@@ -19,12 +19,12 @@ import {
 import type {
   AgentEndpointView,
   AgentMessage,
+  AgentMessageMode,
   AgentMessageReceipt,
   AgentMessageSendInput,
   AgentSenderBinding,
 } from "./agent-messaging-types";
-import type { RelayAgentMessageRoute } from "./relay-agent-message-route";
-
+import { RelayAgentMessageRoute } from "./relay-agent-message-route";
 export interface LocalAgentMessageDelivery {
   deliver(
     target: ResolvedAgentEndpoint,
@@ -60,7 +60,10 @@ export class AgentMessageRouter {
     private readonly deps: {
       registry: Pick<
         AgentEndpointRegistry,
-        "listReachable" | "resolveSender" | "resolveTarget"
+        | "listReachable"
+        | "resolveSender"
+        | "resolveTarget"
+        | "resolveLocalTargetByEndpointId"
       >;
       delivery: LocalAgentMessageDelivery;
       remoteRoute?: RelayAgentMessageRoute;
@@ -216,10 +219,9 @@ export class AgentMessageRouter {
       return { ...cached, deduplicated: true };
     }
 
-    const target =
-      await this.deps.registry.resolveLocalTargetByEndpointId(
-        input.targetEndpointId,
-      );
+    const target = await this.deps.registry.resolveLocalTargetByEndpointId(
+      input.targetEndpointId,
+    );
     const message: AgentMessage = {
       id: input.messageId,
       from: { nodeId: input.sourceNodeId, endpointId: input.sourceEndpointId },
@@ -244,11 +246,7 @@ export class AgentMessageRouter {
 
     let result: SessionMessageReceipt;
     try {
-      result = await this.deps.delivery.deliver(
-        target,
-        message,
-        renderedText,
-      );
+      result = await this.deps.delivery.deliver(target, message, renderedText);
     } catch (error) {
       const mapped = mapDeliveryError(error);
       this.logDelivery(message, undefined, createdAt, mapped.code);

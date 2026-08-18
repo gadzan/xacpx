@@ -1,4 +1,7 @@
-import { AgentMessagingError } from "./agent-messaging-error";
+import {
+  AgentMessagingError,
+  isAgentMessagingErrorCode,
+} from "./agent-messaging-error";
 import type {
   AgentMessage,
   AgentMessageReceipt,
@@ -6,6 +9,8 @@ import type {
 
 export interface RelayRouteClient {
   sendAgentMessageRoute(payload: {
+    sourceNodeId: string;
+    sourceEndpointId: string;
     targetNodeId: string;
     targetEndpointId: string;
     messageId: string;
@@ -37,6 +42,8 @@ export class RelayAgentMessageRoute {
     }
     try {
       const res = await this.client.sendAgentMessageRoute({
+        sourceNodeId: message.from.nodeId,
+        sourceEndpointId: message.from.endpointId,
         targetNodeId: message.to.nodeId,
         targetEndpointId: message.to.endpointId,
         messageId: message.id,
@@ -53,10 +60,11 @@ export class RelayAgentMessageRoute {
       };
     } catch (err) {
       if (err instanceof AgentMessagingError) throw err;
-      throw new AgentMessagingError(
-        "DELIVERY_FAILED",
-        err instanceof Error ? err.message : String(err),
-      );
+      const message = err instanceof Error ? err.message : String(err);
+      const code = isAgentMessagingErrorCode(message)
+        ? message
+        : "DELIVERY_FAILED";
+      throw new AgentMessagingError(code, message);
     }
   }
 }

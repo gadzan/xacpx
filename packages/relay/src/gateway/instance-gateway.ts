@@ -216,6 +216,9 @@ export class InstanceGateway {
           instanceId: identity.instanceId,
           accountId: identity.accountId,
         });
+        this.sendEvent(identity.instanceId, MSG.agentDirectorySnapshot, {
+          endpoints: this.getPublishedEndpoints(identity.accountId),
+        });
       }
       return;
     }

@@ -25,6 +25,12 @@ export class LocalAgentMessageDeliveryAdapter {
     message: AgentMessage,
     renderedText: string,
   ): Promise<SessionMessageReceipt> {
+    if (target.runtime.kind === "remote") {
+      throw new AgentMessagingError(
+        "ROUTE_UNAVAILABLE",
+        "The target belongs to a remote messaging node; use the remote route.",
+      );
+    }
     const session =
       target.runtime.kind === "logical"
         ? await this.deps.resolveLogicalSession(target.runtime.transportSession)

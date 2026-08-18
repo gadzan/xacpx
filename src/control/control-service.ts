@@ -1,6 +1,10 @@
 import type { Agent as ChatAgent } from "../weixin/agent/interface";
 import type { SessionService } from "../sessions/session-service";
-import type { AgentSession, ResolvedSession, SessionTransport } from "../transport/types";
+import type {
+  AgentSession,
+  ResolvedSession,
+  SessionTransport,
+} from "../transport/types";
 import type { ActiveTurnRegistry } from "../sessions/active-turn-registry";
 import type {
   CreateScheduledTaskInput,
@@ -19,9 +23,19 @@ import {
   toDisplaySessionAlias,
 } from "../channels/channel-scope";
 import type { ControlEventBus } from "./control-event-bus";
-import { readNativeSessionHistory, type NativeHistoryMessage } from "../transport/native-session-history";
+import {
+  readNativeSessionHistory,
+  type NativeHistoryMessage,
+} from "../transport/native-session-history";
 import type { AgentCatalogEntry } from "../config/agent-catalog";
-import { WorkspaceFs, type DirListing, type FileContent, type SearchOptions, type SearchResult, type WorkspaceDiff } from "./workspace-fs";
+import {
+  WorkspaceFs,
+  type DirListing,
+  type FileContent,
+  type SearchOptions,
+  type SearchResult,
+  type WorkspaceDiff,
+} from "./workspace-fs";
 import {
   WorkspaceGit,
   type GitCheckoutOptions,
@@ -35,7 +49,10 @@ import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import type { UploadStore } from "./upload-store.js";
 import { SessionTurnRunner } from "./session-turn-runner";
 import { TurnQueue } from "./turn-queue";
-import { buildControlMetadata, type TurnIdleTimeoutDetail } from "./turn-support";
+import {
+  buildControlMetadata,
+  type TurnIdleTimeoutDetail,
+} from "./turn-support";
 import {
   BRIDGE_REQUEST_TIMEOUT_GRACE_MS,
   DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS,
@@ -43,11 +60,13 @@ import {
 } from "../transport/command-timeouts";
 import type { AppLogger } from "../logging/app-logger";
 
-const MODEL_SET_SETTLE_BUDGET_MS = 2 * (
-  DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS + BRIDGE_REQUEST_TIMEOUT_GRACE_MS
-);
+const MODEL_SET_SETTLE_BUDGET_MS =
+  2 * (DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS + BRIDGE_REQUEST_TIMEOUT_GRACE_MS);
 
-function normalizeAdvertisedEffortCurrent(observed: { current?: string; available: string[] }): string | undefined {
+function normalizeAdvertisedEffortCurrent(observed: {
+  current?: string;
+  available: string[];
+}): string | undefined {
   if (observed.available.length === 0) return observed.current;
   return observed.current && observed.available.includes(observed.current)
     ? observed.current
@@ -111,22 +130,42 @@ export interface ControlServiceDeps {
   agent: Pick<ChatAgent, "chat">;
   sessions: Pick<
     SessionService,
-    "listAllResolvedSessions" | "removeSession" | "useSession" | "resolveAliasForChat" | "getSession" | "setSessionModel" | "setSessionEffort" | "setDisplayName"
+    | "listAllResolvedSessions"
+    | "removeSession"
+    | "useSession"
+    | "resolveAliasForChat"
+    | "getSession"
+    | "setSessionModel"
+    | "setSessionEffort"
+    | "setDisplayName"
   >;
   // The active transport, for reading/switching a session's model and effort.
   // These controls are optional on the interface — absence is handled gracefully.
-  transport: Pick<SessionTransport, "setModel" | "getSessionModel" | "setSessionEffort" | "getSessionEffort">;
+  transport: Pick<
+    SessionTransport,
+    "setModel" | "getSessionModel" | "setSessionEffort" | "getSessionEffort"
+  >;
   // Full-lifecycle session creator (resolve → ensure acpx session → bind),
   // wired to CommandRouter.createSessionWithTransport in main.ts. Replaces the
   // logical-only sessions.createSession so control-created sessions are promptable.
-  createSessionWithTransport: (internalAlias: string, agent: string, workspace: string, model?: string) => Promise<ResolvedSession>;
+  createSessionWithTransport: (
+    internalAlias: string,
+    agent: string,
+    workspace: string,
+    model?: string,
+  ) => Promise<ResolvedSession>;
   // Full-lifecycle session teardown/archival, wired to CommandRouter in main.ts so the
   // web path shares the chat path's shared-transport guard + acpx teardown.
-  removeSessionWithTransport: (internalAlias: string) => Promise<{ wasActive: boolean }>;
+  removeSessionWithTransport: (
+    internalAlias: string,
+  ) => Promise<{ wasActive: boolean }>;
   archiveSessionWithTransport: (internalAlias: string) => Promise<void>;
   unarchiveSession: (internalAlias: string) => Promise<void>;
   // List the agent-native sessions for an agent + workspace (web native-attach picker).
-  listNativeSessions: (agent: string, workspace: string) => Promise<AgentSession[]>;
+  listNativeSessions: (
+    agent: string,
+    workspace: string,
+  ) => Promise<AgentSession[]>;
   // Bind a new logical session to an EXISTING agent-native session (resume), the web
   // counterpart of `/ssn` → select. Wired to CommandRouter.attachNativeSessionWithTransport.
   attachNativeSessionWithTransport: (
@@ -138,9 +177,18 @@ export interface ControlServiceDeps {
   ) => Promise<ResolvedSession>;
   activeTurns: Pick<ActiveTurnRegistry, "isActiveAnywhere">;
   /** Warmth tracker view for the cold-session indicator; absent ⇒ `warm` omitted from listings. */
-  sessionWarmth?: Pick<import("./session-warmth-tracker").SessionWarmthTracker, "isWarm" | "markWarm" | "markCold">;
-  scheduled: Pick<ScheduledTaskService, "listPending" | "listRecentForChat" | "createTask" | "cancelPending">;
-  orchestration: Pick<OrchestrationService, "listTasks" | "getTask" | "requestTaskCancellation">;
+  sessionWarmth?: Pick<
+    import("./session-warmth-tracker").SessionWarmthTracker,
+    "isWarm" | "markWarm" | "markCold"
+  >;
+  scheduled: Pick<
+    ScheduledTaskService,
+    "listPending" | "listRecentForChat" | "createTask" | "cancelPending"
+  >;
+  orchestration: Pick<
+    OrchestrationService,
+    "listTasks" | "getTask" | "requestTaskCancellation"
+  >;
   events: ControlEventBus;
   // Read-only config views + a persisting workspace creator. Supplied by main.ts
   // where the live AppConfig and ConfigStore are in scope; created workspaces are
@@ -153,7 +201,11 @@ export interface ControlServiceDeps {
   };
   workspaces: {
     list(): ControlWorkspaceInfo[];
-    create(name: string, cwd: string, description?: string): Promise<ControlWorkspaceInfo>;
+    create(
+      name: string,
+      cwd: string,
+      description?: string,
+    ): Promise<ControlWorkspaceInfo>;
     remove(name: string): Promise<void>;
   };
   uploadStore: UploadStore;
@@ -213,6 +265,21 @@ export interface ControlServiceDeps {
         node: string;
         agent: string;
         state: "idle" | "running" | "unreachable";
+        capabilities: {
+          receive: boolean;
+          steer: boolean;
+          queue: boolean;
+          interrupt: boolean;
+        };
+      }>,
+    ): void;
+    syncRemoteDirectorySnapshot?(
+      endpoints: Array<{
+        nodeId: string;
+        endpointId: string;
+        displayName?: string;
+        agent: string;
+        state: "idle" | "running";
         capabilities: {
           receive: boolean;
           steer: boolean;
@@ -283,21 +350,43 @@ export class ControlService {
 
   constructor(private readonly deps: ControlServiceDeps) {
     this.workspaceGit = new WorkspaceGit(
-      () => this.deps.workspaces.list().map((w) => ({ name: w.name, cwd: w.cwd })),
-      { ...(deps.gitWorktreesRoot ? { managedWorktreesRoot: deps.gitWorktreesRoot } : {}) },
+      () =>
+        this.deps.workspaces.list().map((w) => ({ name: w.name, cwd: w.cwd })),
+      {
+        ...(deps.gitWorktreesRoot
+          ? { managedWorktreesRoot: deps.gitWorktreesRoot }
+          : {}),
+      },
     );
     this.runner = new SessionTurnRunner(deps);
     this.turnQueue = new TurnQueue({
-      runTurn: (req, signal, onActivity) => this.runner.run(req, signal, onActivity),
-      ...(this.deps.turnIdleTimeoutMs ? { turnIdleTimeoutMs: this.deps.turnIdleTimeoutMs } : {}),
-      ...(this.deps.onTurnIdleTimeout ? { onIdleTimeout: this.deps.onTurnIdleTimeout } : {}),
-      ...(this.deps.cancelDrainTimeoutMs !== undefined ? { cancelDrainTimeoutMs: this.deps.cancelDrainTimeoutMs } : {}),
+      runTurn: (req, signal, onActivity) =>
+        this.runner.run(req, signal, onActivity),
+      ...(this.deps.turnIdleTimeoutMs
+        ? { turnIdleTimeoutMs: this.deps.turnIdleTimeoutMs }
+        : {}),
+      ...(this.deps.onTurnIdleTimeout
+        ? { onIdleTimeout: this.deps.onTurnIdleTimeout }
+        : {}),
+      ...(this.deps.cancelDrainTimeoutMs !== undefined
+        ? { cancelDrainTimeoutMs: this.deps.cancelDrainTimeoutMs }
+        : {}),
       emitQueueUpdated: (chatKey, sessionAlias, items) =>
-        this.deps.events.emit({ type: "queue-updated", chatKey, sessionAlias, items }),
+        this.deps.events.emit({
+          type: "queue-updated",
+          chatKey,
+          sessionAlias,
+          items,
+        }),
       detectSessionsChanged: async (detection) => {
         try {
-          const after = await this.deps.sessions.getSession(detection.internalAlias);
-          if (after && after.transportSession !== detection.priorTransportSession) {
+          const after = await this.deps.sessions.getSession(
+            detection.internalAlias,
+          );
+          if (
+            after &&
+            after.transportSession !== detection.priorTransportSession
+          ) {
             this.deps.events.emit({ type: "sessions-changed" });
           }
         } catch {
@@ -333,10 +422,16 @@ export class ControlService {
     return operation();
   }
 
-  private async withWorktreeRegistration<T>(workspaceName: string, operation: () => Promise<T>): Promise<T> {
-    const previous = this.worktreeRegistrationTails.get(workspaceName) ?? Promise.resolve();
+  private async withWorktreeRegistration<T>(
+    workspaceName: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous =
+      this.worktreeRegistrationTails.get(workspaceName) ?? Promise.resolve();
     let release!: () => void;
-    const current = new Promise<void>((resolve) => { release = resolve; });
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     const tail = previous.catch(() => {}).then(() => current);
     this.worktreeRegistrationTails.set(workspaceName, tail);
     await previous.catch(() => {});
@@ -351,27 +446,39 @@ export class ControlService {
   }
 
   gitStage(workspace: string, paths: string[]): Promise<void> {
-    return this.mutateWorkspaceGit(() => this.workspaceGit.stage(workspace, paths));
+    return this.mutateWorkspaceGit(() =>
+      this.workspaceGit.stage(workspace, paths),
+    );
   }
 
   gitUnstage(workspace: string, paths: string[]): Promise<void> {
-    return this.mutateWorkspaceGit(() => this.workspaceGit.unstage(workspace, paths));
+    return this.mutateWorkspaceGit(() =>
+      this.workspaceGit.unstage(workspace, paths),
+    );
   }
 
   gitUntrack(workspace: string, paths: string[]): Promise<void> {
-    return this.mutateWorkspaceGit(() => this.workspaceGit.untrack(workspace, paths));
+    return this.mutateWorkspaceGit(() =>
+      this.workspaceGit.untrack(workspace, paths),
+    );
   }
 
   gitDiscard(workspace: string, paths: string[]): Promise<void> {
-    return this.mutateWorkspaceGit(() => this.workspaceGit.discard(workspace, paths));
+    return this.mutateWorkspaceGit(() =>
+      this.workspaceGit.discard(workspace, paths),
+    );
   }
 
   gitCommit(workspace: string, message: string): Promise<GitCommitResult> {
-    return this.mutateWorkspaceGit(() => this.workspaceGit.commit(workspace, message));
+    return this.mutateWorkspaceGit(() =>
+      this.workspaceGit.commit(workspace, message),
+    );
   }
 
   gitFetch(workspace: string, remote?: string): Promise<void> {
-    return this.mutateWorkspaceGit(() => this.workspaceGit.fetch(workspace, remote));
+    return this.mutateWorkspaceGit(() =>
+      this.workspaceGit.fetch(workspace, remote),
+    );
   }
 
   gitPull(workspace: string): Promise<void> {
@@ -379,55 +486,87 @@ export class ControlService {
   }
 
   gitPush(workspace: string, options?: GitPushOptions): Promise<void> {
-    return this.mutateWorkspaceGit(() => this.workspaceGit.push(workspace, options));
+    return this.mutateWorkspaceGit(() =>
+      this.workspaceGit.push(workspace, options),
+    );
   }
 
   gitCheckout(workspace: string, options: GitCheckoutOptions): Promise<void> {
-    return this.mutateWorkspaceGit(() => this.workspaceGit.checkout(workspace, options));
+    return this.mutateWorkspaceGit(() =>
+      this.workspaceGit.checkout(workspace, options),
+    );
   }
 
   async gitCreateWorktree(
     workspace: string,
     input: GitWorktreeCreateOptions & { workspaceName: string },
-  ): Promise<{ worktree: GitWorktreeCreateResult; workspace: ControlWorkspaceInfo }> {
+  ): Promise<{
+    worktree: GitWorktreeCreateResult;
+    workspace: ControlWorkspaceInfo;
+  }> {
     const workspaceName = input.workspaceName.trim();
     if (!workspaceName) throw new Error("workspace-name-required");
-    return this.mutateWorkspaceGit(() => this.withWorktreeRegistration(workspaceName, async () => {
-      if (this.deps.workspaces.list().some((item) => item.name === workspaceName)) {
-        throw new Error("workspace-name-exists");
-      }
-      const worktree = await this.workspaceGit.createWorktree(workspace, input);
-      try {
-        const registered = await this.deps.workspaces.create(
-          workspaceName,
-          worktree.path,
-          `Git worktree for ${worktree.branch}`,
-        );
-        return { worktree, workspace: registered };
-      } catch (registrationError) {
-        try {
-          await this.workspaceGit.removeManagedWorktree(workspace, worktree.path);
-        } catch (rollbackError) {
-          throw new AggregateError(
-            [registrationError, rollbackError],
-            "workspace-registration-rollback-failed",
-          );
+    return this.mutateWorkspaceGit(() =>
+      this.withWorktreeRegistration(workspaceName, async () => {
+        if (
+          this.deps.workspaces
+            .list()
+            .some((item) => item.name === workspaceName)
+        ) {
+          throw new Error("workspace-name-exists");
         }
-        throw registrationError;
-      }
-    }));
+        const worktree = await this.workspaceGit.createWorktree(
+          workspace,
+          input,
+        );
+        try {
+          const registered = await this.deps.workspaces.create(
+            workspaceName,
+            worktree.path,
+            `Git worktree for ${worktree.branch}`,
+          );
+          return { worktree, workspace: registered };
+        } catch (registrationError) {
+          try {
+            await this.workspaceGit.removeManagedWorktree(
+              workspace,
+              worktree.path,
+            );
+          } catch (rollbackError) {
+            throw new AggregateError(
+              [registrationError, rollbackError],
+              "workspace-registration-rollback-failed",
+            );
+          }
+          throw registrationError;
+        }
+      }),
+    );
   }
 
-  searchWorkspace(workspace: string, opts: SearchOptions): Promise<SearchResult> {
+  searchWorkspace(
+    workspace: string,
+    opts: SearchOptions,
+  ): Promise<SearchResult> {
     return this.workspaceFs.search(workspace, opts);
   }
 
-  async fsCreate(workspace: string, path: string, kind: "file" | "dir"): Promise<{ path: string }> {
+  async fsCreate(
+    workspace: string,
+    path: string,
+    kind: "file" | "dir",
+  ): Promise<{ path: string }> {
     if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
-    return kind === "dir" ? this.workspaceFs.createDir(workspace, path) : this.workspaceFs.createFile(workspace, path);
+    return kind === "dir"
+      ? this.workspaceFs.createDir(workspace, path)
+      : this.workspaceFs.createFile(workspace, path);
   }
 
-  async fsRename(workspace: string, path: string, newName: string): Promise<{ path: string }> {
+  async fsRename(
+    workspace: string,
+    path: string,
+    newName: string,
+  ): Promise<{ path: string }> {
     if (!this.deps.filesWriteEnabled()) throw new Error("files-write-disabled");
     return this.workspaceFs.rename(workspace, path, newName);
   }
@@ -452,19 +591,40 @@ export class ControlService {
     return this.workspaceFs.writeFile(workspace, path, content, expected);
   }
 
-  async fsDownload(workspace: string, path: string): Promise<{ path: string; base64: string; size: number; mimeType: string }> {
+  async fsDownload(
+    workspace: string,
+    path: string,
+  ): Promise<{ path: string; base64: string; size: number; mimeType: string }> {
     return this.workspaceFs.readFileBytes(workspace, path); // read op — intentionally NOT gated
   }
 
-  async uploadFile(input: { filename: string; content: string; mimeType: string }): Promise<{ id: string; path: string; filename: string; mimeType: string; size: number }> {
-    return this.deps.uploadStore.save(input.filename, input.content, input.mimeType);
+  async uploadFile(input: {
+    filename: string;
+    content: string;
+    mimeType: string;
+  }): Promise<{
+    id: string;
+    path: string;
+    filename: string;
+    mimeType: string;
+    size: number;
+  }> {
+    return this.deps.uploadStore.save(
+      input.filename,
+      input.content,
+      input.mimeType,
+    );
   }
 
   /** Read a session's current model and the agent-advertised available ids. */
-  async getSessionModel(chatKey: string, alias: string): Promise<{ current?: string; available: string[] }> {
+  async getSessionModel(
+    chatKey: string,
+    alias: string,
+  ): Promise<{ current?: string; available: string[] }> {
     const session = await this.resolveControlSession(chatKey, alias);
     if (!session) return { available: [] };
-    if (!this.deps.transport.getSessionModel) return { current: session.model, available: [] };
+    if (!this.deps.transport.getSessionModel)
+      return { current: session.model, available: [] };
     return await this.deps.transport.getSessionModel(session);
   }
 
@@ -478,14 +638,18 @@ export class ControlService {
     const session = await this.resolveControlSession(chatKey, alias);
     if (!session) throw new Error("session not found");
     const setModel = this.deps.transport.setModel?.bind(this.deps.transport);
-    if (!setModel) throw new Error("the active transport does not support switching models");
+    if (!setModel)
+      throw new Error("the active transport does not support switching models");
     return await this.runSessionConfigSetExclusive(session.alias, async () => {
       if (
-        typeof options.deadlineAt === "number"
-        && Number.isFinite(options.deadlineAt)
-        && (this.deps.now?.() ?? Date.now()) + MODEL_SET_SETTLE_BUDGET_MS > options.deadlineAt
+        typeof options.deadlineAt === "number" &&
+        Number.isFinite(options.deadlineAt) &&
+        (this.deps.now?.() ?? Date.now()) + MODEL_SET_SETTLE_BUDGET_MS >
+          options.deadlineAt
       ) {
-        throw new Error("model switch deadline is too close to safely start the queued operation");
+        throw new Error(
+          "model switch deadline is too close to safely start the queued operation",
+        );
       }
       try {
         await setModel(session, modelId);
@@ -493,7 +657,11 @@ export class ControlService {
         // A process timeout is ambiguous: acpx may have applied the model before it
         // stopped responding. Read back the authoritative transport state so the
         // persisted logical session and relay-web's optimistic chip cannot diverge.
-        if (!isCommandTimeoutError(error) || !this.deps.transport.getSessionModel) throw error;
+        if (
+          !isCommandTimeoutError(error) ||
+          !this.deps.transport.getSessionModel
+        )
+          throw error;
         let observed: { current?: string; available: string[] };
         try {
           observed = await this.deps.transport.getSessionModel(session);
@@ -501,7 +669,10 @@ export class ControlService {
           // Preserve the original timeout; reconciliation is best-effort diagnostics.
           throw error;
         }
-        await this.deps.sessions.setSessionModel(session.alias, observed.current);
+        await this.deps.sessions.setSessionModel(
+          session.alias,
+          observed.current,
+        );
         try {
           await this.deps.logger?.error(
             "control.session.model.timeout_reconciled",
@@ -516,7 +687,10 @@ export class ControlService {
         } catch {
           // Logging is diagnostic only; reconciliation already succeeded.
         }
-        return { current: observed.current, applied: observed.current === modelId };
+        return {
+          current: observed.current,
+          applied: observed.current === modelId,
+        };
       }
       await this.deps.sessions.setSessionModel(session.alias, modelId);
       return { current: modelId, applied: true };
@@ -524,27 +698,43 @@ export class ControlService {
   }
 
   /** Read the reasoning-effort values advertised by the session's adapter. */
-  async getSessionEffort(chatKey: string, alias: string): Promise<{ current?: string; available: string[] }> {
+  async getSessionEffort(
+    chatKey: string,
+    alias: string,
+  ): Promise<{ current?: string; available: string[] }> {
     const initialSession = await this.resolveControlSession(chatKey, alias);
-    const getEffort = this.deps.transport.getSessionEffort?.bind(this.deps.transport);
+    const getEffort = this.deps.transport.getSessionEffort?.bind(
+      this.deps.transport,
+    );
     if (!initialSession || !getEffort) return { available: [] };
-    return await this.runSessionConfigSetExclusive(initialSession.alias, async () => {
-      const session = await this.resolveControlSession(chatKey, alias);
-      if (!session) return { available: [] };
-      const observed = await getEffort(session);
-      const observedCurrent = normalizeAdvertisedEffortCurrent(observed);
-      let current = session.effort && observed.available.includes(session.effort)
-        ? session.effort
-        : observedCurrent;
-      if (session.effort && observed.available.length > 0 && !observed.available.includes(session.effort)) {
-        await this.deps.sessions.setSessionEffort(session.alias, observedCurrent);
-        current = observedCurrent;
-      }
-      return {
-        current,
-        available: observed.available,
-      };
-    });
+    return await this.runSessionConfigSetExclusive(
+      initialSession.alias,
+      async () => {
+        const session = await this.resolveControlSession(chatKey, alias);
+        if (!session) return { available: [] };
+        const observed = await getEffort(session);
+        const observedCurrent = normalizeAdvertisedEffortCurrent(observed);
+        let current =
+          session.effort && observed.available.includes(session.effort)
+            ? session.effort
+            : observedCurrent;
+        if (
+          session.effort &&
+          observed.available.length > 0 &&
+          !observed.available.includes(session.effort)
+        ) {
+          await this.deps.sessions.setSessionEffort(
+            session.alias,
+            observedCurrent,
+          );
+          current = observedCurrent;
+        }
+        return {
+          current,
+          available: observed.available,
+        };
+      },
+    );
   }
 
   /** Set the adapter-advertised reasoning effort for a session. */
@@ -555,13 +745,20 @@ export class ControlService {
   ): Promise<{ current?: string; applied: boolean }> {
     const session = await this.resolveControlSession(chatKey, alias);
     if (!session) throw new Error("session not found");
-    const setEffort = this.deps.transport.setSessionEffort?.bind(this.deps.transport);
-    if (!setEffort) throw new Error("the active transport does not support setting reasoning effort");
+    const setEffort = this.deps.transport.setSessionEffort?.bind(
+      this.deps.transport,
+    );
+    if (!setEffort)
+      throw new Error(
+        "the active transport does not support setting reasoning effort",
+      );
     return await this.runSessionConfigSetExclusive(session.alias, async () => {
       try {
         await setEffort(session, effort);
       } catch (error) {
-        const getEffort = this.deps.transport.getSessionEffort?.bind(this.deps.transport);
+        const getEffort = this.deps.transport.getSessionEffort?.bind(
+          this.deps.transport,
+        );
         if (!isCommandTimeoutError(error) || !getEffort) throw error;
         let observed: { current?: string; available: string[] };
         try {
@@ -571,7 +768,10 @@ export class ControlService {
           throw error;
         }
         const observedCurrent = normalizeAdvertisedEffortCurrent(observed);
-        await this.deps.sessions.setSessionEffort(session.alias, observedCurrent);
+        await this.deps.sessions.setSessionEffort(
+          session.alias,
+          observedCurrent,
+        );
         try {
           await this.deps.logger?.error(
             "control.session.effort.timeout_reconciled",
@@ -586,7 +786,10 @@ export class ControlService {
         } catch {
           // Logging is diagnostic only; reconciliation already succeeded.
         }
-        return { current: observedCurrent, applied: observedCurrent === effort };
+        return {
+          current: observedCurrent,
+          applied: observedCurrent === effort,
+        };
       }
       await this.deps.sessions.setSessionEffort(session.alias, effort);
       return { current: effort, applied: true };
@@ -594,10 +797,16 @@ export class ControlService {
   }
 
   /** Serialize adapter configuration mutations per logical session so stale operations cannot win last. */
-  private async runSessionConfigSetExclusive<T>(sessionAlias: string, operation: () => Promise<T>): Promise<T> {
-    const previous = this.sessionConfigSetTails.get(sessionAlias) ?? Promise.resolve();
+  private async runSessionConfigSetExclusive<T>(
+    sessionAlias: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous =
+      this.sessionConfigSetTails.get(sessionAlias) ?? Promise.resolve();
     let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     const tail = previous.catch(() => {}).then(() => gate);
     this.sessionConfigSetTails.set(sessionAlias, tail);
 
@@ -613,7 +822,11 @@ export class ControlService {
   }
 
   /** Set (or clear) a session's relay-web display label and persist it. */
-  async setSessionDisplayName(chatKey: string, alias: string, displayName: string): Promise<void> {
+  async setSessionDisplayName(
+    chatKey: string,
+    alias: string,
+    displayName: string,
+  ): Promise<void> {
     const session = await this.resolveControlSession(chatKey, alias);
     if (!session) throw new Error("session not found");
     await this.deps.sessions.setDisplayName(session.alias, displayName);
@@ -621,8 +834,14 @@ export class ControlService {
   }
 
   /** Resolve a chat-scoped display alias to its ResolvedSession, or null. */
-  private async resolveControlSession(chatKey: string, alias: string): Promise<ResolvedSession | null> {
-    const internalAlias = await this.deps.sessions.resolveAliasForChat(chatKey, alias);
+  private async resolveControlSession(
+    chatKey: string,
+    alias: string,
+  ): Promise<ResolvedSession | null> {
+    const internalAlias = await this.deps.sessions.resolveAliasForChat(
+      chatKey,
+      alias,
+    );
     return await this.deps.sessions.getSession(internalAlias);
   }
 
@@ -638,7 +857,9 @@ export class ControlService {
     const channelId = getChannelIdFromChatKey(chatKey);
     return this.deps.sessions
       .listAllResolvedSessions()
-      .filter((session) => isSessionAliasVisibleInChannel(session.alias, channelId))
+      .filter((session) =>
+        isSessionAliasVisibleInChannel(session.alias, channelId),
+      )
       .map((session) => {
         const running = this.deps.activeTurns.isActiveAnywhere(session.alias);
         const warm = running ? true : this.deps.sessionWarmth?.isWarm(session);
@@ -652,7 +873,9 @@ export class ControlService {
           ...(session.archivedAt ? { archivedAt: session.archivedAt } : {}),
           ...(warm !== undefined ? { warm } : {}),
           ...(session.source === "agent-side" ? { native: true } : {}),
-          ...(session.agentCommand ? { agentCommand: session.agentCommand } : {}),
+          ...(session.agentCommand
+            ? { agentCommand: session.agentCommand }
+            : {}),
           ...(session.displayName ? { displayName: session.displayName } : {}),
         };
       });
@@ -672,8 +895,16 @@ export class ControlService {
     // Filters use !== undefined (not truthiness) so "" matches sessions lacking the field.
     const all = this.listSessions(chatKey).filter((session) => {
       if (!archivedVisible(session)) return false;
-      if (filters?.workspace !== undefined && (session.workspace ?? "") !== filters.workspace) return false;
-      if (filters?.agent !== undefined && (session.agent ?? "") !== filters.agent) return false;
+      if (
+        filters?.workspace !== undefined &&
+        (session.workspace ?? "") !== filters.workspace
+      )
+        return false;
+      if (
+        filters?.agent !== undefined &&
+        (session.agent ?? "") !== filters.agent
+      )
+        return false;
       return true;
     });
     if (filters?.archivedOnly) {
@@ -699,7 +930,11 @@ export class ControlService {
    * agent's own rollouts on disk (per-cwd), not chat-scoped — chatKey is accepted only
    * for call-shape symmetry with the other session control methods.
    */
-  async listNativeSessions(_chatKey: string, agent: string, workspace: string): Promise<ControlNativeSessionInfo[]> {
+  async listNativeSessions(
+    _chatKey: string,
+    agent: string,
+    workspace: string,
+  ): Promise<ControlNativeSessionInfo[]> {
     const sessions = await this.deps.listNativeSessions(agent, workspace);
     return sessions.map((s) => ({
       sessionId: s.sessionId,
@@ -717,7 +952,10 @@ export class ControlService {
     agentSessionId?: string,
     model?: string,
   ): Promise<ControlSessionInfo> {
-    const internalAlias = await this.deps.sessions.resolveAliasForChat(chatKey, alias);
+    const internalAlias = await this.deps.sessions.resolveAliasForChat(
+      chatKey,
+      alias,
+    );
     // When an agentSessionId is supplied the user picked an existing native session to
     // resume; otherwise create a fresh transport session (the default `/session new`).
     // Native attach: recover the agent-side rollout's prior conversation from acpx's own
@@ -736,8 +974,18 @@ export class ControlService {
     // `model` only applies to a fresh transport session; a native attach resumes the
     // agent-side rollout under its own recorded model and ignores the override.
     const session = agentSessionId
-      ? await this.deps.attachNativeSessionWithTransport(internalAlias, agent, workspace, agentSessionId)
-      : await this.deps.createSessionWithTransport(internalAlias, agent, workspace, model);
+      ? await this.deps.attachNativeSessionWithTransport(
+          internalAlias,
+          agent,
+          workspace,
+          agentSessionId,
+        )
+      : await this.deps.createSessionWithTransport(
+          internalAlias,
+          agent,
+          workspace,
+          model,
+        );
     this.deps.events.emit({ type: "sessions-changed" });
     if (nativeHistory.length > 0) {
       // The emitted alias must match the ACTUALLY-created session (which may have
@@ -745,7 +993,12 @@ export class ControlService {
       // collided with an archived session). Using the user-supplied `alias` here
       // would drop the native history seed on a session that was never created.
       const historyAlias = toDisplaySessionAlias(session.alias);
-      this.deps.events.emit({ type: "session-history", chatKey, sessionAlias: historyAlias, messages: nativeHistory });
+      this.deps.events.emit({
+        type: "session-history",
+        chatKey,
+        sessionAlias: historyAlias,
+        messages: nativeHistory,
+      });
     }
     return {
       alias: toDisplaySessionAlias(session.alias),
@@ -757,8 +1010,14 @@ export class ControlService {
     };
   }
 
-  async removeSession(chatKey: string, alias: string): Promise<{ wasActive: boolean }> {
-    const internalAlias = await this.deps.sessions.resolveAliasForChat(chatKey, alias);
+  async removeSession(
+    chatKey: string,
+    alias: string,
+  ): Promise<{ wasActive: boolean }> {
+    const internalAlias = await this.deps.sessions.resolveAliasForChat(
+      chatKey,
+      alias,
+    );
     // Drop queued prompts and abort a running turn BEFORE tearing down the transport:
     // a drained turn starting mid-removal (or turn events landing after it) would write
     // history rows for a session that no longer exists. NOTE clearSession is destructive
@@ -766,7 +1025,9 @@ export class ControlService {
     // the queue — so this is a retry-able failure, not a no-op.
     const { cleared } = await this.turnQueue.clearSession(chatKey, alias);
     if (!cleared) {
-      throw new Error(`session "${alias}" is still finishing a stopped turn; retry in a moment`);
+      throw new Error(
+        `session "${alias}" is still finishing a stopped turn; retry in a moment`,
+      );
     }
     // clearSession armed a teardown guard (busy gate rejects new turns); release it once
     // transport removal settles, success or failure, so the key never wedges as busy.
@@ -780,14 +1041,19 @@ export class ControlService {
   }
 
   async archiveSession(chatKey: string, alias: string): Promise<void> {
-    const internalAlias = await this.deps.sessions.resolveAliasForChat(chatKey, alias);
+    const internalAlias = await this.deps.sessions.resolveAliasForChat(
+      chatKey,
+      alias,
+    );
     // Queued prompts must not drain onto the session the user just archived — a drained
     // turn would cold-start a fresh queue owner and effectively undo the archive.
     // clearSession is destructive even on `cleared: false` (turn aborted, queue dropped),
     // so this is a retry-able failure rather than a no-op.
     const { cleared } = await this.turnQueue.clearSession(chatKey, alias);
     if (!cleared) {
-      throw new Error(`session "${alias}" is still finishing a stopped turn; retry in a moment`);
+      throw new Error(
+        `session "${alias}" is still finishing a stopped turn; retry in a moment`,
+      );
     }
     // Hold the teardown guard across the archive so a scheduled turn can't cold-start on the
     // session being archived; release it in finally regardless of outcome.
@@ -795,7 +1061,9 @@ export class ControlService {
       await this.deps.archiveSessionWithTransport(internalAlias);
       // Archive just killed the warm owner — correct the tracker now so an
       // immediate undo-wake doesn't show a stale warm reading until the next poll.
-      const session = await this.deps.sessions.getSession(internalAlias).catch(() => undefined);
+      const session = await this.deps.sessions
+        .getSession(internalAlias)
+        .catch(() => undefined);
       if (session) this.deps.sessionWarmth?.markCold(session);
       this.deps.events.emit({ type: "sessions-changed" });
     } finally {
@@ -804,7 +1072,10 @@ export class ControlService {
   }
 
   async unarchiveSession(chatKey: string, alias: string): Promise<void> {
-    const internalAlias = await this.deps.sessions.resolveAliasForChat(chatKey, alias);
+    const internalAlias = await this.deps.sessions.resolveAliasForChat(
+      chatKey,
+      alias,
+    );
     await this.deps.unarchiveSession(internalAlias);
     this.deps.events.emit({ type: "sessions-changed" });
   }
@@ -817,7 +1088,11 @@ export class ControlService {
     return this.deps.workspaces.list();
   }
 
-  createWorkspace(name: string, cwd: string, description?: string): Promise<ControlWorkspaceInfo> {
+  createWorkspace(
+    name: string,
+    cwd: string,
+    description?: string,
+  ): Promise<ControlWorkspaceInfo> {
     return this.deps.workspaces.create(name, cwd, description);
   }
 
@@ -830,14 +1105,20 @@ export class ControlService {
   }
 
   async removeAgent(name: string): Promise<void> {
-    if (this.deps.sessions.listAllResolvedSessions().some((s) => s.agent === name)) {
+    if (
+      this.deps.sessions.listAllResolvedSessions().some((s) => s.agent === name)
+    ) {
       throw new Error(`agent "${name}" is in use by an existing session`);
     }
     await this.deps.agents.remove(name);
   }
 
   async removeWorkspace(name: string): Promise<void> {
-    if (this.deps.sessions.listAllResolvedSessions().some((s) => s.workspace === name)) {
+    if (
+      this.deps.sessions
+        .listAllResolvedSessions()
+        .some((s) => s.workspace === name)
+    ) {
       throw new Error(`workspace "${name}" is in use by an existing session`);
     }
     await this.deps.workspaces.remove(name);
@@ -850,9 +1131,14 @@ export class ControlService {
     return this.deps.scheduled.listRecentForChat(chatKey);
   }
 
-  async createScheduledTask(input: CreateScheduledTaskInput): Promise<ScheduledTaskRecord> {
+  async createScheduledTask(
+    input: CreateScheduledTaskInput,
+  ): Promise<ScheduledTaskRecord> {
     const task = await this.deps.scheduled.createTask(input);
-    this.deps.events.emit({ type: "scheduled-changed", chatKey: input.chatKey });
+    this.deps.events.emit({
+      type: "scheduled-changed",
+      chatKey: input.chatKey,
+    });
     return task;
   }
 
@@ -864,15 +1150,21 @@ export class ControlService {
     return cancelled;
   }
 
-  listOrchestrationTasks(filter?: OrchestrationTaskFilter): Promise<OrchestrationTaskRecord[]> {
+  listOrchestrationTasks(
+    filter?: OrchestrationTaskFilter,
+  ): Promise<OrchestrationTaskRecord[]> {
     return this.deps.orchestration.listTasks(filter);
   }
 
-  getOrchestrationTask(taskId: string): Promise<OrchestrationTaskRecord | null> {
+  getOrchestrationTask(
+    taskId: string,
+  ): Promise<OrchestrationTaskRecord | null> {
     return this.deps.orchestration.getTask(taskId);
   }
 
-  async cancelOrchestrationTask(input: CancelTaskInput): Promise<OrchestrationTaskRecord> {
+  async cancelOrchestrationTask(
+    input: CancelTaskInput,
+  ): Promise<OrchestrationTaskRecord> {
     const task = await this.deps.orchestration.requestTaskCancellation(input);
     this.deps.events.emit({ type: "orchestration-changed" });
     return task;
@@ -880,7 +1172,10 @@ export class ControlService {
 
   async prompt(input: ControlPromptInput): Promise<ControlPromptResult> {
     if (this.sessionConfigSetTails.size > 0) {
-      const internalAlias = await this.deps.sessions.resolveAliasForChat(input.chatKey, input.sessionAlias);
+      const internalAlias = await this.deps.sessions.resolveAliasForChat(
+        input.chatKey,
+        input.sessionAlias,
+      );
       await this.sessionConfigSetTails.get(internalAlias)?.catch(() => {});
     }
     return this.turnQueue.submit({
@@ -892,7 +1187,9 @@ export class ControlService {
       ...(input.isOwner !== undefined ? { isOwner: input.isOwner } : {}),
       ...(input.accountId !== undefined ? { accountId: input.accountId } : {}),
       ...(input.media !== undefined ? { media: input.media } : {}),
-      ...(input.promptRequestId !== undefined ? { promptRequestId: input.promptRequestId } : {}),
+      ...(input.promptRequestId !== undefined
+        ? { promptRequestId: input.promptRequestId }
+        : {}),
     });
   }
 
@@ -900,7 +1197,9 @@ export class ControlService {
    *  prompt — so it streams live and persists to history — while tagging turn-started
    *  with the prompt text + schedule origin so the hub records the inbound message and
    *  the web can badge it. Owner-authorized: the task was owner-gated at creation. */
-  async runScheduledTurn(input: ControlScheduledTurnInput): Promise<ControlPromptResult> {
+  async runScheduledTurn(
+    input: ControlScheduledTurnInput,
+  ): Promise<ControlPromptResult> {
     return this.turnQueue.submit({
       chatKey: input.chatKey,
       sessionAlias: input.sessionAlias,
@@ -909,7 +1208,10 @@ export class ControlService {
       isOwner: true,
       ...(input.accountId !== undefined ? { accountId: input.accountId } : {}),
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
-      turnStarted: { prompt: input.promptText, scheduled: { taskId: input.taskId, executeAt: input.executeAt } },
+      turnStarted: {
+        prompt: input.promptText,
+        scheduled: { taskId: input.taskId, executeAt: input.executeAt },
+      },
     });
   }
 
@@ -921,7 +1223,11 @@ export class ControlService {
    *  `{ cancelled: false }`) when the queue or the id is absent/already drained —
    *  e.g. a race where the item drained into a running turn just before the cancel
    *  arrived. Does NOT touch a turn that is already running (use `cancelTurn`). */
-  cancelQueuedItem(chatKey: string, sessionAlias: string, itemId: string): { cancelled: boolean } {
+  cancelQueuedItem(
+    chatKey: string,
+    sessionAlias: string,
+    itemId: string,
+  ): { cancelled: boolean } {
     return this.turnQueue.cancelQueuedItem(chatKey, sessionAlias, itemId);
   }
 
@@ -943,14 +1249,21 @@ export class ControlService {
   }
 
   /** Open an interactive terminal in the session's workspace cwd. Rejected when terminal is disabled. */
-  async createTerminal(chatKey: string, sessionAlias: string, cols: number, rows: number): Promise<{ terminalId: string }> {
+  async createTerminal(
+    chatKey: string,
+    sessionAlias: string,
+    cols: number,
+    rows: number,
+  ): Promise<{ terminalId: string }> {
     if (!this.deps.terminalEnabled()) throw new Error("terminal-disabled");
     const session = await this.resolveControlSession(chatKey, sessionAlias);
     if (!session) throw new Error("session-not-found");
     return this.deps.terminal.create({ cwd: session.cwd, cols, rows });
   }
 
-  attachTerminal(terminalId: string): import("./terminal-service").TerminalAttachResult {
+  attachTerminal(
+    terminalId: string,
+  ): import("./terminal-service").TerminalAttachResult {
     if (!this.deps.terminalEnabled()) throw new Error("terminal-disabled");
     return this.deps.terminal.attach(terminalId);
   }
@@ -1017,6 +1330,23 @@ export class ControlService {
     this.deps.agentMessaging?.updateRemoteEndpoints?.(nodeId, endpoints);
   }
 
+  syncRemoteAgentDirectory(
+    endpoints: Array<{
+      nodeId: string;
+      endpointId: string;
+      displayName?: string;
+      agent: string;
+      state: "idle" | "running";
+      capabilities: {
+        receive: boolean;
+        steer: boolean;
+        queue: boolean;
+        interrupt: boolean;
+      };
+    }>,
+  ): void {
+    this.deps.agentMessaging?.syncRemoteDirectorySnapshot?.(endpoints);
+  }
   writeTerminal(terminalId: string, data: string): void {
     this.deps.terminal.write(terminalId, data);
   }

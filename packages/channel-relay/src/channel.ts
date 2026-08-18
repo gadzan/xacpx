@@ -208,27 +208,22 @@ export class RelayChannel implements MessageChannelRuntime {
           return;
         }
         if (envelope.type === MSG.agentDirectorySnapshot) {
-          const snapshotPayload = envelope.payload as AgentDirectorySnapshotPayload | undefined;
-          if (
-            Array.isArray(snapshotPayload?.endpoints) &&
-            "updateRemoteAgentEndpoints" in control &&
-            typeof (control as unknown as { updateRemoteAgentEndpoints: (nodeId: string, endpoints: unknown[]) => void }).updateRemoteAgentEndpoints === "function"
-          ) {
-            const byNode = new Map<string, unknown[]>();
-            for (const ep of snapshotPayload.endpoints) {
-              const list = byNode.get(ep.nodeId) ?? [];
-              list.push({
-                address: { nodeId: ep.nodeId, endpointId: ep.endpointId },
-                handle: `agent:${ep.nodeId}:${ep.endpointId}`,
-                node: ep.displayName ?? ep.nodeId,
-                agent: ep.agent,
-                state: ep.state,
-                capabilities: ep.capabilities,
-              });
-              byNode.set(ep.nodeId, list);
-            }
-            for (const [nodeId, eps] of byNode) {
-              (control as unknown as { updateRemoteAgentEndpoints: (nodeId: string, endpoints: unknown[]) => void }).updateRemoteAgentEndpoints(nodeId, eps);
+          const snapshotPayload = envelope.payload as
+            AgentDirectorySnapshotPayload | undefined;
+          if (Array.isArray(snapshotPayload?.endpoints)) {
+            if (
+              "syncRemoteAgentDirectory" in control &&
+              typeof (
+                control as unknown as {
+                  syncRemoteAgentDirectory: (endpoints: unknown[]) => void;
+                }
+              ).syncRemoteAgentDirectory === "function"
+            ) {
+              (
+                control as unknown as {
+                  syncRemoteAgentDirectory: (endpoints: unknown[]) => void;
+                }
+              ).syncRemoteAgentDirectory(snapshotPayload.endpoints);
             }
           }
           return;
@@ -268,22 +263,26 @@ export class RelayChannel implements MessageChannelRuntime {
           "getPublishedAgentEndpoints" in control &&
           typeof (
             control as unknown as {
-              getPublishedAgentEndpoints: () => unknown[];
+              getPublishedAgentEndpoints: () => unknown[] | Promise<unknown[]>;
             }
           ).getPublishedAgentEndpoints === "function"
         ) {
-          try {
-            const endpoints = (
+          Promise.resolve(
+            (
               control as unknown as {
-                getPublishedAgentEndpoints: () => unknown[];
+                getPublishedAgentEndpoints: () =>
+                  unknown[] | Promise<unknown[]>;
               }
-            ).getPublishedAgentEndpoints();
-            if (Array.isArray(endpoints) && endpoints.length > 0) {
-              client.sendEvent(MSG.instanceAgentEndpointsSync, { endpoints });
-            }
-          } catch {
-            // Ignore optional endpoint sync failure
-          }
+            ).getPublishedAgentEndpoints(),
+          )
+            .then((endpoints) => {
+              if (Array.isArray(endpoints)) {
+                client.sendEvent(MSG.instanceAgentEndpointsSync, {
+                  endpoints,
+                });
+              }
+            })
+            .catch(() => {});
         }
       },
     });
@@ -520,7 +519,9 @@ export class RelayChannel implements MessageChannelRuntime {
         // (bridge/rmux source + redacted paths) for relay.terminal_bootstrap_failed.
         // createProductionTerminalDriver would only return after a successful
         // start and swallow this resolution on the failure path.
-        const supervisor = new RmuxSidecarSupervisor({ config: this.config.terminal });
+        const supervisor = new RmuxSidecarSupervisor({
+          config: this.config.terminal,
+        });
         this.terminalSupervisor = supervisor;
         driver = new SupervisedRmuxDriver(supervisor);
         await supervisor.start();
@@ -573,10 +574,14 @@ export class RelayChannel implements MessageChannelRuntime {
       const resolution = this.resolutionForBootstrapLog(
         this.terminalSupervisor?.getResolution(),
       );
-      void logTerminalEvent(input.logger, "relay.terminal.runtime_unavailable", {
-        errorClass: err instanceof Error ? err.name : "Error",
-        ...resolution,
-      });
+      void logTerminalEvent(
+        input.logger,
+        "relay.terminal.runtime_unavailable",
+        {
+          errorClass: err instanceof Error ? err.name : "Error",
+          ...resolution,
+        },
+      );
       void input.logger?.error(
         "relay.terminal_bootstrap_failed",
         `RMUX terminal runtime failed to start; continuing without terminal capabilities: ${err instanceof Error ? err.message : String(err)}`,
@@ -632,5 +637,11 @@ export class RelayChannel implements MessageChannelRuntime {
       throw new Error("Relay client is offline or not ready");
     }
     return await this.client.sendRequest(MSG.agentMessageRoute, payload);
+  }
+
+  syncAgentEndpoints(endpoints: unknown[]): void {
+    if (this.client && typeof this.client.sendEvent === "function") {
+      this.client.sendEvent(MSG.instanceAgentEndpointsSync, { endpoints });
+    }
   }
 }

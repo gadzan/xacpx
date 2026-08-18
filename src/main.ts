@@ -13,11 +13,26 @@ import { loadConfig } from "./config/load-config";
 import { resolveAcpxCommand } from "./config/resolve-acpx-command";
 import { ConsoleAgent } from "./console-agent";
 import type { AppConfig, LoggingLevel } from "./config/types";
-import { terminalEnabled, terminalIdleTimeoutSeconds, terminalShell, filesWriteEnabled, turnIdleTimeoutSeconds } from "./config/types";
+import {
+  terminalEnabled,
+  terminalIdleTimeoutSeconds,
+  terminalShell,
+  filesWriteEnabled,
+  turnIdleTimeoutSeconds,
+} from "./config/types";
 import { createAppLogger, type AppLogger } from "./logging/app-logger";
-import { resolveDaemonOrchestrationSocketPath, resolveRuntimeDirFromConfigPath } from "./daemon/daemon-files";
-import type { OrchestrationTaskRecord, WorkerBindingRecord } from "./orchestration/orchestration-types";
-import { createOrchestrationEndpoint, resolveOrchestrationEndpoint } from "./orchestration/orchestration-ipc";
+import {
+  resolveDaemonOrchestrationSocketPath,
+  resolveRuntimeDirFromConfigPath,
+} from "./daemon/daemon-files";
+import type {
+  OrchestrationTaskRecord,
+  WorkerBindingRecord,
+} from "./orchestration/orchestration-types";
+import {
+  createOrchestrationEndpoint,
+  resolveOrchestrationEndpoint,
+} from "./orchestration/orchestration-ipc";
 import { AsyncMutex } from "./orchestration/async-mutex";
 import { OrchestrationServer } from "./orchestration/orchestration-server";
 import { OrchestrationService } from "./orchestration/orchestration-service";
@@ -31,17 +46,32 @@ import {
 import { LocalAgentMessageDeliveryAdapter } from "./orchestration/local-agent-message-delivery";
 import { buildCoordinatorPrompt } from "./orchestration/build-coordinator-prompt";
 import { sameCoordinatorSession } from "./orchestration/coordinator-identity";
-import { buildWorkerAnswerPrompt, buildWorkerTaskPrompt } from "./orchestration/worker-prompts";
-import { resolveWorkerAgentLaunch, shouldGuardWorkerAcpOutput } from "./orchestration/worker-launch";
+import {
+  buildWorkerAnswerPrompt,
+  buildWorkerTaskPrompt,
+} from "./orchestration/worker-prompts";
+import {
+  resolveWorkerAgentLaunch,
+  shouldGuardWorkerAcpOutput,
+} from "./orchestration/worker-launch";
 import { ScheduledTaskScheduler } from "./scheduled/scheduled-scheduler";
 import { ScheduledTaskService } from "./scheduled/scheduled-service";
 import { buildScheduledDispatchTask } from "./scheduled/scheduled-dispatch";
 import { createScheduledTaskFromRoute } from "./scheduled/scheduled-route-create";
-import { cancelScheduledTaskFromRoute, listScheduledTasksFromRoute } from "./scheduled/scheduled-route-manage";
-import { SessionService, type SessionLockedTransaction } from "./sessions/session-service";
+import {
+  cancelScheduledTaskFromRoute,
+  listScheduledTasksFromRoute,
+} from "./scheduled/scheduled-route-manage";
+import {
+  SessionService,
+  type SessionLockedTransaction,
+} from "./sessions/session-service";
 import { CoreSessionResourceCatalog } from "./sessions/session-resource-catalog";
 import type { SessionResourceCatalog } from "./sessions/session-resource-catalog";
-import { createActiveTurnRegistry, type ActiveTurnRegistry } from "./sessions/active-turn-registry";
+import {
+  createActiveTurnRegistry,
+  type ActiveTurnRegistry,
+} from "./sessions/active-turn-registry";
 import { DebouncedStateStore } from "./state/debounced-state-store";
 import { StateStore } from "./state/state-store";
 import type { AppState } from "./state/types";
@@ -52,13 +82,19 @@ import { createBackgroundFollowupTransport } from "./transport/background-follow
 import type { ResolvedSession, SessionTransport } from "./transport/types";
 import { reapQueueOwners } from "./transport/queue-owner-reaper";
 import { collectReapTargets } from "./transport/collect-reap-targets";
-import type { MessageChannelRuntime, CoordinatorMessageInput } from "./channels/types.js";
+import type {
+  MessageChannelRuntime,
+  CoordinatorMessageInput,
+} from "./channels/types.js";
 import { RuntimeMediaStore } from "./channels/media-store.js";
 import { isQuotaDeferredError } from "./weixin/messaging/quota-errors";
 import { normalizeWeixinUserIdFromChatKey } from "./weixin/messaging/inbound.js";
 import { setWeixinLog } from "./weixin/util/weixin-log";
 import { ProgressLineBuffer } from "./orchestration/progress-line-parser";
-import { renderTaskHeartbeat, renderTaskProgress } from "./formatting/render-text";
+import {
+  renderTaskHeartbeat,
+  renderTaskProgress,
+} from "./formatting/render-text";
 import { QuotaManager } from "./weixin/messaging/quota-manager";
 import { createControlEventBus } from "./control/control-event-bus";
 import { ControlService } from "./control/control-service";
@@ -68,14 +104,20 @@ import { UploadStore } from "./control/upload-store.js";
 import { listAgentCatalog } from "./config/agent-catalog";
 import { createAcpxAgentRegistryLoader } from "./transport/agent-registry";
 import { startConfigWatcher } from "./config/config-watcher";
-import type { DaemonIdentity, OrphanRegistry } from "./transport/orphan-registry";
+import type {
+  DaemonIdentity,
+  OrphanRegistry,
+} from "./transport/orphan-registry";
 import { sweepWindowsOrphans } from "./transport/windows-orphan-reaper";
 import { replaceRuntimeState } from "./state/replace-runtime-state";
 import { LaunchIntentCoordinator } from "./transport/launch-intent-coordinator";
 import { withAdapterOperationLock } from "./adapters/adapter-locks";
 import { validateAndReResolveAdapterCommand } from "./adapters/adapter-preinstall";
 import { classifyPreinstalledAdapterCommandShape } from "./adapters/adapter-catalog";
-import { probeWindowsProcessIdentity, snapshotWindowsProcessesByToken } from "./process/windows-process-tree";
+import {
+  probeWindowsProcessIdentity,
+  snapshotWindowsProcessesByToken,
+} from "./process/windows-process-tree";
 import { createQueueOwnerAdapterContext } from "./transport/queue-owner-adapter-context";
 import {
   computeAgentOverlayEntries,
@@ -90,7 +132,9 @@ async function defaultProvisionAgentOverlays(
   const entries = computeAgentOverlayEntries(config);
   const result = await ensureAgentOverlays(entries);
   for (const [alias, outcome] of Object.entries(result.outcomes)) {
-    await logger.info("acpx.overlay", `acpx agent overlay ${outcome}`, { alias });
+    await logger.info("acpx.overlay", `acpx agent overlay ${outcome}`, {
+      alias,
+    });
   }
   return result;
 }
@@ -143,7 +187,13 @@ interface RuntimeDeps {
   createBridgeTransport?: () => Promise<SessionTransport>;
   defaultLoggingLevel?: LoggingLevel;
   loggerNow?: () => Date;
-  channel?: Pick<MessageChannelRuntime, "notifyTaskCompletion" | "notifyTaskProgress" | "sendCoordinatorMessage" | "sendScheduledMessage"> & {
+  channel?: Pick<
+    MessageChannelRuntime,
+    | "notifyTaskCompletion"
+    | "notifyTaskProgress"
+    | "sendCoordinatorMessage"
+    | "sendScheduledMessage"
+  > & {
     configureOrchestration?: MessageChannelRuntime["configureOrchestration"];
     supportsScheduledMessages?: (chatKey: string) => boolean;
     nativeSessionListFormat?: (chatKey: string) => "cards" | "table";
@@ -191,33 +241,53 @@ function startProgressHeartbeat(
       for (const task of tasks) {
         try {
           const elapsedSeconds =
-            (Date.now() - new Date(task.lastProgressAt ?? task.createdAt).getTime()) / 1000;
+            (Date.now() -
+              new Date(task.lastProgressAt ?? task.createdAt).getTime()) /
+            1000;
           if (task.chatKey && task.replyContextToken && channel) {
-            await channel.notifyTaskProgress(task, renderTaskHeartbeat(task, elapsedSeconds));
+            await channel.notifyTaskProgress(
+              task,
+              renderTaskHeartbeat(task, elapsedSeconds),
+            );
           }
           await orchestration.recordTaskProgress(task.taskId);
         } catch (error) {
-          await logger.error("orchestration.heartbeat.send_failed", "failed to send heartbeat", {
-            taskId: task.taskId,
-            message: error instanceof Error ? error.message : String(error),
-          });
+          await logger.error(
+            "orchestration.heartbeat.send_failed",
+            "failed to send heartbeat",
+            {
+              taskId: task.taskId,
+              message: error instanceof Error ? error.message : String(error),
+            },
+          );
         }
       }
     } catch (error) {
-      await logger.error("orchestration.heartbeat.check_failed", "heartbeat check failed", {
-        message: error instanceof Error ? error.message : String(error),
-      });
+      await logger.error(
+        "orchestration.heartbeat.check_failed",
+        "heartbeat check failed",
+        {
+          message: error instanceof Error ? error.message : String(error),
+        },
+      );
     } finally {
       ticking = false;
     }
   }, 60_000);
 }
 
-import { createPerfTracer, createNoopPerfTracer, type PerfTracer } from "./perf/perf-tracer";
+import {
+  createPerfTracer,
+  createNoopPerfTracer,
+  type PerfTracer,
+} from "./perf/perf-tracer";
 import { bootstrapBuiltinChannels } from "./channels/bootstrap.js";
 import { setLocale, resolveLocale, getLocale } from "./i18n";
 
-export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Promise<AppRuntime> {
+export async function buildApp(
+  paths: RuntimePaths,
+  deps: RuntimeDeps = {},
+): Promise<AppRuntime> {
   bootstrapBuiltinChannels();
   await ensureConfigExists(paths.configPath);
   const configStore = new ConfigStore(paths.configPath);
@@ -229,7 +299,10 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   // a fresh overlay alias. Provision BEFORE swapping the in-memory config so a
   // conflicting/failed overlay never leaves memory and disk disagreeing.
   const provisionOverlays = async (target: AppConfig): Promise<void> => {
-    await (deps.provisionAgentOverlays ?? defaultProvisionAgentOverlays)(target, logger);
+    await (deps.provisionAgentOverlays ?? defaultProvisionAgentOverlays)(
+      target,
+      logger,
+    );
   };
   const reloadRuntimeConfig = async (): Promise<AppConfig> => {
     const updated = await configStore.load();
@@ -264,8 +337,13 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   // Provision xacpx-managed acpx agent overlays (`~/.acpx/config.json` agents
   // entries) before any transport exists, so every acpx launch resolves its
   // positional alias to the exact structured argv.
-  await (deps.provisionAgentOverlays ?? defaultProvisionAgentOverlays)(config, logger);
-  const acpxCommand = resolveAcpxCommand({ configuredCommand: config.transport.command });
+  await (deps.provisionAgentOverlays ?? defaultProvisionAgentOverlays)(
+    config,
+    logger,
+  );
+  const acpxCommand = resolveAcpxCommand({
+    configuredCommand: config.transport.command,
+  });
   const stateStore = new StateStore(paths.statePath);
   const state = await stateStore.load();
   const stateLoadReport = stateStore.lastLoadReport;
@@ -273,44 +351,63 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     // Loud by design: a quarantined record means data was dropped to keep the
     // daemon bootable; operators must be able to find what was lost and where.
     for (const record of stateLoadReport.dropped) {
-      await logger.error("state.record_quarantined", "dropped malformed state.json record", {
-        statePath: paths.statePath,
-        section: record.section,
-        key: record.key,
-        reason: record.reason,
-      });
+      await logger.error(
+        "state.record_quarantined",
+        "dropped malformed state.json record",
+        {
+          statePath: paths.statePath,
+          section: record.section,
+          key: record.key,
+          reason: record.reason,
+        },
+      );
     }
     if (stateLoadReport.corruptPath) {
-      await logger.error("state.file_corrupt", "state.json was unreadable; renamed aside and starting empty", {
-        statePath: paths.statePath,
-        corruptPath: stateLoadReport.corruptPath,
-      });
+      await logger.error(
+        "state.file_corrupt",
+        "state.json was unreadable; renamed aside and starting empty",
+        {
+          statePath: paths.statePath,
+          corruptPath: stateLoadReport.corruptPath,
+        },
+      );
     }
     if (stateLoadReport.quarantinePath) {
-      await logger.error("state.file_quarantined", "original state.json backed up before dropping records", {
-        statePath: paths.statePath,
-        quarantinePath: stateLoadReport.quarantinePath,
-      });
+      await logger.error(
+        "state.file_quarantined",
+        "original state.json backed up before dropping records",
+        {
+          statePath: paths.statePath,
+          quarantinePath: stateLoadReport.quarantinePath,
+        },
+      );
     }
     if (stateLoadReport.backupError) {
-      await logger.error("state.quarantine_backup_failed", "failed to back up the original state.json", {
-        statePath: paths.statePath,
-        message: stateLoadReport.backupError,
-      });
+      await logger.error(
+        "state.quarantine_backup_failed",
+        "failed to back up the original state.json",
+        {
+          statePath: paths.statePath,
+          message: stateLoadReport.backupError,
+        },
+      );
     }
     for (const record of stateLoadReport.migrated ?? []) {
-      const endpointIdentity = record.section === "orchestration.workerBindings"
-        || record.section === "orchestration.externalCoordinators";
+      const endpointIdentity =
+        record.section === "orchestration.workerBindings" ||
+        record.section === "orchestration.externalCoordinators";
       await logger.info(
-        endpointIdentity ? "state.agent_endpoint_id_migrated" : "state.session_id_migrated",
+        endpointIdentity
+          ? "state.agent_endpoint_id_migrated"
+          : "state.session_id_migrated",
         endpointIdentity
           ? "assigned a stable Agent Messaging endpoint id to a legacy orchestration record"
           : "assigned a new logical_session_id to a legacy session record",
         {
-        statePath: paths.statePath,
-        section: record.section,
-        key: record.key,
-        reason: record.reason,
+          statePath: paths.statePath,
+          section: record.section,
+          key: record.key,
+          reason: record.reason,
         },
       );
     }
@@ -320,66 +417,93 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     delegate: stateStore,
     intervalMs: deps.stateSaveDebounceMs ?? 50,
     onError: (error) => {
-      void logger.error("state.debounced_save.failed", "debounced state.json write failed", {
-        message: error instanceof Error ? error.message : String(error),
-      });
+      void logger.error(
+        "state.debounced_save.failed",
+        "debounced state.json write failed",
+        {
+          message: error instanceof Error ? error.message : String(error),
+        },
+      );
     },
   });
   const runtimeRoot = dirname(paths.configPath);
   const messagingNodeIdentity = await new MessagingNodeIdentityStore(
     join(runtimeRoot, "agent-messaging", "node.json"),
   ).loadOrCreate();
-  const sessions = new SessionService(config, debouncedStateStore, state, { stateMutex, runtimeRoot });
+  const sessions = new SessionService(config, debouncedStateStore, state, {
+    stateMutex,
+    runtimeRoot,
+  });
   // Generic catalog over logical session resources (immutable id, aliases,
   // authoritative workspace cwd, archived flag). Structured channels consume
   // it via ChannelStartInput.sessionResources. Archive/restore/remove
   // transitions publish their lifecycle events through it; SessionService
   // gates each emission on the transition being durably persisted first.
-  const sessionResources = new CoreSessionResourceCatalog({ sessions, config, logger });
+  const sessionResources = new CoreSessionResourceCatalog({
+    sessions,
+    config,
+    logger,
+  });
   sessions.setSessionResourceLifecyclePublisher((transition) =>
     sessionResources.publishLifecycleEvent(transition),
   );
-  const launchIntentCoordinator = new LaunchIntentCoordinator<SessionLockedTransaction>({
-    platform: process.platform,
-    runtimeRoot,
-    configRoot: runtimeRoot,
-    generationId: deps.daemonIdentity?.generationId ?? randomUUID(),
-    ...(deps.orphanRegistry ? { registry: deps.orphanRegistry } : {}),
-    classifyAdapter: (command) => classifyPreinstalledAdapterCommandShape(command),
-    resolveAdapter: async (command) => (await validateAndReResolveAdapterCommand(runtimeRoot, command)).agentCommand,
-    withSessionLock: (critical) => sessions.withSessionLock(critical),
-    withAdapterLock: (id, critical) => withAdapterOperationLock({ id, runtimeRoot }, critical),
-    persistCommand: (locked, sessionKey, command) => locked.setTransportAgentCommandDurably(sessionKey, command),
-    queryLauncherIdentity: async (pid) => {
-      const identity = await probeWindowsProcessIdentity(pid);
-      return identity.status === "found" ? { creationDate: identity.identity.creationDate } : null;
-    },
-    verifyOwner: async (pid, token) => {
-      const snapshot = await snapshotWindowsProcessesByToken(token);
-      const candidate = snapshot?.find((item) => item.pid === pid);
-      if (!candidate) return null;
-      const identity = await probeWindowsProcessIdentity(pid);
-      if (identity.status !== "found") return null;
-      const delta = BigInt(identity.identity.creationDate) - BigInt(candidate.creationDate);
-      if ((delta < 0n ? -delta : delta) > 9n) return null;
-      return {
-        creationDate: identity.identity.creationDate,
-        commandLine: candidate.commandLine,
-        executablePath: identity.identity.executablePath,
-      };
-    },
-    snapshotToken: (token) => snapshotWindowsProcessesByToken(token),
-    onWarning: (message, context) => {
-      void logger.info("transport.launch_intent.warning", message, {
-        ...(context ? { context: JSON.stringify(context) } : {}),
-      }).catch(() => {});
-    },
-  });
+  const launchIntentCoordinator =
+    new LaunchIntentCoordinator<SessionLockedTransaction>({
+      platform: process.platform,
+      runtimeRoot,
+      configRoot: runtimeRoot,
+      generationId: deps.daemonIdentity?.generationId ?? randomUUID(),
+      ...(deps.orphanRegistry ? { registry: deps.orphanRegistry } : {}),
+      classifyAdapter: (command) =>
+        classifyPreinstalledAdapterCommandShape(command),
+      resolveAdapter: async (command) =>
+        (await validateAndReResolveAdapterCommand(runtimeRoot, command))
+          .agentCommand,
+      withSessionLock: (critical) => sessions.withSessionLock(critical),
+      withAdapterLock: (id, critical) =>
+        withAdapterOperationLock({ id, runtimeRoot }, critical),
+      persistCommand: (locked, sessionKey, command) =>
+        locked.setTransportAgentCommandDurably(sessionKey, command),
+      queryLauncherIdentity: async (pid) => {
+        const identity = await probeWindowsProcessIdentity(pid);
+        return identity.status === "found"
+          ? { creationDate: identity.identity.creationDate }
+          : null;
+      },
+      verifyOwner: async (pid, token) => {
+        const snapshot = await snapshotWindowsProcessesByToken(token);
+        const candidate = snapshot?.find((item) => item.pid === pid);
+        if (!candidate) return null;
+        const identity = await probeWindowsProcessIdentity(pid);
+        if (identity.status !== "found") return null;
+        const delta =
+          BigInt(identity.identity.creationDate) -
+          BigInt(candidate.creationDate);
+        if ((delta < 0n ? -delta : delta) > 9n) return null;
+        return {
+          creationDate: identity.identity.creationDate,
+          commandLine: candidate.commandLine,
+          executablePath: identity.identity.executablePath,
+        };
+      },
+      snapshotToken: (token) => snapshotWindowsProcessesByToken(token),
+      onWarning: (message, context) => {
+        void logger
+          .info("transport.launch_intent.warning", message, {
+            ...(context ? { context: JSON.stringify(context) } : {}),
+          })
+          .catch(() => {});
+      },
+    });
   // One shared, non-persisted registry of in-flight (chatKey, alias) turns. The
   // monitor marks turns active/inactive around dispatch; the command router can
   // later read it to tell the user "session X is still running".
   const activeTurns = createActiveTurnRegistry();
-  const scheduledService = new ScheduledTaskService(state, debouncedStateStore, { stateMutex });
+  const scheduledService = new ScheduledTaskService(
+    state,
+    debouncedStateStore,
+    { stateMutex },
+  );
   const pendingWorkerDispatches = new Set<Promise<void>>();
   const baseTransport =
     config.transport.type === "acpx-bridge"
@@ -391,53 +515,81 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
                 bridgeEntryPath: resolveBridgeEntryPath(),
                 agentOverlays: computeAgentOverlayEntries(config),
                 permissionMode: config.transport.permissionMode,
-                nonInteractivePermissions: config.transport.nonInteractivePermissions,
+                nonInteractivePermissions:
+                  config.transport.nonInteractivePermissions,
                 ...(typeof config.transport.permissionPolicy === "string"
                   ? { permissionPolicy: config.transport.permissionPolicy }
                   : {}),
                 ...(typeof config.transport.queueOwnerTtlSeconds === "number"
-                  ? { queueOwnerTtlSeconds: config.transport.queueOwnerTtlSeconds }
+                  ? {
+                      queueOwnerTtlSeconds:
+                        config.transport.queueOwnerTtlSeconds,
+                    }
                   : {}),
                 ...(typeof config.transport.sessionInitTimeoutMs === "number"
-                  ? { sessionInitTimeoutMs: config.transport.sessionInitTimeoutMs }
+                  ? {
+                      sessionInitTimeoutMs:
+                        config.transport.sessionInitTimeoutMs,
+                    }
                   : {}),
                 ...(deps.orphanRegistry
-                  ? { generationFilePath: join(deps.orphanRegistry.root, "generation.json") }
+                  ? {
+                      generationFilePath: join(
+                        deps.orphanRegistry.root,
+                        "generation.json",
+                      ),
+                    }
                   : {}),
                 // A dropped (undecodable) bridge stdout line can be a lost
                 // response; the client-side request timeout unblocks the
                 // caller, but the corruption itself must be visible in logs.
                 onMalformedLine: (line) => {
-                  void logger.error("bridge.protocol.malformed_line", "dropped undecodable bridge output line", {
-                    line: line.length > 500 ? `${line.slice(0, 500)}…` : line,
-                  });
+                  void logger.error(
+                    "bridge.protocol.malformed_line",
+                    "dropped undecodable bridge output line",
+                    {
+                      line: line.length > 500 ? `${line.slice(0, 500)}…` : line,
+                    },
+                  );
                 },
-                onBridgeRequest: (method, params, context) => launchIntentCoordinator.handle(method, params, context),
+                onBridgeRequest: (method, params, context) =>
+                  launchIntentCoordinator.handle(method, params, context),
                 onBridgeDisconnect: () => launchIntentCoordinator.disconnect(),
               }),
             ),
           ))
       : (deps.createCliTransport?.(acpxCommand) ??
-          new AcpxCliTransport({
-            ...config.transport,
-            command: acpxCommand,
-            createAdapterContext: ({ id, sessionKey, agentCommand }) => createQueueOwnerAdapterContext({
+        new AcpxCliTransport({
+          ...config.transport,
+          command: acpxCommand,
+          createAdapterContext: ({ id, sessionKey, agentCommand }) =>
+            createQueueOwnerAdapterContext({
               id,
               sessionKey,
               agentCommand,
               launcherIdentity: async () => {
-                if (process.platform !== "win32") return { pid: process.pid, creationDate: "0" };
+                if (process.platform !== "win32")
+                  return { pid: process.pid, creationDate: "0" };
                 const identity = await probeWindowsProcessIdentity(process.pid);
-                if (identity.status !== "found") throw new Error("CLI launcher identity is unavailable");
-                return { pid: process.pid, creationDate: identity.identity.creationDate };
+                if (identity.status !== "found")
+                  throw new Error("CLI launcher identity is unavailable");
+                return {
+                  pid: process.pid,
+                  creationDate: identity.identity.creationDate,
+                };
               },
-              requestDaemon: (method, params) => launchIntentCoordinator.handle(method, params, { launcherPid: process.pid }),
+              requestDaemon: (method, params) =>
+                launchIntentCoordinator.handle(method, params, {
+                  launcherPid: process.pid,
+                }),
               readCurrentGeneration: async () => {
                 const current = await deps.orphanRegistry?.readGeneration();
-                return current && current.terminating !== true ? current.generationId : null;
+                return current && current.terminating !== true
+                  ? current.generationId
+                  : null;
               },
             }),
-          }));
+        }));
   const transport = createBackgroundFollowupTransport(baseTransport, {
     logger,
     resolveDriver: (agent) => config.agents[agent]?.driver,
@@ -446,56 +598,79 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   // (inbound reset / final reservation) and orchestration deliveries (mid gate).
   // Observer pipes every quota decision into the AppLogger so the path is
   // visible at runtime (otherwise quota throttling is invisible to operators).
-  const quota = new QuotaManager({
-    onInbound: (chatKey) => {
-      void logger.info("weixin.quota.inbound_reset", "inbound message reset quota window", {
-        chatKey,
-      });
+  const quota = new QuotaManager(
+    {
+      onInbound: (chatKey) => {
+        void logger.info(
+          "weixin.quota.inbound_reset",
+          "inbound message reset quota window",
+          {
+            chatKey,
+          },
+        );
+      },
+      onMidReserved: (chatKey, snap) => {
+        void logger.info(
+          "weixin.quota.mid_reserved",
+          "mid-segment quota reserved",
+          {
+            chatKey,
+            mid_used: snap.midUsed,
+            remaining: snap.remaining,
+          },
+        );
+      },
+      onMidRejected: (chatKey, snap) => {
+        void logger.info(
+          "weixin.quota.mid_rejected",
+          "mid-segment quota exhausted; segment dropped/deferred",
+          {
+            chatKey,
+            mid_used: snap.midUsed,
+            remaining: snap.remaining,
+          },
+        );
+      },
+      onFinalReserved: (chatKey, snap) => {
+        void logger.info(
+          "weixin.quota.final_reserved",
+          "final-tier quota reserved",
+          {
+            chatKey,
+            mid_used: snap.midUsed,
+            final_used: snap.finalUsed,
+            remaining: snap.remaining,
+          },
+        );
+      },
+      onFinalRejected: (chatKey, snap) => {
+        void logger.error(
+          "weixin.quota.final_rejected",
+          "final-tier quota exhausted; final message dropped",
+          {
+            chatKey,
+            mid_used: snap.midUsed,
+            final_used: snap.finalUsed,
+          },
+        );
+      },
     },
-    onMidReserved: (chatKey, snap) => {
-      void logger.info("weixin.quota.mid_reserved", "mid-segment quota reserved", {
-        chatKey,
-        mid_used: snap.midUsed,
-        remaining: snap.remaining,
-      });
-    },
-    onMidRejected: (chatKey, snap) => {
-      void logger.info("weixin.quota.mid_rejected", "mid-segment quota exhausted; segment dropped/deferred", {
-        chatKey,
-        mid_used: snap.midUsed,
-        remaining: snap.remaining,
-      });
-    },
-    onFinalReserved: (chatKey, snap) => {
-      void logger.info("weixin.quota.final_reserved", "final-tier quota reserved", {
-        chatKey,
-        mid_used: snap.midUsed,
-        final_used: snap.finalUsed,
-        remaining: snap.remaining,
-      });
-    },
-    onFinalRejected: (chatKey, snap) => {
-      void logger.error(
-        "weixin.quota.final_rejected",
-        "final-tier quota exhausted; final message dropped",
-        {
-          chatKey,
-          mid_used: snap.midUsed,
-          final_used: snap.finalUsed,
-        },
-      );
-    },
-  }, (key) => key.startsWith("weixin:") ? normalizeWeixinUserIdFromChatKey(key) : key);
+    (key) =>
+      key.startsWith("weixin:") ? normalizeWeixinUserIdFromChatKey(key) : key,
+  );
   let orchestration!: OrchestrationService;
   let sendCompletionNotice!: (task: OrchestrationTaskRecord) => Promise<void>;
   const sendCoordinatorMessage =
-    deps.sendCoordinatorMessage ?? (deps.channel
-      ? (input: CoordinatorMessageInput) => deps.channel!.sendCoordinatorMessage(input)
+    deps.sendCoordinatorMessage ??
+    (deps.channel
+      ? (input: CoordinatorMessageInput) =>
+          deps.channel!.sendCoordinatorMessage(input)
       : async () => {});
 
   const wakeCoordinatorLocks = new Map<string, Promise<void>>();
   const wakeCoordinator = async (coordinatorSession: string): Promise<void> => {
-    const previous = wakeCoordinatorLocks.get(coordinatorSession) ?? Promise.resolve();
+    const previous =
+      wakeCoordinatorLocks.get(coordinatorSession) ?? Promise.resolve();
     const next = previous.then(
       () => doWakeCoordinator(coordinatorSession),
       () => doWakeCoordinator(coordinatorSession),
@@ -509,10 +684,15 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     });
     return next;
   };
-  const doWakeCoordinator = async (coordinatorSession: string): Promise<void> => {
-    const session = await sessions.getPreferredSessionForTransport(coordinatorSession);
+  const doWakeCoordinator = async (
+    coordinatorSession: string,
+  ): Promise<void> => {
+    const session =
+      await sessions.getPreferredSessionForTransport(coordinatorSession);
     if (!session) {
-      throw new Error(`no logical session is attached to coordinator "${coordinatorSession}"`);
+      throw new Error(
+        `no logical session is attached to coordinator "${coordinatorSession}"`,
+      );
     }
     session.mcpCoordinatorSession = coordinatorSession;
 
@@ -534,7 +714,9 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
               coordinatorSession,
               chatKey: route.chatKey,
               ...(route.accountId ? { accountId: route.accountId } : {}),
-              ...(route.replyContextToken ? { replyContextToken: route.replyContextToken } : {}),
+              ...(route.replyContextToken
+                ? { replyContextToken: route.replyContextToken }
+                : {}),
               text,
             });
           }
@@ -563,9 +745,13 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
         );
         return;
       }
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       if (groupIds.length > 0) {
-        await orchestration.markCoordinatorGroupsInjectionFailed(groupIds, errorMessage);
+        await orchestration.markCoordinatorGroupsInjectionFailed(
+          groupIds,
+          errorMessage,
+        );
       }
       if (taskIds.length > 0) {
         await orchestration.markTaskInjectionFailed(taskIds, errorMessage);
@@ -616,7 +802,9 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
         sourceHandle: input.workerSession,
         status: input.status,
         ...(input.summary !== undefined ? { summary: input.summary } : {}),
-        ...(input.resultText !== undefined ? { resultText: input.resultText } : {}),
+        ...(input.resultText !== undefined
+          ? { resultText: input.resultText }
+          : {}),
       });
     } catch (error) {
       await logger.error(
@@ -632,13 +820,18 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     }
   };
 
-  const resolveWorkerRuntimeSession = (input: {
-    workerSession: string;
-    targetAgent: string;
-    workspace: string;
-    cwd?: string;
-  }, bindingSnapshot?: Pick<WorkerBindingRecord, "guardAcpOutput">): ResolvedSession => {
-    const binding = bindingSnapshot ?? state.orchestration.workerBindings[input.workerSession];
+  const resolveWorkerRuntimeSession = (
+    input: {
+      workerSession: string;
+      targetAgent: string;
+      workspace: string;
+      cwd?: string;
+    },
+    bindingSnapshot?: Pick<WorkerBindingRecord, "guardAcpOutput">,
+  ): ResolvedSession => {
+    const binding =
+      bindingSnapshot ??
+      state.orchestration.workerBindings[input.workerSession];
     const guardAcpOutput = shouldGuardWorkerAcpOutput(binding);
     if (!input.cwd) {
       return sessions.resolveSession(
@@ -655,7 +848,11 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       throw new Error(`agent "${input.targetAgent}" is not configured`);
     }
 
-    const launch = resolveWorkerAgentLaunch(agentConfig, config.transport, binding);
+    const launch = resolveWorkerAgentLaunch(
+      agentConfig,
+      config.transport,
+      binding,
+    );
     return {
       alias: input.workerSession,
       agent: input.targetAgent,
@@ -693,8 +890,15 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
           try {
             await orchestration.recordTaskProgress(input.taskId, summary);
             const taskState = await orchestration.getTask(input.taskId);
-            if (taskState?.chatKey && taskState.replyContextToken && deps.channel) {
-              await deps.channel.notifyTaskProgress(taskState, renderTaskProgress(taskState, summary));
+            if (
+              taskState?.chatKey &&
+              taskState.replyContextToken &&
+              deps.channel
+            ) {
+              await deps.channel.notifyTaskProgress(
+                taskState,
+                renderTaskProgress(taskState, summary),
+              );
             }
           } catch (error) {
             await logger.error(
@@ -714,7 +918,9 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
           undefined,
           {
             onSegment: async (chunk) => {
-              const summaries = progressBuffer.feed(chunk, { segmentComplete: true });
+              const summaries = progressBuffer.feed(chunk, {
+                segmentComplete: true,
+              });
               for (const summary of summaries) {
                 await recordProgress(summary);
               }
@@ -732,11 +938,15 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        await logger.error("orchestration.worker.dispatch_failed", "worker task dispatch failed", {
-          taskId: input.taskId,
-          workerSession: input.workerSession,
-          message,
-        });
+        await logger.error(
+          "orchestration.worker.dispatch_failed",
+          "worker task dispatch failed",
+          {
+            taskId: input.taskId,
+            workerSession: input.workerSession,
+            message,
+          },
+        );
         taskRecord = await finalizeWorkerTurn({
           taskId: input.taskId,
           workerSession: input.workerSession,
@@ -754,7 +964,10 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
           "failed to reconcile parallel slots after worker turn",
           {
             taskId: input.taskId,
-            message: reconcileError instanceof Error ? reconcileError.message : String(reconcileError),
+            message:
+              reconcileError instanceof Error
+                ? reconcileError.message
+                : String(reconcileError),
           },
         );
       }
@@ -763,15 +976,25 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
         try {
           await sendCompletionNotice(taskRecord);
         } catch (noticeError) {
-          await logger.error("orchestration.worker.notice_failed", "failed to notify delegated task result", {
-            taskId: input.taskId,
-            workerSession: input.workerSession,
-            message: noticeError instanceof Error ? noticeError.message : String(noticeError),
-          });
+          await logger.error(
+            "orchestration.worker.notice_failed",
+            "failed to notify delegated task result",
+            {
+              taskId: input.taskId,
+              workerSession: input.workerSession,
+              message:
+                noticeError instanceof Error
+                  ? noticeError.message
+                  : String(noticeError),
+            },
+          );
         }
       }
 
-      if (taskRecord && !isRuntimeExternalCoordinator(taskRecord.coordinatorSession)) {
+      if (
+        taskRecord &&
+        !isRuntimeExternalCoordinator(taskRecord.coordinatorSession)
+      ) {
         try {
           await wakeCoordinator(taskRecord.coordinatorSession);
         } catch (wakeError) {
@@ -781,7 +1004,10 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
             {
               taskId: input.taskId,
               coordinatorSession: taskRecord.coordinatorSession,
-              message: wakeError instanceof Error ? wakeError.message : String(wakeError),
+              message:
+                wakeError instanceof Error
+                  ? wakeError.message
+                  : String(wakeError),
             },
           );
         }
@@ -793,8 +1019,12 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     });
   };
 
-  const isRuntimeExternalCoordinator = (coordinatorSession: string): boolean => {
-    return Boolean(state.orchestration.externalCoordinators[coordinatorSession]);
+  const isRuntimeExternalCoordinator = (
+    coordinatorSession: string,
+  ): boolean => {
+    return Boolean(
+      state.orchestration.externalCoordinators[coordinatorSession],
+    );
   };
 
   orchestration = new OrchestrationService({
@@ -814,15 +1044,35 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       replaceRuntimeState(state, nextState);
     },
     stateMutex,
-    ensureWorkerSession: async ({ workerSession, targetAgent, workspace, cwd, coordinatorSession }) => {
+    ensureWorkerSession: async ({
+      workerSession,
+      targetAgent,
+      workspace,
+      cwd,
+      coordinatorSession,
+    }) => {
       await reloadRuntimeConfig();
-      const session = resolveWorkerRuntimeSession({ workerSession, targetAgent, workspace, ...(cwd ? { cwd } : {}) });
+      const session = resolveWorkerRuntimeSession({
+        workerSession,
+        targetAgent,
+        workspace,
+        ...(cwd ? { cwd } : {}),
+      });
       session.mcpCoordinatorSession = coordinatorSession;
       session.mcpSourceHandle = workerSession;
       await transport.ensureSession(session);
       return workerSession;
     },
-    dispatchWorkerTask: async ({ workerSession, coordinatorSession, targetAgent, workspace, cwd, taskId, role, task }) => {
+    dispatchWorkerTask: async ({
+      workerSession,
+      coordinatorSession,
+      targetAgent,
+      workspace,
+      cwd,
+      taskId,
+      role,
+      task,
+    }) => {
       launchWorkerTurn({
         taskId,
         workerSession,
@@ -830,17 +1080,40 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
         targetAgent,
         workspace,
         ...(cwd ? { cwd } : {}),
-        promptText: buildWorkerTaskPrompt({ taskId, workerSession, role, task }),
+        promptText: buildWorkerTaskPrompt({
+          taskId,
+          workerSession,
+          role,
+          task,
+        }),
       });
     },
-    cancelWorkerTask: async ({ workerSession, targetAgent, workspace, cwd }) => {
-      const session = resolveWorkerRuntimeSession({ workerSession, targetAgent, workspace, ...(cwd ? { cwd } : {}) });
+    cancelWorkerTask: async ({
+      workerSession,
+      targetAgent,
+      workspace,
+      cwd,
+    }) => {
+      const session = resolveWorkerRuntimeSession({
+        workerSession,
+        targetAgent,
+        workspace,
+        ...(cwd ? { cwd } : {}),
+      });
       const result = await transport.cancel(session);
       if (!result.cancelled) {
-        throw new Error(result.message || "worker task cancel was not acknowledged");
+        throw new Error(
+          result.message || "worker task cancel was not acknowledged",
+        );
       }
     },
-    closeWorkerSession: async ({ workerSession, targetAgent, workspace, cwd, guardAcpOutput }) => {
+    closeWorkerSession: async ({
+      workerSession,
+      targetAgent,
+      workspace,
+      cwd,
+      guardAcpOutput,
+    }) => {
       if (!transport.removeSession) {
         return;
       }
@@ -850,7 +1123,15 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       );
       await transport.removeSession(session);
     },
-    resumeWorkerTask: async ({ taskId, workerSession, coordinatorSession, targetAgent, workspace, cwd, answer }) => {
+    resumeWorkerTask: async ({
+      taskId,
+      workerSession,
+      coordinatorSession,
+      targetAgent,
+      workspace,
+      cwd,
+      answer,
+    }) => {
       launchWorkerTurn({
         taskId,
         workerSession,
@@ -867,18 +1148,39 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     deliverCoordinatorMessage: async (input) => {
       await sendCoordinatorMessage(input);
     },
-    interruptWorkerTask: async ({ workerSession, targetAgent, workspace, cwd }) => {
-      const session = resolveWorkerRuntimeSession({ workerSession, targetAgent, workspace, ...(cwd ? { cwd } : {}) });
+    interruptWorkerTask: async ({
+      workerSession,
+      targetAgent,
+      workspace,
+      cwd,
+    }) => {
+      const session = resolveWorkerRuntimeSession({
+        workerSession,
+        targetAgent,
+        workspace,
+        ...(cwd ? { cwd } : {}),
+      });
       const result = await transport.cancel(session);
       if (!result.cancelled) {
-        throw new Error(result.message || "worker interrupt was not acknowledged");
+        throw new Error(
+          result.message || "worker interrupt was not acknowledged",
+        );
       }
     },
-    findReusableWorkerSession: async ({ coordinatorSession, workspace, cwd, targetAgent, role }) => {
+    findReusableWorkerSession: async ({
+      coordinatorSession,
+      workspace,
+      cwd,
+      targetAgent,
+      role,
+    }) => {
       const binding = Object.entries(state.orchestration.workerBindings).find(
         ([, current]) =>
           current.ephemeral !== true &&
-          sameCoordinatorSession(current.coordinatorSession, coordinatorSession) &&
+          sameCoordinatorSession(
+            current.coordinatorSession,
+            coordinatorSession,
+          ) &&
           current.workspace === workspace &&
           current.cwd === cwd &&
           current.targetAgent === targetAgent &&
@@ -899,20 +1201,32 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     });
   }
   sendCompletionNotice =
-    deps.sendOrchestrationNotice ?? (deps.channel
-      ? async (task) => { await deps.channel!.notifyTaskCompletion(task); }
+    deps.sendOrchestrationNotice ??
+    (deps.channel
+      ? async (task) => {
+          await deps.channel!.notifyTaskCompletion(task);
+        }
       : async () => {});
   for (const task of await orchestration.listPendingTaskNotices()) {
     try {
       await sendCompletionNotice(task);
     } catch (error) {
-      await logger.error("orchestration.notice.replay_failed", "failed to replay pending orchestration notice", {
-        taskId: task.taskId,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      await logger.error(
+        "orchestration.notice.replay_failed",
+        "failed to replay pending orchestration notice",
+        {
+          taskId: task.taskId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
     }
   }
-  const progressHeartbeatInterval = startProgressHeartbeat(orchestration, config, logger, deps.channel ?? null);
+  const progressHeartbeatInterval = startProgressHeartbeat(
+    orchestration,
+    config,
+    logger,
+    deps.channel ?? null,
+  );
   const agentEndpointRegistry = new AgentEndpointRegistry({
     nodeId: messagingNodeIdentity.nodeId,
     loadState: async () => state,
@@ -923,12 +1237,15 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       await sessions.getPreferredSessionForTransport(transportSession),
     resolveWorkerSession: (target) => {
       try {
-        return resolveWorkerRuntimeSession({
-          workerSession: target.workerSession,
-          targetAgent: target.binding.targetAgent,
-          workspace: target.binding.workspace,
-          ...(target.binding.cwd ? { cwd: target.binding.cwd } : {}),
-        }, target.binding);
+        return resolveWorkerRuntimeSession(
+          {
+            workerSession: target.workerSession,
+            targetAgent: target.binding.targetAgent,
+            workspace: target.binding.workspace,
+            ...(target.binding.cwd ? { cwd: target.binding.cwd } : {}),
+          },
+          target.binding,
+        );
       } catch {
         return null;
       }
@@ -937,9 +1254,8 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   const relayAgentMessageRoute = new RelayAgentMessageRoute(
     deps.channel &&
       "sendAgentMessageRoute" in deps.channel &&
-      typeof (
-        deps.channel as unknown as { sendAgentMessageRoute: unknown }
-      ).sendAgentMessageRoute === "function"
+      typeof (deps.channel as unknown as { sendAgentMessageRoute: unknown })
+        .sendAgentMessageRoute === "function"
       ? (deps.channel as unknown as RelayRouteClient)
       : undefined,
   );
@@ -950,32 +1266,46 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     logger,
   });
   const orchestrationEndpoint = createOrchestrationEndpoint(
-    paths.orchestrationSocketPath ?? resolveOrchestrationSocketPathFromConfigPath(paths.configPath),
+    paths.orchestrationSocketPath ??
+      resolveOrchestrationSocketPathFromConfigPath(paths.configPath),
   );
-  const orchestrationServer = new OrchestrationServer(orchestrationEndpoint, orchestration, {
-    agentMessaging,
-    onSocketHardenError: (error) => {
-      void logger.error(
-        "orchestration.socket.chmod_failed",
-        "failed to restrict orchestration socket to owner-only (0600); falling back to runtime dir permissions",
-        { message: error instanceof Error ? error.message : String(error) },
-      );
+  const orchestrationServer = new OrchestrationServer(
+    orchestrationEndpoint,
+    orchestration,
+    {
+      agentMessaging,
+      onSocketHardenError: (error) => {
+        void logger.error(
+          "orchestration.socket.chmod_failed",
+          "failed to restrict orchestration socket to owner-only (0600); falling back to runtime dir permissions",
+          { message: error instanceof Error ? error.message : String(error) },
+        );
+      },
+      createScheduledTaskFromRoute: async (input) =>
+        await createScheduledTaskFromRoute(input, {
+          state,
+          config,
+          sessions,
+          scheduled: scheduledService,
+          ...(deps.channel?.supportsScheduledMessages
+            ? {
+                supportsScheduledMessages:
+                  deps.channel.supportsScheduledMessages.bind(deps.channel),
+              }
+            : {}),
+        }),
+      listScheduledTasksFromRoute: async (input) =>
+        await listScheduledTasksFromRoute(input, {
+          state,
+          scheduled: scheduledService,
+        }),
+      cancelScheduledTaskFromRoute: async (input) =>
+        await cancelScheduledTaskFromRoute(input, {
+          state,
+          scheduled: scheduledService,
+        }),
     },
-    createScheduledTaskFromRoute: async (input) =>
-      await createScheduledTaskFromRoute(input, {
-        state,
-        config,
-        sessions,
-        scheduled: scheduledService,
-        ...(deps.channel?.supportsScheduledMessages
-          ? { supportsScheduledMessages: deps.channel.supportsScheduledMessages.bind(deps.channel) }
-          : {}),
-      }),
-    listScheduledTasksFromRoute: async (input) =>
-      await listScheduledTasksFromRoute(input, { state, scheduled: scheduledService }),
-    cancelScheduledTaskFromRoute: async (input) =>
-      await cancelScheduledTaskFromRoute(input, { state, scheduled: scheduledService }),
-  });
+  );
   const router = new CommandRouter(
     sessions,
     transport,
@@ -986,8 +1316,15 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     orchestration,
     quota,
     scheduledService,
-    deps.channel?.supportsScheduledMessages ? { supportsScheduledMessages: deps.channel.supportsScheduledMessages.bind(deps.channel) } : undefined,
-    deps.channel?.nativeSessionListFormat ? deps.channel.nativeSessionListFormat.bind(deps.channel) : undefined,
+    deps.channel?.supportsScheduledMessages
+      ? {
+          supportsScheduledMessages:
+            deps.channel.supportsScheduledMessages.bind(deps.channel),
+        }
+      : undefined,
+    deps.channel?.nativeSessionListFormat
+      ? deps.channel.nativeSessionListFormat.bind(deps.channel)
+      : undefined,
     activeTurns,
   );
   const agent = new ConsoleAgent(router, logger);
@@ -1027,10 +1364,24 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       router.createSessionWithTransport(internalAlias, agent, workspace, model),
     listNativeSessions: (agent, workspace) =>
       router.listNativeSessionsForControl(agent, workspace),
-    attachNativeSessionWithTransport: (internalAlias, agent, workspace, agentSessionId, nativeMeta) =>
-      router.attachNativeSessionWithTransport(internalAlias, agent, workspace, agentSessionId, nativeMeta),
-    removeSessionWithTransport: (internalAlias) => router.removeSessionWithTransport(internalAlias),
-    archiveSessionWithTransport: (internalAlias) => router.archiveSessionWithTransport(internalAlias),
+    attachNativeSessionWithTransport: (
+      internalAlias,
+      agent,
+      workspace,
+      agentSessionId,
+      nativeMeta,
+    ) =>
+      router.attachNativeSessionWithTransport(
+        internalAlias,
+        agent,
+        workspace,
+        agentSessionId,
+        nativeMeta,
+      ),
+    removeSessionWithTransport: (internalAlias) =>
+      router.removeSessionWithTransport(internalAlias),
+    archiveSessionWithTransport: (internalAlias) =>
+      router.archiveSessionWithTransport(internalAlias),
     unarchiveSession: (internalAlias) => router.unarchiveSession(internalAlias),
     activeTurns,
     ...(sessionWarmth ? { sessionWarmth } : {}),
@@ -1039,8 +1390,12 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     events: controlEvents,
     agents: {
       list: () =>
-        Object.entries(config.agents).map(([name, agentConfig]) => ({ name, driver: agentConfig.driver })),
-      catalog: () => listAgentCatalog(config, { registry: loadAgentRegistry() }),
+        Object.entries(config.agents).map(([name, agentConfig]) => ({
+          name,
+          driver: agentConfig.driver,
+        })),
+      catalog: () =>
+        listAgentCatalog(config, { registry: loadAgentRegistry() }),
       create: async (name, driver) => {
         const updated = await configStore.upsertAgent(name, { driver });
         await provisionOverlays(updated);
@@ -1057,10 +1412,16 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
         Object.entries(config.workspaces).map(([name, workspace]) => ({
           name,
           cwd: workspace.cwd,
-          ...(workspace.description ? { description: workspace.description } : {}),
+          ...(workspace.description
+            ? { description: workspace.description }
+            : {}),
         })),
       create: async (name, cwd, description) => {
-        const updated = await configStore.upsertWorkspace(name, cwd, description);
+        const updated = await configStore.upsertWorkspace(
+          name,
+          cwd,
+          description,
+        );
         replaceRuntimeConfig(config, updated);
         // Push to every web client (the caller updates optimistically; peers need this).
         // The config watcher won't double-fire: it diffs against in-memory config, which
@@ -1082,11 +1443,15 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
     filesWriteEnabled: () => filesWriteEnabled(config),
     turnIdleTimeoutMs: () => turnIdleTimeoutSeconds(config) * 1000,
     onTurnIdleTimeout: ({ chatKey, sessionAlias, idleMs }) => {
-      void logger.info("control.turn.idle_timeout", "reclaimed a wedged turn after inactivity", {
-        chatKey,
-        sessionAlias,
-        idleMs,
-      });
+      void logger.info(
+        "control.turn.idle_timeout",
+        "reclaimed a wedged turn after inactivity",
+        {
+          chatKey,
+          sessionAlias,
+          idleMs,
+        },
+      );
     },
     agentMessaging: {
       deliverInbound: async (input) =>
@@ -1095,6 +1460,8 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
         await agentEndpointRegistry.getPublishedEndpoints(),
       updateRemoteEndpoints: (nodeId, endpoints) =>
         agentEndpointRegistry.updateRemoteEndpoints(nodeId, endpoints),
+      syncRemoteDirectorySnapshot: (endpoints) =>
+        agentEndpointRegistry.syncRemoteDirectorySnapshot(endpoints),
     },
   });
 
@@ -1128,9 +1495,13 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
           }
         })
         .catch((error) => {
-          void logger.error("config.reload_failed", "failed to reload config after file change", {
-            error: error instanceof Error ? error.message : String(error),
-          });
+          void logger.error(
+            "config.reload_failed",
+            "failed to reload config after file change",
+            {
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
         });
     },
   });
@@ -1138,21 +1509,33 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   const scheduledScheduler = new ScheduledTaskScheduler(scheduledService, {
     dispatchTask: buildScheduledDispatchTask({
       getSession: (alias) => sessions.getSession(alias),
-      resolveAliasForChat: (chatKey, alias) => sessions.resolveAliasForChat(chatKey, alias),
+      resolveAliasForChat: (chatKey, alias) =>
+        sessions.resolveAliasForChat(chatKey, alias),
       resolveSession: (alias, agent, workspace, transportSession, options) =>
-        sessions.resolveSession(alias, agent, workspace, transportSession, options),
+        sessions.resolveSession(
+          alias,
+          agent,
+          workspace,
+          transportSession,
+          options,
+        ),
       sendScheduledMessage: async (input) => {
         if (!deps.channel?.sendScheduledMessage) {
-          throw new Error("no channel runtime available for scheduled task dispatch");
+          throw new Error(
+            "no channel runtime available for scheduled task dispatch",
+          );
         }
         await deps.channel.sendScheduledMessage(input);
       },
-      ...(transport.removeSession ? { removeSession: (session) => transport.removeSession!(session) } : {}),
+      ...(transport.removeSession
+        ? { removeSession: (session) => transport.removeSession!(session) }
+        : {}),
       logger,
     }),
     // A fired task reaches a terminal state here; tell structured consumers (the web
     // panel) so it reloads and the run shows its Done/Failed status instead of vanishing.
-    onSettled: (task) => controlEvents.emit({ type: "scheduled-changed", chatKey: task.chat_key }),
+    onSettled: (task) =>
+      controlEvents.emit({ type: "scheduled-changed", chatKey: task.chat_key }),
     logger,
   });
 
@@ -1162,7 +1545,9 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
   // verified `stop`, crashes, reboots) — safe because this daemon has
   // not launched any owners yet, so every recorded owner is stale. Best-effort and
   // bounded: failures/timeouts just leave owners to expire on TTL.
-  const reapWarmQueueOwners = async (phase: "startup" | "periodic" | "shutdown"): Promise<void> => {
+  const reapWarmQueueOwners = async (
+    phase: "startup" | "periodic" | "shutdown",
+  ): Promise<void> => {
     try {
       if (deps.canReapQueueOwners && !deps.canReapQueueOwners()) return;
       if (deps.orphanRegistry && deps.daemonIdentity) {
@@ -1172,39 +1557,65 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
           {
             phase,
             onWarning: (message) => {
-              void logger.info("transport.orphan_reap.degraded", message, { phase }).catch(() => {});
+              void logger
+                .info("transport.orphan_reap.degraded", message, { phase })
+                .catch(() => {});
             },
           },
         );
-        await logger.info("transport.orphan_reap.completed", "reconciled durable Windows orphan records", {
-          phase,
-          ...outcome,
-        }).catch(() => {});
+        await logger
+          .info(
+            "transport.orphan_reap.completed",
+            "reconciled durable Windows orphan records",
+            {
+              phase,
+              ...outcome,
+            },
+          )
+          .catch(() => {});
         return;
       }
       const targets = collectReapTargets(sessions, state.orchestration, config);
       if (targets.length === 0) {
         return;
       }
-      const { terminated, attempted } = await reapQueueOwners(acpxCommand, targets, {
-        onError: (target, error) => {
-          void logger.info("transport.queue_owner_reap.failed", "failed to reap queue owner", {
-            phase,
-            transport_session: target.transportSession,
-            error: error instanceof Error ? error.message : String(error),
-          }).catch(() => {});
+      const { terminated, attempted } = await reapQueueOwners(
+        acpxCommand,
+        targets,
+        {
+          onError: (target, error) => {
+            void logger
+              .info(
+                "transport.queue_owner_reap.failed",
+                "failed to reap queue owner",
+                {
+                  phase,
+                  transport_session: target.transportSession,
+                  error: error instanceof Error ? error.message : String(error),
+                },
+              )
+              .catch(() => {});
+          },
         },
-      });
-      await logger.info("transport.queue_owner_reap.completed", "reaped warm queue owners", {
-        phase,
-        terminated,
-        attempted,
-      }).catch(() => {});
+      );
+      await logger
+        .info(
+          "transport.queue_owner_reap.completed",
+          "reaped warm queue owners",
+          {
+            phase,
+            terminated,
+            attempted,
+          },
+        )
+        .catch(() => {});
     } catch (err) {
-      await logger.error("transport.queue_owner_reap.error", "queue owner reap failed", {
-        phase,
-        error: err instanceof Error ? err.message : String(err),
-      }).catch(() => {});
+      await logger
+        .error("transport.queue_owner_reap.error", "queue owner reap failed", {
+          phase,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        .catch(() => {});
     }
   };
 
@@ -1258,9 +1669,15 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       try {
         await perfTracer.flush();
       } catch (err) {
-        await logger.error("perf.flush_failed", "perf tracer flush failed during shutdown", {
-          error: err instanceof Error ? err.message : String(err),
-        }).catch(() => {});
+        await logger
+          .error(
+            "perf.flush_failed",
+            "perf tracer flush failed during shutdown",
+            {
+              error: err instanceof Error ? err.message : String(err),
+            },
+          )
+          .catch(() => {});
       }
       await logger.flush();
     },
@@ -1302,12 +1719,17 @@ if (import.meta.main) {
   // buildApp exports, so awaiting here would leave both sides of that dynamic
   // import cycle waiting for this module evaluation to finish.
   void main().catch((error) => {
-    console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+    console.error(
+      error instanceof Error ? (error.stack ?? error.message) : String(error),
+    );
     process.exitCode = 1;
   });
 }
 
-export async function prepareChannelMedia(configPath: string, config: AppConfig): Promise<{
+export async function prepareChannelMedia(
+  configPath: string,
+  config: AppConfig,
+): Promise<{
   mediaStore: RuntimeMediaStore;
   channelDeps: import("./channels/create-channel").CreateChannelDeps;
 }> {
@@ -1315,9 +1737,14 @@ export async function prepareChannelMedia(configPath: string, config: AppConfig)
   const mediaRootDir = join(runtimeDir, "media");
   const mediaStore = new RuntimeMediaStore({ rootDir: mediaRootDir });
   await mediaStore.cleanupExpired().catch((error) => {
-    console.error("[xacpx] media cleanup failed:", error instanceof Error ? error.message : String(error));
+    console.error(
+      "[xacpx] media cleanup failed:",
+      error instanceof Error ? error.message : String(error),
+    );
   });
-  const allowedMediaRoots = Object.values(config.workspaces).map((ws) => ws.cwd);
+  const allowedMediaRoots = Object.values(config.workspaces).map(
+    (ws) => ws.cwd,
+  );
   return { mediaStore, channelDeps: { mediaStore, allowedMediaRoots } };
 }
 
@@ -1327,7 +1754,8 @@ export function resolveRuntimePaths(): RuntimePaths {
     throw new Error("Unable to resolve the current user home directory");
   }
 
-  const configPath = coreEnv("CONFIG") ?? join(coreHomeDir(home), "config.json");
+  const configPath =
+    coreEnv("CONFIG") ?? join(coreHomeDir(home), "config.json");
   const runtimeDir = join(dirname(configPath), "runtime");
 
   return {
@@ -1335,7 +1763,8 @@ export function resolveRuntimePaths(): RuntimePaths {
     statePath: coreEnv("STATE") ?? join(coreHomeDir(home), "state.json"),
     perfLogPath: join(runtimeDir, "perf.log"),
     orchestrationSocketPath:
-      coreEnv("ORCHESTRATION_SOCKET") ?? resolveDaemonOrchestrationSocketPath(runtimeDir),
+      coreEnv("ORCHESTRATION_SOCKET") ??
+      resolveDaemonOrchestrationSocketPath(runtimeDir),
   };
 }
 
@@ -1359,12 +1788,17 @@ function resolvePerfLogPath(configPath: string): string {
   return join(runtimeDir, "perf.log");
 }
 
-function resolveOrchestrationSocketPathFromConfigPath(configPath: string): string {
+function resolveOrchestrationSocketPathFromConfigPath(
+  configPath: string,
+): string {
   const runtimeDir = resolveRuntimeDirFromConfigPath(configPath);
   return resolveDaemonOrchestrationSocketPath(runtimeDir);
 }
 
-
 function shouldNotifyTaskCompletion(task: OrchestrationTaskRecord): boolean {
-  return Boolean(task.chatKey && task.replyContextToken && (task.status === "completed" || task.status === "failed"));
+  return Boolean(
+    task.chatKey &&
+    task.replyContextToken &&
+    (task.status === "completed" || task.status === "failed"),
+  );
 }

@@ -23,8 +23,10 @@ type EndpointRuntime =
       kind: "worker";
       workerSession: string;
       binding: WorkerBindingRecord;
+    }
+  | {
+      kind: "remote";
     };
-
 export interface ResolvedAgentIdentity {
   address: AgentAddress;
   coordinatorSession: string;
@@ -45,12 +47,54 @@ export class AgentEndpointRegistry {
       loadState: () => Promise<AppState>;
     },
   ) {}
-
   updateRemoteEndpoints(nodeId: string, endpoints: AgentEndpointView[]): void {
+    if (nodeId === "*") {
+      this.remoteEndpoints.clear();
+      return;
+    }
     if (endpoints.length === 0) {
       this.remoteEndpoints.delete(nodeId);
     } else {
       this.remoteEndpoints.set(nodeId, endpoints);
+    }
+  }
+
+  syncRemoteDirectorySnapshot(
+    endpoints: Array<{
+      nodeId: string;
+      endpointId: string;
+      displayName?: string;
+      agent: string;
+      state: "idle" | "running";
+      capabilities: {
+        receive: boolean;
+        steer: boolean;
+        queue: boolean;
+        interrupt: boolean;
+      };
+    }>,
+  ): void {
+    const byNode = new Map<string, AgentEndpointView[]>();
+    for (const ep of endpoints) {
+      if (ep.nodeId !== this.deps.nodeId) {
+        const list = byNode.get(ep.nodeId) ?? [];
+        list.push({
+          address: { nodeId: ep.nodeId, endpointId: ep.endpointId },
+          handle: encodeAgentHandle({
+            nodeId: ep.nodeId,
+            endpointId: ep.endpointId,
+          }),
+          node: ep.displayName ?? ep.nodeId,
+          agent: ep.agent,
+          state: ep.state,
+          capabilities: ep.capabilities,
+        });
+        byNode.set(ep.nodeId, list);
+      }
+    }
+    this.remoteEndpoints.clear();
+    for (const [nodeId, list] of byNode) {
+      this.remoteEndpoints.set(nodeId, list);
     }
   }
 
@@ -72,17 +116,19 @@ export class AgentEndpointRegistry {
     }>
   > {
     const state = await this.deps.loadState();
-    return this.listCandidates(state, "*").map((candidate) => ({
-      nodeId: candidate.endpoint.address.nodeId,
-      endpointId: candidate.endpoint.address.endpointId,
-      agent: candidate.endpoint.agent,
-      state: candidate.endpoint.state,
-      capabilities: candidate.endpoint.capabilities,
-      ...(candidate.endpoint.displayName
-        ? { displayName: candidate.endpoint.displayName }
-        : {}),
-      updatedAt: Date.now(),
-    }));
+    return this.listCandidates(state, "*")
+      .filter((candidate) => candidate.endpoint.state !== "unreachable")
+      .map((candidate) => ({
+        nodeId: candidate.endpoint.address.nodeId,
+        endpointId: candidate.endpoint.address.endpointId,
+        agent: candidate.endpoint.agent,
+        state: candidate.endpoint.state === "running" ? "running" : "idle",
+        capabilities: candidate.endpoint.capabilities,
+        ...(candidate.endpoint.displayName
+          ? { displayName: candidate.endpoint.displayName }
+          : {}),
+        updatedAt: Date.now(),
+      }));
   }
   async resolveSender(
     binding: AgentSenderBinding,
@@ -243,22 +289,37 @@ export class AgentEndpointRegistry {
     coordinatorSession: string,
   ): ResolvedAgentEndpoint[] {
     const candidates: ResolvedAgentEndpoint[] = [];
-    const logical = findLogicalSession(state, coordinatorSession);
-    if (logical) {
-      candidates.push({
-        endpoint: this.toLogicalEndpoint(logical),
-        runtime: {
-          kind: "logical",
-          alias: logical.alias,
-          transportSession: logical.transport_session,
-        },
-      });
+    const all = coordinatorSession === "*";
+    if (all) {
+      for (const logical of Object.values(state.sessions)) {
+        candidates.push({
+          endpoint: this.toLogicalEndpoint(logical),
+          runtime: {
+            kind: "logical",
+            alias: logical.alias,
+            transportSession: logical.transport_session,
+          },
+        });
+      }
+    } else {
+      const logical = findLogicalSession(state, coordinatorSession);
+      if (logical) {
+        candidates.push({
+          endpoint: this.toLogicalEndpoint(logical),
+          runtime: {
+            kind: "logical",
+            alias: logical.alias,
+            transportSession: logical.transport_session,
+          },
+        });
+      }
     }
 
     for (const [workerSession, worker] of Object.entries(
       state.orchestration.workerBindings,
     )) {
       if (
+        !all &&
         !sameCoordinatorSession(worker.coordinatorSession, coordinatorSession)
       ) {
         continue;
