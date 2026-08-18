@@ -6,6 +6,8 @@ export interface SessionDto {
     transportSession: string;
     running: boolean;
     archived: boolean;
+    /** ISO timestamp when the session was archived. */
+    archivedAt?: string;
     /** Whether the session's agent process is currently alive (next prompt responds without
      *  a cold start). Drives the web cold-session indicator, shown only when `warm === false`.
      *  Omitted when unknown — old instances that don't report warmth, or a session not yet

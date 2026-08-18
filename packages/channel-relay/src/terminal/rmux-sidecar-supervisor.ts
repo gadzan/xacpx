@@ -84,9 +84,15 @@ export class RmuxSidecarSupervisor {
   private starting: Promise<RmuxTerminalDriver> | null = null;
   private spawning = false;
   private stableTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastResolution: ResolvedRmuxBinaries | null = null;
 
   constructor(opts: RmuxSidecarSupervisorOptions) {
     this.opts = opts;
+  }
+
+  /** Last resolved bridge/RMUX binaries — for bootstrap-failure diagnostics. */
+  getResolution(): ResolvedRmuxBinaries | null {
+    return this.lastResolution;
   }
 
   async start(): Promise<RmuxTerminalDriver> {
@@ -163,6 +169,7 @@ export class RmuxSidecarSupervisor {
             bridgeCommand: this.opts.config.bridgeCommand,
             rmuxCommand: this.opts.config.rmuxCommand,
           });
+      this.lastResolution = binaries;
 
       // Never spawn a second child while one is still attached.
       if (this.child) throw new RmuxDriverCrashedError();

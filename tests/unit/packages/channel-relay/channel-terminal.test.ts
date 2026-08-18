@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -479,4 +479,63 @@ test("in-flight catalog retirement is drained before stop closes the runtime", a
   release();
   await started;
   expect(finished).toBe(true);
+});
+
+test("terminal bootstrap handshake failure still logs bridge/rmux resolution details", async () => {
+  // Regression: the supervisor is owned by the channel BEFORE start(), so a
+  // spawn/handshake failure (the exact 0.9/0.10 class of field failure) must
+  // still produce relay.terminal_bootstrap_failed with source + redacted
+  // paths + expected RMUX version — never an empty resolution snapshot.
+  const dir = mkdtempSync(join(tmpdir(), "relay-term-fail-"));
+  dirs.push(dir);
+  const bridgeDir = mkdtempSync(join(tmpdir(), "relay-term-bridge-"));
+  dirs.push(bridgeDir);
+  const failingBridge = join(bridgeDir, "xacpx-rmux-bridge");
+  writeFileSync(failingBridge, "#!/bin/sh\necho 'not-a-sidecar-response'\nexit 1\n");
+  chmodSync(failingBridge, 0o755);
+
+  const errorEvents: Array<[string, unknown]> = [];
+  const channel = new RelayChannel(
+    {
+      url: "ws://h:1",
+      pairingToken: "t",
+      terminal: { enabled: true, bridgeCommand: failingBridge },
+    },
+    {
+      credentialStore: new MemoryCredentialStore(),
+      terminalRegistryDir: dir,
+      createClient: (opts) => ({ start: () => {}, stop: () => {}, sendEvent: () => {} }),
+    },
+  );
+  const controller = new AbortController();
+  const { input } = makeStartInput({
+    abortSignal: controller.signal,
+    sessionResources: new FakeCatalog(),
+    logger: {
+      info: async () => {},
+      debug: async () => {},
+      error: async (event: string, _message: string, fields: unknown) => {
+        errorEvents.push([event, fields]);
+      },
+    },
+  });
+
+  const started = channel.start(input as never);
+  void started;
+  const deadline = Date.now() + 5000;
+  while (
+    !errorEvents.some(([event]) => event === "relay.terminal_bootstrap_failed") &&
+    Date.now() < deadline
+  ) {
+    await Bun.sleep(5);
+  }
+  const failed = errorEvents.find(([event]) => event === "relay.terminal_bootstrap_failed");
+  expect(failed, "bootstrap failure must be logged").toBeDefined();
+  const fields = (failed![1] ?? {}) as Record<string, string>;
+  expect(fields.bridgeSource).toBe("config");
+  expect(fields.bridgePath).toContain("xacpx-rmux-bridge");
+  // Paths must be redacted for doctor/logs: never the full absolute path.
+  expect(fields.bridgePath).not.toBe(failingBridge);
+  expect(fields.bridgePath ?? "").not.toContain(tmpdir());
+  expect(fields.rmuxExpectedVersion).toBe("0.10.0");
 });

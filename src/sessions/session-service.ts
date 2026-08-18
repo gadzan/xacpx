@@ -916,6 +916,7 @@ export class SessionService {
       effectiveReplyMode,
       cwd: workspaceConfig.cwd,
       archived: session.archived === true,
+      archivedAt: session.archived_at,
     };
   }
 

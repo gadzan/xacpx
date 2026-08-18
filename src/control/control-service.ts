@@ -66,6 +66,8 @@ export interface ControlSessionInfo {
   transportSession: string;
   running: boolean;
   archived: boolean;
+  /** ISO timestamp when the session was archived. */
+  archivedAt?: string;
   /** Whether the session's agent process is currently alive (next prompt responds
    *  without a cold start). Omitted when unknown — e.g. the transport can't observe
    *  liveness or the warmth tracker hasn't sampled this session yet. */
@@ -597,6 +599,7 @@ export class ControlService {
           transportSession: session.transportSession,
           running,
           archived: session.archived === true,
+          ...(session.archivedAt ? { archivedAt: session.archivedAt } : {}),
           ...(warm !== undefined ? { warm } : {}),
           ...(session.source === "agent-side" ? { native: true } : {}),
           ...(session.agentCommand ? { agentCommand: session.agentCommand } : {}),
@@ -623,6 +626,16 @@ export class ControlService {
       if (filters?.agent !== undefined && (session.agent ?? "") !== filters.agent) return false;
       return true;
     });
+    if (filters?.archivedOnly) {
+      all.sort((a, b) => {
+        const aTime = a.archivedAt ? new Date(a.archivedAt).getTime() : 0;
+        const bTime = b.archivedAt ? new Date(b.archivedAt).getTime() : 0;
+        if (aTime !== bTime) {
+          return bTime - aTime;
+        }
+        return 0;
+      });
+    }
     const safeOffset = Math.max(0, Math.floor(offset));
     const safeLimit = Math.min(100, Math.max(1, Math.floor(limit)));
     const sessions = all.slice(safeOffset, safeOffset + safeLimit);

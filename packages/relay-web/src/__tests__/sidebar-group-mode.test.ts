@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { loadGroupMode, saveGroupMode, groupSessions, dedupedSessionName } from "../lib/sidebar-group-mode";
+import { loadGroupMode, saveGroupMode, groupSessions, dedupedSessionName, archivedLast } from "../lib/sidebar-group-mode";
 
 const KEY = "xacpx.sidebar.groupMode.i1";
 
@@ -53,6 +53,20 @@ describe("groupSessions", () => {
       "workspace",
     );
     expect(groups[0]!.sessions.map((x) => x.alias)).toEqual(["live1", "live2", "arch1", "arch2"]);
+  });
+
+  it("orders archived sessions by sleep time, most recently slept first", () => {
+    const arch = (alias: string, archivedAt?: string) => ({ ...s(alias, "web", "claude", true), ...(archivedAt ? { archivedAt } : {}) });
+    const sorted = archivedLast([
+      s("live", "web", "claude"),
+      arch("old-sleep", "2026-08-01T00:00:00Z"),
+      arch("fresh-sleep", "2026-08-17T00:00:00Z"),
+      arch("legacy-sleep"), // old connector: no timestamp
+      arch("mid-sleep", "2026-08-09T00:00:00Z"),
+    ]);
+    // Actives keep incoming order; archived sink below, newest sleep on top so a
+    // user expanding the sleeping list finds the latest sessions without paging.
+    expect(sorted.map((x) => x.alias)).toEqual(["live", "fresh-sleep", "mid-sleep", "old-sleep", "legacy-sleep"]);
   });
 
   it("returns no groups for no sessions", () => {

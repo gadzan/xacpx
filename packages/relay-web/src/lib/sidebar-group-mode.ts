@@ -34,20 +34,27 @@ export interface SessionGroup<T> {
 }
 
 /**
- * Archived sessions sink below active ones (stable: both halves keep their
- * incoming order) — shared by the flat list and every group.
+ * Archived sessions sink below active ones — shared by the flat list and every
+ * group. Actives keep their incoming order; among the archived, the most
+ * recently slept session comes first (sorted by archivedAt descending, stable
+ * for rows without a timestamp — old connectors or ties).
  */
-export function archivedLast<T extends { archived?: boolean }>(sessions: T[]): T[] {
-  return [...sessions].sort((a, b) => Number(a.archived ?? false) - Number(b.archived ?? false));
+export function archivedLast<T extends { archived?: boolean; archivedAt?: string }>(sessions: T[]): T[] {
+  const active = sessions.filter((s) => !s.archived);
+  const archived = sessions.filter((s) => s.archived).sort((a, b) => {
+    const aTime = a.archivedAt ? new Date(a.archivedAt).getTime() : 0;
+    const bTime = b.archivedAt ? new Date(b.archivedAt).getTime() : 0;
+    return bTime - aTime;
+  });
+  return [...active, ...archived];
 }
-
 /**
  * Derive second-level groups from the sessions themselves (never from the
  * workspaces/agents catalogs — no empty groups, and the catalogs may not be
  * loaded when sessions arrive). Groups appear in first-appearance (server)
  * order; within a group actives keep server order and archived sink last.
  */
-export function groupSessions<T extends { workspace: string; agent: string; archived?: boolean }>(
+export function groupSessions<T extends { workspace: string; agent: string; archived?: boolean; archivedAt?: string }>(
   sessions: T[],
   mode: "workspace" | "agent",
 ): Array<SessionGroup<T>> {
