@@ -304,8 +304,9 @@ In addition to task delegation (`delegate_request`), xacpx provides direct Agent
 
 - **`agent_list`**: List all discoverable and reachable peer agent endpoints within the authorized messaging scope (local daemon or remote instances via Relay Hub).
 - **`agent_send`**: Send a one-way peer message to an authorized target handle.
-1. **Local Route** (production-enabled in v0.1): When the target endpoint resides on the same daemon node (same coordinator scope), messages are delivered via the local `acpx` prompt queue.
-2. **Relay Route** (protocol scaffolded): Location-independent addressing (`nodeId + endpointId`) and Relay protocol extensions are prepared for multi-daemon federation in the upcoming milestone.
+
+1. **Local Route**: When the target endpoint resides on the same daemon node (same coordinator scope), messages are delivered via the local `acpx` prompt queue.
+2. **Relay Route**: When the target endpoint resides on another connected xacpx daemon under the same account, the message is routed securely via Relay Hub's WebSocket tunnel (`agent.message.route` $\to$ `agent.message.deliver`) with destination deduplication and unforgeable canonical sender identity.
 
 ### Example MCP Calls
 

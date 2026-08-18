@@ -18,7 +18,10 @@ export interface OutboundQuota {
   reserveFinal(chatKey: string): boolean;
   finalRemaining(chatKey: string): number;
   hasPendingFinal(chatKey: string): boolean;
-  drainPendingFinalUpToBudget(chatKey: string, available: number): PendingFinalChunk[];
+  drainPendingFinalUpToBudget(
+    chatKey: string,
+    available: number,
+  ): PendingFinalChunk[];
   prependPendingFinal(chatKey: string, chunks: PendingFinalChunk[]): void;
   enqueuePendingFinal(chatKey: string, chunks: PendingFinalChunk[]): void;
   clearPendingFinal(chatKey: string): void;
@@ -180,7 +183,10 @@ export interface MessageChannelRuntime {
   configureOrchestration?(callbacks: OrchestrationDeliveryCallbacks): void;
 
   notifyTaskCompletion(task: OrchestrationTaskRecord): Promise<void>;
-  notifyTaskProgress(task: OrchestrationTaskRecord, text: string): Promise<void>;
+  notifyTaskProgress(
+    task: OrchestrationTaskRecord,
+    text: string,
+  ): Promise<void>;
   sendCoordinatorMessage(input: CoordinatorMessageInput): Promise<void>;
   sendScheduledMessage?(input: ScheduledChannelMessageInput): Promise<void>;
 
@@ -190,6 +196,30 @@ export interface MessageChannelRuntime {
    * treated as "table".
    */
   nativeSessionListFormat?: "cards" | "table";
+
+  /** Relay-capable channels: route an Agent Message to a remote messaging node.
+   *  Optional — absent channels make the router report ROUTE_UNAVAILABLE. */
+  sendAgentMessageRoute?(payload: {
+    sourceNodeId: string;
+    sourceEndpointId: string;
+    targetNodeId: string;
+    targetEndpointId: string;
+    messageId: string;
+    content: string;
+    requestedMode: string;
+    replyTo?: string;
+  }): Promise<{
+    messageId: string;
+    status: "injected" | "queued" | "failed";
+    modeUsed?: "steer" | "queue" | "interrupt" | "prompt";
+    targetState?: "idle" | "running";
+    errorCode?: string;
+    deduplicated?: boolean;
+  }>;
+
+  /** Relay-capable channels: publish this instance's agent endpoint directory to
+   *  the hub. The FULL snapshot replaces the previous one (no delta protocol). */
+  syncAgentEndpoints?(endpoints: unknown[]): void;
 }
 
 // Structured tool-use event. The transport emits one of these per acpx
@@ -200,7 +230,8 @@ export interface MessageChannelRuntime {
 export type ToolUseStatus = "running" | "success" | "error";
 // Matches the kinds emitted by acpx via streaming-prompt.ts KIND_EMOJI.
 // Any kind the transport doesn't recognize maps to "other".
-export type ToolUseKind = "read" | "search" | "execute" | "edit" | "think" | "other";
+export type ToolUseKind =
+  "read" | "search" | "execute" | "edit" | "think" | "other";
 
 export interface ToolUseEvent {
   toolCallId: string;

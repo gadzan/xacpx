@@ -23,8 +23,10 @@ type EndpointRuntime =
       kind: "worker";
       workerSession: string;
       binding: WorkerBindingRecord;
+    }
+  | {
+      kind: "remote";
     };
-
 export interface ResolvedAgentIdentity {
   address: AgentAddress;
   coordinatorSession: string;
@@ -37,13 +39,97 @@ export interface ResolvedAgentEndpoint {
 }
 
 export class AgentEndpointRegistry {
+  private readonly remoteEndpoints = new Map<string, AgentEndpointView[]>();
+
   constructor(
     private readonly deps: {
       nodeId: string;
       loadState: () => Promise<AppState>;
     },
   ) {}
+  updateRemoteEndpoints(nodeId: string, endpoints: AgentEndpointView[]): void {
+    if (nodeId === "*") {
+      this.remoteEndpoints.clear();
+      return;
+    }
+    if (endpoints.length === 0) {
+      this.remoteEndpoints.delete(nodeId);
+    } else {
+      this.remoteEndpoints.set(nodeId, endpoints);
+    }
+  }
 
+  syncRemoteDirectorySnapshot(
+    endpoints: Array<{
+      nodeId: string;
+      endpointId: string;
+      displayName?: string;
+      agent: string;
+      state: "idle" | "running";
+      capabilities: {
+        receive: boolean;
+        steer: boolean;
+        queue: boolean;
+        interrupt: boolean;
+      };
+    }>,
+  ): void {
+    const byNode = new Map<string, AgentEndpointView[]>();
+    for (const ep of endpoints) {
+      if (ep.nodeId !== this.deps.nodeId) {
+        const list = byNode.get(ep.nodeId) ?? [];
+        list.push({
+          address: { nodeId: ep.nodeId, endpointId: ep.endpointId },
+          handle: encodeAgentHandle({
+            nodeId: ep.nodeId,
+            endpointId: ep.endpointId,
+          }),
+          node: ep.displayName ?? ep.nodeId,
+          agent: ep.agent,
+          state: ep.state,
+          capabilities: ep.capabilities,
+        });
+        byNode.set(ep.nodeId, list);
+      }
+    }
+    this.remoteEndpoints.clear();
+    for (const [nodeId, list] of byNode) {
+      this.remoteEndpoints.set(nodeId, list);
+    }
+  }
+
+  async getPublishedEndpoints(): Promise<
+    Array<{
+      nodeId: string;
+      endpointId: string;
+      displayName?: string;
+      agent: string;
+      state: "idle" | "running";
+      capabilities: {
+        receive: boolean;
+        steer: boolean;
+        queue: boolean;
+        interrupt: boolean;
+      };
+      labels?: string[];
+      updatedAt: number;
+    }>
+  > {
+    const state = await this.deps.loadState();
+    return this.listCandidates(state, "*")
+      .filter((candidate) => candidate.endpoint.state !== "unreachable")
+      .map((candidate) => ({
+        nodeId: candidate.endpoint.address.nodeId,
+        endpointId: candidate.endpoint.address.endpointId,
+        agent: candidate.endpoint.agent,
+        state: candidate.endpoint.state === "running" ? "running" : "idle",
+        capabilities: candidate.endpoint.capabilities,
+        ...(candidate.endpoint.displayName
+          ? { displayName: candidate.endpoint.displayName }
+          : {}),
+        updatedAt: Date.now(),
+      }));
+  }
   async resolveSender(
     binding: AgentSenderBinding,
   ): Promise<ResolvedAgentIdentity> {
@@ -124,11 +210,18 @@ export class AgentEndpointRegistry {
   ): Promise<AgentEndpointView[]> {
     const sender = await this.resolveSender(binding);
     const state = await this.deps.loadState();
-    return this.listCandidates(state, sender.coordinatorSession)
+    const locals = this.listCandidates(state, sender.coordinatorSession)
       .filter(
         (candidate) => !sameAddress(candidate.endpoint.address, sender.address),
       )
       .map((candidate) => candidate.endpoint);
+    const remotes: AgentEndpointView[] = [];
+    for (const [nodeId, list] of this.remoteEndpoints) {
+      if (nodeId !== this.deps.nodeId) {
+        remotes.push(...list);
+      }
+    }
+    return [...locals, ...remotes];
   }
 
   async resolveTarget(
@@ -139,17 +232,31 @@ export class AgentEndpointRegistry {
     if (!address) {
       throw notReachable();
     }
-    if (address.nodeId !== this.deps.nodeId) {
-      throw new AgentMessagingError(
-        "ROUTE_UNAVAILABLE",
-        "The target belongs to another messaging node and no remote route is configured.",
-      );
-    }
     if (sameAddress(address, sender.address)) {
       throw new AgentMessagingError(
         "SELF_MESSAGE_NOT_ALLOWED",
         "Sending a peer message to the current Agent endpoint is not allowed.",
       );
+    }
+
+    if (address.nodeId !== this.deps.nodeId) {
+      const remoteList = this.remoteEndpoints.get(address.nodeId);
+      if (!remoteList) {
+        throw new AgentMessagingError(
+          "ROUTE_UNAVAILABLE",
+          "The target belongs to another messaging node and no remote route is configured.",
+        );
+      }
+      const match = remoteList.find(
+        (e) => e.address.endpointId === address.endpointId,
+      );
+      if (match) {
+        return {
+          endpoint: match,
+          runtime: { kind: "remote" as const },
+        };
+      }
+      throw notReachable();
     }
 
     const state = await this.deps.loadState();
@@ -162,27 +269,57 @@ export class AgentEndpointRegistry {
     return target;
   }
 
+  async resolveLocalTargetByEndpointId(
+    endpointId: string,
+  ): Promise<ResolvedAgentEndpoint> {
+    const state = await this.deps.loadState();
+    const match = this.listCandidates(state, "*").find(
+      (c) => c.endpoint.address.endpointId === endpointId,
+    );
+    if (!match) {
+      throw new AgentMessagingError(
+        "TARGET_NOT_FOUND",
+        `Target endpoint ${endpointId} not found on local node.`,
+      );
+    }
+    return match;
+  }
   private listCandidates(
     state: AppState,
     coordinatorSession: string,
   ): ResolvedAgentEndpoint[] {
     const candidates: ResolvedAgentEndpoint[] = [];
-    const logical = findLogicalSession(state, coordinatorSession);
-    if (logical) {
-      candidates.push({
-        endpoint: this.toLogicalEndpoint(logical),
-        runtime: {
-          kind: "logical",
-          alias: logical.alias,
-          transportSession: logical.transport_session,
-        },
-      });
+    const all = coordinatorSession === "*";
+    if (all) {
+      for (const logical of Object.values(state.sessions)) {
+        candidates.push({
+          endpoint: this.toLogicalEndpoint(logical),
+          runtime: {
+            kind: "logical",
+            alias: logical.alias,
+            transportSession: logical.transport_session,
+          },
+        });
+      }
+    } else {
+      const logical = findLogicalSession(state, coordinatorSession);
+      if (logical) {
+        candidates.push({
+          endpoint: this.toLogicalEndpoint(logical),
+          runtime: {
+            kind: "logical",
+            alias: logical.alias,
+            transportSession: logical.transport_session,
+          },
+        });
+      }
     }
 
     for (const [workerSession, worker] of Object.entries(
       state.orchestration.workerBindings,
     )) {
       if (
+        !all &&
         !sameCoordinatorSession(worker.coordinatorSession, coordinatorSession)
       ) {
         continue;

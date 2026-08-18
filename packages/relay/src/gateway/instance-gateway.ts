@@ -60,6 +60,19 @@ export interface InstanceGatewayDeps {
     accountId: string,
     online: boolean,
   ) => void;
+  /**
+   * Test seam: called when an authenticated instance delivers an RPC response
+   * that matched its pending request. Returning true simulates an ACK loss —
+   * the response is swallowed and the pending request fails as an ambiguous
+   * transport error ("timeout") without waiting out the request timeout, which
+   * exercises the source-side retry + destination dedupe path end to end while
+   * keeping tests free of wall-clock timeouts.
+   */
+  dropRequestResponse?: (
+    instanceId: string,
+    type: string,
+    payload: unknown,
+  ) => boolean;
   logger?: RelayLogger;
 }
 
@@ -106,8 +119,6 @@ export class InstanceGateway {
     );
 
     socket.on("message", (data) => {
-      // A single bad frame (or a throwing onEvent consumer, e.g. a DB write) must
-      // not propagate out of the listener and tear down the whole connection.
       try {
         this.handleMessage(socket, data, authed, (identity) => {
           authed = identity;
@@ -150,6 +161,11 @@ export class InstanceGateway {
       }
     }
     this.deps.onStatusChange?.(instanceId, accountId, false);
+    // The directory shrank with this instance's endpoints: push the new snapshot
+    // to every remaining same-account instance immediately so peers stop
+    // advertising a dead node (agent_list auto-updates without waiting for the
+    // next sync). No-op when nobody is left in the account.
+    this.broadcastDirectorySnapshot(accountId);
   }
 
   private handleMessage(
@@ -218,6 +234,9 @@ export class InstanceGateway {
           instanceId: identity.instanceId,
           accountId: identity.accountId,
         });
+        this.sendEvent(identity.instanceId, MSG.agentDirectorySnapshot, {
+          endpoints: this.getPublishedEndpoints(identity.accountId),
+        });
       }
       return;
     }
@@ -263,6 +282,28 @@ export class InstanceGateway {
         );
         return;
       }
+      if (
+        this.deps.dropRequestResponse?.(
+          authed.instanceId,
+          envelope.type,
+          envelope.payload,
+        )
+      ) {
+        this.logger.info(
+          "relay.instance.response_dropped",
+          "dropped authenticated RPC response (test seam: simulated ACK loss)",
+          { instanceId: authed.instanceId, envelopeType: envelope.type },
+        );
+        // The response is lost from the caller's perspective: fail the pending
+        // request as an ambiguous transport error immediately (a real lost ACK
+        // would surface as a timeout). The target MAY already have accepted the
+        // message — the source retries with the same messageId and the
+        // destination deduplicates.
+        clearTimeout(waiting.timer);
+        this.pending.delete(envelope.id);
+        waiting.reject(new Error("timeout"));
+        return;
+      }
       clearTimeout(waiting.timer);
       this.pending.delete(envelope.id);
       waiting.resolve(envelope.payload);
@@ -275,12 +316,38 @@ export class InstanceGateway {
         const syncPayload =
           envelope.payload as InstanceAgentEndpointsSyncPayload;
         if (Array.isArray(syncPayload?.endpoints)) {
-          this.endpointsByInstance.set(
-            authed.instanceId,
-            syncPayload.endpoints,
-          );
+          if (syncPayload.endpoints.length === 0) {
+            this.endpointsByInstance.delete(authed.instanceId);
+          } else {
+            const claimedNodeIds = new Set(
+              syncPayload.endpoints.map((e) => e.nodeId),
+            );
+            for (const [otherInstId, conn] of this.connections) {
+              if (
+                otherInstId !== authed.instanceId &&
+                conn.accountId === authed.accountId
+              ) {
+                const otherEndpoints =
+                  this.endpointsByInstance.get(otherInstId) ?? [];
+                if (otherEndpoints.some((e) => claimedNodeIds.has(e.nodeId))) {
+                  this.logger.warn(
+                    "relay.instance.node_id_collision",
+                    "instance tried to claim nodeId owned by another active instance",
+                    { instanceId: authed.instanceId },
+                  );
+                  return;
+                }
+              }
+            }
+            this.endpointsByInstance.set(
+              authed.instanceId,
+              syncPayload.endpoints,
+            );
+          }
+          this.broadcastDirectorySnapshot(authed.accountId);
         }
       }
+      return;
     }
     if (envelope.kind === "req" && envelope.id) {
       const respond = (payload: unknown) => {
@@ -295,14 +362,50 @@ export class InstanceGateway {
         );
       };
 
+      if (envelope.type === MSG.agentDirectoryQuery) {
+        respond({ endpoints: this.getPublishedEndpoints(authed.accountId) });
+        return;
+      }
+
       if (envelope.type === MSG.agentMessageRoute) {
         const routePayload = envelope.payload as AgentMessageRoutePayload;
+        // Fail-closed source identity: the canonical source node/endpoint must
+        // belong to the authenticated instance's CURRENTLY published directory.
+        // A caller cannot spoof another node's (or another account's) identity —
+        // the Hub stamps the socket-derived instance, and a mismatched claim is
+        // denied outright rather than forwarded.
+        const sourceEndpoints =
+          this.endpointsByInstance.get(authed.instanceId) ?? [];
+        const sourceEndpoint = sourceEndpoints.find(
+          (e) =>
+            e.nodeId === routePayload.sourceNodeId &&
+            e.endpointId === routePayload.sourceEndpointId,
+        );
+        if (!sourceEndpoint) {
+          respond(
+            errorPayload(
+              "DELIVERY_DENIED",
+              `Source endpoint ${routePayload.sourceEndpointId} is not published by the authenticated instance ${authed.instanceId}`,
+            ),
+          );
+          return;
+        }
+        // replyable is derived, never hardcoded: the target may reply only when
+        // the source endpoint can receive AND the reverse route holds (the
+        // endpoint is published by an online instance — verified above).
+        const replyable = sourceEndpoint.capabilities.receive === true;
         let targetInstanceId: string | null = null;
+        let targetEndpointFound = false;
         for (const [instId, conn] of this.connections) {
           if (conn.accountId === authed.accountId) {
             const endpoints = this.endpointsByInstance.get(instId) ?? [];
             if (endpoints.some((e) => e.nodeId === routePayload.targetNodeId)) {
               targetInstanceId = instId;
+              targetEndpointFound = endpoints.some(
+                (e) =>
+                  e.nodeId === routePayload.targetNodeId &&
+                  e.endpointId === routePayload.targetEndpointId,
+              );
               break;
             }
           }
@@ -316,15 +419,24 @@ export class InstanceGateway {
           );
           return;
         }
+        if (!targetEndpointFound) {
+          respond(
+            errorPayload(
+              "TARGET_NOT_FOUND",
+              `Target endpoint ${routePayload.targetEndpointId} not found on node ${routePayload.targetNodeId}`,
+            ),
+          );
+          return;
+        }
         const deliverPayload: AgentMessageDeliverPayload = {
-          sourceNodeId: authed.instanceId,
-          sourceEndpointId: "",
+          sourceNodeId: routePayload.sourceNodeId,
+          sourceEndpointId: routePayload.sourceEndpointId,
           targetEndpointId: routePayload.targetEndpointId,
           messageId: routePayload.messageId,
           content: routePayload.content,
           requestedMode: routePayload.requestedMode,
           replyTo: routePayload.replyTo,
-          replyable: true,
+          replyable,
         };
         this.sendRequest(
           targetInstanceId,
@@ -555,6 +667,26 @@ export class InstanceGateway {
         clearTimeout(p.timer);
         this.pending.delete(id);
         p.reject(new Error(reason));
+      }
+    }
+  }
+
+  getPublishedEndpoints(accountId: string): PublishedAgentEndpointDto[] {
+    const result: PublishedAgentEndpointDto[] = [];
+    for (const [instId, conn] of this.connections) {
+      if (conn.accountId === accountId) {
+        const endpoints = this.endpointsByInstance.get(instId) ?? [];
+        result.push(...endpoints);
+      }
+    }
+    return result;
+  }
+
+  private broadcastDirectorySnapshot(accountId: string): void {
+    const endpoints = this.getPublishedEndpoints(accountId);
+    for (const [instId, conn] of this.connections) {
+      if (conn.accountId === accountId) {
+        this.sendEvent(instId, MSG.agentDirectorySnapshot, { endpoints });
       }
     }
   }

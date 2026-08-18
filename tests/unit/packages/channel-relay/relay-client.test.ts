@@ -382,3 +382,42 @@ test("reconnects after a drop; fatal handshake rejection stops retrying", async 
   controller.abort();
   wss.close();
 });
+
+test("sendRequest round-trips to relay server and resolves response", async () => {
+  const { wss, url } = await makeFakeRelay((envelope, reply) => {
+    if (envelope.type === MSG.instanceAuth) {
+      reply(res(envelope, { ok: true }));
+      return;
+    }
+    if (envelope.kind === "req" && envelope.type === MSG.agentMessageRoute) {
+      reply({
+        protocolVersion: RELAY_PROTOCOL_VERSION,
+        kind: "res",
+        id: envelope.id,
+        type: envelope.type,
+        payload: {
+          messageId: "msg-123",
+          status: "queued",
+          modeUsed: "queue",
+        },
+      });
+    }
+  });
+  const store = new MemoryCredentialStore({ instanceId: "i-1", credential: "cred-1", relayUrl: url });
+  const controller = new AbortController();
+  const client = new RelayClient({ url, credentialStore: store, onRequest: () => {}, reconnectDelaysMs: [0] });
+  client.start(controller.signal);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  const result = await client.sendRequest<{ status: string }>(MSG.agentMessageRoute, {
+    targetNodeId: "node_2",
+    targetEndpointId: "ep_2",
+    messageId: "msg-123",
+    content: "hi",
+    requestedMode: "auto",
+  });
+  expect(result.status).toBe("queued");
+
+  controller.abort();
+  wss.close();
+});

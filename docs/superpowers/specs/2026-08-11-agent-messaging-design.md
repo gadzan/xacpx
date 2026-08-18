@@ -4,13 +4,14 @@ Status: Proposed / v0.2
 Date: 2026-08-11  
 Scope: xacpx 内置 MCP 驱动的、location-independent Agent-to-Agent Messaging。目标覆盖同 daemon、跨 daemon、跨 OS user、跨机器，以及经显式信任关系授权的跨账号通信。
 
-Implementation status (2026-08-18): Local queue-first v0.1 is implemented and
-verified in this PR: stable node/endpoint identities, same-coordinator
-discovery, one-way `agent_send`, queue acceptance, typed receipts/errors,
-guardrails, both transports, daemon RPC, and MCP tools. Wire protocol constants
-and Relay Hub routing scaffolding are prepared. Same-turn steering remains
-gated by the separate acpx/codex-acp Phase 0 spike. Production multi-daemon
-Relay wiring and remote presence will be closed in the follow-up federation milestone.
+Implementation status (2026-08-18): Local queue-first v0.1 and Same-Account
+Relay Federation v0.1 are implemented and verified end-to-end: stable
+node/endpoint identities, same-coordinator and multi-node Relay discovery,
+one-way `agent_send`, Relay Hub soft directory cache, multi-daemon routing,
+destination-side deduplication, typed receipts/errors, guardrails, both
+transports, daemon RPC, and MCP tools. Same-turn steering remains gated by the
+separate acpx/codex-acp Phase 0 spike. Cross-account peer trust and durable mail
+remain future milestones.
 
 ## 1. Summary
 
@@ -1094,9 +1095,13 @@ E2E 要证明 step 1 与 step 2 间注入后仍是同一 turn id，后续 Agent 
 
 实现 agent.message.route、agent.message.deliver、instance.agent-endpoints.sync。验收 Mac/Windows 双向在线 delivery、offline fail-fast、reconnect retry dedupe、source identity stamping、target policy deny 与 metadata redaction。
 
+**状态（Same-Account Relay Federation v0.1）：已实现并端到端验证。** Hub 从 authenticated socket 派生 source identity，agent.message.route 的 sourceNodeId/sourceEndpointId 必须属于该 instance 当前 published directory，不匹配返回 DELIVERY_DENIED；replyable 由 source endpoint receive + reverse route availability 推导（不写死）。source route 对 ambiguous network failure 做 bounded retry 且复用同一 messageId，typed business failures 不 retry；destination 按 messageId dedupe（deduplicated receipt）。真实 buildApp A → Relay Hub → buildApp B + 真实 acpx + mock ACP agent 的 hard-gate E2E 从 mock agent 的 prompt record 验证 remote `<xacpx-message>` 被消费。
+
 ### Phase 12 — Remote directory and presence
 
 实现 auth/reconnect full sync、endpoint lifecycle delta、account policy filtering、TTL cleanup、Local+authorized Remote 的 agent_list、private metadata redaction。
+
+**状态（v0.1 子集）：已实现。** auth/reconnect full sync、instance disconnect 后立即删除 endpoints 并向同账号剩余实例广播新 snapshot、在线 endpoint create/delete/capability change 后经 debounced FULL endpoint sync 更新 Hub（full replace，无 delta protocol）、空 presence sync 清理 stale endpoints、Local + authorized Remote 的 agent_list。account policy filtering、TTL cleanup、private metadata redaction 属后续里程碑（cross-account trust）。
 
 ### Phase 13 — Cross-OS-user and cross-machine validation
 
