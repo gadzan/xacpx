@@ -815,6 +815,8 @@ export interface AgentMessageRoutePayload {
     targetNodeId: string;
     targetEndpointId: string;
     messageId: string;
+    conversationId?: string;
+    depth?: number;
     content: string;
     requestedMode: string;
     replyTo?: string;
@@ -827,6 +829,8 @@ export interface AgentMessageDeliverPayload {
     sourceEndpointId: string;
     targetEndpointId: string;
     messageId: string;
+    conversationId?: string;
+    depth?: number;
     content: string;
     requestedMode: string;
     replyTo?: string;

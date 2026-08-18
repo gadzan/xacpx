@@ -16,6 +16,12 @@ export interface AgentCapabilities {
   steer: boolean;
   queue: boolean;
   interrupt: boolean;
+  conversation: boolean;
+}
+
+export interface AgentActivityView {
+  status: "idle" | "working" | "waiting";
+  summary?: string;
 }
 
 export interface AgentEndpointView {
@@ -26,6 +32,7 @@ export interface AgentEndpointView {
   workspace?: string;
   displayName?: string;
   state: "idle" | "running" | "unreachable";
+  activity: AgentActivityView;
   capabilities: AgentCapabilities;
 }
 
@@ -34,8 +41,20 @@ export interface AgentSenderBinding {
   sourceHandle?: string;
 }
 
+export interface MessageContext {
+  messageId: string;
+  conversationId: string;
+  depth: number;
+  from: AgentAddress;
+  to: AgentAddress;
+  createdAt: number;
+  expiresAt: number;
+}
+
 export interface AgentMessage {
   id: string;
+  conversationId: string;
+  depth: number;
   from: AgentAddress;
   to: AgentAddress;
   content: string;
@@ -43,6 +62,24 @@ export interface AgentMessage {
   requestedMode: AgentMessageMode;
   createdAt: number;
   expiresAt?: number;
+}
+
+export interface AgentMessageTraceRecord {
+  messageId: string;
+  conversationId: string;
+  depth: number;
+  replyTo?: string;
+  from: AgentAddress;
+  to: AgentAddress;
+  route: "local" | "relay";
+  createdAt: number;
+  deliveredAt?: number;
+  status: "injected" | "queued" | "failed";
+  modeUsed?: "steer" | "queue" | "interrupt" | "prompt";
+  deduplicated?: boolean;
+  errorCode?: AgentMessagingErrorCode;
+  contentLength: number;
+  contentHash: string;
 }
 
 export interface AgentMessageReceipt {

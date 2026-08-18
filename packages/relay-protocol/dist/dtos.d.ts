@@ -304,12 +304,18 @@ export interface PublishedAgentEndpointDto {
     endpointId: string;
     displayName?: string;
     agent: string;
+    workspace?: string;
     state: "idle" | "running";
+    activity?: {
+        status: "idle" | "working" | "waiting";
+        summary?: string;
+    };
     capabilities: {
         receive: boolean;
         steer: boolean;
         queue: boolean;
         interrupt: boolean;
+        conversation?: boolean;
     };
     labels?: string[];
     updatedAt: number;

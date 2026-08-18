@@ -55,6 +55,13 @@ function makeRouter(
     workspace: "project",
     targetAgent: "gemini",
   };
+  state.orchestration.workerBindings.workerC = {
+    sourceHandle: "workerC",
+    agentEndpointId: "endpoint_worker-c",
+    coordinatorSession: "coordinator",
+    workspace: "project",
+    targetAgent: "codex",
+  };
   state.orchestration.workerBindings.externalWorker = {
     sourceHandle: "externalWorker",
     agentEndpointId: "endpoint_external-worker",
@@ -106,6 +113,7 @@ test("lists only the current sender's reachable peer endpoints", async () => {
   expect(endpoints.map((endpoint) => endpoint.address.endpointId)).toEqual([
     "22222222-2222-4222-8222-222222222222",
     "endpoint_worker-b",
+    "endpoint_worker-c",
   ]);
 });
 
@@ -130,6 +138,8 @@ test("sends an auto message as an escaped one-way queue delivery", async () => {
     {
       message: {
         id: "msg_message-1",
+        conversationId: "msg_message-1",
+        depth: 0,
         from: { nodeId, endpointId: "endpoint_worker-a" },
         to: { nodeId, endpointId: "endpoint_worker-b" },
         content: "Use <schema> & tests.",
@@ -138,6 +148,7 @@ test("sends an auto message as an escaped one-way queue delivery", async () => {
       },
       renderedText:
         '<xacpx-message id="msg_message-1" ' +
+        'conversation-id="msg_message-1" ' +
         'from="agent:node_11111111-1111-4111-8111-111111111111:endpoint_worker-a" ' +
         'replyable="true">\n' +
         "Use &lt;schema&gt; &amp; tests.\n" +
@@ -588,6 +599,7 @@ test("expires cached receipts after the configured dedupe TTL", async () => {
     now: () => clock,
     limits: {
       receiptCache: { maxEntries: 4, ttlMs: 100 },
+      duplicateContentWindowMs: 50,
     },
   });
   const binding = {
@@ -741,13 +753,10 @@ test("marks messages from a non-receive-capable external sender as not replyable
     {
       to: encodeAgentHandle({ nodeId, endpointId: "endpoint_external-worker" }),
       content: "external notice",
-      replyTo: "msg_parent",
     },
   );
 
   expect(deliveries[0]?.renderedText).toContain('replyable="false"');
-  expect(deliveries[0]?.renderedText).toContain('reply-to="msg_parent"');
-  expect(deliveries[0]?.message.replyTo).toBe("msg_parent");
 });
 
 test("emits a safe structured delivery log without message content", async () => {
@@ -763,13 +772,11 @@ test("emits a safe structured delivery log without message content", async () =>
       },
     },
   });
-
   await router.send(
     { coordinatorSession: "coordinator", sourceHandle: "workerA" },
     {
       to: encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" }),
       content: "TOP SECRET schema text",
-      replyTo: "msg_parent",
     },
   );
 
@@ -825,6 +832,239 @@ test("failure logs expose only the stable error code and safe metadata", async (
   });
   expect(JSON.stringify(logs)).not.toContain("SECRET BODY");
   expect(JSON.stringify(logs)).not.toContain("/private/tmp");
+});
+
+test("rejects reply when parent message context is unknown or expired (REPLY_CONTEXT_UNAVAILABLE)", async () => {
+  const { router } = makeRouter();
+  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+
+  // Unknown parent context fails closed
+  await expect(
+    router.send(binding, {
+      to,
+      content: "reply to unknown message",
+      replyTo: "msg_unknown_123",
+    }),
+  ).rejects.toMatchObject({
+    code: "REPLY_CONTEXT_UNAVAILABLE",
+  });
+});
+
+test("rejects reply when target endpoint does not support conversation (REPLY_NOT_SUPPORTED)", async () => {
+  const { router } = makeRouter();
+  // Register remote endpoint with conversation: false (legacy v0.1 node)
+  router["deps"].registry["remoteEndpoints"].set("node_legacy", [
+    {
+      address: { nodeId: "node_legacy", endpointId: "ep_legacy" },
+      handle: encodeAgentHandle({ nodeId: "node_legacy", endpointId: "ep_legacy" }),
+      node: "node_legacy",
+      agent: "codex",
+      state: "idle",
+      activity: { status: "idle" },
+      capabilities: {
+        receive: true,
+        steer: false,
+        queue: true,
+        interrupt: false,
+        conversation: false,
+      },
+    },
+  ]);
+
+  // Seed inbound message
+  await router.deliverInbound({
+    sourceNodeId: "node_legacy",
+    sourceEndpointId: "ep_legacy",
+    targetEndpointId: "endpoint_worker-a",
+    messageId: "msg_legacy_1",
+    content: "hello from legacy",
+    requestedMode: "auto",
+    replyable: true,
+  });
+
+  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const to = encodeAgentHandle({ nodeId: "node_legacy", endpointId: "ep_legacy" });
+
+  await expect(
+    router.send(binding, {
+      to,
+      content: "replying to legacy",
+      replyTo: "msg_legacy_1",
+    }),
+  ).rejects.toMatchObject({
+    code: "REPLY_NOT_SUPPORTED",
+  });
+});
+
+test("rejects reply when target peer does not match parent sender (REPLY_TARGET_MISMATCH)", async () => {
+  let deliveryCount = 0;
+  const { router } = makeRouter({
+    deliver: async () => {
+      deliveryCount += 1;
+      return { status: "queued", modeUsed: "queue" };
+    },
+  });
+
+  const bindingA = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const bindingB = { coordinatorSession: "coordinator", sourceHandle: "workerB" };
+  const toB = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+  const toC = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-c" });
+
+  // A -> B : msg_1
+  const r1 = await router.send(bindingA, { to: toB, content: "hello B" });
+  expect(deliveryCount).toBe(1);
+
+  // B -> C with replyTo = msg_1 -> must throw REPLY_TARGET_MISMATCH
+  await expect(
+    router.send(bindingB, {
+      to: toC,
+      content: "hijacking thread to C",
+      replyTo: r1.messageId,
+    }),
+  ).rejects.toMatchObject({
+    code: "REPLY_TARGET_MISMATCH",
+  });
+
+  // Delivery count must NOT increment for C, conversation unchanged
+  expect(deliveryCount).toBe(1);
+});
+
+test("suppresses duplicate content across interleaved messages within 30s window", async () => {
+  let nextId = 0;
+  let deliveryCount = 0;
+  const { router } = makeRouter({
+    createId: () => `msg-${++nextId}`,
+    deliver: async () => {
+      deliveryCount += 1;
+      return { status: "queued", modeUsed: "queue" };
+    },
+    limits: { duplicateContentWindowMs: 30_000 },
+  });
+
+  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+
+  // t=0: A -> B: X (accepted)
+  await router.send(binding, { to, content: "schema changed" });
+  expect(deliveryCount).toBe(1);
+
+  // t=5: A -> B: Y (accepted)
+  await router.send(binding, { to, content: "check tests" });
+  expect(deliveryCount).toBe(2);
+
+  // t=10: A -> B: X (within 30s) -> DUPLICATE_MESSAGE
+  await expect(
+    router.send(binding, { to, content: "schema changed" }),
+  ).rejects.toMatchObject({
+    code: "DUPLICATE_MESSAGE",
+  });
+
+  // Delivery count must remain 2
+  expect(deliveryCount).toBe(2);
+});
+
+test("rejects duplicate content within duplicate suppression window (DUPLICATE_MESSAGE)", async () => {
+  let nextId = 0;
+  const { router } = makeRouter({
+    createId: () => `msg-${++nextId}`,
+    limits: { duplicateContentWindowMs: 30_000 },
+  });
+  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+
+  await router.send(binding, { to, content: "Exact same text" });
+
+  await expect(
+    router.send(binding, { to, content: "Exact same text" }),
+  ).rejects.toMatchObject({
+    code: "DUPLICATE_MESSAGE",
+  });
+
+  // Different text proceeds
+  await expect(
+    router.send(binding, { to, content: "Different text" }),
+  ).resolves.toMatchObject({
+    status: "queued",
+  });
+});
+
+test("enforces conversation depth limit (CONVERSATION_LIMIT_REACHED)", async () => {
+  let nextId = 0;
+  const { router } = makeRouter({
+    createId: () => `msg-${++nextId}`,
+    limits: { maxConversationDepth: 2 },
+  });
+  const bindingA = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const bindingB = { coordinatorSession: "coordinator", sourceHandle: "workerB" };
+  const toB = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+  const toA = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-a" });
+
+  // depth 0 (root)
+  const r1 = await router.send(bindingA, { to: toB, content: "root" });
+  expect(r1.messageId).toBe("msg_msg-1");
+
+  // depth 1 (reply to root)
+  const r2 = await router.send(bindingB, { to: toA, content: "reply 1", replyTo: "msg_msg-1" });
+  expect(r2.messageId).toBe("msg_msg-2");
+
+  // depth 2 (reply to reply 1)
+  const r3 = await router.send(bindingA, { to: toB, content: "reply 2", replyTo: "msg_msg-2" });
+  expect(r3.messageId).toBe("msg_msg-3");
+
+  // depth 3 (exceeds maxConversationDepth = 2) -> rejected
+  await expect(
+    router.send(bindingB, { to: toA, content: "reply 3", replyTo: "msg_msg-3" }),
+  ).rejects.toMatchObject({
+    code: "CONVERSATION_LIMIT_REACHED",
+  });
+});
+
+test("enforces conversation volume limit (CONVERSATION_LIMIT_REACHED)", async () => {
+  let nextId = 0;
+  const { router } = makeRouter({
+    createId: () => `msg-${++nextId}`,
+    limits: { maxMessagesPerConversation: 3, maxConversationDepth: 10, duplicateContentWindowMs: 0 },
+  });
+  const bindingA = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const bindingB = { coordinatorSession: "coordinator", sourceHandle: "workerB" };
+  const toB = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+  const toA = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-a" });
+
+  const r1 = await router.send(bindingA, { to: toB, content: "m1" });
+  const r2 = await router.send(bindingB, { to: toA, content: "m2", replyTo: r1.messageId });
+  const r3 = await router.send(bindingA, { to: toB, content: "m3", replyTo: r2.messageId });
+
+  // 4th message exceeds maxMessagesPerConversation = 3
+  await expect(
+    router.send(bindingB, { to: toA, content: "m4", replyTo: r3.messageId }),
+  ).rejects.toMatchObject({
+    code: "CONVERSATION_LIMIT_REACHED",
+  });
+});
+
+test("records metadata-only trace records and caps ring buffer", async () => {
+  let nextId = 0;
+  const { router } = makeRouter({
+    createId: () => `msg-${++nextId}`,
+    limits: { traceRingBufferSize: 2, duplicateContentWindowMs: 0 },
+  });
+  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+
+  await router.send(binding, { to, content: "secret text 1" });
+  await router.send(binding, { to, content: "secret text 2" });
+  await router.send(binding, { to, content: "secret text 3" });
+
+  const traces = router.getTraceRecords();
+  // Capped at traceRingBufferSize = 2
+  expect(traces).toHaveLength(2);
+  expect(traces[0]?.messageId).toBe("msg_msg-2");
+  expect(traces[1]?.messageId).toBe("msg_msg-3");
+  // Must contain contentHash and contentLength, but NEVER the raw text
+  expect(traces[1]?.contentLength).toBe(13);
+  expect(traces[1]?.contentHash).toHaveLength(64);
+  expect(JSON.stringify(traces)).not.toContain("secret text");
 });
 
 function createDeferred<T>() {

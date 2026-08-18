@@ -14,7 +14,11 @@ describe("UploadStore", () => {
     const root = await freshRoot();
     const store = new UploadStore({ rootDir: root });
     const bytes = Buffer.from("hello world");
-    const res = await store.save("note.txt", bytes.toString("base64"), "text/plain");
+    const res = await store.save(
+      "note.txt",
+      bytes.toString("base64"),
+      "text/plain",
+    );
 
     expect(res.path.startsWith(root)).toBe(true);
     expect(res.filename).toBe("note.txt");
@@ -26,7 +30,11 @@ describe("UploadStore", () => {
   it("sanitizes path-traversal filenames to a basename", async () => {
     const root = await freshRoot();
     const store = new UploadStore({ rootDir: root });
-    const res = await store.save("../../etc/passwd", Buffer.from("x").toString("base64"), "text/plain");
+    const res = await store.save(
+      "../../etc/passwd",
+      Buffer.from("x").toString("base64"),
+      "text/plain",
+    );
 
     expect(res.filename).toBe("passwd");
     expect(res.path.startsWith(root)).toBe(true);
@@ -36,9 +44,13 @@ describe("UploadStore", () => {
   it("rejects files over the byte cap", async () => {
     const root = await freshRoot();
     const store = new UploadStore({ rootDir: root, maxBytes: 8 });
-    await expect(store.save("big.bin", Buffer.alloc(9).toString("base64"), "application/octet-stream")).rejects.toThrow(
-      "file-too-large",
-    );
+    await expect(
+      store.save(
+        "big.bin",
+        Buffer.alloc(9).toString("base64"),
+        "application/octet-stream",
+      ),
+    ).rejects.toThrow("file-too-large");
   });
 
   it("rejects an oversized base64 string before decoding it", async () => {
@@ -50,7 +62,9 @@ describe("UploadStore", () => {
     // payload, but exceeds the cheap length bound).
     const threshold = Math.ceil((maxBytes * 4) / 3) + 4;
     const oversized = "A".repeat(threshold + 1);
-    await expect(store.save("big.bin", oversized, "application/octet-stream")).rejects.toThrow("file-too-large");
+    await expect(
+      store.save("big.bin", oversized, "application/octet-stream"),
+    ).rejects.toThrow("file-too-large");
   });
 
   it("exposes the configured rootDir via root", async () => {
@@ -62,14 +76,24 @@ describe("UploadStore", () => {
   it("rejects empty content", async () => {
     const root = await freshRoot();
     const store = new UploadStore({ rootDir: root });
-    await expect(store.save("empty.txt", "", "text/plain")).rejects.toThrow("empty-file");
+    await expect(store.save("empty.txt", "", "text/plain")).rejects.toThrow(
+      "empty-file",
+    );
   });
 
   it("cleanup() removes upload dirs older than the TTL and keeps fresh ones", async () => {
     const root = await freshRoot();
     const store = new UploadStore({ rootDir: root, ttlMs: 1000 });
-    const stale = await store.save("old.txt", Buffer.from("old").toString("base64"), "text/plain");
-    const fresh = await store.save("new.txt", Buffer.from("new").toString("base64"), "text/plain");
+    const stale = await store.save(
+      "old.txt",
+      Buffer.from("old").toString("base64"),
+      "text/plain",
+    );
+    const fresh = await store.save(
+      "new.txt",
+      Buffer.from("new").toString("base64"),
+      "text/plain",
+    );
 
     // Backdate the stale entry's directory mtime well beyond the TTL.
     const staleDir = join(stale.path, "..");

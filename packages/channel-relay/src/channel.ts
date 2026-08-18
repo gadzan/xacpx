@@ -658,7 +658,7 @@ export class RelayChannel implements MessageChannelRuntime {
 
   /** Read the authoritative local endpoint directory from the control facade and
    *  push it to the hub as a full snapshot (replace semantics). Best-effort. */
-  private syncAgentEndpointsNow(): void {
+  syncAgentEndpointsNow(): void {
     const control = this.control;
     if (!control || !this.client) return;
     if (

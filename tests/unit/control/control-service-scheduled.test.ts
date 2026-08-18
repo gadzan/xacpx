@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
 
 import { ControlService } from "../../../src/control/control-service";
-import { createControlEventBus, type ControlEvent } from "../../../src/control/control-event-bus";
+import {
+  createControlEventBus,
+  type ControlEvent,
+} from "../../../src/control/control-event-bus";
 import type { ScheduledTaskRecord } from "../../../src/scheduled/scheduled-types";
 
 const record: ScheduledTaskRecord = {
@@ -20,12 +23,19 @@ function makeControl() {
   events.subscribe((event) => seen.push(event));
   const calls: Record<string, unknown[]> = { create: [], cancel: [], chat: [] };
   const control = new ControlService({
-    agent: { chat: async (req: unknown) => { calls.chat.push(req); return { text: "ran ok" }; } },
+    agent: {
+      chat: async (req: unknown) => {
+        calls.chat.push(req);
+        return { text: "ran ok" };
+      },
+    },
     sessions: { useSession: async () => {} },
     activeTurns: { isActiveAnywhere: () => false },
     scheduled: {
-      listPending: (chatKey: string) => (chatKey === "relay:acct-1" ? [record] : []),
-      listRecentForChat: (chatKey: string) => (chatKey === "relay:acct-1" ? [record] : []),
+      listPending: (chatKey: string) =>
+        chatKey === "relay:acct-1" ? [record] : [],
+      listRecentForChat: (chatKey: string) =>
+        chatKey === "relay:acct-1" ? [record] : [],
       createTask: async (input: unknown) => {
         calls.create.push(input);
         return record;
@@ -64,17 +74,32 @@ test("runScheduledTurn streams a real turn tagged with prompt + schedule origin"
   // and the web badges it; turn-finished closes the turn.
   const started = seen.find((e) => e.type === "turn-started");
   expect(started).toMatchObject({
-    type: "turn-started", chatKey: "relay:acct-1", sessionAlias: "backend",
-    prompt: "summarize commits", scheduled: { taskId: "ab12", executeAt: "2026-06-14T10:00:00.000Z" },
+    type: "turn-started",
+    chatKey: "relay:acct-1",
+    sessionAlias: "backend",
+    prompt: "summarize commits",
+    scheduled: { taskId: "ab12", executeAt: "2026-06-14T10:00:00.000Z" },
   });
-  expect(seen.some((e) => e.type === "turn-finished" && e.ok === true)).toBe(true);
+  expect(seen.some((e) => e.type === "turn-finished" && e.ok === true)).toBe(
+    true,
+  );
 });
 
 test("a normal prompt's turn-started carries no scheduled origin", async () => {
   const { control, seen } = makeControl();
-  await control.prompt({ chatKey: "relay:acct-1", sessionAlias: "backend", text: "hi", senderId: "acct-1", isOwner: true });
+  await control.prompt({
+    chatKey: "relay:acct-1",
+    sessionAlias: "backend",
+    text: "hi",
+    senderId: "acct-1",
+    isOwner: true,
+  });
   const started = seen.find((e) => e.type === "turn-started");
-  expect(started).toEqual({ type: "turn-started", chatKey: "relay:acct-1", sessionAlias: "backend" });
+  expect(started).toEqual({
+    type: "turn-started",
+    chatKey: "relay:acct-1",
+    sessionAlias: "backend",
+  });
 });
 
 test("createScheduledTask delegates and emits scheduled-changed", async () => {
@@ -87,7 +112,10 @@ test("createScheduledTask delegates and emits scheduled-changed", async () => {
   });
   expect(task.id).toBe("ab12");
   expect(calls.create).toHaveLength(1);
-  expect(seen).toContainEqual({ type: "scheduled-changed", chatKey: "relay:acct-1" });
+  expect(seen).toContainEqual({
+    type: "scheduled-changed",
+    chatKey: "relay:acct-1",
+  });
 });
 
 test("cancelScheduledTask emits only when something was cancelled", async () => {
@@ -95,5 +123,8 @@ test("cancelScheduledTask emits only when something was cancelled", async () => 
   expect(await control.cancelScheduledTask("zz99", "relay:acct-1")).toBe(false);
   expect(seen).toHaveLength(0);
   expect(await control.cancelScheduledTask("ab12", "relay:acct-1")).toBe(true);
-  expect(seen).toContainEqual({ type: "scheduled-changed", chatKey: "relay:acct-1" });
+  expect(seen).toContainEqual({
+    type: "scheduled-changed",
+    chatKey: "relay:acct-1",
+  });
 });

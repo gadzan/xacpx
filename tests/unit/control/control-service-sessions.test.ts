@@ -1,15 +1,26 @@
 import { expect, test } from "bun:test";
 
 import { ControlService } from "../../../src/control/control-service";
-import { createControlEventBus, type ControlEvent } from "../../../src/control/control-event-bus";
+import {
+  createControlEventBus,
+  type ControlEvent,
+} from "../../../src/control/control-event-bus";
+import { registerKnownChannelId } from "../../../src/channels/channel-scope";
 
+registerKnownChannelId("relay");
 function makeDeps() {
   const events = createControlEventBus();
   const seen: ControlEvent[] = [];
-  const calls: Array<{ kind: "fresh" | "native"; internalAlias: string; agent: string; workspace: string; agentSessionId?: string }> = [];
+  const calls: Array<{
+    kind: "fresh" | "native";
+    internalAlias: string;
+    agent: string;
+    workspace: string;
+    agentSessionId?: string;
+  }> = [];
   events.subscribe((event) => seen.push(event));
   const session = {
-    alias: "backend",
+    alias: "relay:backend",
     agent: "claude",
     workspace: "/ws/backend",
     transportSession: "xacpx-backend",
@@ -19,26 +30,62 @@ function makeDeps() {
     sessions: {
       listAllResolvedSessions: () => [session],
       removeSession: async (_alias: string) => ({ wasActive: true }),
-      useSession: async () => ({ alias: "backend", agent: "claude", workspace: "/ws/backend" }),
+      useSession: async () => ({
+        alias: "backend",
+        agent: "claude",
+        workspace: "/ws/backend",
+      }),
       resolveAliasForChat: async (_chatKey: string, alias: string) => alias,
       getSession: async (_alias: string) => session,
     },
-    removeSessionWithTransport: async (_internalAlias: string) => ({ wasActive: true }),
+    removeSessionWithTransport: async (_internalAlias: string) => ({
+      wasActive: true,
+    }),
     archiveSessionWithTransport: async (_internalAlias: string) => {},
     unarchiveSession: async (_internalAlias: string) => {},
-    createSessionWithTransport: async (internalAlias: string, agent: string, workspace: string, model?: string) => {
-      calls.push({ kind: "fresh", internalAlias, agent, workspace, ...(model ? { model } : {}) });
+    createSessionWithTransport: async (
+      internalAlias: string,
+      agent: string,
+      workspace: string,
+      model?: string,
+    ) => {
+      calls.push({
+        kind: "fresh",
+        internalAlias,
+        agent,
+        workspace,
+        ...(model ? { model } : {}),
+      });
       return { ...session, alias: internalAlias, agent, workspace };
     },
     listNativeSessions: async (_agent: string, _workspace: string) => [
-      { sessionId: "ses_abc", title: "Fix login", updatedAt: "2026-06-10T00:00:00Z", cwd: "/ws/docs" },
+      {
+        sessionId: "ses_abc",
+        title: "Fix login",
+        updatedAt: "2026-06-10T00:00:00Z",
+        cwd: "/ws/docs",
+      },
       { sessionId: "ses_def", title: null },
     ],
-    attachNativeSessionWithTransport: async (internalAlias: string, agent: string, workspace: string, agentSessionId: string) => {
-      calls.push({ kind: "native", internalAlias, agent, workspace, agentSessionId });
+    attachNativeSessionWithTransport: async (
+      internalAlias: string,
+      agent: string,
+      workspace: string,
+      agentSessionId: string,
+    ) => {
+      calls.push({
+        kind: "native",
+        internalAlias,
+        agent,
+        workspace,
+        agentSessionId,
+      });
       return { ...session, alias: internalAlias, agent, workspace };
     },
-    activeTurns: { isActiveAnywhere: (alias: string) => alias === "backend" },
+    activeTurns: {
+      isActiveAnywhere: (alias: string) =>
+        alias === "relay:backend" || alias === "backend",
+    },
     scheduled: {
       listPending: () => [],
       createTask: async () => {
@@ -78,49 +125,113 @@ test("listSessions maps resolved sessions with running flag", () => {
 
 test("listSessionsPage filters sleeping sessions and returns a server cursor", () => {
   const { deps } = makeDeps();
-  deps.sessions.listAllResolvedSessions = () => Array.from({ length: 5 }, (_, index) => ({
-    alias: `s${index}`,
-    agent: "claude",
-    workspace: "/ws",
-    transportSession: `t${index}`,
-    ...(index === 1 ? { archived: true } : {}),
-  }));
+  deps.sessions.listAllResolvedSessions = () =>
+    Array.from({ length: 5 }, (_, index) => ({
+      alias: `relay:s${index}`,
+      agent: "claude",
+      workspace: "/ws",
+      transportSession: `t${index}`,
+      ...(index === 1 ? { archived: true } : {}),
+    }));
   const control = new ControlService(deps as never);
 
   expect(control.listSessionsPage("relay:acct", 0, 2)).toMatchObject({
-    sessions: [expect.objectContaining({ alias: "s0" }), expect.objectContaining({ alias: "s2" })],
+    sessions: [
+      expect.objectContaining({ alias: "s0" }),
+      expect.objectContaining({ alias: "s2" }),
+    ],
     hasMore: true,
     nextOffset: 2,
   });
-  expect(control.listSessionsPage("relay:acct", 0, 2, true).sessions.map((session) => session.alias)).toEqual(["s0", "s1"]);
+  expect(
+    control
+      .listSessionsPage("relay:acct", 0, 2, true)
+      .sessions.map((session) => session.alias),
+  ).toEqual(["s0", "s1"]);
 });
 
 test("listSessionsPage archivedOnly orders sleeping sessions newest-sleep-first", () => {
   const { deps } = makeDeps();
   deps.sessions.listAllResolvedSessions = () => [
-    { alias: "oldest", agent: "claude", workspace: "/ws", transportSession: "t1", archived: true, archivedAt: "2026-08-01T00:00:00Z" },
-    { alias: "fresh", agent: "claude", workspace: "/ws", transportSession: "t2", archived: true, archivedAt: "2026-08-17T00:00:00Z" },
-    { alias: "mid", agent: "claude", workspace: "/ws", transportSession: "t3", archived: true, archivedAt: "2026-08-09T00:00:00Z" },
-    { alias: "live", agent: "claude", workspace: "/ws", transportSession: "t4" },
+    {
+      alias: "relay:fresh",
+      agent: "claude",
+      workspace: "/ws",
+      transportSession: "t1",
+      archived: true,
+      archivedAt: "2026-08-18T00:00:00Z",
+    },
+    {
+      alias: "relay:oldest",
+      agent: "claude",
+      workspace: "/ws",
+      transportSession: "t2",
+      archived: true,
+      archivedAt: "2026-08-16T00:00:00Z",
+    },
+    {
+      alias: "relay:mid",
+      agent: "claude",
+      workspace: "/ws",
+      transportSession: "t3",
+      archived: true,
+      archivedAt: "2026-08-17T00:00:00Z",
+    },
+    {
+      alias: "relay:live",
+      agent: "claude",
+      workspace: "/ws",
+      transportSession: "t4",
+    },
   ];
   const control = new ControlService(deps as never);
 
-  const page = control.listSessionsPage("relay:acct", 0, 10, false, { archivedOnly: true });
+  const page = control.listSessionsPage("relay:acct", 0, 10, false, {
+    archivedOnly: true,
+  });
   expect(page.sessions.map((s) => s.alias)).toEqual(["fresh", "mid", "oldest"]);
   // Cursor math runs on the sorted set: paging yields the same order.
-  expect(control.listSessionsPage("relay:acct", 0, 2, false, { archivedOnly: true }))
-    .toMatchObject({ sessions: [expect.objectContaining({ alias: "fresh" }), expect.objectContaining({ alias: "mid" })], hasMore: true, nextOffset: 2 });
+  expect(
+    control.listSessionsPage("relay:acct", 0, 2, false, { archivedOnly: true }),
+  ).toMatchObject({
+    sessions: [
+      expect.objectContaining({ alias: "fresh" }),
+      expect.objectContaining({ alias: "mid" }),
+    ],
+    hasMore: true,
+    nextOffset: 2,
+  });
 });
 
 test("listSessions surfaces archivedAt for sleeping sessions and omits it otherwise", () => {
   const { deps } = makeDeps();
   deps.sessions.listAllResolvedSessions = () => [
-    { alias: "slept", agent: "claude", workspace: "/ws", transportSession: "t1", archived: true, archivedAt: "2026-08-17T00:00:00Z" },
-    { alias: "legacy", agent: "claude", workspace: "/ws", transportSession: "t2", archived: true },
-    { alias: "awake", agent: "claude", workspace: "/ws", transportSession: "t3" },
+    {
+      alias: "relay:slept",
+      agent: "claude",
+      workspace: "/ws",
+      transportSession: "t1",
+      archived: true,
+      archivedAt: "2026-08-17T00:00:00Z",
+    },
+    {
+      alias: "relay:legacy",
+      agent: "claude",
+      workspace: "/ws",
+      transportSession: "t2",
+      archived: true,
+    },
+    {
+      alias: "relay:awake",
+      agent: "claude",
+      workspace: "/ws",
+      transportSession: "t3",
+    },
   ];
   const control = new ControlService(deps as never);
-  const byAlias = new Map(control.listSessions("relay:acct").map((s) => [s.alias, s]));
+  const byAlias = new Map(
+    control.listSessions("relay:acct").map((s) => [s.alias, s]),
+  );
   expect(byAlias.get("slept")!.archivedAt).toBe("2026-08-17T00:00:00Z");
   // Old records without archived_at keep the field omitted (wire stays minimal).
   expect("archivedAt" in byAlias.get("legacy")!).toBe(false);
@@ -130,31 +241,93 @@ test("listSessions surfaces archivedAt for sleeping sessions and omits it otherw
 test("listSessionsPage supports archivedOnly, workspace and agent filters", () => {
   const { deps } = makeDeps();
   deps.sessions.listAllResolvedSessions = () => [
-    { alias: "a", agent: "claude", workspace: "/ws/a", transportSession: "t-a" },
-    { alias: "b", agent: "claude", workspace: "/ws/b", transportSession: "t-b", archived: true },
-    { alias: "c", agent: "codex", workspace: "/ws/a", transportSession: "t-c", archived: true },
-    { alias: "d", agent: "codex", transportSession: "t-d", archived: true },
+    {
+      alias: "relay:a",
+      agent: "claude",
+      workspace: "/ws/b",
+      transportSession: "t1",
+      archived: false,
+    },
+    {
+      alias: "relay:b",
+      agent: "claude",
+      workspace: "/ws/b",
+      transportSession: "t2",
+      archived: true,
+    },
+    {
+      alias: "relay:c",
+      agent: "codex",
+      workspace: "/ws/a",
+      transportSession: "t3",
+      archived: true,
+    },
+    {
+      alias: "relay:d",
+      agent: "codex",
+      workspace: "",
+      transportSession: "t4",
+      archived: true,
+    },
   ];
   const control = new ControlService(deps as never);
 
   // archivedOnly returns only sleeping sessions, ignoring includeArchived.
-  expect(control.listSessionsPage("relay:acct", 0, 10, false, { archivedOnly: true }).sessions.map((s) => s.alias)).toEqual(["b", "c", "d"]);
+  expect(
+    control
+      .listSessionsPage("relay:acct", 0, 10, false, { archivedOnly: true })
+      .sessions.map((s) => s.alias),
+  ).toEqual(["b", "c", "d"]);
   // Workspace filter narrows the sleeping page; cursor math runs on the filtered set.
-  expect(control.listSessionsPage("relay:acct", 0, 1, false, { archivedOnly: true, workspace: "/ws/a" }))
-    .toMatchObject({ sessions: [expect.objectContaining({ alias: "c" })], hasMore: false, nextOffset: 1 });
+  expect(
+    control.listSessionsPage("relay:acct", 0, 1, false, {
+      archivedOnly: true,
+      workspace: "/ws/a",
+    }),
+  ).toMatchObject({
+    sessions: [expect.objectContaining({ alias: "c" })],
+    hasMore: false,
+    nextOffset: 1,
+  });
   // Empty-string workspace matches sessions without a workspace.
-  expect(control.listSessionsPage("relay:acct", 0, 10, false, { archivedOnly: true, workspace: "" }).sessions.map((s) => s.alias)).toEqual(["d"]);
+  expect(
+    control
+      .listSessionsPage("relay:acct", 0, 10, false, {
+        archivedOnly: true,
+        workspace: "",
+      })
+      .sessions.map((s) => s.alias),
+  ).toEqual(["d"]);
   // Agent filter works on the active listing too.
-  expect(control.listSessionsPage("relay:acct", 0, 10, false, { agent: "codex" }).sessions.map((s) => s.alias)).toEqual([]);
-  expect(control.listSessionsPage("relay:acct", 0, 10, true, { agent: "codex" }).sessions.map((s) => s.alias)).toEqual(["c", "d"]);
+  expect(
+    control
+      .listSessionsPage("relay:acct", 0, 10, false, { agent: "codex" })
+      .sessions.map((s) => s.alias),
+  ).toEqual([]);
+  expect(
+    control
+      .listSessionsPage("relay:acct", 0, 10, true, { agent: "codex" })
+      .sessions.map((s) => s.alias),
+  ).toEqual(["c", "d"]);
 });
 
 test("listSessions marks an agent-side (native) session with native: true", () => {
   const { deps } = makeDeps();
   // A native-attached session carries source "agent-side"; a fresh xacpx session does not.
   deps.sessions.listAllResolvedSessions = () => [
-    { alias: "backend", agent: "claude", workspace: "/ws/backend", transportSession: "xacpx-backend" },
-    { alias: "resumed", agent: "codex", workspace: "/ws/docs", transportSession: "ses_abc", source: "agent-side" },
+    {
+      alias: "relay:backend",
+      agent: "claude",
+      workspace: "/ws/backend",
+      transportSession: "xacpx-backend",
+    },
+    {
+      alias: "relay:resumed",
+      agent: "codex",
+      workspace: "/ws/docs",
+      transportSession: "ses_abc",
+      source: "agent-side",
+    },
   ];
   const control = new ControlService(deps as never);
 
@@ -170,7 +343,12 @@ test("listSessions omits warm entirely without a warmth tracker", () => {
   const { deps } = makeDeps();
   // Use a non-running alias — running sessions force warm: true regardless.
   deps.sessions.listAllResolvedSessions = () => [
-    { alias: "idle", agent: "codex", workspace: "/ws/docs", transportSession: "xacpx-idle" },
+    {
+      alias: "relay:idle",
+      agent: "codex",
+      workspace: "/ws/docs",
+      transportSession: "xacpx-idle",
+    },
   ];
   const control = new ControlService(deps as never);
 
@@ -181,13 +359,29 @@ test("listSessions omits warm entirely without a warmth tracker", () => {
 test("listSessions forces warm: true for running sessions and reads the tracker otherwise", () => {
   const { deps } = makeDeps();
   deps.sessions.listAllResolvedSessions = () => [
-    { alias: "backend", agent: "claude", workspace: "/ws/backend", transportSession: "xacpx-backend" },
-    { alias: "idle-cold", agent: "codex", workspace: "/ws/docs", transportSession: "xacpx-idle" },
-    { alias: "unknown", agent: "codex", workspace: "/ws/docs", transportSession: "xacpx-unknown" },
+    {
+      alias: "relay:backend",
+      agent: "claude",
+      workspace: "/ws/backend",
+      transportSession: "xacpx-backend",
+    },
+    {
+      alias: "relay:idle-cold",
+      agent: "codex",
+      workspace: "/ws/docs",
+      transportSession: "xacpx-cold",
+    },
+    {
+      alias: "relay:unknown",
+      agent: "codex",
+      workspace: "/ws/docs",
+      transportSession: "xacpx-unknown",
+    },
   ];
-  const warmth = new Map<string, boolean>([["xacpx-idle", false]]);
+  const warmth = new Map<string, boolean>([["xacpx-cold", false]]);
   (deps as Record<string, unknown>).sessionWarmth = {
-    isWarm: (session: { transportSession: string }) => warmth.get(session.transportSession),
+    isWarm: (session: { transportSession: string }) =>
+      warmth.get(session.transportSession),
     markWarm: () => {},
     markCold: () => {},
   };
@@ -204,33 +398,84 @@ test("listSessions forces warm: true for running sessions and reads the tracker 
 test("createSession runs the transport lifecycle and emits sessions-changed", async () => {
   const { deps, seen, calls } = makeDeps();
   const control = new ControlService(deps as never);
-  const created = await control.createSession("relay:acct", "docs", "codex", "/ws/docs");
+  const created = await control.createSession(
+    "relay:acct",
+    "docs",
+    "codex",
+    "/ws/docs",
+  );
   expect(created.alias).toBe("docs");
-  expect(calls).toEqual([{ kind: "fresh", internalAlias: "docs", agent: "codex", workspace: "/ws/docs" }]);
+  expect(calls).toEqual([
+    {
+      kind: "fresh",
+      internalAlias: "docs",
+      agent: "codex",
+      workspace: "/ws/docs",
+    },
+  ]);
   expect(seen).toContainEqual({ type: "sessions-changed" });
 });
 
 test("createSession forwards a model override to the fresh-create lifecycle", async () => {
   const { deps, calls } = makeDeps();
   const control = new ControlService(deps as never);
-  await control.createSession("relay:acct", "docs", "codex", "/ws/docs", undefined, "gpt-5.2[high]");
-  expect(calls).toEqual([{ kind: "fresh", internalAlias: "docs", agent: "codex", workspace: "/ws/docs", model: "gpt-5.2[high]" }]);
+  await control.createSession(
+    "relay:acct",
+    "docs",
+    "codex",
+    "/ws/docs",
+    undefined,
+    "gpt-5.2[high]",
+  );
+  expect(calls).toEqual([
+    {
+      kind: "fresh",
+      internalAlias: "docs",
+      agent: "codex",
+      workspace: "/ws/docs",
+      model: "gpt-5.2[high]",
+    },
+  ]);
 });
 
 test("createSession ignores a model override on a native attach (resume uses the rollout's model)", async () => {
   const { deps, calls } = makeDeps();
   const control = new ControlService(deps as never);
-  await control.createSession("relay:acct", "resumed", "codex", "/ws/docs", "ses_abc", "gpt-5.2[high]");
+  await control.createSession(
+    "relay:acct",
+    "resumed",
+    "codex",
+    "/ws/docs",
+    "ses_abc",
+    "gpt-5.2[high]",
+  );
   // Native attach path receives no model — it resumes under the rollout's recorded model.
-  expect(calls).toEqual([{ kind: "native", internalAlias: "resumed", agent: "codex", workspace: "/ws/docs", agentSessionId: "ses_abc" }]);
+  expect(calls).toEqual([
+    {
+      kind: "native",
+      internalAlias: "resumed",
+      agent: "codex",
+      workspace: "/ws/docs",
+      agentSessionId: "ses_abc",
+    },
+  ]);
 });
 
 test("listNativeSessions maps agent-native sessions for the web picker", async () => {
   const { deps } = makeDeps();
   const control = new ControlService(deps as never);
-  const sessions = await control.listNativeSessions("relay:acct", "codex", "/ws/docs");
+  const sessions = await control.listNativeSessions(
+    "relay:acct",
+    "codex",
+    "/ws/docs",
+  );
   expect(sessions).toEqual([
-    { sessionId: "ses_abc", title: "Fix login", updatedAt: "2026-06-10T00:00:00Z", cwd: "/ws/docs" },
+    {
+      sessionId: "ses_abc",
+      title: "Fix login",
+      updatedAt: "2026-06-10T00:00:00Z",
+      cwd: "/ws/docs",
+    },
     { sessionId: "ses_def", title: null },
   ]);
 });
@@ -238,10 +483,24 @@ test("listNativeSessions maps agent-native sessions for the web picker", async (
 test("createSession with an agentSessionId resumes the native session instead of creating fresh", async () => {
   const { deps, seen, calls } = makeDeps();
   const control = new ControlService(deps as never);
-  const created = await control.createSession("relay:acct", "resumed", "codex", "/ws/docs", "ses_abc");
+  const created = await control.createSession(
+    "relay:acct",
+    "resumed",
+    "codex",
+    "/ws/docs",
+    "ses_abc",
+  );
   expect(created.alias).toBe("resumed");
   // Routed to the native-attach path, NOT the fresh-create lifecycle.
-  expect(calls).toEqual([{ kind: "native", internalAlias: "resumed", agent: "codex", workspace: "/ws/docs", agentSessionId: "ses_abc" }]);
+  expect(calls).toEqual([
+    {
+      kind: "native",
+      internalAlias: "resumed",
+      agent: "codex",
+      workspace: "/ws/docs",
+      agentSessionId: "ses_abc",
+    },
+  ]);
   expect(seen).toContainEqual({ type: "sessions-changed" });
 });
 
@@ -308,7 +567,9 @@ test("a failed archive funnel call emits no sessions-changed", async () => {
   };
   const control = new ControlService(deps as never);
 
-  await expect(control.archiveSession("relay:acct", "backend")).rejects.toThrow("disk full");
+  await expect(control.archiveSession("relay:acct", "backend")).rejects.toThrow(
+    "disk full",
+  );
 
   expect(seen).not.toContainEqual({ type: "sessions-changed" });
 });

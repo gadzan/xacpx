@@ -1,15 +1,23 @@
 import { expect, test } from "bun:test";
 
 import { ControlService } from "../../../src/control/control-service";
-import { createControlEventBus, type ControlEvent } from "../../../src/control/control-event-bus";
+import {
+  createControlEventBus,
+  type ControlEvent,
+} from "../../../src/control/control-event-bus";
+import { registerKnownChannelId } from "../../../src/channels/channel-scope";
 
+registerKnownChannelId("relay");
 function makeDeps() {
   const events = createControlEventBus();
   const seen: ControlEvent[] = [];
   events.subscribe((event) => seen.push(event));
-  const calls: Array<{ kind: "remove" | "archive" | "unarchive"; internalAlias: string }> = [];
+  const calls: Array<{
+    kind: "remove" | "archive" | "unarchive";
+    internalAlias: string;
+  }> = [];
   const session = {
-    alias: "backend",
+    alias: "relay:backend",
     agent: "claude",
     workspace: "/ws/backend",
     transportSession: "xacpx-backend",
@@ -20,8 +28,13 @@ function makeDeps() {
     sessions: {
       listAllResolvedSessions: () => [session],
       removeSession: async (_alias: string) => ({ wasActive: false }),
-      useSession: async () => ({ alias: "backend", agent: "claude", workspace: "/ws/backend" }),
-      resolveAliasForChat: async (_chatKey: string, alias: string) => `relay:${alias}`,
+      useSession: async () => ({
+        alias: "backend",
+        agent: "claude",
+        workspace: "/ws/backend",
+      }),
+      resolveAliasForChat: async (_chatKey: string, alias: string) =>
+        `relay:${alias}`,
       getSession: async () => session,
       setSessionModel: async () => {},
     },
@@ -40,11 +53,37 @@ function makeDeps() {
       calls.push({ kind: "unarchive", internalAlias });
     },
     activeTurns: { isActiveAnywhere: () => false },
-    scheduled: { listPending: () => [], listRecentForChat: () => [], createTask: async () => { throw new Error("unused"); }, cancelPending: async () => false },
-    orchestration: { listTasks: async () => [], getTask: async () => null, requestTaskCancellation: async () => { throw new Error("unused"); } },
+    scheduled: {
+      listPending: () => [],
+      listRecentForChat: () => [],
+      createTask: async () => {
+        throw new Error("unused");
+      },
+      cancelPending: async () => false,
+    },
+    orchestration: {
+      listTasks: async () => [],
+      getTask: async () => null,
+      requestTaskCancellation: async () => {
+        throw new Error("unused");
+      },
+    },
     events,
-    agents: { list: () => [], catalog: () => [], create: async () => { throw new Error("unused"); }, remove: async () => {} },
-    workspaces: { list: () => [], create: async () => { throw new Error("unused"); }, remove: async () => {} },
+    agents: {
+      list: () => [],
+      catalog: () => [],
+      create: async () => {
+        throw new Error("unused");
+      },
+      remove: async () => {},
+    },
+    workspaces: {
+      list: () => [],
+      create: async () => {
+        throw new Error("unused");
+      },
+      remove: async () => {},
+    },
   };
   return { deps, seen, calls };
 }
@@ -61,7 +100,9 @@ test("unarchiveSession routes through transport and emits sessions-changed", asy
   const { deps, seen, calls } = makeDeps();
   const control = new ControlService(deps as never);
   await control.unarchiveSession("relay:acct", "backend");
-  expect(calls).toEqual([{ kind: "unarchive", internalAlias: "relay:backend" }]);
+  expect(calls).toEqual([
+    { kind: "unarchive", internalAlias: "relay:backend" },
+  ]);
   expect(seen).toContainEqual({ type: "sessions-changed" });
 });
 

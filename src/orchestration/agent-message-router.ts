@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import type { AppLogger } from "../logging/app-logger";
 import { isCommandTimeoutError } from "../transport/command-timeouts";
@@ -22,7 +22,9 @@ import type {
   AgentMessageMode,
   AgentMessageReceipt,
   AgentMessageSendInput,
+  AgentMessageTraceRecord,
   AgentSenderBinding,
+  MessageContext,
 } from "./agent-messaging-types";
 import { RelayAgentMessageRoute } from "./relay-agent-message-route";
 export interface LocalAgentMessageDelivery {
@@ -47,6 +49,9 @@ export interface AgentMessageRouterLimits {
   maxMessageBytes?: number;
   maxReplyToBytes?: number;
   maxPendingPerTarget?: number;
+  maxConversationDepth?: number;
+  maxMessagesPerConversation?: number;
+  duplicateContentWindowMs?: number;
   rateLimit?: {
     maxMessages: number;
     windowMs: number;
@@ -55,6 +60,11 @@ export interface AgentMessageRouterLimits {
     maxEntries: number;
     ttlMs: number;
   };
+  contextCache?: {
+    maxEntries: number;
+    ttlMs: number;
+  };
+  traceRingBufferSize?: number;
 }
 
 export class AgentMessageRouter {
@@ -91,7 +101,10 @@ export class AgentMessageRouter {
       expiresAt: number;
     }
   >();
-
+  private readonly messageContexts = new Map<string, MessageContext>();
+  private readonly conversationMessageCounts = new Map<string, number>();
+  private readonly recentDuplicateContent = new Map<string, number>();
+  private readonly traceRingBuffer: AgentMessageTraceRecord[] = [];
   constructor(
     private readonly deps: {
       registry: Pick<
@@ -114,6 +127,9 @@ export class AgentMessageRouter {
     binding: AgentSenderBinding,
   ): Promise<AgentEndpointView[]> {
     return await this.deps.registry.listReachable(binding);
+  }
+  getTraceRecords(limit = 256): AgentMessageTraceRecord[] {
+    return this.traceRingBuffer.slice(-Math.max(1, limit));
   }
 
   async send(
@@ -167,8 +183,86 @@ export class AgentMessageRouter {
       }
       const createdAt = (this.deps.now ?? Date.now)();
       const messageId = "msg_" + (this.deps.createId ?? randomUUID)();
+
+      // Conversation threading & fail-closed resolution
+      let conversationId = messageId;
+      let depth = 0;
+      if (input.replyTo !== undefined) {
+        if (target.endpoint.capabilities.conversation === false) {
+          throw new AgentMessagingError(
+            "REPLY_NOT_SUPPORTED",
+            "The target endpoint does not support conversation reply threading.",
+          );
+        }
+        const parentContext = this.getMessageContext(input.replyTo, createdAt);
+        if (!parentContext) {
+          throw new AgentMessagingError(
+            "REPLY_CONTEXT_UNAVAILABLE",
+            "The reply correlation id is unknown, expired, or was lost due to daemon restart. Please start a new root message.",
+          );
+        }
+        if (
+          !sameAddress(sender.address, parentContext.to) ||
+          !sameAddress(target.endpoint.address, parentContext.from)
+        ) {
+          throw new AgentMessagingError(
+            "REPLY_TARGET_MISMATCH",
+            "A reply must be sent back to the peer that sent the parent message.",
+          );
+        }
+        conversationId = parentContext.conversationId;
+        depth = parentContext.depth + 1;
+      }
+
+      // Outbound collaboration guards: depth, volume, duplicate content, rate limit
+      const maxDepth = this.deps.limits?.maxConversationDepth ?? 6;
+      if (depth > maxDepth) {
+        throw new AgentMessagingError(
+          "CONVERSATION_LIMIT_REACHED",
+          `Conversation thread depth exceeded maximum limit of ${maxDepth}.`,
+        );
+      }
+      const maxMessagesInConv =
+        this.deps.limits?.maxMessagesPerConversation ?? 12;
+      const currentConvCount =
+        this.conversationMessageCounts.get(conversationId) ?? 0;
+      if (currentConvCount >= maxMessagesInConv) {
+        throw new AgentMessagingError(
+          "CONVERSATION_LIMIT_REACHED",
+          `Conversation total message volume exceeded maximum limit of ${maxMessagesInConv}.`,
+        );
+      }
+
+      const cached = this.getCachedReceipt(messageId, createdAt);
+      if (cached) {
+        const receipt = { ...cached, deduplicated: true };
+        const message: AgentMessage = {
+          id: messageId,
+          conversationId,
+          depth,
+          from: sender.address,
+          to: target.endpoint.address,
+          content: input.content,
+          requestedMode,
+          createdAt,
+          ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+        };
+        this.logDelivery(message, receipt, createdAt);
+        return receipt;
+      }
+
+      const contentHash = createHash("sha256")
+        .update(input.content.trim())
+        .digest("hex");
+      const pairKey =
+        addressKey(sender.address) + "->" + addressKey(target.endpoint.address);
+      this.checkDuplicateContent(pairKey, contentHash, createdAt);
+      this.enforceRateLimit(pairKey, createdAt);
+
       const message: AgentMessage = {
         id: messageId,
+        conversationId,
+        depth,
         from: sender.address,
         to: target.endpoint.address,
         content: input.content,
@@ -176,16 +270,7 @@ export class AgentMessageRouter {
         createdAt,
         ...(input.replyTo ? { replyTo: input.replyTo } : {}),
       };
-      const cached = this.getCachedReceipt(messageId, createdAt);
-      if (cached) {
-        const receipt = { ...cached, deduplicated: true };
-        this.logDelivery(message, receipt, createdAt);
-        return receipt;
-      }
-      this.enforceRateLimit(
-        addressKey(sender.address) + "->" + addressKey(target.endpoint.address),
-        createdAt,
-      );
+
       if (target.endpoint.address.nodeId !== sender.address.nodeId) {
         if (!this.deps.remoteRoute || !this.deps.remoteRoute.isAvailable()) {
           const err = new AgentMessagingError(
@@ -193,6 +278,20 @@ export class AgentMessageRouter {
             `Remote route is unavailable for destination node ${target.endpoint.address.nodeId}.`,
           );
           this.logDelivery(message, undefined, createdAt, err.code);
+          this.recordTrace({
+            messageId,
+            conversationId,
+            depth,
+            replyTo: input.replyTo,
+            from: sender.address,
+            to: target.endpoint.address,
+            route: "relay",
+            createdAt,
+            status: "failed",
+            errorCode: err.code,
+            contentLength: Buffer.byteLength(input.content, "utf8"),
+            contentHash,
+          });
           throw err;
         }
         let remoteReceipt: AgentMessageReceipt;
@@ -201,14 +300,61 @@ export class AgentMessageRouter {
         } catch (error) {
           const mapped = mapDeliveryError(error);
           this.logDelivery(message, undefined, createdAt, mapped.code);
+          this.recordTrace({
+            messageId,
+            conversationId,
+            depth,
+            replyTo: input.replyTo,
+            from: sender.address,
+            to: target.endpoint.address,
+            route: "relay",
+            createdAt,
+            status: "failed",
+            errorCode: mapped.code,
+            contentLength: Buffer.byteLength(input.content, "utf8"),
+            contentHash,
+          });
           throw mapped;
         }
         this.cacheReceipt(remoteReceipt, createdAt);
+        this.conversationMessageCounts.set(
+          conversationId,
+          currentConvCount + 1,
+        );
+        this.recordMessageContext({
+          messageId,
+          conversationId,
+          depth,
+          from: sender.address,
+          to: target.endpoint.address,
+          createdAt,
+          expiresAt:
+            createdAt + (this.deps.limits?.contextCache?.ttlMs ?? 60 * 60_000),
+        });
+        this.recordDuplicateContent(pairKey, contentHash, createdAt);
+        this.recordTrace({
+          messageId,
+          conversationId,
+          depth,
+          replyTo: input.replyTo,
+          from: sender.address,
+          to: target.endpoint.address,
+          route: "relay",
+          createdAt,
+          deliveredAt: (this.deps.now ?? Date.now)(),
+          status: remoteReceipt.status,
+          modeUsed: remoteReceipt.modeUsed,
+          deduplicated: remoteReceipt.deduplicated,
+          contentLength: Buffer.byteLength(input.content, "utf8"),
+          contentHash,
+        });
         this.logDelivery(message, remoteReceipt, createdAt);
         return remoteReceipt;
       }
+
       const renderedText = renderAgentMessageEnvelope({
         id: message.id,
+        conversationId: message.conversationId,
         from: encodeAgentHandle(sender.address),
         replyable: sender.receive && target.endpoint.capabilities.receive,
         ...(message.replyTo ? { replyTo: message.replyTo } : {}),
@@ -224,6 +370,20 @@ export class AgentMessageRouter {
       } catch (error) {
         const mapped = mapDeliveryError(error);
         this.logDelivery(message, undefined, createdAt, mapped.code);
+        this.recordTrace({
+          messageId,
+          conversationId,
+          depth,
+          replyTo: input.replyTo,
+          from: sender.address,
+          to: target.endpoint.address,
+          route: "local",
+          createdAt,
+          status: "failed",
+          errorCode: mapped.code,
+          contentLength: Buffer.byteLength(input.content, "utf8"),
+          contentHash,
+        });
         throw mapped;
       }
       const receipt: AgentMessageReceipt = {
@@ -234,6 +394,34 @@ export class AgentMessageRouter {
         ...(result.targetState ? { targetState: result.targetState } : {}),
       };
       this.cacheReceipt(receipt, createdAt);
+      this.conversationMessageCounts.set(conversationId, currentConvCount + 1);
+      this.recordMessageContext({
+        messageId,
+        conversationId,
+        depth,
+        from: sender.address,
+        to: target.endpoint.address,
+        createdAt,
+        expiresAt:
+          createdAt + (this.deps.limits?.contextCache?.ttlMs ?? 60 * 60_000),
+      });
+      this.recordDuplicateContent(pairKey, contentHash, createdAt);
+      this.recordTrace({
+        messageId,
+        conversationId,
+        depth,
+        replyTo: input.replyTo,
+        from: sender.address,
+        to: target.endpoint.address,
+        route: "local",
+        createdAt,
+        deliveredAt: (this.deps.now ?? Date.now)(),
+        status: receipt.status,
+        modeUsed: receipt.modeUsed,
+        deduplicated: receipt.deduplicated,
+        contentLength: Buffer.byteLength(input.content, "utf8"),
+        contentHash,
+      });
       this.logDelivery(message, receipt, createdAt);
       return receipt;
     });
@@ -244,6 +432,8 @@ export class AgentMessageRouter {
     sourceEndpointId: string;
     targetEndpointId: string;
     messageId: string;
+    conversationId?: string;
+    depth?: number;
     content: string;
     requestedMode: string;
     replyTo?: string;
@@ -252,11 +442,7 @@ export class AgentMessageRouter {
     const createdAt = (this.deps.now ?? Date.now)();
     const fingerprint = inboundFingerprint(input);
 
-    // 1. Terminal outcome cache — a COMPLETED delivery dedupes immediately:
-    //    success returns the cached receipt, and an ambiguous terminal failure
-    //    (the target may already have accepted the message) rethrows the same
-    //    failure instead of re-injecting. Same id with a different payload is
-    //    a different message reusing the id → DELIVERY_DENIED, never cached.
+    // 1. IDEMPOTENCY FIRST: Terminal outcome cache
     const cached = this.inboundOutcomes.get(input.messageId);
     if (cached) {
       if (cached.fingerprint !== fingerprint) {
@@ -314,6 +500,8 @@ export class AgentMessageRouter {
       sourceEndpointId: string;
       targetEndpointId: string;
       messageId: string;
+      conversationId?: string;
+      depth?: number;
       content: string;
       requestedMode: string;
       replyTo?: string;
@@ -324,8 +512,12 @@ export class AgentMessageRouter {
     const target = await this.deps.registry.resolveLocalTargetByEndpointId(
       input.targetEndpointId,
     );
+    const conversationId = input.conversationId ?? input.messageId;
+    const depth = input.depth ?? (input.replyTo ? 1 : 0);
     const message: AgentMessage = {
       id: input.messageId,
+      conversationId,
+      depth,
       from: { nodeId: input.sourceNodeId, endpointId: input.sourceEndpointId },
       to: target.endpoint.address,
       content: input.content,
@@ -340,18 +532,36 @@ export class AgentMessageRouter {
     });
     const renderedText = renderAgentMessageEnvelope({
       id: message.id,
+      conversationId: message.conversationId,
       from: fromHandle,
       replyable: input.replyable && target.endpoint.capabilities.receive,
       ...(message.replyTo ? { replyTo: message.replyTo } : {}),
       content: message.content,
     });
 
+    const contentHash = createHash("sha256")
+      .update(input.content.trim())
+      .digest("hex");
     let result: SessionMessageReceipt;
     try {
       result = await this.deps.delivery.deliver(target, message, renderedText);
     } catch (error) {
       const mapped = mapDeliveryError(error);
       this.logDelivery(message, undefined, createdAt, mapped.code);
+      this.recordTrace({
+        messageId: message.id,
+        conversationId: message.conversationId,
+        depth: message.depth,
+        replyTo: message.replyTo,
+        from: message.from,
+        to: message.to,
+        route: "relay",
+        createdAt,
+        status: "failed",
+        errorCode: mapped.code,
+        contentLength: Buffer.byteLength(input.content, "utf8"),
+        contentHash,
+      });
       throw mapped;
     }
 
@@ -362,9 +572,38 @@ export class AgentMessageRouter {
       route: "relay",
       ...(result.targetState ? { targetState: result.targetState } : {}),
     };
-    // Outcome recording (receipt OR failure tombstone) happens in deliverInbound
-    // so the terminal state is cache-visible before the in-flight slot releases.
+
+    // Register inbound message context on destination so subsequent reply works
+    const contextTtl = this.deps.limits?.contextCache?.ttlMs ?? 60 * 60_000;
+    this.recordMessageContext({
+      messageId: message.id,
+      conversationId: message.conversationId,
+      depth: message.depth,
+      from: message.from,
+      to: message.to,
+      createdAt,
+      expiresAt: createdAt + contextTtl,
+    });
+    const currentConvCount =
+      this.conversationMessageCounts.get(conversationId) ?? 0;
+    this.conversationMessageCounts.set(conversationId, currentConvCount + 1);
+
     this.logDelivery(message, receipt, createdAt);
+    this.recordTrace({
+      messageId: message.id,
+      conversationId: message.conversationId,
+      depth: message.depth,
+      replyTo: message.replyTo,
+      from: message.from,
+      to: message.to,
+      route: "relay",
+      createdAt,
+      deliveredAt: (this.deps.now ?? Date.now)(),
+      status: receipt.status,
+      modeUsed: receipt.modeUsed,
+      contentLength: Buffer.byteLength(input.content, "utf8"),
+      contentHash,
+    });
     return receipt;
   }
 
@@ -523,10 +762,87 @@ export class AgentMessageRouter {
       }
     }
   }
-}
 
+  private recordTrace(record: AgentMessageTraceRecord): void {
+    const maxSize = this.deps.limits?.traceRingBufferSize ?? 256;
+    if (maxSize <= 0) return;
+    if (this.traceRingBuffer.length >= maxSize) {
+      this.traceRingBuffer.shift();
+    }
+    this.traceRingBuffer.push(record);
+  }
+
+  private getMessageContext(
+    messageId: string,
+    now: number,
+  ): MessageContext | undefined {
+    const ctx = this.messageContexts.get(messageId);
+    if (!ctx) return undefined;
+    if (ctx.expiresAt <= now) {
+      this.messageContexts.delete(messageId);
+      return undefined;
+    }
+    return ctx;
+  }
+
+  private recordMessageContext(context: MessageContext): void {
+    const maxEntries = this.deps.limits?.contextCache?.maxEntries ?? 2_048;
+    const now = (this.deps.now ?? Date.now)();
+    for (const [id, ctx] of this.messageContexts) {
+      if (ctx.expiresAt <= now) this.messageContexts.delete(id);
+    }
+    while (this.messageContexts.size >= maxEntries) {
+      const oldest = this.messageContexts.keys().next().value;
+      if (oldest === undefined) break;
+      this.messageContexts.delete(oldest);
+    }
+    this.messageContexts.set(context.messageId, context);
+  }
+
+  private checkDuplicateContent(
+    pairKey: string,
+    hash: string,
+    now: number,
+  ): void {
+    const windowMs = this.deps.limits?.duplicateContentWindowMs ?? 30_000;
+    if (windowMs <= 0) return;
+    const expiresAt = this.recentDuplicateContent.get(pairKey + ":" + hash);
+    if (expiresAt !== undefined && expiresAt > now) {
+      throw new AgentMessagingError(
+        "DUPLICATE_MESSAGE",
+        "Identical message content was already sent to this peer within the duplicate suppression window.",
+      );
+    }
+  }
+
+  private recordDuplicateContent(
+    pairKey: string,
+    hash: string,
+    now: number,
+  ): void {
+    const windowMs = this.deps.limits?.duplicateContentWindowMs ?? 30_000;
+    if (windowMs <= 0) return;
+    const maxEntries = this.deps.limits?.contextCache?.maxEntries ?? 2_048;
+    for (const [key, expiresAt] of this.recentDuplicateContent) {
+      if (expiresAt <= now) this.recentDuplicateContent.delete(key);
+    }
+    while (this.recentDuplicateContent.size >= maxEntries) {
+      const oldest = this.recentDuplicateContent.keys().next().value;
+      if (oldest === undefined) break;
+      this.recentDuplicateContent.delete(oldest);
+    }
+    this.recentDuplicateContent.set(pairKey + ":" + hash, now + windowMs);
+  }
+}
 function addressKey(address: { nodeId: string; endpointId: string }): string {
   return address.nodeId + ":" + address.endpointId;
+}
+
+function sameAddress(
+  left: { nodeId: string; endpointId: string },
+  right: { nodeId: string; endpointId: string },
+): boolean {
+  return left.nodeId === right.nodeId && left.endpointId === right.endpointId;
 }
 
 /** Canonical identity of an inbound delivery attempt: two deliveries with the
@@ -539,6 +855,8 @@ function inboundFingerprint(input: {
   content: string;
   requestedMode: string;
   replyTo?: string;
+  conversationId?: string;
+  depth?: number;
 }): string {
   return JSON.stringify([
     input.sourceNodeId,
@@ -547,6 +865,8 @@ function inboundFingerprint(input: {
     input.content,
     input.requestedMode,
     input.replyTo ?? "",
+    input.conversationId ?? "",
+    input.depth ?? 0,
   ]);
 }
 

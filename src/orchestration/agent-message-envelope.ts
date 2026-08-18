@@ -1,5 +1,6 @@
 export function renderAgentMessageEnvelope(input: {
   id: string;
+  conversationId?: string;
   from: string;
   replyable: boolean;
   replyTo?: string;
@@ -7,6 +8,9 @@ export function renderAgentMessageEnvelope(input: {
 }): string {
   const attributePairs: Array<[string, string]> = [
     ["id", input.id],
+    ...(input.conversationId
+      ? [["conversation-id", input.conversationId] as [string, string]]
+      : []),
     ["from", input.from],
     ["replyable", String(input.replyable)],
     ...(input.replyTo ? [["reply-to", input.replyTo] as [string, string]] : []),

@@ -1465,6 +1465,7 @@ export async function buildApp(
         agentEndpointRegistry.updateRemoteEndpoints(nodeId, endpoints),
       syncRemoteDirectorySnapshot: (endpoints) =>
         agentEndpointRegistry.syncRemoteDirectorySnapshot(endpoints),
+      getTraceRecords: (limit) => agentMessaging.getTraceRecords(limit),
     },
   });
 

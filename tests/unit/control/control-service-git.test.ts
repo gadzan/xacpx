@@ -10,7 +10,8 @@ const cleanups: string[] = [];
 function repo(): string {
   const root = mkdtempSync(join(tmpdir(), "control-git-"));
   cleanups.push(root);
-  const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], { stdio: "pipe" });
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-C", root, ...args], { stdio: "pipe" });
   git("init", "-q", "-b", "main");
   git("config", "user.email", "test@example.com");
   git("config", "user.name", "Test User");
@@ -37,12 +38,18 @@ function service(
     },
     filesWriteEnabled: () => writeEnabled,
     gitWorktreesRoot: options.managedRoot,
-    events: { emit() {}, subscribe() { return () => {}; } },
+    events: {
+      emit() {},
+      subscribe() {
+        return () => {};
+      },
+    },
   } as never);
 }
 
 afterEach(() => {
-  for (const path of cleanups.splice(0)) rmSync(path, { recursive: true, force: true });
+  for (const path of cleanups.splice(0))
+    rmSync(path, { recursive: true, force: true });
 });
 
 describe("ControlService Git gate", () => {
@@ -51,8 +58,13 @@ describe("ControlService Git gate", () => {
     writeFileSync(join(root, "new.txt"), "new\n");
     const control = service(root, false);
 
-    expect(await control.workspaceGitStatus("project")).toMatchObject({ workspace: "project", branch: "main" });
-    await expect(control.gitStage("project", ["new.txt"])).rejects.toThrow("files-write-disabled");
+    expect(await control.workspaceGitStatus("project")).toMatchObject({
+      workspace: "project",
+      branch: "main",
+    });
+    await expect(control.gitStage("project", ["new.txt"])).rejects.toThrow(
+      "files-write-disabled",
+    );
   });
 
   test("all Git mutations share the same disabled-by-default gate", async () => {
@@ -97,12 +109,18 @@ describe("ControlService Git worktree registration", () => {
       control.gitCreateWorktree("project", input),
     ]);
 
-    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-    const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    expect(
+      results.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    const rejected = results.find(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
     expect(rejected?.reason).toBeInstanceOf(Error);
     expect((rejected?.reason as Error).message).toBe("workspace-name-exists");
     expect(created).toHaveLength(1);
-    expect((await control.workspaceGitStatus("project")).worktrees).toHaveLength(2);
+    expect(
+      (await control.workspaceGitStatus("project")).worktrees,
+    ).toHaveLength(2);
   });
 
   test("registers a created worktree as a configured workspace", async () => {
@@ -119,7 +137,9 @@ describe("ControlService Git worktree registration", () => {
       startPoint: "main",
     });
 
-    expect(created).toEqual([{ name: "project-feature", cwd: result.worktree.path }]);
+    expect(created).toEqual([
+      { name: "project-feature", cwd: result.worktree.path },
+    ]);
     expect(result).toMatchObject({
       worktree: { branch: "feature/worktree", linked: true },
       workspace: { name: "project-feature", cwd: result.worktree.path },
@@ -132,13 +152,17 @@ describe("ControlService Git worktree registration", () => {
     cleanups.push(managedRoot);
     const control = service(root, true, [], { managedRoot, failCreate: true });
 
-    await expect(control.gitCreateWorktree("project", {
-      workspaceName: "project-feature",
-      branch: "feature/worktree",
-      createBranch: true,
-      startPoint: "main",
-    })).rejects.toThrow("config-write-failed");
+    await expect(
+      control.gitCreateWorktree("project", {
+        workspaceName: "project-feature",
+        branch: "feature/worktree",
+        createBranch: true,
+        startPoint: "main",
+      }),
+    ).rejects.toThrow("config-write-failed");
 
-    expect((await control.workspaceGitStatus("project")).worktrees).toHaveLength(1);
+    expect(
+      (await control.workspaceGitStatus("project")).worktrees,
+    ).toHaveLength(1);
   });
 });

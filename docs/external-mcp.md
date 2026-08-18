@@ -300,42 +300,60 @@ sequenceDiagram
 
 ## Peer-to-Peer Agent Messaging (`agent_list` / `agent_send`)
 
-In addition to task delegation (`delegate_request`), xacpx provides direct Agent-to-Agent Messaging:
+In addition to task delegation (`delegate_request`), xacpx provides direct Agent-to-Agent Messaging with rich discovery, conversation threading, and anti-spam guardrails (Collaboration v0.2):
 
-- **`agent_list`**: List all discoverable and reachable peer agent endpoints within the authorized messaging scope (local daemon or remote instances via Relay Hub).
-- **`agent_send`**: Send a one-way peer message to an authorized target handle.
+- **`agent_list`**: List all discoverable and reachable peer agent endpoints within scope, including their assigned roles (`displayName`), logical `workspace`, and derived `activity` (`status: "idle" | "working" | "waiting"` and `summary`).
+- **`agent_send`**: Send a high-value asynchronous peer message to an authorized target handle.
 
-1. **Local Route**: When the target endpoint resides on the same daemon node (same coordinator scope), messages are delivered via the local `acpx` prompt queue.
-2. **Relay Route**: When the target endpoint resides on another connected xacpx daemon under the same account, the message is routed securely via Relay Hub's WebSocket tunnel (`agent.message.route` $\to$ `agent.message.deliver`) with destination deduplication and unforgeable canonical sender identity.
+### Communication Policy
+
+Autonomous agents must only message peers when:
+1. You hold critical out-of-band information that directly alters the peer's current work (e.g. breaking schema update, API contract change, interface takeover).
+2. You require an unblocking decision that only the peer can provide.
+
+**Prohibited Patterns:**
+- **Do NOT** send conversational chatter ("Hello", "What are you working on?").
+- **Do NOT** send acknowledgment messages ("Received!", "OK", "Working on it"). One-way notifications require **no ACK**.
 
 ### Example MCP Calls
 
 ```json
-// List reachable peer agents
+// List reachable peer agents with roles and activities
 {
   "name": "agent_list",
   "arguments": {}
 }
 ```
 
+```text
+Authorized peer agents:
+- agent:node_1:ep_worker1: schema-author [backend] (working: User schema migration to v2; receive=true, queue=true, conversation=true)
+- agent:node_2:ep_worker2: api-client [frontend] (idle; receive=true, queue=true, conversation=true)
+```
+
 ```json
-// Send a message to a peer agent
+// Send a high-value notification or reply
 {
   "name": "agent_send",
   "arguments": {
-    "to": "agent:node_7f8a:worker_b",
-    "message": "User schema updated: please adjust your validation logic.",
-    "mode": "auto"
+    "to": "agent:node_2:ep_worker2",
+    "message": "User schema updated: field `legacy_token` is removed; use `bearer_token`.",
+    "replyTo": "msg_parent_123"
   }
 }
 ```
 
 ### Key Guardrails
 
-- **One-way delivery**: `agent_send` returns immediately after the target daemon accepts injection/queueing; it does not wait for the target LLM to respond.
-- **Unforgeable identity**: The sender address is derived server-side from the MCP session binding; client input cannot spoof `from`.
-- **Escaped envelope**: Peer messages are wrapped in `<xacpx-message id="..." from="..." replyable="true">` with XML escaping.
-
+- **Conversation Threading**: Root messages self-anchor (`conversationId = messageId`); replies with `replyTo` inherit the conversation thread and increment depth. Replying to an unknown or expired message ID fails closed with `REPLY_CONTEXT_UNAVAILABLE`.
+- **Deterministic Loop & Spam Guards**:
+  - Max thread depth: 6 (`CONVERSATION_LIMIT_REACHED`).
+  - Max conversation volume: 12 (`CONVERSATION_LIMIT_REACHED`).
+  - Duplicate suppression window: 30 seconds for identical content (`DUPLICATE_MESSAGE`).
+  - Peer rate limit: 8 messages per 10 seconds (`MESSAGE_RATE_LIMITED`).
+- **One-way Delivery**: `agent_send` returns immediately upon target queue/injection admission; it never waits for the remote model to reply.
+- **Escaped Envelope**: Delivered messages are wrapped in `<xacpx-message id="..." conversation-id="..." from="..." replyable="true" reply-to="...">`.
+- **Metadata-Only Trace**: Message delivery attempts and outcomes are recorded in an in-memory ring buffer (storing content SHA-256 hash, zero raw text).
 ## Common tools
 
 Tools commonly used by external coordinators:

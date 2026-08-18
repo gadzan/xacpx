@@ -1,10 +1,18 @@
 import { expect, test } from "bun:test";
 
 import { ControlService } from "../../../src/control/control-service";
-import { createControlEventBus, type ControlEvent } from "../../../src/control/control-event-bus";
-import type { ChatRequest, ChatResponse } from "../../../src/weixin/agent/interface";
+import {
+  createControlEventBus,
+  type ControlEvent,
+} from "../../../src/control/control-event-bus";
+import type {
+  ChatRequest,
+  ChatResponse,
+} from "../../../src/weixin/agent/interface";
 
-function makeControl(chatImpl: (request: ChatRequest) => Promise<ChatResponse>) {
+function makeControl(
+  chatImpl: (request: ChatRequest) => Promise<ChatResponse>,
+) {
   const events = createControlEventBus();
   const seen: ControlEvent[] = [];
   events.subscribe((event) => seen.push(event));
@@ -58,13 +66,29 @@ test("prompt binds session, streams chunks as events, and reports completion", a
   });
   expect(seen).toEqual([
     { type: "turn-started", chatKey: "relay:acct-1", sessionAlias: "backend" },
-    { type: "turn-output", chatKey: "relay:acct-1", sessionAlias: "backend", chunk: "chunk-1" },
+    {
+      type: "turn-output",
+      chatKey: "relay:acct-1",
+      sessionAlias: "backend",
+      chunk: "chunk-1",
+    },
     // Subsequent chunks carry the restored paragraph break (segments arrive trimmed).
-    { type: "turn-output", chatKey: "relay:acct-1", sessionAlias: "backend", chunk: "\n\nfinal" },
+    {
+      type: "turn-output",
+      chatKey: "relay:acct-1",
+      sessionAlias: "backend",
+      chunk: "\n\nfinal",
+    },
     // turn-finished carries the FULL accumulated reply (emitted chunks + response.text)
     // for hub-side fallback persistence — not just response.text, which streaming
     // adapters may leave undefined.
-    { type: "turn-finished", chatKey: "relay:acct-1", sessionAlias: "backend", ok: true, text: "chunk-1\n\nfinal" },
+    {
+      type: "turn-finished",
+      chatKey: "relay:acct-1",
+      sessionAlias: "backend",
+      ok: true,
+      text: "chunk-1\n\nfinal",
+    },
   ]);
 });
 
@@ -76,11 +100,23 @@ function makeControlWithArchived(archived: boolean) {
     agent: { chat: async () => ({ text: "ok" }) },
     sessions: {
       listAllResolvedSessions: () => [],
-      createSession: async () => { throw new Error("unused"); },
+      createSession: async () => {
+        throw new Error("unused");
+      },
       removeSession: async () => ({ wasActive: false }),
-      useSession: async () => ({ alias: "backend", agent: "claude", workspace: "/ws" }),
-      resolveAliasForChat: async (_chatKey: string, alias: string) => `relay:${alias}`,
-      getSession: async () => ({ alias: "relay:backend", agent: "claude", workspace: "/ws", archived }),
+      useSession: async () => ({
+        alias: "backend",
+        agent: "claude",
+        workspace: "/ws",
+      }),
+      resolveAliasForChat: async (_chatKey: string, alias: string) =>
+        `relay:${alias}`,
+      getSession: async () => ({
+        alias: "relay:backend",
+        agent: "claude",
+        workspace: "/ws",
+        archived,
+      }),
     },
     activeTurns: { isActiveAnywhere: () => false },
     scheduled: {} as never,
@@ -94,13 +130,23 @@ test("prompting an archived session emits sessions-changed so the dashboard drop
   // useSession un-archives on message but emits nothing; without this the sidebar keeps
   // showing the "archived" badge until an unrelated refresh.
   const { control, seen } = makeControlWithArchived(true);
-  await control.prompt({ chatKey: "relay:acct-1", sessionAlias: "backend", text: "hi", senderId: "acct-1" });
+  await control.prompt({
+    chatKey: "relay:acct-1",
+    sessionAlias: "backend",
+    text: "hi",
+    senderId: "acct-1",
+  });
   expect(seen.some((e) => e.type === "sessions-changed")).toBe(true);
 });
 
 test("prompting a non-archived session does NOT emit sessions-changed (no needless refresh)", async () => {
   const { control, seen } = makeControlWithArchived(false);
-  await control.prompt({ chatKey: "relay:acct-1", sessionAlias: "backend", text: "hi", senderId: "acct-1" });
+  await control.prompt({
+    chatKey: "relay:acct-1",
+    sessionAlias: "backend",
+    text: "hi",
+    senderId: "acct-1",
+  });
   expect(seen.some((e) => e.type === "sessions-changed")).toBe(false);
 });
 
@@ -115,14 +161,27 @@ function makeControlWithTransportChange(opts: { changes: boolean }) {
     agent: { chat: async () => ({ text: "会话已重置" }) },
     sessions: {
       listAllResolvedSessions: () => [],
-      createSession: async () => { throw new Error("unused"); },
+      createSession: async () => {
+        throw new Error("unused");
+      },
       removeSession: async () => ({ wasActive: false }),
-      useSession: async () => ({ alias: "backend", agent: "claude", workspace: "/ws" }),
-      resolveAliasForChat: async (_chatKey: string, alias: string) => `relay:${alias}`,
+      useSession: async () => ({
+        alias: "backend",
+        agent: "claude",
+        workspace: "/ws",
+      }),
+      resolveAliasForChat: async (_chatKey: string, alias: string) =>
+        `relay:${alias}`,
       getSession: async () => {
         reads += 1;
-        const transportSession = opts.changes && reads > 1 ? "/ws:backend:reset-2" : "/ws:backend";
-        return { alias: "relay:backend", agent: "claude", workspace: "/ws", transportSession };
+        const transportSession =
+          opts.changes && reads > 1 ? "/ws:backend:reset-2" : "/ws:backend";
+        return {
+          alias: "relay:backend",
+          agent: "claude",
+          workspace: "/ws",
+          transportSession,
+        };
       },
     },
     activeTurns: { isActiveAnywhere: () => false },
@@ -137,13 +196,23 @@ test("a control-channel /clear (transport session recreated) emits sessions-chan
   // session.reset rebuilds the transport session mid-turn; without this the dashboard row
   // keeps showing the stale transport id / native binding until an unrelated refresh.
   const { control, seen } = makeControlWithTransportChange({ changes: true });
-  await control.prompt({ chatKey: "relay:acct-1", sessionAlias: "backend", text: "/clear", senderId: "acct-1" });
+  await control.prompt({
+    chatKey: "relay:acct-1",
+    sessionAlias: "backend",
+    text: "/clear",
+    senderId: "acct-1",
+  });
   expect(seen.some((e) => e.type === "sessions-changed")).toBe(true);
 });
 
 test("an ordinary prompt (transport session unchanged) does NOT emit sessions-changed", async () => {
   const { control, seen } = makeControlWithTransportChange({ changes: false });
-  await control.prompt({ chatKey: "relay:acct-1", sessionAlias: "backend", text: "hi", senderId: "acct-1" });
+  await control.prompt({
+    chatKey: "relay:acct-1",
+    sessionAlias: "backend",
+    text: "hi",
+    senderId: "acct-1",
+  });
   expect(seen.some((e) => e.type === "sessions-changed")).toBe(false);
 });
 
@@ -167,10 +236,18 @@ test("multi-paragraph reply: each segment after the first restores the \\n\\n br
     isOwner: true,
   });
 
-  const chunks = seen.filter((e) => e.type === "turn-output").map((e) => (e as { chunk: string }).chunk);
-  expect(chunks).toEqual(["Paragraph one.", "\n\nParagraph two.", "\n\nParagraph three."]);
+  const chunks = seen
+    .filter((e) => e.type === "turn-output")
+    .map((e) => (e as { chunk: string }).chunk);
+  expect(chunks).toEqual([
+    "Paragraph one.",
+    "\n\nParagraph two.",
+    "\n\nParagraph three.",
+  ]);
   // Accumulating the chunks (as web + hub both do) yields proper paragraphs.
-  expect(chunks.join("")).toBe("Paragraph one.\n\nParagraph two.\n\nParagraph three.");
+  expect(chunks.join("")).toBe(
+    "Paragraph one.\n\nParagraph two.\n\nParagraph three.",
+  );
 });
 
 test("stream-mode session emits chunks verbatim (no paragraph reinsertion)", async () => {
@@ -190,9 +267,18 @@ test("stream-mode session emits chunks verbatim (no paragraph reinsertion)", asy
     },
     sessions: {
       listAllResolvedSessions: () => [],
-      useSession: async () => ({ alias: "backend", agent: "claude", workspace: "/ws" }),
+      useSession: async () => ({
+        alias: "backend",
+        agent: "claude",
+        workspace: "/ws",
+      }),
       resolveAliasForChat: async (_chatKey: string, alias: string) => alias,
-      getSession: async () => ({ alias: "backend", agent: "claude", workspace: "/ws", replyMode: "stream" }),
+      getSession: async () => ({
+        alias: "backend",
+        agent: "claude",
+        workspace: "/ws",
+        replyMode: "stream",
+      }),
     },
     activeTurns: { isActiveAnywhere: () => false },
     scheduled: {} as never,
@@ -200,9 +286,16 @@ test("stream-mode session emits chunks verbatim (no paragraph reinsertion)", asy
     events,
   } as never);
 
-  await control.prompt({ chatKey: "relay:acct-1", sessionAlias: "backend", text: "hi", senderId: "acct-1" });
+  await control.prompt({
+    chatKey: "relay:acct-1",
+    sessionAlias: "backend",
+    text: "hi",
+    senderId: "acct-1",
+  });
 
-  const chunks = seen.filter((e) => e.type === "turn-output").map((e) => (e as { chunk: string }).chunk);
+  const chunks = seen
+    .filter((e) => e.type === "turn-output")
+    .map((e) => (e as { chunk: string }).chunk);
   expect(chunks).toEqual(["Para one.\n\n", "Para two."]);
   expect(chunks.join("")).toBe("Para one.\n\nPara two.");
 });
@@ -227,7 +320,9 @@ test("a concurrent prompt while a turn runs is queued; cancelTurn aborts the run
   });
   const { control } = makeControl(async (request) => {
     await new Promise<void>((resolve) => {
-      request.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
+      request.abortSignal?.addEventListener("abort", () => resolve(), {
+        once: true,
+      });
       void gate.then(resolve);
     });
     if (request.abortSignal?.aborted) throw new Error("aborted");
@@ -277,7 +372,9 @@ test("a follow-up prompt after Stop waits for the cancelled turn to drain, then 
       // registers), so the test doesn't depend on microtask ordering.
       await new Promise<void>((resolve) => {
         if (request.abortSignal?.aborted) return resolve();
-        request.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
+        request.abortSignal?.addEventListener("abort", () => resolve(), {
+          once: true,
+        });
       });
       await teardown; // the turn is still registered while this drains
       throw new Error("aborted");
@@ -285,12 +382,22 @@ test("a follow-up prompt after Stop waits for the cancelled turn to drain, then 
     return { text: "second-done" };
   });
 
-  const first = control.prompt({ chatKey: "relay:acct-1", sessionAlias: "backend", text: "long", senderId: "acct-1" });
+  const first = control.prompt({
+    chatKey: "relay:acct-1",
+    sessionAlias: "backend",
+    text: "long",
+    senderId: "acct-1",
+  });
   await Promise.resolve();
   expect(control.cancelTurn("relay:acct-1", "backend")).toBe(true);
 
   // Follow-up issued while the first turn is still draining (teardown not yet released).
-  const second = control.prompt({ chatKey: "relay:acct-1", sessionAlias: "backend", text: "next", senderId: "acct-1" });
+  const second = control.prompt({
+    chatKey: "relay:acct-1",
+    sessionAlias: "backend",
+    text: "next",
+    senderId: "acct-1",
+  });
   await Promise.resolve();
 
   // Let the first turn finish unwinding; the follow-up should then proceed and succeed.
@@ -347,7 +454,9 @@ test("two prompts issued in the same tick: exactly one wins, the other is queued
   });
   const { control } = makeControl(async (request) => {
     await new Promise<void>((resolve) => {
-      request.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
+      request.abortSignal?.addEventListener("abort", () => resolve(), {
+        once: true,
+      });
       void gate.then(resolve);
     });
     return { text: "done" };
@@ -371,6 +480,8 @@ test("two prompts issued in the same tick: exactly one wins, the other is queued
   // Let the winning (gated) turn's agent.chat complete so neither promise hangs.
   release();
   const [resultA, resultB] = await Promise.all([promiseA, promiseB]);
-  const queued = [resultA, resultB].filter((r) => r.ok === true && r.queued === true);
+  const queued = [resultA, resultB].filter(
+    (r) => r.ok === true && r.queued === true,
+  );
   expect(queued).toHaveLength(1);
 });

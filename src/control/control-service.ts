@@ -45,6 +45,10 @@ import {
   type GitWorktreeCreateOptions,
   type GitWorktreeCreateResult,
 } from "./workspace-git";
+import type {
+  AgentEndpointView,
+  AgentMessageTraceRecord,
+} from "../orchestration/agent-messaging-types";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import type { UploadStore } from "./upload-store.js";
 import { SessionTurnRunner } from "./session-turn-runner";
@@ -229,6 +233,8 @@ export interface ControlServiceDeps {
       sourceEndpointId: string;
       targetEndpointId: string;
       messageId: string;
+      conversationId?: string;
+      depth?: number;
       content: string;
       requestedMode: string;
       replyTo?: string;
@@ -259,19 +265,7 @@ export interface ControlServiceDeps {
     >;
     updateRemoteEndpoints?(
       nodeId: string,
-      endpoints: Array<{
-        address: { nodeId: string; endpointId: string };
-        handle: string;
-        node: string;
-        agent: string;
-        state: "idle" | "running" | "unreachable";
-        capabilities: {
-          receive: boolean;
-          steer: boolean;
-          queue: boolean;
-          interrupt: boolean;
-        };
-      }>,
+      endpoints: AgentEndpointView[],
     ): void;
     syncRemoteDirectorySnapshot?(
       endpoints: Array<{
@@ -279,15 +273,22 @@ export interface ControlServiceDeps {
         endpointId: string;
         displayName?: string;
         agent: string;
+        workspace?: string;
         state: "idle" | "running";
+        activity?: {
+          status: "idle" | "working" | "waiting";
+          summary?: string;
+        };
         capabilities: {
           receive: boolean;
           steer: boolean;
           queue: boolean;
           interrupt: boolean;
+          conversation?: boolean;
         };
       }>,
     ): void;
+    getTraceRecords?(limit?: number): AgentMessageTraceRecord[];
   };
 }
 
@@ -1313,39 +1314,35 @@ export class ControlService {
 
   updateRemoteAgentEndpoints(
     nodeId: string,
-    endpoints: Array<{
-      address: { nodeId: string; endpointId: string };
-      handle: string;
-      node: string;
-      agent: string;
-      state: "idle" | "running" | "unreachable";
-      capabilities: {
-        receive: boolean;
-        steer: boolean;
-        queue: boolean;
-        interrupt: boolean;
-      };
-    }>,
+    endpoints: AgentEndpointView[],
   ): void {
     this.deps.agentMessaging?.updateRemoteEndpoints?.(nodeId, endpoints);
   }
-
   syncRemoteAgentDirectory(
     endpoints: Array<{
       nodeId: string;
       endpointId: string;
       displayName?: string;
       agent: string;
+      workspace?: string;
       state: "idle" | "running";
+      activity?: {
+        status: "idle" | "working" | "waiting";
+        summary?: string;
+      };
       capabilities: {
         receive: boolean;
         steer: boolean;
         queue: boolean;
         interrupt: boolean;
+        conversation?: boolean;
       };
     }>,
   ): void {
     this.deps.agentMessaging?.syncRemoteDirectorySnapshot?.(endpoints);
+  }
+  getAgentMessageTrace(limit?: number): AgentMessageTraceRecord[] {
+    return this.deps.agentMessaging?.getTraceRecords?.(limit) ?? [];
   }
   writeTerminal(terminalId: string, data: string): void {
     this.deps.terminal.write(terminalId, data);

@@ -14,9 +14,15 @@
 // (the winner's return is {ok}, the loser's is {queued}; those are not ids or timestamps).
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { expect } from "bun:test";
-import { createControlEventBus, type ControlEvent } from "../../../../src/control/control-event-bus";
+import {
+  createControlEventBus,
+  type ControlEvent,
+} from "../../../../src/control/control-event-bus";
 import { ControlService } from "../../../../src/control/control-service";
-import type { ChatRequest, ChatResponse } from "../../../../src/weixin/agent/interface";
+import type {
+  ChatRequest,
+  ChatResponse,
+} from "../../../../src/weixin/agent/interface";
 
 export type OracleEntry =
   | { kind: "event"; event: unknown }
@@ -35,7 +41,9 @@ export function makeTurnOracle(opts?: {
   const log: OracleEntry[] = [];
   const stabilizer = makeStabilizer();
   const events = createControlEventBus();
-  events.subscribe((event: ControlEvent) => log.push({ kind: "event", event: stabilizer(event) }));
+  events.subscribe((event: ControlEvent) =>
+    log.push({ kind: "event", event: stabilizer(event) }),
+  );
 
   const pending: PendingChat[] = [];
   const chat = async (request: ChatRequest): Promise<ChatResponse> => {
@@ -52,7 +60,11 @@ export function makeTurnOracle(opts?: {
       listAllResolvedSessions: () => [],
       useSession:
         opts?.useSession ??
-        (async (_c: string, alias: string) => ({ alias, agent: "claude", workspace: "/ws" })),
+        (async (_c: string, alias: string) => ({
+          alias,
+          agent: "claude",
+          workspace: "/ws",
+        })),
       resolveAliasForChat: async (_c: string, alias: string) => alias,
       getSession: opts?.getSession ?? (async () => null),
     },
@@ -74,7 +86,8 @@ export function makeTurnOracle(opts?: {
     log,
     record,
     controls: {
-      resolveChat: (index = 0, text = "done") => pending.splice(index, 1)[0]?.resolve({ text }),
+      resolveChat: (index = 0, text = "done") =>
+        pending.splice(index, 1)[0]?.resolve({ text }),
       rejectChat: (index = 0, message = "boom") =>
         pending.splice(index, 1)[0]?.reject(new Error(message)),
       pendingCount: () => pending.length,
@@ -82,7 +95,8 @@ export function makeTurnOracle(opts?: {
   };
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
 
 /** Returns a stabilizer that deep-clones a value and replaces non-deterministic scalars.
@@ -126,7 +140,11 @@ export function expectMatchesFixture(name: string, actual: unknown): void {
     return;
   }
   if (!existsSync(path)) {
-    throw new Error(`turn oracle fixture missing: ${name}.json — record with GOLDEN_UPDATE=1 on the baseline`);
+    throw new Error(
+      `turn oracle fixture missing: ${name}.json — record with GOLDEN_UPDATE=1 on the baseline`,
+    );
   }
-  expect(JSON.parse(serialized) as unknown).toEqual(JSON.parse(readFileSync(path, "utf8")) as unknown);
+  expect(JSON.parse(serialized) as unknown).toEqual(
+    JSON.parse(readFileSync(path, "utf8")) as unknown,
+  );
 }

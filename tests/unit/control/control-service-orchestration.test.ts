@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
 
 import { ControlService } from "../../../src/control/control-service";
-import { createControlEventBus, type ControlEvent } from "../../../src/control/control-event-bus";
+import {
+  createControlEventBus,
+  type ControlEvent,
+} from "../../../src/control/control-event-bus";
 import type { OrchestrationTaskRecord } from "../../../src/orchestration/orchestration-types";
 
 const task = {
