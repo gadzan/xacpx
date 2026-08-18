@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   MSG,
   RELAY_CAPABILITIES,
+  type AgentDirectorySnapshotPayload,
   type InstanceNoticePayload,
   type InstanceRecoveryAckPayload,
   type RelayEnvelope,
@@ -73,11 +74,17 @@ interface CredentialStoreLike {
 interface RelayClientLike {
   start(abortSignal: AbortSignal): void;
   stop(): void;
+  isReady?(): boolean;
   sendEvent(
     type: string,
     payload: unknown,
     onFlush?: (error?: Error) => void,
   ): void;
+  sendRequest?<T = unknown>(
+    type: string,
+    payload: unknown,
+    options?: { timeoutMs?: number },
+  ): Promise<T>;
 }
 
 export function defaultTerminalRegistryDir(): string {
@@ -197,6 +204,32 @@ export class RelayChannel implements MessageChannelRuntime {
           )?.recoveryIds;
           if (Array.isArray(ids) && ids.every((id) => typeof id === "string")) {
             mirror.confirmFinished(ids);
+          }
+          return;
+        }
+        if (envelope.type === MSG.agentDirectorySnapshot) {
+          const snapshotPayload = envelope.payload as AgentDirectorySnapshotPayload | undefined;
+          if (
+            Array.isArray(snapshotPayload?.endpoints) &&
+            "updateRemoteAgentEndpoints" in control &&
+            typeof (control as unknown as { updateRemoteAgentEndpoints: (nodeId: string, endpoints: unknown[]) => void }).updateRemoteAgentEndpoints === "function"
+          ) {
+            const byNode = new Map<string, unknown[]>();
+            for (const ep of snapshotPayload.endpoints) {
+              const list = byNode.get(ep.nodeId) ?? [];
+              list.push({
+                address: { nodeId: ep.nodeId, endpointId: ep.endpointId },
+                handle: `agent:${ep.nodeId}:${ep.endpointId}`,
+                node: ep.displayName ?? ep.nodeId,
+                agent: ep.agent,
+                state: ep.state,
+                capabilities: ep.capabilities,
+              });
+              byNode.set(ep.nodeId, list);
+            }
+            for (const [nodeId, eps] of byNode) {
+              (control as unknown as { updateRemoteAgentEndpoints: (nodeId: string, endpoints: unknown[]) => void }).updateRemoteAgentEndpoints(nodeId, eps);
+            }
           }
           return;
         }
@@ -460,6 +493,7 @@ export class RelayChannel implements MessageChannelRuntime {
           {},
         );
       }
+
       return [];
     }
 
@@ -572,5 +606,31 @@ export class RelayChannel implements MessageChannelRuntime {
   /** Test seam */
   getTerminalRuntimeForTests(): RelayTerminalRuntime | null {
     return this.terminal;
+  }
+
+  async sendAgentMessageRoute(payload: {
+    sourceNodeId: string;
+    sourceEndpointId: string;
+    targetNodeId: string;
+    targetEndpointId: string;
+    messageId: string;
+    content: string;
+    requestedMode: string;
+    replyTo?: string;
+  }): Promise<{
+    messageId: string;
+    status: "injected" | "queued" | "failed";
+    modeUsed?: "steer" | "queue" | "interrupt" | "prompt";
+    targetState?: "idle" | "running";
+    errorCode?: string;
+  }> {
+    if (
+      !this.client ||
+      (typeof this.client.isReady === "function" && !this.client.isReady()) ||
+      typeof this.client.sendRequest !== "function"
+    ) {
+      throw new Error("Relay client is offline or not ready");
+    }
+    return await this.client.sendRequest(MSG.agentMessageRoute, payload);
   }
 }

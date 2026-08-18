@@ -24,6 +24,10 @@ import { OrchestrationService } from "./orchestration/orchestration-service";
 import { MessagingNodeIdentityStore } from "./orchestration/messaging-node-identity-store";
 import { AgentEndpointRegistry } from "./orchestration/agent-endpoint-registry";
 import { AgentMessageRouter } from "./orchestration/agent-message-router";
+import {
+  RelayAgentMessageRoute,
+  type RelayRouteClient,
+} from "./orchestration/relay-agent-message-route";
 import { LocalAgentMessageDeliveryAdapter } from "./orchestration/local-agent-message-delivery";
 import { buildCoordinatorPrompt } from "./orchestration/build-coordinator-prompt";
 import { sameCoordinatorSession } from "./orchestration/coordinator-identity";
@@ -930,9 +934,19 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
       }
     },
   });
+  const relayAgentMessageRoute = new RelayAgentMessageRoute(
+    deps.channel &&
+      "sendAgentMessageRoute" in deps.channel &&
+      typeof (
+        deps.channel as unknown as { sendAgentMessageRoute: unknown }
+      ).sendAgentMessageRoute === "function"
+      ? (deps.channel as unknown as RelayRouteClient)
+      : undefined,
+  );
   const agentMessaging = new AgentMessageRouter({
     registry: agentEndpointRegistry,
     delivery: localAgentMessageDelivery,
+    remoteRoute: relayAgentMessageRoute,
     logger,
   });
   const orchestrationEndpoint = createOrchestrationEndpoint(
@@ -1073,6 +1087,14 @@ export async function buildApp(paths: RuntimePaths, deps: RuntimeDeps = {}): Pro
         sessionAlias,
         idleMs,
       });
+    },
+    agentMessaging: {
+      deliverInbound: async (input) =>
+        await agentMessaging.deliverInbound(input),
+      getPublishedEndpoints: async () =>
+        await agentEndpointRegistry.getPublishedEndpoints(),
+      updateRemoteEndpoints: (nodeId, endpoints) =>
+        agentEndpointRegistry.updateRemoteEndpoints(nodeId, endpoints),
     },
   });
 

@@ -200,6 +200,73 @@ export class AgentMessageRouter {
     });
   }
 
+  async deliverInbound(input: {
+    sourceNodeId: string;
+    sourceEndpointId: string;
+    targetEndpointId: string;
+    messageId: string;
+    content: string;
+    requestedMode: string;
+    replyTo?: string;
+    replyable: boolean;
+  }): Promise<AgentMessageReceipt> {
+    const createdAt = (this.deps.now ?? Date.now)();
+    const cached = this.getCachedReceipt(input.messageId, createdAt);
+    if (cached) {
+      return { ...cached, deduplicated: true };
+    }
+
+    const target =
+      await this.deps.registry.resolveLocalTargetByEndpointId(
+        input.targetEndpointId,
+      );
+    const message: AgentMessage = {
+      id: input.messageId,
+      from: { nodeId: input.sourceNodeId, endpointId: input.sourceEndpointId },
+      to: target.endpoint.address,
+      content: input.content,
+      requestedMode: (input.requestedMode as AgentMessageMode) ?? "auto",
+      createdAt,
+      ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+    };
+
+    const fromHandle = encodeAgentHandle({
+      nodeId: input.sourceNodeId,
+      endpointId: input.sourceEndpointId,
+    });
+    const renderedText = renderAgentMessageEnvelope({
+      id: message.id,
+      from: fromHandle,
+      replyable: input.replyable && target.endpoint.capabilities.receive,
+      ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+      content: message.content,
+    });
+
+    let result: SessionMessageReceipt;
+    try {
+      result = await this.deps.delivery.deliver(
+        target,
+        message,
+        renderedText,
+      );
+    } catch (error) {
+      const mapped = mapDeliveryError(error);
+      this.logDelivery(message, undefined, createdAt, mapped.code);
+      throw mapped;
+    }
+
+    const receipt: AgentMessageReceipt = {
+      messageId: message.id,
+      status: result.status,
+      modeUsed: result.modeUsed,
+      route: "relay",
+      ...(result.targetState ? { targetState: result.targetState } : {}),
+    };
+    this.cacheReceipt(receipt, createdAt);
+    this.logDelivery(message, receipt, createdAt);
+    return receipt;
+  }
+
   private getCachedReceipt(
     messageId: string,
     now: number,

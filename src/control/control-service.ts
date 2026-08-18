@@ -170,8 +170,58 @@ export interface ControlServiceDeps {
   // concrete threshold. main.ts wires this to the app logger. Optional ⇒ no logging.
   onTurnIdleTimeout?: (detail: TurnIdleTimeoutDetail) => void;
   // Test override for how long clearSession waits for an aborted turn to unwind before
-  // remove/archive gives up; production uses the TurnQueue default.
   cancelDrainTimeoutMs?: number;
+  agentMessaging?: {
+    deliverInbound(input: {
+      sourceNodeId: string;
+      sourceEndpointId: string;
+      targetEndpointId: string;
+      messageId: string;
+      content: string;
+      requestedMode: string;
+      replyTo?: string;
+      replyable: boolean;
+    }): Promise<{
+      messageId: string;
+      status: "injected" | "queued" | "failed";
+      modeUsed?: "steer" | "queue" | "interrupt" | "prompt";
+      targetState?: "idle" | "running";
+      errorCode?: string;
+    }>;
+    getPublishedEndpoints(): Promise<
+      Array<{
+        nodeId: string;
+        endpointId: string;
+        displayName?: string;
+        agent: string;
+        state: "idle" | "running";
+        capabilities: {
+          receive: boolean;
+          steer: boolean;
+          queue: boolean;
+          interrupt: boolean;
+        };
+        labels?: string[];
+        updatedAt: number;
+      }>
+    >;
+    updateRemoteEndpoints?(
+      nodeId: string,
+      endpoints: Array<{
+        address: { nodeId: string; endpointId: string };
+        handle: string;
+        node: string;
+        agent: string;
+        state: "idle" | "running" | "unreachable";
+        capabilities: {
+          receive: boolean;
+          steer: boolean;
+          queue: boolean;
+          interrupt: boolean;
+        };
+      }>,
+    ): void;
+  };
 }
 
 export interface ControlPromptInput {
@@ -903,6 +953,68 @@ export class ControlService {
   attachTerminal(terminalId: string): import("./terminal-service").TerminalAttachResult {
     if (!this.deps.terminalEnabled()) throw new Error("terminal-disabled");
     return this.deps.terminal.attach(terminalId);
+  }
+
+  async deliverAgentMessage(input: {
+    sourceNodeId: string;
+    sourceEndpointId: string;
+    targetEndpointId: string;
+    messageId: string;
+    content: string;
+    requestedMode: string;
+    replyTo?: string;
+    replyable: boolean;
+  }): Promise<{
+    messageId: string;
+    status: "injected" | "queued" | "failed";
+    modeUsed?: "steer" | "queue" | "interrupt" | "prompt";
+    targetState?: "idle" | "running";
+    errorCode?: string;
+  }> {
+    if (!this.deps.agentMessaging) {
+      throw new Error("Agent messaging is not configured on this daemon");
+    }
+    return await this.deps.agentMessaging.deliverInbound(input);
+  }
+
+  async getPublishedAgentEndpoints(): Promise<
+    Array<{
+      nodeId: string;
+      endpointId: string;
+      displayName?: string;
+      agent: string;
+      state: "idle" | "running";
+      capabilities: {
+        receive: boolean;
+        steer: boolean;
+        queue: boolean;
+        interrupt: boolean;
+      };
+      labels?: string[];
+      updatedAt: number;
+    }>
+  > {
+    if (!this.deps.agentMessaging) return [];
+    return await this.deps.agentMessaging.getPublishedEndpoints();
+  }
+
+  updateRemoteAgentEndpoints(
+    nodeId: string,
+    endpoints: Array<{
+      address: { nodeId: string; endpointId: string };
+      handle: string;
+      node: string;
+      agent: string;
+      state: "idle" | "running" | "unreachable";
+      capabilities: {
+        receive: boolean;
+        steer: boolean;
+        queue: boolean;
+        interrupt: boolean;
+      };
+    }>,
+  ): void {
+    this.deps.agentMessaging?.updateRemoteEndpoints?.(nodeId, endpoints);
   }
 
   writeTerminal(terminalId: string, data: string): void {

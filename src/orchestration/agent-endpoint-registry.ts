@@ -37,6 +37,8 @@ export interface ResolvedAgentEndpoint {
 }
 
 export class AgentEndpointRegistry {
+  private readonly remoteEndpoints = new Map<string, AgentEndpointView[]>();
+
   constructor(
     private readonly deps: {
       nodeId: string;
@@ -44,6 +46,44 @@ export class AgentEndpointRegistry {
     },
   ) {}
 
+  updateRemoteEndpoints(nodeId: string, endpoints: AgentEndpointView[]): void {
+    if (endpoints.length === 0) {
+      this.remoteEndpoints.delete(nodeId);
+    } else {
+      this.remoteEndpoints.set(nodeId, endpoints);
+    }
+  }
+
+  async getPublishedEndpoints(): Promise<
+    Array<{
+      nodeId: string;
+      endpointId: string;
+      displayName?: string;
+      agent: string;
+      state: "idle" | "running";
+      capabilities: {
+        receive: boolean;
+        steer: boolean;
+        queue: boolean;
+        interrupt: boolean;
+      };
+      labels?: string[];
+      updatedAt: number;
+    }>
+  > {
+    const state = await this.deps.loadState();
+    return this.listCandidates(state, "*").map((candidate) => ({
+      nodeId: candidate.endpoint.address.nodeId,
+      endpointId: candidate.endpoint.address.endpointId,
+      agent: candidate.endpoint.agent,
+      state: candidate.endpoint.state,
+      capabilities: candidate.endpoint.capabilities,
+      ...(candidate.endpoint.displayName
+        ? { displayName: candidate.endpoint.displayName }
+        : {}),
+      updatedAt: Date.now(),
+    }));
+  }
   async resolveSender(
     binding: AgentSenderBinding,
   ): Promise<ResolvedAgentIdentity> {
@@ -124,11 +164,18 @@ export class AgentEndpointRegistry {
   ): Promise<AgentEndpointView[]> {
     const sender = await this.resolveSender(binding);
     const state = await this.deps.loadState();
-    return this.listCandidates(state, sender.coordinatorSession)
+    const locals = this.listCandidates(state, sender.coordinatorSession)
       .filter(
         (candidate) => !sameAddress(candidate.endpoint.address, sender.address),
       )
       .map((candidate) => candidate.endpoint);
+    const remotes: AgentEndpointView[] = [];
+    for (const [nodeId, list] of this.remoteEndpoints) {
+      if (nodeId !== this.deps.nodeId) {
+        remotes.push(...list);
+      }
+    }
+    return [...locals, ...remotes];
   }
 
   async resolveTarget(
@@ -139,17 +186,31 @@ export class AgentEndpointRegistry {
     if (!address) {
       throw notReachable();
     }
-    if (address.nodeId !== this.deps.nodeId) {
-      throw new AgentMessagingError(
-        "ROUTE_UNAVAILABLE",
-        "The target belongs to another messaging node and no remote route is configured.",
-      );
-    }
     if (sameAddress(address, sender.address)) {
       throw new AgentMessagingError(
         "SELF_MESSAGE_NOT_ALLOWED",
         "Sending a peer message to the current Agent endpoint is not allowed.",
       );
+    }
+
+    if (address.nodeId !== this.deps.nodeId) {
+      const remoteList = this.remoteEndpoints.get(address.nodeId);
+      if (!remoteList) {
+        throw new AgentMessagingError(
+          "ROUTE_UNAVAILABLE",
+          "The target belongs to another messaging node and no remote route is configured.",
+        );
+      }
+      const match = remoteList.find(
+        (e) => e.address.endpointId === address.endpointId,
+      );
+      if (match) {
+        return {
+          endpoint: match,
+          runtime: { kind: "remote" as const },
+        };
+      }
+      throw notReachable();
     }
 
     const state = await this.deps.loadState();
@@ -162,6 +223,21 @@ export class AgentEndpointRegistry {
     return target;
   }
 
+  async resolveLocalTargetByEndpointId(
+    endpointId: string,
+  ): Promise<ResolvedAgentEndpoint> {
+    const state = await this.deps.loadState();
+    const match = this.listCandidates(state, "*").find(
+      (c) => c.endpoint.address.endpointId === endpointId,
+    );
+    if (!match) {
+      throw new AgentMessagingError(
+        "TARGET_NOT_FOUND",
+        `Target endpoint ${endpointId} not found on local node.`,
+      );
+    }
+    return match;
+  }
   private listCandidates(
     state: AppState,
     coordinatorSession: string,
