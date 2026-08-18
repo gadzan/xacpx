@@ -26,6 +26,7 @@ At its core, `xacpx` is a bridging system of "message channel ↔ command routin
   - `acpx-cli` (directly spawn `acpx` + optional `node-pty`)
   - `acpx-bridge` (subprocess bridge + JSONL protocol, isolation and stronger concurrency/event handling)
 - Orchestration (optional): under a coordinator session, manages task delegation, progress reporting, human confirmation, group aggregation, etc., across multiple worker sessions.
+- Agent Messaging (optional): a separate one-way `agent_list` / `agent_send` path for peer updates between authorized managed sessions. Local delivery is queue-first; it does not create tasks or wait for peer model output.
 - Daemon: runs in the background (start/status/stop), maintains metadata such as pid/status/log, and hosts the orchestration IPC server.
 - MCP (optional): exposes orchestration capabilities as an MCP stdio server to external hosts (Codex/Claude Code, etc.), where the external host initiates delegate/group operations through tool calls.
 
@@ -93,6 +94,8 @@ The assembly point is in `buildApp()`: it injects capabilities such as worker di
   - Depends on: runtime files (pid/status/log) and process management (spawn/terminate)
 - Orchestration (optional)
   - Depends on: StateStore; drives worker sessions through the transport; pushes progress/result notifications back through channels
+- Agent Messaging (optional)
+  - Depends on: the state-backed endpoint registry and `SessionTransport.injectMessage`; shares orchestration IPC but not `OrchestrationService` task semantics
 - MCP (optional)
   - Depends on: `@modelcontextprotocol/sdk`; calls in-daemon services through orchestration IPC
 
@@ -163,6 +166,11 @@ The assembly point is in `buildApp()`: it injects capabilities such as worker di
 - orchestration:
   - `new OrchestrationService({... injected callbacks ...})`: [main.ts](../src/main.ts#L472-L543)
   - hosts the IPC server within the daemon: `new OrchestrationServer(...)`: [main.ts](../src/main.ts#L569-L573)
+- Agent Messaging:
+  - stable node identity is persisted in `<xacpx-home>/agent-messaging/node.json`; endpoint identities derive from logical sessions and persisted worker/external bindings
+  - [AgentEndpointRegistry](../src/orchestration/agent-endpoint-registry.ts) provides same-coordinator discovery and authorization without publishing private runtime metadata
+  - [AgentMessageRouter](../src/orchestration/agent-message-router.ts) owns message ids, envelope semantics, FIFO, dedupe/limits, safe delivery logs, and the Local Route receipt
+  - [LocalAgentMessageDeliveryAdapter](../src/orchestration/local-agent-message-delivery.ts) resolves the private runtime binding and calls `SessionTransport.injectMessage`
 - router/agent:
   - `new CommandRouter(...)`: [main.ts](../src/main.ts#L573-L574)
   - `new ConsoleAgent(...)`: [main.ts](../src/main.ts#L574-L574)
@@ -259,7 +267,7 @@ Two implementations:
 - `acpx-cli`: [src/transport/acpx-cli](../src/transport/acpx-cli)
 - `acpx-bridge`: [src/transport/acpx-bridge](../src/transport/acpx-bridge)
 
-argv construction for both implementations is centralized in the pure shared module [acpx-command-builder.ts](../src/transport/acpx-command-builder.ts) (no `this`, no I/O; its only import beyond `config/types` is the shared `permission-mode-flag` helper): permission/ttl/model/session/prompt/query args plus `isMissingAcpxSessionError` and `parseAcpxSessionRecordId`, including the permission defaults (`DEFAULT_PERMISSION_MODE`, `DEFAULT_NON_INTERACTIVE`). It is the single source of truth for the shared/global argv prefix (format, cwd, permission, model, ttl, verbose, and agent selection); each transport still builds its own per-operation tail (`prompt`, `-s <name>`, `--file`, `sessions new --name`, `sessions list`, etc.). `acpx-cli-transport.ts` and `bridge-runtime.ts` each call into it and keep their own per-operation orchestration, error handling, capability probing (e.g. bridge's `--verbose` probe), and I/O plumbing (PTY/`child_process` spawning vs. the bridge subprocess).
+argv construction for both implementations is centralized in the pure shared module [acpx-command-builder.ts](../src/transport/acpx-command-builder.ts) (no `this`, no I/O; its only import beyond `config/types` is the shared `permission-mode-flag` helper): permission/ttl/model/session/prompt/query args plus `isMissingAcpxSessionError` and `parseAcpxSessionRecordId`, including the permission defaults (`DEFAULT_PERMISSION_MODE`, `DEFAULT_NON_INTERACTIVE`). It is the single source of truth for the shared/global argv prefix (format, cwd, permission, model, ttl, verbose, and agent selection). Ordinary operations still build their own tails, while Agent Messaging uses the shared `buildQueueMessagePromptArgs` helper so both transports produce the exact same `prompt -s <name> --no-wait <envelope>` queue submission. `acpx-cli-transport.ts` and `bridge-runtime.ts` keep their own per-operation orchestration, error handling, capability probing (e.g. bridge's `--verbose` probe), and I/O plumbing (PTY/`child_process` spawning vs. the bridge subprocess).
 
 ### 5.8 Bridge (src/bridge/*)
 
@@ -300,6 +308,10 @@ The dependency-injection interface is in `OrchestrationServiceDeps`: [orchestrat
 ### 5.11 MCP (src/mcp/*)
 
 `runXacpxMcpServer()` starts the MCP stdio server and provides the tool list:
+
+- Task Orchestration tools model delegated work with eventual results.
+- `agent_list` and `agent_send` model one-way peer updates and return only target-runtime delivery acceptance.
+- The MCP registry closure injects `coordinatorSession` and `sourceHandle`; tool input cannot provide `from` or broaden its discovery scope.
 
 - server initialization and tool registry cache: [xacpx-mcp-server.ts](../src/mcp/xacpx-mcp-server.ts)
 - identity resolution (coordinatorSession/sourceHandle or resolveIdentity): [xacpx-mcp-server.ts](../src/mcp/xacpx-mcp-server.ts)

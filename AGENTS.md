@@ -15,6 +15,7 @@ npm run test:smoke     # Run smoke tests (tests/smoke/**/*.test.ts) — needs re
 `transport.permissionMode` defaults to `approve-all` when omitted, so non-interactive prompt turns do not stop on acpx permission requests unless the user explicitly configures a stricter policy.
 
 **Local daemon CLI (before publish):**
+
 ```bash
 bun run dev            # Run console in foreground (dev mode)
 bun run login          # Show QR code for WeChat login
@@ -24,11 +25,13 @@ node ./dist/cli.js stop    # Stop daemon
 ```
 
 **Local dry-run (no WeChat needed):**
+
 ```bash
 bun run dry-run --chat-key wx:test -- "/session new demo --agent codex --ws backend" "/status"
 ```
 
-**Monorepo builds (packages/* are Bun workspaces):**
+_*Monorepo builds (packages/* are Bun workspaces):_*
+
 ```bash
 bun run build:packages       # Build root + all channel/relay packages
 bun run build:relay          # Build relay hub (bundles relay-web dashboard)
@@ -38,6 +41,7 @@ bun run build:channel-relay  # Build relay channel plugin
 ## Architecture Overview
 
 ### Core Purpose
+
 xacpx is a WeChat console that lets you remotely control `acpx` sessions. It bridges WeChat messages to agent sessions via `weixin-agent-sdk`.
 
 ### Transport Layer (src/transport/)
@@ -91,6 +95,7 @@ There are two session concepts:
 - Daemon subsystem: [`docs/daemon-module.md`](docs/daemon-module.md)
 - Commands module: [`docs/commands-module.md`](docs/commands-module.md)
 - MCP integration: [`docs/external-mcp.md`](docs/external-mcp.md)
+- Agent Messaging proposal: [`docs/superpowers/specs/2026-08-11-agent-messaging-design.md`](docs/superpowers/specs/2026-08-11-agent-messaging-design.md)
 - `xacpx doctor`: [`docs/doctor-command.md`](docs/doctor-command.md)
 - Control API: [`docs/control-module.md`](docs/control-module.md)
 - Relay Hub deployment: [`docs/relay-deployment.md`](docs/relay-deployment.md)
