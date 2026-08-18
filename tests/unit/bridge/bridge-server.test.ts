@@ -58,6 +58,24 @@ test("bridge runtime queues injectMessage with acpx no-wait", async () => {
   ]]);
 });
 
+test("bridge runtime rejects injectMessage when command exits non-zero", async () => {
+  const runtime = new BridgeRuntime(
+    "acpx",
+    async () => ({ code: 1, stdout: "", stderr: "queue owner crashed" }),
+  );
+
+  await expect(
+    runtime.injectMessage({
+      agent: "codex",
+      cwd: "/repo",
+      name: "demo",
+      text: "hello",
+      mode: "queue",
+      messageId: "msg_err",
+    }),
+  ).rejects.toThrow("queue owner crashed");
+});
+
 test("bridge runtime rejects strict unsupported message modes with typed errors", async () => {
   const runtime = new BridgeRuntime(
     "acpx",

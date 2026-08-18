@@ -11,7 +11,7 @@ import {
 } from "../adapters/claude-settings-policy";
 import { resolveSpawnCommand } from "../process/spawn-command";
 import { terminateProcessTree } from "../process/terminate-process-tree";
-import { getPromptText } from "../transport/prompt-output";
+import { getPromptText, normalizeCommandError } from "../transport/prompt-output";
 import type { AgentCommand, UsageBreakdown, UsageCost } from "../transport/types";
 import { createStructuredPromptFile } from "../transport/prompt-media";
 import { createStreamingPromptState, parseStreamingDataChunk } from "../transport/streaming-prompt";
@@ -636,7 +636,7 @@ export class BridgeRuntime {
       input.name,
       input.text,
     ));
-    await this.run(
+    const result = await this.run(
       spawnSpec.command,
       spawnSpec.args,
       this.withSpawnEnvironment(input, {
@@ -644,6 +644,14 @@ export class BridgeRuntime {
         stage: "inject-message",
       }),
     );
+    if (result.code !== 0) {
+      const detail =
+        normalizeCommandError(result) ??
+        (result.stderr ||
+          result.stdout ||
+          `inject-message failed with exit code ${result.code}`);
+      throw new Error(detail);
+    }
     return { status: "queued", modeUsed: "queue" };
   }
 
