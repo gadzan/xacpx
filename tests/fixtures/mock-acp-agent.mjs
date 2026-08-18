@@ -14,6 +14,7 @@
 // server-side adapter), so acpx can resume across agent restarts.
 
 import { createInterface } from "node:readline";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -43,7 +44,8 @@ function loadState() {
     const parsed = JSON.parse(readFileSync(STATE_FILE, "utf8"));
     if (parsed && typeof parsed === "object") {
       for (const [id, state] of Object.entries(parsed)) {
-        if (typeof state === "object" && state !== null) sessions.set(id, state);
+        if (typeof state === "object" && state !== null)
+          sessions.set(id, state);
       }
     }
   } catch {
@@ -71,11 +73,19 @@ function respond(id, result) {
 }
 
 function respondError(id, message, data) {
-  writeFrame({ jsonrpc: "2.0", id, error: { code: -32603, message, ...(data ? { data } : {}) } });
+  writeFrame({
+    jsonrpc: "2.0",
+    id,
+    error: { code: -32603, message, ...(data ? { data } : {}) },
+  });
 }
 
 function sessionUpdate(sessionId, update) {
-  writeFrame({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update } });
+  writeFrame({
+    jsonrpc: "2.0",
+    method: "session/update",
+    params: { sessionId, update },
+  });
 }
 
 function argvEcho() {
@@ -84,7 +94,12 @@ function argvEcho() {
 
 function promptText(prompt) {
   if (typeof prompt === "string") return prompt;
-  if (Array.isArray(prompt)) return prompt.map((block) => (block && typeof block.text === "string" ? block.text : "")).join("");
+  if (Array.isArray(prompt))
+    return prompt
+      .map((block) =>
+        block && typeof block.text === "string" ? block.text : "",
+      )
+      .join("");
   return String(prompt ?? "");
 }
 function handlePrompt(sessionId, text) {
@@ -115,7 +130,11 @@ rl.on("line", (line) => {
   } catch {
     return;
   }
-  if (!message || typeof message !== "object" || typeof message.method !== "string") {
+  if (
+    !message ||
+    typeof message !== "object" ||
+    typeof message.method !== "string"
+  ) {
     return;
   }
   const { id, method, params } = message;
@@ -142,29 +161,36 @@ rl.on("line", (line) => {
       });
       break;
     case "session/new": {
-      // Fixed-width ids: acpx 0.13 uses the agent session id as the record id,
-      // and xacpx's record-id parser requires >= 8 chars.
-      const sessionId = `mock-${String(nextSessionSeq++).padStart(10, "0")}`;
+      // acpx 0.13 uses the agent session id as the record id and named pipe / socket
+      // name. A globally unique session id prevents cross-test named pipe collisions on Windows.
+      const sessionId = `mock-${randomUUID()}`;
       sessions.set(sessionId, { messages: [] });
       saveState();
       respond(id, { sessionId });
       break;
     }
     case "session/load": {
-      const sessionId = typeof params?.sessionId === "string" ? params.sessionId : "mock-load";
+      const sessionId =
+        typeof params?.sessionId === "string" ? params.sessionId : "mock-load";
       if (!sessions.has(sessionId)) sessions.set(sessionId, { messages: [] });
       respond(id, { sessionId, messages: sessions.get(sessionId).messages });
       break;
     }
     case "session/resume": {
-      const sessionId = typeof params?.sessionId === "string" ? params.sessionId : "mock-resume";
+      const sessionId =
+        typeof params?.sessionId === "string"
+          ? params.sessionId
+          : "mock-resume";
       if (!sessions.has(sessionId)) sessions.set(sessionId, { messages: [] });
       saveState();
       respond(id, { sessionId, messages: sessions.get(sessionId).messages });
       break;
     }
     case "session/prompt": {
-      const sessionId = typeof params?.sessionId === "string" ? params.sessionId : "mock-prompt";
+      const sessionId =
+        typeof params?.sessionId === "string"
+          ? params.sessionId
+          : "mock-prompt";
       const text = promptText(params?.prompt);
       handlePrompt(sessionId, text);
       respond(id, { sessionId, stopReason: "end_turn" });
@@ -176,13 +202,18 @@ rl.on("line", (line) => {
     case "session/list": {
       const list = [];
       for (const [sessionId, state] of sessions) {
-        list.push({ sessionId, title: state.title ?? null, updatedAt: new Date().toISOString() });
+        list.push({
+          sessionId,
+          title: state.title ?? null,
+          updatedAt: new Date().toISOString(),
+        });
       }
       respond(id, { sessions: list, nextCursor: null });
       break;
     }
     case "session/close":
-      if (typeof params?.sessionId === "string") sessions.delete(params.sessionId);
+      if (typeof params?.sessionId === "string")
+        sessions.delete(params.sessionId);
       saveState();
       respond(id, {});
       break;

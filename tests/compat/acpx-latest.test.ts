@@ -519,6 +519,10 @@ test(
         '<xacpx-message id="msg_cli_1">injected-peer-text</xacpx-message>',
       ]);
     } finally {
+      try {
+        const { recordId } = await latestRecord(h);
+        await terminateAcpxQueueOwner(recordId);
+      } catch {}
       await transport.dispose?.();
       await h.dispose();
     }
@@ -562,6 +566,10 @@ test(
         '<xacpx-message id="msg_bridge_1">injected-bridge-text</xacpx-message>',
       ]);
     } finally {
+      try {
+        const { recordId } = await latestRecord(h);
+        await terminateAcpxQueueOwner(recordId);
+      } catch {}
       await transport.dispose?.();
       await h.dispose();
     }
