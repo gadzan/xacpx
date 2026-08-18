@@ -68,6 +68,24 @@ export class AgentEndpointRegistry {
           receive: true,
         };
       }
+
+      const external =
+        state.orchestration.externalCoordinators[coordinatorSession];
+      if (external && sourceHandle === coordinatorSession) {
+        return {
+          address: {
+            nodeId: this.deps.nodeId,
+            endpointId: requireEndpointId(external.agentEndpointId),
+          },
+          coordinatorSession,
+          receive: false,
+        };
+      }
+
+      throw new AgentMessagingError(
+        "DELIVERY_DENIED",
+        "The sender source handle is unknown or no longer active.",
+      );
     }
 
     const logical = findLogicalSession(state, coordinatorSession);
@@ -84,7 +102,7 @@ export class AgentEndpointRegistry {
 
     const external =
       state.orchestration.externalCoordinators[coordinatorSession];
-    if (external && (!sourceHandle || sourceHandle === coordinatorSession)) {
+    if (external) {
       return {
         address: {
           nodeId: this.deps.nodeId,

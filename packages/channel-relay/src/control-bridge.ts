@@ -855,11 +855,10 @@ async function dispatchControlRequest(
           }
         ).deliverAgentMessage(input);
       }
-      return {
-        messageId: input.messageId,
-        status: "queued",
-        modeUsed: "queue",
-      };
+      return errorPayload(
+        "ROUTE_UNAVAILABLE",
+        "Remote agent message delivery is not implemented in this connector runtime",
+      );
     }
     case MSG.upload: {
       const input = parseControlPayload(MSG.upload, payload);

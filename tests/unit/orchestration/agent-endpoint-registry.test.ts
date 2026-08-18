@@ -154,3 +154,18 @@ test("external coordinators resolve as send-capable but do not appear as receive
     }),
   ).resolves.toEqual([]);
 });
+
+test("unknown or stale sourceHandle must not fall back to coordinator identity", async () => {
+  const { registry } = makeRegistry();
+
+  // When sourceHandle is unknown / deleted, it must reject with DELIVERY_DENIED,
+  // NEVER fall back to the logical coordinator "coordinator"
+  await expect(
+    registry.resolveSender({
+      coordinatorSession: "coordinator",
+      sourceHandle: "staleWorkerOld",
+    }),
+  ).rejects.toMatchObject<Partial<AgentMessagingError>>({
+    code: "DELIVERY_DENIED",
+  });
+});
