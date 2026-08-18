@@ -21,10 +21,23 @@ import { join } from "node:path";
 // server-side): persisted under the workspace cwd so `sessions list` from a
 // fresh process still sees them.
 const STATE_FILE = join(process.cwd(), ".mock-agent-sessions.json");
+const PROMPTS_FILE = join(process.cwd(), ".mock-agent-prompts.json");
 
+function recordPrompt(text) {
+  try {
+    mkdirSync(process.cwd(), { recursive: true });
+    let list = [];
+    try {
+      list = JSON.parse(readFileSync(PROMPTS_FILE, "utf8"));
+    } catch {}
+    list.push(text);
+    writeFileSync(PROMPTS_FILE, JSON.stringify(list, null, 2));
+  } catch {
+    // best-effort
+  }
+}
 const sessions = new Map();
 let nextSessionSeq = 1;
-
 function loadState() {
   try {
     const parsed = JSON.parse(readFileSync(STATE_FILE, "utf8"));
@@ -74,8 +87,8 @@ function promptText(prompt) {
   if (Array.isArray(prompt)) return prompt.map((block) => (block && typeof block.text === "string" ? block.text : "")).join("");
   return String(prompt ?? "");
 }
-
 function handlePrompt(sessionId, text) {
+  recordPrompt(text);
   const echo = `${argvEcho()}\ncwd=${process.cwd()}\nsession=${sessionId}\nreply=${text}`;
   sessionUpdate(sessionId, {
     sessionUpdate: "agent_message_chunk",

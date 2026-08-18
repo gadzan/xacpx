@@ -489,9 +489,7 @@ test(
     const h = await makeHarness();
     const transport = await makeCliTransport(h);
     try {
-      const spec = session("cli-inject-demo", BOUNDARY_ARGV, h, {
-        mcpCoordinatorSession: "coord-session-cli",
-      });
+      const spec = session("cli-inject-demo", BOUNDARY_ARGV, h);
       await writeOverlay(h, spec.acpxAgent!, BOUNDARY_ARGV);
       await transport.ensureSession(spec);
 
@@ -506,8 +504,20 @@ test(
       expect(receipt.status).toBe("queued");
       expect(receipt.modeUsed).toBe("queue");
 
-      const second = await transport.prompt(spec, "followup");
-      expect(second.text).toContain("reply=");
+      const promptsFile = join(h.ws, ".mock-agent-prompts.json");
+      let observed: string[] = [];
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
+        try {
+          observed = JSON.parse(await readFile(promptsFile, "utf8"));
+          if (observed.length >= 2) break;
+        } catch {}
+        await Bun.sleep(100);
+      }
+      expect(observed).toEqual([
+        "turn-1",
+        '<xacpx-message id="msg_cli_1">injected-peer-text</xacpx-message>',
+      ]);
     } finally {
       await transport.dispose?.();
       await h.dispose();
@@ -522,9 +532,7 @@ test(
     const h = await makeHarness();
     const transport = await makeBridgeTransport(h);
     try {
-      const spec = session("bridge-inject-demo", BOUNDARY_ARGV, h, {
-        mcpCoordinatorSession: "coord-session-bridge",
-      });
+      const spec = session("bridge-inject-demo", BOUNDARY_ARGV, h);
       await writeOverlay(h, spec.acpxAgent!, BOUNDARY_ARGV);
       await transport.ensureSession(spec);
 
@@ -539,8 +547,20 @@ test(
       expect(receipt.status).toBe("queued");
       expect(receipt.modeUsed).toBe("queue");
 
-      const second = await transport.prompt(spec, "followup");
-      expect(second.text).toContain("reply=");
+      const promptsFile = join(h.ws, ".mock-agent-prompts.json");
+      let observed: string[] = [];
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
+        try {
+          observed = JSON.parse(await readFile(promptsFile, "utf8"));
+          if (observed.length >= 2) break;
+        } catch {}
+        await Bun.sleep(100);
+      }
+      expect(observed).toEqual([
+        "turn-1",
+        '<xacpx-message id="msg_bridge_1">injected-bridge-text</xacpx-message>',
+      ]);
     } finally {
       await transport.dispose?.();
       await h.dispose();

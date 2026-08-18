@@ -343,6 +343,31 @@ test("sessions.native.list lists, and sessions.create forwards agentSessionId fo
   expect(created).toEqual([{ chatKey: "relay:acct", alias: "resumed", agent: "codex", workspace: "backend", agentSessionId: "ses_1" }]);
 });
 
+test("agentMessageDeliver fails closed with ROUTE_UNAVAILABLE when deliverAgentMessage is not implemented", async () => {
+  const { control } = makeFakeControl();
+  const bridge = createControlBridge(control as never);
+
+  const res = await dispatch(
+    bridge,
+    req(MSG.agentMessageDeliver, {
+      sourceNodeId: "node_a",
+      sourceEndpointId: "ep_a",
+      targetEndpointId: "ep_b",
+      messageId: "msg_123",
+      content: "hello",
+      requestedMode: "auto",
+      replyable: true,
+    }),
+  );
+
+  expect(res).toEqual({
+    error: {
+      code: "ROUTE_UNAVAILABLE",
+      message: "Remote agent message delivery is not implemented in this connector runtime",
+    },
+  });
+});
+
 test("scheduled list/create map records to camelCase DTOs; executeAt parsed to Date", async () => {
   const { control, calls } = makeFakeControl();
   const bridge = createControlBridge(control as never);
