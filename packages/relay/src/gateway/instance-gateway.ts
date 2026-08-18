@@ -6,12 +6,14 @@ import {
   encodeEnvelope,
   errorPayload,
   normalizeCapabilities,
+  type AgentMessageDeliverPayload,
+  type AgentMessageRoutePayload,
+  type InstanceAgentEndpointsSyncPayload,
   type InstanceAuthPayload,
   type InstanceRegisterPayload,
+  type PublishedAgentEndpointDto,
   type RelayEnvelope,
 } from "@ganglion/xacpx-relay-protocol";
-
-import type { AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
 import { createNoopRelayLogger, type RelayLogger } from "../logging.js";
 import { startHeartbeat } from "./heartbeat.js";
@@ -62,6 +64,7 @@ export class InstanceGateway {
   private readonly connections = new Map<string, { socket: GatewaySocket; accountId: string }>();
   private readonly pending = new Map<string, PendingRequest>();
   private readonly logger: RelayLogger;
+  private readonly endpointsByInstance = new Map<string, PublishedAgentEndpointDto[]>();
   private seq = 0;
 
   constructor(private readonly deps: InstanceGatewayDeps) {
@@ -104,6 +107,7 @@ export class InstanceGateway {
   /** Remove the instance's connection entry, reject its in-flight requests, and
    *  notify the offline transition. Shared by the close handler and disconnect(). */
   private dropConnection(instanceId: string, accountId: string): void {
+    this.endpointsByInstance.delete(instanceId);
     this.connections.delete(instanceId);
     for (const [id, p] of this.pending) {
       if (p.instanceId === instanceId) {
@@ -196,6 +200,57 @@ export class InstanceGateway {
     if (envelope.kind === "event") {
       this.deps.instances.touch(authed.instanceId);
       this.deps.onEvent?.(authed.instanceId, authed.accountId, envelope);
+      if (envelope.type === MSG.instanceAgentEndpointsSync) {
+        const syncPayload = envelope.payload as InstanceAgentEndpointsSyncPayload;
+        if (Array.isArray(syncPayload?.endpoints)) {
+          this.endpointsByInstance.set(authed.instanceId, syncPayload.endpoints);
+        }
+      }
+    }
+    if (envelope.kind === "req" && envelope.id) {
+      const respond = (payload: unknown) => {
+        socket.send(encodeEnvelope({
+          protocolVersion: RELAY_PROTOCOL_VERSION,
+          kind: "res",
+          id: envelope.id,
+          type: envelope.type,
+          payload,
+        }));
+      };
+
+      if (envelope.type === MSG.agentMessageRoute) {
+        const routePayload = envelope.payload as AgentMessageRoutePayload;
+        let targetInstanceId: string | null = null;
+        for (const [instId, conn] of this.connections) {
+          if (conn.accountId === authed.accountId) {
+            const endpoints = this.endpointsByInstance.get(instId) ?? [];
+            if (endpoints.some((e) => e.nodeId === routePayload.targetNodeId)) {
+              targetInstanceId = instId;
+              break;
+            }
+          }
+        }
+        if (!targetInstanceId) {
+          respond(errorPayload("TARGET_NODE_OFFLINE", `Target node ${routePayload.targetNodeId} is offline`));
+          return;
+        }
+        const deliverPayload: AgentMessageDeliverPayload = {
+          sourceNodeId: authed.instanceId,
+          sourceEndpointId: "",
+          targetEndpointId: routePayload.targetEndpointId,
+          messageId: routePayload.messageId,
+          content: routePayload.content,
+          requestedMode: routePayload.requestedMode,
+          replyTo: routePayload.replyTo,
+          replyable: true,
+        };
+        this.sendRequest(targetInstanceId, MSG.agentMessageDeliver, deliverPayload)
+          .then((res) => respond(res))
+          .catch((err) => respond(errorPayload("DELIVERY_FAILED", err instanceof Error ? err.message : String(err))));
+        return;
+      }
+      respond(errorPayload("invalid-request", `unknown request type: ${envelope.type}`));
+      return;
     }
   }
 
