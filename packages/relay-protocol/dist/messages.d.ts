@@ -1,4 +1,4 @@
-import type { AgentCatalogEntryDto, AgentCommandDto, AgentDto, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto } from "./dtos.js";
+import type { AgentCatalogEntryDto, AgentCommandDto, AgentDto, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto } from "./dtos.js";
 export declare const MSG: {
     readonly instanceRegister: "instance.register";
     readonly instanceAuth: "instance.auth";
@@ -78,6 +78,9 @@ export declare const MSG: {
     readonly terminalDetach: "instance.terminal.detach";
     readonly terminalViewerEvent: "instance.terminal.viewer-event";
     readonly terminalResourceExit: "instance.terminal.resource-exit";
+    readonly instanceAgentEndpointsSync: "instance.agent-endpoints.sync";
+    readonly agentMessageRoute: "instance.agent-message.route";
+    readonly agentMessageDeliver: "instance.agent-message.deliver";
 };
 export type MessageType = (typeof MSG)[keyof typeof MSG];
 export interface ErrorPayload {
@@ -800,4 +803,32 @@ export interface TerminalResourceExitPayload {
     generation: string;
     reason: string;
     code?: number;
+}
+export interface InstanceAgentEndpointsSyncPayload {
+    endpoints: PublishedAgentEndpointDto[];
+}
+export interface AgentMessageRoutePayload {
+    targetNodeId: string;
+    targetEndpointId: string;
+    messageId: string;
+    content: string;
+    requestedMode: string;
+    replyTo?: string;
+}
+export interface AgentMessageDeliverPayload {
+    sourceNodeId: string;
+    sourceEndpointId: string;
+    targetEndpointId: string;
+    messageId: string;
+    content: string;
+    requestedMode: string;
+    replyTo?: string;
+    replyable: boolean;
+}
+export interface AgentMessageRouteResult {
+    messageId: string;
+    status: "injected" | "queued" | "failed";
+    modeUsed?: "steer" | "queue" | "interrupt" | "prompt";
+    targetState?: "idle" | "running";
+    errorCode?: string;
 }

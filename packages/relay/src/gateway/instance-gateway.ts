@@ -14,6 +14,7 @@ import {
   type PublishedAgentEndpointDto,
   type RelayEnvelope,
 } from "@ganglion/xacpx-relay-protocol";
+import type { AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
 import { createNoopRelayLogger, type RelayLogger } from "../logging.js";
 import { startHeartbeat } from "./heartbeat.js";
@@ -38,13 +39,27 @@ export interface GatewaySocket {
 }
 
 export interface InstanceGatewayDeps {
-  instances: Pick<InstanceStore, "redeemPairingToken" | "registerInstanceForAccount" | "verifyCredential" | "touch">;
+  instances: Pick<
+    InstanceStore,
+    | "redeemPairingToken"
+    | "registerInstanceForAccount"
+    | "verifyCredential"
+    | "touch"
+  >;
   accounts: Pick<AccountStore, "resolveLoginToken">;
   requestTimeoutMs?: number;
   /** Keepalive ping cadence; overridable for tests. Defaults to HEARTBEAT_INTERVAL_MS. */
   heartbeatIntervalMs?: number;
-  onEvent?: (instanceId: string, accountId: string, envelope: RelayEnvelope) => void;
-  onStatusChange?: (instanceId: string, accountId: string, online: boolean) => void;
+  onEvent?: (
+    instanceId: string,
+    accountId: string,
+    envelope: RelayEnvelope,
+  ) => void;
+  onStatusChange?: (
+    instanceId: string,
+    accountId: string,
+    online: boolean,
+  ) => void;
   logger?: RelayLogger;
 }
 
@@ -61,10 +76,16 @@ interface PendingRequest {
 }
 
 export class InstanceGateway {
-  private readonly connections = new Map<string, { socket: GatewaySocket; accountId: string }>();
+  private readonly connections = new Map<
+    string,
+    { socket: GatewaySocket; accountId: string }
+  >();
   private readonly pending = new Map<string, PendingRequest>();
   private readonly logger: RelayLogger;
-  private readonly endpointsByInstance = new Map<string, PublishedAgentEndpointDto[]>();
+  private readonly endpointsByInstance = new Map<
+    string,
+    PublishedAgentEndpointDto[]
+  >();
   private seq = 0;
 
   constructor(private readonly deps: InstanceGatewayDeps) {
@@ -77,7 +98,12 @@ export class InstanceGateway {
 
   handleConnection(socket: GatewaySocket): void {
     let authed: { instanceId: string; accountId: string } | null = null;
-    startHeartbeat(socket, this.deps.heartbeatIntervalMs, undefined, this.logger);
+    startHeartbeat(
+      socket,
+      this.deps.heartbeatIntervalMs,
+      undefined,
+      this.logger,
+    );
 
     socket.on("message", (data) => {
       // A single bad frame (or a throwing onEvent consumer, e.g. a DB write) must
@@ -87,7 +113,11 @@ export class InstanceGateway {
           authed = identity;
         });
       } catch (err) {
-        this.logger.error("relay.instance.message_failed", "message handling failed", { error: String(err) });
+        this.logger.error(
+          "relay.instance.message_failed",
+          "message handling failed",
+          { error: String(err) },
+        );
       }
     });
 
@@ -100,7 +130,10 @@ export class InstanceGateway {
       const current = this.connections.get(authed.instanceId);
       if (current?.socket !== socket) return;
       this.dropConnection(authed.instanceId, authed.accountId);
-      this.logger.info("relay.instance.offline", "instance disconnected", { instanceId: authed.instanceId, accountId: authed.accountId });
+      this.logger.info("relay.instance.offline", "instance disconnected", {
+        instanceId: authed.instanceId,
+        accountId: authed.accountId,
+      });
     });
   }
 
@@ -127,10 +160,17 @@ export class InstanceGateway {
   ): void {
     const decoded = decodeEnvelope(String(data));
     if (!decoded.ok) {
-      socket.send(encodeEnvelope({
-        protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: "relay.protocol-error",
-        payload: errorPayload(decoded.error, decoded.detail ?? "invalid envelope"),
-      }));
+      socket.send(
+        encodeEnvelope({
+          protocolVersion: RELAY_PROTOCOL_VERSION,
+          kind: "event",
+          type: "relay.protocol-error",
+          payload: errorPayload(
+            decoded.error,
+            decoded.detail ?? "invalid envelope",
+          ),
+        }),
+      );
       if (!authed) socket.close(4400, decoded.error);
       return;
     }
@@ -144,9 +184,16 @@ export class InstanceGateway {
         // entry FIRST, then close the old socket, whose close handler no-ops
         // because the entry no longer points at it.
         const existing = this.connections.get(identity.instanceId);
-        this.connections.set(identity.instanceId, { socket, accountId: identity.accountId });
+        this.connections.set(identity.instanceId, {
+          socket,
+          accountId: identity.accountId,
+        });
         if (existing && existing.socket !== socket) {
-          this.logger.info("relay.instance.superseded", "reconnect superseded old socket", { instanceId: identity.instanceId });
+          this.logger.info(
+            "relay.instance.superseded",
+            "reconnect superseded old socket",
+            { instanceId: identity.instanceId },
+          );
           // The old socket's pending RPCs can never be answered (their responses are
           // fenced out) — reject them NOW instead of letting the HTTP call wait out
           // the full request timeout. No offline transition: the new socket owns the
@@ -155,11 +202,22 @@ export class InstanceGateway {
           try {
             existing.socket.close(4409, "superseded");
           } catch (err) {
-            this.logger.error("relay.instance.superseded_close_failed", "closing superseded instance socket failed", { error: String(err) });
+            this.logger.error(
+              "relay.instance.superseded_close_failed",
+              "closing superseded instance socket failed",
+              { error: String(err) },
+            );
           }
         }
-        this.deps.onStatusChange?.(identity.instanceId, identity.accountId, true);
-        this.logger.info("relay.instance.online", "instance connected", { instanceId: identity.instanceId, accountId: identity.accountId });
+        this.deps.onStatusChange?.(
+          identity.instanceId,
+          identity.accountId,
+          true,
+        );
+        this.logger.info("relay.instance.online", "instance connected", {
+          instanceId: identity.instanceId,
+          accountId: identity.accountId,
+        });
       }
       return;
     }
@@ -173,7 +231,11 @@ export class InstanceGateway {
     // recovered state.
     const current = this.connections.get(authed.instanceId);
     if (current?.socket !== socket) {
-      this.logger.debug("relay.instance.stale_socket", "dropped message from a revoked/superseded socket", { instanceId: authed.instanceId });
+      this.logger.debug(
+        "relay.instance.stale_socket",
+        "dropped message from a revoked/superseded socket",
+        { instanceId: authed.instanceId },
+      );
       return;
     }
 
@@ -185,11 +247,20 @@ export class InstanceGateway {
       // result (markQueued, history deletion, output rows...). The response must come
       // from the SAME instance + SAME socket the request went out on, and echo the
       // request type.
-      if (!waiting || waiting.instanceId !== authed.instanceId || waiting.socket !== socket || waiting.type !== envelope.type) {
-        this.logger.warn("relay.instance.response_mismatch", "dropped RPC response that does not match its pending request", {
-          instanceId: authed.instanceId,
-          envelopeType: envelope.type,
-        });
+      if (
+        !waiting ||
+        waiting.instanceId !== authed.instanceId ||
+        waiting.socket !== socket ||
+        waiting.type !== envelope.type
+      ) {
+        this.logger.warn(
+          "relay.instance.response_mismatch",
+          "dropped RPC response that does not match its pending request",
+          {
+            instanceId: authed.instanceId,
+            envelopeType: envelope.type,
+          },
+        );
         return;
       }
       clearTimeout(waiting.timer);
@@ -201,21 +272,27 @@ export class InstanceGateway {
       this.deps.instances.touch(authed.instanceId);
       this.deps.onEvent?.(authed.instanceId, authed.accountId, envelope);
       if (envelope.type === MSG.instanceAgentEndpointsSync) {
-        const syncPayload = envelope.payload as InstanceAgentEndpointsSyncPayload;
+        const syncPayload =
+          envelope.payload as InstanceAgentEndpointsSyncPayload;
         if (Array.isArray(syncPayload?.endpoints)) {
-          this.endpointsByInstance.set(authed.instanceId, syncPayload.endpoints);
+          this.endpointsByInstance.set(
+            authed.instanceId,
+            syncPayload.endpoints,
+          );
         }
       }
     }
     if (envelope.kind === "req" && envelope.id) {
       const respond = (payload: unknown) => {
-        socket.send(encodeEnvelope({
-          protocolVersion: RELAY_PROTOCOL_VERSION,
-          kind: "res",
-          id: envelope.id,
-          type: envelope.type,
-          payload,
-        }));
+        socket.send(
+          encodeEnvelope({
+            protocolVersion: RELAY_PROTOCOL_VERSION,
+            kind: "res",
+            id: envelope.id,
+            type: envelope.type,
+            payload,
+          }),
+        );
       };
 
       if (envelope.type === MSG.agentMessageRoute) {
@@ -231,7 +308,12 @@ export class InstanceGateway {
           }
         }
         if (!targetInstanceId) {
-          respond(errorPayload("TARGET_NODE_OFFLINE", `Target node ${routePayload.targetNodeId} is offline`));
+          respond(
+            errorPayload(
+              "TARGET_NODE_OFFLINE",
+              `Target node ${routePayload.targetNodeId} is offline`,
+            ),
+          );
           return;
         }
         const deliverPayload: AgentMessageDeliverPayload = {
@@ -244,12 +326,28 @@ export class InstanceGateway {
           replyTo: routePayload.replyTo,
           replyable: true,
         };
-        this.sendRequest(targetInstanceId, MSG.agentMessageDeliver, deliverPayload)
+        this.sendRequest(
+          targetInstanceId,
+          MSG.agentMessageDeliver,
+          deliverPayload,
+        )
           .then((res) => respond(res))
-          .catch((err) => respond(errorPayload("DELIVERY_FAILED", err instanceof Error ? err.message : String(err))));
+          .catch((err) =>
+            respond(
+              errorPayload(
+                "DELIVERY_FAILED",
+                err instanceof Error ? err.message : String(err),
+              ),
+            ),
+          );
         return;
       }
-      respond(errorPayload("invalid-request", `unknown request type: ${envelope.type}`));
+      respond(
+        errorPayload(
+          "invalid-request",
+          `unknown request type: ${envelope.type}`,
+        ),
+      );
       return;
     }
   }
@@ -260,13 +358,22 @@ export class InstanceGateway {
     envelope: RelayEnvelope,
   ): { instanceId: string; accountId: string } | null {
     const respond = (payload: unknown) => {
-      socket.send(encodeEnvelope({
-        protocolVersion: RELAY_PROTOCOL_VERSION, kind: "res",
-        id: envelope.id ?? "handshake", type: envelope.type, payload,
-      }));
+      socket.send(
+        encodeEnvelope({
+          protocolVersion: RELAY_PROTOCOL_VERSION,
+          kind: "res",
+          id: envelope.id ?? "handshake",
+          type: envelope.type,
+          payload,
+        }),
+      );
     };
     if (envelope.kind !== "req") {
-      this.logger.info("relay.instance.handshake_failed", "handshake rejected", { reason: "not-a-request" });
+      this.logger.info(
+        "relay.instance.handshake_failed",
+        "handshake rejected",
+        { reason: "not-a-request" },
+      );
       socket.close(4401, "unauthenticated");
       return null;
     }
@@ -276,34 +383,69 @@ export class InstanceGateway {
       const viaLogin = this.deps.accounts.resolveLoginToken(presented);
       let result;
       if (viaLogin) {
-        result = this.deps.instances.registerInstanceForAccount(viaLogin.account.id, payload?.name, payload?.coreVersion);
+        result = this.deps.instances.registerInstanceForAccount(
+          viaLogin.account.id,
+          payload?.name,
+          payload?.coreVersion,
+        );
       } else {
-        const redeemed = this.deps.instances.redeemPairingToken(presented, payload?.coreVersion);
+        const redeemed = this.deps.instances.redeemPairingToken(
+          presented,
+          payload?.coreVersion,
+        );
         if (!redeemed) {
-          this.logger.info("relay.instance.handshake_failed", "handshake rejected", { reason: "pairing-failed" });
-          respond(errorPayload("pairing-failed", "token is invalid, expired, or already used"));
+          this.logger.info(
+            "relay.instance.handshake_failed",
+            "handshake rejected",
+            { reason: "pairing-failed" },
+          );
+          respond(
+            errorPayload(
+              "pairing-failed",
+              "token is invalid, expired, or already used",
+            ),
+          );
           return null;
         }
         result = redeemed;
       }
       respond({ instanceId: result.instanceId, credential: result.credential });
-      this.deps.instances.touch(result.instanceId, payload?.coreVersion, normalizeCapabilities(payload?.capabilities));
+      this.deps.instances.touch(
+        result.instanceId,
+        payload?.coreVersion,
+        normalizeCapabilities(payload?.capabilities),
+      );
       return { instanceId: result.instanceId, accountId: result.accountId };
     }
     if (envelope.type === MSG.instanceAuth) {
       const payload = envelope.payload as InstanceAuthPayload;
-      const instance = this.deps.instances.verifyCredential(payload?.instanceId ?? "", payload?.credential ?? "");
+      const instance = this.deps.instances.verifyCredential(
+        payload?.instanceId ?? "",
+        payload?.credential ?? "",
+      );
       if (!instance) {
-        this.logger.info("relay.instance.handshake_failed", "handshake rejected", { reason: "auth-failed" });
-        respond(errorPayload("auth-failed", "unknown instance or bad credential"));
+        this.logger.info(
+          "relay.instance.handshake_failed",
+          "handshake rejected",
+          { reason: "auth-failed" },
+        );
+        respond(
+          errorPayload("auth-failed", "unknown instance or bad credential"),
+        );
         socket.close(4403, "auth-failed");
         return null;
       }
       respond({ ok: true });
-      this.deps.instances.touch(instance.id, payload?.coreVersion, normalizeCapabilities(payload?.capabilities));
+      this.deps.instances.touch(
+        instance.id,
+        payload?.coreVersion,
+        normalizeCapabilities(payload?.capabilities),
+      );
       return { instanceId: instance.id, accountId: instance.accountId };
     }
-    this.logger.info("relay.instance.handshake_failed", "handshake rejected", { reason: "unknown-message-type" });
+    this.logger.info("relay.instance.handshake_failed", "handshake rejected", {
+      reason: "unknown-message-type",
+    });
     socket.close(4401, "unauthenticated");
     return null;
   }
@@ -312,7 +454,14 @@ export class InstanceGateway {
   sendEvent(instanceId: string, type: string, payload: unknown): boolean {
     const connection = this.connections.get(instanceId);
     if (!connection) return false;
-    connection.socket.send(encodeEnvelope({ protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type, payload }));
+    connection.socket.send(
+      encodeEnvelope({
+        protocolVersion: RELAY_PROTOCOL_VERSION,
+        kind: "event",
+        type,
+        payload,
+      }),
+    );
     return true;
   }
 
@@ -331,11 +480,19 @@ export class InstanceGateway {
     const connection = this.connections.get(instanceId);
     if (!connection) return;
     this.dropConnection(instanceId, connection.accountId);
-    this.logger.info("relay.instance.disconnected", "instance connection revoked (persist-failed)", { instanceId, accountId: connection.accountId });
+    this.logger.info(
+      "relay.instance.disconnected",
+      "instance connection revoked (persist-failed)",
+      { instanceId, accountId: connection.accountId },
+    );
     try {
       connection.socket.close(4408, "persist-failed");
     } catch (err) {
-      this.logger.debug("relay.instance.disconnect_failed", "closing revoked instance socket failed", { instanceId, error: String(err) });
+      this.logger.debug(
+        "relay.instance.disconnect_failed",
+        "closing revoked instance socket failed",
+        { instanceId, error: String(err) },
+      );
     }
   }
 
@@ -350,8 +507,14 @@ export class InstanceGateway {
       throw new Error("instance-offline");
     }
     const id = `relay-${++this.seq}`;
-    const timeoutMs = options?.timeoutMs ?? this.deps.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
-    const requestBudgetMs = Math.max(timeoutMs - REQUEST_RESPONSE_RESERVE_MS, 1);
+    const timeoutMs =
+      options?.timeoutMs ??
+      this.deps.requestTimeoutMs ??
+      DEFAULT_REQUEST_TIMEOUT_MS;
+    const requestBudgetMs = Math.max(
+      timeoutMs - REQUEST_RESPONSE_RESERVE_MS,
+      1,
+    );
     // This is the mutation work cutoff, not the Hub response timer. Keeping the
     // reserve in both representations prevents delivery latency from consuming it.
     const requestDeadlineAt = Date.now() + requestBudgetMs;
@@ -360,16 +523,25 @@ export class InstanceGateway {
         this.pending.delete(id);
         reject(new Error("timeout"));
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer, instanceId, socket: connection.socket, type });
-      connection.socket.send(encodeEnvelope({
-        protocolVersion: RELAY_PROTOCOL_VERSION,
-        kind: "req",
-        id,
+      this.pending.set(id, {
+        resolve,
+        reject,
+        timer,
+        instanceId,
+        socket: connection.socket,
         type,
-        payload,
-        requestDeadlineAt,
-        requestBudgetMs,
-      }));
+      });
+      connection.socket.send(
+        encodeEnvelope({
+          protocolVersion: RELAY_PROTOCOL_VERSION,
+          kind: "req",
+          id,
+          type,
+          payload,
+          requestDeadlineAt,
+          requestBudgetMs,
+        }),
+      );
     });
   }
 

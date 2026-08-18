@@ -11,7 +11,10 @@ import {
   type InstanceAgentEndpointsSyncPayload,
   type RelayEnvelope,
 } from "../../../../../packages/relay-protocol/src/index";
-import { createSqlDriver, initSchema } from "../../../../../packages/relay/src/db";
+import {
+  createSqlDriver,
+  initSchema,
+} from "../../../../../packages/relay/src/db";
 import { AccountStore } from "../../../../../packages/relay/src/stores/accounts";
 import { InstanceStore } from "../../../../../packages/relay/src/stores/instances";
 import { InstanceGateway } from "../../../../../packages/relay/src/gateway/instance-gateway";
@@ -82,12 +85,20 @@ test("Relay Hub routes agent.message.route to target instance via agent.message.
   const { instances, account, wss, url } = await makeGateway();
 
   // Instance A
-  const tokenA = instances.issuePairingToken(account.id, "nodeA", 600_000).token;
+  const tokenA = instances.issuePairingToken(
+    account.id,
+    "nodeA",
+    600_000,
+  ).token;
   const socketA = await connect(url);
   const authA = await authInstance(socketA, tokenA);
 
   // Instance B
-  const tokenB = instances.issuePairingToken(account.id, "nodeB", 600_000).token;
+  const tokenB = instances.issuePairingToken(
+    account.id,
+    "nodeB",
+    600_000,
+  ).token;
   const socketB = await connect(url);
   const authB = await authInstance(socketB, tokenB);
 
@@ -100,7 +111,12 @@ test("Relay Hub routes agent.message.route to target instance via agent.message.
         displayName: "Worker B",
         agent: "codex",
         state: "idle",
-        capabilities: { receive: true, steer: false, queue: true, interrupt: false },
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+        },
         updatedAt: Date.now(),
       },
     ],
@@ -119,7 +135,11 @@ test("Relay Hub routes agent.message.route to target instance via agent.message.
   // Set up socket B handler to deliver response when it receives agentMessageDeliver
   socketB.on("message", (data) => {
     const decoded = decodeEnvelope(String(data));
-    if (decoded.ok && decoded.envelope.kind === "req" && decoded.envelope.type === MSG.agentMessageDeliver) {
+    if (
+      decoded.ok &&
+      decoded.envelope.kind === "req" &&
+      decoded.envelope.type === MSG.agentMessageDeliver
+    ) {
       const payload = decoded.envelope.payload as AgentMessageDeliverPayload;
       expect(payload.targetEndpointId).toBe("worker_b");
       expect(payload.content).toBe("hello from node A");
@@ -172,7 +192,11 @@ test("Relay Hub routes agent.message.route to target instance via agent.message.
 test("Relay Hub returns TARGET_NODE_OFFLINE when target node is not connected", async () => {
   const { instances, account, wss, url } = await makeGateway();
 
-  const tokenA = instances.issuePairingToken(account.id, "nodeA", 600_000).token;
+  const tokenA = instances.issuePairingToken(
+    account.id,
+    "nodeA",
+    600_000,
+  ).token;
   const socketA = await connect(url);
   await authInstance(socketA, tokenA);
 
@@ -196,7 +220,9 @@ test("Relay Hub returns TARGET_NODE_OFFLINE when target node is not connected", 
   const resA = await nextMessage(socketA);
   expect(resA.kind).toBe("res");
   expect(resA.id).toBe("route-2");
-  const errPayload = resA.payload as { error: { code: string; message: string } };
+  const errPayload = resA.payload as {
+    error: { code: string; message: string };
+  };
   expect(errPayload.error.code).toBe("TARGET_NODE_OFFLINE");
 
   socketA.close();
@@ -207,12 +233,20 @@ test("Relay Hub isolates messages across different accounts", async () => {
   const { instances, account, accountBob, wss, url } = await makeGateway();
 
   // Instance A under Alice
-  const tokenA = instances.issuePairingToken(account.id, "nodeA", 600_000).token;
+  const tokenA = instances.issuePairingToken(
+    account.id,
+    "nodeA",
+    600_000,
+  ).token;
   const socketA = await connect(url);
   await authInstance(socketA, tokenA);
 
   // Instance B under Bob
-  const tokenB = instances.issuePairingToken(accountBob.id, "nodeB", 600_000).token;
+  const tokenB = instances.issuePairingToken(
+    accountBob.id,
+    "nodeB",
+    600_000,
+  ).token;
   const socketB = await connect(url);
   await authInstance(socketB, tokenB);
 
@@ -229,7 +263,12 @@ test("Relay Hub isolates messages across different accounts", async () => {
             displayName: "Worker Bob",
             agent: "codex",
             state: "idle",
-            capabilities: { receive: true, steer: false, queue: true, interrupt: false },
+            capabilities: {
+              receive: true,
+              steer: false,
+              queue: true,
+              interrupt: false,
+            },
             updatedAt: Date.now(),
           },
         ],

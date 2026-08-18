@@ -143,7 +143,10 @@ var MSG = {
   terminalHeartbeat: "instance.terminal.heartbeat",
   terminalDetach: "instance.terminal.detach",
   terminalViewerEvent: "instance.terminal.viewer-event",
-  terminalResourceExit: "instance.terminal.resource-exit"
+  terminalResourceExit: "instance.terminal.resource-exit",
+  instanceAgentEndpointsSync: "instance.agent-endpoints.sync",
+  agentMessageRoute: "instance.agent-message.route",
+  agentMessageDeliver: "instance.agent-message.deliver"
 };
 function errorPayload(code, message) {
   return { error: { code, message } };

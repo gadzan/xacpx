@@ -16,7 +16,9 @@ test("RelayAgentMessageRoute reports unavailable when constructed without client
     createdAt: Date.now(),
   };
 
-  await expect(route.send(message)).rejects.toThrow("Remote route is unavailable");
+  await expect(route.send(message)).rejects.toThrow(
+    "Remote route is unavailable",
+  );
 });
 
 test("RelayAgentMessageRoute forwards to client and formats receipt", async () => {

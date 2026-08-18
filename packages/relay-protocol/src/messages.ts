@@ -1,4 +1,22 @@
-import type { AgentCatalogEntryDto, AgentCommandDto, AgentDto, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto } from "./dtos.js";
+import type {
+  AgentCatalogEntryDto,
+  AgentCommandDto,
+  AgentDto,
+  ControlEventDto,
+  FsDiffFileDto,
+  FsEntryDto,
+  FsSearchHitDto,
+  OrchestrationTaskDto,
+  PublishedAgentEndpointDto,
+  ScheduledOriginDto,
+  ScheduledTaskDto,
+  SessionDto,
+  ToolStepDto,
+  TurnPartDto,
+  UsageBreakdownDto,
+  UsageCostDto,
+  WorkspaceDto,
+} from "./dtos.js";
 
 // Instance <-> relay message types. Convention: chatKey for relay-driven chats
 // is `relay:<accountId>`; the relay server stamps chatKey/senderId/isOwner on
@@ -143,7 +161,12 @@ export function normalizeCapabilities(raw: unknown): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
   for (const item of raw) {
-    if (typeof item !== "string" || item.length === 0 || item.length > MAX_CAPABILITY_LENGTH) continue;
+    if (
+      typeof item !== "string" ||
+      item.length === 0 ||
+      item.length > MAX_CAPABILITY_LENGTH
+    )
+      continue;
     if (seen.has(item)) continue;
     seen.add(item);
     out.push(item);
@@ -184,7 +207,13 @@ export interface InstanceStateSyncPayload {
     /** true = connector capped the mirror; content after that point is lost. */
     truncated?: boolean;
   }>;
-  usage: Array<{ sessionAlias: string; used: number; size: number; cost?: UsageCostDto; breakdown?: UsageBreakdownDto }>;
+  usage: Array<{
+    sessionAlias: string;
+    used: number;
+    size: number;
+    cost?: UsageCostDto;
+    breakdown?: UsageBreakdownDto;
+  }>;
   commands: Array<{ sessionAlias: string; commands: AgentCommandDto[] }>;
   /** Turns that finished and are still awaiting the hub's persistence ack — this
    *  includes turns that finished while the hub was unreachable AND live turns that
@@ -199,7 +228,19 @@ export interface InstanceStateSyncPayload {
    *  drop the entry; a redelivery is deduped by the receipt (never re-appended).
    *  `truncated` marks a reply the connector capped at STATE_SYNC_TEXT_CAP — the
    *  persisted row must say so instead of masquerading as a complete reply. */
-  finishedOffline: Array<{ sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean; text?: string; prompt?: string; queueItemId?: string; scheduled?: ScheduledOriginDto; promptRequestId?: string; recoveryId?: string; truncated?: boolean }>;
+  finishedOffline: Array<{
+    sessionAlias: string;
+    ok: boolean;
+    errorMessage?: string;
+    cancelled?: boolean;
+    text?: string;
+    prompt?: string;
+    queueItemId?: string;
+    scheduled?: ScheduledOriginDto;
+    promptRequestId?: string;
+    recoveryId?: string;
+    truncated?: boolean;
+  }>;
 }
 export interface InstanceNoticePayload {
   kind: "task-completion" | "task-progress" | "coordinator-message";
@@ -496,9 +537,21 @@ export interface FsDiffResult {
 }
 
 // --- structured Git operations (scoped to a configured workspace) ---
-export interface GitStatusPayload { workspace: string; }
-export interface GitBranchDto { name: string; current: boolean; worktreePath?: string; }
-export interface GitWorktreeDto { path: string; branch?: string; detached?: boolean; current: boolean; linked: boolean; }
+export interface GitStatusPayload {
+  workspace: string;
+}
+export interface GitBranchDto {
+  name: string;
+  current: boolean;
+  worktreePath?: string;
+}
+export interface GitWorktreeDto {
+  path: string;
+  branch?: string;
+  detached?: boolean;
+  current: boolean;
+  linked: boolean;
+}
 export interface GitStatusResult {
   workspace: string;
   branch?: string;
@@ -511,13 +564,37 @@ export interface GitStatusResult {
   branches: GitBranchDto[];
   worktrees: GitWorktreeDto[];
 }
-export interface GitPathsPayload { workspace: string; paths: string[]; }
-export interface GitCommitPayload { workspace: string; message: string; }
-export interface GitCommitResult { hash: string; shortHash: string; summary: string; }
-export interface GitFetchPayload { workspace: string; remote?: string; }
-export interface GitPullPayload { workspace: string; }
-export interface GitPushPayload { workspace: string; setUpstream?: boolean; remote?: string; }
-export interface GitCheckoutPayload { workspace: string; branch: string; create?: boolean; startPoint?: string; }
+export interface GitPathsPayload {
+  workspace: string;
+  paths: string[];
+}
+export interface GitCommitPayload {
+  workspace: string;
+  message: string;
+}
+export interface GitCommitResult {
+  hash: string;
+  shortHash: string;
+  summary: string;
+}
+export interface GitFetchPayload {
+  workspace: string;
+  remote?: string;
+}
+export interface GitPullPayload {
+  workspace: string;
+}
+export interface GitPushPayload {
+  workspace: string;
+  setUpstream?: boolean;
+  remote?: string;
+}
+export interface GitCheckoutPayload {
+  workspace: string;
+  branch: string;
+  create?: boolean;
+  startPoint?: string;
+}
 export interface GitWorktreeCreatePayload {
   workspace: string;
   workspaceName: string;
@@ -666,7 +743,8 @@ export const RELAY_CAPABILITIES = {
   terminalMultiViewV1: "terminal.multi-view.v1",
 } as const;
 
-export type RelayCapability = (typeof RELAY_CAPABILITIES)[keyof typeof RELAY_CAPABILITIES];
+export type RelayCapability =
+  (typeof RELAY_CAPABILITIES)[keyof typeof RELAY_CAPABILITIES];
 
 /** Stable browser-facing terminal error codes (i18n by code, not message text). */
 export const TERMINAL_ERROR_CODES = [
@@ -737,8 +815,7 @@ export interface TerminalTerminatePayload {
 }
 
 export type TerminalTerminateResult =
-  | { status: "terminated" }
-  | { status: "cleanup-pending" };
+  { status: "terminated" } | { status: "cleanup-pending" };
 
 export interface TerminalStreamStartPayload {
   attachmentId: string;

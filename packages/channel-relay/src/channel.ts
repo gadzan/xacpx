@@ -22,8 +22,16 @@ import { coreHomeDir } from "xacpx/plugin-api";
 type ChannelStopReason = "shutdown" | "disabled" | "removed" | "logout";
 
 import { parseRelayChannelConfig, type RelayChannelConfig } from "./config.js";
-import { CredentialStore, defaultCredentialPath, type RelayCredential } from "./credential-store.js";
-import { createControlBridge, subscribeControlEvents, dispatchControlEvent } from "./control-bridge.js";
+import {
+  CredentialStore,
+  defaultCredentialPath,
+  type RelayCredential,
+} from "./credential-store.js";
+import {
+  createControlBridge,
+  subscribeControlEvents,
+  dispatchControlEvent,
+} from "./control-bridge.js";
 import { RelayClient, type RelayClientOptions } from "./relay-client.js";
 import { createStateMirror } from "./state-mirror.js";
 import {
@@ -46,7 +54,9 @@ import {
 import { retireRelayTerminals } from "./terminal/retire-terminals.js";
 import { logTerminalEvent } from "./terminal/terminal-log.js";
 
-type OrchestrationTaskRecord = Parameters<MessageChannelRuntime["notifyTaskCompletion"]>[0];
+type OrchestrationTaskRecord = Parameters<
+  MessageChannelRuntime["notifyTaskCompletion"]
+>[0];
 
 interface CredentialStoreLike {
   load(): RelayCredential | null;
@@ -57,7 +67,11 @@ interface CredentialStoreLike {
 interface RelayClientLike {
   start(abortSignal: AbortSignal): void;
   stop(): void;
-  sendEvent(type: string, payload: unknown, onFlush?: (error?: Error) => void): void;
+  sendEvent(
+    type: string,
+    payload: unknown,
+    onFlush?: (error?: Error) => void,
+  ): void;
 }
 
 export function defaultTerminalRegistryDir(): string {
@@ -92,13 +106,19 @@ export class RelayChannel implements MessageChannelRuntime {
   private startLogger: ChannelStartInput["logger"] | undefined;
   private readonly pendingRetirements = new Set<Promise<void>>();
 
-  constructor(options: Record<string, unknown> | undefined, private readonly deps: RelayChannelDeps = {}) {
+  constructor(
+    options: Record<string, unknown> | undefined,
+    private readonly deps: RelayChannelDeps = {},
+  ) {
     this.config = parseRelayChannelConfig(options);
-    this.credentials = deps.credentialStore ?? new CredentialStore(defaultCredentialPath());
+    this.credentials =
+      deps.credentialStore ?? new CredentialStore(defaultCredentialPath());
   }
 
   isLoggedIn(): boolean {
-    return this.credentials.load() !== null || this.config.pairingToken !== undefined;
+    return (
+      this.credentials.load() !== null || this.config.pairingToken !== undefined
+    );
   }
 
   async login(): Promise<string> {
@@ -129,7 +149,9 @@ export class RelayChannel implements MessageChannelRuntime {
 
   async start(input: ChannelStartInput): Promise<void> {
     if (!input.control) {
-      throw new Error("relay channel requires ChannelStartInput.control (xacpx >= 0.11)");
+      throw new Error(
+        "relay channel requires ChannelStartInput.control (xacpx >= 0.11)",
+      );
     }
     const control = input.control;
     this.control = control;
@@ -137,15 +159,24 @@ export class RelayChannel implements MessageChannelRuntime {
     const capabilities = await this.bootstrapTerminal(input);
 
     const bridge = createControlBridge(control);
-    const onRequest = (envelope: RelayEnvelope, respond: (payload: unknown) => void) => {
-      if (this.terminal && this.terminalReady && isTerminalRequestType(envelope.type)) {
+    const onRequest = (
+      envelope: RelayEnvelope,
+      respond: (payload: unknown) => void,
+    ) => {
+      if (
+        this.terminal &&
+        this.terminalReady &&
+        isTerminalRequestType(envelope.type)
+      ) {
         void handleTerminalRequest(this.terminal, envelope, respond);
         return;
       }
       bridge(envelope, respond);
     };
 
-    const client = (this.deps.createClient ?? ((options) => new RelayClient(options)))({
+    const client = (
+      this.deps.createClient ?? ((options) => new RelayClient(options))
+    )({
       url: this.config.url,
       credentialStore: this.credentials,
       pairingToken: this.config.pairingToken,
@@ -155,13 +186,19 @@ export class RelayChannel implements MessageChannelRuntime {
       onRequest,
       onEvent: (envelope) => {
         if (envelope.type === MSG.instanceRecoveryAck) {
-          const ids = (envelope.payload as InstanceRecoveryAckPayload | undefined)?.recoveryIds;
+          const ids = (
+            envelope.payload as InstanceRecoveryAckPayload | undefined
+          )?.recoveryIds;
           if (Array.isArray(ids) && ids.every((id) => typeof id === "string")) {
             mirror.confirmFinished(ids);
           }
           return;
         }
-        if (this.terminal && this.terminalReady && isTerminalEventType(envelope.type)) {
+        if (
+          this.terminal &&
+          this.terminalReady &&
+          isTerminalEventType(envelope.type)
+        ) {
           // RMUX path: never fall through to legacy core PTY handlers.
           void handleTerminalEvent(this.terminal, envelope);
           return;
@@ -176,9 +213,11 @@ export class RelayChannel implements MessageChannelRuntime {
         const liveAliases = new Set<string>();
         for (const chatKey of mirror.chatKeys()) {
           try {
-            for (const session of control.listSessions(chatKey)) liveAliases.add(session.alias);
+            for (const session of control.listSessions(chatKey))
+              liveAliases.add(session.alias);
           } catch {
-            for (const alias of mirror.aliasesForChatKey(chatKey)) liveAliases.add(alias);
+            for (const alias of mirror.aliasesForChatKey(chatKey))
+              liveAliases.add(alias);
           }
         }
         mirror.expirePendingFinished();
@@ -186,9 +225,20 @@ export class RelayChannel implements MessageChannelRuntime {
         client.sendEvent(MSG.instanceStateSync, snapshot, (error) => {
           if (!error) mirror.pruneStateMirror(liveAliases, aliases);
         });
-        if ("getPublishedAgentEndpoints" in control && typeof (control as unknown as { getPublishedAgentEndpoints: () => unknown[] }).getPublishedAgentEndpoints === "function") {
+        if (
+          "getPublishedAgentEndpoints" in control &&
+          typeof (
+            control as unknown as {
+              getPublishedAgentEndpoints: () => unknown[];
+            }
+          ).getPublishedAgentEndpoints === "function"
+        ) {
           try {
-            const endpoints = (control as unknown as { getPublishedAgentEndpoints: () => unknown[] }).getPublishedAgentEndpoints();
+            const endpoints = (
+              control as unknown as {
+                getPublishedAgentEndpoints: () => unknown[];
+              }
+            ).getPublishedAgentEndpoints();
             if (Array.isArray(endpoints) && endpoints.length > 0) {
               client.sendEvent(MSG.instanceAgentEndpointsSync, { endpoints });
             }
@@ -204,9 +254,12 @@ export class RelayChannel implements MessageChannelRuntime {
 
     if (this.terminal) {
       // Rebind publisher now that client exists.
-      const publish = createTerminalViewerPublisher(this.terminal, (type, payload, onFlush) => {
-        client.sendEvent(type, payload, onFlush);
-      });
+      const publish = createTerminalViewerPublisher(
+        this.terminal,
+        (type, payload, onFlush) => {
+          client.sendEvent(type, payload, onFlush);
+        },
+      );
       // Runtime was constructed with a no-op publisher; replace via fresh wiring
       // is awkward — instead emit through a mutable slot set below.
       this.viewerPublish = publish;
@@ -214,9 +267,16 @@ export class RelayChannel implements MessageChannelRuntime {
 
     this.unsubscribe = subscribeControlEvents(control, (type, payload) => {
       const finishedRecoveryId = mirror.handleEnvelope(type, payload);
-      const forwardedPayload = finishedRecoveryId && typeof payload === "object" && payload !== null
-        ? { ...payload as Record<string, unknown>, event: { ...(payload as { event: Record<string, unknown> }).event, recoveryId: finishedRecoveryId } }
-        : payload;
+      const forwardedPayload =
+        finishedRecoveryId && typeof payload === "object" && payload !== null
+          ? {
+              ...(payload as Record<string, unknown>),
+              event: {
+                ...(payload as { event: Record<string, unknown> }).event,
+                recoveryId: finishedRecoveryId,
+              },
+            }
+          : payload;
       client.sendEvent(type, forwardedPayload);
     });
     client.start(input.abortSignal);
@@ -226,16 +286,20 @@ export class RelayChannel implements MessageChannelRuntime {
         resolve();
         return;
       }
-      input.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+      input.abortSignal.addEventListener("abort", () => resolve(), {
+        once: true,
+      });
     });
     await this.stop("shutdown");
   }
 
   /** Mutable slot filled after client construction so runtime events reach the hub. */
-  private viewerPublish: ((
-    event: import("./terminal/terminal-runtime.js").TerminalViewerEvent,
-    onFlush?: (error?: Error) => void,
-  ) => void) | null = null;
+  private viewerPublish:
+    | ((
+        event: import("./terminal/terminal-runtime.js").TerminalViewerEvent,
+        onFlush?: (error?: Error) => void,
+      ) => void)
+    | null = null;
 
   async stop(reason: ChannelStopReason = "shutdown"): Promise<void> {
     this.unsubscribe?.();
@@ -269,13 +333,15 @@ export class RelayChannel implements MessageChannelRuntime {
     logicalSessionId: string,
     reason: "archive" | "delete",
   ): void {
-    const work = runtime.retireLogicalSession(logicalSessionId, reason).catch((err) => {
-      void this.startLogger?.error(
-        "relay.terminal_retire_failed",
-        `logical session retirement failed: ${err instanceof Error ? err.message : String(err)}`,
-        {},
-      );
-    });
+    const work = runtime
+      .retireLogicalSession(logicalSessionId, reason)
+      .catch((err) => {
+        void this.startLogger?.error(
+          "relay.terminal_retire_failed",
+          `logical session retirement failed: ${err instanceof Error ? err.message : String(err)}`,
+          {},
+        );
+      });
     const tracked = work.finally(() => {
       this.pendingRetirements.delete(tracked);
     });
@@ -293,20 +359,35 @@ export class RelayChannel implements MessageChannelRuntime {
   }
 
   async notifyTaskCompletion(task: OrchestrationTaskRecord): Promise<void> {
-    this.sendNotice({ kind: "task-completion", taskId: task.taskId, text: task.summary || task.resultText || task.taskId });
+    this.sendNotice({
+      kind: "task-completion",
+      taskId: task.taskId,
+      text: task.summary || task.resultText || task.taskId,
+    });
   }
 
-  async notifyTaskProgress(task: OrchestrationTaskRecord, text: string): Promise<void> {
+  async notifyTaskProgress(
+    task: OrchestrationTaskRecord,
+    text: string,
+  ): Promise<void> {
     this.sendNotice({ kind: "task-progress", taskId: task.taskId, text });
   }
 
   async sendCoordinatorMessage(input: CoordinatorMessageInput): Promise<void> {
-    this.sendNotice({ kind: "coordinator-message", chatKey: input.chatKey, text: input.text });
+    this.sendNotice({
+      kind: "coordinator-message",
+      chatKey: input.chatKey,
+      text: input.text,
+    });
   }
 
-  async sendScheduledMessage(input: ScheduledChannelMessageInput): Promise<void> {
+  async sendScheduledMessage(
+    input: ScheduledChannelMessageInput,
+  ): Promise<void> {
     if (!this.control) {
-      throw new Error("relay channel cannot dispatch scheduled task before start()");
+      throw new Error(
+        "relay channel cannot dispatch scheduled task before start()",
+      );
     }
     const result = await this.control.runScheduledTurn({
       chatKey: input.chatKey,
@@ -332,7 +413,8 @@ export class RelayChannel implements MessageChannelRuntime {
    * retires leftover resources before omitting capabilities.
    */
   private async bootstrapTerminal(input: ChannelStartInput): Promise<string[]> {
-    const registryDir = this.deps.terminalRegistryDir ?? defaultTerminalRegistryDir();
+    const registryDir =
+      this.deps.terminalRegistryDir ?? defaultTerminalRegistryDir();
 
     if (!this.config.terminal.enabled) {
       try {
@@ -351,7 +433,8 @@ export class RelayChannel implements MessageChannelRuntime {
       return [];
     }
 
-    const catalog = input.sessionResources as SessionResourceCatalog | undefined;
+    const catalog = input.sessionResources as
+      SessionResourceCatalog | undefined;
     if (!catalog) {
       throw new Error(
         "relay terminal.enabled requires ChannelStartInput.sessionResources (xacpx with SessionResourceCatalog)",
@@ -359,7 +442,10 @@ export class RelayChannel implements MessageChannelRuntime {
     }
     this.startLogger = input.logger;
 
-    const registry = new TerminalRegistryStore({ dir: registryDir, exclusiveWriter: true });
+    const registry = new TerminalRegistryStore({
+      dir: registryDir,
+      exclusiveWriter: true,
+    });
     try {
       let driver: RmuxTerminalDriver;
       if (this.deps.createTerminalDriver) {
@@ -387,13 +473,16 @@ export class RelayChannel implements MessageChannelRuntime {
         maxSessions: this.config.terminal.maxSessions,
         maxViewersPerTerminal: this.config.terminal.maxViewersPerTerminal,
       });
-      this.viewerPublish = createTerminalViewerPublisher(runtime, (type, payload, onFlush) => {
-        if (!this.client) {
-          onFlush?.(new Error("not-ready"));
-          return;
-        }
-        this.client.sendEvent(type, payload, onFlush);
-      });
+      this.viewerPublish = createTerminalViewerPublisher(
+        runtime,
+        (type, payload, onFlush) => {
+          if (!this.client) {
+            onFlush?.(new Error("not-ready"));
+            return;
+          }
+          this.client.sendEvent(type, payload, onFlush);
+        },
+      );
 
       this.catalogUnsub = catalog.subscribe((event) => {
         if (event.type === "archived" || event.type === "removed") {
@@ -411,9 +500,13 @@ export class RelayChannel implements MessageChannelRuntime {
         RELAY_CAPABILITIES.terminalMultiViewV1,
       ];
     } catch (err) {
-      void logTerminalEvent(input.logger, "relay.terminal.runtime_unavailable", {
-        errorClass: err instanceof Error ? err.name : "Error",
-      });
+      void logTerminalEvent(
+        input.logger,
+        "relay.terminal.runtime_unavailable",
+        {
+          errorClass: err instanceof Error ? err.name : "Error",
+        },
+      );
       void input.logger?.error(
         "relay.terminal_bootstrap_failed",
         `RMUX terminal runtime failed to start; continuing without terminal capabilities: ${err instanceof Error ? err.message : String(err)}`,

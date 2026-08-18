@@ -13,8 +13,14 @@ import type {
 } from "../../../src/orchestration/agent-messaging-types";
 
 test("Node A sends message to Node B across simulated Relay Hub", async () => {
-  const nodeAAddress: AgentAddress = { nodeId: "node_A", endpointId: "worker_a1" };
-  const nodeBAddress: AgentAddress = { nodeId: "node_B", endpointId: "worker_b1" };
+  const nodeAAddress: AgentAddress = {
+    nodeId: "node_A",
+    endpointId: "worker_a1",
+  };
+  const nodeBAddress: AgentAddress = {
+    nodeId: "node_B",
+    endpointId: "worker_b1",
+  };
 
   const deliveredToB: Array<{ messageId: string; content: string }> = [];
 
@@ -24,7 +30,10 @@ test("Node A sends message to Node B across simulated Relay Hub", async () => {
       expect(payload.targetNodeId).toBe("node_B");
       expect(payload.targetEndpointId).toBe("worker_b1");
       // Simulate Relay Hub forwarding to Node B and Node B accepting delivery
-      deliveredToB.push({ messageId: payload.messageId, content: payload.content });
+      deliveredToB.push({
+        messageId: payload.messageId,
+        content: payload.content,
+      });
       return {
         messageId: payload.messageId,
         status: "queued",
@@ -40,7 +49,12 @@ test("Node A sends message to Node B across simulated Relay Hub", async () => {
     node: "node_B",
     agent: "codex",
     state: "idle",
-    capabilities: { receive: true, steer: false, queue: true, interrupt: false },
+    capabilities: {
+      receive: true,
+      steer: false,
+      queue: true,
+      interrupt: false,
+    },
   };
 
   const registryA = {
@@ -94,8 +108,14 @@ test("Node A sends message to Node B across simulated Relay Hub", async () => {
 });
 
 test("Node A receives fail-fast ROUTE_UNAVAILABLE when remote route is disconnected", async () => {
-  const nodeAAddress: AgentAddress = { nodeId: "node_A", endpointId: "worker_a1" };
-  const nodeBAddress: AgentAddress = { nodeId: "node_B", endpointId: "worker_b1" };
+  const nodeAAddress: AgentAddress = {
+    nodeId: "node_A",
+    endpointId: "worker_a1",
+  };
+  const nodeBAddress: AgentAddress = {
+    nodeId: "node_B",
+    endpointId: "worker_b1",
+  };
 
   const nodeBEndpointView: AgentEndpointView = {
     address: nodeBAddress,
@@ -103,7 +123,12 @@ test("Node A receives fail-fast ROUTE_UNAVAILABLE when remote route is disconnec
     node: "node_B",
     agent: "codex",
     state: "idle",
-    capabilities: { receive: true, steer: false, queue: true, interrupt: false },
+    capabilities: {
+      receive: true,
+      steer: false,
+      queue: true,
+      interrupt: false,
+    },
   };
 
   const registryA = {
@@ -128,7 +153,11 @@ test("Node A receives fail-fast ROUTE_UNAVAILABLE when remote route is disconnec
 
   const routerA = new AgentMessageRouter({
     registry: registryA,
-    delivery: { deliver: async () => { throw new Error("Local"); } },
+    delivery: {
+      deliver: async () => {
+        throw new Error("Local");
+      },
+    },
     remoteRoute: disconnectedRemoteRoute,
   });
 
