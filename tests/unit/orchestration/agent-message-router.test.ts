@@ -526,6 +526,61 @@ test("rejects a concurrent messageId reuse with a different payload", async () =
   expect(deliveryCount).toBe(1);
 });
 
+test("tombstones an ambiguous failed inbound delivery so a same-id retry never re-injects", async () => {
+  // The acpx queue owner may already have enqueued the message when the local
+  // ACK is lost (injectMessage uses only input.text; the queue owner never sees
+  // the messageId, so only the destination can dedupe). The terminal failure
+  // must be cached as a tombstone: a same-id retry returns the SAME failure
+  // instead of calling the delivery adapter again.
+  let deliveryCount = 0;
+  const { router } = makeRouter({
+    deliver: async () => {
+      deliveryCount += 1;
+      throw new MessageInjectionError("DELIVERY_TIMEOUT", "ambiguous ack loss");
+    },
+  });
+  const input = {
+    sourceNodeId: "node_remote",
+    sourceEndpointId: "endpoint_remote",
+    targetEndpointId: "endpoint_worker-b",
+    messageId: "msg_failed_1",
+    content: "retry after ambiguous failure",
+    requestedMode: "auto",
+    replyable: true,
+  };
+
+  await expect(router.deliverInbound(input)).rejects.toMatchObject({
+    code: "DELIVERY_TIMEOUT",
+  });
+  // Retry with the same messageId: tombstone hit → same failure, no re-inject.
+  await expect(router.deliverInbound(input)).rejects.toMatchObject({
+    code: "DELIVERY_TIMEOUT",
+  });
+  expect(deliveryCount).toBe(1);
+});
+
+test("rejects a completed messageId reuse with a different payload", async () => {
+  const { router, deliveries } = makeRouter();
+  const input = {
+    sourceNodeId: "node_remote",
+    sourceEndpointId: "endpoint_remote",
+    targetEndpointId: "endpoint_worker-b",
+    messageId: "msg_completed_1",
+    requestedMode: "auto",
+    replyable: true,
+  };
+
+  const first = await router.deliverInbound({ ...input, content: "original" });
+  expect(first.deduplicated).toBeUndefined();
+
+  // Same id, different content, AFTER completion: the outcome cache stores the
+  // fingerprint, so this is DELIVERY_DENIED — not a stale cached receipt.
+  await expect(
+    router.deliverInbound({ ...input, content: "tampered" }),
+  ).rejects.toMatchObject({ code: "DELIVERY_DENIED" });
+  expect(deliveries).toHaveLength(1);
+});
+
 test("expires cached receipts after the configured dedupe TTL", async () => {
   let clock = 1_000;
   const { router, deliveries } = makeRouter({

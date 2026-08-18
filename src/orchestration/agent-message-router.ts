@@ -33,6 +33,16 @@ export interface LocalAgentMessageDelivery {
   ): Promise<SessionMessageReceipt>;
 }
 
+/**
+ * Terminal result of an inbound delivery attempt, cached by messageId.
+ * `receipt` → completed success; `error` → completed failure (tombstone). The
+ * tombstone matters for AMBIGUOUS failures: the target may already have
+ * accepted the message (e.g. acpx enqueued but the local ACK was lost), so a
+ * same-id retry must return the same failure and NEVER re-inject.
+ */
+type InboundOutcome =
+  { receipt: AgentMessageReceipt } | { error: AgentMessagingError };
+
 export interface AgentMessageRouterLimits {
   maxMessageBytes?: number;
   maxReplyToBytes?: number;
@@ -56,15 +66,30 @@ export class AgentMessageRouter {
     { receipt: AgentMessageReceipt; expiresAt: number }
   >();
   /**
-   * In-flight inbound deliveries keyed by messageId. The receipt cache is only
-   * written AFTER delivery completes, so a source retry that arrives while the
-   * first delivery is still executing would otherwise see a cache miss and
-   * inject AGAIN. This map single-flights concurrent duplicates: the second
-   * caller joins the first delivery's promise and never re-injects.
+   * In-flight inbound deliveries keyed by messageId. The terminal outcome cache
+   * is only written AFTER delivery completes, so a source retry that arrives
+   * while the first delivery is still executing would otherwise see a cache
+   * miss and inject AGAIN. This map single-flights concurrent duplicates: the
+   * second caller joins the first delivery's promise and never re-injects.
    */
   private readonly inboundDeliveries = new Map<
     string,
     { work: Promise<AgentMessageReceipt>; fingerprint: string }
+  >();
+  /**
+   * Terminal inbound outcomes keyed by messageId — a COMPLETED delivery's
+   * receipt OR its failure tombstone, each bound to the delivery fingerprint.
+   * Success dedupes completed retries; a failure tombstone makes a same-id
+   * retry after an ambiguous terminal failure (e.g. acpx already enqueued but
+   * the local ACK was lost) return the SAME failure instead of re-injecting.
+   */
+  private readonly inboundOutcomes = new Map<
+    string,
+    {
+      fingerprint: string;
+      outcome: InboundOutcome;
+      expiresAt: number;
+    }
   >();
 
   constructor(
@@ -225,17 +250,30 @@ export class AgentMessageRouter {
     replyable: boolean;
   }): Promise<AgentMessageReceipt> {
     const createdAt = (this.deps.now ?? Date.now)();
-    const cached = this.getCachedReceipt(input.messageId, createdAt);
+    const fingerprint = inboundFingerprint(input);
+
+    // 1. Terminal outcome cache — a COMPLETED delivery dedupes immediately:
+    //    success returns the cached receipt, and an ambiguous terminal failure
+    //    (the target may already have accepted the message) rethrows the same
+    //    failure instead of re-injecting. Same id with a different payload is
+    //    a different message reusing the id → DELIVERY_DENIED, never cached.
+    const cached = this.inboundOutcomes.get(input.messageId);
     if (cached) {
-      return { ...cached, deduplicated: true };
+      if (cached.fingerprint !== fingerprint) {
+        throw new AgentMessagingError(
+          "DELIVERY_DENIED",
+          "A delivery for this messageId already completed with a different source, target, or content.",
+        );
+      }
+      if ("error" in cached.outcome) {
+        throw cached.outcome.error;
+      }
+      return { ...cached.outcome.receipt, deduplicated: true };
     }
 
-    // In-flight single-flight: the receipt cache only covers COMPLETED
-    // deliveries, so a source retry (ACK lost / socket dropped) that arrives
-    // while the first delivery is still executing would otherwise inject
-    // twice. A concurrent duplicate joins the in-flight delivery's promise and
-    // never calls the delivery adapter again.
-    const fingerprint = inboundFingerprint(input);
+    // 2. In-flight single-flight: a retry arriving while the first delivery is
+    //    still executing joins its promise and never calls the delivery adapter
+    //    again.
     const existing = this.inboundDeliveries.get(input.messageId);
     if (existing) {
       if (existing.fingerprint !== fingerprint) {
@@ -248,11 +286,21 @@ export class AgentMessageRouter {
       return { ...receipt, deduplicated: true };
     }
 
+    // 3. New delivery: record the terminal outcome (receipt OR failure
+    //    tombstone) before releasing the in-flight slot, so there is never a
+    //    window where a same-id retry can slip past both caches.
     const work = this.performInboundDelivery(input, createdAt);
     this.inboundDeliveries.set(input.messageId, { work, fingerprint });
 
     try {
-      return await work;
+      const receipt = await work;
+      this.recordInboundOutcome(input.messageId, fingerprint, { receipt });
+      return receipt;
+    } catch (error) {
+      if (error instanceof AgentMessagingError) {
+        this.recordInboundOutcome(input.messageId, fingerprint, { error });
+      }
+      throw error;
     } finally {
       if (this.inboundDeliveries.get(input.messageId)?.work === work) {
         this.inboundDeliveries.delete(input.messageId);
@@ -314,7 +362,8 @@ export class AgentMessageRouter {
       route: "relay",
       ...(result.targetState ? { targetState: result.targetState } : {}),
     };
-    this.cacheReceipt(receipt, createdAt);
+    // Outcome recording (receipt OR failure tombstone) happens in deliverInbound
+    // so the terminal state is cache-visible before the in-flight slot releases.
     this.logDelivery(message, receipt, createdAt);
     return receipt;
   }
@@ -348,6 +397,34 @@ export class AgentMessageRouter {
     }
     this.receipts.set(receipt.messageId, {
       receipt,
+      expiresAt: now + ttlMs,
+    });
+  }
+
+  /** Cache a terminal inbound outcome (success receipt or failure tombstone)
+   *  with the same TTL/eviction policy as the source-side receipt cache. */
+  private recordInboundOutcome(
+    messageId: string,
+    fingerprint: string,
+    outcome: InboundOutcome,
+  ): void {
+    const configured = this.deps.limits?.receiptCache;
+    const maxEntries = configured?.maxEntries ?? 1_024;
+    const ttlMs = configured?.ttlMs ?? 5 * 60_000;
+    if (maxEntries <= 0 || ttlMs <= 0) return;
+    const now = (this.deps.now ?? Date.now)();
+
+    for (const [id, entry] of this.inboundOutcomes) {
+      if (entry.expiresAt <= now) this.inboundOutcomes.delete(id);
+    }
+    while (this.inboundOutcomes.size >= maxEntries) {
+      const oldest = this.inboundOutcomes.keys().next().value;
+      if (oldest === undefined) break;
+      this.inboundOutcomes.delete(oldest);
+    }
+    this.inboundOutcomes.set(messageId, {
+      fingerprint,
+      outcome,
       expiresAt: now + ttlMs,
     });
   }
