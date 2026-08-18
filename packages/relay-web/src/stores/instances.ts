@@ -44,6 +44,11 @@ export type SessionRow = SessionDto & {
   creatingSince?: number;
   /** Background creation failed; message surfaced in the booting pane. */
   createError?: string;
+  /** Materialised from the create RPC response but not yet seen in a list
+   *  snapshot. Survives page-1 replaces while `sessionsHasMore` may hide it
+   *  (the server appends new sessions last); cleared once a snapshot contains
+   *  the alias, or dropped when a complete list (hasMore false) omits it. */
+  justCreated?: boolean;
 };
 
 export interface InstanceView {
@@ -425,6 +430,29 @@ export const useInstancesStore = defineStore("instances", () => {
       if (inst) {
         const rows = sessions.map((session) => overlaySessionRename(instanceId, session, confirmedRevisionsAtRequest));
         const archived = replace && inst.archivedSessionsLoaded ? inst.sessions.filter((session) => session.archived) : [];
+        if (replace) {
+          // A replace snapshot is authoritative for the rows it contains, but two
+          // kinds of local row must survive it:
+          //  - an optimistic create still booting (RPC in flight, or a 504 whose
+          //    session arrives later via sessions-changed) — dropping it would
+          //    blank the selected session's pane mid-boot;
+          //  - a row materialised from the create RPC response that this page-1
+          //    snapshot cannot contain: the server appends new sessions last, so
+          //    with more actives than one page the new one sits past the boundary.
+          //    Kept only while hasMore — a COMPLETE list omitting the alias is the
+          //    server saying the session is gone.
+          // Mirrors loadArchivedSessions' transient handling.
+          const keep = inst.sessions.filter((row) =>
+            row.creating
+            || row.createError
+            || (row.justCreated === true && hasMore && !rows.some((r) => r.alias === row.alias))
+          );
+          for (const row of keep) {
+            if (!rows.some((r) => r.alias === row.alias)) {
+              rows.push(row);
+            }
+          }
+        }
         inst.sessions = replace
           ? [...rows, ...archived.filter((old) => !rows.some((row) => row.alias === old.alias))]
           : [...inst.sessions, ...rows.filter((row) => !inst.sessions.some((old) => old.alias === row.alias))];
@@ -504,10 +532,11 @@ export const useInstancesStore = defineStore("instances", () => {
   //
   // The RPC returns the ACTUAL alias chosen by the backend, which may differ from
   // the request alias when the desired name collides with an existing archived
-  // session (the backend derives `<alias>-2`, `<alias>-3`, …). When that happens
-  // we patch the optimistic row to the final alias BEFORE reloading the session
-  // list, so `loadSessions` can match the real row against the corrected one and
-  // the user never sees a stale "name not found" error card.
+  // session (the backend derives `<alias>-2`, `<alias>-3`, …). On success the
+  // optimistic row is materialised from the response (final alias, real transport
+  // session, boot state cleared) BEFORE the list reload, and when the alias changed
+  // the chat selection follows it — so `loadSessions` matches the real row against
+  // the corrected one and the user never lands on a stale name.
   async function createSession(instanceId: string, alias: string, agent: string, workspace: string, agentSessionId?: string, model?: string): Promise<{ pending: boolean }> {
     let result: SessionDto | undefined;
     try {
@@ -520,14 +549,25 @@ export const useInstancesStore = defineStore("instances", () => {
       if (e instanceof ApiError && (e.status === 504 || e.code === "timeout")) return { pending: true };
       throw e;
     }
-    if (result && result.alias !== alias) {
+    if (result) {
       const inst = byId(instanceId);
-      if (inst) {
-        const idx = inst.sessions.findIndex((s) => s.alias === alias && !!s.creating);
-        if (idx >= 0) {
-          // Preserve any in-flight optimistic fields (creating, creatingSince, native)
-          // while retargeting the row to the server-chosen alias.
-          inst.sessions.splice(idx, 1, { ...inst.sessions[idx]!, alias: result.alias });
+      const idx = inst?.sessions.findIndex((s) => s.alias === alias && !!s.creating) ?? -1;
+      if (idx >= 0 && inst) {
+        // Materialise the row from the server response: adopt the final alias (the
+        // backend derives `<alias>-2`, … on a collision), real transportSession and
+        // flags, and clear the optimistic boot state. `justCreated` lets the row
+        // survive the page-1 reload below when the instance has more actives than
+        // one page — the server appends new sessions last, so the snapshot cannot
+        // contain it yet and a dropped row would blank the session the user is on.
+        inst.sessions.splice(idx, 1, { ...inst.sessions[idx]!, ...result, creating: undefined, creatingSince: undefined, createError: undefined, justCreated: true });
+      }
+      if (typeof result.alias === "string" && result.alias !== alias) {
+        // The backend derived a different alias — the view (and persisted selection)
+        // must follow the session the user just created, not stay pointed at a name
+        // that never materialised.
+        const chat = useChatStore();
+        if (chat.instanceId === instanceId && chat.sessionAlias === alias) {
+          chat.select(instanceId, result.alias);
         }
       }
     }
@@ -539,9 +579,15 @@ export const useInstancesStore = defineStore("instances", () => {
   // the (slow) create RPC in the background. A cold agent start blocks `createSession`
   // for 10–40s; awaiting it before closing the dialog traps the user in a frozen modal.
   // Instead the booting row lets them watch progress (or navigate away) while it spins
-  // up. On success `loadSessions` (inside createSession) swaps in the real row; on a
-  // 504 the optimistic row simply persists until `sessions-changed` lands; a hard
-  // failure flips the row to an error the booting pane shows.
+  // up. On success `createSession` materialises the row from the RPC response and
+  // `loadSessions` swaps in the list row; on a 504 the optimistic row simply persists
+  // until `sessions-changed` lands; a hard failure flips the row to an error the
+  // booting pane shows.
+  //
+  // The row is appended at the END of the active rows, not prepended: the server list
+  // appends new sessions last (creation order), so the optimistic row sits exactly
+  // where the real row will land — the sidebar order never jumps when creation
+  // completes.
   // Returns false WITHOUT starting creation when the alias is already taken (or the
   // instance is gone): firing the create RPC anyway would only get rejected as a
   // duplicate, and that rejection would land on the pre-existing row (creating=false)
@@ -550,12 +596,20 @@ export const useInstancesStore = defineStore("instances", () => {
   function beginSessionCreation(instanceId: string, alias: string, agent: string, workspace: string, agentSessionId?: string, model?: string): boolean {
     const inst = byId(instanceId);
     if (!inst || inst.sessions.some((s) => s.alias === alias && !s.archived)) return false;
-    inst.sessions = [
-      // A native attach (agentSessionId set) yields a native session — badge the optimistic
-      // row immediately so the marker doesn't pop in only once the server row lands.
-      { alias, agent, workspace, transportSession: "", running: false, archived: false, creating: true, creatingSince: Date.now(), ...(agentSessionId ? { native: true } : {}) },
-      ...inst.sessions,
-    ];
+    const active = inst.sessions.filter((s) => !s.archived);
+    const archived = inst.sessions.filter((s) => s.archived);
+    const optimisticRow: SessionRow = {
+      alias,
+      agent,
+      workspace,
+      transportSession: "",
+      running: false,
+      archived: false,
+      creating: true,
+      creatingSince: Date.now(),
+      ...(agentSessionId ? { native: true } : {}),
+    };
+    inst.sessions = [...active, optimisticRow, ...archived];
     void createSession(instanceId, alias, agent, workspace, agentSessionId, model).catch((e) => {
       const row = byId(instanceId)?.sessions.find((s) => s.alias === alias);
       if (row?.creating) {
