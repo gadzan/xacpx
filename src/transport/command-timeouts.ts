@@ -44,6 +44,7 @@ export type AcpxCommandStage =
   | "get-session-model"
   | "set-session-effort"
   | "get-session-effort"
+  | "inject-message"
   | "cancel"
   | "remove-session";
 

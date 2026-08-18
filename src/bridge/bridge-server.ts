@@ -17,6 +17,7 @@ import {
 import { isClaudeSettingsPolicy, type ClaudeSettingsPolicy } from "../adapters/claude-settings-policy";
 import { PromptCommandError } from "../transport/prompt-output";
 import { AcpxQueueOverflowError } from "../transport/acpx-queue-overflow";
+import { MessageInjectionError } from "../transport/message-injection";
 import type { PromptMedia, PromptMediaInput } from "../transport/types";
 import { BridgeRequestScheduler, type BridgeRequestLane } from "./bridge-request-scheduler";
 import { BridgeRuntime, CommandTimeoutError, EnsureSessionFailedError } from "./bridge-runtime";
@@ -39,6 +40,7 @@ const BRIDGE_METHODS = new Set<BridgeMethod>([
   "listAgentSessions",
   "resumeAgentSession",
   "prompt",
+  "injectMessage",
   "setMode",
   "setModel",
   "getSessionModel",
@@ -58,6 +60,7 @@ const SESSION_SCOPED_METHODS = new Set<BridgeMethod>([
   "tailSessionHistory",
   "resumeAgentSession",
   "prompt",
+  "injectMessage",
   "setMode",
   "setModel",
   "getSessionModel",
@@ -124,6 +127,8 @@ export class BridgeServer {
         : {};
       const errorCode = error instanceof AcpxQueueOverflowError
         ? error.code
+        : error instanceof MessageInjectionError
+          ? error.code
         : error instanceof BridgeInvalidRequestError
           ? "BRIDGE_INVALID_REQUEST"
           : "BRIDGE_INTERNAL_ERROR";
@@ -227,7 +232,11 @@ export class BridgeServer {
       return await this.dispatch(requestId, method, params, writeLine);
     }
 
-    const lane: BridgeRequestLane = method === "cancel" || method === "isSessionWarm" ? "control" : "normal";
+    const lane: BridgeRequestLane = method === "cancel" || method === "isSessionWarm"
+      ? "control"
+      : method === "injectMessage"
+        ? "message"
+        : "normal";
     return await this.scheduler.run(sessionKey, lane, () => this.dispatch(requestId, method, params, writeLine));
   }
 
@@ -367,6 +376,23 @@ export class BridgeServer {
               commands: event.commands,
             }));
           }
+        });
+      case "injectMessage":
+        return await this.runtime.injectMessage({
+          agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
+          agentCommand: asOptionalString(params.agentCommand),
+          ...agentLaunchSelection(params),
+          cwd: requireString(params, "cwd"),
+          name: requireString(params, "name"),
+          sessionKey: asOptionalString(params.sessionKey),
+          model: asOptionalString(params.model),
+          effort: asOptionalString(params.effort),
+          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
+          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
+          text: requireString(params, "text"),
+          mode: requireMessageMode(params, "mode"),
+          messageId: requireString(params, "messageId"),
         });
       case "resumeAgentSession":
         return await this.runtime.resumeAgentSession({
@@ -602,6 +628,17 @@ function requirePromptText(params: Record<string, unknown>, media?: PromptMediaI
     throw new BridgeInvalidRequestError("text must be a non-empty string unless media is provided");
   }
   return value;
+}
+
+function requireMessageMode(
+  params: Record<string, unknown>,
+  key: string,
+): "auto" | "steer" | "queue" | "interrupt" {
+  const value = params[key];
+  if (value === "auto" || value === "steer" || value === "queue" || value === "interrupt") {
+    return value;
+  }
+  throw new BridgeInvalidRequestError(key + " must be auto, steer, queue, or interrupt");
 }
 
 

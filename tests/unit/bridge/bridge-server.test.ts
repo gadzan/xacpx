@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { BridgeRuntime, CommandTimeoutError, EnsureSessionFailedError } from "../../../src/bridge/bridge-runtime";
 import { BridgeServer } from "../../../src/bridge/bridge-server";
 import { AcpxQueueOverflowError } from "../../../src/transport/acpx-queue-overflow";
+import { MessageInjectionError } from "../../../src/transport/message-injection";
 import { PromptCommandError } from "../../../src/transport/prompt-output";
 
 test("returns whether a named session exists", async () => {
@@ -21,6 +22,71 @@ test("returns whether a named session exists", async () => {
       name: "demo",
     }),
   ).resolves.toEqual({ exists: true });
+});
+
+test("bridge runtime queues injectMessage with acpx no-wait", async () => {
+  const calls: string[][] = [];
+  const runtime = new BridgeRuntime("acpx", async (_command, args) => {
+    calls.push(args);
+    return { code: 0, stdout: "", stderr: "" };
+  });
+
+  await expect(runtime.injectMessage({
+    agent: "codex",
+    cwd: "/repo",
+    name: "demo",
+    text: "<xacpx-message id=\"msg_1\">hello</xacpx-message>",
+    mode: "queue",
+    messageId: "msg_1",
+  })).resolves.toEqual({ status: "queued", modeUsed: "queue" });
+
+  expect(calls).toEqual([[
+    "--format",
+    "json",
+    "--json-strict",
+    "--cwd",
+    "/repo",
+    "--approve-all",
+    "--non-interactive-permissions",
+    "deny",
+    "codex",
+    "prompt",
+    "-s",
+    "demo",
+    "--no-wait",
+    "<xacpx-message id=\"msg_1\">hello</xacpx-message>",
+  ]]);
+});
+
+test("bridge runtime rejects strict unsupported message modes with typed errors", async () => {
+  const runtime = new BridgeRuntime(
+    "acpx",
+    async () => ({ code: 0, stdout: "", stderr: "" }),
+  );
+
+  await expect(runtime.injectMessage({
+    agent: "codex",
+    cwd: "/repo",
+    name: "demo",
+    text: "hello",
+    mode: "steer",
+    messageId: "msg_steer",
+  })).rejects.toMatchObject({
+    name: "MessageInjectionError",
+    code: "TARGET_NOT_STEERABLE",
+  });
+
+  await expect(runtime.injectMessage({
+    agent: "codex",
+    cwd: "/repo",
+    name: "demo",
+    text: "hello",
+    mode: "interrupt",
+    messageId: "msg_interrupt",
+  })).rejects.toMatchObject({
+    name: "MessageInjectionError",
+    code: "TARGET_NOT_INTERRUPTIBLE",
+  });
 });
 
 test("tails session history via the acpx 0.12 --limit syntax in bridge runtime", async () => {
@@ -100,6 +166,68 @@ test("forwards persisted effort from bridge prompt params", async () => {
   }));
 
   expect(captured).toMatchObject({ effort: "high" });
+});
+
+test("dispatches injectMessage through the message lane", async () => {
+  let captured: Record<string, unknown> | undefined;
+  const runtime = {
+    injectMessage: async (input: Record<string, unknown>) => {
+      captured = input;
+      return { status: "queued", modeUsed: "queue" };
+    },
+  } as unknown as BridgeRuntime;
+  const server = new BridgeServer(runtime);
+
+  await expect(server.handleLine(JSON.stringify({
+    id: "message-1",
+    method: "injectMessage",
+    params: {
+      agent: "codex",
+      cwd: "/repo",
+      name: "demo",
+      text: "<xacpx-message>hello</xacpx-message>",
+      mode: "queue",
+      messageId: "msg_1",
+    },
+  }))).resolves.toBe(
+    '{"id":"message-1","ok":true,"result":{"status":"queued","modeUsed":"queue"}}\n',
+  );
+
+  expect(captured).toMatchObject({
+    agent: "codex",
+    cwd: "/repo",
+    name: "demo",
+    text: "<xacpx-message>hello</xacpx-message>",
+    mode: "queue",
+    messageId: "msg_1",
+  });
+});
+
+test("preserves message injection error codes over the bridge protocol", async () => {
+  const runtime = {
+    injectMessage: async () => {
+      throw new MessageInjectionError(
+        "TARGET_NOT_STEERABLE",
+        "The target does not support same-turn steering.",
+      );
+    },
+  } as unknown as BridgeRuntime;
+  const server = new BridgeServer(runtime);
+
+  await expect(server.handleLine(JSON.stringify({
+    id: "message-error-1",
+    method: "injectMessage",
+    params: {
+      agent: "codex",
+      cwd: "/repo",
+      name: "demo",
+      text: "hello",
+      mode: "steer",
+      messageId: "msg_1",
+    },
+  }))).resolves.toBe(
+    '{"id":"message-error-1","ok":false,"error":{"code":"TARGET_NOT_STEERABLE","message":"The target does not support same-turn steering."}}\n',
+  );
 });
 
 test("forwards validated Claude settings policy metadata over ndjson", async () => {

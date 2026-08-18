@@ -72,6 +72,49 @@ test("control requests for the same session can run while a normal request is st
   expect(normalCompleted).toBe(true);
 });
 
+test("message requests run while a normal request is pending and stay FIFO with each other", async () => {
+  const scheduler = new BridgeRequestScheduler();
+  const normalStarted = deferred<void>();
+  const normalRelease = deferred<void>();
+  const firstMessageStarted = deferred<void>();
+  const firstMessageRelease = deferred<void>();
+  const secondMessageStarted = deferred<void>();
+  let normalCompleted = false;
+  let secondMessageHasStarted = false;
+  void secondMessageStarted.promise.then(() => {
+    secondMessageHasStarted = true;
+  });
+
+  const normal = scheduler.run("session-a", "normal", async () => {
+    normalStarted.resolve();
+    await normalRelease.promise;
+    normalCompleted = true;
+  });
+  await normalStarted.promise;
+
+  const firstMessage = scheduler.run("session-a", "message", async () => {
+    firstMessageStarted.resolve();
+    await firstMessageRelease.promise;
+    return "first";
+  });
+  const secondMessage = scheduler.run("session-a", "message", async () => {
+    secondMessageStarted.resolve();
+    return "second";
+  });
+
+  await firstMessageStarted.promise;
+  expect(normalCompleted).toBe(false);
+  expect(secondMessageHasStarted).toBe(false);
+
+  firstMessageRelease.resolve();
+  await expect(firstMessage).resolves.toBe("first");
+  await expect(secondMessageStarted.promise).resolves.toBeUndefined();
+  await expect(secondMessage).resolves.toBe("second");
+
+  normalRelease.resolve();
+  await expect(normal).resolves.toBeUndefined();
+});
+
 test("different sessions can progress independently", async () => {
   const scheduler = new BridgeRequestScheduler();
   const aStarted = deferred<void>();
