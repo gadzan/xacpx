@@ -7,6 +7,7 @@ import {
   MAX_TASK_WATCH_TIMEOUT_MS,
 } from "../orchestration/task-watch-timeouts";
 import { isQuotaDeferredError } from "../weixin/messaging/quota-errors";
+import type { AgentMessagingErrorCode } from "../orchestration/agent-messaging-error";
 import { z } from "zod";
 
 const taskStatusSchema = z.enum([
@@ -23,6 +24,22 @@ const orderSchema = z.enum(["asc", "desc"]);
 const contestedDecisionSchema = z.enum(["accept", "discard"]);
 const taskWatchModeSchema = z.enum(["next_event", "until_attention_or_terminal"]);
 const scheduledModeSchema = z.enum(["temp", "bound"]);
+const agentMessagingErrorCodes = new Set<AgentMessagingErrorCode>([
+  "TARGET_NOT_REACHABLE",
+  "TARGET_UNAVAILABLE",
+  "ROUTE_UNAVAILABLE",
+  "TARGET_NOT_RUNNING",
+  "TARGET_NOT_STEERABLE",
+  "TARGET_NOT_INTERRUPTIBLE",
+  "MESSAGE_TOO_LARGE",
+  "MESSAGE_QUEUE_FULL",
+  "MESSAGE_RATE_LIMITED",
+  "SELF_MESSAGE_NOT_ALLOWED",
+  "DELIVERY_RACE",
+  "DELIVERY_TIMEOUT",
+  "DELIVERY_FAILED",
+  "DELIVERY_DENIED",
+]);
 const taskQuestionSchema = z
   .object({
     taskId: z.string().min(1),
@@ -379,6 +396,63 @@ export function buildXacpxMcpToolRegistry(input: {
     },
   ];
 
+  tools.push(
+    {
+      name: "agent_list",
+      description:
+        "List peer agent sessions that the current xacpx-managed agent is authorized to message. Endpoints may be local or remote; only reachable and discoverable endpoints are returned. Use the returned opaque handle as agent_send.to and do not parse it.",
+      inputSchema: z.object({}).strict(),
+      handler: async () =>
+        await asToolResult(async () => {
+          const agents = await transport.listAgentEndpoints({
+            coordinatorSession,
+            ...(sourceHandle ? { sourceHandle } : {}),
+          });
+          const text = agents.length === 0
+            ? "No authorized peer agent sessions are currently reachable."
+            : [
+                "Authorized peer agent sessions:",
+                ...agents.map(
+                  (agent) =>
+                    `- ${agent.handle}: ${agent.agent} (${agent.state}; receive=${agent.capabilities.receive}, steer=${agent.capabilities.steer}, queue=${agent.capabilities.queue}, interrupt=${agent.capabilities.interrupt})`,
+                ),
+              ].join("\n");
+          return createSuccessResult(text, { agents });
+        }),
+    },
+    {
+      name: "agent_send",
+      description:
+        "Send a one-way peer message to another authorized agent session. The target may be local or remote. This call returns only after the target runtime accepts injection or queue delivery and never waits for the target model to reply. Use mode=auto unless same-turn steering or interrupt semantics are explicitly required.",
+      inputSchema: z
+        .object({
+          to: z.string().min(1),
+          message: z.string().min(1),
+          mode: z.enum(["auto", "steer", "queue", "interrupt"]).optional(),
+          replyTo: z.string().min(1).optional(),
+        })
+        .strict(),
+      handler: async (args) =>
+        await asToolResult(async () => {
+          const input = args as {
+            to: string;
+            message: string;
+            mode?: "auto" | "steer" | "queue" | "interrupt";
+            replyTo?: string;
+          };
+          const receipt = await transport.sendAgentMessage({
+            coordinatorSession,
+            ...(sourceHandle ? { sourceHandle } : {}),
+            ...input,
+          });
+          return createSuccessResult(
+            `Peer message ${receipt.messageId} accepted with status=${receipt.status}${receipt.modeUsed ? ` via ${receipt.modeUsed}` : ""}.`,
+            receipt,
+          );
+        }),
+    },
+  );
+
   if (internalSessionTools && !isExternalCoordinator && !sourceHandle) {
     tools.push({
       name: "scheduled_create",
@@ -495,8 +569,29 @@ async function asToolResult(
         isError: false,
       };
     }
+    const messagingError = getAgentMessagingError(error);
+    if (messagingError) {
+      return {
+        content: [{ type: "text", text: messagingError.message }],
+        structuredContent: { error: messagingError },
+        isError: true,
+      };
+    }
     return createErrorResult(formatToolError(error));
   }
+}
+
+function getAgentMessagingError(
+  error: unknown,
+): { code: AgentMessagingErrorCode; message: string } | null {
+  if (!(error instanceof Error) || !("code" in error)) {
+    return null;
+  }
+  const code = (error as Error & { code?: unknown }).code;
+  if (typeof code !== "string" || !agentMessagingErrorCodes.has(code as AgentMessagingErrorCode)) {
+    return null;
+  }
+  return { code: code as AgentMessagingErrorCode, message: error.message };
 }
 
 

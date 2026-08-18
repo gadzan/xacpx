@@ -17,6 +17,11 @@ import type {
   OrchestrationGroupRecord,
   OrchestrationTaskRecord,
 } from "../orchestration/orchestration-types";
+import type {
+  AgentEndpointView,
+  AgentMessageMode,
+  AgentMessageReceipt,
+} from "../orchestration/agent-messaging-types";
 
 export interface XacpxMcpDelegateRequest {
   coordinatorSession: string;
@@ -91,6 +96,18 @@ export interface XacpxMcpScheduledCreateArgs extends ScheduledCreateFromRouteInp
 export interface XacpxMcpScheduledListArgs extends ScheduledListFromRouteInput {}
 export interface XacpxMcpScheduledCancelArgs extends ScheduledCancelFromRouteInput {}
 
+export interface XacpxMcpAgentListArgs {
+  coordinatorSession: string;
+  sourceHandle?: string;
+}
+
+export interface XacpxMcpAgentSendArgs extends XacpxMcpAgentListArgs {
+  to: string;
+  message: string;
+  mode?: AgentMessageMode;
+  replyTo?: string;
+}
+
 export interface XacpxMcpTransport {
   delegateRequest: (input: XacpxMcpDelegateRequest) => Promise<RequestDelegateRpcResult>;
   createGroup: (input: XacpxMcpGroupNewArgs) => Promise<OrchestrationGroupRecord>;
@@ -114,6 +131,8 @@ export interface XacpxMcpTransport {
   scheduledCreate: (input: XacpxMcpScheduledCreateArgs) => Promise<ScheduledTaskRecord>;
   scheduledList: (input: XacpxMcpScheduledListArgs) => Promise<ScheduledTaskRecord[]>;
   scheduledCancel: (input: XacpxMcpScheduledCancelArgs) => Promise<{ id: string; cancelled: boolean }>;
+  listAgentEndpoints: (input: XacpxMcpAgentListArgs) => Promise<AgentEndpointView[]>;
+  sendAgentMessage: (input: XacpxMcpAgentSendArgs) => Promise<AgentMessageReceipt>;
 }
 
 interface OrchestrationClientLike {
@@ -132,6 +151,8 @@ interface OrchestrationClientLike {
   scheduledCreate?: OrchestrationClient["scheduledCreate"];
   scheduledList?: OrchestrationClient["scheduledList"];
   scheduledCancel?: OrchestrationClient["scheduledCancel"];
+  agentList?: OrchestrationClient["agentList"];
+  agentSend?: OrchestrationClient["agentSend"];
 }
 
 export function createOrchestrationTransport(
@@ -204,6 +225,18 @@ export function createOrchestrationTransport(
       }
       return await client.scheduledCancel(input);
     },
+    listAgentEndpoints: async (input) => {
+      if (!client.agentList) {
+        throw new Error("orchestration client agentList is not configured");
+      }
+      return await client.agentList(input);
+    },
+    sendAgentMessage: async (input) => {
+      if (!client.agentSend) {
+        throw new Error("orchestration client agentSend is not configured");
+      }
+      return await client.agentSend(input);
+    },
   };
 }
 
@@ -240,5 +273,11 @@ export function createMemoryTransport(
       overrides.scheduledList ?? (unimplemented("scheduledList") as XacpxMcpTransport["scheduledList"]),
     scheduledCancel:
       overrides.scheduledCancel ?? (unimplemented("scheduledCancel") as XacpxMcpTransport["scheduledCancel"]),
+    listAgentEndpoints:
+      overrides.listAgentEndpoints
+      ?? (unimplemented("listAgentEndpoints") as XacpxMcpTransport["listAgentEndpoints"]),
+    sendAgentMessage:
+      overrides.sendAgentMessage
+      ?? (unimplemented("sendAgentMessage") as XacpxMcpTransport["sendAgentMessage"]),
   };
 }

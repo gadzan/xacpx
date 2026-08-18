@@ -143,6 +143,19 @@ test("createOrchestrationTransport maps coordinator-scoped MCP calls onto the RP
       calls.push({ method: "coordinatorReviewContestedResult", input });
       return { ...taskRecord, status: "blocked" as const };
     },
+    agentList: async (input: unknown) => {
+      calls.push({ method: "agentList", input });
+      return [];
+    },
+    agentSend: async (input: unknown) => {
+      calls.push({ method: "agentSend", input });
+      return {
+        messageId: "msg-1",
+        status: "queued" as const,
+        modeUsed: "queue" as const,
+        route: "local" as const,
+      };
+    },
   };
 
   const transport = createOrchestrationTransport(
@@ -199,6 +212,18 @@ test("createOrchestrationTransport maps coordinator-scoped MCP calls onto the RP
     taskId: "task-1",
     reviewId: "review-1",
     decision: "discard",
+  });
+  await transport.listAgentEndpoints({
+    coordinatorSession: "backend:main",
+    sourceHandle: "backend:worker",
+  });
+  await transport.sendAgentMessage({
+    coordinatorSession: "backend:main",
+    sourceHandle: "backend:worker",
+    to: "agent:node-local:endpoint-peer",
+    message: "schema changed",
+    mode: "queue",
+    replyTo: "msg-prior",
   });
 
   expect(calls).toEqual([
@@ -269,6 +294,24 @@ test("createOrchestrationTransport maps coordinator-scoped MCP calls onto the RP
         taskId: "task-1",
         reviewId: "review-1",
         decision: "discard",
+      },
+    },
+    {
+      method: "agentList",
+      input: {
+        coordinatorSession: "backend:main",
+        sourceHandle: "backend:worker",
+      },
+    },
+    {
+      method: "agentSend",
+      input: {
+        coordinatorSession: "backend:main",
+        sourceHandle: "backend:worker",
+        to: "agent:node-local:endpoint-peer",
+        message: "schema changed",
+        mode: "queue",
+        replyTo: "msg-prior",
       },
     },
   ]);
@@ -415,4 +458,66 @@ test("createOrchestrationTransport workerRaiseQuestion fails clearly when no inj
     }),
   ).rejects.toThrow(/sourceHandle/i);
   expect(calls).toEqual([]);
+});
+
+test("createMemoryTransport exposes agent messaging override hooks", async () => {
+  const calls: unknown[] = [];
+  const transport = createMemoryTransport(
+    async () => ({ taskId: "task-1", status: "running" }),
+    {
+      listAgentEndpoints: async (input) => {
+        calls.push(input);
+        return [
+          {
+            address: { nodeId: "node-local", endpointId: "endpoint-peer" },
+            handle: "agent:node-local:endpoint-peer",
+            node: "node-local",
+            agent: "codex",
+            state: "idle",
+            capabilities: { receive: true, steer: false, queue: true, interrupt: false },
+          },
+        ];
+      },
+      sendAgentMessage: async (input) => {
+        calls.push(input);
+        return {
+          messageId: "msg-1",
+          status: "queued",
+          modeUsed: "queue",
+          route: "local",
+        };
+      },
+    },
+  );
+
+  await expect(
+    transport.listAgentEndpoints({ coordinatorSession: "backend:main", sourceHandle: "worker-a" }),
+  ).resolves.toHaveLength(1);
+  await expect(
+    transport.sendAgentMessage({
+      coordinatorSession: "backend:main",
+      sourceHandle: "worker-a",
+      to: "agent:node-local:endpoint-peer",
+      message: "schema changed",
+      mode: "auto",
+      replyTo: "msg-prior",
+    }),
+  ).resolves.toEqual({
+    messageId: "msg-1",
+    status: "queued",
+    modeUsed: "queue",
+    route: "local",
+  });
+
+  expect(calls).toEqual([
+    { coordinatorSession: "backend:main", sourceHandle: "worker-a" },
+    {
+      coordinatorSession: "backend:main",
+      sourceHandle: "worker-a",
+      to: "agent:node-local:endpoint-peer",
+      message: "schema changed",
+      mode: "auto",
+      replyTo: "msg-prior",
+    },
+  ]);
 });
