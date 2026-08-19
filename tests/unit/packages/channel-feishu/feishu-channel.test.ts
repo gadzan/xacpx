@@ -48,6 +48,7 @@ function createNoopQuota() {
 function createNoopLogger() {
   return {
     info: async () => {},
+    warn: async () => {},
     error: async () => {},
     debug: async () => {},
     cleanup: async () => {},
@@ -966,4 +967,128 @@ test("FeishuChannel rejects outbound media pointing to a directory", async () =>
   await handlers["im.message.receive_v1"]!(event);
 
   expect(errorLogs.some((log) => log.includes(process.cwd()))).toBe(true);
+});
+
+function groupEvent(messageId: string, senderOpenId: string, text: string): FeishuMessageEvent {
+  return {
+    sender: { sender_id: { open_id: senderOpenId } },
+    message: {
+      message_id: messageId,
+      chat_id: "oc_group",
+      chat_type: "group",
+      message_type: "text",
+      content: JSON.stringify({ text }),
+      create_time: String(Date.now()),
+      mentions: [{ key: "@bot", id: { open_id: "ou_bot" } }],
+    },
+  };
+}
+
+test("trustGroupOwner asserts isOwner on group turns from the chat owner", async () => {
+  let handlers: Record<string, (data: unknown) => Promise<void> | void> = {};
+  let ownerLookups = 0;
+  const channel = new FeishuChannel(
+    { ...defaultFeishuConfig, trustGroupOwner: true },
+    {
+      createClient: () => ({
+        sdk: { im: { message: { reply: async () => ({}), create: async () => ({}) } } },
+        probeBot: async () => ({ botOpenId: "ou_bot" }),
+        getChatOwner: async () => {
+          ownerLookups += 1;
+          return "ou_owner";
+        },
+        startWS: async (input: { handlers: Record<string, (data: unknown) => Promise<void> | void> }) => {
+          handlers = input.handlers;
+        },
+      }),
+    },
+  );
+  const requests: { metadata?: Record<string, unknown> }[] = [];
+  const agent: ChatAgent = {
+    async chat(request) {
+      requests.push(request as { metadata?: Record<string, unknown> });
+      return { text: "ok" };
+    },
+  };
+
+  await channel.start({ agent, abortSignal: new AbortController().signal, quota: createNoopQuota(), logger: createNoopLogger() });
+
+  await handlers["im.message.receive_v1"]!(groupEvent("om_g1", "ou_owner", "@bot /use demo"));
+  await handlers["im.message.receive_v1"]!(groupEvent("om_g2", "ou_member", "@bot /use demo"));
+
+  expect(requests).toHaveLength(2);
+  expect(requests[0]!.metadata).toMatchObject({ channel: "feishu", chatType: "group", senderId: "ou_owner", groupId: "oc_group", isOwner: true });
+  expect(requests[1]!.metadata).toMatchObject({ senderId: "ou_member" });
+  expect(requests[1]!.metadata!.isOwner).toBeUndefined();
+  // One cached owner lookup serves both messages.
+  expect(ownerLookups).toBe(1);
+});
+
+test("trustGroupOwner lookup failure leaves isOwner absent (fail closed)", async () => {
+  let handlers: Record<string, (data: unknown) => Promise<void> | void> = {};
+  const channel = new FeishuChannel(
+    { ...defaultFeishuConfig, trustGroupOwner: true },
+    {
+      createClient: () => ({
+        sdk: { im: { message: { reply: async () => ({}), create: async () => ({}) } } },
+        probeBot: async () => ({ botOpenId: "ou_bot" }),
+        getChatOwner: async () => {
+          throw new Error("scope missing");
+        },
+        startWS: async (input: { handlers: Record<string, (data: unknown) => Promise<void> | void> }) => {
+          handlers = input.handlers;
+        },
+      }),
+    },
+  );
+  const requests: { metadata?: Record<string, unknown> }[] = [];
+  const agent: ChatAgent = {
+    async chat(request) {
+      requests.push(request as { metadata?: Record<string, unknown> });
+      return { text: "ok" };
+    },
+  };
+
+  await channel.start({ agent, abortSignal: new AbortController().signal, quota: createNoopQuota(), logger: createNoopLogger() });
+
+  await handlers["im.message.receive_v1"]!(groupEvent("om_g3", "ou_owner", "@bot /use demo"));
+
+  expect(requests).toHaveLength(1);
+  expect(requests[0]!.metadata!.isOwner).toBeUndefined();
+});
+
+test("trustGroupOwner off never queries the chat owner", async () => {
+  let handlers: Record<string, (data: unknown) => Promise<void> | void> = {};
+  let ownerLookups = 0;
+  const channel = new FeishuChannel(
+    defaultFeishuConfig,
+    {
+      createClient: () => ({
+        sdk: { im: { message: { reply: async () => ({}), create: async () => ({}) } } },
+        probeBot: async () => ({ botOpenId: "ou_bot" }),
+        getChatOwner: async () => {
+          ownerLookups += 1;
+          return "ou_owner";
+        },
+        startWS: async (input: { handlers: Record<string, (data: unknown) => Promise<void> | void> }) => {
+          handlers = input.handlers;
+        },
+      }),
+    },
+  );
+  const requests: { metadata?: Record<string, unknown> }[] = [];
+  const agent: ChatAgent = {
+    async chat(request) {
+      requests.push(request as { metadata?: Record<string, unknown> });
+      return { text: "ok" };
+    },
+  };
+
+  await channel.start({ agent, abortSignal: new AbortController().signal, quota: createNoopQuota(), logger: createNoopLogger() });
+
+  await handlers["im.message.receive_v1"]!(groupEvent("om_g4", "ou_owner", "@bot /use demo"));
+
+  expect(requests).toHaveLength(1);
+  expect(requests[0]!.metadata!.isOwner).toBeUndefined();
+  expect(ownerLookups).toBe(0);
 });

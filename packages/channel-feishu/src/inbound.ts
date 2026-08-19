@@ -33,18 +33,25 @@ export function parseFeishuConversationId(chatKey: string): { accountId: string;
  * any unexpected value normalize to `"direct"`. Without this, interactive
  * Feishu turns recorded a route with no `chatType`, which blocked the in-session
  * scheduled_create/list/cancel tools and group-owner command authorization.
+ *
+ * `senderIsOwner` is asserted only when the channel positively resolved the
+ * sender as the group owner (opt-in `trustGroupOwner`). It stays absent on
+ * lookup failure or when the feature is off - the host treats a missing
+ * `isOwner` as fail-closed, which is exactly the safe direction.
  */
 export function buildFeishuRouteMetadata(input: {
   chatType: string | undefined;
   senderOpenId?: string;
   chatId: string;
-}): { channel: "feishu"; chatType: "direct" | "group"; senderId?: string; groupId?: string } {
+  senderIsOwner?: boolean;
+}): { channel: "feishu"; chatType: "direct" | "group"; senderId?: string; groupId?: string; isOwner?: boolean } {
   const isGroup = input.chatType === "group";
   return {
     channel: "feishu",
     chatType: isGroup ? "group" : "direct",
     ...(input.senderOpenId ? { senderId: input.senderOpenId } : {}),
     ...(isGroup ? { groupId: input.chatId } : {}),
+    ...(input.senderIsOwner ? { isOwner: true } : {}),
   };
 }
 

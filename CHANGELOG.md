@@ -1,4 +1,9 @@
 # Changelog
+## [Unreleased]
+
+### Added
+
+- Feishu channel: opt-in `trustGroupOwner` option - asserts `isOwner` on group turns whose sender is the chat owner (GET `/im/v1/chats`, cached 5 min, fail closed on lookup errors), so owner-gated control commands work without configuring `ownerIds`. Off by default; only enable when you control who can add the bot to groups.
 
 ## [relay 0.12.1-beta.3] - 2026-08-18
 

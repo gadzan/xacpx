@@ -13,11 +13,30 @@ export interface FeishuLarkClientOptions {
 export interface FeishuLarkClient {
   sdk: FeishuMessageClient;
   probeBot(): Promise<{ botOpenId?: string; botName?: string }>;
+  /**
+   * Returns the group owner's open_id for a chat the bot belongs to, or
+   * undefined when the response carries none. Throws on API failure so the
+   * caller can fail closed (no owner assertion).
+   */
+  getChatOwner(chatId: string): Promise<string | undefined>;
   startWS(input: {
     handlers: Record<string, (data: unknown) => Promise<void> | void>;
     abortSignal?: AbortSignal;
   }): Promise<void>;
   stop(): void;
+}
+
+/**
+ * Narrows a GET /im/v1/chats/{chat_id} response to its `data.owner_id`,
+ * validating each hop so a malformed payload yields undefined (fail closed)
+ * instead of a fabricated read.
+ */
+function extractChatOwnerId(response: unknown): string | undefined {
+  if (!response || typeof response !== "object" || !("data" in response)) return undefined;
+  const data: unknown = response.data;
+  if (!data || typeof data !== "object" || !("owner_id" in data)) return undefined;
+  const ownerId: unknown = data.owner_id;
+  return typeof ownerId === "string" && ownerId ? ownerId : undefined;
 }
 
 function resolveDomain(domain: string): unknown {
@@ -49,6 +68,19 @@ export function createFeishuLarkClient(options: FeishuLarkClientOptions): Feishu
         botOpenId: response.data?.pingBotInfo?.botID,
         botName: response.data?.pingBotInfo?.botName,
       };
+    },
+    async getChatOwner(chatId: string) {
+      // The Lark SDK Client exposes a generic `request` method; our
+      // FeishuMessageClient subset omits it, so this named cast re-declares
+      // only that method surface.
+      const requester = sdk as unknown as {
+        request(input: { method: "GET"; url: string }): Promise<unknown>;
+      };
+      const response: unknown = await requester.request({
+        method: "GET",
+        url: `/open-apis/im/v1/chats/${encodeURIComponent(chatId)}`,
+      });
+      return extractChatOwnerId(response);
     },
     async startWS(input) {
       if (options.injectedStartWS) {

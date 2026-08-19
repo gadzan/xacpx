@@ -21,6 +21,21 @@ test("buildFeishuRouteMetadata defaults unknown/undefined chat_type to direct", 
   });
 });
 
+
+test("buildFeishuRouteMetadata asserts isOwner only on positive senderIsOwner", () => {
+  expect(
+    buildFeishuRouteMetadata({ chatType: "group", senderOpenId: "ou_owner", chatId: "oc_chat", senderIsOwner: true }),
+  ).toEqual({ channel: "feishu", chatType: "group", senderId: "ou_owner", groupId: "oc_chat", isOwner: true });
+});
+
+test("buildFeishuRouteMetadata omits isOwner when senderIsOwner is false or unresolved", () => {
+  expect(
+    buildFeishuRouteMetadata({ chatType: "group", senderOpenId: "ou_member", chatId: "oc_chat", senderIsOwner: false }),
+  ).toEqual({ channel: "feishu", chatType: "group", senderId: "ou_member", groupId: "oc_chat" });
+  expect(
+    buildFeishuRouteMetadata({ chatType: "group", senderOpenId: "ou_member", chatId: "oc_chat", senderIsOwner: undefined }),
+  ).toEqual({ channel: "feishu", chatType: "group", senderId: "ou_member", groupId: "oc_chat" });
+});
 test("buildFeishuRouteMetadata omits senderId when sender open_id is absent", () => {
   expect(buildFeishuRouteMetadata({ chatType: "p2p", chatId: "oc_chat" })).toEqual({
     channel: "feishu",
