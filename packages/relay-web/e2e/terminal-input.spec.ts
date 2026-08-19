@@ -1,5 +1,5 @@
-import { test, expect, loginAndOpenTerminal, waitForTerminalScreen } from "./fixtures";
 
+import { test, expect, loginAndOpenTerminal, waitForTerminalScreen, readTerminalGrid } from "./fixtures";
 test.describe("terminal input lifecycle", () => {
   test("IME composition commits once; intermediate pinyin never reaches the PTY", async ({ page, hub }) => {
     await loginAndOpenTerminal(page);
@@ -29,6 +29,45 @@ test.describe("terminal input lifecycle", () => {
     const added = hub.inputs.slice(inputsBefore);
     expect(added.join("")).not.toMatch(/n|i|h|a|o/i);
     expect(added).toHaveLength(1);
+  });
+
+  test("legacy mouse report travels as exact raw bytes (onBinary path)", async ({ page, hub }, testInfo) => {
+    // Wide desktop grid needed: col >= 96 forces a coordinate byte >= 0x80.
+    test.skip(testInfo.project.name !== "chromium-desktop", "needs a >=96-col grid");
+    await loginAndOpenTerminal(page);
+    await waitForTerminalScreen(page);
+    // Enable VT200 mouse tracking (DEFAULT encoding): xterm sends these
+    // reports through onBinary, not onData.
+    hub.sendBytes("\u001b[?1000h");
+
+    const grid = await readTerminalGrid(page);
+    test.skip(grid.cols < 100, `terminal too narrow for a >=0x80 coord byte (${grid.cols} cols)`);
+    // Click at 0-based col 96: the report byte is (col+1)+32 = 0x81 >= 0x80 -
+    // exactly the byte a UTF-8 round-trip would corrupt into C2 81.
+    const col = 96;
+    const row = 3;
+    const host = page.getByTestId("terminal-host");
+    const pos = await host.evaluate((el, { col, row }) => {
+      const screen = el.querySelector(".xterm-screen")!.getBoundingClientRect();
+      const cols = Number(el.dataset.cols ?? 80);
+      const rows = Number(el.dataset.rows ?? 24);
+      return {
+        x: screen.left + Math.min(col, cols - 2) * (screen.width / cols) + 1,
+        y: screen.top + Math.min(row, rows - 2) * (screen.height / rows) + 1,
+      };
+    }, { col, row });
+    const inputsBefore = hub.inputBytes.length;
+    await page.mouse.click(pos.x, pos.y);
+
+    await expect.poll(() => hub.inputBytes.length).toBeGreaterThan(inputsBefore);
+    // xterm reports 1-based coords: col 96 -> byte 0x81 (97+32), row 3 -> 0x24 (4+32).
+    // The mousedown report (button byte 0x20) must arrive with 0x81 intact -
+    // a UTF-8 round-trip would corrupt it into C2 81.
+    const down = hub.inputBytes
+      .slice(inputsBefore)
+      .find((b) => b[0] === 0x1b && b[3] === 0x20);
+    expect(down ? Array.from(down) : null).toEqual([0x1b, 0x5b, 0x4d, 0x20, 0x81, 0x24]);
+    expect(Array.from(down!)).not.toContain(0xc2);
   });
 
   test("IME textarea is a one-cell cursor anchor, not a fullscreen overlay", async ({ page }) => {

@@ -109,12 +109,15 @@ export async function readTerminalGrid(page: Page): Promise<{
     const cols = Number(host.dataset.cols ?? 0);
     const rows = Number(host.dataset.rows ?? 0);
     const cellW = cols > 0 ? screenRect.width / cols : 0;
+    // FitAddon parity: fit() reserves 14px for the scrollbar next to the
+    // screen, so the slack left of the scrollbar must stay under one cell.
+    const scrollBarW = 14;
     return {
       cols,
       rows,
       screenWidth: screenRect.width,
       hostWidth: hostRect.width,
-      remainder: cellW > 0 ? hostRect.width - screenRect.width : hostRect.width,
+      remainder: cellW > 0 ? hostRect.width - scrollBarW - screenRect.width : hostRect.width,
     };
   });
 }

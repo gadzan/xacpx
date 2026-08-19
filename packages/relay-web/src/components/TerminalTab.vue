@@ -117,6 +117,13 @@ function handleData(d: string) {
   terminals.sendInput(localKey.value, out);
 }
 
+/** xterm onBinary: legacy mouse reports whose bytes cannot go through UTF-8.
+ *  Adapter already converted charCodes to raw bytes - forward as-is. */
+function handleBinary(bytes: Uint8Array) {
+  if (!canType.value) return;
+  terminals.sendInputBytes(localKey.value, bytes);
+}
+
 function applyMods(seq: string): string {
   const mod = modParam();
   if (mod === 1) return seq;
@@ -231,8 +238,10 @@ async function openAttachment(): Promise<void> {
     cols: 80,
     rows: 24,
     onData: handleData,
+    onBinary: handleBinary,
     theme: currentTheme(),
   });
+
   adapter = currentAdapter;
 
   offRebase = terminals.onRebase(async (key, keyframe, cols, rows) => {

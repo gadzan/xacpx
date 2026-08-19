@@ -33,12 +33,14 @@ export interface MockHub {
   url: string;
   resizes: Array<{ cols: number; rows: number }>;
   inputs: string[];
+  inputBytes: Buffer[];
   lastOpen: { cols: number; rows: number; requestId: string } | null;
   lastTakeControl: { requestId: string } | null;
   sockets: WebSocket[];
   role: "controller" | "spectator";
   send(event: WebServerEvent): void;
   sendRebase(cols: number, rows: number, keyframe?: string, epoch?: number): void;
+  sendBytes(data: string | Buffer): void;
   closeSockets(): void;
   setRole(role: "controller" | "spectator"): void;
   close(): Promise<void>;
@@ -72,10 +74,14 @@ export async function startMockHub(): Promise<MockHub> {
   const sockets: WebSocket[] = [];
   const resizes: Array<{ cols: number; rows: number }> = [];
   const inputs: string[] = [];
+  const inputBytes: Buffer[] = [];
   let lastOpen: MockHub["lastOpen"] = null;
   let lastTakeControl: MockHub["lastTakeControl"] = null;
   let role: "controller" | "spectator" = "controller";
   let rebaseEpoch = 1;
+  let sequence = 0;
+  /** Epoch of the most recently SENT rebase - live bytes must carry it. */
+  let liveEpoch = 1;
 
   const http = createServer(async (req, res) => {
     const url = req.url ?? "/";
@@ -158,6 +164,7 @@ export async function startMockHub(): Promise<MockHub> {
   }
 
   function sendRebase(cols: number, rows: number, keyframe = "", epoch = rebaseEpoch++): void {
+    liveEpoch = epoch;
     const dataBase64 = canonicalBase64(keyframe);
     const totalBytes = Buffer.from(dataBase64, "base64").byteLength;
     send({
@@ -190,6 +197,21 @@ export async function startMockHub(): Promise<MockHub> {
       attachmentId: ATTACHMENT_ID,
       generation: GENERATION,
       epoch,
+    });
+  }
+
+  /** Push live PTY output (already past the initial rebase) as terminal-bytes.
+   *  Sequences continue exactly from the rebase's nextSequence (0): the
+   *  recovery reducer resyncs on any gap. */
+  function sendBytes(data: string | Buffer): void {
+    send({
+      kind: "terminal-bytes",
+      instanceId: INSTANCE_ID,
+      attachmentId: ATTACHMENT_ID,
+      generation: GENERATION,
+      epoch: liveEpoch,
+      sequence: sequence++,
+      dataBase64: Buffer.from(data, "binary").toString("base64"),
     });
   }
 
@@ -249,6 +271,7 @@ export async function startMockHub(): Promise<MockHub> {
     }
     if (msg.kind === "terminal-input" && "dataBase64" in msg) {
       inputs.push(Buffer.from(msg.dataBase64, "base64").toString("utf8"));
+      inputBytes.push(Buffer.from(msg.dataBase64, "base64"));
     }
   }
 
@@ -262,12 +285,14 @@ export async function startMockHub(): Promise<MockHub> {
     url: `http://127.0.0.1:${port}`,
     resizes,
     inputs,
+    inputBytes,
     get lastOpen() { return lastOpen; },
     get lastTakeControl() { return lastTakeControl; },
     sockets,
     get role() { return role; },
     send,
     sendRebase,
+    sendBytes,
     closeSockets() {
       for (const ws of [...sockets]) ws.close();
     },
