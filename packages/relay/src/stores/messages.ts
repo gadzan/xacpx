@@ -53,6 +53,7 @@ export class MessageStore {
     structured?: StructuredTurn,
     attachments?: AttachmentMetadata[],
     promptRequestId?: string,
+    createdAt?: string,
   ): number {
     this.db.run(
       "INSERT INTO messages (instance_id, session_alias, direction, text, created_at, structured, attachments, prompt_request_id) VALUES (?,?,?,?,?,?,?,?)",
@@ -61,7 +62,7 @@ export class MessageStore {
         sessionAlias,
         direction,
         text,
-        this.now().toISOString(),
+        createdAt ?? this.now().toISOString(),
         structured ? JSON.stringify(structured) : null,
         attachments && attachments.length > 0 ? JSON.stringify(attachments) : null,
         promptRequestId ?? null,

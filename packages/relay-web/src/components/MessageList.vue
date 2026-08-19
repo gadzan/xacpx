@@ -8,6 +8,7 @@ import ReasoningPanel from "./ReasoningPanel.vue";
 import TurnParts from "./TurnParts.vue";
 import CopyButton from "./CopyButton.vue";
 import { AlertCircle, CircleStop, Clock, Loader2, RotateCcw, TriangleAlert } from "lucide-vue-next";
+import AgentMessageCard from "./AgentMessageCard.vue";
 import AgentIcon from "./AgentIcon.vue";
 import MessageAttachments from "./MessageAttachments.vue";
 import { fmtTime, fmtDateTime } from "../lib/format";
@@ -387,8 +388,15 @@ watch(
              the key index is translated back to the FULL-array index so optimistic-row
              keys stay stable while older rows are still being revealed above. -->
         <template v-for="(m, i) in visibleMessages" :key="messageKey(m, hiddenCount + i)">
+          <!-- AGENT MESSAGE card (sender / receiver collaboration event) -->
+          <AgentMessageCard
+            v-if="m.structured?.agentMessage"
+            :message="m.structured.agentMessage"
+            :class="enterRowClass"
+            :style="enterStyle(i)"
+          />
           <!-- USER row -->
-          <div v-if="m.direction === 'in'" class="cv-row flex justify-end" :class="enterRowClass"
+          <div v-else-if="m.direction === 'in'" class="cv-row flex justify-end" :class="enterRowClass"
                :style="enterStyle(i)"
                :data-scheduled-task="schedOf(m)?.taskId">
             <!-- min-w-0: without it the flex item's min-width:auto tracks a wide <pre>/table

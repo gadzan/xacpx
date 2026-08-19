@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import type { AppLogger } from "../logging/app-logger";
+import type { ControlEventBus } from "../control/control-event-bus";
 import { isCommandTimeoutError } from "../transport/command-timeouts";
 import {
   MessageInjectionError,
@@ -25,6 +26,8 @@ import type {
   AgentMessageTraceRecord,
   AgentSenderBinding,
   MessageContext,
+  PeerMessageHistoryEntry,
+  PeerMessagePeer,
 } from "./agent-messaging-types";
 import { RelayAgentMessageRoute } from "./relay-agent-message-route";
 export interface LocalAgentMessageDelivery {
@@ -114,13 +117,16 @@ export class AgentMessageRouter {
         | "resolveTarget"
         | "resolveSelector"
         | "resolveLocalTargetByEndpointId"
-      >;
+      > & {
+        resolveTargetByHandle?: (handle: string) => Promise<AgentEndpointView | null>;
+      };
       delivery: LocalAgentMessageDelivery;
       remoteRoute?: RelayAgentMessageRoute;
       createId?: () => string;
       now?: () => number;
       limits?: AgentMessageRouterLimits;
       logger?: Pick<AppLogger, "info">;
+      events?: ControlEventBus;
     },
   ) {}
 
@@ -131,6 +137,36 @@ export class AgentMessageRouter {
   }
   getTraceRecords(limit = 256): AgentMessageTraceRecord[] {
     return this.traceRingBuffer.slice(-Math.max(1, limit));
+  }
+
+  private emitOutboundEvent(
+    senderSessionAlias: string,
+    message: AgentMessage,
+    target: ResolvedAgentEndpoint,
+    receipt: AgentMessageReceipt,
+  ): void {
+    const peer: PeerMessagePeer = {
+      handle: target.endpoint.handle,
+      displayName: target.endpoint.displayName ?? target.endpoint.agent,
+      agent: target.endpoint.agent,
+      ...(target.endpoint.workspace ? { workspace: target.endpoint.workspace } : {}),
+    };
+    const entry: PeerMessageHistoryEntry = {
+      kind: "agent_message",
+      direction: "sent",
+      messageId: message.id,
+      conversationId: message.conversationId,
+      ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+      peer,
+      content: message.content,
+      createdAt: message.createdAt,
+      status: receipt.status === "failed" ? "failed" : "sent",
+    };
+    this.deps.events?.emit({
+      type: "agent-message",
+      sessionAlias: senderSessionAlias,
+      message: entry,
+    });
   }
 
   async send(
@@ -361,6 +397,8 @@ export class AgentMessageRouter {
           contentHash,
         });
         this.logDelivery(message, remoteReceipt, createdAt);
+        const senderSessionAlias = sender.sessionAlias ?? sender.coordinatorSession ?? binding.coordinatorSession;
+        this.emitOutboundEvent(senderSessionAlias, message, target, remoteReceipt);
         return remoteReceipt;
       }
 
@@ -435,6 +473,8 @@ export class AgentMessageRouter {
         contentHash,
       });
       this.logDelivery(message, receipt, createdAt);
+      const senderSessionAlias = sender.sessionAlias ?? sender.coordinatorSession ?? binding.coordinatorSession;
+      this.emitOutboundEvent(senderSessionAlias, message, target, receipt);
       return receipt;
     });
   }
@@ -615,6 +655,44 @@ export class AgentMessageRouter {
       modeUsed: receipt.modeUsed,
       contentLength: Buffer.byteLength(input.content, "utf8"),
       contentHash,
+    });
+    const targetSessionAlias =
+      target.runtime.kind === "logical"
+        ? target.runtime.alias
+        : target.runtime.kind === "worker"
+          ? target.runtime.workerSession
+          : target.endpoint.displayName ?? input.targetEndpointId;
+    const sourceHandle = encodeAgentHandle({
+      nodeId: input.sourceNodeId,
+      endpointId: input.sourceEndpointId,
+    });
+    let sourceEndpoint: AgentEndpointView | null = null;
+    try {
+      sourceEndpoint = (await this.deps.registry.resolveTargetByHandle?.(sourceHandle)) ?? null;
+    } catch {
+      sourceEndpoint = null;
+    }
+    const peer: PeerMessagePeer = {
+      handle: sourceHandle,
+      displayName: sourceEndpoint?.displayName ?? sourceEndpoint?.agent ?? input.sourceEndpointId,
+      agent: sourceEndpoint?.agent ?? "agent",
+      ...(sourceEndpoint?.workspace ? { workspace: sourceEndpoint.workspace } : {}),
+    };
+    const inboundEntry: PeerMessageHistoryEntry = {
+      kind: "agent_message",
+      direction: "received",
+      messageId: message.id,
+      conversationId: message.conversationId,
+      ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+      peer,
+      content: message.content,
+      createdAt,
+      status: "delivered",
+    };
+    this.deps.events?.emit({
+      type: "agent-message",
+      sessionAlias: targetSessionAlias,
+      message: inboundEntry,
     });
     return receipt;
   }

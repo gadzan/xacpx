@@ -75,6 +75,86 @@ test("a scheduled turn-started for an unselected session does not pollute the op
   expect(store.messages.some((m) => m.text === "do thing")).toBe(false);
 });
 
+test("an agent-message event appends structured agentMessage to transcript for selected session", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  const peerMsg = {
+    kind: "agent_message" as const,
+    direction: "sent" as const,
+    messageId: "msg_peer_1",
+    conversationId: "conv_1",
+    peer: {
+      handle: "agent:node_2:endpoint_b",
+      displayName: "Worker B",
+      agent: "codex",
+      workspace: "server",
+    },
+    content: "Schema update notification",
+    createdAt: 1771234567890,
+    status: "sent" as const,
+  };
+  store.applyEvent({
+    kind: "control-event",
+    instanceId: "i1",
+    event: {
+      type: "agent-message",
+      chatKey: "relay:a1",
+      sessionAlias: "backend",
+      message: peerMsg,
+    },
+  } as never);
+  const last = store.messages.at(-1)!;
+  expect(last).toMatchObject({
+    direction: "out",
+    text: "Schema update notification",
+    structured: { agentMessage: peerMsg },
+  });
+});
+
+test("an agent-message event for unselected session marks session as unread", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  const peerMsg = {
+    kind: "agent_message" as const,
+    direction: "received" as const,
+    messageId: "msg_peer_2",
+    conversationId: "conv_2",
+    peer: {
+      handle: "agent:node_1:endpoint_a",
+      displayName: "Worker A",
+      agent: "claude",
+    },
+    content: "Review requested",
+    createdAt: 1771234567890,
+    status: "delivered" as const,
+  };
+  store.applyEvent({
+    kind: "control-event",
+    instanceId: "i1",
+    event: {
+      type: "agent-message",
+      chatKey: "relay:a1",
+      sessionAlias: "other",
+      message: peerMsg,
+    },
+  } as never);
+  expect(store.messages.some((m) => m.text === "Review requested")).toBe(false);
+  expect(store.unread.has("i1\0other")).toBe(true);
+});
+
+test("chat.send forwards agentMentions in rpc control.prompt", async () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  rpc.mockResolvedValue({ ok: true });
+  const mentions = [{ range: [4, 12] as [number, number], handle: "agent:i1:worker_b" }];
+  await store.send("Ask @Backend about the schema", [], mentions);
+  expect(rpc).toHaveBeenCalledWith("i1", "control.prompt", {
+    sessionAlias: "backend",
+    text: "Ask @Backend about the schema",
+    agentMentions: mentions,
+  });
+});
+
 test("turn-usage updates sessionUsage (REPLACE) and survives turn-finished", () => {
   const store = useChatStore();
   store.select("i1", "backend");

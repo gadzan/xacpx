@@ -1,5 +1,5 @@
 import { RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "./envelope.js";
-import type { AgentCommandDto, ControlEventDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
+import type { AgentCommandDto, ControlEventDto, PeerMessageHistoryEntry, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
 import {
   MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
   MAX_TERMINAL_COLS,
@@ -59,7 +59,7 @@ export interface MessageRecordDto {
    *  STATE_SYNC_TEXT_CAP — the persisted text is a prefix, not the full reply.
    *  `compact` is set by `GET .../messages?view=compact`: bulky tool details were
    *  omitted (collapsed cards still render); `GET .../messages/:id` returns the full row. */
-  structured?: { toolSteps?: ToolStepDto[]; reasoning?: string; parts?: TurnPartDto[]; scheduled?: ScheduledOriginDto; truncated?: boolean; compact?: boolean };
+  structured?: { toolSteps?: ToolStepDto[]; reasoning?: string; parts?: TurnPartDto[]; scheduled?: ScheduledOriginDto; truncated?: boolean; compact?: boolean; agentMessage?: PeerMessageHistoryEntry };
   attachments?: AttachmentMetadata[];
 }
 
@@ -248,6 +248,7 @@ const CONTROL_EVENT_TYPE_MAP = {
   "orchestration-changed": true,
   "terminal-output": true,
   "terminal-exit": true,
+  "agent-message": true,
 } satisfies Record<ControlEventDto["type"], true>;
 
 const CONTROL_EVENT_TYPES: ReadonlySet<string> = new Set(Object.keys(CONTROL_EVENT_TYPE_MAP));
@@ -389,6 +390,22 @@ function validStateSnapshot(candidate: Record<string, unknown>): boolean {
   });
 }
 
+function validPeerMessageHistoryEntry(m: unknown): boolean {
+  if (typeof m !== "object" || m === null) return false;
+  const entry = m as Record<string, unknown>;
+  if (entry.kind !== "agent_message") return false;
+  if (entry.direction !== "sent" && entry.direction !== "received") return false;
+  if (typeof entry.messageId !== "string" || typeof entry.conversationId !== "string") return false;
+  if (typeof entry.content !== "string" || typeof entry.createdAt !== "number") return false;
+  if (!optStr(entry.replyTo)) return false;
+  if (typeof entry.peer !== "object" || entry.peer === null) return false;
+  const peer = entry.peer as Record<string, unknown>;
+  if (typeof peer.handle !== "string" || typeof peer.displayName !== "string" || typeof peer.agent !== "string") return false;
+  if (!optStr(peer.workspace)) return false;
+  if (entry.status !== undefined && !["sending", "sent", "delivered", "failed"].includes(entry.status as string)) return false;
+  return true;
+}
+
 /** Deep-validate an inner ControlEventDto: discriminant + per-variant required fields.
  *  The switch is compile-time exhaustive over ControlEventDto["type"] (see the `never`
  *  check in `default`), mirroring CONTROL_EVENT_TYPE_MAP above. */
@@ -439,6 +456,8 @@ export function validControlEvent(e: unknown): boolean {
       return typeof c.terminalId === "string" && typeof c.seq === "number" && typeof c.data === "string";
     case "terminal-exit":
       return typeof c.terminalId === "string" && typeof c.code === "number";
+    case "agent-message":
+      return typeof c.sessionAlias === "string" && optStr(c.chatKey) && validPeerMessageHistoryEntry(c.message);
     case "sessions-changed":
     case "workspaces-changed":
     case "orchestration-changed":

@@ -344,6 +344,10 @@ export interface PromptPayload {
     senderId: string;
     isOwner?: boolean;
     media?: PromptAttachmentRef[];
+    agentMentions?: Array<{
+        range: [number, number];
+        handle: string;
+    }>;
     /** Hub-issued stable id generated when the inbound row is PRE-WRITTEN (before the
      *  RPC), so a queued-response loss (hub restart / dropped response) can still
      *  correlate the connector's queue item back to that exact prompt row on recovery —

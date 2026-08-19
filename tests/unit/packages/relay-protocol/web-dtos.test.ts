@@ -387,3 +387,36 @@ test("InstanceSummaryDto includes optional capabilities (missing → treat as em
   expect(withCaps.capabilities).toHaveLength(2);
   expect(legacy.capabilities ?? []).toEqual([]);
 });
+
+test("validControlEvent round-trips agent-message event with structured peer details", () => {
+  const event: WebServerEvent = {
+    kind: "control-event",
+    instanceId: "i1",
+    event: {
+      type: "agent-message",
+      chatKey: "relay:a1",
+      sessionAlias: "backend",
+      message: {
+        kind: "agent_message",
+        direction: "sent",
+        messageId: "msg_123",
+        conversationId: "conv_456",
+        replyTo: "msg_100",
+        peer: {
+          handle: "agent:node_2:worker_b",
+          displayName: "Worker B",
+          agent: "codex",
+          workspace: "frontend",
+        },
+        content: "API endpoint changed to /api/v2/users",
+        createdAt: 1771234567890,
+        status: "sent",
+      },
+    },
+  };
+  const wire = encodeEnvelope(webEventEnvelope(event));
+  const decoded = decodeEnvelope(wire);
+  expect(decoded.ok).toBe(true);
+  if (!decoded.ok) return;
+  expect(parseWebServerEvent(decoded.envelope)).toEqual(event);
+});

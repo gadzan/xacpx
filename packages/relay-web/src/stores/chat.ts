@@ -650,8 +650,26 @@ export const useChatStore = defineStore("chat", () => {
     } else if (e.type === "queue-updated") {
       // Server-authoritative snapshot of the session's pending prompt queue (REPLACE).
       queues.value[bufKey(event.instanceId, e.sessionAlias)] = e.items;
+    } else if (e.type === "agent-message") {
+      const selected = event.instanceId === instanceId.value && e.sessionAlias === sessionAlias.value;
+      if (selected) {
+        const direction = e.message.direction === "sent" ? "out" : "in";
+        messages.value.push({
+          instanceId: event.instanceId,
+          sessionAlias: e.sessionAlias,
+          direction,
+          text: e.message.content,
+          createdAt: new Date(e.message.createdAt).toISOString(),
+          structured: markRaw({ agentMessage: e.message }),
+        });
+        touchTranscript();
+      } else {
+        const k = bufKey(event.instanceId, e.sessionAlias);
+        const next = new Set(unread.value);
+        next.add(k);
+        unread.value = next;
+      }
     } else if (e.type === "session-history") {
-      // A freshly-attached native session's prior conversation was just seeded into the
       // hub. If we're viewing it, reload history so the backlog appears (otherwise it's
       // already persisted and the next loadHistory on select will show it).
       if (event.instanceId === instanceId.value && e.sessionAlias === sessionAlias.value) {
@@ -678,7 +696,11 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  async function send(text: string, attachments: PromptAttachmentRef[] = []): Promise<void> {
+  async function send(
+    text: string,
+    attachments: PromptAttachmentRef[] = [],
+    agentMentions?: Array<{ range: [number, number]; handle: string }>,
+  ): Promise<void> {
     if (!instanceId.value || !sessionAlias.value) return;
     const id = instanceId.value;
     const alias = sessionAlias.value;
@@ -742,6 +764,7 @@ export const useChatStore = defineStore("chat", () => {
         sessionAlias: alias,
         text,
         ...(attachments.length > 0 ? { media: attachments } : {}),
+        ...(agentMentions && agentMentions.length > 0 ? { agentMentions } : {}),
       });
       if (res && res.ok === false) {
         error.value = res.errorMessage ?? "prompt-failed";

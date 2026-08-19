@@ -366,6 +366,41 @@ describe("MessageList", () => {
     expect(wrapper.find('[data-test="history-skeleton"]').exists()).toBe(false);
     expect(wrapper.find('[data-test="msg-streaming"]').exists()).toBe(true);
   });
+
+  it("renders AgentMessageCard when message has structured.agentMessage", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [
+          msg({
+            direction: "out",
+            text: "Hello peer",
+            structured: {
+              agentMessage: {
+                kind: "agent_message",
+                direction: "sent",
+                messageId: "msg_peer_1",
+                conversationId: "conv_peer_1",
+                peer: {
+                  handle: "agent:node_2:endpoint_b",
+                  displayName: "Worker B",
+                  agent: "codex",
+                },
+                content: "Hello peer",
+                createdAt: 1771234567890,
+                status: "sent",
+              },
+            },
+          }),
+        ],
+        liveTurn: null,
+      },
+    });
+
+    expect(wrapper.find('[data-test="agent-message-card"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="peer-name"]').text()).toBe("Worker B");
+    expect(wrapper.text()).toContain("Hello peer");
+    expect(wrapper.find('[data-test="msg-out"]').exists()).toBe(false);
+  });
 });
 
 it("renders legacy persisted tool steps (no parts) in a collapsed panel", () => {

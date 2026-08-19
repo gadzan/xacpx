@@ -1262,11 +1262,13 @@ export async function buildApp(
       ? (deps.channel as unknown as RelayRouteClient)
       : undefined,
   );
+  const controlEvents = createControlEventBus(logger);
   const agentMessaging = new AgentMessageRouter({
     registry: agentEndpointRegistry,
     delivery: localAgentMessageDelivery,
     remoteRoute: relayAgentMessageRoute,
     logger,
+    events: controlEvents,
   });
   const orchestrationEndpoint = createOrchestrationEndpoint(
     paths.orchestrationSocketPath ??
@@ -1331,7 +1333,6 @@ export async function buildApp(
     activeTurns,
   );
   const agent = new ConsoleAgent(router, logger);
-  const controlEvents = createControlEventBus(logger);
   const terminalService = createTerminalService({
     events: controlEvents,
     idleTimeoutSeconds: () => terminalIdleTimeoutSeconds(config),

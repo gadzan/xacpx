@@ -155,7 +155,7 @@ const validateWorkspacesRemove: Validator<WorkspacesRemovePayload> = (p) => {
 const validatePrompt: Validator<PromptPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && isStr(o.sessionAlias) && isStr(o.text) && isStr(o.senderId)
-    && optBool(o.isOwner) && optArr(o.media) && optStr(o.promptRequestId) ? (o as unknown as PromptPayload) : null;
+    && optBool(o.isOwner) && optArr(o.media) && optArr(o.agentMentions) && optStr(o.promptRequestId) ? (o as unknown as PromptPayload) : null;
 };
 const validatePromptCancel: Validator<PromptCancelPayload> = (p) => {
   const o = fields(p);

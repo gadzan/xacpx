@@ -76,6 +76,8 @@ export default {
     scheduled: "已计划",
     stop: "停止",
     send: "发送",
+    sentTo: "发送给",
+    fromPeer: "来自",
     model: "模型",
     modelSetFailed: "切换模型失败，请重试。",
     effort: "推理强度",

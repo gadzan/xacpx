@@ -36,6 +36,7 @@ export interface ResolvedAgentIdentity {
   address: AgentAddress;
   coordinatorSession: string;
   receive: boolean;
+  sessionAlias?: string;
 }
 
 export interface ResolvedAgentEndpoint {
@@ -179,6 +180,7 @@ export class AgentEndpointRegistry {
           address: { nodeId: this.deps.nodeId, endpointId },
           coordinatorSession,
           receive: true,
+          sessionAlias: sourceHandle,
         };
       }
 
@@ -192,6 +194,7 @@ export class AgentEndpointRegistry {
           },
           coordinatorSession,
           receive: false,
+          sessionAlias: coordinatorSession,
         };
       }
 
@@ -210,20 +213,22 @@ export class AgentEndpointRegistry {
         },
         coordinatorSession,
         receive: true,
+        sessionAlias: logical.alias,
       };
     }
 
     const external =
       state.orchestration.externalCoordinators[coordinatorSession];
     if (external) {
-      return {
-        address: {
-          nodeId: this.deps.nodeId,
-          endpointId: requireEndpointId(external.agentEndpointId),
-        },
-        coordinatorSession,
-        receive: false,
-      };
+        return {
+          address: {
+            nodeId: this.deps.nodeId,
+            endpointId: requireEndpointId(external.agentEndpointId),
+          },
+          coordinatorSession,
+          receive: false,
+          sessionAlias: coordinatorSession,
+        };
     }
 
     throw new AgentMessagingError(

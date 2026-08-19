@@ -278,7 +278,8 @@ var CONTROL_EVENT_TYPE_MAP = {
   "session-history": true,
   "orchestration-changed": true,
   "terminal-output": true,
-  "terminal-exit": true
+  "terminal-exit": true,
+  "agent-message": true
 };
 var CONTROL_EVENT_TYPES = new Set(Object.keys(CONTROL_EVENT_TYPE_MAP));
 var TOOL_STEP_KINDS = new Set(["read", "search", "execute", "edit", "think", "other"]);
@@ -403,6 +404,31 @@ function validStateSnapshot(candidate) {
     return c.instanceId === instanceId && typeof c.sessionAlias === "string" && Array.isArray(c.commands) && c.commands.every(validAgentCommand);
   });
 }
+function validPeerMessageHistoryEntry(m) {
+  if (typeof m !== "object" || m === null)
+    return false;
+  const entry = m;
+  if (entry.kind !== "agent_message")
+    return false;
+  if (entry.direction !== "sent" && entry.direction !== "received")
+    return false;
+  if (typeof entry.messageId !== "string" || typeof entry.conversationId !== "string")
+    return false;
+  if (typeof entry.content !== "string" || typeof entry.createdAt !== "number")
+    return false;
+  if (!optStr(entry.replyTo))
+    return false;
+  if (typeof entry.peer !== "object" || entry.peer === null)
+    return false;
+  const peer = entry.peer;
+  if (typeof peer.handle !== "string" || typeof peer.displayName !== "string" || typeof peer.agent !== "string")
+    return false;
+  if (!optStr(peer.workspace))
+    return false;
+  if (entry.status !== undefined && !["sending", "sent", "delivered", "failed"].includes(entry.status))
+    return false;
+  return true;
+}
 function validControlEvent(e) {
   if (typeof e !== "object" || e === null)
     return false;
@@ -437,6 +463,8 @@ function validControlEvent(e) {
       return typeof c.terminalId === "string" && typeof c.seq === "number" && typeof c.data === "string";
     case "terminal-exit":
       return typeof c.terminalId === "string" && typeof c.code === "number";
+    case "agent-message":
+      return typeof c.sessionAlias === "string" && optStr(c.chatKey) && validPeerMessageHistoryEntry(c.message);
     case "sessions-changed":
     case "workspaces-changed":
     case "orchestration-changed":
@@ -651,7 +679,7 @@ var validateWorkspacesRemove = (p) => {
 };
 var validatePrompt = (p) => {
   const o = fields(p);
-  return o && isStr(o.chatKey) && isStr(o.sessionAlias) && isStr(o.text) && isStr(o.senderId) && optBool(o.isOwner) && optArr(o.media) && optStr(o.promptRequestId) ? o : null;
+  return o && isStr(o.chatKey) && isStr(o.sessionAlias) && isStr(o.text) && isStr(o.senderId) && optBool(o.isOwner) && optArr(o.media) && optArr(o.agentMentions) && optStr(o.promptRequestId) ? o : null;
 };
 var validatePromptCancel = (p) => {
   const o = fields(p);

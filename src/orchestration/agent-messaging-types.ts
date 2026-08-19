@@ -106,3 +106,22 @@ export interface AgentMessageSendInput {
   requestedMode?: AgentMessageMode;
   replyTo?: string;
 }
+
+export interface PeerMessagePeer {
+  handle: string;
+  displayName: string;
+  agent: string;
+  workspace?: string;
+}
+
+export interface PeerMessageHistoryEntry {
+  kind: "agent_message";
+  direction: "sent" | "received";
+  messageId: string;
+  conversationId: string;
+  replyTo?: string;
+  peer: PeerMessagePeer;
+  content: string;
+  createdAt: number;
+  status?: "sending" | "sent" | "delivered" | "failed";
+}

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import type { AppLogger } from "../../../src/logging/app-logger";
+import { createControlEventBus, type ControlEvent, type ControlEventBus } from "../../../src/control/control-event-bus";
 import {
   AgentEndpointRegistry,
   type ResolvedAgentEndpoint,
@@ -29,6 +30,7 @@ function makeRouter(
     limits?: AgentMessageRouterLimits;
     now?: () => number;
     logger?: Pick<AppLogger, "info">;
+    events?: ControlEventBus;
   } = {},
 ) {
   const state = createEmptyState();
@@ -97,6 +99,7 @@ function makeRouter(
     now: options.now ?? (() => 1_000),
     limits: options.limits,
     logger: options.logger,
+    events: options.events,
   });
 
   return { router, deliveries, state };
@@ -1138,6 +1141,76 @@ test("sending with neither or both 'to' and 'selector' throws DELIVERY_FAILED er
   });
 });
 
+test("emits agent-message event with direction 'sent' when outbound message succeeds", async () => {
+  const events = createControlEventBus();
+  const emitted: ControlEvent[] = [];
+  events.subscribe((e) => emitted.push(e));
+
+  const { router } = makeRouter({ events });
+  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+
+  await router.send(binding, {
+    to,
+    content: "Please review the auth schema.",
+  });
+
+  expect(emitted.length).toBe(1);
+  const event = emitted[0];
+  expect(event?.type).toBe("agent-message");
+  if (event && event.type === "agent-message") {
+    expect(event.sessionAlias).toBe("workerA");
+    expect(event.message).toMatchObject({
+      kind: "agent_message",
+      direction: "sent",
+      messageId: "msg_message-1",
+      content: "Please review the auth schema.",
+      status: "sent",
+      peer: {
+        handle: to,
+        agent: "gemini",
+        workspace: "project",
+      },
+    });
+  }
+});
+
+test("emits agent-message event with direction 'received' when inbound message is delivered", async () => {
+  const events = createControlEventBus();
+  const emitted: ControlEvent[] = [];
+  events.subscribe((e) => emitted.push(e));
+
+  const { router } = makeRouter({ events });
+
+  await router.deliverInbound({
+    sourceNodeId: "node_remote_1",
+    sourceEndpointId: "remote_agent_x",
+    targetEndpointId: "endpoint_worker-b",
+    messageId: "msg_inbound_99",
+    conversationId: "conv_123",
+    content: "Schema migration is complete.",
+    requestedMode: "auto",
+    replyable: true,
+  });
+
+  expect(emitted.length).toBe(1);
+  const event = emitted[0];
+  expect(event?.type).toBe("agent-message");
+  if (event && event.type === "agent-message") {
+    expect(event.sessionAlias).toBe("workerB");
+    expect(event.message).toMatchObject({
+      kind: "agent_message",
+      direction: "received",
+      messageId: "msg_inbound_99",
+      conversationId: "conv_123",
+      content: "Schema migration is complete.",
+      status: "delivered",
+      peer: {
+        handle: "agent:node_remote_1:remote_agent_x",
+      },
+    });
+  }
+});
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;

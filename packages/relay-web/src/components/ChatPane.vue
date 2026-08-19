@@ -29,8 +29,12 @@ const keyboardInset = useVirtualKeyboardInset();
 const planExpanded = ref(chat.busy);
 const showPlan = computed(() => (chat.sessionPlan?.length ?? 0) > 0);
 
-function onSend(text: string, media: PromptAttachmentRef[] = []) {
-  void chat.send(text, media);
+function onSend(
+  text: string,
+  media: PromptAttachmentRef[] = [],
+  agentMentions?: Array<{ range: [number, number]; handle: string }>,
+) {
+  void chat.send(text, media, agentMentions);
 }
 
 // Bind the composer to the active instance so file uploads target the right daemon.

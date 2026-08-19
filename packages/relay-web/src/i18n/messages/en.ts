@@ -78,6 +78,8 @@ export default {
     scheduled: "Scheduled",
     stop: "Stop",
     send: "Send",
+    sentTo: "Sent to",
+    fromPeer: "From",
     model: "model",
     modelSetFailed: "Failed to switch model. Try again.",
     effort: "effort",
