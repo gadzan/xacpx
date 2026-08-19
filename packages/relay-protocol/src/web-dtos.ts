@@ -1,5 +1,5 @@
 import { RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "./envelope.js";
-import type { AgentCommandDto, ControlEventDto, PeerMessageHistoryEntry, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
+import type { AgentCommandDto, ControlEventDto, PeerMessageHistoryEntry, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
 import {
   MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
   MAX_TERMINAL_COLS,
@@ -125,6 +125,7 @@ export type WebServerEvent =
   | { kind: "control-event"; instanceId: string; event: ControlEventDto }
   | ({ kind: "state-snapshot"; instanceId: string } & InstanceStateSnapshotDto)
   | { kind: "notice"; instanceId: string; notice: InstanceNoticePayload }
+  | { kind: "agent-directory"; endpoints: PublishedAgentEndpointDto[] }
   | {
       kind: "terminal-opened";
       requestId: string;
@@ -215,6 +216,7 @@ const WEB_EVENT_KINDS = new Set([
   "control-event",
   "state-snapshot",
   "notice",
+  "agent-directory",
   "terminal-opened",
   "terminal-request-failed",
   "terminal-recovery-failed",
@@ -602,10 +604,12 @@ export function parseWebServerEvent(envelope: RelayEnvelope): WebServerEvent | n
   const payload = envelope.payload;
   if (typeof payload !== "object" || payload === null) return null;
   const candidate = payload as Record<string, unknown>;
-  if (typeof candidate.instanceId !== "string") return null;
   if (typeof candidate.kind !== "string" || !WEB_EVENT_KINDS.has(candidate.kind)) return null;
+  if (candidate.kind === "agent-directory") {
+    return Array.isArray(candidate.endpoints) ? (payload as WebServerEvent) : null;
+  }
+  if (typeof candidate.instanceId !== "string") return null;
   if (candidate.kind === "instance-status" && typeof candidate.online !== "boolean") return null;
-  if (candidate.kind === "control-event" && !validControlEvent(candidate.event)) return null;
   if (candidate.kind === "state-snapshot" && !validStateSnapshot(candidate)) return null;
   if (candidate.kind === "notice" && !validNotice(candidate.notice)) return null;
   if (candidate.kind.startsWith("terminal-") && !validTargetedTerminalEvent(candidate)) return null;

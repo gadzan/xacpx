@@ -73,6 +73,10 @@ export interface InstanceGatewayDeps {
     type: string,
     payload: unknown,
   ) => boolean;
+  onDirectoryChange?: (
+    accountId: string,
+    endpoints: PublishedAgentEndpointDto[],
+  ) => void;
   logger?: RelayLogger;
 }
 
@@ -690,6 +694,7 @@ export class InstanceGateway {
 
   private broadcastDirectorySnapshot(accountId: string): void {
     const endpoints = this.getPublishedEndpoints(accountId);
+    this.deps.onDirectoryChange?.(accountId, endpoints);
     for (const [instId, conn] of this.connections) {
       if (conn.accountId === accountId) {
         this.sendEvent(instId, MSG.agentDirectorySnapshot, { endpoints });

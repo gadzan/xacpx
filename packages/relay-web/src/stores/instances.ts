@@ -804,6 +804,8 @@ export const useInstancesStore = defineStore("instances", () => {
       // A workspace was added/removed/edited on the instance (e.g. `xacpx workspace add`
       // from the terminal) — re-fetch so the file browser + create-session form reflect it.
       void loadWorkspaces(event.instanceId).catch(() => {});
+    } else if (event.kind === "agent-directory") {
+      agentDirectory.value = event.endpoints;
     }
   }
 

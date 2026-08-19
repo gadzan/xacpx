@@ -3,11 +3,17 @@ import { fileURLToPath } from "node:url";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WebSocketServer } from "ws";
-import type { Hono } from "hono";
+import { WebSocketServer, WebSocket as WsClient } from "ws";
 import { startRelayServer, type RelayServerHandle } from "../../packages/relay/src/server";
-import { MSG, type PublishedAgentEndpointDto, type MessageRecordDto } from "@ganglion/xacpx-relay-protocol";
-import { AccountStore } from "../../packages/relay/src/stores/accounts";
+import {
+  MSG,
+  decodeEnvelope,
+  parseWebServerEvent,
+  webClientEnvelope,
+  type PublishedAgentEndpointDto,
+  type MessageRecordDto,
+  type WebServerEvent,
+} from "@ganglion/xacpx-relay-protocol";
 import { InstanceStore } from "../../packages/relay/src/stores/instances";
 import { MessageStore } from "../../packages/relay/src/stores/messages";
 import { InstanceGateway } from "../../packages/relay/src/gateway/instance-gateway";
@@ -27,6 +33,7 @@ interface HubHarness {
   gateway: InstanceGateway;
   instances: InstanceStore;
   messages: MessageStore;
+  accounts: AccountStore;
   account: { id: string; username: string };
   hubUrl: string;
   httpUrl: string;
@@ -45,6 +52,7 @@ async function setupHub(): Promise<HubHarness> {
     gateway: relay.runtime.gateway,
     instances: relay.runtime.instances,
     messages: relay.runtime.messages,
+    accounts: relay.runtime.accounts,
     account: { id: account.id, username: "alice" },
     hubUrl: `ws://127.0.0.1:${relay.httpPort}`,
     httpUrl: `http://127.0.0.1:${relay.httpPort}`,
@@ -180,13 +188,18 @@ async function setupDaemon(
   };
 }
 
-async function waitUntil(fn: () => boolean | Promise<boolean>, timeoutMs = 20_000): Promise<void> {
+async function waitUntil(
+  fn: () => boolean | Promise<boolean>,
+  timeoutMs = 20_000,
+  context?: () => string,
+): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (await fn()) return;
     await Bun.sleep(50);
   }
-  throw new Error(`waitUntil timed out after ${timeoutMs}ms`);
+  const extra = context ? ` (${context()})` : "";
+  throw new Error(`waitUntil timed out after ${timeoutMs}ms${extra}`);
 }
 
 test(
@@ -204,8 +217,24 @@ test(
       displayName: "Backend Service",
     });
 
+    const webToken = hub.accounts.createWebSession(hub.account.id, "tok-1", 600_000);
+    const webWs = new WsClient(`${hub.hubUrl}/ws`, {
+      headers: { cookie: `xrelay_session=${webToken}` },
+    });
+    const webEvents: WebServerEvent[] = [];
+    webWs.on("message", (raw) => {
+      const decoded = decodeEnvelope(String(raw));
+      if (decoded.ok) {
+        const ev = parseWebServerEvent(decoded.envelope);
+        if (ev) webEvents.push(ev);
+      }
+    });
+    await new Promise<void>((resolve, reject) => {
+      webWs.on("open", () => resolve());
+      webWs.on("error", reject);
+    });
+
     try {
-      // Warm up sessions so acpx initializes the queue owners
       const warmB = await daemonB.runtime.control.prompt({
         chatKey: daemonB.chatKey,
         sessionAlias: daemonB.sessionAlias,
@@ -215,25 +244,43 @@ test(
       });
       expect(warmB.ok).toBe(true);
 
-      // 1. Wait for both daemons to connect and sync their canonical published directories to Hub
+      let instA!: { id: string };
+      let instB!: { id: string };
       await waitUntil(() => {
-        const endpoints = hub.gateway.getPublishedEndpoints(hub.account.id);
-        const hasA = endpoints.some((e) => e.displayName === "Main Coordinator");
-        const hasB = endpoints.some((e) => e.displayName === "Backend Service");
-        return hasA && hasB;
+        const list = hub.instances.listByAccount(hub.account.id);
+        const a = list.find((i) => i.name === "inst-daemonA");
+        const b = list.find((i) => i.name === "inst-daemonB");
+        if (a && b) {
+          instA = a;
+          instB = b;
+          return true;
+        }
+        return false;
       });
 
-      const published = hub.gateway.getPublishedEndpoints(hub.account.id);
-      const epA = published.find((e) => e.displayName === "Main Coordinator")!;
-      const epB = published.find((e) => e.displayName === "Backend Service")!;
+      // Subscribe web client to instances
+      webWs.send(JSON.stringify(webClientEnvelope({ kind: "subscribe", instanceIds: [instA.id, instB.id] })));
+
+      await waitUntil(() => {
+        const lastDir = webEvents.filter((e): e is Extract<WebServerEvent, { kind: "agent-directory" }> => e.kind === "agent-directory").pop();
+        if (!lastDir) return false;
+        const hasA = lastDir.endpoints.some((e) => e.displayName === "Main Coordinator");
+        const hasB = lastDir.endpoints.some((e) => e.displayName === "Backend Service");
+        return hasA && hasB;
+      });
+      // 2. Web client fetches canonical directory from HTTP bootstrap endpoint
+      const dirRes = await fetch(`${hub.httpUrl}/api/agent-directory`, {
+        headers: { cookie: `xrelay_session=${webToken}` },
+      });
+      expect(dirRes.status).toBe(200);
+      const dirData = (await dirRes.json()) as { endpoints: PublishedAgentEndpointDto[] };
+      const epA = dirData.endpoints.find((e) => e.displayName === "Main Coordinator")!;
+      const epB = dirData.endpoints.find((e) => e.displayName === "Backend Service")!;
       expect(epA).toBeDefined();
       expect(epB).toBeDefined();
-
       const handleA = encodeAgentHandle({ nodeId: epA.nodeId, endpointId: epA.endpointId });
       const handleB = encodeAgentHandle({ nodeId: epB.nodeId, endpointId: epB.endpointId });
-
-      // 2. Simulate Web Client submitting prompt to Session A with structured mention for B
-      const turnPromise = daemonA.runtime.control.prompt({
+      const rpcRes = (await hub.gateway.sendRequest(instA.id, "control.prompt", {
         chatKey: daemonA.chatKey,
         sessionAlias: daemonA.sessionAlias,
         text: "Please coordinate with @Backend Service regarding schema migration",
@@ -244,7 +291,18 @@ test(
             handle: handleB, // Canonical handle from published directory
           },
         ],
+      })) as { ok?: boolean };
+      expect(rpcRes.ok).toBe(true);
+      // 4. Verify Session A executed with the trusted collaboration directive
+      await waitUntil(async () => {
+        const p = await daemonA.readPrompts();
+        return p.some((text) => text.includes("<xacpx-collaboration-directive origin=\"xacpx-server\">"));
       });
+      const turnPromptA = (await daemonA.readPrompts()).find((t) => t.includes("<xacpx-collaboration-directive origin=\"xacpx-server\">"))!;
+      expect(turnPromptA).toContain(`handle="${handleB}"`);
+      expect(turnPromptA).toContain('display-name="Backend Service"');
+      expect(turnPromptA).toContain("<user-prompt>\nPlease coordinate with @Backend Service regarding schema migration\n</user-prompt>");
+      // 5. Session A sends peer message to Session B
       const receiptA = await daemonA.runtime.agentMessaging!.send(
         { coordinatorSession: daemonA.coordinatorSession },
         {
@@ -254,8 +312,24 @@ test(
       );
       expect(receiptA.status).toBe("queued");
       expect(receiptA.messageId).toBeDefined();
-
-      // 5. Hard Gate: Active+idle Session B receives message and WAKES UP to execute turn
+      // 6. Hard Gate: Active+idle Session B WAKES UP and Relay Web receives live turn pipeline!
+      await waitUntil(
+        () => {
+          const bStarted = webEvents.some(
+            (e) => e.kind === "control-event" && e.instanceId === instB.id && e.event?.type === "turn-started",
+          );
+          const bOutput = webEvents.some(
+            (e) => e.kind === "control-event" && e.instanceId === instB.id && e.event?.type === "turn-output",
+          );
+          const bFinished = webEvents.some(
+            (e) => e.kind === "control-event" && e.instanceId === instB.id && e.event?.type === "turn-finished" && e.event?.ok === true,
+          );
+          return bStarted && bOutput && bFinished;
+        },
+        20_000,
+        () => `webEvents=${JSON.stringify(webEvents)}`,
+      );
+      // Verify Session B mock agent actually consumed the inbound message
       await waitUntil(async () => {
         const promptsB = await daemonB.readPrompts();
         return promptsB.some((t) => t.includes("<xacpx-message") && t.includes("Can we drop legacy_id in v2?"));
@@ -263,8 +337,7 @@ test(
       const promptB = (await daemonB.readPrompts()).find((t) => t.includes("Can we drop legacy_id in v2?"))!;
       expect(promptB).toContain(`from="${handleA}"`);
       expect(promptB).toContain(`id="${receiptA.messageId}"`);
-
-      // 6. Session B replies to Session A
+      // 7. Session B replies to Session A
       const replyReceipt = await daemonB.runtime.agentMessaging!.send(
         { coordinatorSession: daemonB.coordinatorSession },
         {
@@ -274,20 +347,18 @@ test(
         },
       );
       expect(replyReceipt.status).toBe("queued");
-
-      // 7. Verify reply arrives on Session A
+      // Verify reply arrives on Session A
       await waitUntil(async () => {
         const pA = await daemonA.readPrompts();
         return pA.some((t) => t.includes("Yes, legacy_id is deprecated and safe to drop."));
       });
-
-      // 8. Verify Timeline History Persistence in Relay Hub DB
-      const instA = hub.instances.listByAccount(hub.account.id).find((i) => i.name === "inst-daemonA")!;
-      const instB = hub.instances.listByAccount(hub.account.id).find((i) => i.name === "inst-daemonB")!;
+      // 8. Hard Gate: Verify History Persistence in Relay Hub SQLite DB
       const pageA = hub.messages.listBySession(hub.account.id, instA.id, "coordinator");
       const pageB = hub.messages.listBySession(hub.account.id, instB.id, "backend");
       const messagesA = pageA.messages;
       const messagesB = pageB.messages;
+
+      // Session A must have the Outbound Sent card and Inbound Received reply card
       const sentOnA = messagesA.find((m) => m.structured?.agentMessage?.direction === "sent");
       expect(sentOnA).toBeDefined();
       expect(sentOnA!.structured?.agentMessage?.content).toBe("Can we drop legacy_id in v2?");
@@ -309,6 +380,7 @@ test(
       expect(sentReplyOnB!.structured?.agentMessage?.content).toBe("Yes, legacy_id is deprecated and safe to drop.");
       expect(sentReplyOnB!.structured?.agentMessage?.replyTo).toBe(receiptA.messageId);
     } finally {
+      webWs.close();
       await daemonA.dispose();
       await daemonB.dispose();
       await hub.close();

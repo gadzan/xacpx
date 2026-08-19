@@ -252,6 +252,7 @@ var WEB_EVENT_KINDS = new Set([
   "control-event",
   "state-snapshot",
   "notice",
+  "agent-directory",
   "terminal-opened",
   "terminal-request-failed",
   "terminal-recovery-failed",
@@ -551,13 +552,14 @@ function parseWebServerEvent(envelope) {
   if (typeof payload !== "object" || payload === null)
     return null;
   const candidate = payload;
-  if (typeof candidate.instanceId !== "string")
-    return null;
   if (typeof candidate.kind !== "string" || !WEB_EVENT_KINDS.has(candidate.kind))
     return null;
-  if (candidate.kind === "instance-status" && typeof candidate.online !== "boolean")
+  if (candidate.kind === "agent-directory") {
+    return Array.isArray(candidate.endpoints) ? payload : null;
+  }
+  if (typeof candidate.instanceId !== "string")
     return null;
-  if (candidate.kind === "control-event" && !validControlEvent(candidate.event))
+  if (candidate.kind === "instance-status" && typeof candidate.online !== "boolean")
     return null;
   if (candidate.kind === "state-snapshot" && !validStateSnapshot(candidate))
     return null;
