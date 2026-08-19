@@ -31,7 +31,7 @@ export interface WebClientDeps {
       options?: { timeoutMs?: number },
     ): Promise<unknown>;
     isOnline(instanceId: string): boolean;
-    getPublishedEndpoints(accountId: string): PublishedAgentEndpointDto[];
+    getPublishedEndpoints?(accountId: string): PublishedAgentEndpointDto[];
   };
   webGateway: Pick<
     WebGateway,
@@ -129,11 +129,12 @@ async function handleWebClientMessageAsync(
   if (msg.kind === "subscribe") {
     const ownedIds = new Set(deps.instances.listByAccount(accountId).map((instance) => instance.id));
     const instanceIds = [...new Set(msg.instanceIds)].filter((id) => ownedIds.has(id));
-    deps.webGateway.setSubscription(socket, instanceIds);
-    deps.webGateway.send(socket, {
-      kind: "agent-directory",
-      endpoints: deps.gateway.getPublishedEndpoints(accountId),
-    });
+    if (typeof deps.gateway.getPublishedEndpoints === "function") {
+      deps.webGateway.send(socket, {
+        kind: "agent-directory",
+        endpoints: deps.gateway.getPublishedEndpoints(accountId),
+      });
+    }
     for (const instanceId of instanceIds) {
       deps.webGateway.send(socket, {
         kind: "state-snapshot",
