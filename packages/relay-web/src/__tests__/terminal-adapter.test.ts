@@ -1,17 +1,14 @@
 import { describe, it, expect, vi } from "vitest";
-import { createTerminalAdapter, syncGhosttyInputAnchor, type GhosttyTerminalLike } from "../lib/terminal-adapter";
+import { createTerminalAdapter, type TerminalLike } from "../lib/terminal-adapter";
 
 type Call = { op: "write" | "resize" | "reset" | "setTheme"; args: unknown[] };
-type RectLike = { left: number; top: number; width: number; height: number };
 
-const asRect = (r: RectLike) => r as unknown as DOMRect;
-
-/** A fake ghostty terminal that records every mutating call (and its arguments) in
- * invocation order, so tests can assert exact ordering — not just individual calls. */
+/** A fake terminal that records every mutating call (and its arguments) in
+ * invocation order, so tests can assert exact ordering - not just individual calls. */
 function fakeTerminal() {
   const calls: Call[] = [];
   const onData = vi.fn();
-  const term: GhosttyTerminalLike = {
+  const term: TerminalLike = {
     open: vi.fn(),
     write: vi.fn((d: string | Uint8Array) => { calls.push({ op: "write", args: [d] }); }),
     resize: vi.fn((c: number, r: number) => { calls.push({ op: "resize", args: [c, r] }); }),
@@ -25,61 +22,30 @@ function fakeTerminal() {
   return { term, calls, onData };
 }
 
-/** A factory that resolves only when the test calls `resolve` — for exercising genuine
- * async races (ready-before/after-dispose, late canvas mutation, etc). */
-function deferredFactory(term: GhosttyTerminalLike) {
-  let resolve!: (t: GhosttyTerminalLike) => void;
+/** A factory that resolves only when the test calls `resolve` - for exercising genuine
+ * async races (ready-before/after-dispose, late grid mutation, etc). */
+function deferredFactory(term: TerminalLike) {
+  let resolve!: (t: TerminalLike) => void;
   let reject!: (e: unknown) => void;
-  const promise = new Promise<GhosttyTerminalLike>((res, rej) => { resolve = res; reject = rej; });
+  const promise = new Promise<TerminalLike>((res, rej) => { resolve = res; reject = rej; });
   return { factory: () => promise, resolve: () => resolve(term), reject };
 }
-
-async function flush(times = 4) {
+async function flush(times = 16) {
   for (let i = 0; i < times; i++) await Promise.resolve();
 }
 
-/** Fake ghostty terminal whose host already contains the canvas + helper textarea (as
- * ghostty's open() would have) plus mutable cursor geometry, for IME-anchor tests. write
- * advances the cursor and reset homes it, so adapter-triggered re-anchors are observable. */
-function anchoredTerminal(
-  host: HTMLElement,
-  geometry: { hostRect: RectLike; canvasRect: RectLike; cols: number; rows: number },
-  cursor: { cursorX: number; cursorY: number },
-) {
-  host.getBoundingClientRect = () => asRect(geometry.hostRect);
-  const canvas = document.createElement("canvas");
-  canvas.getBoundingClientRect = () => asRect(geometry.canvasRect);
-  host.appendChild(canvas);
-  const ta = document.createElement("textarea");
-  ta.style.width = "1px";
-  ta.style.height = "1px";
-  ta.style.clipPath = "inset(50%)";
-  host.appendChild(ta);
-  const term: GhosttyTerminalLike = {
-    open: vi.fn(),
-    write: vi.fn(() => { cursor.cursorX += 10; cursor.cursorY += 1; }),
-    resize: vi.fn((c: number, r: number) => { term.cols = c; term.rows = r; }),
-    reset: vi.fn(() => { cursor.cursorX = 0; cursor.cursorY = 0; }),
-    dispose: vi.fn(),
-    onData: vi.fn(),
-    cols: geometry.cols,
-    rows: geometry.rows,
-    buffer: { active: cursor },
-  };
-  return { term, ta };
+/** The rendered grid element the adapter measures: xterm sizes .xterm-screen to exactly
+ * cols*cellW x rows*cellH (inline styles), mirroring what the old canvas gave us. */
+function screenElement(width: number, height: number): HTMLElement {
+  const screen = document.createElement("div");
+  screen.className = "xterm-screen";
+  screen.getBoundingClientRect = () => ({ width, height }) as DOMRect;
+  return screen;
 }
 
-/** Default IME-anchor geometry: canvas 800×400 on an 80×20 grid (10×20 cells), host
- * offset (20,30) with canvas at viewport (50,80) -> canvas offset inside host (30,50). */
-const ANCHOR_GEOMETRY = {
-  hostRect: { left: 20, top: 30, width: 900, height: 500 },
-  canvasRect: { left: 50, top: 80, width: 800, height: 400 },
-  cols: 80,
-  rows: 20,
-};
 
 describe("terminal-adapter", () => {
-  it("opens the ghostty terminal on the element and wires onData", async () => {
+  it("opens the xterm terminal on the element and wires onData", async () => {
     const { term, onData } = fakeTerminal();
     const onDataCb = vi.fn();
     const el = document.createElement("div");
@@ -103,29 +69,55 @@ describe("terminal-adapter", () => {
     expect(term.dispose).toHaveBeenCalledTimes(1);
   });
 
-  it("fit() computes cols/rows from the rendered canvas metrics", async () => {
-    const canvas = document.createElement("canvas");
-    // 80 cols * 10px = 800 wide; 24 rows * 20px = 480 tall → cellW=10, cellH=20
-    canvas.getBoundingClientRect = () => ({ width: 800, height: 480 }) as DOMRect;
+  it("fit() computes cols/rows from the rendered screen metrics", async () => {
     const element = document.createElement("div");
-    element.appendChild(canvas);
+    element.appendChild(screenElement(800, 480));
     const { term } = fakeTerminal();
-    (term as unknown as { element: HTMLElement }).element = element;
+    term.element = element;
+    term.scrollBarWidth = () => 0; // pure metric math - scrollbar covered by its own tests
     const el = document.createElement("div");
-    Object.defineProperty(el, "clientWidth", { value: 400, configurable: true });  // 400/10 = 40
-    Object.defineProperty(el, "clientHeight", { value: 240, configurable: true }); // 240/20 = 12
+    Object.defineProperty(el, "clientWidth", { value: 400, configurable: true });
+    Object.defineProperty(el, "clientHeight", { value: 240, configurable: true });
     const a = createTerminalAdapter(el, { cols: 80, rows: 24, onData: () => {}, factory: () => term });
     await a.ready();
     expect(a.fit()).toEqual({ cols: 40, rows: 12 });
   });
 
-  it("fit() returns null before the canvas has a measurable size", async () => {
-    const canvas = document.createElement("canvas");
-    canvas.getBoundingClientRect = () => ({ width: 0, height: 0 }) as DOMRect;
+  it("fit() reserves the scrollbar width (FitAddon parity) when scrollback is on", async () => {
     const element = document.createElement("div");
-    element.appendChild(canvas);
+    element.appendChild(screenElement(800, 480)); // cell 10x20
     const { term } = fakeTerminal();
-    (term as unknown as { element: HTMLElement }).element = element;
+    term.element = element;
+    term.scrollBarWidth = () => 14; // xterm default with scrollback 1000
+    const el = document.createElement("div");
+    Object.defineProperty(el, "clientWidth", { value: 400, configurable: true });
+    Object.defineProperty(el, "clientHeight", { value: 240, configurable: true });
+    const a = createTerminalAdapter(el, { cols: 80, rows: 24, onData: () => {}, factory: () => term });
+    await a.ready();
+    // floor((400-14)/10) = 38 - the official FitAddon result; 40 would hide cols under the scrollbar.
+    expect(a.fit()).toEqual({ cols: 38, rows: 12 });
+  });
+
+  it("fit() reserves nothing when scrollback is 0 (no scrollbar)", async () => {
+    const element = document.createElement("div");
+    element.appendChild(screenElement(800, 480));
+    const { term } = fakeTerminal();
+    term.element = element;
+    term.scrollBarWidth = () => 0;
+    const el = document.createElement("div");
+    Object.defineProperty(el, "clientWidth", { value: 400, configurable: true });
+    Object.defineProperty(el, "clientHeight", { value: 240, configurable: true });
+    const a = createTerminalAdapter(el, { cols: 80, rows: 24, onData: () => {}, factory: () => term });
+    await a.ready();
+    expect(a.fit()).toEqual({ cols: 40, rows: 12 });
+  });
+
+
+  it("fit() returns null before the screen has a measurable size", async () => {
+    const element = document.createElement("div");
+    element.appendChild(screenElement(0, 0));
+    const { term } = fakeTerminal();
+    term.element = element;
     const a = createTerminalAdapter(document.createElement("div"), {
       cols: 80, rows: 24, onData: () => {}, factory: () => term,
     });
@@ -133,144 +125,33 @@ describe("terminal-adapter", () => {
     expect(a.fit()).toBeNull();
   });
 
-  it("syncGhosttyInputAnchor anchors the textarea one cell at the terminal cursor, never fullscreen", () => {
-    const host = document.createElement("div");
-    host.getBoundingClientRect = () => asRect(ANCHOR_GEOMETRY.hostRect);
-    const canvas = document.createElement("canvas");
-    canvas.getBoundingClientRect = () => asRect(ANCHOR_GEOMETRY.canvasRect);
-    host.appendChild(canvas);
-    const ta = document.createElement("textarea");
-    // Start from the old fullscreen-workaround styles to prove they are fully cleared.
-    ta.style.left = "0";
-    ta.style.top = "0";
-    ta.style.right = "0";
-    ta.style.bottom = "0";
-    ta.style.width = "100%";
-    ta.style.height = "100%";
-    ta.style.clipPath = "inset(50%)";
-    host.appendChild(ta);
+  it("localGeometry() reports cell height, screen height and the cursor row", async () => {
+    const element = document.createElement("div");
+    element.appendChild(screenElement(800, 480));
     const { term } = fakeTerminal();
-    term.cols = 80;
-    term.rows = 20;
-    term.buffer = { active: { cursorX: 10, cursorY: 5 } };
-
-    syncGhosttyInputAnchor(host, term);
-
-    // cellW = 800/80 = 10, cellH = 400/20 = 20; cursor (10,5) is +100/+100 from the
-    // canvas origin, which itself sits at (50-20, 80-30) inside the host.
-    expect(ta.style.left).toBe("130px");
-    expect(ta.style.top).toBe("150px");
-    expect(ta.style.width).toBe("10px");
-    expect(ta.style.height).toBe("20px");
-    expect(ta.style.right).toBe("");
-    expect(ta.style.bottom).toBe("");
-    // Focusable but invisible and click-through: the canvas owns pointer interaction.
-    expect(ta.style.clipPath).toBe("none");
-    expect(ta.style.opacity).toBe("0");
-    expect(ta.style.pointerEvents).toBe("none");
+    term.element = element;
+    term.buffer = { active: { cursorX: 0, cursorY: 7 } };
+    const a = createTerminalAdapter(document.createElement("div"), {
+      cols: 80, rows: 24, onData: () => {}, factory: () => term,
+    });
+    await a.ready();
+    expect(a.localGeometry()).toEqual({ cellHeight: 480 / 24, screenHeight: 480, cursorY: 7 });
   });
 
-  it("syncGhosttyInputAnchor clamps an out-of-range cursor into the grid", () => {
-    const host = document.createElement("div");
-    host.getBoundingClientRect = () => asRect(ANCHOR_GEOMETRY.hostRect);
-    const canvas = document.createElement("canvas");
-    canvas.getBoundingClientRect = () => asRect(ANCHOR_GEOMETRY.canvasRect);
-    host.appendChild(canvas);
-    const ta = document.createElement("textarea");
-    host.appendChild(ta);
-    const { term } = fakeTerminal();
-    term.cols = 80;
-    term.rows = 20;
-    term.buffer = { active: { cursorX: 999, cursorY: -3 } };
 
-    syncGhosttyInputAnchor(host, term);
-
-    expect(ta.style.left).toBe(`${30 + 79 * 10}px`); // clamped to cols-1
-    expect(ta.style.top).toBe(`${50 + 0 * 20}px`);   // clamped to 0
-  });
-
-  it("focus() focuses the helper textarea (the IME anchor), not the terminal host", async () => {
-    const host = document.createElement("div");
-    const { term, ta } = anchoredTerminal(host, ANCHOR_GEOMETRY, { cursorX: 10, cursorY: 5 });
-    const termFocus = vi.fn();
-    (term as unknown as { focus?: () => void }).focus = termFocus;
-    const hostFocus = vi.spyOn(host, "focus");
-    document.body.appendChild(host);
-    try {
-      const a = createTerminalAdapter(host, { cols: 80, rows: 20, onData: () => {}, factory: () => term });
-      await a.ready();
-      a.focus();
-      await flush();
-      expect(document.activeElement).toBe(ta);
-      expect(termFocus).not.toHaveBeenCalled();
-      expect(hostFocus).not.toHaveBeenCalled();
-      // Focusing must not regress the anchor's invisible/click-through styling.
-      expect(ta.style.opacity).toBe("0");
-      expect(ta.style.pointerEvents).toBe("none");
-    } finally {
-      host.remove();
-    }
-  });
-
-  it("focus() falls back to terminal/host focus when no helper textarea exists", async () => {
+  it("focus() proxies to the underlying terminal focus", async () => {
     const { term } = fakeTerminal();
     const focus = vi.fn();
-    (term as unknown as { focus: () => void }).focus = focus;
-    const el = document.createElement("div");
-    const elFocus = vi.spyOn(el, "focus");
-    const a = createTerminalAdapter(el, {
+    term.focus = focus;
+    const a = createTerminalAdapter(document.createElement("div"), {
       cols: 80, rows: 24, onData: () => {}, factory: () => term,
     });
     await a.ready();
     a.focus();
     await flush();
-    expect(focus).toHaveBeenCalled();
-    expect(elFocus).toHaveBeenCalled();
+    expect(focus).toHaveBeenCalledTimes(1);
   });
 
-  it("open/ready anchors the helper textarea and write() re-anchors as the cursor moves", async () => {
-    const host = document.createElement("div");
-    const cursor = { cursorX: 10, cursorY: 5 };
-    const { term, ta } = anchoredTerminal(host, ANCHOR_GEOMETRY, cursor);
-    const a = createTerminalAdapter(host, { cols: 80, rows: 20, onData: () => {}, factory: () => term });
-    await a.ready();
-    expect(ta.style.clipPath).toBe("none");
-    expect(ta.style.left).toBe("130px"); // (10,5) at 10×20 cells
-    expect(ta.style.top).toBe("150px");
-
-    await a.write("move"); // fake write advances the cursor to (20,6)
-    expect(ta.style.left).toBe(`${30 + 20 * 10}px`);
-    expect(ta.style.top).toBe(`${50 + 6 * 20}px`);
-  });
-
-  it("resize() recomputes the anchor from the new cell geometry", async () => {
-    const host = document.createElement("div");
-    const { term, ta } = anchoredTerminal(host, ANCHOR_GEOMETRY, { cursorX: 10, cursorY: 5 });
-    const a = createTerminalAdapter(host, { cols: 80, rows: 20, onData: () => {}, factory: () => term });
-    await a.ready();
-    expect(ta.style.width).toBe("10px");
-
-    a.resize(100, 25); // fake resize updates cols/rows -> cell 8×16
-    await flush();
-    expect(ta.style.width).toBe("8px");
-    expect(ta.style.height).toBe("16px");
-    expect(ta.style.left).toBe(`${30 + 10 * 8}px`);
-    expect(ta.style.top).toBe(`${50 + 5 * 16}px`);
-  });
-
-  it("resetAndReplay() re-anchors on the rebased grid after the keyframe lands", async () => {
-    const host = document.createElement("div");
-    const { term, ta } = anchoredTerminal(host, ANCHOR_GEOMETRY, { cursorX: 10, cursorY: 5 });
-    const a = createTerminalAdapter(host, { cols: 80, rows: 20, onData: () => {}, factory: () => term });
-    await a.ready();
-
-    // reset homes the cursor to (0,0), resize regrids to 100×25 (8×16 cells), write
-    // advances it to (10,1) - the anchor must reflect the final cursor on the new grid.
-    await a.resetAndReplay(new Uint8Array([1]), 100, 25);
-    expect(ta.style.width).toBe("8px");
-    expect(ta.style.left).toBe(`${30 + 10 * 8}px`);
-    expect(ta.style.top).toBe(`${50 + 1 * 16}px`);
-  });
 
   it("focus() issued before ready still lands after the terminal opens", async () => {
     const { term } = fakeTerminal();
@@ -436,7 +317,7 @@ describe("terminal-adapter", () => {
     it("a rebase into the alternate screen replaces the whole screen instead of appending to stale content", async () => {
       const decoder = new TextDecoder();
       let screen = "";
-      const term: GhosttyTerminalLike = {
+      const term: TerminalLike = {
         open: vi.fn(),
         onData: vi.fn(),
         dispose: vi.fn(),
@@ -476,7 +357,7 @@ describe("terminal-adapter", () => {
   });
 
   describe("binary bytes", () => {
-    it("passes raw non-UTF8 bytes through to ghostty unchanged instead of round-tripping through UTF-8", async () => {
+    it("passes raw non-UTF8 bytes through to the terminal unchanged instead of round-tripping through UTF-8", async () => {
       const { term } = fakeTerminal();
       const a = createTerminalAdapter(document.createElement("div"), {
         cols: 80, rows: 24, onData: () => {}, factory: () => term,
@@ -500,6 +381,107 @@ describe("terminal-adapter", () => {
       await a.resetAndReplay(raw, 80, 24);
       const writeCall = vi.mocked(term.write).mock.calls.at(-1)!;
       expect(writeCall[0]).toBe(raw);
+    });
+  });
+
+  describe("async write parsing (xterm write() is asynchronous)", () => {
+    /** Fake whose write() returns a promise the test resolves manually -
+     *  modeling xterm parsing the chunk on a later event-loop task. */
+    function asyncTerminal() {
+      const pending: Array<(v: void) => void> = [];
+      const ops: string[] = [];
+      const term: TerminalLike = {
+        open: vi.fn(),
+        write: () => new Promise<void>((resolve) => { pending.push(resolve); ops.push("write"); }),
+        resize: () => { ops.push("resize"); },
+        reset: () => { ops.push("reset"); },
+        dispose: vi.fn(),
+        onData: vi.fn(),
+        cols: 80,
+        rows: 24,
+      };
+      const step = () => pending.shift()!();
+      return { term, ops, step };
+    }
+
+    it("resetAndReplay waits for a stale write to PARSE before reset - reset never reorders", async () => {
+      const { term, ops, step } = asyncTerminal();
+      const a = createTerminalAdapter(document.createElement("div"), {
+        cols: 80, rows: 24, onData: () => {}, factory: () => term,
+      });
+      await a.ready();
+
+      void a.write("stale");          // enters xterm's async write buffer, NOT yet parsed
+      const replay = a.resetAndReplay(new Uint8Array([1]), 80, 24);
+      await flush();
+      // The invariant: reset() must not run while the stale chunk is un-parsed -
+      // it would land on the FRESH post-reset screen.
+      expect(ops).toEqual(["write"]);
+
+      step();                          // stale chunk parses
+      await flush();
+      expect(ops).toEqual(["write", "reset", "resize", "write"]);
+      step();                          // keyframe chunk parses
+      await replay;
+    });
+
+    it("write() resolves only after the chunk is parsed, so a following read sees fresh state", async () => {
+      const { term, step } = asyncTerminal();
+      const a = createTerminalAdapter(document.createElement("div"), {
+        cols: 80, rows: 24, onData: () => {}, factory: () => term,
+      });
+      await a.ready();
+      let resolved = false;
+      void Promise.resolve(a.write("data")).then(() => { resolved = true; });
+      await flush();
+      expect(resolved).toBe(false); // still sitting in xterm's write buffer
+      step();
+      await flush();
+      expect(resolved).toBe(true);
+    });
+
+    it("dispose during a pending write settles it as dropped instead of hanging", async () => {
+      const { term } = asyncTerminal();
+      const a = createTerminalAdapter(document.createElement("div"), {
+        cols: 80, rows: 24, onData: () => {}, factory: () => term,
+      });
+      await a.ready();
+      const p = a.write("never-parsed");
+      a.dispose(); // the xterm write callback may never fire now
+      await p;     // must not hang
+      expect(term.dispose).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("binary input (onBinary)", () => {
+    it("wires onBinary and converts charCodes to raw bytes (charCodeAt & 0xFF)", async () => {
+      const received: Uint8Array[] = [];
+      const onBinaryCb = vi.fn();
+      const { term } = fakeTerminal();
+      term.onBinary = onBinaryCb;
+      const a = createTerminalAdapter(document.createElement("div"), {
+        cols: 80, rows: 24, onData: () => {},
+        onBinary: (bytes) => { received.push(bytes); },
+        factory: () => term,
+      });
+      await a.ready();
+      expect(onBinaryCb).toHaveBeenCalledTimes(1);
+
+      // legacy X10 mouse report: ESC [ M then button=0x20, and coords 0xFF (255->0 col)
+      const cb = onBinaryCb.mock.calls[0][0];
+      cb("\u001b[M \u00ff\u0020");
+      expect(received).toEqual([new Uint8Array([0x1b, 0x5b, 0x4d, 0x20, 0xff, 0x20])]);
+    });
+
+    it("does not register onBinary when no handler is given", async () => {
+      const onBinaryCb = vi.fn();
+      const { term } = fakeTerminal();
+      term.onBinary = onBinaryCb;
+      const a = createTerminalAdapter(document.createElement("div"), {
+        cols: 80, rows: 24, onData: () => {}, factory: () => term,
+      });
+      await a.ready();
+      expect(onBinaryCb).not.toHaveBeenCalled();
     });
   });
 });

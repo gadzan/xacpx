@@ -34,7 +34,7 @@ function fakeAdapter() {
   let cols = 80;
   let rows = 24;
   const fit = vi.fn((_extraHeightPx = 0): { cols: number; rows: number } | null => ({ cols: 150, rows: 45 }));
-  const localGeometry = vi.fn((): { cellHeight: number; canvasHeight: number; cursorY: number } | null => null);
+  const localGeometry = vi.fn((): { cellHeight: number; screenHeight: number; cursorY: number } | null => null);
   const adapter: TerminalAdapter = {
     write: vi.fn(),
     resize: vi.fn((c: number, r: number) => { cols = c; rows = r; }),
@@ -47,7 +47,6 @@ function fakeAdapter() {
     ready: vi.fn(async () => {}),
     fit,
     localGeometry,
-    syncInputAnchor: vi.fn(),
     cols: () => cols,
     rows: () => rows,
   };
@@ -255,7 +254,7 @@ describe("terminal viewport controller", () => {
 
   describe("keyboard-open local cursor-follow", () => {
     it("scrolls the host so the cursor row stays visible without resizing the grid", async () => {
-      // 40 rows × 20px = 800px canvas; keyboard shrinks the host to 500px.
+      // 40 rows × 20px = 800px screen; keyboard shrinks the host to 500px.
       const frames = manualFrames();
       const { adapter, fit, localGeometry } = fakeAdapter();
       const el = host(800, 500);
@@ -267,7 +266,7 @@ describe("terminal viewport controller", () => {
         requestFrame: frames.requestFrame,
       });
       fit.mockReturnValue({ cols: 150, rows: 40 });
-      localGeometry.mockReturnValue({ cellHeight: 20, canvasHeight: 800, cursorY: 39 });
+      localGeometry.mockReturnValue({ cellHeight: 20, screenHeight: 800, cursorY: 39 });
       controller.start();
       frames.flushAll();
 
@@ -277,8 +276,6 @@ describe("terminal viewport controller", () => {
       // Cursor row 39 bottom = 40*20 = 800px; visible is 500px -> scroll 300px.
       expect(el.style.alignItems).toBe("flex-start");
       expect(el.scrollTop).toBe(300);
-      // The scroll moved the canvas under a stationary IME anchor: re-anchor.
-      expect(adapter.syncInputAnchor).toHaveBeenCalled();
       // Remote grid stayed at the fit rows — never shrunk for the keyboard.
       expect(adapter.resize).toHaveBeenLastCalledWith(150, 40);
     });
@@ -295,7 +292,7 @@ describe("terminal viewport controller", () => {
         requestFrame: frames.requestFrame,
       });
       fit.mockReturnValue({ cols: 150, rows: 40 });
-      localGeometry.mockReturnValue({ cellHeight: 20, canvasHeight: 800, cursorY: 39 });
+      localGeometry.mockReturnValue({ cellHeight: 20, screenHeight: 800, cursorY: 39 });
       controller.start();
       frames.flushAll();
       controller.setKeyboardInset(300);
@@ -324,14 +321,14 @@ describe("terminal viewport controller", () => {
       controller.start();
       frames.flushAll();
       controller.setKeyboardInset(300);
-      localGeometry.mockReturnValue({ cellHeight: 20, canvasHeight: 800, cursorY: 30 });
+      localGeometry.mockReturnValue({ cellHeight: 20, screenHeight: 800, cursorY: 30 });
       frames.flushAll();
       expect(el.scrollTop).toBe(120); // (30+1)*20 - 500
 
       // Cursor moves down on output; revealCursor must follow without re-fitting.
       const fitCalls = fit.mock.calls.length;
       const resizeCalls = sendRemoteResize.mock.calls.length;
-      localGeometry.mockReturnValue({ cellHeight: 20, canvasHeight: 800, cursorY: 39 });
+      localGeometry.mockReturnValue({ cellHeight: 20, screenHeight: 800, cursorY: 39 });
       controller.revealCursor();
       expect(el.scrollTop).toBe(300);
       expect(fit.mock.calls.length).toBe(fitCalls);
@@ -359,7 +356,7 @@ describe("terminal viewport controller", () => {
       cols: 150,
       rows: Math.floor((500 + extraHeightPx) / 20),
     }));
-    localGeometry.mockReturnValue({ cellHeight: 20, canvasHeight: 800, cursorY: 39 });
+    localGeometry.mockReturnValue({ cellHeight: 20, screenHeight: 800, cursorY: 39 });
 
     controller.setKeyboardInset(300);
     controller.start();

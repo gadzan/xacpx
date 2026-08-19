@@ -15,7 +15,7 @@
 // never push - their local fit must not change backend geometry.
 //
 // Layout settlement: the terminal renderer initializes across several frames
-// (WASM, webfont, canvas mount, CSS layout), and a font swap changes cell
+// (module/css/font load, grid mount, CSS layout), and a font swap changes cell
 // metrics without changing host pixels - ResizeObserver stays silent. start()
 // therefore re-syncs on a short settling ladder (immediate + 16/64/250/1000ms)
 // so the grid always converges to the final metrics.
@@ -103,7 +103,7 @@ export function createTerminalViewportController(
     // never churns the backend pane layout - it only occludes locally.
     const dim = adapter.fit(keyboardInset);
     if (!dim) {
-      // Renderer not measurable yet (WASM/font/canvas). Retry next frame while
+      // Renderer not measurable yet (font/css/grid mount). Retry next frame while
       // the host has layout; once measurable the retries stop on their own.
       if (host.clientWidth > 0) scheduleSync("fit-retry");
       return null;
@@ -125,10 +125,10 @@ export function createTerminalViewportController(
   }
 
   /** Keep the cursor row visible while the soft keyboard occludes the host. The
-   *  grid is keyboard-independent — rows stay put, so the canvas is taller than
-   *  the shrunken host and flex-center would clip BOTH edges (the prompt at the
-   *  bottom out of view). Top-align the canvas and scroll it so the cursor row
-   *  sits at the visible bottom. Never shrinks the Ghostty grid. */
+   *  grid is keyboard-independent - rows stay put, so the rendered screen is taller
+   *  than the shrunken host and flex-center would clip BOTH edges (the prompt at the
+   *  bottom out of view). Top-align the screen and scroll it so the cursor row
+   *  sits at the visible bottom. Never shrinks the terminal grid. */
   function applyLocalCursorFollow(): void {
     if (keyboardInset <= 0) {
       clearLocalFollow();
@@ -136,23 +136,19 @@ export function createTerminalViewportController(
     }
     const vis = host.clientHeight;
     const geo = adapter.localGeometry();
-    if (!geo || geo.canvasHeight <= vis) {
+    if (!geo || geo.screenHeight <= vis) {
       clearLocalFollow();
       return;
     }
     host.style.alignItems = "flex-start";
-    const cursorBottom = Math.min(geo.canvasHeight, (geo.cursorY + 1) * geo.cellHeight);
+    const cursorBottom = Math.min(geo.screenHeight, (geo.cursorY + 1) * geo.cellHeight);
     host.scrollTop = Math.max(0, cursorBottom - vis);
-    // The scroll moved the canvas under a stationary IME anchor; re-measure it.
-    adapter.syncInputAnchor();
   }
 
   /** Restore the neutral (flex-centered) layout when the keyboard is closed. */
   function clearLocalFollow(): void {
-    const changed = host.style.alignItems !== "" || host.scrollTop !== 0;
-    if (host.style.alignItems) host.style.alignItems = "";
-    if (host.scrollTop !== 0) host.scrollTop = 0;
-    if (changed) adapter.syncInputAnchor();
+    host.style.alignItems = "";
+    host.scrollTop = 0;
   }
 
   return {

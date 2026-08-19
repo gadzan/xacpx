@@ -18,7 +18,7 @@ const TOUCH_SCROLL_THRESHOLD_PX = 8;
 
 export interface TerminalTouchScrollOptions {
   host: HTMLElement;
-  /** Rendered canvas cell height in px; null until the canvas is measurable. */
+  /** Rendered screen cell height in px; null until the screen is measurable. */
   lineHeight(): number | null;
   scrollLines(amount: number): void;
 }

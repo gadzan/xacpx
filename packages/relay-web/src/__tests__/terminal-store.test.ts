@@ -136,6 +136,22 @@ describe("terminal store", () => {
     ]));
   });
 
+  it("sendInputBytes sends exact raw bytes (0xFF survives, no UTF-8 round-trip)", async () => {
+    connectEvents((e) => { void useTerminalStore().applyEvent(e); });
+    FakeWS.instances[0].onopen?.();
+    const store = useTerminalStore();
+    const key = terminalLocalKey("i1", "demo");
+    await openAttached(store, key, FakeWS.instances[0], { role: "controller" });
+
+    const before = FakeWS.instances[0].send.mock.calls.length;
+    store.sendInputBytes(key, new Uint8Array([0xff, 0x1b, 0x5b, 0x4d, 0x20]));
+    const msgs = sentMessages(FakeWS.instances[0]).slice(before);
+    const input = msgs.find((m) => (m as { kind: string }).kind === "terminal-input") as { dataBase64: string };
+    // base64 of ff 1b 5b 4d 20 - NOT the UTF-8 C3 BF that a btoa(string) path
+    // would produce for charCode 0xFF.
+    expect(input.dataBase64).toBe("/xtbTSA=");
+  });
+
   it("takeControl re-issues stream-start when recover is still waiting", async () => {
     connectEvents((e) => { void useTerminalStore().applyEvent(e); });
     const ws = FakeWS.instances[0];

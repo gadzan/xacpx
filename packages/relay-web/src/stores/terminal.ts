@@ -72,7 +72,12 @@ export function isFatalTerminalRecoveryCode(code: string): boolean {
 }
 
 function utf8ToCanonicalBase64(text: string): string {
-  const bytes = new TextEncoder().encode(text);
+  return bytesToCanonicalBase64(new TextEncoder().encode(text));
+}
+
+/** Raw bytes (legacy mouse reports et al) must never be UTF-8 encoded - byte
+ *  0xFF would round-trip to 0xC3 0xBF and corrupt the PTY stream. */
+function bytesToCanonicalBase64(bytes: Uint8Array): string {
   if (typeof Buffer !== "undefined") {
     return Buffer.from(bytes).toString("base64");
   }
@@ -387,6 +392,12 @@ export const useTerminalStore = defineStore("terminal", () => {
 
   /** RMUX path: controller-only input for a local tab attachment. */
   function sendInput(localKey: string, data: string): void {
+    sendInputBytes(localKey, new TextEncoder().encode(data));
+  }
+
+  /** RMUX path: controller-only RAW BYTE input (xterm onBinary, e.g. legacy
+   *  mouse reports). Same wire message, but base64 of the exact bytes. */
+  function sendInputBytes(localKey: string, bytes: Uint8Array): void {
     const view = get(localKey);
     if (!view?.attachmentId || !view.generation || view.role !== "controller") return;
     sendWebClientMessage({
@@ -394,9 +405,9 @@ export const useTerminalStore = defineStore("terminal", () => {
       instanceId: view.instanceId,
       attachmentId: view.attachmentId,
       generation: view.generation,
-      dataBase64: utf8ToCanonicalBase64(data),
+      dataBase64: bytesToCanonicalBase64(bytes),
     });
-    // No local echo — characters appear only after recover is live. If it is
+    // No local echo - characters appear only after recover is live. If it is
     // still waiting, restart the output stream so the PTY reply can rebase.
     ensureOutputStreamIfWaiting(view);
   }
@@ -599,6 +610,7 @@ export const useTerminalStore = defineStore("terminal", () => {
     terminate,
     takeControl,
     sendInput,
+    sendInputBytes,
     sendResize,
     onRebase,
     onBytes,
