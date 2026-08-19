@@ -1018,8 +1018,7 @@ test("trustGroupOwner asserts isOwner on group turns from the chat owner", async
 
   expect(requests).toHaveLength(2);
   expect(requests[0]!.metadata).toMatchObject({ channel: "feishu", chatType: "group", senderId: "ou_owner", groupId: "oc_group", isOwner: true });
-  expect(requests[1]!.metadata).toMatchObject({ senderId: "ou_member" });
-  expect(requests[1]!.metadata!.isOwner).toBeUndefined();
+  expect(requests[1]!.metadata).toMatchObject({ senderId: "ou_member", isOwner: false });
   // One cached owner lookup serves both messages.
   expect(ownerLookups).toBe(1);
 });
@@ -1054,7 +1053,7 @@ test("trustGroupOwner lookup failure leaves isOwner absent (fail closed)", async
   await handlers["im.message.receive_v1"]!(groupEvent("om_g3", "ou_owner", "@bot /use demo"));
 
   expect(requests).toHaveLength(1);
-  expect(requests[0]!.metadata!.isOwner).toBeUndefined();
+  expect(requests[0]!.metadata!.isOwner).toBe(false);
 });
 
 test("trustGroupOwner off never queries the chat owner", async () => {
@@ -1089,7 +1088,7 @@ test("trustGroupOwner off never queries the chat owner", async () => {
   await handlers["im.message.receive_v1"]!(groupEvent("om_g4", "ou_owner", "@bot /use demo"));
 
   expect(requests).toHaveLength(1);
-  expect(requests[0]!.metadata!.isOwner).toBeUndefined();
+  expect(requests[0]!.metadata!.isOwner).toBe(false);
   expect(ownerLookups).toBe(0);
 });
 
@@ -1225,8 +1224,8 @@ test("trustGroupOwner failure sentinel short-circuits repeated failing lookups",
   await handlers["im.message.receive_v1"]!(groupEvent("om_g8", "ou_owner", "@bot /use other"));
 
   expect(requests).toHaveLength(2);
-  expect(requests[0]!.metadata!.isOwner).toBeUndefined();
-  expect(requests[1]!.metadata!.isOwner).toBeUndefined();
+  expect(requests[0]!.metadata!.isOwner).toBe(false);
+  expect(requests[1]!.metadata!.isOwner).toBe(false);
   // The fail-closed sentinel (30s) absorbs the second message: one REST call,
   // not one per group message.
   expect(ownerLookups).toBe(1);

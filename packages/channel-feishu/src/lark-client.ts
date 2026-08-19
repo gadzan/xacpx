@@ -1,6 +1,10 @@
 import * as Lark from "@larksuiteoapi/node-sdk";
 import type { FeishuMessageClient } from "./send.js";
 
+// Hard deadline for chat-owner lookups; also passed as the Axios timeout so
+// the SDK's HTTP client itself gives up rather than leaking the connection.
+const CHAT_OWNER_LOOKUP_TIMEOUT_MS = 10_000;
+
 export interface FeishuLarkClientOptions {
   appId: string;
   appSecret: string;
@@ -74,13 +78,29 @@ export function createFeishuLarkClient(options: FeishuLarkClientOptions): Feishu
       // FeishuMessageClient subset omits it, so this named cast re-declares
       // only that method surface.
       const requester = sdk as unknown as {
-        request(input: { method: "GET"; url: string }): Promise<unknown>;
+        request(input: { method: "GET"; url: string; timeout?: number }): Promise<unknown>;
       };
-      const response: unknown = await requester.request({
-        method: "GET",
-        url: `/open-apis/im/v1/chats/${encodeURIComponent(chatId)}`,
-      });
-      return extractChatOwnerId(response);
+      // The SDK's generic request forwards to a bare Axios instance whose
+      // default timeout is 0 (never). This lookup sits on the group-message
+      // hot path and dedups all concurrent turns onto one promise, so a
+      // stalled request would wedge the whole chat: race a hard deadline and
+      // treat it like any other failure (fail closed, 30s sentinel upstream).
+      let deadline: NodeJS.Timeout | undefined;
+      try {
+        const response: unknown = await Promise.race([
+          requester.request({
+            method: "GET",
+            url: `/open-apis/im/v1/chats/${encodeURIComponent(chatId)}`,
+            timeout: CHAT_OWNER_LOOKUP_TIMEOUT_MS,
+          }),
+          new Promise<undefined>((resolve) => {
+            deadline = setTimeout(() => resolve(undefined), CHAT_OWNER_LOOKUP_TIMEOUT_MS);
+          }),
+        ]);
+        return extractChatOwnerId(response);
+      } finally {
+        clearTimeout(deadline);
+      }
     },
     async startWS(input) {
       if (options.injectedStartWS) {
