@@ -1,4 +1,3 @@
-// Thin wrapper over @xterm/xterm. Isolating it here means a future renderer
 // swap only touches this file. Adds fit() (derive cols/rows from the rendered
 // .xterm-screen metrics, reserving scrollbar width exactly like the official
 // FitAddon), parse-completed writes (xterm's write() is async - the FIFO below
@@ -158,10 +157,12 @@ async function defaultFactory(
     // (xterm fills unspecified colors from its own defaults, so partial themes are safe).
     setTheme: (t) => { term.options.theme = t; },
     scrollLines: (amount) => term.scrollLines(amount),
-    // FitAddon parity: scrollback 0 means no scrollbar; overviewRuler width overrides.
+    // FitAddon parity: scrollback 0 means no scrollbar; the overview ruler
+    // width overrides. `||` (not `??`) matches FitAddon exactly - an explicit
+    // width of 0 also falls back to the default scrollbar reservation.
     scrollBarWidth: () => term.options.scrollback === 0
       ? 0
-      : (term.options.overviewRuler?.width ?? DEFAULT_SCROLLBAR_WIDTH),
+      : (term.options.overviewRuler?.width || DEFAULT_SCROLLBAR_WIDTH),
     get buffer() { return term.buffer; },
     get element() { return term.element; },
     get cols() { return term.cols; },
