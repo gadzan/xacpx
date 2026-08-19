@@ -1,4 +1,5 @@
 import type { AppState, LogicalSession } from "../state/types";
+import { toDisplaySessionAlias } from "../channels/channel-scope";
 import {
   sameCoordinatorSession,
   stableCoordinatorSession,
@@ -54,6 +55,7 @@ export class AgentEndpointRegistry {
     private readonly deps: {
       nodeId: string;
       loadState: () => Promise<AppState>;
+      isSessionActive?: (internalAlias: string) => boolean;
     },
   ) {}
   updateRemoteEndpoints(nodeId: string, endpoints: AgentEndpointView[]): void {
@@ -369,6 +371,12 @@ export class AgentEndpointRegistry {
     const workspaceFilter = selector.workspace?.trim().toLowerCase();
     const agentFilter = selector.agent?.trim().toLowerCase();
 
+    if (!displayNameFilter && !workspaceFilter && !agentFilter) {
+      throw new AgentMessagingError(
+        "TARGET_NOT_FOUND",
+        "Target selector must specify at least one criterion (displayName, workspace, or agent).",
+      );
+    }
     const matches = candidates.filter((candidate) => {
       if (displayNameFilter) {
         const candDisplayName = candidate.endpoint.displayName
@@ -515,7 +523,9 @@ export class AgentEndpointRegistry {
       nodeId: this.deps.nodeId,
       endpointId: session.logical_session_id,
     };
-    const displayName = session.display_name || session.alias;
+    const displayName =
+      session.display_name || toDisplaySessionAlias(session.alias);
+    const isRunning = this.deps.isSessionActive?.(session.alias) ?? false;
     return {
       address,
       handle: encodeAgentHandle(address),
@@ -523,9 +533,9 @@ export class AgentEndpointRegistry {
       agent: session.agent,
       workspace: session.workspace,
       displayName,
-      state: "idle",
+      state: isRunning ? "running" : "idle",
       activity: {
-        status: "idle",
+        status: isRunning ? "working" : "idle",
       },
       capabilities: queueOnlyCapabilities(),
     };

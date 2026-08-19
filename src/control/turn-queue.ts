@@ -61,6 +61,7 @@ export interface SubmitParams {
   agentMentions?: Array<{ range: [number, number]; handle: string }>;
   isPeerMessage?: boolean;
   allowRestoreArchived?: boolean;
+  preserveCoordinatorRoute?: boolean;
   /** Hub-issued pre-write correlation; stored on the queue item and carried onto the
    *  drained turn-started so the hub can correlate a queue item back to its
    *  pre-written inbound row (see PromptPayload.promptRequestId). */
@@ -182,7 +183,7 @@ export class TurnQueue {
         concurrencyKey: params.concurrencyKey,
         isPeerMessage: true,
         allowRestoreArchived: false,
-        ...(params.isOwner !== undefined ? { isOwner: params.isOwner } : {}),
+        ...(params.preserveCoordinatorRoute !== undefined ? { preserveCoordinatorRoute: params.preserveCoordinatorRoute } : {}),
         ...(params.accountId !== undefined ? { accountId: params.accountId } : {}),
         ...(params.media !== undefined ? { media: params.media } : {}),
         ...(params.agentMentions !== undefined ? { agentMentions: params.agentMentions } : {}),
@@ -249,7 +250,7 @@ export class TurnQueue {
             concurrencyKey: params.concurrencyKey,
             isPeerMessage: params.isPeerMessage,
             allowRestoreArchived: params.allowRestoreArchived,
-            ...(params.isOwner !== undefined ? { isOwner: params.isOwner } : {}),
+            ...(params.preserveCoordinatorRoute !== undefined ? { preserveCoordinatorRoute: params.preserveCoordinatorRoute } : {}),
             ...(params.accountId !== undefined ? { accountId: params.accountId } : {}),
             ...(params.media !== undefined ? { media: params.media } : {}),
             ...(params.agentMentions !== undefined ? { agentMentions: params.agentMentions } : {}),
@@ -346,6 +347,7 @@ export class TurnQueue {
           media: params.media,
           agentMentions: params.agentMentions,
           allowRestoreArchived: params.allowRestoreArchived,
+          preserveCoordinatorRoute: params.preserveCoordinatorRoute,
         },
         controller.signal,
         onActivity,
@@ -433,7 +435,7 @@ export class TurnQueue {
         drained: true,
         isPeerMessage: next.isPeerMessage,
         allowRestoreArchived: next.allowRestoreArchived,
-        ...(next.isOwner !== undefined ? { isOwner: next.isOwner } : {}),
+        preserveCoordinatorRoute: next.preserveCoordinatorRoute,
         ...(next.accountId !== undefined ? { accountId: next.accountId } : {}),
         ...(next.media !== undefined ? { media: next.media } : {}),
         ...(next.agentMentions !== undefined ? { agentMentions: next.agentMentions } : {}),

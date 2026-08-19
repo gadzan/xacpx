@@ -18,6 +18,7 @@ export interface TurnRequest {
   media?: PromptAttachmentRef[];
   agentMentions?: Array<{ range: [number, number]; handle: string }>;
   allowRestoreArchived?: boolean;
+  preserveCoordinatorRoute?: boolean;
 }
 
 export interface TurnResult {
@@ -291,6 +292,7 @@ export class SessionTurnRunner {
           req.senderId,
           req.isOwner,
           req.boundSessionAlias,
+          req.preserveCoordinatorRoute,
         ),
         abortSignal: signal,
         ...(chatMedia.length > 0 ? { media: chatMedia } : {}),

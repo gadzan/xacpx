@@ -24,7 +24,7 @@ import { buildApp, type AppRuntime } from "../../src/main";
 import { resolveAcpxCommand } from "../../src/config/resolve-acpx-command";
 import { encodeAgentHandle } from "../../src/orchestration/agent-handle";
 import { registerKnownChannelId } from "../../src/channels/channel-scope";
-
+import { stableCoordinatorSession } from "../../src/orchestration/coordinator-identity";
 registerKnownChannelId("feishu");
 const MOCK_AGENT = fileURLToPath(
   new URL("../fixtures/mock-acp-agent.mjs", import.meta.url),
@@ -492,6 +492,18 @@ test(
         code: "MESSAGE_QUEUE_FULL",
       });
 
+      // Failed delivery MUST create a failed message card on sender timeline (Non-blocker 3)
+      await waitUntil(() => {
+        const page = hub.messages.listBySession(hub.account.id, instA.id, daemonA.sessionAlias);
+        return page.messages.some(
+          (m) => m.structured?.agentMessage?.content === "Should exceed queue capacity" && m.structured?.agentMessage?.status === "failed",
+        );
+      });
+      const failedCard = hub.messages.listBySession(hub.account.id, instA.id, daemonA.sessionAlias).messages.find(
+        (m) => m.structured?.agentMessage?.content === "Should exceed queue capacity" && m.structured?.agentMessage?.status === "failed",
+      );
+      expect(failedCard).toBeDefined();
+
       await holderTurn;
       await Promise.all(fillerPromises);
       // Gate D: Archive Race Safety (Fail Closed, Never Restore Sleeping Session)
@@ -677,10 +689,92 @@ test(
       unblockArchive();
       await archiveReviewerPromise;
       controlAny.deps.archiveSessionWithTransport = origArchiveTransport;
-
       const revInternal = await daemonB.runtime.sessions.resolveAliasForChat(daemonB.chatKey, "reviewer");
       const revState = await daemonB.runtime.sessions.getSession(revInternal);
       expect(revState?.archived).toBe(true);
+
+      // Gate I — Peer Turn Route-Context Isolation (Blocker 1)
+      // 1. Human prompt establishes real coordinator route context
+      await daemonB.runtime.control.prompt({
+        chatKey: daemonB.chatKey,
+        sessionAlias: daemonB.sessionAlias,
+        text: "Human prompt establishing real route context",
+        senderId: "alice",
+        isOwner: true,
+      });
+      const bCoordinatorSession = daemonB.coordinatorSession;
+      const routeKey = stableCoordinatorSession(bCoordinatorSession);
+      const readStateB = async () =>
+        JSON.parse(await readFile(join(daemonB.home, "state.json"), "utf8"));
+      const stateBefore = (await readStateB()).orchestration?.coordinatorRoutes?.[routeKey];
+      expect(stateBefore).toBeDefined();
+      expect(stateBefore.chatKey).toBe(daemonB.chatKey);
+      // 2. Peer message from A arrives and executes on B
+      const peerTurnI = await daemonA.runtime.agentMessaging!.send(
+        { coordinatorSession: daemonA.coordinatorSession },
+        { to: handleBackendFresh, content: "Peer message to test route isolation" },
+      );
+      expect(peerTurnI.status).toBe("injected");
+      await waitUntil(async () => {
+        const prompts = await daemonB.readPrompts();
+        return prompts.some((p) => p.includes("Peer message to test route isolation"));
+      });
+      await waitUntil(() => !daemonB.runtime.control.isBusy(daemonB.chatKey, daemonB.sessionAlias));
+      // 3. Coordinator route on B MUST still point to real human chatKey, NOT relay:agent-message:...
+      const stateAfter = (await readStateB()).orchestration?.coordinatorRoutes?.[routeKey];
+      expect(stateAfter).toBeDefined();
+      expect(stateAfter.chatKey).toBe(daemonB.chatKey);
+      expect(stateAfter.chatKey).not.toContain("agent-message");
+
+      // Gate J — Logical Agent Live Activity Lifecycle (Blocker 2)
+      // 1. Wait for B to be settled idle in A's directory after Gate I finishes
+      await waitUntil(async () => {
+        const list = await daemonA.runtime.agentMessaging!.listReachable({ coordinatorSession: daemonA.coordinatorSession });
+        const ep = list.find((e) => e.displayName === "Backend Service");
+        return ep?.state === "idle" && ep?.activity?.status === "idle";
+      });
+      const listJ1 = await daemonA.runtime.agentMessaging!.listReachable({ coordinatorSession: daemonA.coordinatorSession });
+      const epBJ1 = listJ1.find((e) => e.displayName === "Backend Service");
+      expect(epBJ1).toBeDefined();
+      expect(epBJ1!.state).toBe("idle");
+      expect(epBJ1!.activity?.status).toBe("idle");
+      // 2. B starts a long-running turn
+      const bLiveTurn = daemonB.runtime.control.prompt({
+        chatKey: daemonB.chatKey,
+        sessionAlias: daemonB.sessionAlias,
+        text: "delay-2500 Live activity status test",
+        senderId: "alice",
+        isOwner: true,
+      });
+      await waitUntil(() => daemonB.runtime.control.isBusy(daemonB.chatKey, daemonB.sessionAlias));
+
+      // 3. Remote A directory automatically reflects B as working
+      await waitUntil(async () => {
+        const list = await daemonA.runtime.agentMessaging!.listReachable({ coordinatorSession: daemonA.coordinatorSession });
+        const b = list.find((e) => e.displayName === "Backend Service");
+        return b?.state === "running" && b?.activity?.status === "working";
+      });
+
+      // 4. B finishes turn
+      await bLiveTurn;
+
+      // 5. Remote A directory automatically returns B to idle
+      await waitUntil(async () => {
+        const list = await daemonA.runtime.agentMessaging!.listReachable({ coordinatorSession: daemonA.coordinatorSession });
+        const b = list.find((e) => e.displayName === "Backend Service");
+        return b?.state === "idle" && b?.activity?.status === "idle";
+      });
+
+      // Gate K — Selector Criteria Validation (Non-blocker 1)
+      // selector: {} must be rejected
+      await expect(
+        daemonA.runtime.agentMessaging!.send(
+          { coordinatorSession: daemonA.coordinatorSession },
+          { selector: {}, content: "Empty selector" },
+        ),
+      ).rejects.toMatchObject({
+        code: "TARGET_NOT_FOUND",
+      });
     } finally {
       webWs.close();
       await daemonA.dispose();
@@ -688,5 +782,5 @@ test(
       await hub.close();
     }
   },
-  60_000,
+  120_000,
 );

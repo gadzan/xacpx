@@ -519,6 +519,10 @@ export function buildXacpxMcpToolRegistry(input: {
                 .describe("Target agent type"),
             })
             .strict()
+            .refine(
+              (s) => Boolean(s.displayName || s.workspace || s.agent),
+              "Target selector must specify at least one criterion (displayName, workspace, or agent)",
+            )
             .optional()
             .describe("Target selector criteria when handle is not known"),
           message: z

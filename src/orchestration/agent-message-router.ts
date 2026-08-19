@@ -392,9 +392,17 @@ export class AgentMessageRouter {
             contentLength: Buffer.byteLength(input.content, "utf8"),
             contentHash,
           });
+          const senderSessionAlias =
+            sender.sessionAlias ??
+            sender.coordinatorSession ??
+            binding.coordinatorSession;
+          this.emitOutboundEvent(senderSessionAlias, message, target, {
+            messageId: message.id,
+            status: "failed",
+            route: "relay",
+          });
           throw mapped;
         }
-        this.cacheReceipt(remoteReceipt, createdAt);
         this.conversationMessageCounts.set(
           conversationId,
           currentConvCount + 1,
@@ -463,6 +471,15 @@ export class AgentMessageRouter {
           errorCode: mapped.code,
           contentLength: Buffer.byteLength(input.content, "utf8"),
           contentHash,
+        });
+        const senderSessionAlias =
+          sender.sessionAlias ??
+          sender.coordinatorSession ??
+          binding.coordinatorSession;
+        this.emitOutboundEvent(senderSessionAlias, message, target, {
+          messageId: message.id,
+          status: "failed",
+          route: "local",
         });
         throw mapped;
       }

@@ -1236,6 +1236,8 @@ export async function buildApp(
   const agentEndpointRegistry = new AgentEndpointRegistry({
     nodeId: messagingNodeIdentity.nodeId,
     loadState: async () => state,
+    isSessionActive: (internalAlias: string) =>
+      controlRef?.isBusy("", internalAlias) ?? activeTurns.isActiveAnywhere(internalAlias),
   });
   let controlRef: ControlService | null = null;
   const localAgentMessageDelivery = new LocalAgentMessageDeliveryAdapter({

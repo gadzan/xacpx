@@ -1347,6 +1347,7 @@ export class ControlService {
       promptRequestId: input.messageId,
       isPeerMessage: true,
       allowRestoreArchived: false,
+      preserveCoordinatorRoute: true,
     });
     if (admission.status === "rejected") {
       if (admission.reason === "queue-full") {

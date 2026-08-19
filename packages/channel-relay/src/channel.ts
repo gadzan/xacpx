@@ -308,7 +308,9 @@ export class RelayChannel implements MessageChannelRuntime {
         ?.event?.type;
       if (
         eventType === "sessions-changed" ||
-        eventType === "orchestration-changed"
+        eventType === "orchestration-changed" ||
+        eventType === "turn-started" ||
+        eventType === "turn-finished"
       ) {
         this.scheduleEndpointSync();
       }
