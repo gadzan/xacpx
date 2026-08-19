@@ -1155,12 +1155,12 @@ test("emits agent-message event with direction 'sent' when outbound message succ
     content: "Please review the auth schema.",
   });
 
-  expect(emitted.length).toBe(1);
-  const event = emitted[0];
-  expect(event?.type).toBe("agent-message");
-  if (event && event.type === "agent-message") {
-    expect(event.sessionAlias).toBe("workerA");
-    expect(event.message).toMatchObject({
+  expect(emitted.length).toBe(2);
+  const sentEvent = emitted.find((e) => e.type === "agent-message" && e.message.direction === "sent");
+  expect(sentEvent).toBeDefined();
+  if (sentEvent && sentEvent.type === "agent-message") {
+    expect(sentEvent.sessionAlias).toBe("workerA");
+    expect(sentEvent.message).toMatchObject({
       kind: "agent_message",
       direction: "sent",
       messageId: "msg_message-1",
@@ -1171,6 +1171,19 @@ test("emits agent-message event with direction 'sent' when outbound message succ
         agent: "gemini",
         workspace: "project",
       },
+    });
+  }
+
+  const receivedEvent = emitted.find((e) => e.type === "agent-message" && e.message.direction === "received");
+  expect(receivedEvent).toBeDefined();
+  if (receivedEvent && receivedEvent.type === "agent-message") {
+    expect(receivedEvent.sessionAlias).toBe("workerB");
+    expect(receivedEvent.message).toMatchObject({
+      kind: "agent_message",
+      direction: "received",
+      messageId: "msg_message-1",
+      content: "Please review the auth schema.",
+      status: "delivered",
     });
   }
 });

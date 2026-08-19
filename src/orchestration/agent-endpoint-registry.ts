@@ -447,18 +447,24 @@ export class AgentEndpointRegistry {
   ): ResolvedAgentEndpoint[] {
     const candidates: ResolvedAgentEndpoint[] = [];
     const all = coordinatorSession === "*";
-    for (const logical of Object.values(state.sessions)) {
-      if (logical.archived === true) {
-        continue;
+    const isExternal = Boolean(
+      !all && state.orchestration.externalCoordinators[coordinatorSession],
+    );
+
+    if (all || !isExternal) {
+      for (const logical of Object.values(state.sessions)) {
+        if (logical.archived === true) {
+          continue;
+        }
+        candidates.push({
+          endpoint: this.toLogicalEndpoint(logical),
+          runtime: {
+            kind: "logical",
+            alias: logical.alias,
+            transportSession: logical.transport_session,
+          },
+        });
       }
-      candidates.push({
-        endpoint: this.toLogicalEndpoint(logical),
-        runtime: {
-          kind: "logical",
-          alias: logical.alias,
-          transportSession: logical.transport_session,
-        },
-      });
     }
     for (const [workerSession, worker] of Object.entries(
       state.orchestration.workerBindings,
