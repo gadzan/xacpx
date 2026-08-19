@@ -1092,3 +1092,142 @@ test("trustGroupOwner off never queries the chat owner", async () => {
   expect(requests[0]!.metadata!.isOwner).toBeUndefined();
   expect(ownerLookups).toBe(0);
 });
+
+test("trustGroupOwner pending lookup keeps the bound session marked active", async () => {
+  let handlers: Record<string, (data: unknown) => Promise<void> | void> = {};
+  let releaseOwnerLookup: ((ownerId: string) => void) | undefined;
+  const channel = new FeishuChannel(
+    { ...defaultFeishuConfig, trustGroupOwner: true },
+    {
+      createClient: () => ({
+        sdk: { im: { message: { reply: async () => ({}), create: async () => ({}) } } },
+        probeBot: async () => ({ botOpenId: "ou_bot" }),
+        getChatOwner: () =>
+          new Promise<string | undefined>((resolve) => {
+            releaseOwnerLookup = resolve;
+          }),
+        stop: () => {},
+        startWS: async (input: { handlers: Record<string, (data: unknown) => Promise<void> | void> }) => {
+          handlers = input.handlers;
+        },
+      }),
+    },
+  );
+  const requests: { metadata?: Record<string, unknown> }[] = [];
+  const agent: ChatAgent = {
+    async chat(request) {
+      requests.push(request as { metadata?: Record<string, unknown> });
+      return { text: "ok" };
+    },
+  };
+  const activeKeys = new Set<string>();
+  const activeTurns = {
+    markActive: (_chatKey: string, alias: string) => activeKeys.add(alias),
+    markInactive: (_chatKey: string, alias: string) => activeKeys.delete(alias),
+    isActive: (_chatKey: string, alias: string) => activeKeys.has(alias),
+    isActiveAnywhere: (alias: string) => activeKeys.has(alias),
+  };
+  const sessions = { peekCurrentSessionAlias: () => "demo" };
+
+  await channel.start({
+    agent,
+    abortSignal: new AbortController().signal,
+    quota: createNoopQuota(),
+    logger: createNoopLogger(),
+    activeTurns: activeTurns as never,
+    sessions: sessions as never,
+  });
+
+  const handled = handlers["im.message.receive_v1"]!(groupEvent("om_g5", "ou_owner", "@bot hello"));
+  // The turn is blocked inside the owner lookup, but the dispatch-bound
+  // session must already be under active-turn protection (archive refusal,
+  // running-state reporting) - exactly the window the lookup opened up.
+  for (let i = 0; i < 100 && activeKeys.size === 0; i++) await Promise.resolve();
+  expect(activeTurns.isActiveAnywhere("demo")).toBe(true);
+  expect(releaseOwnerLookup).toBeDefined();
+
+  releaseOwnerLookup!("ou_owner");
+  await handled;
+
+  expect(requests).toHaveLength(1);
+  expect(requests[0]!.metadata!.isOwner).toBe(true);
+  expect(activeKeys.has("demo")).toBe(false);
+});
+
+test("trustGroupOwner lookup pending across logout never repopulates the cache", async () => {
+  let handlers: Record<string, (data: unknown) => Promise<void> | void> = {};
+  let releaseOwnerLookup: ((ownerId: string) => void) | undefined;
+  const channel = new FeishuChannel(
+    { ...defaultFeishuConfig, trustGroupOwner: true },
+    {
+      createClient: () => ({
+        sdk: { im: { message: { reply: async () => ({}), create: async () => ({}) } } },
+        probeBot: async () => ({ botOpenId: "ou_bot" }),
+        getChatOwner: () =>
+          new Promise<string | undefined>((resolve) => {
+            releaseOwnerLookup = resolve;
+          }),
+        stop: () => {},
+        startWS: async (input: { handlers: Record<string, (data: unknown) => Promise<void> | void> }) => {
+          handlers = input.handlers;
+        },
+      }),
+    },
+  );
+  const agent: ChatAgent = { async chat() { return { text: "ok" }; } };
+
+  await channel.start({ agent, abortSignal: new AbortController().signal, quota: createNoopQuota(), logger: createNoopLogger() });
+
+  const handled = handlers["im.message.receive_v1"]!(groupEvent("om_g6", "ou_owner", "@bot hello"));
+  for (let i = 0; i < 100 && !releaseOwnerLookup; i++) await Promise.resolve();
+
+  // Lifecycle restart while the lookup is still in flight.
+  channel.logout();
+  releaseOwnerLookup!("ou_owner");
+  await handled;
+
+  // The stale answer served its own straggler turn but must not be cached
+  // into the new lifecycle.
+  const cache = (channel as unknown as { chatOwnerCache: Map<string, unknown> }).chatOwnerCache;
+  expect(cache.size).toBe(0);
+});
+
+test("trustGroupOwner failure sentinel short-circuits repeated failing lookups", async () => {
+  let handlers: Record<string, (data: unknown) => Promise<void> | void> = {};
+  let ownerLookups = 0;
+  const channel = new FeishuChannel(
+    { ...defaultFeishuConfig, trustGroupOwner: true },
+    {
+      createClient: () => ({
+        sdk: { im: { message: { reply: async () => ({}), create: async () => ({}) } } },
+        probeBot: async () => ({ botOpenId: "ou_bot" }),
+        getChatOwner: async () => {
+          ownerLookups += 1;
+          throw new Error("scope missing");
+        },
+        startWS: async (input: { handlers: Record<string, (data: unknown) => Promise<void> | void> }) => {
+          handlers = input.handlers;
+        },
+      }),
+    },
+  );
+  const requests: { metadata?: Record<string, unknown> }[] = [];
+  const agent: ChatAgent = {
+    async chat(request) {
+      requests.push(request as { metadata?: Record<string, unknown> });
+      return { text: "ok" };
+    },
+  };
+
+  await channel.start({ agent, abortSignal: new AbortController().signal, quota: createNoopQuota(), logger: createNoopLogger() });
+
+  await handlers["im.message.receive_v1"]!(groupEvent("om_g7", "ou_owner", "@bot /use demo"));
+  await handlers["im.message.receive_v1"]!(groupEvent("om_g8", "ou_owner", "@bot /use other"));
+
+  expect(requests).toHaveLength(2);
+  expect(requests[0]!.metadata!.isOwner).toBeUndefined();
+  expect(requests[1]!.metadata!.isOwner).toBeUndefined();
+  // The fail-closed sentinel (30s) absorbs the second message: one REST call,
+  // not one per group message.
+  expect(ownerLookups).toBe(1);
+});

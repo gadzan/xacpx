@@ -37,6 +37,10 @@ import { downloadFeishuMessageResource } from "./media.js";
 // costs one API call per window, short enough that an ownership transfer
 // converges without a restart.
 const GROUP_OWNER_CACHE_TTL_MS = 5 * 60 * 1000;
+// Failed or ownerless lookups cache a fail-closed sentinel for a much shorter
+// window: a misconfigured scope must not cost one REST call per group message,
+// while a freshly granted permission still takes effect within seconds.
+const GROUP_OWNER_FAILURE_CACHE_TTL_MS = 30 * 1000;
 
 type OrchestrationTaskRecord = Parameters<MessageChannelRuntime["notifyTaskCompletion"]>[0];
 
@@ -93,10 +97,14 @@ export class FeishuChannel implements MessageChannelRuntime {
   // pending entries. Push on registration, splice on cleanup.
   private readonly activeTasks: Map<string, ActiveTask[]> = new Map();
   // Group-owner resolution (opt-in trustGroupOwner): chat_id -> owner open_id
-  // with a TTL so ownership transfers eventually converge, plus in-flight
-  // dedup so a burst of messages makes at most one API call per chat.
-  private readonly chatOwnerCache: Map<string, { ownerId: string; expiresAt: number }> = new Map();
+  // (undefined = fail-closed sentinel) with a TTL so ownership transfers
+  // eventually converge, plus in-flight dedup so a burst of messages makes at
+  // most one API call per chat. ownerLookupEpoch invalidates lookups that
+  // straddle a logout: an answer from a previous lifecycle may serve its own
+  // turn but must never repopulate the new lifecycle's cache.
+  private readonly chatOwnerCache: Map<string, { ownerId: string | undefined; expiresAt: number }> = new Map();
   private readonly chatOwnerLookups: Map<string, Promise<string | undefined>> = new Map();
+  private ownerLookupEpoch = 0;
   private readonly permissionNotifier: PermissionNotifier;
   private readonly config: FeishuChannelConfig;
 
@@ -117,7 +125,6 @@ export class FeishuChannel implements MessageChannelRuntime {
     if (this.isLoggedIn()) return "feishu credentials configured";
     throw new Error("Feishu uses channel.options.appId and channel.options.appSecret; configure them instead of QR login.");
   }
-
   logout(): void {
     for (const [accountId, runtime] of this.accounts) {
       runtime.client.stop();
@@ -126,7 +133,11 @@ export class FeishuChannel implements MessageChannelRuntime {
     }
     this.accounts.clear();
     // Owner assertions are per-account, per-membership; drop them so a
-    // reconfigured restart never trusts a previous login's chat roster.
+    // reconfigured restart never trusts a previous login's chat roster. The
+    // epoch bump also rejects lookups still in flight from the old lifecycle
+    // when they settle: their answers may serve their own straggler turn but
+    // can never repopulate this cache or evict a new lifecycle's registration.
+    this.ownerLookupEpoch += 1;
     this.chatOwnerCache.clear();
     this.chatOwnerLookups.clear();
     this.permissionNotifier.reset();
@@ -420,15 +431,6 @@ export class FeishuChannel implements MessageChannelRuntime {
     const lane = resolveTurnLane(requestText);
 
     const senderOpenId = event.sender?.sender_id?.open_id;
-    // Opt-in owner assertion: resolve before task registration so the flag
-    // rides on ActiveTask into the turn's route metadata. Cached per chat, so
-    // steady state costs nothing; any lookup failure yields undefined and the
-    // host's owner gate stays fail-closed.
-    const senderIsOwner =
-      event.message.chat_type === "group" && runtime.account.trustGroupOwner && senderOpenId
-        ? await this.resolveSenderIsGroupOwner({ runtime, accountId, chatId, senderOpenId })
-        : undefined;
-
     const { active, abortController } = this.registerActiveTask({
       accountId,
       chatId,
@@ -436,9 +438,20 @@ export class FeishuChannel implements MessageChannelRuntime {
       queueKey,
       senderOpenId,
       chatType: event.message.chat_type,
-      senderIsOwner,
+      senderIsOwner: undefined,
       boundAlias,
     });
+    if (boundAlias) this.activeTurns?.markActive(chatKey, boundAlias);
+
+    // Opt-in owner assertion runs AFTER task registration + markActive: the
+    // bound session must enjoy active-turn protection (archive refusal,
+    // running-state reporting) and abort tracking even while this turn is
+    // blocked on a (possibly uncached) REST lookup. The resolved flag rides
+    // on ActiveTask into the turn's route metadata; any failure leaves it
+    // undefined and the host's owner gate stays fail-closed.
+    if (event.message.chat_type === "group" && runtime.account.trustGroupOwner && senderOpenId) {
+      active.senderIsOwner = await this.resolveSenderIsGroupOwner({ runtime, accountId, chatId, senderOpenId });
+    }
 
     await this.executor.run(
       chatKey,
@@ -569,10 +582,14 @@ export class FeishuChannel implements MessageChannelRuntime {
 
   /**
    * Resolves whether the sender is the Feishu group owner, via a TTL-cached
-   * GET /im/v1/chats lookup with in-flight dedup. Every failure path returns
-   * undefined (never true): an API error, a malformed response, or a missing
-   * owner_id must all degrade to the host's fail-closed owner gate rather
-   * than silently granting or silently denying on stale data.
+   * GET /im/v1/chats lookup with in-flight dedup. Every failure path fails
+   * closed (never asserts owner): an API error, a malformed response, or a
+   * missing owner_id all cache a fail-closed sentinel for a short window - a
+   * misconfigured `im:chat:readonly` scope must not cost one REST call per
+   * group message - and degrade to the host's fail-closed owner gate. A
+   * lookup that straddles a logout() never writes the new lifecycle's cache:
+   * the epoch check drops it, and the identity-checked finally can never
+   * evict a newer lifecycle's in-flight registration.
    */
   private async resolveSenderIsGroupOwner(input: {
     runtime: AccountRuntime;
@@ -584,28 +601,42 @@ export class FeishuChannel implements MessageChannelRuntime {
     const cacheKey = `${accountId}:${chatId}`;
     const cached = this.chatOwnerCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
+      // A fail-closed sentinel (ownerId undefined) resolves to false.
       return cached.ownerId === senderOpenId;
     }
+    const epoch = this.ownerLookupEpoch;
     let lookup = this.chatOwnerLookups.get(cacheKey);
     if (!lookup) {
-      lookup = runtime.client.getChatOwner(chatId).finally(() => {
-        this.chatOwnerLookups.delete(cacheKey);
+      const request = runtime.client.getChatOwner(chatId);
+      lookup = request.finally(() => {
+        if (this.chatOwnerLookups.get(cacheKey) === lookup) {
+          this.chatOwnerLookups.delete(cacheKey);
+        }
       });
       this.chatOwnerLookups.set(cacheKey, lookup);
     }
     let ownerId: string | undefined;
+    let failure: { message: string } | undefined;
     try {
       ownerId = await lookup;
     } catch (error) {
+      failure = { message: error instanceof Error ? error.message : String(error) };
+    }
+    if (failure) {
       await this.logger?.warn("feishu.chat_owner.lookup_failed", "failed to look up feishu chat owner; owner assertion skipped (fail closed)", {
         accountId,
         chatId,
-        message: error instanceof Error ? error.message : String(error),
+        message: failure.message,
       });
-      return undefined;
     }
-    if (!ownerId) return undefined;
-    this.chatOwnerCache.set(cacheKey, { ownerId, expiresAt: Date.now() + GROUP_OWNER_CACHE_TTL_MS });
+    if (epoch !== this.ownerLookupEpoch) {
+      // A logout restarted the lifecycle mid-lookup: this answer belongs to
+      // the previous one, so serve it to this turn only - never the cache.
+      return ownerId === senderOpenId;
+    }
+    this.chatOwnerCache.set(cacheKey, failure || !ownerId
+      ? { ownerId: undefined, expiresAt: Date.now() + GROUP_OWNER_FAILURE_CACHE_TTL_MS }
+      : { ownerId, expiresAt: Date.now() + GROUP_OWNER_CACHE_TTL_MS });
     return ownerId === senderOpenId;
   }
 
