@@ -561,6 +561,8 @@ function parseWebServerEvent(envelope) {
     return null;
   if (candidate.kind === "instance-status" && typeof candidate.online !== "boolean")
     return null;
+  if (candidate.kind === "control-event" && !validControlEvent(candidate.event))
+    return null;
   if (candidate.kind === "state-snapshot" && !validStateSnapshot(candidate))
     return null;
   if (candidate.kind === "notice" && !validNotice(candidate.notice))

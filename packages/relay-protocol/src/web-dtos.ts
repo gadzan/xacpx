@@ -610,6 +610,7 @@ export function parseWebServerEvent(envelope: RelayEnvelope): WebServerEvent | n
   }
   if (typeof candidate.instanceId !== "string") return null;
   if (candidate.kind === "instance-status" && typeof candidate.online !== "boolean") return null;
+  if (candidate.kind === "control-event" && !validControlEvent(candidate.event)) return null;
   if (candidate.kind === "state-snapshot" && !validStateSnapshot(candidate)) return null;
   if (candidate.kind === "notice" && !validNotice(candidate.notice)) return null;
   if (candidate.kind.startsWith("terminal-") && !validTargetedTerminalEvent(candidate)) return null;
