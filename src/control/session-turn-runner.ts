@@ -7,6 +7,7 @@ import { toErrorMessage, buildControlMetadata, TURN_IDLE_TIMEOUT_REASON } from "
 export interface TurnRequest {
   chatKey: string;
   sessionAlias: string;
+  boundSessionAlias?: string;
   text: string;
   senderId: string;
   isOwner?: boolean;
@@ -150,7 +151,9 @@ export class SessionTurnRunner {
     let wasArchived = false;
     let priorTransportSession: string | undefined;
     try {
-      internalAlias = await this.deps.sessions.resolveAliasForChat(req.chatKey, req.sessionAlias);
+      internalAlias =
+        req.boundSessionAlias ??
+        (await this.deps.sessions.resolveAliasForChat(req.chatKey, req.sessionAlias));
       const prior = await this.deps.sessions.getSession(internalAlias);
       wasArchived = prior?.archived === true;
       priorTransportSession = prior?.transportSession;
@@ -160,14 +163,16 @@ export class SessionTurnRunner {
     if (req.allowRestoreArchived === false && wasArchived) {
       return { ok: false, errorMessage: "session-archived" };
     }
-    try {
-      await this.deps.sessions.useSession(req.chatKey, req.sessionAlias);
-    } catch (error) {
-      // This turn never really started, but it still holds the concurrency slot in
-      // ControlService. Just report the failure — the caller settles/advances the
-      // queue around this call so a transient bind failure on a *drained* head does
-      // not strand the items behind it.
-      return { ok: false, errorMessage: toErrorMessage(error) };
+    if (!req.boundSessionAlias) {
+      try {
+        await this.deps.sessions.useSession(req.chatKey, req.sessionAlias);
+      } catch (error) {
+        // This turn never really started, but it still holds the concurrency slot in
+        // ControlService. Just report the failure — the caller settles/advances the
+        // queue around this call so a transient bind failure on a *drained* head does
+        // not strand the items behind it.
+        return { ok: false, errorMessage: toErrorMessage(error) };
+      }
     }
     if (wasArchived) {
       this.deps.events.emit({ type: "sessions-changed" });
@@ -282,7 +287,11 @@ export class SessionTurnRunner {
         accountId: req.accountId ?? "control",
         conversationId: req.chatKey,
         text: chatText,
-        metadata: buildControlMetadata(req.senderId, req.isOwner),
+        metadata: buildControlMetadata(
+          req.senderId,
+          req.isOwner,
+          req.boundSessionAlias,
+        ),
         abortSignal: signal,
         ...(chatMedia.length > 0 ? { media: chatMedia } : {}),
         reply: async (chunk) => {

@@ -23,7 +23,9 @@ import { MessageChannelRegistry } from "../../src/channels/channel-registry";
 import { buildApp, type AppRuntime } from "../../src/main";
 import { resolveAcpxCommand } from "../../src/config/resolve-acpx-command";
 import { encodeAgentHandle } from "../../src/orchestration/agent-handle";
+import { registerKnownChannelId } from "../../src/channels/channel-scope";
 
+registerKnownChannelId("feishu");
 const MOCK_AGENT = fileURLToPath(
   new URL("../fixtures/mock-acp-agent.mjs", import.meta.url),
 );
@@ -420,7 +422,7 @@ test(
       const delayedTurnB = daemonB.runtime.control.prompt({
         chatKey: daemonB.chatKey,
         sessionAlias: daemonB.sessionAlias,
-        text: "delay-1500",
+        text: "delay-3000",
         senderId: "test",
         isOwner: true,
       });
@@ -439,11 +441,21 @@ test(
       await delayedTurnB;
       await waitUntil(() => {
         const afterEvents = webEvents.slice(busyEventStart);
-        return afterEvents.some(
+        return afterEvents.filter(
           (e) => e.kind === "control-event" && e.instanceId === instB.id && e.event?.type === "turn-finished" && e.event?.sessionAlias === "backend",
-        );
+        ).length >= 2;
       });
 
+      // Strict event sequence ordering assertion: first turn-started < first turn-finished < peer turn-started
+      const bControlEvents = webEvents
+        .slice(busyEventStart)
+        .filter((e) => e.kind === "control-event" && e.instanceId === instB.id && e.event?.sessionAlias === "backend");
+      const firstTurnStartedIdx = bControlEvents.findIndex((e) => e.event?.type === "turn-started");
+      const firstTurnFinishedIdx = bControlEvents.findIndex((e) => e.event?.type === "turn-finished");
+      const peerTurnStartedIdx = bControlEvents.findIndex((e, idx) => idx > firstTurnFinishedIdx && e.event?.type === "turn-started");
+      expect(firstTurnStartedIdx).toBeGreaterThanOrEqual(0);
+      expect(firstTurnFinishedIdx).toBeGreaterThan(firstTurnStartedIdx);
+      expect(peerTurnStartedIdx).toBeGreaterThan(firstTurnFinishedIdx);
       // Gate B: Admission Failure Honesty (Queue Depth Limit Rejection)
       // Fill B's prompt queue up to QUEUE_MAX_DEPTH (20 items) while B is running
       const holderTurn = daemonB.runtime.control.prompt({
@@ -517,6 +529,158 @@ test(
       expect(rawPromptRecord).not.toContain("<xacpx-collaboration-directive");
       expect(rawPromptRecord).not.toContain("<user-prompt>");
       expect(rawPromptRecord).toContain("Tell @Backend Service to hold off");
+      // Gate E — Cross-Target Isolation
+      const reviewerSession = await daemonB.runtime.control.createSession(daemonB.chatKey, "reviewer", "mock", "default");
+      await daemonB.runtime.control.setSessionDisplayName(daemonB.chatKey, "reviewer", "Reviewer Agent");
+      await daemonB.runtime.control.unarchiveSession(daemonB.chatKey, daemonB.sessionAlias);
+      daemonB.channel.syncAgentEndpointsNow();
+
+      await waitUntil(async () => {
+        const list = await daemonA.runtime.agentMessaging!.listReachable({ coordinatorSession: daemonA.coordinatorSession });
+        return (
+          list.some((e) => e.displayName === "Reviewer Agent") &&
+          list.some((e) => e.displayName === "Backend Service")
+        );
+      });
+
+      const listE = await daemonA.runtime.agentMessaging!.listReachable({ coordinatorSession: daemonA.coordinatorSession });
+      const handleReviewer = listE.find((e) => e.displayName === "Reviewer Agent")!.handle;
+      const handleBackendFresh = listE.find((e) => e.displayName === "Backend Service")!.handle;
+
+      // Concurrently send A -> Backend and A -> Reviewer
+      const [receiptE1, receiptE2] = await Promise.all([
+        daemonA.runtime.agentMessaging!.send(
+          { coordinatorSession: daemonA.coordinatorSession },
+          { to: handleBackendFresh, content: "Directive to Backend Service" },
+        ),
+        daemonA.runtime.agentMessaging!.send(
+          { coordinatorSession: daemonA.coordinatorSession },
+          { to: handleReviewer, content: "Directive to Reviewer Agent" },
+        ),
+      ]);
+      expect(receiptE1.status).toBe("injected");
+      expect(receiptE2.status).toBe("injected");
+
+      await waitUntil(async () => {
+        const prompts = await daemonB.readPrompts();
+        return (
+          prompts.some((p) => p.includes("Directive to Backend Service")) &&
+          prompts.some((p) => p.includes("Directive to Reviewer Agent"))
+        );
+      });
+      await waitUntil(() => !daemonB.runtime.control.isBusy(daemonB.chatKey, "backend") && !daemonB.runtime.control.isBusy(daemonB.chatKey, "reviewer"));
+
+      // Gate F — Cross-Source Queue Context Preservation
+      const gateFStart = webEvents.length;
+      const peerTurnF = daemonA.runtime.agentMessaging!.send(
+        { coordinatorSession: daemonA.coordinatorSession },
+        { to: handleBackendFresh, content: "delay-1500 Peer prompt on Backend" },
+      );
+      await waitUntil(() => daemonB.runtime.control.isBusy(daemonB.chatKey, daemonB.sessionAlias));
+      const userPromptF = daemonB.runtime.control.prompt({
+        chatKey: daemonB.chatKey,
+        sessionAlias: daemonB.sessionAlias,
+        text: "Relay Web User Prompt",
+        senderId: "web-alice",
+        isOwner: true,
+      });
+      await waitUntil(() => daemonB.runtime.control.queueLength(daemonB.chatKey, daemonB.sessionAlias) === 1);
+      await peerTurnF;
+      await userPromptF;
+
+      await waitUntil(() => {
+        return webEvents
+          .slice(gateFStart)
+          .some(
+            (e) =>
+              e.kind === "control-event" &&
+              e.instanceId === instB.id &&
+              e.event?.type === "turn-started" &&
+              e.event?.prompt === "Relay Web User Prompt",
+          );
+      });
+      const userEventF = webEvents
+        .slice(gateFStart)
+        .find(
+          (e) =>
+            e.kind === "control-event" &&
+            e.instanceId === instB.id &&
+            e.event?.type === "turn-started" &&
+            e.event?.prompt === "Relay Web User Prompt",
+        );
+      expect(userEventF).toBeDefined();
+      expect(userEventF!.event?.chatKey).toBe(daemonB.chatKey);
+      // Gate G — Exact Canonical Identity (relay:backend vs feishu:backend)
+      await daemonB.runtime.control.createSession("feishu:test", "backend", "mock", "default");
+      await daemonB.runtime.control.setSessionDisplayName("feishu:test", "backend", "Feishu Backend");
+      daemonB.channel.syncAgentEndpointsNow();
+
+      await waitUntil(async () => {
+        const list = await daemonA.runtime.agentMessaging!.listReachable({ coordinatorSession: daemonA.coordinatorSession });
+        return list.some((e) => e.displayName === "Feishu Backend");
+      });
+      const listG = await daemonA.runtime.agentMessaging!.listReachable({ coordinatorSession: daemonA.coordinatorSession });
+      const epFeishu = listG.find((e) => e.displayName === "Feishu Backend")!;
+
+      // Make relay:backend busy
+      const relayBusyTurn = daemonB.runtime.control.prompt({
+        chatKey: daemonB.chatKey,
+        sessionAlias: daemonB.sessionAlias,
+        text: "delay-2000 Busy turn on relay backend",
+        senderId: "test",
+        isOwner: true,
+      });
+      await waitUntil(() => daemonB.runtime.control.isBusy(daemonB.chatKey, daemonB.sessionAlias));
+
+      // Send peer message to feishu:backend -> MUST be injected immediately (NOT queued behind relay:backend)
+      const feishuReceipt = await daemonA.runtime.agentMessaging!.send(
+        { coordinatorSession: daemonA.coordinatorSession },
+        { to: epFeishu.handle, content: "Hello Feishu Backend" },
+      );
+      expect(feishuReceipt.status).toBe("injected");
+      await relayBusyTurn;
+      // Gate H — Actual Archive Race (Removing Teardown Guard)
+      let unblockArchive!: () => void;
+      const archiveGate = new Promise<void>((resolve) => {
+        unblockArchive = resolve;
+      });
+      const controlAny = daemonB.runtime.control as unknown as {
+        deps: { archiveSessionWithTransport: (alias: string) => Promise<void> };
+      };
+      const origArchiveTransport = controlAny.deps.archiveSessionWithTransport;
+      controlAny.deps.archiveSessionWithTransport = async (alias: string) => {
+        await archiveGate;
+        return await origArchiveTransport(alias);
+      };
+
+      const archiveReviewerPromise = daemonB.runtime.control.archiveSession(daemonB.chatKey, "reviewer");
+
+      // Wait until clearSession has completed and removing is set
+      await waitUntil(() => {
+        return daemonB.runtime.control.queueLength(daemonB.chatKey, "reviewer") === 0;
+      });
+
+      // While archive teardown is in flight, an inbound peer message MUST immediately reject with TARGET_UNAVAILABLE
+      await expect(
+        daemonA.runtime.agentMessaging!.send(
+          { coordinatorSession: daemonA.coordinatorSession },
+          { to: handleReviewer, content: "Message during in-flight archive" },
+        ),
+      ).rejects.toMatchObject({
+        code: "TARGET_UNAVAILABLE",
+      });
+
+      // Queue length must remain 0 (never enqueued!)
+      expect(daemonB.runtime.control.queueLength(daemonB.chatKey, "reviewer")).toBe(0);
+
+      // Release archive
+      unblockArchive();
+      await archiveReviewerPromise;
+      controlAny.deps.archiveSessionWithTransport = origArchiveTransport;
+
+      const revInternal = await daemonB.runtime.sessions.resolveAliasForChat(daemonB.chatKey, "reviewer");
+      const revState = await daemonB.runtime.sessions.getSession(revInternal);
+      expect(revState?.archived).toBe(true);
     } finally {
       webWs.close();
       await daemonA.dispose();

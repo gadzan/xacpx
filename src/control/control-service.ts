@@ -22,6 +22,7 @@ import {
   isSessionAliasVisibleInChannel,
   scopeDisplayAliasToInternal,
   toDisplaySessionAlias,
+  toInternalSessionAlias,
 } from "../channels/channel-scope";
 import { AgentMessagingError } from "../orchestration/agent-messaging-error";
 import type { ControlEventBus } from "./control-event-bus";
@@ -141,6 +142,7 @@ export interface ControlServiceDeps {
     | "useSession"
     | "resolveAliasForChat"
     | "getSession"
+    | "getResolvedSessionByInternalAlias"
     | "setSessionModel"
     | "setSessionEffort"
     | "setDisplayName"
@@ -1104,7 +1106,11 @@ export class ControlService {
       );
     }
     try {
+      const priorSession = await this.deps.sessions.getSession(internalAlias).catch(() => null);
       await this.deps.archiveSessionWithTransport(internalAlias);
+      if (priorSession && this.deps.sessionWarmth) {
+        this.deps.sessionWarmth.markCold(priorSession);
+      }
       this.deps.events.emit({ type: "sessions-changed" });
     } finally {
       this.turnQueue.finishClear(chatKey, alias, internalAlias);
@@ -1211,11 +1217,14 @@ export class ControlService {
   }
 
   async prompt(input: ControlPromptInput): Promise<ControlPromptResult> {
-    const channelId = getChannelIdFromChatKey(input.chatKey);
-    const internalAlias = scopeDisplayAliasToInternal(
-      channelId,
+    const internalAlias = await this.deps.sessions.resolveAliasForChat(
+      input.chatKey,
       input.sessionAlias,
     );
+    await (
+      this.sessionConfigSetTails.get(internalAlias) ??
+      this.sessionConfigSetTails.get(input.sessionAlias)
+    )?.catch(() => {});
     return this.turnQueue.submit({
       chatKey: input.chatKey,
       sessionAlias: input.sessionAlias,
@@ -1242,9 +1251,8 @@ export class ControlService {
   async runScheduledTurn(
     input: ControlScheduledTurnInput,
   ): Promise<ControlPromptResult> {
-    const channelId = getChannelIdFromChatKey(input.chatKey);
-    const internalAlias = scopeDisplayAliasToInternal(
-      channelId,
+    const internalAlias = await this.deps.sessions.resolveAliasForChat(
+      input.chatKey,
       input.sessionAlias,
     );
     return this.turnQueue.submit({
@@ -1265,33 +1273,48 @@ export class ControlService {
 
   queueLength(chatKey: string, sessionAlias: string): number {
     const channelId = getChannelIdFromChatKey(chatKey);
-    const internalAlias = scopeDisplayAliasToInternal(channelId, sessionAlias);
+    const internalAlias =
+      this.deps.sessions.getResolvedSessionByInternalAlias?.(sessionAlias)?.alias ??
+      this.deps.sessions.getResolvedSessionByInternalAlias?.(
+        toInternalSessionAlias(channelId, sessionAlias),
+      )?.alias ??
+      scopeDisplayAliasToInternal(channelId, sessionAlias);
     return this.turnQueue.queueLength(chatKey, sessionAlias, internalAlias);
   }
 
   isBusy(chatKey: string, sessionAlias: string): boolean {
     const channelId = getChannelIdFromChatKey(chatKey);
-    const internalAlias = scopeDisplayAliasToInternal(channelId, sessionAlias);
+    const internalAlias =
+      this.deps.sessions.getResolvedSessionByInternalAlias?.(sessionAlias)?.alias ??
+      this.deps.sessions.getResolvedSessionByInternalAlias?.(
+        toInternalSessionAlias(channelId, sessionAlias),
+      )?.alias ??
+      scopeDisplayAliasToInternal(channelId, sessionAlias);
     return this.turnQueue.isBusy(chatKey, sessionAlias, internalAlias);
   }
+
   cancelTurn(chatKey: string, sessionAlias: string): boolean {
     const channelId = getChannelIdFromChatKey(chatKey);
-    const internalAlias = scopeDisplayAliasToInternal(channelId, sessionAlias);
+    const internalAlias =
+      this.deps.sessions.getResolvedSessionByInternalAlias?.(sessionAlias)?.alias ??
+      this.deps.sessions.getResolvedSessionByInternalAlias?.(
+        toInternalSessionAlias(channelId, sessionAlias),
+      )?.alias ??
+      scopeDisplayAliasToInternal(channelId, sessionAlias);
     return this.turnQueue.cancelTurn(chatKey, sessionAlias, internalAlias);
   }
 
   async submitPeerTurn(input: {
     chatKey: string;
     sessionAlias: string;
+    boundSessionAlias?: string;
     text: string;
     senderId: string;
     messageId: string;
   }): Promise<{ status: "injected" | "queued" }> {
-    const channelId = getChannelIdFromChatKey(input.chatKey);
-    const internalAlias = scopeDisplayAliasToInternal(
-      channelId,
-      input.sessionAlias,
-    );
+    const internalAlias =
+      input.boundSessionAlias ??
+      (await this.deps.sessions.resolveAliasForChat(input.chatKey, input.sessionAlias));
     const session = await this.deps.sessions.getSession(internalAlias);
     if (!session || session.archived === true) {
       throw new AgentMessagingError(
@@ -1302,6 +1325,7 @@ export class ControlService {
     const admission = this.turnQueue.submitPeerTurn({
       chatKey: input.chatKey,
       sessionAlias: input.sessionAlias,
+      boundSessionAlias: internalAlias,
       concurrencyKey: internalAlias,
       text: input.text,
       senderId: input.senderId,
@@ -1314,6 +1338,12 @@ export class ControlService {
         throw new AgentMessagingError(
           "MESSAGE_QUEUE_FULL",
           "The target Agent's message queue is full.",
+        );
+      }
+      if (admission.reason === "target-unavailable") {
+        throw new AgentMessagingError(
+          "TARGET_UNAVAILABLE",
+          "The target Agent session is currently being removed or archived.",
         );
       }
       throw new AgentMessagingError(
@@ -1357,6 +1387,7 @@ export class ControlService {
     chatKey: string;
     text: string;
     senderId: string;
+    isOwner?: boolean;
     accountId?: string;
   }): Promise<string> {
     const chunks: string[] = [];
@@ -1364,7 +1395,7 @@ export class ControlService {
       accountId: input.accountId ?? "control",
       conversationId: input.chatKey,
       text: input.text,
-      metadata: buildControlMetadata(input.senderId, true),
+      metadata: buildControlMetadata(input.senderId, input.isOwner ?? true),
       reply: async (chunk) => {
         chunks.push(chunk);
       },

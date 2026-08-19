@@ -1259,9 +1259,11 @@ export async function buildApp(
     },
     deliverLogicalTurn: async (alias, renderedText, messageId) => {
       if (controlRef) {
+        const chatKey = `relay:agent-message:${alias}`;
         return await controlRef.submitPeerTurn({
-          chatKey: "relay:agent-messaging",
+          chatKey,
           sessionAlias: alias,
+          boundSessionAlias: alias,
           text: renderedText,
           senderId: "agent-messaging",
           messageId,

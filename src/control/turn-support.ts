@@ -8,6 +8,11 @@ export interface QueuedPrompt {
   text: string;
   enqueuedAt: string;
   senderId: string;
+  executionContext: {
+    chatKey: string;
+    sessionAlias: string;
+    boundSessionAlias?: string;
+  };
   isOwner?: boolean;
   accountId?: string;
   media?: PromptAttachmentRef[];
@@ -70,11 +75,16 @@ export function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function buildControlMetadata(senderId: string, isOwner: boolean | undefined): ChatRequestMetadata {
+export function buildControlMetadata(
+  senderId: string,
+  isOwner: boolean | undefined,
+  boundSessionAlias?: string,
+): ChatRequestMetadata {
   return {
     channel: "control",
     chatType: "direct",
     senderId,
     ...(isOwner === undefined ? {} : { isOwner }),
+    ...(boundSessionAlias ? { boundSessionAlias } : {}),
   };
 }
