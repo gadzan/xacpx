@@ -1217,14 +1217,21 @@ export class ControlService {
   }
 
   async prompt(input: ControlPromptInput): Promise<ControlPromptResult> {
-    const internalAlias = await this.deps.sessions.resolveAliasForChat(
-      input.chatKey,
-      input.sessionAlias,
-    );
-    await (
+    const channelId = getChannelIdFromChatKey(input.chatKey);
+    const internalAlias =
+      this.deps.sessions.getResolvedSessionByInternalAlias?.(input.sessionAlias)?.alias ??
+      this.deps.sessions.getResolvedSessionByInternalAlias?.(
+        toInternalSessionAlias(channelId, input.sessionAlias),
+      )?.alias ??
+      scopeDisplayAliasToInternal(channelId, input.sessionAlias);
+
+    const configTail =
       this.sessionConfigSetTails.get(internalAlias) ??
-      this.sessionConfigSetTails.get(input.sessionAlias)
-    )?.catch(() => {});
+      this.sessionConfigSetTails.get(input.sessionAlias);
+    if (configTail) {
+      await configTail.catch(() => {});
+    }
+
     return this.turnQueue.submit({
       chatKey: input.chatKey,
       sessionAlias: input.sessionAlias,
@@ -1251,10 +1258,13 @@ export class ControlService {
   async runScheduledTurn(
     input: ControlScheduledTurnInput,
   ): Promise<ControlPromptResult> {
-    const internalAlias = await this.deps.sessions.resolveAliasForChat(
-      input.chatKey,
-      input.sessionAlias,
-    );
+    const channelId = getChannelIdFromChatKey(input.chatKey);
+    const internalAlias =
+      this.deps.sessions.getResolvedSessionByInternalAlias?.(input.sessionAlias)?.alias ??
+      this.deps.sessions.getResolvedSessionByInternalAlias?.(
+        toInternalSessionAlias(channelId, input.sessionAlias),
+      )?.alias ??
+      scopeDisplayAliasToInternal(channelId, input.sessionAlias);
     return this.turnQueue.submit({
       chatKey: input.chatKey,
       sessionAlias: input.sessionAlias,
@@ -1312,9 +1322,14 @@ export class ControlService {
     senderId: string;
     messageId: string;
   }): Promise<{ status: "injected" | "queued" }> {
+    const channelId = getChannelIdFromChatKey(input.chatKey);
     const internalAlias =
       input.boundSessionAlias ??
-      (await this.deps.sessions.resolveAliasForChat(input.chatKey, input.sessionAlias));
+      this.deps.sessions.getResolvedSessionByInternalAlias?.(input.sessionAlias)?.alias ??
+      this.deps.sessions.getResolvedSessionByInternalAlias?.(
+        toInternalSessionAlias(channelId, input.sessionAlias),
+      )?.alias ??
+      scopeDisplayAliasToInternal(channelId, input.sessionAlias);
     const session = await this.deps.sessions.getSession(internalAlias);
     if (!session || session.archived === true) {
       throw new AgentMessagingError(
