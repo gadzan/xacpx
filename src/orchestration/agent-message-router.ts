@@ -14,6 +14,7 @@ import type {
 } from "./agent-endpoint-registry";
 import { encodeAgentHandle } from "./agent-handle";
 import { renderAgentMessageEnvelope } from "./agent-message-envelope";
+import { toDisplaySessionAlias } from "../channels/channel-scope";
 import {
   AgentMessagingError,
   type AgentMessagingErrorCode,
@@ -165,7 +166,7 @@ export class AgentMessageRouter {
     };
     this.deps.events?.emit({
       type: "agent-message",
-      sessionAlias: senderSessionAlias,
+      sessionAlias: toDisplaySessionAlias(senderSessionAlias),
       message: entry,
     });
   }
@@ -193,7 +194,7 @@ export class AgentMessageRouter {
     };
     this.deps.events?.emit({
       type: "agent-message",
-      sessionAlias: targetSessionAlias,
+      sessionAlias: toDisplaySessionAlias(targetSessionAlias),
       message: entry,
     });
   }
@@ -725,7 +726,7 @@ export class AgentMessageRouter {
     };
     this.deps.events?.emit({
       type: "agent-message",
-      sessionAlias: targetSessionAlias,
+      sessionAlias: toDisplaySessionAlias(targetSessionAlias),
       message: inboundEntry,
     });
     return receipt;

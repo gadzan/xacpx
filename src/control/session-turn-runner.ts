@@ -60,6 +60,12 @@ export interface SessionTurnRunnerDeps
   >;
 }
 
+export function disarmUserDirectiveTags(text: string): string {
+  return text
+    .replace(/<(\/?)xacpx-([^>]*)>/gi, "&lt;$1xacpx-$2&gt;")
+    .replace(/<(\/?)xacpx-/gi, "&lt;$1xacpx-");
+}
+
 export function buildCollaborationDirective(
   targets: Array<{
     handle: string;
@@ -78,11 +84,15 @@ export function buildCollaborationDirective(
       `    agent="${escapeXmlAttribute(target.agent)}"`,
       `    workspace="${escapeXmlAttribute(workspace)}"`,
       "  />",
+      "  <instruction>",
+      `    The user explicitly directed to coordinate with @${escapeXmlAttribute(displayName)}.`,
+      "    Use the `agent_send` tool targeting this handle or selector.",
+      "  </instruction>",
     ].join("\n");
   });
 
   return [
-    "<xacpx-collaboration-directive>",
+    '<xacpx-collaboration-directive origin="xacpx-server">',
     ...targetXmls,
     "</xacpx-collaboration-directive>",
   ].join("\n");
@@ -234,7 +244,8 @@ export class SessionTurnRunner {
         messageId: ref.id,
       },
     }));
-    let chatText = req.text;
+    const disarmedUserText = disarmUserDirectiveTags(req.text);
+    let chatText = disarmedUserText;
     if (req.agentMentions && req.agentMentions.length > 0) {
       const resolvedTargets: Array<{
         handle: string;
@@ -257,7 +268,9 @@ export class SessionTurnRunner {
       }
       if (resolvedTargets.length > 0) {
         const directive = buildCollaborationDirective(resolvedTargets);
-        chatText = req.text ? `${directive}\n\n${req.text}` : directive;
+        chatText = disarmedUserText
+          ? `${directive}\n\n<user-prompt>\n${disarmedUserText}\n</user-prompt>`
+          : directive;
       }
     }
     try {

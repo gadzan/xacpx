@@ -162,27 +162,19 @@ interface AgentMentionItem {
   displayName: string;
   agent: string;
   workspace?: string;
-  instanceName?: string;
+  nodeId: string;
+  endpointId: string;
 }
 
 const availableAgents = computed<AgentMentionItem[]>(() => {
-  const result: AgentMentionItem[] = [];
-  for (const inst of instancesStore.instances) {
-    if (!inst.online) continue;
-    for (const session of inst.sessions) {
-      if (session.archived || session.creating || session.createError) continue;
-      const displayName = session.displayName || session.alias;
-      const handle = `agent:${inst.id}:${session.alias}`;
-      result.push({
-        handle,
-        displayName,
-        agent: session.agent,
-        workspace: session.workspace,
-        instanceName: inst.name,
-      });
-    }
-  }
-  return result;
+  return instancesStore.agentDirectory.map((ep) => ({
+    handle: `agent:${ep.nodeId}:${ep.endpointId}`,
+    displayName: ep.displayName || ep.agent,
+    agent: ep.agent,
+    workspace: ep.workspace,
+    nodeId: ep.nodeId,
+    endpointId: ep.endpointId,
+  }));
 });
 
 const mentionMenuOpen = ref(false);
@@ -190,8 +182,13 @@ const mentionActiveIdx = ref(0);
 const mentionQuery = ref<string | null>(null);
 const mentionCursorPos = ref(0);
 const mentionStartPos = ref(-1);
-const recordedMentions = ref<Array<{ handle: string; displayName: string }>>([]);
-
+interface BoundMention {
+  handle: string;
+  displayName: string;
+  start: number;
+  end: number;
+}
+const recordedMentions = ref<BoundMention[]>([]);
 function updateMentionState() {
   const el = textarea.value;
   if (!el) {
@@ -248,11 +245,16 @@ function pickMention(agentItem: AgentMentionItem) {
   if (mentionStartPos.value < 0) return;
   const before = text.value.slice(0, mentionStartPos.value);
   const after = text.value.slice(mentionCursorPos.value);
-  const mentionText = `@${agentItem.displayName} `;
-  text.value = before + mentionText + after;
+  const targetToken = `@${agentItem.displayName}`;
+  const insertion = `${targetToken} `;
+  const start = mentionStartPos.value;
+  const end = start + targetToken.length;
+  text.value = before + insertion + after;
   recordedMentions.value.push({
     handle: agentItem.handle,
     displayName: agentItem.displayName,
+    start,
+    end,
   });
   mentionMenuOpen.value = false;
   mentionQuery.value = null;
@@ -260,7 +262,7 @@ function pickMention(agentItem: AgentMentionItem) {
   void nextTick(() => {
     if (textarea.value) {
       textarea.value.focus();
-      const newPos = before.length + mentionText.length;
+      const newPos = before.length + insertion.length;
       textarea.value.setSelectionRange(newPos, newPos);
     }
   });
@@ -363,41 +365,19 @@ function submit() {
 
   const rawText = text.value;
   const mentions: Array<{ range: [number, number]; handle: string }> = [];
-  const seenMentions = new Set<string>();
+  const seenRanges = new Set<string>();
 
   for (const item of recordedMentions.value) {
     const targetToken = `@${item.displayName}`;
-    let searchFrom = 0;
-    while (searchFrom < rawText.length) {
-      const idx = rawText.indexOf(targetToken, searchFrom);
-      if (idx === -1) break;
-      const key = `${idx}:${item.handle}`;
-      if (!seenMentions.has(key)) {
-        seenMentions.add(key);
+    if (rawText.slice(item.start, item.start + targetToken.length) === targetToken) {
+      const key = `${item.start}:${item.handle}`;
+      if (!seenRanges.has(key)) {
+        seenRanges.add(key);
         mentions.push({
-          range: [idx, idx + targetToken.length],
+          range: [item.start, item.start + targetToken.length],
           handle: item.handle,
         });
       }
-      searchFrom = idx + targetToken.length;
-    }
-  }
-
-  for (const agentItem of availableAgents.value) {
-    const targetToken = `@${agentItem.displayName}`;
-    let searchFrom = 0;
-    while (searchFrom < rawText.length) {
-      const idx = rawText.indexOf(targetToken, searchFrom);
-      if (idx === -1) break;
-      const key = `${idx}:${agentItem.handle}`;
-      if (!seenMentions.has(key)) {
-        seenMentions.add(key);
-        mentions.push({
-          range: [idx, idx + targetToken.length],
-          handle: agentItem.handle,
-        });
-      }
-      searchFrom = idx + targetToken.length;
     }
   }
 
@@ -554,8 +534,8 @@ function onInput() {
               {{ agentItem.workspace }}
             </span>
           </div>
-          <span v-if="agentItem.instanceName" class="shrink-0 text-[11px] text-fg-muted">
-            {{ agentItem.instanceName }}
+          <span v-if="agentItem.nodeId" class="shrink-0 text-[11px] text-fg-muted">
+            {{ agentItem.nodeId }}
           </span>
         </li>
       </ul>

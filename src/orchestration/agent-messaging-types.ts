@@ -123,5 +123,5 @@ export interface PeerMessageHistoryEntry {
   peer: PeerMessagePeer;
   content: string;
   createdAt: number;
-  status?: "sending" | "sent" | "delivered" | "failed";
+  status?: "sending" | "sent" | "queued" | "delivered" | "failed";
 }

@@ -425,7 +425,7 @@ function validPeerMessageHistoryEntry(m) {
     return false;
   if (!optStr(peer.workspace))
     return false;
-  if (entry.status !== undefined && !["sending", "sent", "delivered", "failed"].includes(entry.status))
+  if (entry.status !== undefined && !["sending", "sent", "queued", "delivered", "failed"].includes(entry.status))
     return false;
   return true;
 }

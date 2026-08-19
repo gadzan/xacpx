@@ -402,7 +402,7 @@ function validPeerMessageHistoryEntry(m: unknown): boolean {
   const peer = entry.peer as Record<string, unknown>;
   if (typeof peer.handle !== "string" || typeof peer.displayName !== "string" || typeof peer.agent !== "string") return false;
   if (!optStr(peer.workspace)) return false;
-  if (entry.status !== undefined && !["sending", "sent", "delivered", "failed"].includes(entry.status as string)) return false;
+  if (entry.status !== undefined && !["sending", "sent", "queued", "delivered", "failed"].includes(entry.status as string)) return false;
   return true;
 }
 
