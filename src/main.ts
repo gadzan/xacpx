@@ -1259,26 +1259,13 @@ export async function buildApp(
     },
     deliverLogicalTurn: async (alias, renderedText, messageId) => {
       if (controlRef) {
-        void controlRef
-          .prompt({
-            chatKey: "relay:agent-messaging",
-            sessionAlias: alias,
-            text: renderedText,
-            senderId: "agent-messaging",
-            promptRequestId: messageId,
-          })
-          .catch((err) => {
-            void logger.error(
-              "agent_messaging.local_turn_failed",
-              "background agent turn failed",
-              {
-                alias,
-                messageId,
-                error: String(err),
-              },
-            );
-          });
-        return { status: "queued" };
+        return await controlRef.submitPeerTurn({
+          chatKey: "relay:agent-messaging",
+          sessionAlias: alias,
+          text: renderedText,
+          senderId: "agent-messaging",
+          messageId,
+        });
       }
       return { status: "queued" };
     },

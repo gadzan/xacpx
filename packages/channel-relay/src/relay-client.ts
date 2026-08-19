@@ -383,7 +383,9 @@ export class RelayClient {
         clearTimeout(pending.timer);
         this.pendingRequests.delete(envelope.id);
         if (isErrorPayload(envelope.payload)) {
-          pending.reject(new Error(envelope.payload.error.code));
+          const err = new Error(envelope.payload.error.code);
+          (err as Error & { code?: string }).code = envelope.payload.error.code;
+          pending.reject(err);
         } else {
           pending.resolve(envelope.payload);
         }

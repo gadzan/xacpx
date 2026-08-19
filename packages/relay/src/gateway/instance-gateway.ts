@@ -457,7 +457,7 @@ export class InstanceGateway {
           .catch((err) =>
             respond(
               errorPayload(
-                "DELIVERY_FAILED",
+                (err as Error & { code?: string }).code ?? "DELIVERY_FAILED",
                 err instanceof Error ? err.message : String(err),
               ),
             ),

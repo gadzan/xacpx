@@ -20,8 +20,10 @@ import type { OrchestrationTaskRecord } from "../orchestration/orchestration-typ
 import {
   getChannelIdFromChatKey,
   isSessionAliasVisibleInChannel,
+  scopeDisplayAliasToInternal,
   toDisplaySessionAlias,
 } from "../channels/channel-scope";
+import { AgentMessagingError } from "../orchestration/agent-messaging-error";
 import type { ControlEventBus } from "./control-event-bus";
 import {
   readNativeSessionHistory,
@@ -1062,7 +1064,11 @@ export class ControlService {
     // history rows for a session that no longer exists. NOTE clearSession is destructive
     // even when it reports `cleared: false` — it has already aborted the turn and dropped
     // the queue — so this is a retry-able failure, not a no-op.
-    const { cleared } = await this.turnQueue.clearSession(chatKey, alias);
+    const { cleared } = await this.turnQueue.clearSession(
+      chatKey,
+      alias,
+      internalAlias,
+    );
     if (!cleared) {
       throw new Error(
         `session "${alias}" is still finishing a stopped turn; retry in a moment`,
@@ -1075,7 +1081,7 @@ export class ControlService {
       this.deps.events.emit({ type: "sessions-changed" });
       return result;
     } finally {
-      this.turnQueue.finishClear(chatKey, alias);
+      this.turnQueue.finishClear(chatKey, alias, internalAlias);
     }
   }
 
@@ -1087,26 +1093,21 @@ export class ControlService {
     // Queued prompts must not drain onto the session the user just archived — a drained
     // turn would cold-start a fresh queue owner and effectively undo the archive.
     // clearSession is destructive even on `cleared: false` (turn aborted, queue dropped),
-    // so this is a retry-able failure rather than a no-op.
-    const { cleared } = await this.turnQueue.clearSession(chatKey, alias);
+    const { cleared } = await this.turnQueue.clearSession(
+      chatKey,
+      alias,
+      internalAlias,
+    );
     if (!cleared) {
       throw new Error(
         `session "${alias}" is still finishing a stopped turn; retry in a moment`,
       );
     }
-    // Hold the teardown guard across the archive so a scheduled turn can't cold-start on the
-    // session being archived; release it in finally regardless of outcome.
     try {
       await this.deps.archiveSessionWithTransport(internalAlias);
-      // Archive just killed the warm owner — correct the tracker now so an
-      // immediate undo-wake doesn't show a stale warm reading until the next poll.
-      const session = await this.deps.sessions
-        .getSession(internalAlias)
-        .catch(() => undefined);
-      if (session) this.deps.sessionWarmth?.markCold(session);
       this.deps.events.emit({ type: "sessions-changed" });
     } finally {
-      this.turnQueue.finishClear(chatKey, alias);
+      this.turnQueue.finishClear(chatKey, alias, internalAlias);
     }
   }
 
@@ -1210,16 +1211,15 @@ export class ControlService {
   }
 
   async prompt(input: ControlPromptInput): Promise<ControlPromptResult> {
-    if (this.sessionConfigSetTails.size > 0) {
-      const internalAlias = await this.deps.sessions.resolveAliasForChat(
-        input.chatKey,
-        input.sessionAlias,
-      );
-      await this.sessionConfigSetTails.get(internalAlias)?.catch(() => {});
-    }
+    const channelId = getChannelIdFromChatKey(input.chatKey);
+    const internalAlias = scopeDisplayAliasToInternal(
+      channelId,
+      input.sessionAlias,
+    );
     return this.turnQueue.submit({
       chatKey: input.chatKey,
       sessionAlias: input.sessionAlias,
+      concurrencyKey: internalAlias,
       text: input.text,
       senderId: input.senderId,
       queueable: true,
@@ -1242,9 +1242,15 @@ export class ControlService {
   async runScheduledTurn(
     input: ControlScheduledTurnInput,
   ): Promise<ControlPromptResult> {
+    const channelId = getChannelIdFromChatKey(input.chatKey);
+    const internalAlias = scopeDisplayAliasToInternal(
+      channelId,
+      input.sessionAlias,
+    );
     return this.turnQueue.submit({
       chatKey: input.chatKey,
       sessionAlias: input.sessionAlias,
+      concurrencyKey: internalAlias,
       text: input.promptText,
       senderId: "scheduler",
       isOwner: true,
@@ -1257,8 +1263,65 @@ export class ControlService {
     });
   }
 
+  queueLength(chatKey: string, sessionAlias: string): number {
+    const channelId = getChannelIdFromChatKey(chatKey);
+    const internalAlias = scopeDisplayAliasToInternal(channelId, sessionAlias);
+    return this.turnQueue.queueLength(chatKey, sessionAlias, internalAlias);
+  }
+
+  isBusy(chatKey: string, sessionAlias: string): boolean {
+    const channelId = getChannelIdFromChatKey(chatKey);
+    const internalAlias = scopeDisplayAliasToInternal(channelId, sessionAlias);
+    return this.turnQueue.isBusy(chatKey, sessionAlias, internalAlias);
+  }
   cancelTurn(chatKey: string, sessionAlias: string): boolean {
-    return this.turnQueue.cancelTurn(chatKey, sessionAlias);
+    const channelId = getChannelIdFromChatKey(chatKey);
+    const internalAlias = scopeDisplayAliasToInternal(channelId, sessionAlias);
+    return this.turnQueue.cancelTurn(chatKey, sessionAlias, internalAlias);
+  }
+
+  async submitPeerTurn(input: {
+    chatKey: string;
+    sessionAlias: string;
+    text: string;
+    senderId: string;
+    messageId: string;
+  }): Promise<{ status: "injected" | "queued" }> {
+    const channelId = getChannelIdFromChatKey(input.chatKey);
+    const internalAlias = scopeDisplayAliasToInternal(
+      channelId,
+      input.sessionAlias,
+    );
+    const session = await this.deps.sessions.getSession(internalAlias);
+    if (!session || session.archived === true) {
+      throw new AgentMessagingError(
+        "TARGET_UNAVAILABLE",
+        "The target Agent session is not currently available or is archived.",
+      );
+    }
+    const admission = this.turnQueue.submitPeerTurn({
+      chatKey: input.chatKey,
+      sessionAlias: input.sessionAlias,
+      concurrencyKey: internalAlias,
+      text: input.text,
+      senderId: input.senderId,
+      promptRequestId: input.messageId,
+      isPeerMessage: true,
+      allowRestoreArchived: false,
+    });
+    if (admission.status === "rejected") {
+      if (admission.reason === "queue-full") {
+        throw new AgentMessagingError(
+          "MESSAGE_QUEUE_FULL",
+          "The target Agent's message queue is full.",
+        );
+      }
+      throw new AgentMessagingError(
+        "DELIVERY_FAILED",
+        `Peer turn admission rejected: ${admission.reason}`,
+      );
+    }
+    return { status: admission.status };
   }
 
   /** Remove a pending queued prompt (by id) before it drains. No-ops (returns
@@ -1270,16 +1333,38 @@ export class ControlService {
     sessionAlias: string,
     itemId: string,
   ): { cancelled: boolean } {
-    return this.turnQueue.cancelQueuedItem(chatKey, sessionAlias, itemId);
+    const channelId = getChannelIdFromChatKey(chatKey);
+    const internalAlias = scopeDisplayAliasToInternal(channelId, sessionAlias);
+    return this.turnQueue.cancelQueuedItem(chatKey, sessionAlias, itemId, internalAlias);
   }
 
-  async executeCommand(input: ControlExecuteCommandInput): Promise<string> {
+  async clearSession(
+    chatKey: string,
+    sessionAlias: string,
+  ): Promise<{ cleared: boolean }> {
+    const channelId = getChannelIdFromChatKey(chatKey);
+    const internalAlias = scopeDisplayAliasToInternal(channelId, sessionAlias);
+    return this.turnQueue.clearSession(chatKey, sessionAlias, internalAlias);
+  }
+
+  finishClear(chatKey: string, sessionAlias: string): void {
+    const channelId = getChannelIdFromChatKey(chatKey);
+    const internalAlias = scopeDisplayAliasToInternal(channelId, sessionAlias);
+    this.turnQueue.finishClear(chatKey, sessionAlias, internalAlias);
+  }
+
+  async executeCommand(input: {
+    chatKey: string;
+    text: string;
+    senderId: string;
+    accountId?: string;
+  }): Promise<string> {
     const chunks: string[] = [];
     const response = await this.deps.agent.chat({
       accountId: input.accountId ?? "control",
       conversationId: input.chatKey,
       text: input.text,
-      metadata: buildControlMetadata(input.senderId, input.isOwner),
+      metadata: buildControlMetadata(input.senderId, true),
       reply: async (chunk) => {
         chunks.push(chunk);
       },
@@ -1289,8 +1374,6 @@ export class ControlService {
     }
     return chunks.join("\n");
   }
-
-  /** Open an interactive terminal in the session's workspace cwd. Rejected when terminal is disabled. */
   async createTerminal(
     chatKey: string,
     sessionAlias: string,

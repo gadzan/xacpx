@@ -192,6 +192,14 @@ rl.on("line", (line) => {
           ? params.sessionId
           : "mock-prompt";
       const text = promptText(params?.prompt);
+      if (text.startsWith("delay-")) {
+        const ms = parseInt(text.slice(6), 10) || 500;
+        setTimeout(() => {
+          handlePrompt(sessionId, text);
+          respond(id, { sessionId, stopReason: "end_turn" });
+        }, ms);
+        break;
+      }
       handlePrompt(sessionId, text);
       respond(id, { sessionId, stopReason: "end_turn" });
       break;

@@ -16,6 +16,7 @@ export interface TurnRequest {
   turnStarted?: { prompt?: string; scheduled?: ScheduledOrigin; queueItemId?: string; promptRequestId?: string };
   media?: PromptAttachmentRef[];
   agentMentions?: Array<{ range: [number, number]; handle: string }>;
+  allowRestoreArchived?: boolean;
 }
 
 export interface TurnResult {
@@ -155,6 +156,9 @@ export class SessionTurnRunner {
       priorTransportSession = prior?.transportSession;
     } catch {
       /* best-effort: a detection failure just means no badge refresh */
+    }
+    if (req.allowRestoreArchived === false && wasArchived) {
+      return { ok: false, errorMessage: "session-archived" };
     }
     try {
       await this.deps.sessions.useSession(req.chatKey, req.sessionAlias);

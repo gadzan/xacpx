@@ -167,9 +167,10 @@ export function createControlBridge(
     void dispatchControlRequest(control, envelope, deadlineAt)
       .then(respondOnce)
       .catch((error: unknown) => {
+        const code = (error as Error & { code?: string }).code ?? "internal";
         respondOnce(
           errorPayload(
-            "internal",
+            code,
             error instanceof Error ? error.message : String(error),
           ),
         );
@@ -849,11 +850,16 @@ async function dispatchControlRequest(
           }
         ).deliverAgentMessage === "function"
       ) {
-        return await (
-          control as unknown as {
-            deliverAgentMessage: (i: unknown) => Promise<unknown>;
-          }
-        ).deliverAgentMessage(input);
+        try {
+          return await (
+            control as unknown as {
+              deliverAgentMessage: (i: unknown) => Promise<unknown>;
+            }
+          ).deliverAgentMessage(input);
+        } catch (error) {
+          const code = (error as Error & { code?: string }).code ?? "DELIVERY_FAILED";
+          return errorPayload(code, (error as Error).message);
+        }
       }
       return errorPayload(
         "ROUTE_UNAVAILABLE",

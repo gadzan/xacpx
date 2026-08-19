@@ -314,9 +314,8 @@ test(
           content: "Can we drop legacy_id in v2?",
         },
       );
-      expect(receiptA.status).toBe("queued");
+      expect(["injected", "queued"]).toContain(receiptA.status);
       expect(receiptA.messageId).toBeDefined();
-
       // 6. Hard Gate: Active+idle Session B WAKES UP and Relay Web receives live turn pipeline!
       // Assert that strictly POST-SEND events contain B's turn-started (working), turn-output, and turn-finished (idle)
       let bOutputChunk = "";
@@ -357,9 +356,7 @@ test(
           replyTo: receiptA.messageId,
         },
       );
-      expect(replyReceipt.status).toBe("queued");
-
-      // Verify Session A wakes up and Relay Web receives live reply turn pipeline
+      expect(["injected", "queued"]).toContain(replyReceipt.status);
       let aReplyChunk = "";
       await waitUntil(
         () => {
@@ -409,13 +406,111 @@ test(
 
       const sentReplyOnB = messagesB.find((m) => m.structured?.agentMessage?.direction === "sent");
       expect(sentReplyOnB).toBeDefined();
-      // 9. Negative Hard Gate 1: Raw @Backend typing without structured mention produces NO directive
+      expect(sentReplyOnB!.structured?.agentMessage?.content).toBe("Yes, legacy_id is deprecated and safe to drop.");
+      expect(sentReplyOnB!.structured?.agentMessage?.replyTo).toBe(receiptA.messageId);
+
+      // Gate C: Timeline Purity — No raw <xacpx-message> user row exists in SQLite messages table
+      const rawInboundUserRowB = messagesB.find(
+        (m) => m.direction === "in" && m.text.includes("<xacpx-message") && !m.structured?.agentMessage,
+      );
+      expect(rawInboundUserRowB).toBeUndefined();
+
+      // Gate A: Working Target Serialization (Queue-Next-Turn, NEVER Parallel Turn)
+      const busyEventStart = webEvents.length;
+      const delayedTurnB = daemonB.runtime.control.prompt({
+        chatKey: daemonB.chatKey,
+        sessionAlias: daemonB.sessionAlias,
+        text: "delay-1500",
+        senderId: "test",
+        isOwner: true,
+      });
+
+      // Wait until B has claimed the in-flight slot and is actively running
+      await waitUntil(() => daemonB.runtime.control.isBusy(daemonB.chatKey, daemonB.sessionAlias));
+
+      const queuedReceipt = await daemonA.runtime.agentMessaging!.send(
+        { coordinatorSession: daemonA.coordinatorSession },
+        {
+          to: handleB,
+          content: "Queued while B was busy",
+        },
+      );
+      expect(queuedReceipt.status).toBe("queued");
+      await delayedTurnB;
+      await waitUntil(() => {
+        const afterEvents = webEvents.slice(busyEventStart);
+        return afterEvents.some(
+          (e) => e.kind === "control-event" && e.instanceId === instB.id && e.event?.type === "turn-finished" && e.event?.sessionAlias === "backend",
+        );
+      });
+
+      // Gate B: Admission Failure Honesty (Queue Depth Limit Rejection)
+      // Fill B's prompt queue up to QUEUE_MAX_DEPTH (20 items) while B is running
+      const holderTurn = daemonB.runtime.control.prompt({
+        chatKey: daemonB.chatKey,
+        sessionAlias: daemonB.sessionAlias,
+        text: "delay-3000",
+        senderId: "test",
+        isOwner: true,
+      });
+      await waitUntil(() => daemonB.runtime.control.isBusy(daemonB.chatKey, daemonB.sessionAlias));
+      const fillerPromises: Promise<unknown>[] = [];
+      for (let i = 0; i < 20; i++) {
+        fillerPromises.push(
+          daemonB.runtime.control.prompt({
+            chatKey: daemonB.chatKey,
+            sessionAlias: daemonB.sessionAlias,
+            text: `filler-prompt-${i}`,
+            senderId: "test",
+            isOwner: true,
+          }),
+        );
+      }
+      await waitUntil(() => daemonB.runtime.control.queueLength(daemonB.chatKey, daemonB.sessionAlias) === 20);
+      // Next peer message MUST be honestly rejected with MESSAGE_QUEUE_FULL
+      await expect(
+        daemonA.runtime.agentMessaging!.send(
+          { coordinatorSession: daemonA.coordinatorSession },
+          {
+            to: handleB,
+            content: "Should exceed queue capacity",
+          },
+        ),
+      ).rejects.toMatchObject({
+        code: "MESSAGE_QUEUE_FULL",
+      });
+
+      await holderTurn;
+      await Promise.all(fillerPromises);
+      // Gate D: Archive Race Safety (Fail Closed, Never Restore Sleeping Session)
+      // Archive Session B
+      await daemonB.runtime.control.archiveSession(daemonB.chatKey, daemonB.sessionAlias);
+
+      // Inbound peer message must fail closed with TARGET_NOT_FOUND or TARGET_UNAVAILABLE
+      try {
+        await daemonA.runtime.agentMessaging!.send(
+          { coordinatorSession: daemonA.coordinatorSession },
+          {
+            to: handleB,
+            content: "Message to sleeping session",
+          },
+        );
+        expect.unreachable();
+      } catch (err: unknown) {
+        const code = (err as { code?: string }).code;
+        expect(["TARGET_UNAVAILABLE", "TARGET_NOT_FOUND"]).toContain(code);
+      }
+      // Session B must still be archived (not automatically woken up by peer message)
+      const bInternalAlias = await daemonB.runtime.sessions.resolveAliasForChat(daemonB.chatKey, daemonB.sessionAlias);
+      const bArchivedCheck = await daemonB.runtime.sessions.getSession(bInternalAlias);
+      expect(bArchivedCheck?.archived).toBe(true);
+
+      // Negative Hard Gate 1: Raw @Backend typing without structured mention produces NO directive
       const rawPrompt = await daemonA.runtime.control.prompt({
         chatKey: daemonA.chatKey,
         sessionAlias: daemonA.sessionAlias,
         text: "Tell @Backend Service to hold off",
         senderId: "user-alice",
-        // agentMentions omitted (user typed raw text without picking autocomplete)
       });
       expect(rawPrompt.ok).toBe(true);
       const rawPromptRecord = (await daemonA.readPrompts()).pop()!;

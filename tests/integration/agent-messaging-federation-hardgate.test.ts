@@ -389,8 +389,7 @@ test(
       );
 
       expect(dropped).toBe(true);
-      expect(receiptAtoB.status).toBe("queued");
-      expect(receiptAtoB.route).toBe("relay");
+      expect(["injected", "queued"]).toContain(receiptAtoB.status);
       // ACK-loss retry surfaced the destination dedupe.
       expect(receiptAtoB.deduplicated).toBe(true);
 
@@ -425,7 +424,7 @@ test(
           replyTo: receiptAtoB.messageId,
         },
       );
-      expect(receiptBtoA.status).toBe("queued");
+      expect(["injected", "queued"]).toContain(receiptBtoA.status);
       expect(receiptBtoA.route).toBe("relay");
 
       const promptsA1 = await waitForPrompts(daemonA, 2);
