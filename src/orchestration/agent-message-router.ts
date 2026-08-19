@@ -10,6 +10,7 @@ import {
 import type {
   AgentEndpointRegistry,
   ResolvedAgentEndpoint,
+  ResolvedAgentIdentity,
 } from "./agent-endpoint-registry";
 import { encodeAgentHandle } from "./agent-handle";
 import { renderAgentMessageEnvelope } from "./agent-message-envelope";
@@ -165,6 +166,34 @@ export class AgentMessageRouter {
     this.deps.events?.emit({
       type: "agent-message",
       sessionAlias: senderSessionAlias,
+      message: entry,
+    });
+  }
+  private emitInboundEvent(
+    targetSessionAlias: string,
+    message: AgentMessage,
+    sender: ResolvedAgentIdentity,
+  ): void {
+    const peer: PeerMessagePeer = {
+      handle: encodeAgentHandle(sender.address),
+      displayName: sender.displayName ?? sender.agent ?? sender.address.endpointId,
+      agent: sender.agent ?? "agent",
+      ...(sender.workspace ? { workspace: sender.workspace } : {}),
+    };
+    const entry: PeerMessageHistoryEntry = {
+      kind: "agent_message",
+      direction: "received",
+      messageId: message.id,
+      conversationId: message.conversationId,
+      ...(message.replyTo ? { replyTo: message.replyTo } : {}),
+      peer,
+      content: message.content,
+      createdAt: message.createdAt,
+      status: "delivered",
+    };
+    this.deps.events?.emit({
+      type: "agent-message",
+      sessionAlias: targetSessionAlias,
       message: entry,
     });
   }
@@ -475,6 +504,11 @@ export class AgentMessageRouter {
       this.logDelivery(message, receipt, createdAt);
       const senderSessionAlias = sender.sessionAlias ?? sender.coordinatorSession ?? binding.coordinatorSession;
       this.emitOutboundEvent(senderSessionAlias, message, target, receipt);
+      if (target.runtime.kind === "logical") {
+        this.emitInboundEvent(target.runtime.alias, message, sender);
+      } else if (target.runtime.kind === "worker") {
+        this.emitInboundEvent(target.runtime.workerSession, message, sender);
+      }
       return receipt;
     });
   }

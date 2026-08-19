@@ -37,6 +37,9 @@ export interface ResolvedAgentIdentity {
   coordinatorSession: string;
   receive: boolean;
   sessionAlias?: string;
+  displayName?: string;
+  agent?: string;
+  workspace?: string;
 }
 
 export interface ResolvedAgentEndpoint {
@@ -181,9 +184,11 @@ export class AgentEndpointRegistry {
           coordinatorSession,
           receive: true,
           sessionAlias: sourceHandle,
+          displayName: worker.role || worker.targetAgent,
+          agent: worker.targetAgent,
+          workspace: worker.workspace,
         };
       }
-
       const external =
         state.orchestration.externalCoordinators[coordinatorSession];
       if (external && sourceHandle === coordinatorSession) {
@@ -214,6 +219,9 @@ export class AgentEndpointRegistry {
         coordinatorSession,
         receive: true,
         sessionAlias: logical.alias,
+        displayName: logical.display_name || logical.alias,
+        agent: logical.agent,
+        workspace: logical.workspace,
       };
     }
 
@@ -439,32 +447,18 @@ export class AgentEndpointRegistry {
   ): ResolvedAgentEndpoint[] {
     const candidates: ResolvedAgentEndpoint[] = [];
     const all = coordinatorSession === "*";
-    if (all) {
-      for (const logical of Object.values(state.sessions)) {
-        if (logical.archived === true) {
-          continue;
-        }
-        candidates.push({
-          endpoint: this.toLogicalEndpoint(logical),
-          runtime: {
-            kind: "logical",
-            alias: logical.alias,
-            transportSession: logical.transport_session,
-          },
-        });
+    for (const logical of Object.values(state.sessions)) {
+      if (logical.archived === true) {
+        continue;
       }
-    } else {
-      const logical = findLogicalSession(state, coordinatorSession);
-      if (logical && !logical.archived) {
-        candidates.push({
-          endpoint: this.toLogicalEndpoint(logical),
-          runtime: {
-            kind: "logical",
-            alias: logical.alias,
-            transportSession: logical.transport_session,
-          },
-        });
-      }
+      candidates.push({
+        endpoint: this.toLogicalEndpoint(logical),
+        runtime: {
+          kind: "logical",
+          alias: logical.alias,
+          transportSession: logical.transport_session,
+        },
+      });
     }
     for (const [workerSession, worker] of Object.entries(
       state.orchestration.workerBindings,
