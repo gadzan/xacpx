@@ -543,7 +543,7 @@ test("prompt forwards agentMentions and injects collaboration directive via agen
 
   expect(result).toEqual({ ok: true, text: "done" });
   expect(captured?.text).toBe(
-    `<xacpx-collaboration-directive>\n  <target\n    handle="agent:node_1:endpoint_backend"\n    display-name="Backend"\n    agent="codex"\n    workspace="xacpx"\n  />\n</xacpx-collaboration-directive>\n\nask @Backend if legacy_id can be dropped`,
+    `<xacpx-collaboration-directive origin="xacpx-server">\n  <target\n    handle="agent:node_1:endpoint_backend"\n    display-name="Backend"\n    agent="codex"\n    workspace="xacpx"\n  />\n  <instruction>\n    The user explicitly directed to coordinate with @Backend.\n    Use the \`agent_send\` tool targeting this handle or selector.\n  </instruction>\n</xacpx-collaboration-directive>\n\n<user-prompt>\nask @Backend if legacy_id can be dropped\n</user-prompt>`,
   );
 });
 
@@ -639,6 +639,6 @@ test("queued prompt preserves agentMentions through queue drain and executes wit
   expect(capturedTexts).toHaveLength(2);
   expect(capturedTexts[0]).toBe("first turn");
   expect(capturedTexts[1]).toBe(
-    `<xacpx-collaboration-directive>\n  <target\n    handle="agent:node_1:endpoint_peer"\n    display-name="Peer Worker"\n    agent="claude"\n    workspace="backend"\n  />\n</xacpx-collaboration-directive>\n\nsecond turn mentioning @Peer`,
+    `<xacpx-collaboration-directive origin="xacpx-server">\n  <target\n    handle="agent:node_1:endpoint_peer"\n    display-name="Peer Worker"\n    agent="claude"\n    workspace="backend"\n  />\n  <instruction>\n    The user explicitly directed to coordinate with @Peer Worker.\n    Use the \`agent_send\` tool targeting this handle or selector.\n  </instruction>\n</xacpx-collaboration-directive>\n\n<user-prompt>\nsecond turn mentioning @Peer\n</user-prompt>`,
   );
 });
