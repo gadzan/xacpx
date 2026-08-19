@@ -99,7 +99,7 @@ function makeRouter(
     logger: options.logger,
   });
 
-  return { router, deliveries };
+  return { router, deliveries, state };
 }
 
 test("lists only the current sender's reachable peer endpoints", async () => {
@@ -1065,6 +1065,77 @@ test("records metadata-only trace records and caps ring buffer", async () => {
   expect(traces[1]?.contentLength).toBe(13);
   expect(traces[1]?.contentHash).toHaveLength(64);
   expect(JSON.stringify(traces)).not.toContain("secret text");
+});
+
+test("sending with selector succeeds on unique match", async () => {
+  let deliveredContent = "";
+  let deliveredTargetId = "";
+  const { router } = makeRouter({
+    deliver: async (target, message) => {
+      deliveredTargetId = target.endpoint.address.endpointId;
+      deliveredContent = message.content;
+      return { status: "queued", modeUsed: "queue" };
+    },
+  });
+  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+
+  const receipt = await router.send(binding, {
+    selector: { agent: "gemini" },
+    content: "hello worker b",
+  });
+
+  expect(receipt.status).toBe("queued");
+  expect(deliveredTargetId).toBe("endpoint_worker-b");
+  expect(deliveredContent).toBe("hello worker b");
+});
+
+test("sending with ambiguous selector throws TARGET_AMBIGUOUS", async () => {
+  const { router, state } = makeRouter();
+  // Add a second worker with the same agent
+  state.orchestration.workerBindings.workerC = {
+    sourceHandle: "workerC",
+    agentEndpointId: "endpoint_worker-c",
+    coordinatorSession: "coordinator",
+    workspace: "project",
+    targetAgent: "gemini",
+    role: "workerC",
+  };
+  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+
+  await expect(
+    router.send(binding, {
+      selector: { agent: "gemini" },
+      content: "ambiguous hello",
+    }),
+  ).rejects.toMatchObject<Partial<AgentMessagingError>>({
+    code: "TARGET_AMBIGUOUS",
+  });
+});
+
+test("sending with neither or both 'to' and 'selector' throws DELIVERY_FAILED error", async () => {
+  const { router } = makeRouter();
+  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+
+  // Neither 'to' nor 'selector'
+  await expect(
+    router.send(binding, {
+      content: "no destination",
+    }),
+  ).rejects.toMatchObject<Partial<AgentMessagingError>>({
+    code: "DELIVERY_FAILED",
+  });
+
+  // Both 'to' and 'selector'
+  await expect(
+    router.send(binding, {
+      to,
+      selector: { agent: "gemini" },
+      content: "double destination",
+    }),
+  ).rejects.toMatchObject<Partial<AgentMessagingError>>({
+    code: "DELIVERY_FAILED",
+  });
 });
 
 function createDeferred<T>() {

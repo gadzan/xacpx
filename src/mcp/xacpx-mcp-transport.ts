@@ -21,8 +21,8 @@ import type {
   AgentEndpointView,
   AgentMessageMode,
   AgentMessageReceipt,
+  AgentTargetSelector,
 } from "../orchestration/agent-messaging-types";
-
 export interface XacpxMcpDelegateRequest {
   coordinatorSession: string;
   sourceHandle?: string;
@@ -102,12 +102,12 @@ export interface XacpxMcpAgentListArgs {
 }
 
 export interface XacpxMcpAgentSendArgs extends XacpxMcpAgentListArgs {
-  to: string;
+  to?: string;
+  selector?: AgentTargetSelector;
   message: string;
   mode?: AgentMessageMode;
   replyTo?: string;
 }
-
 export interface XacpxMcpTransport {
   delegateRequest: (input: XacpxMcpDelegateRequest) => Promise<RequestDelegateRpcResult>;
   createGroup: (input: XacpxMcpGroupNewArgs) => Promise<OrchestrationGroupRecord>;

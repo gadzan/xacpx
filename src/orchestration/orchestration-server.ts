@@ -31,8 +31,8 @@ import type {
 } from "../scheduled/scheduled-route-manage";
 import type { ScheduledTaskRecord } from "../scheduled/scheduled-types";
 import type { AgentMessageRouter } from "./agent-message-router";
+import type { AgentTargetSelector } from "./agent-messaging-types";
 import { AgentMessagingError } from "./agent-messaging-error";
-
 class OrchestrationInvalidRequestError extends Error {}
 
 const ORCHESTRATION_RPC_METHODS = new Set<OrchestrationRpcMethod>([
@@ -199,10 +199,30 @@ export class OrchestrationServer {
       case "agent.send": {
         requireOnlyKeys(
           params,
-          ["coordinatorSession", "sourceHandle", "to", "message", "mode", "replyTo"],
+          ["coordinatorSession", "sourceHandle", "to", "selector", "message", "mode", "replyTo"],
           "params",
         );
         const sourceHandle = requireOptionalString(params, "sourceHandle");
+        const to = requireOptionalString(params, "to");
+        const selectorRaw = requireOptionalObject(params, "selector");
+        let selector: AgentTargetSelector | undefined;
+        if (selectorRaw !== undefined) {
+          requireOnlyKeys(selectorRaw, ["displayName", "workspace", "agent"], "selector");
+          const displayName = requireOptionalString(selectorRaw, "displayName");
+          const workspace = requireOptionalString(selectorRaw, "workspace");
+          const agent = requireOptionalString(selectorRaw, "agent");
+          selector = {
+            ...(displayName !== undefined ? { displayName } : {}),
+            ...(workspace !== undefined ? { workspace } : {}),
+            ...(agent !== undefined ? { agent } : {}),
+          };
+        }
+        if (to === undefined && selector === undefined) {
+          throw new OrchestrationInvalidRequestError("agent.send requires to or selector");
+        }
+        if (to !== undefined && selector !== undefined) {
+          throw new OrchestrationInvalidRequestError("agent.send requires to or selector, not both");
+        }
         const mode = requireOptionalEnum(params, "mode", ["auto", "steer", "queue", "interrupt"]);
         const replyTo = requireOptionalString(params, "replyTo");
         const binding = {
@@ -210,7 +230,8 @@ export class OrchestrationServer {
           ...(sourceHandle !== undefined ? { sourceHandle } : {}),
         };
         const input = {
-          to: requireString(params, "to"),
+          ...(to !== undefined ? { to } : {}),
+          ...(selector !== undefined ? { selector } : {}),
           content: requireString(params, "message"),
           ...(mode !== undefined ? { mode } : {}),
           ...(replyTo !== undefined ? { replyTo } : {}),

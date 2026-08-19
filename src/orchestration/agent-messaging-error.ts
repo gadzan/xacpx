@@ -1,5 +1,6 @@
 export type AgentMessagingErrorCode =
   | "TARGET_NOT_FOUND"
+  | "TARGET_AMBIGUOUS"
   | "TARGET_NOT_REACHABLE"
   | "TARGET_UNAVAILABLE"
   | "TARGET_NODE_OFFLINE"
@@ -22,6 +23,7 @@ export type AgentMessagingErrorCode =
   | "DUPLICATE_MESSAGE";
 export const AGENT_MESSAGING_ERROR_CODES: ReadonlySet<string> = new Set([
   "TARGET_NOT_FOUND",
+  "TARGET_AMBIGUOUS",
   "TARGET_NOT_REACHABLE",
   "TARGET_UNAVAILABLE",
   "TARGET_NODE_OFFLINE",
@@ -59,6 +61,7 @@ export function isAgentMessagingErrorCode(
 const NON_RETRYABLE_DELIVERY_CODES: ReadonlySet<AgentMessagingErrorCode> =
   new Set([
     "TARGET_NOT_FOUND",
+    "TARGET_AMBIGUOUS",
     "TARGET_NOT_REACHABLE",
     "TARGET_UNAVAILABLE",
     "TARGET_NODE_OFFLINE",

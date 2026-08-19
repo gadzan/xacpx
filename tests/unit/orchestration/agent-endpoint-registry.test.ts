@@ -262,3 +262,117 @@ test("syncRemoteDirectorySnapshot preserves activity and conversation capabiliti
   expect(remote?.activity.summary).toBe("Refactoring Client Components");
   expect(remote?.capabilities.conversation).toBe(true);
 });
+
+test("archived sessions are excluded from candidates, reachable list, and target resolution", async () => {
+  const { registry, state } = makeRegistry();
+  state.sessions.archivedSession = {
+    alias: "archived-worker",
+    agent: "codex",
+    workspace: "project",
+    transport_session: "coordinator",
+    logical_session_id: "33333333-3333-4333-8333-333333333333",
+    display_name: "Archived Specialist",
+    archived: true,
+    created_at: "2026-08-18T00:00:00.000Z",
+    last_used_at: "2026-08-18T00:00:00.000Z",
+  };
+
+  const reachable = await registry.listReachable({
+    coordinatorSession: "coordinator",
+    sourceHandle: "workerA",
+  });
+  expect(reachable.some((e) => e.address.endpointId === "33333333-3333-4333-8333-333333333333")).toBe(false);
+  expect(reachable.some((e) => e.displayName === "Archived Specialist")).toBe(false);
+
+  const published = await registry.getPublishedEndpoints();
+  expect(published.some((e) => e.endpointId === "33333333-3333-4333-8333-333333333333")).toBe(false);
+
+  const sender = await registry.resolveSender({
+    coordinatorSession: "coordinator",
+    sourceHandle: "workerA",
+  });
+  const archivedHandle = encodeAgentHandle({
+    nodeId,
+    endpointId: "33333333-3333-4333-8333-333333333333",
+  });
+  await expect(registry.resolveTarget(sender, archivedHandle)).rejects.toMatchObject<Partial<AgentMessagingError>>({
+    code: "TARGET_NOT_REACHABLE",
+  });
+
+  await expect(
+    registry.resolveSelector(sender, { displayName: "Archived Specialist" }),
+  ).rejects.toMatchObject<Partial<AgentMessagingError>>({
+    code: "TARGET_NOT_FOUND",
+  });
+});
+
+test("resolveSelector resolves a unique match by displayName, workspace, or agent", async () => {
+  const { registry, state } = makeRegistry();
+  state.orchestration.workerBindings.workerB.role = "Reviewer";
+  const sender = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+
+  // Match by displayName (case-insensitive with trimming)
+  const byName = await registry.resolveSelector(sender, { displayName: "  reviewer  " });
+  expect(byName.endpoint.address.endpointId).toBe("endpoint_worker-b");
+
+  // Match by logical session alias
+  const byAlias = await registry.resolveSelector(sender, { displayName: "main" });
+  expect(byAlias.endpoint.address.endpointId).toBe("22222222-2222-4222-8222-222222222222");
+
+  // Match by agent
+  const byAgent = await registry.resolveSelector(sender, { agent: "gemini" });
+  expect(byAgent.endpoint.address.endpointId).toBe("endpoint_worker-b");
+
+  // Match by combined criteria
+  const byCombined = await registry.resolveSelector(sender, {
+    agent: "gemini",
+    workspace: "project",
+    displayName: "Reviewer",
+  });
+  expect(byCombined.endpoint.address.endpointId).toBe("endpoint_worker-b");
+});
+
+test("resolveSelector throws TARGET_NOT_FOUND when 0 candidates match", async () => {
+  const { registry } = makeRegistry();
+  const sender = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+
+  await expect(
+    registry.resolveSelector(sender, { displayName: "nonexistent-agent" }),
+  ).rejects.toMatchObject<Partial<AgentMessagingError>>({
+    code: "TARGET_NOT_FOUND",
+  });
+
+  await expect(
+    registry.resolveSelector(sender, { workspace: "nonexistent-workspace" }),
+  ).rejects.toMatchObject<Partial<AgentMessagingError>>({
+    code: "TARGET_NOT_FOUND",
+  });
+});
+test("resolveSelector throws TARGET_AMBIGUOUS with candidate details when multiple match", async () => {
+  const { registry, state } = makeRegistry();
+  state.orchestration.workerBindings.workerB.role = "workerB";
+  // Add a second worker with the same agent and workspace
+  state.orchestration.workerBindings.workerC = {
+    sourceHandle: "workerC",
+    agentEndpointId: "endpoint_worker-c",
+    coordinatorSession: "coordinator",
+    workspace: "project",
+    targetAgent: "gemini",
+    role: "workerC",
+  };
+
+  const sender = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+
+  try {
+    await registry.resolveSelector(sender, { agent: "gemini" });
+    expect.unreachable("should have thrown TARGET_AMBIGUOUS");
+  } catch (error) {
+    expect(error).toBeInstanceOf(AgentMessagingError);
+    const err = error as AgentMessagingError;
+    expect(err.code).toBe("TARGET_AMBIGUOUS");
+    expect(err.message).toContain("endpoint_worker-b");
+    expect(err.message).toContain("endpoint_worker-c");
+    expect(err.message).toContain("workerB");
+    expect(err.message).toContain("workerC");
+  }
+});

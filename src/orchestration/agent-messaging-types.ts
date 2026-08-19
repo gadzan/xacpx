@@ -92,9 +92,17 @@ export interface AgentMessageReceipt {
   errorCode?: AgentMessagingErrorCode;
 }
 
+export interface AgentTargetSelector {
+  displayName?: string;
+  workspace?: string;
+  agent?: string;
+}
+
 export interface AgentMessageSendInput {
-  to: string;
+  to?: string;
+  selector?: AgentTargetSelector;
   content: string;
   mode?: AgentMessageMode;
+  requestedMode?: AgentMessageMode;
   replyTo?: string;
 }

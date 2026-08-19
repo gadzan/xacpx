@@ -112,6 +112,7 @@ export class AgentMessageRouter {
         | "listReachable"
         | "resolveSender"
         | "resolveTarget"
+        | "resolveSelector"
         | "resolveLocalTargetByEndpointId"
       >;
       delivery: LocalAgentMessageDelivery;
@@ -162,10 +163,21 @@ export class AgentMessageRouter {
         "The reply correlation id is not a valid opaque message id.",
       );
     }
-    return await this.enqueueTarget(input.to, async () => {
-      const sender = await this.deps.registry.resolveSender(binding);
-      const target = await this.deps.registry.resolveTarget(sender, input.to);
-      const requestedMode = input.mode ?? "auto";
+    const hasTo = typeof input.to === "string" && input.to.trim().length > 0;
+    const hasSelector = input.selector !== undefined && input.selector !== null;
+    if ((hasTo && hasSelector) || (!hasTo && !hasSelector)) {
+      throw new AgentMessagingError(
+        "DELIVERY_FAILED",
+        "Must provide either 'to' handle or 'selector', not both or neither.",
+      );
+    }
+    const sender = await this.deps.registry.resolveSender(binding);
+    const target = input.selector
+      ? await this.deps.registry.resolveSelector(sender, input.selector)
+      : await this.deps.registry.resolveTarget(sender, input.to!);
+
+    return await this.enqueueTarget(target.endpoint.handle, async () => {
+      const requestedMode = input.requestedMode ?? input.mode ?? "auto";
       if (requestedMode === "steer" && !target.endpoint.capabilities.steer) {
         throw new AgentMessagingError(
           "TARGET_NOT_STEERABLE",
