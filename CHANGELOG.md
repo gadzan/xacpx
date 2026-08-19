@@ -1,4 +1,9 @@
 # Changelog
+## [Unreleased]
+
+### Added
+
+- Feishu channel: opt-in `trustGroupOwner` option - asserts `isOwner` on group turns whose sender is the chat owner (GET `/im/v1/chats`, cached 5 min with a 10 s lookup timeout, fail closed on errors with a 30 s failure sentinel; lifecycle-epoch guarded so lookups that straddle a logout never repopulate the cache). Every group turn records an explicit owner boolean, so a non-owner turn overwrites - never inherits - a previous owner turn's state on the persistent coordinator route. Off by default; only enable when you control who can add the bot to groups.
 
 ## [relay 0.12.1-beta.3] - 2026-08-18
 

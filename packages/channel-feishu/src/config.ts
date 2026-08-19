@@ -15,6 +15,14 @@ export interface FeishuAccountConfig {
   groupPolicy?: FeishuGroupPolicy;
   allowFrom?: string[];
   replyMode?: FeishuReplyMode;
+  /**
+   * Opt-in: assert `isOwner` on group turns when the sender is the Feishu
+   * chat owner (queried via GET /im/v1/chats). Only enable when you control
+   * who can add this bot to groups - anyone who creates a group and adds the
+   * bot becomes its owner, and owner-gated control commands run with the
+   * operator's authority. Defaults to false.
+   */
+  trustGroupOwner?: boolean;
 }
 
 export interface FeishuResolvedAccountConfig {
@@ -30,6 +38,7 @@ export interface FeishuResolvedAccountConfig {
   groupPolicy: FeishuGroupPolicy;
   allowFrom: string[];
   replyMode: FeishuReplyMode;
+  trustGroupOwner: boolean;
 }
 
 export interface FeishuChannelConfig extends FeishuAccountConfig {
@@ -143,6 +152,7 @@ function resolveAccount(
     groupPolicy,
     allowFrom,
     replyMode,
+    trustGroupOwner: booleanOptional(merged.trustGroupOwner, `${path}.trustGroupOwner`) ?? false,
   };
 }
 
@@ -199,6 +209,7 @@ export function parseFeishuChannelConfig(raw: unknown): FeishuChannelConfig {
   if (typeof baseAccount.appSecret === "string") baseAccountReturn.appSecret = baseAccount.appSecret;
   if (typeof baseAccount.domain === "string") baseAccountReturn.domain = baseAccount.domain.trim();
   if (typeof baseAccount.requireMention === "boolean") baseAccountReturn.requireMention = baseAccount.requireMention;
+  if (typeof baseAccount.trustGroupOwner === "boolean") baseAccountReturn.trustGroupOwner = baseAccount.trustGroupOwner;
 
   return {
     ...baseAccountReturn,

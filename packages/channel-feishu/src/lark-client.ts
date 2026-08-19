@@ -1,6 +1,10 @@
 import * as Lark from "@larksuiteoapi/node-sdk";
 import type { FeishuMessageClient } from "./send.js";
 
+// Hard deadline for chat-owner lookups; also passed as the Axios timeout so
+// the SDK's HTTP client itself gives up rather than leaking the connection.
+const CHAT_OWNER_LOOKUP_TIMEOUT_MS = 10_000;
+
 export interface FeishuLarkClientOptions {
   appId: string;
   appSecret: string;
@@ -13,11 +17,30 @@ export interface FeishuLarkClientOptions {
 export interface FeishuLarkClient {
   sdk: FeishuMessageClient;
   probeBot(): Promise<{ botOpenId?: string; botName?: string }>;
+  /**
+   * Returns the group owner's open_id for a chat the bot belongs to, or
+   * undefined when the response carries none. Throws on API failure so the
+   * caller can fail closed (no owner assertion).
+   */
+  getChatOwner(chatId: string): Promise<string | undefined>;
   startWS(input: {
     handlers: Record<string, (data: unknown) => Promise<void> | void>;
     abortSignal?: AbortSignal;
   }): Promise<void>;
   stop(): void;
+}
+
+/**
+ * Narrows a GET /im/v1/chats/{chat_id} response to its `data.owner_id`,
+ * validating each hop so a malformed payload yields undefined (fail closed)
+ * instead of a fabricated read.
+ */
+function extractChatOwnerId(response: unknown): string | undefined {
+  if (!response || typeof response !== "object" || !("data" in response)) return undefined;
+  const data: unknown = response.data;
+  if (!data || typeof data !== "object" || !("owner_id" in data)) return undefined;
+  const ownerId: unknown = data.owner_id;
+  return typeof ownerId === "string" && ownerId ? ownerId : undefined;
 }
 
 function resolveDomain(domain: string): unknown {
@@ -49,6 +72,35 @@ export function createFeishuLarkClient(options: FeishuLarkClientOptions): Feishu
         botOpenId: response.data?.pingBotInfo?.botID,
         botName: response.data?.pingBotInfo?.botName,
       };
+    },
+    async getChatOwner(chatId: string) {
+      // The Lark SDK Client exposes a generic `request` method; our
+      // FeishuMessageClient subset omits it, so this named cast re-declares
+      // only that method surface.
+      const requester = sdk as unknown as {
+        request(input: { method: "GET"; url: string; timeout?: number }): Promise<unknown>;
+      };
+      // The SDK's generic request forwards to a bare Axios instance whose
+      // default timeout is 0 (never). This lookup sits on the group-message
+      // hot path and dedups all concurrent turns onto one promise, so a
+      // stalled request would wedge the whole chat: race a hard deadline and
+      // treat it like any other failure (fail closed, 30s sentinel upstream).
+      let deadline: NodeJS.Timeout | undefined;
+      try {
+        const response: unknown = await Promise.race([
+          requester.request({
+            method: "GET",
+            url: `/open-apis/im/v1/chats/${encodeURIComponent(chatId)}`,
+            timeout: CHAT_OWNER_LOOKUP_TIMEOUT_MS,
+          }),
+          new Promise<undefined>((resolve) => {
+            deadline = setTimeout(() => resolve(undefined), CHAT_OWNER_LOOKUP_TIMEOUT_MS);
+          }),
+        ]);
+        return extractChatOwnerId(response);
+      } finally {
+        clearTimeout(deadline);
+      }
     },
     async startWS(input) {
       if (options.injectedStartWS) {

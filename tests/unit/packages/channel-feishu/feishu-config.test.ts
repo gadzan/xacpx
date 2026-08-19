@@ -90,7 +90,8 @@ test("parseFeishuChannelConfig promotes legacy single-bot config to default acco
       dmPolicy: "open",
       groupPolicy: "open",
       allowFrom: [],
-      replyMode: "auto",
+    replyMode: "auto",
+    trustGroupOwner: false,
     },
   ]);
 });
@@ -128,6 +129,7 @@ test("parseFeishuChannelConfig parses multi-bot accounts with per-account overri
     groupPolicy: "open",
     allowFrom: [],
     replyMode: "auto",
+    trustGroupOwner: false,
   });
   expect(byId.get("review")).toEqual({
     accountId: "review",
@@ -142,6 +144,7 @@ test("parseFeishuChannelConfig parses multi-bot accounts with per-account overri
     groupPolicy: "open",
     allowFrom: [],
     replyMode: "auto",
+    trustGroupOwner: false,
   });
 });
 
@@ -270,4 +273,29 @@ test("parseFeishuChannelConfig rejects non-positive tuning values", () => {
     appSecret: "y",
     tuning: { cardFlushIntervalMs: 0 },
   })).toThrow("channel.options.tuning.cardFlushIntervalMs must be a positive number");
+});
+
+test("parseFeishuChannelConfig defaults trustGroupOwner to false", () => {
+  const config = parseFeishuChannelConfig({ appId: "x", appSecret: "y" });
+  expect(config.accounts[0]!.trustGroupOwner).toBe(false);
+});
+
+test("parseFeishuChannelConfig accepts trustGroupOwner and per-account override", () => {
+  const config = parseFeishuChannelConfig({
+    appId: "x",
+    appSecret: "y",
+    trustGroupOwner: true,
+    accounts: {
+      default: {},
+      strict: { appId: "x2", appSecret: "y2", trustGroupOwner: false },
+    },
+  });
+  const byId = new Map(config.accounts.map((a) => [a.accountId, a]));
+  expect(byId.get("default")!.trustGroupOwner).toBe(true);
+  expect(byId.get("strict")!.trustGroupOwner).toBe(false);
+  expect(config.trustGroupOwner).toBe(true);
+});
+
+test("parseFeishuChannelConfig rejects non-boolean trustGroupOwner", () => {
+  expect(() => parseFeishuChannelConfig({ appId: "x", appSecret: "y", trustGroupOwner: "yes" })).toThrow("trustGroupOwner must be a boolean");
 });
