@@ -961,6 +961,11 @@ export function dispatchControlEvent(
   }
 }
 
+function toDisplaySessionAlias(internalAlias: string): string {
+  const colon = internalAlias.indexOf(":");
+  return colon >= 0 ? internalAlias.slice(colon + 1) : internalAlias;
+}
+
 export function subscribeControlEvents(
   control: ControlService,
   sendEvent: (type: string, payload: unknown) => void,
@@ -971,7 +976,7 @@ export function subscribeControlEvents(
         event: {
           type: "tool-event",
           chatKey: event.chatKey,
-          sessionAlias: event.sessionAlias,
+          sessionAlias: toDisplaySessionAlias(event.sessionAlias),
           step: toolUseEventToStepDto(event.event),
         },
       });
@@ -982,8 +987,17 @@ export function subscribeControlEvents(
         event: {
           type: "session-history",
           chatKey: event.chatKey,
-          sessionAlias: event.sessionAlias,
+          sessionAlias: toDisplaySessionAlias(event.sessionAlias),
           messages: historyMessagesToRows(event.messages),
+        },
+      });
+      return;
+    }
+    if ("sessionAlias" in event && typeof event.sessionAlias === "string") {
+      sendEvent(MSG.instanceEvent, {
+        event: {
+          ...event,
+          sessionAlias: toDisplaySessionAlias(event.sessionAlias),
         },
       });
       return;

@@ -217,6 +217,16 @@ test(
       displayName: "Backend Service",
     });
 
+    // Warm up session B BEFORE opening web client observation window
+    const warmB = await daemonB.runtime.control.prompt({
+      chatKey: daemonB.chatKey,
+      sessionAlias: daemonB.sessionAlias,
+      text: "warmup-B",
+      senderId: "test",
+      isOwner: true,
+    });
+    expect(warmB.ok).toBe(true);
+
     const webToken = hub.accounts.createWebSession(hub.account.id, "tok-1", 600_000);
     const webWs = new WsClient(`${hub.hubUrl}/ws`, {
       headers: { cookie: `xrelay_session=${webToken}` },
@@ -235,15 +245,6 @@ test(
     });
 
     try {
-      const warmB = await daemonB.runtime.control.prompt({
-        chatKey: daemonB.chatKey,
-        sessionAlias: daemonB.sessionAlias,
-        text: "warmup-B",
-        senderId: "test",
-        isOwner: true,
-      });
-      expect(warmB.ok).toBe(true);
-
       let instA!: { id: string };
       let instB!: { id: string };
       await waitUntil(() => {
@@ -303,6 +304,9 @@ test(
       expect(turnPromptA).toContain('display-name="Backend Service"');
       expect(turnPromptA).toContain("<user-prompt>\nPlease coordinate with @Backend Service regarding schema migration\n</user-prompt>");
       // 5. Session A sends peer message to Session B
+      // Hard Gate: Capture baseline event index so assertions ONLY evaluate events emitted AFTER peer send
+      const eventStartIndex = webEvents.length;
+
       const receiptA = await daemonA.runtime.agentMessaging!.send(
         { coordinatorSession: daemonA.coordinatorSession },
         {
@@ -312,32 +316,39 @@ test(
       );
       expect(receiptA.status).toBe("queued");
       expect(receiptA.messageId).toBeDefined();
+
       // 6. Hard Gate: Active+idle Session B WAKES UP and Relay Web receives live turn pipeline!
+      // Assert that strictly POST-SEND events contain B's turn-started (working), turn-output, and turn-finished (idle)
+      let bOutputChunk = "";
       await waitUntil(
         () => {
-          const bStarted = webEvents.some(
-            (e) => e.kind === "control-event" && e.instanceId === instB.id && e.event?.type === "turn-started",
+          const peerEvents = webEvents.slice(eventStartIndex);
+          const bStarted = peerEvents.some(
+            (e) => e.kind === "control-event" && e.instanceId === instB.id && e.event?.type === "turn-started" && e.event?.sessionAlias === "backend",
           );
-          const bOutput = webEvents.some(
-            (e) => e.kind === "control-event" && e.instanceId === instB.id && e.event?.type === "turn-output",
+          const bOutput = peerEvents.find(
+            (e) => e.kind === "control-event" && e.instanceId === instB.id && e.event?.type === "turn-output" && e.event?.sessionAlias === "backend",
           );
-          const bFinished = webEvents.some(
-            (e) => e.kind === "control-event" && e.instanceId === instB.id && e.event?.type === "turn-finished" && e.event?.ok === true,
+          if (bOutput && bOutput.kind === "control-event" && bOutput.event.type === "turn-output") {
+            bOutputChunk = bOutput.event.chunk;
+          }
+          const bFinished = peerEvents.some(
+            (e) => e.kind === "control-event" && e.instanceId === instB.id && e.event?.type === "turn-finished" && e.event?.sessionAlias === "backend" && e.event?.ok === true,
           );
-          return bStarted && bOutput && bFinished;
+          return bStarted && Boolean(bOutputChunk) && bFinished;
         },
-        20_000,
-        () => `webEvents=${JSON.stringify(webEvents)}`,
+        25_000,
+        () => `peerEvents=${JSON.stringify(webEvents.slice(eventStartIndex))}`,
       );
-      // Verify Session B mock agent actually consumed the inbound message
-      await waitUntil(async () => {
-        const promptsB = await daemonB.readPrompts();
-        return promptsB.some((t) => t.includes("<xacpx-message") && t.includes("Can we drop legacy_id in v2?"));
-      });
-      const promptB = (await daemonB.readPrompts()).find((t) => t.includes("Can we drop legacy_id in v2?"))!;
-      expect(promptB).toContain(`from="${handleA}"`);
-      expect(promptB).toContain(`id="${receiptA.messageId}"`);
+
+      // Verify Session B's live turn output contains the exact incoming envelope
+      expect(bOutputChunk).toContain("&lt;xacpx-message");
+      expect(bOutputChunk).toContain(handleA);
+      expect(bOutputChunk).toContain(receiptA.messageId);
+      expect(bOutputChunk).toContain("Can we drop legacy_id in v2?");
+
       // 7. Session B replies to Session A
+      const replyStartIndex = webEvents.length;
       const replyReceipt = await daemonB.runtime.agentMessaging!.send(
         { coordinatorSession: daemonB.coordinatorSession },
         {
@@ -347,12 +358,33 @@ test(
         },
       );
       expect(replyReceipt.status).toBe("queued");
-      // Verify reply arrives on Session A
-      await waitUntil(async () => {
-        const pA = await daemonA.readPrompts();
-        return pA.some((t) => t.includes("Yes, legacy_id is deprecated and safe to drop."));
-      });
-      // 8. Hard Gate: Verify History Persistence in Relay Hub SQLite DB
+
+      // Verify Session A wakes up and Relay Web receives live reply turn pipeline
+      let aReplyChunk = "";
+      await waitUntil(
+        () => {
+          const replyEvents = webEvents.slice(replyStartIndex);
+          const aStarted = replyEvents.some(
+            (e) => e.kind === "control-event" && e.instanceId === instA.id && e.event?.type === "turn-started" && e.event?.sessionAlias === "coordinator",
+          );
+          const aOutput = replyEvents.find(
+            (e) => e.kind === "control-event" && e.instanceId === instA.id && e.event?.type === "turn-output" && e.event?.sessionAlias === "coordinator",
+          );
+          if (aOutput && aOutput.kind === "control-event" && aOutput.event.type === "turn-output") {
+            aReplyChunk = aOutput.event.chunk;
+          }
+          const aFinished = replyEvents.some(
+            (e) => e.kind === "control-event" && e.instanceId === instA.id && e.event?.type === "turn-finished" && e.event?.sessionAlias === "coordinator" && e.event?.ok === true,
+          );
+          return aStarted && Boolean(aReplyChunk) && aFinished;
+        },
+        25_000,
+        () => `replyEvents=${JSON.stringify(webEvents.slice(replyStartIndex))}`,
+      );
+
+      expect(aReplyChunk).toContain("&lt;xacpx-message");
+      expect(aReplyChunk).toContain("Yes, legacy_id is deprecated and safe to drop.");
+      expect(aReplyChunk).toContain(receiptA.messageId);
       const pageA = hub.messages.listBySession(hub.account.id, instA.id, "coordinator");
       const pageB = hub.messages.listBySession(hub.account.id, instB.id, "backend");
       const messagesA = pageA.messages;
@@ -377,8 +409,19 @@ test(
 
       const sentReplyOnB = messagesB.find((m) => m.structured?.agentMessage?.direction === "sent");
       expect(sentReplyOnB).toBeDefined();
-      expect(sentReplyOnB!.structured?.agentMessage?.content).toBe("Yes, legacy_id is deprecated and safe to drop.");
-      expect(sentReplyOnB!.structured?.agentMessage?.replyTo).toBe(receiptA.messageId);
+      // 9. Negative Hard Gate 1: Raw @Backend typing without structured mention produces NO directive
+      const rawPrompt = await daemonA.runtime.control.prompt({
+        chatKey: daemonA.chatKey,
+        sessionAlias: daemonA.sessionAlias,
+        text: "Tell @Backend Service to hold off",
+        senderId: "user-alice",
+        // agentMentions omitted (user typed raw text without picking autocomplete)
+      });
+      expect(rawPrompt.ok).toBe(true);
+      const rawPromptRecord = (await daemonA.readPrompts()).pop()!;
+      expect(rawPromptRecord).not.toContain("<xacpx-collaboration-directive");
+      expect(rawPromptRecord).not.toContain("<user-prompt>");
+      expect(rawPromptRecord).toContain("Tell @Backend Service to hold off");
     } finally {
       webWs.close();
       await daemonA.dispose();

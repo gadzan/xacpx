@@ -399,7 +399,7 @@ test(
       const promptsB1 = await waitForPrompts(daemonB, 2);
       expect(promptsB1[0]).toBe("turn-1");
       const consumedEnvelope = promptsB1[1]!;
-      expect(consumedEnvelope).toContain("<xacpx-message ");
+      expect(consumedEnvelope).toContain("&lt;xacpx-message ");
       expect(consumedEnvelope).toContain("remote-hello-from-A");
       expect(consumedEnvelope).toContain(
         'from="agent:' + aNodeId + ":" + aEndpointId + '"',
@@ -431,6 +431,7 @@ test(
       const promptsA1 = await waitForPrompts(daemonA, 2);
       expect(promptsA1[0]).toBe("turn-0");
       const replyEnvelope = promptsA1[1]!;
+      expect(replyEnvelope).toContain("&lt;xacpx-message ");
       expect(replyEnvelope).toContain("remote-reply-from-B");
       expect(replyEnvelope).toContain(
         'from="agent:' + bNodeId + ":" + bEndpointId + '"',

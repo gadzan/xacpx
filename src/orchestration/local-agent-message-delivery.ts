@@ -17,6 +17,11 @@ export class LocalAgentMessageDeliveryAdapter {
       resolveWorkerSession: (
         target: Extract<ResolvedAgentEndpoint["runtime"], { kind: "worker" }>,
       ) => ResolvedSession | null;
+      deliverLogicalTurn?: (
+        alias: string,
+        renderedText: string,
+        messageId: string,
+      ) => Promise<{ status: "injected" | "queued" }>;
     },
   ) {}
 
@@ -30,6 +35,17 @@ export class LocalAgentMessageDeliveryAdapter {
         "ROUTE_UNAVAILABLE",
         "The target belongs to a remote messaging node; use the remote route.",
       );
+    }
+    if (target.runtime.kind === "logical" && this.deps.deliverLogicalTurn) {
+      const res = await this.deps.deliverLogicalTurn(
+        target.runtime.alias,
+        renderedText,
+        message.id,
+      );
+      return {
+        status: res.status,
+        modeUsed: "queue",
+      };
     }
     const session =
       target.runtime.kind === "logical"

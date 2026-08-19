@@ -129,6 +129,7 @@ async function handleWebClientMessageAsync(
   if (msg.kind === "subscribe") {
     const ownedIds = new Set(deps.instances.listByAccount(accountId).map((instance) => instance.id));
     const instanceIds = [...new Set(msg.instanceIds)].filter((id) => ownedIds.has(id));
+    deps.webGateway.setSubscription(socket, instanceIds);
     if (typeof deps.gateway.getPublishedEndpoints === "function") {
       deps.webGateway.send(socket, {
         kind: "agent-directory",

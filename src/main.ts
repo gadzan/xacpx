@@ -1237,6 +1237,7 @@ export async function buildApp(
     nodeId: messagingNodeIdentity.nodeId,
     loadState: async () => state,
   });
+  let controlRef: ControlService | null = null;
   const localAgentMessageDelivery = new LocalAgentMessageDeliveryAdapter({
     transport,
     resolveLogicalSession: async (transportSession) =>
@@ -1255,6 +1256,31 @@ export async function buildApp(
       } catch {
         return null;
       }
+    },
+    deliverLogicalTurn: async (alias, renderedText, messageId) => {
+      if (controlRef) {
+        void controlRef
+          .prompt({
+            chatKey: "relay:agent-messaging",
+            sessionAlias: alias,
+            text: renderedText,
+            senderId: "agent-messaging",
+            promptRequestId: messageId,
+          })
+          .catch((err) => {
+            void logger.error(
+              "agent_messaging.local_turn_failed",
+              "background agent turn failed",
+              {
+                alias,
+                messageId,
+                error: String(err),
+              },
+            );
+          });
+        return { status: "queued" };
+      }
+      return { status: "queued" };
     },
   });
   const relayAgentMessageRoute = new RelayAgentMessageRoute(
@@ -1471,7 +1497,7 @@ export async function buildApp(
       getTraceRecords: (limit) => agentMessaging.getTraceRecords(limit),
     },
   });
-
+  controlRef = control;
   // Pick up out-of-band config edits without a daemon restart. `xacpx workspace add`
   // (and `agent add`, `/config` from another process) run as separate CLI processes:
   // they only write config.json and can't reach this daemon's in-memory config, so the
