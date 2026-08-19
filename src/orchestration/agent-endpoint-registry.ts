@@ -295,6 +295,31 @@ export class AgentEndpointRegistry {
     }
     return target;
   }
+  async resolveTargetByHandle(
+    handle: string,
+  ): Promise<AgentEndpointView | null> {
+    const address = decodeAgentHandle(handle);
+    if (!address) {
+      return null;
+    }
+
+    if (address.nodeId !== this.deps.nodeId) {
+      const remoteList = this.remoteEndpoints.get(address.nodeId);
+      if (!remoteList) {
+        return null;
+      }
+      const match = remoteList.find(
+        (e) => e.address.endpointId === address.endpointId,
+      );
+      return match ?? null;
+    }
+
+    const state = await this.deps.loadState();
+    const target = this.listCandidates(state, "*").find((candidate) =>
+      sameAddress(candidate.endpoint.address, address),
+    );
+    return target?.endpoint ?? null;
+  }
   async resolveSelector(
     sender: AgentSenderBinding | ResolvedAgentIdentity,
     selector: AgentTargetSelector,

@@ -15,6 +15,7 @@ export interface TurnRequest {
   // is set only for a drained queue head so the web can reconcile the badge.
   turnStarted?: { prompt?: string; scheduled?: ScheduledOrigin; queueItemId?: string; promptRequestId?: string };
   media?: PromptAttachmentRef[];
+  agentMentions?: Array<{ range: [number, number]; handle: string }>;
 }
 
 export interface TurnResult {
@@ -42,10 +43,90 @@ export interface TurnResult {
 //
 // Holds no concurrency state of its own — the inFlight/queues/draining lifecycle
 // lives in TurnQueue, which decides whether to call run() at all.
+export interface SessionTurnRunnerDeps
+  extends Pick<
+    ControlServiceDeps,
+    "agent" | "sessions" | "events" | "uploadStore" | "sessionWarmth"
+  > {
+  resolveAgentTarget?: (handle: string) => Promise<{
+    handle: string;
+    displayName?: string;
+    agent: string;
+    workspace?: string;
+  } | null>;
+  agentMessaging?: Pick<
+    NonNullable<ControlServiceDeps["agentMessaging"]>,
+    "resolveTargetByHandle" | "getPublishedEndpoints"
+  >;
+}
+
+export function buildCollaborationDirective(
+  targets: Array<{
+    handle: string;
+    displayName?: string;
+    agent: string;
+    workspace?: string;
+  }>,
+): string {
+  const targetXmls = targets.map((target) => {
+    const displayName = target.displayName || target.agent;
+    const workspace = target.workspace || "";
+    return [
+      "  <target",
+      `    handle="${escapeXmlAttribute(target.handle)}"`,
+      `    display-name="${escapeXmlAttribute(displayName)}"`,
+      `    agent="${escapeXmlAttribute(target.agent)}"`,
+      `    workspace="${escapeXmlAttribute(workspace)}"`,
+      "  />",
+    ].join("\n");
+  });
+
+  return [
+    "<xacpx-collaboration-directive>",
+    ...targetXmls,
+    "</xacpx-collaboration-directive>",
+  ].join("\n");
+}
+
+function escapeXmlAttribute(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 export class SessionTurnRunner {
-  constructor(
-    private readonly deps: Pick<ControlServiceDeps, "agent" | "sessions" | "events" | "uploadStore" | "sessionWarmth">,
-  ) {}
+  constructor(private readonly deps: SessionTurnRunnerDeps) {}
+
+  private async resolveMentionTarget(handle: string): Promise<{
+    handle: string;
+    displayName?: string;
+    agent: string;
+    workspace?: string;
+  } | null> {
+    if (this.deps.resolveAgentTarget) {
+      return await this.deps.resolveAgentTarget(handle);
+    }
+    if (this.deps.agentMessaging?.resolveTargetByHandle) {
+      return await this.deps.agentMessaging.resolveTargetByHandle(handle);
+    }
+    if (this.deps.agentMessaging?.getPublishedEndpoints) {
+      const endpoints = await this.deps.agentMessaging.getPublishedEndpoints();
+      const match = endpoints.find(
+        (e) => `agent:${e.nodeId}:${e.endpointId}` === handle,
+      );
+      if (match) {
+        return {
+          handle,
+          displayName: match.displayName,
+          agent: match.agent,
+          workspace: match.workspace,
+        };
+      }
+    }
+    return null;
+  }
 
   async run(req: TurnRequest, signal: AbortSignal, onActivity?: () => void): Promise<TurnResult> {
     // Sending to an archived session restores it (useSession clears `archived`), and
@@ -153,11 +234,37 @@ export class SessionTurnRunner {
         messageId: ref.id,
       },
     }));
+    let chatText = req.text;
+    if (req.agentMentions && req.agentMentions.length > 0) {
+      const resolvedTargets: Array<{
+        handle: string;
+        displayName?: string;
+        agent: string;
+        workspace?: string;
+      }> = [];
+      const seen = new Set<string>();
+      for (const mention of req.agentMentions) {
+        if (!mention.handle || seen.has(mention.handle)) continue;
+        seen.add(mention.handle);
+        try {
+          const target = await this.resolveMentionTarget(mention.handle);
+          if (target) {
+            resolvedTargets.push(target);
+          }
+        } catch {
+          // ignore lookup errors gracefully
+        }
+      }
+      if (resolvedTargets.length > 0) {
+        const directive = buildCollaborationDirective(resolvedTargets);
+        chatText = req.text ? `${directive}\n\n${req.text}` : directive;
+      }
+    }
     try {
       const response = await this.deps.agent.chat({
         accountId: req.accountId ?? "control",
         conversationId: req.chatKey,
-        text: req.text,
+        text: chatText,
         metadata: buildControlMetadata(req.senderId, req.isOwner),
         abortSignal: signal,
         ...(chatMedia.length > 0 ? { media: chatMedia } : {}),

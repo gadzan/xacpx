@@ -56,6 +56,7 @@ export interface SubmitParams {
   // is set only for a drained queue head so the web can reconcile the badge.
   turnStarted?: TurnRequest["turnStarted"];
   media?: PromptAttachmentRef[];
+  agentMentions?: Array<{ range: [number, number]; handle: string }>;
   /** Hub-issued pre-write correlation; stored on the queue item and carried onto the
    *  drained turn-started so the hub can correlate a queue item back to its
    *  pre-written inbound row (see PromptPayload.promptRequestId). */
@@ -160,6 +161,7 @@ export class TurnQueue {
             ...(params.isOwner !== undefined ? { isOwner: params.isOwner } : {}),
             ...(params.accountId !== undefined ? { accountId: params.accountId } : {}),
             ...(params.media !== undefined ? { media: params.media } : {}),
+            ...(params.agentMentions !== undefined ? { agentMentions: params.agentMentions } : {}),
             ...(params.promptRequestId !== undefined ? { promptRequestId: params.promptRequestId } : {}),
           };
           q.push(item);
@@ -250,6 +252,7 @@ export class TurnQueue {
           ...(params.accountId !== undefined ? { accountId: params.accountId } : {}),
           ...(params.turnStarted ? { turnStarted: params.turnStarted } : {}),
           ...(params.media !== undefined ? { media: params.media } : {}),
+          ...(params.agentMentions !== undefined ? { agentMentions: params.agentMentions } : {}),
         },
         controller.signal,
         onActivity,
@@ -327,6 +330,7 @@ export class TurnQueue {
         ...(next.isOwner !== undefined ? { isOwner: next.isOwner } : {}),
         ...(next.accountId !== undefined ? { accountId: next.accountId } : {}),
         ...(next.media !== undefined ? { media: next.media } : {}),
+        ...(next.agentMentions !== undefined ? { agentMentions: next.agentMentions } : {}),
         turnStarted: { prompt: next.text, queueItemId: next.id, ...(next.promptRequestId !== undefined ? { promptRequestId: next.promptRequestId } : {}) },
       });
     } else {

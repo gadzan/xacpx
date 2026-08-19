@@ -485,3 +485,160 @@ test("two prompts issued in the same tick: exactly one wins, the other is queued
   );
   expect(queued).toHaveLength(1);
 });
+
+test("prompt forwards agentMentions and injects collaboration directive via agentMessaging", async () => {
+  let captured: ChatRequest | undefined;
+  const events = createControlEventBus();
+  const seen: ControlEvent[] = [];
+  events.subscribe((event) => seen.push(event));
+  const control = new ControlService({
+    agent: {
+      chat: async (req) => {
+        captured = req;
+        return { text: "done" };
+      },
+    },
+    sessions: {
+      listAllResolvedSessions: () => [],
+      createSession: async () => {
+        throw new Error("unused");
+      },
+      removeSession: async () => ({ wasActive: false }),
+      useSession: async () => ({
+        alias: "worker",
+        agent: "codex",
+        workspace: "/ws",
+      }),
+    },
+    activeTurns: { isActiveAnywhere: () => false },
+    scheduled: {} as never,
+    orchestration: {} as never,
+    events,
+    agentMessaging: {
+      deliverInbound: async () => ({ messageId: "m", status: "injected" }),
+      getPublishedEndpoints: async () => [],
+      resolveTargetByHandle: async (handle: string) => {
+        if (handle === "agent:node_1:endpoint_backend") {
+          return {
+            handle,
+            displayName: "Backend",
+            agent: "codex",
+            workspace: "xacpx",
+          };
+        }
+        return null;
+      },
+    },
+  } as never);
+
+  const result = await control.prompt({
+    chatKey: "relay:acct-1",
+    sessionAlias: "worker",
+    text: "ask @Backend if legacy_id can be dropped",
+    senderId: "acct-1",
+    agentMentions: [
+      { range: [4, 12], handle: "agent:node_1:endpoint_backend" },
+    ],
+  });
+
+  expect(result).toEqual({ ok: true, text: "done" });
+  expect(captured?.text).toBe(
+    `<xacpx-collaboration-directive>\n  <target\n    handle="agent:node_1:endpoint_backend"\n    display-name="Backend"\n    agent="codex"\n    workspace="xacpx"\n  />\n</xacpx-collaboration-directive>\n\nask @Backend if legacy_id can be dropped`,
+  );
+});
+
+test("queued prompt preserves agentMentions through queue drain and executes with directive", async () => {
+  const capturedTexts: string[] = [];
+  const firstGate = Promise.withResolvers<void>();
+  const turn2Finished = Promise.withResolvers<void>();
+
+  const events = createControlEventBus();
+  const seen: ControlEvent[] = [];
+  let turnFinishedCount = 0;
+  events.subscribe((event) => {
+    seen.push(event);
+    if (event.type === "turn-finished") {
+      turnFinishedCount++;
+      if (turnFinishedCount === 2) {
+        turn2Finished.resolve();
+      }
+    }
+  });
+
+  const control = new ControlService({
+    agent: {
+      chat: async (req) => {
+        capturedTexts.push(req.text);
+        if (capturedTexts.length === 1) {
+          await firstGate.promise;
+        }
+        return { text: `reply-${capturedTexts.length}` };
+      },
+    },
+    sessions: {
+      listAllResolvedSessions: () => [],
+      createSession: async () => {
+        throw new Error("unused");
+      },
+      removeSession: async () => ({ wasActive: false }),
+      useSession: async () => ({
+        alias: "worker",
+        agent: "codex",
+        workspace: "/ws",
+      }),
+    },
+    activeTurns: { isActiveAnywhere: () => false },
+    scheduled: {} as never,
+    orchestration: {} as never,
+    events,
+    agentMessaging: {
+      deliverInbound: async () => ({ messageId: "m", status: "injected" }),
+      getPublishedEndpoints: async () => [],
+      resolveTargetByHandle: async (handle: string) => {
+        if (handle === "agent:node_1:endpoint_peer") {
+          return {
+            handle,
+            displayName: "Peer Worker",
+            agent: "claude",
+            workspace: "backend",
+          };
+        }
+        return null;
+      },
+    },
+  } as never);
+
+  const turn1 = control.prompt({
+    chatKey: "relay:acct-1",
+    sessionAlias: "worker",
+    text: "first turn",
+    senderId: "acct-1",
+  });
+
+  await Promise.resolve();
+
+  const turn2 = await control.prompt({
+    chatKey: "relay:acct-1",
+    sessionAlias: "worker",
+    text: "second turn mentioning @Peer",
+    senderId: "acct-1",
+    agentMentions: [
+      { range: [23, 28], handle: "agent:node_1:endpoint_peer" },
+    ],
+  });
+
+  expect(turn2.ok).toBe(true);
+  expect(turn2.queued).toBe(true);
+
+  firstGate.resolve();
+  const turn1Result = await turn1;
+  expect(turn1Result.ok).toBe(true);
+
+  await turn2Finished.promise;
+
+  expect(capturedTexts).toHaveLength(2);
+  expect(capturedTexts[0]).toBe("first turn");
+  expect(capturedTexts[1]).toBe(
+    `<xacpx-collaboration-directive>\n  <target\n    handle="agent:node_1:endpoint_peer"\n    display-name="Peer Worker"\n    agent="claude"\n    workspace="backend"\n  />\n</xacpx-collaboration-directive>\n\nsecond turn mentioning @Peer`,
+  );
+});

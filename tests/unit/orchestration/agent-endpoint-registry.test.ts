@@ -376,3 +376,61 @@ test("resolveSelector throws TARGET_AMBIGUOUS with candidate details when multip
     expect(err.message).toContain("workerC");
   }
 });
+
+test("resolveTargetByHandle resolves local and remote endpoints by handle", async () => {
+  const { registry } = makeRegistry();
+  const localHandle = encodeAgentHandle({
+    nodeId,
+    endpointId: "22222222-2222-4222-8222-222222222222",
+  });
+
+  const resolvedLocal = await registry.resolveTargetByHandle(localHandle);
+  expect(resolvedLocal).toMatchObject({
+    handle: localHandle,
+    displayName: "main",
+    agent: "codex",
+    workspace: "project",
+  });
+
+  const remoteNodeId = "node_remote-9999-9999-9999-999999999999";
+  const remoteEndpointId = "endpoint_remote_worker";
+  const remoteHandle = encodeAgentHandle({
+    nodeId: remoteNodeId,
+    endpointId: remoteEndpointId,
+  });
+
+  registry.updateRemoteEndpoints(remoteNodeId, [
+    {
+      address: { nodeId: remoteNodeId, endpointId: remoteEndpointId },
+      handle: remoteHandle,
+      node: remoteNodeId,
+      agent: "claude",
+      workspace: "billing",
+      displayName: "Remote Billing",
+      state: "idle",
+      activity: { status: "idle" },
+      capabilities: {
+        receive: true,
+        steer: false,
+        queue: true,
+        interrupt: false,
+        conversation: true,
+      },
+    },
+  ]);
+
+  const resolvedRemote = await registry.resolveTargetByHandle(remoteHandle);
+  expect(resolvedRemote).toMatchObject({
+    handle: remoteHandle,
+    displayName: "Remote Billing",
+    agent: "claude",
+    workspace: "billing",
+  });
+
+  expect(await registry.resolveTargetByHandle("invalid:handle")).toBeNull();
+  expect(
+    await registry.resolveTargetByHandle(
+      encodeAgentHandle({ nodeId, endpointId: "endpoint_missing" }),
+    ),
+  ).toBeNull();
+});

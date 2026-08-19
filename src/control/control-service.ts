@@ -252,6 +252,7 @@ export interface ControlServiceDeps {
         endpointId: string;
         displayName?: string;
         agent: string;
+        workspace?: string;
         state: "idle" | "running";
         capabilities: {
           receive: boolean;
@@ -263,6 +264,12 @@ export interface ControlServiceDeps {
         updatedAt: number;
       }>
     >;
+    resolveTargetByHandle?(handle: string): Promise<{
+      handle: string;
+      displayName?: string;
+      agent: string;
+      workspace?: string;
+    } | null>;
     updateRemoteEndpoints?(
       nodeId: string,
       endpoints: AgentEndpointView[],
@@ -300,6 +307,7 @@ export interface ControlPromptInput {
   senderId: string;
   isOwner?: boolean;
   media?: PromptAttachmentRef[];
+  agentMentions?: Array<{ range: [number, number]; handle: string }>;
   /** Hub-issued pre-write correlation; threaded onto the queue item and the drained
    *  turn-started so the hub can tie a queued prompt back to its pre-written inbound
    *  row (see PromptPayload.promptRequestId). */
@@ -359,7 +367,37 @@ export class ControlService {
           : {}),
       },
     );
-    this.runner = new SessionTurnRunner(deps);
+    const resolveAgentTarget = deps.agentMessaging
+      ? async (handle: string) => {
+          if (deps.agentMessaging?.resolveTargetByHandle) {
+            return await deps.agentMessaging.resolveTargetByHandle(handle);
+          }
+          if (deps.agentMessaging?.getPublishedEndpoints) {
+            const endpoints = await deps.agentMessaging.getPublishedEndpoints();
+            const match = endpoints.find(
+              (e) => `agent:${e.nodeId}:${e.endpointId}` === handle,
+            );
+            if (match) {
+              return {
+                handle,
+                displayName: match.displayName,
+                agent: match.agent,
+                workspace: match.workspace,
+              };
+            }
+          }
+          return null;
+        }
+      : undefined;
+    this.runner = new SessionTurnRunner({
+      agent: deps.agent,
+      sessions: deps.sessions,
+      events: deps.events,
+      uploadStore: deps.uploadStore,
+      ...(deps.sessionWarmth ? { sessionWarmth: deps.sessionWarmth } : {}),
+      ...(deps.agentMessaging ? { agentMessaging: deps.agentMessaging } : {}),
+      ...(resolveAgentTarget ? { resolveAgentTarget } : {}),
+    });
     this.turnQueue = new TurnQueue({
       runTurn: (req, signal, onActivity) =>
         this.runner.run(req, signal, onActivity),
@@ -1188,6 +1226,9 @@ export class ControlService {
       ...(input.isOwner !== undefined ? { isOwner: input.isOwner } : {}),
       ...(input.accountId !== undefined ? { accountId: input.accountId } : {}),
       ...(input.media !== undefined ? { media: input.media } : {}),
+      ...(input.agentMentions !== undefined
+        ? { agentMentions: input.agentMentions }
+        : {}),
       ...(input.promptRequestId !== undefined
         ? { promptRequestId: input.promptRequestId }
         : {}),

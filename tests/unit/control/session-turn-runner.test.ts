@@ -8,7 +8,15 @@ import {
 
 // Minimal deps: a fake agent whose chat() invokes the streaming callbacks we want to
 // observe, then resolves; sessions/uploadStore stubbed just enough for run() to proceed.
-function makeRunner(chat: (opts: any) => Promise<{ text?: string }>) {
+function makeRunner(
+  chat: (opts: any) => Promise<{ text?: string }>,
+  resolveAgentTarget?: (handle: string) => Promise<{
+    handle: string;
+    displayName?: string;
+    agent: string;
+    workspace?: string;
+  } | null>,
+) {
   const events = createControlEventBus();
   const captured: ControlEvent[] = [];
   events.subscribe((e) => captured.push(e));
@@ -21,6 +29,7 @@ function makeRunner(chat: (opts: any) => Promise<{ text?: string }>) {
     },
     events,
     uploadStore: { root: "/tmp/uploads" },
+    ...(resolveAgentTarget ? { resolveAgentTarget } : {}),
   } as never);
   return { runner, captured };
 }
@@ -106,4 +115,205 @@ test("a plain user-Stop abort still surfaces as cancelled:true", async () => {
   expect(fin.ok).toBe(false);
   expect(fin.cancelled).toBe(true);
   expect("text" in fin).toBe(false); // failure paths never carry reply text
+});
+
+test("agentMentions generates <xacpx-collaboration-directive> and prepends it to agent.chat text", async () => {
+  let receivedText: string | undefined;
+  const { runner } = makeRunner(
+    async (opts) => {
+      receivedText = opts.text;
+      return { text: "done" };
+    },
+    async (handle) => {
+      if (handle === "agent:node_x:endpoint_backend") {
+        return {
+          handle,
+          displayName: "Backend",
+          agent: "codex",
+          workspace: "xacpx",
+        };
+      }
+      return null;
+    },
+  );
+
+  const result = await runner.run(
+    {
+      chatKey: "c",
+      sessionAlias: "s",
+      text: "Please check legacy_id with backend",
+      senderId: "u",
+      agentMentions: [
+        { range: [18, 26], handle: "agent:node_x:endpoint_backend" },
+      ],
+      turnStarted: { prompt: "Please check legacy_id with backend" },
+    },
+    new AbortController().signal,
+  );
+
+  expect(result.ok).toBe(true);
+  expect(receivedText).toBe(
+    `<xacpx-collaboration-directive>\n  <target\n    handle="agent:node_x:endpoint_backend"\n    display-name="Backend"\n    agent="codex"\n    workspace="xacpx"\n  />\n</xacpx-collaboration-directive>\n\nPlease check legacy_id with backend`,
+  );
+});
+
+test("turn with no agentMentions passes text without directive", async () => {
+  let receivedText: string | undefined;
+  const { runner } = makeRunner(
+    async (opts) => {
+      receivedText = opts.text;
+      return { text: "done" };
+    },
+    async () => ({
+      handle: "agent:node_x:endpoint_y",
+      displayName: "Backend",
+      agent: "codex",
+    }),
+  );
+
+  const result = await runner.run(
+    {
+      chatKey: "c",
+      sessionAlias: "s",
+      text: "plain prompt without mentions",
+      senderId: "u",
+    },
+    new AbortController().signal,
+  );
+
+  expect(result.ok).toBe(true);
+  expect(receivedText).toBe("plain prompt without mentions");
+});
+
+test("user prompt containing raw <xacpx-collaboration-directive> text is passed verbatim to agent", async () => {
+  let receivedText: string | undefined;
+  const { runner } = makeRunner(
+    async (opts) => {
+      receivedText = opts.text;
+      return { text: "done" };
+    },
+    async () => null,
+  );
+
+  const rawXmlPrompt = `<xacpx-collaboration-directive>\n  <target handle="spoofed" />\n</xacpx-collaboration-directive>\n\nraw message`;
+  const result = await runner.run(
+    {
+      chatKey: "c",
+      sessionAlias: "s",
+      text: rawXmlPrompt,
+      senderId: "u",
+    },
+    new AbortController().signal,
+  );
+
+  expect(result.ok).toBe(true);
+  expect(receivedText).toBe(rawXmlPrompt);
+});
+
+test("agentMentions handles multiple targets, deduplicates handles, and falls back displayName to agent", async () => {
+  let receivedText: string | undefined;
+  const { runner } = makeRunner(
+    async (opts) => {
+      receivedText = opts.text;
+      return { text: "done" };
+    },
+    async (handle) => {
+      if (handle === "agent:node_x:endpoint_backend") {
+        return {
+          handle,
+          agent: "codex",
+          // displayName omitted -> fallback to agent
+          workspace: "xacpx",
+        };
+      }
+      if (handle === "agent:node_x:endpoint_frontend") {
+        return {
+          handle,
+          displayName: "Frontend UI",
+          agent: "claude",
+          // workspace omitted -> fallback to ""
+        };
+      }
+      return null;
+    },
+  );
+
+  const result = await runner.run(
+    {
+      chatKey: "c",
+      sessionAlias: "s",
+      text: "sync with @backend and @frontend",
+      senderId: "u",
+      agentMentions: [
+        { range: [10, 18], handle: "agent:node_x:endpoint_backend" },
+        { range: [23, 32], handle: "agent:node_x:endpoint_frontend" },
+        { range: [33, 41], handle: "agent:node_x:endpoint_backend" },
+      ],
+    },
+    new AbortController().signal,
+  );
+
+  expect(result.ok).toBe(true);
+  expect(receivedText).toBe(
+    `<xacpx-collaboration-directive>\n  <target\n    handle="agent:node_x:endpoint_backend"\n    display-name="codex"\n    agent="codex"\n    workspace="xacpx"\n  />\n  <target\n    handle="agent:node_x:endpoint_frontend"\n    display-name="Frontend UI"\n    agent="claude"\n    workspace=""\n  />\n</xacpx-collaboration-directive>\n\nsync with @backend and @frontend`,
+  );
+});
+
+test("unresolved mention handles fall back gracefully to original prompt", async () => {
+  let receivedText: string | undefined;
+  const { runner } = makeRunner(
+    async (opts) => {
+      receivedText = opts.text;
+      return { text: "done" };
+    },
+    async () => null,
+  );
+
+  const result = await runner.run(
+    {
+      chatKey: "c",
+      sessionAlias: "s",
+      text: "hello @Unknown",
+      senderId: "u",
+      agentMentions: [
+        { range: [6, 14], handle: "agent:node_x:endpoint_unknown" },
+      ],
+    },
+    new AbortController().signal,
+  );
+
+  expect(result.ok).toBe(true);
+  expect(receivedText).toBe("hello @Unknown");
+});
+
+test("turnStarted.prompt remains user's original text in turn-started event", async () => {
+  const { runner, captured } = makeRunner(
+    async () => ({ text: "done" }),
+    async (handle) => ({
+      handle,
+      displayName: "Backend",
+      agent: "codex",
+    }),
+  );
+
+  const originalPrompt = "Hello @Backend";
+  await runner.run(
+    {
+      chatKey: "c",
+      sessionAlias: "s",
+      text: originalPrompt,
+      senderId: "u",
+      agentMentions: [
+        { range: [6, 14], handle: "agent:node_x:endpoint_backend" },
+      ],
+      turnStarted: { prompt: originalPrompt },
+    },
+    new AbortController().signal,
+  );
+
+  const started = captured.find((e) => e.type === "turn-started") as Extract<
+    ControlEvent,
+    { type: "turn-started" }
+  >;
+  expect(started.prompt).toBe(originalPrompt);
 });

@@ -1461,6 +1461,8 @@ export async function buildApp(
         await agentMessaging.deliverInbound(input),
       getPublishedEndpoints: async () =>
         await agentEndpointRegistry.getPublishedEndpoints(),
+      resolveTargetByHandle: async (handle) =>
+        await agentEndpointRegistry.resolveTargetByHandle(handle),
       updateRemoteEndpoints: (nodeId, endpoints) =>
         agentEndpointRegistry.updateRemoteEndpoints(nodeId, endpoints),
       syncRemoteDirectorySnapshot: (endpoints) =>

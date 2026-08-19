@@ -11,6 +11,7 @@ export interface QueuedPrompt {
   isOwner?: boolean;
   accountId?: string;
   media?: PromptAttachmentRef[];
+  agentMentions?: Array<{ range: [number, number]; handle: string }>;
   /** Hub-issued pre-write correlation (see PromptPayload.promptRequestId); carried
    *  onto the drained turn-started so the hub can tie the queue item back to the
    *  pre-written inbound row even if the queued RPC response was lost. */
