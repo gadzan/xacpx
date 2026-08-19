@@ -434,3 +434,34 @@ test("resolveTargetByHandle resolves local and remote endpoints by handle", asyn
     ),
   ).toBeNull();
 });
+
+test("logical session endpoint reflects active status when isSessionActive returns true", async () => {
+  const state = createEmptyState();
+  state.sessions.backend = {
+    alias: "backend",
+    agent: "codex",
+    workspace: "project",
+    transport_session: "coordinator",
+    logical_session_id: "33333333-3333-4333-8333-333333333333",
+    created_at: "2026-08-18T00:00:00.000Z",
+    last_used_at: "2026-08-18T00:00:00.000Z",
+  };
+  const activeRegistry = new AgentEndpointRegistry({
+    nodeId,
+    loadState: async () => state,
+    isSessionActive: (alias) => alias === "backend",
+  });
+  const endpoints = await activeRegistry.getPublishedEndpoints();
+  const ep = endpoints.find((e) => e.endpointId === "33333333-3333-4333-8333-333333333333");
+  expect(ep).toBeDefined();
+  expect(ep!.state).toBe("running");
+  expect(ep!.activity).toEqual({ status: "working" });
+});
+
+test("resolveSelector throws TARGET_NOT_FOUND when selector is empty object", async () => {
+  const { registry } = makeRegistry();
+  const sender = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  await expect(registry.resolveSelector(sender, {})).rejects.toMatchObject({
+    code: "TARGET_NOT_FOUND",
+  });
+});

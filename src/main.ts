@@ -1237,7 +1237,7 @@ export async function buildApp(
     nodeId: messagingNodeIdentity.nodeId,
     loadState: async () => state,
     isSessionActive: (internalAlias: string) =>
-      controlRef?.isBusy("", internalAlias) ?? activeTurns.isActiveAnywhere(internalAlias),
+      Boolean((controlRef?.isSessionBusy(internalAlias) ?? false) || activeTurns.isActiveAnywhere(internalAlias)),
   });
   let controlRef: ControlService | null = null;
   const localAgentMessageDelivery = new LocalAgentMessageDeliveryAdapter({

@@ -1291,7 +1291,6 @@ export class ControlService {
       scopeDisplayAliasToInternal(channelId, sessionAlias);
     return this.turnQueue.queueLength(chatKey, sessionAlias, internalAlias);
   }
-
   isBusy(chatKey: string, sessionAlias: string): boolean {
     const channelId = getChannelIdFromChatKey(chatKey);
     const internalAlias =
@@ -1303,6 +1302,9 @@ export class ControlService {
     return this.turnQueue.isBusy(chatKey, sessionAlias, internalAlias);
   }
 
+  isSessionBusy(internalAlias: string): boolean {
+    return this.turnQueue.isBusy("", internalAlias, internalAlias);
+  }
   cancelTurn(chatKey: string, sessionAlias: string): boolean {
     const channelId = getChannelIdFromChatKey(chatKey);
     const internalAlias =

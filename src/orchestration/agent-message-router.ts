@@ -403,6 +403,7 @@ export class AgentMessageRouter {
           });
           throw mapped;
         }
+        this.cacheReceipt(remoteReceipt, createdAt);
         this.conversationMessageCounts.set(
           conversationId,
           currentConvCount + 1,

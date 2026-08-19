@@ -540,3 +540,28 @@ test("clearSession arms a teardown guard that rejects new turns until finishClea
   await tick();
   expect(started).toEqual(["after"]);
 });
+
+test("queued prompt preserves isOwner:true when drained into runTurn", async () => {
+  let drainedIsOwner: boolean | undefined;
+  const requests: unknown[] = [];
+  const h = makeQueue();
+  const origRun = (h.queue as unknown as { deps: { runTurn: (req: unknown, sig: unknown, act: unknown) => Promise<unknown> } }).deps.runTurn;
+  (h.queue as unknown as { deps: { runTurn: (req: unknown, sig: unknown, act: unknown) => Promise<unknown> } }).deps.runTurn = async (req, sig, act) => {
+    requests.push(req);
+    drainedIsOwner = (req as { isOwner?: boolean }).isOwner;
+    return await origRun(req as never, sig as never, act as never);
+  };
+
+  const p1 = h.queue.submit({ ...BASE, text: "first", queueable: true });
+  await tick();
+  const p2 = h.queue.submit({ ...BASE, text: "second", isOwner: true, queueable: true });
+  expect(h.queue.queueLength("c", "s")).toBe(1);
+
+  h.resolveNext();
+  await p1;
+  await tick();
+  h.resolveNext();
+  await p2;
+
+  expect(drainedIsOwner).toBe(true);
+});
