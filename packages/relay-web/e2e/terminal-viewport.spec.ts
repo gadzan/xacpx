@@ -41,6 +41,7 @@ test.describe("terminal viewport", () => {
     // Authoritative rebase (80x24) updates syncedResize belief, so the
     // subsequent forceSync sends a corrective resize back to host dimensions.
     expect(hub.resizes.length).toBeGreaterThan(resizesBefore);
+    const last = hub.resizes.at(-1)!;
     expect(last.cols).toBe(after.cols);
     expect(last.rows).toBe(after.rows);
   });
