@@ -20,6 +20,7 @@ import {
   type RmuxSidecarSupervisor,
 } from "../../packages/channel-relay/src/terminal/rmux-sidecar-supervisor";
 import {
+  RMUX_POSIX_XTERM_DIALECT_CAPABILITY,
   RmuxInvalidUtf8InputError,
   type RmuxRecoveryEvent,
   type RmuxSessionHandle,
@@ -131,6 +132,16 @@ async function collectUntil(
   );
 }
 
+function recoveryText(events: RmuxRecoveryEvent[]): string {
+  const decoder = new TextDecoder();
+  let text = "";
+  for (const event of events) {
+    if (event.type === "rebase") text += decoder.decode(event.keyframe);
+    if (event.type === "bytes") text += decoder.decode(event.data);
+  }
+  return text;
+}
+
 function hasRebase(events: RmuxRecoveryEvent[]): boolean {
   return events.some((e) => e.type === "rebase");
 }
@@ -169,6 +180,36 @@ test.skipIf(!enabled)("real sidecar: create → UTF-8 input → recover rebase �
     driver.input(handle.paneId, new Uint8Array([0xff, 0xfe])),
   ).rejects.toBeInstanceOf(RmuxInvalidUtf8InputError);
 });
+
+test.skipIf(!enabled || process.platform === "win32")(
+  "real sidecar: created POSIX shell advertises xterm-256color through recovery",
+  async () => {
+    const { driver, cwd } = await boot();
+    const diagnostics = await driver.diagnostics();
+    expect(diagnostics.capabilities).toContain(
+      RMUX_POSIX_XTERM_DIALECT_CAPABILITY,
+    );
+
+    const handle = await createShell(driver, cwd, "term-dialect");
+    const expected = "__XACPX_TERM__xterm-256color__";
+    const recoverP = collectUntil(
+      driver.recover(handle.paneId),
+      (events) => recoveryText(events).includes(expected),
+      20_000,
+    );
+    await Bun.sleep(50);
+    await driver.input(
+      handle.paneId,
+      new TextEncoder().encode(
+        "printf '__XACPX_TERM__%s__\\n' \"$TERM\"\n",
+      ),
+    );
+    const events = await recoverP;
+    expect(recoveryText(events)).toContain(expected);
+
+    await driver.kill(handle.sessionId);
+  },
+);
 
 test.skipIf(!enabled)("real sidecar: shutdown kills owned session (process-owned)", async () => {
   const { driver, supervisor, cwd } = await boot();
