@@ -237,6 +237,9 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     accounts,
     requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
     logger,
+    onDirectoryChange: (accountId, endpoints) => {
+      webGateway.broadcast(accountId, { kind: "agent-directory", endpoints });
+    },
     onStatusChange: (instanceId, accountId, online) => {
       if (!online) {
         const prefix = `${instanceId}\0`;
@@ -245,6 +248,10 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         for (const k of sessionCommands.keys()) if (k.startsWith(prefix)) sessionCommands.delete(k);
       }
       webGateway.broadcast(accountId, { kind: "instance-status", instanceId, online });
+      webGateway.broadcast(accountId, {
+        kind: "agent-directory",
+        endpoints: gateway.getPublishedEndpoints(accountId),
+      });
     },
     onEvent: (instanceId, accountId, envelope: RelayEnvelope) => {
       // Recoverable terminal streams are attachment-targeted and must never enter
@@ -451,6 +458,18 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 messages.append(instanceId, event.sessionAlias, row.direction, row.text, row.structured ? capSeededStructured(row.structured) : row.structured);
               }
             }
+          } else if (event.type === "agent-message") {
+            const direction = event.message.direction === "sent" ? "out" : "in";
+            messages.append(
+              instanceId,
+              event.sessionAlias,
+              direction,
+              event.message.content,
+              { agentMessage: event.message },
+              undefined,
+              undefined,
+              new Date(event.message.createdAt).toISOString(),
+            );
           }
         } else if (envelope.type === MSG.instanceStateSync) {
           if (!validInstanceStateSync(envelope.payload)) {

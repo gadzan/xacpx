@@ -125,4 +125,138 @@ describe("PromptInput composer", () => {
     await w.vm.$nextTick();
     expect((w.find("textarea").element as HTMLTextAreaElement).value).toBe("/status");
   });
+
+  it("typing @ displays agent mention autocomplete from canonical directory and emits structured agentMentions", async () => {
+    const { useInstancesStore } = await import("../stores/instances");
+    const instances = useInstancesStore();
+    instances.agentDirectory = [
+      {
+        nodeId: "node-1",
+        endpointId: "ep-backend",
+        displayName: "Backend",
+        agent: "codex",
+        workspace: "project",
+        state: "idle",
+        capabilities: { receive: true, steer: false, queue: true, interrupt: false, conversation: true },
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    await ta.setValue("Please check with @Back");
+    await ta.trigger("input");
+    await w.vm.$nextTick();
+
+    expect(w.find('[data-test="mention-menu"]').exists()).toBe(true);
+    const items = w.findAll('[data-test="mention-item"]');
+    expect(items.length).toBe(1);
+    expect(items[0].text()).toContain("@Backend");
+
+    // Enter selects the mention
+    await ta.trigger("keydown", { key: "Enter" });
+    await w.vm.$nextTick();
+
+    expect((ta.element as HTMLTextAreaElement).value).toBe("Please check with @Backend ");
+    expect(w.find('[data-test="mention-menu"]').exists()).toBe(false);
+
+    // Submit
+    await ta.trigger("keydown", { key: "Enter" });
+    expect(w.emitted("send")?.[0]).toEqual([
+      "Please check with @Backend",
+      [],
+      [
+        {
+          range: [18, 26],
+          handle: "agent:node-1:ep-backend",
+        },
+      ],
+    ]);
+  });
+
+  it("negative gate: typing raw @Backend without autocomplete selection does NOT produce structured agentMentions", async () => {
+    const { useInstancesStore } = await import("../stores/instances");
+    const instances = useInstancesStore();
+    instances.agentDirectory = [
+      {
+        nodeId: "node-1",
+        endpointId: "ep-backend",
+        displayName: "Backend",
+        agent: "codex",
+        workspace: "project",
+        state: "idle",
+        capabilities: { receive: true, steer: false, queue: true, interrupt: false, conversation: true },
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    // User types raw text with @Backend but never interacts with/picks from autocomplete dropdown
+    await ta.setValue("Please check with @Backend directly");
+    // User hits Escape to close dropdown, then Enter to send
+    await ta.trigger("keydown", { key: "Escape" });
+    await w.vm.$nextTick();
+    await ta.trigger("keydown", { key: "Enter" });
+
+    // Must NOT auto-upgrade raw text to structured mentions
+    expect(w.emitted("send")?.[0]).toEqual([
+      "Please check with @Backend directly",
+      [],
+    ]);
+  });
+
+  it("negative gate: selecting between duplicate displayName agents binds ONLY the selected canonical endpoint", async () => {
+    const { useInstancesStore } = await import("../stores/instances");
+    const instances = useInstancesStore();
+    instances.agentDirectory = [
+      {
+        nodeId: "node-1",
+        endpointId: "ep-backend-1",
+        displayName: "Backend",
+        agent: "codex",
+        workspace: "backend-api",
+        state: "idle",
+        capabilities: { receive: true, steer: false, queue: true, interrupt: false, conversation: true },
+        updatedAt: Date.now(),
+      },
+      {
+        nodeId: "node-2",
+        endpointId: "ep-backend-2",
+        displayName: "Backend",
+        agent: "claude",
+        workspace: "billing-service",
+        state: "idle",
+        capabilities: { receive: true, steer: false, queue: true, interrupt: false, conversation: true },
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    await ta.setValue("Ask @Back");
+    await ta.trigger("input");
+    await w.vm.$nextTick();
+
+    const items = w.findAll('[data-test="mention-item"]');
+    expect(items.length).toBe(2);
+
+    // Arrow down to pick the second one ("billing-service" on node-2)
+    await ta.trigger("keydown", { key: "ArrowDown" });
+    await ta.trigger("keydown", { key: "Enter" });
+    await w.vm.$nextTick();
+
+    // Submit
+    await ta.trigger("keydown", { key: "Enter" });
+    expect(w.emitted("send")?.[0]).toEqual([
+      "Ask @Backend",
+      [],
+      [
+        {
+          range: [4, 12],
+          handle: "agent:node-2:ep-backend-2", // ONLY the selected endpoint
+        },
+      ],
+    ]);
+  });
 });

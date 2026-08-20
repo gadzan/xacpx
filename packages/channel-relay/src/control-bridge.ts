@@ -167,9 +167,10 @@ export function createControlBridge(
     void dispatchControlRequest(control, envelope, deadlineAt)
       .then(respondOnce)
       .catch((error: unknown) => {
+        const code = (error as Error & { code?: string }).code ?? "internal";
         respondOnce(
           errorPayload(
-            "internal",
+            code,
             error instanceof Error ? error.message : String(error),
           ),
         );
@@ -849,11 +850,16 @@ async function dispatchControlRequest(
           }
         ).deliverAgentMessage === "function"
       ) {
-        return await (
-          control as unknown as {
-            deliverAgentMessage: (i: unknown) => Promise<unknown>;
-          }
-        ).deliverAgentMessage(input);
+        try {
+          return await (
+            control as unknown as {
+              deliverAgentMessage: (i: unknown) => Promise<unknown>;
+            }
+          ).deliverAgentMessage(input);
+        } catch (error) {
+          const code = (error as Error & { code?: string }).code ?? "DELIVERY_FAILED";
+          return errorPayload(code, (error as Error).message);
+        }
       }
       return errorPayload(
         "ROUTE_UNAVAILABLE",
@@ -961,6 +967,11 @@ export function dispatchControlEvent(
   }
 }
 
+function toDisplaySessionAlias(internalAlias: string): string {
+  const colon = internalAlias.indexOf(":");
+  return colon >= 0 ? internalAlias.slice(colon + 1) : internalAlias;
+}
+
 export function subscribeControlEvents(
   control: ControlService,
   sendEvent: (type: string, payload: unknown) => void,
@@ -971,7 +982,7 @@ export function subscribeControlEvents(
         event: {
           type: "tool-event",
           chatKey: event.chatKey,
-          sessionAlias: event.sessionAlias,
+          sessionAlias: toDisplaySessionAlias(event.sessionAlias),
           step: toolUseEventToStepDto(event.event),
         },
       });
@@ -982,8 +993,17 @@ export function subscribeControlEvents(
         event: {
           type: "session-history",
           chatKey: event.chatKey,
-          sessionAlias: event.sessionAlias,
+          sessionAlias: toDisplaySessionAlias(event.sessionAlias),
           messages: historyMessagesToRows(event.messages),
+        },
+      });
+      return;
+    }
+    if ("sessionAlias" in event && typeof event.sessionAlias === "string") {
+      sendEvent(MSG.instanceEvent, {
+        event: {
+          ...event,
+          sessionAlias: toDisplaySessionAlias(event.sessionAlias),
         },
       });
       return;

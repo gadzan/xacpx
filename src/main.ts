@@ -1236,7 +1236,10 @@ export async function buildApp(
   const agentEndpointRegistry = new AgentEndpointRegistry({
     nodeId: messagingNodeIdentity.nodeId,
     loadState: async () => state,
+    isSessionActive: (internalAlias: string) =>
+      Boolean((controlRef?.isSessionBusy(internalAlias) ?? false) || activeTurns.isActiveAnywhere(internalAlias)),
   });
+  let controlRef: ControlService | null = null;
   const localAgentMessageDelivery = new LocalAgentMessageDeliveryAdapter({
     transport,
     resolveLogicalSession: async (transportSession) =>
@@ -1256,17 +1259,33 @@ export async function buildApp(
         return null;
       }
     },
+    deliverLogicalTurn: async (alias, renderedText, messageId) => {
+      if (controlRef) {
+        const chatKey = `relay:agent-message:${alias}`;
+        return await controlRef.submitPeerTurn({
+          chatKey,
+          sessionAlias: alias,
+          boundSessionAlias: alias,
+          text: renderedText,
+          senderId: "agent-messaging",
+          messageId,
+        });
+      }
+      return { status: "queued" };
+    },
   });
   const relayAgentMessageRoute = new RelayAgentMessageRoute(
     deps.channel?.sendAgentMessageRoute
       ? (deps.channel as unknown as RelayRouteClient)
       : undefined,
   );
+  const controlEvents = createControlEventBus(logger);
   const agentMessaging = new AgentMessageRouter({
     registry: agentEndpointRegistry,
     delivery: localAgentMessageDelivery,
     remoteRoute: relayAgentMessageRoute,
     logger,
+    events: controlEvents,
   });
   const orchestrationEndpoint = createOrchestrationEndpoint(
     paths.orchestrationSocketPath ??
@@ -1331,7 +1350,6 @@ export async function buildApp(
     activeTurns,
   );
   const agent = new ConsoleAgent(router, logger);
-  const controlEvents = createControlEventBus(logger);
   const terminalService = createTerminalService({
     events: controlEvents,
     idleTimeoutSeconds: () => terminalIdleTimeoutSeconds(config),
@@ -1461,6 +1479,8 @@ export async function buildApp(
         await agentMessaging.deliverInbound(input),
       getPublishedEndpoints: async () =>
         await agentEndpointRegistry.getPublishedEndpoints(),
+      resolveTargetByHandle: async (handle) =>
+        await agentEndpointRegistry.resolveTargetByHandle(handle),
       updateRemoteEndpoints: (nodeId, endpoints) =>
         agentEndpointRegistry.updateRemoteEndpoints(nodeId, endpoints),
       syncRemoteDirectorySnapshot: (endpoints) =>
@@ -1468,7 +1488,7 @@ export async function buildApp(
       getTraceRecords: (limit) => agentMessaging.getTraceRecords(limit),
     },
   });
-
+  controlRef = control;
   // Pick up out-of-band config edits without a daemon restart. `xacpx workspace add`
   // (and `agent add`, `/config` from another process) run as separate CLI processes:
   // they only write config.json and can't reach this daemon's in-memory config, so the

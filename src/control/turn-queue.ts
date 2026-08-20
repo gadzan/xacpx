@@ -46,6 +46,8 @@ export interface TurnQueueDeps {
 export interface SubmitParams {
   chatKey: string;
   sessionAlias: string;
+  boundSessionAlias?: string;
+  concurrencyKey?: string;
   text: string;
   senderId: string;
   isOwner?: boolean;
@@ -56,6 +58,10 @@ export interface SubmitParams {
   // is set only for a drained queue head so the web can reconcile the badge.
   turnStarted?: TurnRequest["turnStarted"];
   media?: PromptAttachmentRef[];
+  agentMentions?: Array<{ range: [number, number]; handle: string }>;
+  isPeerMessage?: boolean;
+  allowRestoreArchived?: boolean;
+  preserveCoordinatorRoute?: boolean;
   /** Hub-issued pre-write correlation; stored on the queue item and carried onto the
    *  drained turn-started so the hub can correlate a queue item back to its
    *  pre-written inbound row (see PromptPayload.promptRequestId). */
@@ -110,18 +116,98 @@ export class TurnQueue {
   // scheduler path that never touches that lock.
   private readonly removing = new Set<string>();
 
-  queueLength(chatKey: string, sessionAlias: string): number {
-    return this.queues.get(turnKey(chatKey, sessionAlias))?.length ?? 0;
+  private resolveKey(chatKey: string, sessionAlias: string, concurrencyKey?: string): string {
+    if (concurrencyKey) {
+      return concurrencyKey;
+    }
+    const directKey = turnKey(chatKey, sessionAlias);
+    if (
+      this.inFlight.has(directKey) ||
+      this.queues.has(directKey) ||
+      this.draining.has(directKey) ||
+      this.removing.has(directKey)
+    ) {
+      return directKey;
+    }
+    const cleanAlias = sessionAlias.includes(":") ? sessionAlias.split(":").pop()! : sessionAlias;
+    for (const k of this.inFlight.keys()) {
+      if (k === directKey || k.endsWith(":" + cleanAlias) || k.endsWith(" " + cleanAlias) || k === cleanAlias) return k;
+    }
+    for (const k of this.queues.keys()) {
+      if (k === directKey || k.endsWith(":" + cleanAlias) || k.endsWith(" " + cleanAlias) || k === cleanAlias) return k;
+    }
+    for (const k of this.draining) {
+      if (k === directKey || k.endsWith(":" + cleanAlias) || k.endsWith(" " + cleanAlias) || k === cleanAlias) return k;
+    }
+    for (const k of this.removing) {
+      if (k === directKey || k.endsWith(":" + cleanAlias) || k.endsWith(" " + cleanAlias) || k === cleanAlias) return k;
+    }
+    return directKey;
   }
 
-  isBusy(chatKey: string, sessionAlias: string): boolean {
-    const key = turnKey(chatKey, sessionAlias);
+  queueLength(chatKey: string, sessionAlias: string, concurrencyKey?: string): number {
+    return this.queues.get(this.resolveKey(chatKey, sessionAlias, concurrencyKey))?.length ?? 0;
+  }
+
+  isBusy(chatKey: string, sessionAlias: string, concurrencyKey?: string): boolean {
+    const key = this.resolveKey(chatKey, sessionAlias, concurrencyKey);
     const existing = this.inFlight.get(key);
     return this.draining.has(key) || (existing !== undefined && !existing.controller.signal.aborted);
   }
 
-  private emitQueueUpdated(chatKey: string, sessionAlias: string): void {
-    const items = (this.queues.get(turnKey(chatKey, sessionAlias)) ?? []).map((q) => ({
+  submitPeerTurn(params: SubmitParams): { status: "injected" | "queued" } | { status: "rejected"; reason: string } {
+    const key = this.resolveKey(params.chatKey, params.sessionAlias, params.concurrencyKey);
+    if (this.removing.has(key)) {
+      return { status: "rejected", reason: "target-unavailable" };
+    }
+    const existing = this.inFlight.get(key);
+    const busy =
+      this.draining.has(key) ||
+      (existing !== undefined && !existing.controller.signal.aborted);
+    if (busy) {
+      const q = this.queues.get(key) ?? [];
+      if (q.length >= QUEUE_MAX_DEPTH) {
+        return { status: "rejected", reason: "queue-full" };
+      }
+      const id = randomUUID();
+      const item: QueuedPrompt = {
+        id,
+        text: params.text,
+        enqueuedAt: new Date().toISOString(),
+        senderId: params.senderId,
+        executionContext: {
+          chatKey: params.chatKey,
+          sessionAlias: params.sessionAlias,
+          ...(params.boundSessionAlias ? { boundSessionAlias: params.boundSessionAlias } : {}),
+        },
+        concurrencyKey: params.concurrencyKey,
+        isPeerMessage: true,
+        allowRestoreArchived: false,
+        ...(params.isOwner !== undefined ? { isOwner: params.isOwner } : {}),
+        ...(params.preserveCoordinatorRoute !== undefined ? { preserveCoordinatorRoute: params.preserveCoordinatorRoute } : {}),
+        ...(params.accountId !== undefined ? { accountId: params.accountId } : {}),
+        ...(params.media !== undefined ? { media: params.media } : {}),
+        ...(params.agentMentions !== undefined ? { agentMentions: params.agentMentions } : {}),
+        ...(params.promptRequestId !== undefined ? { promptRequestId: params.promptRequestId } : {}),
+      };
+      q.push(item);
+      this.queues.set(key, q);
+      this.emitQueueUpdated(params.chatKey, params.sessionAlias, key);
+      return { status: "queued" };
+    }
+
+    void this.submit({
+      ...params,
+      queueable: true,
+      isPeerMessage: true,
+      allowRestoreArchived: false,
+    });
+    return { status: "injected" };
+  }
+
+  private emitQueueUpdated(chatKey: string, sessionAlias: string, queueKey?: string): void {
+    const key = queueKey ?? this.resolveKey(chatKey, sessionAlias);
+    const items = (this.queues.get(key) ?? []).map((q) => ({
       id: q.id,
       textPreview: q.text.length > QUEUE_PREVIEW_MAX ? q.text.slice(0, QUEUE_PREVIEW_MAX) : q.text,
       enqueuedAt: q.enqueuedAt,
@@ -130,7 +216,7 @@ export class TurnQueue {
   }
 
   async submit(params: SubmitParams): Promise<SubmitResult> {
-    const key = turnKey(params.chatKey, params.sessionAlias);
+    const key = params.concurrencyKey ?? turnKey(params.chatKey, params.sessionAlias);
     // A drained head turn (params.drained) is the turn the just-finished turn intentionally
     // started next; it must bypass this gate (it re-registers its own inFlight and clears the
     // `draining` guard synchronously at its top). Every other caller treats a live turn OR an
@@ -157,14 +243,24 @@ export class TurnQueue {
             text: params.text,
             enqueuedAt: new Date().toISOString(),
             senderId: params.senderId,
+            executionContext: {
+              chatKey: params.chatKey,
+              sessionAlias: params.sessionAlias,
+              ...(params.boundSessionAlias ? { boundSessionAlias: params.boundSessionAlias } : {}),
+            },
+            concurrencyKey: params.concurrencyKey,
+            isPeerMessage: params.isPeerMessage,
+            allowRestoreArchived: params.allowRestoreArchived,
             ...(params.isOwner !== undefined ? { isOwner: params.isOwner } : {}),
+            ...(params.preserveCoordinatorRoute !== undefined ? { preserveCoordinatorRoute: params.preserveCoordinatorRoute } : {}),
             ...(params.accountId !== undefined ? { accountId: params.accountId } : {}),
             ...(params.media !== undefined ? { media: params.media } : {}),
+            ...(params.agentMentions !== undefined ? { agentMentions: params.agentMentions } : {}),
             ...(params.promptRequestId !== undefined ? { promptRequestId: params.promptRequestId } : {}),
           };
           q.push(item);
           this.queues.set(key, q);
-          this.emitQueueUpdated(params.chatKey, params.sessionAlias);
+          this.emitQueueUpdated(params.chatKey, params.sessionAlias, key);
           return { ok: true, queued: true, queueItemId: id };
         }
         // Not queueable (e.g. a scheduled turn) — reject right away.
@@ -232,32 +328,37 @@ export class TurnQueue {
       const t = idleTimer as { unref?: () => void };
       if (typeof t.unref === "function") t.unref();
     };
+    armIdle();
     const onActivity = () => {
       if (idleMs <= 0 || watchdogFired || controller.signal.aborted) return;
       if (idleTimer) this.clearTimer(idleTimer);
       armIdle();
     };
-    armIdle();
     let result: TurnResult | undefined;
     try {
       result = await this.deps.runTurn(
         {
           chatKey: params.chatKey,
           sessionAlias: params.sessionAlias,
+          boundSessionAlias: params.boundSessionAlias,
           text: params.text,
           senderId: params.senderId,
-          ...(params.isOwner !== undefined ? { isOwner: params.isOwner } : {}),
-          ...(params.accountId !== undefined ? { accountId: params.accountId } : {}),
-          ...(params.turnStarted ? { turnStarted: params.turnStarted } : {}),
-          ...(params.media !== undefined ? { media: params.media } : {}),
+          isOwner: params.isOwner,
+          accountId: params.accountId,
+          turnStarted: params.turnStarted,
+          media: params.media,
+          agentMentions: params.agentMentions,
+          allowRestoreArchived: params.allowRestoreArchived,
+          preserveCoordinatorRoute: params.preserveCoordinatorRoute,
         },
         controller.signal,
         onActivity,
       );
+    } catch (error) {
+      result = { ok: false, errorMessage: String(error) };
     } finally {
       if (idleTimer) this.clearTimer(idleTimer);
       // If a queued head is waiting, mark `draining` synchronously NOW — before the slot is
-      // handed off, and before the awaited post-turn detection below — so nothing starts a
       // parallel turn during the release→drain window, even for an *aborted* turn whose
       // lingering inFlight entry no longer reads as busy. This is the single writer of the
       // hand-off guard; advanceQueue (called synchronously below) relies on it already being
@@ -282,7 +383,7 @@ export class TurnQueue {
       // Single decision point (shared whether the run failed at useSession or at the chat
       // drive): start the next queued head as the drained turn while holding the slot, or
       // release inFlight if empty.
-      this.advanceQueue(key, params.chatKey, params.sessionAlias);
+      this.advanceQueue(key);
     }
     // Strip the internal postTurnDetection so the return value stays exactly
     // {ok, text?, errorMessage?} — the golden fixtures record this return value.
@@ -299,7 +400,7 @@ export class TurnQueue {
   // added BEFORE the fire-and-forget drained `submit`, whose `inFlight.set` runs synchronously
   // before its first await — so there is no window in which an incoming submission could
   // observe a not-busy session between the ended turn and the drained turn.
-  private advanceQueue(key: string, chatKey: string, sessionAlias: string): void {
+  private advanceQueue(key: string): void {
     const q = this.queues.get(key);
     const next = q?.shift();
     if (q && q.length === 0) this.queues.delete(key);
@@ -311,23 +412,37 @@ export class TurnQueue {
       // than starting a parallel turn — pinned by turn-queue.test.ts "a submit arriving during
       // the drain hand-off enqueues (no parallel turn)".
       // The head was already popped above; emit the shorter snapshot.
-      this.emitQueueUpdated(chatKey, sessionAlias);
+      this.emitQueueUpdated(
+        next.executionContext.chatKey,
+        next.executionContext.sessionAlias,
+        key,
+      );
       // Fire-and-forget: the drained turn drives its own settled lifecycle. It bypasses the
       // busy gate (drained: true), re-registers inFlight and clears `draining` at its top — all
       // synchronously before the first await — so there is no parallel-turn window. The
       // prompt and queueItemId let web clients associate the optimistic enqueue-time bubble
       // with this execution-time event without guessing by message text.
+      const concurrencyKey = next.concurrencyKey ?? key;
+      const turnStarted = next.isPeerMessage
+        ? { queueItemId: next.id, ...(next.promptRequestId !== undefined ? { promptRequestId: next.promptRequestId } : {}) }
+        : { prompt: next.text, queueItemId: next.id, ...(next.promptRequestId !== undefined ? { promptRequestId: next.promptRequestId } : {}) };
       void this.submit({
-        chatKey,
-        sessionAlias,
+        chatKey: next.executionContext.chatKey,
+        sessionAlias: next.executionContext.sessionAlias,
+        boundSessionAlias: next.executionContext.boundSessionAlias,
+        concurrencyKey,
         text: next.text,
         senderId: next.senderId,
         queueable: true,
         drained: true,
+        isPeerMessage: next.isPeerMessage,
+        allowRestoreArchived: next.allowRestoreArchived,
+        preserveCoordinatorRoute: next.preserveCoordinatorRoute,
         ...(next.isOwner !== undefined ? { isOwner: next.isOwner } : {}),
         ...(next.accountId !== undefined ? { accountId: next.accountId } : {}),
         ...(next.media !== undefined ? { media: next.media } : {}),
-        turnStarted: { prompt: next.text, queueItemId: next.id, ...(next.promptRequestId !== undefined ? { promptRequestId: next.promptRequestId } : {}) },
+        ...(next.agentMentions !== undefined ? { agentMentions: next.agentMentions } : {}),
+        turnStarted,
       });
     } else {
       // The queue emptied during the drain hand-off (e.g. a cancel removed the only queued
@@ -340,8 +455,9 @@ export class TurnQueue {
     }
   }
 
-  cancelTurn(chatKey: string, sessionAlias: string): boolean {
-    const entry = this.inFlight.get(turnKey(chatKey, sessionAlias));
+  cancelTurn(chatKey: string, sessionAlias: string, concurrencyKey?: string): boolean {
+    const key = this.resolveKey(chatKey, sessionAlias, concurrencyKey);
+    const entry = this.inFlight.get(key);
     if (!entry) {
       return false;
     }
@@ -365,11 +481,11 @@ export class TurnQueue {
    *  On `cleared: true` it arms a teardown guard (the busy gate now rejects new turns for this
    *  session) so a scheduled turn cannot cold-start during the caller's transport teardown. The
    *  caller MUST call `finishClear` once teardown settles (success or failure) to release it. */
-  async clearSession(chatKey: string, sessionAlias: string): Promise<{ cleared: boolean }> {
-    const key = turnKey(chatKey, sessionAlias);
+  async clearSession(chatKey: string, sessionAlias: string, concurrencyKey?: string): Promise<{ cleared: boolean }> {
+    const key = this.resolveKey(chatKey, sessionAlias, concurrencyKey);
     // queues never holds empty arrays, so a successful delete means items were dropped.
     if (this.queues.delete(key)) {
-      this.emitQueueUpdated(chatKey, sessionAlias);
+      this.emitQueueUpdated(chatKey, sessionAlias, key);
     }
     const entry = this.inFlight.get(key);
     if (entry) {
@@ -378,7 +494,7 @@ export class TurnQueue {
       // The await is a window: new prompts may have enqueued (behind the aborted-but-live
       // turn) — drop those too so nothing drains later.
       if (this.queues.delete(key)) {
-        this.emitQueueUpdated(chatKey, sessionAlias);
+        this.emitQueueUpdated(chatKey, sessionAlias, key);
       }
     }
     // Re-check rather than trusting the race: `inFlight` still present means the turn
@@ -395,23 +511,23 @@ export class TurnQueue {
   /** Release the teardown guard armed by a successful `clearSession`. MUST be called by the
    *  caller once transport removal/archive settles (in a finally), whether it succeeded or
    *  threw — otherwise the session key stays wedged as busy forever. */
-  finishClear(chatKey: string, sessionAlias: string): void {
-    this.removing.delete(turnKey(chatKey, sessionAlias));
+  finishClear(chatKey: string, sessionAlias: string, concurrencyKey?: string): void {
+    this.removing.delete(this.resolveKey(chatKey, sessionAlias, concurrencyKey));
   }
 
   /** Remove a pending queued prompt (by id) before it drains. No-ops (returns
    *  `{ cancelled: false }`) when the queue or the id is absent/already drained — e.g. a race
    *  where the item drained into a running turn just before the cancel arrived. Does NOT touch
    *  a turn that is already running (use `cancelTurn`). */
-  cancelQueuedItem(chatKey: string, sessionAlias: string, itemId: string): { cancelled: boolean } {
-    const key = turnKey(chatKey, sessionAlias);
+  cancelQueuedItem(chatKey: string, sessionAlias: string, itemId: string, concurrencyKey?: string): { cancelled: boolean } {
+    const key = this.resolveKey(chatKey, sessionAlias, concurrencyKey);
     const q = this.queues.get(key);
     if (!q) return { cancelled: false };
     const i = q.findIndex((x) => x.id === itemId);
     if (i < 0) return { cancelled: false };
     q.splice(i, 1);
     if (q.length === 0) this.queues.delete(key);
-    this.emitQueueUpdated(chatKey, sessionAlias);
+    this.emitQueueUpdated(chatKey, sessionAlias, key);
     return { cancelled: true };
   }
 }

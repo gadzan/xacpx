@@ -83,6 +83,15 @@ export class RelayAgentMessageRoute {
           requestedMode: message.requestedMode,
           replyTo: message.replyTo,
         });
+        if (res && typeof res === "object" && "errorCode" in res && res.errorCode) {
+          const code = isAgentMessagingErrorCode(res.errorCode) ? res.errorCode : "DELIVERY_FAILED";
+          throw new AgentMessagingError(code, String(res.errorCode));
+        }
+        if (res && typeof res === "object" && "error" in res && res.error) {
+          const errPayload = (res as { error: { code?: string; message?: string } }).error;
+          const code = isAgentMessagingErrorCode(errPayload.code) ? errPayload.code : "DELIVERY_FAILED";
+          throw new AgentMessagingError(code, errPayload.message || errPayload.code || "DELIVERY_FAILED");
+        }
         return {
           messageId: res.messageId,
           status: res.status,
@@ -93,9 +102,6 @@ export class RelayAgentMessageRoute {
         };
       } catch (err) {
         lastError = err;
-        // Only AMBIGUOUS network failures are retried. Typed business failures
-        // (TARGET_NODE_OFFLINE, DELIVERY_DENIED, ...) would fail identically on
-        // the next attempt — retrying them only adds latency and duplicate load.
         if (!isAmbiguousDeliveryError(err) || attempt >= maxAttempts) {
           break;
         }
@@ -104,10 +110,13 @@ export class RelayAgentMessageRoute {
     }
     const err = lastError;
     if (err instanceof AgentMessagingError) throw err;
+    const rawCode = (err as Error & { code?: string }).code;
     const errorMessage = err instanceof Error ? err.message : String(err);
-    const code = isAgentMessagingErrorCode(errorMessage)
-      ? errorMessage
-      : "DELIVERY_FAILED";
+    const code = isAgentMessagingErrorCode(rawCode)
+      ? rawCode
+      : isAgentMessagingErrorCode(errorMessage)
+        ? errorMessage
+        : "DELIVERY_FAILED";
     throw new AgentMessagingError(code, errorMessage);
   }
 }

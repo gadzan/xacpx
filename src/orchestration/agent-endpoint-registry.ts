@@ -1,4 +1,5 @@
 import type { AppState, LogicalSession } from "../state/types";
+import { toDisplaySessionAlias } from "../channels/channel-scope";
 import {
   sameCoordinatorSession,
   stableCoordinatorSession,
@@ -10,6 +11,7 @@ import type {
   AgentCapabilities,
   AgentEndpointView,
   AgentSenderBinding,
+  AgentTargetSelector,
 } from "./agent-messaging-types";
 import {
   isAttentionRequiredTask,
@@ -35,6 +37,10 @@ export interface ResolvedAgentIdentity {
   address: AgentAddress;
   coordinatorSession: string;
   receive: boolean;
+  sessionAlias?: string;
+  displayName?: string;
+  agent?: string;
+  workspace?: string;
 }
 
 export interface ResolvedAgentEndpoint {
@@ -49,6 +55,7 @@ export class AgentEndpointRegistry {
     private readonly deps: {
       nodeId: string;
       loadState: () => Promise<AppState>;
+      isSessionActive?: (internalAlias: string) => boolean;
     },
   ) {}
   updateRemoteEndpoints(nodeId: string, endpoints: AgentEndpointView[]): void {
@@ -178,9 +185,12 @@ export class AgentEndpointRegistry {
           address: { nodeId: this.deps.nodeId, endpointId },
           coordinatorSession,
           receive: true,
+          sessionAlias: sourceHandle,
+          displayName: worker.role || worker.targetAgent,
+          agent: worker.targetAgent,
+          workspace: worker.workspace,
         };
       }
-
       const external =
         state.orchestration.externalCoordinators[coordinatorSession];
       if (external && sourceHandle === coordinatorSession) {
@@ -191,6 +201,7 @@ export class AgentEndpointRegistry {
           },
           coordinatorSession,
           receive: false,
+          sessionAlias: coordinatorSession,
         };
       }
 
@@ -209,20 +220,25 @@ export class AgentEndpointRegistry {
         },
         coordinatorSession,
         receive: true,
+        sessionAlias: logical.alias,
+        displayName: logical.display_name || logical.alias,
+        agent: logical.agent,
+        workspace: logical.workspace,
       };
     }
 
     const external =
       state.orchestration.externalCoordinators[coordinatorSession];
     if (external) {
-      return {
-        address: {
-          nodeId: this.deps.nodeId,
-          endpointId: requireEndpointId(external.agentEndpointId),
-        },
-        coordinatorSession,
-        receive: false,
-      };
+        return {
+          address: {
+            nodeId: this.deps.nodeId,
+            endpointId: requireEndpointId(external.agentEndpointId),
+          },
+          coordinatorSession,
+          receive: false,
+          sessionAlias: coordinatorSession,
+        };
     }
 
     throw new AgentMessagingError(
@@ -294,6 +310,128 @@ export class AgentEndpointRegistry {
     }
     return target;
   }
+  async resolveTargetByHandle(
+    handle: string,
+  ): Promise<AgentEndpointView | null> {
+    const address = decodeAgentHandle(handle);
+    if (!address) {
+      return null;
+    }
+
+    if (address.nodeId !== this.deps.nodeId) {
+      const remoteList = this.remoteEndpoints.get(address.nodeId);
+      if (!remoteList) {
+        return null;
+      }
+      const match = remoteList.find(
+        (e) => e.address.endpointId === address.endpointId,
+      );
+      return match ?? null;
+    }
+
+    const state = await this.deps.loadState();
+    const target = this.listCandidates(state, "*").find((candidate) =>
+      sameAddress(candidate.endpoint.address, address),
+    );
+    return target?.endpoint ?? null;
+  }
+  async resolveSelector(
+    sender: AgentSenderBinding | ResolvedAgentIdentity,
+    selector: AgentTargetSelector,
+  ): Promise<ResolvedAgentEndpoint> {
+    const senderIdentity =
+      "address" in sender
+        ? sender
+        : await this.resolveSender(sender);
+
+    const state = await this.deps.loadState();
+    const localCandidates = this.listCandidates(
+      state,
+      senderIdentity.coordinatorSession,
+    ).filter(
+      (candidate) =>
+        !sameAddress(candidate.endpoint.address, senderIdentity.address),
+    );
+
+    const remoteCandidates: ResolvedAgentEndpoint[] = [];
+    for (const [nodeId, list] of this.remoteEndpoints) {
+      if (nodeId !== this.deps.nodeId) {
+        for (const endpoint of list) {
+          remoteCandidates.push({
+            endpoint,
+            runtime: { kind: "remote" as const },
+          });
+        }
+      }
+    }
+
+    const candidates = [...localCandidates, ...remoteCandidates];
+
+    const displayNameFilter = selector.displayName?.trim().toLowerCase();
+    const workspaceFilter = selector.workspace?.trim().toLowerCase();
+    const agentFilter = selector.agent?.trim().toLowerCase();
+
+    if (!displayNameFilter && !workspaceFilter && !agentFilter) {
+      throw new AgentMessagingError(
+        "TARGET_NOT_FOUND",
+        "Target selector must specify at least one criterion (displayName, workspace, or agent).",
+      );
+    }
+    const matches = candidates.filter((candidate) => {
+      if (displayNameFilter) {
+        const candDisplayName = candidate.endpoint.displayName
+          ?.trim()
+          .toLowerCase();
+        const candAlias =
+          candidate.runtime.kind === "logical"
+            ? candidate.runtime.alias?.trim().toLowerCase()
+            : undefined;
+        if (
+          candDisplayName !== displayNameFilter &&
+          candAlias !== displayNameFilter
+        ) {
+          return false;
+        }
+      }
+      if (workspaceFilter) {
+        const candWorkspace = candidate.endpoint.workspace
+          ?.trim()
+          .toLowerCase();
+        if (candWorkspace !== workspaceFilter) {
+          return false;
+        }
+      }
+      if (agentFilter) {
+        const candAgent = candidate.endpoint.agent?.trim().toLowerCase();
+        if (candAgent !== agentFilter) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    if (matches.length === 0) {
+      throw new AgentMessagingError(
+        "TARGET_NOT_FOUND",
+        `No reachable agent matched the provided selector: ${JSON.stringify(selector)}.`,
+      );
+    }
+
+    if (matches.length === 1) {
+      return matches[0]!;
+    }
+
+    const candidateList = matches
+      .map(
+        (m) =>
+          `${m.endpoint.displayName ?? m.endpoint.agent} (${m.endpoint.handle})`,
+      )
+      .join(", ");
+    throw new AgentMessagingError(
+      "TARGET_AMBIGUOUS",
+      `Target selector matched ${matches.length} candidate endpoints: ${candidateList}. Please use a more specific selector or exact handle.`,
+    );
+  }
 
   async resolveLocalTargetByEndpointId(
     endpointId: string,
@@ -310,26 +448,22 @@ export class AgentEndpointRegistry {
     }
     return match;
   }
+
   private listCandidates(
     state: AppState,
     coordinatorSession: string,
   ): ResolvedAgentEndpoint[] {
     const candidates: ResolvedAgentEndpoint[] = [];
     const all = coordinatorSession === "*";
-    if (all) {
+    const isExternal = Boolean(
+      !all && state.orchestration.externalCoordinators[coordinatorSession],
+    );
+
+    if (all || !isExternal) {
       for (const logical of Object.values(state.sessions)) {
-        candidates.push({
-          endpoint: this.toLogicalEndpoint(logical),
-          runtime: {
-            kind: "logical",
-            alias: logical.alias,
-            transportSession: logical.transport_session,
-          },
-        });
-      }
-    } else {
-      const logical = findLogicalSession(state, coordinatorSession);
-      if (logical) {
+        if (logical.archived === true) {
+          continue;
+        }
         candidates.push({
           endpoint: this.toLogicalEndpoint(logical),
           runtime: {
@@ -340,7 +474,6 @@ export class AgentEndpointRegistry {
         });
       }
     }
-
     for (const [workerSession, worker] of Object.entries(
       state.orchestration.workerBindings,
     )) {
@@ -390,7 +523,9 @@ export class AgentEndpointRegistry {
       nodeId: this.deps.nodeId,
       endpointId: session.logical_session_id,
     };
-    const displayName = session.display_name || session.alias;
+    const displayName =
+      session.display_name || toDisplaySessionAlias(session.alias);
+    const isRunning = this.deps.isSessionActive?.(session.alias) ?? false;
     return {
       address,
       handle: encodeAgentHandle(address),
@@ -398,9 +533,9 @@ export class AgentEndpointRegistry {
       agent: session.agent,
       workspace: session.workspace,
       displayName,
-      state: "idle",
+      state: isRunning ? "running" : "idle",
       activity: {
-        status: "idle",
+        status: isRunning ? "working" : "idle",
       },
       capabilities: queueOnlyCapabilities(),
     };
@@ -462,8 +597,10 @@ function findLogicalSession(
   coordinatorSession: string,
 ): LogicalSession | undefined {
   return Object.values(state.sessions)
-    .filter((session) =>
-      sameCoordinatorSession(session.transport_session, coordinatorSession),
+    .filter(
+      (session) =>
+        session.archived !== true &&
+        sameCoordinatorSession(session.transport_session, coordinatorSession),
     )
     .sort((left, right) => left.alias.localeCompare(right.alias))[0];
 }

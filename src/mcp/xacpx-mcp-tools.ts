@@ -10,7 +10,10 @@ import {
   MAX_TASK_WATCH_TIMEOUT_MS,
 } from "../orchestration/task-watch-timeouts";
 import { isQuotaDeferredError } from "../weixin/messaging/quota-errors";
-import type { AgentMessagingErrorCode } from "../orchestration/agent-messaging-error";
+import {
+  type AgentMessagingErrorCode,
+  isAgentMessagingErrorCode,
+} from "../orchestration/agent-messaging-error";
 import { z } from "zod";
 
 const taskStatusSchema = z.enum([
@@ -30,22 +33,6 @@ const taskWatchModeSchema = z.enum([
   "until_attention_or_terminal",
 ]);
 const scheduledModeSchema = z.enum(["temp", "bound"]);
-const agentMessagingErrorCodes = new Set<AgentMessagingErrorCode>([
-  "TARGET_NOT_REACHABLE",
-  "TARGET_UNAVAILABLE",
-  "ROUTE_UNAVAILABLE",
-  "TARGET_NOT_RUNNING",
-  "TARGET_NOT_STEERABLE",
-  "TARGET_NOT_INTERRUPTIBLE",
-  "MESSAGE_TOO_LARGE",
-  "MESSAGE_QUEUE_FULL",
-  "MESSAGE_RATE_LIMITED",
-  "SELF_MESSAGE_NOT_ALLOWED",
-  "DELIVERY_RACE",
-  "DELIVERY_TIMEOUT",
-  "DELIVERY_FAILED",
-  "DELIVERY_DENIED",
-]);
 const taskQuestionSchema = z
   .object({
     taskId: z.string().min(1),
@@ -511,7 +498,33 @@ export function buildXacpxMcpToolRegistry(input: {
           to: z
             .string()
             .min(1)
+            .optional()
             .describe("Target opaque handle from agent_list"),
+          selector: z
+            .object({
+              displayName: z
+                .string()
+                .min(1)
+                .optional()
+                .describe("Target display name or alias"),
+              workspace: z
+                .string()
+                .min(1)
+                .optional()
+                .describe("Target workspace"),
+              agent: z
+                .string()
+                .min(1)
+                .optional()
+                .describe("Target agent type"),
+            })
+            .strict()
+            .refine(
+              (s) => Boolean(s.displayName || s.workspace || s.agent),
+              "Target selector must specify at least one criterion (displayName, workspace, or agent)",
+            )
+            .optional()
+            .describe("Target selector criteria when handle is not known"),
           message: z
             .string()
             .min(1)
@@ -526,11 +539,24 @@ export function buildXacpxMcpToolRegistry(input: {
             .optional()
             .describe("Message ID being replied to, if continuing a thread"),
         })
-        .strict(),
+        .strict()
+        .refine(
+          (data) =>
+            (data.to !== undefined && data.selector === undefined) ||
+            (data.to === undefined && data.selector !== undefined),
+          {
+            message: "Exactly one of 'to' or 'selector' must be specified.",
+          },
+        ),
       handler: async (args) =>
         await asToolResult(async () => {
           const input = args as {
-            to: string;
+            to?: string;
+            selector?: {
+              displayName?: string;
+              workspace?: string;
+              agent?: string;
+            };
             message: string;
             mode?: "auto" | "steer" | "queue" | "interrupt";
             replyTo?: string;
@@ -703,13 +729,10 @@ function getAgentMessagingError(
     return null;
   }
   const code = (error as Error & { code?: unknown }).code;
-  if (
-    typeof code !== "string" ||
-    !agentMessagingErrorCodes.has(code as AgentMessagingErrorCode)
-  ) {
+  if (!isAgentMessagingErrorCode(code)) {
     return null;
   }
-  return { code: code as AgentMessagingErrorCode, message: error.message };
+  return { code, message: error.message };
 }
 
 function renderTaskWatchResult(result: {

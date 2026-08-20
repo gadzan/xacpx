@@ -3,7 +3,15 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { randomUUID } from "node:crypto";
 
-import { isErrorPayload, MSG, parseControlPayload, type LiveTurnSnapshotDto, type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto } from "@ganglion/xacpx-relay-protocol";
+import {
+  isErrorPayload,
+  MSG,
+  parseControlPayload,
+  type LiveTurnSnapshotDto,
+  type PublishedAgentEndpointDto,
+  type SessionCommandsSnapshotDto,
+  type SessionUsageSnapshotDto,
+} from "@ganglion/xacpx-relay-protocol";
 
 import type { AccountRow, AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
@@ -16,6 +24,7 @@ import { readRelayVersion, type UpdateCheck } from "../version.js";
 export interface GatewayForApp {
   isOnline(instanceId: string): boolean;
   sendRequest(instanceId: string, type: string, payload: unknown): Promise<unknown>;
+  getPublishedEndpoints(accountId: string): PublishedAgentEndpointDto[];
 }
 
 export interface AppDeps {
@@ -430,6 +439,11 @@ export function createApp(deps: AppDeps): Hono<Vars> {
     const account = c.get("account");
     const removed = deps.instances.remove(c.req.param("id"), account.id);
     return removed ? c.json({ ok: true }) : c.json({ error: "not-found" }, 404);
+  });
+  app.get("/api/agent-directory", (c) => {
+    const account = c.get("account");
+    const endpoints = deps.gateway.getPublishedEndpoints(account.id);
+    return c.json({ endpoints });
   });
 
   // In-flight turns across all of the account's instances, so a refreshed web client

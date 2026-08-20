@@ -9,14 +9,24 @@ import UsagePopover from "./UsagePopover.vue";
 import { useComposerStore } from "../stores/composer";
 import { useSessionControlsStore } from "../stores/session-controls";
 import { useChatStore } from "../stores/chat";
+import { useInstancesStore } from "../stores/instances";
 import { formatModelLabel } from "../lib/model-label";
 
 const props = defineProps<{ busy?: boolean; draftKey?: string; instanceId?: string | null; sessionAlias?: string | null }>();
-const emit = defineEmits<{ send: [text: string, media: PromptAttachmentRef[]]; cancel: [] }>();
+const emit = defineEmits<{
+  send: [
+    text: string,
+    media: PromptAttachmentRef[],
+    agentMentions?: Array<{ range: [number, number]; handle: string }>,
+  ];
+  cancel: [];
+}>();
 
 const composer = useComposerStore();
 const controls = useSessionControlsStore();
 const chat = useChatStore();
+const instancesStore = useInstancesStore();
+
 
 // Context-usage meter (ACP usage_update) for the current session. Null when the agent
 // doesn't report it (e.g. codex) or the window is unknown — the chip then hides.
@@ -147,6 +157,117 @@ function pickCommand(name: string) {
   void nextTick(() => textarea.value?.focus());
 }
 
+interface AgentMentionItem {
+  handle: string;
+  displayName: string;
+  agent: string;
+  workspace?: string;
+  nodeId: string;
+  endpointId: string;
+}
+
+const availableAgents = computed<AgentMentionItem[]>(() => {
+  return instancesStore.agentDirectory.map((ep) => ({
+    handle: `agent:${ep.nodeId}:${ep.endpointId}`,
+    displayName: ep.displayName || ep.agent,
+    agent: ep.agent,
+    workspace: ep.workspace,
+    nodeId: ep.nodeId,
+    endpointId: ep.endpointId,
+  }));
+});
+
+const mentionMenuOpen = ref(false);
+const mentionActiveIdx = ref(0);
+const mentionQuery = ref<string | null>(null);
+const mentionCursorPos = ref(0);
+const mentionStartPos = ref(-1);
+interface BoundMention {
+  handle: string;
+  displayName: string;
+  start: number;
+  end: number;
+}
+const recordedMentions = ref<BoundMention[]>([]);
+function updateMentionState() {
+  const el = textarea.value;
+  if (!el) {
+    mentionMenuOpen.value = false;
+    return;
+  }
+  const pos = el.selectionStart ?? 0;
+  mentionCursorPos.value = pos;
+  const beforeCursor = text.value.slice(0, pos);
+  const lastAtIdx = beforeCursor.lastIndexOf("@");
+  if (lastAtIdx === -1) {
+    mentionMenuOpen.value = false;
+    mentionQuery.value = null;
+    mentionStartPos.value = -1;
+    return;
+  }
+  if (lastAtIdx > 0 && !/[\s(]/.test(beforeCursor[lastAtIdx - 1]!)) {
+    mentionMenuOpen.value = false;
+    mentionQuery.value = null;
+    mentionStartPos.value = -1;
+    return;
+  }
+  const query = beforeCursor.slice(lastAtIdx + 1);
+  if (/[\s\n]/.test(query)) {
+    mentionMenuOpen.value = false;
+    mentionQuery.value = null;
+    mentionStartPos.value = -1;
+    return;
+  }
+  mentionStartPos.value = lastAtIdx;
+  mentionQuery.value = query.toLowerCase();
+}
+
+const mentionMatches = computed(() => {
+  if (mentionQuery.value === null) return [];
+  const q = mentionQuery.value;
+  return availableAgents.value
+    .filter((a) => {
+      return (
+        a.displayName.toLowerCase().includes(q) ||
+        a.agent.toLowerCase().includes(q) ||
+        (a.workspace && a.workspace.toLowerCase().includes(q))
+      );
+    })
+    .slice(0, 8);
+});
+
+watch(mentionMatches, (m) => {
+  mentionMenuOpen.value = m.length > 0 && mentionQuery.value !== null;
+  mentionActiveIdx.value = 0;
+});
+
+function pickMention(agentItem: AgentMentionItem) {
+  if (mentionStartPos.value < 0) return;
+  const before = text.value.slice(0, mentionStartPos.value);
+  const after = text.value.slice(mentionCursorPos.value);
+  const targetToken = `@${agentItem.displayName}`;
+  const insertion = `${targetToken} `;
+  const start = mentionStartPos.value;
+  const end = start + targetToken.length;
+  text.value = before + insertion + after;
+  recordedMentions.value.push({
+    handle: agentItem.handle,
+    displayName: agentItem.displayName,
+    start,
+    end,
+  });
+  mentionMenuOpen.value = false;
+  mentionQuery.value = null;
+  mentionStartPos.value = -1;
+  void nextTick(() => {
+    if (textarea.value) {
+      textarea.value.focus();
+      const newPos = before.length + insertion.length;
+      textarea.value.setSelectionRange(newPos, newPos);
+    }
+  });
+}
+
 function openPicker() {
   fileInput.value?.click();
 }
@@ -241,11 +362,39 @@ function submit() {
     size: p.size,
     ...(p.previewUrl ? { previewUrl: p.previewUrl } : {}),
   }));
-  emit("send", value, media);
+
+  const rawText = text.value;
+  const mentions: Array<{ range: [number, number]; handle: string }> = [];
+  const seenRanges = new Set<string>();
+
+  for (const item of recordedMentions.value) {
+    const targetToken = `@${item.displayName}`;
+    if (rawText.slice(item.start, item.start + targetToken.length) === targetToken) {
+      const key = `${item.start}:${item.handle}`;
+      if (!seenRanges.has(key)) {
+        seenRanges.add(key);
+        mentions.push({
+          range: [item.start, item.start + targetToken.length],
+          handle: item.handle,
+        });
+      }
+    }
+  }
+
+  mentions.sort((a, b) => a.range[0] - b.range[0]);
+
+  if (mentions.length > 0) {
+    emit("send", value, media, mentions);
+  } else {
+    emit("send", value, media);
+  }
   composer.clearAttachments();
+  recordedMentions.value = [];
   if (value && history.value[history.value.length - 1] !== value) history.value.push(value);
   historyIdx = -1;
   text.value = "";
+  mentionMenuOpen.value = false;
+  mentionQuery.value = null;
 }
 
 function recallHistory(dir: -1 | 1) {
@@ -264,6 +413,30 @@ function onKeydown(e: KeyboardEvent) {
   // IME guard: never intercept keys mid-composition (CJK input) — Enter here confirms
   // the candidate, it must not submit. `isComposing` covers all input engines.
   if (e.isComposing) return;
+  // Mention autocomplete takes keys while menu is open
+  if (mentionMenuOpen.value && mentionMatches.value.length > 0) {
+    if (e.key === "ArrowDown") {
+      mentionActiveIdx.value = (mentionActiveIdx.value + 1) % mentionMatches.value.length;
+      e.preventDefault();
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      mentionActiveIdx.value = (mentionActiveIdx.value - 1 + mentionMatches.value.length) % mentionMatches.value.length;
+      e.preventDefault();
+      return;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      const m = mentionMatches.value[mentionActiveIdx.value];
+      if (m) pickMention(m);
+      e.preventDefault();
+      return;
+    }
+    if (e.key === "Escape") {
+      mentionMenuOpen.value = false;
+      e.preventDefault();
+      return;
+    }
+  }
   // Command autocomplete takes the arrow/enter/tab/esc keys while its menu is open.
   if (cmdMenuOpen.value && cmdMatches.value.length > 0) {
     if (e.key === "ArrowDown") { cmdActiveIdx.value = (cmdActiveIdx.value + 1) % cmdMatches.value.length; e.preventDefault(); return; }
@@ -285,6 +458,7 @@ function onKeydown(e: KeyboardEvent) {
 
 function onInput() {
   historyIdx = -1;
+  updateMentionState();
 }
 </script>
 
@@ -329,6 +503,7 @@ function onInput() {
       </span>
       <!-- Agent slash-command autocomplete: floats above the composer card (bottom-full)
            so it never grows the input box; pinned to the card's horizontal edges. -->
+      <!-- Agent slash-command autocomplete -->
       <ul v-if="cmdMenuOpen && cmdMatches.length" data-test="cmd-menu" role="listbox"
           class="absolute bottom-full inset-x-2.5 z-20 mb-2 max-h-56 overflow-auto rounded-md border border-border bg-raised py-1 shadow-e2">
         <li v-for="(c, i) in cmdMatches" :key="c.name"
@@ -341,6 +516,29 @@ function onInput() {
           <span v-if="c.description" class="truncate text-fg-muted">{{ c.description }}</span>
         </li>
       </ul>
+      <!-- Agent @ mention autocomplete: floats above the composer card -->
+      <ul v-if="mentionMenuOpen && mentionMatches.length" data-test="mention-menu" role="listbox"
+          class="absolute bottom-full inset-x-2.5 z-20 mb-2 max-h-56 overflow-auto rounded-md border border-border bg-raised py-1 shadow-e2">
+        <li v-for="(agentItem, i) in mentionMatches" :key="agentItem.handle"
+            data-test="mention-item" role="option" :aria-selected="i === mentionActiveIdx"
+            class="flex cursor-pointer items-center justify-between gap-2 px-3 py-1.5 text-[13px]"
+            :class="i === mentionActiveIdx ? 'bg-accent/10' : ''"
+            @mousedown.prevent="pickMention(agentItem)"
+            @mouseenter="mentionActiveIdx = i">
+          <div class="flex min-w-0 items-center gap-2">
+            <span class="font-semibold text-accent">@{{ agentItem.displayName }}</span>
+            <span class="inline-flex items-center gap-1 rounded border border-border bg-surface px-1.5 py-0.5 text-[11px] text-fg-muted">
+              {{ agentItem.agent }}
+            </span>
+            <span v-if="agentItem.workspace" class="truncate text-[11px] text-fg-muted">
+              {{ agentItem.workspace }}
+            </span>
+          </div>
+          <span v-if="agentItem.nodeId" class="shrink-0 text-[11px] text-fg-muted">
+            {{ agentItem.nodeId }}
+          </span>
+        </li>
+      </ul>
       <!-- Stays enabled while busy: sending here queues server-side (no client-side
            blocking) and Esc still cancels the in-flight turn. -->
       <textarea ref="textarea" v-model="text" rows="2"
@@ -348,6 +546,8 @@ function onInput() {
                 :style="isDesktop ? { height: composerHeight + 'px' } : undefined"
                 :placeholder='busy ? $t("chat.working") : $t("chat.message")'
                 @input="onInput"
+                @click="updateMentionState"
+                @keyup="updateMentionState"
                 @keydown="onKeydown"
                 @paste="onPaste" />
       <div class="flex items-center justify-between gap-2 px-2.5 pb-2.5 pt-0.5">

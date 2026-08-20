@@ -8,9 +8,19 @@ export interface QueuedPrompt {
   text: string;
   enqueuedAt: string;
   senderId: string;
+  executionContext: {
+    chatKey: string;
+    sessionAlias: string;
+    boundSessionAlias?: string;
+  };
   isOwner?: boolean;
   accountId?: string;
   media?: PromptAttachmentRef[];
+  agentMentions?: Array<{ range: [number, number]; handle: string }>;
+  concurrencyKey?: string;
+  isPeerMessage?: boolean;
+  allowRestoreArchived?: boolean;
+  preserveCoordinatorRoute?: boolean;
   /** Hub-issued pre-write correlation (see PromptPayload.promptRequestId); carried
    *  onto the drained turn-started so the hub can tie the queue item back to the
    *  pre-written inbound row even if the queued RPC response was lost. */
@@ -66,11 +76,18 @@ export function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function buildControlMetadata(senderId: string, isOwner: boolean | undefined): ChatRequestMetadata {
+export function buildControlMetadata(
+  senderId: string,
+  isOwner: boolean | undefined,
+  boundSessionAlias?: string,
+  preserveCoordinatorRoute?: boolean,
+): ChatRequestMetadata {
   return {
     channel: "control",
     chatType: "direct",
     senderId,
     ...(isOwner === undefined ? {} : { isOwner }),
+    ...(boundSessionAlias ? { boundSessionAlias } : {}),
+    ...(preserveCoordinatorRoute ? { preserveCoordinatorRoute } : {}),
   };
 }

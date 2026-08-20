@@ -82,6 +82,11 @@ export interface ChatRequestMetadata {
   // current when the user sent it — not whatever current_session is now (the
   // user may have switched sessions while it waited on the per-session lane).
   boundSessionAlias?: string;
+  /**
+   * When true, this turn is an internal peer collaboration turn and MUST NOT
+   * overwrite the coordinator's recorded human return route context.
+   */
+  preserveCoordinatorRoute?: boolean;
 }
 
 export interface ChatResponse {

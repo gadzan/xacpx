@@ -55,3 +55,31 @@ test("deleteBySession removes only the targeted instance and alias history", asy
   expect(store.listBySession("a1", "i1", "other").messages.map((m) => m.text)).toEqual(["keep alias"]);
   expect(store.listBySession("a2", "i2", "backend").messages.map((m) => m.text)).toEqual(["keep instance"]);
 });
+
+test("append stores structured agentMessage metadata and custom createdAt", async () => {
+  const db = await freshDb();
+  const store = new MessageStore(db);
+  const agentMsg = {
+    kind: "agent_message" as const,
+    direction: "sent" as const,
+    messageId: "msg_abc",
+    conversationId: "conv_xyz",
+    peer: {
+      handle: "agent:node_b:worker_1",
+      displayName: "Backend Worker",
+      agent: "claude",
+      workspace: "server",
+    },
+    content: "Database schema updated.",
+    createdAt: 1771234567890,
+    status: "sent" as const,
+  };
+  const customIso = new Date(1771234567890).toISOString();
+  store.append("i1", "backend", "out", agentMsg.content, { agentMessage: agentMsg }, undefined, undefined, customIso);
+  const rows = store.listBySession("a1", "i1", "backend").messages;
+  expect(rows.length).toBe(1);
+  expect(rows[0]?.direction).toBe("out");
+  expect(rows[0]?.text).toBe("Database schema updated.");
+  expect(rows[0]?.createdAt).toBe(customIso);
+  expect(rows[0]?.structured?.agentMessage).toEqual(agentMsg);
+});

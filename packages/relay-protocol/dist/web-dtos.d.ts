@@ -1,5 +1,5 @@
 import { type RelayEnvelope } from "./envelope.js";
-import type { AgentCommandDto, ControlEventDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
+import type { AgentCommandDto, ControlEventDto, PeerMessageHistoryEntry, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
 import type { InstanceNoticePayload, TerminalRole } from "./messages.js";
 /** Envelope `type` for every relay→web push. */
 export declare const WEB_EVENT_TYPE = "web.event";
@@ -41,6 +41,7 @@ export interface MessageRecordDto {
         scheduled?: ScheduledOriginDto;
         truncated?: boolean;
         compact?: boolean;
+        agentMessage?: PeerMessageHistoryEntry;
     };
     attachments?: AttachmentMetadata[];
 }
@@ -111,6 +112,9 @@ export type WebServerEvent = {
     kind: "notice";
     instanceId: string;
     notice: InstanceNoticePayload;
+} | {
+    kind: "agent-directory";
+    endpoints: PublishedAgentEndpointDto[];
 } | {
     kind: "terminal-opened";
     requestId: string;

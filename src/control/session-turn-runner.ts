@@ -7,6 +7,7 @@ import { toErrorMessage, buildControlMetadata, TURN_IDLE_TIMEOUT_REASON } from "
 export interface TurnRequest {
   chatKey: string;
   sessionAlias: string;
+  boundSessionAlias?: string;
   text: string;
   senderId: string;
   isOwner?: boolean;
@@ -15,6 +16,9 @@ export interface TurnRequest {
   // is set only for a drained queue head so the web can reconcile the badge.
   turnStarted?: { prompt?: string; scheduled?: ScheduledOrigin; queueItemId?: string; promptRequestId?: string };
   media?: PromptAttachmentRef[];
+  agentMentions?: Array<{ range: [number, number]; handle: string }>;
+  allowRestoreArchived?: boolean;
+  preserveCoordinatorRoute?: boolean;
 }
 
 export interface TurnResult {
@@ -42,10 +46,100 @@ export interface TurnResult {
 //
 // Holds no concurrency state of its own — the inFlight/queues/draining lifecycle
 // lives in TurnQueue, which decides whether to call run() at all.
+export interface SessionTurnRunnerDeps
+  extends Pick<
+    ControlServiceDeps,
+    "agent" | "sessions" | "events" | "uploadStore" | "sessionWarmth"
+  > {
+  resolveAgentTarget?: (handle: string) => Promise<{
+    handle: string;
+    displayName?: string;
+    agent: string;
+    workspace?: string;
+  } | null>;
+  agentMessaging?: Pick<
+    NonNullable<ControlServiceDeps["agentMessaging"]>,
+    "resolveTargetByHandle" | "getPublishedEndpoints"
+  >;
+}
+
+export function disarmUserDirectiveTags(text: string): string {
+  return text
+    .replace(/<(\/?)xacpx-([^>]*)>/gi, "&lt;$1xacpx-$2&gt;")
+    .replace(/<(\/?)xacpx-/gi, "&lt;$1xacpx-");
+}
+
+export function buildCollaborationDirective(
+  targets: Array<{
+    handle: string;
+    displayName?: string;
+    agent: string;
+    workspace?: string;
+  }>,
+): string {
+  const targetXmls = targets.map((target) => {
+    const displayName = target.displayName || target.agent;
+    const workspace = target.workspace || "";
+    return [
+      "  <target",
+      `    handle="${escapeXmlAttribute(target.handle)}"`,
+      `    display-name="${escapeXmlAttribute(displayName)}"`,
+      `    agent="${escapeXmlAttribute(target.agent)}"`,
+      `    workspace="${escapeXmlAttribute(workspace)}"`,
+      "  />",
+      "  <instruction>",
+      `    The user explicitly directed to coordinate with @${escapeXmlAttribute(displayName)}.`,
+      "    Use the `agent_send` tool targeting this handle or selector.",
+      "  </instruction>",
+    ].join("\n");
+  });
+
+  return [
+    '<xacpx-collaboration-directive origin="xacpx-server">',
+    ...targetXmls,
+    "</xacpx-collaboration-directive>",
+  ].join("\n");
+}
+
+function escapeXmlAttribute(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 export class SessionTurnRunner {
-  constructor(
-    private readonly deps: Pick<ControlServiceDeps, "agent" | "sessions" | "events" | "uploadStore" | "sessionWarmth">,
-  ) {}
+  constructor(private readonly deps: SessionTurnRunnerDeps) {}
+
+  private async resolveMentionTarget(handle: string): Promise<{
+    handle: string;
+    displayName?: string;
+    agent: string;
+    workspace?: string;
+  } | null> {
+    if (this.deps.resolveAgentTarget) {
+      return await this.deps.resolveAgentTarget(handle);
+    }
+    if (this.deps.agentMessaging?.resolveTargetByHandle) {
+      return await this.deps.agentMessaging.resolveTargetByHandle(handle);
+    }
+    if (this.deps.agentMessaging?.getPublishedEndpoints) {
+      const endpoints = await this.deps.agentMessaging.getPublishedEndpoints();
+      const match = endpoints.find(
+        (e) => `agent:${e.nodeId}:${e.endpointId}` === handle,
+      );
+      if (match) {
+        return {
+          handle,
+          displayName: match.displayName,
+          agent: match.agent,
+          workspace: match.workspace,
+        };
+      }
+    }
+    return null;
+  }
 
   async run(req: TurnRequest, signal: AbortSignal, onActivity?: () => void): Promise<TurnResult> {
     // Sending to an archived session restores it (useSession clears `archived`), and
@@ -58,21 +152,28 @@ export class SessionTurnRunner {
     let wasArchived = false;
     let priorTransportSession: string | undefined;
     try {
-      internalAlias = await this.deps.sessions.resolveAliasForChat(req.chatKey, req.sessionAlias);
+      internalAlias =
+        req.boundSessionAlias ??
+        (await this.deps.sessions.resolveAliasForChat(req.chatKey, req.sessionAlias));
       const prior = await this.deps.sessions.getSession(internalAlias);
       wasArchived = prior?.archived === true;
       priorTransportSession = prior?.transportSession;
     } catch {
       /* best-effort: a detection failure just means no badge refresh */
     }
-    try {
-      await this.deps.sessions.useSession(req.chatKey, req.sessionAlias);
-    } catch (error) {
-      // This turn never really started, but it still holds the concurrency slot in
-      // ControlService. Just report the failure — the caller settles/advances the
-      // queue around this call so a transient bind failure on a *drained* head does
-      // not strand the items behind it.
-      return { ok: false, errorMessage: toErrorMessage(error) };
+    if (req.allowRestoreArchived === false && wasArchived) {
+      return { ok: false, errorMessage: "session-archived" };
+    }
+    if (!req.boundSessionAlias) {
+      try {
+        await this.deps.sessions.useSession(req.chatKey, req.sessionAlias);
+      } catch (error) {
+        // This turn never really started, but it still holds the concurrency slot in
+        // ControlService. Just report the failure — the caller settles/advances the
+        // queue around this call so a transient bind failure on a *drained* head does
+        // not strand the items behind it.
+        return { ok: false, errorMessage: toErrorMessage(error) };
+      }
     }
     if (wasArchived) {
       this.deps.events.emit({ type: "sessions-changed" });
@@ -153,12 +254,46 @@ export class SessionTurnRunner {
         messageId: ref.id,
       },
     }));
+    const disarmedUserText = disarmUserDirectiveTags(req.text);
+    let chatText = disarmedUserText;
+    if (req.agentMentions && req.agentMentions.length > 0) {
+      const resolvedTargets: Array<{
+        handle: string;
+        displayName?: string;
+        agent: string;
+        workspace?: string;
+      }> = [];
+      const seen = new Set<string>();
+      for (const mention of req.agentMentions) {
+        if (!mention.handle || seen.has(mention.handle)) continue;
+        seen.add(mention.handle);
+        try {
+          const target = await this.resolveMentionTarget(mention.handle);
+          if (target) {
+            resolvedTargets.push(target);
+          }
+        } catch {
+          // ignore lookup errors gracefully
+        }
+      }
+      if (resolvedTargets.length > 0) {
+        const directive = buildCollaborationDirective(resolvedTargets);
+        chatText = disarmedUserText
+          ? `${directive}\n\n<user-prompt>\n${disarmedUserText}\n</user-prompt>`
+          : directive;
+      }
+    }
     try {
       const response = await this.deps.agent.chat({
         accountId: req.accountId ?? "control",
         conversationId: req.chatKey,
-        text: req.text,
-        metadata: buildControlMetadata(req.senderId, req.isOwner),
+        text: chatText,
+        metadata: buildControlMetadata(
+          req.senderId,
+          req.isOwner,
+          req.boundSessionAlias,
+          req.preserveCoordinatorRoute,
+        ),
         abortSignal: signal,
         ...(chatMedia.length > 0 ? { media: chatMedia } : {}),
         reply: async (chunk) => {

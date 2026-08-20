@@ -6,6 +6,7 @@ import {
   type AgentCatalogEntryDto,
   type AgentDto,
   type NativeSessionDto,
+  type PublishedAgentEndpointDto,
   type SessionDto,
   type SessionModelResult,
   type WebServerEvent,
@@ -115,6 +116,17 @@ export function parseGroupArchivedKey(key: string): { mode: GroupArchivedMode; g
 }
 
 export const useInstancesStore = defineStore("instances", () => {
+  const agentDirectory = ref<PublishedAgentEndpointDto[]>([]);
+
+  async function loadAgentDirectory(): Promise<void> {
+    try {
+      const res = await api.get<{ endpoints: PublishedAgentEndpointDto[] }>("/api/agent-directory");
+      agentDirectory.value = res.endpoints ?? [];
+    } catch {
+      /* best effort */
+    }
+  }
+
   const instances = ref<InstanceView[]>([]);
   const pendingSessionRenames = new Map<string, {
     latestRevision: number;
@@ -203,6 +215,7 @@ export const useInstancesStore = defineStore("instances", () => {
         agentCatalog: prev?.agentCatalog ?? [],
       };
     });
+    void loadAgentDirectory();
   }
 
   const pendingSessionRefreshes = new Set<string>();
@@ -791,6 +804,8 @@ export const useInstancesStore = defineStore("instances", () => {
       // A workspace was added/removed/edited on the instance (e.g. `xacpx workspace add`
       // from the terminal) — re-fetch so the file browser + create-session form reflect it.
       void loadWorkspaces(event.instanceId).catch(() => {});
+    } else if (event.kind === "agent-directory") {
+      agentDirectory.value = event.endpoints;
     }
   }
 
@@ -798,5 +813,5 @@ export const useInstancesStore = defineStore("instances", () => {
     return instances.value.find((i) => i.id === id);
   }
 
-  return { instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, listModelSuggestions, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId };
+  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, listModelSuggestions, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId };
 });

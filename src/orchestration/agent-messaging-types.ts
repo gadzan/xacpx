@@ -92,9 +92,36 @@ export interface AgentMessageReceipt {
   errorCode?: AgentMessagingErrorCode;
 }
 
+export interface AgentTargetSelector {
+  displayName?: string;
+  workspace?: string;
+  agent?: string;
+}
+
 export interface AgentMessageSendInput {
-  to: string;
+  to?: string;
+  selector?: AgentTargetSelector;
   content: string;
   mode?: AgentMessageMode;
+  requestedMode?: AgentMessageMode;
   replyTo?: string;
+}
+
+export interface PeerMessagePeer {
+  handle: string;
+  displayName: string;
+  agent: string;
+  workspace?: string;
+}
+
+export interface PeerMessageHistoryEntry {
+  kind: "agent_message";
+  direction: "sent" | "received";
+  messageId: string;
+  conversationId: string;
+  replyTo?: string;
+  peer: PeerMessagePeer;
+  content: string;
+  createdAt: number;
+  status?: "sending" | "sent" | "queued" | "delivered" | "failed";
 }

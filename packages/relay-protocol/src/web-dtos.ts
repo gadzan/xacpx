@@ -1,5 +1,5 @@
 import { RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "./envelope.js";
-import type { AgentCommandDto, ControlEventDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
+import type { AgentCommandDto, ControlEventDto, PeerMessageHistoryEntry, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
 import {
   MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
   MAX_TERMINAL_COLS,
@@ -59,7 +59,7 @@ export interface MessageRecordDto {
    *  STATE_SYNC_TEXT_CAP — the persisted text is a prefix, not the full reply.
    *  `compact` is set by `GET .../messages?view=compact`: bulky tool details were
    *  omitted (collapsed cards still render); `GET .../messages/:id` returns the full row. */
-  structured?: { toolSteps?: ToolStepDto[]; reasoning?: string; parts?: TurnPartDto[]; scheduled?: ScheduledOriginDto; truncated?: boolean; compact?: boolean };
+  structured?: { toolSteps?: ToolStepDto[]; reasoning?: string; parts?: TurnPartDto[]; scheduled?: ScheduledOriginDto; truncated?: boolean; compact?: boolean; agentMessage?: PeerMessageHistoryEntry };
   attachments?: AttachmentMetadata[];
 }
 
@@ -125,6 +125,7 @@ export type WebServerEvent =
   | { kind: "control-event"; instanceId: string; event: ControlEventDto }
   | ({ kind: "state-snapshot"; instanceId: string } & InstanceStateSnapshotDto)
   | { kind: "notice"; instanceId: string; notice: InstanceNoticePayload }
+  | { kind: "agent-directory"; endpoints: PublishedAgentEndpointDto[] }
   | {
       kind: "terminal-opened";
       requestId: string;
@@ -215,6 +216,7 @@ const WEB_EVENT_KINDS = new Set([
   "control-event",
   "state-snapshot",
   "notice",
+  "agent-directory",
   "terminal-opened",
   "terminal-request-failed",
   "terminal-recovery-failed",
@@ -248,6 +250,7 @@ const CONTROL_EVENT_TYPE_MAP = {
   "orchestration-changed": true,
   "terminal-output": true,
   "terminal-exit": true,
+  "agent-message": true,
 } satisfies Record<ControlEventDto["type"], true>;
 
 const CONTROL_EVENT_TYPES: ReadonlySet<string> = new Set(Object.keys(CONTROL_EVENT_TYPE_MAP));
@@ -389,6 +392,22 @@ function validStateSnapshot(candidate: Record<string, unknown>): boolean {
   });
 }
 
+function validPeerMessageHistoryEntry(m: unknown): boolean {
+  if (typeof m !== "object" || m === null) return false;
+  const entry = m as Record<string, unknown>;
+  if (entry.kind !== "agent_message") return false;
+  if (entry.direction !== "sent" && entry.direction !== "received") return false;
+  if (typeof entry.messageId !== "string" || typeof entry.conversationId !== "string") return false;
+  if (typeof entry.content !== "string" || typeof entry.createdAt !== "number") return false;
+  if (!optStr(entry.replyTo)) return false;
+  if (typeof entry.peer !== "object" || entry.peer === null) return false;
+  const peer = entry.peer as Record<string, unknown>;
+  if (typeof peer.handle !== "string" || typeof peer.displayName !== "string" || typeof peer.agent !== "string") return false;
+  if (!optStr(peer.workspace)) return false;
+  if (entry.status !== undefined && !["sending", "sent", "queued", "delivered", "failed"].includes(entry.status as string)) return false;
+  return true;
+}
+
 /** Deep-validate an inner ControlEventDto: discriminant + per-variant required fields.
  *  The switch is compile-time exhaustive over ControlEventDto["type"] (see the `never`
  *  check in `default`), mirroring CONTROL_EVENT_TYPE_MAP above. */
@@ -439,6 +458,8 @@ export function validControlEvent(e: unknown): boolean {
       return typeof c.terminalId === "string" && typeof c.seq === "number" && typeof c.data === "string";
     case "terminal-exit":
       return typeof c.terminalId === "string" && typeof c.code === "number";
+    case "agent-message":
+      return typeof c.sessionAlias === "string" && optStr(c.chatKey) && validPeerMessageHistoryEntry(c.message);
     case "sessions-changed":
     case "workspaces-changed":
     case "orchestration-changed":
@@ -583,8 +604,11 @@ export function parseWebServerEvent(envelope: RelayEnvelope): WebServerEvent | n
   const payload = envelope.payload;
   if (typeof payload !== "object" || payload === null) return null;
   const candidate = payload as Record<string, unknown>;
-  if (typeof candidate.instanceId !== "string") return null;
   if (typeof candidate.kind !== "string" || !WEB_EVENT_KINDS.has(candidate.kind)) return null;
+  if (candidate.kind === "agent-directory") {
+    return Array.isArray(candidate.endpoints) ? (payload as WebServerEvent) : null;
+  }
+  if (typeof candidate.instanceId !== "string") return null;
   if (candidate.kind === "instance-status" && typeof candidate.online !== "boolean") return null;
   if (candidate.kind === "control-event" && !validControlEvent(candidate.event)) return null;
   if (candidate.kind === "state-snapshot" && !validStateSnapshot(candidate)) return null;

@@ -42,6 +42,7 @@ import type {
   AgentMessageMode,
   AgentMessageReceipt,
   AgentSenderBinding,
+  AgentTargetSelector,
 } from "./agent-messaging-types";
 
 export type CoordinatorTaskListFilter = Pick<OrchestrationTaskFilter, "status" | "stuck" | "sort" | "order"> & {
@@ -49,12 +50,12 @@ export type CoordinatorTaskListFilter = Pick<OrchestrationTaskFilter, "status" |
 };
 
 export interface AgentSendRpcInput extends AgentSenderBinding {
-  to: string;
+  to?: string;
+  selector?: AgentTargetSelector;
   message: string;
   mode?: AgentMessageMode;
   replyTo?: string;
 }
-
 interface OrchestrationClientDeps {
   createId?: () => string;
   timeoutMs?: number;

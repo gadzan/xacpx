@@ -1127,3 +1127,108 @@ test.each([
     isError: true,
   });
 });
+
+test("agent_send supports target selector and rejects both or neither destination", async () => {
+  const calls: unknown[] = [];
+  const receipt = {
+    messageId: "msg-123",
+    status: "queued" as const,
+    route: "local" as const,
+  };
+  const registry = buildXacpxMcpToolRegistry({
+    transport: createMemoryTransport(
+      async () => ({ taskId: "task-1", status: "running" }),
+      {
+        sendAgentMessage: async (input) => {
+          calls.push(input);
+          return receipt;
+        },
+      },
+    ),
+    coordinatorSession: "backend:main",
+    sourceHandle: "backend:worker-a",
+  });
+
+  const sendTool = registry.find((tool) => tool.name === "agent_send");
+  expect(sendTool).toBeDefined();
+
+  // Valid with selector
+  expect(
+    sendTool?.inputSchema.safeParse({
+      selector: { displayName: "reviewer", workspace: "project", agent: "gemini" },
+      message: "please review PR",
+    }).success,
+  ).toBe(true);
+
+  // Invalid with both to and selector
+  expect(
+    sendTool?.inputSchema.safeParse({
+      to: "agent:node-local:endpoint-peer",
+      selector: { displayName: "reviewer" },
+      message: "please review PR",
+    }).success,
+  ).toBe(false);
+
+  // Invalid with neither to nor selector
+  expect(
+    sendTool?.inputSchema.safeParse({
+      message: "please review PR",
+    }).success,
+  ).toBe(false);
+
+  // Invoke handler with selector
+  const sendResult = await sendTool?.handler({
+    selector: { displayName: "reviewer", workspace: "project", agent: "gemini" },
+    message: "please review PR",
+    mode: "queue",
+  });
+
+  expect(sendResult?.structuredContent).toEqual(receipt);
+  expect(calls).toEqual([
+    {
+      coordinatorSession: "backend:main",
+      sourceHandle: "backend:worker-a",
+      selector: { displayName: "reviewer", workspace: "project", agent: "gemini" },
+      message: "please review PR",
+      mode: "queue",
+    },
+  ]);
+});
+
+test("agent_send preserves TARGET_AMBIGUOUS as a structured messaging failure", async () => {
+  const registry = buildXacpxMcpToolRegistry({
+    transport: createMemoryTransport(
+      async () => ({ taskId: "task-1", status: "running" }),
+      {
+        sendAgentMessage: async () => {
+          throw new AgentMessagingError(
+            "TARGET_AMBIGUOUS",
+            "Target selector matched 2 candidate endpoints: workerA, workerB.",
+          );
+        },
+      },
+    ),
+    coordinatorSession: "backend:main",
+  });
+
+  const result = await registry.find((tool) => tool.name === "agent_send")?.handler({
+    selector: { agent: "gemini" },
+    message: "schema changed",
+  });
+
+  expect(result).toEqual({
+    content: [
+      {
+        type: "text",
+        text: "Target selector matched 2 candidate endpoints: workerA, workerB.",
+      },
+    ],
+    structuredContent: {
+      error: {
+        code: "TARGET_AMBIGUOUS",
+        message: "Target selector matched 2 candidate endpoints: workerA, workerB.",
+      },
+    },
+    isError: true,
+  });
+});

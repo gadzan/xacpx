@@ -2,6 +2,7 @@ import type { AppLogger } from "../logging/app-logger";
 import type { ToolUseEvent, PlanEntry } from "../channels/types";
 import type { AgentCommand, UsageBreakdown, UsageCost } from "../transport/types";
 import type { NativeHistoryMessage } from "../transport/native-session-history";
+import type { PeerMessageHistoryEntry } from "../orchestration/agent-messaging-types";
 
 export interface ScheduledOrigin {
   taskId: string;
@@ -51,7 +52,8 @@ export type ControlEvent =
   // command-router/handlers. `seq` is a per-terminal monotonic counter for v2 replay.
   | { type: "terminal-output"; terminalId: string; seq: number; data: string }
   | { type: "terminal-exit"; terminalId: string; code: number }
-  | { type: "orchestration-changed" };
+  | { type: "orchestration-changed" }
+  | { type: "agent-message"; chatKey?: string; sessionAlias: string; message: PeerMessageHistoryEntry };
 
 export type ControlEventListener = (event: ControlEvent) => void;
 

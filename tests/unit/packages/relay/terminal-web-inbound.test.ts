@@ -27,8 +27,8 @@ function deps(owned: boolean, extras: Record<string, unknown> = {}) {
   webGateway.register("a1", sock as never);
   return {
     instances: {
-      getOwned: mock((id: string, acc: string) => (owned && id === "i1" && acc === "a1" ? { id: "i1" } : undefined)),
-      listByAccount: mock((acc: string) => (owned && acc === "a1" ? [{ id: "i1" }] : [])),
+      getOwned: mock((_id: string, _accountId: string) => (owned ? { id: "i1" } : null)),
+      listByAccount: mock((_accountId: string) => (owned ? [{ id: "i1" }] : [])),
     },
     gateway: {
       sendEvent: mock(() => true),
@@ -40,6 +40,7 @@ function deps(owned: boolean, extras: Record<string, unknown> = {}) {
         viewerCount: 1,
       })),
       isOnline: mock(() => true),
+      getPublishedEndpoints: mock(() => []),
       ...extras,
     },
     webGateway,
@@ -310,9 +311,13 @@ test("a subscribe frame filters ownership and installs the subscription", () => 
   const d = deps(true);
   handleWebClientMessage(d as never, "a1", d.sock as never, encodeEnvelope(webClientEnvelope({ kind: "subscribe", instanceIds: ["i1", "i2"] })));
   // snapshot send happens; ownership filter drops i2
-  expect(d.sock.sent.length).toBe(1);
-  const decoded = decodeEnvelope(d.sock.sent[0]!);
-  expect(decoded.ok && parseWebServerEvent(decoded.envelope)).toMatchObject({
+  expect(d.sock.sent.length).toBe(2);
+  const dirDecoded = decodeEnvelope(d.sock.sent[0]!);
+  expect(dirDecoded.ok && parseWebServerEvent(dirDecoded.envelope)).toMatchObject({
+    kind: "agent-directory",
+  });
+  const snapshotDecoded = decodeEnvelope(d.sock.sent[1]!);
+  expect(snapshotDecoded.ok && parseWebServerEvent(snapshotDecoded.envelope)).toMatchObject({
     kind: "state-snapshot",
     instanceId: "i1",
   });

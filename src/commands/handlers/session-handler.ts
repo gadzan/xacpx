@@ -845,7 +845,7 @@ async function promptWithSession(
   // see "verbose" instead of undefined and format tool-call progress correctly.
   if (!session.replyMode) session.replyMode = effectiveReplyMode;
   const transportReply = effectiveReplyMode !== "final" ? reply : undefined;
-  if (context.orchestration) {
+  if (context.orchestration && !metadata?.preserveCoordinatorRoute) {
     try {
       await context.orchestration.recordCoordinatorRouteContext?.({
         coordinatorSession: stableCoordinatorSession(session.transportSession),
