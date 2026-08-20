@@ -85,6 +85,11 @@ export default {
     effort: "effort",
     effortSetFailed: "Failed to switch effort. Try again.",
     working: "Agent is working… (Esc to stop)",
+    mentionActivity: {
+      working: "Working",
+      waiting: "Waiting",
+      idle: "Idle",
+    },
     message: "Message",
     mermaidError: "Diagram failed to render",
     mermaidZoomOut: "Zoom out",

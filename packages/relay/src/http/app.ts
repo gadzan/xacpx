@@ -11,6 +11,7 @@ import {
   type PublishedAgentEndpointDto,
   type SessionCommandsSnapshotDto,
   type SessionUsageSnapshotDto,
+  type WebAgentDirectoryEndpointDto,
 } from "@ganglion/xacpx-relay-protocol";
 
 import type { AccountRow, AccountStore } from "../stores/accounts.js";
@@ -25,6 +26,7 @@ export interface GatewayForApp {
   isOnline(instanceId: string): boolean;
   sendRequest(instanceId: string, type: string, payload: unknown): Promise<unknown>;
   getPublishedEndpoints(accountId: string): PublishedAgentEndpointDto[];
+  getWebPublishedEndpoints?(accountId: string): WebAgentDirectoryEndpointDto[];
 }
 
 export interface AppDeps {
@@ -442,7 +444,9 @@ export function createApp(deps: AppDeps): Hono<Vars> {
   });
   app.get("/api/agent-directory", (c) => {
     const account = c.get("account");
-    const endpoints = deps.gateway.getPublishedEndpoints(account.id);
+    const endpoints = deps.gateway.getWebPublishedEndpoints
+      ? deps.gateway.getWebPublishedEndpoints(account.id)
+      : deps.gateway.getPublishedEndpoints(account.id);
     return c.json({ endpoints });
   });
 

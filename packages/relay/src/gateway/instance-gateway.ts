@@ -13,6 +13,7 @@ import {
   type InstanceRegisterPayload,
   type PublishedAgentEndpointDto,
   type RelayEnvelope,
+  type WebAgentDirectoryEndpointDto,
 } from "@ganglion/xacpx-relay-protocol";
 import type { AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
@@ -75,7 +76,7 @@ export interface InstanceGatewayDeps {
   ) => boolean;
   onDirectoryChange?: (
     accountId: string,
-    endpoints: PublishedAgentEndpointDto[],
+    endpoints: WebAgentDirectoryEndpointDto[],
   ) => void;
   logger?: RelayLogger;
 }
@@ -692,9 +693,26 @@ export class InstanceGateway {
     return result;
   }
 
+  getWebPublishedEndpoints(accountId: string): WebAgentDirectoryEndpointDto[] {
+    const result: WebAgentDirectoryEndpointDto[] = [];
+    for (const [instId, conn] of this.connections) {
+      if (conn.accountId === accountId) {
+        const endpoints = this.endpointsByInstance.get(instId) ?? [];
+        for (const ep of endpoints) {
+          result.push({
+            ...ep,
+            instanceId: instId,
+          });
+        }
+      }
+    }
+    return result;
+  }
+
   private broadcastDirectorySnapshot(accountId: string): void {
     const endpoints = this.getPublishedEndpoints(accountId);
-    this.deps.onDirectoryChange?.(accountId, endpoints);
+    const webEndpoints = this.getWebPublishedEndpoints(accountId);
+    this.deps.onDirectoryChange?.(accountId, webEndpoints);
     for (const [instId, conn] of this.connections) {
       if (conn.accountId === accountId) {
         this.sendEvent(instId, MSG.agentDirectorySnapshot, { endpoints });

@@ -9,6 +9,7 @@ import {
   type PublishedAgentEndpointDto,
   type SessionDto,
   type SessionModelResult,
+  type WebAgentDirectoryEndpointDto,
   type WebServerEvent,
   type WorkspaceDto,
 } from "@ganglion/xacpx-relay-protocol";
@@ -116,11 +117,11 @@ export function parseGroupArchivedKey(key: string): { mode: GroupArchivedMode; g
 }
 
 export const useInstancesStore = defineStore("instances", () => {
-  const agentDirectory = ref<PublishedAgentEndpointDto[]>([]);
+  const agentDirectory = ref<WebAgentDirectoryEndpointDto[]>([]);
 
   async function loadAgentDirectory(): Promise<void> {
     try {
-      const res = await api.get<{ endpoints: PublishedAgentEndpointDto[] }>("/api/agent-directory");
+      const res = await api.get<{ endpoints: WebAgentDirectoryEndpointDto[] }>("/api/agent-directory");
       agentDirectory.value = res.endpoints ?? [];
     } catch {
       /* best effort */

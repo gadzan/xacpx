@@ -158,6 +158,7 @@ describe("PromptInput composer", () => {
     const instances = useInstancesStore();
     instances.agentDirectory = [
       {
+        instanceId: "inst-1",
         nodeId: "node-1",
         endpointId: "ep-backend",
         displayName: "Backend",
@@ -214,6 +215,7 @@ describe("PromptInput composer", () => {
     const instances = useInstancesStore();
     instances.agentDirectory = [
       {
+        instanceId: "inst-1",
         nodeId: "node-1",
         endpointId: "ep-backend",
         displayName: "Backend",
@@ -252,6 +254,7 @@ describe("PromptInput composer", () => {
     const instances = useInstancesStore();
     instances.agentDirectory = [
       {
+        instanceId: "inst-1",
         nodeId: "node-1",
         endpointId: "ep-backend-1",
         displayName: "Backend",
@@ -268,6 +271,7 @@ describe("PromptInput composer", () => {
         updatedAt: Date.now(),
       },
       {
+        instanceId: "inst-2",
         nodeId: "node-2",
         endpointId: "ep-backend-2",
         displayName: "Backend",
@@ -318,6 +322,7 @@ describe("PromptInput composer", () => {
     const instances = useInstancesStore();
     instances.agentDirectory = [
       {
+        instanceId: "inst-1",
         nodeId: "node-12345",
         endpointId: "ep-1",
         displayName: "发布机器人",
@@ -375,6 +380,7 @@ describe("PromptInput composer", () => {
     const instances = useInstancesStore();
     instances.agentDirectory = [
       {
+        instanceId: "inst-1",
         nodeId: "node-12345",
         endpointId: "ep-1",
         displayName: "omp-2",
@@ -416,6 +422,7 @@ describe("PromptInput composer", () => {
     const instances = useInstancesStore();
     instances.agentDirectory = [
       {
+        instanceId: "inst-1",
         nodeId: "node-1",
         endpointId: "ep-1",
         displayName: "发布机器人",
@@ -456,6 +463,7 @@ describe("PromptInput composer", () => {
     const instances = useInstancesStore();
     instances.agentDirectory = [
       {
+        instanceId: "inst-1",
         nodeId: "node_4c860598-e4ba-4205-ad59-08f0fb683dbc",
         endpointId: "ep_789123456_a",
         displayName: "Backend",
@@ -474,6 +482,7 @@ describe("PromptInput composer", () => {
         updatedAt: Date.now(),
       },
       {
+        instanceId: "inst-2",
         nodeId: "node_99887766-aaaa-bbbb-cccc-112233445566",
         endpointId: "ep_789123456_b",
         displayName: "Backend",
@@ -544,17 +553,37 @@ describe("PromptInput composer", () => {
     ]);
   });
 
-  it("Test F: Session Tree consistency and deterministic ranking", async () => {
+  it("Test F: Session Tree consistency under workspace grouped mode", async () => {
     const { useInstancesStore } = await import("../stores/instances");
+    const { sessionPresentationName } = await import("../lib/sidebar-group-mode");
     const instances = useInstancesStore();
+    instances.instances = [
+      { id: "inst-1", name: "MacBook Air", online: true, sessionsLoaded: true },
+    ] as never;
+    instances.setGroupMode("inst-1", "workspace");
+
+    // Session in workspace "weacpx-github" with alias "weacpx-github-omp-2"
+    const sessionAlias = "weacpx-github-omp-2";
+    const workspace = "weacpx-github";
+
+    // 1. Shared helper (also used by InstanceTree.vue rowName) returns "omp-2"
+    const treeRowName = sessionPresentationName({
+      alias: sessionAlias,
+      workspace,
+      agent: "codex",
+      groupMode: instances.groupModeFor("inst-1"),
+    });
+    expect(treeRowName).toBe("omp-2");
+
+    // 2. PromptInput autocomplete directory item from inst-1
     instances.agentDirectory = [
       {
+        instanceId: "inst-1",
         nodeId: "node-1",
         endpointId: "ep-1",
-        displayName: "发布机器人",
-        sessionAlias: "omp-2",
+        sessionAlias,
         agent: "codex",
-        workspace: "weacpx-github",
+        workspace,
         state: "idle",
         capabilities: {
           receive: true,
@@ -565,7 +594,118 @@ describe("PromptInput composer", () => {
         },
         updatedAt: Date.now(),
       },
+    ];
+
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    await ta.setValue("Ask @omp");
+    await ta.trigger("input");
+    await w.vm.$nextTick();
+
+    const item = w.find('[data-test="mention-item"]');
+    // The primary name MUST match the Session Tree grouped presentation ("omp-2"), NOT "weacpx-github-omp-2"
+    expect(item.find('[data-test="mention-primary"]').text()).toBe("@omp-2");
+    expect(item.find('[data-test="mention-secondary"]').text()).toBe(
+      "weacpx-github · codex",
+    );
+  });
+
+  it("Test G: duplicate displayNames across Relay instances disambiguate using instance name, not technical nodeId", async () => {
+    const { useInstancesStore } = await import("../stores/instances");
+    const instances = useInstancesStore();
+    instances.instances = [
+      { id: "inst-mac", name: "MacBook Air", online: true },
+      { id: "inst-dev", name: "Dev Server", online: true },
+    ] as never;
+
+    instances.agentDirectory = [
       {
+        instanceId: "inst-mac",
+        nodeId: "node_4c860598-e4ba-4205-ad59-08f0fb683dbc",
+        endpointId: "ep_1",
+        displayName: "Backend",
+        sessionAlias: "backend",
+        agent: "codex",
+        workspace: "xacpx",
+        state: "running",
+        activity: { status: "working" },
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+      {
+        instanceId: "inst-dev",
+        nodeId: "node_99887766-aaaa-bbbb-cccc-112233445566",
+        endpointId: "ep_2",
+        displayName: "Backend",
+        sessionAlias: "backend",
+        agent: "codex",
+        workspace: "xacpx",
+        state: "idle",
+        activity: { status: "idle" },
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    await ta.setValue("Ping @Back");
+    await ta.trigger("input");
+    await w.vm.$nextTick();
+
+    const items = w.findAll('[data-test="mention-item"]');
+    expect(items.length).toBe(2);
+
+    // Both have exact same (displayName, sessionAlias, workspace, agent).
+    // They MUST disambiguate via Relay instance names (MacBook Air / Dev Server)
+    expect(items[0].find('[data-test="mention-secondary"]').text()).toBe(
+      "backend · xacpx · codex · MacBook Air",
+    );
+    expect(items[1].find('[data-test="mention-secondary"]').text()).toBe(
+      "backend · xacpx · codex · Dev Server",
+    );
+
+    // Must NOT contain technical nodeId suffix
+    expect(items[0].text()).not.toContain("…83dbc");
+    expect(items[1].text()).not.toContain("…45566");
+  });
+  it("Test H: activity badges display localized strings and deterministic ranking", async () => {
+    const { useInstancesStore } = await import("../stores/instances");
+    const instances = useInstancesStore();
+    instances.agentDirectory = [
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "ep-1",
+        displayName: "发布机器人",
+        sessionAlias: "omp-2",
+        agent: "codex",
+        workspace: "weacpx-github",
+        state: "running",
+        activity: { status: "working" },
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+      {
+        instanceId: "inst-1",
         nodeId: "node-1",
         endpointId: "ep-2",
         displayName: "omp-builder",
@@ -573,6 +713,7 @@ describe("PromptInput composer", () => {
         agent: "codex",
         workspace: "weacpx-github",
         state: "idle",
+        activity: { status: "waiting" },
         capabilities: {
           receive: true,
           steer: false,
@@ -589,15 +730,21 @@ describe("PromptInput composer", () => {
     await ta.setValue("@omp");
     await ta.trigger("input");
     await w.vm.$nextTick();
-
     const items = w.findAll('[data-test="mention-item"]');
     expect(items.length).toBe(2);
     // omp-builder has displayName prefix match (rank 3), while 发布机器人 has sessionAlias prefix match (rank 4)
     expect(items[0].find('[data-test="mention-primary"]').text()).toBe(
       "@omp-builder",
     );
+    expect(items[0].find('[data-test="mention-activity"]').text()).toBe(
+      "Waiting",
+    );
+
     expect(items[1].find('[data-test="mention-primary"]').text()).toBe(
       "@发布机器人",
+    );
+    expect(items[1].find('[data-test="mention-activity"]').text()).toBe(
+      "Working",
     );
   });
 });

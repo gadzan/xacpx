@@ -27,7 +27,10 @@ import { useSessionControlsStore } from "../stores/session-controls";
 import { useChatStore } from "../stores/chat";
 import { useInstancesStore } from "../stores/instances";
 import { formatModelLabel } from "../lib/model-label";
+import { sessionPresentationName } from "../lib/sidebar-group-mode";
+import { useI18n } from "vue-i18n";
 
+const { t } = useI18n();
 const props = defineProps<{
   busy?: boolean;
   draftKey?: string;
@@ -216,9 +219,12 @@ interface AgentMentionItem {
   handle: string;
   displayName: string;
   sessionAlias?: string;
+  hasCustomDisplayName: boolean;
   agent: string;
   workspace?: string;
+  groupMode?: "instance" | "workspace" | "agent";
   nodeLabel?: string;
+  instanceId?: string;
   nodeId: string;
   endpointId: string;
   activity?: {
@@ -229,16 +235,36 @@ interface AgentMentionItem {
 
 const availableAgents = computed<AgentMentionItem[]>(() => {
   return instancesStore.agentDirectory.map((ep) => {
-    const inst = instancesStore.instances.find((i) => i.id === ep.nodeId);
+    const inst = ep.instanceId
+      ? instancesStore.instances.find((i) => i.id === ep.instanceId)
+      : undefined;
     const nodeLabel = inst?.name;
-    const primaryName = ep.displayName || ep.sessionAlias || ep.agent;
+    const groupMode = ep.instanceId
+      ? instancesStore.groupModeFor(ep.instanceId)
+      : undefined;
+    const baseAlias = ep.sessionAlias || ep.agent;
+    const primaryName = sessionPresentationName({
+      displayName: ep.displayName,
+      alias: baseAlias,
+      workspace: ep.workspace,
+      agent: ep.agent,
+      groupMode,
+    });
+    const hasCustomDisplayName = Boolean(
+      ep.displayName &&
+        ep.sessionAlias &&
+        ep.displayName !== ep.sessionAlias,
+    );
     return {
       handle: `agent:${ep.nodeId}:${ep.endpointId}`,
       displayName: primaryName,
       sessionAlias: ep.sessionAlias,
+      hasCustomDisplayName,
       agent: ep.agent,
       workspace: ep.workspace,
+      groupMode,
       nodeLabel,
+      instanceId: ep.instanceId,
       nodeId: ep.nodeId,
       endpointId: ep.endpointId,
       activity: ep.activity,
@@ -252,9 +278,18 @@ function formatSecondaryLine(
 ): string {
   const parts: string[] = [];
 
-  if (item.sessionAlias && item.sessionAlias !== item.displayName) {
-    parts.push(item.sessionAlias);
+  if (item.hasCustomDisplayName && item.sessionAlias) {
+    const displayAlias = sessionPresentationName({
+      alias: item.sessionAlias,
+      workspace: item.workspace,
+      agent: item.agent,
+      groupMode: item.groupMode,
+    });
+    if (displayAlias && displayAlias !== item.displayName) {
+      parts.push(displayAlias);
+    }
   }
+
   if (item.workspace) {
     parts.push(item.workspace);
   }
@@ -264,19 +299,23 @@ function formatSecondaryLine(
 
   const duplicates = allItems.filter(
     (other) =>
-      other.displayName === item.displayName && other.handle !== item.handle,
+      other.displayName === item.displayName &&
+      other.handle !== item.handle,
   );
 
   if (duplicates.length > 0) {
     const myBaseKey = [
-      item.sessionAlias ?? "",
+      item.hasCustomDisplayName ? item.sessionAlias ?? "" : "",
       item.workspace ?? "",
       item.agent ?? "",
     ].join("::");
     const sameBaseDuplicates = duplicates.filter(
       (d) =>
-        [d.sessionAlias ?? "", d.workspace ?? "", d.agent ?? ""].join("::") ===
-        myBaseKey,
+        [
+          d.hasCustomDisplayName ? d.sessionAlias ?? "" : "",
+          d.workspace ?? "",
+          d.agent ?? "",
+        ].join("::") === myBaseKey,
     );
 
     if (sameBaseDuplicates.length > 0) {
@@ -300,16 +339,15 @@ function activityLabel(activity?: {
   if (!activity?.status) return "";
   switch (activity.status) {
     case "working":
-      return "Working";
+      return t("chat.mentionActivity.working");
     case "waiting":
-      return "Waiting";
+      return t("chat.mentionActivity.waiting");
     case "idle":
-      return "Idle";
+      return t("chat.mentionActivity.idle");
     default:
       return "";
   }
 }
-
 function activityClass(status?: "idle" | "working" | "waiting"): string {
   switch (status) {
     case "working":

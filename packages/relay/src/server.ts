@@ -250,7 +250,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
       webGateway.broadcast(accountId, { kind: "instance-status", instanceId, online });
       webGateway.broadcast(accountId, {
         kind: "agent-directory",
-        endpoints: gateway.getPublishedEndpoints(accountId),
+        endpoints: gateway.getWebPublishedEndpoints(accountId),
       });
     },
     onEvent: (instanceId, accountId, envelope: RelayEnvelope) => {

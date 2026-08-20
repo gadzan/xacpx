@@ -11,7 +11,7 @@ import { confirm } from "../lib/use-confirm";
 import { showActionToast } from "../lib/use-action-toast";
 import { pushToast } from "../lib/use-toasts";
 import { useSwipeActions } from "../lib/use-swipe-actions";
-import { groupSessions, dedupedSessionName, archivedLast } from "../lib/sidebar-group-mode";
+import { groupSessions, dedupedSessionName, sessionPresentationName, archivedLast } from "../lib/sidebar-group-mode";
 import NewSessionDialog from "./NewSessionDialog.vue";
 import ManageInstanceDialog from "./ManageInstanceDialog.vue";
 import AgentIcon from "./AgentIcon.vue";
@@ -205,11 +205,15 @@ function toggleGroup(inst: InstanceView, key: string): void {
 
 // Display-only dedup of the `<workspace>-<agent>` auto-alias inside a group; the
 // row's hover title always carries the full name.
-function rowName(inst: InstanceView, s: { alias: string; displayName?: string }, sectionKey: string | null): string {
-  const name = s.displayName || s.alias;
+function rowName(inst: InstanceView, s: { alias: string; displayName?: string; workspace?: string; agent?: string }, sectionKey: string | null): string {
   const mode = groupModeOf(inst);
-  if (sectionKey === null || mode === "instance") return name;
-  return dedupedSessionName(name, sectionKey, mode);
+  return sessionPresentationName({
+    displayName: s.displayName,
+    alias: s.alias,
+    workspace: s.workspace ?? (mode === "workspace" ? sectionKey ?? undefined : undefined),
+    agent: s.agent ?? (mode === "agent" ? sectionKey ?? undefined : undefined),
+    groupMode: mode,
+  });
 }
 
 // Group-header ＋: open the create dialog with the group's own value prefilled.

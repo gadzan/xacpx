@@ -85,3 +85,27 @@ export function dedupedSessionName(name: string, groupKey: string, mode: "worksp
   }
   return name;
 }
+
+/**
+ * Shared presentation helper for deriving a human-facing session name, matching
+ * the name displayed in the left-side Session Tree under any groupMode (instance,
+ * workspace, or agent).
+ */
+export function sessionPresentationName(params: {
+  displayName?: string;
+  alias: string;
+  workspace?: string;
+  agent?: string;
+  groupMode?: "instance" | "workspace" | "agent";
+}): string {
+  const name = params.displayName || params.alias;
+  const mode = params.groupMode;
+  if (!mode || mode === "instance") {
+    return name;
+  }
+  const sectionKey = mode === "workspace" ? params.workspace : params.agent;
+  if (!sectionKey) {
+    return name;
+  }
+  return dedupedSessionName(name, sectionKey, mode);
+}

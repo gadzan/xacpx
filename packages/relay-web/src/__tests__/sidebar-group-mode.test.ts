@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { loadGroupMode, saveGroupMode, groupSessions, dedupedSessionName, archivedLast } from "../lib/sidebar-group-mode";
+import { loadGroupMode, saveGroupMode, groupSessions, dedupedSessionName, sessionPresentationName, archivedLast } from "../lib/sidebar-group-mode";
 
 const KEY = "xacpx.sidebar.groupMode.i1";
 
@@ -91,5 +91,25 @@ describe("dedupedSessionName", () => {
   it("never dedups down to an empty name", () => {
     expect(dedupedSessionName("web-", "web", "workspace")).toBe("web-");
     expect(dedupedSessionName("-claude", "claude", "agent")).toBe("-claude");
+  });
+});
+
+describe("sessionPresentationName", () => {
+  it("uses custom displayName when present under any mode", () => {
+    expect(sessionPresentationName({ displayName: "发布机器人", alias: "weacpx-github-omp-2", workspace: "weacpx-github", groupMode: "workspace" })).toBe("发布机器人");
+    expect(sessionPresentationName({ displayName: "发布机器人", alias: "omp-2", groupMode: "instance" })).toBe("发布机器人");
+  });
+
+  it("dedups alias in workspace mode by stripping leading <workspace>-", () => {
+    expect(sessionPresentationName({ alias: "weacpx-github-omp-2", workspace: "weacpx-github", groupMode: "workspace" })).toBe("omp-2");
+  });
+
+  it("dedups alias in agent mode by stripping trailing -<agent>", () => {
+    expect(sessionPresentationName({ alias: "omp-2-codex", agent: "codex", groupMode: "agent" })).toBe("omp-2");
+  });
+
+  it("preserves alias unchanged in flat instance mode or when no group key matches", () => {
+    expect(sessionPresentationName({ alias: "weacpx-github-omp-2", workspace: "weacpx-github", groupMode: "instance" })).toBe("weacpx-github-omp-2");
+    expect(sessionPresentationName({ alias: "custom-alias", workspace: "weacpx-github", groupMode: "workspace" })).toBe("custom-alias");
   });
 });
