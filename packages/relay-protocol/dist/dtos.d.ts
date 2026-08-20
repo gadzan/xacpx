@@ -308,6 +308,7 @@ export interface PublishedAgentEndpointDto {
     nodeId: string;
     endpointId: string;
     displayName?: string;
+    sessionAlias?: string;
     agent: string;
     workspace?: string;
     state: "idle" | "running";

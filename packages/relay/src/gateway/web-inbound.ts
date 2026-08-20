@@ -11,6 +11,7 @@ import {
   type TerminalRoleResult,
   type TerminalTerminateResult,
   type TerminalViewerEventPayload,
+  type WebAgentDirectoryEndpointDto,
   type WebServerEvent,
 } from "@ganglion/xacpx-relay-protocol";
 
@@ -32,6 +33,7 @@ export interface WebClientDeps {
     ): Promise<unknown>;
     isOnline(instanceId: string): boolean;
     getPublishedEndpoints?(accountId: string): PublishedAgentEndpointDto[];
+    getWebPublishedEndpoints?(accountId: string): WebAgentDirectoryEndpointDto[];
   };
   webGateway: Pick<
     WebGateway,
@@ -130,10 +132,15 @@ async function handleWebClientMessageAsync(
     const ownedIds = new Set(deps.instances.listByAccount(accountId).map((instance) => instance.id));
     const instanceIds = [...new Set(msg.instanceIds)].filter((id) => ownedIds.has(id));
     deps.webGateway.setSubscription(socket, instanceIds);
-    if (typeof deps.gateway.getPublishedEndpoints === "function") {
+    if (typeof deps.gateway.getWebPublishedEndpoints === "function") {
       deps.webGateway.send(socket, {
         kind: "agent-directory",
-        endpoints: deps.gateway.getPublishedEndpoints(accountId),
+        endpoints: deps.gateway.getWebPublishedEndpoints(accountId),
+      });
+    } else if (typeof deps.gateway.getPublishedEndpoints === "function") {
+      deps.webGateway.send(socket, {
+        kind: "agent-directory",
+        endpoints: deps.gateway.getPublishedEndpoints(accountId) as never,
       });
     }
     for (const instanceId of instanceIds) {

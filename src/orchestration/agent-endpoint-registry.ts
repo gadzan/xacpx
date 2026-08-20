@@ -75,6 +75,7 @@ export class AgentEndpointRegistry {
       nodeId: string;
       endpointId: string;
       displayName?: string;
+      sessionAlias?: string;
       agent: string;
       workspace?: string;
       state: "idle" | "running";
@@ -103,6 +104,7 @@ export class AgentEndpointRegistry {
           }),
           node: ep.displayName ?? ep.nodeId,
           displayName: ep.displayName,
+          sessionAlias: ep.sessionAlias,
           agent: ep.agent,
           workspace: ep.workspace,
           state: ep.state,
@@ -128,6 +130,7 @@ export class AgentEndpointRegistry {
       nodeId: string;
       endpointId: string;
       displayName?: string;
+      sessionAlias?: string;
       agent: string;
       workspace?: string;
       state: "idle" | "running";
@@ -159,6 +162,9 @@ export class AgentEndpointRegistry {
         capabilities: candidate.endpoint.capabilities,
         ...(candidate.endpoint.displayName
           ? { displayName: candidate.endpoint.displayName }
+          : {}),
+        ...(candidate.endpoint.sessionAlias
+          ? { sessionAlias: candidate.endpoint.sessionAlias }
           : {}),
         updatedAt: Date.now(),
       }));
@@ -230,15 +236,15 @@ export class AgentEndpointRegistry {
     const external =
       state.orchestration.externalCoordinators[coordinatorSession];
     if (external) {
-        return {
-          address: {
-            nodeId: this.deps.nodeId,
-            endpointId: requireEndpointId(external.agentEndpointId),
-          },
-          coordinatorSession,
-          receive: false,
-          sessionAlias: coordinatorSession,
-        };
+      return {
+        address: {
+          nodeId: this.deps.nodeId,
+          endpointId: requireEndpointId(external.agentEndpointId),
+        },
+        coordinatorSession,
+        receive: false,
+        sessionAlias: coordinatorSession,
+      };
     }
 
     throw new AgentMessagingError(
@@ -340,9 +346,7 @@ export class AgentEndpointRegistry {
     selector: AgentTargetSelector,
   ): Promise<ResolvedAgentEndpoint> {
     const senderIdentity =
-      "address" in sender
-        ? sender
-        : await this.resolveSender(sender);
+      "address" in sender ? sender : await this.resolveSender(sender);
 
     const state = await this.deps.loadState();
     const localCandidates = this.listCandidates(
@@ -383,9 +387,10 @@ export class AgentEndpointRegistry {
           ?.trim()
           .toLowerCase();
         const candAlias =
-          candidate.runtime.kind === "logical"
+          candidate.endpoint.sessionAlias?.trim().toLowerCase() ??
+          (candidate.runtime.kind === "logical"
             ? candidate.runtime.alias?.trim().toLowerCase()
-            : undefined;
+            : undefined);
         if (
           candDisplayName !== displayNameFilter &&
           candAlias !== displayNameFilter
@@ -523,8 +528,8 @@ export class AgentEndpointRegistry {
       nodeId: this.deps.nodeId,
       endpointId: session.logical_session_id,
     };
-    const displayName =
-      session.display_name || toDisplaySessionAlias(session.alias);
+    const sessionAlias = toDisplaySessionAlias(session.alias);
+    const displayName = session.display_name || sessionAlias;
     const isRunning = this.deps.isSessionActive?.(session.alias) ?? false;
     return {
       address,
@@ -533,6 +538,7 @@ export class AgentEndpointRegistry {
       agent: session.agent,
       workspace: session.workspace,
       displayName,
+      sessionAlias,
       state: isRunning ? "running" : "idle",
       activity: {
         status: isRunning ? "working" : "idle",

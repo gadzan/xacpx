@@ -96,6 +96,10 @@ export interface InstanceSummaryDto {
     /** Last known connector capabilities; missing/undefined → treat as []. */
     capabilities?: string[];
 }
+/** Web-enriched agent directory DTO tagging each published endpoint with its owning Relay instanceId. */
+export interface WebAgentDirectoryEndpointDto extends PublishedAgentEndpointDto {
+    instanceId: string;
+}
 /** Server→web push payloads (tagged with the originating instance). */
 export type WebServerEvent = {
     kind: "instance-status";
@@ -114,7 +118,7 @@ export type WebServerEvent = {
     notice: InstanceNoticePayload;
 } | {
     kind: "agent-directory";
-    endpoints: PublishedAgentEndpointDto[];
+    endpoints: WebAgentDirectoryEndpointDto[];
 } | {
     kind: "terminal-opened";
     requestId: string;

@@ -83,6 +83,11 @@ export default {
     effort: "推理强度",
     effortSetFailed: "切换推理强度失败，请重试。",
     working: "Agent 正在工作…（按 Esc 停止）",
+    mentionActivity: {
+      working: "执行中",
+      waiting: "等待中",
+      idle: "空闲",
+    },
     message: "消息",
     mermaidError: "图表渲染失败",
     mermaidZoomOut: "缩小",
