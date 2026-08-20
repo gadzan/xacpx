@@ -2,14 +2,14 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { homedir } from "node:os";
 import { readdir, realpath, stat, open, readFile, writeFile, mkdir, rename as fsRename, cp, rm } from "node:fs/promises";
-import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import writeFileAtomic from "write-file-atomic";
 
 const execFileAsync = promisify(execFile);
 
 /** Expand a leading `~` to the home directory (workspace cwds are often configured
  *  as `~` or `~/path`). */
-function expandHome(p: string): string {
+export function expandHome(p: string): string {
   if (p === "~") return homedir();
   if (p.startsWith("~/") || p.startsWith("~" + sep)) return resolve(homedir(), p.slice(2));
   return p;
@@ -103,6 +103,62 @@ export interface WorkspaceDiff {
   detached?: boolean;
   /** Working-tree context: its top-level root, and whether it's a linked (non-primary) worktree. */
   worktree?: { root: string; linked: boolean };
+}
+
+// --- instance directory picker (workspace-independent) ---
+// Unlike the WorkspaceFs methods above, browseDirectories is NOT scoped to a
+// configured workspace: its purpose is choosing a cwd for a NEW workspace, so
+// the workspace whitelist cannot apply. Directory names only, capped, no metadata.
+export interface BrowseDirsResult {
+  path: string;
+  sep: "/" | "\\";
+  parent: string | null;
+  home: string;
+  dirs: Array<{ name: string; path: string }>;
+  truncated: boolean;
+}
+
+const MAX_BROWSE_ENTRIES = 1000;
+
+export async function browseDirectories(input?: string): Promise<BrowseDirsResult> {
+  const raw = (input ?? "").trim();
+  const dir = resolve(homedir(), expandHome(raw));
+  const dirents = await readdir(dir, { withFileTypes: true });
+  const out: Array<{ name: string; path: string }> = [];
+  for (const d of dirents) {
+    if (d.isDirectory()) {
+      out.push({ name: d.name, path: join(dir, d.name) });
+      continue;
+    }
+    if (d.isSymbolicLink()) {
+      try {
+        if ((await stat(join(dir, d.name))).isDirectory()) {
+          out.push({ name: d.name, path: join(dir, d.name) });
+        }
+      } catch {
+        /* broken link — skip */
+      }
+    }
+  }
+  out.sort((a, b) => {
+    const la = a.name.toLowerCase(), lb = b.name.toLowerCase();
+    return la < lb ? -1 : la > lb ? 1 : a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+  });
+  const truncated = out.length > MAX_BROWSE_ENTRIES;
+  if (truncated) out.length = MAX_BROWSE_ENTRIES;
+  const parent = dirname(dir);
+  return {
+    path: dir,
+    sep: sepChar(),
+    parent: parent === dir ? null : parent,
+    home: homedir(),
+    dirs: out,
+    truncated,
+  };
+}
+
+function sepChar(): "/" | "\\" {
+  return sep === "\\" ? "\\" : "/";
 }
 
 export interface WorkspaceRef {

@@ -33,6 +33,8 @@ import {
 import type { AgentCatalogEntry } from "../config/agent-catalog";
 import {
   WorkspaceFs,
+  browseDirectories as browseDirs,
+  type BrowseDirsResult,
   type DirListing,
   type FileContent,
   type SearchOptions,
@@ -446,6 +448,13 @@ export class ControlService {
   );
   listDirectory(workspace: string, path?: string): Promise<DirListing> {
     return this.workspaceFs.listDirectory(workspace, path);
+  }
+
+  // Directory-only picker over the WHOLE instance host (not workspace-scoped) —
+  // used by the relay-web "choose directory" dialog to pick a cwd for a new
+  // workspace. Directory names only; capped at 1000; no file contents/metadata.
+  browseDirectories(path?: string): Promise<BrowseDirsResult> {
+    return browseDirs(path);
   }
 
   readWorkspaceFile(workspace: string, path: string): Promise<FileContent> {
