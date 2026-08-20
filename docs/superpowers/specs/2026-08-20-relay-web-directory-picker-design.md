@@ -77,6 +77,7 @@ export interface FsBrowseResult {
 新组件 `src/components/DirectoryPicker.vue`：
 
 - Props：`instanceId: string; initialPath?: string`；emits：`confirm(path: string)`、`close`。
+- 集成处打开时把输入框已有值作为 `initialPath`（有值即直接定位该目录；为空走服务端默认 home）。
 - `Teleport to body` + `useModalA11y`（同 `NewSessionDialog`：焦点圈定、Esc 关闭、焦点还原）。
 - **导航即确认模型**（OS 选择器惯例）：点目录行 = 进入；底部主按钮「选择此目录」确认当前目录。移动端友好、无需双击。
 - 顶部：可编辑路径框（Enter 跳转，`~` 展开、相对路径同服务端语义）+ 面包屑段可点；「主目录」快捷按钮（`result.home`）。
