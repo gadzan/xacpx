@@ -1,5 +1,33 @@
 # Changelog
-## [Unreleased]
+## [0.23.0-beta.0] - 2026-08-20
+
+### Added
+
+- Agent Messaging: a location-independent, MCP-driven channel for an agent to message another xacpx-managed agent session. Local queue delivery (v0.1), multi-node federation with presence sync/retry/fail-closed identity (v0.1), and Collaboration v0.2 — conversation threading, loop guards with pair-hash duplicate suppression, a typed trace buffer, reply peer pairing, and conversation capabilities.
+
+## [relay-protocol 0.5.0-beta.0] - 2026-08-20
+
+### Added
+
+- Agent Messaging wire protocol: peer message frames, remote delivery, and collaboration v0.2 message types; refined federation payload types.
+
+## [relay 0.13.0-beta.0] - 2026-08-20
+
+### Added
+
+- Route peer agent messages between authenticated instances and enforce sender identity; relay-web Agent Messaging collaboration UX (threaded conversation + reply).
+
+### Changed
+
+- Switch relay-web terminal renderer to xterm.js (`@xterm/xterm` 6).
+
+## [channel-relay 0.7.0-beta.0] - 2026-08-20
+
+### Added
+
+- Upward request support in `RelayClient`; handle remote agent message delivery and endpoint sync.
+
+## [channel-feishu 0.8.0-beta.0] - 2026-08-20
 
 ### Added
 

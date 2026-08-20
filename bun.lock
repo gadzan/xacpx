@@ -29,7 +29,7 @@
     },
     "packages/channel-feishu": {
       "name": "@ganglion/xacpx-channel-feishu",
-      "version": "0.7.0",
+      "version": "0.8.0-beta.0",
       "dependencies": {
         "@larksuiteoapi/node-sdk": "~1.60.0",
       },
@@ -42,18 +42,18 @@
     },
     "packages/channel-relay": {
       "name": "@ganglion/xacpx-channel-relay",
-      "version": "0.6.1-beta.3",
+      "version": "0.7.0-beta.0",
       "dependencies": {
-        "@ganglion/xacpx-relay-protocol": "^0.4.2-beta.0",
+        "@ganglion/xacpx-relay-protocol": "^0.5.0-beta.0",
         "proper-lockfile": "^4.1.2",
         "ws": "^8.20.0",
       },
       "optionalDependencies": {
-        "@ganglion/xacpx-rmux-bridge-darwin-arm64": "0.6.1-beta.3",
-        "@ganglion/xacpx-rmux-bridge-darwin-x64": "0.6.1-beta.3",
-        "@ganglion/xacpx-rmux-bridge-linux-arm64": "0.6.1-beta.3",
-        "@ganglion/xacpx-rmux-bridge-linux-x64": "0.6.1-beta.3",
-        "@ganglion/xacpx-rmux-bridge-win32-x64": "0.6.1-beta.3",
+        "@ganglion/xacpx-rmux-bridge-darwin-arm64": "0.7.0-beta.0",
+        "@ganglion/xacpx-rmux-bridge-darwin-x64": "0.7.0-beta.0",
+        "@ganglion/xacpx-rmux-bridge-linux-arm64": "0.7.0-beta.0",
+        "@ganglion/xacpx-rmux-bridge-linux-x64": "0.7.0-beta.0",
+        "@ganglion/xacpx-rmux-bridge-win32-x64": "0.7.0-beta.0",
       },
       "peerDependencies": {
         "xacpx": ">=0.17.0",
@@ -86,12 +86,12 @@
     },
     "packages/relay": {
       "name": "@ganglion/xacpx-relay",
-      "version": "0.12.1-beta.3",
+      "version": "0.13.0-beta.0",
       "bin": {
         "xacpx-relay": "./dist/cli.js",
       },
       "dependencies": {
-        "@ganglion/xacpx-relay-protocol": "^0.4.2-beta.0",
+        "@ganglion/xacpx-relay-protocol": "^0.5.0-beta.0",
         "@hono/node-server": "^1.13.0",
         "hono": "^4.6.0",
         "ws": "^8.20.0",
@@ -99,7 +99,7 @@
     },
     "packages/relay-protocol": {
       "name": "@ganglion/xacpx-relay-protocol",
-      "version": "0.4.2-beta.0",
+      "version": "0.5.0-beta.0",
     },
     "packages/relay-web": {
       "name": "@ganglion/xacpx-relay-web",
@@ -122,7 +122,7 @@
         "@codemirror/view": "^6.0.0",
         "@fontsource/inter": "^5.2.8",
         "@fontsource/jetbrains-mono": "^5.2.8",
-        "@ganglion/xacpx-relay-protocol": "^0.4.2-beta.0",
+        "@ganglion/xacpx-relay-protocol": "^0.5.0-beta.0",
         "@lezer/highlight": "^1.0.0",
         "@lobehub/icons-static-svg": "^1.91.0",
         "@xterm/xterm": "^6.0.0",

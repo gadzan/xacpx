@@ -1,9 +1,14 @@
 {
   "name": "@ganglion/xacpx-channel-feishu",
-  "version": "0.7.0",
+  "version": "0.8.0-beta.0",
   "description": "Feishu channel plugin for xacpx.",
   "license": "MIT",
-  "keywords": ["xacpx", "feishu", "channel", "plugin"],
+  "keywords": [
+    "xacpx",
+    "feishu",
+    "channel",
+    "plugin"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/gadzan/xacpx.git",
@@ -18,7 +23,10 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "peerDependencies": {
     "xacpx": ">=0.9.0-0"
   },
