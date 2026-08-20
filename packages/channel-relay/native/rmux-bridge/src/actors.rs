@@ -5,7 +5,7 @@
 //! 2. `new_window_with().cwd(...)` for the work pane, with the POSIX
 //!    application terminal dialect pinned to `TERM=xterm-256color`
 //! 3. close default window 0
-//! 4. resize + `history-limit` on the stable pane id
+//! 4. resize the work window + set `history-limit` on the stable pane id
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use rmux_sdk::{
     CleanupPolicy, NewWindowBuilder, OwnedSession, PaneId, PaneRecoveryEvent,
-    PaneRecoveryRebaseReason, Rmux, SessionName, TerminalSizeSpec,
+    PaneRecoveryRebaseReason, Rmux, SessionName,
 };
 use tokio::sync::{mpsc, Mutex};
 
@@ -49,6 +49,7 @@ struct SessionActor {
     owned: OwnedSession,
     session_id: String,
     pane_id: String,
+    window_index: u32,
     name: String,
     tags: Vec<String>,
     recover_abort: Option<tokio::task::JoinHandle<()>>,
@@ -110,8 +111,18 @@ impl BridgeState {
                 return Err(format!("new_window failed: {e}"));
             }
         };
+        let work_window_index = work.target().window_index;
 
         let _ = owned.window(0).close().await;
+
+        // Pane::resize changes a pane inside the current window layout; it
+        // cannot grow a single-pane window beyond the window's own geometry.
+        // relay-web needs the PTY/window itself to match the browser viewport,
+        // so use the SDK's authoritative ResizeWindow request instead.
+        if let Err(e) = work.resize(Some(cols), Some(rows)).await {
+            let _ = owned.cleanup().await;
+            return Err(format!("window resize failed: {e}"));
+        }
 
         let panes = match work.panes().await {
             Ok(p) => p,
@@ -135,11 +146,6 @@ impl BridgeState {
                 return Err(format!("pane_by_id failed: {e}"));
             }
         };
-
-        if let Err(e) = pane.resize(TerminalSizeSpec::new(cols, rows)).await {
-            let _ = owned.cleanup().await;
-            return Err(format!("resize failed: {e}"));
-        }
         let _ = pane
             .set_option("history-limit", history_limit.to_string())
             .await;
@@ -152,6 +158,7 @@ impl BridgeState {
             owned,
             session_id: session_id.clone(),
             pane_id: pane_id_str.clone(),
+            window_index: work_window_index,
             name: name.clone(),
             tags: tags.clone(),
             recover_abort: None,
@@ -262,7 +269,6 @@ impl BridgeState {
     }
 
     pub async fn resize(&self, pane_id: &str, cols: u16, rows: u16) -> Result<(), String> {
-        let pane_id_parsed = parse_pane_id(pane_id)?;
         let session_id = self
             .panes
             .lock()
@@ -274,14 +280,12 @@ impl BridgeState {
         let actor = sessions
             .get(&session_id)
             .ok_or_else(|| format!("session not found: {session_id}"))?;
-        let pane = actor
+        actor
             .owned
-            .pane_by_id(pane_id_parsed)
+            .window(actor.window_index)
+            .resize(Some(cols), Some(rows))
             .await
-            .map_err(|e| format!("pane_by_id failed: {e}"))?;
-        pane.resize(TerminalSizeSpec::new(cols, rows))
-            .await
-            .map_err(|e| format!("resize failed: {e}"))?;
+            .map_err(|e| format!("window resize failed: {e}"))?;
         Ok(())
     }
 
