@@ -180,7 +180,46 @@ function isCoarsePointer(): boolean {
 // opens/closes. Fed by bindTerminalKeyboardInset (debounced measurement).
 const keyboardInset = ref(0);
 
+async function nextLayoutFrame(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => resolve());
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
 
+/**
+ * terminal-open creates (or resumes) the backend PTY at the supplied geometry.
+ * Do not send the adapter's 80x24 construction bootstrap: xterm.js loads its
+ * CSS/font asynchronously, so first wait until it is open, then derive the
+ * actual host-fit grid. A few layout-frame retries cover the rare case where
+ * the xterm screen is mounted but has not received measurable layout yet.
+ */
+async function fitBeforeTerminalOpen(
+  currentAdapter: TerminalAdapter,
+  myEpoch: number,
+): Promise<{ cols: number; rows: number }> {
+  await currentAdapter.ready();
+  for (let attempt = 0; attempt < 8; attempt++) {
+    if (myEpoch !== epoch || adapter !== currentAdapter) {
+      throw new Error("terminal adapter superseded");
+    }
+    const dim = currentAdapter.fit(keyboardInset.value);
+    if (dim) {
+      if (dim.cols !== currentAdapter.cols() || dim.rows !== currentAdapter.rows()) {
+        currentAdapter.resize(dim.cols, dim.rows);
+      }
+      return dim;
+    }
+    await nextLayoutFrame();
+  }
+  // Extremely defensive fallback for a renderer that remains unmeasurable.
+  // Normal browser opens never take this path; the settling viewport controller
+  // still converges locally afterward.
+  return { cols: currentAdapter.cols(), rows: currentAdapter.rows() };
+}
 
 function mapErrorCode(code: string): string {
   switch (code) {
@@ -271,8 +310,7 @@ async function openAttachment(): Promise<void> {
   });
 
   try {
-    const cols = currentAdapter.cols();
-    const rows = currentAdapter.rows();
+    const { cols, rows } = await fitBeforeTerminalOpen(currentAdapter, myEpoch);
     const view = await terminals.openOrResume(localKey.value, {
       instanceId: props.instanceId,
       sessionAlias: props.sessionAlias,
