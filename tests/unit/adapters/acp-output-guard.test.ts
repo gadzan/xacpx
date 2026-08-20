@@ -147,10 +147,23 @@ test("stdio guard handles arbitrary child chunking and preserves exit status", a
       process.stdin.on("data", () => {
         const text = "x".repeat(12 * 1024 * 1024);
         const oversized = JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "s", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } } });
-        for (let i = 0; i < oversized.length; i += 17) process.stdout.write(oversized.slice(i, i + 17));
-        process.stdout.write("\\n");
-        process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "done" } } } }) + "\\n");
-        process.exit(0);
+        // Backpressure-aware pump: only exit after the final write's callback
+        // fires, so process.exit(0) can never drop buffered stdout and
+        // truncate the stream (bun/node exit without waiting for writes).
+        let i = 0;
+        const pump = () => {
+          while (i < oversized.length) {
+            const ok = process.stdout.write(oversized.slice(i, i + 17));
+            i += 17;
+            if (!ok) {
+              process.stdout.once("drain", pump);
+              return;
+            }
+          }
+          process.stdout.write("\\n");
+          process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "done" } } } }) + "\\n", () => process.exit(0));
+        };
+        pump();
       });
     `);
 
