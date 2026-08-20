@@ -84,17 +84,15 @@ test("platform package never falls back to its public rmux CLI when the daemon i
     const pkgBin = join(dir, "pkg", "bin");
     mkdirSync(pkgBin, { recursive: true });
     const bridge = touchExecutable(join(pkgBin, "xacpx-rmux-bridge.exe"));
-    const publicCli = touchExecutable(join(pkgBin, "rmux.exe"));
+    touchExecutable(join(pkgBin, "rmux.exe"));
 
-    const resolved = resolveRmuxBinaries({
-      platformPackageResolver: () => bridge,
-      pathEnv: "",
-      homeDir: join(dir, "empty-home"),
-    });
-    expect(resolved.source.bridge).toBe("platform-package");
-    expect(resolved.rmuxCommand).toBeUndefined();
-    expect(resolved.source.rmux).toBeUndefined();
-    expect(resolved.rmuxCommand).not.toBe(publicCli);
+    expect(() =>
+      resolveRmuxBinaries({
+        platformPackageResolver: () => bridge,
+        pathEnv: "",
+        homeDir: join(dir, "empty-home"),
+      }),
+    ).toThrow(RmuxBinaryUnavailableError);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
