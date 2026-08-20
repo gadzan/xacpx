@@ -10,6 +10,12 @@ test.describe("terminal viewport", () => {
     expect(grid.cols === 80 && grid.rows === 24).toBe(false);
     expect(grid.cols).toBeGreaterThan(20);
     expect(grid.rows).toBeGreaterThan(10);
+    // The backend terminal-open must be born at the measured browser grid.
+    // A later resize is no longer allowed to repair an 80x24 bootstrap PTY.
+    expect(hub.lastOpen).not.toBeNull();
+    expect(hub.lastOpen!.cols).toBe(grid.cols);
+    expect(hub.lastOpen!.rows).toBe(grid.rows);
+    expect(hub.lastOpen!.cols === 80 && hub.lastOpen!.rows === 24).toBe(false);
     // Sub-cell remainder is expected (items-center); never a whole unused cell.
     expect(grid.remainder).toBeLessThan(grid.screenWidth / grid.cols + 1);
     expect(hub.resizes.length).toBeGreaterThan(0);
