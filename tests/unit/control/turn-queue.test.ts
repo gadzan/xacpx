@@ -541,27 +541,63 @@ test("clearSession arms a teardown guard that rejects new turns until finishClea
   expect(started).toEqual(["after"]);
 });
 
-test("queued prompt preserves isOwner:true when drained into runTurn", async () => {
-  let drainedIsOwner: boolean | undefined;
-  const requests: unknown[] = [];
+test("queued prompt preserves full execution context and all metadata fields when drained into runTurn", async () => {
+  let drainedReq: unknown;
   const h = makeQueue();
   const origRun = (h.queue as unknown as { deps: { runTurn: (req: unknown, sig: unknown, act: unknown) => Promise<unknown> } }).deps.runTurn;
   (h.queue as unknown as { deps: { runTurn: (req: unknown, sig: unknown, act: unknown) => Promise<unknown> } }).deps.runTurn = async (req, sig, act) => {
-    requests.push(req);
-    drainedIsOwner = (req as { isOwner?: boolean }).isOwner;
+    drainedReq = req;
     return await origRun(req as never, sig as never, act as never);
   };
 
-  const p1 = h.queue.submit({ ...BASE, text: "first", queueable: true });
+  const p1 = h.queue.submit({
+    chatKey: "relay:chat-user",
+    sessionAlias: "backend",
+    concurrencyKey: "relay:backend",
+    senderId: "bob",
+    text: "first",
+    queueable: true,
+  });
   await tick();
-  const p2 = h.queue.submit({ ...BASE, text: "second", isOwner: true, queueable: true });
-  expect(h.queue.queueLength("c", "s")).toBe(1);
 
+  const fullMetadata = {
+    chatKey: "relay:chat-user",
+    sessionAlias: "backend",
+    boundSessionAlias: "relay:backend",
+    concurrencyKey: "relay:backend",
+    text: "second",
+    senderId: "alice",
+    isOwner: true,
+    accountId: "acct-999",
+    preserveCoordinatorRoute: true,
+    media: [{ id: "m1", kind: "image" as const, filePath: "/tmp/img.png", mimeType: "image/png", size: 100 }],
+    agentMentions: [{ range: [0, 8] as [number, number], handle: "agent:node:ep1" }],
+    promptRequestId: "req-12345",
+    queueable: true,
+  };
+
+  const p2 = h.queue.submit(fullMetadata);
+  expect(h.queue.queueLength("relay:chat-user", "backend", "relay:backend")).toBe(1);
   h.resolveNext();
   await p1;
   await tick();
   h.resolveNext();
   await p2;
 
-  expect(drainedIsOwner).toBe(true);
+  expect(drainedReq).toMatchObject({
+    chatKey: "relay:chat-user",
+    sessionAlias: "backend",
+    boundSessionAlias: "relay:backend",
+    text: "second",
+    senderId: "alice",
+    isOwner: true,
+    accountId: "acct-999",
+    preserveCoordinatorRoute: true,
+    media: [{ id: "m1", kind: "image", filePath: "/tmp/img.png", mimeType: "image/png", size: 100 }],
+    agentMentions: [{ range: [0, 8], handle: "agent:node:ep1" }],
+    turnStarted: {
+      prompt: "second",
+      promptRequestId: "req-12345",
+    },
+  });
 });

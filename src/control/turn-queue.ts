@@ -185,6 +185,7 @@ export class TurnQueue {
         allowRestoreArchived: false,
         ...(params.isOwner !== undefined ? { isOwner: params.isOwner } : {}),
         ...(params.preserveCoordinatorRoute !== undefined ? { preserveCoordinatorRoute: params.preserveCoordinatorRoute } : {}),
+        ...(params.accountId !== undefined ? { accountId: params.accountId } : {}),
         ...(params.media !== undefined ? { media: params.media } : {}),
         ...(params.agentMentions !== undefined ? { agentMentions: params.agentMentions } : {}),
         ...(params.promptRequestId !== undefined ? { promptRequestId: params.promptRequestId } : {}),
@@ -252,6 +253,7 @@ export class TurnQueue {
             allowRestoreArchived: params.allowRestoreArchived,
             ...(params.isOwner !== undefined ? { isOwner: params.isOwner } : {}),
             ...(params.preserveCoordinatorRoute !== undefined ? { preserveCoordinatorRoute: params.preserveCoordinatorRoute } : {}),
+            ...(params.accountId !== undefined ? { accountId: params.accountId } : {}),
             ...(params.media !== undefined ? { media: params.media } : {}),
             ...(params.agentMentions !== undefined ? { agentMentions: params.agentMentions } : {}),
             ...(params.promptRequestId !== undefined ? { promptRequestId: params.promptRequestId } : {}),
@@ -438,6 +440,7 @@ export class TurnQueue {
         preserveCoordinatorRoute: next.preserveCoordinatorRoute,
         ...(next.isOwner !== undefined ? { isOwner: next.isOwner } : {}),
         ...(next.accountId !== undefined ? { accountId: next.accountId } : {}),
+        ...(next.media !== undefined ? { media: next.media } : {}),
         ...(next.agentMentions !== undefined ? { agentMentions: next.agentMentions } : {}),
         turnStarted,
       });
