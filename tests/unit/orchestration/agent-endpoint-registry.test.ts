@@ -181,7 +181,9 @@ test("derives worker activity status and summary from orchestration task state",
     coordinatorSession: "coordinator",
     sourceHandle: "workerB",
   });
-  const workerAIdle = endpoints.find((e) => e.address.endpointId === "endpoint_worker-a");
+  const workerAIdle = endpoints.find(
+    (e) => e.address.endpointId === "endpoint_worker-a",
+  );
   expect(workerAIdle?.activity.status).toBe("idle");
   expect(workerAIdle?.activity.summary).toBe("Idle (worker-a-role)");
   expect(workerAIdle?.displayName).toBe("worker-a-role");
@@ -209,9 +211,13 @@ test("derives worker activity status and summary from orchestration task state",
     coordinatorSession: "coordinator",
     sourceHandle: "workerB",
   });
-  const workerARunning = endpoints.find((e) => e.address.endpointId === "endpoint_worker-a");
+  const workerARunning = endpoints.find(
+    (e) => e.address.endpointId === "endpoint_worker-a",
+  );
   expect(workerARunning?.activity.status).toBe("working");
-  expect(workerARunning?.activity.summary).toBe("Implementing User OAuth Migration");
+  expect(workerARunning?.activity.summary).toBe(
+    "Implementing User OAuth Migration",
+  );
   // Must NEVER expose the raw prompt text
   expect(JSON.stringify(workerARunning)).not.toContain("Secret raw prompt");
 
@@ -221,7 +227,9 @@ test("derives worker activity status and summary from orchestration task state",
     coordinatorSession: "coordinator",
     sourceHandle: "workerB",
   });
-  const workerAWaiting = endpoints.find((e) => e.address.endpointId === "endpoint_worker-a");
+  const workerAWaiting = endpoints.find(
+    (e) => e.address.endpointId === "endpoint_worker-a",
+  );
   expect(workerAWaiting?.activity.status).toBe("waiting");
   expect(workerAWaiting?.activity.summary).toBe("Waiting for confirmation");
 });
@@ -281,11 +289,21 @@ test("archived sessions are excluded from candidates, reachable list, and target
     coordinatorSession: "coordinator",
     sourceHandle: "workerA",
   });
-  expect(reachable.some((e) => e.address.endpointId === "33333333-3333-4333-8333-333333333333")).toBe(false);
-  expect(reachable.some((e) => e.displayName === "Archived Specialist")).toBe(false);
+  expect(
+    reachable.some(
+      (e) => e.address.endpointId === "33333333-3333-4333-8333-333333333333",
+    ),
+  ).toBe(false);
+  expect(reachable.some((e) => e.displayName === "Archived Specialist")).toBe(
+    false,
+  );
 
   const published = await registry.getPublishedEndpoints();
-  expect(published.some((e) => e.endpointId === "33333333-3333-4333-8333-333333333333")).toBe(false);
+  expect(
+    published.some(
+      (e) => e.endpointId === "33333333-3333-4333-8333-333333333333",
+    ),
+  ).toBe(false);
 
   const sender = await registry.resolveSender({
     coordinatorSession: "coordinator",
@@ -295,7 +313,9 @@ test("archived sessions are excluded from candidates, reachable list, and target
     nodeId,
     endpointId: "33333333-3333-4333-8333-333333333333",
   });
-  await expect(registry.resolveTarget(sender, archivedHandle)).rejects.toMatchObject<Partial<AgentMessagingError>>({
+  await expect(
+    registry.resolveTarget(sender, archivedHandle),
+  ).rejects.toMatchObject<Partial<AgentMessagingError>>({
     code: "TARGET_NOT_REACHABLE",
   });
 
@@ -312,12 +332,18 @@ test("resolveSelector resolves a unique match by displayName, workspace, or agen
   const sender = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
 
   // Match by displayName (case-insensitive with trimming)
-  const byName = await registry.resolveSelector(sender, { displayName: "  reviewer  " });
+  const byName = await registry.resolveSelector(sender, {
+    displayName: "  reviewer  ",
+  });
   expect(byName.endpoint.address.endpointId).toBe("endpoint_worker-b");
 
   // Match by logical session alias
-  const byAlias = await registry.resolveSelector(sender, { displayName: "main" });
-  expect(byAlias.endpoint.address.endpointId).toBe("22222222-2222-4222-8222-222222222222");
+  const byAlias = await registry.resolveSelector(sender, {
+    displayName: "main",
+  });
+  expect(byAlias.endpoint.address.endpointId).toBe(
+    "22222222-2222-4222-8222-222222222222",
+  );
 
   // Match by agent
   const byAgent = await registry.resolveSelector(sender, { agent: "gemini" });
@@ -452,10 +478,61 @@ test("logical session endpoint reflects active status when isSessionActive retur
     isSessionActive: (alias) => alias === "backend",
   });
   const endpoints = await activeRegistry.getPublishedEndpoints();
-  const ep = endpoints.find((e) => e.endpointId === "33333333-3333-4333-8333-333333333333");
+  const ep = endpoints.find(
+    (e) => e.endpointId === "33333333-3333-4333-8333-333333333333",
+  );
   expect(ep).toBeDefined();
   expect(ep!.state).toBe("running");
   expect(ep!.activity).toEqual({ status: "working" });
+});
+test("getPublishedEndpoints publishes sessionAlias and displayName separately for logical sessions", async () => {
+  const state = createEmptyState();
+  state.sessions.withCustomName = {
+    alias: "weixin:omp-2",
+    display_name: "发布机器人",
+    agent: "codex",
+    workspace: "weacpx-github",
+    transport_session: "coordinator",
+    logical_session_id: "44444444-4444-4444-4444-444444444444",
+    created_at: "2026-08-18T00:00:00.000Z",
+    last_used_at: "2026-08-18T00:00:00.000Z",
+  };
+  state.sessions.plain = {
+    alias: "omp-3",
+    agent: "claude",
+    workspace: "weacpx-github",
+    transport_session: "coordinator",
+    logical_session_id: "55555555-5555-5555-5555-555555555555",
+    created_at: "2026-08-18T00:00:00.000Z",
+    last_used_at: "2026-08-18T00:00:00.000Z",
+  };
+
+  const reg = new AgentEndpointRegistry({
+    nodeId,
+    loadState: async () => state,
+  });
+
+  const endpoints = await reg.getPublishedEndpoints();
+  const customEp = endpoints.find(
+    (e) => e.endpointId === "44444444-4444-4444-4444-444444444444",
+  );
+  const plainEp = endpoints.find(
+    (e) => e.endpointId === "55555555-5555-5555-5555-555555555555",
+  );
+
+  expect(customEp).toMatchObject({
+    displayName: "发布机器人",
+    sessionAlias: "omp-2",
+    agent: "codex",
+    workspace: "weacpx-github",
+  });
+
+  expect(plainEp).toMatchObject({
+    displayName: "omp-3",
+    sessionAlias: "omp-3",
+    agent: "claude",
+    workspace: "weacpx-github",
+  });
 });
 
 test("resolveSelector throws TARGET_NOT_FOUND when selector is empty object", async () => {
