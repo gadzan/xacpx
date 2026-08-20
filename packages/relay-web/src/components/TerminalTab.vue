@@ -14,7 +14,10 @@ import { useConnectionStore } from "../stores/connection";
 import { useInstancesStore } from "../stores/instances";
 import { TerminalRequestError, isRetryableTerminalError } from "../api/events";
 
-const props = defineProps<{ instanceId: string; sessionAlias: string }>();
+const props = withDefaults(
+  defineProps<{ instanceId: string; sessionAlias: string; active?: boolean }>(),
+  { active: true },
+);
 // Close is owned by the center tab strip → Dashboard requestCloseTerminal (global terminate).
 defineEmits<{ close: [] }>();
 
@@ -180,7 +183,43 @@ function isCoarsePointer(): boolean {
 // opens/closes. Fed by bindTerminalKeyboardInset (debounced measurement).
 const keyboardInset = ref(0);
 
+async function nextLayoutFrame(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => resolve());
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
 
+/**
+ * terminal-open creates (or resumes) the backend PTY at the supplied geometry.
+ * Do not send the adapter's 80x24 construction bootstrap: xterm.js loads its
+ * CSS/font asynchronously, so first wait until it is open, then derive the
+ * actual host-fit grid. A few layout-frame retries cover the rare case where
+ * the xterm screen is mounted but has not received measurable layout yet.
+ */
+async function fitBeforeTerminalOpen(
+  currentAdapter: TerminalAdapter,
+  myEpoch: number,
+): Promise<{ cols: number; rows: number }> {
+  await currentAdapter.ready();
+  for (let attempt = 0; attempt < 30; attempt++) {
+    if (myEpoch !== epoch || adapter !== currentAdapter) {
+      throw new Error("terminal adapter superseded");
+    }
+    const dim = currentAdapter.fit(keyboardInset.value);
+    if (dim) {
+      if (dim.cols !== currentAdapter.cols() || dim.rows !== currentAdapter.rows()) {
+        currentAdapter.resize(dim.cols, dim.rows);
+      }
+      return dim;
+    }
+    await nextLayoutFrame();
+  }
+  throw new Error("terminal host layout unmeasurable");
+}
 
 function mapErrorCode(code: string): string {
   switch (code) {
@@ -228,6 +267,7 @@ function releaseFrontend(detachBackend: boolean): void {
 }
 
 async function openAttachment(): Promise<void> {
+  if (!props.active) return;
   releaseFrontend(true);
   const myEpoch = epoch;
   if (!props.sessionAlias || !host.value) { status.value = "idle"; return; }
@@ -271,8 +311,7 @@ async function openAttachment(): Promise<void> {
   });
 
   try {
-    const cols = currentAdapter.cols();
-    const rows = currentAdapter.rows();
+    const { cols, rows } = await fitBeforeTerminalOpen(currentAdapter, myEpoch);
     const view = await terminals.openOrResume(localKey.value, {
       instanceId: props.instanceId,
       sessionAlias: props.sessionAlias,
@@ -387,20 +426,39 @@ function onPageHide() {
 }
 
 onMounted(() => {
-  void openAttachment();
+  if (props.active) {
+    void openAttachment();
+  }
   attachInputLifecycles();
   window.addEventListener("pagehide", onPageHide);
 });
-watch(() => [props.instanceId, props.sessionAlias], () => { void openAttachment(); });
+watch(() => props.active, (active) => {
+  if (active) {
+    if (!attached.value && status.value !== "connecting") {
+      void openAttachment();
+    } else if (attached.value) {
+      viewport?.forceSync("tab-activated");
+      if (isController()) adapter?.focus();
+    }
+  }
+});
+watch(() => [props.instanceId, props.sessionAlias], () => {
+  if (props.active) {
+    void openAttachment();
+  } else {
+    releaseFrontend(true);
+    status.value = "idle";
+  }
+});
 watch(() => theme.mode, () => adapter?.setTheme(currentTheme()));
 watch(() => conn.online, (online) => {
-  if (online && status.value === "error") {
+  if (online && status.value === "error" && props.active) {
     autoRetried = false;
     void openAttachment();
   }
 });
 watch(() => instances.byId(props.instanceId)?.online, (online) => {
-  if (online && status.value === "error") {
+  if (online && status.value === "error" && props.active) {
     autoRetried = false;
     void openAttachment();
   }

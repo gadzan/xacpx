@@ -127,6 +127,226 @@ test("late timed-out create compensates via compensateTimedOutOpen", async () =>
   expect(responses).toHaveLength(1);
 });
 
+test("late timed-out resumed controller is compensated without resizing shared pane", async () => {
+  let release!: (value: {
+    terminalId: string;
+    generation: string;
+    attachmentId: string;
+    role: "controller";
+    viewerCount: number;
+    openKind: "resumed";
+  }) => void;
+  const openGate = new Promise<{
+    terminalId: string;
+    generation: string;
+    attachmentId: string;
+    role: "controller";
+    viewerCount: number;
+    openKind: "resumed";
+  }>((resolve) => {
+    release = resolve;
+  });
+  const compensateTimedOutOpen = mock(async () => {});
+  const resize = mock(async () => {});
+  const runtime = {
+    openOrResume: mock(async () => openGate),
+    compensateTimedOutOpen,
+    resize,
+    detach: mock(() => {}),
+  };
+
+  const responses: unknown[] = [];
+  const timers: Array<{ fn: () => void; ms: number }> = [];
+  const done = handleTerminalRequest(
+    runtime as never,
+    {
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "t-open-late-resume",
+      type: MSG.terminalOpen,
+      payload: {
+        chatKey: "relay:u1",
+        sessionAlias: "demo",
+        viewerId: "v1",
+        cols: 132,
+        rows: 47,
+      },
+      requestDeadlineAt: 1_050,
+      requestBudgetMs: 50,
+    },
+    (payload) => responses.push(payload),
+    {
+      now: () => 1_000,
+      setTimeoutFn: (fn, ms) => {
+        timers.push({ fn, ms });
+        return timers.length;
+      },
+      clearTimeoutFn: () => {},
+    },
+  );
+
+  expect(timers).toHaveLength(1);
+  timers[0]!.fn();
+  expect(responses).toEqual([
+    expect.objectContaining({ error: expect.objectContaining({ code: "timeout" }) }),
+  ]);
+
+  const result = {
+    terminalId: "term-1",
+    generation: "g1",
+    attachmentId: "att-late",
+    role: "controller" as const,
+    viewerCount: 1,
+    openKind: "resumed" as const,
+  };
+  release(result);
+  await done;
+
+  expect(resize).not.toHaveBeenCalled();
+  expect(compensateTimedOutOpen).toHaveBeenCalledWith(result);
+  expect(responses).toHaveLength(1);
+});
+
+test("authoritative resume resize enters commit phase and disarms deadline timer", async () => {
+  let releaseResize!: () => void;
+  const resizeGate = new Promise<void>((resolve) => {
+    releaseResize = resolve;
+  });
+  const compensateTimedOutOpen = mock(async () => {});
+  const detach = mock(() => {});
+  const clearedTimers: unknown[] = [];
+  const runtime = {
+    openOrResume: mock(async () => ({
+      terminalId: "term-1",
+      generation: "g1",
+      attachmentId: "att-commit",
+      role: "controller" as const,
+      viewerCount: 1,
+      openKind: "resumed" as const,
+    })),
+    compensateTimedOutOpen,
+    resize: mock(async () => resizeGate),
+    detach,
+  };
+
+  const responses: unknown[] = [];
+  const timers: Array<{ fn: () => void; ms: number }> = [];
+  const done = handleTerminalRequest(
+    runtime as never,
+    {
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "t-open-commit",
+      type: MSG.terminalOpen,
+      payload: {
+        chatKey: "relay:u1",
+        sessionAlias: "demo",
+        viewerId: "v1",
+        cols: 132,
+        rows: 47,
+      },
+      requestDeadlineAt: 1_050,
+      requestBudgetMs: 50,
+    },
+    (payload) => responses.push(payload),
+    {
+      now: () => 1_000,
+      setTimeoutFn: (fn, ms) => {
+        timers.push({ fn, ms });
+        return timers.length;
+      },
+      clearTimeoutFn: (timer) => {
+        clearedTimers.push(timer);
+      },
+    },
+  );
+
+  // Wait for openOrResume to settle and enter the commit phase.
+  await Promise.resolve();
+  await Promise.resolve();
+
+  // openOrResume resolved before deadline -> commit phase disarmed the timer.
+  expect(clearedTimers).toEqual([1]);
+  expect(responses).toHaveLength(0);
+  // Complete resize
+  releaseResize();
+  await done;
+
+  expect(runtime.resize).toHaveBeenCalledWith("att-commit", "g1", 132, 47);
+  expect(compensateTimedOutOpen).not.toHaveBeenCalled();
+  expect(detach).not.toHaveBeenCalled();
+  expect(responses).toEqual([
+    {
+      terminalId: "term-1",
+      generation: "g1",
+      attachmentId: "att-commit",
+      role: "controller",
+      viewerCount: 1,
+    },
+  ]);
+});
+
+test("openOrResume resolving after deadlineAt but before timer callback is fenced from commit", async () => {
+  const openGate = Promise.withResolvers<unknown>();
+  const compensateTimedOutOpen = mock(async () => {});
+  const resize = mock(async () => {});
+  const runtime = {
+    openOrResume: mock(async () => openGate.promise),
+    compensateTimedOutOpen,
+    resize,
+    detach: mock(() => {}),
+  };
+  let currentTime = 1_000;
+  const timers: Array<{ fn: () => void; ms: number }> = [];
+  const responses: unknown[] = [];
+
+  const done = handleTerminalRequest(
+    runtime as never,
+    {
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "t-open-deadline-fence",
+      type: MSG.terminalOpen,
+      payload: {
+        chatKey: "relay:u1",
+        sessionAlias: "demo",
+        viewerId: "v1",
+        cols: 132,
+        rows: 47,
+      },
+      requestDeadlineAt: 1_050,
+      requestBudgetMs: 50,
+    },
+    (payload) => responses.push(payload),
+    {
+      now: () => currentTime,
+      setTimeoutFn: (fn, ms) => {
+        timers.push({ fn, ms });
+        return timers.length;
+      },
+    },
+  );
+
+  // Advance clock past deadline (1051 > 1050) WITHOUT firing the timer callback
+  currentTime = 1_051;
+  const result = {
+    terminalId: "term-1",
+    generation: "g1",
+    attachmentId: "att-late",
+    role: "controller" as const,
+    viewerCount: 1,
+    openKind: "resumed" as const,
+  };
+  openGate.resolve(result);
+  await done;
+
+  expect(resize).not.toHaveBeenCalled();
+  expect(compensateTimedOutOpen).toHaveBeenCalledWith(result);
+  expect(responses).toEqual([
+    { error: { code: "timeout", message: `rpc ${MSG.terminalOpen} exceeded request deadline` } },
+  ]);
+});
+
 test("late timed-out open strips openKind from successful wire responses", async () => {
   const runtime = {
     openOrResume: mock(async () => ({
@@ -165,6 +385,133 @@ test("late timed-out open strips openKind from successful wire responses", async
     viewerCount: 1,
   });
   expect((responses[0] as { openKind?: string }).openKind).toBeUndefined();
+});
+
+test("resumed controller is resized to requested geometry before terminal-open succeeds", async () => {
+  const order: string[] = [];
+  const resize = mock(async () => { order.push("resize"); });
+  const detach = mock(() => { order.push("detach"); });
+  const runtime = {
+    openOrResume: mock(async () => {
+      order.push("open");
+      return {
+        terminalId: "term-1",
+        generation: "g1",
+        attachmentId: "att-1",
+        role: "controller" as const,
+        viewerCount: 1,
+        openKind: "resumed" as const,
+      };
+    }),
+    resize,
+    detach,
+  };
+  const responses: unknown[] = [];
+  await handleTerminalRequest(
+    runtime as never,
+    {
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "t-resume",
+      type: MSG.terminalOpen,
+      payload: {
+        chatKey: "relay:u1",
+        sessionAlias: "demo",
+        viewerId: "v1",
+        cols: 132,
+        rows: 47,
+      },
+    },
+    (payload) => responses.push(payload),
+  );
+
+  expect(order).toEqual(["open", "resize"]);
+  expect(resize).toHaveBeenCalledWith("att-1", "g1", 132, 47);
+  expect(detach).not.toHaveBeenCalled();
+  expect(responses[0]).toEqual({
+    terminalId: "term-1",
+    generation: "g1",
+    attachmentId: "att-1",
+    role: "controller",
+    viewerCount: 1,
+  });
+});
+
+test("resumed spectator never resizes the shared pane", async () => {
+  const resize = mock(async () => {});
+  const runtime = {
+    openOrResume: mock(async () => ({
+      terminalId: "term-1",
+      generation: "g1",
+      attachmentId: "att-2",
+      role: "spectator" as const,
+      viewerCount: 2,
+      openKind: "resumed" as const,
+    })),
+    resize,
+  };
+  const responses: unknown[] = [];
+  await handleTerminalRequest(
+    runtime as never,
+    {
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "t-spectator",
+      type: MSG.terminalOpen,
+      payload: {
+        chatKey: "relay:u1",
+        sessionAlias: "demo",
+        viewerId: "v2",
+        cols: 150,
+        rows: 50,
+      },
+    },
+    (payload) => responses.push(payload),
+  );
+
+  expect(resize).not.toHaveBeenCalled();
+  expect(responses).toHaveLength(1);
+});
+
+test("resumed controller resize failure rolls back the unpublished attachment", async () => {
+  const detach = mock(() => {});
+  const runtime = {
+    openOrResume: mock(async () => ({
+      terminalId: "term-1",
+      generation: "g1",
+      attachmentId: "att-1",
+      role: "controller" as const,
+      viewerCount: 1,
+      openKind: "resumed" as const,
+    })),
+    resize: mock(async () => {
+      throw new Error("resize failed");
+    }),
+    detach,
+  };
+  const responses: unknown[] = [];
+  await handleTerminalRequest(
+    runtime as never,
+    {
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "t-resume-fail",
+      type: MSG.terminalOpen,
+      payload: {
+        chatKey: "relay:u1",
+        sessionAlias: "demo",
+        viewerId: "v1",
+        cols: 132,
+        rows: 47,
+      },
+    },
+    (payload) => responses.push(payload),
+  );
+
+  expect(detach).toHaveBeenCalledWith("att-1");
+  expect(responses).toEqual([
+    { error: { code: "terminal-rmux-unavailable", message: "resize failed" } },
+  ]);
 });
 
 test("malformed terminal-open payload returns invalid-payload and does not call runtime", async () => {

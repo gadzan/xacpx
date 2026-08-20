@@ -366,3 +366,34 @@ test("clicking the tab strip's own X button terminates after confirm", async () 
 
   expect(terminateSpy).toHaveBeenCalledWith(localKey);
 });
+
+test("background terminal tab receives active=false, becomes active=true when switched to", async () => {
+  const termStub = {
+    name: "TerminalTab",
+    props: ["active", "instanceId", "sessionAlias"],
+    template: '<div data-test="stub-term" :data-active="active" />',
+    emits: ["close"],
+  };
+  const wrapper = mount(DashboardView, { global: { stubs: { ...stubs, TerminalTab: termStub } } });
+  await flushPromises();
+  const key = selectSession();
+  await flushPromises();
+
+  const centerTabs = useCenterTabsStore();
+  centerTabs.openTerminal(key);
+  await flushPromises();
+  // Open file to put terminal in background
+  centerTabs.openFile(key, "README.md");
+  await flushPromises();
+
+  const term = wrapper.findComponent(termStub);
+  expect(term.exists()).toBe(true);
+  expect(term.props("active")).toBe(false);
+
+  // Switch back to terminal
+  const termTabId = centerTabs.tabsFor(key).find((t) => t.kind === "terminal")!.id;
+  centerTabs.setActive(key, termTabId);
+  await flushPromises();
+
+  expect(term.props("active")).toBe(true);
+});

@@ -10,12 +10,19 @@ test.describe("terminal viewport", () => {
     expect(grid.cols === 80 && grid.rows === 24).toBe(false);
     expect(grid.cols).toBeGreaterThan(20);
     expect(grid.rows).toBeGreaterThan(10);
+    // The backend terminal-open must be born at the measured browser grid.
+    // A later resize is no longer allowed to repair an 80x24 bootstrap PTY.
+    expect(hub.lastOpen).not.toBeNull();
+    expect(hub.lastOpen!.cols).toBe(grid.cols);
+    expect(hub.lastOpen!.rows).toBe(grid.rows);
+    expect(hub.lastOpen!.cols === 80 && hub.lastOpen!.rows === 24).toBe(false);
     // Sub-cell remainder is expected (items-center); never a whole unused cell.
     expect(grid.remainder).toBeLessThan(grid.screenWidth / grid.cols + 1);
-    expect(hub.resizes.length).toBeGreaterThan(0);
-    const last = hub.resizes.at(-1)!;
-    expect(last.cols).toBe(grid.cols);
-    expect(last.rows).toBe(grid.rows);
+    if (hub.resizes.length > 0) {
+      const last = hub.resizes.at(-1)!;
+      expect(last.cols).toBe(grid.cols);
+      expect(last.rows).toBe(grid.rows);
+    }
   });
 
   test("late rebase rebuilds at the keyframe size then re-fits the host", async ({ page, hub }) => {
@@ -31,8 +38,9 @@ test.describe("terminal viewport", () => {
     const after = await readTerminalGrid(page);
     expect(after.rows).toBe(before.rows);
     expect(after.cols === 80 && after.rows === 24).toBe(false);
-    // Controller may re-push the host geometry; store dedupe owns exact count.
-    expect(hub.resizes.length).toBeGreaterThanOrEqual(resizesBefore);
+    // Authoritative rebase (80x24) updates syncedResize belief, so the
+    // subsequent forceSync sends a corrective resize back to host dimensions.
+    expect(hub.resizes.length).toBeGreaterThan(resizesBefore);
     const last = hub.resizes.at(-1)!;
     expect(last.cols).toBe(after.cols);
     expect(last.rows).toBe(after.rows);

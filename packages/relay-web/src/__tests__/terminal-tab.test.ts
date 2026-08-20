@@ -10,6 +10,7 @@ import type { TerminalAttachmentView } from "../stores/terminal";
 enableAutoUnmount(afterEach);
 
 const adapter = {
+  ready: vi.fn(async () => {}),
   write: vi.fn(async () => {}),
   resize: vi.fn(),
   dispose: vi.fn(),
@@ -454,7 +455,10 @@ describe("TerminalTab", () => {
     // grid, and nothing re-fires ResizeObserver - settling syncs must re-fit.
     vi.useFakeTimers();
     try {
-      adapter.fit.mockReturnValueOnce({ cols: 80, rows: 24 }).mockReturnValue({ cols: 150, rows: 45 });
+      adapter.fit
+        .mockReturnValueOnce({ cols: 80, rows: 24 })
+        .mockReturnValueOnce({ cols: 80, rows: 24 })
+        .mockReturnValue({ cols: 150, rows: 45 });
       mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
       await vi.advanceTimersByTimeAsync(0);
       // The adapter starts at 80x24, so the first fit is a local no-op - the
@@ -586,6 +590,38 @@ describe("TerminalTab", () => {
       expect(adapter.resize).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
+      adapter.fit.mockReturnValue({ cols: 80, rows: 24 });
+    }
+  });
+
+  it("does not open attachment on mount when active is false, opens when activated", async () => {
+    const w = mount(TerminalTab, {
+      props: { instanceId: "i1", sessionAlias: "demo", active: false },
+      global: globalOpts,
+    });
+    await flushPromises();
+    expect(openOrResume).not.toHaveBeenCalled();
+    expect(createTerminalAdapter).not.toHaveBeenCalled();
+
+    // Activating opens with fitted geometry
+    adapter.fit.mockReturnValue({ cols: 120, rows: 35 });
+    try {
+      await w.setProps({ active: true });
+      await flushPromises();
+      expect(openOrResume).toHaveBeenCalledWith("i1\0demo", expect.objectContaining({ cols: 120, rows: 35 }));
+      expect(createTerminalAdapter).toHaveBeenCalled();
+
+      // Deactivating keeps the attachment warm (no detach)
+      await w.setProps({ active: false });
+      await flushPromises();
+      expect(detach).not.toHaveBeenCalled();
+
+      // Reactivating does not reopen, stays attached
+      openOrResume.mockClear();
+      await w.setProps({ active: true });
+      await flushPromises();
+      expect(openOrResume).not.toHaveBeenCalled();
+    } finally {
       adapter.fit.mockReturnValue({ cols: 80, rows: 24 });
     }
   });

@@ -247,9 +247,43 @@ export async function handleTerminalRequest(
           cols: p.cols,
           rows: p.rows,
         });
-        if (timedOut) {
+        const deadlineMissed =
+          timedOut ||
+          (deadlineAt !== undefined && now() >= deadlineAt);
+        if (deadlineMissed) {
+          if (!timedOut) {
+            timedOut = true;
+            respondOnce(errorPayload(
+              "timeout",
+              `rpc ${envelope.type} exceeded request deadline`,
+            ));
+          }
           void runtime.compensateTimedOutOpen(result).catch(() => {});
           return true;
+        }
+        // Commit phase: once openOrResume succeeds in time, disarm the request
+        // timer so the connector does not declare a timeout mid-resize after
+        // committing to the attachment and authoritative geometry convergence.
+        if (timer !== undefined) {
+          clearTimeoutFn(timer);
+          timer = undefined;
+        }
+        // A create already passes the requested geometry into driver.create().
+        // A resume used to ignore it completely and relied on a later browser
+        // fire-and-forget resize, so a stale 80x24 pane could survive a refresh
+        // indefinitely. The controller open is authoritative: converge the
+        // durable pane before acknowledging terminal-open. Spectators never
+        // resize the shared pane.
+        if (result.openKind === "resumed" && result.role === "controller") {
+          try {
+            await runtime.resize(result.attachmentId, result.generation, p.cols, p.rows);
+          } catch (err) {
+            // The Hub has not seen this attachment yet. Roll it back so a
+            // failed authoritative resize cannot leave a phantom viewer bound
+            // to a terminal-open request that returns an error.
+            runtime.detach(result.attachmentId);
+            throw err;
+          }
         }
         respondOnce(toTerminalOpenWireResult(result));
         return true;
@@ -261,7 +295,7 @@ export async function handleTerminalRequest(
           return true;
         }
         const result = await runtime.takeControl(p.attachmentId, p.generation);
-        if (timedOut) return true;
+        if (timedOut || (deadlineAt !== undefined && now() >= deadlineAt)) return true;
         respondOnce(result);
         return true;
       }
@@ -272,7 +306,7 @@ export async function handleTerminalRequest(
           return true;
         }
         await runtime.resync(p.attachmentId, p.generation);
-        if (timedOut) return true;
+        if (timedOut || (deadlineAt !== undefined && now() >= deadlineAt)) return true;
         respondOnce({ ok: true });
         return true;
       }
@@ -289,7 +323,7 @@ export async function handleTerminalRequest(
         });
         // Late terminate after Hub timeout is still useful cleanup; respond if
         // the Hub is still waiting, otherwise leave the side effect alone.
-        if (timedOut) return true;
+        if (timedOut || (deadlineAt !== undefined && now() >= deadlineAt)) return true;
         respondOnce(result);
         return true;
       }
