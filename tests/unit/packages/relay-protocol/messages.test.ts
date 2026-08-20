@@ -11,6 +11,7 @@ import {
   type InstanceAuthPayload,
   type InstanceRegisterPayload,
 } from "../../../../packages/relay-protocol/src/messages";
+import { parseControlPayload } from "../../../../packages/relay-protocol/src/payload-validators";
 import type { AgentCatalogEntryDto } from "../../../../packages/relay-protocol/src/dtos";
 
 test("message type constants are namespaced and unique", () => {
@@ -37,6 +38,7 @@ test("new control message types exist with the control. prefix", () => {
   expect(MSG.agentsCreate).toBe("control.agents.create");
   expect(MSG.agentsRemove).toBe("control.agents.remove");
   expect(MSG.workspacesRemove).toBe("control.workspaces.remove");
+  expect(MSG.fsBrowse).toBe("control.fs.browse");
 });
 
 test("recoverable terminal message types use the instance.terminal namespace", () => {
@@ -92,4 +94,12 @@ test("InstanceRegisterPayload and InstanceAuthPayload accept optional capabiliti
   };
   expect(reg.capabilities).toHaveLength(1);
   expect(auth.capabilities).toEqual([]);
+});
+
+test("fsBrowse payload validator accepts empty and path payloads, rejects non-string path", () => {
+  expect(parseControlPayload(MSG.fsBrowse, {})).toEqual({});
+  expect(parseControlPayload(MSG.fsBrowse, { path: "/srv" })).toEqual({ path: "/srv" });
+  expect(parseControlPayload(MSG.fsBrowse, { path: "~" })).toEqual({ path: "~" });
+  expect(parseControlPayload(MSG.fsBrowse, { path: 42 })).toBeNull();
+  expect(parseControlPayload(MSG.fsBrowse, "nope")).toBeNull();
 });

@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { X, Loader2, AlertTriangle, ChevronDown } from "lucide-vue-next";
+import { X, Loader2, AlertTriangle, ChevronDown, FolderOpen } from "lucide-vue-next";
 import type { NativeSessionDto } from "@ganglion/xacpx-relay-protocol";
 import { useInstancesStore } from "../stores/instances";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { genAlias, uniqueName, workspaceNameFromPath } from "../lib/session-form";
 import { fmtDateTime } from "../lib/format";
 import SelectMenu, { type SelectGroup } from "./SelectMenu.vue";
+import DirectoryPicker from "./DirectoryPicker.vue";
 
 // presetAgent / presetWorkspace: seed the pickers (group-header ＋ in the grouped
 // sidebar prefills its own group). Still changeable — they only override the default
@@ -32,6 +33,13 @@ const sessionSource = ref<"new" | "native">("new"); // fresh transport session v
 const wsMode = ref<"existing" | "path">("existing");
 const workspaceSel = ref("");
 const workspacePath = ref("");
+const browsing = ref(false);           // directory picker overlay (new-path mode)
+// The picker emits confirm then close itself, but closing here too keeps the
+// invariant local to the parent: a confirmed path always dismisses the picker.
+function onBrowseConfirm(p: string): void {
+  workspacePath.value = p;
+  browsing.value = false;
+}
 const model = ref("");                  // model override; empty = agent default ("default")
 const modelSuggestions = ref<string[]>([]); // hints from existing same-agent sessions
 // Themed combobox state (a native <datalist> renders an unstyleable white OS popup that
@@ -392,9 +400,16 @@ async function submit(): Promise<void> {
               </div>
             </div>
             <SelectMenu v-if="wsMode === 'existing'" v-model="workspaceSel" :groups="workspaceGroups" data-test="ns-workspace" :aria-label='$t("session.workspace")' :placeholder='$t("session.selectWorkspace")' />
-            <input v-else v-model="workspacePath" data-test="ns-ws-path" :placeholder='$t("session.pathPlaceholder")'
-                   class="w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+            <div v-else class="flex gap-2">
+              <input v-model="workspacePath" data-test="ns-ws-path" :placeholder='$t("session.pathPlaceholder")'
+                     class="min-w-0 flex-1 rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" />
+              <button type="button" data-test="ns-ws-browse" :title='$t("session.browsePath")' :aria-label='$t("session.browsePath")'
+                      class="grid h-[38px] w-[38px] shrink-0 place-items-center rounded-lg border border-border text-fg-muted hover:bg-fg/5 hover:text-fg"
+                      @click="browsing = true"><FolderOpen :size="16" /></button>
+            </div>
           </div>
+          <DirectoryPicker v-if="browsing" :instance-id="instanceId" :initial-path="workspacePath.trim() || undefined"
+                           @confirm="onBrowseConfirm" @close="browsing = false" />
 
           <!-- Model override (fresh sessions only). Editable: pick a suggested model or
                type any id. Blank/"default" keeps the agent's default model. Native attach

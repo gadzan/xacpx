@@ -52,6 +52,11 @@
   - `control.agents.create {name,driver}`：按名+driver 新建 agent 并持久化进实例 config。
   - `control.agents.remove {name}`：删除 agent；若有现存会话正在用该 agent，则以 in-use 错误拒绝。
   - `control.workspaces.remove {name}`：删除 workspace；若有现存会话正在用该 workspace，则以 in-use 错误拒绝。
+  - `control.fs.browse {path?}`：config-global、目录-only 的实例文件系统浏览（供 Web
+    目录选择器选新 workspace cwd）；空/`~` 为 home，相对路径按 home 解析；只返回目录
+    名+绝对路径，响应上限 1000 条（`truncated` 标记；约束响应大小，服务端为读取整目录后排序截断），
+    不返回文件/内容/元数据。不经 WorkspaceFs 的 workspace 白名单（选择尚未注册的目录是其目的），
+    仍受 hub 账号-持有实例门约束。
   - 四者经 control-bridge 映射到 ControlService（catalog/create/remove），in-use 校验在 ControlService 内。
 - `control.sessions.create` 走**完整 transport 生命周期**（resolve→reserve→ensure→check→attach→refresh，
   经 `CommandRouter.createSessionWithTransport`）：解析 agent/workspace → 预留别名 → 在后端建/确认 acpx 命名会话

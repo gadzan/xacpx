@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import { expect, test, mock } from "bun:test";
 
 import {
@@ -48,6 +49,17 @@ function makeFakeControl(overrides: Record<string, unknown> = {}) {
       { name: "claude", driver: "claude" },
     ],
     listWorkspaces: () => [{ name: "home", cwd: "/home", description: "h" }],
+    browseDirectories: async (path?: string) => {
+      record("browseDirectories", path);
+      return {
+        path: path ?? "/home",
+        sep: "/",
+        parent: path ? dirname(path) : "/",
+        home: "/home",
+        dirs: [{ name: "proj", path: `${path ?? "/home"}/proj` }],
+        truncated: false,
+      };
+    },
     createWorkspace: async (
       name: string,
       cwd: string,
@@ -1557,4 +1569,17 @@ test("custom timeout value overrides the default for bounded RPCs", async () => 
   );
 
   expect(seams.armed.map((timer) => timer.ms)).toEqual([1_000, 1_000]);
+});
+
+test("fsBrowse maps to browseDirectories and rejects malformed payloads", async () => {
+  const { control, calls } = makeFakeControl();
+  const bridge = createControlBridge(control as never);
+  const ok = await dispatch(bridge, req(MSG.fsBrowse, { path: "/srv" }));
+  expect(calls.browseDirectories).toEqual(["/srv"]);
+  expect((ok as { path: string }).path).toBe("/srv");
+  const bad = await dispatch(bridge, req(MSG.fsBrowse, { path: 7 }));
+  expect(bad).toMatchObject({ error: { code: "invalid-payload" } });
+  expect(await dispatch(bridge, req(MSG.fsBrowse, {}))).toMatchObject({
+    path: "/home",
+  });
 });

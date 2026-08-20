@@ -386,4 +386,17 @@ describe("NewSessionDialog", () => {
     expect(wrapper.emitted("created")?.[0]).toEqual(["backend"]);
     expect(wrapper.emitted("close")).toBeTruthy();
   });
+
+  it("browse button fills the path field from the picker's confirm", async () => {
+    const { wrapper } = mountDialog();
+    await flushPromises();
+    await wrapper.get('[data-test="ns-ws-mode-path"]').trigger("click");
+    await wrapper.get('[data-test="ns-ws-browse"]').trigger("click");
+    expect(wrapper.findComponent({ name: "DirectoryPicker" }).exists()).toBe(true);
+    await wrapper.findComponent({ name: "DirectoryPicker" }).vm.$emit("confirm", "/srv/app");
+    await flushPromises();
+    expect((wrapper.get('[data-test="ns-ws-path"]').element as HTMLInputElement).value).toBe("/srv/app");
+    // picker closed after confirm
+    expect(wrapper.findComponent({ name: "DirectoryPicker" }).exists()).toBe(false);
+  });
 });

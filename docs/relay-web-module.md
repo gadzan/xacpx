@@ -167,6 +167,11 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 - **workspace 选或输路径**：workspace 控件可从已配置项里选，也可直接**输入一个路径**——输入路径时按其
   basename 自动新建一个 workspace（提交时先 `control.workspaces.create` 持久化，再
   `control.sessions.create` 在其中建会话）。
+- **目录选择器（`DirectoryPicker.vue`）**：「新路径」输入框旁的文件夹按钮打开一个浏览
+  **目标实例文件系统**的目录选择弹窗（RPC `control.fs.browse`，跨实例——实例在哪台机器
+  上就浏览哪台）；路径框 Enter 跳转、面包屑/主目录/上一级快捷键、隐藏目录开关、
+  ↑/↓/Enter/Backspace 键盘导航；导航即进入、底部「选择此目录」确认当前目录并回填。
+  迟到响应按导航序号丢弃，错误内联显示。Manage 弹窗 Workspaces 管理器的新增表单同款按钮。
 - **错误浮现**：实例侧 RPC 错误是 200 + `{error:{code,message}}`（网关 resolve 不 reject），store 的
   `unwrap()` 用 `isErrorPayload` 检出并抛出，对话框渲染错误横幅而非静默吞掉（修了旧表单「点 Create 无反应」）。
 
