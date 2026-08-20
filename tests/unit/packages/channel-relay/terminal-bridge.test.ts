@@ -127,6 +127,86 @@ test("late timed-out create compensates via compensateTimedOutOpen", async () =>
   expect(responses).toHaveLength(1);
 });
 
+test("late timed-out resumed controller is compensated without resizing shared pane", async () => {
+  let release!: (value: {
+    terminalId: string;
+    generation: string;
+    attachmentId: string;
+    role: "controller";
+    viewerCount: number;
+    openKind: "resumed";
+  }) => void;
+  const openGate = new Promise<{
+    terminalId: string;
+    generation: string;
+    attachmentId: string;
+    role: "controller";
+    viewerCount: number;
+    openKind: "resumed";
+  }>((resolve) => {
+    release = resolve;
+  });
+  const compensateTimedOutOpen = mock(async () => {});
+  const resize = mock(async () => {});
+  const runtime = {
+    openOrResume: mock(async () => openGate),
+    compensateTimedOutOpen,
+    resize,
+    detach: mock(() => {}),
+  };
+
+  const responses: unknown[] = [];
+  const timers: Array<{ fn: () => void; ms: number }> = [];
+  const done = handleTerminalRequest(
+    runtime as never,
+    {
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "t-open-late-resume",
+      type: MSG.terminalOpen,
+      payload: {
+        chatKey: "relay:u1",
+        sessionAlias: "demo",
+        viewerId: "v1",
+        cols: 132,
+        rows: 47,
+      },
+      requestDeadlineAt: 1_050,
+      requestBudgetMs: 50,
+    },
+    (payload) => responses.push(payload),
+    {
+      now: () => 1_000,
+      setTimeoutFn: (fn, ms) => {
+        timers.push({ fn, ms });
+        return timers.length;
+      },
+      clearTimeoutFn: () => {},
+    },
+  );
+
+  expect(timers).toHaveLength(1);
+  timers[0]!.fn();
+  expect(responses).toEqual([
+    expect.objectContaining({ error: expect.objectContaining({ code: "timeout" }) }),
+  ]);
+
+  const result = {
+    terminalId: "term-1",
+    generation: "g1",
+    attachmentId: "att-late",
+    role: "controller" as const,
+    viewerCount: 1,
+    openKind: "resumed" as const,
+  };
+  release(result);
+  await done;
+
+  expect(resize).not.toHaveBeenCalled();
+  expect(compensateTimedOutOpen).toHaveBeenCalledWith(result);
+  expect(responses).toHaveLength(1);
+});
+
 test("late timed-out open strips openKind from successful wire responses", async () => {
   const runtime = {
     openOrResume: mock(async () => ({
