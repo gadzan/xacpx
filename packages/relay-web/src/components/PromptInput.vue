@@ -27,7 +27,10 @@ import { useSessionControlsStore } from "../stores/session-controls";
 import { useChatStore } from "../stores/chat";
 import { useInstancesStore } from "../stores/instances";
 import { formatModelLabel } from "../lib/model-label";
-import { sessionPresentationName } from "../lib/sidebar-group-mode";
+import {
+  sessionPresentationName,
+  shortestUniqueSuffix,
+} from "../lib/sidebar-group-mode";
 import { useI18n } from "vue-i18n";
 
 const { t } = useI18n();
@@ -327,15 +330,19 @@ function formatSecondaryLine(
       );
 
       if (sameInstanceDuplicates.length > 0) {
-        const suffix =
-          item.endpointId.length > 5
-            ? `…${item.endpointId.slice(-5)}`
-            : item.endpointId;
+        const allCollidingRoutingKeys = [item, ...sameInstanceDuplicates].map(
+          (i) => `${i.nodeId}:${i.endpointId}`,
+        );
+        const targetRoutingKey = `${item.nodeId}:${item.endpointId}`;
+        const suffix = shortestUniqueSuffix(
+          targetRoutingKey,
+          allCollidingRoutingKeys,
+          5,
+        );
         parts.push(suffix);
       }
     }
   }
-
   return parts.join(" · ");
 }
 

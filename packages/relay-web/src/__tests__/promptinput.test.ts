@@ -1065,4 +1065,131 @@ describe("PromptInput composer", () => {
       "Working",
     );
   });
+
+  it("Test M: shortest unique suffix dynamically expands when last 5 characters of endpointId collide", async () => {
+    const { useInstancesStore } = await import("../stores/instances");
+    const instances = useInstancesStore();
+    instances.instances = [
+      { id: "inst-1", name: "MacBook Air", online: true },
+    ] as never;
+
+    instances.agentDirectory = [
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "endpoint_worker_A12345",
+        displayName: "Reviewer",
+        agent: "claude",
+        workspace: "project",
+        state: "idle",
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "endpoint_worker_B12345",
+        displayName: "Reviewer",
+        agent: "claude",
+        workspace: "project",
+        state: "idle",
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    await ta.setValue("Ask @Rev");
+    await ta.trigger("input");
+    await w.vm.$nextTick();
+
+    const items = w.findAll('[data-test="mention-item"]');
+    expect(items.length).toBe(2);
+
+    // Both end with "12345" (5 chars collision).
+    // The suffix MUST dynamically expand to 6 characters ("…A12345" vs "…B12345") to guarantee uniqueness!
+    expect(items[0].find('[data-test="mention-secondary"]').text()).toBe(
+      "project · claude · MacBook Air · …A12345",
+    );
+    expect(items[1].find('[data-test="mention-secondary"]').text()).toBe(
+      "project · claude · MacBook Air · …B12345",
+    );
+  });
+
+  it("Test N: cross-node identical endpointIds with duplicate instance names dynamically expand to include node discriminator", async () => {
+    const { useInstancesStore } = await import("../stores/instances");
+    const instances = useInstancesStore();
+    instances.instances = [
+      { id: "inst-1", name: "Dev Server", online: true },
+      { id: "inst-2", name: "Dev Server", online: true },
+    ] as never;
+
+    instances.agentDirectory = [
+      {
+        instanceId: "inst-1",
+        nodeId: "node-alpha",
+        endpointId: "endpoint_worker_default",
+        displayName: "Backend",
+        agent: "codex",
+        workspace: "project",
+        state: "idle",
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+      {
+        instanceId: "inst-2",
+        nodeId: "node-beta",
+        endpointId: "endpoint_worker_default",
+        displayName: "Backend",
+        agent: "codex",
+        workspace: "project",
+        state: "idle",
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    await ta.setValue("Ask @Back");
+    await ta.trigger("input");
+    await w.vm.$nextTick();
+
+    const items = w.findAll('[data-test="mention-item"]');
+    expect(items.length).toBe(2);
+
+    // endpointId is identical across two nodes ("endpoint_worker_default").
+    // The suffix MUST dynamically expand until the node discriminator is included!
+    expect(items[0].find('[data-test="mention-secondary"]').text()).toBe(
+      "project · codex · Dev Server · …ha:endpoint_worker_default",
+    );
+    expect(items[1].find('[data-test="mention-secondary"]').text()).toBe(
+      "project · codex · Dev Server · …ta:endpoint_worker_default",
+    );
+  });
 });
