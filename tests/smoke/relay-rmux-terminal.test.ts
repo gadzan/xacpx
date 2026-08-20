@@ -133,13 +133,26 @@ async function collectUntil(
 }
 
 function recoveryText(events: RmuxRecoveryEvent[]): string {
-  const decoder = new TextDecoder();
-  let text = "";
+  const chunks: Uint8Array[] = [];
+  let total = 0;
   for (const event of events) {
-    if (event.type === "rebase") text += decoder.decode(event.keyframe);
-    if (event.type === "bytes") text += decoder.decode(event.data);
+    const bytes =
+      event.type === "rebase"
+        ? event.keyframe
+        : event.type === "bytes"
+          ? event.data
+          : null;
+    if (!bytes) continue;
+    chunks.push(bytes);
+    total += bytes.byteLength;
   }
-  return text;
+  const joined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(joined);
 }
 
 function hasRebase(events: RmuxRecoveryEvent[]): boolean {
