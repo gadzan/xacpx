@@ -441,18 +441,21 @@ impl BridgeState {
         (
             BRIDGE_VERSION.to_owned(),
             "0.10.0".to_owned(),
-            bridge_capabilities(),
+            bridge_capabilities(std::env::consts::FAMILY),
         )
     }
 }
 
-fn bridge_capabilities() -> Vec<String> {
-    vec![
+fn bridge_capabilities(family: &str) -> Vec<String> {
+    let mut capabilities = vec![
         "terminal.rmux.recovery.v1".to_owned(),
         "terminal.multi-view.v1".to_owned(),
         "process-owned.v1".to_owned(),
-        POSIX_WEB_TERMINAL_DIALECT_CAPABILITY.to_owned(),
-    ]
+    ];
+    if family == "unix" {
+        capabilities.push(POSIX_WEB_TERMINAL_DIALECT_CAPABILITY.to_owned());
+    }
+    capabilities
 }
 
 /// Process environment overrides for xacpx-created shell work windows.
@@ -632,9 +635,11 @@ mod tests {
     }
 
     #[test]
-    fn bridge_capabilities_publish_versioned_posix_renderer_dialect() {
-        let capabilities = bridge_capabilities();
-        assert!(capabilities
+    fn bridge_capabilities_publish_renderer_dialect_only_on_posix() {
+        assert!(bridge_capabilities("unix")
+            .iter()
+            .any(|value| value == POSIX_WEB_TERMINAL_DIALECT_CAPABILITY));
+        assert!(!bridge_capabilities("windows")
             .iter()
             .any(|value| value == POSIX_WEB_TERMINAL_DIALECT_CAPABILITY));
         assert_eq!(
