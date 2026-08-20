@@ -156,8 +156,8 @@ test.skipIf(!enabled)("bundled RMUX daemon is resolved over a hostile PATH fake;
     const handle = await prod.driver.create({
       name,
       cwd,
-      cols: 80,
-      rows: 24,
+      cols: 132,
+      rows: 47,
       historyLimit: 2000,
       tags: ["xacpx:relay", "smoke:platform-package"],
       ownerLeaseTtlSeconds: 30,
@@ -170,13 +170,18 @@ test.skipIf(!enabled)("bundled RMUX daemon is resolved over a hostile PATH fake;
     await Bun.sleep(200);
     await prod.driver.input(handle.paneId, new TextEncoder().encode("echo pkg-smoke-ok\n"));
     const events = await recoveryP;
-    expect(events[0]?.type).toBe("rebase");
+    const initialRebase = events.find(
+      (event): event is Extract<RmuxRecoveryEvent, { type: "rebase" }> => event.type === "rebase",
+    );
+    expect(initialRebase).toBeDefined();
+    expect(initialRebase!.cols).toBe(132);
+    expect(initialRebase!.rows).toBe(47);
 
-    // The exact production package must also prove that a browser-sized resize
+    // The exact production package must also prove that a subsequent resize
     // reaches the native RMUX pane. Starting a fresh recovery after resize gives
     // us an authoritative rebase geometry instead of merely checking that the
     // resize RPC returned.
-    await prod.driver.resize(handle.paneId, 132, 47);
+    await prod.driver.resize(handle.paneId, 111, 39);
     const resized = await collectUntil(
       prod.driver.recover(handle.paneId),
       (next) => next.some((event) => event.type === "rebase"),
@@ -185,9 +190,8 @@ test.skipIf(!enabled)("bundled RMUX daemon is resolved over a hostile PATH fake;
       (event): event is Extract<RmuxRecoveryEvent, { type: "rebase" }> => event.type === "rebase",
     );
     expect(resizedRebase).toBeDefined();
-    expect(resizedRebase!.cols).toBe(132);
-    expect(resizedRebase!.rows).toBe(47);
-
+    expect(resizedRebase!.cols).toBe(111);
+    expect(resizedRebase!.rows).toBe(39);
     await prod.driver.kill(handle.sessionId);
     expect((await prod.driver.list()).every((e) => e.name !== name)).toBe(true);
 

@@ -14,7 +14,10 @@ import { useConnectionStore } from "../stores/connection";
 import { useInstancesStore } from "../stores/instances";
 import { TerminalRequestError, isRetryableTerminalError } from "../api/events";
 
-const props = defineProps<{ instanceId: string; sessionAlias: string }>();
+const props = withDefaults(
+  defineProps<{ instanceId: string; sessionAlias: string; active?: boolean }>(),
+  { active: true },
+);
 // Close is owned by the center tab strip → Dashboard requestCloseTerminal (global terminate).
 defineEmits<{ close: [] }>();
 
@@ -202,7 +205,7 @@ async function fitBeforeTerminalOpen(
   myEpoch: number,
 ): Promise<{ cols: number; rows: number }> {
   await currentAdapter.ready();
-  for (let attempt = 0; attempt < 8; attempt++) {
+  for (let attempt = 0; attempt < 30; attempt++) {
     if (myEpoch !== epoch || adapter !== currentAdapter) {
       throw new Error("terminal adapter superseded");
     }
@@ -215,10 +218,7 @@ async function fitBeforeTerminalOpen(
     }
     await nextLayoutFrame();
   }
-  // Extremely defensive fallback for a renderer that remains unmeasurable.
-  // Normal browser opens never take this path; the settling viewport controller
-  // still converges locally afterward.
-  return { cols: currentAdapter.cols(), rows: currentAdapter.rows() };
+  throw new Error("terminal host layout unmeasurable");
 }
 
 function mapErrorCode(code: string): string {
@@ -267,6 +267,7 @@ function releaseFrontend(detachBackend: boolean): void {
 }
 
 async function openAttachment(): Promise<void> {
+  if (!props.active) return;
   releaseFrontend(true);
   const myEpoch = epoch;
   if (!props.sessionAlias || !host.value) { status.value = "idle"; return; }
@@ -425,20 +426,39 @@ function onPageHide() {
 }
 
 onMounted(() => {
-  void openAttachment();
+  if (props.active) {
+    void openAttachment();
+  }
   attachInputLifecycles();
   window.addEventListener("pagehide", onPageHide);
 });
-watch(() => [props.instanceId, props.sessionAlias], () => { void openAttachment(); });
+watch(() => props.active, (active) => {
+  if (active) {
+    if (!attached.value && status.value !== "connecting") {
+      void openAttachment();
+    } else if (attached.value) {
+      viewport?.forceSync("tab-activated");
+      if (isController()) adapter?.focus();
+    }
+  }
+});
+watch(() => [props.instanceId, props.sessionAlias], () => {
+  if (props.active) {
+    void openAttachment();
+  } else {
+    releaseFrontend(true);
+    status.value = "idle";
+  }
+});
 watch(() => theme.mode, () => adapter?.setTheme(currentTheme()));
 watch(() => conn.online, (online) => {
-  if (online && status.value === "error") {
+  if (online && status.value === "error" && props.active) {
     autoRetried = false;
     void openAttachment();
   }
 });
 watch(() => instances.byId(props.instanceId)?.online, (online) => {
-  if (online && status.value === "error") {
+  if (online && status.value === "error" && props.active) {
     autoRetried = false;
     void openAttachment();
   }

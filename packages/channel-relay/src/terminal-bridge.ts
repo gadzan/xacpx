@@ -247,10 +247,17 @@ export async function handleTerminalRequest(
           cols: p.cols,
           rows: p.rows,
         });
-        // Once the request deadline has fired, this browser no longer owns an
-        // unpublished open. Compensation may detach/clean it up, but it must
-        // not mutate shared terminal state (notably geometry) after timeout.
-        if (timedOut) {
+        const deadlineMissed =
+          timedOut ||
+          (deadlineAt !== undefined && now() >= deadlineAt);
+        if (deadlineMissed) {
+          if (!timedOut) {
+            timedOut = true;
+            respondOnce(errorPayload(
+              "timeout",
+              `rpc ${envelope.type} exceeded request deadline`,
+            ));
+          }
           void runtime.compensateTimedOutOpen(result).catch(() => {});
           return true;
         }
@@ -288,7 +295,7 @@ export async function handleTerminalRequest(
           return true;
         }
         const result = await runtime.takeControl(p.attachmentId, p.generation);
-        if (timedOut) return true;
+        if (timedOut || (deadlineAt !== undefined && now() >= deadlineAt)) return true;
         respondOnce(result);
         return true;
       }
@@ -299,7 +306,7 @@ export async function handleTerminalRequest(
           return true;
         }
         await runtime.resync(p.attachmentId, p.generation);
-        if (timedOut) return true;
+        if (timedOut || (deadlineAt !== undefined && now() >= deadlineAt)) return true;
         respondOnce({ ok: true });
         return true;
       }
@@ -316,7 +323,7 @@ export async function handleTerminalRequest(
         });
         // Late terminate after Hub timeout is still useful cleanup; respond if
         // the Hub is still waiting, otherwise leave the side effect alone.
-        if (timedOut) return true;
+        if (timedOut || (deadlineAt !== undefined && now() >= deadlineAt)) return true;
         respondOnce(result);
         return true;
       }

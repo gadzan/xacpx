@@ -534,6 +534,42 @@ describe("terminal store", () => {
     ]);
   });
 
+  it("authoritative rebase-start updates syncedResize and allows corrective resize", async () => {
+    connectEvents((e) => { void useTerminalStore().applyEvent(e); });
+    const ws = FakeWS.instances[0];
+    ws.onopen?.();
+    const store = useTerminalStore();
+    const key = terminalLocalKey("i1", "demo");
+    await openAttached(store, key, ws, { role: "controller" });
+    store.sendResize(key, 132, 47);
+    expect(resizeFrames(ws)).toEqual([{ cols: 132, rows: 47 }]);
+    expect(store.get(key)?.syncedResize).toEqual({ cols: 132, rows: 47 });
+
+    // Late recovery arrives carrying backend authoritative 80x24 geometry.
+    await store.applyEvent({
+      kind: "terminal-rebase-start",
+      instanceId: "i1",
+      attachmentId: "a1",
+      generation: "g1",
+      epoch: 2,
+      nextSequence: 0,
+      cols: 80,
+      rows: 24,
+      alternate: false,
+      totalBytes: 0,
+      chunkCount: 0,
+    });
+    expect(store.get(key)?.syncedResize).toEqual({ cols: 80, rows: 24 });
+
+    // Viewport forceSync re-fits to local 132x47 and must NOT be swallowed.
+    store.sendResize(key, 132, 47);
+    expect(resizeFrames(ws)).toEqual([
+      { cols: 132, rows: 47 },
+      { cols: 132, rows: 47 },
+    ]);
+    expect(store.get(key)?.syncedResize).toEqual({ cols: 132, rows: 47 });
+  });
+
   it("same-role viewerCount churn keeps the synced belief (join)", async () => {
     connectEvents((e) => { void useTerminalStore().applyEvent(e); });
     const ws = FakeWS.instances[0];

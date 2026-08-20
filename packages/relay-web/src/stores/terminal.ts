@@ -265,9 +265,8 @@ export const useTerminalStore = defineStore("terminal", () => {
         viewerCount: opened.viewerCount,
         recovery: initialRecoveryState(opened.generation),
         lastErrorCode: undefined,
-        // Resume of an existing pane does NOT resize it to the browser's fit —
-        // the new binding carries no "backend already at this size" guarantee.
-        syncedResize: undefined,
+        // Controller open authoritatively converges backend geometry to requested opts.
+        syncedResize: opened.role === "controller" ? { cols: opts.cols, rows: opts.rows } : undefined,
       };
       put(view);
       // Spec §14.5: stream starts only after opened metadata is applied locally.
@@ -558,6 +557,13 @@ export const useTerminalStore = defineStore("terminal", () => {
     ) {
       const view = findByAttachmentId(event.attachmentId);
       if (!view) return;
+      let syncedResize = view.syncedResize;
+      if (event.kind === "terminal-rebase-start") {
+        // Authoritative rebase carries backend geometry — update belief so
+        // subsequent viewport.forceSync() can send a corrective resize if host
+        // dimensions differ.
+        syncedResize = { cols: event.cols, rows: event.rows };
+      }
       const inbound =
         event.kind === "terminal-rebase-start"
           ? {
@@ -596,7 +602,7 @@ export const useTerminalStore = defineStore("terminal", () => {
       if (stepped.state.phase !== "waiting") {
         waitingStreamStartInFlight.delete(view.localKey);
       }
-      put({ ...view, recovery: stepped.state });
+      put({ ...view, recovery: stepped.state, syncedResize });
       await applyRecoveryAction(view.localKey, stepped.action);
     }
   }

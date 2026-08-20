@@ -286,6 +286,67 @@ test("authoritative resume resize enters commit phase and disarms deadline timer
   ]);
 });
 
+test("openOrResume resolving after deadlineAt but before timer callback is fenced from commit", async () => {
+  const openGate = Promise.withResolvers<unknown>();
+  const compensateTimedOutOpen = mock(async () => {});
+  const resize = mock(async () => {});
+  const runtime = {
+    openOrResume: mock(async () => openGate.promise),
+    compensateTimedOutOpen,
+    resize,
+    detach: mock(() => {}),
+  };
+  let currentTime = 1_000;
+  const timers: Array<{ fn: () => void; ms: number }> = [];
+  const responses: unknown[] = [];
+
+  const done = handleTerminalRequest(
+    runtime as never,
+    {
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "t-open-deadline-fence",
+      type: MSG.terminalOpen,
+      payload: {
+        chatKey: "relay:u1",
+        sessionAlias: "demo",
+        viewerId: "v1",
+        cols: 132,
+        rows: 47,
+      },
+      requestDeadlineAt: 1_050,
+      requestBudgetMs: 50,
+    },
+    (payload) => responses.push(payload),
+    {
+      now: () => currentTime,
+      setTimeoutFn: (fn, ms) => {
+        timers.push({ fn, ms });
+        return timers.length;
+      },
+    },
+  );
+
+  // Advance clock past deadline (1051 > 1050) WITHOUT firing the timer callback
+  currentTime = 1_051;
+  const result = {
+    terminalId: "term-1",
+    generation: "g1",
+    attachmentId: "att-late",
+    role: "controller" as const,
+    viewerCount: 1,
+    openKind: "resumed" as const,
+  };
+  openGate.resolve(result);
+  await done;
+
+  expect(resize).not.toHaveBeenCalled();
+  expect(compensateTimedOutOpen).toHaveBeenCalledWith(result);
+  expect(responses).toEqual([
+    { error: { code: "timeout", message: `rpc ${MSG.terminalOpen} exceeded request deadline` } },
+  ]);
+});
+
 test("late timed-out open strips openKind from successful wire responses", async () => {
   const runtime = {
     openOrResume: mock(async () => ({

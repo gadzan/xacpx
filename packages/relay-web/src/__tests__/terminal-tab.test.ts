@@ -593,4 +593,36 @@ describe("TerminalTab", () => {
       adapter.fit.mockReturnValue({ cols: 80, rows: 24 });
     }
   });
+
+  it("does not open attachment on mount when active is false, opens when activated", async () => {
+    const w = mount(TerminalTab, {
+      props: { instanceId: "i1", sessionAlias: "demo", active: false },
+      global: globalOpts,
+    });
+    await flushPromises();
+    expect(openOrResume).not.toHaveBeenCalled();
+    expect(createTerminalAdapter).not.toHaveBeenCalled();
+
+    // Activating opens with fitted geometry
+    adapter.fit.mockReturnValue({ cols: 120, rows: 35 });
+    try {
+      await w.setProps({ active: true });
+      await flushPromises();
+      expect(openOrResume).toHaveBeenCalledWith("i1\0demo", expect.objectContaining({ cols: 120, rows: 35 }));
+      expect(createTerminalAdapter).toHaveBeenCalled();
+
+      // Deactivating keeps the attachment warm (no detach)
+      await w.setProps({ active: false });
+      await flushPromises();
+      expect(detach).not.toHaveBeenCalled();
+
+      // Reactivating does not reopen, stays attached
+      openOrResume.mockClear();
+      await w.setProps({ active: true });
+      await flushPromises();
+      expect(openOrResume).not.toHaveBeenCalled();
+    } finally {
+      adapter.fit.mockReturnValue({ cols: 80, rows: 24 });
+    }
+  });
 });
