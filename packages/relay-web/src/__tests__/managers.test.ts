@@ -59,6 +59,16 @@ test("WorkspacesManager resets its inputs after a successful create", async () =
   expect((w.get('[data-test="wm-desc"]').element as HTMLInputElement).value).toBe("");
 });
 
+test("WorkspacesManager browse button fills the path field from the picker's confirm", async () => {
+  const store = useInstancesStore(); seed(store);
+  const w = mount(WorkspacesManager, { props: { instanceId: "i1" } });
+  await w.get('[data-test="wm-add-toggle"]').trigger("click");
+  await w.get('[data-test="wm-browse"]').trigger("click");
+  await w.findComponent({ name: "DirectoryPicker" }).vm.$emit("confirm", "/data/ws");
+  await flushPromises();
+  expect((w.get('[data-test="wm-path"]').element as HTMLInputElement).value).toBe("/data/ws");
+});
+
 test("AgentsManager adds an agent from the catalog driver picker", async () => {
   const store = useInstancesStore(); seed(store);
   const createAgent = vi.spyOn(store, "createAgent").mockResolvedValue(undefined as never);
