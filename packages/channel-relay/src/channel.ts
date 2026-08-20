@@ -40,7 +40,10 @@ import {
   SupervisedRmuxDriver,
   createProductionTerminalDriver,
 } from "./terminal/rmux-sidecar-supervisor.js";
-import type { RmuxTerminalDriver } from "./terminal/rmux-driver.js";
+import {
+  missingRequiredRmuxBridgeCapabilities,
+  type RmuxTerminalDriver,
+} from "./terminal/rmux-driver.js";
 import { TerminalRegistryStore } from "./terminal/terminal-registry-store.js";
 import {
   DefaultRelayTerminalRuntime,
@@ -527,6 +530,20 @@ export class RelayChannel implements MessageChannelRuntime {
         this.terminalSupervisor = supervisor;
         driver = new SupervisedRmuxDriver(supervisor);
         await supervisor.start();
+      }
+
+      // The bridge handshake may succeed across mixed package versions, so the
+      // renderer dialect must be validated explicitly before reconciliation or
+      // Hub capability publication. On POSIX this includes the xterm-256color
+      // dialect proof; Windows deliberately has no POSIX TERM requirement.
+      const bridgeDiagnostics = await driver.diagnostics();
+      const missingBridgeCapabilities = missingRequiredRmuxBridgeCapabilities(
+        bridgeDiagnostics.capabilities,
+      );
+      if (missingBridgeCapabilities.length > 0) {
+        throw new Error(
+          `RMUX bridge is missing required terminal capabilities: ${missingBridgeCapabilities.join(", ")}`,
+        );
       }
 
       const runtime = new DefaultRelayTerminalRuntime({
