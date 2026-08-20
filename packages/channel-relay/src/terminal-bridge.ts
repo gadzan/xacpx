@@ -247,6 +247,23 @@ export async function handleTerminalRequest(
           cols: p.cols,
           rows: p.rows,
         });
+        // A create already passes the requested geometry into driver.create().
+        // A resume used to ignore it completely and relied on a later browser
+        // fire-and-forget resize, so a stale 80x24 pane could survive a refresh
+        // indefinitely. The controller open is authoritative: converge the
+        // durable pane before acknowledging terminal-open. Spectators never
+        // resize the shared pane.
+        if (result.openKind === "resumed" && result.role === "controller") {
+          try {
+            await runtime.resize(result.attachmentId, result.generation, p.cols, p.rows);
+          } catch (err) {
+            // The Hub has not seen this attachment yet. Roll it back so a
+            // failed authoritative resize cannot leave a phantom viewer bound
+            // to a terminal-open request that returns an error.
+            runtime.detach(result.attachmentId);
+            throw err;
+          }
+        }
         if (timedOut) {
           void runtime.compensateTimedOutOpen(result).catch(() => {});
           return true;
