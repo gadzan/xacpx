@@ -10,6 +10,7 @@ import type { TerminalAttachmentView } from "../stores/terminal";
 enableAutoUnmount(afterEach);
 
 const adapter = {
+  ready: vi.fn(async () => {}),
   write: vi.fn(async () => {}),
   resize: vi.fn(),
   dispose: vi.fn(),
@@ -454,7 +455,10 @@ describe("TerminalTab", () => {
     // grid, and nothing re-fires ResizeObserver - settling syncs must re-fit.
     vi.useFakeTimers();
     try {
-      adapter.fit.mockReturnValueOnce({ cols: 80, rows: 24 }).mockReturnValue({ cols: 150, rows: 45 });
+      adapter.fit
+        .mockReturnValueOnce({ cols: 80, rows: 24 })
+        .mockReturnValueOnce({ cols: 80, rows: 24 })
+        .mockReturnValue({ cols: 150, rows: 45 });
       mount(TerminalTab, { props: { instanceId: "i1", sessionAlias: "demo" }, global: globalOpts });
       await vi.advanceTimersByTimeAsync(0);
       // The adapter starts at 80x24, so the first fit is a local no-op - the
