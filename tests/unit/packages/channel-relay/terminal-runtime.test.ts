@@ -51,6 +51,18 @@ function baseConfig(overrides: Partial<RelayTerminalConfig> = {}): RelayTerminal
   };
 }
 
+/**
+ * Poll until `cond()` is true (bounded). Fixed sleeps in this file flake under
+ * parallel CI load; the caller's expect() reports the failure on timeout.
+ */
+async function until(cond: () => boolean, timeoutMs = 2000, intervalMs = 5): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!cond()) {
+    if (Date.now() >= deadline) return;
+    await Bun.sleep(intervalMs);
+  }
+}
+
 function descriptor(
   overrides: Partial<SessionResourceDescriptor> = {},
 ): SessionResourceDescriptor {
@@ -488,7 +500,10 @@ test("natural shell exit marks reaping(exited) and fans out exit", async () => {
   const sessionId = (await driver.list())[0]!.sessionId;
   events.length = 0;
   driver.exitSession(sessionId, 0);
-  await Bun.sleep(80);
+  // Wait for the exit event AND the reap to fully finish (registry entry removed
+  // only after the atomic persist completes), so no async write outlives the test.
+  await until(() => events.some((e) => e.type === "exit" && e.reason === "exited"));
+  await until(() => registry.getSnapshot().terminals[opened.terminalId] === undefined);
 
   expect(events.some((e) => e.type === "exit" && e.reason === "exited")).toBe(true);
   // finishReap should have removed once kill/absent completes; exitSession leaves
@@ -669,7 +684,7 @@ test("stalled flush keeps pending outbound and overflows at 2MiB", async () => {
   for (let i = 0; i < 10; i++) {
     driver.injectOutput(paneId, chunk);
   }
-  await Bun.sleep(80);
+  await until(() => events.some((e) => e.type === "queue-overflow"));
   expect(events.some((e) => e.type === "queue-overflow")).toBe(true);
 });
 
