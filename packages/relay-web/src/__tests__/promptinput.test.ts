@@ -56,17 +56,28 @@ describe("PromptInput composer", () => {
     await w.setProps({ draftKey: "k2" }); // switch session → draft stashed, k2 empty
     expect((w.find("textarea").element as HTMLTextAreaElement).value).toBe("");
     await w.setProps({ draftKey: "k1" }); // back → restored
-    expect((w.find("textarea").element as HTMLTextAreaElement).value).toBe("half-typed");
+    expect((w.find("textarea").element as HTMLTextAreaElement).value).toBe(
+      "half-typed",
+    );
   });
 
   it("typing / shows agent-command autocomplete and Enter completes without sending", async () => {
     const { useChatStore } = await import("../stores/chat");
     const chat = useChatStore();
     chat.select("i1", "backend");
-    chat.applyEvent({ kind: "control-event", instanceId: "i1", event: {
-      type: "agent-commands", chatKey: "relay:a1", sessionAlias: "backend",
-      commands: [{ name: "compact", description: "Compact the conversation" }, { name: "clear" }],
-    } } as never);
+    chat.applyEvent({
+      kind: "control-event",
+      instanceId: "i1",
+      event: {
+        type: "agent-commands",
+        chatKey: "relay:a1",
+        sessionAlias: "backend",
+        commands: [
+          { name: "compact", description: "Compact the conversation" },
+          { name: "clear" },
+        ],
+      },
+    } as never);
     const w = mount(PromptInput);
     const ta = w.find("textarea");
     await ta.setValue("/co");
@@ -85,10 +96,16 @@ describe("PromptInput composer", () => {
     const { useChatStore } = await import("../stores/chat");
     const chat = useChatStore();
     chat.select("i1", "backend");
-    chat.applyEvent({ kind: "control-event", instanceId: "i1", event: {
-      type: "agent-commands", chatKey: "relay:a1", sessionAlias: "backend",
-      commands: [{ name: "compact" }],
-    } } as never);
+    chat.applyEvent({
+      kind: "control-event",
+      instanceId: "i1",
+      event: {
+        type: "agent-commands",
+        chatKey: "relay:a1",
+        sessionAlias: "backend",
+        commands: [{ name: "compact" }],
+      },
+    } as never);
     const w = mount(PromptInput);
     const ta = w.find("textarea");
     await ta.setValue("/co");
@@ -107,10 +124,16 @@ describe("PromptInput composer", () => {
     const composer = useComposerStore();
     const w = mount(PromptInput);
     await w.find("textarea").setValue("ready to go"); // would normally enable Send
-    expect((w.get('[data-test="composer-send"]').element as HTMLButtonElement).disabled).toBe(false);
+    expect(
+      (w.get('[data-test="composer-send"]').element as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
     composer.uploading = true;
     await w.vm.$nextTick();
-    expect((w.get('[data-test="composer-send"]').element as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      (w.get('[data-test="composer-send"]').element as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
   });
 
   it("inserts text from a composer store request targeting this session", async () => {
@@ -119,11 +142,15 @@ describe("PromptInput composer", () => {
     const w = mount(PromptInput, { props: { draftKey: "ins-key" } });
     composer.requestInsert("ins-key", "/status");
     await w.vm.$nextTick();
-    expect((w.find("textarea").element as HTMLTextAreaElement).value).toBe("/status");
+    expect((w.find("textarea").element as HTMLTextAreaElement).value).toBe(
+      "/status",
+    );
     // a request for a different session is ignored
     composer.requestInsert("other", "/help");
     await w.vm.$nextTick();
-    expect((w.find("textarea").element as HTMLTextAreaElement).value).toBe("/status");
+    expect((w.find("textarea").element as HTMLTextAreaElement).value).toBe(
+      "/status",
+    );
   });
 
   it("typing @ displays agent mention autocomplete from canonical directory and emits structured agentMentions", async () => {
@@ -137,7 +164,13 @@ describe("PromptInput composer", () => {
         agent: "codex",
         workspace: "project",
         state: "idle",
-        capabilities: { receive: true, steer: false, queue: true, interrupt: false, conversation: true },
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
         updatedAt: Date.now(),
       },
     ];
@@ -157,7 +190,9 @@ describe("PromptInput composer", () => {
     await ta.trigger("keydown", { key: "Enter" });
     await w.vm.$nextTick();
 
-    expect((ta.element as HTMLTextAreaElement).value).toBe("Please check with @Backend ");
+    expect((ta.element as HTMLTextAreaElement).value).toBe(
+      "Please check with @Backend ",
+    );
     expect(w.find('[data-test="mention-menu"]').exists()).toBe(false);
 
     // Submit
@@ -185,7 +220,13 @@ describe("PromptInput composer", () => {
         agent: "codex",
         workspace: "project",
         state: "idle",
-        capabilities: { receive: true, steer: false, queue: true, interrupt: false, conversation: true },
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
         updatedAt: Date.now(),
       },
     ];
@@ -217,7 +258,13 @@ describe("PromptInput composer", () => {
         agent: "codex",
         workspace: "backend-api",
         state: "idle",
-        capabilities: { receive: true, steer: false, queue: true, interrupt: false, conversation: true },
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
         updatedAt: Date.now(),
       },
       {
@@ -227,7 +274,13 @@ describe("PromptInput composer", () => {
         agent: "claude",
         workspace: "billing-service",
         state: "idle",
-        capabilities: { receive: true, steer: false, queue: true, interrupt: false, conversation: true },
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
         updatedAt: Date.now(),
       },
     ];
@@ -258,5 +311,293 @@ describe("PromptInput composer", () => {
         },
       ],
     ]);
+  });
+
+  it("Test A: custom display name renders primary @displayName and secondary sessionAlias · workspace · agent", async () => {
+    const { useInstancesStore } = await import("../stores/instances");
+    const instances = useInstancesStore();
+    instances.agentDirectory = [
+      {
+        nodeId: "node-12345",
+        endpointId: "ep-1",
+        displayName: "发布机器人",
+        sessionAlias: "omp-2",
+        agent: "codex",
+        workspace: "weacpx-github",
+        state: "running",
+        activity: { status: "working", summary: "Building release" },
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    await ta.setValue("Ask @发布");
+    await ta.trigger("input");
+    await w.vm.$nextTick();
+
+    expect(w.find('[data-test="mention-menu"]').exists()).toBe(true);
+    const item = w.find('[data-test="mention-item"]');
+    expect(item.find('[data-test="mention-primary"]').text()).toBe(
+      "@发布机器人",
+    );
+    expect(item.find('[data-test="mention-secondary"]').text()).toBe(
+      "omp-2 · weacpx-github · codex",
+    );
+    expect(item.find('[data-test="mention-activity"]').text()).toBe("Working");
+
+    // Selecting binds canonical handle
+    await ta.trigger("keydown", { key: "Enter" });
+    await w.vm.$nextTick();
+    await ta.trigger("keydown", { key: "Enter" });
+
+    expect(w.emitted("send")?.[0]).toEqual([
+      "Ask @发布机器人",
+      [],
+      [
+        {
+          range: [4, 10],
+          handle: "agent:node-12345:ep-1",
+        },
+      ],
+    ]);
+  });
+
+  it("Test B: no custom display name (displayName === sessionAlias) does not duplicate alias", async () => {
+    const { useInstancesStore } = await import("../stores/instances");
+    const instances = useInstancesStore();
+    instances.agentDirectory = [
+      {
+        nodeId: "node-12345",
+        endpointId: "ep-1",
+        displayName: "omp-2",
+        sessionAlias: "omp-2",
+        agent: "codex",
+        workspace: "weacpx-github",
+        state: "idle",
+        activity: { status: "idle" },
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    await ta.setValue("Ask @omp");
+    await ta.trigger("input");
+    await w.vm.$nextTick();
+
+    const item = w.find('[data-test="mention-item"]');
+    expect(item.find('[data-test="mention-primary"]').text()).toBe("@omp-2");
+    expect(item.find('[data-test="mention-secondary"]').text()).toBe(
+      "weacpx-github · codex",
+    );
+    expect(item.find('[data-test="mention-secondary"]').text()).not.toContain(
+      "omp-2 · omp-2",
+    );
+    expect(item.find('[data-test="mention-activity"]').text()).toBe("Idle");
+  });
+
+  it("Test C: search by sessionAlias finds agent with custom displayName", async () => {
+    const { useInstancesStore } = await import("../stores/instances");
+    const instances = useInstancesStore();
+    instances.agentDirectory = [
+      {
+        nodeId: "node-1",
+        endpointId: "ep-1",
+        displayName: "发布机器人",
+        sessionAlias: "omp-2",
+        agent: "codex",
+        workspace: "weacpx-github",
+        state: "idle",
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    // Type @omp which matches sessionAlias 'omp-2' even though displayName is '发布机器人'
+    await ta.setValue("Ask @omp");
+    await ta.trigger("input");
+    await w.vm.$nextTick();
+
+    expect(w.find('[data-test="mention-menu"]').exists()).toBe(true);
+    const item = w.find('[data-test="mention-item"]');
+    expect(item.find('[data-test="mention-primary"]').text()).toBe(
+      "@发布机器人",
+    );
+    expect(item.find('[data-test="mention-secondary"]').text()).toBe(
+      "omp-2 · weacpx-github · codex",
+    );
+  });
+
+  it("Test D & E: duplicate displayNames render distinct human metadata and no normal nodeId exposure", async () => {
+    const { useInstancesStore } = await import("../stores/instances");
+    const instances = useInstancesStore();
+    instances.agentDirectory = [
+      {
+        nodeId: "node_4c860598-e4ba-4205-ad59-08f0fb683dbc",
+        endpointId: "ep_789123456_a",
+        displayName: "Backend",
+        sessionAlias: "backend-api",
+        agent: "claude",
+        workspace: "xacpx",
+        state: "running",
+        activity: { status: "working" },
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+      {
+        nodeId: "node_99887766-aaaa-bbbb-cccc-112233445566",
+        endpointId: "ep_789123456_b",
+        displayName: "Backend",
+        sessionAlias: "billing-service",
+        agent: "codex",
+        workspace: "billing",
+        state: "idle",
+        activity: { status: "idle" },
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    await ta.setValue("Ping @Back");
+    await ta.trigger("input");
+    await w.vm.$nextTick();
+
+    const items = w.findAll('[data-test="mention-item"]');
+    expect(items.length).toBe(2);
+
+    expect(items[0].find('[data-test="mention-primary"]').text()).toBe(
+      "@Backend",
+    );
+    expect(items[0].find('[data-test="mention-secondary"]').text()).toBe(
+      "backend-api · xacpx · claude",
+    );
+    // Test E: assert full nodeId/endpointId is NOT in normal row text
+    expect(items[0].text()).not.toContain(
+      "node_4c860598-e4ba-4205-ad59-08f0fb683dbc",
+    );
+    expect(items[0].text()).not.toContain("ep_789123456_a");
+
+    expect(items[1].find('[data-test="mention-primary"]').text()).toBe(
+      "@Backend",
+    );
+    expect(items[1].find('[data-test="mention-secondary"]').text()).toBe(
+      "billing-service · billing · codex",
+    );
+    expect(items[1].text()).not.toContain(
+      "node_99887766-aaaa-bbbb-cccc-112233445566",
+    );
+    expect(items[1].text()).not.toContain("ep_789123456_b");
+
+    // Select second item
+    await ta.trigger("keydown", { key: "ArrowDown" });
+    await ta.trigger("keydown", { key: "Enter" });
+    await w.vm.$nextTick();
+    await ta.trigger("keydown", { key: "Enter" });
+
+    expect(w.emitted("send")?.[0]).toEqual([
+      "Ping @Backend",
+      [],
+      [
+        {
+          range: [5, 13],
+          handle:
+            "agent:node_99887766-aaaa-bbbb-cccc-112233445566:ep_789123456_b",
+        },
+      ],
+    ]);
+  });
+
+  it("Test F: Session Tree consistency and deterministic ranking", async () => {
+    const { useInstancesStore } = await import("../stores/instances");
+    const instances = useInstancesStore();
+    instances.agentDirectory = [
+      {
+        nodeId: "node-1",
+        endpointId: "ep-1",
+        displayName: "发布机器人",
+        sessionAlias: "omp-2",
+        agent: "codex",
+        workspace: "weacpx-github",
+        state: "idle",
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+      {
+        nodeId: "node-1",
+        endpointId: "ep-2",
+        displayName: "omp-builder",
+        sessionAlias: "omp-builder",
+        agent: "codex",
+        workspace: "weacpx-github",
+        state: "idle",
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    await ta.setValue("@omp");
+    await ta.trigger("input");
+    await w.vm.$nextTick();
+
+    const items = w.findAll('[data-test="mention-item"]');
+    expect(items.length).toBe(2);
+    // omp-builder has displayName prefix match (rank 3), while 发布机器人 has sessionAlias prefix match (rank 4)
+    expect(items[0].find('[data-test="mention-primary"]').text()).toBe(
+      "@omp-builder",
+    );
+    expect(items[1].find('[data-test="mention-primary"]').text()).toBe(
+      "@发布机器人",
+    );
   });
 });

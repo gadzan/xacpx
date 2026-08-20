@@ -31,6 +31,7 @@ export interface AgentEndpointView {
   agent: string;
   workspace?: string;
   displayName?: string;
+  sessionAlias?: string;
   state: "idle" | "running" | "unreachable";
   activity: AgentActivityView;
   capabilities: AgentCapabilities;
