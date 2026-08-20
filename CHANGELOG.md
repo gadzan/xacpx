@@ -1,4 +1,36 @@
 # Changelog
+## [0.23.0-beta.2] - 2026-08-20
+
+### Added
+
+- Control API: `browseDirectories` - a workspace-independent directory picker over the instance host (`~`/home expansion, directory names only, capped at 1000 entries, no file contents) for choosing a new workspace cwd.
+
+## [relay-protocol 0.5.0-beta.2] - 2026-08-20
+
+### Added
+
+- `control.fs.browse` message and its `FsBrowsePayload` / `FsBrowseEntry` / `FsBrowseResult` DTOs backing the instance directory picker.
+
+## [relay 0.13.0-beta.2] - 2026-08-20
+
+### Added
+
+- Cross-instance directory picker for the new-session path and workspace form: pick a workspace cwd from any connected instance's host.
+
+### Fixed
+
+- Terminal open geometry is now host-authoritative - the backend-computed viewport wins over the web canvas size on open.
+
+## [channel-relay 0.7.0-beta.2] - 2026-08-20
+
+### Added
+
+- Forward `control.fs.browse` requests upward to the instance host for the directory picker.
+
+### Fixed
+
+- Terminal open geometry: apply the host-computed size on open (native `actors.rs` + `terminal-bridge`) so the shell viewport matches the web renderer.
+
 ## [0.23.0-beta.1] - 2026-08-20
 
 ### Changed
