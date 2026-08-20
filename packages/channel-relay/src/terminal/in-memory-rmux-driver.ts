@@ -360,12 +360,6 @@ export class InMemoryRmuxDriver implements RmuxTerminalDriver {
     this.inventoryOverride = [];
   }
 
-  restoreDriver(): void {
-    this.crashed = false;
-    this.crashError = new RmuxDriverCrashedError();
-    this.inventoryOverride = null;
-  }
-
   private async gate(op: RmuxDriverOp): Promise<void> {
     const delay = this.delays.get(op);
     if (delay !== undefined) await this.deps.sleep(delay);
