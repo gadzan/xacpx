@@ -167,6 +167,133 @@ test("late timed-out open strips openKind from successful wire responses", async
   expect((responses[0] as { openKind?: string }).openKind).toBeUndefined();
 });
 
+test("resumed controller is resized to requested geometry before terminal-open succeeds", async () => {
+  const order: string[] = [];
+  const resize = mock(async () => { order.push("resize"); });
+  const detach = mock(() => { order.push("detach"); });
+  const runtime = {
+    openOrResume: mock(async () => {
+      order.push("open");
+      return {
+        terminalId: "term-1",
+        generation: "g1",
+        attachmentId: "att-1",
+        role: "controller" as const,
+        viewerCount: 1,
+        openKind: "resumed" as const,
+      };
+    }),
+    resize,
+    detach,
+  };
+  const responses: unknown[] = [];
+  await handleTerminalRequest(
+    runtime as never,
+    {
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "t-resume",
+      type: MSG.terminalOpen,
+      payload: {
+        chatKey: "relay:u1",
+        sessionAlias: "demo",
+        viewerId: "v1",
+        cols: 132,
+        rows: 47,
+      },
+    },
+    (payload) => responses.push(payload),
+  );
+
+  expect(order).toEqual(["open", "resize"]);
+  expect(resize).toHaveBeenCalledWith("att-1", "g1", 132, 47);
+  expect(detach).not.toHaveBeenCalled();
+  expect(responses[0]).toEqual({
+    terminalId: "term-1",
+    generation: "g1",
+    attachmentId: "att-1",
+    role: "controller",
+    viewerCount: 1,
+  });
+});
+
+test("resumed spectator never resizes the shared pane", async () => {
+  const resize = mock(async () => {});
+  const runtime = {
+    openOrResume: mock(async () => ({
+      terminalId: "term-1",
+      generation: "g1",
+      attachmentId: "att-2",
+      role: "spectator" as const,
+      viewerCount: 2,
+      openKind: "resumed" as const,
+    })),
+    resize,
+  };
+  const responses: unknown[] = [];
+  await handleTerminalRequest(
+    runtime as never,
+    {
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "t-spectator",
+      type: MSG.terminalOpen,
+      payload: {
+        chatKey: "relay:u1",
+        sessionAlias: "demo",
+        viewerId: "v2",
+        cols: 150,
+        rows: 50,
+      },
+    },
+    (payload) => responses.push(payload),
+  );
+
+  expect(resize).not.toHaveBeenCalled();
+  expect(responses).toHaveLength(1);
+});
+
+test("resumed controller resize failure rolls back the unpublished attachment", async () => {
+  const detach = mock(() => {});
+  const runtime = {
+    openOrResume: mock(async () => ({
+      terminalId: "term-1",
+      generation: "g1",
+      attachmentId: "att-1",
+      role: "controller" as const,
+      viewerCount: 1,
+      openKind: "resumed" as const,
+    })),
+    resize: mock(async () => {
+      throw new Error("resize failed");
+    }),
+    detach,
+  };
+  const responses: unknown[] = [];
+  await handleTerminalRequest(
+    runtime as never,
+    {
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "t-resume-fail",
+      type: MSG.terminalOpen,
+      payload: {
+        chatKey: "relay:u1",
+        sessionAlias: "demo",
+        viewerId: "v1",
+        cols: 132,
+        rows: 47,
+      },
+    },
+    (payload) => responses.push(payload),
+  );
+
+  expect(detach).toHaveBeenCalledWith("att-1");
+  expect(responses).toEqual([
+    { error: { code: "terminal-rmux-unavailable", message: "resize failed" } },
+  ]);
+});
+
 test("malformed terminal-open payload returns invalid-payload and does not call runtime", async () => {
   const runtime = {
     openOrResume: mock(async () => {
