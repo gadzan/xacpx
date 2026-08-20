@@ -286,10 +286,7 @@ const availableAgents = computed<AgentMentionItem[]>(() => {
   });
 });
 
-function formatSecondaryLine(
-  item: AgentMentionItem,
-  allItems: AgentMentionItem[],
-): string {
+function secondaryIdentityParts(item: AgentMentionItem): string[] {
   const parts: string[] = [];
 
   if (
@@ -306,24 +303,25 @@ function formatSecondaryLine(
   if (item.agent && item.agent !== item.displayName) {
     parts.push(item.agent);
   }
+
+  return parts;
+}
+
+function formatSecondaryLine(
+  item: AgentMentionItem,
+  allItems: AgentMentionItem[],
+): string {
+  const parts = secondaryIdentityParts(item);
+
   const duplicates = allItems.filter(
     (other) =>
       other.displayName === item.displayName && other.handle !== item.handle,
   );
 
   if (duplicates.length > 0) {
-    const baseKey = [
-      item.hasCustomDisplayName ? (item.presentationSessionAlias ?? "") : "",
-      item.workspace ?? "",
-      item.agent ?? "",
-    ].join("::");
+    const baseKey = secondaryIdentityParts(item).join("::");
     const sameBaseDuplicates = duplicates.filter(
-      (d) =>
-        [
-          d.hasCustomDisplayName ? (d.presentationSessionAlias ?? "") : "",
-          d.workspace ?? "",
-          d.agent ?? "",
-        ].join("::") === baseKey,
+      (d) => secondaryIdentityParts(d).join("::") === baseKey,
     );
 
     if (sameBaseDuplicates.length > 0) {

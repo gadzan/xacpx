@@ -1329,4 +1329,79 @@ describe("PromptInput composer", () => {
       "@omp-2-helper",
     );
   });
+
+  it("Test Q: collision key aligns with visible secondary parts when one endpoint has custom displayName and another does not", async () => {
+    const { useInstancesStore } = await import("../stores/instances");
+    const instances = useInstancesStore();
+    instances.instances = [
+      { id: "inst-1", name: "MacBook Air", online: true },
+    ] as never;
+    instances.setGroupMode("inst-1", "workspace");
+
+    // Endpoint A: custom displayName "review", raw sessionAlias "project-review" (folds to "review" under workspace mode)
+    // Endpoint B: no custom displayName, raw sessionAlias "review" (folds to "review" under workspace mode)
+    // Both render primary: @review
+    // Both render initial secondary: project · codex
+    // Level-3 routing suffix MUST trigger to disambiguate!
+    instances.agentDirectory = [
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "ep_aaaa_1",
+        displayName: "review",
+        sessionAlias: "project-review",
+        agent: "codex",
+        workspace: "project",
+        state: "idle",
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "ep_bbbb_2",
+        sessionAlias: "review",
+        agent: "codex",
+        workspace: "project",
+        state: "idle",
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    await ta.setValue("Ask @rev");
+    await ta.trigger("input");
+    await w.vm.$nextTick();
+
+    const items = w.findAll('[data-test="mention-item"]');
+    expect(items.length).toBe(2);
+
+    expect(items[0].find('[data-test="mention-primary"]').text()).toBe(
+      "@review",
+    );
+    expect(items[0].find('[data-test="mention-secondary"]').text()).toBe(
+      "project · codex · MacBook Air · …aaa_1",
+    );
+
+    expect(items[1].find('[data-test="mention-primary"]').text()).toBe(
+      "@review",
+    );
+    expect(items[1].find('[data-test="mention-secondary"]').text()).toBe(
+      "project · codex · MacBook Air · …bbb_2",
+    );
+  });
 });
