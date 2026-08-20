@@ -207,6 +207,85 @@ test("late timed-out resumed controller is compensated without resizing shared p
   expect(responses).toHaveLength(1);
 });
 
+test("authoritative resume resize enters commit phase and disarms deadline timer", async () => {
+  let releaseResize!: () => void;
+  const resizeGate = new Promise<void>((resolve) => {
+    releaseResize = resolve;
+  });
+  const compensateTimedOutOpen = mock(async () => {});
+  const detach = mock(() => {});
+  const clearedTimers: unknown[] = [];
+  const runtime = {
+    openOrResume: mock(async () => ({
+      terminalId: "term-1",
+      generation: "g1",
+      attachmentId: "att-commit",
+      role: "controller" as const,
+      viewerCount: 1,
+      openKind: "resumed" as const,
+    })),
+    compensateTimedOutOpen,
+    resize: mock(async () => resizeGate),
+    detach,
+  };
+
+  const responses: unknown[] = [];
+  const timers: Array<{ fn: () => void; ms: number }> = [];
+  const done = handleTerminalRequest(
+    runtime as never,
+    {
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "t-open-commit",
+      type: MSG.terminalOpen,
+      payload: {
+        chatKey: "relay:u1",
+        sessionAlias: "demo",
+        viewerId: "v1",
+        cols: 132,
+        rows: 47,
+      },
+      requestDeadlineAt: 1_050,
+      requestBudgetMs: 50,
+    },
+    (payload) => responses.push(payload),
+    {
+      now: () => 1_000,
+      setTimeoutFn: (fn, ms) => {
+        timers.push({ fn, ms });
+        return timers.length;
+      },
+      clearTimeoutFn: (timer) => {
+        clearedTimers.push(timer);
+      },
+    },
+  );
+
+  // Wait for openOrResume to settle and enter the commit phase.
+  await Promise.resolve();
+  await Promise.resolve();
+
+  // openOrResume resolved before deadline -> commit phase disarmed the timer.
+  expect(clearedTimers).toEqual([1]);
+  expect(responses).toHaveLength(0);
+  // Complete resize
+  releaseResize();
+  await done;
+
+  expect(runtime.resize).toHaveBeenCalledWith("att-commit", "g1", 132, 47);
+  expect(compensateTimedOutOpen).not.toHaveBeenCalled();
+  expect(detach).not.toHaveBeenCalled();
+  expect(responses).toEqual([
+    {
+      terminalId: "term-1",
+      generation: "g1",
+      attachmentId: "att-commit",
+      role: "controller",
+      viewerCount: 1,
+    },
+  ]);
+});
+
 test("late timed-out open strips openKind from successful wire responses", async () => {
   const runtime = {
     openOrResume: mock(async () => ({

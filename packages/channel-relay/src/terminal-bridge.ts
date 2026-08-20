@@ -254,6 +254,13 @@ export async function handleTerminalRequest(
           void runtime.compensateTimedOutOpen(result).catch(() => {});
           return true;
         }
+        // Commit phase: once openOrResume succeeds in time, disarm the request
+        // timer so the connector does not declare a timeout mid-resize after
+        // committing to the attachment and authoritative geometry convergence.
+        if (timer !== undefined) {
+          clearTimeoutFn(timer);
+          timer = undefined;
+        }
         // A create already passes the requested geometry into driver.create().
         // A resume used to ignore it completely and relied on a later browser
         // fire-and-forget resize, so a stale 80x24 pane could survive a refresh
