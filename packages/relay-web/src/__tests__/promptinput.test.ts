@@ -1192,4 +1192,141 @@ describe("PromptInput composer", () => {
       "project · codex · Dev Server · …ta:endpoint_worker_default",
     );
   });
+
+  it("Test O: group mode folding different raw aliases into same presentation alias correctly triggers Level-3 disambiguation", async () => {
+    const { useInstancesStore } = await import("../stores/instances");
+    const instances = useInstancesStore();
+    instances.instances = [
+      { id: "inst-1", name: "MacBook Air", online: true },
+    ] as never;
+    instances.setGroupMode("inst-1", "workspace");
+
+    // Two endpoints on the same instance:
+    // raw alias "project-review" folds to "review" under workspace mode
+    // raw alias "review" is already "review"
+    instances.agentDirectory = [
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "ep_aaaa_1",
+        displayName: "Reviewer",
+        sessionAlias: "project-review",
+        agent: "codex",
+        workspace: "project",
+        state: "idle",
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "ep_bbbb_2",
+        displayName: "Reviewer",
+        sessionAlias: "review",
+        agent: "codex",
+        workspace: "project",
+        state: "idle",
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    await ta.setValue("Ask @Rev");
+    await ta.trigger("input");
+    await w.vm.$nextTick();
+
+    const items = w.findAll('[data-test="mention-item"]');
+    expect(items.length).toBe(2);
+
+    // Both display @Reviewer with visible presentation alias "review", "project", "codex", "MacBook Air".
+    // Because the VISIBLE Level-1 metadata and nodeLabel collide, Level-3 routing suffix MUST trigger!
+    expect(items[0].find('[data-test="mention-secondary"]').text()).toBe(
+      "review · project · codex · MacBook Air · …aaa_1",
+    );
+    expect(items[1].find('[data-test="mention-secondary"]').text()).toBe(
+      "review · project · codex · MacBook Air · …bbb_2",
+    );
+  });
+
+  it("Test P: search ranking matches visible presentation alias as exact match over displayName prefix match", async () => {
+    const { useInstancesStore } = await import("../stores/instances");
+    const instances = useInstancesStore();
+    instances.instances = [
+      { id: "inst-1", name: "MacBook Air", online: true },
+    ] as never;
+    instances.setGroupMode("inst-1", "workspace");
+
+    instances.agentDirectory = [
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "ep-1",
+        displayName: "发布机器人",
+        sessionAlias: "weacpx-github-omp-2", // folds to visible presentation alias "omp-2"
+        agent: "codex",
+        workspace: "weacpx-github",
+        state: "idle",
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "ep-2",
+        displayName: "omp-2-helper",
+        sessionAlias: "omp-2-helper",
+        agent: "claude",
+        workspace: "weacpx-github",
+        state: "idle",
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    // User types @omp-2:
+    // ep-1 has visible presentation alias "omp-2" (Exact match, Rank 12)
+    // ep-2 has displayName "omp-2-helper" (Prefix match, Rank 21)
+    await ta.setValue("@omp-2");
+    await ta.trigger("input");
+    await w.vm.$nextTick();
+
+    const items = w.findAll('[data-test="mention-item"]');
+    expect(items.length).toBe(2);
+
+    // Exact match on visible presentation alias MUST rank #1!
+    expect(items[0].find('[data-test="mention-primary"]').text()).toBe(
+      "@发布机器人",
+    );
+    expect(items[1].find('[data-test="mention-primary"]').text()).toBe(
+      "@omp-2-helper",
+    );
+  });
 });

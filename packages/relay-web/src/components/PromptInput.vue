@@ -222,6 +222,7 @@ interface AgentMentionItem {
   handle: string;
   displayName: string;
   sessionAlias?: string;
+  presentationSessionAlias?: string;
   hasCustomDisplayName: boolean;
   agent: string;
   workspace?: string;
@@ -256,6 +257,14 @@ const availableAgents = computed<AgentMentionItem[]>(() => {
     const hasCustomDisplayName = Boolean(
       ep.displayName && ep.sessionAlias && ep.displayName !== ep.sessionAlias,
     );
+    const presentationSessionAlias = ep.sessionAlias
+      ? sessionPresentationName({
+          alias: ep.sessionAlias,
+          workspace: ep.workspace,
+          agent: ep.agent,
+          groupMode,
+        })
+      : undefined;
     const normalizedActivity = ep.activity ?? {
       status: ep.state === "running" ? "working" : "idle",
     };
@@ -263,6 +272,7 @@ const availableAgents = computed<AgentMentionItem[]>(() => {
       handle: `agent:${ep.nodeId}:${ep.endpointId}`,
       displayName: primaryName,
       sessionAlias: ep.sessionAlias,
+      presentationSessionAlias,
       hasCustomDisplayName,
       agent: ep.agent,
       workspace: ep.workspace,
@@ -282,16 +292,12 @@ function formatSecondaryLine(
 ): string {
   const parts: string[] = [];
 
-  if (item.hasCustomDisplayName && item.sessionAlias) {
-    const displayAlias = sessionPresentationName({
-      alias: item.sessionAlias,
-      workspace: item.workspace,
-      agent: item.agent,
-      groupMode: item.groupMode,
-    });
-    if (displayAlias && displayAlias !== item.displayName) {
-      parts.push(displayAlias);
-    }
+  if (
+    item.hasCustomDisplayName &&
+    item.presentationSessionAlias &&
+    item.presentationSessionAlias !== item.displayName
+  ) {
+    parts.push(item.presentationSessionAlias);
   }
 
   if (item.workspace) {
@@ -307,14 +313,14 @@ function formatSecondaryLine(
 
   if (duplicates.length > 0) {
     const baseKey = [
-      item.hasCustomDisplayName ? (item.sessionAlias ?? "") : "",
+      item.hasCustomDisplayName ? (item.presentationSessionAlias ?? "") : "",
       item.workspace ?? "",
       item.agent ?? "",
     ].join("::");
     const sameBaseDuplicates = duplicates.filter(
       (d) =>
         [
-          d.hasCustomDisplayName ? (d.sessionAlias ?? "") : "",
+          d.hasCustomDisplayName ? (d.presentationSessionAlias ?? "") : "",
           d.workspace ?? "",
           d.agent ?? "",
         ].join("::") === baseKey,
@@ -423,27 +429,31 @@ function updateMentionState() {
 function computeRank(item: AgentMentionItem, q: string): number {
   if (!q) return 0;
   const dn = item.displayName.toLowerCase();
-  const sa = (item.sessionAlias ?? "").toLowerCase();
+  const psa = (item.presentationSessionAlias ?? "").toLowerCase();
+  const rawSa = (item.sessionAlias ?? "").toLowerCase();
   const ws = (item.workspace ?? "").toLowerCase();
   const ag = item.agent.toLowerCase();
 
-  // Tier 1: Exact matches (11..14)
+  // Tier 1: Exact matches (11..15)
   if (dn === q) return 11;
-  if (sa && sa === q) return 12;
+  if (psa && psa === q) return 12;
   if (ws && ws === q) return 13;
   if (ag === q) return 14;
+  if (rawSa && rawSa !== psa && rawSa === q) return 15;
 
-  // Tier 2: Prefix matches (21..24)
+  // Tier 2: Prefix matches (21..25)
   if (dn.startsWith(q)) return 21;
-  if (sa && sa.startsWith(q)) return 22;
+  if (psa && psa.startsWith(q)) return 22;
   if (ws && ws.startsWith(q)) return 23;
   if (ag.startsWith(q)) return 24;
+  if (rawSa && rawSa !== psa && rawSa.startsWith(q)) return 25;
 
-  // Tier 3: Contains matches (31..34)
+  // Tier 3: Contains matches (31..35)
   if (dn.includes(q)) return 31;
-  if (sa && sa.includes(q)) return 32;
+  if (psa && psa.includes(q)) return 32;
   if (ws && ws.includes(q)) return 33;
   if (ag.includes(q)) return 34;
+  if (rawSa && rawSa !== psa && rawSa.includes(q)) return 35;
 
   return -1;
 }
@@ -467,10 +477,10 @@ const mentionMatches = computed(() => {
     }
     const dnCmp = a.item.displayName.localeCompare(b.item.displayName);
     if (dnCmp !== 0) return dnCmp;
-    const saCmp = (a.item.sessionAlias ?? "").localeCompare(
-      b.item.sessionAlias ?? "",
+    const psaCmp = (a.item.presentationSessionAlias ?? "").localeCompare(
+      b.item.presentationSessionAlias ?? "",
     );
-    if (saCmp !== 0) return saCmp;
+    if (psaCmp !== 0) return psaCmp;
     const wsCmp = (a.item.workspace ?? "").localeCompare(
       b.item.workspace ?? "",
     );
