@@ -4,7 +4,6 @@ import DirectoryPicker from "../components/DirectoryPicker.vue";
 import { api } from "../api/client";
 import { i18n } from "../i18n";
 
-function result(over: Partial<Parameters<typeof api.rpc>[2]> = {}) { return over; }
 type Browse = {
   path: string; sep: "/" | "\\"; parent: string | null; home: string;
   dirs: Array<{ name: string; path: string }>; truncated: boolean;

@@ -121,7 +121,7 @@ function onListKeydown(e: KeyboardEvent): void {
            data-test="dp-dialog">
         <header class="flex items-center justify-between border-b border-border px-5 py-3">
           <h2 id="dp-title" class="text-sm font-semibold text-fg">{{ $t("dirPicker.title") }}</h2>
-          <button class="rounded p-1 text-fg-muted hover:bg-fg/5 hover:text-fg" :aria-label='$t("session.close")'
+          <button type="button" class="rounded p-1 text-fg-muted hover:bg-fg/5 hover:text-fg" :aria-label='$t("session.close")'
                   @click="emit('close')"><X :size="16" /></button>
         </header>
 
@@ -171,8 +171,8 @@ function onListKeydown(e: KeyboardEvent): void {
         <p v-if="error" data-test="dp-error" class="mx-5 mt-2 rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">{{ error }}</p>
 
         <footer class="flex justify-end gap-2 border-t border-border px-5 py-3">
-          <button class="rounded-lg px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5" @click="emit('close')">{{ $t("common.cancel") }}</button>
-          <button data-test="dp-confirm" :disabled="!result"
+          <button type="button" class="rounded-lg px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5" @click="emit('close')">{{ $t("common.cancel") }}</button>
+          <button type="button" data-test="dp-confirm" :disabled="!result"
                   class="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-white enabled:hover:bg-accent-hover disabled:opacity-40"
                   @click="choose">{{ $t("dirPicker.chooseCurrent") }}</button>
         </footer>
