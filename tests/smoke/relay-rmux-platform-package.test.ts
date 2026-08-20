@@ -9,12 +9,13 @@
  *   node_modules/@ganglion/xacpx-rmux-bridge-<os>-<arch>
  * so the production resolver finds it via require.resolve. No explicit
  * terminal.rmuxCommand / bridgeCommand may be set — the point is to exercise
- * production resolution (bundled RMUX wins over PATH/helper).
+ * production resolution (bundled RMUX wins over PATH/helper and resolves the
+ * dedicated rmux-daemon, never the public rmux CLI).
  */
 import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { basename, delimiter, join } from "node:path";
 
 import { parseRelayTerminalConfig } from "../../packages/channel-relay/src/config";
 import {
@@ -100,7 +101,7 @@ function collectUntil(
   })();
 }
 
-test.skipIf(!enabled)("bundled RMUX is resolved over a hostile PATH fake; live lifecycle works and the fake is never executed", async () => {
+test.skipIf(!enabled)("bundled RMUX daemon is resolved over a hostile PATH fake; live lifecycle works and the fake is never executed", async () => {
   // --- Hostile environment: fake rmux 0.9-ish at the FRONT of PATH -----------
   const hostileDir = tempDir("rmux-hostile-");
   const marker = join(hostileDir, "fake-ran.marker");
@@ -121,19 +122,27 @@ test.skipIf(!enabled)("bundled RMUX is resolved over a hostile PATH fake; live l
   const oldPath = process.env.PATH;
   process.env.PATH = hostilePath;
   try {
-    // --- Production resolution must pick the bundled platform-package RMUX ---
+    // --- Production resolution must pick the bundled platform-package daemon -
     const resolved = resolveRmuxBinaries({
       pathEnv: process.env.PATH,
       platformPackageResolver: undefined,
     });
     expect(resolved.source.bridge).toBe("platform-package");
-    expect(resolved.rmuxCommand, "bundled RMUX must exist next to the platform bridge").toBeDefined();
+    expect(resolved.rmuxCommand, "bundled RMUX daemon must exist next to the platform bridge").toBeDefined();
     expect(resolved.source.rmux).toBe("platform-package");
+    expect(basename(resolved.rmuxCommand!)).toBe(
+      process.platform === "win32" ? "rmux-daemon.exe" : "rmux-daemon",
+    );
     expect(resolved.rmuxCommand).not.toBe(fakeRmux);
     expect(resolved.rmuxCommand).not.toBe(fakeDaemon);
 
-    // The bundled binary must be the pinned version (proves it is not the fake).
-    const probe = Bun.spawnSync([resolved.rmuxCommand!, "-V"], { encoding: "utf8" });
+    // The public bundled CLI remains the version probe authority. Resolve its
+    // path beside the dedicated daemon instead of executing the daemon itself.
+    const bundledCli = join(
+      resolved.rmuxCommand!.slice(0, -basename(resolved.rmuxCommand!).length),
+      process.platform === "win32" ? "rmux.exe" : "rmux",
+    );
+    const probe = Bun.spawnSync([bundledCli, "-V"], { encoding: "utf8" });
     expect(probe.exitCode).toBe(0);
     expect(`${probe.stdout}${probe.stderr}`).toContain(`rmux ${RMUX_BUNDLED_VERSION}`);
 

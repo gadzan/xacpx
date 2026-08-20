@@ -68,12 +68,14 @@ function createFakePlatformPackage(packagesRoot: string, platform: string): stri
   return pkgDir;
 }
 
-test("pack script bundles bridge + rmux + helper and writes the new checksums schema", () => {
+test("pack script bundles bridge + rmux + daemon + helper and writes the new checksums schema", () => {
   const packagesRoot = tempDir("pack-pkgs-");
   const pkgDir = createFakePlatformPackage(packagesRoot, "darwin-x64");
 
   const bridge = writeExecutable(join(tempDir("pack-src-"), "xacpx-rmux-bridge"), "bridge-binary");
-  const rmux = writeExecutable(join(tempDir("pack-rmux-"), "rmux"), "rmux-binary");
+  const rmuxDir = tempDir("pack-rmux-");
+  const rmux = writeExecutable(join(rmuxDir, "rmux"), "rmux-binary");
+  const daemon = writeExecutable(join(rmuxDir, "rmux-daemon"), "rmux-daemon-binary");
   const helper = writeExecutable(
     join(tempDir("pack-helper-"), "rmux"),
     "rmux-helper-binary",
@@ -91,6 +93,8 @@ test("pack script bundles bridge + rmux + helper and writes the new checksums sc
       bridge,
       "--rmux-binary",
       rmux,
+      "--rmux-daemon",
+      daemon,
       "--rmux-helper",
       helper,
       "--packages-dir",
@@ -102,12 +106,14 @@ test("pack script bundles bridge + rmux + helper and writes the new checksums sc
 
   expect(run.status, run.stderr).toBe(0);
 
-  // Layout: bridge + rmux in bin/, helper under libexec/rmux/.
+  // Layout: bridge + rmux + daemon in bin/, helper under libexec/rmux/.
   const bridgeDest = join(pkgDir, "bin", "xacpx-rmux-bridge");
   const rmuxDest = join(pkgDir, "bin", "rmux");
+  const daemonDest = join(pkgDir, "bin", "rmux-daemon");
   const helperDest = join(pkgDir, "libexec", "rmux", "rmux");
   expect(readFileSync(bridgeDest, "utf8")).toBe("bridge-binary");
   expect(readFileSync(rmuxDest, "utf8")).toBe("rmux-binary");
+  expect(readFileSync(daemonDest, "utf8")).toBe("rmux-daemon-binary");
   expect(readFileSync(helperDest, "utf8")).toBe("rmux-helper-binary");
 
   // Redistributed-RMUX license + notice must ride along in the packaged dir
@@ -131,19 +137,24 @@ test("pack script bundles bridge + rmux + helper and writes the new checksums sc
     path: "bin/rmux",
     sha256: sha256Of(rmuxDest),
   });
+  expect(checksums.artifacts.rmuxDaemon).toEqual({
+    path: "bin/rmux-daemon",
+    sha256: sha256Of(daemonDest),
+  });
   expect(checksums.artifacts.rmuxHelper).toEqual({
     path: "libexec/rmux/rmux",
     sha256: sha256Of(helperDest),
   });
 });
 
-test("pack script derives the helper from ../libexec/rmux next to --rmux-binary", () => {
+test("pack script derives the daemon and helper from the official layout around --rmux-binary", () => {
   const packagesRoot = tempDir("pack-pkgs-");
   const pkgDir = createFakePlatformPackage(packagesRoot, "linux-x64");
 
   const srcRoot = tempDir("pack-rel-");
   const bridge = writeExecutable(join(srcRoot, "bin", "xacpx-rmux-bridge"), "bridge");
   const rmux = writeExecutable(join(srcRoot, "bin", "rmux"), "rmux");
+  writeExecutable(join(srcRoot, "bin", "rmux-daemon"), "daemon");
   const helper = writeExecutable(join(srcRoot, "libexec", "rmux", "rmux"), "helper");
 
   const run = spawnSync(
@@ -166,6 +177,7 @@ test("pack script derives the helper from ../libexec/rmux next to --rmux-binary"
   );
 
   expect(run.status, run.stderr).toBe(0);
+  expect(readFileSync(join(pkgDir, "bin", "rmux-daemon"), "utf8")).toBe("daemon");
   expect(readFileSync(join(pkgDir, "libexec", "rmux", "rmux"), "utf8")).toBe("helper");
 });
 
@@ -235,6 +247,7 @@ function writePackedPackage(repoRoot: string, tamperRmuxSha = false): void {
   writeLicenseFiles(pkgDir);
   const bridge = writeExecutable(join(pkgDir, "bin", "xacpx-rmux-bridge"), "bridge");
   const rmux = writeExecutable(join(pkgDir, "bin", "rmux"), "rmux");
+  const daemon = writeExecutable(join(pkgDir, "bin", "rmux-daemon"), "daemon");
   const helper = writeExecutable(join(pkgDir, "libexec", "rmux", "rmux"), "helper");
 
   const checksums = {
@@ -252,6 +265,7 @@ function writePackedPackage(repoRoot: string, tamperRmuxSha = false): void {
         path: "bin/rmux",
         sha256: tamperRmuxSha ? "deadbeef".repeat(8) : sha256Of(rmux),
       },
+      rmuxDaemon: { path: "bin/rmux-daemon", sha256: sha256Of(daemon) },
       rmuxHelper: { path: "libexec/rmux/rmux", sha256: sha256Of(helper) },
     },
   };
@@ -302,6 +316,7 @@ test("verifyRepo accepts the unpacked placeholder state (null checksums, no bina
         artifacts: {
           bridge: { path: "bin/xacpx-rmux-bridge.exe", sha256: null },
           rmux: { path: "bin/rmux.exe", sha256: null },
+          rmuxDaemon: { path: "bin/rmux-daemon.exe", sha256: null },
           rmuxHelper: { path: "libexec/rmux/rmux.exe", sha256: null },
         },
       },
@@ -334,6 +349,7 @@ test("verifyRepo rejects drift between the resolver constant and the release man
     failures.some((f) => f.includes("RMUX_BUNDLED_VERSION=0.9.0 != rmux-release.mjs")),
   ).toBe(true);
 });
+
 test("verifyRepo rejects a platform package that lacks the redistributed-RMUX license", async () => {
   const repoRoot = createVerifyRepo();
   const pkgDir = join(repoRoot, "platform-packages", "xacpx-rmux-bridge-linux-x64");
@@ -341,6 +357,7 @@ test("verifyRepo rejects a platform package that lacks the redistributed-RMUX li
   mkdirSync(join(pkgDir, "libexec", "rmux"), { recursive: true });
   writeExecutable(join(pkgDir, "bin", "xacpx-rmux-bridge"), "bridge");
   writeExecutable(join(pkgDir, "bin", "rmux"), "rmux");
+  writeExecutable(join(pkgDir, "bin", "rmux-daemon"), "daemon");
   writeExecutable(join(pkgDir, "libexec", "rmux", "rmux"), "helper");
   writeFileSync(
     join(pkgDir, "checksums.json"),
@@ -352,7 +369,21 @@ test("verifyRepo rejects a platform package that lacks the redistributed-RMUX li
       platform: "linux-x64",
       artifact: "bin/xacpx-rmux-bridge",
       sha256: sha256Of(join(pkgDir, "bin", "xacpx-rmux-bridge")),
-      artifacts: { bridge: { path: "bin/xacpx-rmux-bridge", sha256: sha256Of(join(pkgDir, "bin", "xacpx-rmux-bridge")) } },
+      artifacts: {
+        bridge: {
+          path: "bin/xacpx-rmux-bridge",
+          sha256: sha256Of(join(pkgDir, "bin", "xacpx-rmux-bridge")),
+        },
+        rmux: { path: "bin/rmux", sha256: sha256Of(join(pkgDir, "bin", "rmux")) },
+        rmuxDaemon: {
+          path: "bin/rmux-daemon",
+          sha256: sha256Of(join(pkgDir, "bin", "rmux-daemon")),
+        },
+        rmuxHelper: {
+          path: "libexec/rmux/rmux",
+          sha256: sha256Of(join(pkgDir, "libexec", "rmux", "rmux")),
+        },
+      },
     }, null, 2)}\n`,
   );
   const failures = await collectPublishVerificationFailures({

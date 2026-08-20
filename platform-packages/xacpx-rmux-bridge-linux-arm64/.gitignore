@@ -3,4 +3,6 @@ bin/xacpx-rmux-bridge
 bin/xacpx-rmux-bridge.exe
 bin/rmux
 bin/rmux.exe
+bin/rmux-daemon
+bin/rmux-daemon.exe
 libexec/

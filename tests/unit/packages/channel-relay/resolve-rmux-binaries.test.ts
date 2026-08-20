@@ -26,13 +26,14 @@ function homeWithManagedHelper(dir: string): string {
   return helperDir;
 }
 
-test("bundled RMUX beside a platform-package bridge wins over PATH", () => {
+test("bundled RMUX daemon beside a platform-package bridge wins over PATH", () => {
   const dir = mkdtempSync(join(tmpdir(), "rmux-bundled-path-"));
   try {
     const pkgBin = join(dir, "pkg", "bin");
     mkdirSync(pkgBin, { recursive: true });
     const bridge = touchExecutable(join(pkgBin, "xacpx-rmux-bridge.exe"));
-    const bundled = touchExecutable(join(pkgBin, "rmux.exe"));
+    touchExecutable(join(pkgBin, "rmux.exe"));
+    const bundled = touchExecutable(join(pkgBin, "rmux-daemon.exe"));
 
     // Hostile PATH: a stale rmux (e.g. WinGet 0.9.0) that must never win.
     const staleDir = join(dir, "stale-path");
@@ -54,13 +55,14 @@ test("bundled RMUX beside a platform-package bridge wins over PATH", () => {
   }
 });
 
-test("bundled RMUX wins over a stale managed helper in ~/.local/libexec/rmux", () => {
+test("bundled RMUX daemon wins over a stale managed helper in ~/.local/libexec/rmux", () => {
   const dir = mkdtempSync(join(tmpdir(), "rmux-bundled-helper-"));
   try {
     const pkgBin = join(dir, "pkg", "bin");
     mkdirSync(pkgBin, { recursive: true });
     const bridge = touchExecutable(join(pkgBin, "xacpx-rmux-bridge.exe"));
-    const bundled = touchExecutable(join(pkgBin, "rmux.exe"));
+    touchExecutable(join(pkgBin, "rmux.exe"));
+    const bundled = touchExecutable(join(pkgBin, "rmux-daemon.exe"));
     const helperDir = homeWithManagedHelper(dir);
 
     const resolved = resolveRmuxBinaries({
@@ -76,13 +78,35 @@ test("bundled RMUX wins over a stale managed helper in ~/.local/libexec/rmux", (
   }
 });
 
+test("platform package never falls back to its public rmux CLI when the daemon is missing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "rmux-bundled-missing-daemon-"));
+  try {
+    const pkgBin = join(dir, "pkg", "bin");
+    mkdirSync(pkgBin, { recursive: true });
+    const bridge = touchExecutable(join(pkgBin, "xacpx-rmux-bridge.exe"));
+    const publicCli = touchExecutable(join(pkgBin, "rmux.exe"));
+
+    const resolved = resolveRmuxBinaries({
+      platformPackageResolver: () => bridge,
+      pathEnv: "",
+      homeDir: join(dir, "empty-home"),
+    });
+    expect(resolved.source.bridge).toBe("platform-package");
+    expect(resolved.rmuxCommand).toBeUndefined();
+    expect(resolved.source.rmux).toBeUndefined();
+    expect(resolved.rmuxCommand).not.toBe(publicCli);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("explicit terminal.rmuxCommand always wins over bundled RMUX", () => {
   const dir = mkdtempSync(join(tmpdir(), "rmux-explicit-"));
   try {
     const pkgBin = join(dir, "pkg", "bin");
     mkdirSync(pkgBin, { recursive: true });
     const bridge = touchExecutable(join(pkgBin, "xacpx-rmux-bridge.exe"));
-    touchExecutable(join(pkgBin, "rmux.exe"));
+    touchExecutable(join(pkgBin, "rmux-daemon.exe"));
     const customDir = join(dir, "custom");
     mkdirSync(customDir, { recursive: true });
     const custom = touchExecutable(join(customDir, "rmux.exe"));
@@ -224,7 +248,7 @@ test("resolveRmuxBinaries rejects missing config rmuxCommand even with bundled R
   const dir = mkdtempSync(join(tmpdir(), "rmux-bin-"));
   try {
     const bridge = touchExecutable(join(dir, "xacpx-rmux-bridge"));
-    touchExecutable(join(dir, "rmux"));
+    touchExecutable(join(dir, "rmux-daemon"));
     expect(() =>
       resolveRmuxBinaries({
         bridgeCommand: bridge,
