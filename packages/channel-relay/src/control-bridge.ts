@@ -482,6 +482,15 @@ async function dispatchControlRequest(
         return errorPayload("bad-request", "workspace is required");
       return await control.listDirectory(input.workspace, input.path); // DirListing ≅ FsListResult
     }
+    case MSG.fsBrowse: {
+      const input = parseControlPayload(MSG.fsBrowse, payload);
+      if (!input)
+        return errorPayload(
+          "invalid-payload",
+          `${MSG.fsBrowse}: malformed payload`,
+        );
+      return await control.browseDirectories(input.path); // BrowseDirsResult ≅ FsBrowseResult
+    }
     case MSG.fsRead: {
       const input = parseControlPayload(MSG.fsRead, payload);
       if (!input)

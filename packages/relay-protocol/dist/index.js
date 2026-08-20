@@ -105,6 +105,7 @@ var MSG = {
   orchestrationGet: "control.orchestration.get",
   orchestrationCancel: "control.orchestration.cancel",
   fsList: "control.fs.list",
+  fsBrowse: "control.fs.browse",
   fsRead: "control.fs.read",
   fsDiff: "control.fs.diff",
   fsSearch: "control.fs.search",
@@ -721,6 +722,10 @@ var validateFsList = (p) => {
   const o = fields(p);
   return o && isStr(o.workspace) && optStr(o.path) ? o : null;
 };
+var validateFsBrowse = (p) => {
+  const o = fields(p);
+  return o && optStr(o.path) ? o : null;
+};
 var validateFsRead = (p) => {
   const o = fields(p);
   return o && isStr(o.workspace) && isStr(o.path) ? o : null;
@@ -857,6 +862,7 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.orchestrationGet]: validateOrchestrationGet,
   [MSG.orchestrationCancel]: validateOrchestrationCancel,
   [MSG.fsList]: validateFsList,
+  [MSG.fsBrowse]: validateFsBrowse,
   [MSG.fsRead]: validateFsRead,
   [MSG.fsDiff]: validateFsDiff,
   [MSG.fsSearch]: validateFsSearch,

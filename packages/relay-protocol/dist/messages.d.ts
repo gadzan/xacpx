@@ -37,6 +37,7 @@ export declare const MSG: {
     readonly orchestrationGet: "control.orchestration.get";
     readonly orchestrationCancel: "control.orchestration.cancel";
     readonly fsList: "control.fs.list";
+    readonly fsBrowse: "control.fs.browse";
     readonly fsRead: "control.fs.read";
     readonly fsDiff: "control.fs.diff";
     readonly fsSearch: "control.fs.search";
@@ -438,6 +439,31 @@ export interface FsListResult {
     root: string;
     /** Host path separator. */
     sep: "/" | "\\";
+}
+export interface FsBrowsePayload {
+    /** Absolute directory path on the instance host. Empty/omitted = home; `~` and
+     *  `~/` expand to home; relative paths resolve against home. */
+    path?: string;
+}
+export interface FsBrowseEntry {
+    name: string;
+    /** Absolute path of this directory. */
+    path: string;
+}
+export interface FsBrowseResult {
+    /** Normalized absolute path (no trailing separator; roots are "/" or "C:\"). */
+    path: string;
+    /** Host path separator. */
+    sep: "/" | "\\";
+    /** Parent absolute path; null at a filesystem root (POSIX "/", Windows drive root). */
+    parent: string | null;
+    /** Instance user home directory (for the "home" shortcut). */
+    home: string;
+    /** Subdirectories including hidden ones (client filters display); sorted
+     *  locale-independently by name. */
+    dirs: FsBrowseEntry[];
+    /** True when the directory count hit the cap and the list was truncated. */
+    truncated: boolean;
 }
 export interface FsReadPayload {
     workspace: string;
