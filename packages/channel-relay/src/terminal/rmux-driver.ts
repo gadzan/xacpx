@@ -68,7 +68,38 @@ export type RmuxRecoveryEvent =
   | { type: "exit"; code?: number }
   | { type: "error"; code: string; message: string };
 
-/** Version/capability stub — real driver reports bridge + RMUX wire version. */
+/** Bridge capabilities that must be proven before Relay advertises terminal
+ * capability to the Hub. The POSIX dialect capability is deliberately an
+ * internal bridge→connector contract: browsers only see the generic terminal
+ * capabilities after this preflight succeeds. */
+export const RMUX_BRIDGE_RECOVERY_CAPABILITY = "terminal.rmux.recovery.v1";
+export const RMUX_BRIDGE_MULTI_VIEW_CAPABILITY = "terminal.multi-view.v1";
+export const RMUX_POSIX_XTERM_DIALECT_CAPABILITY =
+  "terminal.posix-dialect.xterm-256color.v1";
+
+export function requiredRmuxBridgeCapabilities(
+  platform: NodeJS.Platform = process.platform,
+): readonly string[] {
+  return platform === "win32"
+    ? [RMUX_BRIDGE_RECOVERY_CAPABILITY, RMUX_BRIDGE_MULTI_VIEW_CAPABILITY]
+    : [
+        RMUX_BRIDGE_RECOVERY_CAPABILITY,
+        RMUX_BRIDGE_MULTI_VIEW_CAPABILITY,
+        RMUX_POSIX_XTERM_DIALECT_CAPABILITY,
+      ];
+}
+
+export function missingRequiredRmuxBridgeCapabilities(
+  capabilities: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  const advertised = new Set(capabilities);
+  return requiredRmuxBridgeCapabilities(platform).filter(
+    (capability) => !advertised.has(capability),
+  );
+}
+
+/** Version/capability snapshot — real driver reports bridge + RMUX wire version. */
 export interface RmuxDiagnostics {
   bridgeVersion: string;
   rmuxWireVersion: string;

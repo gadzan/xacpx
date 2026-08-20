@@ -2,8 +2,8 @@
 //!
 //! Create path (no rmux patches):
 //! 1. `OwnedSession` with `KillOnOwnerExit` + lease TTL
-//! 2. `new_window_with().cwd(...)` for the work pane, plus a macOS-only
-//!    `TERM=screen-256color` override on that pane (not daemon-global)
+//! 2. `new_window_with().cwd(...)` for the work pane, with the POSIX
+//!    application terminal dialect pinned to `TERM=xterm-256color`
 //! 3. close default window 0
 //! 4. resize + `history-limit` on the stable pane id
 
@@ -28,6 +28,16 @@ use crate::protocol::{
 /// sidecar request timeout (15s). Recover itself is dispatched off the stdin
 /// loop so other panes are not queued behind this wait.
 const INITIAL_REBASE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Terminal dialect advertised to POSIX applications whose RMUX raw recovery
+/// stream is replayed by relay-web's xterm.js renderer.
+///
+/// This is an end-to-end renderer contract, not RMUX's daemon terminal type.
+/// Keeping application output on the xterm dialect prevents screen/tmux-only
+/// control strings from reaching a renderer that does not implement them.
+const POSIX_WEB_TERMINAL_DIALECT: &str = "xterm-256color";
+const POSIX_WEB_TERMINAL_DIALECT_CAPABILITY: &str =
+    "terminal.posix-dialect.xterm-256color.v1";
 
 pub struct BridgeState {
     rmux: Rmux,
@@ -91,7 +101,8 @@ impl BridgeState {
             .new_window_with()
             .name("shell")
             .cwd(PathBuf::from(&cwd));
-        let work_builder = apply_production_work_window_env(work_builder, std::env::consts::OS);
+        let work_builder =
+            apply_production_work_window_env(work_builder, std::env::consts::FAMILY);
         let work = match work_builder.await {
             Ok(w) => w,
             Err(e) => {
@@ -430,38 +441,46 @@ impl BridgeState {
         (
             BRIDGE_VERSION.to_owned(),
             "0.10.0".to_owned(),
-            vec![
-                "terminal.rmux.recovery.v1".to_owned(),
-                "terminal.multi-view.v1".to_owned(),
-                "process-owned.v1".to_owned(),
-            ],
+            bridge_capabilities(std::env::consts::FAMILY),
         )
     }
 }
 
+fn bridge_capabilities(family: &str) -> Vec<String> {
+    let mut capabilities = vec![
+        "terminal.rmux.recovery.v1".to_owned(),
+        "terminal.multi-view.v1".to_owned(),
+        "process-owned.v1".to_owned(),
+    ];
+    if family == "unix" {
+        capabilities.push(POSIX_WEB_TERMINAL_DIALECT_CAPABILITY.to_owned());
+    }
+    capabilities
+}
+
 /// Process environment overrides for xacpx-created shell work windows.
 ///
-/// `os` is [`std::env::consts::OS`] (`macos`, `linux`, `windows`, ...).
+/// `family` is [`std::env::consts::FAMILY`] (`unix`, `windows`, ...).
 ///
-/// On macOS, inject `TERM=screen-256color`. RMUX's daemon default is
-/// `tmux-256color`, which is a valid terminal type, but the current macOS
-/// system terminfo database has no readable entry for it. Async prompts such
-/// as Powerlevel10k then cannot emit CUU/ED and append a duplicate prompt
-/// after every command. This is a host compatibility fallback, not a claim
-/// that `screen-256color` is a better default than `tmux-256color`. Other
-/// platforms keep the daemon `default-terminal`.
-fn production_work_window_env(os: &str) -> Vec<(&'static str, &'static str)> {
-    match os {
-        "macos" => vec![("TERM", "screen-256color")],
+/// RMUX recovery deliberately forwards the pane's raw terminal bytes to
+/// relay-web, so the shell application and the browser renderer must agree on
+/// one terminal dialect. relay-web uses xterm.js; therefore POSIX work panes
+/// advertise `xterm-256color` rather than inheriting RMUX's `tmux-256color` or
+/// using the previous macOS-only `screen-256color` fallback. That keeps title
+/// integration and other terminal-control choices on xterm-compatible
+/// sequences end to end. Windows does not use the POSIX TERM contract.
+fn production_work_window_env(family: &str) -> Vec<(&'static str, &'static str)> {
+    match family {
+        "unix" => vec![("TERM", POSIX_WEB_TERMINAL_DIALECT)],
         _ => Vec::new(),
     }
 }
 
 fn apply_production_work_window_env<'a>(
     mut builder: NewWindowBuilder<'a>,
-    os: &str,
+    family: &str,
 ) -> NewWindowBuilder<'a> {
-    for (key, value) in production_work_window_env(os) {
+    for (key, value) in production_work_window_env(family) {
         builder = builder.env(key, value);
     }
     builder
@@ -583,40 +602,50 @@ mod tests {
     use rmux_sdk::PaneStreamEndReason;
 
     #[test]
-    fn macos_work_window_injects_screen_256color_term() {
+    fn unix_work_window_uses_xterm_renderer_dialect() {
         assert_eq!(
-            production_work_window_env("macos"),
-            vec![("TERM", "screen-256color")]
+            production_work_window_env("unix"),
+            vec![("TERM", "xterm-256color")]
         );
     }
 
     #[test]
-    fn macos_work_window_does_not_prefer_xterm_256color() {
-        assert!(
-            !production_work_window_env("macos")
-                .iter()
-                .any(|(key, value)| *key == "TERM" && *value == "xterm-256color"),
-            "macOS fallback must be screen-256color, not xterm-256color"
-        );
+    fn unix_work_window_does_not_advertise_screen_or_tmux_dialect() {
+        let term = production_work_window_env("unix")
+            .into_iter()
+            .find_map(|(key, value)| (key == "TERM").then_some(value))
+            .expect("unix work window must set TERM");
+        assert!(!term.starts_with("screen"));
+        assert!(!term.starts_with("tmux"));
+        assert!(term.starts_with("xterm"));
     }
 
     #[test]
-    fn linux_work_window_keeps_daemon_default_term() {
-        assert!(production_work_window_env("linux").is_empty());
-    }
-
-    #[test]
-    fn windows_work_window_keeps_daemon_default_term() {
+    fn windows_work_window_does_not_inject_posix_term() {
         assert!(production_work_window_env("windows").is_empty());
     }
 
     #[test]
-    fn host_work_window_env_matches_production_helper() {
-        let env = production_work_window_env(std::env::consts::OS);
-        #[cfg(target_os = "macos")]
-        assert_eq!(env, vec![("TERM", "screen-256color")]);
-        #[cfg(not(target_os = "macos"))]
+    fn host_work_window_env_matches_renderer_contract() {
+        let env = production_work_window_env(std::env::consts::FAMILY);
+        #[cfg(unix)]
+        assert_eq!(env, vec![("TERM", POSIX_WEB_TERMINAL_DIALECT)]);
+        #[cfg(windows)]
         assert!(env.is_empty());
+    }
+
+    #[test]
+    fn bridge_capabilities_publish_renderer_dialect_only_on_posix() {
+        assert!(bridge_capabilities("unix")
+            .iter()
+            .any(|value| value == POSIX_WEB_TERMINAL_DIALECT_CAPABILITY));
+        assert!(!bridge_capabilities("windows")
+            .iter()
+            .any(|value| value == POSIX_WEB_TERMINAL_DIALECT_CAPABILITY));
+        assert_eq!(
+            POSIX_WEB_TERMINAL_DIALECT_CAPABILITY,
+            "terminal.posix-dialect.xterm-256color.v1"
+        );
     }
 
     #[test]
