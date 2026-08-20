@@ -247,6 +247,13 @@ export async function handleTerminalRequest(
           cols: p.cols,
           rows: p.rows,
         });
+        // Once the request deadline has fired, this browser no longer owns an
+        // unpublished open. Compensation may detach/clean it up, but it must
+        // not mutate shared terminal state (notably geometry) after timeout.
+        if (timedOut) {
+          void runtime.compensateTimedOutOpen(result).catch(() => {});
+          return true;
+        }
         // A create already passes the requested geometry into driver.create().
         // A resume used to ignore it completely and relied on a later browser
         // fire-and-forget resize, so a stale 80x24 pane could survive a refresh
@@ -263,10 +270,6 @@ export async function handleTerminalRequest(
             runtime.detach(result.attachmentId);
             throw err;
           }
-        }
-        if (timedOut) {
-          void runtime.compensateTimedOutOpen(result).catch(() => {});
-          return true;
         }
         respondOnce(toTerminalOpenWireResult(result));
         return true;
