@@ -133,24 +133,16 @@ async function collectUntil(
 }
 
 function recoveryText(events: RmuxRecoveryEvent[]): string {
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (const event of events) {
-    const bytes =
-      event.type === "rebase"
-        ? event.keyframe
-        : event.type === "bytes"
-          ? event.data
-          : null;
-    if (!bytes) continue;
-    chunks.push(bytes);
-    total += bytes.byteLength;
-  }
+  const bytesEvents = events.filter(
+    (event): event is Extract<RmuxRecoveryEvent, { type: "bytes" }> =>
+      event.type === "bytes",
+  );
+  const total = bytesEvents.reduce((sum, event) => sum + event.data.byteLength, 0);
   const joined = new Uint8Array(total);
   let offset = 0;
-  for (const chunk of chunks) {
-    joined.set(chunk, offset);
-    offset += chunk.byteLength;
+  for (const event of bytesEvents) {
+    joined.set(event.data, offset);
+    offset += event.data.byteLength;
   }
   return new TextDecoder().decode(joined);
 }
