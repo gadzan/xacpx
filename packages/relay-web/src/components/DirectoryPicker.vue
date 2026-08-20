@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { X, Folder, Home, ArrowUp, Loader2 } from "lucide-vue-next";
 import { isErrorPayload, type FsBrowseResult } from "@ganglion/xacpx-relay-protocol";
@@ -56,13 +56,27 @@ const visibleDirs = computed(() => {
   return showHidden.value ? dirs : dirs.filter((d) => !d.name.startsWith("."));
 });
 
-// Breadcrumbs: cumulative joins of the path segments (POSIX root "/" yields
-// ["", "home", …] filtered to segment labels; each crumb navigates on click).
+// Breadcrumbs: cumulative ABSOLUTE paths — the daemon resolves relatives against
+// homedir, so a crumb must carry its full path. POSIX root "/" splits to
+// ["", "home", …] (empties filtered for labels) and re-prefixed with "/"; on
+// Windows the first crumb is the bare drive root ("C:\\"), later crumbs are
+// joined cumulative segments ("C:\\Users\\me").
 const crumbs = computed(() => {
   const r = result.value;
   if (!r) return [];
   const parts = r.path.split(r.sep).filter(Boolean);
-  return parts.map((label, i) => ({ label, path: parts.slice(0, i + 1).join(r.sep) }));
+  return parts.map((label, i) => ({
+    label,
+    path: r.sep === "\\"
+      ? (i === 0 ? parts[0] + "\\" : parts.slice(0, i + 1).join("\\"))
+      : "/" + parts.slice(0, i + 1).join("/"),
+  }));
+});
+
+// Toggling hidden dirs off can shrink the list under the highlighted index —
+// clamp so Enter never silently no-ops on a stale highlight.
+watch(visibleDirs, (v) => {
+  if (highlight.value >= v.length) highlight.value = 0;
 });
 
 function submitPath(): void {

@@ -7,7 +7,13 @@ import { nextTick, onBeforeUnmount, onMounted, type Ref } from "vue";
  *  (and an `aria-labelledby` pointing at the title).
  *
  *  The keydown listener sits on `document`, so a child that must swallow Escape itself
- *  (e.g. an open combobox closing its own popup) simply calls `e.stopPropagation()`. */
+ *  (e.g. an open combobox closing its own popup) simply calls `e.stopPropagation()`.
+ *
+ *  Nested dialogs: a module-level stack tracks every registered dialog; only the
+ *  top-most (last mounted) one acts on Escape, so closing a child never also
+ *  closes the parent behind it. Tab trapping stays per-dialog. */
+const stack: Array<() => void> = [];
+
 export function useModalA11y(dialogEl: Ref<HTMLElement | null>, close: () => void): void {
   let previouslyFocused: HTMLElement | null = null;
   const FOCUSABLE =
@@ -17,6 +23,7 @@ export function useModalA11y(dialogEl: Ref<HTMLElement | null>, close: () => voi
   }
   function onKeydown(e: KeyboardEvent): void {
     if (e.key === "Escape") {
+      if (stack[stack.length - 1] !== close) return; // a nested dialog on top owns Escape
       e.preventDefault();
       close();
       return;
@@ -35,6 +42,7 @@ export function useModalA11y(dialogEl: Ref<HTMLElement | null>, close: () => voi
     }
   }
   onMounted(() => {
+    stack.push(close);
     previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     document.addEventListener("keydown", onKeydown);
     void nextTick(() => {
@@ -42,6 +50,8 @@ export function useModalA11y(dialogEl: Ref<HTMLElement | null>, close: () => voi
     });
   });
   onBeforeUnmount(() => {
+    const i = stack.indexOf(close);
+    if (i !== -1) stack.splice(i, 1);
     document.removeEventListener("keydown", onKeydown);
     previouslyFocused?.focus?.();
   });

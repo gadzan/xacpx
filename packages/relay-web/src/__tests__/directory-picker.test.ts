@@ -135,4 +135,26 @@ describe("DirectoryPicker", () => {
     await flushPromises();
     expect(rpc).toHaveBeenCalledWith("i1", "control.fs.browse", { path: "/home/me/proj" });
   });
+
+  it("breadcrumb crumb click navigates to the absolute path (POSIX)", async () => {
+    const rpc = vi.spyOn(api, "rpc").mockResolvedValue(home as never);
+    const w = mountPicker();
+    await flushPromises();
+    const crumbs = w.find('nav[aria-label="breadcrumb"]').findAll("button");
+    expect(crumbs).toHaveLength(2); // home, me — not relative "home"/"home/me"
+    await crumbs[0].trigger("click");
+    expect(rpc).toHaveBeenLastCalledWith("i1", "control.fs.browse", { path: "/home" });
+  });
+
+  it("first Windows crumb is the drive root (C:\\)", async () => {
+    const rpc = vi.spyOn(api, "rpc").mockResolvedValue({
+      ...home, path: "C:\\Users\\me", sep: "\\", parent: "C:\\Users",
+    } as never);
+    const w = mountPicker();
+    await flushPromises();
+    const crumbs = w.find('nav[aria-label="breadcrumb"]').findAll("button");
+    expect(crumbs).toHaveLength(3);
+    await crumbs[0].trigger("click");
+    expect(rpc).toHaveBeenLastCalledWith("i1", "control.fs.browse", { path: "C:\\" });
+  });
 });
