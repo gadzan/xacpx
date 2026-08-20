@@ -1,9 +1,9 @@
 // Resolve RMUX bridge + daemon binaries for process-owned terminal mode.
 //
 // Bridge order: explicit config absolute path → platform package optional dep → PATH.
-// RMUX order:   explicit config absolute path → dedicated daemon beside selected
-//               bridge (bundled platform-package daemon when applicable) → legacy
-//               managed helper ~/.local/libexec/rmux → PATH.
+// RMUX order:   explicit config absolute path → if the bridge came from the managed
+//               platform package, require its bundled dedicated daemon; otherwise
+//               use beside-bridge → legacy managed helper ~/.local/libexec/rmux → PATH.
 //
 // The platform packages bundle a pinned RMUX whose version matches the native
 // bridge's rmux-sdk pin (`RMUX_BUNDLED_VERSION` below), so a machine-local
@@ -12,12 +12,11 @@
 // rmux-sdk 0.10.0). Explicit terminal.rmuxCommand always wins.
 //
 // A platform package is stricter than a developer/legacy layout: it must have
-// a dedicated rmux-daemon beside the bridge. Never fall back to the public
-// rmux CLI from a platform package, including from PATH. On Windows the tiny
-// CLI re-execs the full libexec helper without preserving the daemon's hidden-
-// process creation flags, which opens a persistent console window. Missing
-// packaged daemon therefore fails closed into the managed-helper/dedicated-
-// daemon fallback chain instead of launching rmux.exe.
+// a dedicated rmux-daemon beside the bridge. Never fall back from an incomplete
+// managed package to ~/.local, PATH, or the SDK's implicit candidates. On Windows
+// the public tiny CLI re-execs the full libexec helper without preserving the
+// daemon's hidden-process creation flags, which opens a persistent console window.
+// Missing packaged daemon therefore fails closed before the bridge can start.
 //
 // Never downloads latest; never path-depends on a workspace `../rmux`.
 
@@ -184,25 +183,33 @@ export function resolveRmuxBinaries(input: {
     }
     rmuxCommand = input.rmuxCommand;
     rmuxSource = "config";
+  } else if (bridgeSource === "platform-package") {
+    // Production packages are self-contained. If their dedicated daemon is
+    // missing, do not let the SDK rediscover machine-local rmux/rmux-daemon:
+    // that would reintroduce version skew and the Windows public-CLI handoff.
+    const bundledDaemon = resolveDaemonBesideBridge(bridgeCommand, false);
+    if (!bundledDaemon) {
+      throw new RmuxBinaryUnavailableError(
+        `platform RMUX package is incomplete: dedicated rmux-daemon is missing beside ${bridgeCommand}; reinstall @ganglion/xacpx-channel-relay and its platform optional dependency`,
+      );
+    }
+    rmuxCommand = bundledDaemon;
+    rmuxSource = "platform-package";
   } else {
-    // Bundled dedicated daemon beside the selected bridge is the production
-    // default. A managed platform package must not silently fall back to its
-    // public rmux CLI (beside the bridge or on PATH). The managed libexec
-    // helper remains a safe compatibility fallback because the SDK applies
-    // hidden-daemon creation flags directly to that helper process.
-    const allowCliFallback = bridgeSource !== "platform-package";
-    const beside = resolveDaemonBesideBridge(bridgeCommand, allowCliFallback);
+    // Explicit/PATH bridge layouts are legacy/developer surfaces. Keep their
+    // compatibility chain: beside-bridge, managed helper, then PATH; if none
+    // resolve, leave rmuxCommand undefined and let the SDK emit its native
+    // actionable discovery error during handshake.
+    const beside = resolveDaemonBesideBridge(bridgeCommand, true);
     const helper = resolveDaemonHelper(input.homeDir ?? homedir());
     const onPath = resolveDaemonOnPath(
       input.pathEnv ?? process.env.PATH ?? "",
-      allowCliFallback,
+      true,
     );
     rmuxCommand = beside ?? helper ?? onPath;
     if (rmuxCommand) {
       rmuxSource = beside
-        ? bridgeSource === "platform-package"
-          ? "platform-package"
-          : "beside-bridge"
+        ? "beside-bridge"
         : helper
           ? "managed-helper"
           : "path";

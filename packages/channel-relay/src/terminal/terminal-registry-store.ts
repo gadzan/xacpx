@@ -15,13 +15,22 @@ const OWNER_FILE = "terminal-owner.json";
 const REGISTRY_FILE = "terminals.json";
 const LOCK_FILE = "terminals.lock";
 const FILE_MODE = 0o600;
+
+export type TerminalRegistryLockRetries = number | {
+  retries: number;
+  factor?: number;
+  minTimeout?: number;
+  maxTimeout?: number;
+  randomize?: boolean;
+};
+
 const require = createRequire(import.meta.url);
 const properLockfile = require("proper-lockfile") as {
   lock: (
     resource: string,
     options: {
       lockfilePath: string;
-      retries: number;
+      retries: TerminalRegistryLockRetries;
       stale: number;
       update?: number;
       realpath: boolean;
@@ -31,6 +40,28 @@ const properLockfile = require("proper-lockfile") as {
 
 const WRITER_LOCK_STALE_MS = 30_000;
 const WRITER_LOCK_UPDATE_MS = 10_000;
+const WINDOWS_WRITER_LOCK_RETRY_MS = 1_000;
+const WINDOWS_WRITER_LOCK_RETRY_COUNT = 35;
+
+/**
+ * Windows `xacpx stop/restart` can terminate the daemon tree before channel
+ * cleanup reaches registry.close(), leaving proper-lockfile's directory behind
+ * until its 30s stale lease expires. Retry only on Windows long enough to cross
+ * that lease boundary; POSIX keeps the historical fail-fast behavior because
+ * graceful shutdown normally releases the lock in-process.
+ */
+export function terminalRegistryWriterLockRetries(
+  platform: NodeJS.Platform = process.platform,
+): TerminalRegistryLockRetries {
+  if (platform !== "win32") return 0;
+  return {
+    retries: WINDOWS_WRITER_LOCK_RETRY_COUNT,
+    factor: 1,
+    minTimeout: WINDOWS_WRITER_LOCK_RETRY_MS,
+    maxTimeout: WINDOWS_WRITER_LOCK_RETRY_MS,
+    randomize: false,
+  };
+}
 
 export class TerminalRegistryRevisionMismatchError extends Error {
   constructor(expected: number, actual: number) {
@@ -105,7 +136,7 @@ export interface TerminalRegistryFsDeps {
     resource: string,
     options: {
       lockfilePath: string;
-      retries: number;
+      retries: TerminalRegistryLockRetries;
       stale: number;
       update?: number;
       realpath: boolean;
@@ -124,6 +155,8 @@ export interface TerminalRegistryStoreOptions {
    * without a lock.
    */
   exclusiveWriter?: boolean;
+  /** Override the platform retry policy for the exclusive writer lock (tests/ops). */
+  writerLockRetries?: TerminalRegistryLockRetries;
 }
 
 type LoadedState = {
@@ -228,6 +261,7 @@ export class TerminalRegistryStore {
   private readonly dir: string;
   private readonly deps: Required<TerminalRegistryFsDeps>;
   private readonly exclusiveWriter: boolean;
+  private readonly writerLockRetries: TerminalRegistryLockRetries;
   private state: LoadedState | null = null;
   private chain: Promise<unknown> = Promise.resolve();
   private releaseLock: (() => Promise<void>) | null = null;
@@ -235,6 +269,7 @@ export class TerminalRegistryStore {
   constructor(options: TerminalRegistryStoreOptions) {
     this.dir = options.dir;
     this.exclusiveWriter = options.exclusiveWriter === true;
+    this.writerLockRetries = options.writerLockRetries ?? terminalRegistryWriterLockRetries();
     const d = options.deps ?? {};
     this.deps = {
       mkdir: d.mkdir ?? ((p, o) => mkdir(p, o)),
@@ -567,7 +602,7 @@ export class TerminalRegistryStore {
     try {
       this.releaseLock = await this.deps.lock(this.dir, {
         lockfilePath: join(this.dir, LOCK_FILE),
-        retries: 0,
+        retries: this.writerLockRetries,
         stale: WRITER_LOCK_STALE_MS,
         update: WRITER_LOCK_UPDATE_MS,
         realpath: false,

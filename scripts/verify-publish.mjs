@@ -107,7 +107,7 @@ export async function collectPublishVerificationFailures(input = {}) {
  * Platform packages bundle a pinned RMUX next to the bridge. Verify:
  *   - the three version pins agree (release manifest ↔ TS resolver constant ↔
  *     Cargo.toml rmux-sdk), so the packaged RMUX provably matches the bridge
- *   - every packed package contains bridge + rmux + libexec helper binaries
+ *   - every packed package contains bridge + rmux + rmux-daemon + libexec helper
  *   - checksums.json artifacts match the actual file bytes
  * Unpacked (post-checkout placeholder) packages pass as long as their
  * checksums are null; a non-null checksum must always match its file.
@@ -179,9 +179,14 @@ export async function verifyPlatformPackages(repoRoot, failures = []) {
       );
     }
     const artifacts = checksums.artifacts;
-    if (!artifacts?.bridge?.path || !artifacts?.rmux?.path || !artifacts?.rmuxHelper?.path) {
+    if (
+      !artifacts?.bridge?.path
+      || !artifacts?.rmux?.path
+      || !artifacts?.rmuxDaemon?.path
+      || !artifacts?.rmuxHelper?.path
+    ) {
       failures.push(
-        `${dir}: checksums.artifacts must list bridge + rmux + rmuxHelper paths`,
+        `${dir}: checksums.artifacts must list bridge + rmux + rmuxDaemon + rmuxHelper paths`,
       );
       continue;
     }
@@ -192,9 +197,10 @@ export async function verifyPlatformPackages(repoRoot, failures = []) {
     );
     if (anyArtifactPresent) {
       // Packed (or partially packed) state: every artifact must exist and
-      // match its recorded SHA-256 — including the bundled RMUX + helper.
+      // match its recorded SHA-256 — including the bundled RMUX daemon/helper.
       await verifyArtifactBytes(dir, artifacts.bridge, pkgRoot, checksums, failures);
       await verifyArtifactBytes(dir, artifacts.rmux, pkgRoot, checksums, failures);
+      await verifyArtifactBytes(dir, artifacts.rmuxDaemon, pkgRoot, checksums, failures);
       await verifyArtifactBytes(dir, artifacts.rmuxHelper, pkgRoot, checksums, failures);
       // Legacy single-artifact fields must stay the bridge entry.
       if (checksums.artifact !== artifacts.bridge.path) {
