@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  requiredRmuxBridgeCapabilities,
   RmuxDriverCrashedError,
   RmuxPaneNotFoundError,
   RmuxSessionNameConflictError,
@@ -138,7 +139,7 @@ export class InMemoryRmuxDriver implements RmuxTerminalDriver {
   private diagnosticsValue: RmuxDiagnostics = {
     bridgeVersion: "in-memory-fake-0.0.0",
     rmuxWireVersion: "0.10.0-fake",
-    capabilities: ["terminal.rmux.recovery.v1", "terminal.multi-view.v1"],
+    capabilities: [...requiredRmuxBridgeCapabilities()],
   };
 
   constructor(deps: InMemoryRmuxDriverDeps = {}) {
@@ -357,6 +358,12 @@ export class InMemoryRmuxDriver implements RmuxTerminalDriver {
     }
     this.sessionsById.clear();
     this.inventoryOverride = [];
+  }
+
+  restoreDriver(): void {
+    this.crashed = false;
+    this.crashError = new RmuxDriverCrashedError();
+    this.inventoryOverride = null;
   }
 
   private async gate(op: RmuxDriverOp): Promise<void> {
