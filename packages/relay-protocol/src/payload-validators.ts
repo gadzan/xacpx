@@ -17,6 +17,7 @@ import {
   type FsDeletePayload,
   type FsDiffPayload,
   type FsDownloadPayload,
+  type FsBrowsePayload,
   type FsListPayload,
   type FsReadPayload,
   type FsRenamePayload,
@@ -201,6 +202,10 @@ const validateFsList: Validator<FsListPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.workspace) && optStr(o.path) ? (o as unknown as FsListPayload) : null;
 };
+const validateFsBrowse: Validator<FsBrowsePayload> = (p) => {
+  const o = fields(p);
+  return o && optStr(o.path) ? (o as unknown as FsBrowsePayload) : null;
+};
 const validateFsRead: Validator<FsReadPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.workspace) && isStr(o.path) ? (o as unknown as FsReadPayload) : null;
@@ -368,6 +373,7 @@ export type ControlRpcType =
   | typeof MSG.promptCancel | typeof MSG.queueCancel | typeof MSG.commandExecute
   | typeof MSG.scheduledList | typeof MSG.scheduledCreate | typeof MSG.scheduledCancel
   | typeof MSG.orchestrationGet | typeof MSG.orchestrationCancel | typeof MSG.fsList
+  | typeof MSG.fsBrowse
   | typeof MSG.fsRead | typeof MSG.fsDiff | typeof MSG.fsSearch | typeof MSG.fsCreate
   | typeof MSG.fsRename | typeof MSG.fsDelete | typeof MSG.fsCopy | typeof MSG.fsDownload
   | typeof MSG.fsWrite | typeof MSG.sessionModelGet | typeof MSG.sessionModelSet
@@ -406,6 +412,7 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.orchestrationGet]: validateOrchestrationGet,
   [MSG.orchestrationCancel]: validateOrchestrationCancel,
   [MSG.fsList]: validateFsList,
+  [MSG.fsBrowse]: validateFsBrowse,
   [MSG.fsRead]: validateFsRead,
   [MSG.fsDiff]: validateFsDiff,
   [MSG.fsSearch]: validateFsSearch,

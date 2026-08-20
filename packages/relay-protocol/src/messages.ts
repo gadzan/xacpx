@@ -59,6 +59,7 @@ export const MSG = {
   orchestrationGet: "control.orchestration.get",
   orchestrationCancel: "control.orchestration.cancel",
   fsList: "control.fs.list",
+  fsBrowse: "control.fs.browse",
   fsRead: "control.fs.read",
   fsDiff: "control.fs.diff",
   fsSearch: "control.fs.search",
@@ -499,6 +500,34 @@ export interface FsListResult {
   root: string;
   /** Host path separator. */
   sep: "/" | "\\";
+}
+
+// --- instance directory picker (NOT scoped to a configured workspace; lists
+// directories anywhere on the instance host, for choosing a workspace cwd) ---
+export interface FsBrowsePayload {
+  /** Absolute directory path on the instance host. Empty/omitted = home; `~` and
+   *  `~/` expand to home; relative paths resolve against home. */
+  path?: string;
+}
+export interface FsBrowseEntry {
+  name: string;
+  /** Absolute path of this directory. */
+  path: string;
+}
+export interface FsBrowseResult {
+  /** Normalized absolute path (no trailing separator; roots are "/" or "C:\"). */
+  path: string;
+  /** Host path separator. */
+  sep: "/" | "\\";
+  /** Parent absolute path; null at a filesystem root (POSIX "/", Windows drive root). */
+  parent: string | null;
+  /** Instance user home directory (for the "home" shortcut). */
+  home: string;
+  /** Subdirectories including hidden ones (client filters display); sorted
+   *  locale-independently by name. */
+  dirs: FsBrowseEntry[];
+  /** True when the directory count hit the cap and the list was truncated. */
+  truncated: boolean;
 }
 export interface FsReadPayload {
   workspace: string;
