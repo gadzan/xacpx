@@ -70,7 +70,7 @@ export interface FsBrowseResult {
 ### 安全模型
 
 - hub `POST /api/instances/:id/rpc` 已有账号-持有实例门 + 只放行 `control.*`；browse 的可见范围与 `workspaces.create`（接受任意 cwd）+ `fs.list` 的既有信任面等价——账号被视为实例机器的信任方。
-- 只返回**目录名**，不返回文件、不返回内容；上限 1000；不含 mtime/权限等元数据，降低指纹价值。
+- 只返回**目录名**，不返回文件、不返回内容；响应上限 1000（服务端读取整目录后排序截断）；不含 mtime/权限等元数据，降低指纹价值。
 
 ## Web（packages/relay-web）
 

@@ -45,6 +45,10 @@ async function navigate(p: string): Promise<void> {
   } catch (e) {
     if (mine !== seq) return;
     error.value = e instanceof Error ? e.message : t("dirPicker.loadFailed");
+    // Realign the editable path box with the still-current directory: the failed
+    // target (e.g. a typo) must not stay displayed while confirm submits the old
+    // listing's path - what the user sees must be what confirm would submit.
+    if (result.value) pathInput.value = result.value.path;
   } finally {
     if (mine === seq) loading.value = false;
   }
@@ -92,7 +96,9 @@ function home(): void {
   if (h) void navigate(h);
 }
 function choose(): void {
-  if (!result.value) return;
+  // A pending navigation leaves `result` at the OLD listing - confirming then
+  // would silently submit the stale directory. Inert until it settles.
+  if (loading.value || !result.value) return;
   emit("confirm", result.value.path);
   emit("close");
 }
@@ -172,7 +178,7 @@ function onListKeydown(e: KeyboardEvent): void {
 
         <footer class="flex justify-end gap-2 border-t border-border px-5 py-3">
           <button type="button" class="rounded-lg px-3 py-1.5 text-sm text-fg-muted hover:bg-fg/5" @click="emit('close')">{{ $t("common.cancel") }}</button>
-          <button type="button" data-test="dp-confirm" :disabled="!result"
+          <button type="button" data-test="dp-confirm" :disabled="!result || loading"
                   class="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-white enabled:hover:bg-accent-hover disabled:opacity-40"
                   @click="choose">{{ $t("dirPicker.chooseCurrent") }}</button>
         </footer>

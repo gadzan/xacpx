@@ -156,4 +156,41 @@ describe("DirectoryPicker", () => {
     await crumbs[0].trigger("click");
     expect(rpc).toHaveBeenLastCalledWith("i1", "control.fs.browse", { path: "C:\\" });
   });
+
+  it("cannot confirm while a navigation is pending (review #293 finding 1)", async () => {
+    const pending = Promise.withResolvers<unknown>();
+    vi.spyOn(api, "rpc").mockImplementation((_i, _t, p = {}) => {
+      const path = typeof p === "object" && p !== null && "path" in p ? p.path : undefined;
+      if (path === "/home/me/proj") return pending.promise;
+      return Promise.resolve(home as never);
+    });
+    const w = mountPicker();
+    await flushPromises();
+    await w.get('[data-test="dp-dir-proj"]').trigger("click");
+    await flushPromises();
+    // Pending navigation: result still holds the OLD listing - confirm must be
+    // inert so it can never submit the stale directory.
+    expect((w.get('[data-test="dp-confirm"]').element as HTMLButtonElement).disabled).toBe(true);
+    pending.resolve({ ...home, path: "/home/me/proj", parent: "/home/me" });
+    await flushPromises();
+    expect((w.get('[data-test="dp-confirm"]').element as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("a failed navigation realigns the path box to the current directory", async () => {
+    vi.spyOn(api, "rpc").mockImplementation((_i, _t, p = {}) => {
+      const path = typeof p === "object" && p !== null && "path" in p ? p.path : undefined;
+      if (path === "/nope") return Promise.resolve({ error: { code: "ENOENT", message: "no such directory" } });
+      return Promise.resolve(home as never);
+    });
+    const w = mountPicker();
+    await flushPromises();
+    await w.get('[data-test="dp-path"]').setValue("/nope");
+    await w.get('[data-test="dp-path"]').trigger("keydown", { key: "Enter" });
+    await flushPromises();
+    // The failed target must not stay displayed while confirm would submit the
+    // old listing's path - the box realigns to what confirm actually submits.
+    expect((w.get('[data-test="dp-path"]').element as HTMLInputElement).value).toBe("/home/me");
+    await w.get('[data-test="dp-confirm"]').trigger("click");
+    expect(w.emitted("confirm")).toEqual([["/home/me"]]);
+  });
 });
