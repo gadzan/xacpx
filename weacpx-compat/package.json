@@ -1,6 +1,6 @@
 {
   "name": "weacpx",
-  "version": "0.23.0-beta.0",
+  "version": "0.23.0-beta.1",
   "description": "Deprecated: weacpx has been renamed to `xacpx` (npm package `@ganglion/xacpx`, command `xacpx`). Install `@ganglion/xacpx` instead. This package forwards `weacpx/plugin-api` to `@ganglion/xacpx/plugin-api` for backward compatibility and has no CLI.",
   "keywords": [
     "xacpx",
@@ -26,7 +26,7 @@
     "README.md"
   ],
   "dependencies": {
-    "@ganglion/xacpx": "^0.23.0-beta.0"
+    "@ganglion/xacpx": "^0.23.0-beta.1"
   },
   "publishConfig": {
     "access": "public"

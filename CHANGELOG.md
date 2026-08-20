@@ -1,4 +1,32 @@
 # Changelog
+## [0.23.0-beta.1] - 2026-08-20
+
+### Changed
+
+- Agent Messaging endpoint views and registry carry `sessionAlias`; `@agent` target resolution prefers an exact session-alias match over display name / node id.
+
+## [relay-protocol 0.5.0-beta.1] - 2026-08-20
+
+### Added
+
+- `PublishedAgentEndpointDto.sessionAlias?`; web agent-directory events now carry `WebAgentDirectoryEndpointDto` tagged with the owning Relay `instanceId`.
+
+## [relay 0.13.0-beta.1] - 2026-08-20
+
+### Added
+
+- Serve the instance-tagged agent directory to the web dashboard (per-account `getWebPublishedEndpoints`), backing the `@agent` autocomplete identity/alias display.
+
+## [channel-relay 0.7.0-beta.1] - 2026-08-20
+
+### Added
+
+- Bundle and select the dedicated RMUX daemon (`rmuxDaemon` artifact in the `xacpx-rmux-bridge-*` platform packages) alongside the helper.
+
+### Changed
+
+- Pin the RMUX application terminal dialect to `TERM=xterm-256color` on POSIX to match the xterm.js renderer (advertised via a `terminal.posix-dialect.xterm-256color.v1` capability), replacing the macOS-only `screen-256color` override.
+
 ## [0.23.0-beta.0] - 2026-08-20
 
 ### Added
