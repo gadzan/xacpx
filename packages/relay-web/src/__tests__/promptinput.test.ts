@@ -555,7 +555,8 @@ describe("PromptInput composer", () => {
 
   it("Test F: Session Tree consistency under workspace grouped mode", async () => {
     const { useInstancesStore } = await import("../stores/instances");
-    const { sessionPresentationName } = await import("../lib/sidebar-group-mode");
+    const { sessionPresentationName } =
+      await import("../lib/sidebar-group-mode");
     const instances = useInstancesStore();
     instances.instances = [
       { id: "inst-1", name: "MacBook Air", online: true, sessionsLoaded: true },
@@ -742,6 +743,323 @@ describe("PromptInput composer", () => {
 
     expect(items[1].find('[data-test="mention-primary"]').text()).toBe(
       "@发布机器人",
+    );
+    expect(items[1].find('[data-test="mention-activity"]').text()).toBe(
+      "Working",
+    );
+  });
+
+  it("Test I: same instance duplicate endpoints disambiguate with endpointId suffix", async () => {
+    const { useInstancesStore } = await import("../stores/instances");
+    const instances = useInstancesStore();
+    instances.instances = [
+      { id: "inst-1", name: "MacBook Air", online: true },
+    ] as never;
+
+    instances.agentDirectory = [
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "ep_worker_1234a",
+        displayName: "Reviewer",
+        agent: "claude",
+        workspace: "project",
+        state: "idle",
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "ep_worker_5678b",
+        displayName: "Reviewer",
+        agent: "claude",
+        workspace: "project",
+        state: "idle",
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    await ta.setValue("Ask @Rev");
+    await ta.trigger("input");
+    await w.vm.$nextTick();
+
+    const items = w.findAll('[data-test="mention-item"]');
+    expect(items.length).toBe(2);
+
+    // Both are on the SAME instance with the same human metadata.
+    // They MUST append endpointId technical suffix to guarantee unique distinction!
+    expect(items[0].find('[data-test="mention-secondary"]').text()).toBe(
+      "project · claude · MacBook Air · …1234a",
+    );
+    expect(items[1].find('[data-test="mention-secondary"]').text()).toBe(
+      "project · claude · MacBook Air · …5678b",
+    );
+
+    // Selecting the second binds the second endpoint
+    await ta.trigger("keydown", { key: "ArrowDown" });
+    await ta.trigger("keydown", { key: "Enter" });
+    await w.vm.$nextTick();
+    await ta.trigger("keydown", { key: "Enter" });
+
+    expect(w.emitted("send")?.[0]).toEqual([
+      "Ask @Reviewer",
+      [],
+      [
+        {
+          range: [4, 13],
+          handle: "agent:node-1:ep_worker_5678b",
+        },
+      ],
+    ]);
+  });
+
+  it("Test J: instances with duplicate name disambiguate using endpointId suffix", async () => {
+    const { useInstancesStore } = await import("../stores/instances");
+    const instances = useInstancesStore();
+    // Two different instances legally sharing the same name "Dev Server"
+    instances.instances = [
+      { id: "inst-1", name: "Dev Server", online: true },
+      { id: "inst-2", name: "Dev Server", online: true },
+    ] as never;
+
+    instances.agentDirectory = [
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "ep_aaaa_11111",
+        displayName: "Backend",
+        sessionAlias: "backend",
+        agent: "codex",
+        workspace: "xacpx",
+        state: "idle",
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+      {
+        instanceId: "inst-2",
+        nodeId: "node-2",
+        endpointId: "ep_bbbb_22222",
+        displayName: "Backend",
+        sessionAlias: "backend",
+        agent: "codex",
+        workspace: "xacpx",
+        state: "idle",
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    await ta.setValue("Ping @Back");
+    await ta.trigger("input");
+    await w.vm.$nextTick();
+
+    const items = w.findAll('[data-test="mention-item"]');
+    expect(items.length).toBe(2);
+
+    expect(items[0].find('[data-test="mention-secondary"]').text()).toBe(
+      "backend · xacpx · codex · Dev Server · …11111",
+    );
+    expect(items[1].find('[data-test="mention-secondary"]').text()).toBe(
+      "backend · xacpx · codex · Dev Server · …22222",
+    );
+  });
+
+  it("Test K: full-field ranking ensures exact matches on workspace/agent beat prefix matches on displayName", async () => {
+    const { useInstancesStore } = await import("../stores/instances");
+    const instances = useInstancesStore();
+    instances.agentDirectory = [
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "ep-1",
+        displayName: "codex-helper",
+        sessionAlias: "codex-helper",
+        agent: "claude",
+        workspace: "project",
+        state: "idle",
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "ep-2",
+        displayName: "Helper",
+        sessionAlias: "helper",
+        agent: "codex",
+        workspace: "project",
+        state: "idle",
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "ep-3",
+        displayName: "xacpx-runner",
+        sessionAlias: "xacpx-runner",
+        agent: "claude",
+        workspace: "other",
+        state: "idle",
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "ep-4",
+        displayName: "Runner",
+        sessionAlias: "runner",
+        agent: "claude",
+        workspace: "xacpx",
+        state: "idle",
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+
+    // 1. Query @codex: exact match on agent (ep-2: Helper) MUST beat prefix match on displayName (ep-1: codex-helper)
+    await ta.setValue("@codex");
+    await ta.trigger("input");
+    await w.vm.$nextTick();
+
+    let items = w.findAll('[data-test="mention-item"]');
+    expect(items.length).toBe(2);
+    expect(items[0].find('[data-test="mention-primary"]').text()).toBe(
+      "@Helper",
+    );
+    expect(items[1].find('[data-test="mention-primary"]').text()).toBe(
+      "@codex-helper",
+    );
+
+    // 2. Query @xacpx: exact match on workspace (ep-4: Runner) MUST beat prefix match on displayName (ep-3: xacpx-runner)
+    await ta.setValue("@xacpx");
+    await ta.trigger("input");
+    await w.vm.$nextTick();
+
+    items = w.findAll('[data-test="mention-item"]');
+    expect(items.length).toBe(2);
+    expect(items[0].find('[data-test="mention-primary"]').text()).toBe(
+      "@Runner",
+    );
+    expect(items[1].find('[data-test="mention-primary"]').text()).toBe(
+      "@xacpx-runner",
+    );
+  });
+
+  it("Test L: activity fallback normalizes from state when activity field is omitted", async () => {
+    const { useInstancesStore } = await import("../stores/instances");
+    const instances = useInstancesStore();
+    instances.agentDirectory = [
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "ep-1",
+        displayName: "RunningBot",
+        agent: "codex",
+        workspace: "project",
+        state: "running",
+        // activity omitted (e.g. older connector or state-only publish)
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "ep-2",
+        displayName: "IdleBot",
+        agent: "codex",
+        workspace: "project",
+        state: "idle",
+        // activity omitted
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+        },
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    await ta.setValue("@Bot");
+    await ta.trigger("input");
+    await w.vm.$nextTick();
+
+    const items = w.findAll('[data-test="mention-item"]');
+    expect(items.length).toBe(2);
+    expect(items[0].find('[data-test="mention-primary"]').text()).toBe(
+      "@IdleBot",
+    );
+    expect(items[0].find('[data-test="mention-activity"]').text()).toBe("Idle");
+    expect(items[1].find('[data-test="mention-primary"]').text()).toBe(
+      "@RunningBot",
     );
     expect(items[1].find('[data-test="mention-activity"]').text()).toBe(
       "Working",

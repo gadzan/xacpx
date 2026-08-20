@@ -251,10 +251,11 @@ const availableAgents = computed<AgentMentionItem[]>(() => {
       groupMode,
     });
     const hasCustomDisplayName = Boolean(
-      ep.displayName &&
-        ep.sessionAlias &&
-        ep.displayName !== ep.sessionAlias,
+      ep.displayName && ep.sessionAlias && ep.displayName !== ep.sessionAlias,
     );
+    const normalizedActivity = ep.activity ?? {
+      status: ep.state === "running" ? "working" : "idle",
+    };
     return {
       handle: `agent:${ep.nodeId}:${ep.endpointId}`,
       displayName: primaryName,
@@ -267,7 +268,7 @@ const availableAgents = computed<AgentMentionItem[]>(() => {
       instanceId: ep.instanceId,
       nodeId: ep.nodeId,
       endpointId: ep.endpointId,
-      activity: ep.activity,
+      activity: normalizedActivity,
     };
   });
 });
@@ -296,34 +297,40 @@ function formatSecondaryLine(
   if (item.agent && item.agent !== item.displayName) {
     parts.push(item.agent);
   }
-
   const duplicates = allItems.filter(
     (other) =>
-      other.displayName === item.displayName &&
-      other.handle !== item.handle,
+      other.displayName === item.displayName && other.handle !== item.handle,
   );
 
   if (duplicates.length > 0) {
-    const myBaseKey = [
-      item.hasCustomDisplayName ? item.sessionAlias ?? "" : "",
+    const baseKey = [
+      item.hasCustomDisplayName ? (item.sessionAlias ?? "") : "",
       item.workspace ?? "",
       item.agent ?? "",
     ].join("::");
     const sameBaseDuplicates = duplicates.filter(
       (d) =>
         [
-          d.hasCustomDisplayName ? d.sessionAlias ?? "" : "",
+          d.hasCustomDisplayName ? (d.sessionAlias ?? "") : "",
           d.workspace ?? "",
           d.agent ?? "",
-        ].join("::") === myBaseKey,
+        ].join("::") === baseKey,
     );
 
     if (sameBaseDuplicates.length > 0) {
       if (item.nodeLabel) {
         parts.push(item.nodeLabel);
-      } else {
+      }
+
+      const sameInstanceDuplicates = sameBaseDuplicates.filter(
+        (d) => (d.nodeLabel ?? "") === (item.nodeLabel ?? ""),
+      );
+
+      if (sameInstanceDuplicates.length > 0) {
         const suffix =
-          item.nodeId.length > 5 ? `…${item.nodeId.slice(-5)}` : item.nodeId;
+          item.endpointId.length > 5
+            ? `…${item.endpointId.slice(-5)}`
+            : item.endpointId;
         parts.push(suffix);
       }
     }
@@ -413,16 +420,23 @@ function computeRank(item: AgentMentionItem, q: string): number {
   const ws = (item.workspace ?? "").toLowerCase();
   const ag = item.agent.toLowerCase();
 
-  if (dn === q) return 1;
-  if (sa && sa === q) return 2;
-  if (dn.startsWith(q)) return 3;
-  if (sa && sa.startsWith(q)) return 4;
-  if (dn.includes(q)) return 5;
-  if (sa && sa.includes(q)) return 6;
-  if (ws && ws.startsWith(q)) return 7;
-  if (ws && ws.includes(q)) return 8;
-  if (ag.startsWith(q)) return 9;
-  if (ag.includes(q)) return 10;
+  // Tier 1: Exact matches (11..14)
+  if (dn === q) return 11;
+  if (sa && sa === q) return 12;
+  if (ws && ws === q) return 13;
+  if (ag === q) return 14;
+
+  // Tier 2: Prefix matches (21..24)
+  if (dn.startsWith(q)) return 21;
+  if (sa && sa.startsWith(q)) return 22;
+  if (ws && ws.startsWith(q)) return 23;
+  if (ag.startsWith(q)) return 24;
+
+  // Tier 3: Contains matches (31..34)
+  if (dn.includes(q)) return 31;
+  if (sa && sa.includes(q)) return 32;
+  if (ws && ws.includes(q)) return 33;
+  if (ag.includes(q)) return 34;
 
   return -1;
 }
@@ -450,6 +464,12 @@ const mentionMatches = computed(() => {
       b.item.sessionAlias ?? "",
     );
     if (saCmp !== 0) return saCmp;
+    const wsCmp = (a.item.workspace ?? "").localeCompare(
+      b.item.workspace ?? "",
+    );
+    if (wsCmp !== 0) return wsCmp;
+    const agCmp = a.item.agent.localeCompare(b.item.agent);
+    if (agCmp !== 0) return agCmp;
     return a.item.handle.localeCompare(b.item.handle);
   });
 
