@@ -1,7 +1,7 @@
 /**
  * Production-platform-package smoke: resolve the bridge + bundled RMUX from
- * the real npm layout, then run a live create → input → recover → kill cycle
- * with a HOSTILE fake RMUX on PATH that must never be executed.
+ * the real npm layout, then run a live create → input → recover → resize → kill
+ * cycle with a HOSTILE fake RMUX on PATH that must never be executed.
  *
  * Requires (publish workflow / Windows CI only, never default CI):
  *   XACPX_RMUX_PLATFORM_PACKAGE=1
@@ -171,6 +171,22 @@ test.skipIf(!enabled)("bundled RMUX daemon is resolved over a hostile PATH fake;
     await prod.driver.input(handle.paneId, new TextEncoder().encode("echo pkg-smoke-ok\n"));
     const events = await recoveryP;
     expect(events[0]?.type).toBe("rebase");
+
+    // The exact production package must also prove that a browser-sized resize
+    // reaches the native RMUX pane. Starting a fresh recovery after resize gives
+    // us an authoritative rebase geometry instead of merely checking that the
+    // resize RPC returned.
+    await prod.driver.resize(handle.paneId, 132, 47);
+    const resized = await collectUntil(
+      prod.driver.recover(handle.paneId),
+      (next) => next.some((event) => event.type === "rebase"),
+    );
+    const resizedRebase = resized.find(
+      (event): event is Extract<RmuxRecoveryEvent, { type: "rebase" }> => event.type === "rebase",
+    );
+    expect(resizedRebase).toBeDefined();
+    expect(resizedRebase!.cols).toBe(132);
+    expect(resizedRebase!.rows).toBe(47);
 
     await prod.driver.kill(handle.sessionId);
     expect((await prod.driver.list()).every((e) => e.name !== name)).toBe(true);
