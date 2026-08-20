@@ -16,6 +16,10 @@
       "path": "bin/rmux.exe",
       "sha256": null
     },
+    "rmuxDaemon": {
+      "path": "bin/rmux-daemon.exe",
+      "sha256": null
+    },
     "rmuxHelper": {
       "path": "libexec/rmux/rmux.exe",
       "sha256": null

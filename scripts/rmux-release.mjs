@@ -27,11 +27,16 @@ export const RMUX_RELEASE_REPO = "Helvesec/rmux";
 
 /**
  * Official release asset per platform/arch with its pinned SHA-256.
- * Release layout (rmux-package-v2): `bin/rmux[.exe]` (connect-or-start CLI)
- * + `libexec/rmux/rmux[.exe]` (hidden-daemon helper the CLI re-execs). The
- * bridge only needs the CLI; the helper must ride along in the same package
- * because `rmux` refuses to daemonize without it ("private rmux helper not
- * found under libexec/rmux").
+ * Release layout (rmux-package-v2):
+ *   - public connect-or-start CLI: bin/rmux[.exe] (Windows: package-root rmux.exe)
+ *   - dedicated hidden daemon: bin/rmux-daemon[.exe] (Windows: package-root rmux-daemon.exe)
+ *   - private full helper: libexec/rmux/rmux[.exe]
+ *
+ * xacpx must bundle all three. In particular the bridge SDK should launch the
+ * dedicated rmux-daemon directly; pointing RMUX_SDK_DAEMON_BINARY at the tiny
+ * public rmux.exe makes Windows fall back to the full helper without the
+ * daemon's CREATE_NO_WINDOW/DETACHED_PROCESS launch flags, which opens a
+ * persistent console window.
  */
 export const RMUX_RELEASE_ASSETS = {
   "darwin-arm64": {
@@ -76,18 +81,24 @@ export function rmuxReleaseUrl(platform, arch) {
 export function rmuxBinariesForExtractedRelease(extractRoot, platform) {
   const exe = platform === "win32" ? ".exe" : "";
   const cliName = `rmux${exe}`;
-  const helperName = `${cliName}`;
-  // Two official layouts exist (package_layout rmux-package-v2):
-  //   unix tarballs: bin/rmux + libexec/rmux/rmux
-  //   windows zip:   rmux.exe + libexec/rmux/rmux.exe at the package root
+  const daemonName = `rmux-daemon${exe}`;
+  const helperName = cliName;
+  // Official v0.10.0 layouts:
+  //   unix tarballs: bin/rmux + bin/rmux-daemon + libexec/rmux/rmux
+  //   windows zip:   rmux.exe + rmux-daemon.exe + libexec/rmux/rmux.exe
   const cliCandidates = [join(extractRoot, "bin", cliName), join(extractRoot, cliName)];
+  const daemonCandidates = [
+    join(extractRoot, "bin", daemonName),
+    join(extractRoot, daemonName),
+  ];
   const helperCandidates = [
     join(extractRoot, "libexec", "rmux", helperName),
     join(extractRoot, "bin", "..", "libexec", "rmux", helperName),
   ];
   const cli = cliCandidates.find((candidate) => existsSync(candidate));
+  const daemon = daemonCandidates.find((candidate) => existsSync(candidate));
   const helper = helperCandidates.find((candidate) => existsSync(candidate));
-  return { cli, helper };
+  return { cli, daemon, helper };
 }
 
 /**
@@ -116,8 +127,8 @@ export function fetchRmuxReleaseArchive({ platform, arch, cacheDir }) {
 }
 
 /**
- * Extract a fetched RMUX release archive into destDir and return the
- * connect-or-start CLI + hidden-daemon helper paths.
+ * Extract a fetched RMUX release archive into destDir and return the public
+ * CLI, dedicated daemon, and private helper paths.
  */
 export function extractRmuxRelease({ archive, platform, destDir }) {
   mkdirSync(destDir, { recursive: true });
@@ -144,14 +155,15 @@ export function extractRmuxRelease({ archive, platform, destDir }) {
   const entries = readdirSync(destDir, { withFileTypes: true });
   const topLevel =
     entries.length === 1 && entries[0].isDirectory() ? join(destDir, entries[0].name) : destDir;
-  const { cli, helper } = rmuxBinariesForExtractedRelease(topLevel, platform);
-  if (!existsSync(cli) || !existsSync(helper)) {
+  const { cli, daemon, helper } = rmuxBinariesForExtractedRelease(topLevel, platform);
+  if (!cli || !daemon || !helper || !existsSync(cli) || !existsSync(daemon) || !existsSync(helper)) {
     throw new Error(
-      `unexpected RMUX ${platform} release layout: missing ${cli} or ${helper}; ` +
+      `unexpected RMUX ${platform} release layout: missing CLI (${cli ?? "not found"}), ` +
+        `daemon (${daemon ?? "not found"}), or helper (${helper ?? "not found"}); ` +
         `update scripts/rmux-release.mjs to the current layout`,
     );
   }
-  return { cli, helper };
+  return { cli, daemon, helper };
 }
 
 function sha256OfFile(path) {

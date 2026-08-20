@@ -4,11 +4,17 @@
  * matching platform npm package and write checksums.json. Does not
  * cross-compile — run on (or with a binary for) each target OS/arch.
  *
- * The RMUX binary comes from the pinned official release (scripts/rmux-release.mjs,
+ * The RMUX binaries come from the pinned official release (scripts/rmux-release.mjs,
  * fixed version + URL + SHA-256) so the platform package is self-contained and
  * offline-installable: users never need a machine-local RMUX, and a stale
  * PATH/~/.local RMUX can never shadow the bundled one (Windows field bug:
  * WinGet rmux 0.9.0 vs bridge rmux-sdk 0.10.0).
+ *
+ * The package includes all three upstream runtime pieces: the tiny public CLI,
+ * the dedicated hidden daemon, and the private full helper. The bridge resolver
+ * intentionally selects rmux-daemon first. On Windows this is required to keep
+ * daemon startup on RMUX's CREATE_NO_WINDOW/DETACHED_PROCESS path instead of
+ * falling through rmux.exe -> libexec/rmux/rmux.exe and opening a console.
  *
  * Usage:
  *   node scripts/pack-rmux-bridge-platform.mjs \
@@ -16,7 +22,8 @@
  *     --binary packages/channel-relay/native/rmux-bridge/target/release/xacpx-rmux-bridge
  *
  * Optional overrides (normally the pinned release is fetched automatically):
- *   --rmux-binary <path>   pre-fetched bin/rmux[.exe] from the pinned release
+ *   --rmux-binary <path>   pre-fetched public bin/rmux[.exe]
+ *   --rmux-daemon <path>   pre-fetched bin/rmux-daemon[.exe] (defaults beside --rmux-binary)
  *   --rmux-helper <path>   pre-fetched libexec/rmux/rmux[.exe] (defaults to
  *                          ../libexec/rmux/rmux relative to --rmux-binary)
  *   --rmux-archive-cache <dir>  where downloaded RMUX archives are reused
@@ -34,7 +41,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 import { extractRmuxRelease, fetchRmuxReleaseArchive, RMUX_VERSION } from "./rmux-release.mjs";
 
@@ -55,6 +62,7 @@ const bridge = resolve(
   ),
 );
 const rmuxBinaryArg = arg("rmux-binary", null);
+const rmuxDaemonArg = arg("rmux-daemon", null);
 const rmuxHelperArg = arg("rmux-helper", null);
 const archiveCache = resolve(arg("rmux-archive-cache", join(root, ".rmux-release-cache")));
 const skipVersionCheck = process.argv.includes("--skip-version-check");
@@ -64,6 +72,7 @@ const packagesRoot = resolve(arg("packages-dir", join(root, "platform-packages")
 const pkgDir = join(packagesRoot, `xacpx-rmux-bridge-${key}`);
 const bridgeBinName = platform === "win32" ? "xacpx-rmux-bridge.exe" : "xacpx-rmux-bridge";
 const rmuxBinName = platform === "win32" ? "rmux.exe" : "rmux";
+const rmuxDaemonName = platform === "win32" ? "rmux-daemon.exe" : "rmux-daemon";
 
 if (!existsSync(pkgDir)) {
   console.error(`unknown platform package: ${pkgDir}`);
@@ -74,13 +83,23 @@ if (!existsSync(bridge)) {
   process.exit(1);
 }
 
-// --- Resolve the pinned RMUX CLI + hidden-daemon helper ----------------------
+// --- Resolve the pinned RMUX CLI + dedicated daemon + private helper ---------
 let rmuxSource;
+let rmuxDaemon;
 let rmuxHelper;
 if (rmuxBinaryArg) {
   rmuxSource = resolve(rmuxBinaryArg);
   if (!existsSync(rmuxSource)) {
     console.error(`--rmux-binary not found: ${rmuxSource}`);
+    process.exit(1);
+  }
+  rmuxDaemon = rmuxDaemonArg
+    ? resolve(rmuxDaemonArg)
+    : join(dirname(rmuxSource), rmuxDaemonName);
+  if (!existsSync(rmuxDaemon)) {
+    console.error(
+      `rmux daemon not found: ${rmuxDaemon} (pass --rmux-daemon, or drop --rmux-binary to fetch the pinned release)`,
+    );
     process.exit(1);
   }
   rmuxHelper = rmuxHelperArg
@@ -93,11 +112,12 @@ if (rmuxBinaryArg) {
     process.exit(1);
   }
 } else {
-  // Pin + SHA-verify the official release, then extract the CLI + helper.
+  // Pin + SHA-verify the official release, then extract all runtime binaries.
   const archive = fetchRmuxReleaseArchive({ platform, arch, cacheDir: archiveCache });
   const tmpExtract = join(archiveCache, `extract-${key}`);
   const extracted = extractRmuxRelease({ archive, platform, destDir: tmpExtract });
   rmuxSource = extracted.cli;
+  rmuxDaemon = extracted.daemon;
   rmuxHelper = extracted.helper;
 }
 
@@ -108,14 +128,17 @@ mkdirSync(libexecRmuxDir, { recursive: true });
 
 const bridgeDest = join(binDir, bridgeBinName);
 const rmuxDest = join(binDir, rmuxBinName);
+const rmuxDaemonDest = join(binDir, rmuxDaemonName);
 const rmuxHelperDest = join(libexecRmuxDir, rmuxBinName);
 
 copyFileSync(bridge, bridgeDest);
 copyFileSync(rmuxSource, rmuxDest);
+copyFileSync(rmuxDaemon, rmuxDaemonDest);
 copyFileSync(rmuxHelper, rmuxHelperDest);
 if (platform !== "win32") {
   chmodSync(bridgeDest, 0o755);
   chmodSync(rmuxDest, 0o755);
+  chmodSync(rmuxDaemonDest, 0o755);
   chmodSync(rmuxHelperDest, 0o755);
 }
 
@@ -137,6 +160,7 @@ const sha256Of = (path) => createHash("sha256").update(readFileSync(path)).diges
 
 const bridgeSha = sha256Of(bridgeDest);
 const rmuxSha = sha256Of(rmuxDest);
+const rmuxDaemonSha = sha256Of(rmuxDaemonDest);
 const rmuxHelperSha = sha256Of(rmuxHelperDest);
 
 const channelRelayVersion = JSON.parse(
@@ -173,6 +197,10 @@ const checksums = {
       path: `bin/${rmuxBinName}`,
       sha256: rmuxSha,
     },
+    rmuxDaemon: {
+      path: `bin/${rmuxDaemonName}`,
+      sha256: rmuxDaemonSha,
+    },
     rmuxHelper: {
       path: `libexec/rmux/${rmuxBinName}`,
       sha256: rmuxHelperSha,
@@ -182,5 +210,7 @@ const checksums = {
 };
 writeFileSync(join(pkgDir, "checksums.json"), `${JSON.stringify(checksums, null, 2)}\n`);
 console.log(
-  `packed ${pkgJson.name}@${channelRelayVersion} bridge=${bridgeSha.slice(0, 12)} rmux=${rmuxSha.slice(0, 12)} (v${RMUX_VERSION}) helper=${rmuxHelperSha.slice(0, 12)}`,
+  `packed ${pkgJson.name}@${channelRelayVersion} bridge=${bridgeSha.slice(0, 12)} ` +
+    `rmux=${rmuxSha.slice(0, 12)} daemon=${rmuxDaemonSha.slice(0, 12)} ` +
+    `(v${RMUX_VERSION}) helper=${rmuxHelperSha.slice(0, 12)}`,
 );
