@@ -2,6 +2,7 @@ import {
   MSG,
   errorPayload,
   parseControlPayload,
+  type AgentMessageCompletionPayload,
   type AgentMessageDeliverPayload,
   type OrchestrationTaskDto,
   type RelayEnvelope,
@@ -873,6 +874,45 @@ async function dispatchControlRequest(
       return errorPayload(
         "ROUTE_UNAVAILABLE",
         "Remote agent message delivery is not implemented in this connector runtime",
+      );
+    }
+    case MSG.agentMessageCompletion: {
+      const input = payload as AgentMessageCompletionPayload | undefined;
+      if (
+        !input ||
+        typeof input !== "object" ||
+        !input.requestMessageId ||
+        !input.source ||
+        !input.target ||
+        !input.status
+      ) {
+        return errorPayload(
+          "invalid-payload",
+          `${MSG.agentMessageCompletion}: malformed payload`,
+        );
+      }
+      if (
+        "deliverPeerCompletion" in control &&
+        typeof (
+          control as unknown as {
+            deliverPeerCompletion: (i: unknown) => Promise<unknown>;
+          }
+        ).deliverPeerCompletion === "function"
+      ) {
+        try {
+          return await (
+            control as unknown as {
+              deliverPeerCompletion: (i: unknown) => Promise<unknown>;
+            }
+          ).deliverPeerCompletion(input);
+        } catch (error) {
+          const code = (error as Error & { code?: string }).code ?? "DELIVERY_FAILED";
+          return errorPayload(code, (error as Error).message);
+        }
+      }
+      return errorPayload(
+        "ROUTE_UNAVAILABLE",
+        "Remote peer completion delivery is not implemented in this connector runtime",
       );
     }
     case MSG.upload: {

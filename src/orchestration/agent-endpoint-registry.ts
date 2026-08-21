@@ -66,7 +66,17 @@ export class AgentEndpointRegistry {
     if (endpoints.length === 0) {
       this.remoteEndpoints.delete(nodeId);
     } else {
-      this.remoteEndpoints.set(nodeId, endpoints);
+      this.remoteEndpoints.set(
+        nodeId,
+        endpoints.map((ep) => ({
+          ...ep,
+          capabilities: {
+            ...ep.capabilities,
+            conversation: ep.capabilities.conversation ?? false,
+            completion: ep.capabilities.completion ?? false,
+          },
+        })),
+      );
     }
   }
 
@@ -89,6 +99,7 @@ export class AgentEndpointRegistry {
         queue: boolean;
         interrupt: boolean;
         conversation?: boolean;
+        completion?: boolean;
       };
       /** Remote-published presentation context, preserved verbatim — never synthesized. */
       endpointKind?: "logical" | "worker";
@@ -117,6 +128,7 @@ export class AgentEndpointRegistry {
           capabilities: {
             ...ep.capabilities,
             conversation: ep.capabilities.conversation ?? false,
+            completion: ep.capabilities.completion ?? false,
           },
           // Preserve remote context fields exactly as published (absent stays absent).
           ...(ep.endpointKind ? { endpointKind: ep.endpointKind } : {}),
@@ -670,6 +682,7 @@ function queueOnlyCapabilities(): AgentCapabilities {
     queue: true,
     interrupt: false,
     conversation: true,
+    completion: true,
   };
 }
 

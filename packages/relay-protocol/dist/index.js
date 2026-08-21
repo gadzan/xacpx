@@ -148,6 +148,7 @@ var MSG = {
   instanceAgentEndpointsSync: "instance.agent-endpoints.sync",
   agentMessageRoute: "instance.agent-message.route",
   agentMessageDeliver: "instance.agent-message.deliver",
+  agentMessageCompletion: "instance.agent-message.completion",
   agentDirectorySnapshot: "instance.agent-directory.snapshot",
   agentDirectoryQuery: "instance.agent-directory.query"
 };

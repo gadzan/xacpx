@@ -355,6 +355,7 @@ export interface PublishedAgentEndpointDto {
     queue: boolean;
     interrupt: boolean;
     conversation?: boolean;
+    completion?: boolean;
   };
   labels?: string[];
   /** Endpoint context for presentation ranking. logical = normal logical session endpoint; worker = orchestration worker endpoint. Optional: old peers omit it. */

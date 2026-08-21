@@ -13,6 +13,7 @@ import {
 } from "../../../src/orchestration/agent-message-router";
 import { AgentMessagingError } from "../../../src/orchestration/agent-messaging-error";
 import type { AgentMessage } from "../../../src/orchestration/agent-messaging-types";
+import { RelayAgentMessageRoute } from "../../../src/orchestration/relay-agent-message-route";
 import type { SessionMessageReceipt } from "../../../src/transport/message-injection";
 import { MessageInjectionError } from "../../../src/transport/message-injection";
 import { createEmptyState } from "../../../src/state/types";
@@ -26,6 +27,8 @@ function makeRouter(
       message: AgentMessage,
       renderedText: string,
     ) => Promise<SessionMessageReceipt>;
+    delivery?: LocalAgentMessageDelivery;
+    remoteRoute?: RelayAgentMessageRoute;
     createId?: () => string;
     limits?: AgentMessageRouterLimits;
     now?: () => number;
@@ -85,7 +88,7 @@ function makeRouter(
   const deliveries: Array<{ message: AgentMessage; renderedText: string }> = [];
   const router = new AgentMessageRouter({
     registry,
-    delivery: {
+    delivery: options.delivery ?? {
       deliver: async (target, message, renderedText) => {
         deliveries.push({ message, renderedText });
         return await (options.deliver?.(target, message, renderedText) ??
@@ -95,6 +98,7 @@ function makeRouter(
           }));
       },
     },
+    remoteRoute: options.remoteRoute,
     createId: options.createId ?? (() => "message-1"),
     now: options.now ?? (() => 1_000),
     limits: options.limits,
@@ -1773,6 +1777,193 @@ test("Guards untouched: completion cycle does not consume conversation depth, vo
   // Verify that duplicate content cache contains only the original send
   const pairKey = `${nodeId}:endpoint_worker-a->${nodeId}:endpoint_worker-b`;
   expect((router as any).rateWindows.get(pairKey)?.length).toBe(1);
+});
+
+test("remote route accepts completion = result when remote endpoint advertises completion capability", async () => {
+  let routedPayload: { completion?: string } | null = null;
+  const remoteRoute = new RelayAgentMessageRoute({
+    sendAgentMessageRoute: async (payload) => {
+      routedPayload = payload;
+      return { messageId: payload.messageId, status: "queued" };
+    },
+  });
+  const { router, registry } = makeRouter({ remoteRoute });
+  registry.updateRemoteEndpoints("node_remote", [
+    {
+      address: { nodeId: "node_remote", endpointId: "endpoint_remote_worker" },
+      handle: encodeAgentHandle({ nodeId: "node_remote", endpointId: "endpoint_remote_worker" }),
+      node: "Remote Node",
+      displayName: "Remote Worker",
+      agent: "claude",
+      state: "idle",
+      activity: { status: "idle" },
+      capabilities: {
+        receive: true,
+        steer: false,
+        queue: true,
+        interrupt: false,
+        conversation: true,
+        completion: true,
+      },
+    },
+  ]);
+  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const to = encodeAgentHandle({ nodeId: "node_remote", endpointId: "endpoint_remote_worker" });
+
+  const receipt = await router.send(binding, { to, content: "remote result test", completion: "result" });
+  expect(receipt.status).toBe("queued");
+  expect(receipt.route).toBe("relay");
+  expect(routedPayload?.completion).toBe("result");
+});
+
+test("completePeerTurn for remote source routes upward via remoteRoute.sendCompletion", async () => {
+  let completionSent: {
+    requestMessageId: string;
+    source: { nodeId: string; endpointId: string };
+    target: { nodeId: string; endpointId: string };
+    status: string;
+    result?: string;
+  } | null = null;
+  const remoteRoute = new RelayAgentMessageRoute({
+    sendAgentMessageRoute: async () => ({ messageId: "1", status: "queued" }),
+    sendAgentMessageCompletion: async (payload) => {
+      completionSent = payload;
+      return { ok: true };
+    },
+  });
+  const { router } = makeRouter({ remoteRoute });
+
+  const origin = {
+    requestMessageId: "msg_remote_req_1",
+    completion: "result" as const,
+    source: { nodeId: "node_remote_source", endpointId: "worker_remote_source" },
+    target: { nodeId, endpointId: "endpoint_worker-b" },
+  };
+
+  const completion = await router.completePeerTurn(origin, { ok: true, text: "computed answer" });
+  expect(completion).not.toBeNull();
+  expect(completion!.status).toBe("completed");
+  expect(completion!.result).toBe("computed answer");
+
+  expect(completionSent).toBeDefined();
+  expect(completionSent!.requestMessageId).toBe("msg_remote_req_1");
+  expect(completionSent!.source.nodeId).toBe("node_remote_source");
+  expect(completionSent!.target.nodeId).toBe(nodeId);
+  expect(completionSent!.status).toBe("completed");
+  expect(completionSent!.result).toBe("computed answer");
+});
+
+test("deliverInboundCompletion performs source-side injection with idempotency and history update", async () => {
+  const events = createControlEventBus();
+  const emitted: ControlEvent[] = [];
+  events.subscribe((e) => emitted.push(e));
+
+  let injectedPrompt: string | null = null;
+  let deliveredCount = 0;
+  const delivery: LocalAgentMessageDelivery = {
+    deliver: async () => ({ status: "queued" as const, modeUsed: "queue" as const }),
+    deliverCompletion: async (_alias, prompt) => {
+      deliveredCount += 1;
+      injectedPrompt = prompt;
+      return { status: "injected" as const };
+    },
+  };
+
+  const remoteRoute = new RelayAgentMessageRoute({
+    sendAgentMessageRoute: async (payload) => ({ messageId: payload.messageId, status: "queued" }),
+  });
+  const { router, registry } = makeRouter({ events, delivery, remoteRoute });
+
+  registry.updateRemoteEndpoints("node_remote", [
+    {
+      address: { nodeId: "node_remote", endpointId: "endpoint_remote_b" },
+      handle: encodeAgentHandle({ nodeId: "node_remote", endpointId: "endpoint_remote_b" }),
+      node: "Remote Node",
+      displayName: "Remote Worker B",
+      agent: "codex",
+      state: "idle",
+      activity: { status: "idle" },
+      capabilities: {
+        receive: true,
+        steer: false,
+        queue: true,
+        interrupt: false,
+        conversation: true,
+        completion: true,
+      },
+    },
+  ]);
+
+  // 1. Send outbound message from local workerA to remote endpoint_remote_b
+  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const to = encodeAgentHandle({ nodeId: "node_remote", endpointId: "endpoint_remote_b" });
+  const receipt = await router.send(binding, { to, content: "Please compute X", completion: "result" });
+
+  // 2. Inbound completion arrives from remote node
+  const res = await router.deliverInboundCompletion({
+    requestMessageId: receipt.messageId,
+    source: { nodeId, endpointId: "endpoint_worker-a" },
+    target: { nodeId: "node_remote", endpointId: "endpoint_remote_b" },
+    status: "completed",
+    result: "X = 42",
+    completedAt: 1700000000000,
+  });
+  expect(res.ok).toBe(true);
+  expect(deliveredCount).toBe(1);
+  expect(injectedPrompt).toContain("<xacpx-peer-result");
+  expect(injectedPrompt).toContain("X = 42");
+
+  // Verify updated history event was emitted
+  const historyEvents = emitted.filter((e): e is Extract<ControlEvent, { type: "agent-message" }> => e.type === "agent-message");
+  const latestHistory = historyEvents[historyEvents.length - 1];
+  expect(latestHistory).toBeDefined();
+  expect(latestHistory.message.messageId).toBe(receipt.messageId);
+  expect(latestHistory.message.completionStatus).toBe("completed");
+
+  // 3. Duplicate inbound completion arrives (idempotency check)
+  const dupRes = await router.deliverInboundCompletion({
+    requestMessageId: receipt.messageId,
+    source: { nodeId, endpointId: "endpoint_worker-a" },
+    target: { nodeId: "node_remote", endpointId: "endpoint_remote_b" },
+    status: "completed",
+    result: "X = 42",
+    completedAt: 1700000000000,
+  });
+  expect(dupRes.ok).toBe(true);
+  expect(dupRes.deduplicated).toBe(true);
+  expect(deliveredCount).toBe(1); // exactly one injection
+});
+
+test("deliverInboundCompletion does not wake archived source session", async () => {
+  let deliveredCount = 0;
+  const delivery: LocalAgentMessageDelivery = {
+    deliver: async () => ({ status: "queued" as const }),
+    deliverCompletion: async () => {
+      deliveredCount += 1;
+      return { status: "injected" as const };
+    },
+  };
+  const { router } = makeRouter({
+    delivery,
+    registryOverrides: {
+      findLocalSessionByEndpointId: async () => ({
+        alias: "archived-session",
+        archived: true,
+        isLogical: true,
+      }),
+    },
+  });
+
+  const res = await router.deliverInboundCompletion({
+    requestMessageId: "msg_archived_test",
+    source: { nodeId, endpointId: "endpoint_archived" },
+    target: { nodeId: "node_remote", endpointId: "worker_remote" },
+    status: "completed",
+    result: "Done",
+    completedAt: Date.now(),
+  });
+  expect(res.ok).toBe(true);
+  expect(deliveredCount).toBe(0); // No turn injected for archived session
 });
 
 function createDeferred<T>() {

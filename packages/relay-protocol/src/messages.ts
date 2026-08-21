@@ -1,8 +1,10 @@
 import type {
+  AgentAddressDto,
   AgentCatalogEntryDto,
   AgentCommandDto,
   AgentDto,
   AgentMessageCompletionMode,
+  AgentMessageCompletionStatus,
   ControlEventDto,
   FsDiffFileDto,
   FsEntryDto,
@@ -107,6 +109,7 @@ export const MSG = {
   instanceAgentEndpointsSync: "instance.agent-endpoints.sync",
   agentMessageRoute: "instance.agent-message.route",
   agentMessageDeliver: "instance.agent-message.deliver",
+  agentMessageCompletion: "instance.agent-message.completion",
   agentDirectorySnapshot: "instance.agent-directory.snapshot",
   agentDirectoryQuery: "instance.agent-directory.query",
 } as const;
@@ -989,4 +992,20 @@ export interface AgentMessageRouteResult {
   errorCode?: string;
   /** True when the destination had already delivered this messageId (ACK-loss retry). */
   deduplicated?: boolean;
+}
+
+export interface AgentMessageCompletionPayload {
+  requestMessageId: string;
+  source: AgentAddressDto;
+  target: AgentAddressDto;
+  status: AgentMessageCompletionStatus;
+  result?: string;
+  error?: string;
+  completedAt: number;
+}
+
+export interface AgentMessageCompletionResult {
+  ok: boolean;
+  deduplicated?: boolean;
+  error?: string;
 }

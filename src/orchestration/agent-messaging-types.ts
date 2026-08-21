@@ -30,6 +30,7 @@ export interface AgentCapabilities {
   queue: boolean;
   interrupt: boolean;
   conversation: boolean;
+  completion?: boolean;
 }
 
 export interface AgentActivityView {

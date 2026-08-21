@@ -288,8 +288,8 @@ export class AgentMessageRouter {
       : await this.deps.registry.resolveTarget(sender, input.to!);
 
     if (
-      target.endpoint.address.nodeId !== sender.address.nodeId &&
-      completion !== "none"
+      completion !== "none" &&
+      !target.endpoint.capabilities.completion
     ) {
       throw new AgentMessagingError(
         "COMPLETION_NOT_SUPPORTED",
@@ -911,22 +911,30 @@ export class AgentMessageRouter {
     // Reverse route choice
     const isLocalSource = origin.source.nodeId === origin.target.nodeId;
     if (!isLocalSource) {
-      // Remote source: Phase 8 (not yet). Record outcome + metadata log, no route attempt.
-      void this.deps.logger
-        ?.info(
-          "agent_messaging.remote_completion_deferred",
-          "Remote peer completion deferred to federation route.",
-          {
+      if (this.deps.remoteRoute && this.deps.remoteRoute.isAvailable()) {
+        try {
+          await this.deps.remoteRoute.sendCompletion({
             requestMessageId: origin.requestMessageId,
-            completionMode: origin.completion,
+            source: origin.source,
+            target: origin.target,
             status,
-            sourceNodeId: origin.source.nodeId,
-            sourceEndpointId: origin.source.endpointId,
-            targetNodeId: origin.target.nodeId,
-            targetEndpointId: origin.target.endpointId,
-          },
-        )
-        ?.catch?.(() => undefined);
+            ...(completion.result !== undefined ? { result: completion.result } : {}),
+            ...(completion.error !== undefined ? { error: completion.error } : {}),
+            completedAt,
+          });
+        } catch (error) {
+          void this.deps.logger
+            ?.info(
+              "agent_messaging.remote_completion_failed",
+              "Failed to send peer completion over remote route.",
+              {
+                requestMessageId: origin.requestMessageId,
+                error: error instanceof Error ? error.message : String(error),
+              },
+            )
+            ?.catch?.(() => undefined);
+        }
+      }
       return completion;
     }
     // Local source delivery
@@ -952,6 +960,101 @@ export class AgentMessageRouter {
     }
 
     return completion;
+  }
+
+  async deliverInboundCompletion(input: {
+    requestMessageId: string;
+    source: AgentAddress;
+    target: AgentAddress;
+    status: AgentMessageCompletionStatus;
+    result?: string;
+    error?: string;
+    completedAt: number;
+  }): Promise<{ ok: boolean; deduplicated?: boolean; error?: string }> {
+    // 1. Idempotency gate on source injection (Gate N source half)
+    if (this.completionInjections.has(input.requestMessageId)) {
+      return { ok: true, deduplicated: true };
+    }
+
+    // 2. Resolve sender session alias & update sender history entry (Gate I, J, M, O)
+    const cachedOutbound = this.outboundMessages.get(input.requestMessageId);
+    let senderSessionAlias = cachedOutbound?.senderSessionAlias;
+
+    let sourceIsArchived = false;
+    if (this.deps.registry.findLocalSessionByEndpointId) {
+      try {
+        const sourceSession =
+          await this.deps.registry.findLocalSessionByEndpointId(
+            input.source.endpointId,
+          );
+        if (sourceSession) {
+          if (!senderSessionAlias) {
+            senderSessionAlias = sourceSession.alias;
+          }
+          sourceIsArchived = sourceSession.archived;
+        }
+      } catch {
+        // ignore lookup error
+      }
+    }
+
+    if (senderSessionAlias) {
+      const peer: PeerMessagePeer = cachedOutbound?.targetPeer ?? {
+        handle: encodeAgentHandle(input.target),
+        displayName: input.target.endpointId,
+        agent: "agent",
+      };
+      const entry: PeerMessageHistoryEntry = {
+        kind: "agent_message",
+        direction: "sent",
+        messageId: input.requestMessageId,
+        conversationId:
+          cachedOutbound?.message.conversationId ?? input.requestMessageId,
+        ...(cachedOutbound?.message.replyTo
+          ? { replyTo: cachedOutbound.message.replyTo }
+          : {}),
+        peer,
+        content: cachedOutbound?.message.content ?? "",
+        createdAt: cachedOutbound?.message.createdAt ?? input.completedAt,
+        status: "sent",
+        completion: cachedOutbound?.message.completion ?? "result",
+        completionStatus: input.status,
+      };
+      this.deps.events?.emit({
+        type: "agent-message",
+        sessionAlias: toDisplaySessionAlias(senderSessionAlias),
+        message: entry,
+      });
+    }
+
+    // If source session is missing or archived: do NOT wake (allowRestoreArchived: false semantics, Gate M). No turn.
+    if (sourceIsArchived || !senderSessionAlias) {
+      return { ok: true };
+    }
+
+    this.completionInjections.add(input.requestMessageId);
+
+    const completion: AgentMessageCompletion = {
+      requestMessageId: input.requestMessageId,
+      from: input.target,
+      to: input.source,
+      status: input.status,
+      ...(input.result !== undefined ? { result: boundPeerResult(input.result) } : {}),
+      ...(input.error !== undefined
+        ? { error: sanitizeCompletionError(input.error) }
+        : {}),
+      completedAt: input.completedAt,
+    };
+    const prompt = buildPeerCompletionPrompt(completion);
+    if (this.deps.delivery.deliverCompletion) {
+      await this.deps.delivery.deliverCompletion(
+        senderSessionAlias,
+        prompt,
+        input.requestMessageId,
+      );
+    }
+
+    return { ok: true };
   }
 
   private getCachedReceipt(

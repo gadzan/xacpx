@@ -53,6 +53,7 @@ interface DaemonNode {
    *  sessions-changed / orchestration-changed signals). */
   controlEvents: ReturnType<typeof createControlEventBus>;
   injectedPrompts: Array<{ session: string; text: string }>;
+  completionTurns: Array<{ alias: string; prompt: string; requestMessageId: string }>;
   dispose: () => Promise<void>;
 }
 
@@ -104,7 +105,7 @@ async function setupDaemonNode(
   const home = await mkdtemp(join(tmpdir(), `xacpx-fed-home-${nodeId}-`));
   const ws = await mkdtemp(join(tmpdir(), `xacpx-fed-ws-${nodeId}-`));
   const injectedPrompts: Array<{ session: string; text: string }> = [];
-
+  const completionTurns: Array<{ alias: string; prompt: string; requestMessageId: string }> = [];
   const stateRef = { state: createEmptyState() };
   stateRef.state.sessions.main = {
     alias: "main",
@@ -144,6 +145,10 @@ async function setupDaemonNode(
         targetState: "idle",
       };
     },
+    deliverCompletion: async (alias, prompt, requestMessageId) => {
+      completionTurns.push({ alias, prompt, requestMessageId });
+      return { status: "injected" };
+    },
   };
 
   let channel!: RelayChannel;
@@ -151,6 +156,9 @@ async function setupDaemonNode(
   const relayRoute = new RelayAgentMessageRoute({
     sendAgentMessageRoute: async (payload) => {
       return await channel.sendAgentMessageRoute(payload);
+    },
+    sendAgentMessageCompletion: async (payload) => {
+      return await channel.sendAgentMessageCompletion(payload);
     },
   });
 
@@ -166,6 +174,11 @@ async function setupDaemonNode(
       input: Parameters<typeof router.deliverInbound>[0],
     ) => {
       return await router.deliverInbound(input);
+    },
+    deliverPeerCompletion: async (
+      input: Parameters<typeof router.deliverInboundCompletion>[0],
+    ) => {
+      return await router.deliverInboundCompletion(input);
     },
     getPublishedAgentEndpoints: async () => {
       return await registry.getPublishedEndpoints();
@@ -212,6 +225,7 @@ async function setupDaemonNode(
     stateRef,
     controlEvents,
     injectedPrompts,
+    completionTurns,
     dispose: async () => {
       abortController.abort();
       await channelStartPromise.catch(() => {});
@@ -590,3 +604,225 @@ test(
   },
   { timeout: 30_000 },
 );
+
+test("Agent Messaging Federation Completion: Daemon A sends completion=result to remote Daemon B, B completes, A receives trusted completion turn", async () => {
+  const hub = await setupHub();
+
+  const tokenA = hub.instances.issuePairingToken(hub.account.id, "nodeA", 600_000).token;
+  const tokenB = hub.instances.issuePairingToken(hub.account.id, "nodeB", 600_000).token;
+
+  const daemonA = await setupDaemonNode("node_A", hub.hubUrl, tokenA);
+  const daemonB = await setupDaemonNode("node_B", hub.hubUrl, tokenB);
+
+  try {
+    // Wait for discovery
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const list = await daemonA.router.listReachable({
+        coordinatorSession: "coordinator",
+        sourceHandle: "worker1",
+      });
+      if (list.some((e) => e.address.nodeId === "node_B")) break;
+      await Bun.sleep(50);
+    }
+
+    const targetHandleB = encodeAgentHandle({
+      nodeId: "node_B",
+      endpointId: "worker_endpoint_node_B",
+    });
+
+    // 1. Daemon A sends message to Daemon B requesting completion="result"
+    const receipt = await daemonA.router.send(
+      { coordinatorSession: "coordinator", sourceHandle: "worker1" },
+      {
+        to: targetHandleB,
+        content: "Calculate checksum for file",
+        completion: "result",
+      },
+    );
+    expect(receipt.status).toBe("queued");
+    expect(receipt.route).toBe("relay");
+
+    // Wait for B to receive inbound delivery
+    const receiveDeadline = Date.now() + 5000;
+    while (Date.now() < receiveDeadline) {
+      if (daemonB.injectedPrompts.length > 0) break;
+      await Bun.sleep(50);
+    }
+    expect(daemonB.injectedPrompts).toHaveLength(1);
+    expect(daemonB.injectedPrompts[0]!.text).toContain("Calculate checksum for file");
+
+    // 2. Daemon B executes turn and completes with text
+    const originB = {
+      requestMessageId: receipt.messageId,
+      completion: "result" as const,
+      source: { nodeId: "node_A", endpointId: "worker_endpoint_node_A" },
+      target: { nodeId: "node_B", endpointId: "worker_endpoint_node_B" },
+    };
+    const bCompletion = await daemonB.router.completePeerTurn(originB, {
+      ok: true,
+      text: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    });
+    expect(bCompletion).not.toBeNull();
+    expect(bCompletion!.status).toBe("completed");
+
+    // 3. Completion routes back via Hub to Daemon A
+    const completionDeadline = Date.now() + 5000;
+    while (Date.now() < completionDeadline) {
+      if (daemonA.completionTurns.length > 0) break;
+      await Bun.sleep(50);
+    }
+
+    // 4. Daemon A receives trusted completion turn
+    expect(daemonA.completionTurns).toHaveLength(1);
+    const completionTurn = daemonA.completionTurns[0]!;
+    expect(completionTurn.requestMessageId).toBe(receipt.messageId);
+    expect(completionTurn.prompt).toContain("<xacpx-peer-result");
+    expect(completionTurn.prompt).toContain(`request-id="${receipt.messageId}"`);
+    expect(completionTurn.prompt).toContain("sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    expect(completionTurn.prompt).toContain("Do NOT send an acknowledgement or confirmation message back to the peer.");
+  } finally {
+    await daemonA.dispose();
+    await daemonB.dispose();
+    await hub.close();
+  }
+});
+
+test("Agent Messaging Federation Completion: duplicate delivery simulation yields exactly one turn on A", async () => {
+  const hub = await setupHub();
+
+  const tokenA = hub.instances.issuePairingToken(hub.account.id, "nodeA", 600_000).token;
+  const tokenB = hub.instances.issuePairingToken(hub.account.id, "nodeB", 600_000).token;
+
+  const daemonA = await setupDaemonNode("node_A", hub.hubUrl, tokenA);
+  const daemonB = await setupDaemonNode("node_B", hub.hubUrl, tokenB);
+
+  try {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const list = await daemonA.router.listReachable({
+        coordinatorSession: "coordinator",
+        sourceHandle: "worker1",
+      });
+      if (list.some((e) => e.address.nodeId === "node_B")) break;
+      await Bun.sleep(50);
+    }
+
+    const targetHandleB = encodeAgentHandle({
+      nodeId: "node_B",
+      endpointId: "worker_endpoint_node_B",
+    });
+
+    const receipt = await daemonA.router.send(
+      { coordinatorSession: "coordinator", sourceHandle: "worker1" },
+      {
+        to: targetHandleB,
+        content: "Idempotency test message",
+        completion: "result",
+      },
+    );
+
+    // Simulate first delivery to A
+    const res1 = await daemonA.router.deliverInboundCompletion({
+      requestMessageId: receipt.messageId,
+      source: { nodeId: "node_A", endpointId: "worker_endpoint_node_A" },
+      target: { nodeId: "node_B", endpointId: "worker_endpoint_node_B" },
+      status: "completed",
+      result: "First delivery result",
+      completedAt: Date.now(),
+    });
+    expect(res1.ok).toBe(true);
+    expect(daemonA.completionTurns).toHaveLength(1);
+
+    // Simulate duplicate delivery (e.g. at-least-once Relay retry)
+    const res2 = await daemonA.router.deliverInboundCompletion({
+      requestMessageId: receipt.messageId,
+      source: { nodeId: "node_A", endpointId: "worker_endpoint_node_A" },
+      target: { nodeId: "node_B", endpointId: "worker_endpoint_node_B" },
+      status: "completed",
+      result: "Duplicate delivery result",
+      completedAt: Date.now(),
+    });
+    expect(res2.ok).toBe(true);
+    expect(res2.deduplicated).toBe(true);
+    // Exactly one turn was delivered to A
+    expect(daemonA.completionTurns).toHaveLength(1);
+    expect(daemonA.completionTurns[0]!.prompt).toContain("First delivery result");
+  } finally {
+    await daemonA.dispose();
+    await daemonB.dispose();
+    await hub.close();
+  }
+});
+
+test("Agent Messaging Federation Completion: remote failure delivers failed completion turn on A", async () => {
+  const hub = await setupHub();
+
+  const tokenA = hub.instances.issuePairingToken(hub.account.id, "nodeA", 600_000).token;
+  const tokenB = hub.instances.issuePairingToken(hub.account.id, "nodeB", 600_000).token;
+
+  const daemonA = await setupDaemonNode("node_A", hub.hubUrl, tokenA);
+  const daemonB = await setupDaemonNode("node_B", hub.hubUrl, tokenB);
+
+  try {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const list = await daemonA.router.listReachable({
+        coordinatorSession: "coordinator",
+        sourceHandle: "worker1",
+      });
+      if (list.some((e) => e.address.nodeId === "node_B")) break;
+      await Bun.sleep(50);
+    }
+
+    const targetHandleB = encodeAgentHandle({
+      nodeId: "node_B",
+      endpointId: "worker_endpoint_node_B",
+    });
+
+    const receipt = await daemonA.router.send(
+      { coordinatorSession: "coordinator", sourceHandle: "worker1" },
+      {
+        to: targetHandleB,
+        content: "Trigger failure",
+        completion: "result",
+      },
+    );
+
+    // Wait for B to receive
+    const receiveDeadline = Date.now() + 5000;
+    while (Date.now() < receiveDeadline) {
+      if (daemonB.injectedPrompts.length > 0) break;
+      await Bun.sleep(50);
+    }
+
+    // B fails its turn
+    const originB = {
+      requestMessageId: receipt.messageId,
+      completion: "result" as const,
+      source: { nodeId: "node_A", endpointId: "worker_endpoint_node_A" },
+      target: { nodeId: "node_B", endpointId: "worker_endpoint_node_B" },
+    };
+    await daemonB.router.completePeerTurn(originB, {
+      ok: false,
+      errorMessage: "Command execution failed: out of memory",
+    });
+
+    // Wait for A to receive failed completion
+    const completionDeadline = Date.now() + 5000;
+    while (Date.now() < completionDeadline) {
+      if (daemonA.completionTurns.length > 0) break;
+      await Bun.sleep(50);
+    }
+
+    expect(daemonA.completionTurns).toHaveLength(1);
+    const completionTurn = daemonA.completionTurns[0]!;
+    expect(completionTurn.prompt).toContain("<xacpx-peer-completion");
+    expect(completionTurn.prompt).toContain(`status="failed"`);
+    expect(completionTurn.prompt).toContain(`error="Command execution failed: out of memory"`);
+  } finally {
+    await daemonA.dispose();
+    await daemonB.dispose();
+    await hub.close();
+  }
+});

@@ -1,4 +1,4 @@
-import type { AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto } from "./dtos.js";
+import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto } from "./dtos.js";
 export declare const MSG: {
     readonly instanceRegister: "instance.register";
     readonly instanceAuth: "instance.auth";
@@ -82,6 +82,7 @@ export declare const MSG: {
     readonly instanceAgentEndpointsSync: "instance.agent-endpoints.sync";
     readonly agentMessageRoute: "instance.agent-message.route";
     readonly agentMessageDeliver: "instance.agent-message.deliver";
+    readonly agentMessageCompletion: "instance.agent-message.completion";
     readonly agentDirectorySnapshot: "instance.agent-directory.snapshot";
     readonly agentDirectoryQuery: "instance.agent-directory.query";
 };
@@ -876,4 +877,18 @@ export interface AgentMessageRouteResult {
     errorCode?: string;
     /** True when the destination had already delivered this messageId (ACK-loss retry). */
     deduplicated?: boolean;
+}
+export interface AgentMessageCompletionPayload {
+    requestMessageId: string;
+    source: AgentAddressDto;
+    target: AgentAddressDto;
+    status: AgentMessageCompletionStatus;
+    result?: string;
+    error?: string;
+    completedAt: number;
+}
+export interface AgentMessageCompletionResult {
+    ok: boolean;
+    deduplicated?: boolean;
+    error?: string;
 }

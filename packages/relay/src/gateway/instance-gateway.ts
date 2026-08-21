@@ -6,6 +6,7 @@ import {
   encodeEnvelope,
   errorPayload,
   normalizeCapabilities,
+  type AgentMessageCompletionPayload,
   type AgentMessageDeliverPayload,
   type AgentMessageRoutePayload,
   type InstanceAgentEndpointsSyncPayload,
@@ -454,6 +455,83 @@ export class InstanceGateway {
           targetInstanceId,
           MSG.agentMessageDeliver,
           deliverPayload,
+        )
+          .then((res) => respond(res))
+          .catch((err) =>
+            respond(
+              errorPayload(
+                (err as Error & { code?: string }).code ?? "DELIVERY_FAILED",
+                err instanceof Error ? err.message : String(err),
+              ),
+            ),
+          );
+        return;
+      }
+
+      if (envelope.type === MSG.agentMessageCompletion) {
+        const completionPayload =
+          envelope.payload as AgentMessageCompletionPayload;
+        if (
+          !completionPayload ||
+          typeof completionPayload !== "object" ||
+          !completionPayload.source ||
+          !completionPayload.target ||
+          !completionPayload.requestMessageId ||
+          !completionPayload.status
+        ) {
+          respond(
+            errorPayload(
+              "invalid-payload",
+              `${MSG.agentMessageCompletion}: malformed payload`,
+            ),
+          );
+          return;
+        }
+        // Fail-closed source identity: the completing target endpoint must belong
+        // to the authenticated instance's CURRENTLY published directory.
+        const senderEndpoints =
+          this.endpointsByInstance.get(authed.instanceId) ?? [];
+        const senderEndpoint = senderEndpoints.find(
+          (e) =>
+            e.nodeId === completionPayload.target.nodeId &&
+            e.endpointId === completionPayload.target.endpointId,
+        );
+        if (!senderEndpoint) {
+          respond(
+            errorPayload(
+              "DELIVERY_DENIED",
+              `Target endpoint ${completionPayload.target.endpointId} is not published by the authenticated instance ${authed.instanceId}`,
+            ),
+          );
+          return;
+        }
+
+        let sourceInstanceId: string | null = null;
+        for (const [instId, conn] of this.connections) {
+          if (conn.accountId === authed.accountId) {
+            const endpoints = this.endpointsByInstance.get(instId) ?? [];
+            if (
+              endpoints.some((e) => e.nodeId === completionPayload.source.nodeId)
+            ) {
+              sourceInstanceId = instId;
+              break;
+            }
+          }
+        }
+        if (!sourceInstanceId) {
+          respond(
+            errorPayload(
+              "TARGET_NODE_OFFLINE",
+              `Source node ${completionPayload.source.nodeId} is offline`,
+            ),
+          );
+          return;
+        }
+
+        this.sendRequest(
+          sourceInstanceId,
+          MSG.agentMessageCompletion,
+          completionPayload,
         )
           .then((res) => respond(res))
           .catch((err) =>

@@ -253,6 +253,15 @@ export interface ControlServiceDeps {
       targetState?: "idle" | "running";
       errorCode?: string;
     }>;
+    deliverInboundCompletion?(input: {
+      requestMessageId: string;
+      source: { nodeId: string; endpointId: string };
+      target: { nodeId: string; endpointId: string };
+      status: "completed" | "failed" | "cancelled";
+      result?: string;
+      error?: string;
+      completedAt: number;
+    }): Promise<{ ok: boolean; deduplicated?: boolean; error?: string }>;
     getPublishedEndpoints(): Promise<
       Array<{
         nodeId: string;
@@ -1502,6 +1511,21 @@ export class ControlService {
       throw new Error("Agent messaging is not configured on this daemon");
     }
     return await this.deps.agentMessaging.deliverInbound(input);
+  }
+
+  async deliverPeerCompletion(input: {
+    requestMessageId: string;
+    source: { nodeId: string; endpointId: string };
+    target: { nodeId: string; endpointId: string };
+    status: "completed" | "failed" | "cancelled";
+    result?: string;
+    error?: string;
+    completedAt: number;
+  }): Promise<{ ok: boolean; deduplicated?: boolean; error?: string }> {
+    if (!this.deps.agentMessaging?.deliverInboundCompletion) {
+      throw new Error("Agent messaging is not configured on this daemon");
+    }
+    return await this.deps.agentMessaging.deliverInboundCompletion(input);
   }
 
   async getPublishedAgentEndpoints(): Promise<

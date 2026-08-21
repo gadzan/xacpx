@@ -4,7 +4,9 @@ import {
   isAmbiguousDeliveryError,
 } from "./agent-messaging-error";
 import type {
+  AgentAddress,
   AgentMessage,
+  AgentMessageCompletionStatus,
   AgentMessageReceipt,
 } from "./agent-messaging-types";
 
@@ -20,6 +22,7 @@ export interface RelayRouteClient {
     content: string;
     requestedMode: string;
     replyTo?: string;
+    completion?: string;
   }): Promise<{
     messageId: string;
     status: "injected" | "queued" | "failed";
@@ -27,6 +30,19 @@ export interface RelayRouteClient {
     targetState?: "idle" | "running";
     errorCode?: string;
     deduplicated?: boolean;
+  }>;
+  sendAgentMessageCompletion?(payload: {
+    requestMessageId: string;
+    source: AgentAddress;
+    target: AgentAddress;
+    status: AgentMessageCompletionStatus;
+    result?: string;
+    error?: string;
+    completedAt: number;
+  }): Promise<{
+    ok: boolean;
+    deduplicated?: boolean;
+    error?: string;
   }>;
 }
 
@@ -102,6 +118,63 @@ export class RelayAgentMessageRoute {
           route: "relay",
           ...(res.targetState ? { targetState: res.targetState } : {}),
           ...(res.deduplicated ? { deduplicated: res.deduplicated } : {}),
+        };
+      } catch (err) {
+        lastError = err;
+        if (!isAmbiguousDeliveryError(err) || attempt >= maxAttempts) {
+          break;
+        }
+        await delay(backoffMs * attempt);
+      }
+    }
+    const err = lastError;
+    if (err instanceof AgentMessagingError) throw err;
+    const rawCode = (err as Error & { code?: string }).code;
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    const code = isAgentMessagingErrorCode(rawCode)
+      ? rawCode
+      : isAgentMessagingErrorCode(errorMessage)
+        ? errorMessage
+        : "DELIVERY_FAILED";
+    throw new AgentMessagingError(code, errorMessage);
+  }
+
+  async sendCompletion(payload: {
+    requestMessageId: string;
+    source: AgentAddress;
+    target: AgentAddress;
+    status: AgentMessageCompletionStatus;
+    result?: string;
+    error?: string;
+    completedAt: number;
+  }): Promise<{
+    ok: boolean;
+    deduplicated?: boolean;
+  }> {
+    if (!this.client || typeof this.client.sendAgentMessageCompletion !== "function") {
+      throw new AgentMessagingError(
+        "ROUTE_UNAVAILABLE",
+        `Remote completion route is unavailable for destination node ${payload.source.nodeId}.`,
+      );
+    }
+    const maxAttempts = Math.max(1, this.retry.maxAttempts ?? 3);
+    const backoffMs = Math.max(0, this.retry.backoffMs ?? 150);
+    const delay = this.retry.delay ?? defaultDelay;
+
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const res = await this.client.sendAgentMessageCompletion(payload);
+        if (res && typeof res === "object" && "error" in res && res.error) {
+          const errPayload = res.error;
+          const code = typeof errPayload === "string"
+            ? (isAgentMessagingErrorCode(errPayload) ? errPayload : "DELIVERY_FAILED")
+            : "DELIVERY_FAILED";
+          throw new AgentMessagingError(code, String(res.error));
+        }
+        return {
+          ok: res?.ok ?? true,
+          ...(res?.deduplicated ? { deduplicated: res.deduplicated } : {}),
         };
       } catch (err) {
         lastError = err;

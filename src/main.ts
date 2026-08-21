@@ -198,6 +198,7 @@ interface RuntimeDeps {
     | "sendCoordinatorMessage"
     | "sendScheduledMessage"
     | "sendAgentMessageRoute"
+    | "sendAgentMessageCompletion"
     | "syncAgentEndpoints"
   > & {
     configureOrchestration?: MessageChannelRuntime["configureOrchestration"];
