@@ -158,3 +158,63 @@ test("Phase 6: ControlService.submitPeerTurn passes peerOrigin to TurnQueue", as
     peerOrigin,
   });
 });
+
+test("Phase 7: ControlService.submitCompletionTurn passes prompt to TurnQueue without peerOrigin", async () => {
+  const { service } = makeControlService();
+  (service as any).deps.sessions.getSession = async () => ({
+    alias: "main",
+    archived: false,
+  });
+
+  let capturedParams: any = null;
+  (service as any).turnQueue.submitPeerTurn = (params: any) => {
+    capturedParams = params;
+    return { status: "injected" };
+  };
+
+  const res = await service.submitCompletionTurn({
+    sourceAlias: "main",
+    prompt: "<xacpx-peer-result>result</xacpx-peer-result>",
+    requestMessageId: "msg_comp_1",
+  });
+
+  expect(res).toEqual({ status: "injected" });
+  expect(capturedParams).toMatchObject({
+    chatKey: "relay:agent-message:main",
+    sessionAlias: "main",
+    boundSessionAlias: "main",
+    text: "<xacpx-peer-result>result</xacpx-peer-result>",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_comp_1",
+    isPeerMessage: true,
+    allowRestoreArchived: false,
+    preserveCoordinatorRoute: true,
+  });
+  // Completion turn must NOT carry peerOrigin (one-shot, non-replyable)
+  expect(capturedParams.peerOrigin).toBeUndefined();
+});
+
+test("Phase 7: ControlService.submitCompletionTurn rejects when session is archived or missing", async () => {
+  const { service } = makeControlService();
+
+  // Missing session
+  (service as any).deps.sessions.getSession = async () => null;
+  const resMissing = await service.submitCompletionTurn({
+    sourceAlias: "missing",
+    prompt: "prompt",
+    requestMessageId: "msg_1",
+  });
+  expect(resMissing).toEqual({ status: "rejected", reason: "target-unavailable" });
+
+  // Archived session
+  (service as any).deps.sessions.getSession = async () => ({
+    alias: "archived-session",
+    archived: true,
+  });
+  const resArchived = await service.submitCompletionTurn({
+    sourceAlias: "archived-session",
+    prompt: "prompt",
+    requestMessageId: "msg_2",
+  });
+  expect(resArchived).toEqual({ status: "rejected", reason: "target-unavailable" });
+});

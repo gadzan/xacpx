@@ -433,6 +433,8 @@ function validPeerMessageHistoryEntry(m) {
     return false;
   if (entry.completion !== undefined && !["none", "notify", "result"].includes(entry.completion))
     return false;
+  if (entry.completionStatus !== undefined && !["completed", "failed", "cancelled"].includes(entry.completionStatus))
+    return false;
   return true;
 }
 function validAgentAddress(a) {

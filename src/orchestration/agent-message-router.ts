@@ -19,10 +19,19 @@ import {
   AgentMessagingError,
   type AgentMessagingErrorCode,
 } from "./agent-messaging-error";
+import {
+  boundPeerResult,
+  buildPeerCompletionPrompt,
+  sanitizeCompletionError,
+} from "./agent-message-completion";
+import type { PeerTurnOrigin } from "../control/turn-support";
 import type {
+  AgentAddress,
   AgentEndpointView,
   AgentMessage,
+  AgentMessageCompletion,
   AgentMessageCompletionMode,
+  AgentMessageCompletionStatus,
   AgentMessageMode,
   AgentMessageReceipt,
   AgentMessageSendInput,
@@ -39,6 +48,11 @@ export interface LocalAgentMessageDelivery {
     message: AgentMessage,
     renderedText: string,
   ): Promise<SessionMessageReceipt>;
+  deliverCompletion?(
+    sourceAlias: string,
+    prompt: string,
+    requestMessageId: string,
+  ): Promise<{ status: "injected" | "queued" } | { status: "rejected"; reason: string }>;
 }
 
 /**
@@ -111,6 +125,19 @@ export class AgentMessageRouter {
   private readonly conversationMessageCounts = new Map<string, number>();
   private readonly recentDuplicateContent = new Map<string, number>();
   private readonly traceRingBuffer: AgentMessageTraceRecord[] = [];
+  private readonly outboundMessages = new Map<
+    string,
+    {
+      senderSessionAlias: string;
+      message: AgentMessage;
+      targetPeer: PeerMessagePeer;
+    }
+  >();
+  private readonly completionOutcomes = new Map<
+    string,
+    AgentMessageCompletion
+  >();
+  private readonly completionInjections = new Set<string>();
   constructor(
     private readonly deps: {
       registry: Pick<
@@ -122,6 +149,9 @@ export class AgentMessageRouter {
         | "resolveLocalTargetByEndpointId"
       > & {
         resolveTargetByHandle?: (handle: string) => Promise<AgentEndpointView | null>;
+        findLocalSessionByEndpointId?: (
+          endpointId: string,
+        ) => Promise<{ alias: string; archived: boolean; isLogical: boolean } | null>;
       };
       delivery: LocalAgentMessageDelivery;
       remoteRoute?: RelayAgentMessageRoute;
@@ -171,6 +201,17 @@ export class AgentMessageRouter {
       sessionAlias: toDisplaySessionAlias(senderSessionAlias),
       message: entry,
     });
+    if (message.completion !== "none") {
+      this.outboundMessages.set(message.id, {
+        senderSessionAlias,
+        message,
+        targetPeer: peer,
+      });
+      if (this.outboundMessages.size > 1000) {
+        const oldestKey = this.outboundMessages.keys().next().value;
+        if (oldestKey) this.outboundMessages.delete(oldestKey);
+      }
+    }
   }
   private emitInboundEvent(
     targetSessionAlias: string,
@@ -214,12 +255,6 @@ export class AgentMessageRouter {
       );
     }
     const completion = input.completion ?? "none";
-    if (completion !== "none") {
-      throw new AgentMessagingError(
-        "COMPLETION_NOT_SUPPORTED",
-        `Completion mode '${completion}' is not supported.`,
-      );
-    }
     const maxReplyToBytes = this.deps.limits?.maxReplyToBytes ?? 128;
     if (
       input.replyTo !== undefined &&
@@ -252,6 +287,15 @@ export class AgentMessageRouter {
       ? await this.deps.registry.resolveSelector(sender, input.selector)
       : await this.deps.registry.resolveTarget(sender, input.to!);
 
+    if (
+      target.endpoint.address.nodeId !== sender.address.nodeId &&
+      completion !== "none"
+    ) {
+      throw new AgentMessagingError(
+        "COMPLETION_NOT_SUPPORTED",
+        `Completion mode '${completion}' is not supported.`,
+      );
+    }
     return await this.enqueueTarget(target.endpoint.handle, async () => {
       const requestedMode = input.requestedMode ?? input.mode ?? "auto";
       if (requestedMode === "steer" && !target.endpoint.capabilities.steer) {
@@ -764,6 +808,150 @@ export class AgentMessageRouter {
       message: inboundEntry,
     });
     return receipt;
+  }
+
+  async completePeerTurn(
+    origin: PeerTurnOrigin,
+    terminal: {
+      ok: boolean;
+      text?: string;
+      errorMessage?: string;
+      cancelled?: boolean;
+    },
+  ): Promise<AgentMessageCompletion | null> {
+    if (origin.completion === "none") {
+      return null;
+    }
+
+    // Target-side terminal idempotency cache (Gate N target half)
+    const existing = this.completionOutcomes.get(origin.requestMessageId);
+    if (existing) {
+      return existing;
+    }
+
+    const status: AgentMessageCompletionStatus = terminal.cancelled
+      ? "cancelled"
+      : !terminal.ok
+        ? "failed"
+        : "completed";
+
+    const completedAt = (this.deps.now ?? Date.now)();
+    const completion: AgentMessageCompletion = {
+      requestMessageId: origin.requestMessageId,
+      from: origin.target,
+      to: origin.source,
+      status,
+      ...(status === "completed" && origin.completion === "result"
+        ? { result: boundPeerResult(terminal.text ?? "") }
+        : {}),
+      ...(status === "failed"
+        ? {
+            error: sanitizeCompletionError(
+              terminal.errorMessage ?? "Peer turn failed",
+            ),
+          }
+        : {}),
+      completedAt,
+    };
+
+    this.completionOutcomes.set(origin.requestMessageId, completion);
+
+    // Update sender history entry (Gate I, J, M, O)
+    const cachedOutbound = this.outboundMessages.get(origin.requestMessageId);
+    let senderSessionAlias = cachedOutbound?.senderSessionAlias;
+
+    // If not cached, resolve sender endpoint on local registry if local
+    let sourceIsArchived = false;
+    if (this.deps.registry.findLocalSessionByEndpointId) {
+      try {
+        const sourceSession =
+          await this.deps.registry.findLocalSessionByEndpointId(
+            origin.source.endpointId,
+          );
+        if (sourceSession) {
+          if (!senderSessionAlias) {
+            senderSessionAlias = sourceSession.alias;
+          }
+          sourceIsArchived = sourceSession.archived;
+        }
+      } catch {
+        // ignore lookup error
+      }
+    }
+
+    if (senderSessionAlias) {
+      const peer: PeerMessagePeer = cachedOutbound?.targetPeer ?? {
+        handle: encodeAgentHandle(origin.target),
+        displayName: origin.target.endpointId,
+        agent: "agent",
+      };
+      const entry: PeerMessageHistoryEntry = {
+        kind: "agent_message",
+        direction: "sent",
+        messageId: origin.requestMessageId,
+        conversationId:
+          cachedOutbound?.message.conversationId ?? origin.requestMessageId,
+        ...(cachedOutbound?.message.replyTo
+          ? { replyTo: cachedOutbound.message.replyTo }
+          : {}),
+        peer,
+        content: cachedOutbound?.message.content ?? "",
+        createdAt: cachedOutbound?.message.createdAt ?? completedAt,
+        status: "sent",
+        completion: origin.completion,
+        completionStatus: status,
+      };
+      this.deps.events?.emit({
+        type: "agent-message",
+        sessionAlias: toDisplaySessionAlias(senderSessionAlias),
+        message: entry,
+      });
+    }
+
+    // Reverse route choice
+    const isLocalSource = origin.source.nodeId === origin.target.nodeId;
+    if (!isLocalSource) {
+      // Remote source: Phase 8 (not yet). Record outcome + metadata log, no route attempt.
+      void this.deps.logger
+        ?.info(
+          "agent_messaging.remote_completion_deferred",
+          "Remote peer completion deferred to federation route.",
+          {
+            requestMessageId: origin.requestMessageId,
+            completionMode: origin.completion,
+            status,
+            sourceNodeId: origin.source.nodeId,
+            sourceEndpointId: origin.source.endpointId,
+            targetNodeId: origin.target.nodeId,
+            targetEndpointId: origin.target.endpointId,
+          },
+        )
+        ?.catch?.(() => undefined);
+      return completion;
+    }
+    // Local source delivery
+    // Idempotency gate on source injection (Gate N source half)
+    if (this.completionInjections.has(origin.requestMessageId)) {
+      return completion;
+    }
+
+    // If source session is missing or archived: do NOT wake (allowRestoreArchived: false semantics, Gate M). No turn.
+    if (sourceIsArchived || !senderSessionAlias) {
+      return completion;
+    }
+
+    this.completionInjections.add(origin.requestMessageId);
+
+    const prompt = buildPeerCompletionPrompt(completion);
+    if (this.deps.delivery.deliverCompletion) {
+      await this.deps.delivery.deliverCompletion(
+        senderSessionAlias,
+        prompt,
+        origin.requestMessageId,
+      );
+    }
+
+    return completion;
   }
 
   private getCachedReceipt(

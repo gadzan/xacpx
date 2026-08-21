@@ -207,3 +207,32 @@ test("Phase 6: delivers logical endpoint through deliverLogicalTurn with exact p
     },
   });
 });
+
+test("Phase 7: delivers completion turn through deliverCompletionTurn", async () => {
+  let capturedArgs: { alias: string; prompt: string; requestMessageId: string } | null = null;
+  const deliverCompletionTurn = mock(async (alias: string, prompt: string, requestMessageId: string) => {
+    capturedArgs = { alias, prompt, requestMessageId };
+    return { status: "injected" as const };
+  });
+
+  const delivery = new LocalAgentMessageDeliveryAdapter({
+    transport: { injectMessage: async () => ({ status: "queued", modeUsed: "queue" }) },
+    resolveLogicalSession: async () => logicalSession,
+    resolveWorkerSession: () => null,
+    deliverCompletionTurn,
+  });
+
+  const res = await delivery.deliverCompletion(
+    "coordinator",
+    "<xacpx-peer-result>result</xacpx-peer-result>",
+    "msg_comp_1",
+  );
+
+  expect(res).toEqual({ status: "injected" });
+  expect(deliverCompletionTurn).toHaveBeenCalledTimes(1);
+  expect(capturedArgs).toEqual({
+    alias: "coordinator",
+    prompt: "<xacpx-peer-result>result</xacpx-peer-result>",
+    requestMessageId: "msg_comp_1",
+  });
+});

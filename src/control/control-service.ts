@@ -1387,6 +1387,31 @@ export class ControlService {
     return { status: admission.status };
   }
 
+  async submitCompletionTurn(input: {
+    sourceAlias: string;
+    prompt: string;
+    requestMessageId: string;
+  }): Promise<{ status: "injected" | "queued" } | { status: "rejected"; reason: string }> {
+    const session = await this.deps.sessions.getSession(input.sourceAlias);
+    if (!session || session.archived === true) {
+      return { status: "rejected", reason: "target-unavailable" };
+    }
+    const internalAlias = session.alias;
+    const admission = this.turnQueue.submitPeerTurn({
+      chatKey: `relay:agent-message:${input.sourceAlias}`,
+      sessionAlias: input.sourceAlias,
+      boundSessionAlias: internalAlias,
+      concurrencyKey: internalAlias,
+      text: input.prompt,
+      senderId: "agent-messaging",
+      promptRequestId: input.requestMessageId,
+      isPeerMessage: true,
+      allowRestoreArchived: false,
+      preserveCoordinatorRoute: true,
+    });
+    return admission;
+  }
+
   /** Remove a pending queued prompt (by id) before it drains. No-ops (returns
    *  `{ cancelled: false }`) when the queue or the id is absent/already drained —
    *  e.g. a race where the item drained into a running turn just before the cancel

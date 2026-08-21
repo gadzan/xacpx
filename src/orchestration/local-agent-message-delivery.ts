@@ -24,6 +24,11 @@ export class LocalAgentMessageDeliveryAdapter {
         messageId: string,
         peerOrigin?: PeerTurnOrigin,
       ) => Promise<{ status: "injected" | "queued" }>;
+      deliverCompletionTurn?: (
+        alias: string,
+        prompt: string,
+        requestMessageId: string,
+      ) => Promise<{ status: "injected" | "queued" } | { status: "rejected"; reason: string }>;
     },
   ) {}
 
@@ -89,5 +94,20 @@ export class LocalAgentMessageDeliveryAdapter {
       messageId: message.id,
       mode: message.requestedMode,
     });
+  }
+
+  async deliverCompletion(
+    sourceAlias: string,
+    prompt: string,
+    requestMessageId: string,
+  ): Promise<{ status: "injected" | "queued" } | { status: "rejected"; reason: string }> {
+    if (this.deps.deliverCompletionTurn) {
+      return await this.deps.deliverCompletionTurn(
+        sourceAlias,
+        prompt,
+        requestMessageId,
+      );
+    }
+    return { status: "queued" };
   }
 }

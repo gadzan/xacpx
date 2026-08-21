@@ -470,6 +470,33 @@ export class AgentEndpointRegistry {
     return match;
   }
 
+  async findLocalSessionByEndpointId(
+    endpointId: string,
+  ): Promise<{ alias: string; archived: boolean; isLogical: boolean } | null> {
+    const state = await this.deps.loadState();
+    for (const session of Object.values(state.sessions)) {
+      if (session.logical_session_id === endpointId) {
+        return {
+          alias: session.alias,
+          archived: session.archived === true,
+          isLogical: true,
+        };
+      }
+    }
+    for (const [workerSession, worker] of Object.entries(
+      state.orchestration.workerBindings,
+    )) {
+      if (worker.agentEndpointId === endpointId) {
+        return {
+          alias: workerSession,
+          archived: false,
+          isLogical: false,
+        };
+      }
+    }
+    return null;
+  }
+
   private listCandidates(
     state: AppState,
     coordinatorSession: string,

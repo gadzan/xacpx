@@ -575,8 +575,17 @@ export function buildXacpxMcpToolRegistry(input: {
             ...input,
             ...(input.completion !== undefined ? { completion: input.completion } : {}),
           });
+          const completion = input.completion ?? "none";
+          let completionHint = "";
+          if (completion === "notify") {
+            completionHint =
+              " xacpx will notify this session when the peer turn completes. Do not poll or send acknowledgement messages.";
+          } else if (completion === "result") {
+            completionHint =
+              " xacpx will return the peer's final result to this session when it completes. Do not poll or send acknowledgement messages.";
+          }
           return createSuccessResult(
-            `Peer message ${receipt.messageId} accepted with status=${receipt.status}${receipt.modeUsed ? ` via ${receipt.modeUsed}` : ""}.`,
+            `Peer message ${receipt.messageId} accepted with status=${receipt.status}${receipt.modeUsed ? ` via ${receipt.modeUsed}` : ""}.${completionHint}`,
             receipt,
           );
         }),

@@ -532,6 +532,70 @@ test("legacy agent-message event without completion parses as absent and behaves
   expect(parsed.event.message.completion).toBeUndefined();
 });
 
+test("validControlEvent round-trips agent-message event with completionStatus", () => {
+  for (const completionStatus of ["completed", "failed", "cancelled"] as const) {
+    const event: WebServerEvent = {
+      kind: "control-event",
+      instanceId: "i1",
+      event: {
+        type: "agent-message",
+        chatKey: "relay:a1",
+        sessionAlias: "backend",
+        message: {
+          kind: "agent_message",
+          direction: "sent",
+          messageId: "msg_status_test",
+          conversationId: "conv_status_test",
+          peer: {
+            handle: "agent:node_2:worker_b",
+            displayName: "Worker B",
+            agent: "codex",
+          },
+          content: "Status test message",
+          createdAt: 1771234567890,
+          status: "sent",
+          completion: "result",
+          completionStatus,
+        },
+      },
+    };
+    expect(roundtrip(event)).toEqual(event);
+  }
+});
+
+test("validControlEvent rejects agent-message event with invalid completionStatus", () => {
+  const event = {
+    kind: "control-event",
+    instanceId: "i1",
+    event: {
+      type: "agent-message",
+      chatKey: "relay:a1",
+      sessionAlias: "backend",
+      message: {
+        kind: "agent_message",
+        direction: "sent",
+        messageId: "msg_status_invalid",
+        conversationId: "conv_status_invalid",
+        peer: {
+          handle: "agent:node_2:worker_b",
+          displayName: "Worker B",
+          agent: "codex",
+        },
+        content: "Invalid status test message",
+        createdAt: 1771234567890,
+        status: "sent",
+        completion: "result",
+        completionStatus: "invalid_status",
+      },
+    },
+  };
+  const wire = encodeEnvelope(webEventEnvelope(event as any));
+  const decoded = decodeEnvelope(wire);
+  expect(decoded.ok).toBe(true);
+  if (!decoded.ok) return;
+  expect(parseWebServerEvent(decoded.envelope)).toBeNull();
+});
+
 test("agent-directory events preserve endpoint context fields and accept legacy rows", () => {
   // endpointKind/channelId are optional presentation context (v0.3): rows from
   // new daemons carry them; rows from old daemons omit them and must parse.

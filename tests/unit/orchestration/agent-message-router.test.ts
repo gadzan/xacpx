@@ -101,8 +101,7 @@ function makeRouter(
     logger: options.logger,
     events: options.events,
   });
-
-  return { router, deliveries, state };
+  return { router, deliveries, state, registry };
 }
 
 test("lists only the current sender's reachable peer endpoints", async () => {
@@ -1326,21 +1325,39 @@ test("explicit completion = none: carries completion 'none' in history entries a
   expect(agentMessages[1]!.message.completion).toBe("none");
 });
 
-test("completion = notify: router rejects with COMPLETION_NOT_SUPPORTED before admission with zero side effects", async () => {
+test("remote route completion = notify: router rejects with COMPLETION_NOT_SUPPORTED with zero side effects", async () => {
   let idAllocated = false;
   const events = createControlEventBus();
   const emitted: ControlEvent[] = [];
   events.subscribe((e) => emitted.push(e));
 
-  const { router } = makeRouter({
+  const { router, registry } = makeRouter({
     events,
     createId: () => {
       idAllocated = true;
       return "should-not-allocate";
     },
   });
+  registry.updateRemoteEndpoints("node_remote", [
+    {
+      address: { nodeId: "node_remote", endpointId: "endpoint_remote_worker" },
+      handle: encodeAgentHandle({ nodeId: "node_remote", endpointId: "endpoint_remote_worker" }),
+      node: "Remote Node",
+      displayName: "Remote Worker",
+      agent: "claude",
+      state: "idle",
+      activity: { status: "idle" },
+      capabilities: {
+        receive: true,
+        steer: false,
+        queue: true,
+        interrupt: false,
+        conversation: true,
+      },
+    },
+  ]);
   const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
-  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+  const to = encodeAgentHandle({ nodeId: "node_remote", endpointId: "endpoint_remote_worker" });
 
   let thrown: unknown;
   try {
@@ -1353,27 +1370,41 @@ test("completion = notify: router rejects with COMPLETION_NOT_SUPPORTED before a
   expect((thrown as AgentMessagingError).code).toBe("COMPLETION_NOT_SUPPORTED");
   expect(idAllocated).toBe(false);
   expect(emitted).toHaveLength(0);
-
-  // Verify that the duplicate content guard was NOT consumed: sending identical content with completion "none" succeeds
-  const receipt = await router.send(binding, { to, content: "notify message", completion: "none" });
-  expect(receipt.status).toBe("queued");
 });
 
-test("completion = result: router rejects with COMPLETION_NOT_SUPPORTED before admission with zero side effects", async () => {
+test("remote route completion = result: router rejects with COMPLETION_NOT_SUPPORTED with zero side effects", async () => {
   let idAllocated = false;
   const events = createControlEventBus();
   const emitted: ControlEvent[] = [];
   events.subscribe((e) => emitted.push(e));
 
-  const { router } = makeRouter({
+  const { router, registry } = makeRouter({
     events,
     createId: () => {
       idAllocated = true;
       return "should-not-allocate";
     },
   });
+  registry.updateRemoteEndpoints("node_remote", [
+    {
+      address: { nodeId: "node_remote", endpointId: "endpoint_remote_worker" },
+      handle: encodeAgentHandle({ nodeId: "node_remote", endpointId: "endpoint_remote_worker" }),
+      node: "Remote Node",
+      displayName: "Remote Worker",
+      agent: "claude",
+      state: "idle",
+      activity: { status: "idle" },
+      capabilities: {
+        receive: true,
+        steer: false,
+        queue: true,
+        interrupt: false,
+        conversation: true,
+      },
+    },
+  ]);
   const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
-  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+  const to = encodeAgentHandle({ nodeId: "node_remote", endpointId: "endpoint_remote_worker" });
 
   let thrown: unknown;
   try {
@@ -1386,12 +1417,43 @@ test("completion = result: router rejects with COMPLETION_NOT_SUPPORTED before a
   expect((thrown as AgentMessagingError).code).toBe("COMPLETION_NOT_SUPPORTED");
   expect(idAllocated).toBe(false);
   expect(emitted).toHaveLength(0);
-
-  // Verify that guards were not consumed
-  const receipt = await router.send(binding, { to, content: "result message", completion: "none" });
-  expect(receipt.status).toBe("queued");
 });
 
+test("local route accepts completion = notify and carries completion mode in history entries", async () => {
+  const events = createControlEventBus();
+  const emitted: ControlEvent[] = [];
+  events.subscribe((e) => emitted.push(e));
+
+  const { router } = makeRouter({ events });
+  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+
+  const receipt = await router.send(binding, { to, content: "notify message", completion: "notify" });
+  expect(receipt.status).toBe("queued");
+
+  const agentMessages = emitted.filter((e): e is Extract<ControlEvent, { type: "agent-message" }> => e.type === "agent-message");
+  expect(agentMessages).toHaveLength(2);
+  expect(agentMessages[0]!.message.completion).toBe("notify");
+  expect(agentMessages[1]!.message.completion).toBe("notify");
+});
+
+test("local route accepts completion = result and carries completion mode in history entries", async () => {
+  const events = createControlEventBus();
+  const emitted: ControlEvent[] = [];
+  events.subscribe((e) => emitted.push(e));
+
+  const { router } = makeRouter({ events });
+  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+
+  const receipt = await router.send(binding, { to, content: "result message", completion: "result" });
+  expect(receipt.status).toBe("queued");
+
+  const agentMessages = emitted.filter((e): e is Extract<ControlEvent, { type: "agent-message" }> => e.type === "agent-message");
+  expect(agentMessages).toHaveLength(2);
+  expect(agentMessages[0]!.message.completion).toBe("result");
+  expect(agentMessages[1]!.message.completion).toBe("result");
+});
 test("deliverInbound sets completion 'none' on history entry when absent or none", async () => {
   const events = createControlEventBus();
   const emitted: ControlEvent[] = [];
@@ -1412,6 +1474,305 @@ test("deliverInbound sets completion 'none' on history entry when absent or none
   const agentMessages = emitted.filter((e): e is Extract<ControlEvent, { type: "agent-message" }> => e.type === "agent-message");
   expect(agentMessages).toHaveLength(1);
   expect(agentMessages[0]!.message.completion).toBe("none");
+});
+
+test("Gate H: completePeerTurn with completion = none returns null with zero side effects", async () => {
+  const events = createControlEventBus();
+  const emitted: ControlEvent[] = [];
+  events.subscribe((e) => emitted.push(e));
+  let injected = false;
+
+  const { router } = makeRouter({
+    events,
+  });
+  (router as any).deps.delivery.deliverCompletion = async () => {
+    injected = true;
+    return { status: "injected" };
+  };
+
+  const origin = {
+    requestMessageId: "msg_none_1",
+    completion: "none" as const,
+    source: { nodeId, endpointId: "endpoint_worker-a" },
+    target: { nodeId, endpointId: "endpoint_worker-b" },
+  };
+
+  const res = await router.completePeerTurn(origin, {
+    ok: true,
+    text: "result text",
+  });
+
+  expect(res).toBeNull();
+  expect(emitted).toHaveLength(0);
+  expect(injected).toBe(false);
+});
+
+test("Gate I: completePeerTurn with completion = notify emits completionStatus=completed and delivers prompt with <xacpx-peer-completion", async () => {
+  const events = createControlEventBus();
+  const emitted: ControlEvent[] = [];
+  events.subscribe((e) => emitted.push(e));
+  const deliveredCompletions: Array<{ sourceAlias: string; prompt: string; requestMessageId: string }> = [];
+
+  const { router } = makeRouter({ events });
+  (router as any).deps.delivery.deliverCompletion = async (
+    sourceAlias: string,
+    prompt: string,
+    requestMessageId: string,
+  ) => {
+    deliveredCompletions.push({ sourceAlias, prompt, requestMessageId });
+    return { status: "injected" as const };
+  };
+
+  // First send the message so outbound is recorded
+  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+  const receipt = await router.send(binding, { to, content: "do task", completion: "notify" });
+
+  const origin = {
+    requestMessageId: receipt.messageId,
+    completion: "notify" as const,
+    source: { nodeId, endpointId: "endpoint_worker-a" },
+    target: { nodeId, endpointId: "endpoint_worker-b" },
+  };
+
+  const completion = await router.completePeerTurn(origin, {
+    ok: true,
+    text: "done with task",
+  });
+
+  expect(completion).not.toBeNull();
+  expect(completion?.status).toBe("completed");
+  expect(completion?.result).toBeUndefined();
+
+  // Verify history event emitted with completionStatus: completed
+  const agentMessages = emitted.filter((e): e is Extract<ControlEvent, { type: "agent-message" }> => e.type === "agent-message");
+  // initial sent + initial received + updated sent
+  expect(agentMessages).toHaveLength(3);
+  const updatedSent = agentMessages[2]!;
+  expect(updatedSent.message.direction).toBe("sent");
+  expect(updatedSent.message.messageId).toBe(receipt.messageId);
+  expect(updatedSent.message.completionStatus).toBe("completed");
+
+  // Verify prompt delivered to source
+  expect(deliveredCompletions).toHaveLength(1);
+  expect(deliveredCompletions[0]!.sourceAlias).toBe("workerA");
+  expect(deliveredCompletions[0]!.prompt).toContain("<xacpx-peer-completion");
+  expect(deliveredCompletions[0]!.prompt).toContain('status="completed"');
+  expect(deliveredCompletions[0]!.prompt).toContain("<instruction>");
+  expect(deliveredCompletions[0]!.prompt).not.toContain("done with task");
+});
+
+test("Gate J: completePeerTurn with completion = result bounds 20KiB text to <=16KiB with marker and delivers <xacpx-peer-result", async () => {
+  const events = createControlEventBus();
+  const deliveredCompletions: Array<{ sourceAlias: string; prompt: string; requestMessageId: string }> = [];
+
+  const { router } = makeRouter({ events });
+  (router as any).deps.delivery.deliverCompletion = async (
+    sourceAlias: string,
+    prompt: string,
+    requestMessageId: string,
+  ) => {
+    deliveredCompletions.push({ sourceAlias, prompt, requestMessageId });
+    return { status: "injected" as const };
+  };
+
+  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+  const receipt = await router.send(binding, { to, content: "compute large", completion: "result" });
+
+  const largeResult = "答案：" + "X".repeat(20 * 1024);
+  const origin = {
+    requestMessageId: receipt.messageId,
+    completion: "result" as const,
+    source: { nodeId, endpointId: "endpoint_worker-a" },
+    target: { nodeId, endpointId: "endpoint_worker-b" },
+  };
+
+  const completion = await router.completePeerTurn(origin, {
+    ok: true,
+    text: largeResult,
+  });
+
+  expect(completion?.status).toBe("completed");
+  expect(completion?.result).toBeDefined();
+  expect(Buffer.byteLength(completion!.result!, "utf8")).toBeLessThanOrEqual(16 * 1024);
+  expect(completion!.result!.endsWith("\n[xacpx: result truncated]")).toBe(true);
+
+  expect(deliveredCompletions).toHaveLength(1);
+  expect(deliveredCompletions[0]!.prompt).toContain("<xacpx-peer-result");
+  expect(deliveredCompletions[0]!.prompt).toContain("[xacpx: result truncated]");
+});
+
+test("Gate M: completePeerTurn when source session is archived updates history entry but does not inject turn", async () => {
+  const events = createControlEventBus();
+  const emitted: ControlEvent[] = [];
+  events.subscribe((e) => emitted.push(e));
+  let injected = false;
+
+  const { router, registry, state } = makeRouter({ events });
+  // Make session 'main' archived
+  state.sessions.main!.archived = true;
+  (router as any).deps.delivery.deliverCompletion = async () => {
+    injected = true;
+    return { status: "injected" as const };
+  };
+
+  const origin = {
+    requestMessageId: "msg_archived_source",
+    completion: "notify" as const,
+    source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" }, // main session endpoint
+    target: { nodeId, endpointId: "endpoint_worker-b" },
+  };
+
+  const completion = await router.completePeerTurn(origin, {
+    ok: true,
+    text: "done",
+  });
+
+  expect(completion?.status).toBe("completed");
+  // History entry updated with completionStatus
+  const agentMessages = emitted.filter((e): e is Extract<ControlEvent, { type: "agent-message" }> => e.type === "agent-message");
+  expect(agentMessages).toHaveLength(1);
+  expect(agentMessages[0]!.sessionAlias).toBe("main");
+  expect(agentMessages[0]!.message.completionStatus).toBe("completed");
+
+  // NO turn injected
+  expect(injected).toBe(false);
+});
+
+test("Gate N: duplicate completePeerTurn (including contradictory terminal) returns first terminal with exactly one injection and history update", async () => {
+  const events = createControlEventBus();
+  const emitted: ControlEvent[] = [];
+  events.subscribe((e) => emitted.push(e));
+  const deliveredCompletions: string[] = [];
+
+  const { router } = makeRouter({ events });
+  (router as any).deps.delivery.deliverCompletion = async (
+    _alias: string,
+    prompt: string,
+  ) => {
+    deliveredCompletions.push(prompt);
+    return { status: "injected" as const };
+  };
+
+  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+  const receipt = await router.send(binding, { to, content: "task dedup", completion: "result" });
+
+  const origin = {
+    requestMessageId: receipt.messageId,
+    completion: "result" as const,
+    source: { nodeId, endpointId: "endpoint_worker-a" },
+    target: { nodeId, endpointId: "endpoint_worker-b" },
+  };
+
+  // First terminal: ok with "first answer"
+  const first = await router.completePeerTurn(origin, {
+    ok: true,
+    text: "first answer",
+  });
+
+  // Second terminal: contradictory failure attempt
+  const second = await router.completePeerTurn(origin, {
+    ok: false,
+    errorMessage: "contradictory failure",
+  });
+
+  expect(first?.status).toBe("completed");
+  expect(first?.result).toBe("first answer");
+  // First terminal wins!
+  expect(second).toBe(first);
+  expect(second?.status).toBe("completed");
+  expect(second?.result).toBe("first answer");
+
+  // Exactly one history update event for the completion (total 3: sent, received, completion update)
+  const agentMessages = emitted.filter((e): e is Extract<ControlEvent, { type: "agent-message" }> => e.type === "agent-message");
+  expect(agentMessages).toHaveLength(3);
+  expect(agentMessages[2]!.message.completionStatus).toBe("completed");
+
+  // Exactly one prompt delivered
+  expect(deliveredCompletions).toHaveLength(1);
+  expect(deliveredCompletions[0]).toContain("first answer");
+});
+
+test("Gate O: peer turn failure sets completionStatus=failed and carries sanitized error; cancelled sets status=cancelled", async () => {
+  const events = createControlEventBus();
+  const emitted: ControlEvent[] = [];
+  events.subscribe((e) => emitted.push(e));
+  const deliveredCompletions: string[] = [];
+
+  const { router } = makeRouter({ events });
+  (router as any).deps.delivery.deliverCompletion = async (
+    _alias: string,
+    prompt: string,
+  ) => {
+    deliveredCompletions.push(prompt);
+    return { status: "injected" as const };
+  };
+
+  // 1. Failed turn
+  const originFail = {
+    requestMessageId: "msg_fail_cycle",
+    completion: "result" as const,
+    source: { nodeId, endpointId: "endpoint_worker-a" },
+    target: { nodeId, endpointId: "endpoint_worker-b" },
+  };
+
+  const failCompletion = await router.completePeerTurn(originFail, {
+    ok: false,
+    errorMessage: "Task failed: database disconnected\n    at query (/app/db.ts:12:3)",
+  });
+
+  expect(failCompletion?.status).toBe("failed");
+  expect(failCompletion?.error).toBe("Task failed: database disconnected");
+  expect(failCompletion?.result).toBeUndefined();
+  expect(deliveredCompletions[0]).toContain('<xacpx-peer-completion request-id="msg_fail_cycle" from="agent:' + nodeId + ':endpoint_worker-b" status="failed" error="Task failed: database disconnected">');
+
+  // 2. Cancelled turn
+  const originCancel = {
+    requestMessageId: "msg_cancel_cycle",
+    completion: "notify" as const,
+    source: { nodeId, endpointId: "endpoint_worker-a" },
+    target: { nodeId, endpointId: "endpoint_worker-b" },
+  };
+
+  const cancelCompletion = await router.completePeerTurn(originCancel, {
+    ok: false,
+    cancelled: true,
+  });
+
+  expect(cancelCompletion?.status).toBe("cancelled");
+  expect(deliveredCompletions[1]).toContain('<xacpx-peer-completion request-id="msg_cancel_cycle" from="agent:' + nodeId + ':endpoint_worker-b" status="cancelled">');
+});
+
+test("Guards untouched: completion cycle does not consume conversation depth, volume, rate limit, or duplicate counters", async () => {
+  let clock = 10_000;
+  const { router } = makeRouter({
+    now: () => clock,
+  });
+  (router as any).deps.delivery.deliverCompletion = async () => ({ status: "injected" as const });
+
+  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+
+  // Send a message with completion = notify
+  const receipt = await router.send(binding, { to, content: "guard check message", completion: "notify" });
+
+  // Complete the peer turn
+  const origin = {
+    requestMessageId: receipt.messageId,
+    completion: "notify" as const,
+    source: { nodeId, endpointId: "endpoint_worker-a" },
+    target: { nodeId, endpointId: "endpoint_worker-b" },
+  };
+  await router.completePeerTurn(origin, { ok: true, text: "done" });
+
+  // Verify that conversation volume count is exactly 1 (from the single send, NOT incremented by completePeerTurn)
+  expect((router as any).conversationMessageCounts.get(receipt.messageId)).toBe(1);
+
+  // Verify that duplicate content cache contains only the original send
+  const pairKey = `${nodeId}:endpoint_worker-a->${nodeId}:endpoint_worker-b`;
+  expect((router as any).rateWindows.get(pairKey)?.length).toBe(1);
 });
 
 function createDeferred<T>() {

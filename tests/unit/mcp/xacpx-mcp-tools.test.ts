@@ -1330,3 +1330,50 @@ test("agent_send forwards explicit completion parameter to transport", async () 
     },
   ]);
 });
+
+test("agent_send returns tailored success text for none, notify, and result completion modes", async () => {
+  const receipt = {
+    messageId: "msg-123",
+    status: "queued" as const,
+    route: "local" as const,
+  };
+  const registry = buildXacpxMcpToolRegistry({
+    transport: createMemoryTransport(
+      async () => ({ taskId: "task-1", status: "running" }),
+      {
+        sendAgentMessage: async () => receipt,
+      },
+    ),
+    coordinatorSession: "backend:main",
+  });
+  const sendTool = registry.find((tool) => tool.name === "agent_send");
+
+  // none / unset
+  const resNone = await sendTool?.handler({
+    to: "agent:node-local:endpoint-peer",
+    message: "msg",
+  });
+  expect(resNone && "content" in resNone ? resNone.content[0]?.text : "").toBe(
+    "Peer message msg-123 accepted with status=queued.",
+  );
+
+  // notify
+  const resNotify = await sendTool?.handler({
+    to: "agent:node-local:endpoint-peer",
+    message: "msg",
+    completion: "notify",
+  });
+  expect(resNotify && "content" in resNotify ? resNotify.content[0]?.text : "").toBe(
+    "Peer message msg-123 accepted with status=queued. xacpx will notify this session when the peer turn completes. Do not poll or send acknowledgement messages.",
+  );
+
+  // result
+  const resResult = await sendTool?.handler({
+    to: "agent:node-local:endpoint-peer",
+    message: "msg",
+    completion: "result",
+  });
+  expect(resResult && "content" in resResult ? resResult.content[0]?.text : "").toBe(
+    "Peer message msg-123 accepted with status=queued. xacpx will return the peer's final result to this session when it completes. Do not poll or send acknowledgement messages.",
+  );
+});

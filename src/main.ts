@@ -1274,6 +1274,16 @@ export async function buildApp(
       }
       return { status: "queued" };
     },
+    deliverCompletionTurn: async (alias, prompt, requestMessageId) => {
+      if (controlRef) {
+        return await controlRef.submitCompletionTurn({
+          sourceAlias: alias,
+          prompt,
+          requestMessageId,
+        });
+      }
+      return { status: "queued" };
+    },
   });
   const relayAgentMessageRoute = new RelayAgentMessageRoute(
     deps.channel?.sendAgentMessageRoute
@@ -1490,6 +1500,31 @@ export async function buildApp(
     },
   });
   controlRef = control;
+  controlEvents.subscribe((event) => {
+    if (
+      event.type === "turn-finished" &&
+      event.peerOrigin &&
+      event.peerOrigin.completion !== "none"
+    ) {
+      void agentMessaging
+        .completePeerTurn(event.peerOrigin, {
+          ok: event.ok,
+          text: event.text,
+          errorMessage: event.errorMessage,
+          cancelled: event.cancelled,
+        })
+        .catch((error) => {
+          void logger.error(
+            "agent_messaging.complete_peer_turn_failed",
+            "failed to deliver peer turn completion",
+            {
+              requestMessageId: event.peerOrigin?.requestMessageId,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+        });
+    }
+  });
   // Pick up out-of-band config edits without a daemon restart. `xacpx workspace add`
   // (and `agent add`, `/config` from another process) run as separate CLI processes:
   // they only write config.json and can't reach this daemon's in-memory config, so the

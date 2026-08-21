@@ -850,3 +850,56 @@ test("Phase 6: injected peer turn on idle target attaches peerOrigin directly", 
 
   h.resolveNext();
 });
+
+test("Phase 7 (Gate L): busy source session queues completion turn and drains sequentially without parallel turn", async () => {
+  const h = makeQueue();
+  const executedRequests: Array<{ text: string; isPeerMessage?: boolean; peerOrigin?: unknown }> = [];
+  const origRun = (h.queue as any).deps.runTurn;
+  (h.queue as any).deps.runTurn = async (req: any, sig: any, act: any) => {
+    executedRequests.push(req);
+    return await origRun(req, sig, act);
+  };
+
+  // 1. Start an active human turn on session "source-lane"
+  void h.queue.submit({
+    chatKey: "relay:source-lane",
+    sessionAlias: "source-lane",
+    concurrencyKey: "source-lane",
+    text: "human running turn",
+    senderId: "user",
+    queueable: true,
+  });
+  await tick();
+  expect(h.queue.isBusy("relay:source-lane", "source-lane")).toBe(true);
+  expect(executedRequests).toHaveLength(1);
+  expect(executedRequests[0]!.text).toBe("human running turn");
+
+  // 2. Completion turn arrives while busy
+  const completionAdmission = h.queue.submitPeerTurn({
+    chatKey: "relay:source-lane",
+    sessionAlias: "source-lane",
+    concurrencyKey: "source-lane",
+    text: "<xacpx-peer-result>computed value</xacpx-peer-result>",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_comp_123",
+    isPeerMessage: true,
+    allowRestoreArchived: false,
+    preserveCoordinatorRoute: true,
+  });
+
+  expect(completionAdmission).toEqual({ status: "queued" });
+  expect(h.queue.queueLength("relay:source-lane", "source-lane")).toBe(1);
+  // No parallel turn started
+  expect(executedRequests).toHaveLength(1);
+
+  // 3. Current turn finishes -> completion drains next in the same lane
+  h.resolveNext({ ok: true, text: "human turn finished" });
+  await tick();
+  expect(executedRequests).toHaveLength(2);
+  expect(executedRequests[1]!.text).toBe("<xacpx-peer-result>computed value</xacpx-peer-result>");
+  expect(executedRequests[1]!.turnStarted?.promptRequestId).toBe("msg_comp_123");
+  expect(executedRequests[1]!.peerOrigin).toBeUndefined();
+  h.resolveNext({ ok: true, text: "completion turn finished" });
+  await tick();
+  expect(h.queue.isBusy("relay:source-lane", "source-lane")).toBe(false);
+});
