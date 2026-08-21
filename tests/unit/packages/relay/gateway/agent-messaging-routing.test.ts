@@ -670,6 +670,7 @@ async function establishCompletionRoute(opts: {
     }),
   );
   const res = await nextResponse(opts.socketA);
+  console.error("DBG route res:", JSON.stringify(res.payload));
   expect((res.payload as { status: string }).status).toBe("queued");
   const deadline = Date.now() + 2000;
   while (!deliverSeen && Date.now() < deadline) {
@@ -1063,11 +1064,34 @@ test("Relay Hub retains the route grant when the source returns an APPLICATION e
   expect((res2.payload as { ok?: boolean }).ok).toBe(true);
   expect(completionAttempts).toBe(2);
 
-  // Grant retired after explicit acceptance: a third replay is denied.
+  // Grant is now a TERMINAL TOMBSTONE: an at-least-once replay of the same
+  // completion (Hub success ACK lost to B) is absorbed as deduplicated —
+  // NOT denied, which would make B retry an already-honored contract.
   sendCompletion("comp-attempt-3");
   const res3 = await nextResponse(socketB);
+  expect((res3.payload as { ok?: boolean }).ok).toBe(true);
+  expect((res3.payload as { deduplicated?: boolean }).deduplicated).toBe(true);
+  expect(completionAttempts).toBe(2);
+
+  // A replay with a MISMATCHED identity on the delivered id stays denied.
+  socketB.send(
+    encodeEnvelope({
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "comp-attempt-4-spoof",
+      type: MSG.agentMessageCompletion,
+      payload: {
+        requestMessageId: "msg_b1_retry",
+        source: { nodeId: "node_a_999", endpointId: "worker_a_sender" },
+        target: { nodeId: "node_b_123", endpointId: "worker_OTHER" },
+        status: "completed",
+        completedAt: Date.now(),
+      },
+    }),
+  );
+  const res4 = await nextResponse(socketB);
   expect(
-    (res3.payload as { error?: { code: string } }).error?.code,
+    (res4.payload as { error?: { code: string } }).error?.code,
   ).toBe("DELIVERY_DENIED");
   expect(completionAttempts).toBe(2);
 

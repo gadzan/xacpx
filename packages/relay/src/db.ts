@@ -189,7 +189,8 @@ export function initSchema(db: SqlDriver): void {
       target_node_id TEXT NOT NULL,
       target_endpoint_id TEXT NOT NULL,
       mode TEXT NOT NULL,
-      expires_at INTEGER NOT NULL
+      expires_at INTEGER NOT NULL,
+      state TEXT NOT NULL DEFAULT 'pending'
     );
   `);
 
@@ -203,6 +204,10 @@ export function initSchema(db: SqlDriver): void {
   }
   if (!messageCols.some((c) => c.name === "queue_item_id")) {
     db.exec("ALTER TABLE messages ADD COLUMN queue_item_id TEXT");
+  }
+  const routeCols = db.all<{ name: string }>("PRAGMA table_info(pending_completion_routes)");
+  if (!routeCols.some((c) => c.name === "state")) {
+    db.exec("ALTER TABLE pending_completion_routes ADD COLUMN state TEXT NOT NULL DEFAULT 'pending'");
   }
   if (!messageCols.some((c) => c.name === "queue_fallback")) {
     db.exec("ALTER TABLE messages ADD COLUMN queue_fallback INTEGER NOT NULL DEFAULT 0");

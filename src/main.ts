@@ -1301,6 +1301,37 @@ export async function buildApp(
     "agent-messaging",
     "pending-completions.json",
   );
+  const completionOutboxPath = join(
+    runtimeRoot,
+    "agent-messaging",
+    "completion-outbox.json",
+  );
+  type OutboxEntry = Parameters<
+    NonNullable<
+      ConstructorParameters<typeof AgentMessageRouter>[0]["completionOutboxStore"]
+    >["upsert"]
+  >[0];
+  const completionOutboxLoadRaw = (): Map<string, OutboxEntry> => {
+    try {
+      const raw = readFileSync(completionOutboxPath, "utf8");
+      const parsed = JSON.parse(raw) as { entries?: OutboxEntry[] };
+      return new Map(
+        Array.isArray(parsed.entries)
+          ? parsed.entries.map((e) => [e.key, e])
+          : [],
+      );
+    } catch {
+      return new Map();
+    }
+  };
+  const completionOutboxWriteRaw = (
+    entries: Map<string, OutboxEntry>,
+  ): void => {
+    const tmp = `${completionOutboxPath}.tmp`;
+    mkdirSync(dirname(completionOutboxPath), { recursive: true });
+    writeFileSync(tmp, JSON.stringify({ entries: [...entries.values()] }));
+    renameSync(tmp, completionOutboxPath);
+  };
   const agentMessaging = new AgentMessageRouter({
     registry: agentEndpointRegistry,
     delivery: localAgentMessageDelivery,
@@ -1322,6 +1353,29 @@ export async function buildApp(
         mkdirSync(dirname(pendingCompletionsPath), { recursive: true });
         writeFileSync(tmp, JSON.stringify({ grants }, null, 2));
         renameSync(tmp, pendingCompletionsPath);
+      },
+    },
+    completionOutboxStore: {
+      load: () => {
+        try {
+          const raw = readFileSync(completionOutboxPath, "utf8");
+          const parsed = JSON.parse(raw) as { entries?: unknown };
+          return Array.isArray(parsed.entries)
+            ? (parsed.entries as never)
+            : [];
+        } catch {
+          return [];
+        }
+      },
+      upsert: (entry) => {
+        const entries = completionOutboxLoadRaw();
+        entries.set(entry.key, entry);
+        completionOutboxWriteRaw(entries);
+      },
+      delete: (key) => {
+        const entries = completionOutboxLoadRaw();
+        if (!entries.delete(key)) return;
+        completionOutboxWriteRaw(entries);
       },
     },
   });

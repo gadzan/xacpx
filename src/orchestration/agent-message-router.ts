@@ -388,6 +388,30 @@ export class AgentMessageRouter {
           }>,
         ): void;
       };
+      /** Durable terminal-completion outbox (v0.3): entries survive daemon
+       *  restarts so an accepted completion contract whose delivery was
+       *  interrupted (Relay offline, source busy) is still fulfilled after
+       *  the restart. Carries the bounded completion payload by necessity —
+       *  it IS the undeliverable-yet message. */
+      completionOutboxStore?: {
+        load(): Array<{
+          key: string;
+          kind: "local" | "remote";
+          requestMessageId: string;
+          senderSessionAlias?: string;
+          completion: AgentMessageCompletion;
+          expiresAt: number;
+        }>;
+        upsert(entry: {
+          key: string;
+          kind: "local" | "remote";
+          requestMessageId: string;
+          senderSessionAlias?: string;
+          completion: AgentMessageCompletion;
+          expiresAt: number;
+        }): void;
+        delete(key: string): void;
+      };
     },
   ) {
     // Hydrate persisted pending-completion grants. Expired entries are dropped;
@@ -407,6 +431,61 @@ export class AgentMessageRouter {
     } catch {
       // Fail-closed: an unloadable store starts empty (completions for
       // pre-restart requests will be denied rather than mis-attributed).
+    }
+    // Hydrate the durable terminal-completion outbox: entries whose delivery
+    // was interrupted by a restart are re-armed with reconstructed attempt
+    // closures and swept like live ones.
+    try {
+      const now2 = (this.deps.now ?? Date.now)();
+      for (const entry of this.deps.completionOutboxStore?.load() ?? []) {
+        if (entry.expiresAt <= now2) {
+          this.deps.completionOutboxStore?.delete(entry.key);
+          continue;
+        }
+        const attempt =
+          entry.kind === "local" && entry.senderSessionAlias
+            ? async () =>
+                await this.attemptCompletionAdmission(
+                  entry.requestMessageId,
+                  entry.senderSessionAlias!,
+                  entry.completion,
+                )
+            : async () => {
+                if (
+                  !this.deps.remoteRoute ||
+                  !this.deps.remoteRoute.isAvailable()
+                ) {
+                  return false;
+                }
+                const res = await this.deps.remoteRoute.sendCompletion({
+                  requestMessageId: entry.completion.requestMessageId,
+                  source: entry.completion.to,
+                  target: entry.completion.from,
+                  status: entry.completion.status,
+                  ...(entry.completion.result !== undefined
+                    ? { result: entry.completion.result }
+                    : {}),
+                  ...(entry.completion.error !== undefined
+                    ? { error: entry.completion.error }
+                    : {}),
+                  completedAt: entry.completion.completedAt,
+                });
+                if (res.ok === true) {
+                  this.retirePendingCompletion(entry.requestMessageId);
+                  return true;
+                }
+                return false;
+              };
+        this.deliveryPending.set(entry.key, {
+          attempt,
+          nextAttemptAt: now2 + AgentMessageRouter.COMPLETION_RETRY_SWEEP_MS,
+          expiresAt: entry.expiresAt,
+        });
+      }
+      if (this.deliveryPending.size > 0) this.armDeliveryRetryTimer();
+    } catch {
+      // An unloadable outbox starts empty; source-side grants remain durable
+      // so targets keep retrying into this daemon.
     }
   }
 
@@ -1195,7 +1274,7 @@ export class AgentMessageRouter {
     if (!isLocalSource) {
       if (this.deps.remoteRoute && this.deps.remoteRoute.isAvailable()) {
         try {
-          await this.deps.remoteRoute.sendCompletion({
+          const fwdRes = await this.deps.remoteRoute.sendCompletion({
             requestMessageId: origin.requestMessageId,
             source: origin.source,
             target: origin.target,
@@ -1204,9 +1283,42 @@ export class AgentMessageRouter {
             ...(completion.error !== undefined ? { error: completion.error } : {}),
             completedAt,
           });
-          // Delivered to the source daemon → retire the reservation; the
-          // terminal tombstone absorbs late duplicates.
-          this.retirePendingCompletion(origin.requestMessageId);
+          if (fwdRes.ok === true) {
+            // Delivered to the source daemon → retire the reservation; the
+            // terminal tombstone absorbs late duplicates.
+            this.retirePendingCompletion(origin.requestMessageId);
+            return completion;
+          }
+          // Source explicitly reported NOT delivered (e.g. its queue was full).
+          // The durable Hub route grant is still live — retain ours and retry.
+          this.scheduleCompletionDelivery(
+            `remote:${origin.requestMessageId}`,
+            async () => {
+              if (!this.deps.remoteRoute || !this.deps.remoteRoute.isAvailable()) {
+                return false;
+              }
+              const retryRes = await this.deps.remoteRoute.sendCompletion({
+                requestMessageId: origin.requestMessageId,
+                source: origin.source,
+                target: origin.target,
+                status,
+                ...(completion.result !== undefined ? { result: completion.result } : {}),
+                ...(completion.error !== undefined ? { error: completion.error } : {}),
+                completedAt,
+              });
+              if (retryRes.ok === true) {
+                this.retirePendingCompletion(origin.requestMessageId);
+                return true;
+              }
+              return false;
+            },
+            completedAt,
+            {
+              kind: "remote",
+              requestMessageId: origin.requestMessageId,
+              completion,
+            },
+          );
           return completion;
         } catch (error) {
           void this.deps.logger
@@ -1250,6 +1362,11 @@ export class AgentMessageRouter {
           return true;
         },
         completedAt,
+        {
+          kind: "remote",
+          requestMessageId: origin.requestMessageId,
+          completion,
+        },
       );
       return completion;
     }
@@ -1289,6 +1406,12 @@ export class AgentMessageRouter {
             completion,
           ),
         completedAt,
+        {
+          kind: "local",
+          requestMessageId: origin.requestMessageId,
+          senderSessionAlias,
+          completion,
+        },
       );
     }
     return completion;
@@ -1418,7 +1541,23 @@ export class AgentMessageRouter {
             completion,
           ),
         (this.deps.now ?? Date.now)(),
+        {
+          kind: "local",
+          requestMessageId: input.requestMessageId,
+          senderSessionAlias,
+          completion,
+        },
       );
+      // DURABLE ACK RULE: {ok:true} may only be returned once the completion
+      // actually entered the source TurnQueue. Admission failed (queue-full /
+      // unavailable) and the retry lives in a RAM outbox — reporting success
+      // would let the Hub retire its durable route grant while the only copy
+      // of this result sits in volatile memory. Returning failure keeps the
+      // Hub grant live so the TARGET keeps retrying.
+      return {
+        ok: false,
+        error: "source session busy; completion delivery pending",
+      };
     }
 
     return { ok: true };
@@ -1482,6 +1621,12 @@ export class AgentMessageRouter {
     key: string,
     attempt: () => Promise<boolean>,
     now: number,
+    entry?: {
+      kind: "local" | "remote";
+      requestMessageId: string;
+      senderSessionAlias?: string;
+      completion: AgentMessageCompletion;
+    },
   ): void {
     const ttlMs = this.deps.limits?.pendingCompletion?.ttlMs ?? 24 * 60 * 60_000;
     if (ttlMs <= 0) return;
@@ -1497,6 +1642,26 @@ export class AgentMessageRouter {
       nextAttemptAt: now + AgentMessageRouter.COMPLETION_RETRY_SWEEP_MS,
       expiresAt: now + ttlMs,
     });
+    if (entry) {
+      // Persist the obligation so a daemon restart re-arms it. Best-effort:
+      // the turn already ran and cannot be re-run — a persistence failure is
+      // logged loudly by the caller boundary, and the in-RAM retry still
+      // covers this process lifetime.
+      try {
+        this.deps.completionOutboxStore?.upsert({
+          key,
+          kind: entry.kind,
+          requestMessageId: entry.requestMessageId,
+          ...(entry.senderSessionAlias !== undefined
+            ? { senderSessionAlias: entry.senderSessionAlias }
+            : {}),
+          completion: entry.completion,
+          expiresAt: now + ttlMs,
+        });
+      } catch {
+        // best-effort — see comment above
+      }
+    }
     this.armDeliveryRetryTimer();
   }
 
@@ -1518,6 +1683,7 @@ export class AgentMessageRouter {
     for (const [key, task] of [...this.deliveryPending]) {
       if (task.expiresAt <= now) {
         this.deliveryPending.delete(key);
+        this.deps.completionOutboxStore?.delete(key);
         continue;
       }
       if (!force && task.nextAttemptAt > now) continue;
@@ -1525,6 +1691,7 @@ export class AgentMessageRouter {
         const admitted = await task.attempt();
         if (admitted) {
           this.deliveryPending.delete(key);
+          this.deps.completionOutboxStore?.delete(key);
         } else {
           task.nextAttemptAt =
             (this.deps.now ?? Date.now)() +

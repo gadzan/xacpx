@@ -66,7 +66,9 @@ export interface InstanceGatewayDeps {
   /** Durable backing store for private completion ROUTE grants (v0.3). */
   pendingCompletionRoutes?: {
     load(): PendingCompletionRouteRow[];
-    save(grants: PendingCompletionRouteRow[]): void;
+    insert(grant: PendingCompletionRouteRow): void;
+    markDelivered(requestMessageId: string): void;
+    delete(requestMessageId: string): void;
   };
   /**
    * Test seam: called when an authenticated instance delivers an RPC response
@@ -122,15 +124,7 @@ export class InstanceGateway {
    */
   private readonly pendingCompletionRoutes = new Map<
     string,
-    {
-      accountId: string;
-      sourceInstanceId: string;
-      source: { nodeId: string; endpointId: string };
-      targetInstanceId: string;
-      target: { nodeId: string; endpointId: string };
-      mode: "notify" | "result";
-      expiresAt: number;
-    }
+    PendingCompletionRouteRow
   >();
   private static readonly PENDING_COMPLETION_TTL_MS = 24 * 60 * 60_000;
   private static readonly PENDING_COMPLETION_MAX_ENTRIES = 5_000;
@@ -181,16 +175,24 @@ export class InstanceGateway {
     requestMessageId: string,
     grant: PendingCompletionRouteRow,
   ): void {
+    let pendingCount = 0;
     for (const [id, g] of [...this.pendingCompletionRoutes]) {
-      if (g.expiresAt <= Date.now()) this.pendingCompletionRoutes.delete(id);
+      if (g.expiresAt <= Date.now()) {
+        this.pendingCompletionRoutes.delete(id);
+        continue;
+      }
+      // Delivered tombstones do not consume contract capacity; they expire
+      // with their TTL.
+      if (g.state === "pending") pendingCount += 1;
     }
     if (
-      this.pendingCompletionRoutes.size >=
-      InstanceGateway.PENDING_COMPLETION_MAX_ENTRIES
+      pendingCount >= InstanceGateway.PENDING_COMPLETION_MAX_ENTRIES
     ) {
       throw new Error("PENDING_COMPLETION_ROUTE_CAPACITY");
     }
-    this.deps.pendingCompletionRoutes?.upsert(grant);
+    // INSERT-only: an existing id is never overwritten here. Fingerprint
+    // conflicts are rejected by the completion handler's find() comparison.
+    this.deps.pendingCompletionRoutes?.insert(grant);
     this.pendingCompletionRoutes.set(requestMessageId, grant);
   }
 
@@ -573,6 +575,7 @@ export class InstanceGateway {
               },
               mode: completionMode,
               expiresAt: Date.now() + InstanceGateway.PENDING_COMPLETION_TTL_MS,
+              state: "pending" as const,
             });
             provisionalGrant = true;
           } catch (err) {
@@ -674,6 +677,31 @@ export class InstanceGateway {
           );
           return;
         }
+
+        // Terminal tombstone: the completion was already delivered and
+        // acknowledged by the source. An at-least-once replay (Hub success ACK
+        // lost to the target) is absorbed as deduplicated instead of denying a
+        // contract that WAS honored. Fingerprint mismatches stay denied.
+        if (grant.state === "delivered") {
+          const sameFingerprint =
+            authed.instanceId === grant.targetInstanceId &&
+            grant.source.nodeId === completionPayload.source.nodeId &&
+            grant.source.endpointId === completionPayload.source.endpointId &&
+            grant.target.nodeId === completionPayload.target.nodeId &&
+            grant.target.endpointId === completionPayload.target.endpointId;
+          if (sameFingerprint) {
+            respond({ ok: true, deduplicated: true });
+          } else {
+            respond(
+              errorPayload(
+                "DELIVERY_DENIED",
+                `Completion identities do not match the original route for ${completionPayload.requestMessageId}`,
+              ),
+            );
+          }
+          return;
+        }
+
         if (authed.instanceId !== grant.targetInstanceId) {
           respond(
             errorPayload(
@@ -719,11 +747,20 @@ export class InstanceGateway {
             // Retire the route grant ONLY when the source daemon explicitly
             // accepted ({ ok: true }). Application error payloads resolve as
             // normal responses — treating them as success would sever the
-            // contract while the target is still retrying.
+            // contract while the target is still retrying. On acceptance the
+            // row becomes a TERMINAL TOMBSTONE (state=delivered) so ACK-loss
+            // replays are answered deduplicated instead of denied.
             if ((res as { ok?: boolean }).ok === true) {
-              this.deletePendingCompletionRoute(
-                completionPayload.requestMessageId,
-              );
+              grant.state = "delivered";
+              try {
+                this.deps.pendingCompletionRoutes?.markDelivered(
+                  completionPayload.requestMessageId,
+                );
+              } catch {
+                // Store update is best-effort on the happy path: the in-memory
+                // state already answers replays for this process lifetime, and
+                // the row expires with its TTL regardless.
+              }
             }
             respond(res);
           })

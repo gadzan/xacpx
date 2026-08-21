@@ -34,6 +34,25 @@ function makeRouter(
     now?: () => number;
     logger?: Pick<AppLogger, "info">;
     events?: ControlEventBus;
+    completionOutboxStore?: {
+      load(): Array<{
+        key: string;
+        kind: "local" | "remote";
+        requestMessageId: string;
+        senderSessionAlias?: string;
+        completion: AgentMessageCompletion;
+        expiresAt: number;
+      }>;
+      upsert(entry: {
+        key: string;
+        kind: "local" | "remote";
+        requestMessageId: string;
+        senderSessionAlias?: string;
+        completion: AgentMessageCompletion;
+        expiresAt: number;
+      }): void;
+      delete(key: string): void;
+    };
   } = {},
 ) {
   const state = createEmptyState();
@@ -104,6 +123,7 @@ function makeRouter(
     limits: options.limits,
     logger: options.logger,
     events: options.events,
+    completionOutboxStore: options.completionOutboxStore,
   });
   return { router, deliveries, state, registry };
 }
@@ -2141,6 +2161,131 @@ test("Round-4 (B2): terminal outbox never evicts — saturated obligations all d
   await router.sweepPendingCompletionDeliveries();
   expect(deliveredCompletions).toHaveLength(3);
   expect((router as unknown as { pendingCompletions: Map<string, unknown> }).pendingCompletions.size).toBe(0);
+});
+
+
+test("Round-5 (Q2): admission failure returns ok:false so the Hub keeps its durable grant", async () => {
+  const events = createControlEventBus();
+  const { router, state } = makeRouter({ events });
+  addLogicalPeers(state);
+  (router as unknown as { deps: { delivery: { deliverCompletion?: () => Promise<{ status: "rejected"; reason: string }> } } }).deps.delivery.deliverCompletion = async () => ({
+    status: "rejected" as const,
+    reason: "queue-full",
+  });
+
+  // A live grant exists (as if this daemon had sent the request earlier).
+  (router as unknown as { pendingCompletions: Map<string, unknown> }).pendingCompletions.set(
+    "msg_q2_pending",
+    {
+      source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+      target: { nodeId, endpointId: LOGICAL_TARGET_ID },
+      mode: "result",
+      expiresAt: Date.now() + 60_000,
+    },
+  );
+
+  const res = await router.deliverInboundCompletion({
+    requestMessageId: "msg_q2_pending",
+    source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+    target: { nodeId, endpointId: LOGICAL_TARGET_ID },
+    status: "completed",
+    result: "not yet deliverable",
+    completedAt: Date.now(),
+  });
+
+  // DURABLE ACK RULE: {ok:true} would let the Hub retire its route grant while
+  // the only copy of the result sits in the RAM outbox. Failure keeps the
+  // target's retry chain alive.
+  expect(res.ok).toBe(false);
+});
+
+test("Round-5 (Q3): the terminal completion outbox is durable across router recreation", async () => {
+  const events = createControlEventBus();
+  const deliveredCompletions: AgentMessageCompletion[] = [];
+  const outboxEntries = new Map<
+    string,
+    {
+      key: string;
+      kind: "local" | "remote";
+      requestMessageId: string;
+      senderSessionAlias?: string;
+      completion: AgentMessageCompletion;
+      expiresAt: number;
+    }
+  >();
+  let idSeq = 0;
+
+  const buildRouter = (admissionSucceeds: boolean) => {
+    const { router, state } = makeRouter({
+      events,
+      createId: () => `uuid-${++idSeq}`,
+      delivery: {
+        deliver: async () => ({ status: "queued" as const, modeUsed: "queue" as const }),
+        deliverCompletion: async (_alias, completion) => {
+          if (!admissionSucceeds) {
+            return { status: "rejected" as const, reason: "queue-full" };
+          }
+          deliveredCompletions.push(completion);
+          return { status: "injected" as const };
+        },
+      },
+      completionOutboxStore: {
+        load: () => [...outboxEntries.values()],
+        upsert: (entry) => void outboxEntries.set(entry.key, entry),
+        delete: (key) => void outboxEntries.delete(key),
+      },
+    });
+    addLogicalPeers(state);
+    return router;
+  };
+
+  // Process 1: completion arrives; admission fails → obligation persisted.
+  const router1 = buildRouter(false);
+  (router1 as unknown as { pendingCompletions: Map<string, unknown> }).pendingCompletions.set(
+    "msg_outbox_restart",
+    {
+      source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+      target: { nodeId, endpointId: LOGICAL_TARGET_ID },
+      mode: "result",
+      expiresAt: Date.now() + 60_000,
+    },
+  );
+  await router1.deliverInboundCompletion({
+    requestMessageId: "msg_outbox_restart",
+    source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+    target: { nodeId, endpointId: LOGICAL_TARGET_ID },
+    status: "completed",
+    result: "survives restart",
+    completedAt: Date.now(),
+  });
+  expect(outboxEntries.size).toBe(1);
+  expect(deliveredCompletions).toHaveLength(0);
+
+  // Process 2: daemon restarted — a FRESH router hydrates from the same store.
+  const router2 = buildRouter(true);
+  expect(
+    (router2 as unknown as { deliveryPending: Map<string, unknown> }).deliveryPending
+      .size,
+  ).toBe(1);
+  await router2.sweepPendingCompletionDeliveries(true);
+
+  // The obligation was fulfilled exactly once after the restart.
+  expect(deliveredCompletions).toHaveLength(1);
+  expect(deliveredCompletions[0]!.result).toBe("survives restart");
+  expect(outboxEntries.size).toBe(0);
+
+  // A duplicate of the same request is absorbed by the tombstone.
+  const dup = await router2.deliverInboundCompletion({
+    requestMessageId: "msg_outbox_restart",
+    source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+    target: { nodeId, endpointId: LOGICAL_TARGET_ID },
+    status: "completed",
+    result: "replayed after restart",
+    completedAt: Date.now(),
+  });
+  expect(dup.ok).toBe(true);
+  expect(dup.deduplicated).toBe(true);
+  expect(deliveredCompletions).toHaveLength(1);
 });
 
 test("Guards untouched: completion cycle does not consume conversation depth, volume, rate limit, or duplicate counters", async () => {
