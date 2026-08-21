@@ -108,6 +108,48 @@ function countSummary(output: Record<string, unknown>): string | undefined {
   return parts.join(" · ");
 }
 
+/** messageId = "msg_" + randomUUID() (core agent-message-router); the loose
+ * length bound keeps the gate tight without coupling to UUID formatting. */
+const AGENT_MSG_ID_RE = /^msg_[0-9a-fA-F-]{8,}$/;
+const AGENT_RECEIPT_STATUSES: Record<string, true> = { injected: true, queued: true, failed: true };
+
+/** A record is a receipt only with a well-formed messageId AND a receipt status —
+ * unrelated records that merely happen to carry a messageId field must not
+ * correlate a step to the wrong (or any) peer message. */
+function agentReceiptMessageId(v: unknown): string | undefined {
+  const r = rec(v);
+  const messageId = typeof r.messageId === "string" ? r.messageId : undefined;
+  if (!messageId || !AGENT_MSG_ID_RE.test(messageId)) return undefined;
+  return typeof r.status === "string" && AGENT_RECEIPT_STATUSES[r.status] === true ? messageId : undefined;
+}
+
+/** Extract the Agent Messaging receipt messageId from an agent_send tool event.
+ * Structured shapes only: MCP structuredContent, a receipt-shaped rawOutput, a
+ * JSON-RPC result envelope, or a single content text block that JSON-parses to
+ * a receipt. The human display line ("Peer message msg_… accepted…") is never
+ * parsed. Pure and total: malformed input yields undefined, never an exception. */
+function extractAgentMessageId(event: ToolUseEvent): string | undefined {
+  const output = rec(event.rawOutput);
+  // Host preserved the MCP tool result's structured output.
+  const direct = agentReceiptMessageId(output.structuredContent) ?? agentReceiptMessageId(output);
+  if (direct) return direct;
+  // Host wrapped the result in a JSON-RPC envelope: {result:{structuredContent:…}} or {result:<receipt>}.
+  const result = rec(output.result);
+  const enveloped = agentReceiptMessageId(result.structuredContent) ?? agentReceiptMessageId(result);
+  if (enveloped) return enveloped;
+  // Host stringified the MCP result into a single text block.
+  const blocks = blocksOf(event.content);
+  const block = blocks[0];
+  if (block && block.type === "text" && typeof block.text === "string") {
+    try {
+      return agentReceiptMessageId(JSON.parse(block.text));
+    } catch {
+      // not JSON (e.g. the human display line) — nothing structured to read
+    }
+  }
+  return undefined;
+}
+
 /** Normalize a raw core ToolUseEvent into a friendly, capped, presentation-ready step. */
 export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
   const input = toolInput(event.rawInput);
@@ -130,6 +172,13 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
     event.status === "error"
       ? asString(output.error) ?? asString(output.message) ?? textFromBlocks(blocks) ?? asString(output.output) ?? asString(output.text) ?? terminalOut ?? rawOutputText
       : undefined;
+  // Agent Messaging correlation: only the agent_send tool (bare or MCP-qualified
+  // as mcp__xacpx__agent_send — tight suffix match, no fuzzy contains) and only
+  // a valid structured receipt may anchor a messageId to the step.
+  const agentMessageId =
+    event.toolName === "agent_send" || /__?agent_send$/.test(event.toolName)
+      ? extractAgentMessageId(event)
+      : undefined;
   const base: Omit<ToolStepDto, "title" | "detail"> = {
     toolCallId: event.toolCallId,
     ...(event.parentToolCallId ? { parentToolCallId: event.parentToolCallId } : {}),
@@ -139,6 +188,7 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
     status: event.status,
     ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
     ...(errMsg ? { error: cap(errMsg, 2000) } : {}),
+    ...(agentMessageId ? { agentMessageId } : {}),
   };
 
   // Delegated subagent (Agent/Task) steps: many adapters (qoder/kimi/codex) never emit

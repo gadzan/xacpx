@@ -243,6 +243,18 @@ test("accepts an error string on a failed tool-event step, rejects a non-string 
   })).toBeNull();
 });
 
+test("accepts an agentMessageId on a tool-event step, rejects a non-string one", () => {
+  const event = (extra: Record<string, unknown>) => ({
+    kind: "control-event", instanceId: "i1",
+    event: {
+      type: "tool-event", chatKey: "c", sessionAlias: "s",
+      step: { toolCallId: "t1", toolName: "agent_send", kind: "other", status: "success", title: "x", ...extra },
+    },
+  });
+  expect(roundtrip(event({ agentMessageId: "msg_3f2a9c1e-7b4d-4e5f-8a6b-2c1d0e9f8a7b" }))).not.toBeNull();
+  expect(roundtrip(event({ agentMessageId: 42 }))).toBeNull();
+});
+
 test("accepts subagent hierarchy fields and rejects malformed hierarchy metadata", () => {
   const event = (extra: Record<string, unknown>) => ({
     kind: "control-event", instanceId: "i1",

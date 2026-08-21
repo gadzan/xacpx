@@ -1257,7 +1257,19 @@ test("subscribeControlEvents normalizes tool-event into a step DTO", () => {
       rawInput: { command: "ls" },
     },
   });
-  stop();
+  events.emit({
+    type: "tool-event",
+    chatKey: "c",
+    sessionAlias: "s",
+    event: {
+      toolCallId: "t2",
+      toolName: "agent_send",
+      kind: "other",
+      status: "success",
+      rawInput: { to: "agent:node_1:endpoint_peer", message: "ping" },
+      rawOutput: { messageId: "msg_3f2a9c1e-7b4d-4e5f-8a6b-2c1d0e9f8a7b", status: "queued", route: "local" },
+    },
+  });
 
   expect(sent[0].payload.event).toEqual({
     type: "turn-started",
@@ -1272,6 +1284,10 @@ test("subscribeControlEvents normalizes tool-event into a step DTO", () => {
     title: "ls",
     detail: { type: "command", command: "ls" },
   });
+  // agent_send receipt correlation must survive the forwarding into the wire step.
+  const agentSend = sent[2].payload.event;
+  expect(agentSend.type).toBe("tool-event");
+  expect(agentSend.step.agentMessageId).toBe("msg_3f2a9c1e-7b4d-4e5f-8a6b-2c1d0e9f8a7b");
   expect(tool.event).toBeUndefined();
 });
 

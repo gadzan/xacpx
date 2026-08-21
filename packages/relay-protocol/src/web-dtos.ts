@@ -332,6 +332,7 @@ function validToolStep(s: unknown): boolean {
   if (!optStr(c.parentToolCallId) || (c.isSubagent !== undefined && typeof c.isSubagent !== "boolean")) return false;
   if (c.durationMs !== undefined && !finiteNonNegative(c.durationMs)) return false;
   if (!optStr(c.error)) return false;
+  if (!optStr(c.agentMessageId)) return false;
   if (c.detail !== undefined) {
     if (typeof c.detail !== "object" || c.detail === null) return false;
     if (!validToolDetail(c.detail as Record<string, unknown>)) return false;

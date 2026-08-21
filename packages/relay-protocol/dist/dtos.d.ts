@@ -149,6 +149,10 @@ export interface ToolStepDto {
     detail?: ToolDetailDto;
     /** Failure message, present only when status === "error". */
     error?: string;
+    /** Agent Messaging receipt correlation — populated only for the `agent_send`
+     * tool when the connector extracted a valid structured receipt (messageId).
+     * Enables anchoring the sent peer-message card to this exact step. */
+    agentMessageId?: string;
 }
 /** One entry in a turn's ordered wire transcript, retained for transport and
  *  persistence. A presentation layer may move an activity to the end of the

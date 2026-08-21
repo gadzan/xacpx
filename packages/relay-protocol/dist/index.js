@@ -346,6 +346,8 @@ function validToolStep(s) {
     return false;
   if (!optStr(c.error))
     return false;
+  if (!optStr(c.agentMessageId))
+    return false;
   if (c.detail !== undefined) {
     if (typeof c.detail !== "object" || c.detail === null)
       return false;
