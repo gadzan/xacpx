@@ -967,6 +967,115 @@ test("Relay Hub isolates completions across different accounts", async () => {
 }, { timeout: 60_000 });
 
 
+
+test("Relay Hub retains the route grant when the source returns an APPLICATION error — the target's retry then succeeds (B1)", async () => {
+  const { instances, account, wss, url } = await makeGateway();
+
+  const tokenA = instances.issuePairingToken(account.id, "nodeA", 600_000).token;
+  const socketA = await connect(url);
+  await authInstance(socketA, tokenA);
+  const tokenB = instances.issuePairingToken(account.id, "nodeB", 600_000).token;
+  const socketB = await connect(url);
+  await authInstance(socketB, tokenB);
+
+  publishEndpoints(socketA, [publishedEndpoint("node_a_999", "worker_a_sender")]);
+  publishEndpoints(socketB, [publishedEndpoint("node_b_123", "worker_b")]);
+  await new Promise((r) => setTimeout(r, 50));
+
+  // A's completion admission fails on the FIRST delivery (transient) and
+  // succeeds on the retry.
+  let completionAttempts = 0;
+  socketA.on("message", (data) => {
+    const decoded = decodeEnvelope(String(data));
+    if (
+      decoded.ok &&
+      decoded.envelope.kind === "req" &&
+      decoded.envelope.type === MSG.agentMessageCompletion
+    ) {
+      completionAttempts += 1;
+      if (completionAttempts === 1) {
+        // Application-level rejection (e.g. source session queue-full):
+        // a NORMAL errorPayload response, not a transport failure.
+        socketA.send(
+          encodeEnvelope({
+            protocolVersion: RELAY_PROTOCOL_VERSION,
+            kind: "res",
+            id: decoded.envelope.id,
+            type: decoded.envelope.type,
+            payload: {
+              error: { code: "DELIVERY_FAILED", message: "source busy" },
+            },
+          }),
+        );
+      } else {
+        socketA.send(
+          encodeEnvelope({
+            protocolVersion: RELAY_PROTOCOL_VERSION,
+            kind: "res",
+            id: decoded.envelope.id,
+            type: decoded.envelope.type,
+            payload: { ok: true },
+          }),
+        );
+      }
+    }
+  });
+
+  await establishCompletionRoute({
+    socketA,
+    socketB,
+    routeId: "route-b1",
+    messageId: "msg_b1_retry",
+    mode: "result",
+  });
+
+  const sendCompletion = (id: string) => {
+    socketB.send(
+      encodeEnvelope({
+        protocolVersion: RELAY_PROTOCOL_VERSION,
+        kind: "req",
+        id,
+        type: MSG.agentMessageCompletion,
+        payload: {
+          requestMessageId: "msg_b1_retry",
+          source: { nodeId: "node_a_999", endpointId: "worker_a_sender" },
+          target: { nodeId: "node_b_123", endpointId: "worker_b" },
+          status: "completed",
+          result: "the answer",
+          completedAt: Date.now(),
+        },
+      }),
+    );
+  };
+
+  // First attempt: source returns an application error.
+  sendCompletion("comp-attempt-1");
+  const res1 = await nextResponse(socketB);
+  // The error payload is FORWARDED to B (hub stays a pass-through), and…
+  expect((res1.payload as { error?: { code: string } }).error?.code).toBe(
+    "DELIVERY_FAILED",
+  );
+  // …the route grant is RETAINED — B's retry is still authorized.
+
+  // Second attempt: source accepts.
+  sendCompletion("comp-attempt-2");
+  const res2 = await nextResponse(socketB);
+  expect((res2.payload as { ok?: boolean }).ok).toBe(true);
+  expect(completionAttempts).toBe(2);
+
+  // Grant retired after explicit acceptance: a third replay is denied.
+  sendCompletion("comp-attempt-3");
+  const res3 = await nextResponse(socketB);
+  expect(
+    (res3.payload as { error?: { code: string } }).error?.code,
+  ).toBe("DELIVERY_DENIED");
+  expect(completionAttempts).toBe(2);
+
+  socketA.close();
+  socketB.close();
+  wss.close();
+});
+
 test("Relay Hub pending completion ROUTE grants SURVIVE a full gateway restart on the same SQLite database", async () => {
   const dbPath = join(tmpdir(), `xacpx-hub-grants-${Date.now()}.db`);
 

@@ -212,7 +212,14 @@ export class AgentMessageRouter {
     for (const [id, grant] of [...this.pendingCompletions]) {
       if (grant.expiresAt <= now) this.pendingCompletions.delete(id);
     }
-    if (this.pendingCompletions.size >= maxEntries) {
+    if (
+      this.pendingCompletions.size >= maxEntries ||
+      this.deliveryPending.size >= maxEntries
+    ) {
+      // Backpressure refuses the NEW contract instead of ever evicting an
+      // older one — and the terminal-outbox projection is checked here too:
+      // every accepted contract may still owe exactly one outbox entry, so
+      // accepting more than the budget could later strand a finished result.
       throw new AgentMessagingError(
         "MESSAGE_QUEUE_FULL",
         "Pending completion capacity reached; existing completion contracts are never evicted.",
@@ -1367,7 +1374,28 @@ export class AgentMessageRouter {
     }
 
     // 5. Missing or archived source: recorded above, never woken (Gate M).
+    // The contract is TERMINAL at this point (status recorded durably via the
+    // patch event), so retire the source grant — leaving it pending would let
+    // archived-source contracts permanently consume completion capacity. A
+    // tombstone is written as well so late at-least-once duplicates are
+    // absorbed as deduplicated instead of surfacing as retry noise.
     if (sourceIsArchived || !senderSessionAlias) {
+      this.retirePendingCompletion(input.requestMessageId);
+      while (
+        this.completionInjections.size >=
+        (this.deps.limits?.completionCache?.maxEntries ?? 2_000)
+      ) {
+        const oldest = this.completionInjections.keys().next().value;
+        if (oldest === undefined) break;
+        this.completionInjections.delete(oldest);
+      }
+      this.completionInjections.set(input.requestMessageId, {
+        expiresAt: Math.max(
+          this.pendingCompletions.get(input.requestMessageId)?.expiresAt ?? 0,
+          input.completedAt +
+            (this.deps.limits?.completionCache?.ttlMs ?? 24 * 60 * 60_000),
+        ),
+      });
       return { ok: true };
     }
 
@@ -1456,14 +1484,14 @@ export class AgentMessageRouter {
     now: number,
   ): void {
     const ttlMs = this.deps.limits?.pendingCompletion?.ttlMs ?? 24 * 60 * 60_000;
-    const maxEntries =
-      this.deps.limits?.pendingCompletion?.maxEntries ?? 1_000;
-    if (ttlMs <= 0 || maxEntries <= 0) return;
-    while (this.deliveryPending.size >= maxEntries) {
-      const oldest = this.deliveryPending.keys().next().value;
-      if (oldest === undefined) break;
-      this.deliveryPending.delete(oldest);
-    }
+    if (ttlMs <= 0) return;
+    // NO EVICTION: entries here are undelivered terminal completions —
+    // obligations for work the peer already finished. Dropping the oldest one
+    // on capacity pressure would silently lose a result that can never be
+    // regenerated (the outcomes cache would just return the cached terminal).
+    // Capacity is reserved UP FRONT at request time (see
+    // reservePendingCompletion's deliveryPending backpressure), so this map is
+    // bounded by construction; expired entries are pruned by the sweep.
     this.deliveryPending.set(key, {
       attempt,
       nextAttemptAt: now + AgentMessageRouter.COMPLETION_RETRY_SWEEP_MS,
@@ -1482,16 +1510,17 @@ export class AgentMessageRouter {
 
   /**
    * Run one retry pass over pending completion deliveries. Public so tests can
-   * drive retries deterministically without waiting on the timer.
+   * drive retries deterministically without waiting on the timer; `force`
+   * ignores the per-entry backoff gate (production timer passes false).
    */
-  async sweepPendingCompletionDeliveries(): Promise<void> {
+  async sweepPendingCompletionDeliveries(force = false): Promise<void> {
     const now = (this.deps.now ?? Date.now)();
     for (const [key, task] of [...this.deliveryPending]) {
       if (task.expiresAt <= now) {
         this.deliveryPending.delete(key);
         continue;
       }
-      if (task.nextAttemptAt > now) continue;
+      if (!force && task.nextAttemptAt > now) continue;
       try {
         const admitted = await task.attempt();
         if (admitted) {

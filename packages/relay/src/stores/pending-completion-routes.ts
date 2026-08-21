@@ -2,7 +2,11 @@ import type { SqlDriver } from "../db.js";
 
 /** One durable Hub-side completion ROUTE grant (v0.3). Authorization metadata
  *  only — never result bodies. Rows survive Hub restarts so an already-accepted
- *  completion contract cannot be revoked by an infrastructure restart. */
+ *  completion contract cannot be revoked by an infrastructure restart.
+ *
+ *  Mutations are ROW-LEVEL atomic single-statement upserts/deletes: a crash
+ *  between operations can never leave a half-replaced grant table behind
+ *  (the previous full-replace pattern could drop unrelated contracts). */
 export interface PendingCompletionRouteRow {
   requestMessageId: string;
   accountId: string;
@@ -42,30 +46,47 @@ export class PendingCompletionRouteStore {
     }));
   }
 
-  /** Full replace — the in-memory map is authoritative; the table mirrors it. */
-  save(grants: PendingCompletionRouteRow[]): void {
-    this.db.run("DELETE FROM pending_completion_routes");
-    for (const g of grants) {
-      this.db.run(
-        `INSERT INTO pending_completion_routes (
-           request_message_id, account_id, source_instance_id,
-           source_node_id, source_endpoint_id,
-           target_instance_id, target_node_id, target_endpoint_id,
-           mode, expires_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          g.requestMessageId,
-          g.accountId,
-          g.sourceInstanceId,
-          g.source.nodeId,
-          g.source.endpointId,
-          g.targetInstanceId,
-          g.target.nodeId,
-          g.target.endpointId,
-          g.mode,
-          g.expiresAt,
-        ],
-      );
-    }
+  /** Single-statement atomic upsert. Throws on storage failure — callers must
+   *  fail closed (refuse the request) rather than back an outward contract
+   *  with a grant that is not durable. */
+  upsert(grant: PendingCompletionRouteRow): void {
+    this.db.run(
+      `INSERT INTO pending_completion_routes (
+         request_message_id, account_id, source_instance_id,
+         source_node_id, source_endpoint_id,
+         target_instance_id, target_node_id, target_endpoint_id,
+         mode, expires_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(request_message_id) DO UPDATE SET
+         account_id = excluded.account_id,
+         source_instance_id = excluded.source_instance_id,
+         source_node_id = excluded.source_node_id,
+         source_endpoint_id = excluded.source_endpoint_id,
+         target_instance_id = excluded.target_instance_id,
+         target_node_id = excluded.target_node_id,
+         target_endpoint_id = excluded.target_endpoint_id,
+         mode = excluded.mode,
+         expires_at = excluded.expires_at`,
+      [
+        grant.requestMessageId,
+        grant.accountId,
+        grant.sourceInstanceId,
+        grant.source.nodeId,
+        grant.source.endpointId,
+        grant.targetInstanceId,
+        grant.target.nodeId,
+        grant.target.endpointId,
+        grant.mode,
+        grant.expiresAt,
+      ],
+    );
+  }
+
+  /** Single-statement atomic delete. */
+  delete(requestMessageId: string): void {
+    this.db.run(
+      "DELETE FROM pending_completion_routes WHERE request_message_id = ?",
+      [requestMessageId],
+    );
   }
 }

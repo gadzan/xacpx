@@ -2072,6 +2072,77 @@ test("Round-3: a DEFINITE remote rejection releases the reservation; ambiguous o
   }
 });
 
+
+test("Round-4 (B2): terminal outbox never evicts — saturated obligations all deliver exactly once after recovery", async () => {
+  const events = createControlEventBus();
+  const deliveredCompletions: AgentMessageCompletion[] = [];
+  let idSeq = 0;
+  let admissionFail = true;
+
+  const { router, state } = makeRouter({
+    events,
+    createId: () => `uuid-${++idSeq}`,
+    limits: { pendingCompletion: { maxEntries: 3, ttlMs: 60 * 60_000 } },
+  });
+  addLogicalPeers(state);
+  (router as unknown as { deps: { delivery: { deliverCompletion?: (alias: string, c: AgentMessageCompletion, id: string) => Promise<{ status: "injected" | "queued" } | { status: "rejected"; reason: string }> } } }).deps.delivery.deliverCompletion = async (
+    _alias,
+    completion,
+  ) => {
+    if (admissionFail) {
+      // Source session busy/queue-full: admission rejected, delivery pending.
+      return { status: "rejected" as const, reason: "queue-full" };
+    }
+    deliveredCompletions.push(completion);
+    return { status: "injected" as const };
+  };
+
+  const toSecond = encodeAgentHandle({ nodeId, endpointId: "33333333-3333-4333-8333-333333333333" });
+
+  // Three accepted completion contracts; ALL of their admissions fail while
+  // the source is busy → three undelivered obligations pile up in the outbox.
+  const receipts: string[] = [];
+  for (const content of ["task 1", "task 2", "task 3"]) {
+    const receipt = await router.send(LOGICAL_SENDER, { to: toSecond, content, completion: "result" });
+    receipts.push(receipt.messageId);
+    await router.completePeerTurn(
+      {
+        requestMessageId: receipt.messageId,
+        completion: "result",
+        source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+        target: { nodeId, endpointId: LOGICAL_TARGET_ID },
+      },
+      { ok: true, text: `answer ${content}` },
+    );
+  }
+  expect(deliveredCompletions).toHaveLength(0);
+
+  // The outbox holds every obligation — nothing was evicted.
+  const outbox = (
+    router as unknown as { deliveryPending: Map<string, unknown> }
+  ).deliveryPending;
+  expect(outbox.size).toBe(3);
+
+  // A FOURTH contract must be refused by backpressure rather than accepted
+  // and later silently dropped.
+  await expect(
+    router.send(LOGICAL_SENDER, { to: toSecond, content: "task overflow", completion: "result" }),
+  ).rejects.toMatchObject({ code: "MESSAGE_QUEUE_FULL" });
+
+  // Route recovers: the sweep delivers EVERY accepted obligation exactly once.
+  admissionFail = false;
+  await router.sweepPendingCompletionDeliveries(true);
+
+  expect(deliveredCompletions).toHaveLength(3);
+  const results = deliveredCompletions.map((c) => c.result).sort();
+  expect(results).toEqual(["answer task 1", "answer task 2", "answer task 3"]);
+
+  // Grants retired; a second sweep delivers nothing further.
+  await router.sweepPendingCompletionDeliveries();
+  expect(deliveredCompletions).toHaveLength(3);
+  expect((router as unknown as { pendingCompletions: Map<string, unknown> }).pendingCompletions.size).toBe(0);
+});
+
 test("Guards untouched: completion cycle does not consume conversation depth, volume, rate limit, or duplicate counters", async () => {
   let clock = 10_000;
   const { router, state } = makeRouter({

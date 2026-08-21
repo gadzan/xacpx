@@ -134,6 +134,20 @@ export class InstanceGateway {
   >();
   private static readonly PENDING_COMPLETION_TTL_MS = 24 * 60 * 60_000;
   private static readonly PENDING_COMPLETION_MAX_ENTRIES = 5_000;
+  /** Application rejections that PROVE the target never admitted the request
+   *  (error payloads carrying these codes compensate a provisional grant).
+   *  Timeout/race codes and unknown payloads stay ambiguous → grant retained. */
+  private static readonly DEFINITE_ROUTE_REJECTION_CODES: ReadonlySet<string> =
+    new Set([
+      "TARGET_UNAVAILABLE",
+      "TARGET_NOT_FOUND",
+      "TARGET_NODE_OFFLINE",
+      "MESSAGE_QUEUE_FULL",
+      "DELIVERY_DENIED",
+      "CONVERSATION_LIMIT_REACHED",
+      "DUPLICATE_MESSAGE",
+      "MESSAGE_RATE_LIMITED",
+    ]);
 
 
   constructor(private readonly deps: InstanceGatewayDeps) {
@@ -153,34 +167,20 @@ export class InstanceGateway {
   }
 
   /**
-   * Persist the full grant set. Throws on storage failure so callers can fail
-   * closed BEFORE a completion-bearing request is forwarded — a grant that is
-   * not durable must never back an outward "will complete" contract.
+   * Durable-reserve a completion ROUTE grant. The SQLite row is written FIRST
+   * (row-level atomic); only then does the in-memory map update. A storage
+   * failure propagates so callers fail closed BEFORE forwarding the request —
+   * a grant that is not durable must never back an outward "will complete"
+   * contract.
+   *
+   * Backpressure, not eviction: expired grants are pruned first; if the store
+   * is STILL at capacity, the NEW request is refused rather than silently
+   * revoking an older contract that may still be executing.
    */
-  private persistPendingCompletionRoutes(): void {
-    this.deps.pendingCompletionRoutes?.save(
-      [...this.pendingCompletionRoutes].map(([requestMessageId, g]) => ({
-        requestMessageId,
-        ...g,
-      })),
-    );
-  }
-
   private recordPendingCompletionRoute(
     requestMessageId: string,
-    grant: {
-      accountId: string;
-      sourceInstanceId: string;
-      source: { nodeId: string; endpointId: string };
-      targetInstanceId: string;
-      target: { nodeId: string; endpointId: string };
-      mode: "notify" | "result";
-      expiresAt: number;
-    },
+    grant: PendingCompletionRouteRow,
   ): void {
-    // Backpressure, not eviction: prune expired grants first; if the store is
-    // STILL full, refuse the NEW request rather than silently revoking an
-    // older contract that may still be executing.
     for (const [id, g] of [...this.pendingCompletionRoutes]) {
       if (g.expiresAt <= Date.now()) this.pendingCompletionRoutes.delete(id);
     }
@@ -190,18 +190,19 @@ export class InstanceGateway {
     ) {
       throw new Error("PENDING_COMPLETION_ROUTE_CAPACITY");
     }
+    this.deps.pendingCompletionRoutes?.upsert(grant);
     this.pendingCompletionRoutes.set(requestMessageId, grant);
-    this.persistPendingCompletionRoutes();
   }
 
+  /**
+   * Retire a route grant. The SQLite delete runs FIRST; only after it succeeds
+   * is the in-memory entry removed, so RAM and store can never disagree about
+   * whether an authorization exists. Storage failure → grant stays live in
+   * both places and the caller surfaces the error (retry later).
+   */
   private deletePendingCompletionRoute(requestMessageId: string): void {
-    if (!this.pendingCompletionRoutes.delete(requestMessageId)) return;
-    try {
-      this.persistPendingCompletionRoutes();
-    } catch {
-      // Best-effort on compensation: the in-memory deletion already prevents
-      // further routing; the stale row expires with its TTL.
-    }
+    this.deps.pendingCompletionRoutes?.delete(requestMessageId);
+    this.pendingCompletionRoutes.delete(requestMessageId);
   }
 
 
@@ -558,6 +559,7 @@ export class InstanceGateway {
         if (completionMode === "notify" || completionMode === "result") {
           try {
             this.recordPendingCompletionRoute(routePayload.messageId, {
+              requestMessageId: routePayload.messageId,
               accountId: authed.accountId,
               sourceInstanceId: authed.instanceId,
               source: {
@@ -573,11 +575,18 @@ export class InstanceGateway {
               expiresAt: Date.now() + InstanceGateway.PENDING_COMPLETION_TTL_MS,
             });
             provisionalGrant = true;
-          } catch {
+          } catch (err) {
+            const isCapacity =
+              err instanceof Error &&
+              err.message === "PENDING_COMPLETION_ROUTE_CAPACITY";
             respond(
               errorPayload(
-                "MESSAGE_QUEUE_FULL",
-                "Hub pending completion capacity reached; request not sent",
+                isCapacity ? "MESSAGE_QUEUE_FULL" : "DELIVERY_FAILED",
+                isCapacity
+                  ? "Hub pending completion capacity reached; request not sent"
+                  : `Completion route could not be persisted; request not sent: ${
+                      err instanceof Error ? err.message : String(err)
+                    }`,
               ),
             );
             return;
@@ -590,13 +599,27 @@ export class InstanceGateway {
         )
           .then((res) => {
             if (provisionalGrant) {
-              const routeRes = res as { status?: string };
-              if (routeRes.status === "failed") {
-                // Definite target-side rejection → compensate the reservation.
+              // Classify the target's response:
+              //  - exact injected|queued admission → grant stands;
+              //  - an APPLICATION error payload (error.code present) with a
+              //    known definite pre-admission rejection code → the target
+              //    never accepted → compensate the reservation;
+              //  - transport ambiguity (timeout/race) or malformed/unknown
+              //    payloads → grant RETAINED (the target may have accepted).
+              const routeRes = res as {
+                status?: string;
+                ok?: boolean;
+                error?: { code?: string };
+              };
+              const definiteRejection =
+                routeRes.status === "failed" ||
+                (routeRes.error?.code !== undefined &&
+                  InstanceGateway.DEFINITE_ROUTE_REJECTION_CODES.has(
+                    routeRes.error.code,
+                  ));
+              if (definiteRejection) {
                 this.deletePendingCompletionRoute(routePayload.messageId);
               }
-              // injected | queued → exact admission, grant stands.
-              // Unknown/absent status → ambiguous, grant retained.
             }
             respond(res);
           })
@@ -693,10 +716,15 @@ export class InstanceGateway {
           completionPayload,
         )
           .then((res) => {
-            // The route grant's job is done once the completion has been
-            // handed to the original source instance; retire it (the source
-            // tombstone absorbs any late duplicates).
-            this.deletePendingCompletionRoute(completionPayload.requestMessageId);
+            // Retire the route grant ONLY when the source daemon explicitly
+            // accepted ({ ok: true }). Application error payloads resolve as
+            // normal responses — treating them as success would sever the
+            // contract while the target is still retrying.
+            if ((res as { ok?: boolean }).ok === true) {
+              this.deletePendingCompletionRoute(
+                completionPayload.requestMessageId,
+              );
+            }
             respond(res);
           })
           .catch((err) =>
