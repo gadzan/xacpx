@@ -26,6 +26,10 @@ import qoder from '@lobehub/icons-static-svg/icons/qoder-color.svg?raw';
 import trae from '@lobehub/icons-static-svg/icons/trae-color.svg?raw';
 import yuanbaoSvg from '@lobehub/icons-static-svg/icons/yuanbao-color.svg?raw';
 
+// omp (Oh My Pi): no @lobehub glyph — official gradient "pi mark", same as the relay-web
+// agent icon (packages/relay-web/assets/omp-mark.svg).
+const ompSvg = `<svg viewBox="0 0 64 64" width="22" height="22" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="pi-mark-1-grad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="oklch(0.7 0.24 340)"></stop><stop offset=".5" stop-color="oklch(0.62 0.21 295)"></stop><stop offset="1" stop-color="oklch(0.81 0.14 200)"></stop></linearGradient></defs><path fill="url(#pi-mark-1-grad)" d="M10 14h44v9H43v33h-9V23h-9v22h-9V23H10z"></path></svg>`;
+
 const { lang } = useData();
 const zh = computed(() => lang.value.startsWith('zh'));
 
@@ -50,7 +54,7 @@ const agents: Agent[] = [
   { name: 'iFlow', mono: 'iF' },
   { name: 'Kilocode', svg: kilocode },
   { name: 'Kiro', svg: kiro },
-  { name: 'omp', mono: 'o' },
+  { name: 'omp', svg: ompSvg },
   { name: 'Reasonix', mono: 'Rx' },
   { name: 'Qoder', svg: qoder },
   { name: 'Trae', svg: trae },

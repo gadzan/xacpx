@@ -17,7 +17,10 @@ import openclaw from "@lobehub/icons-static-svg/icons/openclaw-color.svg?raw";
 import kilocode from "@lobehub/icons-static-svg/icons/kilocode.svg?raw";
 import kiro from "@lobehub/icons-static-svg/icons/kiro-color.svg?raw";
 import qoder from "@lobehub/icons-static-svg/icons/qoder-color.svg?raw";
+
 import trae from "@lobehub/icons-static-svg/icons/trae-color.svg?raw";
+// omp (Oh My Pi) has no @lobehub glyph — its gradient "pi mark" ships as a local asset.
+import omp from "../../assets/omp-mark.svg?raw";
 
 // Keyed by acpx driver (src/config/agent-templates.ts). A custom agent ("my-codex")
 // resolves to driver "codex" upstream, so keying on driver — not the agent name — keeps
@@ -37,6 +40,7 @@ const ICONS: Record<string, string> = {
   kiro,
   qoder,
   trae,
+  omp,
 };
 
 /** Raw brand SVG for an agent driver, or null when the library ships none (the caller

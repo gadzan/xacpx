@@ -5,7 +5,7 @@ import AgentIcon from "../components/AgentIcon.vue";
 
 describe("agentIconSvg", () => {
   it("returns brand SVG markup for known drivers", () => {
-    for (const driver of ["codex", "claude", "gemini", "copilot", "cursor", "hermes", "qwen", "kimi", "opencode"]) {
+    for (const driver of ["codex", "claude", "gemini", "copilot", "cursor", "hermes", "qwen", "kimi", "opencode", "omp"]) {
       const svg = agentIconSvg(driver);
       expect(svg, driver).toBeTruthy();
       expect(svg!).toContain("<svg");
