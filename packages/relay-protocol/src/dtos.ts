@@ -398,5 +398,5 @@ export interface PeerMessageHistoryEntry {
   createdAt: number;
   status?: "sending" | "sent" | "queued" | "delivered" | "failed";
   completion?: AgentMessageCompletionMode;
-  completionStatus?: AgentMessageCompletionStatus;
+  completionStatus?: "pending" | "completed" | "failed" | "cancelled";
 }

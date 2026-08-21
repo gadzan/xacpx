@@ -510,4 +510,15 @@ export default {
       right: "Right",
     },
   },
+  agentMessage: {
+    waitingForCompletion: "Waiting for completion",
+    waitingForResult: "Waiting for result",
+    resultReturned: "Result returned",
+    completed: "Completed",
+    failed: "Failed",
+    cancelled: "Cancelled",
+    sent: "Sent",
+    delivered: "Delivered",
+    sending: "Sending",
+  },
 } as const;

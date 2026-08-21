@@ -5,7 +5,7 @@ import CopyButton from "./CopyButton.vue";
 import StreamMarkdown from "./StreamMarkdown.vue";
 import AgentIcon from "./AgentIcon.vue";
 import { fmtTime } from "../lib/format";
-import { ArrowRight, ArrowLeft, Folder, AlertCircle, CheckCircle2, Send } from "lucide-vue-next";
+import { ArrowRight, ArrowLeft, Folder, AlertCircle, CheckCircle2, Send, Clock3 } from "lucide-vue-next";
 
 const props = defineProps<{
   message: PeerMessageHistoryEntry;
@@ -14,6 +14,35 @@ const props = defineProps<{
 const isSent = computed(() => props.message.direction === "sent");
 const peerName = computed(() => props.message.peer.displayName || props.message.peer.handle);
 const timeStr = computed(() => fmtTime(new Date(props.message.createdAt).toISOString()));
+
+// v0.3 sender-card completion state (spec §36): notify/result sends surface an
+// asynchronous system-managed lifecycle chip instead of the delivery chips.
+// none/absent keeps the legacy delivery presentation ("Sent"/"Delivered"/…).
+interface CompletionChip {
+  key: string;
+  icon: typeof CheckCircle2;
+  cls: string;
+  test: string;
+  pulse?: boolean;
+}
+
+const completionChip = computed<CompletionChip | null>(() => {
+  if (!isSent.value) return null;
+  const completion = props.message.completion;
+  if (!completion || completion === "none") return null;
+  const status = props.message.completionStatus;
+  if (completion === "notify") {
+    if (status === "completed") return { key: "agentMessage.completed", icon: CheckCircle2, cls: "text-accent", test: "msg-status-completed" };
+    if (status === "failed") return { key: "agentMessage.failed", icon: AlertCircle, cls: "text-danger", test: "msg-status-failed" };
+    if (status === "cancelled") return { key: "agentMessage.cancelled", icon: AlertCircle, cls: "text-danger", test: "msg-status-cancelled" };
+    return { key: "agentMessage.waitingForCompletion", icon: Clock3, cls: "text-fg-muted", test: "msg-status-waiting", pulse: true };
+  }
+  // completion === "result"
+  if (status === "completed") return { key: "agentMessage.resultReturned", icon: CheckCircle2, cls: "text-accent", test: "msg-status-result-returned" };
+  if (status === "failed") return { key: "agentMessage.failed", icon: AlertCircle, cls: "text-danger", test: "msg-status-failed" };
+  if (status === "cancelled") return { key: "agentMessage.cancelled", icon: AlertCircle, cls: "text-danger", test: "msg-status-cancelled" };
+  return { key: "agentMessage.waitingForResult", icon: Clock3, cls: "text-fg-muted", test: "msg-status-waiting", pulse: true };
+});
 </script>
 
 <template>
@@ -66,15 +95,29 @@ const timeStr = computed(() => fmtTime(new Date(props.message.createdAt).toISOSt
       </div>
 
       <div class="flex shrink-0 items-center gap-2 text-[11px] text-fg-muted">
-        <span v-if="message.status === 'failed'" data-test="msg-status-failed" class="inline-flex items-center gap-1 text-danger">
-          <AlertCircle :size="11" /> Failed
+        <span
+          v-if="completionChip"
+          :data-test="completionChip.test"
+          class="inline-flex items-center gap-1"
+          :class="completionChip.cls"
+        >
+          <component :is="completionChip.icon" :size="11" :class="{ 'animate-pulse': completionChip.pulse }" />
+          {{ $t(completionChip.key) }}
         </span>
-        <span v-else-if="message.status === 'sending'" data-test="msg-status-sending" class="inline-flex items-center gap-1 text-fg-muted">
-          <Send :size="11" class="animate-pulse" /> Sending
-        </span>
-        <span v-else-if="message.status === 'delivered'" data-test="msg-status-delivered" class="inline-flex items-center gap-1 text-accent">
-          <CheckCircle2 :size="11" /> Delivered
-        </span>
+        <template v-else>
+          <span v-if="message.status === 'failed'" data-test="msg-status-failed" class="inline-flex items-center gap-1 text-danger">
+            <AlertCircle :size="11" /> Failed
+          </span>
+          <span v-else-if="message.status === 'sending'" data-test="msg-status-sending" class="inline-flex items-center gap-1 text-fg-muted">
+            <Send :size="11" class="animate-pulse" /> Sending
+          </span>
+          <span v-else-if="message.status === 'delivered'" data-test="msg-status-delivered" class="inline-flex items-center gap-1 text-accent">
+            <CheckCircle2 :size="11" /> Delivered
+          </span>
+          <span v-else-if="isSent && (message.status === 'sent' || message.status === 'queued')" data-test="msg-status-sent" class="inline-flex items-center gap-1 text-fg-muted">
+            <CheckCircle2 :size="11" /> {{ $t("agentMessage.sent") }}
+          </span>
+        </template>
         <span v-if="timeStr" data-test="msg-time" class="font-mono tabular-nums">{{ timeStr }}</span>
       </div>
     </div>

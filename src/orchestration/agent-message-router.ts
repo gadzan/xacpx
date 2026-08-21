@@ -195,6 +195,12 @@ export class AgentMessageRouter {
       createdAt: message.createdAt,
       status: receipt.status === "failed" ? "failed" : "sent",
       completion: message.completion,
+      completionStatus:
+        message.completion && message.completion !== "none"
+          ? receipt.status === "failed"
+            ? "failed"
+            : "pending"
+          : undefined,
     };
     this.deps.events?.emit({
       type: "agent-message",

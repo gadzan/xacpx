@@ -111,6 +111,63 @@ test("an agent-message event appends structured agentMessage to transcript for s
   });
 });
 
+test("a repeated agent-message event with the same messageId updates the existing row in place (completion status refresh)", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  const pending = {
+    kind: "agent_message" as const,
+    direction: "sent" as const,
+    messageId: "msg_peer_update",
+    conversationId: "conv_1",
+    peer: {
+      handle: "agent:node_2:endpoint_b",
+      displayName: "Worker B",
+      agent: "codex",
+      workspace: "server",
+    },
+    content: "regen fixtures",
+    createdAt: 1771234567890,
+    status: "queued" as const,
+    completion: "result" as const,
+    completionStatus: "pending" as const,
+  };
+  store.applyEvent({
+    kind: "control-event",
+    instanceId: "i1",
+    event: {
+      type: "agent-message",
+      chatKey: "relay:a1",
+      sessionAlias: "backend",
+      message: pending,
+    },
+  } as never);
+  expect(store.messages.length).toBe(1);
+
+  const terminal = {
+    ...pending,
+    status: "sent" as const,
+    completionStatus: "completed" as const,
+  };
+  store.applyEvent({
+    kind: "control-event",
+    instanceId: "i1",
+    event: {
+      type: "agent-message",
+      chatKey: "relay:a1",
+      sessionAlias: "backend",
+      message: terminal,
+    },
+  } as never);
+  // Same messageId → row replaced in place, not appended.
+  expect(store.messages.length).toBe(1);
+  const row = store.messages[0]!;
+  expect(row.structured?.agentMessage).toMatchObject({
+    messageId: "msg_peer_update",
+    completion: "result",
+    completionStatus: "completed",
+  });
+});
+
 test("an agent-message event for unselected session marks session as unread", () => {
   const store = useChatStore();
   store.select("i1", "backend");

@@ -653,15 +653,28 @@ export const useChatStore = defineStore("chat", () => {
     } else if (e.type === "agent-message") {
       const selected = event.instanceId === instanceId.value && e.sessionAlias === sessionAlias.value;
       if (selected) {
-        const direction = e.message.direction === "sent" ? "out" : "in";
-        messages.value.push({
-          instanceId: event.instanceId,
-          sessionAlias: e.sessionAlias,
-          direction,
-          text: e.message.content,
-          createdAt: new Date(e.message.createdAt).toISOString(),
-          structured: markRaw({ agentMessage: e.message }),
-        });
+        const existing = messages.value.find(
+          (m) =>
+            m.structured?.agentMessage &&
+            m.structured.agentMessage.direction === e.message.direction &&
+            m.structured.agentMessage.messageId === e.message.messageId,
+        );
+        if (existing) {
+          existing.structured = markRaw({
+            ...existing.structured,
+            agentMessage: e.message,
+          });
+        } else {
+          const direction = e.message.direction === "sent" ? "out" : "in";
+          messages.value.push({
+            instanceId: event.instanceId,
+            sessionAlias: e.sessionAlias,
+            direction,
+            text: e.message.content,
+            createdAt: new Date(e.message.createdAt).toISOString(),
+            structured: markRaw({ agentMessage: e.message }),
+          });
+        }
         touchTranscript();
       } else {
         const k = bufKey(event.instanceId, e.sessionAlias);

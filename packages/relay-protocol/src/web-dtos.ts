@@ -411,7 +411,7 @@ function validPeerMessageHistoryEntry(m: unknown): boolean {
   if (!optStr(peer.workspace)) return false;
   if (entry.status !== undefined && !["sending", "sent", "queued", "delivered", "failed"].includes(entry.status as string)) return false;
   if (entry.completion !== undefined && !["none", "notify", "result"].includes(entry.completion as string)) return false;
-  if (entry.completionStatus !== undefined && !["completed", "failed", "cancelled"].includes(entry.completionStatus as string)) return false;
+  if (entry.completionStatus !== undefined && !["pending", "completed", "failed", "cancelled"].includes(entry.completionStatus as string)) return false;
   return true;
 }
 function validAgentAddress(a: unknown): boolean {

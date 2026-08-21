@@ -459,17 +459,24 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               }
             }
           } else if (event.type === "agent-message") {
-            const direction = event.message.direction === "sent" ? "out" : "in";
-            messages.append(
+            const updated = messages.updateAgentMessage(
               instanceId,
               event.sessionAlias,
-              direction,
-              event.message.content,
-              { agentMessage: event.message },
-              undefined,
-              undefined,
-              new Date(event.message.createdAt).toISOString(),
+              event.message,
             );
+            if (!updated) {
+              const direction = event.message.direction === "sent" ? "out" : "in";
+              messages.append(
+                instanceId,
+                event.sessionAlias,
+                direction,
+                event.message.content,
+                { agentMessage: event.message },
+                undefined,
+                undefined,
+                new Date(event.message.createdAt).toISOString(),
+              );
+            }
           }
         } else if (envelope.type === MSG.instanceStateSync) {
           if (!validInstanceStateSync(envelope.payload)) {

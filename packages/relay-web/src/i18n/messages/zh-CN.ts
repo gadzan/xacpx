@@ -508,4 +508,15 @@ export default {
       right: "右",
     },
   },
+  agentMessage: {
+    waitingForCompletion: "等待完成通知",
+    waitingForResult: "等待结果",
+    resultReturned: "已返回结果",
+    completed: "已完成",
+    failed: "失败",
+    cancelled: "已取消",
+    sent: "已发送",
+    delivered: "已送达",
+    sending: "发送中",
+  },
 };

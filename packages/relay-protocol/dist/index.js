@@ -434,7 +434,7 @@ function validPeerMessageHistoryEntry(m) {
     return false;
   if (entry.completion !== undefined && !["none", "notify", "result"].includes(entry.completion))
     return false;
-  if (entry.completionStatus !== undefined && !["completed", "failed", "cancelled"].includes(entry.completionStatus))
+  if (entry.completionStatus !== undefined && !["pending", "completed", "failed", "cancelled"].includes(entry.completionStatus))
     return false;
   return true;
 }
