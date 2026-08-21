@@ -432,3 +432,55 @@ test("validControlEvent round-trips agent-message event with structured peer det
   if (!decoded.ok) return;
   expect(parseWebServerEvent(decoded.envelope)).toEqual(event);
 });
+
+test("agent-directory events preserve endpoint context fields and accept legacy rows", () => {
+  // endpointKind/channelId are optional presentation context (v0.3): rows from
+  // new daemons carry them; rows from old daemons omit them and must parse.
+  const event: WebServerEvent = {
+    kind: "agent-directory",
+    endpoints: [
+      {
+        instanceId: "i1",
+        nodeId: "node_a",
+        endpointId: "ep_logical",
+        agent: "codex",
+        state: "idle",
+        capabilities: { receive: true, steer: false, queue: true, interrupt: false },
+        updatedAt: 1771234567890,
+        endpointKind: "logical",
+        channelId: "relay",
+      },
+      {
+        instanceId: "i1",
+        nodeId: "node_a",
+        endpointId: "ep_worker",
+        agent: "claude",
+        state: "running",
+        capabilities: { receive: true, steer: false, queue: true, interrupt: false },
+        updatedAt: 1771234567890,
+        endpointKind: "worker",
+      },
+      {
+        instanceId: "i1",
+        nodeId: "node_old",
+        endpointId: "ep_legacy",
+        agent: "gemini",
+        state: "idle",
+        capabilities: { receive: true, steer: false, queue: true, interrupt: false },
+        updatedAt: 1771234567890,
+      },
+    ],
+  };
+  const wire = encodeEnvelope(webEventEnvelope(event));
+  const decoded = decodeEnvelope(wire);
+  expect(decoded.ok).toBe(true);
+  if (!decoded.ok) return;
+  const parsed = parseWebServerEvent(decoded.envelope);
+  expect(parsed).toEqual(event);
+  if (!parsed || parsed.kind !== "agent-directory") return;
+  expect(parsed.endpoints[0]).toMatchObject({ endpointKind: "logical", channelId: "relay" });
+  expect(parsed.endpoints[1]).toMatchObject({ endpointKind: "worker" });
+  expect("channelId" in parsed.endpoints[1]!).toBe(false);
+  expect("endpointKind" in parsed.endpoints[2]!).toBe(false);
+  expect("channelId" in parsed.endpoints[2]!).toBe(false);
+});

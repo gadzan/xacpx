@@ -35,6 +35,12 @@ export interface AgentEndpointView {
   state: "idle" | "running" | "unreachable";
   activity: AgentActivityView;
   capabilities: AgentCapabilities;
+  /** Presentation context mirrored from the published wire DTO. Local rows are
+   * derived at construction; federated rows keep exactly what the remote
+   * published (absent stays absent — no synthesis). */
+  endpointKind?: "logical" | "worker";
+  /** Channel namespace owning the endpoint when known (e.g. "relay", "weixin"). */
+  channelId?: string;
 }
 
 export interface AgentSenderBinding {

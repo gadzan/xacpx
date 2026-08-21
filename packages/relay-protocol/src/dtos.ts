@@ -355,6 +355,10 @@ export interface PublishedAgentEndpointDto {
     conversation?: boolean;
   };
   labels?: string[];
+  /** Endpoint context for presentation ranking. logical = normal logical session endpoint; worker = orchestration worker endpoint. Optional: old peers omit it. */
+  endpointKind?: "logical" | "worker";
+  /** Source channel namespace owning the endpoint when known (e.g. "relay", "weixin", "feishu"). Optional. */
+  channelId?: string;
   updatedAt: number;
 }
 

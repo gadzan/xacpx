@@ -299,6 +299,9 @@ export interface ControlServiceDeps {
           interrupt: boolean;
           conversation?: boolean;
         };
+        /** Remote-published presentation context, preserved verbatim. */
+        endpointKind?: "logical" | "worker";
+        channelId?: string;
       }>,
     ): void;
     getTraceRecords?(limit?: number): AgentMessageTraceRecord[];
@@ -1519,6 +1522,9 @@ export class ControlService {
         interrupt: boolean;
         conversation?: boolean;
       };
+      /** Remote-published presentation context, preserved verbatim. */
+      endpointKind?: "logical" | "worker";
+      channelId?: string;
     }>,
   ): void {
     this.deps.agentMessaging?.syncRemoteDirectorySnapshot?.(endpoints);

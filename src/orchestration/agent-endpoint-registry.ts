@@ -1,5 +1,5 @@
 import type { AppState, LogicalSession } from "../state/types";
-import { toDisplaySessionAlias } from "../channels/channel-scope";
+import { getChannelIdFromChatKey, toDisplaySessionAlias } from "../channels/channel-scope";
 import {
   sameCoordinatorSession,
   stableCoordinatorSession,
@@ -90,6 +90,9 @@ export class AgentEndpointRegistry {
         interrupt: boolean;
         conversation?: boolean;
       };
+      /** Remote-published presentation context, preserved verbatim — never synthesized. */
+      endpointKind?: "logical" | "worker";
+      channelId?: string;
     }>,
   ): void {
     const byNode = new Map<string, AgentEndpointView[]>();
@@ -115,6 +118,9 @@ export class AgentEndpointRegistry {
             ...ep.capabilities,
             conversation: ep.capabilities.conversation ?? false,
           },
+          // Preserve remote context fields exactly as published (absent stays absent).
+          ...(ep.endpointKind ? { endpointKind: ep.endpointKind } : {}),
+          ...(ep.channelId ? { channelId: ep.channelId } : {}),
         });
         byNode.set(ep.nodeId, list);
       }
@@ -146,6 +152,10 @@ export class AgentEndpointRegistry {
         conversation?: boolean;
       };
       labels?: string[];
+      /** Endpoint context for presentation ranking (see PublishedAgentEndpointDto). */
+      endpointKind?: "logical" | "worker";
+      /** Source channel namespace owning the endpoint when known. */
+      channelId?: string;
       updatedAt: number;
     }>
   > {
@@ -165,6 +175,12 @@ export class AgentEndpointRegistry {
           : {}),
         ...(candidate.endpoint.sessionAlias
           ? { sessionAlias: candidate.endpoint.sessionAlias }
+          : {}),
+        ...(candidate.endpoint.endpointKind
+          ? { endpointKind: candidate.endpoint.endpointKind }
+          : {}),
+        ...(candidate.endpoint.channelId
+          ? { channelId: candidate.endpoint.channelId }
           : {}),
         updatedAt: Date.now(),
       }));
@@ -509,6 +525,9 @@ export class AgentEndpointRegistry {
           state: workerState,
           activity,
           capabilities: queueOnlyCapabilities(),
+          // Worker endpoints are channel-agnostic orchestration runtimes: no
+          // authoritative channel fact exists, so channelId stays absent.
+          endpointKind: "worker",
         },
         runtime: {
           kind: "worker",
@@ -544,6 +563,12 @@ export class AgentEndpointRegistry {
         status: isRunning ? "working" : "idle",
       },
       capabilities: queueOnlyCapabilities(),
+      endpointKind: "logical",
+      // Channel ownership is derived from the internal alias namespace (the
+      // authoritative channel-scoping record) via the single-home helper in
+      // channel-scope — same derivation as session-resource-catalog and
+      // session-service. Never parse the display alias.
+      channelId: getChannelIdFromChatKey(session.alias),
     };
   }
 }
