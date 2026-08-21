@@ -1224,6 +1224,71 @@ test("emits agent-message event with direction 'received' when inbound message i
     });
   }
 });
+
+test("send resolves with the admission receipt without waiting for the peer turn to complete", async () => {
+  // v0.2 contract: the delivery adapter's admission result IS the ACK. The
+  // peer's turn stays in flight for the entire test; if send() ever starts
+  // awaiting peer completion instead of returning the admission receipt,
+  // this test hangs and fails on the per-test timeout.
+  const peerTurnStillRunning = createDeferred<void>();
+  const { router } = makeRouter({
+    deliver: async () => {
+      void peerTurnStillRunning.promise;
+      return { status: "injected" as const, modeUsed: "queue" as const };
+    },
+  });
+
+  const receipt = await router.send(
+    { coordinatorSession: "coordinator", sourceHandle: "workerA" },
+    {
+      to: encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" }),
+      content: "admission ack only",
+    },
+  );
+
+  expect(receipt).toEqual({
+    messageId: "msg_message-1",
+    status: "injected",
+    modeUsed: "queue",
+    route: "local",
+  });
+});
+
+test("local delivery stays one-way: the source session gets only its sent history event", async () => {
+  const events = createControlEventBus();
+  const emitted: ControlEvent[] = [];
+  events.subscribe((e) => emitted.push(e));
+
+  const { router } = makeRouter({ events });
+  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+
+  await router.send(binding, { to, content: "one-way ping" });
+
+  // Exactly the two history events exist: the sender's outbound row and the
+  // target's inbound row. No system turn, no turn lifecycle, nothing else.
+  expect(emitted.map((e) => e.type)).toEqual(["agent-message", "agent-message"]);
+  expect(
+    emitted.filter(
+      (e) =>
+        e.type === "agent-message" &&
+        e.sessionAlias === "workerA" &&
+        e.message.direction === "sent",
+    ),
+  ).toHaveLength(1);
+  expect(
+    emitted.filter(
+      (e) =>
+        e.type === "agent-message" &&
+        e.sessionAlias === "workerB" &&
+        e.message.direction === "received",
+    ),
+  ).toHaveLength(1);
+  expect(
+    emitted.some((e) => e.type.startsWith("turn-") || e.type === "queue-updated"),
+  ).toBe(false);
+});
+
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;

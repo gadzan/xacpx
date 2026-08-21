@@ -142,6 +142,44 @@ test("an agent-message event for unselected session marks session as unread", ()
   expect(store.unread.has("i1\0other")).toBe(true);
 });
 
+test("an inbound agent-message event appends a received row for the selected session", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  const peerMsg = {
+    kind: "agent_message" as const,
+    direction: "received" as const,
+    messageId: "msg_peer_3",
+    conversationId: "conv_3",
+    peer: {
+      handle: "agent:node_1:endpoint_a",
+      displayName: "Worker A",
+      agent: "claude",
+    },
+    content: "Review requested",
+    createdAt: 1771234567890,
+    status: "delivered" as const,
+  };
+  store.applyEvent({
+    kind: "control-event",
+    instanceId: "i1",
+    event: {
+      type: "agent-message",
+      chatKey: "relay:a1",
+      sessionAlias: "backend",
+      message: peerMsg,
+    },
+  } as never);
+  const last = store.messages.at(-1)!;
+  expect(last).toMatchObject({
+    direction: "in",
+    text: "Review requested",
+    structured: { agentMessage: peerMsg },
+  });
+  // The row lands in the open transcript, not behind an unread badge.
+  expect(store.messages).toHaveLength(1);
+  expect(store.unread.has("i1\0backend")).toBe(false);
+});
+
 test("chat.send forwards agentMentions in rpc control.prompt", async () => {
   const store = useChatStore();
   store.select("i1", "backend");

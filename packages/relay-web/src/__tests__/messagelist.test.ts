@@ -401,6 +401,42 @@ describe("MessageList", () => {
     expect(wrapper.text()).toContain("Hello peer");
     expect(wrapper.find('[data-test="msg-out"]').exists()).toBe(false);
   });
+
+  it("renders a standalone AgentMessageCard row for an inbound peer message", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [
+          msg({
+            direction: "in",
+            text: "Review requested",
+            structured: {
+              agentMessage: {
+                kind: "agent_message",
+                direction: "received",
+                messageId: "msg_peer_2",
+                conversationId: "conv_peer_2",
+                peer: {
+                  handle: "agent:node_1:endpoint_a",
+                  displayName: "Worker A",
+                  agent: "claude",
+                },
+                content: "Review requested",
+                createdAt: 1771234567890,
+                status: "delivered",
+              },
+            },
+          }),
+        ],
+        liveTurn: null,
+      },
+    });
+
+    expect(wrapper.find('[data-test="agent-message-card"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="agent-message-card"]').attributes("data-direction")).toBe("received");
+    expect(wrapper.find('[data-test="peer-name"]').text()).toBe("Worker A");
+    expect(wrapper.text()).toContain("Review requested");
+    expect(wrapper.find('[data-test="msg-in"]').exists()).toBe(false);
+  });
 });
 
 it("renders legacy persisted tool steps (no parts) in a collapsed panel", () => {
