@@ -1,5 +1,5 @@
 import { RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "./envelope.js";
-import type { AgentCommandDto, ControlEventDto, PeerMessageHistoryEntry, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
+import type { AgentAddressDto, AgentCommandDto, ControlEventDto, PeerMessageHistoryEntry, PeerTurnOriginDto, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
 import {
   MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
   MAX_TERMINAL_COLS,
@@ -413,6 +413,25 @@ function validPeerMessageHistoryEntry(m: unknown): boolean {
   if (entry.completion !== undefined && !["none", "notify", "result"].includes(entry.completion as string)) return false;
   return true;
 }
+function validAgentAddress(a: unknown): boolean {
+  if (typeof a !== "object" || a === null) return false;
+  const addr = a as Record<string, unknown>;
+  return typeof addr.nodeId === "string" && typeof addr.endpointId === "string";
+}
+
+function validPeerTurnOrigin(o: unknown): boolean {
+  if (o === undefined) return true;
+  if (typeof o !== "object" || o === null) return false;
+  const origin = o as Record<string, unknown>;
+  return (
+    typeof origin.requestMessageId === "string" &&
+    typeof origin.completion === "string" &&
+    ["none", "notify", "result"].includes(origin.completion) &&
+    validAgentAddress(origin.source) &&
+    validAgentAddress(origin.target)
+  );
+}
+
 
 /** Deep-validate an inner ControlEventDto: discriminant + per-variant required fields.
  *  The switch is compile-time exhaustive over ControlEventDto["type"] (see the `never`
@@ -430,12 +449,14 @@ export function validControlEvent(e: unknown): boolean {
       // recovery receipt) are validated so a buggy connector cannot slip a non-string
       // into SQLite and trigger a disconnect loop.
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean"
-        && optStr(c.text) && optStr(c.recoveryId) && optStr(c.errorMessage) && optBool(c.cancelled);
+        && optStr(c.text) && optStr(c.recoveryId) && optStr(c.errorMessage) && optBool(c.cancelled)
+        && validPeerTurnOrigin(c.peerOrigin);
     case "scheduled-changed":
       return typeof c.chatKey === "string";
     case "turn-started":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string"
-        && optStr(c.prompt) && optStr(c.queueItemId) && optStr(c.promptRequestId) && validScheduledOrigin(c.scheduled);
+        && optStr(c.prompt) && optStr(c.queueItemId) && optStr(c.promptRequestId) && validScheduledOrigin(c.scheduled)
+        && validPeerTurnOrigin(c.peerOrigin);
     case "turn-thought":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
     case "plan":

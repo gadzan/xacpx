@@ -435,6 +435,20 @@ function validPeerMessageHistoryEntry(m) {
     return false;
   return true;
 }
+function validAgentAddress(a) {
+  if (typeof a !== "object" || a === null)
+    return false;
+  const addr = a;
+  return typeof addr.nodeId === "string" && typeof addr.endpointId === "string";
+}
+function validPeerTurnOrigin(o) {
+  if (o === undefined)
+    return true;
+  if (typeof o !== "object" || o === null)
+    return false;
+  const origin = o;
+  return typeof origin.requestMessageId === "string" && typeof origin.completion === "string" && ["none", "notify", "result"].includes(origin.completion) && validAgentAddress(origin.source) && validAgentAddress(origin.target);
+}
 function validControlEvent(e) {
   if (typeof e !== "object" || e === null)
     return false;
@@ -446,11 +460,11 @@ function validControlEvent(e) {
     case "turn-output":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
     case "turn-finished":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean" && optStr(c.text) && optStr(c.recoveryId) && optStr(c.errorMessage) && optBool(c.cancelled);
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean" && optStr(c.text) && optStr(c.recoveryId) && optStr(c.errorMessage) && optBool(c.cancelled) && validPeerTurnOrigin(c.peerOrigin);
     case "scheduled-changed":
       return typeof c.chatKey === "string";
     case "turn-started":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && optStr(c.prompt) && optStr(c.queueItemId) && optStr(c.promptRequestId) && validScheduledOrigin(c.scheduled);
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && optStr(c.prompt) && optStr(c.queueItemId) && optStr(c.promptRequestId) && validScheduledOrigin(c.scheduled) && validPeerTurnOrigin(c.peerOrigin);
     case "turn-thought":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
     case "plan":

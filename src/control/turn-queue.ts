@@ -11,6 +11,7 @@ import {
   TURN_IDLE_TIMEOUT_REASON,
   type QueuedPrompt,
   type TurnIdleTimeoutDetail,
+  type PeerTurnOrigin,
 } from "./turn-support";
 
 export interface QueuedItemSnapshot {
@@ -66,6 +67,7 @@ export interface SubmitParams {
    *  drained turn-started so the hub can correlate a queue item back to its
    *  pre-written inbound row (see PromptPayload.promptRequestId). */
   promptRequestId?: string;
+  peerOrigin?: PeerTurnOrigin;
   // Only interactive prompt() sets this. When true and a turn is already running, the
   // submission is appended to the per-session queue instead of being rejected. Scheduled
   // turns omit it, so they keep the immediate-or-reject behavior.
@@ -189,6 +191,7 @@ export class TurnQueue {
         ...(params.media !== undefined ? { media: params.media } : {}),
         ...(params.agentMentions !== undefined ? { agentMentions: params.agentMentions } : {}),
         ...(params.promptRequestId !== undefined ? { promptRequestId: params.promptRequestId } : {}),
+        ...(params.peerOrigin !== undefined ? { peerOrigin: params.peerOrigin } : {}),
       };
       q.push(item);
       this.queues.set(key, q);
@@ -257,6 +260,7 @@ export class TurnQueue {
             ...(params.media !== undefined ? { media: params.media } : {}),
             ...(params.agentMentions !== undefined ? { agentMentions: params.agentMentions } : {}),
             ...(params.promptRequestId !== undefined ? { promptRequestId: params.promptRequestId } : {}),
+            ...(params.peerOrigin !== undefined ? { peerOrigin: params.peerOrigin } : {}),
           };
           q.push(item);
           this.queues.set(key, q);
@@ -350,6 +354,7 @@ export class TurnQueue {
           agentMentions: params.agentMentions,
           allowRestoreArchived: params.allowRestoreArchived,
           preserveCoordinatorRoute: params.preserveCoordinatorRoute,
+          peerOrigin: params.peerOrigin,
         },
         controller.signal,
         onActivity,
@@ -438,6 +443,7 @@ export class TurnQueue {
         isPeerMessage: next.isPeerMessage,
         allowRestoreArchived: next.allowRestoreArchived,
         preserveCoordinatorRoute: next.preserveCoordinatorRoute,
+        peerOrigin: next.peerOrigin,
         ...(next.isOwner !== undefined ? { isOwner: next.isOwner } : {}),
         ...(next.accountId !== undefined ? { accountId: next.accountId } : {}),
         ...(next.media !== undefined ? { media: next.media } : {}),

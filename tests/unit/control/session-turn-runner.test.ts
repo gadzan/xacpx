@@ -318,3 +318,148 @@ test("turnStarted.prompt remains user's original text in turn-started event", as
   >;
   expect(started.prompt).toBe(originalPrompt);
 });
+test("Phase 6: clean peer-origin turn emits peerOrigin on both turn-started and turn-finished events", async () => {
+  const { runner, captured } = makeRunner(async (opts) => {
+    opts.reply("agent reply chunk");
+    return { text: " final" };
+  });
+
+  const peerOrigin = {
+    requestMessageId: "msg_req_1",
+    completion: "notify" as const,
+    source: { nodeId: "node-a", endpointId: "ep-a" },
+    target: { nodeId: "node-b", endpointId: "ep-b" },
+  };
+
+  const result = await runner.run(
+    {
+      chatKey: "c",
+      sessionAlias: "s",
+      text: "<xacpx-message>peer request</xacpx-message>",
+      senderId: "agent-messaging",
+      peerOrigin,
+    },
+    new AbortController().signal,
+  );
+
+  expect(result.ok).toBe(true);
+
+  const started = captured.find((e) => e.type === "turn-started") as Extract<
+    ControlEvent,
+    { type: "turn-started" }
+  >;
+  expect(started).toBeDefined();
+  expect(started.peerOrigin).toEqual(peerOrigin);
+
+  const finished = captured.find((e) => e.type === "turn-finished") as Extract<
+    ControlEvent,
+    { type: "turn-finished" }
+  >;
+  expect(finished).toBeDefined();
+  expect(finished.ok).toBe(true);
+  expect(finished.text).toBe("agent reply chunk final");
+  expect(finished.peerOrigin).toEqual(peerOrigin);
+});
+
+test("Phase 6: failed peer-origin turn emits peerOrigin on turn-finished with ok:false and errorMessage", async () => {
+  const { runner, captured } = makeRunner(async () => {
+    throw new Error("agent execution crashed");
+  });
+
+  const peerOrigin = {
+    requestMessageId: "msg_req_fail",
+    completion: "result" as const,
+    source: { nodeId: "node-a", endpointId: "ep-a" },
+    target: { nodeId: "node-b", endpointId: "ep-b" },
+  };
+
+  const result = await runner.run(
+    {
+      chatKey: "c",
+      sessionAlias: "s",
+      text: "will fail",
+      senderId: "agent-messaging",
+      peerOrigin,
+    },
+    new AbortController().signal,
+  );
+
+  expect(result.ok).toBe(false);
+  expect(result.errorMessage).toBe("agent execution crashed");
+
+  const started = captured.find((e) => e.type === "turn-started") as Extract<
+    ControlEvent,
+    { type: "turn-started" }
+  >;
+  expect(started.peerOrigin).toEqual(peerOrigin);
+
+  const finished = captured.find((e) => e.type === "turn-finished") as Extract<
+    ControlEvent,
+    { type: "turn-finished" }
+  >;
+  expect(finished.ok).toBe(false);
+  expect(finished.errorMessage).toBe("agent execution crashed");
+  expect(finished.peerOrigin).toEqual(peerOrigin);
+});
+
+test("Phase 6: cancelled peer-origin turn emits peerOrigin with cancelled:true and ok:false", async () => {
+  const controller = new AbortController();
+  const { runner, captured } = makeRunner(async (opts) => {
+    controller.abort();
+    throw new Error("aborted");
+  });
+
+  const peerOrigin = {
+    requestMessageId: "msg_req_cancel",
+    completion: "none" as const,
+    source: { nodeId: "node-a", endpointId: "ep-a" },
+    target: { nodeId: "node-b", endpointId: "ep-b" },
+  };
+
+  const result = await runner.run(
+    {
+      chatKey: "c",
+      sessionAlias: "s",
+      text: "will cancel",
+      senderId: "agent-messaging",
+      peerOrigin,
+    },
+    controller.signal,
+  );
+
+  expect(result.ok).toBe(false);
+
+  const finished = captured.find((e) => e.type === "turn-finished") as Extract<
+    ControlEvent,
+    { type: "turn-finished" }
+  >;
+  expect(finished.ok).toBe(false);
+  expect(finished.cancelled).toBe(true);
+  expect(finished.peerOrigin).toEqual(peerOrigin);
+});
+
+test("Phase 6: human turn without peerOrigin does not emit peerOrigin on turn-started or turn-finished", async () => {
+  const { runner, captured } = makeRunner(async () => ({ text: "done" }));
+
+  await runner.run(
+    {
+      chatKey: "c",
+      sessionAlias: "s",
+      text: "human turn",
+      senderId: "human",
+    },
+    new AbortController().signal,
+  );
+
+  const started = captured.find((e) => e.type === "turn-started") as Extract<
+    ControlEvent,
+    { type: "turn-started" }
+  >;
+  expect("peerOrigin" in started).toBe(false);
+
+  const finished = captured.find((e) => e.type === "turn-finished") as Extract<
+    ControlEvent,
+    { type: "turn-finished" }
+  >;
+  expect("peerOrigin" in finished).toBe(false);
+});

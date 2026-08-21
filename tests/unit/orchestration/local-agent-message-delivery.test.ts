@@ -161,3 +161,49 @@ test("fails closed when the configured transport cannot inject messages", async 
     expect(error).toMatchObject({ code: "DELIVERY_FAILED" });
   }
 });
+test("Phase 6: delivers logical endpoint through deliverLogicalTurn with exact peerOrigin", async () => {
+  let capturedArgs: any = null;
+  const deliverLogicalTurn = mock(async (alias, renderedText, messageId, peerOrigin) => {
+    capturedArgs = { alias, renderedText, messageId, peerOrigin };
+    return { status: "queued" as const };
+  });
+
+  const delivery = new LocalAgentMessageDeliveryAdapter({
+    transport: { injectMessage: async () => ({ status: "queued", modeUsed: "queue" }) },
+    resolveLogicalSession: async () => logicalSession,
+    resolveWorkerSession: () => null,
+    deliverLogicalTurn,
+  });
+
+  const msgWithCompletion: AgentMessage = {
+    id: "msg_peer_1",
+    conversationId: "conv_1",
+    depth: 0,
+    from: { nodeId: "node_src", endpointId: "ep_src" },
+    to: logicalTarget.endpoint.address,
+    content: "peer content",
+    requestedMode: "queue",
+    completion: "notify",
+    createdAt: 12345,
+  };
+
+  const res = await delivery.deliver(
+    logicalTarget,
+    msgWithCompletion,
+    "<xacpx-message>peer content</xacpx-message>",
+  );
+
+  expect(res).toEqual({ status: "queued", modeUsed: "queue" });
+  expect(deliverLogicalTurn).toHaveBeenCalledTimes(1);
+  expect(capturedArgs).toEqual({
+    alias: "coordinator",
+    renderedText: "<xacpx-message>peer content</xacpx-message>",
+    messageId: "msg_peer_1",
+    peerOrigin: {
+      requestMessageId: "msg_peer_1",
+      completion: "notify",
+      source: { nodeId: "node_src", endpointId: "ep_src" },
+      target: logicalTarget.endpoint.address,
+    },
+  });
+});

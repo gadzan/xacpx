@@ -61,6 +61,7 @@ import { TurnQueue } from "./turn-queue";
 import {
   buildControlMetadata,
   type TurnIdleTimeoutDetail,
+  type PeerTurnOrigin,
 } from "./turn-support";
 import {
   BRIDGE_REQUEST_TIMEOUT_GRACE_MS,
@@ -1335,6 +1336,7 @@ export class ControlService {
     text: string;
     senderId: string;
     messageId: string;
+    peerOrigin?: PeerTurnOrigin;
   }): Promise<{ status: "injected" | "queued" }> {
     const channelId = getChannelIdFromChatKey(input.chatKey);
     const internalAlias =
@@ -1362,6 +1364,7 @@ export class ControlService {
       isPeerMessage: true,
       allowRestoreArchived: false,
       preserveCoordinatorRoute: true,
+      peerOrigin: input.peerOrigin,
     });
     if (admission.status === "rejected") {
       if (admission.reason === "queue-full") {

@@ -1,5 +1,16 @@
+import type {
+  AgentAddress,
+  AgentMessageCompletionMode,
+} from "../orchestration/agent-messaging-types";
 import type { ChatRequestMetadata } from "../weixin/agent/interface";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
+
+export interface PeerTurnOrigin {
+  requestMessageId: string;
+  completion: AgentMessageCompletionMode;
+  source: AgentAddress;
+  target: AgentAddress;
+}
 
 /** A prompt held in the per-session server-side queue while a turn is in flight.
  *  Runs through the same `executeTurn` machinery as a manual prompt once drained. */
@@ -25,6 +36,7 @@ export interface QueuedPrompt {
    *  onto the drained turn-started so the hub can tie the queue item back to the
    *  pre-written inbound row even if the queued RPC response was lost. */
   promptRequestId?: string;
+  peerOrigin?: PeerTurnOrigin;
 }
 
 // Upper bound on how long a follow-up prompt waits for a just-cancelled turn to

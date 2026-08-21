@@ -2,7 +2,12 @@ import path from "node:path";
 import type { ControlServiceDeps } from "./control-service";
 import type { ScheduledOrigin } from "./control-event-bus";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
-import { toErrorMessage, buildControlMetadata, TURN_IDLE_TIMEOUT_REASON } from "./turn-support";
+import {
+  toErrorMessage,
+  buildControlMetadata,
+  TURN_IDLE_TIMEOUT_REASON,
+  type PeerTurnOrigin,
+} from "./turn-support";
 
 export interface TurnRequest {
   chatKey: string;
@@ -19,6 +24,7 @@ export interface TurnRequest {
   agentMentions?: Array<{ range: [number, number]; handle: string }>;
   allowRestoreArchived?: boolean;
   preserveCoordinatorRoute?: boolean;
+  peerOrigin?: PeerTurnOrigin;
 }
 
 export interface TurnResult {
@@ -192,6 +198,7 @@ export class SessionTurnRunner {
       ...(req.turnStarted?.scheduled ? { scheduled: req.turnStarted.scheduled } : {}),
       ...(req.turnStarted?.queueItemId ? { queueItemId: req.turnStarted.queueItemId } : {}),
       ...(req.turnStarted?.promptRequestId ? { promptRequestId: req.turnStarted.promptRequestId } : {}),
+      ...(req.peerOrigin ? { peerOrigin: req.peerOrigin } : {}),
     });
     // Stream-mode sessions (replyMode "stream") get raw token streaming: the transport
     // forwards chunks verbatim (paragraph breaks intact), so we concatenate as-is.
@@ -362,6 +369,7 @@ export class SessionTurnRunner {
         // persist the FULL answer — response.text alone is unreliable for streaming
         // adapters (often undefined or the last segment only).
         text: finalText,
+        ...(req.peerOrigin ? { peerOrigin: req.peerOrigin } : {}),
       });
       return {
         ok: true,
@@ -383,6 +391,7 @@ export class SessionTurnRunner {
         ok: false,
         errorMessage,
         ...(!timedOut && signal.aborted ? { cancelled: true } : {}),
+        ...(req.peerOrigin ? { peerOrigin: req.peerOrigin } : {}),
       });
       return {
         ok: false,

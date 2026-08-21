@@ -601,3 +601,252 @@ test("queued prompt preserves full execution context and all metadata fields whe
     },
   });
 });
+test("Phase 6: busy target with peer request R1 and human prompt preserves FIFO drain order and exact peerOrigin", async () => {
+  const h = makeQueue();
+  let drainedRequests: any[] = [];
+  const origRun = (h.queue as any).deps.runTurn;
+  (h.queue as any).deps.runTurn = async (req: any, sig: any, act: any) => {
+    drainedRequests.push(req);
+    return await origRun(req, sig, act);
+  };
+
+  const peerOriginR1 = {
+    requestMessageId: "msg_r1",
+    completion: "none" as const,
+    source: { nodeId: "node-a", endpointId: "agent-a" },
+    target: { nodeId: "node-b", endpointId: "agent-b" },
+  };
+
+  // 1. Start running a human prompt
+  const p1 = h.queue.submit({
+    chatKey: "relay:chat-user",
+    sessionAlias: "backend",
+    concurrencyKey: "relay:backend",
+    senderId: "human-user",
+    text: "human 1",
+    queueable: true,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(h.pendingCount()).toBe(1);
+
+  // 2. Peer request R1 arrives while busy → queued
+  const r1Res = h.queue.submitPeerTurn({
+    chatKey: "relay:chat-user",
+    sessionAlias: "backend",
+    boundSessionAlias: "relay:backend",
+    concurrencyKey: "relay:backend",
+    text: "<xacpx-message>r1</xacpx-message>",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_r1",
+    peerOrigin: peerOriginR1,
+  });
+  expect(r1Res).toEqual({ status: "queued" });
+  expect(h.queue.queueLength("relay:chat-user", "backend", "relay:backend")).toBe(1);
+
+  // 3. Another human prompt arrives while busy → queued
+  const p3 = h.queue.submit({
+    chatKey: "relay:chat-user",
+    sessionAlias: "backend",
+    concurrencyKey: "relay:backend",
+    senderId: "human-user",
+    text: "human 2",
+    queueable: true,
+  });
+  expect(h.queue.queueLength("relay:chat-user", "backend", "relay:backend")).toBe(2);
+
+  // Drain 1st (human 1)
+  h.resolveNext();
+  await p1;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  // Now R1 should be running as the drained head
+  expect(h.pendingCount()).toBe(1);
+  expect(drainedRequests.length).toBe(2);
+  expect(drainedRequests[0].text).toBe("human 1");
+  expect(drainedRequests[0].peerOrigin).toBeUndefined();
+
+  expect(drainedRequests[1].text).toBe("<xacpx-message>r1</xacpx-message>");
+  expect(drainedRequests[1].peerOrigin).toEqual(peerOriginR1);
+  expect(drainedRequests[1].turnStarted.prompt).toBeUndefined(); // peer prompt masked
+  expect(drainedRequests[1].turnStarted.promptRequestId).toBe("msg_r1");
+
+  // Drain 2nd (R1)
+  h.resolveNext();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  // Now human 2 should be running
+  expect(h.pendingCount()).toBe(1);
+  expect(drainedRequests.length).toBe(3);
+  expect(drainedRequests[2].text).toBe("human 2");
+  expect(drainedRequests[2].peerOrigin).toBeUndefined();
+  expect(drainedRequests[2].turnStarted.prompt).toBe("human 2"); // human prompt unmasked
+
+  // Drain 3rd (human 2)
+  h.resolveNext();
+  await p3;
+  expect(h.started).toEqual(["human 1", "<xacpx-message>r1</xacpx-message>", "human 2"]);
+});
+
+test("Phase 6: multiple queued peer requests R1 and R2 maintain exact peerOrigin without cross-assignment", async () => {
+  const h = makeQueue();
+  let drainedRequests: any[] = [];
+  const origRun = (h.queue as any).deps.runTurn;
+  (h.queue as any).deps.runTurn = async (req: any, sig: any, act: any) => {
+    drainedRequests.push(req);
+    return await origRun(req, sig, act);
+  };
+
+  const peerOriginR1 = {
+    requestMessageId: "msg_r1",
+    completion: "none" as const,
+    source: { nodeId: "node-a", endpointId: "agent-a" },
+    target: { nodeId: "node-b", endpointId: "agent-b" },
+  };
+  const peerOriginR2 = {
+    requestMessageId: "msg_r2",
+    completion: "notify" as const,
+    source: { nodeId: "node-c", endpointId: "agent-c" },
+    target: { nodeId: "node-b", endpointId: "agent-b" },
+  };
+
+  // Start turn 1
+  const p1 = h.queue.submit({
+    chatKey: "relay:chat-user",
+    sessionAlias: "backend",
+    concurrencyKey: "relay:backend",
+    senderId: "user",
+    text: "first",
+    queueable: true,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  // Queue R1 and R2
+  h.queue.submitPeerTurn({
+    chatKey: "relay:chat-user",
+    sessionAlias: "backend",
+    concurrencyKey: "relay:backend",
+    text: "r1",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_r1",
+    peerOrigin: peerOriginR1,
+  });
+  h.queue.submitPeerTurn({
+    chatKey: "relay:chat-user",
+    sessionAlias: "backend",
+    concurrencyKey: "relay:backend",
+    text: "r2",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_r2",
+    peerOrigin: peerOriginR2,
+  });
+
+  expect(h.queue.queueLength("relay:chat-user", "backend", "relay:backend")).toBe(2);
+
+  h.resolveNext();
+  await p1;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(drainedRequests[1].peerOrigin).toEqual(peerOriginR1);
+  expect(drainedRequests[1].peerOrigin.requestMessageId).toBe("msg_r1");
+
+  h.resolveNext();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(drainedRequests[2].peerOrigin).toEqual(peerOriginR2);
+  expect(drainedRequests[2].peerOrigin.requestMessageId).toBe("msg_r2");
+
+  h.resolveNext();
+});
+
+test("Phase 6: cross-session concurrency isolates peerOrigin per session lane", async () => {
+  const h = makeQueue();
+  let drainedRequests: any[] = [];
+  const origRun = (h.queue as any).deps.runTurn;
+  (h.queue as any).deps.runTurn = async (req: any, sig: any, act: any) => {
+    drainedRequests.push(req);
+    return await origRun(req, sig, act);
+  };
+
+  const peerOriginS1 = {
+    requestMessageId: "msg_s1",
+    completion: "none" as const,
+    source: { nodeId: "node-1", endpointId: "ep-1" },
+    target: { nodeId: "node-target", endpointId: "session-1" },
+  };
+  const peerOriginS2 = {
+    requestMessageId: "msg_s2",
+    completion: "result" as const,
+    source: { nodeId: "node-2", endpointId: "ep-2" },
+    target: { nodeId: "node-target", endpointId: "session-2" },
+  };
+
+  // Submit on session 1
+  h.queue.submitPeerTurn({
+    chatKey: "relay:s1",
+    sessionAlias: "session-1",
+    concurrencyKey: "session-1",
+    text: "turn s1",
+    senderId: "agent-messaging",
+    peerOrigin: peerOriginS1,
+  });
+
+  // Submit on session 2
+  h.queue.submitPeerTurn({
+    chatKey: "relay:s2",
+    sessionAlias: "session-2",
+    concurrencyKey: "session-2",
+    text: "turn s2",
+    senderId: "agent-messaging",
+    peerOrigin: peerOriginS2,
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(h.pendingCount()).toBe(2);
+
+  const req1 = drainedRequests.find((r) => r.sessionAlias === "session-1");
+  const req2 = drainedRequests.find((r) => r.sessionAlias === "session-2");
+
+  expect(req1?.peerOrigin).toEqual(peerOriginS1);
+  expect(req2?.peerOrigin).toEqual(peerOriginS2);
+
+  h.resolveNext();
+  h.resolveNext();
+});
+
+test("Phase 6: injected peer turn on idle target attaches peerOrigin directly", async () => {
+  const h = makeQueue();
+  let capturedReq: any = null;
+  const origRun = (h.queue as any).deps.runTurn;
+  (h.queue as any).deps.runTurn = async (req: any, sig: any, act: any) => {
+    capturedReq = req;
+    return await origRun(req, sig, act);
+  };
+
+  const peerOrigin = {
+    requestMessageId: "msg_idle",
+    completion: "none" as const,
+    source: { nodeId: "node-a", endpointId: "agent-a" },
+    target: { nodeId: "node-b", endpointId: "agent-b" },
+  };
+
+  const res = h.queue.submitPeerTurn({
+    chatKey: "relay:idle",
+    sessionAlias: "backend",
+    concurrencyKey: "relay:backend",
+    text: "immediate peer prompt",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_idle",
+    peerOrigin,
+  });
+
+  expect(res).toEqual({ status: "injected" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(capturedReq).toMatchObject({
+    sessionAlias: "backend",
+    text: "immediate peer prompt",
+    peerOrigin,
+  });
+
+  h.resolveNext();
+});

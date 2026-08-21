@@ -1,3 +1,4 @@
+import type { PeerTurnOrigin } from "./turn-support";
 import type { AppLogger } from "../logging/app-logger";
 import type { ToolUseEvent, PlanEntry } from "../channels/types";
 import type { AgentCommand, UsageBreakdown, UsageCost } from "../transport/types";
@@ -23,7 +24,7 @@ export type ControlEvent =
   // task (relay channel), or a turn drained from the queue, letting the hub persist
   // the inbound prompt and the web badge it. A drained turn carries `queueItemId` so
   // the web can move its original optimistic bubble to the actual execution point.
-  | { type: "turn-started"; chatKey: string; sessionAlias: string; prompt?: string; scheduled?: ScheduledOrigin; queueItemId?: string; promptRequestId?: string }
+  | { type: "turn-started"; chatKey: string; sessionAlias: string; prompt?: string; scheduled?: ScheduledOrigin; queueItemId?: string; promptRequestId?: string; peerOrigin?: PeerTurnOrigin }
   // Full ordered snapshot (replace-latest) of the pending prompt queue for a session,
   // emitted on every enqueue/drain/cancel.
   | { type: "queue-updated"; chatKey: string; sessionAlias: string; items: QueuedItemInfo[] }
@@ -37,7 +38,7 @@ export type ControlEvent =
   // `text` carries the final reply text on success so a relay hub that lost the turn's
   // streamed chunks (e.g. hub restart mid-turn) can still persist the answer. Omitted on
   // failure paths (`errorMessage` already covers them).
-  | { type: "turn-finished"; chatKey: string; sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean; text?: string }
+  | { type: "turn-finished"; chatKey: string; sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean; text?: string; peerOrigin?: PeerTurnOrigin }
   | { type: "sessions-changed" }
   // The set of configured workspaces changed (e.g. a separate `xacpx workspace add`
   // CLI process edited config.json, or a `/config` mutation). Carries no payload;

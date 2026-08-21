@@ -237,6 +237,7 @@ export type ControlEventDto =
       scheduled?: ScheduledOriginDto;
       queueItemId?: string;
       promptRequestId?: string;
+      peerOrigin?: PeerTurnOriginDto;
     }
   | {
       type: "tool-event";
@@ -285,6 +286,7 @@ export type ControlEventDto =
       cancelled?: boolean;
       text?: string;
       recoveryId?: string;
+      peerOrigin?: PeerTurnOriginDto;
     }
   | { type: "sessions-changed" }
   // The configured workspace set changed (out-of-band CLI edit or `/config`); the web
@@ -364,6 +366,18 @@ export interface PublishedAgentEndpointDto {
 
 export type AgentMessageCompletionMode = "none" | "notify" | "result";
 export type AgentMessageCompletionStatus = "completed" | "failed" | "cancelled";
+
+export interface AgentAddressDto {
+  nodeId: string;
+  endpointId: string;
+}
+
+export interface PeerTurnOriginDto {
+  requestMessageId: string;
+  completion: AgentMessageCompletionMode;
+  source: AgentAddressDto;
+  target: AgentAddressDto;
+}
 
 export interface PeerMessagePeer {
   handle: string;

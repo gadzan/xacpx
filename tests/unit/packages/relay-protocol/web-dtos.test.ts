@@ -583,3 +583,110 @@ test("agent-directory events preserve endpoint context fields and accept legacy 
   expect("endpointKind" in parsed.endpoints[2]!).toBe(false);
   expect("channelId" in parsed.endpoints[2]!).toBe(false);
 });
+test("Phase 6: validControlEvent round-trips turn-started and turn-finished with peerOrigin", () => {
+  const peerOrigin = {
+    requestMessageId: "msg_wire_1",
+    completion: "notify" as const,
+    source: { nodeId: "node-1", endpointId: "ep-1" },
+    target: { nodeId: "node-2", endpointId: "ep-2" },
+  };
+
+  const startedEvent: WebServerEvent = {
+    kind: "control-event",
+    instanceId: "i1",
+    event: {
+      type: "turn-started",
+      chatKey: "relay:a1",
+      sessionAlias: "backend",
+      queueItemId: "q-1",
+      peerOrigin,
+    },
+  };
+
+  const startedWire = encodeEnvelope(webEventEnvelope(startedEvent));
+  const startedDecoded = decodeEnvelope(startedWire);
+  expect(startedDecoded.ok).toBe(true);
+  if (!startedDecoded.ok) return;
+  const startedParsed = parseWebServerEvent(startedDecoded.envelope);
+  expect(startedParsed).toEqual(startedEvent);
+
+  const finishedEvent: WebServerEvent = {
+    kind: "control-event",
+    instanceId: "i1",
+    event: {
+      type: "turn-finished",
+      chatKey: "relay:a1",
+      sessionAlias: "backend",
+      ok: true,
+      text: "reply content",
+      peerOrigin,
+    },
+  };
+
+  const finishedWire = encodeEnvelope(webEventEnvelope(finishedEvent));
+  const finishedDecoded = decodeEnvelope(finishedWire);
+  expect(finishedDecoded.ok).toBe(true);
+  if (!finishedDecoded.ok) return;
+  const finishedParsed = parseWebServerEvent(finishedDecoded.envelope);
+  expect(finishedParsed).toEqual(finishedEvent);
+});
+
+test("Phase 6: validControlEvent rejects turn-started / turn-finished with malformed peerOrigin", () => {
+  // invalid completion
+  expect(
+    roundtrip({
+      kind: "control-event",
+      instanceId: "i1",
+      event: {
+        type: "turn-started",
+        chatKey: "c",
+        sessionAlias: "s",
+        peerOrigin: {
+          requestMessageId: "msg_1",
+          completion: "invalid_mode",
+          source: { nodeId: "n1", endpointId: "e1" },
+          target: { nodeId: "n2", endpointId: "e2" },
+        },
+      },
+    }),
+  ).toBeNull();
+
+  // missing target.endpointId
+  expect(
+    roundtrip({
+      kind: "control-event",
+      instanceId: "i1",
+      event: {
+        type: "turn-finished",
+        chatKey: "c",
+        sessionAlias: "s",
+        ok: true,
+        peerOrigin: {
+          requestMessageId: "msg_1",
+          completion: "none",
+          source: { nodeId: "n1", endpointId: "e1" },
+          target: { nodeId: "n2" },
+        },
+      },
+    }),
+  ).toBeNull();
+
+  // non-string requestMessageId
+  expect(
+    roundtrip({
+      kind: "control-event",
+      instanceId: "i1",
+      event: {
+        type: "turn-started",
+        chatKey: "c",
+        sessionAlias: "s",
+        peerOrigin: {
+          requestMessageId: 123,
+          completion: "none",
+          source: { nodeId: "n1", endpointId: "e1" },
+          target: { nodeId: "n2", endpointId: "e2" },
+        },
+      },
+    }),
+  ).toBeNull();
+});

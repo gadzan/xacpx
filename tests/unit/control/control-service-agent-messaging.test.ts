@@ -116,3 +116,45 @@ test("ControlService returns empty published endpoints when agentMessaging is no
   const { service } = makeControlService();
   expect(await service.getPublishedAgentEndpoints()).toEqual([]);
 });
+test("Phase 6: ControlService.submitPeerTurn passes peerOrigin to TurnQueue", async () => {
+  const { service } = makeControlService();
+  (service as any).deps.sessions.getSession = async () => ({
+    alias: "main",
+    archived: false,
+  });
+
+  let capturedParams: any = null;
+  (service as any).turnQueue.submitPeerTurn = (params: any) => {
+    capturedParams = params;
+    return { status: "injected" };
+  };
+
+  const peerOrigin = {
+    requestMessageId: "msg_ctrl_1",
+    completion: "notify" as const,
+    source: { nodeId: "node-1", endpointId: "ep-1" },
+    target: { nodeId: "node-2", endpointId: "ep-2" },
+  };
+
+  const res = await service.submitPeerTurn({
+    chatKey: "relay:agent-message:main",
+    sessionAlias: "main",
+    boundSessionAlias: "main",
+    text: "<xacpx-message>hello</xacpx-message>",
+    senderId: "agent-messaging",
+    messageId: "msg_ctrl_1",
+    peerOrigin,
+  });
+
+  expect(res).toEqual({ status: "injected" });
+  expect(capturedParams).toMatchObject({
+    chatKey: "relay:agent-message:main",
+    sessionAlias: "main",
+    boundSessionAlias: "main",
+    text: "<xacpx-message>hello</xacpx-message>",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_ctrl_1",
+    isPeerMessage: true,
+    peerOrigin,
+  });
+});

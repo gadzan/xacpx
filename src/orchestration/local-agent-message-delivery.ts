@@ -1,3 +1,4 @@
+import type { PeerTurnOrigin } from "../control/turn-support";
 import type { ResolvedSession, SessionTransport } from "../transport/types";
 import {
   MessageInjectionError,
@@ -21,6 +22,7 @@ export class LocalAgentMessageDeliveryAdapter {
         alias: string,
         renderedText: string,
         messageId: string,
+        peerOrigin?: PeerTurnOrigin,
       ) => Promise<{ status: "injected" | "queued" }>;
     },
   ) {}
@@ -37,10 +39,17 @@ export class LocalAgentMessageDeliveryAdapter {
       );
     }
     if (target.runtime.kind === "logical" && this.deps.deliverLogicalTurn) {
+      const peerOrigin: PeerTurnOrigin = {
+        requestMessageId: message.id,
+        completion: message.completion ?? "none",
+        source: message.from,
+        target: message.to,
+      };
       const res = await this.deps.deliverLogicalTurn(
         target.runtime.alias,
         renderedText,
         message.id,
+        peerOrigin,
       );
       return {
         status: res.status,
