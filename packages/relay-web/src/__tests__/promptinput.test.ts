@@ -2,7 +2,7 @@ import { mount } from "@vue/test-utils";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import PromptInput from "../components/PromptInput.vue";
-
+import { useInstancesStore } from "../stores/instances";
 // PromptInput now uses the composer store, which needs an active pinia.
 beforeEach(() => setActivePinia(createPinia()));
 
@@ -1403,5 +1403,136 @@ describe("PromptInput composer", () => {
     expect(items[1].find('[data-test="mention-secondary"]').text()).toBe(
       "project · codex · MacBook Air · …bbb_2",
     );
+  });
+
+  it("v0.3 Gate D & Self: mounted PromptInput ranks @ mentions by context tier and excludes self", async () => {
+    const instancesStore = useInstancesStore();
+    instancesStore.instances = [
+      {
+        id: "inst-1",
+        name: "Local Instance",
+        sessions: [
+          { alias: "current-session", workspace: "xacpx", agent: "codex" } as unknown as (typeof instancesStore.instances)[number]["sessions"][number],
+          { alias: "same-inst-other-ws", workspace: "other-ws", agent: "codex" } as unknown as (typeof instancesStore.instances)[number]["sessions"][number],
+        ],
+      } as unknown as (typeof instancesStore.instances)[number],
+      {
+        id: "inst-2",
+        name: "Remote Instance",
+        sessions: [
+          { alias: "remote-same-ws", workspace: "xacpx", agent: "claude" } as unknown as (typeof instancesStore.instances)[number]["sessions"][number],
+          { alias: "remote-other-ws", workspace: "other-ws", agent: "claude" } as unknown as (typeof instancesStore.instances)[number]["sessions"][number],
+        ],
+      } as unknown as (typeof instancesStore.instances)[number],
+    ];
+
+    instancesStore.agentDirectory = [
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "ep-self",
+        sessionAlias: "current-session",
+        displayName: "Self Agent",
+        agent: "codex",
+        workspace: "xacpx",
+        endpointKind: "logical",
+        channelId: "relay",
+      } as unknown as (typeof instancesStore.agentDirectory)[number],
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "ep-same-inst",
+        sessionAlias: "same-inst-other-ws",
+        displayName: "Same Inst Other Ws",
+        agent: "codex",
+        workspace: "other-ws",
+        endpointKind: "logical",
+        channelId: "relay",
+      } as unknown as (typeof instancesStore.agentDirectory)[number],
+      {
+        instanceId: "inst-2",
+        nodeId: "node-2",
+        endpointId: "ep-remote-same-ws",
+        sessionAlias: "remote-same-ws",
+        displayName: "Remote Same Ws",
+        agent: "claude",
+        workspace: "xacpx",
+        endpointKind: "logical",
+        channelId: "relay",
+      } as unknown as (typeof instancesStore.agentDirectory)[number],
+      {
+        instanceId: "inst-2",
+        nodeId: "node-2",
+        endpointId: "ep-remote-other-ws",
+        sessionAlias: "remote-other-ws",
+        displayName: "Remote Other Ws",
+        agent: "claude",
+        workspace: "other-ws",
+        endpointKind: "logical",
+        channelId: "relay",
+      } as unknown as (typeof instancesStore.agentDirectory)[number],
+    ];
+
+    const w = mount(PromptInput, {
+      props: {
+        instanceId: "inst-1",
+        sessionAlias: "current-session",
+      },
+      attachTo: document.body,
+    });
+
+    const ta = w.find("textarea");
+    await ta.setValue("@");
+    await ta.trigger("input");
+
+    const items = w.findAll('[data-test="mention-item"]');
+    // Self excluded → 3 items remaining
+    expect(items.length).toBe(3);
+    // Order: Tier 0 (same ws: Remote Same Ws) -> Tier 1 (same inst: Same Inst Other Ws) -> Tier 2 (Remote Other Ws)
+    expect(items[0].find('[data-test="mention-primary"]').text()).toBe("@Remote Same Ws");
+    expect(items[1].find('[data-test="mention-primary"]').text()).toBe("@Same Inst Other Ws");
+    expect(items[2].find('[data-test="mention-primary"]').text()).toBe("@Remote Other Ws");
+  });
+
+  it("v0.3 Gate G: non-Relay and worker candidates are labeled visibly in secondary line", async () => {
+    const instancesStore = useInstancesStore();
+    instancesStore.instances = [{ id: "inst-1", name: "Main", sessions: [] } as unknown as (typeof instancesStore.instances)[number]];
+    instancesStore.agentDirectory = [
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "ep-worker",
+        sessionAlias: "worker-1",
+        displayName: "Review Worker",
+        agent: "codex",
+        workspace: "xacpx",
+        endpointKind: "worker",
+      } as unknown as (typeof instancesStore.agentDirectory)[number],
+      {
+        instanceId: "inst-1",
+        nodeId: "node-1",
+        endpointId: "ep-wechat",
+        sessionAlias: "wechat-bot",
+        displayName: "WeChat Reviewer",
+        agent: "claude",
+        workspace: "xacpx",
+        endpointKind: "logical",
+        channelId: "weixin",
+      } as unknown as (typeof instancesStore.agentDirectory)[number],
+    ];
+
+    const w = mount(PromptInput, {
+      props: { instanceId: "inst-1", sessionAlias: "active-session" },
+      attachTo: document.body,
+    });
+
+    const ta = w.find("textarea");
+    await ta.setValue("@");
+    await ta.trigger("input");
+
+    const items = w.findAll('[data-test="mention-item"]');
+    expect(items.length).toBe(2);
+    expect(items[0].find('[data-test="mention-secondary"]').text()).toContain("Worker");
+    expect(items[1].find('[data-test="mention-secondary"]').text()).toContain("WeChat");
   });
 });

@@ -18,6 +18,10 @@ import {
   X,
 } from "lucide-vue-next";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
+import {
+  rankAgentMentions,
+  type AgentAutocompleteContext,
+} from "../lib/agent-mention-ranking";
 import { loadDraft, saveDraft } from "../lib/composer-drafts";
 import { createDebouncedFlush } from "../lib/debounce-flush";
 import { clampPanelWidth, createBottomPanelResize } from "../lib/resize-panel";
@@ -231,6 +235,10 @@ interface AgentMentionItem {
   instanceId?: string;
   nodeId: string;
   endpointId: string;
+  // v0.3 directory context metadata (absent on legacy peers) — drives
+  // collaboration-tier ranking and the low-priority source label.
+  endpointKind?: "logical" | "worker";
+  channelId?: string;
   activity?: {
     status: "idle" | "working" | "waiting";
     summary?: string;
@@ -281,9 +289,33 @@ const availableAgents = computed<AgentMentionItem[]>(() => {
       instanceId: ep.instanceId,
       nodeId: ep.nodeId,
       endpointId: ep.endpointId,
+      endpointKind: ep.endpointKind,
+      channelId: ep.channelId,
       activity: normalizedActivity,
     };
   });
+});
+
+// Composer context the @Agent ranking is relative to (spec §14). instanceId and
+// sessionAlias arrive as props from ChatPane (the chat store's selection); the
+// workspace is looked up from the sidebar's already-loaded session rows — no
+// extra fetch. Everything optional: with no selection (or sessions not yet
+// loaded) ranking degrades to instance/channel/kind facts only.
+const autocompleteContext = computed<AgentAutocompleteContext>(() => {
+  const inst = props.instanceId
+    ? instancesStore.instances.find((i) => i.id === props.instanceId)
+    : undefined;
+  const sessionRow = props.sessionAlias
+    ? (inst?.sessions ?? []).find(
+        (s) => s.alias === props.sessionAlias && !s.archived,
+      ) ??
+      (inst?.sessions ?? []).find((s) => s.alias === props.sessionAlias)
+    : undefined;
+  return {
+    currentInstanceId: props.instanceId ?? undefined,
+    currentSessionAlias: props.sessionAlias ?? undefined,
+    currentWorkspace: sessionRow?.workspace || undefined,
+  };
 });
 
 function secondaryIdentityParts(item: AgentMentionItem): string[] {
@@ -302,6 +334,20 @@ function secondaryIdentityParts(item: AgentMentionItem): string[] {
   }
   if (item.agent && item.agent !== item.displayName) {
     parts.push(item.agent);
+  }
+
+  if (item.endpointKind === "worker") {
+    parts.push("Worker");
+  } else if (item.channelId && item.channelId !== "relay") {
+    const channelLabel =
+      item.channelId === "weixin"
+        ? "WeChat"
+        : item.channelId === "feishu"
+          ? "Feishu"
+          : item.channelId === "yuanbao"
+            ? "Yuanbao"
+            : item.channelId;
+    parts.push(channelLabel);
   }
 
   return parts;
@@ -424,71 +470,13 @@ function updateMentionState() {
   mentionQuery.value = query.toLowerCase();
 }
 
-function computeRank(item: AgentMentionItem, q: string): number {
-  if (!q) return 0;
-  const dn = item.displayName.toLowerCase();
-  const psa = (item.presentationSessionAlias ?? "").toLowerCase();
-  const rawSa = (item.sessionAlias ?? "").toLowerCase();
-  const ws = (item.workspace ?? "").toLowerCase();
-  const ag = item.agent.toLowerCase();
-
-  // Tier 1: Exact matches (11..15)
-  if (dn === q) return 11;
-  if (psa && psa === q) return 12;
-  if (ws && ws === q) return 13;
-  if (ag === q) return 14;
-  if (rawSa && rawSa !== psa && rawSa === q) return 15;
-
-  // Tier 2: Prefix matches (21..25)
-  if (dn.startsWith(q)) return 21;
-  if (psa && psa.startsWith(q)) return 22;
-  if (ws && ws.startsWith(q)) return 23;
-  if (ag.startsWith(q)) return 24;
-  if (rawSa && rawSa !== psa && rawSa.startsWith(q)) return 25;
-
-  // Tier 3: Contains matches (31..35)
-  if (dn.includes(q)) return 31;
-  if (psa && psa.includes(q)) return 32;
-  if (ws && ws.includes(q)) return 33;
-  if (ag.includes(q)) return 34;
-  if (rawSa && rawSa !== psa && rawSa.includes(q)) return 35;
-
-  return -1;
-}
-
 const mentionMatches = computed(() => {
   if (mentionQuery.value === null) return [];
-  const q = mentionQuery.value.trim().toLowerCase();
-  const all = availableAgents.value;
-
-  const scored: Array<{ item: AgentMentionItem; rank: number }> = [];
-  for (const item of all) {
-    const rank = computeRank(item, q);
-    if (rank !== -1) {
-      scored.push({ item, rank });
-    }
-  }
-
-  scored.sort((a, b) => {
-    if (a.rank !== b.rank) {
-      return a.rank - b.rank;
-    }
-    const dnCmp = a.item.displayName.localeCompare(b.item.displayName);
-    if (dnCmp !== 0) return dnCmp;
-    const psaCmp = (a.item.presentationSessionAlias ?? "").localeCompare(
-      b.item.presentationSessionAlias ?? "",
-    );
-    if (psaCmp !== 0) return psaCmp;
-    const wsCmp = (a.item.workspace ?? "").localeCompare(
-      b.item.workspace ?? "",
-    );
-    if (wsCmp !== 0) return wsCmp;
-    const agCmp = a.item.agent.localeCompare(b.item.agent);
-    if (agCmp !== 0) return agCmp;
-    return a.item.handle.localeCompare(b.item.handle);
-  });
-
-  return scored.map((s) => s.item).slice(0, 8);
+  return rankAgentMentions(
+    availableAgents.value,
+    mentionQuery.value,
+    autocompleteContext.value,
+  ).slice(0, 8);
 });
 
 watch(mentionMatches, (m) => {
