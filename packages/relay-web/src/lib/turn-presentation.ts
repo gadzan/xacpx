@@ -1,4 +1,4 @@
-import type { ToolStepDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
+import type { PeerMessageHistoryEntry, ToolStepDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
 import { markdownBlockBoundaries } from "./render-markdown";
 import { hasToolStepAncestor, indexToolSteps } from "./subagent-trace";
 
@@ -12,13 +12,43 @@ export type TurnPresentationItem =
       step: ToolStepDto;
       children: ToolStepDto[];
       isLatest: boolean;
+    }
+  | {
+      key: string;
+      type: "agent-message";
+      message: PeerMessageHistoryEntry;
+      anchorToolCallId: string;
+      isLatest: boolean;
     };
+
+/** Optional composition inputs. `sentAgentMessageById` keys SENT peer-message
+ *  history entries by messageId so the sent card can be joined — presentation-only —
+ *  to the exact agent_send tool step whose structured receipt carries that id.
+ *  The persisted rows stay the canonical record; nothing here mutates them. */
+export interface TurnPresentationOptions {
+  sentAgentMessageById?: Map<string, PeerMessageHistoryEntry>;
+}
 
 type ActivityPart =
   | Exclude<TurnPartDto, { type: "text" }>
   | { type: "subagent"; step: ToolStepDto; children: ToolStepDto[] };
 
-export function deriveTurnPresentation(parts: TurnPartDto[]): TurnPresentationItem[] {
+/** MessageIds these parts can anchor a sent card to: every tool step's
+ *  `agentMessageId`, including steps folded into subagent activities. Mirrors the
+ *  anchoring deriveTurnPresentation performs, so a caller can suppress a standalone
+ *  card row exactly when the card renders inside a turn. */
+export function anchoredAgentMessageIds(parts: TurnPartDto[]): Set<string> {
+  const ids = new Set<string>();
+  for (const part of parts) {
+    if (part.type === "tool" && part.step.agentMessageId) ids.add(part.step.agentMessageId);
+  }
+  return ids;
+}
+
+export function deriveTurnPresentation(
+  parts: TurnPartDto[],
+  opts?: TurnPresentationOptions,
+): TurnPresentationItem[] {
   const latestVisibleIndex = parts.findLastIndex((part) =>
     part.type === "tool" || part.text.trim().length > 0,
   );
@@ -80,6 +110,30 @@ export function deriveTurnPresentation(parts: TurnPartDto[]): TurnPresentationIt
   const result: TurnPresentationItem[] = [];
   let cursor = 0;
 
+  // Sent cards join right after the exact tool step that produced them (a send made
+  // inside a subagent anchors after the whole subagent activity). Each messageId
+  // anchors at most once; receiver-direction entries never join — those stay
+  // standalone timeline rows.
+  const anchoredMessageIds = new Set<string>();
+  const pushAgentMessages = (steps: ToolStepDto[]): void => {
+    const byId = opts?.sentAgentMessageById;
+    if (!byId || byId.size === 0) return;
+    for (const step of steps) {
+      const id = step.agentMessageId;
+      if (!id || anchoredMessageIds.has(id)) continue;
+      const message = byId.get(id);
+      if (!message || message.direction !== "sent") continue;
+      anchoredMessageIds.add(id);
+      result.push({
+        key: `agent-message:${id}`,
+        type: "agent-message",
+        message,
+        anchorToolCallId: step.toolCallId,
+        isLatest: false,
+      });
+    }
+  };
+
   const pushText = (end: number) => {
     const text = narrative.slice(cursor, end);
     if (text.trim()) {
@@ -110,6 +164,7 @@ export function deriveTurnPresentation(parts: TurnPartDto[]): TurnPresentationIt
           step: activity.part.step,
           isLatest: activity.index === latestVisibleIndex,
         });
+        pushAgentMessages([activity.part.step]);
       } else {
         result.push({
           key: `subagent:${activity.part.step.toolCallId}`,
@@ -118,6 +173,7 @@ export function deriveTurnPresentation(parts: TurnPartDto[]): TurnPresentationIt
           children: activity.part.children,
           isLatest: activity.index === latestVisibleIndex,
         });
+        pushAgentMessages([activity.part.step, ...activity.part.children]);
       }
     }
   }

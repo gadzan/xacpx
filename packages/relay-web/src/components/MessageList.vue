@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
-import type { ScheduledOriginDto } from "@ganglion/xacpx-relay-protocol";
+import type { PeerMessageHistoryEntry, ScheduledOriginDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
 import type { ChatMessage, LiveTurn } from "../stores/chat";
 import StreamMarkdown from "./StreamMarkdown.vue";
 import ToolCallPanel from "./ToolCallPanel.vue";
@@ -12,6 +12,7 @@ import AgentMessageCard from "./AgentMessageCard.vue";
 import AgentIcon from "./AgentIcon.vue";
 import MessageAttachments from "./MessageAttachments.vue";
 import { fmtTime, fmtDateTime } from "../lib/format";
+import { anchoredAgentMessageIds } from "../lib/turn-presentation";
 
 const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; loadingHistory?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null; ensureFull?: (messageId: number) => Promise<void> }>();
 const emit = defineEmits<{ resend: [message: ChatMessage]; loadOlder: [] }>();
@@ -27,6 +28,35 @@ function ensureFullOf(m: ChatMessage): (() => Promise<void>) | undefined {
 function schedOf(m: ChatMessage): ScheduledOriginDto | undefined {
   return m.scheduled ?? m.structured?.scheduled;
 }
+
+// Presentation-only join (v0.3 spec §8): a SENT peer-message card anchors right after
+// the agent_send tool step whose structured receipt carries its messageId. The map
+// indexes the transcript's sent card rows; assistant rows and the live turn contribute
+// anchorable ids from their parts. An anchored card is suppressed as a standalone row
+// (no duplicate); anything unjoinable — receiver cards, legacy/compact rows without
+// parts, older connectors — keeps its standalone row (no data loss).
+const sentAgentMessageById = computed(() => {
+  const map = new Map<string, PeerMessageHistoryEntry>();
+  for (const m of props.messages) {
+    const am = m.structured?.agentMessage;
+    if (am?.direction === "sent") map.set(am.messageId, am);
+  }
+  return map;
+});
+const anchoredSentMessageIds = computed(() => {
+  const byId = sentAgentMessageById.value;
+  if (byId.size === 0) return new Set<string>();
+  const anchored = new Set<string>();
+  const collect = (parts: TurnPartDto[] | undefined): void => {
+    if (!parts?.length) return;
+    for (const id of anchoredAgentMessageIds(parts)) {
+      if (byId.has(id)) anchored.add(id);
+    }
+  };
+  for (const m of props.messages) collect(m.structured?.parts);
+  collect(props.liveTurn?.parts);
+  return anchored;
+});
 
 function messageKey(m: ChatMessage, index: number): string {
   const recordKey = m.id !== undefined ? `p${m.id}` : `o${m.createdAt}:${index}`;
@@ -388,15 +418,17 @@ watch(
              the key index is translated back to the FULL-array index so optimistic-row
              keys stay stable while older rows are still being revealed above. -->
         <template v-for="(m, i) in visibleMessages" :key="messageKey(m, hiddenCount + i)">
-          <!-- AGENT MESSAGE card (sender / receiver collaboration event) -->
+          <!-- AGENT MESSAGE card (sender / receiver collaboration event). A sent card
+               already anchored inside an assistant turn's agent_send step renders
+               there; its standalone row is suppressed so the card never shows twice. -->
           <AgentMessageCard
-            v-if="m.structured?.agentMessage"
+            v-if="m.structured?.agentMessage && !anchoredSentMessageIds.has(m.structured.agentMessage.messageId)"
             :message="m.structured.agentMessage"
             :class="enterRowClass"
             :style="enterStyle(i)"
           />
           <!-- USER row -->
-          <div v-else-if="m.direction === 'in'" class="cv-row flex justify-end" :class="enterRowClass"
+          <div v-else-if="m.direction === 'in' && !m.structured?.agentMessage" class="cv-row flex justify-end" :class="enterRowClass"
                :style="enterStyle(i)"
                :data-scheduled-task="schedOf(m)?.taskId">
             <!-- min-w-0: without it the flex item's min-width:auto tracks a wide <pre>/table
@@ -430,7 +462,7 @@ watch(
             </div>
           </div>
           <!-- ASSISTANT row -->
-          <div v-else class="cv-row group flex gap-2.5" :class="enterRowClass" :style="enterStyle(i)">
+          <div v-else-if="!m.structured?.agentMessage" class="cv-row group flex gap-2.5" :class="enterRowClass" :style="enterStyle(i)">
             <div class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center overflow-hidden">
               <AgentIcon :driver="driver" :size="15" fill />
             </div>
@@ -439,7 +471,7 @@ watch(
               <!-- Structured transcript: activity cards stay grouped above one continuous
                    Markdown narrative. Tool cards own their collapsed state. -->
               <div data-test="msg-content" class="space-y-2.5">
-                <TurnParts v-if="m.structured?.parts?.length" :parts="m.structured.parts" :ensure-full="ensureFullOf(m)" />
+                <TurnParts v-if="m.structured?.parts?.length" :parts="m.structured.parts" :ensure-full="ensureFullOf(m)" :sent-agent-messages="sentAgentMessageById" />
                 <!-- Legacy rows persisted before `parts`: aggregated fallback. -->
                 <template v-else>
                   <ToolCallPanel v-if="m.structured?.toolSteps?.length" :steps="m.structured.toolSteps" :ensure-full="ensureFullOf(m)" />
@@ -465,7 +497,7 @@ watch(
             <AgentIcon :driver="driver" :size="15" fill />
           </div>
           <div data-test="msg-streaming" class="min-w-0 flex-1">
-            <TurnParts :parts="liveTurn.parts" :streaming="true" />
+            <TurnParts :parts="liveTurn.parts" :streaming="true" :sent-agent-messages="sentAgentMessageById" />
           </div>
         </div>
       </div>
