@@ -448,6 +448,7 @@ export class InstanceGateway {
           requestedMode: routePayload.requestedMode,
           replyTo: routePayload.replyTo,
           replyable,
+          ...(routePayload.completion ? { completion: routePayload.completion } : {}),
         };
         this.sendRequest(
           targetInstanceId,

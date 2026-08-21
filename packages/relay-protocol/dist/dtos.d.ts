@@ -334,6 +334,8 @@ export interface PublishedAgentEndpointDto {
     channelId?: string;
     updatedAt: number;
 }
+export type AgentMessageCompletionMode = "none" | "notify" | "result";
+export type AgentMessageCompletionStatus = "completed" | "failed" | "cancelled";
 export interface PeerMessagePeer {
     handle: string;
     displayName: string;
@@ -350,4 +352,5 @@ export interface PeerMessageHistoryEntry {
     content: string;
     createdAt: number;
     status?: "sending" | "sent" | "queued" | "delivered" | "failed";
+    completion?: AgentMessageCompletionMode;
 }

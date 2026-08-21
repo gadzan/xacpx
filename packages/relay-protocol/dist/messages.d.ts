@@ -1,4 +1,4 @@
-import type { AgentCatalogEntryDto, AgentCommandDto, AgentDto, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto } from "./dtos.js";
+import type { AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto } from "./dtos.js";
 export declare const MSG: {
     readonly instanceRegister: "instance.register";
     readonly instanceAuth: "instance.auth";
@@ -850,6 +850,7 @@ export interface AgentMessageRoutePayload {
     content: string;
     requestedMode: string;
     replyTo?: string;
+    completion?: AgentMessageCompletionMode;
 }
 export interface AgentDirectorySnapshotPayload {
     endpoints: PublishedAgentEndpointDto[];
@@ -865,6 +866,7 @@ export interface AgentMessageDeliverPayload {
     requestedMode: string;
     replyTo?: string;
     replyable: boolean;
+    completion?: AgentMessageCompletionMode;
 }
 export interface AgentMessageRouteResult {
     messageId: string;

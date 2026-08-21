@@ -199,7 +199,7 @@ export class OrchestrationServer {
       case "agent.send": {
         requireOnlyKeys(
           params,
-          ["coordinatorSession", "sourceHandle", "to", "selector", "message", "mode", "replyTo"],
+          ["coordinatorSession", "sourceHandle", "to", "selector", "message", "mode", "replyTo", "completion"],
           "params",
         );
         const sourceHandle = requireOptionalString(params, "sourceHandle");
@@ -225,6 +225,7 @@ export class OrchestrationServer {
         }
         const mode = requireOptionalEnum(params, "mode", ["auto", "steer", "queue", "interrupt"]);
         const replyTo = requireOptionalString(params, "replyTo");
+        const completion = requireOptionalEnum(params, "completion", ["none", "notify", "result"]);
         const binding = {
           coordinatorSession: requireString(params, "coordinatorSession"),
           ...(sourceHandle !== undefined ? { sourceHandle } : {}),
@@ -235,6 +236,7 @@ export class OrchestrationServer {
           content: requireString(params, "message"),
           ...(mode !== undefined ? { mode } : {}),
           ...(replyTo !== undefined ? { replyTo } : {}),
+          ...(completion !== undefined ? { completion } : {}),
         };
         const agentMessaging = this.deps.agentMessaging;
         if (!agentMessaging) {

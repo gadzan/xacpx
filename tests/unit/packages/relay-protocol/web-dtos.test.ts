@@ -433,6 +433,105 @@ test("validControlEvent round-trips agent-message event with structured peer det
   expect(parseWebServerEvent(decoded.envelope)).toEqual(event);
 });
 
+test("validControlEvent round-trips agent-message event with completion mode", () => {
+  for (const completion of ["none", "notify", "result"] as const) {
+    const event: WebServerEvent = {
+      kind: "control-event",
+      instanceId: "i1",
+      event: {
+        type: "agent-message",
+        chatKey: "relay:a1",
+        sessionAlias: "backend",
+        message: {
+          kind: "agent_message",
+          direction: "sent",
+          messageId: "msg_123",
+          conversationId: "conv_456",
+          peer: {
+            handle: "agent:node_2:worker_b",
+            displayName: "Worker B",
+            agent: "codex",
+          },
+          content: "API endpoint changed",
+          createdAt: 1771234567890,
+          status: "sent",
+          completion,
+        },
+      },
+    };
+    const wire = encodeEnvelope(webEventEnvelope(event));
+    const decoded = decodeEnvelope(wire);
+    expect(decoded.ok).toBe(true);
+    if (!decoded.ok) return;
+    expect(parseWebServerEvent(decoded.envelope)).toEqual(event);
+  }
+});
+
+test("validControlEvent rejects agent-message event with invalid completion mode", () => {
+  const event = {
+    kind: "control-event",
+    instanceId: "i1",
+    event: {
+      type: "agent-message",
+      chatKey: "relay:a1",
+      sessionAlias: "backend",
+      message: {
+        kind: "agent_message",
+        direction: "sent",
+        messageId: "msg_123",
+        conversationId: "conv_456",
+        peer: {
+          handle: "agent:node_2:worker_b",
+          displayName: "Worker B",
+          agent: "codex",
+        },
+        content: "API endpoint changed",
+        createdAt: 1771234567890,
+        status: "sent",
+        completion: "invalid_mode",
+      },
+    },
+  };
+  const wire = encodeEnvelope(webEventEnvelope(event as never));
+  const decoded = decodeEnvelope(wire);
+  expect(decoded.ok).toBe(true);
+  if (!decoded.ok) return;
+  expect(parseWebServerEvent(decoded.envelope)).toBeNull();
+});
+
+test("legacy agent-message event without completion parses as absent and behaves as none", () => {
+  const event: WebServerEvent = {
+    kind: "control-event",
+    instanceId: "i1",
+    event: {
+      type: "agent-message",
+      chatKey: "relay:a1",
+      sessionAlias: "backend",
+      message: {
+        kind: "agent_message",
+        direction: "sent",
+        messageId: "msg_legacy",
+        conversationId: "conv_legacy",
+        peer: {
+          handle: "agent:node_2:worker_b",
+          displayName: "Worker B",
+          agent: "codex",
+        },
+        content: "Legacy message without completion",
+        createdAt: 1771234567890,
+      },
+    },
+  };
+  const wire = encodeEnvelope(webEventEnvelope(event));
+  const decoded = decodeEnvelope(wire);
+  expect(decoded.ok).toBe(true);
+  if (!decoded.ok) return;
+  const parsed = parseWebServerEvent(decoded.envelope);
+  expect(parsed).toEqual(event);
+  if (!parsed || parsed.kind !== "control-event" || parsed.event.type !== "agent-message") return;
+  expect(parsed.event.message.completion).toBeUndefined();
+});
+
 test("agent-directory events preserve endpoint context fields and accept legacy rows", () => {
   // endpointKind/channelId are optional presentation context (v0.3): rows from
   // new daemons carry them; rows from old daemons omit them and must parse.

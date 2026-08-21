@@ -39,6 +39,7 @@ import {
 } from "./task-watch-timeouts";
 import type {
   AgentEndpointView,
+  AgentMessageCompletionMode,
   AgentMessageMode,
   AgentMessageReceipt,
   AgentSenderBinding,
@@ -55,6 +56,7 @@ export interface AgentSendRpcInput extends AgentSenderBinding {
   message: string;
   mode?: AgentMessageMode;
   replyTo?: string;
+  completion?: AgentMessageCompletionMode;
 }
 interface OrchestrationClientDeps {
   createId?: () => string;

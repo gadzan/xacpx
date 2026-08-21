@@ -22,6 +22,7 @@ import {
 import type {
   AgentEndpointView,
   AgentMessage,
+  AgentMessageCompletionMode,
   AgentMessageMode,
   AgentMessageReceipt,
   AgentMessageSendInput,
@@ -163,6 +164,7 @@ export class AgentMessageRouter {
       content: message.content,
       createdAt: message.createdAt,
       status: receipt.status === "failed" ? "failed" : "sent",
+      completion: message.completion,
     };
     this.deps.events?.emit({
       type: "agent-message",
@@ -191,6 +193,7 @@ export class AgentMessageRouter {
       content: message.content,
       createdAt: message.createdAt,
       status: "delivered",
+      completion: message.completion,
     };
     this.deps.events?.emit({
       type: "agent-message",
@@ -208,6 +211,13 @@ export class AgentMessageRouter {
       throw new AgentMessagingError(
         "MESSAGE_TOO_LARGE",
         `Peer messages must not exceed ${maxMessageBytes} UTF-8 bytes.`,
+      );
+    }
+    const completion = input.completion ?? "none";
+    if (completion !== "none") {
+      throw new AgentMessagingError(
+        "COMPLETION_NOT_SUPPORTED",
+        `Completion mode '${completion}' is not supported.`,
       );
     }
     const maxReplyToBytes = this.deps.limits?.maxReplyToBytes ?? 128;
@@ -322,6 +332,7 @@ export class AgentMessageRouter {
           to: target.endpoint.address,
           content: input.content,
           requestedMode,
+          completion,
           createdAt,
           ...(input.replyTo ? { replyTo: input.replyTo } : {}),
         };
@@ -345,6 +356,7 @@ export class AgentMessageRouter {
         to: target.endpoint.address,
         content: input.content,
         requestedMode,
+        completion,
         createdAt,
         ...(input.replyTo ? { replyTo: input.replyTo } : {}),
       };
@@ -543,6 +555,7 @@ export class AgentMessageRouter {
     requestedMode: string;
     replyTo?: string;
     replyable: boolean;
+    completion?: AgentMessageCompletionMode;
   }): Promise<AgentMessageReceipt> {
     const createdAt = (this.deps.now ?? Date.now)();
     const fingerprint = inboundFingerprint(input);
@@ -611,6 +624,7 @@ export class AgentMessageRouter {
       requestedMode: string;
       replyTo?: string;
       replyable: boolean;
+      completion?: AgentMessageCompletionMode;
     },
     createdAt: number,
   ): Promise<AgentMessageReceipt> {
@@ -627,6 +641,7 @@ export class AgentMessageRouter {
       to: target.endpoint.address,
       content: input.content,
       requestedMode: (input.requestedMode as AgentMessageMode) ?? "auto",
+      completion: input.completion ?? "none",
       createdAt,
       ...(input.replyTo ? { replyTo: input.replyTo } : {}),
     };
@@ -741,6 +756,7 @@ export class AgentMessageRouter {
       content: message.content,
       createdAt,
       status: "delivered",
+      completion: message.completion,
     };
     this.deps.events?.emit({
       type: "agent-message",
@@ -1000,6 +1016,7 @@ function inboundFingerprint(input: {
   replyTo?: string;
   conversationId?: string;
   depth?: number;
+  completion?: string;
 }): string {
   return JSON.stringify([
     input.sourceNodeId,
@@ -1010,6 +1027,7 @@ function inboundFingerprint(input: {
     input.replyTo ?? "",
     input.conversationId ?? "",
     input.depth ?? 0,
+    input.completion ?? "none",
   ]);
 }
 

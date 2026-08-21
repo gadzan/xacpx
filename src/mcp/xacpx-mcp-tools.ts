@@ -14,6 +14,7 @@ import {
   type AgentMessagingErrorCode,
   isAgentMessagingErrorCode,
 } from "../orchestration/agent-messaging-error";
+import type { AgentMessageCompletionMode } from "../orchestration/agent-messaging-types";
 import { z } from "zod";
 
 const taskStatusSchema = z.enum([
@@ -492,7 +493,7 @@ export function buildXacpxMcpToolRegistry(input: {
     {
       name: "agent_send",
       description:
-        "Send a high-value asynchronous peer message to another agent. ONLY use this when: (1) you have critical information that directly alters the target's current work (e.g. breaking schema change, interface takeover), or (2) you need an unblocking decision only the target can provide. DO NOT send acknowledgments ('Received', 'OK', 'Working on it'), status polling ('Are you done?'), or conversational chatter. One-way notifications require NO reply. Provide replyTo when answering an earlier message.",
+        "Send a high-value asynchronous peer message to another agent. ONLY use this when: (1) you have critical information that directly alters the target's current work (e.g. breaking schema change, interface takeover), or (2) you need an unblocking decision only the target can provide. DO NOT send acknowledgments ('Received', 'OK', 'Working on it'), status polling ('Are you done?'), or conversational chatter. One-way notifications require NO reply. Provide replyTo when answering an earlier message. Completion modes: none (one-way message; no completion signal is returned), notify (after the peer turn triggered by this message reaches terminal state, xacpx notifies the sender that the peer completed/failed/cancelled), result (after the peer turn reaches terminal state, xacpx returns the peer's bounded final assistant result to the sender). Note agent_send still returns delivery admission immediately.",
       inputSchema: z
         .object({
           to: z
@@ -538,6 +539,12 @@ export function buildXacpxMcpToolRegistry(input: {
             .min(1)
             .optional()
             .describe("Message ID being replied to, if continuing a thread"),
+          completion: z
+            .enum(["none", "notify", "result"])
+            .optional()
+            .describe(
+              "Completion notification mode: 'none' (one-way message; no completion signal is returned), 'notify' (notifies sender when peer turn reaches terminal state), or 'result' (returns peer's bounded final assistant result). Note agent_send still returns delivery admission immediately.",
+            ),
         })
         .strict()
         .refine(
@@ -560,11 +567,13 @@ export function buildXacpxMcpToolRegistry(input: {
             message: string;
             mode?: "auto" | "steer" | "queue" | "interrupt";
             replyTo?: string;
+            completion?: AgentMessageCompletionMode;
           };
           const receipt = await transport.sendAgentMessage({
             coordinatorSession,
             ...(sourceHandle ? { sourceHandle } : {}),
             ...input,
+            ...(input.completion !== undefined ? { completion: input.completion } : {}),
           });
           return createSuccessResult(
             `Peer message ${receipt.messageId} accepted with status=${receipt.status}${receipt.modeUsed ? ` via ${receipt.modeUsed}` : ""}.`,

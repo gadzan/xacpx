@@ -82,6 +82,9 @@ export class RelayAgentMessageRoute {
           content: message.content,
           requestedMode: message.requestedMode,
           replyTo: message.replyTo,
+          ...(message.completion && message.completion !== "none"
+            ? { completion: message.completion }
+            : {}),
         });
         if (res && typeof res === "object" && "errorCode" in res && res.errorCode) {
           const code = isAgentMessagingErrorCode(res.errorCode) ? res.errorCode : "DELIVERY_FAILED";

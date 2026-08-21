@@ -11,6 +11,19 @@ export interface MessagingNodeIdentity {
 
 export type AgentMessageMode = "auto" | "steer" | "queue" | "interrupt";
 
+export type AgentMessageCompletionMode = "none" | "notify" | "result";
+export type AgentMessageCompletionStatus = "completed" | "failed" | "cancelled";
+
+export interface AgentMessageCompletion {
+  requestMessageId: string;
+  from: AgentAddress;
+  to: AgentAddress;
+  status: AgentMessageCompletionStatus;
+  result?: string;
+  error?: string;
+  completedAt: number;
+}
+
 export interface AgentCapabilities {
   receive: boolean;
   steer: boolean;
@@ -67,6 +80,7 @@ export interface AgentMessage {
   content: string;
   replyTo?: string;
   requestedMode: AgentMessageMode;
+  completion: AgentMessageCompletionMode;
   createdAt: number;
   expiresAt?: number;
 }
@@ -112,6 +126,7 @@ export interface AgentMessageSendInput {
   mode?: AgentMessageMode;
   requestedMode?: AgentMessageMode;
   replyTo?: string;
+  completion?: AgentMessageCompletionMode;
 }
 
 export interface PeerMessagePeer {
@@ -131,4 +146,5 @@ export interface PeerMessageHistoryEntry {
   content: string;
   createdAt: number;
   status?: "sending" | "sent" | "queued" | "delivered" | "failed";
+  completion?: AgentMessageCompletionMode;
 }

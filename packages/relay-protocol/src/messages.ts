@@ -2,6 +2,7 @@ import type {
   AgentCatalogEntryDto,
   AgentCommandDto,
   AgentDto,
+  AgentMessageCompletionMode,
   ControlEventDto,
   FsDiffFileDto,
   FsEntryDto,
@@ -959,6 +960,7 @@ export interface AgentMessageRoutePayload {
   content: string;
   requestedMode: string;
   replyTo?: string;
+  completion?: AgentMessageCompletionMode;
 }
 
 export interface AgentDirectorySnapshotPayload {
@@ -976,6 +978,7 @@ export interface AgentMessageDeliverPayload {
   requestedMode: string;
   replyTo?: string;
   replyable: boolean;
+  completion?: AgentMessageCompletionMode;
 }
 
 export interface AgentMessageRouteResult {

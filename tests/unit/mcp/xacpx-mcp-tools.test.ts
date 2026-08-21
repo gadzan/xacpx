@@ -1232,3 +1232,101 @@ test("agent_send preserves TARGET_AMBIGUOUS as a structured messaging failure", 
     isError: true,
   });
 });
+
+test("agent_send schema accepts all three completion modes and rejects invalid values", () => {
+  const registry = buildXacpxMcpToolRegistry({
+    transport: createMemoryTransport(async () => ({ taskId: "task-1", status: "running" })),
+    coordinatorSession: "backend:main",
+  });
+  const sendTool = registry.find((tool) => tool.name === "agent_send");
+  expect(sendTool).toBeDefined();
+
+  // Valid completion values
+  expect(sendTool?.inputSchema.safeParse({ to: "agent:handle", message: "hi", completion: "none" }).success).toBe(true);
+  expect(sendTool?.inputSchema.safeParse({ to: "agent:handle", message: "hi", completion: "notify" }).success).toBe(true);
+  expect(sendTool?.inputSchema.safeParse({ to: "agent:handle", message: "hi", completion: "result" }).success).toBe(true);
+  expect(sendTool?.inputSchema.safeParse({ to: "agent:handle", message: "hi" }).success).toBe(true);
+
+  // Invalid completion values
+  expect(sendTool?.inputSchema.safeParse({ to: "agent:handle", message: "hi", completion: "invalid" }).success).toBe(false);
+  expect(sendTool?.inputSchema.safeParse({ to: "agent:handle", message: "hi", completion: 123 }).success).toBe(false);
+  expect(sendTool?.inputSchema.safeParse({ to: "agent:handle", message: "hi", completion: null }).success).toBe(false);
+});
+
+test("agent_send preserves COMPLETION_NOT_SUPPORTED as a structured messaging failure", async () => {
+  const registry = buildXacpxMcpToolRegistry({
+    transport: createMemoryTransport(
+      async () => ({ taskId: "task-1", status: "running" }),
+      {
+        sendAgentMessage: async () => {
+          throw new AgentMessagingError(
+            "COMPLETION_NOT_SUPPORTED",
+            "Completion mode 'notify' is not supported.",
+          );
+        },
+      },
+    ),
+    coordinatorSession: "backend:main",
+  });
+
+  const result = await registry.find((tool) => tool.name === "agent_send")?.handler({
+    to: "agent:node-local:endpoint-peer",
+    message: "schema changed",
+    completion: "notify",
+  });
+
+  expect(result).toEqual({
+    content: [
+      {
+        type: "text",
+        text: "Completion mode 'notify' is not supported.",
+      },
+    ],
+    structuredContent: {
+      error: {
+        code: "COMPLETION_NOT_SUPPORTED",
+        message: "Completion mode 'notify' is not supported.",
+      },
+    },
+    isError: true,
+  });
+});
+
+test("agent_send forwards explicit completion parameter to transport", async () => {
+  const calls: unknown[] = [];
+  const receipt = {
+    messageId: "msg-123",
+    status: "queued" as const,
+    route: "local" as const,
+  };
+  const registry = buildXacpxMcpToolRegistry({
+    transport: createMemoryTransport(
+      async () => ({ taskId: "task-1", status: "running" }),
+      {
+        sendAgentMessage: async (input) => {
+          calls.push(input);
+          return receipt;
+        },
+      },
+    ),
+    coordinatorSession: "backend:main",
+    sourceHandle: "backend:worker-a",
+  });
+
+  const sendTool = registry.find((tool) => tool.name === "agent_send");
+  await sendTool?.handler({
+    to: "agent:node-local:endpoint-peer",
+    message: "please review PR",
+    completion: "none",
+  });
+
+  expect(calls).toEqual([
+    {
+      coordinatorSession: "backend:main",
+      sourceHandle: "backend:worker-a",
+      to: "agent:node-local:endpoint-peer",
+      message: "please review PR",
+      completion: "none",
+    },
+  ]);
+});

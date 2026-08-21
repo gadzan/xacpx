@@ -410,6 +410,7 @@ function validPeerMessageHistoryEntry(m: unknown): boolean {
   if (typeof peer.handle !== "string" || typeof peer.displayName !== "string" || typeof peer.agent !== "string") return false;
   if (!optStr(peer.workspace)) return false;
   if (entry.status !== undefined && !["sending", "sent", "queued", "delivered", "failed"].includes(entry.status as string)) return false;
+  if (entry.completion !== undefined && !["none", "notify", "result"].includes(entry.completion as string)) return false;
   return true;
 }
 

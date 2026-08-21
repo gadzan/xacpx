@@ -147,6 +147,7 @@ test("sends an auto message as an escaped one-way queue delivery", async () => {
         to: { nodeId, endpointId: "endpoint_worker-b" },
         content: "Use <schema> & tests.",
         requestedMode: "auto",
+        completion: "none",
         createdAt: 1_000,
       },
       renderedText:
@@ -1287,6 +1288,130 @@ test("local delivery stays one-way: the source session gets only its sent histor
   expect(
     emitted.some((e) => e.type.startsWith("turn-") || e.type === "queue-updated"),
   ).toBe(false);
+});
+
+test("default completion = none: send without completion carries completion 'none' in history entries", async () => {
+  const events = createControlEventBus();
+  const emitted: ControlEvent[] = [];
+  events.subscribe((e) => emitted.push(e));
+
+  const { router } = makeRouter({ events });
+  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+
+  const receipt = await router.send(binding, { to, content: "default completion test" });
+  expect(receipt.status).toBe("queued");
+
+  const agentMessages = emitted.filter((e): e is Extract<ControlEvent, { type: "agent-message" }> => e.type === "agent-message");
+  expect(agentMessages).toHaveLength(2);
+  expect(agentMessages[0]!.message.completion).toBe("none");
+  expect(agentMessages[1]!.message.completion).toBe("none");
+});
+
+test("explicit completion = none: carries completion 'none' in history entries and succeeds", async () => {
+  const events = createControlEventBus();
+  const emitted: ControlEvent[] = [];
+  events.subscribe((e) => emitted.push(e));
+
+  const { router } = makeRouter({ events });
+  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+
+  const receipt = await router.send(binding, { to, content: "explicit none test", completion: "none" });
+  expect(receipt.status).toBe("queued");
+
+  const agentMessages = emitted.filter((e): e is Extract<ControlEvent, { type: "agent-message" }> => e.type === "agent-message");
+  expect(agentMessages).toHaveLength(2);
+  expect(agentMessages[0]!.message.completion).toBe("none");
+  expect(agentMessages[1]!.message.completion).toBe("none");
+});
+
+test("completion = notify: router rejects with COMPLETION_NOT_SUPPORTED before admission with zero side effects", async () => {
+  let idAllocated = false;
+  const events = createControlEventBus();
+  const emitted: ControlEvent[] = [];
+  events.subscribe((e) => emitted.push(e));
+
+  const { router } = makeRouter({
+    events,
+    createId: () => {
+      idAllocated = true;
+      return "should-not-allocate";
+    },
+  });
+  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+
+  let thrown: unknown;
+  try {
+    await router.send(binding, { to, content: "notify message", completion: "notify" });
+  } catch (err) {
+    thrown = err;
+  }
+
+  expect(thrown).toBeInstanceOf(AgentMessagingError);
+  expect((thrown as AgentMessagingError).code).toBe("COMPLETION_NOT_SUPPORTED");
+  expect(idAllocated).toBe(false);
+  expect(emitted).toHaveLength(0);
+
+  // Verify that the duplicate content guard was NOT consumed: sending identical content with completion "none" succeeds
+  const receipt = await router.send(binding, { to, content: "notify message", completion: "none" });
+  expect(receipt.status).toBe("queued");
+});
+
+test("completion = result: router rejects with COMPLETION_NOT_SUPPORTED before admission with zero side effects", async () => {
+  let idAllocated = false;
+  const events = createControlEventBus();
+  const emitted: ControlEvent[] = [];
+  events.subscribe((e) => emitted.push(e));
+
+  const { router } = makeRouter({
+    events,
+    createId: () => {
+      idAllocated = true;
+      return "should-not-allocate";
+    },
+  });
+  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+
+  let thrown: unknown;
+  try {
+    await router.send(binding, { to, content: "result message", completion: "result" });
+  } catch (err) {
+    thrown = err;
+  }
+
+  expect(thrown).toBeInstanceOf(AgentMessagingError);
+  expect((thrown as AgentMessagingError).code).toBe("COMPLETION_NOT_SUPPORTED");
+  expect(idAllocated).toBe(false);
+  expect(emitted).toHaveLength(0);
+
+  // Verify that guards were not consumed
+  const receipt = await router.send(binding, { to, content: "result message", completion: "none" });
+  expect(receipt.status).toBe("queued");
+});
+
+test("deliverInbound sets completion 'none' on history entry when absent or none", async () => {
+  const events = createControlEventBus();
+  const emitted: ControlEvent[] = [];
+  events.subscribe((e) => emitted.push(e));
+
+  const { router } = makeRouter({ events });
+  const receipt = await router.deliverInbound({
+    sourceNodeId: "node_other",
+    sourceEndpointId: "endpoint_remote",
+    targetEndpointId: "endpoint_worker-a",
+    messageId: "msg_inbound_comp_1",
+    content: "inbound test",
+    requestedMode: "queue",
+    replyable: false,
+  });
+
+  expect(receipt.status).toBe("queued");
+  const agentMessages = emitted.filter((e): e is Extract<ControlEvent, { type: "agent-message" }> => e.type === "agent-message");
+  expect(agentMessages).toHaveLength(1);
+  expect(agentMessages[0]!.message.completion).toBe("none");
 });
 
 function createDeferred<T>() {
