@@ -58,6 +58,14 @@ const anchoredSentMessageIds = computed(() => {
   return anchored;
 });
 
+// Direction guard on the join above: only the SENT twin of an anchored pair may
+// drop its standalone row. Echo/forward topologies can carry one messageId on
+// both a sent and a received entry — a received card must NEVER be suppressed.
+function isSuppressedSentRow(m: ChatMessage): boolean {
+  const am = m.structured?.agentMessage;
+  return am?.direction === "sent" && anchoredSentMessageIds.value.has(am.messageId);
+}
+
 function messageKey(m: ChatMessage, index: number): string {
   const recordKey = m.id !== undefined ? `p${m.id}` : `o${m.createdAt}:${index}`;
   return `${m.instanceId}:${m.sessionAlias}:${recordKey}`;
@@ -422,7 +430,7 @@ watch(
                already anchored inside an assistant turn's agent_send step renders
                there; its standalone row is suppressed so the card never shows twice. -->
           <AgentMessageCard
-            v-if="m.structured?.agentMessage && !anchoredSentMessageIds.has(m.structured.agentMessage.messageId)"
+            v-if="m.structured?.agentMessage && !isSuppressedSentRow(m)"
             :message="m.structured.agentMessage"
             :class="enterRowClass"
             :style="enterStyle(i)"

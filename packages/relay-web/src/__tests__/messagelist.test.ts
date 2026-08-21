@@ -52,6 +52,25 @@ const sentCard = (messageId: string): ChatMessage => msg({
   },
 });
 
+// Echo/forward topologies keep ONE messageId across both directions: the peer's
+// copy of a locally-sent message arrives as a received entry with the SAME id.
+const receivedCard = (messageId: string): ChatMessage => msg({
+  direction: "in",
+  text: `hello ${messageId}`,
+  structured: {
+    agentMessage: {
+      kind: "agent_message",
+      direction: "received",
+      messageId,
+      conversationId: `conv_${messageId}`,
+      peer: { handle: "agent:node_1:endpoint_a", displayName: "Worker A", agent: "claude" },
+      content: `hello ${messageId}`,
+      createdAt: 1771234567891,
+      status: "delivered",
+    },
+  },
+});
+
 const sendStep = (toolCallId: string, messageId?: string) => ({
   toolCallId,
   toolName: "agent_send",
@@ -531,6 +550,22 @@ describe("MessageList", () => {
     expect(wrapper.find('[data-test="turn-agent-message"]').exists()).toBe(false);
     // The assistant turn itself renders unchanged.
     expect(wrapper.find('[data-test="tool-step-card"]').exists()).toBe(true);
+  });
+
+  it("never suppresses a received card whose id is also an anchored sent card (echo topology)", () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [turnWithSend("m1"), sentCard("m1"), receivedCard("m1")], liveTurn: null },
+    });
+
+    // Both render: the sent twin anchors inside the turn; the received twin keeps
+    // its own standalone row — the anchored id must not swallow the receiver's copy.
+    expect(wrapper.find('[data-test="msg-out"] [data-test="turn-agent-message"]').exists()).toBe(true);
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(2);
+    const received = wrapper.find('[data-test="agent-message-card"][data-direction="received"]');
+    expect(received.exists()).toBe(true);
+    expect(received.text()).toContain("hello m1");
+    // The received card renders as its own transcript row, outside the assistant turn.
+    expect(received.element.closest('[data-test="msg-out"]')).toBeNull();
   });
 
   it("keeps an unjoinable sent card standalone — legacy history with no matching step (Gate C)", () => {
