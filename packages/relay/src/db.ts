@@ -179,6 +179,18 @@ export function initSchema(db: SqlDriver): void {
       created_at TEXT NOT NULL,
       PRIMARY KEY (instance_id, recovery_id)
     );
+    CREATE TABLE IF NOT EXISTS pending_completion_routes (
+      request_message_id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      source_instance_id TEXT NOT NULL,
+      source_node_id TEXT NOT NULL,
+      source_endpoint_id TEXT NOT NULL,
+      target_instance_id TEXT NOT NULL,
+      target_node_id TEXT NOT NULL,
+      target_endpoint_id TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
   `);
 
   // Idempotent column add for pre-existing local dev DBs (create-only schema otherwise).

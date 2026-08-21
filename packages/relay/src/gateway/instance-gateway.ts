@@ -18,6 +18,7 @@ import {
 } from "@ganglion/xacpx-relay-protocol";
 import type { AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
+import type { PendingCompletionRouteRow } from "../stores/pending-completion-routes.js";
 import { createNoopRelayLogger, type RelayLogger } from "../logging.js";
 import { startHeartbeat } from "./heartbeat.js";
 
@@ -62,6 +63,11 @@ export interface InstanceGatewayDeps {
     accountId: string,
     online: boolean,
   ) => void;
+  /** Durable backing store for private completion ROUTE grants (v0.3). */
+  pendingCompletionRoutes?: {
+    load(): PendingCompletionRouteRow[];
+    save(grants: PendingCompletionRouteRow[]): void;
+  };
   /**
    * Test seam: called when an authenticated instance delivers an RPC response
    * that matched its pending request. Returning true simulates an ACK loss —
@@ -132,6 +138,32 @@ export class InstanceGateway {
 
   constructor(private readonly deps: InstanceGatewayDeps) {
     this.logger = deps.logger ?? createNoopRelayLogger();
+    // Hydrate durable route grants. Expired rows are pruned; survivors keep
+    // already-accepted completion contracts enforceable across Hub restarts.
+    const now = Date.now();
+    try {
+      for (const grant of this.deps.pendingCompletionRoutes?.load() ?? []) {
+        if (grant.expiresAt <= now) continue;
+        this.pendingCompletionRoutes.set(grant.requestMessageId, grant);
+      }
+    } catch {
+      // Fail-closed: an unloadable store starts empty (completions for
+      // pre-restart requests will be denied rather than mis-routed).
+    }
+  }
+
+  /**
+   * Persist the full grant set. Throws on storage failure so callers can fail
+   * closed BEFORE a completion-bearing request is forwarded — a grant that is
+   * not durable must never back an outward "will complete" contract.
+   */
+  private persistPendingCompletionRoutes(): void {
+    this.deps.pendingCompletionRoutes?.save(
+      [...this.pendingCompletionRoutes].map(([requestMessageId, g]) => ({
+        requestMessageId,
+        ...g,
+      })),
+    );
   }
 
   private recordPendingCompletionRoute(
@@ -146,15 +178,30 @@ export class InstanceGateway {
       expiresAt: number;
     },
   ): void {
-    while (
+    // Backpressure, not eviction: prune expired grants first; if the store is
+    // STILL full, refuse the NEW request rather than silently revoking an
+    // older contract that may still be executing.
+    for (const [id, g] of [...this.pendingCompletionRoutes]) {
+      if (g.expiresAt <= Date.now()) this.pendingCompletionRoutes.delete(id);
+    }
+    if (
       this.pendingCompletionRoutes.size >=
       InstanceGateway.PENDING_COMPLETION_MAX_ENTRIES
     ) {
-      const oldest = this.pendingCompletionRoutes.keys().next().value;
-      if (oldest === undefined) break;
-      this.pendingCompletionRoutes.delete(oldest);
+      throw new Error("PENDING_COMPLETION_ROUTE_CAPACITY");
     }
     this.pendingCompletionRoutes.set(requestMessageId, grant);
+    this.persistPendingCompletionRoutes();
+  }
+
+  private deletePendingCompletionRoute(requestMessageId: string): void {
+    if (!this.pendingCompletionRoutes.delete(requestMessageId)) return;
+    try {
+      this.persistPendingCompletionRoutes();
+    } catch {
+      // Best-effort on compensation: the in-memory deletion already prevents
+      // further routing; the stale row expires with its TTL.
+    }
   }
 
 
@@ -498,54 +545,72 @@ export class InstanceGateway {
           replyable,
           ...(routePayload.completion ? { completion: routePayload.completion } : {}),
         };
+        // v0.3 trust boundary: the completion ROUTE grant is durably RESERVED
+        // before the request is forwarded. A grant that is not durable must
+        // never back an outward "xacpx will complete" contract, so a storage
+        // failure fails the request closed (nothing is sent). The grant only
+        // becomes final when the target reports exact admission
+        // (injected | queued); a definite rejection compensates it away, and
+        // an ambiguous transport outcome retains it (the target may have
+        // accepted).
+        const completionMode = routePayload.completion;
+        let provisionalGrant = false;
+        if (completionMode === "notify" || completionMode === "result") {
+          try {
+            this.recordPendingCompletionRoute(routePayload.messageId, {
+              accountId: authed.accountId,
+              sourceInstanceId: authed.instanceId,
+              source: {
+                nodeId: routePayload.sourceNodeId,
+                endpointId: routePayload.sourceEndpointId,
+              },
+              targetInstanceId,
+              target: {
+                nodeId: routePayload.targetNodeId,
+                endpointId: routePayload.targetEndpointId,
+              },
+              mode: completionMode,
+              expiresAt: Date.now() + InstanceGateway.PENDING_COMPLETION_TTL_MS,
+            });
+            provisionalGrant = true;
+          } catch {
+            respond(
+              errorPayload(
+                "MESSAGE_QUEUE_FULL",
+                "Hub pending completion capacity reached; request not sent",
+              ),
+            );
+            return;
+          }
+        }
         this.sendRequest(
           targetInstanceId,
           MSG.agentMessageDeliver,
           deliverPayload,
         )
           .then((res) => {
-            // v0.3 trust boundary: a completion-bearing request that was
-            // ACCEPTED by the target establishes a private, TTL-bounded
-            // completion ROUTE grant at the Hub. Authorization is decoupled
-            // from the public Agent Directory — either side may archive/sleep
-            // afterwards without revoking the already-accepted contract.
-            const completionMode = routePayload.completion;
-            if (
-              completionMode === "notify" ||
-              completionMode === "result"
-            ) {
+            if (provisionalGrant) {
               const routeRes = res as { status?: string };
-              if (routeRes.status !== "failed") {
-                this.recordPendingCompletionRoute(
-                  routePayload.messageId,
-                  {
-                    accountId: authed.accountId,
-                    sourceInstanceId: authed.instanceId,
-                    source: {
-                      nodeId: routePayload.sourceNodeId,
-                      endpointId: routePayload.sourceEndpointId,
-                    },
-                    targetInstanceId,
-                    target: {
-                      nodeId: routePayload.targetNodeId,
-                      endpointId: routePayload.targetEndpointId,
-                    },
-                    mode: completionMode,
-                    expiresAt: Date.now() + this.PENDING_COMPLETION_TTL_MS,
-                  },
-                );
+              if (routeRes.status === "failed") {
+                // Definite target-side rejection → compensate the reservation.
+                this.deletePendingCompletionRoute(routePayload.messageId);
               }
+              // injected | queued → exact admission, grant stands.
+              // Unknown/absent status → ambiguous, grant retained.
             }
             respond(res);
           })
-          .catch((err) =>
+          .catch((err) => {
+            // Transport-level ambiguity (timeout / lost ACK): the target may
+            // have accepted, so the provisional grant is retained.
+            void provisionalGrant;
             respond(
               errorPayload(
                 (err as Error & { code?: string }).code ?? "DELIVERY_FAILED",
                 err instanceof Error ? err.message : String(err),
               ),
-            ),
-          );
+            );
+          });
         return;
       }
 
@@ -627,7 +692,13 @@ export class InstanceGateway {
           MSG.agentMessageCompletion,
           completionPayload,
         )
-          .then((res) => respond(res))
+          .then((res) => {
+            // The route grant's job is done once the completion has been
+            // handed to the original source instance; retire it (the source
+            // tombstone absorbs any late duplicates).
+            this.deletePendingCompletionRoute(completionPayload.requestMessageId);
+            respond(res);
+          })
           .catch((err) =>
             respond(
               errorPayload(

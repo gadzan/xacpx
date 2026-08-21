@@ -1888,6 +1888,190 @@ test("Gate P: two independent concurrent completion pairs do not cross-contamina
   expect(statusById.get(receiptCD.messageId)).toBe("completed");
 });
 
+
+test("Round-3: durable reserve happens BEFORE dispatch — a store save failure fails the send closed", async () => {
+  const events = createControlEventBus();
+  const deliveries: unknown[] = [];
+  let idSeq = 0;
+  const { router, state } = makeRouter({
+    events,
+    createId: () => `uuid-${++idSeq}`,
+    delivery: {
+      deliver: async (target, message) => {
+        deliveries.push(message);
+        return { status: "queued" as const, modeUsed: "queue" as const };
+      },
+    },
+  });
+  addLogicalPeers(state);
+  let saveCalls = 0;
+  const routerWithStore = router as unknown as {
+    deps: {
+      delivery: LocalAgentMessageDelivery;
+      pendingCompletionStore?: {
+        load(): never[];
+        save(grants: unknown[]): void;
+      };
+    };
+  };
+  let failSave = true;
+  routerWithStore.deps.pendingCompletionStore = {
+    load: () => [],
+    save: (grants) => {
+      saveCalls += 1;
+      if (failSave) throw new Error("disk full");
+      void grants;
+    },
+  };
+
+  const to = encodeAgentHandle({ nodeId, endpointId: LOGICAL_TARGET_ID });
+
+  // Persistence failure → the completion-bearing request fails CLOSED and
+  // nothing is dispatched to the target.
+  await expect(
+    router.send(LOGICAL_SENDER, { to, content: "must not be sent", completion: "result" }),
+  ).rejects.toMatchObject({ code: "DELIVERY_FAILED" });
+  expect(deliveries).toHaveLength(0);
+
+  // One-way messages are unaffected by the completion store.
+  await router.send(LOGICAL_SENDER, { to, content: "one way ok" });
+  expect(deliveries).toHaveLength(1);
+
+  // Once the store recovers, the same completion request succeeds.
+  failSave = false;
+  await router.send(LOGICAL_SENDER, { to, content: "now it works", completion: "result" });
+  expect(deliveries).toHaveLength(2);
+});
+
+test("Round-3: capacity is BACKPRESSURE — the oldest active contract is never evicted", async () => {
+  const events = createControlEventBus();
+  const deliveredCompletions: AgentMessageCompletion[] = [];
+  let idSeq = 0;
+  const { router, state } = makeRouter({
+    events,
+    createId: () => `uuid-${++idSeq}`,
+    limits: { pendingCompletion: { maxEntries: 2, ttlMs: 60 * 60_000 } },
+  });
+  addLogicalPeers(state);
+  (router as unknown as { deps: { delivery: { deliverCompletion?: (alias: string, c: AgentMessageCompletion, id: string) => Promise<{ status: "injected" }> } } }).deps.delivery.deliverCompletion = async (
+    _alias,
+    completion,
+  ) => {
+    deliveredCompletions.push(completion);
+    return { status: "injected" as const };
+  };
+  const toSecond = encodeAgentHandle({ nodeId, endpointId: "33333333-3333-4333-8333-333333333333" });
+  const toFourth = encodeAgentHandle({ nodeId, endpointId: "55555555-5555-4555-8555-555555555555" });
+
+  // Fill both grant slots.
+  const r1 = await router.send(LOGICAL_SENDER, { to: toSecond, content: "task B", completion: "result" });
+  const r2 = await router.send(
+    { coordinatorSession: "coordinator-third" },
+    { to: toFourth, content: "task D", completion: "result" },
+  );
+
+  // A THIRD request must be refused rather than evicting r1/r2's contracts.
+  await expect(
+    router.send(LOGICAL_SENDER, { to: toSecond, content: "task overflow", completion: "notify" }),
+  ).rejects.toMatchObject({ code: "MESSAGE_QUEUE_FULL" });
+
+  // The FIRST contract is still alive: its completion is honored.
+  const firstCompletion = await router.completePeerTurn(
+    {
+      requestMessageId: r1.messageId,
+      completion: "result",
+      source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+      target: { nodeId, endpointId: "33333333-3333-4333-8333-333333333333" },
+    },
+    { ok: true, text: "answer for B" },
+  );
+  expect(firstCompletion?.status).toBe("completed");
+  expect(deliveredCompletions).toHaveLength(1);
+  // Retired on delivery → capacity returned.
+  expect((router as unknown as { pendingCompletions: Map<string, unknown> }).pendingCompletions.has(r1.messageId)).toBe(false);
+
+  // A duplicate of the RETIRED contract is absorbed by the terminal tombstone
+  // instead of re-denying.
+  const dup = await router.completePeerTurn(
+    {
+      requestMessageId: r1.messageId,
+      completion: "result",
+      source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+      target: { nodeId, endpointId: "33333333-3333-4333-8333-333333333333" },
+    },
+    { ok: true, text: "late duplicate terminal" },
+  );
+  expect(dup).toBe(firstCompletion);
+  expect(deliveredCompletions).toHaveLength(1);
+
+  // r2's contract was untouched the whole time.
+  expect((router as unknown as { pendingCompletions: Map<string, unknown> }).pendingCompletions.has(r2.messageId)).toBe(true);
+});
+
+test("Round-3: a DEFINITE remote rejection releases the reservation; ambiguous outcomes retain it", async () => {
+  const events = createControlEventBus();
+  let idSeq = 0;
+  const base = {
+    events,
+    createId: () => `uuid-${++idSeq}`,
+  };
+
+  // Definite rejection (target node offline at route time).
+  {
+    const { router, state } = makeRouter({ ...base });
+    addLogicalPeers(state);
+    // No remoteRoute configured → ROUTE_UNAVAILABLE (definite).
+    await expect(
+      router.send(LOGICAL_SENDER, {
+        to: encodeAgentHandle({ nodeId: "node_remote_x", endpointId: "ep_remote" }),
+        content: "x",
+        completion: "result",
+      }),
+    ).rejects.toMatchObject({ code: "ROUTE_UNAVAILABLE" });
+    // Reservation released — nothing pending.
+    expect((router as unknown as { pendingCompletions: Map<string, unknown> }).pendingCompletions.size).toBe(0);
+  }
+
+  // Ambiguous outcome (ACK lost → DELIVERY_TIMEOUT): reservation retained.
+  {
+    const remoteRoute = new RelayAgentMessageRoute({
+      sendAgentMessageRoute: async () => {
+        throw Object.assign(new Error("ack lost"), { code: "DELIVERY_TIMEOUT" });
+      },
+    });
+    const { router, state, registry } = makeRouter({ ...base, remoteRoute });
+    addLogicalPeers(state);
+    registry.updateRemoteEndpoints("node_remote_x", [
+      {
+        address: { nodeId: "node_remote_x", endpointId: "ep_remote" },
+        handle: encodeAgentHandle({ nodeId: "node_remote_x", endpointId: "ep_remote" }),
+        node: "Remote X",
+        displayName: "Remote X",
+        agent: "claude",
+        state: "idle",
+        activity: { status: "idle" },
+        capabilities: {
+          receive: true,
+          steer: false,
+          queue: true,
+          interrupt: false,
+          conversation: true,
+          completion: true,
+        },
+      },
+    ]);
+    await expect(
+      router.send(LOGICAL_SENDER, {
+        to: encodeAgentHandle({ nodeId: "node_remote_x", endpointId: "ep_remote" }),
+        content: "x",
+        completion: "result",
+      }),
+    ).rejects.toMatchObject({ code: "DELIVERY_TIMEOUT" });
+    // Retained: the target may have accepted.
+    expect((router as unknown as { pendingCompletions: Map<string, unknown> }).pendingCompletions.size).toBe(1);
+  }
+});
+
 test("Guards untouched: completion cycle does not consume conversation depth, volume, rate limit, or duplicate counters", async () => {
   let clock = 10_000;
   const { router, state } = makeRouter({

@@ -14,6 +14,7 @@ import { createSqlDriver, initSchema, type SqlDriver } from "./db.js";
 import { AccountStore } from "./stores/accounts.js";
 import { InstanceStore } from "./stores/instances.js";
 import { MessageStore } from "./stores/messages.js";
+import { PendingCompletionRouteStore } from "./stores/pending-completion-routes.js";
 import { RecoveryReceiptStore } from "./stores/recovery-receipts.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS, InstanceGateway } from "./gateway/instance-gateway.js";
 import { WebGateway } from "./gateway/web-gateway.js";
@@ -232,11 +233,13 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     else a.parts.push({ type: "tool", step });
   };
 
+  const pendingCompletionRoutes = new PendingCompletionRouteStore(db);
   const gateway = new InstanceGateway({
     instances,
     accounts,
     requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
     logger,
+    pendingCompletionRoutes,
     onDirectoryChange: (accountId, endpoints) => {
       webGateway.broadcast(accountId, { kind: "agent-directory", endpoints });
     },

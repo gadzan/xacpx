@@ -191,7 +191,14 @@ export class AgentMessageRouter {
 
 
 
-  private recordPendingCompletion(
+  /**
+   * Durable-reserve a completion contract BEFORE the request is dispatched.
+   * Throws when capacity is exhausted: pending grants are active contracts,
+   * not a cache — expired entries are pruned, but an existing grant is NEVER
+   * evicted to make room for a newer one. Persistence failures propagate so
+   * the caller fails closed (nothing is sent).
+   */
+  private reservePendingCompletion(
     messageId: string,
     source: AgentAddress,
     target: AgentAddress,
@@ -202,10 +209,14 @@ export class AgentMessageRouter {
     const maxEntries =
       this.deps.limits?.pendingCompletion?.maxEntries ?? 1_000;
     if (ttlMs <= 0 || maxEntries <= 0) return;
-    while (this.pendingCompletions.size >= maxEntries) {
-      const oldest = this.pendingCompletions.keys().next().value;
-      if (oldest === undefined) break;
-      this.pendingCompletions.delete(oldest);
+    for (const [id, grant] of [...this.pendingCompletions]) {
+      if (grant.expiresAt <= now) this.pendingCompletions.delete(id);
+    }
+    if (this.pendingCompletions.size >= maxEntries) {
+      throw new AgentMessagingError(
+        "MESSAGE_QUEUE_FULL",
+        "Pending completion capacity reached; existing completion contracts are never evicted.",
+      );
     }
     this.pendingCompletions.set(messageId, {
       source,
@@ -213,8 +224,57 @@ export class AgentMessageRouter {
       mode,
       expiresAt: now + ttlMs,
     });
-    this.persistPendingCompletions();
+    // Reserve must be durable before the request leaves this daemon — a
+    // persistence failure here fails the send closed with a typed error, and
+    // the in-memory reservation is rolled back so no phantom grant remains.
+    try {
+      this.persistPendingCompletions();
+    } catch (error) {
+      this.pendingCompletions.delete(messageId);
+      throw new AgentMessagingError(
+        "DELIVERY_FAILED",
+        `Pending completion could not be persisted; request not sent: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
+
+  /** Compensation for a DEFINITE pre-admission rejection: the target never
+   *  accepted the request, so the reservation is released. */
+  private releasePendingCompletion(messageId: string): void {
+    if (!this.pendingCompletions.delete(messageId)) return;
+    try {
+      this.persistPendingCompletions();
+    } catch {
+      // Best-effort on compensation: the stale row expires with its TTL.
+    }
+  }
+
+  /** Retire the reservation once the completion was delivered/admitted. The
+   *  terminal tombstone (whose lifetime is derived from the grant) absorbs
+   *  late duplicates. */
+  private retirePendingCompletion(messageId: string): void {
+    this.releasePendingCompletion(messageId);
+  }
+
+  private static readonly DEFINITE_NOT_SENT_CODES: ReadonlySet<string> = new Set([
+    "ROUTE_UNAVAILABLE",
+    "TARGET_NODE_OFFLINE",
+    "TARGET_NOT_FOUND",
+    "TARGET_NOT_REACHABLE",
+    "TARGET_NOT_RUNNING",
+    "TARGET_AMBIGUOUS",
+    "TARGET_UNAVAILABLE",
+    "DELIVERY_DENIED",
+    "CONVERSATION_LIMIT_REACHED",
+    "DUPLICATE_MESSAGE",
+    "MESSAGE_RATE_LIMITED",
+    "MESSAGE_QUEUE_FULL",
+    "TARGET_NOT_STEERABLE",
+    "TARGET_NOT_INTERRUPTIBLE",
+    "MESSAGE_TOO_LARGE",
+  ]);
 
   /**
    * Write-through persistence for pending grants. The grant is an OUTWARD
@@ -223,21 +283,22 @@ export class AgentMessageRouter {
    * legitimate completion into DELIVERY_DENIED. Only small authorization
    * metadata is persisted, never result bodies.
    */
+  /**
+   * Throws on storage failure. Callers reserve-time MUST let the error
+   * propagate (fail closed — nothing is sent); compensation paths
+   * (release/retire) catch it themselves since a stale persisted row expires
+   * with its TTL anyway.
+   */
   private persistPendingCompletions(): void {
-    try {
-      this.deps.pendingCompletionStore?.save(
-        [...this.pendingCompletions].map(([requestMessageId, grant]) => ({
-          requestMessageId,
-          source: grant.source,
-          target: grant.target,
-          mode: grant.mode,
-          expiresAt: grant.expiresAt,
-        })),
-      );
-    } catch {
-      // Persistence is best-effort; the in-memory grant remains authoritative
-      // for this process lifetime.
-    }
+    this.deps.pendingCompletionStore?.save(
+      [...this.pendingCompletions].map(([requestMessageId, grant]) => ({
+        requestMessageId,
+        source: grant.source,
+        target: grant.target,
+        mode: grant.mode,
+        expiresAt: grant.expiresAt,
+      })),
+    );
   }
 
   /**
@@ -597,12 +658,27 @@ export class AgentMessageRouter {
         ...(input.replyTo ? { replyTo: input.replyTo } : {}),
       };
 
+      // v0.3: durable-reserve the completion contract BEFORE dispatch. A
+      // persistence failure throws here → the request fails closed and nothing
+      // is sent; capacity exhaustion likewise refuses the NEW request rather
+      // than evicting an older still-executing contract.
+      if (completion !== "none") {
+        this.reservePendingCompletion(
+          message.id,
+          sender.address,
+          target.endpoint.address,
+          completion,
+          createdAt,
+        );
+      }
+
       if (target.endpoint.address.nodeId !== sender.address.nodeId) {
         if (!this.deps.remoteRoute || !this.deps.remoteRoute.isAvailable()) {
           const err = new AgentMessagingError(
             "ROUTE_UNAVAILABLE",
             `Remote route is unavailable for destination node ${target.endpoint.address.nodeId}.`,
           );
+          if (completion !== "none") this.releasePendingCompletion(message.id);
           this.logDelivery(message, undefined, createdAt, err.code);
           this.recordTrace({
             messageId,
@@ -625,6 +701,15 @@ export class AgentMessageRouter {
           remoteReceipt = await this.deps.remoteRoute.send(message);
         } catch (error) {
           const mapped = mapDeliveryError(error);
+          // Definite pre-admission rejections release the reservation;
+          // ambiguous outcomes (timeout/race/unknown) retain it — the target
+          // may have accepted and the completion must still be honored.
+          if (
+            completion !== "none" &&
+            AgentMessageRouter.DEFINITE_NOT_SENT_CODES.has(mapped.code)
+          ) {
+            this.releasePendingCompletion(message.id);
+          }
           this.logDelivery(message, undefined, createdAt, mapped.code);
           this.recordTrace({
             messageId,
@@ -650,6 +735,9 @@ export class AgentMessageRouter {
             route: "relay",
           });
           throw mapped;
+        }
+        if (completion !== "none" && remoteReceipt.status === "failed") {
+          this.releasePendingCompletion(message.id);
         }
         this.cacheReceipt(remoteReceipt, createdAt);
         this.conversationMessageCounts.set(
@@ -686,15 +774,6 @@ export class AgentMessageRouter {
         this.logDelivery(message, remoteReceipt, createdAt);
         const senderSessionAlias = sender.sessionAlias ?? sender.coordinatorSession ?? binding.coordinatorSession;
         this.emitOutboundEvent(senderSessionAlias, message, target, remoteReceipt);
-        if (completion !== "none") {
-          this.recordPendingCompletion(
-            message.id,
-            sender.address,
-            target.endpoint.address,
-            completion,
-            createdAt,
-          );
-        }
         return remoteReceipt;
       }
 
@@ -715,6 +794,9 @@ export class AgentMessageRouter {
         );
       } catch (error) {
         const mapped = mapDeliveryError(error);
+        // Local admission is synchronous: a throw means the target never
+        // accepted → release the reservation.
+        if (completion !== "none") this.releasePendingCompletion(message.id);
         this.logDelivery(message, undefined, createdAt, mapped.code);
         this.recordTrace({
           messageId,
@@ -777,15 +859,6 @@ export class AgentMessageRouter {
         contentLength: Buffer.byteLength(input.content, "utf8"),
         contentHash,
       });
-      if (completion !== "none") {
-        this.recordPendingCompletion(
-          message.id,
-          sender.address,
-          target.endpoint.address,
-          completion,
-          createdAt,
-        );
-      }
       this.logDelivery(message, receipt, createdAt);
       const senderSessionAlias = sender.sessionAlias ?? sender.coordinatorSession ?? binding.coordinatorSession;
       this.emitOutboundEvent(senderSessionAlias, message, target, receipt);
@@ -1124,6 +1197,9 @@ export class AgentMessageRouter {
             ...(completion.error !== undefined ? { error: completion.error } : {}),
             completedAt,
           });
+          // Delivered to the source daemon → retire the reservation; the
+          // terminal tombstone absorbs late duplicates.
+          this.retirePendingCompletion(origin.requestMessageId);
           return completion;
         } catch (error) {
           void this.deps.logger
@@ -1163,6 +1239,7 @@ export class AgentMessageRouter {
             ...(completion.error !== undefined ? { error: completion.error } : {}),
             completedAt,
           });
+          this.retirePendingCompletion(origin.requestMessageId);
           return true;
         },
         completedAt,
@@ -1219,7 +1296,19 @@ export class AgentMessageRouter {
     error?: string;
     completedAt: number;
   }): Promise<{ ok: boolean; deduplicated?: boolean; error?: string }> {
-    // 1. Trust boundary (v0.3): an inbound completion is only honored when THIS
+    // 1. Idempotency gate on source injection (Gate N source half) runs BEFORE
+    // the grant check on purpose: once the contract is fulfilled and retired, a
+    // late at-least-once duplicate must still be absorbed by the terminal
+    // tombstone instead of surfacing as DELIVERY_DENIED retry noise.
+    const tombstone = this.completionInjections.get(input.requestMessageId);
+    if (tombstone) {
+      if (tombstone.expiresAt > (this.deps.now ?? Date.now)()) {
+        return { ok: true, deduplicated: true };
+      }
+      this.completionInjections.delete(input.requestMessageId);
+    }
+
+    // 2. Trust boundary (v0.3): an inbound completion is only honored when THIS
     // daemon originally sent a completion-bearing request whose messageId,
     // source and target exactly match. Without this check any same-account
     // instance could forge a "trusted" peer result into another agent's turn
@@ -1228,15 +1317,6 @@ export class AgentMessageRouter {
     const grantError = this.checkPendingCompletion(input);
     if (grantError) {
       throw grantError;
-    }
-
-    // 2. Idempotency gate on source injection (Gate N source half)
-    const tombstone = this.completionInjections.get(input.requestMessageId);
-    if (tombstone) {
-      if (tombstone.expiresAt > (this.deps.now ?? Date.now)()) {
-        return { ok: true, deduplicated: true };
-      }
-      this.completionInjections.delete(input.requestMessageId);
     }
 
     const completion: AgentMessageCompletion = {
@@ -1337,6 +1417,13 @@ export class AgentMessageRouter {
     if (result.status === "rejected") {
       return false;
     }
+    // Tombstone must outlive the authorization contract it deduplicates:
+    // expiry is anchored to the grant's own expiresAt when one still exists.
+    const now = (this.deps.now ?? Date.now)();
+    const grantExpiry =
+      this.pendingCompletions.get(requestMessageId)?.expiresAt ?? 0;
+    const cacheTtl = this.deps.limits?.completionCache?.ttlMs ?? 24 * 60 * 60_000;
+    const tombstoneExpiresAt = Math.max(grantExpiry, now + cacheTtl);
     while (
       this.completionInjections.size >=
       (this.deps.limits?.completionCache?.maxEntries ?? 2_000)
@@ -1346,10 +1433,11 @@ export class AgentMessageRouter {
       this.completionInjections.delete(oldest);
     }
     this.completionInjections.set(requestMessageId, {
-      expiresAt:
-        (this.deps.now ?? Date.now)() +
-        (this.deps.limits?.completionCache?.ttlMs ?? 24 * 60 * 60_000),
+      expiresAt: tombstoneExpiresAt,
     });
+    // Delivered/admitted → the outward contract is fulfilled; retire it so
+    // capacity returns and late hub-side duplicates hit the tombstone instead.
+    this.retirePendingCompletion(requestMessageId);
     return true;
   }
   /** Retry cadence for pending completion deliveries. */

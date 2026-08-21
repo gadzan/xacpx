@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import { WebSocket, WebSocketServer } from "ws";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 import {
   MSG,
@@ -19,19 +21,27 @@ import {
 import { AccountStore } from "../../../../../packages/relay/src/stores/accounts";
 import { InstanceStore } from "../../../../../packages/relay/src/stores/instances";
 import { InstanceGateway } from "../../../../../packages/relay/src/gateway/instance-gateway";
+import { PendingCompletionRouteStore } from "../../../../../packages/relay/src/stores/pending-completion-routes";
 
-async function makeGateway(requestTimeoutMs = 1000) {
-  const db = await createSqlDriver(":memory:");
+async function makeGateway(requestTimeoutMs = 1000, dbPath?: string) {
+  const db = await createSqlDriver(dbPath ?? ":memory:");
   initSchema(db);
   const accounts = new AccountStore(db);
   const instances = new InstanceStore(db);
-  const account = accounts.createAccount("alice");
-  const accountBob = accounts.createAccount("bob");
+  // Restart runs reuse the same DB — "alice" already exists there.
+  const account =
+    accounts.listAccounts().find((a) => a.username === "alice") ??
+    accounts.createAccount("alice");
+  const accountBob =
+    accounts.listAccounts().find((a) => a.username === "bob") ??
+    accounts.createAccount("bob");
   const events: unknown[] = [];
+  const pendingCompletionRouteStore = new PendingCompletionRouteStore(db);
   const gateway = new InstanceGateway({
     instances,
     accounts,
     requestTimeoutMs,
+    pendingCompletionRoutes: pendingCompletionRouteStore,
     onEvent: (instanceId, accountId, envelope) =>
       events.push({ instanceId, accountId, type: envelope.type }),
   });
@@ -125,6 +135,37 @@ function publishEndpoints(
       payload: { endpoints },
     }),
   );
+}
+
+/** Re-authenticate an already-paired instance using its stored credential —
+ *  the production reconnect path after a Hub restart. */
+async function authWithCredential(
+  url: string,
+  instanceId: string,
+  credential: string,
+): Promise<WebSocket> {
+  const socket = new WebSocket(url);
+  await new Promise<void>((resolve, reject) => {
+    socket.on("open", () => resolve());
+    socket.on("error", reject);
+  });
+  socket.send(
+    encodeEnvelope({
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: `auth-${instanceId}`,
+      type: MSG.instanceAuth,
+      payload: { instanceId, credential },
+    }),
+  );
+  const res = await nextMessage(socket);
+  // The gateway answers credential auth with { ok: true } — the instance id
+  // was resolved from the stored credential server-side, and THIS socket is
+  // now the authenticated connection for the instance.
+  if ((res.payload as { ok?: boolean }).ok !== true) {
+    throw new Error(`credential auth failed for ${instanceId}`);
+  }
+  return socket;
 }
 
 test("Relay Hub routes agent.message.route to target instance via agent.message.deliver and preserves source identity", async () => {
@@ -923,4 +964,107 @@ test("Relay Hub isolates completions across different accounts", async () => {
   socketAlice.close();
   socketBob.close();
   wss.close();
-});
+}, { timeout: 60_000 });
+
+
+test("Relay Hub pending completion ROUTE grants SURVIVE a full gateway restart on the same SQLite database", async () => {
+  const dbPath = join(tmpdir(), `xacpx-hub-grants-${Date.now()}.db`);
+
+  // ---- Process 1: establish the route grant through a real exchange. ----
+  let credA = "";
+  let credB = "";
+  let instA = "";
+  let instB = "";
+  {
+    const { instances, account, wss, url } = await makeGateway(1000, dbPath);
+    const tokenA = instances.issuePairingToken(account.id, "nodeA", 600_000).token;
+    const socketA = await connect(url);
+    const regA = await authInstance(socketA, tokenA);
+    credA = regA.credential;
+    instA = regA.instanceId;
+    const tokenB = instances.issuePairingToken(account.id, "nodeB", 600_000).token;
+    const socketB = await connect(url);
+    const regB = await authInstance(socketB, tokenB);
+    credB = regB.credential;
+    instB = regB.instanceId;
+
+    publishEndpoints(socketA, [publishedEndpoint("node_a_999", "worker_a_sender")]);
+    publishEndpoints(socketB, [publishedEndpoint("node_b_123", "worker_b")]);
+    await new Promise((r) => setTimeout(r, 50));
+
+    await establishCompletionRoute({
+      socketA,
+      socketB,
+      routeId: "route-restart",
+      messageId: "msg_restart_persist",
+      mode: "result",
+    });
+
+    socketA.close();
+    socketB.close();
+    wss.close();
+
+  }
+
+  // ---- Process 2: FRESH gateway on the same SQLite file (Hub restart). ----
+  {
+    const { account, wss, url } = await makeGateway(1000, dbPath);
+    void account;
+
+    const socketA = await authWithCredential(url, instA, credA);
+    const socketB = await authWithCredential(url, instB, credB);
+
+    // Production reconnect path: re-auth with the STORED credential → same
+    // instance ids as before the restart. No re-publishing needed for the
+    // completion to route — authorization comes from the persisted grant.
+    let receivedCompletion: AgentMessageCompletionPayload | null = null;
+    socketA.on("message", (data) => {
+      const decoded = decodeEnvelope(String(data));
+      if (
+        decoded.ok &&
+        decoded.envelope.kind === "req" &&
+        decoded.envelope.type === MSG.agentMessageCompletion
+      ) {
+        receivedCompletion = decoded.envelope.payload as AgentMessageCompletionPayload;
+        socketA.send(
+          encodeEnvelope({
+            protocolVersion: RELAY_PROTOCOL_VERSION,
+            kind: "res",
+            id: decoded.envelope.id,
+            type: decoded.envelope.type,
+            payload: { ok: true },
+          }),
+        );
+      }
+    });
+
+    socketB.send(
+      encodeEnvelope({
+        protocolVersion: RELAY_PROTOCOL_VERSION,
+        kind: "req",
+        id: "comp-after-restart",
+        type: MSG.agentMessageCompletion,
+        payload: {
+          requestMessageId: "msg_restart_persist",
+          source: { nodeId: "node_a_999", endpointId: "worker_a_sender" },
+          target: { nodeId: "node_b_123", endpointId: "worker_b" },
+          status: "completed",
+          result: "survived the restart",
+          completedAt: Date.now(),
+        },
+      }),
+    );
+
+    console.log("SENDING COMPLETION after restart");
+    const resB = await nextResponse(socketB);
+    console.log("RES B:", resB.kind, JSON.stringify(resB.payload));
+    expect(resB.kind).toBe("res");
+    expect((resB.payload as { ok?: boolean }).ok).toBe(true);
+    expect(receivedCompletion).toBeDefined();
+    expect(receivedCompletion!.result).toBe("survived the restart");
+
+    socketA.close();
+    socketB.close();
+    wss.close();
+  }
+}, { timeout: 60_000 });
