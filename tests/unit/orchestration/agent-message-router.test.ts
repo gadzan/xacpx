@@ -1749,6 +1749,108 @@ test("Gate O: peer turn failure sets completionStatus=failed and carries sanitiz
   expect(deliveredCompletions[1]).toContain('<xacpx-peer-completion request-id="msg_cancel_cycle" from="agent:' + nodeId + ':endpoint_worker-b" status="cancelled">');
 });
 
+test("Gate P: two independent concurrent completion pairs (A→B, C→D) do not cross-contaminate results or identities", async () => {
+  const events = createControlEventBus();
+  const emitted: ControlEvent[] = [];
+  events.subscribe((e) => emitted.push(e));
+  const deliveredCompletions: Array<{ alias: string; prompt: string }> = [];
+
+  let idSeq = 0;
+  const { router, state } = makeRouter({
+    events,
+    createId: () => `uuid-${++idSeq}`,
+  });
+  // Register a fourth worker so pair 2 (C→D) has a disjoint target endpoint.
+  state.orchestration.workerBindings.workerD = {
+    sourceHandle: "workerD",
+    agentEndpointId: "endpoint_worker-d",
+    coordinatorSession: "coordinator",
+    workspace: "project",
+    targetAgent: "codex",
+  };
+  // Test seam: swap the delivery adapter's completion injector for a recorder
+  // (same override the Gate N/O tests perform, via a typed narrow instead of any).
+  const deliverySeam = router as unknown as {
+    deps: {
+      delivery: {
+        deliverCompletion: (
+          alias: string,
+          prompt: string,
+        ) => Promise<{ status: "injected" | "queued" }>;
+      };
+    };
+  };
+  deliverySeam.deps.delivery.deliverCompletion = async (alias, prompt) => {
+    deliveredCompletions.push({ alias, prompt });
+    return { status: "injected" };
+  };
+
+  const bindingA = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
+  const bindingC = { coordinatorSession: "coordinator", sourceHandle: "workerC" };
+  const toB = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+  const toD = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-d" });
+
+  const receiptAB = await router.send(bindingA, { to: toB, content: "task for B", completion: "result" });
+  const receiptCD = await router.send(bindingC, { to: toD, content: "task for D", completion: "result" });
+  expect(receiptAB.messageId).not.toBe(receiptCD.messageId);
+
+  // Terminals arrive concurrently and out of order (D finishes before B).
+  const [completionCD, completionAB] = await Promise.all([
+    router.completePeerTurn(
+      {
+        requestMessageId: receiptCD.messageId,
+        completion: "result",
+        source: { nodeId, endpointId: "endpoint_worker-c" },
+        target: { nodeId, endpointId: "endpoint_worker-d" },
+      },
+      { ok: true, text: "answer from D" },
+    ),
+    router.completePeerTurn(
+      {
+        requestMessageId: receiptAB.messageId,
+        completion: "result",
+        source: { nodeId, endpointId: "endpoint_worker-a" },
+        target: { nodeId, endpointId: "endpoint_worker-b" },
+      },
+      { ok: true, text: "answer from B" },
+    ),
+  ]);
+
+  expect(completionAB?.requestMessageId).toBe(receiptAB.messageId);
+  expect(completionAB?.result).toBe("answer from B");
+  // Completion travels reverse to the source: `to` = original sender, `from` = peer.
+  expect(completionAB?.to.endpointId).toBe("endpoint_worker-a");
+  expect(completionAB?.from.endpointId).toBe("endpoint_worker-b");
+  expect(completionCD?.requestMessageId).toBe(receiptCD.messageId);
+  expect(completionCD?.result).toBe("answer from D");
+  expect(completionCD?.to.endpointId).toBe("endpoint_worker-c");
+  expect(completionCD?.from.endpointId).toBe("endpoint_worker-d");
+  // Exactly one injection per pair, each carrying only its own result.
+  expect(deliveredCompletions).toHaveLength(2);
+  const prompts = deliveredCompletions.map((d) => d.prompt);
+  expect(prompts.find((p) => p.includes("answer from B"))).toBeTruthy();
+  expect(prompts.find((p) => p.includes("answer from D"))).toBeTruthy();
+  expect(prompts.find((p) => p.includes("answer from B"))).not.toContain("answer from D");
+  expect(prompts.find((p) => p.includes("answer from D"))).not.toContain("answer from B");
+
+  // History updates: per pair exactly one "pending" (on send) + one terminal
+  // "completed", keyed to that pair's own requestMessageId — no identity bleed.
+  const completionUpdates = emitted.filter(
+    (e): e is Extract<ControlEvent, { type: "agent-message" }> =>
+      e.type === "agent-message" && e.message.completionStatus !== undefined,
+  );
+  expect(completionUpdates).toHaveLength(4);
+  const statusById = new Map<string, string[]>();
+  for (const e of completionUpdates) {
+    const statuses = statusById.get(e.message.messageId) ?? [];
+    statuses.push(e.message.completionStatus!);
+    statusById.set(e.message.messageId, statuses);
+  }
+  expect(statusById.get(receiptAB.messageId)).toEqual(["pending", "completed"]);
+  expect(statusById.get(receiptCD.messageId)).toEqual(["pending", "completed"]);
+});
+
+
 test("Guards untouched: completion cycle does not consume conversation depth, volume, rate limit, or duplicate counters", async () => {
   let clock = 10_000;
   const { router } = makeRouter({

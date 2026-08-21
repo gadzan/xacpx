@@ -96,6 +96,7 @@ There are two session concepts:
 - Commands module: [`docs/commands-module.md`](docs/commands-module.md)
 - MCP integration: [`docs/external-mcp.md`](docs/external-mcp.md)
 - Agent Messaging proposal: [`docs/superpowers/specs/2026-08-11-agent-messaging-design.md`](docs/superpowers/specs/2026-08-11-agent-messaging-design.md)
+- Agent Messaging v0.3 collaboration UX (card anchoring / @Agent ranking / completion policy): [`docs/superpowers/specs/2026-08-21-xacpx-agent-message-collaboration-ux-v0.3.md`](docs/superpowers/specs/2026-08-21-xacpx-agent-message-collaboration-ux-v0.3.md)
 - `xacpx doctor`: [`docs/doctor-command.md`](docs/doctor-command.md)
 - Control API: [`docs/control-module.md`](docs/control-module.md)
 - Relay Hub deployment: [`docs/relay-deployment.md`](docs/relay-deployment.md)

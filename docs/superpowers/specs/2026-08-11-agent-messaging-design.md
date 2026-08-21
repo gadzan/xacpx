@@ -1295,3 +1295,42 @@ target daemon      = destination policy + final injection authority
 acpx queue owner   = live session / active-turn owner
 adapter            = provider-specific steering implementation
 ```
+
+---
+
+## 20. v0.3 Collaboration UX（已实现）
+
+v0.3 在 v0.2 单向消息基础上增加三项能力，完整规范见
+[`2026-08-21-xacpx-agent-message-collaboration-ux-v0.3.md`](2026-08-21-xacpx-agent-message-collaboration-ux-v0.3.md)。
+
+### 20.1 发送方卡片锚定（Sender Card Anchoring）
+
+- `agent_send` 工具结果中的结构化回执 `messageId` 由 connector 提取并写入
+  `ToolStepDto.agentMessageId`（仅限 `agent_send` 且回执结构合法时）。
+- Relay Web 在呈现层按 messageId 精确 join：发送方 AgentMessage 卡片渲染在对应
+  tool step 之后，不再作为独立时间线行；无法关联的历史卡片保持独立行（向后兼容）。
+- 关联只依赖显式 messageId，禁止时间戳 / 文本 / 顺序推断。
+
+### 20.2 上下文感知 @Agent 自动补全
+
+- Canonical Agent Directory 仍是唯一可达性事实来源；Web 只做排序与展示。
+- 目录新增可选元数据 `endpointKind`（logical | worker）与 `channelId`
+  （来自 known-channel registry，非别名字符串推断）。
+- 排序：空/宽泛查询按上下文分层（同 workspace > 同实例 > 其他实例 >
+  非 Relay/worker/legacy）；明确查询时文本匹配优先于上下文分层。
+- 自身 endpoint 按规范身份（instanceId + sessionAlias）排除，不按 displayName。
+
+### 20.3 系统托管完成策略（Completion Policy）
+
+- `agent_send` 新增 `completion?: "none" | "notify" | "result"`，默认 none。
+- `agent_send` 仍立即返回投递回执；完成信号由 xacpx 运行时在对端 turn 终态后生成，
+  对端 Agent 无需回复。
+- 完成不是普通 AgentMessage：不消耗会话深度 / 音量 / 频控 / 去重计数器，不可回复。
+- 通过 `PeerTurnOrigin { requestMessageId, completion, source, target }` 精确关联
+  对端 TurnQueue 条目与执行；禁止"等下一个 turn-finished"式推断。
+- 结果仅取对端 turn 最终用户可见助手文本，16KiB 截断上限 + 稳定截断标记。
+- 注入使用受信信封 `<xacpx-peer-completion>` / `<xacpx-peer-result>`（内容转义 +
+  xacpx 指令框架），源侧按 requestMessageId 幂等（恰好一次）。
+- 归档源会话仅记录完成状态，不会被自动唤醒；忙碌源会话在原 canonical lane 排队。
+- 本地与 Relay 联邦路径语义一致；旧版本对端显式请求 completion 时返回类型化失败
+  `COMPLETION_NOT_SUPPORTED`。
