@@ -108,9 +108,11 @@ function countSummary(output: Record<string, unknown>): string | undefined {
   return parts.join(" · ");
 }
 
-/** messageId = "msg_" + randomUUID() (core agent-message-router); the loose
- * length bound keeps the gate tight without coupling to UUID formatting. */
-const AGENT_MSG_ID_RE = /^msg_[0-9a-fA-F-]{8,}$/;
+/** messageId is an OPAQUE id ("msg_" + createId()) — the core never promises a
+ * UUID shape and tests/fixtures legitimately use forms like msg_message-1. The
+ * gate therefore checks the msg_ prefix plus a bounded safe-id charset, never a
+ * specific generator's alphabet. */
+const AGENT_MSG_ID_RE = /^msg_[A-Za-z0-9_-]{7,127}$/;
 const AGENT_RECEIPT_STATUSES: Record<string, true> = { injected: true, queued: true, failed: true };
 
 /** A record is a receipt only with a well-formed messageId AND a receipt status —

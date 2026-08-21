@@ -298,6 +298,15 @@ test("Phase 7: end-to-end local peer turn completion delivery routes back to sou
     created_at: "2026-08-18T00:00:00.000Z",
     last_used_at: "2026-08-18T00:00:00.000Z",
   };
+  state.sessions.peer = {
+    alias: "peer",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "peer-session",
+    logical_session_id: "22222222-2222-4222-8222-222222222222",
+    created_at: "2026-08-18T00:00:00.000Z",
+    last_used_at: "2026-08-18T00:00:00.000Z",
+  };
   state.orchestration.workerBindings["worker-a"] = {
     sourceHandle: "worker-a",
     agentEndpointId: "endpoint_worker-a",
@@ -325,7 +334,11 @@ test("Phase 7: end-to-end local peer turn completion delivery routes back to sou
     }),
   );
   await writeFile(statePath, JSON.stringify(state));
-  let capturedCompletionTurnParams: { sourceAlias: string; prompt: string; requestMessageId: string } | null = null;
+  let capturedCompletionTurnParams: {
+    sourceAlias: string;
+    completion: { requestMessageId: string; status: string; result?: string };
+    requestMessageId: string;
+  } | null = null;
   const runtime = await buildApp(
     { configPath, statePath, orchestrationSocketPath },
     {
@@ -353,7 +366,9 @@ test("Phase 7: end-to-end local peer turn completion delivery routes back to sou
   };
 
   try {
-    // List peers from worker-a
+    // v0.3: completion requires a LOGICAL sender and LOGICAL target — the
+    // canonical TurnQueue path is the only one that can produce a correlated
+    // terminal event. The logical coordinator session sends to the logical peer.
     const listResponse = JSON.parse(
       await runtime.orchestration.server.handleLine(
         JSON.stringify({
@@ -361,14 +376,13 @@ test("Phase 7: end-to-end local peer turn completion delivery routes back to sou
           method: "agent.list",
           params: {
             coordinatorSession: "coordinator-session",
-            sourceHandle: "worker-a",
           },
         }),
       ),
     );
     expect(listResponse.ok).toBe(true);
     const coordinatorPeer = listResponse.result.find(
-      (peer: { address: { endpointId: string } }) => peer.address.endpointId === "11111111-1111-4111-8111-111111111111",
+      (peer: { address: { endpointId: string } }) => peer.address.endpointId === "22222222-2222-4222-8222-222222222222",
     );
     expect(coordinatorPeer).toBeDefined();
 
@@ -380,7 +394,6 @@ test("Phase 7: end-to-end local peer turn completion delivery routes back to sou
           method: "agent.send",
           params: {
             coordinatorSession: "coordinator-session",
-            sourceHandle: "worker-a",
             to: coordinatorPeer.handle,
             message: "please calculate total",
             completion: "result",
@@ -404,7 +417,7 @@ test("Phase 7: end-to-end local peer turn completion delivery routes back to sou
         completion: "result",
         source: {
           nodeId: coordinatorPeer.address.nodeId,
-          endpointId: "endpoint_worker-a",
+          endpointId: "11111111-1111-4111-8111-111111111111",
         },
         target: coordinatorPeer.address,
       },
@@ -414,13 +427,12 @@ test("Phase 7: end-to-end local peer turn completion delivery routes back to sou
     await completionDelivered.promise;
 
     expect(capturedCompletionTurnParams).toBeDefined();
-    expect(capturedCompletionTurnParams!.sourceAlias).toBe("worker-a");
+    expect(capturedCompletionTurnParams!.sourceAlias).toBe("coordinator");
     expect(capturedCompletionTurnParams!.requestMessageId).toBe(receipt.messageId);
-    expect(capturedCompletionTurnParams!.prompt).toContain("<xacpx-peer-result");
-    expect(capturedCompletionTurnParams!.prompt).toContain('status="completed"');
-    expect(capturedCompletionTurnParams!.prompt).toContain("Total is 42");
-    expect(capturedCompletionTurnParams!.prompt).toContain("<instruction>");
-    expect(capturedCompletionTurnParams!.prompt).toContain("Do NOT send an acknowledgement or confirmation message back to the peer.");
+    // The router hands over a STRUCTURED completion; the trusted envelope is
+    // composed inside the SessionTurnRunner after user text is disarmed.
+    expect(capturedCompletionTurnParams!.completion.status).toBe("completed");
+    expect(capturedCompletionTurnParams!.completion.result).toBe("Total is 42");
   } finally {
     await runtime.dispose();
     await rm(dir, { recursive: true, force: true });

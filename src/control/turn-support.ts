@@ -1,7 +1,10 @@
 import type {
   AgentAddress,
+  AgentMessageCompletion,
   AgentMessageCompletionMode,
 } from "../orchestration/agent-messaging-types";
+
+export type { AgentMessageCompletion };
 import type { ChatRequestMetadata } from "../weixin/agent/interface";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 
@@ -37,6 +40,11 @@ export interface QueuedPrompt {
    *  pre-written inbound row even if the queued RPC response was lost. */
   promptRequestId?: string;
   peerOrigin?: PeerTurnOrigin;
+  /** v0.3: structured system-managed completion for a source-side completion
+   *  turn. The SessionTurnRunner builds the trusted envelope itself AFTER
+   *  disarming user text — a pre-rendered XML wrapper passed as `text` would be
+   *  disarmed into inert markup and lose its provenance. */
+  trustedPeerCompletion?: AgentMessageCompletion;
 }
 
 // Upper bound on how long a follow-up prompt waits for a just-cancelled turn to

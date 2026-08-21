@@ -282,7 +282,8 @@ var CONTROL_EVENT_TYPE_MAP = {
   "orchestration-changed": true,
   "terminal-output": true,
   "terminal-exit": true,
-  "agent-message": true
+  "agent-message": true,
+  "agent-message-completion": true
 };
 var CONTROL_EVENT_TYPES = new Set(Object.keys(CONTROL_EVENT_TYPE_MAP));
 var TOOL_STEP_KINDS = new Set(["read", "search", "execute", "edit", "think", "other"]);
@@ -488,6 +489,8 @@ function validControlEvent(e) {
       return typeof c.terminalId === "string" && typeof c.code === "number";
     case "agent-message":
       return typeof c.sessionAlias === "string" && optStr(c.chatKey) && validPeerMessageHistoryEntry(c.message);
+    case "agent-message-completion":
+      return typeof c.sessionAlias === "string" && optStr(c.messageId) && (c.completionStatus === "completed" || c.completionStatus === "failed" || c.completionStatus === "cancelled");
     case "sessions-changed":
     case "workspaces-changed":
     case "orchestration-changed":

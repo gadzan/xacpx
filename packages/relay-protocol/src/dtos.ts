@@ -317,6 +317,15 @@ export type ControlEventDto =
       chatKey?: string;
       sessionAlias: string;
       message: PeerMessageHistoryEntry;
+    }
+  | {
+      /** v0.3 completion-status PATCH for an already-persisted sender card.
+       *  Carries only the correlation id and new terminal status — the durable
+       *  row's content/peer/mode must never be rebuilt from this event. */
+      type: "agent-message-completion";
+      sessionAlias: string;
+      messageId: string;
+      completionStatus: "completed" | "failed" | "cancelled";
     };
 
 export interface TerminalAttachRequest {

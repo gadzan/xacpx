@@ -37,6 +37,8 @@ export interface ResolvedAgentIdentity {
   address: AgentAddress;
   coordinatorSession: string;
   receive: boolean;
+  /** Runtime kind of the sender — completion requests are logical-sender-only. */
+  senderKind: "logical" | "worker" | "external";
   sessionAlias?: string;
   displayName?: string;
   agent?: string;
@@ -219,6 +221,7 @@ export class AgentEndpointRegistry {
           address: { nodeId: this.deps.nodeId, endpointId },
           coordinatorSession,
           receive: true,
+          senderKind: "worker",
           sessionAlias: sourceHandle,
           displayName: worker.role || worker.targetAgent,
           agent: worker.targetAgent,
@@ -233,8 +236,9 @@ export class AgentEndpointRegistry {
             nodeId: this.deps.nodeId,
             endpointId: requireEndpointId(external.agentEndpointId),
           },
-          coordinatorSession,
           receive: false,
+          senderKind: "external",
+          coordinatorSession,
           sessionAlias: coordinatorSession,
         };
       }
@@ -254,6 +258,7 @@ export class AgentEndpointRegistry {
         },
         coordinatorSession,
         receive: true,
+        senderKind: "logical",
         sessionAlias: logical.alias,
         displayName: logical.display_name || logical.alias,
         agent: logical.agent,
@@ -271,6 +276,7 @@ export class AgentEndpointRegistry {
         },
         coordinatorSession,
         receive: false,
+        senderKind: "external",
         sessionAlias: coordinatorSession,
       };
     }
@@ -563,7 +569,7 @@ export class AgentEndpointRegistry {
           displayName,
           state: workerState,
           activity,
-          capabilities: queueOnlyCapabilities(),
+          capabilities: queueOnlyCapabilities({ completion: false }),
           // Worker endpoints are channel-agnostic orchestration runtimes: no
           // authoritative channel fact exists, so channelId stays absent.
           endpointKind: "worker",
@@ -601,7 +607,7 @@ export class AgentEndpointRegistry {
       activity: {
         status: isRunning ? "working" : "idle",
       },
-      capabilities: queueOnlyCapabilities(),
+      capabilities: queueOnlyCapabilities({ completion: true }),
       endpointKind: "logical",
       // Channel ownership is derived from the internal alias namespace (the
       // authoritative channel-scoping record) via the single-home helper in
@@ -675,14 +681,18 @@ function findLogicalSession(
     .sort((left, right) => left.alias.localeCompare(right.alias))[0];
 }
 
-function queueOnlyCapabilities(): AgentCapabilities {
+function queueOnlyCapabilities(options?: { completion?: boolean }): AgentCapabilities {
   return {
     receive: true,
     steer: false,
     queue: true,
     interrupt: false,
     conversation: true,
-    completion: true,
+    // v0.3: completion signals require the canonical TurnQueue/SessionTurnRunner
+    // path (PeerTurnOrigin → turn-finished). Only logical sessions run on that
+    // path — worker runtimes inject via transport.injectMessage and can never
+    // produce a correlated terminal event, so they must not advertise completion.
+    completion: options?.completion ?? false,
   };
 }
 

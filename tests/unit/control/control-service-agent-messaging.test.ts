@@ -159,7 +159,7 @@ test("Phase 6: ControlService.submitPeerTurn passes peerOrigin to TurnQueue", as
   });
 });
 
-test("Phase 7: ControlService.submitCompletionTurn passes prompt to TurnQueue without peerOrigin", async () => {
+test("Phase 7: ControlService.submitCompletionTurn passes the STRUCTURED completion to TurnQueue (never pre-rendered prompt text)", async () => {
   const { service } = makeControlService();
   (service as any).deps.sessions.getSession = async () => ({
     alias: "main",
@@ -172,9 +172,18 @@ test("Phase 7: ControlService.submitCompletionTurn passes prompt to TurnQueue wi
     return { status: "injected" };
   };
 
+  const completion = {
+    requestMessageId: "msg_comp_1",
+    from: { nodeId: "node_1", endpointId: "peer" },
+    to: { nodeId: "node_1", endpointId: "source" },
+    status: "completed" as const,
+    result: "the answer",
+    completedAt: 123,
+  };
+
   const res = await service.submitCompletionTurn({
     sourceAlias: "main",
-    prompt: "<xacpx-peer-result>result</xacpx-peer-result>",
+    completion,
     requestMessageId: "msg_comp_1",
   });
 
@@ -183,13 +192,16 @@ test("Phase 7: ControlService.submitCompletionTurn passes prompt to TurnQueue wi
     chatKey: "relay:agent-message:main",
     sessionAlias: "main",
     boundSessionAlias: "main",
-    text: "<xacpx-peer-result>result</xacpx-peer-result>",
+    // Prompt text is empty: the trusted envelope is composed inside the
+    // SessionTurnRunner AFTER user text is disarmed.
+    text: "",
     senderId: "agent-messaging",
     promptRequestId: "msg_comp_1",
     isPeerMessage: true,
     allowRestoreArchived: false,
     preserveCoordinatorRoute: true,
   });
+  expect(capturedParams.trustedPeerCompletion).toEqual(completion);
   // Completion turn must NOT carry peerOrigin (one-shot, non-replyable)
   expect(capturedParams.peerOrigin).toBeUndefined();
 });

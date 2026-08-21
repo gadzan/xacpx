@@ -477,6 +477,16 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 new Date(event.message.createdAt).toISOString(),
               );
             }
+          } else if (event.type === "agent-message-completion") {
+            // v0.3: completion-status PATCH. Only flips the terminal status on
+            // the already-persisted sender card — the durable row's content,
+            // peer, conversation and completion mode are never rebuilt here.
+            messages.patchAgentMessageCompletionStatus(
+              instanceId,
+              event.sessionAlias,
+              event.messageId,
+              event.completionStatus,
+            );
           }
         } else if (envelope.type === MSG.instanceStateSync) {
           if (!validInstanceStateSync(envelope.payload)) {

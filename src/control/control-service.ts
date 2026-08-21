@@ -17,6 +17,7 @@ import type {
   OrchestrationTaskFilter,
 } from "../orchestration/orchestration-service";
 import type { OrchestrationTaskRecord } from "../orchestration/orchestration-types";
+import type { AgentMessageCompletion } from "../orchestration/agent-messaging-types";
 import {
   getChannelIdFromChatKey,
   isSessionAliasVisibleInChannel,
@@ -1398,7 +1399,7 @@ export class ControlService {
 
   async submitCompletionTurn(input: {
     sourceAlias: string;
-    prompt: string;
+    completion: AgentMessageCompletion;
     requestMessageId: string;
   }): Promise<{ status: "injected" | "queued" } | { status: "rejected"; reason: string }> {
     const session = await this.deps.sessions.getSession(input.sourceAlias);
@@ -1411,12 +1412,18 @@ export class ControlService {
       sessionAlias: input.sourceAlias,
       boundSessionAlias: internalAlias,
       concurrencyKey: internalAlias,
-      text: input.prompt,
+      // The trusted completion envelope is NOT carried as prompt text — the
+      // runner disarms all user text before composing its prompt, so a
+      // pre-rendered trusted XML wrapper would be escaped into inert text.
+      // Instead the structured completion rides the queue and the
+      // SessionTurnRunner builds the server-owned envelope itself.
+      text: "",
       senderId: "agent-messaging",
       promptRequestId: input.requestMessageId,
       isPeerMessage: true,
       allowRestoreArchived: false,
       preserveCoordinatorRoute: true,
+      trustedPeerCompletion: input.completion,
     });
     return admission;
   }

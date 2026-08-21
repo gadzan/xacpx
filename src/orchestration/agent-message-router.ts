@@ -50,7 +50,7 @@ export interface LocalAgentMessageDelivery {
   ): Promise<SessionMessageReceipt>;
   deliverCompletion?(
     sourceAlias: string,
-    prompt: string,
+    completion: AgentMessageCompletion,
     requestMessageId: string,
   ): Promise<{ status: "injected" | "queued" } | { status: "rejected"; reason: string }>;
 }
@@ -81,6 +81,10 @@ export interface AgentMessageRouterLimits {
     ttlMs: number;
   };
   contextCache?: {
+    maxEntries: number;
+    ttlMs: number;
+  };
+  pendingCompletion?: {
     maxEntries: number;
     ttlMs: number;
   };
@@ -138,6 +142,100 @@ export class AgentMessageRouter {
     AgentMessageCompletion
   >();
   private readonly completionInjections = new Set<string>();
+  /**
+   * Completions whose terminal outcome is recorded but whose DELIVERY has not
+   * yet been admitted (remote route offline, source queue full, transport
+   * throw). Swept periodically until admitted or expired — a completion is
+   * never silently dropped after the peer turn already finished.
+   */
+  private readonly deliveryPending = new Map<
+    string,
+    {
+      attempt: () => Promise<boolean>;
+      nextAttemptAt: number;
+      expiresAt: number;
+    }
+  >();
+  private deliveryRetryTimer: NodeJS.Timeout | undefined;
+  /**
+   * Authoritative pending-completion grants (v0.3 trust boundary). Created ONLY
+   * when a logical sender successfully sends with completion != none; inbound
+   * completions must exact-match a live grant or they are DELIVERY_DENIED.
+   * Bounded: TTL + max entries, oldest evicted first.
+   */
+  private readonly pendingCompletions = new Map<
+    string,
+    {
+      source: AgentAddress;
+      target: AgentAddress;
+      mode: "notify" | "result";
+      expiresAt: number;
+    }
+  >();
+
+  private recordPendingCompletion(
+    messageId: string,
+    source: AgentAddress,
+    target: AgentAddress,
+    mode: "notify" | "result",
+    now: number,
+  ): void {
+    const ttlMs = this.deps.limits?.pendingCompletion?.ttlMs ?? 24 * 60 * 60_000;
+    const maxEntries =
+      this.deps.limits?.pendingCompletion?.maxEntries ?? 1_000;
+    if (ttlMs <= 0 || maxEntries <= 0) return;
+    while (this.pendingCompletions.size >= maxEntries) {
+      const oldest = this.pendingCompletions.keys().next().value;
+      if (oldest === undefined) break;
+      this.pendingCompletions.delete(oldest);
+    }
+    this.pendingCompletions.set(messageId, {
+      source,
+      target,
+      mode,
+      expiresAt: now + ttlMs,
+    });
+  }
+
+  /**
+   * Trust-boundary check for inbound completions: a completion is only accepted
+   * when an unexpired grant exists for this exact requestMessageId with
+   * matching source AND target addresses, and the payload does not upgrade a
+   * notify grant into a result-bearing completion.
+   */
+  private checkPendingCompletion(input: {
+    requestMessageId: string;
+    source: AgentAddress;
+    target: AgentAddress;
+    result?: string;
+  }): AgentMessagingError | undefined {
+    const grant = this.pendingCompletions.get(input.requestMessageId);
+    const now = (this.deps.now ?? Date.now)();
+    if (!grant || grant.expiresAt <= now) {
+      if (grant) this.pendingCompletions.delete(input.requestMessageId);
+      return new AgentMessagingError(
+        "DELIVERY_DENIED",
+        "No pending completion grant exists for this request message id.",
+      );
+    }
+    if (
+      !sameAddress(grant.source, input.source) ||
+      !sameAddress(grant.target, input.target)
+    ) {
+      return new AgentMessagingError(
+        "DELIVERY_DENIED",
+        "Completion source/target do not match the original request.",
+      );
+    }
+    if (grant.mode === "notify" && input.result !== undefined) {
+      return new AgentMessagingError(
+        "DELIVERY_DENIED",
+        "A notify-mode completion must not carry a result body.",
+      );
+    }
+    return undefined;
+  }
+
   constructor(
     private readonly deps: {
       registry: Pick<
@@ -293,14 +391,21 @@ export class AgentMessageRouter {
       ? await this.deps.registry.resolveSelector(sender, input.selector)
       : await this.deps.registry.resolveTarget(sender, input.to!);
 
-    if (
-      completion !== "none" &&
-      !target.endpoint.capabilities.completion
-    ) {
-      throw new AgentMessagingError(
-        "COMPLETION_NOT_SUPPORTED",
-        `Completion mode '${completion}' is not supported.`,
-      );
+    if (completion !== "none") {
+      // v0.3 fail-closed scope: completion signals ride the canonical
+      // TurnQueue/SessionTurnRunner path, which only logical sessions have on
+      // both ends. Worker runtimes inject via transport.injectMessage (no
+      // correlated terminal event) and worker/external senders have no logical
+      // lane to receive the completion turn in.
+      const senderIsLogical = sender.senderKind === "logical";
+      const targetSupportsCompletion =
+        target.endpoint.capabilities.completion === true;
+      if (!senderIsLogical || !targetSupportsCompletion) {
+        throw new AgentMessagingError(
+          "COMPLETION_NOT_SUPPORTED",
+          `Completion mode '${completion}' requires a logical-session sender and a logical-session target.`,
+        );
+      }
     }
     return await this.enqueueTarget(target.endpoint.handle, async () => {
       const requestedMode = input.requestedMode ?? input.mode ?? "auto";
@@ -500,6 +605,15 @@ export class AgentMessageRouter {
         this.logDelivery(message, remoteReceipt, createdAt);
         const senderSessionAlias = sender.sessionAlias ?? sender.coordinatorSession ?? binding.coordinatorSession;
         this.emitOutboundEvent(senderSessionAlias, message, target, remoteReceipt);
+        if (completion !== "none") {
+          this.recordPendingCompletion(
+            message.id,
+            sender.address,
+            target.endpoint.address,
+            completion,
+            createdAt,
+          );
+        }
         return remoteReceipt;
       }
 
@@ -582,6 +696,15 @@ export class AgentMessageRouter {
         contentLength: Buffer.byteLength(input.content, "utf8"),
         contentHash,
       });
+      if (completion !== "none") {
+        this.recordPendingCompletion(
+          message.id,
+          sender.address,
+          target.endpoint.address,
+          completion,
+          createdAt,
+        );
+      }
       this.logDelivery(message, receipt, createdAt);
       const senderSessionAlias = sender.sessionAlias ?? sender.coordinatorSession ?? binding.coordinatorSession;
       this.emitOutboundEvent(senderSessionAlias, message, target, receipt);
@@ -862,22 +985,19 @@ export class AgentMessageRouter {
 
     this.completionOutcomes.set(origin.requestMessageId, completion);
 
-    // Update sender history entry (Gate I, J, M, O)
+    // Resolve the sender session alias (for the status patch event + local
+    // injection). Cache first, then authoritative registry lookup.
     const cachedOutbound = this.outboundMessages.get(origin.requestMessageId);
     let senderSessionAlias = cachedOutbound?.senderSessionAlias;
-
-    // If not cached, resolve sender endpoint on local registry if local
     let sourceIsArchived = false;
-    if (this.deps.registry.findLocalSessionByEndpointId) {
+    if (!senderSessionAlias && this.deps.registry.findLocalSessionByEndpointId) {
       try {
         const sourceSession =
           await this.deps.registry.findLocalSessionByEndpointId(
             origin.source.endpointId,
           );
         if (sourceSession) {
-          if (!senderSessionAlias) {
-            senderSessionAlias = sourceSession.alias;
-          }
+          senderSessionAlias = sourceSession.alias;
           sourceIsArchived = sourceSession.archived;
         }
       } catch {
@@ -885,32 +1005,14 @@ export class AgentMessageRouter {
       }
     }
 
+    // Patch the persisted sender card's completion status (v0.3: patch event,
+    // never a fabricated full entry — the durable row belongs to the original send).
     if (senderSessionAlias) {
-      const peer: PeerMessagePeer = cachedOutbound?.targetPeer ?? {
-        handle: encodeAgentHandle(origin.target),
-        displayName: origin.target.endpointId,
-        agent: "agent",
-      };
-      const entry: PeerMessageHistoryEntry = {
-        kind: "agent_message",
-        direction: "sent",
-        messageId: origin.requestMessageId,
-        conversationId:
-          cachedOutbound?.message.conversationId ?? origin.requestMessageId,
-        ...(cachedOutbound?.message.replyTo
-          ? { replyTo: cachedOutbound.message.replyTo }
-          : {}),
-        peer,
-        content: cachedOutbound?.message.content ?? "",
-        createdAt: cachedOutbound?.message.createdAt ?? completedAt,
-        status: "sent",
-        completion: origin.completion,
-        completionStatus: status,
-      };
       this.deps.events?.emit({
-        type: "agent-message",
+        type: "agent-message-completion",
         sessionAlias: toDisplaySessionAlias(senderSessionAlias),
-        message: entry,
+        messageId: origin.requestMessageId,
+        completionStatus: status,
       });
     }
 
@@ -928,11 +1030,12 @@ export class AgentMessageRouter {
             ...(completion.error !== undefined ? { error: completion.error } : {}),
             completedAt,
           });
+          return completion;
         } catch (error) {
           void this.deps.logger
             ?.info(
-              "agent_messaging.remote_completion_failed",
-              "Failed to send peer completion over remote route.",
+              "agent_messaging.remote_completion_retry_scheduled",
+              "Remote peer-completion delivery failed; scheduled for reconnect retry.",
               {
                 requestMessageId: origin.requestMessageId,
                 error: error instanceof Error ? error.message : String(error),
@@ -940,31 +1043,72 @@ export class AgentMessageRouter {
             )
             ?.catch?.(() => undefined);
         }
+      } else {
+        void this.deps.logger
+          ?.info(
+            "agent_messaging.remote_completion_retry_scheduled",
+            "Remote route unavailable; peer completion scheduled for reconnect retry.",
+            { requestMessageId: origin.requestMessageId },
+          )
+          ?.catch?.(() => undefined);
       }
+      // Terminal outcome is recorded, but DELIVERY is still pending: retry until
+      // the route comes back or the grant TTL expires. Never silently dropped.
+      this.scheduleCompletionDelivery(
+        `remote:${origin.requestMessageId}`,
+        async () => {
+          if (!this.deps.remoteRoute || !this.deps.remoteRoute.isAvailable()) {
+            return false;
+          }
+          await this.deps.remoteRoute.sendCompletion({
+            requestMessageId: origin.requestMessageId,
+            source: origin.source,
+            target: origin.target,
+            status,
+            ...(completion.result !== undefined ? { result: completion.result } : {}),
+            ...(completion.error !== undefined ? { error: completion.error } : {}),
+            completedAt,
+          });
+          return true;
+        },
+        completedAt,
+      );
       return completion;
     }
+
     // Local source delivery
     // Idempotency gate on source injection (Gate N source half)
     if (this.completionInjections.has(origin.requestMessageId)) {
       return completion;
     }
 
-    // If source session is missing or archived: do NOT wake (allowRestoreArchived: false semantics, Gate M). No turn.
+    // If source session is missing or archived: do NOT wake (allowRestoreArchived
+    // semantics, Gate M). The status patch above is the durable record. No turn.
     if (sourceIsArchived || !senderSessionAlias) {
       return completion;
     }
 
-    this.completionInjections.add(origin.requestMessageId);
-
-    const prompt = buildPeerCompletionPrompt(completion);
-    if (this.deps.delivery.deliverCompletion) {
-      await this.deps.delivery.deliverCompletion(
-        senderSessionAlias,
-        prompt,
-        origin.requestMessageId,
+    // Admission-aware injection: the dedupe tombstone is written ONLY after the
+    // source TurnQueue actually admitted the turn (injected | queued). A
+    // queue-full rejection or transport throw schedules a retry instead of
+    // permanently dropping the result.
+    const admitted = await this.attemptCompletionAdmission(
+      origin.requestMessageId,
+      senderSessionAlias,
+      completion,
+    );
+    if (!admitted) {
+      this.scheduleCompletionDelivery(
+        `local:${origin.requestMessageId}`,
+        async () =>
+          await this.attemptCompletionAdmission(
+            origin.requestMessageId,
+            senderSessionAlias!,
+            completion,
+          ),
+        completedAt,
       );
     }
-
     return completion;
   }
 
@@ -977,15 +1121,39 @@ export class AgentMessageRouter {
     error?: string;
     completedAt: number;
   }): Promise<{ ok: boolean; deduplicated?: boolean; error?: string }> {
-    // 1. Idempotency gate on source injection (Gate N source half)
+    // 1. Trust boundary (v0.3): an inbound completion is only honored when THIS
+    // daemon originally sent a completion-bearing request whose messageId,
+    // source and target exactly match. Without this check any same-account
+    // instance could forge a "trusted" peer result into another agent's turn
+    // lane. completion=none sends never create a grant, so they can never
+    // receive completions; notify grants reject result-bearing payloads.
+    const grantError = this.checkPendingCompletion(input);
+    if (grantError) {
+      throw grantError;
+    }
+
+    // 2. Idempotency gate on source injection (Gate N source half)
     if (this.completionInjections.has(input.requestMessageId)) {
       return { ok: true, deduplicated: true };
     }
 
-    // 2. Resolve sender session alias & update sender history entry (Gate I, J, M, O)
+    const completion: AgentMessageCompletion = {
+      requestMessageId: input.requestMessageId,
+      from: input.target,
+      to: input.source,
+      status: input.status,
+      ...(input.result !== undefined
+        ? { result: boundPeerResult(input.result) }
+        : {}),
+      ...(input.error !== undefined
+        ? { error: sanitizeCompletionError(input.error) }
+        : {}),
+      completedAt: input.completedAt,
+    };
+
+    // 3. Resolve the sender session alias (patch event + local injection).
     const cachedOutbound = this.outboundMessages.get(input.requestMessageId);
     let senderSessionAlias = cachedOutbound?.senderSessionAlias;
-
     let sourceIsArchived = false;
     if (this.deps.registry.findLocalSessionByEndpointId) {
       try {
@@ -1004,63 +1172,140 @@ export class AgentMessageRouter {
       }
     }
 
+    // 4. Patch the persisted sender card's completion status. Never fabricate a
+    // full PeerMessageHistoryEntry here — after a daemon restart the outbound
+    // cache is gone and a rebuilt entry would clobber the durable history row.
     if (senderSessionAlias) {
-      const peer: PeerMessagePeer = cachedOutbound?.targetPeer ?? {
-        handle: encodeAgentHandle(input.target),
-        displayName: input.target.endpointId,
-        agent: "agent",
-      };
-      const entry: PeerMessageHistoryEntry = {
-        kind: "agent_message",
-        direction: "sent",
-        messageId: input.requestMessageId,
-        conversationId:
-          cachedOutbound?.message.conversationId ?? input.requestMessageId,
-        ...(cachedOutbound?.message.replyTo
-          ? { replyTo: cachedOutbound.message.replyTo }
-          : {}),
-        peer,
-        content: cachedOutbound?.message.content ?? "",
-        createdAt: cachedOutbound?.message.createdAt ?? input.completedAt,
-        status: "sent",
-        completion: cachedOutbound?.message.completion ?? "result",
-        completionStatus: input.status,
-      };
       this.deps.events?.emit({
-        type: "agent-message",
+        type: "agent-message-completion",
         sessionAlias: toDisplaySessionAlias(senderSessionAlias),
-        message: entry,
+        messageId: input.requestMessageId,
+        completionStatus: input.status,
       });
     }
 
-    // If source session is missing or archived: do NOT wake (allowRestoreArchived: false semantics, Gate M). No turn.
+    // 5. Missing or archived source: recorded above, never woken (Gate M).
     if (sourceIsArchived || !senderSessionAlias) {
       return { ok: true };
     }
 
-    this.completionInjections.add(input.requestMessageId);
-
-    const completion: AgentMessageCompletion = {
-      requestMessageId: input.requestMessageId,
-      from: input.target,
-      to: input.source,
-      status: input.status,
-      ...(input.result !== undefined ? { result: boundPeerResult(input.result) } : {}),
-      ...(input.error !== undefined
-        ? { error: sanitizeCompletionError(input.error) }
-        : {}),
-      completedAt: input.completedAt,
-    };
-    const prompt = buildPeerCompletionPrompt(completion);
-    if (this.deps.delivery.deliverCompletion) {
-      await this.deps.delivery.deliverCompletion(
-        senderSessionAlias,
-        prompt,
-        input.requestMessageId,
+    // 6. Admission-aware injection — dedupe tombstone only after real admission;
+    // rejections/throws schedule bounded retries instead of dropping the result.
+    const admitted = await this.attemptCompletionAdmission(
+      input.requestMessageId,
+      senderSessionAlias,
+      completion,
+    );
+    if (!admitted) {
+      this.scheduleCompletionDelivery(
+        `local:${input.requestMessageId}`,
+        async () =>
+          await this.attemptCompletionAdmission(
+            input.requestMessageId,
+            senderSessionAlias!,
+            completion,
+          ),
+        input.completedAt,
       );
     }
 
     return { ok: true };
+  }
+
+  /**
+   * One delivery attempt against the source session's canonical lane. Returns
+   * true only when the TurnQueue admitted the completion turn (injected |
+   * queued); the dedupe tombstone is written strictly after that point.
+   */
+  private async attemptCompletionAdmission(
+    requestMessageId: string,
+    senderSessionAlias: string,
+    completion: AgentMessageCompletion,
+  ): Promise<boolean> {
+    if (!this.deps.delivery.deliverCompletion) {
+      return false;
+    }
+    const result = await this.deps.delivery.deliverCompletion(
+      senderSessionAlias,
+      completion,
+      requestMessageId,
+    );
+    if (result.status === "rejected") {
+      return false;
+    }
+    this.completionInjections.add(requestMessageId);
+    return true;
+  }
+  /** Retry cadence for pending completion deliveries. */
+  private static readonly COMPLETION_RETRY_SWEEP_MS = 5_000;
+  private static readonly COMPLETION_RETRY_MAX_ENTRIES = 1_000;
+
+  /**
+   * Queue a not-yet-admitted completion delivery for bounded retry. Entries
+   * expire with the same TTL as pending grants; the map is size-bounded with
+   * oldest-first eviction so a long-lived daemon cannot accumulate unbounded
+   * state.
+   */
+  private scheduleCompletionDelivery(
+    key: string,
+    attempt: () => Promise<boolean>,
+    now: number,
+  ): void {
+    const ttlMs = this.deps.limits?.pendingCompletion?.ttlMs ?? 24 * 60 * 60_000;
+    const maxEntries =
+      this.deps.limits?.pendingCompletion?.maxEntries ?? 1_000;
+    if (ttlMs <= 0 || maxEntries <= 0) return;
+    while (this.deliveryPending.size >= maxEntries) {
+      const oldest = this.deliveryPending.keys().next().value;
+      if (oldest === undefined) break;
+      this.deliveryPending.delete(oldest);
+    }
+    this.deliveryPending.set(key, {
+      attempt,
+      nextAttemptAt: now + AgentMessageRouter.COMPLETION_RETRY_SWEEP_MS,
+      expiresAt: now + ttlMs,
+    });
+    this.armDeliveryRetryTimer();
+  }
+
+  private armDeliveryRetryTimer(): void {
+    if (this.deliveryRetryTimer) return;
+    this.deliveryRetryTimer = setTimeout(() => {
+      this.deliveryRetryTimer = undefined;
+      void this.sweepPendingCompletionDeliveries();
+    }, AgentMessageRouter.COMPLETION_RETRY_SWEEP_MS);
+  }
+
+  /**
+   * Run one retry pass over pending completion deliveries. Public so tests can
+   * drive retries deterministically without waiting on the timer.
+   */
+  async sweepPendingCompletionDeliveries(): Promise<void> {
+    const now = (this.deps.now ?? Date.now)();
+    for (const [key, task] of [...this.deliveryPending]) {
+      if (task.expiresAt <= now) {
+        this.deliveryPending.delete(key);
+        continue;
+      }
+      if (task.nextAttemptAt > now) continue;
+      try {
+        const admitted = await task.attempt();
+        if (admitted) {
+          this.deliveryPending.delete(key);
+        } else {
+          task.nextAttemptAt =
+            (this.deps.now ?? Date.now)() +
+            AgentMessageRouter.COMPLETION_RETRY_SWEEP_MS;
+        }
+      } catch {
+        task.nextAttemptAt =
+          (this.deps.now ?? Date.now)() +
+          AgentMessageRouter.COMPLETION_RETRY_SWEEP_MS;
+      }
+    }
+    if (this.deliveryPending.size > 0) {
+      this.armDeliveryRetryTimer();
+    }
   }
 
   private getCachedReceipt(

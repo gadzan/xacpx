@@ -1275,11 +1275,11 @@ export async function buildApp(
       }
       return { status: "queued" };
     },
-    deliverCompletionTurn: async (alias, prompt, requestMessageId) => {
+    deliverCompletionTurn: async (alias, completion, requestMessageId) => {
       if (controlRef) {
         return await controlRef.submitCompletionTurn({
           sourceAlias: alias,
-          prompt,
+          completion,
           requestMessageId,
         });
       }
@@ -1489,6 +1489,8 @@ export async function buildApp(
     agentMessaging: {
       deliverInbound: async (input) =>
         await agentMessaging.deliverInbound(input),
+      deliverInboundCompletion: async (input) =>
+        await agentMessaging.deliverInboundCompletion(input),
       getPublishedEndpoints: async () =>
         await agentEndpointRegistry.getPublishedEndpoints(),
       resolveTargetByHandle: async (handle) =>

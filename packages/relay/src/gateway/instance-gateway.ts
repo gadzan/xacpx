@@ -508,14 +508,19 @@ export class InstanceGateway {
 
         let sourceInstanceId: string | null = null;
         for (const [instId, conn] of this.connections) {
-          if (conn.accountId === authed.accountId) {
-            const endpoints = this.endpointsByInstance.get(instId) ?? [];
-            if (
-              endpoints.some((e) => e.nodeId === completionPayload.source.nodeId)
-            ) {
-              sourceInstanceId = instId;
-              break;
-            }
+          if (conn.accountId !== authed.accountId) continue;
+          const endpoints = this.endpointsByInstance.get(instId) ?? [];
+          // Full canonical-identity match (nodeId + endpointId): a completion may
+          // only be delivered to the exact source endpoint of the original request.
+          if (
+            endpoints.some(
+              (e) =>
+                e.nodeId === completionPayload.source.nodeId &&
+                e.endpointId === completionPayload.source.endpointId,
+            )
+          ) {
+            sourceInstanceId = instId;
+            break;
           }
         }
         if (!sourceInstanceId) {

@@ -337,17 +337,13 @@ function secondaryIdentityParts(item: AgentMentionItem): string[] {
   }
 
   if (item.endpointKind === "worker") {
-    parts.push("Worker");
+    parts.push(t("chat.mentionSource.worker"));
   } else if (item.channelId && item.channelId !== "relay") {
-    const channelLabel =
-      item.channelId === "weixin"
-        ? "WeChat"
-        : item.channelId === "feishu"
-          ? "Feishu"
-          : item.channelId === "yuanbao"
-            ? "Yuanbao"
-            : item.channelId;
-    parts.push(channelLabel);
+    const key = `chat.mentionSource.${item.channelId}`;
+    const label = t(key);
+    // vue-i18n returns the key itself for missing messages — fall back to the
+    // raw channel id, which is still more informative than a wrong label.
+    parts.push(label === key ? item.channelId : label);
   }
 
   return parts;

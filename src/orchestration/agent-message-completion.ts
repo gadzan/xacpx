@@ -91,6 +91,7 @@ export function buildPeerCompletionPrompt(
     completion.status === "completed" && completion.result !== undefined;
   if (isResultMode) {
     const attributePairs: Array<[string, string]> = [
+      ["origin", "xacpx-server"],
       ["request-id", completion.requestMessageId],
       ["from", fromHandle],
       ["status", "completed"],
@@ -115,6 +116,7 @@ export function buildPeerCompletionPrompt(
   }
 
   const attributePairs: Array<[string, string]> = [
+    ["origin", "xacpx-server"],
     ["request-id", completion.requestMessageId],
     ["from", fromHandle],
     ["status", completion.status],

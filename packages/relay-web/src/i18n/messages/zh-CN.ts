@@ -83,6 +83,12 @@ export default {
     effort: "推理强度",
     effortSetFailed: "切换推理强度失败，请重试。",
     working: "Agent 正在工作…（按 Esc 停止）",
+    mentionSource: {
+      worker: "Worker",
+      weixin: "微信",
+      feishu: "飞书",
+      yuanbao: "元宝",
+    },
     mentionActivity: {
       working: "执行中",
       waiting: "等待中",

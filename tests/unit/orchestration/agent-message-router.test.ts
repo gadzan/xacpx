@@ -12,7 +12,7 @@ import {
   type AgentMessageRouterLimits,
 } from "../../../src/orchestration/agent-message-router";
 import { AgentMessagingError } from "../../../src/orchestration/agent-messaging-error";
-import type { AgentMessage } from "../../../src/orchestration/agent-messaging-types";
+import type { AgentMessage, AgentMessageCompletion } from "../../../src/orchestration/agent-messaging-types";
 import { RelayAgentMessageRoute } from "../../../src/orchestration/relay-agent-message-route";
 import type { SessionMessageReceipt } from "../../../src/transport/message-injection";
 import { MessageInjectionError } from "../../../src/transport/message-injection";
@@ -1423,40 +1423,98 @@ test("remote route completion = result: router rejects with COMPLETION_NOT_SUPPO
   expect(emitted).toHaveLength(0);
 });
 
-test("local route accepts completion = notify and carries completion mode in history entries", async () => {
+/** v0.3 completion signals require logical senders AND logical targets (the
+ * canonical TurnQueue path). These sessions give completion tests a logical
+ * pair: main (coordinator) -> second, plus third/fourth for the Gate P pair. */
+function addLogicalPeers(state: ReturnType<typeof createEmptyState>): void {
+  const base = {
+    agent: "codex",
+    workspace: "project",
+    created_at: "2026-08-18T00:00:00.000Z",
+    last_used_at: "2026-08-18T00:00:00.000Z",
+  };
+  state.sessions.second = {
+    alias: "second",
+    transport_session: "coordinator-second",
+    logical_session_id: "33333333-3333-4333-8333-333333333333",
+    ...base,
+  };
+  state.sessions.third = {
+    alias: "third",
+    transport_session: "coordinator-third",
+    logical_session_id: "44444444-4444-4444-8444-444444444444",
+    ...base,
+  };
+  state.sessions.fourth = {
+    alias: "fourth",
+    transport_session: "coordinator-fourth",
+    logical_session_id: "55555555-5555-4555-8555-555555555555",
+    ...base,
+  };
+}
+
+const LOGICAL_SENDER = { coordinatorSession: "coordinator" } as const;
+const LOGICAL_TARGET_ID = "33333333-3333-4333-8333-333333333333";
+
+test("local route accepts completion = notify from a logical sender to a logical target", async () => {
   const events = createControlEventBus();
   const emitted: ControlEvent[] = [];
   events.subscribe((e) => emitted.push(e));
 
-  const { router } = makeRouter({ events });
-  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
-  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+  const { router, state } = makeRouter({ events });
+  addLogicalPeers(state);
+  const to = encodeAgentHandle({ nodeId, endpointId: LOGICAL_TARGET_ID });
 
-  const receipt = await router.send(binding, { to, content: "notify message", completion: "notify" });
+  const receipt = await router.send(LOGICAL_SENDER, { to, content: "notify message", completion: "notify" });
   expect(receipt.status).toBe("queued");
 
   const agentMessages = emitted.filter((e): e is Extract<ControlEvent, { type: "agent-message" }> => e.type === "agent-message");
   expect(agentMessages).toHaveLength(2);
   expect(agentMessages[0]!.message.completion).toBe("notify");
+  expect(agentMessages[0]!.message.completionStatus).toBe("pending");
   expect(agentMessages[1]!.message.completion).toBe("notify");
+  // A pending-completion grant was recorded for this exact request.
+  expect((router as any).pendingCompletions.has(receipt.messageId)).toBe(true);
 });
 
-test("local route accepts completion = result and carries completion mode in history entries", async () => {
+test("local route accepts completion = result from a logical sender to a logical target", async () => {
   const events = createControlEventBus();
   const emitted: ControlEvent[] = [];
   events.subscribe((e) => emitted.push(e));
 
-  const { router } = makeRouter({ events });
-  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
-  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+  const { router, state } = makeRouter({ events });
+  addLogicalPeers(state);
+  const to = encodeAgentHandle({ nodeId, endpointId: LOGICAL_TARGET_ID });
 
-  const receipt = await router.send(binding, { to, content: "result message", completion: "result" });
+  const receipt = await router.send(LOGICAL_SENDER, { to, content: "result message", completion: "result" });
   expect(receipt.status).toBe("queued");
 
   const agentMessages = emitted.filter((e): e is Extract<ControlEvent, { type: "agent-message" }> => e.type === "agent-message");
   expect(agentMessages).toHaveLength(2);
   expect(agentMessages[0]!.message.completion).toBe("result");
+  expect(agentMessages[0]!.message.completionStatus).toBe("pending");
   expect(agentMessages[1]!.message.completion).toBe("result");
+  expect((router as any).pendingCompletions.has(receipt.messageId)).toBe(true);
+});
+
+test("completion requests from worker senders or to worker targets fail closed", async () => {
+  const { router, state } = makeRouter();
+  addLogicalPeers(state);
+  const workerTo = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+
+  // Worker sender (workerA) requesting completion → rejected.
+  await expect(
+    router.send(
+      { coordinatorSession: "coordinator", sourceHandle: "workerA" },
+      { to: encodeAgentHandle({ nodeId, endpointId: LOGICAL_TARGET_ID }), content: "x", completion: "result" },
+    ),
+  ).rejects.toMatchObject({ code: "COMPLETION_NOT_SUPPORTED" });
+
+  // Logical sender to worker target → rejected (worker cannot produce a
+  // correlated terminal event, so it must not advertise completion).
+  await expect(
+    router.send(LOGICAL_SENDER, { to: workerTo, content: "x", completion: "notify" }),
+  ).rejects.toMatchObject({ code: "COMPLETION_NOT_SUPPORTED" });
 });
 test("deliverInbound sets completion 'none' on history entry when absent or none", async () => {
   const events = createControlEventBus();
@@ -1511,32 +1569,30 @@ test("Gate H: completePeerTurn with completion = none returns null with zero sid
   expect(injected).toBe(false);
 });
 
-test("Gate I: completePeerTurn with completion = notify emits completionStatus=completed and delivers prompt with <xacpx-peer-completion", async () => {
+test("Gate I: completePeerTurn with completion = notify emits a completion-status patch and admits one structured completion turn", async () => {
   const events = createControlEventBus();
   const emitted: ControlEvent[] = [];
   events.subscribe((e) => emitted.push(e));
-  const deliveredCompletions: Array<{ sourceAlias: string; prompt: string; requestMessageId: string }> = [];
+  const deliveredCompletions: Array<{ sourceAlias: string; completion: AgentMessageCompletion; requestMessageId: string }> = [];
 
-  const { router } = makeRouter({ events });
-  (router as any).deps.delivery.deliverCompletion = async (
-    sourceAlias: string,
-    prompt: string,
-    requestMessageId: string,
+  const { router, state } = makeRouter({ events });
+  addLogicalPeers(state);
+  (router as unknown as { deps: { delivery: { deliverCompletion?: (alias: string, completion: AgentMessageCompletion, id: string) => Promise<{ status: "injected" | "queued" } | { status: "rejected"; reason: string }> } } }).deps.delivery.deliverCompletion = async (
+    sourceAlias,
+    completion,
+    requestMessageId,
   ) => {
-    deliveredCompletions.push({ sourceAlias, prompt, requestMessageId });
+    deliveredCompletions.push({ sourceAlias, completion, requestMessageId });
     return { status: "injected" as const };
   };
 
-  // First send the message so outbound is recorded
-  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
-  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
-  const receipt = await router.send(binding, { to, content: "do task", completion: "notify" });
+  const receipt = await router.send(LOGICAL_SENDER, { to: encodeAgentHandle({ nodeId, endpointId: LOGICAL_TARGET_ID }), content: "do task", completion: "notify" });
 
   const origin = {
     requestMessageId: receipt.messageId,
     completion: "notify" as const,
-    source: { nodeId, endpointId: "endpoint_worker-a" },
-    target: { nodeId, endpointId: "endpoint_worker-b" },
+    source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+    target: { nodeId, endpointId: LOGICAL_TARGET_ID },
   };
 
   const completion = await router.completePeerTurn(origin, {
@@ -1546,50 +1602,46 @@ test("Gate I: completePeerTurn with completion = notify emits completionStatus=c
 
   expect(completion).not.toBeNull();
   expect(completion?.status).toBe("completed");
+  // Notify grants never carry a result body.
   expect(completion?.result).toBeUndefined();
 
-  // Verify history event emitted with completionStatus: completed
-  const agentMessages = emitted.filter((e): e is Extract<ControlEvent, { type: "agent-message" }> => e.type === "agent-message");
-  // initial sent + initial received + updated sent
-  expect(agentMessages).toHaveLength(3);
-  const updatedSent = agentMessages[2]!;
-  expect(updatedSent.message.direction).toBe("sent");
-  expect(updatedSent.message.messageId).toBe(receipt.messageId);
-  expect(updatedSent.message.completionStatus).toBe("completed");
+  // Sender card status was PATCHED (not rebuilt as a full entry).
+  const patches = emitted.filter((e): e is Extract<ControlEvent, { type: "agent-message-completion" }> => e.type === "agent-message-completion");
+  expect(patches).toHaveLength(1);
+  expect(patches[0]!.sessionAlias).toBe("main");
+  expect(patches[0]!.messageId).toBe(receipt.messageId);
+  expect(patches[0]!.completionStatus).toBe("completed");
 
-  // Verify prompt delivered to source
+  // Exactly one structured completion turn admitted into the source lane.
   expect(deliveredCompletions).toHaveLength(1);
-  expect(deliveredCompletions[0]!.sourceAlias).toBe("workerA");
-  expect(deliveredCompletions[0]!.prompt).toContain("<xacpx-peer-completion");
-  expect(deliveredCompletions[0]!.prompt).toContain('status="completed"');
-  expect(deliveredCompletions[0]!.prompt).toContain("<instruction>");
-  expect(deliveredCompletions[0]!.prompt).not.toContain("done with task");
+  expect(deliveredCompletions[0]!.sourceAlias).toBe("main");
+  expect(deliveredCompletions[0]!.completion.status).toBe("completed");
+  expect(deliveredCompletions[0]!.completion.result).toBeUndefined();
 });
 
-test("Gate J: completePeerTurn with completion = result bounds 20KiB text to <=16KiB with marker and delivers <xacpx-peer-result", async () => {
+test("Gate J: completePeerTurn with completion = result bounds 20KiB text to <=16KiB with marker and admits one structured result turn", async () => {
   const events = createControlEventBus();
-  const deliveredCompletions: Array<{ sourceAlias: string; prompt: string; requestMessageId: string }> = [];
+  const deliveredCompletions: Array<{ sourceAlias: string; completion: AgentMessageCompletion; requestMessageId: string }> = [];
 
-  const { router } = makeRouter({ events });
-  (router as any).deps.delivery.deliverCompletion = async (
-    sourceAlias: string,
-    prompt: string,
-    requestMessageId: string,
+  const { router, state } = makeRouter({ events });
+  addLogicalPeers(state);
+  (router as unknown as { deps: { delivery: { deliverCompletion?: (alias: string, completion: AgentMessageCompletion, id: string) => Promise<{ status: "injected" | "queued" } | { status: "rejected"; reason: string }> } } }).deps.delivery.deliverCompletion = async (
+    sourceAlias,
+    completion,
+    requestMessageId,
   ) => {
-    deliveredCompletions.push({ sourceAlias, prompt, requestMessageId });
+    deliveredCompletions.push({ sourceAlias, completion, requestMessageId });
     return { status: "injected" as const };
   };
 
-  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
-  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
-  const receipt = await router.send(binding, { to, content: "compute large", completion: "result" });
+  const receipt = await router.send(LOGICAL_SENDER, { to: encodeAgentHandle({ nodeId, endpointId: LOGICAL_TARGET_ID }), content: "compute large", completion: "result" });
 
   const largeResult = "答案：" + "X".repeat(20 * 1024);
   const origin = {
     requestMessageId: receipt.messageId,
     completion: "result" as const,
-    source: { nodeId, endpointId: "endpoint_worker-a" },
-    target: { nodeId, endpointId: "endpoint_worker-b" },
+    source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+    target: { nodeId, endpointId: LOGICAL_TARGET_ID },
   };
 
   const completion = await router.completePeerTurn(origin, {
@@ -1603,11 +1655,10 @@ test("Gate J: completePeerTurn with completion = result bounds 20KiB text to <=1
   expect(completion!.result!.endsWith("\n[xacpx: result truncated]")).toBe(true);
 
   expect(deliveredCompletions).toHaveLength(1);
-  expect(deliveredCompletions[0]!.prompt).toContain("<xacpx-peer-result");
-  expect(deliveredCompletions[0]!.prompt).toContain("[xacpx: result truncated]");
+  expect(deliveredCompletions[0]!.completion.result).toBe(completion?.result);
 });
 
-test("Gate M: completePeerTurn when source session is archived updates history entry but does not inject turn", async () => {
+test("Gate M: completePeerTurn when source session is archived patches status but does not inject turn", async () => {
   const events = createControlEventBus();
   const emitted: ControlEvent[] = [];
   events.subscribe((e) => emitted.push(e));
@@ -1616,7 +1667,7 @@ test("Gate M: completePeerTurn when source session is archived updates history e
   const { router, registry, state } = makeRouter({ events });
   // Make session 'main' archived
   state.sessions.main!.archived = true;
-  (router as any).deps.delivery.deliverCompletion = async () => {
+  (router as unknown as { deps: { delivery: { deliverCompletion?: () => Promise<{ status: "injected" }> } } }).deps.delivery.deliverCompletion = async () => {
     injected = true;
     return { status: "injected" as const };
   };
@@ -1625,7 +1676,7 @@ test("Gate M: completePeerTurn when source session is archived updates history e
     requestMessageId: "msg_archived_source",
     completion: "notify" as const,
     source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" }, // main session endpoint
-    target: { nodeId, endpointId: "endpoint_worker-b" },
+    target: { nodeId, endpointId: LOGICAL_TARGET_ID },
   };
 
   const completion = await router.completePeerTurn(origin, {
@@ -1634,40 +1685,39 @@ test("Gate M: completePeerTurn when source session is archived updates history e
   });
 
   expect(completion?.status).toBe("completed");
-  // History entry updated with completionStatus
-  const agentMessages = emitted.filter((e): e is Extract<ControlEvent, { type: "agent-message" }> => e.type === "agent-message");
-  expect(agentMessages).toHaveLength(1);
-  expect(agentMessages[0]!.sessionAlias).toBe("main");
-  expect(agentMessages[0]!.message.completionStatus).toBe("completed");
+  // Status patch still recorded (durable record for the archived sender)…
+  const patches = emitted.filter((e): e is Extract<ControlEvent, { type: "agent-message-completion" }> => e.type === "agent-message-completion");
+  expect(patches).toHaveLength(1);
+  expect(patches[0]!.sessionAlias).toBe("main");
+  expect(patches[0]!.completionStatus).toBe("completed");
 
-  // NO turn injected
+  // …but NO turn injected (archived sessions are never woken).
   expect(injected).toBe(false);
 });
 
-test("Gate N: duplicate completePeerTurn (including contradictory terminal) returns first terminal with exactly one injection and history update", async () => {
+test("Gate N: duplicate completePeerTurn (including contradictory terminal) returns first terminal with exactly one injection and one patch", async () => {
   const events = createControlEventBus();
   const emitted: ControlEvent[] = [];
   events.subscribe((e) => emitted.push(e));
-  const deliveredCompletions: string[] = [];
+  const deliveredCompletions: AgentMessageCompletion[] = [];
 
-  const { router } = makeRouter({ events });
-  (router as any).deps.delivery.deliverCompletion = async (
-    _alias: string,
-    prompt: string,
+  const { router, state } = makeRouter({ events });
+  addLogicalPeers(state);
+  (router as unknown as { deps: { delivery: { deliverCompletion?: (alias: string, completion: AgentMessageCompletion, id: string) => Promise<{ status: "injected" | "queued" } | { status: "rejected"; reason: string }> } } }).deps.delivery.deliverCompletion = async (
+    _alias,
+    completion,
   ) => {
-    deliveredCompletions.push(prompt);
+    deliveredCompletions.push(completion);
     return { status: "injected" as const };
   };
 
-  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
-  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
-  const receipt = await router.send(binding, { to, content: "task dedup", completion: "result" });
+  const receipt = await router.send(LOGICAL_SENDER, { to: encodeAgentHandle({ nodeId, endpointId: LOGICAL_TARGET_ID }), content: "task dedup", completion: "result" });
 
   const origin = {
     requestMessageId: receipt.messageId,
     completion: "result" as const,
-    source: { nodeId, endpointId: "endpoint_worker-a" },
-    target: { nodeId, endpointId: "endpoint_worker-b" },
+    source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+    target: { nodeId, endpointId: LOGICAL_TARGET_ID },
   };
 
   // First terminal: ok with "first answer"
@@ -1689,28 +1739,28 @@ test("Gate N: duplicate completePeerTurn (including contradictory terminal) retu
   expect(second?.status).toBe("completed");
   expect(second?.result).toBe("first answer");
 
-  // Exactly one history update event for the completion (total 3: sent, received, completion update)
-  const agentMessages = emitted.filter((e): e is Extract<ControlEvent, { type: "agent-message" }> => e.type === "agent-message");
-  expect(agentMessages).toHaveLength(3);
-  expect(agentMessages[2]!.message.completionStatus).toBe("completed");
+  // Exactly one completion-status patch event for the terminal.
+  const patches = emitted.filter((e): e is Extract<ControlEvent, { type: "agent-message-completion" }> => e.type === "agent-message-completion");
+  expect(patches).toHaveLength(1);
+  expect(patches[0]!.messageId).toBe(receipt.messageId);
+  expect(patches[0]!.completionStatus).toBe("completed");
 
-  // Exactly one prompt delivered
+  // Exactly one structured completion delivered
   expect(deliveredCompletions).toHaveLength(1);
-  expect(deliveredCompletions[0]).toContain("first answer");
+  expect(deliveredCompletions[0]!.result).toBe("first answer");
 });
 
 test("Gate O: peer turn failure sets completionStatus=failed and carries sanitized error; cancelled sets status=cancelled", async () => {
   const events = createControlEventBus();
-  const emitted: ControlEvent[] = [];
-  events.subscribe((e) => emitted.push(e));
-  const deliveredCompletions: string[] = [];
+  const deliveredCompletions: AgentMessageCompletion[] = [];
 
-  const { router } = makeRouter({ events });
-  (router as any).deps.delivery.deliverCompletion = async (
-    _alias: string,
-    prompt: string,
+  const { router, state } = makeRouter({ events });
+  addLogicalPeers(state);
+  (router as unknown as { deps: { delivery: { deliverCompletion?: (alias: string, completion: AgentMessageCompletion, id: string) => Promise<{ status: "injected" | "queued" } | { status: "rejected"; reason: string }> } } }).deps.delivery.deliverCompletion = async (
+    _alias,
+    completion,
   ) => {
-    deliveredCompletions.push(prompt);
+    deliveredCompletions.push(completion);
     return { status: "injected" as const };
   };
 
@@ -1718,8 +1768,8 @@ test("Gate O: peer turn failure sets completionStatus=failed and carries sanitiz
   const originFail = {
     requestMessageId: "msg_fail_cycle",
     completion: "result" as const,
-    source: { nodeId, endpointId: "endpoint_worker-a" },
-    target: { nodeId, endpointId: "endpoint_worker-b" },
+    source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+    target: { nodeId, endpointId: LOGICAL_TARGET_ID },
   };
 
   const failCompletion = await router.completePeerTurn(originFail, {
@@ -1730,14 +1780,18 @@ test("Gate O: peer turn failure sets completionStatus=failed and carries sanitiz
   expect(failCompletion?.status).toBe("failed");
   expect(failCompletion?.error).toBe("Task failed: database disconnected");
   expect(failCompletion?.result).toBeUndefined();
-  expect(deliveredCompletions[0]).toContain('<xacpx-peer-completion request-id="msg_fail_cycle" from="agent:' + nodeId + ':endpoint_worker-b" status="failed" error="Task failed: database disconnected">');
+  expect(deliveredCompletions[0]).toMatchObject({
+    requestMessageId: "msg_fail_cycle",
+    status: "failed",
+    error: "Task failed: database disconnected",
+  });
 
   // 2. Cancelled turn
   const originCancel = {
     requestMessageId: "msg_cancel_cycle",
     completion: "notify" as const,
-    source: { nodeId, endpointId: "endpoint_worker-a" },
-    target: { nodeId, endpointId: "endpoint_worker-b" },
+    source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+    target: { nodeId, endpointId: LOGICAL_TARGET_ID },
   };
 
   const cancelCompletion = await router.completePeerTurn(originCancel, {
@@ -1746,52 +1800,42 @@ test("Gate O: peer turn failure sets completionStatus=failed and carries sanitiz
   });
 
   expect(cancelCompletion?.status).toBe("cancelled");
-  expect(deliveredCompletions[1]).toContain('<xacpx-peer-completion request-id="msg_cancel_cycle" from="agent:' + nodeId + ':endpoint_worker-b" status="cancelled">');
+  expect(deliveredCompletions[1]).toMatchObject({
+    requestMessageId: "msg_cancel_cycle",
+    status: "cancelled",
+  });
 });
 
-test("Gate P: two independent concurrent completion pairs (A→B, C→D) do not cross-contaminate results or identities", async () => {
+test("Gate P: two independent concurrent completion pairs do not cross-contaminate results or identities", async () => {
   const events = createControlEventBus();
   const emitted: ControlEvent[] = [];
   events.subscribe((e) => emitted.push(e));
-  const deliveredCompletions: Array<{ alias: string; prompt: string }> = [];
+  const deliveredCompletions: Array<{ alias: string; completion: AgentMessageCompletion }> = [];
 
   let idSeq = 0;
   const { router, state } = makeRouter({
     events,
     createId: () => `uuid-${++idSeq}`,
   });
-  // Register a fourth worker so pair 2 (C→D) has a disjoint target endpoint.
-  state.orchestration.workerBindings.workerD = {
-    sourceHandle: "workerD",
-    agentEndpointId: "endpoint_worker-d",
-    coordinatorSession: "coordinator",
-    workspace: "project",
-    targetAgent: "codex",
-  };
-  // Test seam: swap the delivery adapter's completion injector for a recorder
-  // (same override the Gate N/O tests perform, via a typed narrow instead of any).
-  const deliverySeam = router as unknown as {
-    deps: {
-      delivery: {
-        deliverCompletion: (
-          alias: string,
-          prompt: string,
-        ) => Promise<{ status: "injected" | "queued" }>;
-      };
-    };
-  };
-  deliverySeam.deps.delivery.deliverCompletion = async (alias, prompt) => {
-    deliveredCompletions.push({ alias, prompt });
-    return { status: "injected" };
+  addLogicalPeers(state);
+  (router as unknown as { deps: { delivery: { deliverCompletion?: (alias: string, completion: AgentMessageCompletion, id: string) => Promise<{ status: "injected" | "queued" } | { status: "rejected"; reason: string }> } } }).deps.delivery.deliverCompletion = async (
+    alias,
+    completion,
+  ) => {
+    deliveredCompletions.push({ alias, completion });
+    return { status: "injected" as const };
   };
 
-  const bindingA = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
-  const bindingC = { coordinatorSession: "coordinator", sourceHandle: "workerC" };
-  const toB = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
-  const toD = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-d" });
-
-  const receiptAB = await router.send(bindingA, { to: toB, content: "task for B", completion: "result" });
-  const receiptCD = await router.send(bindingC, { to: toD, content: "task for D", completion: "result" });
+  // Pair 1: main -> second. Pair 2: third -> fourth.
+  const receiptAB = await router.send(LOGICAL_SENDER, {
+    to: encodeAgentHandle({ nodeId, endpointId: "33333333-3333-4333-8333-333333333333" }),
+    content: "task for B",
+    completion: "result",
+  });
+  const receiptCD = await router.send(
+    { coordinatorSession: "coordinator-third" },
+    { to: encodeAgentHandle({ nodeId, endpointId: "55555555-5555-4555-8555-555555555555" }), content: "task for D", completion: "result" },
+  );
   expect(receiptAB.messageId).not.toBe(receiptCD.messageId);
 
   // Terminals arrive concurrently and out of order (D finishes before B).
@@ -1800,8 +1844,8 @@ test("Gate P: two independent concurrent completion pairs (A→B, C→D) do not 
       {
         requestMessageId: receiptCD.messageId,
         completion: "result",
-        source: { nodeId, endpointId: "endpoint_worker-c" },
-        target: { nodeId, endpointId: "endpoint_worker-d" },
+        source: { nodeId, endpointId: "44444444-4444-4444-8444-444444444444" },
+        target: { nodeId, endpointId: "55555555-5555-4555-8555-555555555555" },
       },
       { ok: true, text: "answer from D" },
     ),
@@ -1809,8 +1853,8 @@ test("Gate P: two independent concurrent completion pairs (A→B, C→D) do not 
       {
         requestMessageId: receiptAB.messageId,
         completion: "result",
-        source: { nodeId, endpointId: "endpoint_worker-a" },
-        target: { nodeId, endpointId: "endpoint_worker-b" },
+        source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+        target: { nodeId, endpointId: "33333333-3333-4333-8333-333333333333" },
       },
       { ok: true, text: "answer from B" },
     ),
@@ -1819,69 +1863,62 @@ test("Gate P: two independent concurrent completion pairs (A→B, C→D) do not 
   expect(completionAB?.requestMessageId).toBe(receiptAB.messageId);
   expect(completionAB?.result).toBe("answer from B");
   // Completion travels reverse to the source: `to` = original sender, `from` = peer.
-  expect(completionAB?.to.endpointId).toBe("endpoint_worker-a");
-  expect(completionAB?.from.endpointId).toBe("endpoint_worker-b");
+  expect(completionAB?.to.endpointId).toBe("22222222-2222-4222-8222-222222222222");
+  expect(completionAB?.from.endpointId).toBe("33333333-3333-4333-8333-333333333333");
   expect(completionCD?.requestMessageId).toBe(receiptCD.messageId);
   expect(completionCD?.result).toBe("answer from D");
-  expect(completionCD?.to.endpointId).toBe("endpoint_worker-c");
-  expect(completionCD?.from.endpointId).toBe("endpoint_worker-d");
+  expect(completionCD?.to.endpointId).toBe("44444444-4444-4444-8444-444444444444");
+  expect(completionCD?.from.endpointId).toBe("55555555-5555-4555-8555-555555555555");
+
   // Exactly one injection per pair, each carrying only its own result.
   expect(deliveredCompletions).toHaveLength(2);
-  const prompts = deliveredCompletions.map((d) => d.prompt);
-  expect(prompts.find((p) => p.includes("answer from B"))).toBeTruthy();
-  expect(prompts.find((p) => p.includes("answer from D"))).toBeTruthy();
-  expect(prompts.find((p) => p.includes("answer from B"))).not.toContain("answer from D");
-  expect(prompts.find((p) => p.includes("answer from D"))).not.toContain("answer from B");
+  const byResult = new Map(deliveredCompletions.map((d) => [d.completion.result, d]));
+  const bDelivery = byResult.get("answer from B");
+  const dDelivery = byResult.get("answer from D");
+  expect(bDelivery).toBeDefined();
+  expect(dDelivery).toBeDefined();
+  expect(bDelivery!.alias).toBe("main");
+  expect(dDelivery!.alias).toBe("third");
 
-  // History updates: per pair exactly one "pending" (on send) + one terminal
-  // "completed", keyed to that pair's own requestMessageId — no identity bleed.
-  const completionUpdates = emitted.filter(
-    (e): e is Extract<ControlEvent, { type: "agent-message" }> =>
-      e.type === "agent-message" && e.message.completionStatus !== undefined,
-  );
-  expect(completionUpdates).toHaveLength(4);
-  const statusById = new Map<string, string[]>();
-  for (const e of completionUpdates) {
-    const statuses = statusById.get(e.message.messageId) ?? [];
-    statuses.push(e.message.completionStatus!);
-    statusById.set(e.message.messageId, statuses);
-  }
-  expect(statusById.get(receiptAB.messageId)).toEqual(["pending", "completed"]);
-  expect(statusById.get(receiptCD.messageId)).toEqual(["pending", "completed"]);
+  // History patches carry their own requestMessageId — no identity bleed.
+  const patches = emitted.filter((e): e is Extract<ControlEvent, { type: "agent-message-completion" }> => e.type === "agent-message-completion");
+  expect(patches).toHaveLength(2);
+  const statusById = new Map(patches.map((p) => [p.messageId, p.completionStatus]));
+  expect(statusById.get(receiptAB.messageId)).toBe("completed");
+  expect(statusById.get(receiptCD.messageId)).toBe("completed");
 });
-
 
 test("Guards untouched: completion cycle does not consume conversation depth, volume, rate limit, or duplicate counters", async () => {
   let clock = 10_000;
-  const { router } = makeRouter({
+  const { router, state } = makeRouter({
     now: () => clock,
   });
-  (router as any).deps.delivery.deliverCompletion = async () => ({ status: "injected" as const });
+  addLogicalPeers(state);
+  (router as unknown as { deps: { delivery: { deliverCompletion?: () => Promise<{ status: "injected" }> } } }).deps.delivery.deliverCompletion = async () => ({ status: "injected" as const });
 
-  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
-  const to = encodeAgentHandle({ nodeId, endpointId: "endpoint_worker-b" });
+  const to = encodeAgentHandle({ nodeId, endpointId: LOGICAL_TARGET_ID });
 
   // Send a message with completion = notify
-  const receipt = await router.send(binding, { to, content: "guard check message", completion: "notify" });
+  const receipt = await router.send(LOGICAL_SENDER, { to, content: "guard check message", completion: "notify" });
 
   // Complete the peer turn
   const origin = {
     requestMessageId: receipt.messageId,
     completion: "notify" as const,
-    source: { nodeId, endpointId: "endpoint_worker-a" },
-    target: { nodeId, endpointId: "endpoint_worker-b" },
+    source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+    target: { nodeId, endpointId: LOGICAL_TARGET_ID },
   };
   await router.completePeerTurn(origin, { ok: true, text: "done" });
 
   // Verify that conversation volume count is exactly 1 (from the single send, NOT incremented by completePeerTurn)
-  expect((router as any).conversationMessageCounts.get(receipt.messageId)).toBe(1);
+  expect((router as unknown as { conversationMessageCounts: Map<string, number> }).conversationMessageCounts.get(receipt.messageId)).toBe(1);
 
-  // Verify that duplicate content cache contains only the original send
-  const pairKey = `${nodeId}:endpoint_worker-a->${nodeId}:endpoint_worker-b`;
-  expect((router as any).rateWindows.get(pairKey)?.length).toBe(1);
+  // Verify that rate window contains only the original send
+  const pairKey = `${nodeId}:22222222-2222-4222-8222-222222222222->${nodeId}:${LOGICAL_TARGET_ID}`;
+  expect((router as unknown as { rateWindows: Map<string, number[]> }).rateWindows.get(pairKey)?.length).toBe(1);
 });
 
-test("remote route accepts completion = result when remote endpoint advertises completion capability", async () => {
+test("remote route accepts completion = result from a logical sender when remote endpoint advertises completion capability", async () => {
   let routedPayload: { completion?: string } | null = null;
   const remoteRoute = new RelayAgentMessageRoute({
     sendAgentMessageRoute: async (payload) => {
@@ -1889,7 +1926,8 @@ test("remote route accepts completion = result when remote endpoint advertises c
       return { messageId: payload.messageId, status: "queued" };
     },
   });
-  const { router, registry } = makeRouter({ remoteRoute });
+  const { router, registry, state } = makeRouter({ remoteRoute });
+  addLogicalPeers(state);
   registry.updateRemoteEndpoints("node_remote", [
     {
       address: { nodeId: "node_remote", endpointId: "endpoint_remote_worker" },
@@ -1909,13 +1947,14 @@ test("remote route accepts completion = result when remote endpoint advertises c
       },
     },
   ]);
-  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
   const to = encodeAgentHandle({ nodeId: "node_remote", endpointId: "endpoint_remote_worker" });
 
-  const receipt = await router.send(binding, { to, content: "remote result test", completion: "result" });
+  const receipt = await router.send(LOGICAL_SENDER, { to, content: "remote result test", completion: "result" });
   expect(receipt.status).toBe("queued");
   expect(receipt.route).toBe("relay");
   expect(routedPayload?.completion).toBe("result");
+  // A grant is recorded on the source daemon so the returning completion is accepted.
+  expect((router as unknown as { pendingCompletions: Map<string, unknown> }).pendingCompletions.has(receipt.messageId)).toBe(true);
 });
 
 test("completePeerTurn for remote source routes upward via remoteRoute.sendCompletion", async () => {
@@ -1955,18 +1994,18 @@ test("completePeerTurn for remote source routes upward via remoteRoute.sendCompl
   expect(completionSent!.result).toBe("computed answer");
 });
 
-test("deliverInboundCompletion performs source-side injection with idempotency and history update", async () => {
+test("deliverInboundCompletion performs source-side injection with idempotency and status patch — but ONLY with a valid grant", async () => {
   const events = createControlEventBus();
   const emitted: ControlEvent[] = [];
   events.subscribe((e) => emitted.push(e));
 
-  let injectedPrompt: string | null = null;
   let deliveredCount = 0;
+  let deliveredCompletion: AgentMessageCompletion | null = null;
   const delivery: LocalAgentMessageDelivery = {
     deliver: async () => ({ status: "queued" as const, modeUsed: "queue" as const }),
-    deliverCompletion: async (_alias, prompt) => {
+    deliverCompletion: async (_alias, completion) => {
       deliveredCount += 1;
-      injectedPrompt = prompt;
+      deliveredCompletion = completion;
       return { status: "injected" as const };
     },
   };
@@ -1974,7 +2013,9 @@ test("deliverInboundCompletion performs source-side injection with idempotency a
   const remoteRoute = new RelayAgentMessageRoute({
     sendAgentMessageRoute: async (payload) => ({ messageId: payload.messageId, status: "queued" }),
   });
-  const { router, registry } = makeRouter({ events, delivery, remoteRoute });
+  let idSeq = 0;
+  const { router, registry, state } = makeRouter({ events, delivery, remoteRoute, createId: () => `uuid-${++idSeq}` });
+  addLogicalPeers(state);
 
   registry.updateRemoteEndpoints("node_remote", [
     {
@@ -1996,15 +2037,39 @@ test("deliverInboundCompletion performs source-side injection with idempotency a
     },
   ]);
 
-  // 1. Send outbound message from local workerA to remote endpoint_remote_b
-  const binding = { coordinatorSession: "coordinator", sourceHandle: "workerA" };
-  const to = encodeAgentHandle({ nodeId: "node_remote", endpointId: "endpoint_remote_b" });
-  const receipt = await router.send(binding, { to, content: "Please compute X", completion: "result" });
+  // 0. Trust boundary: a completion for an UNKNOWN request must be denied.
+  await expect(
+    router.deliverInboundCompletion({
+      requestMessageId: "msg_forged_unknown",
+      source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+      target: { nodeId: "node_remote", endpointId: "endpoint_remote_b" },
+      status: "completed",
+      result: "forged result",
+      completedAt: 1700000000000,
+    }),
+  ).rejects.toMatchObject({ code: "DELIVERY_DENIED" });
+  expect(deliveredCount).toBe(0);
 
-  // 2. Inbound completion arrives from remote node
+  // 1. Send outbound message from local logical session to remote endpoint
+  const to = encodeAgentHandle({ nodeId: "node_remote", endpointId: "endpoint_remote_b" });
+  const receipt = await router.send(LOGICAL_SENDER, { to, content: "Please compute X", completion: "result" });
+
+  // 1b. A mismatched source/target on a REAL request id is also denied.
+  await expect(
+    router.deliverInboundCompletion({
+      requestMessageId: receipt.messageId,
+      source: { nodeId, endpointId: "endpoint_worker-a" },
+      target: { nodeId: "node_remote", endpointId: "endpoint_remote_b" },
+      status: "completed",
+      result: "forged",
+      completedAt: 1700000000000,
+    }),
+  ).rejects.toMatchObject({ code: "DELIVERY_DENIED" });
+
+  // 2. Inbound completion arrives from remote node with exact identities
   const res = await router.deliverInboundCompletion({
     requestMessageId: receipt.messageId,
-    source: { nodeId, endpointId: "endpoint_worker-a" },
+    source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
     target: { nodeId: "node_remote", endpointId: "endpoint_remote_b" },
     status: "completed",
     result: "X = 42",
@@ -2012,20 +2077,19 @@ test("deliverInboundCompletion performs source-side injection with idempotency a
   });
   expect(res.ok).toBe(true);
   expect(deliveredCount).toBe(1);
-  expect(injectedPrompt).toContain("<xacpx-peer-result");
-  expect(injectedPrompt).toContain("X = 42");
+  expect(deliveredCompletion!.result).toBe("X = 42");
+  expect(deliveredCompletion!.to.endpointId).toBe("22222222-2222-4222-8222-222222222222");
 
-  // Verify updated history event was emitted
-  const historyEvents = emitted.filter((e): e is Extract<ControlEvent, { type: "agent-message" }> => e.type === "agent-message");
-  const latestHistory = historyEvents[historyEvents.length - 1];
-  expect(latestHistory).toBeDefined();
-  expect(latestHistory.message.messageId).toBe(receipt.messageId);
-  expect(latestHistory.message.completionStatus).toBe("completed");
+  // Status patch event was emitted for the sender card.
+  const patches = emitted.filter((e): e is Extract<ControlEvent, { type: "agent-message-completion" }> => e.type === "agent-message-completion");
+  expect(patches).toHaveLength(1);
+  expect(patches[0]!.messageId).toBe(receipt.messageId);
+  expect(patches[0]!.completionStatus).toBe("completed");
 
   // 3. Duplicate inbound completion arrives (idempotency check)
   const dupRes = await router.deliverInboundCompletion({
     requestMessageId: receipt.messageId,
-    source: { nodeId, endpointId: "endpoint_worker-a" },
+    source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
     target: { nodeId: "node_remote", endpointId: "endpoint_remote_b" },
     status: "completed",
     result: "X = 42",
@@ -2034,6 +2098,31 @@ test("deliverInboundCompletion performs source-side injection with idempotency a
   expect(dupRes.ok).toBe(true);
   expect(dupRes.deduplicated).toBe(true);
   expect(deliveredCount).toBe(1); // exactly one injection
+
+  // 4. A notify grant must not be upgraded into a result-bearing completion.
+  const notifyReceipt = await router.send(LOGICAL_SENDER, { to, content: "notify only", completion: "notify" });
+  await expect(
+    router.deliverInboundCompletion({
+      requestMessageId: notifyReceipt.messageId,
+      source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+      target: { nodeId: "node_remote", endpointId: "endpoint_remote_b" },
+      status: "completed",
+      result: "smuggled result body",
+      completedAt: 1700000000001,
+    }),
+  ).rejects.toMatchObject({ code: "DELIVERY_DENIED" });
+
+  // 5. completion=none sends never create grants.
+  const noneReceipt = await router.send(LOGICAL_SENDER, { to, content: "one way only" });
+  await expect(
+    router.deliverInboundCompletion({
+      requestMessageId: noneReceipt.messageId,
+      source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+      target: { nodeId: "node_remote", endpointId: "endpoint_remote_b" },
+      status: "completed",
+      completedAt: 1700000000002,
+    }),
+  ).rejects.toMatchObject({ code: "DELIVERY_DENIED" });
 });
 
 test("deliverInboundCompletion does not wake archived source session", async () => {
@@ -2054,6 +2143,14 @@ test("deliverInboundCompletion does not wake archived source session", async () 
         isLogical: true,
       }),
     },
+  });
+
+  // A valid grant must exist first — archived or not, forgeries are denied.
+  (router as unknown as { pendingCompletions: Map<string, unknown> }).pendingCompletions.set("msg_archived_test", {
+    source: { nodeId, endpointId: "endpoint_archived" },
+    target: { nodeId: "node_remote", endpointId: "worker_remote" },
+    mode: "result",
+    expiresAt: Date.now() + 60_000,
   });
 
   const res = await router.deliverInboundCompletion({

@@ -54,7 +54,12 @@ export type ControlEvent =
   | { type: "terminal-output"; terminalId: string; seq: number; data: string }
   | { type: "terminal-exit"; terminalId: string; code: number }
   | { type: "orchestration-changed" }
-  | { type: "agent-message"; chatKey?: string; sessionAlias: string; message: PeerMessageHistoryEntry };
+  | { type: "agent-message"; chatKey?: string; sessionAlias: string; message: PeerMessageHistoryEntry }
+  // v0.3: completion-status PATCH for an already-persisted sender card. Carries
+  // only the correlation id and the new terminal status — never a rebuilt
+  // PeerMessageHistoryEntry — so the durable row's content/peer/mode survive
+  // daemon restarts and outbound-cache eviction.
+  | { type: "agent-message-completion"; sessionAlias: string; messageId: string; completionStatus: "completed" | "failed" | "cancelled" };
 
 export type ControlEventListener = (event: ControlEvent) => void;
 

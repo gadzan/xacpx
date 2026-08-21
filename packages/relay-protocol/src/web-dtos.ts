@@ -255,6 +255,7 @@ const CONTROL_EVENT_TYPE_MAP = {
   "terminal-output": true,
   "terminal-exit": true,
   "agent-message": true,
+  "agent-message-completion": true,
 } satisfies Record<ControlEventDto["type"], true>;
 
 const CONTROL_EVENT_TYPES: ReadonlySet<string> = new Set(Object.keys(CONTROL_EVENT_TYPE_MAP));
@@ -488,6 +489,12 @@ export function validControlEvent(e: unknown): boolean {
       return typeof c.terminalId === "string" && typeof c.code === "number";
     case "agent-message":
       return typeof c.sessionAlias === "string" && optStr(c.chatKey) && validPeerMessageHistoryEntry(c.message);
+    case "agent-message-completion":
+      return (
+        typeof c.sessionAlias === "string" &&
+        optStr(c.messageId) &&
+        (c.completionStatus === "completed" || c.completionStatus === "failed" || c.completionStatus === "cancelled")
+      );
     case "sessions-changed":
     case "workspaces-changed":
     case "orchestration-changed":

@@ -101,6 +101,46 @@ export class MessageStore {
     return true;
   }
 
+  /**
+   * v0.3: flip only the terminal completion status on an already-persisted
+   * sender card, matched by the agentMessage messageId. Returns false when no
+   * matching row exists (e.g. pruned history) — callers must never synthesize a
+   * replacement row from a completion event alone.
+   */
+  patchAgentMessageCompletionStatus(
+    instanceId: string,
+    sessionAlias: string,
+    messageId: string,
+    completionStatus: "completed" | "failed" | "cancelled",
+  ): boolean {
+    const existing = this.db.get<{ id: number; structured: string | null }>(
+      `SELECT id, structured FROM messages
+       WHERE instance_id = ? AND session_alias = ?
+         AND json_extract(structured, '$.agentMessage.messageId') = ?
+       ORDER BY id DESC LIMIT 1`,
+      [instanceId, sessionAlias, messageId],
+    );
+    if (!existing) return false;
+    let structuredObj: StructuredTurn = {};
+    if (existing.structured) {
+      try {
+        structuredObj = JSON.parse(existing.structured) as StructuredTurn;
+      } catch {
+        return false;
+      }
+    }
+    if (!structuredObj.agentMessage) return false;
+    structuredObj.agentMessage = {
+      ...structuredObj.agentMessage,
+      completionStatus,
+    };
+    this.db.run("UPDATE messages SET structured = ? WHERE id = ?", [
+      JSON.stringify(structuredObj),
+      existing.id,
+    ]);
+    return true;
+  }
+
   /** Associate an already-persisted Web prompt with the connector's queue id. The
    *  whole reconcile (set the id, absorb a racing fallback row) runs in ONE
    *  transaction — a crash between the statements would leave a double row. The

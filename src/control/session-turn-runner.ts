@@ -2,6 +2,8 @@ import path from "node:path";
 import type { ControlServiceDeps } from "./control-service";
 import type { ScheduledOrigin } from "./control-event-bus";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
+import type { AgentMessageCompletion } from "../orchestration/agent-messaging-types";
+import { buildPeerCompletionPrompt } from "../orchestration/agent-message-completion";
 import {
   toErrorMessage,
   buildControlMetadata,
@@ -25,6 +27,9 @@ export interface TurnRequest {
   allowRestoreArchived?: boolean;
   preserveCoordinatorRoute?: boolean;
   peerOrigin?: PeerTurnOrigin;
+  /** v0.3 structured system completion — the runner builds the trusted
+   *  envelope server-side after disarming user text (see chatText composition). */
+  trustedPeerCompletion?: AgentMessageCompletion;
 }
 
 export interface TurnResult {
@@ -289,6 +294,13 @@ export class SessionTurnRunner {
           ? `${directive}\n\n<user-prompt>\n${disarmedUserText}\n</user-prompt>`
           : directive;
       }
+    }
+    // v0.3 trusted completion envelope: composed HERE, after user text was
+    // disarmed, so the server-owned wrapper keeps its provenance (user-typed
+    // <xacpx-*> tags were escaped above and can never produce this shape).
+    if (req.trustedPeerCompletion) {
+      const envelope = buildPeerCompletionPrompt(req.trustedPeerCompletion);
+      chatText = chatText ? `${chatText}\n\n${envelope}` : envelope;
     }
     try {
       const response = await this.deps.agent.chat({

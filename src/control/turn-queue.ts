@@ -5,13 +5,14 @@ import type { TurnRequest, TurnResult } from "./session-turn-runner";
 import {
   turnKey,
   raceWithTimeout,
+  type QueuedPrompt,
   CANCEL_DRAIN_TIMEOUT_MS,
   QUEUE_MAX_DEPTH,
   QUEUE_PREVIEW_MAX,
   TURN_IDLE_TIMEOUT_REASON,
-  type QueuedPrompt,
-  type TurnIdleTimeoutDetail,
   type PeerTurnOrigin,
+  type AgentMessageCompletion,
+  type TurnIdleTimeoutDetail,
 } from "./turn-support";
 
 export interface QueuedItemSnapshot {
@@ -68,6 +69,8 @@ export interface SubmitParams {
    *  pre-written inbound row (see PromptPayload.promptRequestId). */
   promptRequestId?: string;
   peerOrigin?: PeerTurnOrigin;
+  /** v0.3 structured system completion — see QueuedPrompt.trustedPeerCompletion. */
+  trustedPeerCompletion?: AgentMessageCompletion;
   // Only interactive prompt() sets this. When true and a turn is already running, the
   // submission is appended to the per-session queue instead of being rejected. Scheduled
   // turns omit it, so they keep the immediate-or-reject behavior.
@@ -192,6 +195,7 @@ export class TurnQueue {
         ...(params.agentMentions !== undefined ? { agentMentions: params.agentMentions } : {}),
         ...(params.promptRequestId !== undefined ? { promptRequestId: params.promptRequestId } : {}),
         ...(params.peerOrigin !== undefined ? { peerOrigin: params.peerOrigin } : {}),
+        ...(params.trustedPeerCompletion !== undefined ? { trustedPeerCompletion: params.trustedPeerCompletion } : {}),
       };
       q.push(item);
       this.queues.set(key, q);
@@ -261,6 +265,7 @@ export class TurnQueue {
             ...(params.agentMentions !== undefined ? { agentMentions: params.agentMentions } : {}),
             ...(params.promptRequestId !== undefined ? { promptRequestId: params.promptRequestId } : {}),
             ...(params.peerOrigin !== undefined ? { peerOrigin: params.peerOrigin } : {}),
+            ...(params.trustedPeerCompletion !== undefined ? { trustedPeerCompletion: params.trustedPeerCompletion } : {}),
           };
           q.push(item);
           this.queues.set(key, q);
@@ -355,6 +360,7 @@ export class TurnQueue {
           allowRestoreArchived: params.allowRestoreArchived,
           preserveCoordinatorRoute: params.preserveCoordinatorRoute,
           peerOrigin: params.peerOrigin,
+          trustedPeerCompletion: params.trustedPeerCompletion,
         },
         controller.signal,
         onActivity,
@@ -443,7 +449,9 @@ export class TurnQueue {
         isPeerMessage: next.isPeerMessage,
         allowRestoreArchived: next.allowRestoreArchived,
         preserveCoordinatorRoute: next.preserveCoordinatorRoute,
+        promptRequestId: next.promptRequestId,
         peerOrigin: next.peerOrigin,
+        trustedPeerCompletion: next.trustedPeerCompletion,
         ...(next.isOwner !== undefined ? { isOwner: next.isOwner } : {}),
         ...(next.accountId !== undefined ? { accountId: next.accountId } : {}),
         ...(next.media !== undefined ? { media: next.media } : {}),

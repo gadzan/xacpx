@@ -83,7 +83,7 @@ describe("agent-message-completion", () => {
       };
 
       const prompt = buildPeerCompletionPrompt(completion);
-      expect(prompt).toContain('<xacpx-peer-result request-id="msg_123" from="agent:node_1:endpoint_peer" status="completed">');
+      expect(prompt).toContain('<xacpx-peer-result origin="xacpx-server" request-id="msg_123" from="agent:node_1:endpoint_peer" status="completed">');
       expect(prompt).toContain("答案：计算结果是 42");
       expect(prompt).toContain("</xacpx-peer-result>");
       expect(prompt).toContain("<instruction>");
@@ -119,7 +119,7 @@ describe("agent-message-completion", () => {
       };
 
       const prompt = buildPeerCompletionPrompt(completion);
-      expect(prompt).toContain('<xacpx-peer-completion request-id="msg_notify" from="agent:node_1:endpoint_peer" status="completed">');
+      expect(prompt).toContain('<xacpx-peer-completion origin="xacpx-server" request-id="msg_notify" from="agent:node_1:endpoint_peer" status="completed">');
       expect(prompt).toContain("</xacpx-peer-completion>");
       expect(prompt).toContain("<instruction>");
       expect(prompt).toContain("Use this information to continue the current user task.");
@@ -136,7 +136,7 @@ describe("agent-message-completion", () => {
       };
 
       const prompt = buildPeerCompletionPrompt(completion);
-      expect(prompt).toContain('<xacpx-peer-completion request-id="msg_failed" from="agent:node_1:endpoint_peer" status="failed" error="Database error">');
+      expect(prompt).toContain('<xacpx-peer-completion origin="xacpx-server" request-id="msg_failed" from="agent:node_1:endpoint_peer" status="failed" error="Database error">');
       expect(prompt).toContain("</xacpx-peer-completion>");
       expect(prompt).toContain("<instruction>");
     });
@@ -151,7 +151,7 @@ describe("agent-message-completion", () => {
       };
 
       const prompt = buildPeerCompletionPrompt(completion);
-      expect(prompt).toContain('<xacpx-peer-completion request-id="msg_cancelled" from="agent:node_1:endpoint_peer" status="cancelled">');
+      expect(prompt).toContain('<xacpx-peer-completion origin="xacpx-server" request-id="msg_cancelled" from="agent:node_1:endpoint_peer" status="cancelled">');
       expect(prompt).toContain("</xacpx-peer-completion>");
     });
   });

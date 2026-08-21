@@ -85,6 +85,12 @@ export default {
     effort: "effort",
     effortSetFailed: "Failed to switch effort. Try again.",
     working: "Agent is working… (Esc to stop)",
+    mentionSource: {
+      worker: "Worker",
+      weixin: "WeChat",
+      feishu: "Feishu",
+      yuanbao: "Yuanbao",
+    },
     mentionActivity: {
       working: "Working",
       waiting: "Waiting",
