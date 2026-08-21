@@ -412,10 +412,29 @@ test("agent_send never parses the display line for a messageId", () => {
 });
 
 test("malformed receipts are ignored (bad id, missing or unknown status)", () => {
+  // v0.3: ids are opaque — msg_cli_1-style short ids and msg_message-1 are
+  // legal. Genuinely malformed ids (wrong prefix, unsafe charset, oversize)
+  // are still rejected.
+  const badPrefix = toolUseEventToStepDto(agentSendEvent({
+    rawOutput: { structuredContent: { messageId: "id_123", status: "queued" } },
+  }));
+  expect(badPrefix.agentMessageId).toBeUndefined();
+  const badCharset = toolUseEventToStepDto(agentSendEvent({
+    rawOutput: { structuredContent: { messageId: "msg_bad id!", status: "queued" } },
+  }));
+  expect(badCharset.agentMessageId).toBeUndefined();
+  const oversize = toolUseEventToStepDto(agentSendEvent({
+    rawOutput: { structuredContent: { messageId: `msg_${"a".repeat(125)}`, status: "queued" } },
+  }));
+  expect(oversize.agentMessageId).toBeUndefined();
+  const shortOpaqueStillValid = toolUseEventToStepDto(agentSendEvent({
+    rawOutput: { structuredContent: { messageId: "msg_cli_1", status: "queued" } },
+  }));
+  expect(shortOpaqueStillValid.agentMessageId).toBe("msg_cli_1");
   const badId = toolUseEventToStepDto(agentSendEvent({
     rawOutput: { structuredContent: { messageId: "msg_123", status: "queued" } },
   }));
-  expect(badId.agentMessageId).toBeUndefined();
+  expect(badId.agentMessageId).toBe("msg_123");
   const missingStatus = toolUseEventToStepDto(agentSendEvent({
     rawOutput: { structuredContent: { messageId: MSG_ID } },
   }));

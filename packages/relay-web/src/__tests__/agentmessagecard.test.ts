@@ -146,7 +146,7 @@ describe("AgentMessageCard", () => {
     const wrapper = mount(AgentMessageCard, { props: { message } });
     const chip = wrapper.find('[data-test="msg-status-completed"]');
     expect(chip.exists()).toBe(true);
-    expect(chip.text()).toContain("Completed");
+    expect(chip.text()).toContain("Peer completed");
   });
 
   it("v0.3: completion=result pending renders Waiting for result", () => {
@@ -184,7 +184,7 @@ describe("AgentMessageCard", () => {
     const wrapper = mount(AgentMessageCard, { props: { message } });
     const chip = wrapper.find('[data-test="msg-status-result-returned"]');
     expect(chip.exists()).toBe(true);
-    expect(chip.text()).toContain("Result returned");
+    expect(chip.text()).toContain("Result ready");
   });
 
   it("v0.3: terminal failed/cancelled render Failed/Cancelled chips", () => {

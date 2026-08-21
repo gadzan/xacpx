@@ -24,7 +24,7 @@ const ACPX = resolveAcpxCommand({});
  * Exercises the REAL production path end to end — no manual
  * `completePeerTurn()` calls, no delivery recorders:
  *
- *   logical A → agent_send(completion=result) → Relay Hub → logical B
+ *   logical A → MCP agent_send RPC (XacpxMcpTransport seam) → Relay Hub → logical B
  *   → B TurnQueue / SessionTurnRunner → automatic turn-finished(peerOrigin)
  *   → automatic completePeerTurn → Hub reverse route → A grant check
  *   → A TurnQueue / SessionTurnRunner → mock ACP agent receives the
@@ -212,14 +212,25 @@ test(
       expect(handleB).not.toBe("");
 
       // A (logical sender) requests completion=result from remote logical B.
-      const receipt = await daemonA.runtime.agentMessaging!.send(
-        { coordinatorSession: daemonA.coordinatorSession },
-        {
-          to: handleB,
-          content: "请总结你刚刚完成了什么",
-          completion: "result",
-        },
+      // Entry point is the REAL transport seam: the same "agent.send" RPC the
+      // xacpx MCP agent_send tool issues through XacpxMcpTransport.
+      const sendResponse = JSON.parse(
+        await daemonA.runtime.orchestration.server.handleLine(
+          JSON.stringify({
+            id: "send-completion-1",
+            method: "agent.send",
+            params: {
+              coordinatorSession: daemonA.coordinatorSession,
+              to: handleB,
+              message: "请总结你刚刚完成了什么",
+              completion: "result",
+            },
+          }),
+        ),
       );
+      expect(sendResponse.ok).toBe(true);
+      const receipt = sendResponse.result;
+      expect(receipt.messageId).toBeDefined();
       expect(["injected", "queued"]).toContain(receipt.status);
 
       // B's mock agent receives the peer envelope and runs its NORMAL turn —
@@ -373,6 +384,104 @@ test(
 
       // The replayed result body must NOT have leaked into the delivered turn.
       expect(completionTurns[0]!).not.toContain("replayed result");
+    } finally {
+      await daemonA.dispose();
+      await daemonB.dispose();
+      await hub.close();
+    }
+  },
+  { timeout: 120_000 },
+);
+
+test(
+  "Completion Hard Gate (Gate R): archiving the source mid-flight does not strand the completion — status is recorded, source stays archived, no turn starts",
+  async () => {
+    const hub = await setupHub();
+    const daemonA = await setupDaemon("A", hub, { alias: "requester" });
+    const daemonB = await setupDaemon("B", hub, { alias: "worker" });
+
+    try {
+      let handleB = "";
+      await waitUntil(async () => {
+        const peers = await daemonA.runtime.agentMessaging!.listReachable({
+          coordinatorSession: daemonA.coordinatorSession,
+        });
+        const peerB = peers.find(
+          (p) => p.sessionAlias === "worker" && p.endpointKind === "logical",
+        );
+        if (!peerB) return false;
+        handleB = encodeAgentHandle(peerB.address);
+        return true;
+      });
+
+      const promptsBeforeArchive = (await daemonA.readPrompts()).length;
+
+      // A requests completion=result; B starts its turn.
+      const sendResponse = JSON.parse(
+        await daemonA.runtime.orchestration.server.handleLine(
+          JSON.stringify({
+            id: "send-gate-r",
+            method: "agent.send",
+            params: {
+              coordinatorSession: daemonA.coordinatorSession,
+              to: handleB,
+              message: "long running task",
+              completion: "result",
+            },
+          }),
+        ),
+      );
+      expect(sendResponse.ok).toBe(true);
+      const receipt = sendResponse.result;
+
+      // While B is working, the user archives A (A disappears from the
+      // published directory — correct discoverability behavior).
+      await daemonA.runtime.control.archiveSession(daemonA.chatKey, daemonA.sessionAlias);
+
+      // The Hub routes the completion via the PRIVATE route grant recorded at
+      // request time — not via the live directory. The archived source's
+      // sender card is patched durably…
+      await waitUntil(
+        async () => {
+          const page = hub.runtime.messages.listBySession(
+            hub.account.id,
+            (
+              hub.instances.listByAccount(hub.account.id).find(
+                (i) => i.name === "inst-A",
+              ) ?? { id: "" }
+            ).id,
+            daemonA.sessionAlias,
+          );
+          const sentCard = page.messages.find(
+            (m) =>
+              m.structured?.agentMessage?.messageId === receipt.messageId &&
+              m.structured.agentMessage.direction === "sent",
+          );
+          return sentCard?.structured?.agentMessage?.completionStatus === "completed";
+        },
+        40_000,
+        async () =>
+          `prompts=${JSON.stringify(await daemonA.readPrompts())}`,
+      );
+
+      // …and the card's original content is intact (patch-only semantics).
+      const page2 = hub.runtime.messages.listBySession(
+        hub.account.id,
+        (
+          hub.instances.listByAccount(hub.account.id).find(
+            (i) => i.name === "inst-A",
+          ) ?? { id: "" }
+        ).id,
+        daemonA.sessionAlias,
+      );
+      const card = page2.messages.find(
+        (m) => m.structured?.agentMessage?.messageId === receipt.messageId,
+      );
+      expect(card?.structured?.agentMessage?.content).toBe("long running task");
+
+      // A remains archived and NO new turn started on it.
+      const promptsAfter = await daemonA.readPrompts();
+      expect(promptsAfter.length).toBe(promptsBeforeArchive);
     } finally {
       await daemonA.dispose();
       await daemonB.dispose();

@@ -519,8 +519,8 @@ export default {
   agentMessage: {
     waitingForCompletion: "Waiting for completion",
     waitingForResult: "Waiting for result",
-    resultReturned: "Result returned",
-    completed: "Completed",
+    resultReturned: "Result ready",
+    completed: "Peer completed",
     failed: "Failed",
     cancelled: "Cancelled",
     sent: "Sent",

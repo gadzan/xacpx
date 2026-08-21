@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { coreHomeDir } from "./runtime/core-home";
@@ -1292,12 +1293,37 @@ export async function buildApp(
       : undefined,
   );
   const controlEvents = createControlEventBus(logger);
+  // Durable, bounded pending-completion grants: the daemon may restart between
+  // an outbound completion-bearing request and the peer's terminal turn. Only
+  // small authorization metadata is persisted — never result bodies.
+  const pendingCompletionsPath = join(
+    runtimeRoot,
+    "agent-messaging",
+    "pending-completions.json",
+  );
   const agentMessaging = new AgentMessageRouter({
     registry: agentEndpointRegistry,
     delivery: localAgentMessageDelivery,
     remoteRoute: relayAgentMessageRoute,
     logger,
     events: controlEvents,
+    pendingCompletionStore: {
+      load: () => {
+        try {
+          const raw = readFileSync(pendingCompletionsPath, "utf8");
+          const parsed = JSON.parse(raw) as { grants?: unknown };
+          return Array.isArray(parsed.grants) ? (parsed.grants as never) : [];
+        } catch {
+          return [];
+        }
+      },
+      save: (grants) => {
+        const tmp = `${pendingCompletionsPath}.tmp`;
+        mkdirSync(dirname(pendingCompletionsPath), { recursive: true });
+        writeFileSync(tmp, JSON.stringify({ grants }, null, 2));
+        renameSync(tmp, pendingCompletionsPath);
+      },
+    },
   });
   const orchestrationEndpoint = createOrchestrationEndpoint(
     paths.orchestrationSocketPath ??

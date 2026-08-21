@@ -88,6 +88,11 @@ export interface AgentMessageRouterLimits {
     maxEntries: number;
     ttlMs: number;
   };
+  /** Bounded retention for terminal outcomes + exactly-once tombstones. */
+  completionCache?: {
+    maxEntries: number;
+    ttlMs: number;
+  };
   traceRingBufferSize?: number;
 }
 
@@ -137,11 +142,37 @@ export class AgentMessageRouter {
       targetPeer: PeerMessagePeer;
     }
   >();
+  /**
+   * Terminal completion outcomes, keyed by requestMessageId. Bounded
+   * (TTL + max entries) — entries are pruned lazily and by the retry sweep.
+   */
   private readonly completionOutcomes = new Map<
     string,
-    AgentMessageCompletion
+    { value: AgentMessageCompletion; expiresAt: number }
   >();
-  private readonly completionInjections = new Set<string>();
+  /**
+   * Source-side exactly-once tombstones. TTL-bounded: after expiry a duplicate
+   * delivery may re-inject, which is acceptable (transport is at-least-once)
+   * whereas unbounded growth on a long-lived daemon is not.
+   */
+  private readonly completionInjections = new Map<string, { expiresAt: number }>();
+  /**
+   * Authoritative pending-completion grants (v0.3 trust boundary). Created ONLY
+   * when a logical sender successfully sends with completion != none; inbound
+   * completions must exact-match a live grant or they are DELIVERY_DENIED.
+   * Bounded (TTL + max entries) and persisted write-through so a daemon
+   * restart between request and completion does not revoke the outward
+   * "xacpx will return the peer's result" contract.
+   */
+  private readonly pendingCompletions = new Map<
+    string,
+    {
+      source: AgentAddress;
+      target: AgentAddress;
+      mode: "notify" | "result";
+      expiresAt: number;
+    }
+  >();
   /**
    * Completions whose terminal outcome is recorded but whose DELIVERY has not
    * yet been admitted (remote route offline, source queue full, transport
@@ -157,21 +188,8 @@ export class AgentMessageRouter {
     }
   >();
   private deliveryRetryTimer: NodeJS.Timeout | undefined;
-  /**
-   * Authoritative pending-completion grants (v0.3 trust boundary). Created ONLY
-   * when a logical sender successfully sends with completion != none; inbound
-   * completions must exact-match a live grant or they are DELIVERY_DENIED.
-   * Bounded: TTL + max entries, oldest evicted first.
-   */
-  private readonly pendingCompletions = new Map<
-    string,
-    {
-      source: AgentAddress;
-      target: AgentAddress;
-      mode: "notify" | "result";
-      expiresAt: number;
-    }
-  >();
+
+
 
   private recordPendingCompletion(
     messageId: string,
@@ -195,6 +213,31 @@ export class AgentMessageRouter {
       mode,
       expiresAt: now + ttlMs,
     });
+    this.persistPendingCompletions();
+  }
+
+  /**
+   * Write-through persistence for pending grants. The grant is an OUTWARD
+   * contract ("xacpx will return the peer's result when it completes") — a
+   * daemon restart between request and completion must not turn every future
+   * legitimate completion into DELIVERY_DENIED. Only small authorization
+   * metadata is persisted, never result bodies.
+   */
+  private persistPendingCompletions(): void {
+    try {
+      this.deps.pendingCompletionStore?.save(
+        [...this.pendingCompletions].map(([requestMessageId, grant]) => ({
+          requestMessageId,
+          source: grant.source,
+          target: grant.target,
+          mode: grant.mode,
+          expiresAt: grant.expiresAt,
+        })),
+      );
+    } catch {
+      // Persistence is best-effort; the in-memory grant remains authoritative
+      // for this process lifetime.
+    }
   }
 
   /**
@@ -236,6 +279,7 @@ export class AgentMessageRouter {
     return undefined;
   }
 
+
   constructor(
     private readonly deps: {
       registry: Pick<
@@ -258,8 +302,45 @@ export class AgentMessageRouter {
       limits?: AgentMessageRouterLimits;
       logger?: Pick<AppLogger, "info">;
       events?: ControlEventBus;
+      pendingCompletionStore?: {
+        load(): Array<{
+          requestMessageId: string;
+          source: AgentAddress;
+          target: AgentAddress;
+          mode: "notify" | "result";
+          expiresAt: number;
+        }>;
+        save(
+          grants: Array<{
+            requestMessageId: string;
+            source: AgentAddress;
+            target: AgentAddress;
+            mode: "notify" | "result";
+            expiresAt: number;
+          }>,
+        ): void;
+      };
     },
-  ) {}
+  ) {
+    // Hydrate persisted pending-completion grants. Expired entries are dropped;
+    // survivors keep this daemon's outward completion contracts enforceable
+    // across restarts.
+    const now = (this.deps.now ?? Date.now)();
+    try {
+      for (const grant of this.deps.pendingCompletionStore?.load() ?? []) {
+        if (grant.expiresAt <= now) continue;
+        this.pendingCompletions.set(grant.requestMessageId, {
+          source: grant.source,
+          target: grant.target,
+          mode: grant.mode,
+          expiresAt: grant.expiresAt,
+        });
+      }
+    } catch {
+      // Fail-closed: an unloadable store starts empty (completions for
+      // pre-restart requests will be denied rather than mis-attributed).
+    }
+  }
 
   async listReachable(
     binding: AgentSenderBinding,
@@ -953,9 +1034,12 @@ export class AgentMessageRouter {
     }
 
     // Target-side terminal idempotency cache (Gate N target half)
-    const existing = this.completionOutcomes.get(origin.requestMessageId);
-    if (existing) {
-      return existing;
+    const cachedOutcome = this.completionOutcomes.get(origin.requestMessageId);
+    if (cachedOutcome) {
+      if (cachedOutcome.expiresAt > (this.deps.now ?? Date.now)()) {
+        return cachedOutcome.value;
+      }
+      this.completionOutcomes.delete(origin.requestMessageId);
     }
 
     const status: AgentMessageCompletionStatus = terminal.cancelled
@@ -983,7 +1067,17 @@ export class AgentMessageRouter {
       completedAt,
     };
 
-    this.completionOutcomes.set(origin.requestMessageId, completion);
+    while (this.completionOutcomes.size >= (this.deps.limits?.completionCache?.maxEntries ?? 2_000)) {
+      const oldest = this.completionOutcomes.keys().next().value;
+      if (oldest === undefined) break;
+      this.completionOutcomes.delete(oldest);
+    }
+    this.completionOutcomes.set(origin.requestMessageId, {
+      value: completion,
+      expiresAt:
+        completedAt +
+        (this.deps.limits?.completionCache?.ttlMs ?? 24 * 60 * 60_000),
+    });
 
     // Resolve the sender session alias (for the status patch event + local
     // injection). Cache first, then authoritative registry lookup.
@@ -1078,8 +1172,12 @@ export class AgentMessageRouter {
 
     // Local source delivery
     // Idempotency gate on source injection (Gate N source half)
-    if (this.completionInjections.has(origin.requestMessageId)) {
-      return completion;
+    const localTombstone = this.completionInjections.get(origin.requestMessageId);
+    if (localTombstone) {
+      if (localTombstone.expiresAt > (this.deps.now ?? Date.now)()) {
+        return completion;
+      }
+      this.completionInjections.delete(origin.requestMessageId);
     }
 
     // If source session is missing or archived: do NOT wake (allowRestoreArchived
@@ -1133,8 +1231,12 @@ export class AgentMessageRouter {
     }
 
     // 2. Idempotency gate on source injection (Gate N source half)
-    if (this.completionInjections.has(input.requestMessageId)) {
-      return { ok: true, deduplicated: true };
+    const tombstone = this.completionInjections.get(input.requestMessageId);
+    if (tombstone) {
+      if (tombstone.expiresAt > (this.deps.now ?? Date.now)()) {
+        return { ok: true, deduplicated: true };
+      }
+      this.completionInjections.delete(input.requestMessageId);
     }
 
     const completion: AgentMessageCompletion = {
@@ -1197,6 +1299,8 @@ export class AgentMessageRouter {
       completion,
     );
     if (!admitted) {
+      // Retry scheduling must use the LOCAL clock: completedAt is the peer's
+      // timestamp and clock skew would corrupt nextAttemptAt/expiresAt.
       this.scheduleCompletionDelivery(
         `local:${input.requestMessageId}`,
         async () =>
@@ -1205,7 +1309,7 @@ export class AgentMessageRouter {
             senderSessionAlias!,
             completion,
           ),
-        input.completedAt,
+        (this.deps.now ?? Date.now)(),
       );
     }
 
@@ -1233,7 +1337,19 @@ export class AgentMessageRouter {
     if (result.status === "rejected") {
       return false;
     }
-    this.completionInjections.add(requestMessageId);
+    while (
+      this.completionInjections.size >=
+      (this.deps.limits?.completionCache?.maxEntries ?? 2_000)
+    ) {
+      const oldest = this.completionInjections.keys().next().value;
+      if (oldest === undefined) break;
+      this.completionInjections.delete(oldest);
+    }
+    this.completionInjections.set(requestMessageId, {
+      expiresAt:
+        (this.deps.now ?? Date.now)() +
+        (this.deps.limits?.completionCache?.ttlMs ?? 24 * 60 * 60_000),
+    });
     return true;
   }
   /** Retry cadence for pending completion deliveries. */

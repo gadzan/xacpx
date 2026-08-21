@@ -106,10 +106,57 @@ export class InstanceGateway {
     PublishedAgentEndpointDto[]
   >();
   private seq = 0;
+  /**
+   * v0.3 private completion ROUTE grants. Recorded when an agentMessageRoute
+   * with completion != none is ACCEPTED by the target; subsequent completions
+   * authenticate against this grant and route to the ORIGINAL source instance
+   * — fully decoupled from the live public Agent Directory so post-request
+   * archive/sleep on either side cannot revoke (or forge) the established
+   * contract. TTL + size bounded.
+   */
+  private readonly pendingCompletionRoutes = new Map<
+    string,
+    {
+      accountId: string;
+      sourceInstanceId: string;
+      source: { nodeId: string; endpointId: string };
+      targetInstanceId: string;
+      target: { nodeId: string; endpointId: string };
+      mode: "notify" | "result";
+      expiresAt: number;
+    }
+  >();
+  private static readonly PENDING_COMPLETION_TTL_MS = 24 * 60 * 60_000;
+  private static readonly PENDING_COMPLETION_MAX_ENTRIES = 5_000;
+
 
   constructor(private readonly deps: InstanceGatewayDeps) {
     this.logger = deps.logger ?? createNoopRelayLogger();
   }
+
+  private recordPendingCompletionRoute(
+    requestMessageId: string,
+    grant: {
+      accountId: string;
+      sourceInstanceId: string;
+      source: { nodeId: string; endpointId: string };
+      targetInstanceId: string;
+      target: { nodeId: string; endpointId: string };
+      mode: "notify" | "result";
+      expiresAt: number;
+    },
+  ): void {
+    while (
+      this.pendingCompletionRoutes.size >=
+      InstanceGateway.PENDING_COMPLETION_MAX_ENTRIES
+    ) {
+      const oldest = this.pendingCompletionRoutes.keys().next().value;
+      if (oldest === undefined) break;
+      this.pendingCompletionRoutes.delete(oldest);
+    }
+    this.pendingCompletionRoutes.set(requestMessageId, grant);
+  }
+
 
   isOnline(instanceId: string): boolean {
     return this.connections.has(instanceId);
@@ -456,7 +503,41 @@ export class InstanceGateway {
           MSG.agentMessageDeliver,
           deliverPayload,
         )
-          .then((res) => respond(res))
+          .then((res) => {
+            // v0.3 trust boundary: a completion-bearing request that was
+            // ACCEPTED by the target establishes a private, TTL-bounded
+            // completion ROUTE grant at the Hub. Authorization is decoupled
+            // from the public Agent Directory — either side may archive/sleep
+            // afterwards without revoking the already-accepted contract.
+            const completionMode = routePayload.completion;
+            if (
+              completionMode === "notify" ||
+              completionMode === "result"
+            ) {
+              const routeRes = res as { status?: string };
+              if (routeRes.status !== "failed") {
+                this.recordPendingCompletionRoute(
+                  routePayload.messageId,
+                  {
+                    accountId: authed.accountId,
+                    sourceInstanceId: authed.instanceId,
+                    source: {
+                      nodeId: routePayload.sourceNodeId,
+                      endpointId: routePayload.sourceEndpointId,
+                    },
+                    targetInstanceId,
+                    target: {
+                      nodeId: routePayload.targetNodeId,
+                      endpointId: routePayload.targetEndpointId,
+                    },
+                    mode: completionMode,
+                    expiresAt: Date.now() + this.PENDING_COMPLETION_TTL_MS,
+                  },
+                );
+              }
+            }
+            respond(res);
+          })
           .catch((err) =>
             respond(
               errorPayload(
@@ -487,54 +568,62 @@ export class InstanceGateway {
           );
           return;
         }
-        // Fail-closed source identity: the completing target endpoint must belong
-        // to the authenticated instance's CURRENTLY published directory.
-        const senderEndpoints =
-          this.endpointsByInstance.get(authed.instanceId) ?? [];
-        const senderEndpoint = senderEndpoints.find(
-          (e) =>
-            e.nodeId === completionPayload.target.nodeId &&
-            e.endpointId === completionPayload.target.endpointId,
+
+        // v0.3 trust boundary: authorization comes from the PRIVATE route grant
+        // recorded when the original agentMessageRoute was accepted — NEVER
+        // from the current public Agent Directory. Either side archiving after
+        // the request must not revoke (or forge) an established contract.
+        const grant = this.pendingCompletionRoutes.get(
+          completionPayload.requestMessageId,
         );
-        if (!senderEndpoint) {
+        if (!grant || grant.expiresAt <= Date.now()) {
+          if (grant) this.pendingCompletionRoutes.delete(completionPayload.requestMessageId);
           respond(
             errorPayload(
               "DELIVERY_DENIED",
-              `Target endpoint ${completionPayload.target.endpointId} is not published by the authenticated instance ${authed.instanceId}`,
+              `No pending completion route exists for request ${completionPayload.requestMessageId}`,
             ),
           );
           return;
         }
-
-        let sourceInstanceId: string | null = null;
-        for (const [instId, conn] of this.connections) {
-          if (conn.accountId !== authed.accountId) continue;
-          const endpoints = this.endpointsByInstance.get(instId) ?? [];
-          // Full canonical-identity match (nodeId + endpointId): a completion may
-          // only be delivered to the exact source endpoint of the original request.
-          if (
-            endpoints.some(
-              (e) =>
-                e.nodeId === completionPayload.source.nodeId &&
-                e.endpointId === completionPayload.source.endpointId,
-            )
-          ) {
-            sourceInstanceId = instId;
-            break;
-          }
-        }
-        if (!sourceInstanceId) {
+        if (authed.instanceId !== grant.targetInstanceId) {
           respond(
             errorPayload(
-              "TARGET_NODE_OFFLINE",
-              `Source node ${completionPayload.source.nodeId} is offline`,
+              "DELIVERY_DENIED",
+              `Completion for ${completionPayload.requestMessageId} must be sent by the instance that accepted the original request`,
+            ),
+          );
+          return;
+        }
+        if (
+          grant.source.nodeId !== completionPayload.source.nodeId ||
+          grant.source.endpointId !== completionPayload.source.endpointId ||
+          grant.target.nodeId !== completionPayload.target.nodeId ||
+          grant.target.endpointId !== completionPayload.target.endpointId
+        ) {
+          respond(
+            errorPayload(
+              "DELIVERY_DENIED",
+              `Completion identities do not match the original route for ${completionPayload.requestMessageId}`,
+            ),
+          );
+          return;
+        }
+        if (grant.mode === "notify" && completionPayload.result !== undefined) {
+          respond(
+            errorPayload(
+              "DELIVERY_DENIED",
+              "A notify-mode completion must not carry a result body",
             ),
           );
           return;
         }
 
+        // Route to the ORIGINAL source instance — not a re-lookup through the
+        // live directory, which would drop completions addressed to endpoints
+        // that archived/slept after the request was accepted.
         this.sendRequest(
-          sourceInstanceId,
+          grant.sourceInstanceId,
           MSG.agentMessageCompletion,
           completionPayload,
         )

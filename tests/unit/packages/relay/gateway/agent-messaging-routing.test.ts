@@ -570,23 +570,86 @@ test("Relay Hub derives replyable from the source endpoint receive capability", 
   wss.close();
 });
 
-test("Relay Hub routes agent.message.completion from target instance to source instance and preserves identities", async () => {
+
+/** v0.3: establish a Hub-side completion ROUTE grant through a real
+ *  completion-bearing agentMessageRoute exchange (the only way grants are
+ *  created). Returns once the target's deliver ACK has been processed. */
+async function establishCompletionRoute(opts: {
+  socketA: WebSocket;
+  socketB: WebSocket;
+  routeId: string;
+  messageId: string;
+  sourceEndpoint?: { nodeId: string; endpointId: string };
+  targetEndpoint?: { nodeId: string; endpointId: string };
+  mode?: "notify" | "result";
+}): Promise<void> {
+  const source = opts.sourceEndpoint ?? { nodeId: "node_a_999", endpointId: "worker_a_sender" };
+  const target = opts.targetEndpoint ?? { nodeId: "node_b_123", endpointId: "worker_b" };
+  let deliverSeen = false;
+  const onMessage = (data: unknown) => {
+    const decoded = decodeEnvelope(String(data));
+    if (
+      decoded.ok &&
+      decoded.envelope.kind === "req" &&
+      decoded.envelope.type === MSG.agentMessageDeliver
+    ) {
+      deliverSeen = true;
+      opts.socketB.send(
+        encodeEnvelope({
+          protocolVersion: RELAY_PROTOCOL_VERSION,
+          kind: "res",
+          id: decoded.envelope.id,
+          type: decoded.envelope.type,
+          payload: {
+            messageId: (decoded.envelope.payload as { messageId: string }).messageId,
+            status: "queued",
+            modeUsed: "queue",
+          },
+        }),
+      );
+    }
+  };
+  opts.socketB.on("message", onMessage);
+  opts.socketA.send(
+    encodeEnvelope({
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: opts.routeId,
+      type: MSG.agentMessageRoute,
+      payload: {
+        sourceNodeId: source.nodeId,
+        sourceEndpointId: source.endpointId,
+        targetNodeId: target.nodeId,
+        targetEndpointId: target.endpointId,
+        messageId: opts.messageId,
+        content: "completion-bearing request",
+        requestedMode: "auto",
+        ...(opts.mode ? { completion: opts.mode } : {}),
+      },
+    }),
+  );
+  const res = await nextResponse(opts.socketA);
+  expect((res.payload as { status: string }).status).toBe("queued");
+  const deadline = Date.now() + 2000;
+  while (!deliverSeen && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  expect(deliverSeen).toBe(true);
+}
+
+test("Relay Hub routes agent.message.completion via the ROUTE GRANT to source instance and preserves identities", async () => {
   const { instances, account, wss, url } = await makeGateway();
 
-  // Instance A (original sender)
   const tokenA = instances.issuePairingToken(account.id, "nodeA", 600_000).token;
   const socketA = await connect(url);
   await authInstance(socketA, tokenA);
 
-  // Instance B (original target, now sending completion)
   const tokenB = instances.issuePairingToken(account.id, "nodeB", 600_000).token;
   const socketB = await connect(url);
   await authInstance(socketB, tokenB);
 
-  // Publish endpoints
   publishEndpoints(socketA, [publishedEndpoint("node_a_999", "worker_a_sender")]);
   publishEndpoints(socketB, [publishedEndpoint("node_b_123", "worker_b")]);
-
   await new Promise((r) => setTimeout(r, 50));
 
   let receivedCompletion: AgentMessageCompletionPayload | null = null;
@@ -608,6 +671,15 @@ test("Relay Hub routes agent.message.completion from target instance to source i
         }),
       );
     }
+  });
+
+  // The grant is established by the REAL completion-bearing route exchange.
+  await establishCompletionRoute({
+    socketA,
+    socketB,
+    routeId: "route-grant-1",
+    messageId: "msg_req_100",
+    mode: "result",
   });
 
   const completionPayload: AgentMessageCompletionPayload = {
@@ -638,11 +710,86 @@ test("Relay Hub routes agent.message.completion from target instance to source i
   expect(receivedCompletion).toBeDefined();
   expect(receivedCompletion!.requestMessageId).toBe("msg_req_100");
   expect(receivedCompletion!.source.nodeId).toBe("node_a_999");
-  expect(receivedCompletion!.source.endpointId).toBe("worker_a_sender");
-  expect(receivedCompletion!.target.nodeId).toBe("node_b_123");
   expect(receivedCompletion!.target.endpointId).toBe("worker_b");
-  expect(receivedCompletion!.status).toBe("completed");
   expect(receivedCompletion!.result).toBe("Analysis complete: all tests passed");
+
+  socketA.close();
+  socketB.close();
+  wss.close();
+});
+
+test("Relay Hub routes completions via the route grant even when BOTH endpoints left the live directory (post-request archive decoupling)", async () => {
+  const { instances, account, wss, url } = await makeGateway();
+
+  const tokenA = instances.issuePairingToken(account.id, "nodeA", 600_000).token;
+  const socketA = await connect(url);
+  await authInstance(socketA, tokenA);
+
+  const tokenB = instances.issuePairingToken(account.id, "nodeB", 600_000).token;
+  const socketB = await connect(url);
+  await authInstance(socketB, tokenB);
+
+  publishEndpoints(socketA, [publishedEndpoint("node_a_999", "worker_a_sender")]);
+  publishEndpoints(socketB, [publishedEndpoint("node_b_123", "worker_b")]);
+  await new Promise((r) => setTimeout(r, 50));
+
+  let receivedCompletion: AgentMessageCompletionPayload | null = null;
+  socketA.on("message", (data) => {
+    const decoded = decodeEnvelope(String(data));
+    if (
+      decoded.ok &&
+      decoded.envelope.kind === "req" &&
+      decoded.envelope.type === MSG.agentMessageCompletion
+    ) {
+      receivedCompletion = decoded.envelope.payload as AgentMessageCompletionPayload;
+      socketA.send(
+        encodeEnvelope({
+          protocolVersion: RELAY_PROTOCOL_VERSION,
+          kind: "res",
+          id: decoded.envelope.id,
+          type: decoded.envelope.type,
+          payload: { ok: true },
+        }),
+      );
+    }
+  });
+
+  await establishCompletionRoute({
+    socketA,
+    socketB,
+    routeId: "route-grant-archive",
+    messageId: "msg_archive_race",
+    mode: "result",
+  });
+
+  // BOTH sides now archive: A (source) and B (completing target) vanish from
+  // the published directory via the production empty-presence sync. The
+  // established completion contract must survive.
+  publishEndpoints(socketA, []);
+  publishEndpoints(socketB, []);
+  await new Promise((r) => setTimeout(r, 50));
+
+  socketB.send(
+    encodeEnvelope({
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "comp-after-archive",
+      type: MSG.agentMessageCompletion,
+      payload: {
+        requestMessageId: "msg_archive_race",
+        source: { nodeId: "node_a_999", endpointId: "worker_a_sender" },
+        target: { nodeId: "node_b_123", endpointId: "worker_b" },
+        status: "completed",
+        result: "finished while offline",
+        completedAt: 1700000000001,
+      },
+    }),
+  );
+
+  const resB = await nextResponse(socketB);
+  expect((resB.payload as { ok: boolean }).ok).toBe(true);
+  expect(receivedCompletion).toBeDefined();
+  expect(receivedCompletion!.result).toBe("finished while offline");
 
   socketA.close();
   socketB.close();
@@ -693,7 +840,7 @@ test("Relay Hub rejects a spoofed target identity on completion with DELIVERY_DE
   wss.close();
 });
 
-test("Relay Hub returns TARGET_NODE_OFFLINE when source node is not connected for completion", async () => {
+test("Relay Hub denies completions with no route grant, regardless of directory state", async () => {
   const { instances, account, wss, url } = await makeGateway();
 
   const tokenB = instances.issuePairingToken(account.id, "nodeB", 600_000).token;
@@ -724,7 +871,9 @@ test("Relay Hub returns TARGET_NODE_OFFLINE when source node is not connected fo
   expect(resB.kind).toBe("res");
   expect(resB.payload).toHaveProperty("error");
   const error = (resB.payload as { error: { code: string; message: string } }).error;
-  expect(error.code).toBe("TARGET_NODE_OFFLINE");
+  // Authorization is grant-based: an unknown request is denied no matter what
+  // the directory looks like.
+  expect(error.code).toBe("DELIVERY_DENIED");
 
   socketB.close();
   wss.close();
@@ -768,7 +917,8 @@ test("Relay Hub isolates completions across different accounts", async () => {
   expect(resBob.kind).toBe("res");
   expect(resBob.payload).toHaveProperty("error");
   const error = (resBob.payload as { error: { code: string } }).error;
-  expect(error.code).toBe("TARGET_NODE_OFFLINE");
+  // Cross-account forgery: no grant exists for Bob's request id.
+  expect(error.code).toBe("DELIVERY_DENIED");
 
   socketAlice.close();
   socketBob.close();
