@@ -2400,6 +2400,121 @@ test("Round-6 (final blocker): delivered source grant survives restart — targe
   expect(grantStore.get("msg_final_blocker")?.state).toBe("delivered");
 });
 
+
+test("Round-6 (final gate): persistence failure must NEVER be published as {ok:true}", async () => {
+  const events = createControlEventBus();
+  const deliveredCompletions: AgentMessageCompletion[] = [];
+  const admittedIds = new Set<string>();
+  let admissionCalls = 0;
+  const grantStore = new Map<
+    string,
+    {
+      requestMessageId: string;
+      source: { nodeId: string; endpointId: string };
+      target: { nodeId: string; endpointId: string };
+      mode: "notify" | "result";
+      expiresAt: number;
+      state: "pending" | "delivered";
+    }
+  >();
+  let saveFails = true;
+
+  const buildRouter = () => {
+    const { router, state } = makeRouter({
+      events,
+      delivery: {
+        deliver: async () => ({ status: "queued" as const, modeUsed: "queue" as const }),
+        deliverCompletion: async (_alias, completion) => {
+          // Existing TurnQueue/request-idempotency seam: a retry of the SAME
+          // request is ABSORBED as injected (promptRequestId already admitted
+          // a turn) — it is not a second admission and not a rejection.
+          if (admittedIds.has(completion.requestMessageId)) {
+            return { status: "injected" as const };
+          }
+          admittedIds.add(completion.requestMessageId);
+          admissionCalls += 1;
+          deliveredCompletions.push(completion);
+          return { status: "injected" as const };
+        },
+      },
+      pendingCompletionStore: {
+        load: () => [...grantStore.entries()].map(([requestMessageId, g]) => ({ requestMessageId, ...g })),
+        save: (grants) => {
+          for (const g of grants) {
+            // Simulate the durable write failing while the failure window is
+            // armed (first persist attempt only).
+            if (saveFails && g.state === "delivered") throw new Error("disk full");
+            grantStore.set(g.requestMessageId, g);
+          }
+        },
+      },
+    });
+    addLogicalPeers(state);
+    return router;
+  };
+
+  const router1 = buildRouter();
+  const seededGrant = {
+    requestMessageId: "msg_final_gate",
+    source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+    target: { nodeId, endpointId: LOGICAL_TARGET_ID },
+    mode: "result" as const,
+    expiresAt: Date.now() + 60_000,
+    state: "pending" as const,
+  };
+  // The durable RESERVE already persisted this grant (production order:
+  // reserve-before-dispatch), so the store starts materialized.
+  grantStore.set("msg_final_gate", seededGrant);
+  (router1 as unknown as { pendingCompletions: Map<string, unknown> }).pendingCompletions.set(
+    "msg_final_gate",
+    seededGrant,
+  );
+
+  const sendCompletion = () =>
+    router1.deliverInboundCompletion({
+      requestMessageId: "msg_final_gate",
+      source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+      target: { nodeId, endpointId: LOGICAL_TARGET_ID },
+      status: "completed",
+      result: "the answer",
+      completedAt: Date.now(),
+    });
+
+  // Attempt 1: admission succeeds exactly once, but the durable delivered
+  // transition FAILS → source MUST NOT answer ok:true.
+  const res1 = await sendCompletion();
+  expect(res1.ok).toBe(false);
+  expect(admissionCalls).toBe(1);
+  // The earlier durable RESERVE wrote the pending row to the store; the
+  // failed mark-delivered left it untouched (RAM rolled back, store kept).
+  expect(grantStore.get("msg_final_gate")?.state).toBe("pending");
+
+  // Storage recovers. Retry: the TurnQueue seam absorbs the duplicate
+  // admission; the durable delivered transition now persists → ok:true.
+  saveFails = false;
+  const res2 = await sendCompletion();
+  expect(res2.ok).toBe(true);
+
+  // Delivered state persisted.
+  expect(grantStore.get("msg_final_gate")?.state).toBe("delivered");
+
+  // ---- Source restart: fresh router on the same store. ----
+  const router2 = buildRouter();
+  const res3 = await router2.deliverInboundCompletion({
+    requestMessageId: "msg_final_gate",
+    source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+    target: { nodeId, endpointId: LOGICAL_TARGET_ID },
+    status: "completed",
+    result: "replayed after restart",
+    completedAt: Date.now(),
+  });
+
+  // Replay returns ok:true + deduplicated:true; admission count stays at one.
+  expect(res3.ok).toBe(true);
+  expect(res3.deduplicated).toBe(true);
+  expect(admissionCalls).toBe(1);
+});
+
 test("Guards untouched: completion cycle does not consume conversation depth, volume, rate limit, or duplicate counters", async () => {
   let clock = 10_000;
   const { router, state } = makeRouter({

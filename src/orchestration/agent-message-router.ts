@@ -278,11 +278,18 @@ export class AgentMessageRouter {
     try {
       this.persistPendingCompletions();
     } catch (error) {
+      // FAIL-CLOSED: a terminal transition that is not durable must never be
+      // announced as {ok:true}. Roll the RAM state back and rethrow — callers
+      // that owe a remote announcement surface a RETRYABLE failure (the Hub
+      // keeps its grant, the target's durable outbox retries), and callers
+      // without a remote announcement let the error reach their logger.
+      grant.state = "pending";
       this.deps.logger?.error(
         "agent_messaging.grant_delivered_persist_failed",
         "failed to persist delivered completion state",
         { requestMessageId: messageId, error: String(error) },
       );
+      throw error;
     }
   }
 
@@ -1569,12 +1576,24 @@ export class AgentMessageRouter {
     }
 
     // 6. Admission-aware injection — dedupe tombstone only after real admission;
-    // rejections/throws schedule bounded retries instead of dropping the result.
-    const admitted = await this.attemptCompletionAdmission(
-      input.requestMessageId,
-      senderSessionAlias,
-      completion,
-    );
+    // rejections schedule a retry for the LOCAL same-daemon path; a DURABLE
+    // terminal-state failure propagates as retryable failure so the Hub keeps
+    // its grant and the target's durable outbox retries.
+    let admitted: boolean;
+    try {
+      admitted = await this.attemptCompletionAdmission(
+        input.requestMessageId,
+        senderSessionAlias,
+        completion,
+      );
+    } catch (error) {
+      return {
+        ok: false,
+        error: `terminal completion state not durable; retry: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
     if (!admitted) {
       // DURABLE ACK RULE + SINGLE RETRY OWNER (v0.3 round-5 review): a Relay
       // inbound completion has a durable retry chain already — the target's
@@ -1614,6 +1633,11 @@ export class AgentMessageRouter {
     if (result.status === "rejected") {
       return false;
     }
+    // Durable-first: the delivered transition is persisted BEFORE any
+    // {ok:true} can escape. A storage failure THROWS so callers fail closed
+    // (retryable failure) instead of announcing a terminal ACK whose
+    // tombstone would not survive a restart.
+    this.markGrantDelivered(requestMessageId);
     // Tombstone must outlive the authorization contract it deduplicates:
     // expiry is anchored to the grant's own expiresAt when one still exists.
     const now = (this.deps.now ?? Date.now)();
@@ -1632,9 +1656,6 @@ export class AgentMessageRouter {
     this.completionInjections.set(requestMessageId, {
       expiresAt: tombstoneExpiresAt,
     });
-    // Delivered/admitted → the outward contract is fulfilled; retire it so
-    // capacity returns and late hub-side duplicates hit the tombstone instead.
-    this.markGrantDelivered(requestMessageId);
     return true;
   }
   /** Retry cadence for pending completion deliveries. */
