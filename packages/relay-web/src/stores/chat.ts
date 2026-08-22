@@ -653,21 +653,55 @@ export const useChatStore = defineStore("chat", () => {
     } else if (e.type === "agent-message") {
       const selected = event.instanceId === instanceId.value && e.sessionAlias === sessionAlias.value;
       if (selected) {
-        const direction = e.message.direction === "sent" ? "out" : "in";
-        messages.value.push({
-          instanceId: event.instanceId,
-          sessionAlias: e.sessionAlias,
-          direction,
-          text: e.message.content,
-          createdAt: new Date(e.message.createdAt).toISOString(),
-          structured: markRaw({ agentMessage: e.message }),
-        });
+        const existing = messages.value.find(
+          (m) =>
+            m.structured?.agentMessage &&
+            m.structured.agentMessage.direction === e.message.direction &&
+            m.structured.agentMessage.messageId === e.message.messageId,
+        );
+        if (existing) {
+          existing.structured = markRaw({
+            ...existing.structured,
+            agentMessage: e.message,
+          });
+        } else {
+          const direction = e.message.direction === "sent" ? "out" : "in";
+          messages.value.push({
+            instanceId: event.instanceId,
+            sessionAlias: e.sessionAlias,
+            direction,
+            text: e.message.content,
+            createdAt: new Date(e.message.createdAt).toISOString(),
+            structured: markRaw({ agentMessage: e.message }),
+          });
+        }
         touchTranscript();
       } else {
         const k = bufKey(event.instanceId, e.sessionAlias);
         const next = new Set(unread.value);
         next.add(k);
         unread.value = next;
+      }
+    } else if (e.type === "agent-message-completion") {
+      // v0.3 completion-status PATCH: flip the terminal status on the existing
+      // sender card row. Never append or synthesize a row from this event.
+      const selected = event.instanceId === instanceId.value && e.sessionAlias === sessionAlias.value;
+      if (selected) {
+        const existing = messages.value.find(
+          (m) =>
+            m.structured?.agentMessage &&
+            m.structured.agentMessage.messageId === e.messageId,
+        );
+        if (existing && existing.structured?.agentMessage) {
+          existing.structured = markRaw({
+            ...existing.structured,
+            agentMessage: {
+              ...existing.structured.agentMessage,
+              completionStatus: e.completionStatus,
+            },
+          });
+          touchTranscript();
+        }
       }
     } else if (e.type === "session-history") {
       // hub. If we're viewing it, reload history so the backlog appears (otherwise it's

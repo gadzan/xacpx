@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { ToolUseEvent } from "../../../../src/channels/types";
 import { toolUseEventToStepDto } from "../../../../packages/channel-relay/src/tool-presentation";
 
 test("edit reads the content diff block", () => {
@@ -351,4 +352,134 @@ test("error field is omitted on success", () => {
     rawInput: { command: "ls" }, rawOutput: { stdout: "a b", exitCode: 0, error: "ignored when not error" },
   });
   expect(step.error).toBeUndefined();
+});
+
+// --- agent_send receipt correlation (Agent Messaging v0.3) ---
+
+const MSG_ID = "msg_3f2a9c1e-7b4d-4e5f-8a6b-2c1d0e9f8a7b";
+
+function agentSendEvent(overrides: Partial<ToolUseEvent> = {}): ToolUseEvent {
+  return {
+    toolCallId: "as1",
+    toolName: "agent_send",
+    kind: "other",
+    status: "success",
+    rawInput: { to: "agent:node_1:endpoint_peer", message: "ping" },
+    ...overrides,
+  };
+}
+
+test("agent_send extracts the receipt messageId from MCP structuredContent", () => {
+  const step = toolUseEventToStepDto(agentSendEvent({
+    rawOutput: { structuredContent: { messageId: MSG_ID, status: "queued", modeUsed: "queue", route: "local" } },
+  }));
+  expect(step.agentMessageId).toBe(MSG_ID);
+});
+
+test("agent_send extracts the messageId when rawOutput IS the receipt", () => {
+  const step = toolUseEventToStepDto(agentSendEvent({
+    rawOutput: { messageId: MSG_ID, status: "injected", modeUsed: "queue", route: "local" },
+  }));
+  expect(step.agentMessageId).toBe(MSG_ID);
+});
+
+test("agent_send extracts the messageId from an MCP JSON-RPC result envelope", () => {
+  const viaStructured = toolUseEventToStepDto(agentSendEvent({
+    rawOutput: { result: { structuredContent: { messageId: MSG_ID, status: "queued", route: "relay" } } },
+  }));
+  expect(viaStructured.agentMessageId).toBe(MSG_ID);
+  const viaTopLevel = toolUseEventToStepDto(agentSendEvent({
+    rawOutput: { result: { messageId: MSG_ID, status: "failed", errorCode: "TARGET_NOT_FOUND" } },
+  }));
+  expect(viaTopLevel.agentMessageId).toBe(MSG_ID);
+});
+
+test("agent_send parses a single JSON receipt text block", () => {
+  const step = toolUseEventToStepDto(agentSendEvent({
+    content: [{ type: "text", text: JSON.stringify({ messageId: MSG_ID, status: "queued", route: "local" }) }],
+  }));
+  expect(step.agentMessageId).toBe(MSG_ID);
+});
+
+test("agent_send never parses the display line for a messageId", () => {
+  const display = `Peer message msg_${"0".repeat(32)} accepted with status=queued`;
+  const viaRawOutput = toolUseEventToStepDto(agentSendEvent({ rawOutput: display }));
+  expect(viaRawOutput.agentMessageId).toBeUndefined();
+  const viaContentBlock = toolUseEventToStepDto(agentSendEvent({
+    content: [{ type: "text", text: display }],
+  }));
+  expect(viaContentBlock.agentMessageId).toBeUndefined();
+});
+
+test("malformed receipts are ignored (bad id, missing or unknown status)", () => {
+  // v0.3: ids are opaque — msg_cli_1-style short ids and msg_message-1 are
+  // legal. Genuinely malformed ids (wrong prefix, unsafe charset, oversize)
+  // are still rejected.
+  const badPrefix = toolUseEventToStepDto(agentSendEvent({
+    rawOutput: { structuredContent: { messageId: "id_123", status: "queued" } },
+  }));
+  expect(badPrefix.agentMessageId).toBeUndefined();
+  const badCharset = toolUseEventToStepDto(agentSendEvent({
+    rawOutput: { structuredContent: { messageId: "msg_bad id!", status: "queued" } },
+  }));
+  expect(badCharset.agentMessageId).toBeUndefined();
+  const oversize = toolUseEventToStepDto(agentSendEvent({
+    rawOutput: { structuredContent: { messageId: `msg_${"a".repeat(125)}`, status: "queued" } },
+  }));
+  expect(oversize.agentMessageId).toBeUndefined();
+  const shortOpaqueStillValid = toolUseEventToStepDto(agentSendEvent({
+    rawOutput: { structuredContent: { messageId: "msg_cli_1", status: "queued" } },
+  }));
+  expect(shortOpaqueStillValid.agentMessageId).toBe("msg_cli_1");
+  const badId = toolUseEventToStepDto(agentSendEvent({
+    rawOutput: { structuredContent: { messageId: "msg_123", status: "queued" } },
+  }));
+  expect(badId.agentMessageId).toBe("msg_123");
+  const missingStatus = toolUseEventToStepDto(agentSendEvent({
+    rawOutput: { structuredContent: { messageId: MSG_ID } },
+  }));
+  expect(missingStatus.agentMessageId).toBeUndefined();
+  const unknownStatus = toolUseEventToStepDto(agentSendEvent({
+    rawOutput: { messageId: MSG_ID, status: "weird" },
+  }));
+  expect(unknownStatus.agentMessageId).toBeUndefined();
+  const nonStringId = toolUseEventToStepDto(agentSendEvent({
+    rawOutput: { messageId: 42, status: "queued" },
+  }));
+  expect(nonStringId.agentMessageId).toBeUndefined();
+});
+
+test("other tools never carry agentMessageId even with receipt-shaped output", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "x1", toolName: "Bash", kind: "execute", status: "success",
+    rawInput: { command: "ls" },
+    rawOutput: { structuredContent: { messageId: MSG_ID, status: "queued", route: "local" } },
+  });
+  expect(step.agentMessageId).toBeUndefined();
+});
+
+test("MCP-qualified mcp__xacpx__agent_send is recognized", () => {
+  const step = toolUseEventToStepDto(agentSendEvent({
+    toolName: "mcp__xacpx__agent_send",
+    rawOutput: { structuredContent: { messageId: MSG_ID, status: "queued", route: "local" } },
+  }));
+  expect(step.agentMessageId).toBe(MSG_ID);
+});
+
+test("agentMessageId survives every detail-variant path via the base spread", () => {
+  const variants: Array<Partial<ToolUseEvent>> = [
+    { kind: "other", rawInput: { to: "peer", message: "hi" } },
+    { kind: "edit", rawInput: { file_path: "src/a.ts", old_string: "a", new_string: "b" } },
+    { kind: "read", rawInput: { file_path: "src/a.ts" } },
+    { kind: "execute", rawInput: { command: "ls" } },
+    { kind: "search", rawInput: { query: "foo" } },
+    { kind: "think", rawInput: { explanation: "hmm" } },
+  ];
+  for (const variant of variants) {
+    const step = toolUseEventToStepDto(agentSendEvent({
+      ...variant,
+      rawOutput: { structuredContent: { messageId: MSG_ID, status: "queued", route: "local" } },
+    }));
+    expect(step.agentMessageId).toBe(MSG_ID);
+  }
 });

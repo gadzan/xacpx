@@ -11,12 +11,26 @@ export interface MessagingNodeIdentity {
 
 export type AgentMessageMode = "auto" | "steer" | "queue" | "interrupt";
 
+export type AgentMessageCompletionMode = "none" | "notify" | "result";
+export type AgentMessageCompletionStatus = "completed" | "failed" | "cancelled";
+
+export interface AgentMessageCompletion {
+  requestMessageId: string;
+  from: AgentAddress;
+  to: AgentAddress;
+  status: AgentMessageCompletionStatus;
+  result?: string;
+  error?: string;
+  completedAt: number;
+}
+
 export interface AgentCapabilities {
   receive: boolean;
   steer: boolean;
   queue: boolean;
   interrupt: boolean;
   conversation: boolean;
+  completion?: boolean;
 }
 
 export interface AgentActivityView {
@@ -35,6 +49,12 @@ export interface AgentEndpointView {
   state: "idle" | "running" | "unreachable";
   activity: AgentActivityView;
   capabilities: AgentCapabilities;
+  /** Presentation context mirrored from the published wire DTO. Local rows are
+   * derived at construction; federated rows keep exactly what the remote
+   * published (absent stays absent — no synthesis). */
+  endpointKind?: "logical" | "worker";
+  /** Channel namespace owning the endpoint when known (e.g. "relay", "weixin"). */
+  channelId?: string;
 }
 
 export interface AgentSenderBinding {
@@ -61,6 +81,7 @@ export interface AgentMessage {
   content: string;
   replyTo?: string;
   requestedMode: AgentMessageMode;
+  completion: AgentMessageCompletionMode;
   createdAt: number;
   expiresAt?: number;
 }
@@ -106,6 +127,7 @@ export interface AgentMessageSendInput {
   mode?: AgentMessageMode;
   requestedMode?: AgentMessageMode;
   replyTo?: string;
+  completion?: AgentMessageCompletionMode;
 }
 
 export interface PeerMessagePeer {
@@ -125,4 +147,6 @@ export interface PeerMessageHistoryEntry {
   content: string;
   createdAt: number;
   status?: "sending" | "sent" | "queued" | "delivered" | "failed";
+  completion?: AgentMessageCompletionMode;
+  completionStatus?: "pending" | "completed" | "failed" | "cancelled";
 }

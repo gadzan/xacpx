@@ -243,6 +243,18 @@ test("accepts an error string on a failed tool-event step, rejects a non-string 
   })).toBeNull();
 });
 
+test("accepts an agentMessageId on a tool-event step, rejects a non-string one", () => {
+  const event = (extra: Record<string, unknown>) => ({
+    kind: "control-event", instanceId: "i1",
+    event: {
+      type: "tool-event", chatKey: "c", sessionAlias: "s",
+      step: { toolCallId: "t1", toolName: "agent_send", kind: "other", status: "success", title: "x", ...extra },
+    },
+  });
+  expect(roundtrip(event({ agentMessageId: "msg_3f2a9c1e-7b4d-4e5f-8a6b-2c1d0e9f8a7b" }))).not.toBeNull();
+  expect(roundtrip(event({ agentMessageId: 42 }))).toBeNull();
+});
+
 test("accepts subagent hierarchy fields and rejects malformed hierarchy metadata", () => {
   const event = (extra: Record<string, unknown>) => ({
     kind: "control-event", instanceId: "i1",
@@ -419,4 +431,326 @@ test("validControlEvent round-trips agent-message event with structured peer det
   expect(decoded.ok).toBe(true);
   if (!decoded.ok) return;
   expect(parseWebServerEvent(decoded.envelope)).toEqual(event);
+});
+
+test("validControlEvent round-trips agent-message event with completion mode", () => {
+  for (const completion of ["none", "notify", "result"] as const) {
+    const event: WebServerEvent = {
+      kind: "control-event",
+      instanceId: "i1",
+      event: {
+        type: "agent-message",
+        chatKey: "relay:a1",
+        sessionAlias: "backend",
+        message: {
+          kind: "agent_message",
+          direction: "sent",
+          messageId: "msg_123",
+          conversationId: "conv_456",
+          peer: {
+            handle: "agent:node_2:worker_b",
+            displayName: "Worker B",
+            agent: "codex",
+          },
+          content: "API endpoint changed",
+          createdAt: 1771234567890,
+          status: "sent",
+          completion,
+        },
+      },
+    };
+    const wire = encodeEnvelope(webEventEnvelope(event));
+    const decoded = decodeEnvelope(wire);
+    expect(decoded.ok).toBe(true);
+    if (!decoded.ok) return;
+    expect(parseWebServerEvent(decoded.envelope)).toEqual(event);
+  }
+});
+
+test("validControlEvent rejects agent-message event with invalid completion mode", () => {
+  const event = {
+    kind: "control-event",
+    instanceId: "i1",
+    event: {
+      type: "agent-message",
+      chatKey: "relay:a1",
+      sessionAlias: "backend",
+      message: {
+        kind: "agent_message",
+        direction: "sent",
+        messageId: "msg_123",
+        conversationId: "conv_456",
+        peer: {
+          handle: "agent:node_2:worker_b",
+          displayName: "Worker B",
+          agent: "codex",
+        },
+        content: "API endpoint changed",
+        createdAt: 1771234567890,
+        status: "sent",
+        completion: "invalid_mode",
+      },
+    },
+  };
+  const wire = encodeEnvelope(webEventEnvelope(event as never));
+  const decoded = decodeEnvelope(wire);
+  expect(decoded.ok).toBe(true);
+  if (!decoded.ok) return;
+  expect(parseWebServerEvent(decoded.envelope)).toBeNull();
+});
+
+test("legacy agent-message event without completion parses as absent and behaves as none", () => {
+  const event: WebServerEvent = {
+    kind: "control-event",
+    instanceId: "i1",
+    event: {
+      type: "agent-message",
+      chatKey: "relay:a1",
+      sessionAlias: "backend",
+      message: {
+        kind: "agent_message",
+        direction: "sent",
+        messageId: "msg_legacy",
+        conversationId: "conv_legacy",
+        peer: {
+          handle: "agent:node_2:worker_b",
+          displayName: "Worker B",
+          agent: "codex",
+        },
+        content: "Legacy message without completion",
+        createdAt: 1771234567890,
+      },
+    },
+  };
+  const wire = encodeEnvelope(webEventEnvelope(event));
+  const decoded = decodeEnvelope(wire);
+  expect(decoded.ok).toBe(true);
+  if (!decoded.ok) return;
+  const parsed = parseWebServerEvent(decoded.envelope);
+  expect(parsed).toEqual(event);
+  if (!parsed || parsed.kind !== "control-event" || parsed.event.type !== "agent-message") return;
+  expect(parsed.event.message.completion).toBeUndefined();
+});
+
+test("validControlEvent round-trips agent-message event with completionStatus", () => {
+  for (const completionStatus of ["completed", "failed", "cancelled"] as const) {
+    const event: WebServerEvent = {
+      kind: "control-event",
+      instanceId: "i1",
+      event: {
+        type: "agent-message",
+        chatKey: "relay:a1",
+        sessionAlias: "backend",
+        message: {
+          kind: "agent_message",
+          direction: "sent",
+          messageId: "msg_status_test",
+          conversationId: "conv_status_test",
+          peer: {
+            handle: "agent:node_2:worker_b",
+            displayName: "Worker B",
+            agent: "codex",
+          },
+          content: "Status test message",
+          createdAt: 1771234567890,
+          status: "sent",
+          completion: "result",
+          completionStatus,
+        },
+      },
+    };
+    expect(roundtrip(event)).toEqual(event);
+  }
+});
+
+test("validControlEvent rejects agent-message event with invalid completionStatus", () => {
+  const event = {
+    kind: "control-event",
+    instanceId: "i1",
+    event: {
+      type: "agent-message",
+      chatKey: "relay:a1",
+      sessionAlias: "backend",
+      message: {
+        kind: "agent_message",
+        direction: "sent",
+        messageId: "msg_status_invalid",
+        conversationId: "conv_status_invalid",
+        peer: {
+          handle: "agent:node_2:worker_b",
+          displayName: "Worker B",
+          agent: "codex",
+        },
+        content: "Invalid status test message",
+        createdAt: 1771234567890,
+        status: "sent",
+        completion: "result",
+        completionStatus: "invalid_status",
+      },
+    },
+  };
+  const wire = encodeEnvelope(webEventEnvelope(event as any));
+  const decoded = decodeEnvelope(wire);
+  expect(decoded.ok).toBe(true);
+  if (!decoded.ok) return;
+  expect(parseWebServerEvent(decoded.envelope)).toBeNull();
+});
+
+test("agent-directory events preserve endpoint context fields and accept legacy rows", () => {
+  // endpointKind/channelId are optional presentation context (v0.3): rows from
+  // new daemons carry them; rows from old daemons omit them and must parse.
+  const event: WebServerEvent = {
+    kind: "agent-directory",
+    endpoints: [
+      {
+        instanceId: "i1",
+        nodeId: "node_a",
+        endpointId: "ep_logical",
+        agent: "codex",
+        state: "idle",
+        capabilities: { receive: true, steer: false, queue: true, interrupt: false },
+        updatedAt: 1771234567890,
+        endpointKind: "logical",
+        channelId: "relay",
+      },
+      {
+        instanceId: "i1",
+        nodeId: "node_a",
+        endpointId: "ep_worker",
+        agent: "claude",
+        state: "running",
+        capabilities: { receive: true, steer: false, queue: true, interrupt: false },
+        updatedAt: 1771234567890,
+        endpointKind: "worker",
+      },
+      {
+        instanceId: "i1",
+        nodeId: "node_old",
+        endpointId: "ep_legacy",
+        agent: "gemini",
+        state: "idle",
+        capabilities: { receive: true, steer: false, queue: true, interrupt: false },
+        updatedAt: 1771234567890,
+      },
+    ],
+  };
+  const wire = encodeEnvelope(webEventEnvelope(event));
+  const decoded = decodeEnvelope(wire);
+  expect(decoded.ok).toBe(true);
+  if (!decoded.ok) return;
+  const parsed = parseWebServerEvent(decoded.envelope);
+  expect(parsed).toEqual(event);
+  if (!parsed || parsed.kind !== "agent-directory") return;
+  expect(parsed.endpoints[0]).toMatchObject({ endpointKind: "logical", channelId: "relay" });
+  expect(parsed.endpoints[1]).toMatchObject({ endpointKind: "worker" });
+  expect("channelId" in parsed.endpoints[1]!).toBe(false);
+  expect("endpointKind" in parsed.endpoints[2]!).toBe(false);
+  expect("channelId" in parsed.endpoints[2]!).toBe(false);
+});
+test("Phase 6: validControlEvent round-trips turn-started and turn-finished with peerOrigin", () => {
+  const peerOrigin = {
+    requestMessageId: "msg_wire_1",
+    completion: "notify" as const,
+    source: { nodeId: "node-1", endpointId: "ep-1" },
+    target: { nodeId: "node-2", endpointId: "ep-2" },
+  };
+
+  const startedEvent: WebServerEvent = {
+    kind: "control-event",
+    instanceId: "i1",
+    event: {
+      type: "turn-started",
+      chatKey: "relay:a1",
+      sessionAlias: "backend",
+      queueItemId: "q-1",
+      peerOrigin,
+    },
+  };
+
+  const startedWire = encodeEnvelope(webEventEnvelope(startedEvent));
+  const startedDecoded = decodeEnvelope(startedWire);
+  expect(startedDecoded.ok).toBe(true);
+  if (!startedDecoded.ok) return;
+  const startedParsed = parseWebServerEvent(startedDecoded.envelope);
+  expect(startedParsed).toEqual(startedEvent);
+
+  const finishedEvent: WebServerEvent = {
+    kind: "control-event",
+    instanceId: "i1",
+    event: {
+      type: "turn-finished",
+      chatKey: "relay:a1",
+      sessionAlias: "backend",
+      ok: true,
+      text: "reply content",
+      peerOrigin,
+    },
+  };
+
+  const finishedWire = encodeEnvelope(webEventEnvelope(finishedEvent));
+  const finishedDecoded = decodeEnvelope(finishedWire);
+  expect(finishedDecoded.ok).toBe(true);
+  if (!finishedDecoded.ok) return;
+  const finishedParsed = parseWebServerEvent(finishedDecoded.envelope);
+  expect(finishedParsed).toEqual(finishedEvent);
+});
+
+test("Phase 6: validControlEvent rejects turn-started / turn-finished with malformed peerOrigin", () => {
+  // invalid completion
+  expect(
+    roundtrip({
+      kind: "control-event",
+      instanceId: "i1",
+      event: {
+        type: "turn-started",
+        chatKey: "c",
+        sessionAlias: "s",
+        peerOrigin: {
+          requestMessageId: "msg_1",
+          completion: "invalid_mode",
+          source: { nodeId: "n1", endpointId: "e1" },
+          target: { nodeId: "n2", endpointId: "e2" },
+        },
+      },
+    }),
+  ).toBeNull();
+
+  // missing target.endpointId
+  expect(
+    roundtrip({
+      kind: "control-event",
+      instanceId: "i1",
+      event: {
+        type: "turn-finished",
+        chatKey: "c",
+        sessionAlias: "s",
+        ok: true,
+        peerOrigin: {
+          requestMessageId: "msg_1",
+          completion: "none",
+          source: { nodeId: "n1", endpointId: "e1" },
+          target: { nodeId: "n2" },
+        },
+      },
+    }),
+  ).toBeNull();
+
+  // non-string requestMessageId
+  expect(
+    roundtrip({
+      kind: "control-event",
+      instanceId: "i1",
+      event: {
+        type: "turn-started",
+        chatKey: "c",
+        sessionAlias: "s",
+        peerOrigin: {
+          requestMessageId: 123,
+          completion: "none",
+          source: { nodeId: "n1", endpointId: "e1" },
+          target: { nodeId: "n2", endpointId: "e2" },
+        },
+      },
+    }),
+  ).toBeNull();
 });

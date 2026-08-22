@@ -53,6 +53,7 @@ interface DaemonNode {
    *  sessions-changed / orchestration-changed signals). */
   controlEvents: ReturnType<typeof createControlEventBus>;
   injectedPrompts: Array<{ session: string; text: string }>;
+  completionTurns: Array<{ alias: string; prompt: string; requestMessageId: string }>;
   dispose: () => Promise<void>;
 }
 
@@ -104,7 +105,7 @@ async function setupDaemonNode(
   const home = await mkdtemp(join(tmpdir(), `xacpx-fed-home-${nodeId}-`));
   const ws = await mkdtemp(join(tmpdir(), `xacpx-fed-ws-${nodeId}-`));
   const injectedPrompts: Array<{ session: string; text: string }> = [];
-
+  const completionTurns: Array<{ alias: string; prompt: string; requestMessageId: string }> = [];
   const stateRef = { state: createEmptyState() };
   stateRef.state.sessions.main = {
     alias: "main",
@@ -144,6 +145,10 @@ async function setupDaemonNode(
         targetState: "idle",
       };
     },
+    deliverCompletion: async (alias, prompt, requestMessageId) => {
+      completionTurns.push({ alias, prompt, requestMessageId });
+      return { status: "injected" };
+    },
   };
 
   let channel!: RelayChannel;
@@ -151,6 +156,9 @@ async function setupDaemonNode(
   const relayRoute = new RelayAgentMessageRoute({
     sendAgentMessageRoute: async (payload) => {
       return await channel.sendAgentMessageRoute(payload);
+    },
+    sendAgentMessageCompletion: async (payload) => {
+      return await channel.sendAgentMessageCompletion(payload);
     },
   });
 
@@ -166,6 +174,11 @@ async function setupDaemonNode(
       input: Parameters<typeof router.deliverInbound>[0],
     ) => {
       return await router.deliverInbound(input);
+    },
+    deliverPeerCompletion: async (
+      input: Parameters<typeof router.deliverInboundCompletion>[0],
+    ) => {
+      return await router.deliverInboundCompletion(input);
     },
     getPublishedAgentEndpoints: async () => {
       return await registry.getPublishedEndpoints();
@@ -212,6 +225,7 @@ async function setupDaemonNode(
     stateRef,
     controlEvents,
     injectedPrompts,
+    completionTurns,
     dispose: async () => {
       abortController.abort();
       await channelStartPromise.catch(() => {});

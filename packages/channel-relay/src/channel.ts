@@ -5,6 +5,8 @@ import {
   MSG,
   RELAY_CAPABILITIES,
   type AgentDirectorySnapshotPayload,
+  type AgentMessageCompletionPayload,
+  type AgentMessageCompletionResult,
   type InstanceNoticePayload,
   type InstanceRecoveryAckPayload,
   type RelayEnvelope,
@@ -656,6 +658,19 @@ export class RelayChannel implements MessageChannelRuntime {
       throw new Error("Relay client is offline or not ready");
     }
     return await this.client.sendRequest(MSG.agentMessageRoute, payload);
+  }
+
+  async sendAgentMessageCompletion(
+    payload: AgentMessageCompletionPayload,
+  ): Promise<AgentMessageCompletionResult> {
+    if (
+      !this.client ||
+      (typeof this.client.isReady === "function" && !this.client.isReady()) ||
+      typeof this.client.sendRequest !== "function"
+    ) {
+      throw new Error("Relay client is offline or not ready");
+    }
+    return await this.client.sendRequest(MSG.agentMessageCompletion, payload);
   }
 
   syncAgentEndpoints(endpoints: unknown[]): void {

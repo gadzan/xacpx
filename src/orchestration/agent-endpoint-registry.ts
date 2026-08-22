@@ -1,5 +1,5 @@
 import type { AppState, LogicalSession } from "../state/types";
-import { toDisplaySessionAlias } from "../channels/channel-scope";
+import { getChannelIdFromChatKey, toDisplaySessionAlias } from "../channels/channel-scope";
 import {
   sameCoordinatorSession,
   stableCoordinatorSession,
@@ -37,6 +37,8 @@ export interface ResolvedAgentIdentity {
   address: AgentAddress;
   coordinatorSession: string;
   receive: boolean;
+  /** Runtime kind of the sender — completion requests are logical-sender-only. */
+  senderKind: "logical" | "worker" | "external";
   sessionAlias?: string;
   displayName?: string;
   agent?: string;
@@ -66,7 +68,17 @@ export class AgentEndpointRegistry {
     if (endpoints.length === 0) {
       this.remoteEndpoints.delete(nodeId);
     } else {
-      this.remoteEndpoints.set(nodeId, endpoints);
+      this.remoteEndpoints.set(
+        nodeId,
+        endpoints.map((ep) => ({
+          ...ep,
+          capabilities: {
+            ...ep.capabilities,
+            conversation: ep.capabilities.conversation ?? false,
+            completion: ep.capabilities.completion ?? false,
+          },
+        })),
+      );
     }
   }
 
@@ -89,7 +101,11 @@ export class AgentEndpointRegistry {
         queue: boolean;
         interrupt: boolean;
         conversation?: boolean;
+        completion?: boolean;
       };
+      /** Remote-published presentation context, preserved verbatim — never synthesized. */
+      endpointKind?: "logical" | "worker";
+      channelId?: string;
     }>,
   ): void {
     const byNode = new Map<string, AgentEndpointView[]>();
@@ -114,7 +130,11 @@ export class AgentEndpointRegistry {
           capabilities: {
             ...ep.capabilities,
             conversation: ep.capabilities.conversation ?? false,
+            completion: ep.capabilities.completion ?? false,
           },
+          // Preserve remote context fields exactly as published (absent stays absent).
+          ...(ep.endpointKind ? { endpointKind: ep.endpointKind } : {}),
+          ...(ep.channelId ? { channelId: ep.channelId } : {}),
         });
         byNode.set(ep.nodeId, list);
       }
@@ -146,6 +166,10 @@ export class AgentEndpointRegistry {
         conversation?: boolean;
       };
       labels?: string[];
+      /** Endpoint context for presentation ranking (see PublishedAgentEndpointDto). */
+      endpointKind?: "logical" | "worker";
+      /** Source channel namespace owning the endpoint when known. */
+      channelId?: string;
       updatedAt: number;
     }>
   > {
@@ -165,6 +189,12 @@ export class AgentEndpointRegistry {
           : {}),
         ...(candidate.endpoint.sessionAlias
           ? { sessionAlias: candidate.endpoint.sessionAlias }
+          : {}),
+        ...(candidate.endpoint.endpointKind
+          ? { endpointKind: candidate.endpoint.endpointKind }
+          : {}),
+        ...(candidate.endpoint.channelId
+          ? { channelId: candidate.endpoint.channelId }
           : {}),
         updatedAt: Date.now(),
       }));
@@ -191,6 +221,7 @@ export class AgentEndpointRegistry {
           address: { nodeId: this.deps.nodeId, endpointId },
           coordinatorSession,
           receive: true,
+          senderKind: "worker",
           sessionAlias: sourceHandle,
           displayName: worker.role || worker.targetAgent,
           agent: worker.targetAgent,
@@ -205,8 +236,9 @@ export class AgentEndpointRegistry {
             nodeId: this.deps.nodeId,
             endpointId: requireEndpointId(external.agentEndpointId),
           },
-          coordinatorSession,
           receive: false,
+          senderKind: "external",
+          coordinatorSession,
           sessionAlias: coordinatorSession,
         };
       }
@@ -226,6 +258,7 @@ export class AgentEndpointRegistry {
         },
         coordinatorSession,
         receive: true,
+        senderKind: "logical",
         sessionAlias: logical.alias,
         displayName: logical.display_name || logical.alias,
         agent: logical.agent,
@@ -243,6 +276,7 @@ export class AgentEndpointRegistry {
         },
         coordinatorSession,
         receive: false,
+        senderKind: "external",
         sessionAlias: coordinatorSession,
       };
     }
@@ -454,6 +488,33 @@ export class AgentEndpointRegistry {
     return match;
   }
 
+  async findLocalSessionByEndpointId(
+    endpointId: string,
+  ): Promise<{ alias: string; archived: boolean; isLogical: boolean } | null> {
+    const state = await this.deps.loadState();
+    for (const session of Object.values(state.sessions)) {
+      if (session.logical_session_id === endpointId) {
+        return {
+          alias: session.alias,
+          archived: session.archived === true,
+          isLogical: true,
+        };
+      }
+    }
+    for (const [workerSession, worker] of Object.entries(
+      state.orchestration.workerBindings,
+    )) {
+      if (worker.agentEndpointId === endpointId) {
+        return {
+          alias: workerSession,
+          archived: false,
+          isLogical: false,
+        };
+      }
+    }
+    return null;
+  }
+
   private listCandidates(
     state: AppState,
     coordinatorSession: string,
@@ -508,7 +569,10 @@ export class AgentEndpointRegistry {
           displayName,
           state: workerState,
           activity,
-          capabilities: queueOnlyCapabilities(),
+          capabilities: queueOnlyCapabilities({ completion: false }),
+          // Worker endpoints are channel-agnostic orchestration runtimes: no
+          // authoritative channel fact exists, so channelId stays absent.
+          endpointKind: "worker",
         },
         runtime: {
           kind: "worker",
@@ -543,7 +607,13 @@ export class AgentEndpointRegistry {
       activity: {
         status: isRunning ? "working" : "idle",
       },
-      capabilities: queueOnlyCapabilities(),
+      capabilities: queueOnlyCapabilities({ completion: true }),
+      endpointKind: "logical",
+      // Channel ownership is derived from the internal alias namespace (the
+      // authoritative channel-scoping record) via the single-home helper in
+      // channel-scope — same derivation as session-resource-catalog and
+      // session-service. Never parse the display alias.
+      channelId: getChannelIdFromChatKey(session.alias),
     };
   }
 }
@@ -611,13 +681,18 @@ function findLogicalSession(
     .sort((left, right) => left.alias.localeCompare(right.alias))[0];
 }
 
-function queueOnlyCapabilities(): AgentCapabilities {
+function queueOnlyCapabilities(options?: { completion?: boolean }): AgentCapabilities {
   return {
     receive: true,
     steer: false,
     queue: true,
     interrupt: false,
     conversation: true,
+    // v0.3: completion signals require the canonical TurnQueue/SessionTurnRunner
+    // path (PeerTurnOrigin → turn-finished). Only logical sessions run on that
+    // path — worker runtimes inject via transport.injectMessage and can never
+    // produce a correlated terminal event, so they must not advertise completion.
+    completion: options?.completion ?? false,
   };
 }
 

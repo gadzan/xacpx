@@ -116,3 +116,117 @@ test("ControlService returns empty published endpoints when agentMessaging is no
   const { service } = makeControlService();
   expect(await service.getPublishedAgentEndpoints()).toEqual([]);
 });
+test("Phase 6: ControlService.submitPeerTurn passes peerOrigin to TurnQueue", async () => {
+  const { service } = makeControlService();
+  (service as any).deps.sessions.getSession = async () => ({
+    alias: "main",
+    archived: false,
+  });
+
+  let capturedParams: any = null;
+  (service as any).turnQueue.submitPeerTurn = (params: any) => {
+    capturedParams = params;
+    return { status: "injected" };
+  };
+
+  const peerOrigin = {
+    requestMessageId: "msg_ctrl_1",
+    completion: "notify" as const,
+    source: { nodeId: "node-1", endpointId: "ep-1" },
+    target: { nodeId: "node-2", endpointId: "ep-2" },
+  };
+
+  const res = await service.submitPeerTurn({
+    chatKey: "relay:agent-message:main",
+    sessionAlias: "main",
+    boundSessionAlias: "main",
+    text: "<xacpx-message>hello</xacpx-message>",
+    senderId: "agent-messaging",
+    messageId: "msg_ctrl_1",
+    peerOrigin,
+  });
+
+  expect(res).toEqual({ status: "injected" });
+  expect(capturedParams).toMatchObject({
+    chatKey: "relay:agent-message:main",
+    sessionAlias: "main",
+    boundSessionAlias: "main",
+    text: "<xacpx-message>hello</xacpx-message>",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_ctrl_1",
+    isPeerMessage: true,
+    peerOrigin,
+  });
+});
+
+test("Phase 7: ControlService.submitCompletionTurn passes the STRUCTURED completion to TurnQueue (never pre-rendered prompt text)", async () => {
+  const { service } = makeControlService();
+  (service as any).deps.sessions.getSession = async () => ({
+    alias: "main",
+    archived: false,
+  });
+
+  let capturedParams: any = null;
+  (service as any).turnQueue.submitPeerTurn = (params: any) => {
+    capturedParams = params;
+    return { status: "injected" };
+  };
+
+  const completion = {
+    requestMessageId: "msg_comp_1",
+    from: { nodeId: "node_1", endpointId: "peer" },
+    to: { nodeId: "node_1", endpointId: "source" },
+    status: "completed" as const,
+    result: "the answer",
+    completedAt: 123,
+  };
+
+  const res = await service.submitCompletionTurn({
+    sourceAlias: "main",
+    completion,
+    requestMessageId: "msg_comp_1",
+  });
+
+  expect(res).toEqual({ status: "injected" });
+  expect(capturedParams).toMatchObject({
+    chatKey: "relay:agent-message:main",
+    sessionAlias: "main",
+    boundSessionAlias: "main",
+    // Prompt text is empty: the trusted envelope is composed inside the
+    // SessionTurnRunner AFTER user text is disarmed.
+    text: "",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_comp_1",
+    isPeerMessage: true,
+    allowRestoreArchived: false,
+    preserveCoordinatorRoute: true,
+  });
+  expect(capturedParams.trustedPeerCompletion).toEqual(completion);
+  // Completion turn must NOT carry peerOrigin (one-shot, non-replyable)
+  expect(capturedParams.peerOrigin).toBeUndefined();
+});
+
+test("Phase 7: ControlService.submitCompletionTurn rejects when session is archived or missing", async () => {
+  const { service } = makeControlService();
+
+  // Missing session
+  (service as any).deps.sessions.getSession = async () => null;
+  const resMissing = await service.submitCompletionTurn({
+    sourceAlias: "missing",
+    prompt: "prompt",
+    requestMessageId: "msg_1",
+  });
+  expect(resMissing).toEqual({ status: "rejected", reason: "target-unavailable" });
+
+  // Archived session
+  (service as any).deps.sessions.getSession = async () => ({
+    alias: "archived-session",
+    archived: true,
+  });
+  const resArchived = await service.submitCompletionTurn({
+    sourceAlias: "archived-session",
+    prompt: "prompt",
+    requestMessageId: "msg_2",
+  });
+  expect(resArchived).toEqual({ status: "rejected", reason: "target-unavailable" });
+});

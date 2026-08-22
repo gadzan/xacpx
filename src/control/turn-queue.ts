@@ -5,11 +5,13 @@ import type { TurnRequest, TurnResult } from "./session-turn-runner";
 import {
   turnKey,
   raceWithTimeout,
+  type QueuedPrompt,
   CANCEL_DRAIN_TIMEOUT_MS,
   QUEUE_MAX_DEPTH,
   QUEUE_PREVIEW_MAX,
   TURN_IDLE_TIMEOUT_REASON,
-  type QueuedPrompt,
+  type PeerTurnOrigin,
+  type AgentMessageCompletion,
   type TurnIdleTimeoutDetail,
 } from "./turn-support";
 
@@ -41,6 +43,18 @@ export interface TurnQueueDeps {
   // Bound on how long clearSession waits for an aborted turn to unwind before reporting
   // `cleared: false`. Defaults to CANCEL_DRAIN_TIMEOUT_MS; injectable for tests.
   cancelDrainTimeoutMs?: number;
+  // v0.3: a queued PEER item carrying a completion contract (peerOrigin.completion
+  // !== "none") was removed BEFORE it could start (cancelQueuedItem or
+  // clearSession/archive). No turn-finished(peerOrigin) will ever fire for it, so
+  // the source's terminal-completion contract would dangle forever. The caller
+  // MUST route exactly one terminal cancelled outcome through the completion state
+  // machine. Best-effort and synchronous; must not throw.
+  onQueuedPeerCancelled?: (detail: {
+    chatKey: string;
+    sessionAlias: string;
+    peerOrigin: PeerTurnOrigin;
+    promptRequestId?: string;
+  }) => void;
 }
 
 export interface SubmitParams {
@@ -66,6 +80,9 @@ export interface SubmitParams {
    *  drained turn-started so the hub can correlate a queue item back to its
    *  pre-written inbound row (see PromptPayload.promptRequestId). */
   promptRequestId?: string;
+  peerOrigin?: PeerTurnOrigin;
+  /** v0.3 structured system completion — see QueuedPrompt.trustedPeerCompletion. */
+  trustedPeerCompletion?: AgentMessageCompletion;
   // Only interactive prompt() sets this. When true and a turn is already running, the
   // submission is appended to the per-session queue instead of being rejected. Scheduled
   // turns omit it, so they keep the immediate-or-reject behavior.
@@ -95,7 +112,18 @@ export class TurnQueue {
 
   // Each in-flight turn carries its AbortController plus a `settled` promise that resolves
   // once the turn has fully unwound (transport cancelled, inFlight cleared).
-  private readonly inFlight = new Map<string, { controller: AbortController; settled: Promise<void> }>();
+  private readonly inFlight = new Map<
+    string,
+    { controller: AbortController; settled: Promise<void>; promptRequestId?: string }
+  >();
+  /**
+   * Settled request-id tombstones (v0.3): a completion delivery whose
+   * promptRequestId already RAN to completion must not be re-admitted by a
+   * late retry — the in-flight/queued dedupe above no longer covers it once
+   * the turn resolved. Bounded FIFO eviction.
+   */
+  private readonly settledRequestIds = new Map<string, number>();
+  private static readonly SETTLED_REQUEST_IDS_MAX = 2_000;
 
   // Per-session FIFO queue of prompts that arrived while a turn was already running. Only
   // interactive submissions with `queueable: true` enqueue; non-queueable (scheduled) turns
@@ -160,10 +188,36 @@ export class TurnQueue {
     if (this.removing.has(key)) {
       return { status: "rejected", reason: "target-unavailable" };
     }
+    // Request-id admission dedupe (v0.3): a completion delivery whose
+    // promptRequestId already sits in this session's lane — in flight OR
+    // queued — is absorbed idempotently. A retry after an ambiguous outcome
+    // must never admit a second turn for the same request.
+    if (params.promptRequestId !== undefined && params.isPeerMessage) {
+      // Settled tombstone first: covers turns that already RAN. The
+      // tombstone is only consulted while its TTL holds.
+      if (this.hasSettledRequestId(params.promptRequestId)) {
+        return { status: "injected" };
+      }
+      const queuedDup = (this.queues.get(key) ?? []).some(
+        (item) => item.promptRequestId === params.promptRequestId,
+      );
+      const inFlightEntry = this.inFlight.get(key);
+      const inFlightDup =
+        inFlightEntry?.promptRequestId === params.promptRequestId;
+      if (queuedDup || inFlightDup) {
+        return { status: "injected" };
+      }
+    }
     const existing = this.inFlight.get(key);
-    const busy =
-      this.draining.has(key) ||
-      (existing !== undefined && !existing.controller.signal.aborted);
+    // Peer admission must be SYNCHRONOUS: either a queued push or a fresh
+    // inFlight registration. An aborted-but-unwound predecessor breaks
+    // submit()'s synchronous prefix — submit awaits existing.settled BEFORE
+    // registering and may then reject turn-already-running, long after this
+    // caller returned injected and tombstoned a request that never entered
+    // the queue. For peer turns ANY registered predecessor (aborted or not)
+    // counts as busy, so the request takes the synchronous enqueue path
+    // behind the unwind; the turn-finish hand-off drains it.
+    const busy = this.draining.has(key) || existing !== undefined;
     if (busy) {
       const q = this.queues.get(key) ?? [];
       if (q.length >= QUEUE_MAX_DEPTH) {
@@ -189,10 +243,16 @@ export class TurnQueue {
         ...(params.media !== undefined ? { media: params.media } : {}),
         ...(params.agentMentions !== undefined ? { agentMentions: params.agentMentions } : {}),
         ...(params.promptRequestId !== undefined ? { promptRequestId: params.promptRequestId } : {}),
+        ...(params.peerOrigin !== undefined ? { peerOrigin: params.peerOrigin } : {}),
+        ...(params.trustedPeerCompletion !== undefined ? { trustedPeerCompletion: params.trustedPeerCompletion } : {}),
       };
       q.push(item);
       this.queues.set(key, q);
       this.emitQueueUpdated(params.chatKey, params.sessionAlias, key);
+      // Admitted (queued): NOW the request id is terminal-safe to tombstone.
+      // A queue-full rejection above returns WITHOUT recording, so a retry
+      // after capacity frees still gets a real turn.
+      this.recordSettledRequestId(params.promptRequestId);
       return { status: "queued" };
     }
 
@@ -202,7 +262,52 @@ export class TurnQueue {
       isPeerMessage: true,
       allowRestoreArchived: false,
     });
+    // Admitted (injected): submit's synchronous prefix registers inFlight
+    // before any await (see the SYNCHRONOUS PREFIX note in submit), so by
+    // this line the turn genuinely holds the lane. Same-tick duplicates now
+    // dedupe via the tombstone.
+    this.recordSettledRequestId(params.promptRequestId);
     return { status: "injected" };
+  }
+
+  private hasSettledRequestId(id: string): boolean {
+    const expiresAt = this.settledRequestIds.get(id);
+    if (expiresAt === undefined) return false;
+    if (expiresAt <= Date.now()) {
+      this.settledRequestIds.delete(id);
+      return false;
+    }
+    return true;
+  }
+
+  private recordSettledRequestId(id: string | undefined): void {
+    if (id === undefined) return;
+    this.settledRequestIds.set(id, Date.now() + 24 * 60 * 60_000);
+    while (this.settledRequestIds.size > TurnQueue.SETTLED_REQUEST_IDS_MAX) {
+      const oldest = this.settledRequestIds.keys().next().value;
+      if (oldest === undefined) break;
+      this.settledRequestIds.delete(oldest);
+    }
+  }
+
+  /** Terminal cancellation for queued peer items dropped before execution. */
+  private notifyQueuedPeerCancelled(items: readonly QueuedPrompt[]): void {
+    for (const item of items) {
+      if (item.isPeerMessage !== true) continue;
+      if (!item.peerOrigin || item.peerOrigin.completion === "none") continue;
+      try {
+        this.deps.onQueuedPeerCancelled?.({
+          chatKey: item.executionContext.chatKey,
+          sessionAlias: item.executionContext.sessionAlias,
+          peerOrigin: item.peerOrigin,
+          ...(item.promptRequestId !== undefined
+            ? { promptRequestId: item.promptRequestId }
+            : {}),
+        });
+      } catch {
+        // best-effort by contract — removal proceeds regardless
+      }
+    }
   }
 
   private emitQueueUpdated(chatKey: string, sessionAlias: string, queueKey?: string): void {
@@ -257,6 +362,8 @@ export class TurnQueue {
             ...(params.media !== undefined ? { media: params.media } : {}),
             ...(params.agentMentions !== undefined ? { agentMentions: params.agentMentions } : {}),
             ...(params.promptRequestId !== undefined ? { promptRequestId: params.promptRequestId } : {}),
+            ...(params.peerOrigin !== undefined ? { peerOrigin: params.peerOrigin } : {}),
+            ...(params.trustedPeerCompletion !== undefined ? { trustedPeerCompletion: params.trustedPeerCompletion } : {}),
           };
           q.push(item);
           this.queues.set(key, q);
@@ -294,7 +401,13 @@ export class TurnQueue {
     // parallel turn. Pinned by turn-queue.test.ts "submit's busy-decision + enqueue is a
     // synchronous prefix (same tick, zero await)": that mutation reddens its zero-await
     // queueLength===1 / isBusy===true assertions.
-    this.inFlight.set(key, { controller, settled });
+    this.inFlight.set(key, {
+      controller,
+      settled,
+      ...(params.promptRequestId !== undefined
+        ? { promptRequestId: params.promptRequestId }
+        : {}),
+    });
     // A drained head turn has now re-registered its own inFlight synchronously (no await since
     // the finished turn's finally). Clear the hand-off guard: the slot is genuinely held again,
     // so the temporary `draining` busy marker is no longer needed.
@@ -350,6 +463,8 @@ export class TurnQueue {
           agentMentions: params.agentMentions,
           allowRestoreArchived: params.allowRestoreArchived,
           preserveCoordinatorRoute: params.preserveCoordinatorRoute,
+          peerOrigin: params.peerOrigin,
+          trustedPeerCompletion: params.trustedPeerCompletion,
         },
         controller.signal,
         onActivity,
@@ -438,6 +553,9 @@ export class TurnQueue {
         isPeerMessage: next.isPeerMessage,
         allowRestoreArchived: next.allowRestoreArchived,
         preserveCoordinatorRoute: next.preserveCoordinatorRoute,
+        promptRequestId: next.promptRequestId,
+        peerOrigin: next.peerOrigin,
+        trustedPeerCompletion: next.trustedPeerCompletion,
         ...(next.isOwner !== undefined ? { isOwner: next.isOwner } : {}),
         ...(next.accountId !== undefined ? { accountId: next.accountId } : {}),
         ...(next.media !== undefined ? { media: next.media } : {}),
@@ -484,8 +602,11 @@ export class TurnQueue {
   async clearSession(chatKey: string, sessionAlias: string, concurrencyKey?: string): Promise<{ cleared: boolean }> {
     const key = this.resolveKey(chatKey, sessionAlias, concurrencyKey);
     // queues never holds empty arrays, so a successful delete means items were dropped.
-    if (this.queues.delete(key)) {
+    const droppedFirst = this.queues.get(key);
+    if (droppedFirst) {
+      this.queues.delete(key);
       this.emitQueueUpdated(chatKey, sessionAlias, key);
+      this.notifyQueuedPeerCancelled(droppedFirst);
     }
     const entry = this.inFlight.get(key);
     if (entry) {
@@ -493,8 +614,11 @@ export class TurnQueue {
       await raceWithTimeout(entry.settled, this.cancelDrainTimeoutMs);
       // The await is a window: new prompts may have enqueued (behind the aborted-but-live
       // turn) — drop those too so nothing drains later.
-      if (this.queues.delete(key)) {
+      const droppedSecond = this.queues.get(key);
+      if (droppedSecond) {
+        this.queues.delete(key);
         this.emitQueueUpdated(chatKey, sessionAlias, key);
+        this.notifyQueuedPeerCancelled(droppedSecond);
       }
     }
     // Re-check rather than trusting the race: `inFlight` still present means the turn
@@ -525,9 +649,12 @@ export class TurnQueue {
     if (!q) return { cancelled: false };
     const i = q.findIndex((x) => x.id === itemId);
     if (i < 0) return { cancelled: false };
-    q.splice(i, 1);
+    const removed = q.splice(i, 1)[0]!;
     if (q.length === 0) this.queues.delete(key);
     this.emitQueueUpdated(chatKey, sessionAlias, key);
+    // The item will never start: any completion contract it carried is
+    // resolved as terminal cancelled so the source is not left Waiting.
+    this.notifyQueuedPeerCancelled([removed]);
     return { cancelled: true };
   }
 }

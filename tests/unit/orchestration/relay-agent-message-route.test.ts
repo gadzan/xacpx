@@ -188,3 +188,67 @@ test("RelayAgentMessageRoute does NOT retry DELIVERY_DENIED", async () => {
   });
   expect(attempts).toBe(1);
 });
+
+test("RelayAgentMessageRoute.sendCompletion throws ROUTE_UNAVAILABLE when client missing", async () => {
+  const route = new RelayAgentMessageRoute();
+  await expect(
+    route.sendCompletion({
+      requestMessageId: "msg_1",
+      source: { nodeId: "nodeA", endpointId: "workerA" },
+      target: { nodeId: "nodeB", endpointId: "workerB" },
+      status: "completed",
+      completedAt: Date.now(),
+    }),
+  ).rejects.toThrow("Remote completion route is unavailable");
+});
+
+test("RelayAgentMessageRoute.sendCompletion forwards to client and returns result", async () => {
+  let captured: unknown = null;
+  const route = new RelayAgentMessageRoute({
+    sendAgentMessageRoute: async () => ({ messageId: "1", status: "queued" }),
+    sendAgentMessageCompletion: async (payload) => {
+      captured = payload;
+      return { ok: true };
+    },
+  });
+
+  const payload = {
+    requestMessageId: "msg_100",
+    source: { nodeId: "nodeA", endpointId: "workerA" },
+    target: { nodeId: "nodeB", endpointId: "workerB" },
+    status: "completed" as const,
+    result: "Done",
+    completedAt: 1700000000000,
+  };
+  const res = await route.sendCompletion(payload);
+  expect(res.ok).toBe(true);
+  expect(captured).toEqual(payload);
+});
+
+test("RelayAgentMessageRoute.sendCompletion retries ambiguous network failures", async () => {
+  let attempts = 0;
+  const route = new RelayAgentMessageRoute(
+    {
+      sendAgentMessageRoute: async () => ({ messageId: "1", status: "queued" }),
+      sendAgentMessageCompletion: async () => {
+        attempts += 1;
+        if (attempts < 3) {
+          throw new Error("WebSocket request timed out after 1000ms");
+        }
+        return { ok: true, deduplicated: true };
+      },
+    },
+    { maxAttempts: 3, backoffMs: 1, delay: async () => undefined },
+  );
+
+  const res = await route.sendCompletion({
+    requestMessageId: "msg_retry",
+    source: { nodeId: "nodeA", endpointId: "workerA" },
+    target: { nodeId: "nodeB", endpointId: "workerB" },
+    status: "completed",
+    completedAt: Date.now(),
+  });
+  expect(res.ok).toBe(true);
+  expect(res.deduplicated).toBe(true);
+  expect(attempts).toBe(3);
+});

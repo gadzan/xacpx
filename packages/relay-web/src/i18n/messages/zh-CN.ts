@@ -83,6 +83,12 @@ export default {
     effort: "推理强度",
     effortSetFailed: "切换推理强度失败，请重试。",
     working: "Agent 正在工作…（按 Esc 停止）",
+    mentionSource: {
+      worker: "Worker",
+      weixin: "微信",
+      feishu: "飞书",
+      yuanbao: "元宝",
+    },
     mentionActivity: {
       working: "执行中",
       waiting: "等待中",
@@ -507,5 +513,16 @@ export default {
       left: "左",
       right: "右",
     },
+  },
+  agentMessage: {
+    waitingForCompletion: "等待完成通知",
+    waitingForResult: "等待结果",
+    resultReturned: "结果已就绪",
+    completed: "对端已完成",
+    failed: "失败",
+    cancelled: "已取消",
+    sent: "已发送",
+    delivered: "已送达",
+    sending: "发送中",
   },
 };

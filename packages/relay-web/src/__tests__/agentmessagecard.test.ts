@@ -93,4 +93,118 @@ describe("AgentMessageCard", () => {
 
     expect(wrapper.find('[data-test="msg-status-failed"]').exists()).toBe(true);
   });
+
+  it("v0.3: completion=none renders legacy Sent chip", () => {
+    const message: PeerMessageHistoryEntry = {
+      kind: "agent_message",
+      direction: "sent",
+      messageId: "msg_none",
+      conversationId: "conv",
+      peer: { handle: "agent:n:e", displayName: "Peer", agent: "codex" },
+      content: "one-way note",
+      createdAt: 1771234567890,
+      status: "sent",
+      completion: "none",
+    };
+    const wrapper = mount(AgentMessageCard, { props: { message } });
+    expect(wrapper.find('[data-test="msg-status-sent"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="msg-status-sent"]').text()).toContain("Sent");
+  });
+
+  it("v0.3: completion=notify pending renders Waiting for completion", () => {
+    const message: PeerMessageHistoryEntry = {
+      kind: "agent_message",
+      direction: "sent",
+      messageId: "msg_notify",
+      conversationId: "conv",
+      peer: { handle: "agent:n:e", displayName: "Peer", agent: "codex" },
+      content: "regen fixtures",
+      createdAt: 1771234567890,
+      status: "queued",
+      completion: "notify",
+      completionStatus: "pending",
+    };
+    const wrapper = mount(AgentMessageCard, { props: { message } });
+    const chip = wrapper.find('[data-test="msg-status-waiting"]');
+    expect(chip.exists()).toBe(true);
+    expect(chip.text()).toContain("Waiting for completion");
+  });
+
+  it("v0.3: completion=notify completed renders Completed", () => {
+    const message: PeerMessageHistoryEntry = {
+      kind: "agent_message",
+      direction: "sent",
+      messageId: "msg_notify_done",
+      conversationId: "conv",
+      peer: { handle: "agent:n:e", displayName: "Peer", agent: "codex" },
+      content: "regen fixtures",
+      createdAt: 1771234567890,
+      status: "sent",
+      completion: "notify",
+      completionStatus: "completed",
+    };
+    const wrapper = mount(AgentMessageCard, { props: { message } });
+    const chip = wrapper.find('[data-test="msg-status-completed"]');
+    expect(chip.exists()).toBe(true);
+    expect(chip.text()).toContain("Peer completed");
+  });
+
+  it("v0.3: completion=result pending renders Waiting for result", () => {
+    const message: PeerMessageHistoryEntry = {
+      kind: "agent_message",
+      direction: "sent",
+      messageId: "msg_result",
+      conversationId: "conv",
+      peer: { handle: "agent:n:e", displayName: "Peer", agent: "codex" },
+      content: "summarize",
+      createdAt: 1771234567890,
+      status: "queued",
+      completion: "result",
+      completionStatus: "pending",
+    };
+    const wrapper = mount(AgentMessageCard, { props: { message } });
+    const chip = wrapper.find('[data-test="msg-status-waiting"]');
+    expect(chip.exists()).toBe(true);
+    expect(chip.text()).toContain("Waiting for result");
+  });
+
+  it("v0.3: completion=result completed renders Result returned", () => {
+    const message: PeerMessageHistoryEntry = {
+      kind: "agent_message",
+      direction: "sent",
+      messageId: "msg_result_done",
+      conversationId: "conv",
+      peer: { handle: "agent:n:e", displayName: "Peer", agent: "codex" },
+      content: "summarize",
+      createdAt: 1771234567890,
+      status: "sent",
+      completion: "result",
+      completionStatus: "completed",
+    };
+    const wrapper = mount(AgentMessageCard, { props: { message } });
+    const chip = wrapper.find('[data-test="msg-status-result-returned"]');
+    expect(chip.exists()).toBe(true);
+    expect(chip.text()).toContain("Result ready");
+  });
+
+  it("v0.3: terminal failed/cancelled render Failed/Cancelled chips", () => {
+    const base = {
+      kind: "agent_message" as const,
+      direction: "sent" as const,
+      conversationId: "conv",
+      peer: { handle: "agent:n:e", displayName: "Peer", agent: "codex" },
+      content: "x",
+      createdAt: 1771234567890,
+      status: "sent" as const,
+      completion: "result" as const,
+    };
+    const failed = mount(AgentMessageCard, {
+      props: { message: { ...base, messageId: "msg_f", completionStatus: "failed" as const } },
+    });
+    expect(failed.find('[data-test="msg-status-failed"]').text()).toContain("Failed");
+    const cancelled = mount(AgentMessageCard, {
+      props: { message: { ...base, messageId: "msg_c", completionStatus: "cancelled" as const } },
+    });
+    expect(cancelled.find('[data-test="msg-status-cancelled"]').text()).toContain("Cancelled");
+  });
 });

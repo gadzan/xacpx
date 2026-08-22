@@ -58,6 +58,7 @@ const HANDSHAKE_ID = "handshake-1";
  */
 const ALLOWED_UPWARD_REQUEST_TYPES: ReadonlySet<string> = new Set([
   MSG.agentMessageRoute,
+  MSG.agentMessageCompletion,
 ]);
 
 /**

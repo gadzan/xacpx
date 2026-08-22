@@ -1,10 +1,11 @@
+import type { PeerTurnOrigin } from "../control/turn-support";
 import type { ResolvedSession, SessionTransport } from "../transport/types";
 import {
   MessageInjectionError,
   type SessionMessageReceipt,
 } from "../transport/message-injection";
 import type { ResolvedAgentEndpoint } from "./agent-endpoint-registry";
-import type { AgentMessage } from "./agent-messaging-types";
+import type { AgentMessage, AgentMessageCompletion } from "./agent-messaging-types";
 import { AgentMessagingError } from "./agent-messaging-error";
 
 export class LocalAgentMessageDeliveryAdapter {
@@ -21,7 +22,13 @@ export class LocalAgentMessageDeliveryAdapter {
         alias: string,
         renderedText: string,
         messageId: string,
+        peerOrigin?: PeerTurnOrigin,
       ) => Promise<{ status: "injected" | "queued" }>;
+      deliverCompletionTurn?: (
+        alias: string,
+        completion: AgentMessageCompletion,
+        requestMessageId: string,
+      ) => Promise<{ status: "injected" | "queued" } | { status: "rejected"; reason: string }>;
     },
   ) {}
 
@@ -37,10 +44,17 @@ export class LocalAgentMessageDeliveryAdapter {
       );
     }
     if (target.runtime.kind === "logical" && this.deps.deliverLogicalTurn) {
+      const peerOrigin: PeerTurnOrigin = {
+        requestMessageId: message.id,
+        completion: message.completion ?? "none",
+        source: message.from,
+        target: message.to,
+      };
       const res = await this.deps.deliverLogicalTurn(
         target.runtime.alias,
         renderedText,
         message.id,
+        peerOrigin,
       );
       return {
         status: res.status,
@@ -80,5 +94,20 @@ export class LocalAgentMessageDeliveryAdapter {
       messageId: message.id,
       mode: message.requestedMode,
     });
+  }
+
+  async deliverCompletion(
+    sourceAlias: string,
+    completion: AgentMessageCompletion,
+    requestMessageId: string,
+  ): Promise<{ status: "injected" | "queued" } | { status: "rejected"; reason: string }> {
+    if (this.deps.deliverCompletionTurn) {
+      return await this.deps.deliverCompletionTurn(
+        sourceAlias,
+        completion,
+        requestMessageId,
+      );
+    }
+    return { status: "queued" };
   }
 }

@@ -601,3 +601,667 @@ test("queued prompt preserves full execution context and all metadata fields whe
     },
   });
 });
+test("Phase 6: busy target with peer request R1 and human prompt preserves FIFO drain order and exact peerOrigin", async () => {
+  const h = makeQueue();
+  let drainedRequests: any[] = [];
+  const origRun = (h.queue as any).deps.runTurn;
+  (h.queue as any).deps.runTurn = async (req: any, sig: any, act: any) => {
+    drainedRequests.push(req);
+    return await origRun(req, sig, act);
+  };
+
+  const peerOriginR1 = {
+    requestMessageId: "msg_r1",
+    completion: "none" as const,
+    source: { nodeId: "node-a", endpointId: "agent-a" },
+    target: { nodeId: "node-b", endpointId: "agent-b" },
+  };
+
+  // 1. Start running a human prompt
+  const p1 = h.queue.submit({
+    chatKey: "relay:chat-user",
+    sessionAlias: "backend",
+    concurrencyKey: "relay:backend",
+    senderId: "human-user",
+    text: "human 1",
+    queueable: true,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(h.pendingCount()).toBe(1);
+
+  // 2. Peer request R1 arrives while busy → queued
+  const r1Res = h.queue.submitPeerTurn({
+    chatKey: "relay:chat-user",
+    sessionAlias: "backend",
+    boundSessionAlias: "relay:backend",
+    concurrencyKey: "relay:backend",
+    text: "<xacpx-message>r1</xacpx-message>",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_r1",
+    peerOrigin: peerOriginR1,
+  });
+  expect(r1Res).toEqual({ status: "queued" });
+  expect(h.queue.queueLength("relay:chat-user", "backend", "relay:backend")).toBe(1);
+
+  // 3. Another human prompt arrives while busy → queued
+  const p3 = h.queue.submit({
+    chatKey: "relay:chat-user",
+    sessionAlias: "backend",
+    concurrencyKey: "relay:backend",
+    senderId: "human-user",
+    text: "human 2",
+    queueable: true,
+  });
+  expect(h.queue.queueLength("relay:chat-user", "backend", "relay:backend")).toBe(2);
+
+  // Drain 1st (human 1)
+  h.resolveNext();
+  await p1;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  // Now R1 should be running as the drained head
+  expect(h.pendingCount()).toBe(1);
+  expect(drainedRequests.length).toBe(2);
+  expect(drainedRequests[0].text).toBe("human 1");
+  expect(drainedRequests[0].peerOrigin).toBeUndefined();
+
+  expect(drainedRequests[1].text).toBe("<xacpx-message>r1</xacpx-message>");
+  expect(drainedRequests[1].peerOrigin).toEqual(peerOriginR1);
+  expect(drainedRequests[1].turnStarted.prompt).toBeUndefined(); // peer prompt masked
+  expect(drainedRequests[1].turnStarted.promptRequestId).toBe("msg_r1");
+
+  // Drain 2nd (R1)
+  h.resolveNext();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  // Now human 2 should be running
+  expect(h.pendingCount()).toBe(1);
+  expect(drainedRequests.length).toBe(3);
+  expect(drainedRequests[2].text).toBe("human 2");
+  expect(drainedRequests[2].peerOrigin).toBeUndefined();
+  expect(drainedRequests[2].turnStarted.prompt).toBe("human 2"); // human prompt unmasked
+
+  // Drain 3rd (human 2)
+  h.resolveNext();
+  await p3;
+  expect(h.started).toEqual(["human 1", "<xacpx-message>r1</xacpx-message>", "human 2"]);
+});
+
+test("Phase 6: multiple queued peer requests R1 and R2 maintain exact peerOrigin without cross-assignment", async () => {
+  const h = makeQueue();
+  let drainedRequests: any[] = [];
+  const origRun = (h.queue as any).deps.runTurn;
+  (h.queue as any).deps.runTurn = async (req: any, sig: any, act: any) => {
+    drainedRequests.push(req);
+    return await origRun(req, sig, act);
+  };
+
+  const peerOriginR1 = {
+    requestMessageId: "msg_r1",
+    completion: "none" as const,
+    source: { nodeId: "node-a", endpointId: "agent-a" },
+    target: { nodeId: "node-b", endpointId: "agent-b" },
+  };
+  const peerOriginR2 = {
+    requestMessageId: "msg_r2",
+    completion: "notify" as const,
+    source: { nodeId: "node-c", endpointId: "agent-c" },
+    target: { nodeId: "node-b", endpointId: "agent-b" },
+  };
+
+  // Start turn 1
+  const p1 = h.queue.submit({
+    chatKey: "relay:chat-user",
+    sessionAlias: "backend",
+    concurrencyKey: "relay:backend",
+    senderId: "user",
+    text: "first",
+    queueable: true,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  // Queue R1 and R2
+  h.queue.submitPeerTurn({
+    chatKey: "relay:chat-user",
+    sessionAlias: "backend",
+    concurrencyKey: "relay:backend",
+    text: "r1",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_r1",
+    peerOrigin: peerOriginR1,
+  });
+  h.queue.submitPeerTurn({
+    chatKey: "relay:chat-user",
+    sessionAlias: "backend",
+    concurrencyKey: "relay:backend",
+    text: "r2",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_r2",
+    peerOrigin: peerOriginR2,
+  });
+
+  expect(h.queue.queueLength("relay:chat-user", "backend", "relay:backend")).toBe(2);
+
+  h.resolveNext();
+  await p1;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(drainedRequests[1].peerOrigin).toEqual(peerOriginR1);
+  expect(drainedRequests[1].peerOrigin.requestMessageId).toBe("msg_r1");
+
+  h.resolveNext();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(drainedRequests[2].peerOrigin).toEqual(peerOriginR2);
+  expect(drainedRequests[2].peerOrigin.requestMessageId).toBe("msg_r2");
+
+  h.resolveNext();
+});
+
+test("Phase 6: cross-session concurrency isolates peerOrigin per session lane", async () => {
+  const h = makeQueue();
+  let drainedRequests: any[] = [];
+  const origRun = (h.queue as any).deps.runTurn;
+  (h.queue as any).deps.runTurn = async (req: any, sig: any, act: any) => {
+    drainedRequests.push(req);
+    return await origRun(req, sig, act);
+  };
+
+  const peerOriginS1 = {
+    requestMessageId: "msg_s1",
+    completion: "none" as const,
+    source: { nodeId: "node-1", endpointId: "ep-1" },
+    target: { nodeId: "node-target", endpointId: "session-1" },
+  };
+  const peerOriginS2 = {
+    requestMessageId: "msg_s2",
+    completion: "result" as const,
+    source: { nodeId: "node-2", endpointId: "ep-2" },
+    target: { nodeId: "node-target", endpointId: "session-2" },
+  };
+
+  // Submit on session 1
+  h.queue.submitPeerTurn({
+    chatKey: "relay:s1",
+    sessionAlias: "session-1",
+    concurrencyKey: "session-1",
+    text: "turn s1",
+    senderId: "agent-messaging",
+    peerOrigin: peerOriginS1,
+  });
+
+  // Submit on session 2
+  h.queue.submitPeerTurn({
+    chatKey: "relay:s2",
+    sessionAlias: "session-2",
+    concurrencyKey: "session-2",
+    text: "turn s2",
+    senderId: "agent-messaging",
+    peerOrigin: peerOriginS2,
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(h.pendingCount()).toBe(2);
+
+  const req1 = drainedRequests.find((r) => r.sessionAlias === "session-1");
+  const req2 = drainedRequests.find((r) => r.sessionAlias === "session-2");
+
+  expect(req1?.peerOrigin).toEqual(peerOriginS1);
+  expect(req2?.peerOrigin).toEqual(peerOriginS2);
+
+  h.resolveNext();
+  h.resolveNext();
+});
+
+test("Phase 6: injected peer turn on idle target attaches peerOrigin directly", async () => {
+  const h = makeQueue();
+  let capturedReq: any = null;
+  const origRun = (h.queue as any).deps.runTurn;
+  (h.queue as any).deps.runTurn = async (req: any, sig: any, act: any) => {
+    capturedReq = req;
+    return await origRun(req, sig, act);
+  };
+
+  const peerOrigin = {
+    requestMessageId: "msg_idle",
+    completion: "none" as const,
+    source: { nodeId: "node-a", endpointId: "agent-a" },
+    target: { nodeId: "node-b", endpointId: "agent-b" },
+  };
+
+  const res = h.queue.submitPeerTurn({
+    chatKey: "relay:idle",
+    sessionAlias: "backend",
+    concurrencyKey: "relay:backend",
+    text: "immediate peer prompt",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_idle",
+    peerOrigin,
+  });
+
+  expect(res).toEqual({ status: "injected" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(capturedReq).toMatchObject({
+    sessionAlias: "backend",
+    text: "immediate peer prompt",
+    peerOrigin,
+  });
+
+  h.resolveNext();
+});
+
+
+test("Round-6 (request-id admission dedupe): same-promptRequestId peer retry is absorbed as injected — no second turn", async () => {
+  const h = makeQueue();
+  const executedRequests: Array<{ text: string; turnStarted?: { promptRequestId?: string } }> = [];
+  const origRun = (h.queue as any).deps.runTurn;
+  (h.queue as any).deps.runTurn = async (req: any, sig: any, act: any) => {
+    executedRequests.push(req);
+    return await origRun(req, sig, act);
+  };
+
+  const params = {
+    chatKey: "relay:source-lane",
+    sessionAlias: "source-lane",
+    concurrencyKey: "source-lane",
+    text: "",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_dedupe_1",
+    isPeerMessage: true,
+    allowRestoreArchived: false,
+  };
+
+  // First admission on an idle session → injected, turn runs.
+  const first = h.queue.submitPeerTurn(params);
+  expect(first.status).toBe("injected");
+  await tick();
+  expect(executedRequests).toHaveLength(1);
+
+  // Retry while the completion turn is IN FLIGHT → absorbed idempotently.
+  const retryInFlight = h.queue.submitPeerTurn(params);
+  expect(retryInFlight.status).toBe("injected");
+  expect(h.queue.queueLength("relay:source-lane", "source-lane")).toBe(0);
+
+  h.resolveNext({ ok: true, text: "done" });
+  await tick();
+
+  // Exactly ONE turn ran for this request id.
+  expect(executedRequests).toHaveLength(1);
+});
+
+test("B1 (settled request-id tombstone): after the first completion turn RESOLVES, a same-requestId retry produces no second runTurn", async () => {
+  const h = makeQueue();
+  const executedRequests: Array<{ text: string }> = [];
+  const origRun = (h.queue as any).deps.runTurn;
+  (h.queue as any).deps.runTurn = async (req: any, sig: any, act: any) => {
+    executedRequests.push(req);
+    return await origRun(req, sig, act);
+  };
+
+  const params = {
+    chatKey: "relay:source-lane",
+    sessionAlias: "source-lane",
+    concurrencyKey: "source-lane",
+    text: "",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_b1_tombstone",
+    isPeerMessage: true,
+    allowRestoreArchived: false,
+  };
+
+  // First admission + full resolution of runTurn.
+  const first = h.queue.submitPeerTurn(params);
+  expect(first.status).toBe("injected");
+  h.resolveNext({ ok: true, text: "done" });
+  await tick();
+  expect(executedRequests).toHaveLength(1);
+
+  // Late target retry AFTER the first turn settled: absorbed by the settled
+  // request-id tombstone — no second turn, no queue growth.
+  const retry = h.queue.submitPeerTurn(params);
+  expect(retry.status).toBe("injected");
+  await tick();
+  expect(executedRequests).toHaveLength(1);
+  expect(h.queue.queueLength("relay:source-lane", "source-lane")).toBe(0);
+
+  h.resolveNext({ ok: true, text: "ignored" });
+});
+
+test("B1 (aborted-but-unsettled predecessor): completion X is NOT false-injected and NOT tombstone-poisoned; exactly one X turn runs after unwind", async () => {
+  const h = makeQueue();
+  const executedRequests: Array<{ text: string }> = [];
+  const origRun = (h.queue as any).deps.runTurn;
+  (h.queue as any).deps.runTurn = async (req: any, sig: any, act: any) => {
+    executedRequests.push(req);
+    return await origRun(req, sig, act);
+  };
+
+  // Running turn on the lane.
+  const p1 = h.queue.submit({
+    chatKey: "relay:abort-lane",
+    sessionAlias: "abort-lane",
+    concurrencyKey: "abort-lane",
+    text: "running",
+    senderId: "user",
+    queueable: true,
+    isPeerMessage: false,
+    allowRestoreArchived: false,
+  });
+  await tick();
+
+  // Abort the live turn but keep its runTurn UNRESOLVED (Stop unwinding).
+  const entry = (h.queue as any).inFlight.get("abort-lane") as {
+    controller: AbortController;
+  };
+  expect(entry).toBeDefined();
+  entry.controller.abort();
+
+  // Completion X arrives in the aborted-but-unsettled window.
+  const x = h.queue.submitPeerTurn({
+    chatKey: "relay:abort-lane",
+    sessionAlias: "abort-lane",
+    concurrencyKey: "abort-lane",
+    text: "request X",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_b1_abort_window",
+    isPeerMessage: true,
+    allowRestoreArchived: false,
+  });
+  // Synchronous admission only: X must be QUEUED (never a false injected).
+  expect(x).toEqual({ status: "queued" });
+
+  // The predecessor unwinds.
+  h.resolveNext({ ok: false, cancelled: true });
+  await p1;
+
+  // Drain until X executes — exactly one X turn, no duplicates.
+  let guard = 0;
+  while (executedRequests.every((r) => r.text !== "request X") && guard++ < 50) {
+    h.resolveNext({ ok: true, text: "x ran" });
+    await tick();
+  }
+  expect(
+    executedRequests.filter((r) => r.text === "request X"),
+  ).toHaveLength(1);
+});
+
+test("B2-1 (cancelQueuedItem): a queued peer completion=result item cancelled before start resolves its contract exactly once and never executes", async () => {
+  const cancelled: Array<{ peerOrigin: unknown; promptRequestId?: string }> = [];
+  const h = makeQueue({
+    cancelDrainTimeoutMs: 10,
+    onQueuedPeerCancelled: (detail) => cancelled.push(detail),
+  });
+  const executedRequests: Array<{ text: string }> = [];
+  const origRun = (h.queue as any).deps.runTurn;
+  (h.queue as any).deps.runTurn = async (req: any, sig: any, act: any) => {
+    executedRequests.push(req);
+    return await origRun(req, sig, act);
+  };
+
+  const peerOrigin = {
+    requestMessageId: "msg_b2_cancel",
+    completion: "result",
+    source: { nodeId: "n", endpointId: "src" },
+    target: { nodeId: "n", endpointId: "tgt" },
+  };
+
+  // Running turn A keeps the lane busy; the completion-bearing B queues.
+  const p1 = h.queue.submit({
+    chatKey: "relay:b2-lane",
+    sessionAlias: "b2-lane",
+    concurrencyKey: "b2-lane",
+    text: "turn A",
+    senderId: "user",
+    queueable: true,
+    isPeerMessage: false,
+    allowRestoreArchived: false,
+  });
+  await tick();
+  const admission = h.queue.submitPeerTurn({
+    chatKey: "relay:b2-lane",
+    sessionAlias: "b2-lane",
+    concurrencyKey: "b2-lane",
+    text: "request B",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_b2_cancel",
+    isPeerMessage: true,
+    allowRestoreArchived: false,
+    peerOrigin,
+  });
+  expect(admission.status).toBe("queued");
+
+  // Snapshot the queue to find B's item id, then cancel it pre-start.
+  const q = (h.queue as any).queues.get("b2-lane") as Array<{ id: string }>;
+  const itemId = q.find(() => true)!.id;
+  expect(h.queue.cancelQueuedItem("relay:b2-lane", "b2-lane", itemId, "b2-lane")).toEqual({ cancelled: true });
+
+  // Exactly ONE terminal cancellation carries B's contract.
+  expect(cancelled).toHaveLength(1);
+  expect(cancelled[0]!.peerOrigin).toEqual(peerOrigin);
+  expect(cancelled[0]!.promptRequestId).toBe("msg_b2_cancel");
+
+  // A unwinds; B NEVER executes.
+  h.resolveNext({ ok: true, text: "A done" });
+  await p1;
+  await tick();
+  await tick();
+  expect(executedRequests.filter((r) => r.text === "request B")).toHaveLength(0);
+  // And no late duplicate cancellation from the drain of an empty queue.
+  expect(cancelled).toHaveLength(1);
+});
+
+test("B2-2 (clearSession/archive): queued peer completion=result items dropped by clearSession resolve their contracts exactly once", async () => {
+  const cancelled: Array<{ peerOrigin: unknown }> = [];
+  const h = makeQueue({
+    cancelDrainTimeoutMs: 10,
+    onQueuedPeerCancelled: (detail) => cancelled.push(detail),
+  });
+
+  const peerOrigin = {
+    requestMessageId: "msg_b2_clear",
+    completion: "result",
+    source: { nodeId: "n", endpointId: "src" },
+    target: { nodeId: "n", endpointId: "tgt" },
+  };
+
+  const p1 = h.queue.submit({
+    chatKey: "relay:b2c-lane",
+    sessionAlias: "b2c-lane",
+    concurrencyKey: "b2c-lane",
+    text: "turn A",
+    senderId: "user",
+    queueable: true,
+    isPeerMessage: false,
+    allowRestoreArchived: false,
+  });
+  await tick();
+  const admission = h.queue.submitPeerTurn({
+    chatKey: "relay:b2c-lane",
+    sessionAlias: "b2c-lane",
+    concurrencyKey: "b2c-lane",
+    text: "request B",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_b2_clear",
+    isPeerMessage: true,
+    allowRestoreArchived: false,
+    peerOrigin,
+  });
+  expect(admission.status).toBe("queued");
+
+  // Archive/teardown clears the session — the queued peer item is dropped.
+  await h.queue.clearSession("relay:b2c-lane", "b2c-lane", "b2c-lane");
+  h.resolveNext({ ok: false, cancelled: true });
+  await p1;
+  h.queue.finishClear("relay:b2c-lane", "b2c-lane", "b2c-lane");
+
+  // Exactly ONE terminal cancellation, carrying the contract.
+  expect(cancelled).toHaveLength(1);
+  expect(cancelled[0]!.peerOrigin).toEqual(peerOrigin);
+});
+
+test("B1a (tombstone admission ordering): queue-full rejection does NOT poison the request id — retry after capacity frees gets a real turn", async () => {
+  const h = makeQueue();
+  const executedRequests: Array<{ text: string }> = [];
+  const origRun = (h.queue as any).deps.runTurn;
+  (h.queue as any).deps.runTurn = async (req: any, sig: any, act: any) => {
+    executedRequests.push(req);
+    return await origRun(req, sig, act);
+  };
+
+  // One live turn + a FULL queue on the lane.
+  const fill = (id: string) => ({
+    chatKey: "relay:poison-lane",
+    sessionAlias: "poison-lane",
+    concurrencyKey: "poison-lane",
+    text: `filler ${id}`,
+    senderId: "user",
+    queueable: true,
+    isPeerMessage: false,
+    allowRestoreArchived: false,
+  });
+  // submit() settles only when the TURN settles — park the live one.
+  const pLive = h.queue.submit(fill("live"));
+  await tick();
+  expect(h.queue.isBusy("relay:poison-lane", "poison-lane", "poison-lane")).toBe(true);
+  for (let i = 0; i < QUEUE_MAX_DEPTH; i++) {
+    expect(await h.queue.submit(fill(`q${i}`))).toMatchObject({ ok: true, queued: true });
+  }
+
+  // X arrives against the full lane: rejected queue-full — the tombstone
+  // must NOT be recorded for a rejected admission.
+  const x = h.queue.submitPeerTurn({
+    chatKey: "relay:poison-lane",
+    sessionAlias: "poison-lane",
+    concurrencyKey: "poison-lane",
+    text: "request X",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_b1a_reject_then_retry",
+    isPeerMessage: true,
+    allowRestoreArchived: false,
+  });
+  expect(x).toEqual({ status: "rejected", reason: "queue-full" });
+
+  // Capacity frees: the live turn resolves and drains the queue.
+  h.resolveNext({ ok: true, text: "done" });
+  await pLive;
+  let guard = 0;
+  while (h.queue.queueLength("relay:poison-lane", "poison-lane", "poison-lane") > 0 && guard++ < 50) {
+    h.resolveNext({ ok: true, text: "drained" });
+    await tick();
+  }
+  expect(guard).toBeLessThan(50);
+
+  // Retry X: a REAL admission (injected or queued behind the last filler),
+  // never a poisoned injected no-op. Drain until X actually RUNS.
+  const retry = h.queue.submitPeerTurn({
+    chatKey: "relay:poison-lane",
+    sessionAlias: "poison-lane",
+    concurrencyKey: "poison-lane",
+    text: "request X",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_b1a_reject_then_retry",
+    isPeerMessage: true,
+    allowRestoreArchived: false,
+  });
+  expect(["injected", "queued"]).toContain(retry.status);
+  let xDrain = 0;
+  while (
+    executedRequests.every((r) => r.text !== "request X") &&
+    xDrain++ < 50
+  ) {
+    h.resolveNext({ ok: true, text: "turn" });
+    await tick();
+  }
+  const xRuns = executedRequests.filter((r) => r.text === "request X");
+  expect(xRuns).toHaveLength(1);
+});
+
+test("B1b (tombstone TTL): an expired settled tombstone no longer absorbs a retry", async () => {
+  const h = makeQueue();
+  const executedRequests: Array<{ text: string }> = [];
+  const origRun = (h.queue as any).deps.runTurn;
+  (h.queue as any).deps.runTurn = async (req: any, sig: any, act: any) => {
+    executedRequests.push(req);
+    return await origRun(req, sig, act);
+  };
+  const params = {
+    chatKey: "relay:ttl-lane",
+    sessionAlias: "ttl-lane",
+    concurrencyKey: "ttl-lane",
+    text: "ttl probe",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_b1b_ttl",
+    isPeerMessage: true,
+    allowRestoreArchived: false,
+  };
+
+  expect(h.queue.submitPeerTurn(params).status).toBe("injected");
+  h.resolveNext({ ok: true, text: "done" });
+  await tick();
+  expect(executedRequests).toHaveLength(1);
+
+  // Age the tombstone past its 24h TTL.
+  const tombstones = (h.queue as any).settledRequestIds as Map<string, number>;
+  expect(tombstones.has("msg_b1b_ttl")).toBe(true);
+  tombstones.set("msg_b1b_ttl", Date.now() - 1);
+
+  // The retry now runs a REAL turn again.
+  expect(h.queue.submitPeerTurn(params).status).toBe("injected");
+  h.resolveNext({ ok: true, text: "second real turn" });
+  await tick();
+  expect(executedRequests).toHaveLength(2);
+});
+
+test("Phase 7 (Gate L): busy source session queues completion turn and drains sequentially without parallel turn", async () => {
+  const h = makeQueue();
+  const executedRequests: Array<{ text: string; isPeerMessage?: boolean; peerOrigin?: unknown }> = [];
+  const origRun = (h.queue as any).deps.runTurn;
+  (h.queue as any).deps.runTurn = async (req: any, sig: any, act: any) => {
+    executedRequests.push(req);
+    return await origRun(req, sig, act);
+  };
+
+  // 1. Start an active human turn on session "source-lane"
+  void h.queue.submit({
+    chatKey: "relay:source-lane",
+    sessionAlias: "source-lane",
+    concurrencyKey: "source-lane",
+    text: "human running turn",
+    senderId: "user",
+    queueable: true,
+  });
+  await tick();
+  expect(h.queue.isBusy("relay:source-lane", "source-lane")).toBe(true);
+  expect(executedRequests).toHaveLength(1);
+  expect(executedRequests[0]!.text).toBe("human running turn");
+
+  // 2. Completion turn arrives while busy
+  const completionAdmission = h.queue.submitPeerTurn({
+    chatKey: "relay:source-lane",
+    sessionAlias: "source-lane",
+    concurrencyKey: "source-lane",
+    text: "<xacpx-peer-result>computed value</xacpx-peer-result>",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_comp_123",
+    isPeerMessage: true,
+    allowRestoreArchived: false,
+    preserveCoordinatorRoute: true,
+  });
+
+  expect(completionAdmission).toEqual({ status: "queued" });
+  expect(h.queue.queueLength("relay:source-lane", "source-lane")).toBe(1);
+  // No parallel turn started
+  expect(executedRequests).toHaveLength(1);
+
+  // 3. Current turn finishes -> completion drains next in the same lane
+  h.resolveNext({ ok: true, text: "human turn finished" });
+  await tick();
+  expect(executedRequests).toHaveLength(2);
+  expect(executedRequests[1]!.text).toBe("<xacpx-peer-result>computed value</xacpx-peer-result>");
+  expect(executedRequests[1]!.turnStarted?.promptRequestId).toBe("msg_comp_123");
+  expect(executedRequests[1]!.peerOrigin).toBeUndefined();
+  h.resolveNext({ ok: true, text: "completion turn finished" });
+  await tick();
+  expect(h.queue.isBusy("relay:source-lane", "source-lane")).toBe(false);
+});

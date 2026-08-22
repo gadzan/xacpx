@@ -19,9 +19,19 @@ import {
   AgentMessagingError,
   type AgentMessagingErrorCode,
 } from "./agent-messaging-error";
+import {
+  boundPeerResult,
+  buildPeerCompletionPrompt,
+  sanitizeCompletionError,
+} from "./agent-message-completion";
+import type { PeerTurnOrigin } from "../control/turn-support";
 import type {
+  AgentAddress,
   AgentEndpointView,
   AgentMessage,
+  AgentMessageCompletion,
+  AgentMessageCompletionMode,
+  AgentMessageCompletionStatus,
   AgentMessageMode,
   AgentMessageReceipt,
   AgentMessageSendInput,
@@ -38,6 +48,11 @@ export interface LocalAgentMessageDelivery {
     message: AgentMessage,
     renderedText: string,
   ): Promise<SessionMessageReceipt>;
+  deliverCompletion?(
+    sourceAlias: string,
+    completion: AgentMessageCompletion,
+    requestMessageId: string,
+  ): Promise<{ status: "injected" | "queued" } | { status: "rejected"; reason: string }>;
 }
 
 /**
@@ -69,8 +84,27 @@ export interface AgentMessageRouterLimits {
     maxEntries: number;
     ttlMs: number;
   };
+  pendingCompletion?: {
+    maxEntries: number;
+    ttlMs: number;
+  };
+  /** Bounded retention for terminal outcomes + exactly-once tombstones. */
+  completionCache?: {
+    maxEntries: number;
+    ttlMs: number;
+  };
   traceRingBufferSize?: number;
 }
+
+/**
+ * Inbound rejection codes that PROVE the target never admitted the request —
+ * the accepted outbox reservation is released on these. */
+const INBOUND_DEFINITE_REJECTION_CODES: ReadonlySet<string> = new Set([
+  "TARGET_UNAVAILABLE",
+  "MESSAGE_QUEUE_FULL",
+  "DELIVERY_DENIED",
+  "COMPLETION_NOT_SUPPORTED",
+]);
 
 export class AgentMessageRouter {
   private readonly targetTails = new Map<string, Promise<void>>();
@@ -110,6 +144,332 @@ export class AgentMessageRouter {
   private readonly conversationMessageCounts = new Map<string, number>();
   private readonly recentDuplicateContent = new Map<string, number>();
   private readonly traceRingBuffer: AgentMessageTraceRecord[] = [];
+  private readonly outboundMessages = new Map<
+    string,
+    {
+      senderSessionAlias: string;
+      message: AgentMessage;
+      targetPeer: PeerMessagePeer;
+    }
+  >();
+  /**
+   * Terminal completion outcomes, keyed by requestMessageId. Bounded
+   * (TTL + max entries) — entries are pruned lazily and by the retry sweep.
+   */
+  private readonly completionOutcomes = new Map<
+    string,
+    { value: AgentMessageCompletion; expiresAt: number }
+  >();
+  /**
+   * Source-side exactly-once tombstones. TTL-bounded: after expiry a duplicate
+   * delivery may re-inject, which is acceptable (transport is at-least-once)
+   * whereas unbounded growth on a long-lived daemon is not.
+   */
+  private readonly completionInjections = new Map<string, { expiresAt: number }>();
+  /**
+   * Authoritative pending-completion grants (v0.3 trust boundary). Created ONLY
+   * when a logical sender successfully sends with completion != none; inbound
+   * completions must exact-match a live grant or they are DELIVERY_DENIED.
+   * Bounded (TTL + max entries) and persisted write-through so a daemon
+   * restart between request and completion does not revoke the outward
+   * "xacpx will return the peer's result" contract.
+   */
+  private readonly pendingCompletions = new Map<
+    string,
+    {
+      source: AgentAddress;
+      target: AgentAddress;
+      mode: "notify" | "result";
+      expiresAt: number;
+      /** pending → delivered (durable, survives restart). Delivered rows are
+       *  terminal tombstones until their TTL expires. */
+      state: "pending" | "delivered";
+    }
+  >();
+  /**
+   * Completions whose terminal outcome is recorded but whose DELIVERY has not
+   * yet been admitted (remote route offline, source queue full, transport
+   * throw). Swept periodically until admitted or expired — a completion is
+   * never silently dropped after the peer turn already finished.
+   */
+  private readonly deliveryPending = new Map<
+    string,
+    {
+      attempt: () => Promise<boolean>;
+      nextAttemptAt: number;
+      expiresAt: number;
+      /** false until the durable outbox upsert has succeeded at least once
+       *  for this entry; failed upserts are retried by the sweep. */
+      persisted: boolean;
+      /** Retained so a failed outbox upsert can be retried by the sweep. */
+      completionForPersist?: AgentMessageCompletion;
+      kindForPersist?: "local" | "remote";
+      requestMessageIdForPersist?: string;
+      senderForPersist?: string;
+    }
+  >();
+  private deliveryRetryTimer: NodeJS.Timeout | undefined;
+  /**
+   * Accepted-but-not-yet-terminal completion obligations. A slot is reserved
+   * at ACCEPTANCE time (ensureTerminalOutboxCapacity) and released when the
+   * obligation is delivered, expires, or its contract is compensated — so two
+   * requests accepted before either completes cannot both fit a cap=1 outbox.
+   */
+  private readonly outboxReservations = new Map<string, number>();
+
+
+
+  /**
+   * Durable-reserve a completion contract BEFORE the request is dispatched.
+   * Throws when capacity is exhausted: pending grants are active contracts,
+   * not a cache — expired entries are pruned, but an existing grant is NEVER
+   * evicted to make room for a newer one. Persistence failures propagate so
+   * the caller fails closed (nothing is sent).
+   */
+  private reservePendingCompletion(
+    messageId: string,
+    source: AgentAddress,
+    target: AgentAddress,
+    mode: "notify" | "result",
+    now: number,
+  ): void {
+    const ttlMs = this.deps.limits?.pendingCompletion?.ttlMs ?? 24 * 60 * 60_000;
+    const maxEntries =
+      this.deps.limits?.pendingCompletion?.maxEntries ?? 1_000;
+    if (ttlMs <= 0 || maxEntries <= 0) return;
+    // Silent sync prune: capacity accounting only. Terminal patches for
+    // expired grants are emitted by expirePendingCompletions(), which every
+    // public entry runs first — so by the time reserve is reached there is
+    // nothing expired left to patch.
+    const stale = [...this.pendingCompletions].filter(
+      ([, grant]) => grant.expiresAt <= now,
+    );
+    for (const [id] of stale) this.pendingCompletions.delete(id);
+    // Delivered tombstones are retained until TTL but never consume contract
+    // capacity — only state=pending grants count toward the budget.
+    const pendingContracts = [...this.pendingCompletions.values()].filter(
+      (g) => g.state === "pending",
+    ).length;
+    if (
+      pendingContracts >= maxEntries ||
+      this.deliveryPending.size >= maxEntries
+    ) {
+      // Backpressure refuses the NEW contract instead of ever evicting an
+      // older one — and the terminal-outbox projection is checked here too:
+      // every accepted contract may still owe exactly one outbox entry, so
+      // accepting more than the budget could later strand a finished result.
+      throw new AgentMessagingError(
+        "MESSAGE_QUEUE_FULL",
+        "Pending completion capacity reached; existing completion contracts are never evicted.",
+      );
+    }
+    this.pendingCompletions.set(messageId, {
+      source,
+      target,
+      mode,
+      expiresAt: now + ttlMs,
+      state: "pending",
+    });
+    // Reserve must be durable before the request leaves this daemon — a
+    // persistence failure here fails the send closed with a typed error, and
+    // the in-memory reservation is rolled back so no phantom grant remains.
+    try {
+      this.persistPendingCompletions();
+    } catch (error) {
+      this.pendingCompletions.delete(messageId);
+      throw new AgentMessagingError(
+        "DELIVERY_FAILED",
+        `Pending completion could not be persisted; request not sent: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  /** Compensation for a DEFINITE pre-admission rejection: the target never
+   *  accepted the request, so the reservation is released. */
+  private releasePendingCompletion(messageId: string): void {
+    if (!this.pendingCompletions.delete(messageId)) return;
+    // The contract is voided → its outbox reservation (if any) is released.
+    this.outboxReservations.delete(messageId);
+    try {
+      this.persistPendingCompletions();
+    } catch {
+      // Best-effort on compensation: the stale row expires with its TTL.
+    }
+  }
+
+  /**
+   * DURABLY transition the grant to state=delivered once its completion was
+   * delivered/admitted. The row is KEPT until its original TTL expires and
+   * becomes a terminal tombstone — a source daemon restart before the target
+   * finishes retrying therefore still answers replays with deduplicated
+   * instead of DELIVERY_DENIED. Persistence failure here cannot undo the
+   * already-performed admission, so it degrades to RAM-only protection with a
+   * loud error (the caller boundary logs it).
+   */
+  private markGrantDelivered(messageId: string): void {
+    const grant = this.pendingCompletions.get(messageId);
+    if (!grant || grant.state === "delivered") return;
+    grant.state = "delivered";
+    this.outboxReservations.delete(messageId);
+    try {
+      this.persistPendingCompletions();
+    } catch (error) {
+      // FAIL-CLOSED: a terminal transition that is not durable must never be
+      // announced as {ok:true}. Roll the RAM state back and rethrow — callers
+      // that owe a remote announcement surface a RETRYABLE failure (the Hub
+      // keeps its grant, the target's durable outbox retries), and callers
+      // without a remote announcement let the error reach their logger.
+      grant.state = "pending";
+      this.deps.logger?.error(
+        "agent_messaging.grant_delivered_persist_failed",
+        "failed to persist delivered completion state",
+        { requestMessageId: messageId, error: String(error) },
+      );
+      throw error;
+    }
+  }
+
+  private static readonly DEFINITE_NOT_SENT_CODES: ReadonlySet<string> = new Set([
+    "ROUTE_UNAVAILABLE",
+    "TARGET_NODE_OFFLINE",
+    "TARGET_NOT_FOUND",
+    "TARGET_NOT_REACHABLE",
+    "TARGET_NOT_RUNNING",
+    "TARGET_AMBIGUOUS",
+    "TARGET_UNAVAILABLE",
+    "DELIVERY_DENIED",
+    "CONVERSATION_LIMIT_REACHED",
+    "DUPLICATE_MESSAGE",
+    "MESSAGE_RATE_LIMITED",
+    "MESSAGE_QUEUE_FULL",
+    "TARGET_NOT_STEERABLE",
+    "TARGET_NOT_INTERRUPTIBLE",
+    "MESSAGE_TOO_LARGE",
+  ]);
+
+  /**
+   * Write-through persistence for pending grants. The grant is an OUTWARD
+   * contract ("xacpx will return the peer's result when it completes") — a
+   * daemon restart between request and completion must not turn every future
+   * legitimate completion into DELIVERY_DENIED. Only small authorization
+   * metadata is persisted, never result bodies.
+   */
+  /**
+   * Medium-2 (v0.3 review): resolve EXPIRED pending grants instead of
+   * silently deleting them. A grant whose TTL elapsed without a terminal
+   * outcome leaves the sender card "Waiting" forever — emit one terminal
+   * cancelled patch (contract lapsed, peer never answered) and free the
+   * capacity. Async so the sender alias can be recovered via the registry
+   * even for post-restart grants; every public entry (send, deliverInbound,
+   * sweep) runs this BEFORE any sync prune, so the patch always fires.
+   */
+  private async expirePendingCompletions(): Promise<void> {
+    const now = (this.deps.now ?? Date.now)();
+    const expiredPending: Array<{ id: string; endpointId: string }> = [];
+    let changed = false;
+    for (const [id, grant] of [...this.pendingCompletions]) {
+      if (grant.expiresAt > now) continue;
+      this.pendingCompletions.delete(id);
+      if (grant.state === "pending") {
+        changed = true;
+        expiredPending.push({ id, endpointId: grant.source.endpointId });
+      }
+    }
+    if (!changed) return;
+    for (const { id, endpointId } of expiredPending) {
+      const alias =
+        this.outboundMessages.get(id)?.senderSessionAlias ??
+        (await this.lookupLocalSessionAlias(endpointId));
+      if (alias) {
+        this.deps.events?.emit({
+          type: "agent-message-completion",
+          sessionAlias: toDisplaySessionAlias(alias),
+          messageId: id,
+          completionStatus: "cancelled",
+        });
+      }
+    }
+    try {
+      this.persistPendingCompletions();
+    } catch {
+      // compensation path — the persisted row itself expires by TTL
+    }
+  }
+
+  private async lookupLocalSessionAlias(
+    endpointId: string,
+  ): Promise<string | null> {
+    const finder = this.deps.registry.findLocalSessionByEndpointId;
+    if (!finder) return null;
+    try {
+      const found = await finder(endpointId);
+      return found?.alias ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Throws on storage failure. Callers reserve-time MUST let the error
+   * propagate (fail closed — nothing is sent); compensation paths
+   * (release/retire) catch it themselves since a stale persisted row expires
+   * with its TTL anyway.
+   */
+  private persistPendingCompletions(): void {
+    this.deps.pendingCompletionStore?.save(
+      [...this.pendingCompletions].map(([requestMessageId, grant]) => ({
+        requestMessageId,
+        source: grant.source,
+        target: grant.target,
+        mode: grant.mode,
+        expiresAt: grant.expiresAt,
+        state: grant.state,
+      })),
+    );
+  }
+
+  /**
+   * Trust-boundary check for inbound completions: a completion is only accepted
+   * when an unexpired grant exists for this exact requestMessageId with
+   * matching source AND target addresses, and the payload does not upgrade a
+   * notify grant into a result-bearing completion.
+   */
+  private checkPendingCompletion(input: {
+    requestMessageId: string;
+    source: AgentAddress;
+    target: AgentAddress;
+    result?: string;
+  }): AgentMessagingError | undefined {
+    const grant = this.pendingCompletions.get(input.requestMessageId);
+    const now = (this.deps.now ?? Date.now)();
+    if (!grant || grant.expiresAt <= now) {
+      if (grant) this.pendingCompletions.delete(input.requestMessageId);
+      return new AgentMessagingError(
+        "DELIVERY_DENIED",
+        "No pending completion grant exists for this request message id.",
+      );
+    }
+    if (
+      !sameAddress(grant.source, input.source) ||
+      !sameAddress(grant.target, input.target)
+    ) {
+      return new AgentMessagingError(
+        "DELIVERY_DENIED",
+        "Completion source/target do not match the original request.",
+      );
+    }
+    if (grant.mode === "notify" && input.result !== undefined) {
+      return new AgentMessagingError(
+        "DELIVERY_DENIED",
+        "A notify-mode completion must not carry a result body.",
+      );
+    }
+    return undefined;
+  }
+
+
   constructor(
     private readonly deps: {
       registry: Pick<
@@ -121,16 +481,146 @@ export class AgentMessageRouter {
         | "resolveLocalTargetByEndpointId"
       > & {
         resolveTargetByHandle?: (handle: string) => Promise<AgentEndpointView | null>;
+        findLocalSessionByEndpointId?: (
+          endpointId: string,
+        ) => Promise<{ alias: string; archived: boolean; isLogical: boolean } | null>;
       };
       delivery: LocalAgentMessageDelivery;
       remoteRoute?: RelayAgentMessageRoute;
       createId?: () => string;
       now?: () => number;
       limits?: AgentMessageRouterLimits;
-      logger?: Pick<AppLogger, "info">;
+      logger?: Pick<AppLogger, "info" | "error">;
       events?: ControlEventBus;
+      pendingCompletionStore?: {
+        load(): Array<{
+          requestMessageId: string;
+          source: AgentAddress;
+          target: AgentAddress;
+          mode: "notify" | "result";
+          expiresAt: number;
+          state?: "pending" | "delivered";
+        }>;
+        save(
+          grants: Array<{
+            requestMessageId: string;
+            source: AgentAddress;
+            target: AgentAddress;
+            mode: "notify" | "result";
+            expiresAt: number;
+            state: "pending" | "delivered";
+          }>,
+        ): void;
+      };
+      /** Durable terminal-completion outbox (v0.3): entries survive daemon
+       *  restarts so an accepted completion contract whose delivery was
+       *  interrupted (Relay offline, source busy) is still fulfilled after
+       *  the restart. Carries the bounded completion payload by necessity —
+       *  it IS the undeliverable-yet message. */
+      completionOutboxStore?: {
+        load(): Array<{
+          key: string;
+          kind: "local" | "remote";
+          requestMessageId: string;
+          senderSessionAlias?: string;
+          completion: AgentMessageCompletion;
+          expiresAt: number;
+        }>;
+        upsert(entry: {
+          key: string;
+          kind: "local" | "remote";
+          requestMessageId: string;
+          senderSessionAlias?: string;
+          completion: AgentMessageCompletion;
+          expiresAt: number;
+        }): void;
+        delete(key: string): void;
+      };
     },
-  ) {}
+  ) {
+    // Hydrate persisted pending-completion grants. Expired entries are dropped;
+    // survivors keep this daemon's outward completion contracts enforceable
+    // across restarts.
+    const now = (this.deps.now ?? Date.now)();
+    try {
+      for (const grant of this.deps.pendingCompletionStore?.load() ?? []) {
+        if (grant.expiresAt <= now) continue;
+        this.pendingCompletions.set(grant.requestMessageId, {
+          source: grant.source,
+          target: grant.target,
+          mode: grant.mode,
+          expiresAt: grant.expiresAt,
+          state: grant.state ?? "pending",
+        });
+      }
+    } catch {
+      // Fail-closed: an unloadable store starts empty (completions for
+      // pre-restart requests will be denied rather than mis-attributed).
+    }
+    // Hydrate the durable terminal-completion outbox: entries whose delivery
+    // was interrupted by a restart are re-armed with reconstructed attempt
+    // closures and swept like live ones.
+    try {
+      const now2 = (this.deps.now ?? Date.now)();
+      for (const entry of this.deps.completionOutboxStore?.load() ?? []) {
+        if (entry.expiresAt <= now2) {
+          this.deps.completionOutboxStore?.delete(entry.key);
+          continue;
+        }
+        const attempt =
+          entry.kind === "local" && entry.senderSessionAlias
+            ? async () =>
+                await this.attemptCompletionAdmission(
+                  entry.requestMessageId,
+                  entry.senderSessionAlias!,
+                  entry.completion,
+                )
+            : async () => {
+                if (
+                  !this.deps.remoteRoute ||
+                  !this.deps.remoteRoute.isAvailable()
+                ) {
+                  return false;
+                }
+                const res = await this.deps.remoteRoute.sendCompletion({
+                  requestMessageId: entry.completion.requestMessageId,
+                  source: entry.completion.to,
+                  target: entry.completion.from,
+                  status: entry.completion.status,
+                  ...(entry.completion.result !== undefined
+                    ? { result: entry.completion.result }
+                    : {}),
+                  ...(entry.completion.error !== undefined
+                    ? { error: entry.completion.error }
+                    : {}),
+                  completedAt: entry.completion.completedAt,
+                });
+                if (res.ok === true) {
+                  this.markGrantDelivered(entry.requestMessageId);
+                  return true;
+                }
+                return false;
+              };
+        this.deliveryPending.set(entry.key, {
+          attempt,
+          nextAttemptAt: now2 + AgentMessageRouter.COMPLETION_RETRY_SWEEP_MS,
+          expiresAt: entry.expiresAt,
+          // Hydrated entries came FROM the durable outbox.
+          persisted: true,
+          completionForPersist: entry.completion,
+          kindForPersist: entry.kind,
+          requestMessageIdForPersist: entry.requestMessageId,
+          ...(entry.senderSessionAlias !== undefined
+            ? { senderForPersist: entry.senderSessionAlias }
+            : {}),
+        });
+      }
+      if (this.deliveryPending.size > 0) this.armDeliveryRetryTimer();
+    } catch {
+      // An unloadable outbox starts empty; source-side grants remain durable
+      // so targets keep retrying into this daemon.
+    }
+  }
 
   async listReachable(
     binding: AgentSenderBinding,
@@ -163,12 +653,30 @@ export class AgentMessageRouter {
       content: message.content,
       createdAt: message.createdAt,
       status: receipt.status === "failed" ? "failed" : "sent",
+      completion: message.completion,
+      completionStatus:
+        message.completion && message.completion !== "none"
+          ? receipt.status === "failed"
+            ? "failed"
+            : "pending"
+          : undefined,
     };
     this.deps.events?.emit({
       type: "agent-message",
       sessionAlias: toDisplaySessionAlias(senderSessionAlias),
       message: entry,
     });
+    if (message.completion !== "none") {
+      this.outboundMessages.set(message.id, {
+        senderSessionAlias,
+        message,
+        targetPeer: peer,
+      });
+      if (this.outboundMessages.size > 1000) {
+        const oldestKey = this.outboundMessages.keys().next().value;
+        if (oldestKey) this.outboundMessages.delete(oldestKey);
+      }
+    }
   }
   private emitInboundEvent(
     targetSessionAlias: string,
@@ -191,6 +699,7 @@ export class AgentMessageRouter {
       content: message.content,
       createdAt: message.createdAt,
       status: "delivered",
+      completion: message.completion,
     };
     this.deps.events?.emit({
       type: "agent-message",
@@ -203,6 +712,9 @@ export class AgentMessageRouter {
     binding: AgentSenderBinding,
     input: AgentMessageSendInput,
   ): Promise<AgentMessageReceipt> {
+    // Resolve expired grants (terminal patches for the sender cards) before
+    // this send's reserve step prunes anything.
+    await this.expirePendingCompletions();
     const maxMessageBytes = this.deps.limits?.maxMessageBytes ?? 16 * 1024;
     if (Buffer.byteLength(input.content, "utf8") > maxMessageBytes) {
       throw new AgentMessagingError(
@@ -210,6 +722,7 @@ export class AgentMessageRouter {
         `Peer messages must not exceed ${maxMessageBytes} UTF-8 bytes.`,
       );
     }
+    const completion = input.completion ?? "none";
     const maxReplyToBytes = this.deps.limits?.maxReplyToBytes ?? 128;
     if (
       input.replyTo !== undefined &&
@@ -242,6 +755,22 @@ export class AgentMessageRouter {
       ? await this.deps.registry.resolveSelector(sender, input.selector)
       : await this.deps.registry.resolveTarget(sender, input.to!);
 
+    if (completion !== "none") {
+      // v0.3 fail-closed scope: completion signals ride the canonical
+      // TurnQueue/SessionTurnRunner path, which only logical sessions have on
+      // both ends. Worker runtimes inject via transport.injectMessage (no
+      // correlated terminal event) and worker/external senders have no logical
+      // lane to receive the completion turn in.
+      const senderIsLogical = sender.senderKind === "logical";
+      const targetSupportsCompletion =
+        target.endpoint.capabilities.completion === true;
+      if (!senderIsLogical || !targetSupportsCompletion) {
+        throw new AgentMessagingError(
+          "COMPLETION_NOT_SUPPORTED",
+          `Completion mode '${completion}' requires a logical-session sender and a logical-session target.`,
+        );
+      }
+    }
     return await this.enqueueTarget(target.endpoint.handle, async () => {
       const requestedMode = input.requestedMode ?? input.mode ?? "auto";
       if (requestedMode === "steer" && !target.endpoint.capabilities.steer) {
@@ -322,6 +851,7 @@ export class AgentMessageRouter {
           to: target.endpoint.address,
           content: input.content,
           requestedMode,
+          completion,
           createdAt,
           ...(input.replyTo ? { replyTo: input.replyTo } : {}),
         };
@@ -345,9 +875,24 @@ export class AgentMessageRouter {
         to: target.endpoint.address,
         content: input.content,
         requestedMode,
+        completion,
         createdAt,
         ...(input.replyTo ? { replyTo: input.replyTo } : {}),
       };
+
+      // v0.3: durable-reserve the completion contract BEFORE dispatch. A
+      // persistence failure throws here → the request fails closed and nothing
+      // is sent; capacity exhaustion likewise refuses the NEW request rather
+      // than evicting an older still-executing contract.
+      if (completion !== "none") {
+        this.reservePendingCompletion(
+          message.id,
+          sender.address,
+          target.endpoint.address,
+          completion,
+          createdAt,
+        );
+      }
 
       if (target.endpoint.address.nodeId !== sender.address.nodeId) {
         if (!this.deps.remoteRoute || !this.deps.remoteRoute.isAvailable()) {
@@ -355,6 +900,7 @@ export class AgentMessageRouter {
             "ROUTE_UNAVAILABLE",
             `Remote route is unavailable for destination node ${target.endpoint.address.nodeId}.`,
           );
+          if (completion !== "none") this.releasePendingCompletion(message.id);
           this.logDelivery(message, undefined, createdAt, err.code);
           this.recordTrace({
             messageId,
@@ -377,6 +923,15 @@ export class AgentMessageRouter {
           remoteReceipt = await this.deps.remoteRoute.send(message);
         } catch (error) {
           const mapped = mapDeliveryError(error);
+          // Definite pre-admission rejections release the reservation;
+          // ambiguous outcomes (timeout/race/unknown) retain it — the target
+          // may have accepted and the completion must still be honored.
+          if (
+            completion !== "none" &&
+            AgentMessageRouter.DEFINITE_NOT_SENT_CODES.has(mapped.code)
+          ) {
+            this.releasePendingCompletion(message.id);
+          }
           this.logDelivery(message, undefined, createdAt, mapped.code);
           this.recordTrace({
             messageId,
@@ -402,6 +957,9 @@ export class AgentMessageRouter {
             route: "relay",
           });
           throw mapped;
+        }
+        if (completion !== "none" && remoteReceipt.status === "failed") {
+          this.releasePendingCompletion(message.id);
         }
         this.cacheReceipt(remoteReceipt, createdAt);
         this.conversationMessageCounts.set(
@@ -458,6 +1016,9 @@ export class AgentMessageRouter {
         );
       } catch (error) {
         const mapped = mapDeliveryError(error);
+        // Local admission is synchronous: a throw means the target never
+        // accepted → release the reservation.
+        if (completion !== "none") this.releasePendingCompletion(message.id);
         this.logDelivery(message, undefined, createdAt, mapped.code);
         this.recordTrace({
           messageId,
@@ -532,6 +1093,55 @@ export class AgentMessageRouter {
     });
   }
 
+  /**
+   * TARGET-side terminal-outbox admission reservation (v0.3 round-6): a
+   * completion-bearing request accepted by THIS daemon creates an obligation
+   * to later deliver one bounded completion. Capacity is reserved HERE — at
+   * acceptance time — instead of being inferred from each source's budget,
+   * so a saturated outbox refuses NEW requests (MESSAGE_QUEUE_FULL) rather
+   * than stranding finished work. The reservation is the deliveryPending
+   * budget itself; expired entries are pruned before the check.
+   */
+  ensureTerminalOutboxCapacity(requestMessageId?: string): void {
+    const now = (this.deps.now ?? Date.now)();
+    for (const [key, task] of [...this.deliveryPending]) {
+      if (task.expiresAt <= now) {
+        this.deliveryPending.delete(key);
+        this.deps.completionOutboxStore?.delete(key);
+        this.outboxReservations.delete(key);
+      }
+    }
+    // Reservations are held only until their contract TTL: an ambiguous
+    // outcome (e.g. DELIVERY_TIMEOUT) must not consume a target slot
+    // forever. Expired reservations are released here, before counting.
+    const contractTtlMs =
+      this.deps.limits?.pendingCompletion?.ttlMs ?? 24 * 60 * 60_000;
+    for (const [id, expiresAt] of [...this.outboxReservations]) {
+      if (expiresAt <= now) this.outboxReservations.delete(id);
+    }
+    if (requestMessageId !== undefined) {
+      // A reservation for THIS request may already exist (retry of an
+      // obligation whose delivery failed) — it reuses its slot.
+      if (this.outboxReservations.has(requestMessageId)) return;
+    }
+    const outstanding =
+      this.deliveryPending.size + this.outboxReservations.size;
+    const cap =
+      this.deps.limits?.pendingCompletion?.maxEntries ?? 1_000;
+    if (outstanding >= cap) {
+      throw new AgentMessagingError(
+        "MESSAGE_QUEUE_FULL",
+        "Terminal completion outbox at capacity; existing obligations are never evicted.",
+      );
+    }
+    if (requestMessageId !== undefined && contractTtlMs > 0) {
+      this.outboxReservations.set(
+        requestMessageId,
+        now + contractTtlMs,
+      );
+    }
+  }
+
   async deliverInbound(input: {
     sourceNodeId: string;
     sourceEndpointId: string;
@@ -543,7 +1153,10 @@ export class AgentMessageRouter {
     requestedMode: string;
     replyTo?: string;
     replyable: boolean;
+    completion?: AgentMessageCompletionMode;
   }): Promise<AgentMessageReceipt> {
+    // Resolve expired grants (terminal patches) before acceptance work.
+    await this.expirePendingCompletions();
     const createdAt = (this.deps.now ?? Date.now)();
     const fingerprint = inboundFingerprint(input);
 
@@ -590,6 +1203,16 @@ export class AgentMessageRouter {
     } catch (error) {
       if (error instanceof AgentMessagingError) {
         this.recordInboundOutcome(input.messageId, fingerprint, { error });
+        // Definite rejections void the accepted contract → release its
+        // terminal-outbox reservation so capacity returns immediately
+        // (ambiguous outcomes keep the reservation for retry).
+        if (
+          input.completion !== undefined &&
+          input.completion !== "none" &&
+          INBOUND_DEFINITE_REJECTION_CODES.has(error.code)
+        ) {
+          this.outboxReservations.delete(input.messageId);
+        }
       }
       throw error;
     } finally {
@@ -611,6 +1234,7 @@ export class AgentMessageRouter {
       requestedMode: string;
       replyTo?: string;
       replyable: boolean;
+      completion?: AgentMessageCompletionMode;
     },
     createdAt: number,
   ): Promise<AgentMessageReceipt> {
@@ -627,9 +1251,32 @@ export class AgentMessageRouter {
       to: target.endpoint.address,
       content: input.content,
       requestedMode: (input.requestedMode as AgentMessageMode) ?? "auto",
+      completion: input.completion ?? "none",
       createdAt,
       ...(input.replyTo ? { replyTo: input.replyTo } : {}),
     };
+
+    // TARGET-side outbox reservation: a completion-bearing request accepted by
+    // this daemon owes exactly one future terminal delivery. A slot is
+    // RESERVED here (acceptance time) so saturation refuses the request
+    // instead of stranding finished work later; released when the obligation
+    // converts to a live outbox entry or the contract is compensated.
+    if (message.completion !== "none") {
+      // Receiver-side fail-closed (independent of the sending hub's check):
+      // a remote hub or a stale directory snapshot may forward a
+      // completion-bearing request to a target that does not advertise
+      // completion capability (worker runtimes can never correlate a
+      // terminal turn event). Reject BEFORE reserving any terminal-outbox
+      // slot so no capacity is consumed by an undeliverable contract.
+      if (target.endpoint.capabilities.completion !== true) {
+        throw new AgentMessagingError(
+          "COMPLETION_NOT_SUPPORTED",
+          `Completion mode '${message.completion}' requires a target that advertises completion capability.`,
+        );
+      }
+      // Reserve a terminal-outbox slot for this accepted obligation.
+      this.ensureTerminalOutboxCapacity(message.id);
+    }
 
     const fromHandle = encodeAgentHandle({
       nodeId: input.sourceNodeId,
@@ -741,6 +1388,7 @@ export class AgentMessageRouter {
       content: message.content,
       createdAt,
       status: "delivered",
+      completion: message.completion,
     };
     this.deps.events?.emit({
       type: "agent-message",
@@ -748,6 +1396,665 @@ export class AgentMessageRouter {
       message: inboundEntry,
     });
     return receipt;
+  }
+
+  async completePeerTurn(
+    origin: PeerTurnOrigin,
+    terminal: {
+      ok: boolean;
+      text?: string;
+      errorMessage?: string;
+      cancelled?: boolean;
+    },
+  ): Promise<AgentMessageCompletion | null> {
+    if (origin.completion === "none") {
+      return null;
+    }
+
+    // Target-side terminal idempotency cache (Gate N target half)
+    const cachedOutcome = this.completionOutcomes.get(origin.requestMessageId);
+    if (cachedOutcome) {
+      if (cachedOutcome.expiresAt > (this.deps.now ?? Date.now)()) {
+        return cachedOutcome.value;
+      }
+      this.completionOutcomes.delete(origin.requestMessageId);
+    }
+
+    const status: AgentMessageCompletionStatus = terminal.cancelled
+      ? "cancelled"
+      : !terminal.ok
+        ? "failed"
+        : "completed";
+
+    const completedAt = (this.deps.now ?? Date.now)();
+    const completion: AgentMessageCompletion = {
+      requestMessageId: origin.requestMessageId,
+      from: origin.target,
+      to: origin.source,
+      status,
+      ...(status === "completed" && origin.completion === "result"
+        ? { result: boundPeerResult(terminal.text ?? "") }
+        : {}),
+      ...(status === "failed"
+        ? {
+            error: sanitizeCompletionError(
+              terminal.errorMessage ?? "Peer turn failed",
+            ),
+          }
+        : {}),
+      completedAt,
+    };
+
+    while (this.completionOutcomes.size >= (this.deps.limits?.completionCache?.maxEntries ?? 2_000)) {
+      const oldest = this.completionOutcomes.keys().next().value;
+      if (oldest === undefined) break;
+      this.completionOutcomes.delete(oldest);
+    }
+    this.completionOutcomes.set(origin.requestMessageId, {
+      value: completion,
+      expiresAt:
+        completedAt +
+        (this.deps.limits?.completionCache?.ttlMs ?? 24 * 60 * 60_000),
+    });
+
+    // Resolve the sender session alias + AUTHORITATIVE archive lifecycle.
+    // The outbound cache only seeds the alias; archived state is ALWAYS read
+    // from the registry — a cached alias from before the user archived the
+    // session must not bypass Gate M.
+    const cachedOutbound = this.outboundMessages.get(origin.requestMessageId);
+    let senderSessionAlias = cachedOutbound?.senderSessionAlias;
+    let sourceIsArchived = false;
+    if (this.deps.registry.findLocalSessionByEndpointId) {
+      try {
+        const sourceSession =
+          await this.deps.registry.findLocalSessionByEndpointId(
+            origin.source.endpointId,
+          );
+        if (sourceSession) {
+          if (!senderSessionAlias) {
+            senderSessionAlias = sourceSession.alias;
+          }
+          sourceIsArchived = sourceSession.archived;
+        }
+      } catch {
+        // ignore lookup error
+      }
+    }
+
+    // Patch the persisted sender card's completion status (v0.3: patch event,
+    // never a fabricated full entry — the durable row belongs to the original send).
+    if (senderSessionAlias) {
+      this.deps.events?.emit({
+        type: "agent-message-completion",
+        sessionAlias: toDisplaySessionAlias(senderSessionAlias),
+        messageId: origin.requestMessageId,
+        completionStatus: status,
+      });
+    }
+
+    // Reverse route choice
+    const isLocalSource = origin.source.nodeId === origin.target.nodeId;
+    if (!isLocalSource) {
+      if (this.deps.remoteRoute && this.deps.remoteRoute.isAvailable()) {
+        try {
+          const fwdRes = await this.deps.remoteRoute.sendCompletion({
+            requestMessageId: origin.requestMessageId,
+            source: origin.source,
+            target: origin.target,
+            status,
+            ...(completion.result !== undefined ? { result: completion.result } : {}),
+            ...(completion.error !== undefined ? { error: completion.error } : {}),
+            completedAt,
+          });
+          if (fwdRes.ok === true) {
+            // Delivered to the source daemon → retire the reservation; the
+            // terminal tombstone absorbs late duplicates.
+            this.markGrantDelivered(origin.requestMessageId);
+            this.outboxReservations.delete(origin.requestMessageId);
+            return completion;
+          }
+          // Source explicitly reported NOT delivered (e.g. its queue was full).
+          // The durable Hub route grant is still live — retain ours and retry.
+          this.scheduleCompletionDelivery(
+            `remote:${origin.requestMessageId}`,
+            async () => {
+              if (!this.deps.remoteRoute || !this.deps.remoteRoute.isAvailable()) {
+                return false;
+              }
+              const retryRes = await this.deps.remoteRoute.sendCompletion({
+                requestMessageId: origin.requestMessageId,
+                source: origin.source,
+                target: origin.target,
+                status,
+                ...(completion.result !== undefined ? { result: completion.result } : {}),
+                ...(completion.error !== undefined ? { error: completion.error } : {}),
+                completedAt,
+              });
+              if (retryRes.ok === true) {
+                this.markGrantDelivered(origin.requestMessageId);
+                this.outboxReservations.delete(origin.requestMessageId);
+                return true;
+              }
+              return false;
+            },
+            completedAt,
+            {
+              kind: "remote",
+              requestMessageId: origin.requestMessageId,
+              completion,
+            },
+          );
+          return completion;
+        } catch (error) {
+          void this.deps.logger
+            ?.info(
+              "agent_messaging.remote_completion_retry_scheduled",
+              "Remote peer-completion delivery failed; scheduled for reconnect retry.",
+              {
+                requestMessageId: origin.requestMessageId,
+                error: error instanceof Error ? error.message : String(error),
+              },
+            )
+            ?.catch?.(() => undefined);
+        }
+      } else {
+        void this.deps.logger
+          ?.info(
+            "agent_messaging.remote_completion_retry_scheduled",
+            "Remote route unavailable; peer completion scheduled for reconnect retry.",
+            { requestMessageId: origin.requestMessageId },
+          )
+          ?.catch?.(() => undefined);
+      }
+      // Terminal outcome is recorded, but DELIVERY is still pending: retry until
+      // the route comes back or the grant TTL expires. Never silently dropped.
+      this.scheduleCompletionDelivery(
+        `remote:${origin.requestMessageId}`,
+        async () => {
+          if (!this.deps.remoteRoute || !this.deps.remoteRoute.isAvailable()) {
+            return false;
+          }
+          const retryRes = await this.deps.remoteRoute.sendCompletion({
+            requestMessageId: origin.requestMessageId,
+            source: origin.source,
+            target: origin.target,
+            status,
+            ...(completion.result !== undefined ? { result: completion.result } : {}),
+            ...(completion.error !== undefined ? { error: completion.error } : {}),
+            completedAt,
+          });
+          // Only an explicit source acceptance retires the contract.
+          if (retryRes.ok !== true) return false;
+          this.markGrantDelivered(origin.requestMessageId);
+          this.outboxReservations.delete(origin.requestMessageId);
+          return true;
+        },
+        completedAt,
+        {
+          kind: "remote",
+          requestMessageId: origin.requestMessageId,
+          completion,
+        },
+      );
+      return completion;
+    }
+
+    // Local source delivery
+    // Idempotency gate on source injection (Gate N source half)
+    const localTombstone = this.completionInjections.get(origin.requestMessageId);
+    if (localTombstone) {
+      if (localTombstone.expiresAt > (this.deps.now ?? Date.now)()) {
+        return completion;
+      }
+      this.completionInjections.delete(origin.requestMessageId);
+    }
+
+    // If source session is missing or archived: do NOT wake (allowRestoreArchived
+    // semantics, Gate M). Mark the grant DELIVERED so the archived contract
+    // stops consuming pending capacity; the status patch above is the durable
+    // record. No turn.
+    if (sourceIsArchived || !senderSessionAlias) {
+      this.markGrantDelivered(origin.requestMessageId);
+      return completion;
+    }
+
+    // Admission-aware injection: the dedupe tombstone is written ONLY after the
+    // source TurnQueue actually admitted the turn (injected | queued). A
+    // queue-full rejection or transport throw schedules a retry instead of
+    // permanently dropping the result.
+    const admitted = await this.attemptCompletionAdmission(
+      origin.requestMessageId,
+      senderSessionAlias,
+      completion,
+    );
+    if (!admitted) {
+      this.scheduleCompletionDelivery(
+        `local:${origin.requestMessageId}`,
+        async () =>
+          await this.attemptCompletionAdmission(
+            origin.requestMessageId,
+            senderSessionAlias!,
+            completion,
+          ),
+        completedAt,
+        {
+          kind: "local",
+          requestMessageId: origin.requestMessageId,
+          senderSessionAlias,
+          completion,
+        },
+      );
+    }
+    return completion;
+  }
+
+  async deliverInboundCompletion(input: {
+    requestMessageId: string;
+    source: AgentAddress;
+    target: AgentAddress;
+    status: AgentMessageCompletionStatus;
+    result?: string;
+    error?: string;
+    completedAt: number;
+  }): Promise<{ ok: boolean; deduplicated?: boolean; error?: string }> {
+    // 1. Idempotency gate on source injection (Gate N source half) runs BEFORE
+    // the grant check on purpose: once the contract is fulfilled and retired, a
+    // late at-least-once duplicate must still be absorbed by the terminal
+    // tombstone instead of surfacing as DELIVERY_DENIED retry noise.
+    const tombstone = this.completionInjections.get(input.requestMessageId);
+    if (tombstone) {
+      if (tombstone.expiresAt > (this.deps.now ?? Date.now)()) {
+        return { ok: true, deduplicated: true };
+      }
+      this.completionInjections.delete(input.requestMessageId);
+    }
+
+    // 2. Trust boundary (v0.3): an inbound completion is only honored when THIS
+    // daemon originally sent a completion-bearing request whose messageId,
+    // source and target exactly match. Without this check any same-account
+    // instance could forge a "trusted" peer result into another agent's turn
+    // lane. completion=none sends never create a grant, so they can never
+    // receive completions; notify grants reject result-bearing payloads.
+    //
+    // Lifecycle-aware dedupe: a DELIVERED grant is a terminal tombstone — an
+    // exact-fingerprint replay is absorbed (the source daemon may have
+    // restarted since admission, losing its RAM tombstone); a mismatched
+    // replay stays denied.
+    const deliveredGrant = this.pendingCompletions.get(input.requestMessageId);
+    if (
+      deliveredGrant?.state === "delivered" &&
+      deliveredGrant.expiresAt > (this.deps.now ?? Date.now)()
+    ) {
+      const sameFingerprint =
+        sameAddress(deliveredGrant.source, input.source) &&
+        sameAddress(deliveredGrant.target, input.target);
+      if (sameFingerprint) {
+        return { ok: true, deduplicated: true };
+      }
+      throw new AgentMessagingError(
+        "DELIVERY_DENIED",
+        "Completion identities do not match the original request.",
+      );
+    }
+    const grantError = this.checkPendingCompletion(input);
+    if (grantError) {
+      throw grantError;
+    }
+
+    const completion: AgentMessageCompletion = {
+      requestMessageId: input.requestMessageId,
+      from: input.target,
+      to: input.source,
+      status: input.status,
+      ...(input.result !== undefined
+        ? { result: boundPeerResult(input.result) }
+        : {}),
+      ...(input.error !== undefined
+        ? { error: sanitizeCompletionError(input.error) }
+        : {}),
+      completedAt: input.completedAt,
+    };
+
+    // 3. Resolve the sender session alias + AUTHORITATIVE archive lifecycle
+    // (same rationale as completePeerTurn — cache never bypasses Gate M).
+    const cachedOutbound = this.outboundMessages.get(input.requestMessageId);
+    let senderSessionAlias = cachedOutbound?.senderSessionAlias;
+    let sourceIsArchived = false;
+    if (this.deps.registry.findLocalSessionByEndpointId) {
+      try {
+        const sourceSession =
+          await this.deps.registry.findLocalSessionByEndpointId(
+            input.source.endpointId,
+          );
+        if (sourceSession) {
+          if (!senderSessionAlias) {
+            senderSessionAlias = sourceSession.alias;
+          }
+          sourceIsArchived = sourceSession.archived;
+        }
+      } catch {
+        // ignore lookup error
+      }
+    }
+
+    // 4. Patch the persisted sender card's completion status. Never fabricate a
+    // full PeerMessageHistoryEntry here — after a daemon restart the outbound
+    // cache is gone and a rebuilt entry would clobber the durable history row.
+    if (senderSessionAlias) {
+      this.deps.events?.emit({
+        type: "agent-message-completion",
+        sessionAlias: toDisplaySessionAlias(senderSessionAlias),
+        messageId: input.requestMessageId,
+        completionStatus: input.status,
+      });
+    }
+
+    // 5. Missing or archived source: recorded above, never woken (Gate M).
+    // The contract is TERMINAL at this point (status recorded durably via the
+    // patch event), so retire the source grant — leaving it pending would let
+    // archived-source contracts permanently consume completion capacity. A
+    // tombstone is written as well so late at-least-once duplicates are
+    // absorbed as deduplicated instead of surfacing as retry noise.
+    if (sourceIsArchived || !senderSessionAlias) {
+      this.markGrantDelivered(input.requestMessageId);
+      while (
+        this.completionInjections.size >=
+        (this.deps.limits?.completionCache?.maxEntries ?? 2_000)
+      ) {
+        const oldest = this.completionInjections.keys().next().value;
+        if (oldest === undefined) break;
+        this.completionInjections.delete(oldest);
+      }
+      this.completionInjections.set(input.requestMessageId, {
+        expiresAt: Math.max(
+          this.pendingCompletions.get(input.requestMessageId)?.expiresAt ?? 0,
+          input.completedAt +
+            (this.deps.limits?.completionCache?.ttlMs ?? 24 * 60 * 60_000),
+        ),
+      });
+      return { ok: true };
+    }
+
+    // 6. Admission-aware injection — dedupe tombstone only after real admission;
+    // rejections schedule a retry for the LOCAL same-daemon path; a DURABLE
+    // terminal-state failure propagates as retryable failure so the Hub keeps
+    // its grant and the target's durable outbox retries.
+    let admitted: boolean;
+    try {
+      admitted = await this.attemptCompletionAdmission(
+        input.requestMessageId,
+        senderSessionAlias,
+        completion,
+      );
+    } catch (error) {
+      return {
+        ok: false,
+        error: `terminal completion state not durable; retry: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
+    if (!admitted) {
+      // DURABLE ACK RULE + SINGLE RETRY OWNER (v0.3 round-5 review): a Relay
+      // inbound completion has a durable retry chain already — the target's
+      // persisted remote outbox plus the Hub's pending route grant. Scheduling
+      // a SECOND source-local retry here would create dual ownership whose
+      // tombstones diverge after a restart. Returning {ok:false} keeps that
+      // durable chain alive: the Hub forwards the failure to the target, which
+      // retains its grant and retries. {ok:true} is returned only on real
+      // admission.
+      return {
+        ok: false,
+        error: "source session busy; completion delivery pending",
+      };
+    }
+
+    return { ok: true };
+  }
+
+  /**
+   * One delivery attempt against the source session's canonical lane. Returns
+   * true only when the TurnQueue admitted the completion turn (injected |
+   * queued); the dedupe tombstone is written strictly after that point.
+   */
+  private async attemptCompletionAdmission(
+    requestMessageId: string,
+    senderSessionAlias: string,
+    completion: AgentMessageCompletion,
+  ): Promise<boolean> {
+    // Router-owned dedupe (medium-3): admission absorption must NOT depend
+    // on the TurnQueue's bounded 2000-entry FIFO — a tombstone evicted there
+    // while this terminal delivery is still retrying would re-admit a
+    // duplicate turn. This router tombstone (pendingCompletions state /
+    // completionInjections) is written durably-first by markGrantDelivered
+    // and checked here BEFORE any new admission is attempted.
+    if (
+      this.pendingCompletions.get(requestMessageId)?.state === "delivered" ||
+      this.completionInjections.has(requestMessageId)
+    ) {
+      return true; // already admitted idempotently — absorb
+    }
+    if (!this.deps.delivery.deliverCompletion) {
+      return false;
+    }
+    const result = await this.deps.delivery.deliverCompletion(
+      senderSessionAlias,
+      completion,
+      requestMessageId,
+    );
+    if (result.status === "rejected") {
+      return false;
+    }
+    // Durable-first: the delivered transition is persisted BEFORE any
+    // {ok:true} can escape. A storage failure THROWS so callers fail closed
+    // (retryable failure) instead of announcing a terminal ACK whose
+    // tombstone would not survive a restart.
+    this.markGrantDelivered(requestMessageId);
+    // Tombstone must outlive the authorization contract it deduplicates:
+    // expiry is anchored to the grant's own expiresAt when one still exists.
+    const now = (this.deps.now ?? Date.now)();
+    const grantExpiry =
+      this.pendingCompletions.get(requestMessageId)?.expiresAt ?? 0;
+    const cacheTtl = this.deps.limits?.completionCache?.ttlMs ?? 24 * 60 * 60_000;
+    const tombstoneExpiresAt = Math.max(grantExpiry, now + cacheTtl);
+    while (
+      this.completionInjections.size >=
+      (this.deps.limits?.completionCache?.maxEntries ?? 2_000)
+    ) {
+      const oldest = this.completionInjections.keys().next().value;
+      if (oldest === undefined) break;
+      this.completionInjections.delete(oldest);
+    }
+    this.completionInjections.set(requestMessageId, {
+      expiresAt: tombstoneExpiresAt,
+    });
+    return true;
+  }
+  /** Retry cadence for pending completion deliveries. */
+  private static readonly COMPLETION_RETRY_SWEEP_MS = 5_000;
+  private static readonly COMPLETION_RETRY_MAX_ENTRIES = 1_000;
+
+  /**
+   * Queue a not-yet-admitted completion delivery for bounded retry. Entries
+   * expire with the same TTL as pending grants; the map is size-bounded with
+   * oldest-first eviction so a long-lived daemon cannot accumulate unbounded
+   * state.
+   */
+  private scheduleCompletionDelivery(
+    key: string,
+    attempt: () => Promise<boolean>,
+    now: number,
+    entry?: {
+      kind: "local" | "remote";
+      requestMessageId: string;
+      senderSessionAlias?: string;
+      completion: AgentMessageCompletion;
+    },
+  ): void {
+    const ttlMs = this.deps.limits?.pendingCompletion?.ttlMs ?? 24 * 60 * 60_000;
+    if (ttlMs <= 0) return;
+    // NO EVICTION: entries here are undelivered terminal completions —
+    // obligations for work the peer already finished. Dropping the oldest one
+    // on capacity pressure would silently lose a result that can never be
+    // regenerated (the outcomes cache would just return the cached terminal).
+    // Capacity is reserved UP FRONT at request time (see
+    // reservePendingCompletion's deliveryPending backpressure), so this map is
+    // bounded by construction; expired entries are pruned by the sweep.
+    const task = {
+      attempt,
+      nextAttemptAt: now + AgentMessageRouter.COMPLETION_RETRY_SWEEP_MS,
+      expiresAt: now + ttlMs,
+      persisted: false,
+      // Retained so a FAILED durable upsert can be retried by the sweep
+      // with the exact same durable shape (kind + sender) — never a
+      // degraded guess that would reroute the obligation.
+      ...(entry !== undefined
+        ? {
+            completionForPersist: entry.completion,
+            kindForPersist: entry.kind,
+            requestMessageIdForPersist: entry.requestMessageId,
+            ...(entry.senderSessionAlias !== undefined
+              ? { senderForPersist: entry.senderSessionAlias }
+              : {}),
+          }
+        : {}),
+    };
+    this.deliveryPending.set(key, task);
+    if (entry) {
+      this.outboxReservations.delete(entry.requestMessageId);
+      // Persist the obligation so a daemon restart re-arms it. The turn
+      // already ran and cannot be re-run, so a failure here is LOUD: it stays
+      // observable and the sweep retries the upsert before delivering.
+      try {
+        this.deps.completionOutboxStore?.upsert({
+          key,
+          kind: entry.kind,
+          requestMessageId: entry.requestMessageId,
+          ...(entry.senderSessionAlias !== undefined
+            ? { senderSessionAlias: entry.senderSessionAlias }
+            : {}),
+          completion: entry.completion,
+          expiresAt: now + ttlMs,
+        });
+        task.persisted = true;
+      } catch (error) {
+        this.deps.logger?.error(
+          "agent_messaging.completion_outbox_persist_failed",
+          "failed to persist terminal completion obligation; will retry",
+          {
+            key,
+            requestMessageId: entry.requestMessageId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+      }
+    }
+    this.armDeliveryRetryTimer();
+  }
+
+  private armDeliveryRetryTimer(): void {
+    if (this.deliveryRetryTimer) return;
+    this.deliveryRetryTimer = setTimeout(() => {
+      this.deliveryRetryTimer = undefined;
+      void this.sweepPendingCompletionDeliveries();
+    }, AgentMessageRouter.COMPLETION_RETRY_SWEEP_MS);
+  }
+
+  /**
+   * Run one retry pass over pending completion deliveries. Public so tests can
+   * drive retries deterministically without waiting on the timer; `force`
+   * ignores the per-entry backoff gate (production timer passes false).
+   */
+  async sweepPendingCompletionDeliveries(force = false): Promise<void> {
+    try {
+      await this.sweepPendingCompletionDeliveriesInner(force);
+    } finally {
+      // Unconditional re-arm (medium-4): a sweep that threw mid-pass must
+      // not strand the remaining obligations without a retry timer.
+      if (this.deliveryPending.size > 0) {
+        this.armDeliveryRetryTimer();
+      }
+    }
+  }
+
+  private async sweepPendingCompletionDeliveriesInner(
+    force = false,
+  ): Promise<void> {
+    const now = (this.deps.now ?? Date.now)();
+    // Resolve expired grants first: their outbox obligations are already
+    // pruned below by TTL, and the sender card must not stay Waiting.
+    await this.expirePendingCompletions();
+    // Recovery pass: re-attempt the durable upsert for entries whose
+    // persistence failed earlier, so restart durability is restored as soon
+    // as storage recovers — before their next delivery attempt.
+    for (const [key, task] of [...this.deliveryPending]) {
+      if (!task.persisted) {
+        try {
+          if (
+            task.completionForPersist === undefined ||
+            task.kindForPersist === undefined ||
+            task.requestMessageIdForPersist === undefined
+          ) {
+            // No durable shape retained for this entry (legacy/hydrated
+            // path) — nothing safe to re-persist.
+            continue;
+          }
+          this.deps.completionOutboxStore?.upsert({
+            key,
+            kind: task.kindForPersist,
+            requestMessageId: task.requestMessageIdForPersist,
+            ...(task.senderForPersist !== undefined
+              ? { senderSessionAlias: task.senderForPersist }
+              : {}),
+            completion: task.completionForPersist,
+            expiresAt: task.expiresAt,
+          });
+          task.persisted = true;
+        } catch {
+          // stays unpersisted; retried on the next sweep
+        }
+      }
+    }
+    for (const [key, task] of [...this.deliveryPending]) {
+      if (task.expiresAt <= now) {
+        this.deliveryPending.delete(key);
+        this.outboxReservations.delete(key);
+        this.deleteOutboxEntry(key);
+        continue;
+      }
+      if (!force && task.nextAttemptAt > now) continue;
+      try {
+        const admitted = await task.attempt();
+        if (admitted) {
+          this.deliveryPending.delete(key);
+          this.outboxReservations.delete(key.replace(/^(?:local|remote):/, ""));
+          this.deleteOutboxEntry(key);
+        } else {
+          task.nextAttemptAt =
+            (this.deps.now ?? Date.now)() +
+            AgentMessageRouter.COMPLETION_RETRY_SWEEP_MS;
+        }
+      } catch {
+        task.nextAttemptAt =
+          (this.deps.now ?? Date.now)() +
+          AgentMessageRouter.COMPLETION_RETRY_SWEEP_MS;
+      }
+    }
+  }
+
+  private deleteOutboxEntry(key: string): void {
+    try {
+      this.deps.completionOutboxStore?.delete(key);
+    } catch (error) {
+      this.deps.logger?.error(
+        "agent_messaging.completion_outbox_delete_failed",
+        "failed to delete delivered completion obligation from durable outbox",
+        {
+          key,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
   }
 
   private getCachedReceipt(
@@ -1000,6 +2307,7 @@ function inboundFingerprint(input: {
   replyTo?: string;
   conversationId?: string;
   depth?: number;
+  completion?: string;
 }): string {
   return JSON.stringify([
     input.sourceNodeId,
@@ -1010,6 +2318,7 @@ function inboundFingerprint(input: {
     input.replyTo ?? "",
     input.conversationId ?? "",
     input.depth ?? 0,
+    input.completion ?? "none",
   ]);
 }
 

@@ -160,6 +160,32 @@ export class MessageChannelRegistry {
     );
   }
 
+  /** Delegate to the first registered channel that implements the relay agent
+   *  messaging completion route. Without a relay-capable channel the router stays
+   *  ROUTE_UNAVAILABLE. */
+  async sendAgentMessageCompletion(payload: {
+    requestMessageId: string;
+    source: { nodeId: string; endpointId: string };
+    target: { nodeId: string; endpointId: string };
+    status: "completed" | "failed" | "cancelled";
+    result?: string;
+    error?: string;
+    completedAt: number;
+  }): Promise<{
+    ok: boolean;
+    deduplicated?: boolean;
+    error?: string;
+  }> {
+    for (const channel of this.channels.values()) {
+      if (typeof channel.sendAgentMessageCompletion === "function") {
+        return await channel.sendAgentMessageCompletion(payload);
+      }
+    }
+    throw new Error(
+      "no registered channel implements the agent messaging relay completion route",
+    );
+  }
+
   /** Publish the full local agent endpoint directory to the relay hub (debounced
    *  by the channel; no delta protocol). No-op when no channel implements it. */
   syncAgentEndpoints(endpoints: unknown[]): void {

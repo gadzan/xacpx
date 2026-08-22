@@ -33,6 +33,66 @@ function live(parts: LiveTurn["parts"]): LiveTurn {
   return { parts, status: "streaming", startedAt: 0 };
 }
 
+// Peer-message fixtures: a SENT card row (as the store/hub persist it) and an
+// assistant turn whose agent_send step carries the receipt's messageId.
+const sentCard = (messageId: string): ChatMessage => msg({
+  direction: "out",
+  text: `hello ${messageId}`,
+  structured: {
+    agentMessage: {
+      kind: "agent_message",
+      direction: "sent",
+      messageId,
+      conversationId: `conv_${messageId}`,
+      peer: { handle: "agent:node_2:endpoint_b", displayName: "Worker B", agent: "codex" },
+      content: `hello ${messageId}`,
+      createdAt: 1771234567890,
+      status: "sent",
+    },
+  },
+});
+
+// Echo/forward topologies keep ONE messageId across both directions: the peer's
+// copy of a locally-sent message arrives as a received entry with the SAME id.
+const receivedCard = (messageId: string): ChatMessage => msg({
+  direction: "in",
+  text: `hello ${messageId}`,
+  structured: {
+    agentMessage: {
+      kind: "agent_message",
+      direction: "received",
+      messageId,
+      conversationId: `conv_${messageId}`,
+      peer: { handle: "agent:node_1:endpoint_a", displayName: "Worker A", agent: "claude" },
+      content: `hello ${messageId}`,
+      createdAt: 1771234567891,
+      status: "delivered",
+    },
+  },
+});
+
+const sendStep = (toolCallId: string, messageId?: string) => ({
+  toolCallId,
+  toolName: "agent_send",
+  kind: "other" as const,
+  status: "success" as const,
+  title: "agent_send",
+  ...(messageId ? { agentMessageId: messageId } : {}),
+});
+
+const turnWithSend = (messageId?: string): ChatMessage => msg({
+  direction: "out",
+  text: "done",
+  status: "done",
+  structured: {
+    parts: [
+      { type: "text", text: "before\n\n" },
+      { type: "tool", step: sendStep("send-1", messageId) },
+      { type: "text", text: "after" },
+    ],
+  },
+});
+
 describe("MessageList", () => {
   it("shows agent text immediately while keeping inline tool details collapsed by default", () => {
     const wrapper = mount(MessageList, {
@@ -400,6 +460,194 @@ describe("MessageList", () => {
     expect(wrapper.find('[data-test="peer-name"]').text()).toBe("Worker B");
     expect(wrapper.text()).toContain("Hello peer");
     expect(wrapper.find('[data-test="msg-out"]').exists()).toBe(false);
+  });
+
+  it("renders a standalone AgentMessageCard row for an inbound peer message", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [
+          msg({
+            direction: "in",
+            text: "Review requested",
+            structured: {
+              agentMessage: {
+                kind: "agent_message",
+                direction: "received",
+                messageId: "msg_peer_2",
+                conversationId: "conv_peer_2",
+                peer: {
+                  handle: "agent:node_1:endpoint_a",
+                  displayName: "Worker A",
+                  agent: "claude",
+                },
+                content: "Review requested",
+                createdAt: 1771234567890,
+                status: "delivered",
+              },
+            },
+          }),
+        ],
+        liveTurn: null,
+      },
+    });
+
+    expect(wrapper.find('[data-test="agent-message-card"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="agent-message-card"]').attributes("data-direction")).toBe("received");
+    expect(wrapper.find('[data-test="peer-name"]').text()).toBe("Worker A");
+    expect(wrapper.text()).toContain("Review requested");
+    expect(wrapper.find('[data-test="msg-in"]').exists()).toBe(false);
+  });
+
+  it("anchors a sent card after its agent_send step and suppresses the standalone row (Gate A)", () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [turnWithSend("m1"), sentCard("m1")], liveTurn: null },
+    });
+
+    // Exactly one card — the anchored one; the standalone m1 row is suppressed.
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
+    const anchored = wrapper.find('[data-test="msg-out"] [data-test="turn-agent-message"]');
+    expect(anchored.exists()).toBe(true);
+    expect(wrapper.text()).toContain("hello m1");
+
+    // Rendered order inside the turn: narrative → tool card → anchored card → narrative.
+    const out = wrapper.find('[data-test="msg-out"]');
+    const mds = out.findAll(".stream-md");
+    expect(mds).toHaveLength(3); // "before", card body, "after"
+    const tool = wrapper.find('[data-test="tool-step-card"]');
+    expect(mds[0]!.element.compareDocumentPosition(tool.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(tool.element.compareDocumentPosition(anchored.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(anchored.element.compareDocumentPosition(mds[2]!.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("keeps a received card standalone even when a turn step references its message id (Gate B)", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [
+          turnWithSend("m_peer"),
+          msg({
+            direction: "in",
+            text: "ping",
+            structured: {
+              agentMessage: {
+                kind: "agent_message",
+                direction: "received",
+                messageId: "m_peer",
+                conversationId: "conv_peer",
+                peer: { handle: "agent:node_1:endpoint_a", displayName: "Worker A", agent: "claude" },
+                content: "ping",
+                createdAt: 1771234567890,
+                status: "delivered",
+              },
+            },
+          }),
+        ],
+        liveTurn: null,
+      },
+    });
+
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
+    expect(wrapper.find('[data-test="agent-message-card"]').attributes("data-direction")).toBe("received");
+    expect(wrapper.find('[data-test="turn-agent-message"]').exists()).toBe(false);
+    // The assistant turn itself renders unchanged.
+    expect(wrapper.find('[data-test="tool-step-card"]').exists()).toBe(true);
+  });
+
+  it("never suppresses a received card whose id is also an anchored sent card (echo topology)", () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [turnWithSend("m1"), sentCard("m1"), receivedCard("m1")], liveTurn: null },
+    });
+
+    // Both render: the sent twin anchors inside the turn; the received twin keeps
+    // its own standalone row — the anchored id must not swallow the receiver's copy.
+    expect(wrapper.find('[data-test="msg-out"] [data-test="turn-agent-message"]').exists()).toBe(true);
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(2);
+    const received = wrapper.find('[data-test="agent-message-card"][data-direction="received"]');
+    expect(received.exists()).toBe(true);
+    expect(received.text()).toContain("hello m1");
+    // The received card renders as its own transcript row, outside the assistant turn.
+    expect(received.element.closest('[data-test="msg-out"]')).toBeNull();
+  });
+
+  it("keeps an unjoinable sent card standalone — legacy history with no matching step (Gate C)", () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [turnWithSend("other"), sentCard("m1")], liveTurn: null },
+    });
+
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
+    expect(wrapper.find('[data-test="turn-agent-message"]').exists()).toBe(false);
+  });
+
+  it("keeps a sent card standalone when the assistant row is compact without parts (fallback)", () => {
+    const compactRow = msg({
+      direction: "out",
+      text: "done",
+      status: "done",
+      structured: {
+        compact: true,
+        toolSteps: [sendStep("send-1", "m1")],
+      },
+    });
+    const wrapper = mount(MessageList, {
+      props: { messages: [compactRow, sentCard("m1")], liveTurn: null },
+    });
+
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
+    expect(wrapper.find('[data-test="turn-agent-message"]').exists()).toBe(false);
+  });
+
+  it("anchors two sends in one turn in tool order (no swap)", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [
+          msg({
+            direction: "out",
+            text: "done",
+            status: "done",
+            structured: {
+              parts: [
+                { type: "tool", step: sendStep("send-1", "m1") },
+                { type: "tool", step: sendStep("send-2", "m2") },
+              ],
+            },
+          }),
+          sentCard("m1"),
+          sentCard("m2"),
+        ],
+        liveTurn: null,
+      },
+    });
+
+    const anchoredCards = wrapper.findAll('[data-test="turn-agent-message"]');
+    expect(anchoredCards).toHaveLength(2);
+    expect(anchoredCards[0]!.text()).toContain("hello m1");
+    expect(anchoredCards[1]!.text()).toContain("hello m2");
+    expect(anchoredCards[0]!.element.compareDocumentPosition(anchoredCards[1]!.element)
+      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(2);
+  });
+
+  it("anchors a sent card that arrives after its tool event without manual refresh (live append)", async () => {
+    const assistant = turnWithSend("m1");
+    const wrapper = mount(MessageList, { props: { messages: [assistant], liveTurn: null } });
+    expect(wrapper.find('[data-test="agent-message-card"]').exists()).toBe(false);
+
+    // The agent-message ControlEvent lands after the tool event: the store pushes the
+    // row, and the reactive join moves the card into the turn — no manual refresh.
+    await wrapper.setProps({ messages: [assistant, sentCard("m1")] });
+    expect(wrapper.find('[data-test="msg-out"] [data-test="turn-agent-message"]').exists()).toBe(true);
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
+  });
+
+  it("anchors a sent card inside the live streaming turn", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [sentCard("m1")],
+        liveTurn: live([{ type: "tool", step: sendStep("send-1", "m1") }]),
+      },
+    });
+
+    expect(wrapper.find('[data-test="msg-streaming"] [data-test="turn-agent-message"]').exists()).toBe(true);
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
   });
 });
 

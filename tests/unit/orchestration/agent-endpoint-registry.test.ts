@@ -1,9 +1,18 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 
 import { AgentMessagingError } from "../../../src/orchestration/agent-messaging-error";
 import { AgentEndpointRegistry } from "../../../src/orchestration/agent-endpoint-registry";
 import { encodeAgentHandle } from "../../../src/orchestration/agent-handle";
+import { registerKnownChannelId } from "../../../src/channels/channel-scope";
 import { createEmptyState } from "../../../src/state/types";
+
+beforeAll(() => {
+  // channelId derivation resolves the internal-alias namespace prefix against
+  // the process-wide known-channel registry, exactly like production channel
+  // plugins do at startup (registerChannelFactory → registerKnownChannelId).
+  registerKnownChannelId("relay");
+  registerKnownChannelId("feishu");
+});
 
 const nodeId = "node_11111111-1111-4111-8111-111111111111";
 
@@ -541,4 +550,113 @@ test("resolveSelector throws TARGET_NOT_FOUND when selector is empty object", as
   await expect(registry.resolveSelector(sender, {})).rejects.toMatchObject({
     code: "TARGET_NOT_FOUND",
   });
+});
+
+test("getPublishedEndpoints derives endpointKind logical and channelId from the owning channel namespace", async () => {
+  const state = createEmptyState();
+  const base = {
+    agent: "codex",
+    workspace: "project",
+    transport_session: "coordinator",
+    created_at: "2026-08-18T00:00:00.000Z",
+    last_used_at: "2026-08-18T00:00:00.000Z",
+  };
+  state.sessions.relayBot = {
+    ...base,
+    alias: "relay:omp-2",
+    logical_session_id: "66666666-6666-4666-8666-666666666666",
+  };
+  state.sessions.feishuBot = {
+    ...base,
+    alias: "feishu:omp-3",
+    logical_session_id: "77777777-7777-4777-8777-777777777777",
+  };
+  state.sessions.legacyBot = {
+    ...base,
+    alias: "omp-4",
+    logical_session_id: "88888888-8888-4888-8888-888888888888",
+  };
+
+  const reg = new AgentEndpointRegistry({
+    nodeId,
+    loadState: async () => state,
+  });
+
+  const endpoints = await reg.getPublishedEndpoints();
+  expect(
+    endpoints.find((e) => e.endpointId === "66666666-6666-4666-8666-666666666666"),
+  ).toMatchObject({ endpointKind: "logical", channelId: "relay" });
+  expect(
+    endpoints.find((e) => e.endpointId === "77777777-7777-4777-8777-777777777777"),
+  ).toMatchObject({ endpointKind: "logical", channelId: "feishu" });
+  // Unprefixed (legacy default-namespace) aliases resolve to "weixin".
+  expect(
+    endpoints.find((e) => e.endpointId === "88888888-8888-4888-8888-888888888888"),
+  ).toMatchObject({ endpointKind: "logical", channelId: "weixin" });
+});
+
+test("worker endpoints publish endpointKind worker without channelId", async () => {
+  const { registry } = makeRegistry();
+
+  const published = await registry.getPublishedEndpoints();
+  const workerEp = published.find((e) => e.endpointId === "endpoint_worker-a");
+  expect(workerEp?.endpointKind).toBe("worker");
+  expect("channelId" in (workerEp ?? {})).toBe(false);
+
+  // Sanity: the local logical session still carries its logical kind + namespace.
+  const logicalEp = published.find(
+    (e) => e.endpointId === "22222222-2222-4222-8222-222222222222",
+  );
+  expect(logicalEp?.endpointKind).toBe("logical");
+  expect(logicalEp?.channelId).toBe("weixin");
+});
+
+test("syncRemoteDirectorySnapshot preserves remote context fields and accepts legacy rows without them", async () => {
+  const { registry } = makeRegistry();
+  const remoteNode = "node_remote_ctx";
+  registry.syncRemoteDirectorySnapshot([
+    {
+      nodeId: remoteNode,
+      endpointId: "ep_remote_ctx",
+      displayName: "Remote Logical",
+      agent: "claude",
+      state: "idle",
+      capabilities: {
+        receive: true,
+        steer: false,
+        queue: true,
+        interrupt: false,
+      },
+      endpointKind: "logical",
+      channelId: "feishu",
+    },
+    {
+      nodeId: remoteNode,
+      endpointId: "ep_remote_legacy",
+      displayName: "Legacy Daemon Row",
+      agent: "codex",
+      state: "idle",
+      capabilities: {
+        receive: true,
+        steer: false,
+        queue: true,
+        interrupt: false,
+      },
+    },
+  ]);
+
+  const endpoints = await registry.listReachable({
+    coordinatorSession: "coordinator",
+    sourceHandle: "workerA",
+  });
+  const ctx = endpoints.find((e) => e.address.endpointId === "ep_remote_ctx");
+  expect(ctx?.endpointKind).toBe("logical");
+  expect(ctx?.channelId).toBe("feishu");
+
+  const legacy = endpoints.find(
+    (e) => e.address.endpointId === "ep_remote_legacy",
+  );
+  expect(legacy).toBeDefined();
+  expect("endpointKind" in (legacy ?? {})).toBe(false);
+  expect("channelId" in (legacy ?? {})).toBe(false);
 });

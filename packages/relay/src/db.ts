@@ -179,6 +179,19 @@ export function initSchema(db: SqlDriver): void {
       created_at TEXT NOT NULL,
       PRIMARY KEY (instance_id, recovery_id)
     );
+    CREATE TABLE IF NOT EXISTS pending_completion_routes (
+      request_message_id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      source_instance_id TEXT NOT NULL,
+      source_node_id TEXT NOT NULL,
+      source_endpoint_id TEXT NOT NULL,
+      target_instance_id TEXT NOT NULL,
+      target_node_id TEXT NOT NULL,
+      target_endpoint_id TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      state TEXT NOT NULL DEFAULT 'pending'
+    );
   `);
 
   // Idempotent column add for pre-existing local dev DBs (create-only schema otherwise).
@@ -191,6 +204,10 @@ export function initSchema(db: SqlDriver): void {
   }
   if (!messageCols.some((c) => c.name === "queue_item_id")) {
     db.exec("ALTER TABLE messages ADD COLUMN queue_item_id TEXT");
+  }
+  const routeCols = db.all<{ name: string }>("PRAGMA table_info(pending_completion_routes)");
+  if (!routeCols.some((c) => c.name === "state")) {
+    db.exec("ALTER TABLE pending_completion_routes ADD COLUMN state TEXT NOT NULL DEFAULT 'pending'");
   }
   if (!messageCols.some((c) => c.name === "queue_fallback")) {
     db.exec("ALTER TABLE messages ADD COLUMN queue_fallback INTEGER NOT NULL DEFAULT 0");

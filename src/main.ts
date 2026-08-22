@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { coreHomeDir } from "./runtime/core-home";
@@ -198,6 +199,7 @@ interface RuntimeDeps {
     | "sendCoordinatorMessage"
     | "sendScheduledMessage"
     | "sendAgentMessageRoute"
+    | "sendAgentMessageCompletion"
     | "syncAgentEndpoints"
   > & {
     configureOrchestration?: MessageChannelRuntime["configureOrchestration"];
@@ -1259,7 +1261,7 @@ export async function buildApp(
         return null;
       }
     },
-    deliverLogicalTurn: async (alias, renderedText, messageId) => {
+    deliverLogicalTurn: async (alias, renderedText, messageId, peerOrigin) => {
       if (controlRef) {
         const chatKey = `relay:agent-message:${alias}`;
         return await controlRef.submitPeerTurn({
@@ -1269,6 +1271,17 @@ export async function buildApp(
           text: renderedText,
           senderId: "agent-messaging",
           messageId,
+          peerOrigin,
+        });
+      }
+      return { status: "queued" };
+    },
+    deliverCompletionTurn: async (alias, completion, requestMessageId) => {
+      if (controlRef) {
+        return await controlRef.submitCompletionTurn({
+          sourceAlias: alias,
+          completion,
+          requestMessageId,
         });
       }
       return { status: "queued" };
@@ -1280,12 +1293,91 @@ export async function buildApp(
       : undefined,
   );
   const controlEvents = createControlEventBus(logger);
+  // Durable, bounded pending-completion grants: the daemon may restart between
+  // an outbound completion-bearing request and the peer's terminal turn. Only
+  // small authorization metadata is persisted — never result bodies.
+  const pendingCompletionsPath = join(
+    runtimeRoot,
+    "agent-messaging",
+    "pending-completions.json",
+  );
+  const completionOutboxPath = join(
+    runtimeRoot,
+    "agent-messaging",
+    "completion-outbox.json",
+  );
+  type OutboxEntry = Parameters<
+    NonNullable<
+      ConstructorParameters<typeof AgentMessageRouter>[0]["completionOutboxStore"]
+    >["upsert"]
+  >[0];
+  const completionOutboxLoadRaw = (): Map<string, OutboxEntry> => {
+    try {
+      const raw = readFileSync(completionOutboxPath, "utf8");
+      const parsed = JSON.parse(raw) as { entries?: OutboxEntry[] };
+      return new Map(
+        Array.isArray(parsed.entries)
+          ? parsed.entries.map((e) => [e.key, e])
+          : [],
+      );
+    } catch {
+      return new Map();
+    }
+  };
+  const completionOutboxWriteRaw = (
+    entries: Map<string, OutboxEntry>,
+  ): void => {
+    const tmp = `${completionOutboxPath}.tmp`;
+    mkdirSync(dirname(completionOutboxPath), { recursive: true });
+    writeFileSync(tmp, JSON.stringify({ entries: [...entries.values()] }));
+    renameSync(tmp, completionOutboxPath);
+  };
   const agentMessaging = new AgentMessageRouter({
     registry: agentEndpointRegistry,
     delivery: localAgentMessageDelivery,
     remoteRoute: relayAgentMessageRoute,
     logger,
     events: controlEvents,
+    pendingCompletionStore: {
+      load: () => {
+        try {
+          const raw = readFileSync(pendingCompletionsPath, "utf8");
+          const parsed = JSON.parse(raw) as { grants?: unknown };
+          return Array.isArray(parsed.grants) ? (parsed.grants as never) : [];
+        } catch {
+          return [];
+        }
+      },
+      save: (grants) => {
+        const tmp = `${pendingCompletionsPath}.tmp`;
+        mkdirSync(dirname(pendingCompletionsPath), { recursive: true });
+        writeFileSync(tmp, JSON.stringify({ grants }, null, 2));
+        renameSync(tmp, pendingCompletionsPath);
+      },
+    },
+    completionOutboxStore: {
+      load: () => {
+        try {
+          const raw = readFileSync(completionOutboxPath, "utf8");
+          const parsed = JSON.parse(raw) as { entries?: unknown };
+          return Array.isArray(parsed.entries)
+            ? (parsed.entries as never)
+            : [];
+        } catch {
+          return [];
+        }
+      },
+      upsert: (entry) => {
+        const entries = completionOutboxLoadRaw();
+        entries.set(entry.key, entry);
+        completionOutboxWriteRaw(entries);
+      },
+      delete: (key) => {
+        const entries = completionOutboxLoadRaw();
+        if (!entries.delete(key)) return;
+        completionOutboxWriteRaw(entries);
+      },
+    },
   });
   const orchestrationEndpoint = createOrchestrationEndpoint(
     paths.orchestrationSocketPath ??
@@ -1477,6 +1569,8 @@ export async function buildApp(
     agentMessaging: {
       deliverInbound: async (input) =>
         await agentMessaging.deliverInbound(input),
+      deliverInboundCompletion: async (input) =>
+        await agentMessaging.deliverInboundCompletion(input),
       getPublishedEndpoints: async () =>
         await agentEndpointRegistry.getPublishedEndpoints(),
       resolveTargetByHandle: async (handle) =>
@@ -1487,8 +1581,55 @@ export async function buildApp(
         agentEndpointRegistry.syncRemoteDirectorySnapshot(endpoints),
       getTraceRecords: (limit) => agentMessaging.getTraceRecords(limit),
     },
+    // v0.3: a queued peer item carrying a completion contract was removed
+    // before it could start (cancel / clear / archive). No turn-finished
+    // will ever fire for it — resolve the source's contract with exactly
+    // one terminal cancelled outcome through the same state machine.
+    onQueuedPeerCancelled: (detail) => {
+      void agentMessaging
+        .completePeerTurn(detail.peerOrigin, {
+          ok: false,
+          cancelled: true,
+          errorMessage: "peer turn cancelled before execution",
+        })
+        .catch((error) => {
+          void logger.error(
+            "agent_messaging.queued_peer_cancel_failed",
+            "failed to deliver terminal cancellation for removed queued peer item",
+            {
+              requestMessageId: detail.peerOrigin.requestMessageId,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+        });
+    },
   });
   controlRef = control;
+  controlEvents.subscribe((event) => {
+    if (
+      event.type === "turn-finished" &&
+      event.peerOrigin &&
+      event.peerOrigin.completion !== "none"
+    ) {
+      void agentMessaging
+        .completePeerTurn(event.peerOrigin, {
+          ok: event.ok,
+          text: event.text,
+          errorMessage: event.errorMessage,
+          cancelled: event.cancelled,
+        })
+        .catch((error) => {
+          void logger.error(
+            "agent_messaging.complete_peer_turn_failed",
+            "failed to deliver peer turn completion",
+            {
+              requestMessageId: event.peerOrigin?.requestMessageId,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+        });
+    }
+  });
   // Pick up out-of-band config edits without a daemon restart. `xacpx workspace add`
   // (and `agent add`, `/config` from another process) run as separate CLI processes:
   // they only write config.json and can't reach this daemon's in-memory config, so the

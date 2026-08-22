@@ -20,7 +20,8 @@ export type AgentMessagingErrorCode =
   | "REPLY_TARGET_MISMATCH"
   | "REPLY_NOT_SUPPORTED"
   | "CONVERSATION_LIMIT_REACHED"
-  | "DUPLICATE_MESSAGE";
+  | "DUPLICATE_MESSAGE"
+  | "COMPLETION_NOT_SUPPORTED";
 export const AGENT_MESSAGING_ERROR_CODES: ReadonlySet<string> = new Set([
   "TARGET_NOT_FOUND",
   "TARGET_AMBIGUOUS",
@@ -44,6 +45,7 @@ export const AGENT_MESSAGING_ERROR_CODES: ReadonlySet<string> = new Set([
   "REPLY_NOT_SUPPORTED",
   "CONVERSATION_LIMIT_REACHED",
   "DUPLICATE_MESSAGE",
+  "COMPLETION_NOT_SUPPORTED",
 ]);
 
 export function isAgentMessagingErrorCode(
@@ -80,6 +82,7 @@ const NON_RETRYABLE_DELIVERY_CODES: ReadonlySet<AgentMessagingErrorCode> =
     "REPLY_NOT_SUPPORTED",
     "CONVERSATION_LIMIT_REACHED",
     "DUPLICATE_MESSAGE",
+    "COMPLETION_NOT_SUPPORTED",
   ]);
 
 /**

@@ -1,17 +1,28 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import type { TurnPartDto } from "@ganglion/xacpx-relay-protocol";
+import type { PeerMessageHistoryEntry, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
 import StreamMarkdown from "./StreamMarkdown.vue";
 import ReasoningPanel from "./ReasoningPanel.vue";
 import ToolStepCard from "./ToolStepCard.vue";
 import SubagentStepCard from "./SubagentStepCard.vue";
+import AgentMessageCard from "./AgentMessageCard.vue";
 import { deriveTurnPresentation } from "../lib/turn-presentation";
 
 // Wire parts preserve arrival order, but transport events are not necessarily safe
 // Markdown boundaries. The presentation module anchors activity after the top-level
 // Markdown block that was in progress when the activity arrived.
-const props = defineProps<{ parts: TurnPartDto[]; streaming?: boolean; ensureFull?: () => Promise<void> }>();
-const presentation = computed(() => deriveTurnPresentation(props.parts));
+const props = defineProps<{
+  parts: TurnPartDto[];
+  streaming?: boolean;
+  ensureFull?: () => Promise<void>;
+  sentAgentMessages?: Map<string, PeerMessageHistoryEntry>;
+}>();
+const presentation = computed(() =>
+  deriveTurnPresentation(
+    props.parts,
+    props.sentAgentMessages ? { sentAgentMessageById: props.sentAgentMessages } : undefined,
+  ),
+);
 </script>
 
 <template>
@@ -26,6 +37,11 @@ const presentation = computed(() => deriveTurnPresentation(props.parts));
                       :streaming="streaming === true && item.isLatest"
                       :default-open="false" />
       <ToolStepCard v-else-if="item.type === 'tool'" :step="item.step" :ensure-full="ensureFull" />
+      <!-- Sent peer-message card joined to the agent_send step right above it;
+           indented to read as nested inside the turn, not a standalone row. -->
+      <div v-else-if="item.type === 'agent-message'" data-test="turn-agent-message" class="pl-2">
+        <AgentMessageCard :message="item.message" />
+      </div>
       <SubagentStepCard v-else :step="item.step" :children="item.children" :ensure-full="ensureFull" />
     </template>
   </div>

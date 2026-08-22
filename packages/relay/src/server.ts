@@ -14,6 +14,7 @@ import { createSqlDriver, initSchema, type SqlDriver } from "./db.js";
 import { AccountStore } from "./stores/accounts.js";
 import { InstanceStore } from "./stores/instances.js";
 import { MessageStore } from "./stores/messages.js";
+import { PendingCompletionRouteStore } from "./stores/pending-completion-routes.js";
 import { RecoveryReceiptStore } from "./stores/recovery-receipts.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS, InstanceGateway } from "./gateway/instance-gateway.js";
 import { WebGateway } from "./gateway/web-gateway.js";
@@ -232,11 +233,13 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     else a.parts.push({ type: "tool", step });
   };
 
+  const pendingCompletionRoutes = new PendingCompletionRouteStore(db);
   const gateway = new InstanceGateway({
     instances,
     accounts,
     requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
     logger,
+    pendingCompletionRoutes,
     onDirectoryChange: (accountId, endpoints) => {
       webGateway.broadcast(accountId, { kind: "agent-directory", endpoints });
     },
@@ -459,16 +462,33 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               }
             }
           } else if (event.type === "agent-message") {
-            const direction = event.message.direction === "sent" ? "out" : "in";
-            messages.append(
+            const updated = messages.updateAgentMessage(
               instanceId,
               event.sessionAlias,
-              direction,
-              event.message.content,
-              { agentMessage: event.message },
-              undefined,
-              undefined,
-              new Date(event.message.createdAt).toISOString(),
+              event.message,
+            );
+            if (!updated) {
+              const direction = event.message.direction === "sent" ? "out" : "in";
+              messages.append(
+                instanceId,
+                event.sessionAlias,
+                direction,
+                event.message.content,
+                { agentMessage: event.message },
+                undefined,
+                undefined,
+                new Date(event.message.createdAt).toISOString(),
+              );
+            }
+          } else if (event.type === "agent-message-completion") {
+            // v0.3: completion-status PATCH. Only flips the terminal status on
+            // the already-persisted sender card — the durable row's content,
+            // peer, conversation and completion mode are never rebuilt here.
+            messages.patchAgentMessageCompletionStatus(
+              instanceId,
+              event.sessionAlias,
+              event.messageId,
+              event.completionStatus,
             );
           }
         } else if (envelope.type === MSG.instanceStateSync) {
@@ -640,7 +660,6 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     },
   });
   gatewayRef = gateway;
-
   const app = createApp({
     accounts, instances, messages, gateway, webRoot: options.webRoot,
     historyRetentionDays: options.historyRetentionDays ?? 30,
@@ -652,7 +671,26 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     checkUpdate: createRelayUpdateChecker({ current: readRelayVersion() }),
     logger,
   });
-  return { db, accounts, instances, messages, recoveryReceipts, gateway, webGateway, stateSnapshot, app, close: () => db.close() };
+  const completionRouteSweepTimer = setInterval(
+    () => gateway.sweepExpiredCompletionRoutes(),
+    60 * 60_000,
+  );
+  completionRouteSweepTimer.unref?.();
+  return {
+    db,
+    accounts,
+    instances,
+    messages,
+    recoveryReceipts,
+    gateway,
+    webGateway,
+    stateSnapshot,
+    app,
+    close: () => {
+      clearInterval(completionRouteSweepTimer);
+      db.close();
+    },
+  };
 }
 
 export interface StartRelayOptions {

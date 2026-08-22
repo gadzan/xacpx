@@ -6,6 +6,7 @@ import {
   encodeEnvelope,
   errorPayload,
   normalizeCapabilities,
+  type AgentMessageCompletionPayload,
   type AgentMessageDeliverPayload,
   type AgentMessageRoutePayload,
   type InstanceAgentEndpointsSyncPayload,
@@ -17,6 +18,7 @@ import {
 } from "@ganglion/xacpx-relay-protocol";
 import type { AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
+import type { PendingCompletionRouteRow } from "../stores/pending-completion-routes.js";
 import { createNoopRelayLogger, type RelayLogger } from "../logging.js";
 import { startHeartbeat } from "./heartbeat.js";
 
@@ -61,6 +63,15 @@ export interface InstanceGatewayDeps {
     accountId: string,
     online: boolean,
   ) => void;
+  /** Durable backing store for private completion ROUTE grants (v0.3). */
+  pendingCompletionRoutes?: {
+    load(): PendingCompletionRouteRow[];
+    insert(grant: PendingCompletionRouteRow): void;
+    markDelivered(requestMessageId: string): void;
+    delete(requestMessageId: string): void;
+    /** Durable TTL cleanup — must reach SQLite, not only RAM. */
+    sweepExpired(now: number): number;
+  };
   /**
    * Test seam: called when an authenticated instance delivers an RPC response
    * that matched its pending request. Returning true simulates an ACK loss —
@@ -105,10 +116,142 @@ export class InstanceGateway {
     PublishedAgentEndpointDto[]
   >();
   private seq = 0;
+  /**
+   * v0.3 private completion ROUTE grants. Recorded when an agentMessageRoute
+   * with completion != none is ACCEPTED by the target; subsequent completions
+   * authenticate against this grant and route to the ORIGINAL source instance
+   * — fully decoupled from the live public Agent Directory so post-request
+   * archive/sleep on either side cannot revoke (or forge) the established
+   * contract. TTL + size bounded.
+   */
+  private readonly pendingCompletionRoutes = new Map<
+    string,
+    PendingCompletionRouteRow
+  >();
+  private static readonly PENDING_COMPLETION_TTL_MS = 24 * 60 * 60_000;
+  private static readonly PENDING_COMPLETION_MAX_ENTRIES = 5_000;
+  /** Application rejections that PROVE the target never admitted the request
+   *  (error payloads carrying these codes compensate a provisional grant).
+   *  Timeout/race codes and unknown payloads stay ambiguous → grant retained. */
+  private static readonly DEFINITE_ROUTE_REJECTION_CODES: ReadonlySet<string> =
+    new Set([
+      "TARGET_UNAVAILABLE",
+      "TARGET_NOT_FOUND",
+      "TARGET_NODE_OFFLINE",
+      "MESSAGE_QUEUE_FULL",
+      "DELIVERY_DENIED",
+      "CONVERSATION_LIMIT_REACHED",
+      "DUPLICATE_MESSAGE",
+      "MESSAGE_RATE_LIMITED",
+    ]);
+
 
   constructor(private readonly deps: InstanceGatewayDeps) {
     this.logger = deps.logger ?? createNoopRelayLogger();
+    // Hydrate durable route grants. Expired rows are pruned; survivors keep
+    // already-accepted completion contracts enforceable across Hub restarts.
+    const now = Date.now();
+    try {
+      for (const grant of this.deps.pendingCompletionRoutes?.load() ?? []) {
+        if (grant.expiresAt <= now) continue;
+        this.pendingCompletionRoutes.set(grant.requestMessageId, grant);
+      }
+    } catch {
+      // Fail-closed: an unloadable store starts empty (completions for
+      // pre-restart requests will be denied rather than mis-routed).
+    }
   }
+
+  /**
+   * Durable-reserve a completion ROUTE grant. The SQLite row is written FIRST
+   * (row-level atomic); only then does the in-memory map update. A storage
+   * failure propagates so callers fail closed BEFORE forwarding the request —
+   * a grant that is not durable must never back an outward "will complete"
+   * contract.
+   *
+   * Backpressure, not eviction: expired grants are pruned first; if the store
+   * is STILL at capacity, the NEW request is refused rather than silently
+   * revoking an older contract that may still be executing.
+   */
+  private recordPendingCompletionRoute(
+    requestMessageId: string,
+    grant: PendingCompletionRouteRow,
+  ): { created: boolean } {
+    // Expired rows are pruned durably (SQLite delete), not just from RAM.
+    this.sweepExpiredCompletionRoutes();
+
+    // Same-message retry support (source ACK-loss / ambiguous outcome): a retry
+    // of an ALREADY-RESERVED request must reuse the existing grant, never
+    // re-insert. Fingerprints bind account + both instance ids + both
+    // endpoints + mode — any difference is a forgery attempt on a live
+    // contract and is denied without touching the original row.
+    const existing = this.pendingCompletionRoutes.get(requestMessageId);
+    if (existing) {
+      const sameFingerprint =
+        existing.accountId === grant.accountId &&
+        existing.sourceInstanceId === grant.sourceInstanceId &&
+        existing.source.nodeId === grant.source.nodeId &&
+        existing.source.endpointId === grant.source.endpointId &&
+        existing.targetInstanceId === grant.targetInstanceId &&
+        existing.target.nodeId === grant.target.nodeId &&
+        existing.target.endpointId === grant.target.endpointId &&
+        existing.mode === grant.mode;
+      if (!sameFingerprint) {
+        throw new Error(
+          `DELIVERY_DENIED: Request ${requestMessageId} already has a completion route with a different fingerprint`,
+        );
+      }
+      // Idempotent reuse — no second INSERT. The caller must NOT treat this
+      // attempt's failure as grounds to compensation-delete the standing
+      // contract (an earlier delivery may already be executing).
+      return { created: false };
+    }
+
+    let pendingCount = 0;
+    for (const [, g] of [...this.pendingCompletionRoutes]) {
+      if (g.state === "pending") pendingCount += 1;
+    }
+    if (
+      pendingCount >= InstanceGateway.PENDING_COMPLETION_MAX_ENTRIES
+    ) {
+      throw new Error("PENDING_COMPLETION_ROUTE_CAPACITY");
+    }
+    this.deps.pendingCompletionRoutes?.insert(grant);
+    this.pendingCompletionRoutes.set(requestMessageId, grant);
+    return { created: true };
+  }
+
+  /**
+   * Retire a route grant. The SQLite delete runs FIRST; only after it succeeds
+   * is the in-memory entry removed, so RAM and store can never disagree about
+   * whether an authorization exists. Storage failure → grant stays live in
+   * both places and the caller surfaces the error (retry later).
+   */
+  private deletePendingCompletionRoute(requestMessageId: string): void {
+    this.deps.pendingCompletionRoutes?.delete(requestMessageId);
+    this.pendingCompletionRoutes.delete(requestMessageId);
+  }
+
+  /**
+   * Durably remove every expired route row (pending or delivered tombstone).
+   * Called from the reservation path and safe to call periodically — TTL
+   * cleanup must reach SQLite, not only the RAM map, or a long-running Hub
+   * accumulates rows forever.
+   */
+  sweepExpiredCompletionRoutes(): void {
+    const now = Date.now();
+    if (this.deps.pendingCompletionRoutes) {
+      this.deps.pendingCompletionRoutes.sweepExpired(now);
+      for (const [id, g] of [...this.pendingCompletionRoutes]) {
+        if (g.expiresAt <= now) this.pendingCompletionRoutes.delete(id);
+      }
+      return;
+    }
+    for (const [id, g] of [...this.pendingCompletionRoutes]) {
+      if (g.expiresAt <= now) this.pendingCompletionRoutes.delete(id);
+    }
+  }
+
 
   isOnline(instanceId: string): boolean {
     return this.connections.has(instanceId);
@@ -448,13 +591,248 @@ export class InstanceGateway {
           requestedMode: routePayload.requestedMode,
           replyTo: routePayload.replyTo,
           replyable,
+          ...(routePayload.completion ? { completion: routePayload.completion } : {}),
         };
+        // v0.3 trust boundary: the completion ROUTE grant is durably RESERVED
+        // before the request is forwarded. A grant that is not durable must
+        // never back an outward "xacpx will complete" contract, so a storage
+        // failure fails the request closed (nothing is sent). The grant only
+        // becomes final when the target reports exact admission
+        // (injected | queued); a definite rejection compensates it away, and
+        // an ambiguous transport outcome retains it (the target may have
+        // accepted).
+        const completionMode = routePayload.completion;
+        let provisionalGrant = false;
+        let grantCreatedByThisRequest = false;
+        if (completionMode === "notify" || completionMode === "result") {
+          try {
+            const { created } = this.recordPendingCompletionRoute(routePayload.messageId, {
+              requestMessageId: routePayload.messageId,
+              accountId: authed.accountId,
+              sourceInstanceId: authed.instanceId,
+              source: {
+                nodeId: routePayload.sourceNodeId,
+                endpointId: routePayload.sourceEndpointId,
+              },
+              targetInstanceId,
+              target: {
+                nodeId: routePayload.targetNodeId,
+                endpointId: routePayload.targetEndpointId,
+              },
+              mode: completionMode,
+              expiresAt: Date.now() + InstanceGateway.PENDING_COMPLETION_TTL_MS,
+              state: "pending" as const,
+            });
+            provisionalGrant = true;
+            grantCreatedByThisRequest = created;
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            const isCapacity =
+              message === "PENDING_COMPLETION_ROUTE_CAPACITY";
+            const isFingerprintConflict = message.startsWith(
+              "DELIVERY_DENIED: Request",
+            );
+            respond(
+              errorPayload(
+                isCapacity
+                  ? "MESSAGE_QUEUE_FULL"
+                  : isFingerprintConflict
+                    ? "DELIVERY_DENIED"
+                    : "DELIVERY_FAILED",
+                isCapacity
+                  ? "Hub pending completion capacity reached; request not sent"
+                  : isFingerprintConflict
+                    ? message
+                    : `Completion route could not be persisted; request not sent: ${message}`,
+              ),
+            );
+            return;
+          }
+        }
         this.sendRequest(
           targetInstanceId,
           MSG.agentMessageDeliver,
           deliverPayload,
         )
-          .then((res) => respond(res))
+          .then((res) => {
+            if (provisionalGrant) {
+              // Classify the target's response:
+              //  - exact injected|queued admission → grant stands;
+              //  - an APPLICATION error payload (error.code present) with a
+              //    known definite pre-admission rejection code → the target
+              //    never accepted → compensate the reservation;
+              //  - transport ambiguity (timeout/race) or malformed/unknown
+              //    payloads → grant RETAINED (the target may have accepted).
+              const routeRes = res as {
+                status?: string;
+                ok?: boolean;
+                error?: { code?: string };
+              };
+              const definiteRejection =
+                routeRes.status === "failed" ||
+                (routeRes.error?.code !== undefined &&
+                  InstanceGateway.DEFINITE_ROUTE_REJECTION_CODES.has(
+                    routeRes.error.code,
+                  ));
+              // Only a grant CREATED by THIS request may be compensated away
+              // on definite rejection. A REUSED grant (same-message retry of
+              // an already-accepted contract) must survive this attempt's
+              // failure — the original delivery may still be in flight.
+              if (definiteRejection && grantCreatedByThisRequest) {
+                this.deletePendingCompletionRoute(routePayload.messageId);
+              }
+            }
+            respond(res);
+          })
+          .catch((err) => {
+            // Transport-level ambiguity (timeout / lost ACK): the target may
+            // have accepted, so the provisional grant is retained.
+            void provisionalGrant;
+            respond(
+              errorPayload(
+                (err as Error & { code?: string }).code ?? "DELIVERY_FAILED",
+                err instanceof Error ? err.message : String(err),
+              ),
+            );
+          });
+        return;
+      }
+
+      if (envelope.type === MSG.agentMessageCompletion) {
+        const completionPayload =
+          envelope.payload as AgentMessageCompletionPayload;
+        if (
+          !completionPayload ||
+          typeof completionPayload !== "object" ||
+          !completionPayload.source ||
+          !completionPayload.target ||
+          !completionPayload.requestMessageId ||
+          !completionPayload.status
+        ) {
+          respond(
+            errorPayload(
+              "invalid-payload",
+              `${MSG.agentMessageCompletion}: malformed payload`,
+            ),
+          );
+          return;
+        }
+
+        // v0.3 trust boundary: authorization comes from the PRIVATE route grant
+        // recorded when the original agentMessageRoute was accepted — NEVER
+        // from the current public Agent Directory. Either side archiving after
+        // the request must not revoke (or forge) an established contract.
+        const grant = this.pendingCompletionRoutes.get(
+          completionPayload.requestMessageId,
+        );
+        if (!grant || grant.expiresAt <= Date.now()) {
+          if (grant) this.deletePendingCompletionRoute(completionPayload.requestMessageId);
+          respond(
+            errorPayload(
+              "DELIVERY_DENIED",
+              `No pending completion route exists for request ${completionPayload.requestMessageId}`,
+            ),
+          );
+          return;
+        }
+
+        // Terminal tombstone: the completion was already delivered and
+        // acknowledged by the source. An at-least-once replay (Hub success ACK
+        // lost to the target) is absorbed as deduplicated instead of denying a
+        // contract that WAS honored. Fingerprint mismatches stay denied.
+        if (grant.state === "delivered") {
+          const sameFingerprint =
+            authed.instanceId === grant.targetInstanceId &&
+            grant.source.nodeId === completionPayload.source.nodeId &&
+            grant.source.endpointId === completionPayload.source.endpointId &&
+            grant.target.nodeId === completionPayload.target.nodeId &&
+            grant.target.endpointId === completionPayload.target.endpointId;
+          if (sameFingerprint) {
+            respond({ ok: true, deduplicated: true });
+          } else {
+            respond(
+              errorPayload(
+                "DELIVERY_DENIED",
+                `Completion identities do not match the original route for ${completionPayload.requestMessageId}`,
+              ),
+            );
+          }
+          return;
+        }
+
+        if (authed.instanceId !== grant.targetInstanceId) {
+          respond(
+            errorPayload(
+              "DELIVERY_DENIED",
+              `Completion for ${completionPayload.requestMessageId} must be sent by the instance that accepted the original request`,
+            ),
+          );
+          return;
+        }
+        if (
+          grant.source.nodeId !== completionPayload.source.nodeId ||
+          grant.source.endpointId !== completionPayload.source.endpointId ||
+          grant.target.nodeId !== completionPayload.target.nodeId ||
+          grant.target.endpointId !== completionPayload.target.endpointId
+        ) {
+          respond(
+            errorPayload(
+              "DELIVERY_DENIED",
+              `Completion identities do not match the original route for ${completionPayload.requestMessageId}`,
+            ),
+          );
+          return;
+        }
+        if (grant.mode === "notify" && completionPayload.result !== undefined) {
+          respond(
+            errorPayload(
+              "DELIVERY_DENIED",
+              "A notify-mode completion must not carry a result body",
+            ),
+          );
+          return;
+        }
+
+        // Route to the ORIGINAL source instance — not a re-lookup through the
+        // live directory, which would drop completions addressed to endpoints
+        // that archived/slept after the request was accepted.
+        this.sendRequest(
+          grant.sourceInstanceId,
+          MSG.agentMessageCompletion,
+          completionPayload,
+        )
+          .then((res) => {
+            // Retire the route grant ONLY when the source daemon explicitly
+            // accepted ({ ok: true }). Application error payloads resolve as
+            // normal responses — treating them as success would sever the
+            // contract while the target is still retrying.
+            //
+            // DB-FIRST durable transition: the SQLite row must read
+            // state='delivered' BEFORE the target is told the contract is
+            // terminal. A storage failure here keeps RAM + DB pending and
+            // responds a RETRYABLE failure — the target's durable outbox
+            // retries, the source dedupe absorbs the duplicate, and the
+            // durable transition eventually completes.
+            if ((res as { ok?: boolean }).ok === true) {
+              try {
+                this.deps.pendingCompletionRoutes?.markDelivered(
+                  completionPayload.requestMessageId,
+                );
+                grant.state = "delivered";
+              } catch (err) {
+                respond(
+                  errorPayload(
+                    "DELIVERY_FAILED",
+                    `Completion delivered but terminal state could not be made durable; retry: ${
+                      err instanceof Error ? err.message : String(err)
+                    }`,
+                  ),
+                );
+                return;
+              }
+            }
+            respond(res);
+          })
           .catch((err) =>
             respond(
               errorPayload(

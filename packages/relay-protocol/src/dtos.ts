@@ -165,6 +165,10 @@ export interface ToolStepDto {
   detail?: ToolDetailDto;
   /** Failure message, present only when status === "error". */
   error?: string;
+  /** Agent Messaging receipt correlation — populated only for the `agent_send`
+   * tool when the connector extracted a valid structured receipt (messageId).
+   * Enables anchoring the sent peer-message card to this exact step. */
+  agentMessageId?: string;
 }
 
 /** One entry in a turn's ordered wire transcript, retained for transport and
@@ -233,6 +237,7 @@ export type ControlEventDto =
       scheduled?: ScheduledOriginDto;
       queueItemId?: string;
       promptRequestId?: string;
+      peerOrigin?: PeerTurnOriginDto;
     }
   | {
       type: "tool-event";
@@ -281,6 +286,7 @@ export type ControlEventDto =
       cancelled?: boolean;
       text?: string;
       recoveryId?: string;
+      peerOrigin?: PeerTurnOriginDto;
     }
   | { type: "sessions-changed" }
   // The configured workspace set changed (out-of-band CLI edit or `/config`); the web
@@ -311,6 +317,15 @@ export type ControlEventDto =
       chatKey?: string;
       sessionAlias: string;
       message: PeerMessageHistoryEntry;
+    }
+  | {
+      /** v0.3 completion-status PATCH for an already-persisted sender card.
+       *  Carries only the correlation id and new terminal status — the durable
+       *  row's content/peer/mode must never be rebuilt from this event. */
+      type: "agent-message-completion";
+      sessionAlias: string;
+      messageId: string;
+      completionStatus: "completed" | "failed" | "cancelled";
     };
 
 export interface TerminalAttachRequest {
@@ -349,9 +364,29 @@ export interface PublishedAgentEndpointDto {
     queue: boolean;
     interrupt: boolean;
     conversation?: boolean;
+    completion?: boolean;
   };
   labels?: string[];
+  /** Endpoint context for presentation ranking. logical = normal logical session endpoint; worker = orchestration worker endpoint. Optional: old peers omit it. */
+  endpointKind?: "logical" | "worker";
+  /** Source channel namespace owning the endpoint when known (e.g. "relay", "weixin", "feishu"). Optional. */
+  channelId?: string;
   updatedAt: number;
+}
+
+export type AgentMessageCompletionMode = "none" | "notify" | "result";
+export type AgentMessageCompletionStatus = "completed" | "failed" | "cancelled";
+
+export interface AgentAddressDto {
+  nodeId: string;
+  endpointId: string;
+}
+
+export interface PeerTurnOriginDto {
+  requestMessageId: string;
+  completion: AgentMessageCompletionMode;
+  source: AgentAddressDto;
+  target: AgentAddressDto;
 }
 
 export interface PeerMessagePeer {
@@ -371,4 +406,6 @@ export interface PeerMessageHistoryEntry {
   content: string;
   createdAt: number;
   status?: "sending" | "sent" | "queued" | "delivered" | "failed";
+  completion?: AgentMessageCompletionMode;
+  completionStatus?: "pending" | "completed" | "failed" | "cancelled";
 }

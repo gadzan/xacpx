@@ -17,6 +17,7 @@ import type {
   OrchestrationTaskFilter,
 } from "../orchestration/orchestration-service";
 import type { OrchestrationTaskRecord } from "../orchestration/orchestration-types";
+import type { AgentMessageCompletion } from "../orchestration/agent-messaging-types";
 import {
   getChannelIdFromChatKey,
   isSessionAliasVisibleInChannel,
@@ -61,6 +62,7 @@ import { TurnQueue } from "./turn-queue";
 import {
   buildControlMetadata,
   type TurnIdleTimeoutDetail,
+  type PeerTurnOrigin,
 } from "./turn-support";
 import {
   BRIDGE_REQUEST_TIMEOUT_GRACE_MS,
@@ -233,6 +235,15 @@ export interface ControlServiceDeps {
   onTurnIdleTimeout?: (detail: TurnIdleTimeoutDetail) => void;
   // Test override for how long clearSession waits for an aborted turn to unwind before
   cancelDrainTimeoutMs?: number;
+  // v0.3: forwarded to the TurnQueue — fires when a queued peer item carrying a
+  // completion contract is removed before execution (cancel/clear/archive), so
+  // the caller can resolve the source's contract with a terminal cancelled outcome.
+  onQueuedPeerCancelled?: (detail: {
+    chatKey: string;
+    sessionAlias: string;
+    peerOrigin: PeerTurnOrigin;
+    promptRequestId?: string;
+  }) => void;
   agentMessaging?: {
     deliverInbound(input: {
       sourceNodeId: string;
@@ -252,6 +263,15 @@ export interface ControlServiceDeps {
       targetState?: "idle" | "running";
       errorCode?: string;
     }>;
+    deliverInboundCompletion?(input: {
+      requestMessageId: string;
+      source: { nodeId: string; endpointId: string };
+      target: { nodeId: string; endpointId: string };
+      status: "completed" | "failed" | "cancelled";
+      result?: string;
+      error?: string;
+      completedAt: number;
+    }): Promise<{ ok: boolean; deduplicated?: boolean; error?: string }>;
     getPublishedEndpoints(): Promise<
       Array<{
         nodeId: string;
@@ -299,6 +319,9 @@ export interface ControlServiceDeps {
           interrupt: boolean;
           conversation?: boolean;
         };
+        /** Remote-published presentation context, preserved verbatim. */
+        endpointKind?: "logical" | "worker";
+        channelId?: string;
       }>,
     ): void;
     getTraceRecords?(limit?: number): AgentMessageTraceRecord[];
@@ -415,6 +438,9 @@ export class ControlService {
         : {}),
       ...(this.deps.cancelDrainTimeoutMs !== undefined
         ? { cancelDrainTimeoutMs: this.deps.cancelDrainTimeoutMs }
+        : {}),
+      ...(this.deps.onQueuedPeerCancelled
+        ? { onQueuedPeerCancelled: this.deps.onQueuedPeerCancelled }
         : {}),
       emitQueueUpdated: (chatKey, sessionAlias, items) =>
         this.deps.events.emit({
@@ -1332,6 +1358,7 @@ export class ControlService {
     text: string;
     senderId: string;
     messageId: string;
+    peerOrigin?: PeerTurnOrigin;
   }): Promise<{ status: "injected" | "queued" }> {
     const channelId = getChannelIdFromChatKey(input.chatKey);
     const internalAlias =
@@ -1359,6 +1386,7 @@ export class ControlService {
       isPeerMessage: true,
       allowRestoreArchived: false,
       preserveCoordinatorRoute: true,
+      peerOrigin: input.peerOrigin,
     });
     if (admission.status === "rejected") {
       if (admission.reason === "queue-full") {
@@ -1379,6 +1407,37 @@ export class ControlService {
       );
     }
     return { status: admission.status };
+  }
+
+  async submitCompletionTurn(input: {
+    sourceAlias: string;
+    completion: AgentMessageCompletion;
+    requestMessageId: string;
+  }): Promise<{ status: "injected" | "queued" } | { status: "rejected"; reason: string }> {
+    const session = await this.deps.sessions.getSession(input.sourceAlias);
+    if (!session || session.archived === true) {
+      return { status: "rejected", reason: "target-unavailable" };
+    }
+    const internalAlias = session.alias;
+    const admission = this.turnQueue.submitPeerTurn({
+      chatKey: `relay:agent-message:${input.sourceAlias}`,
+      sessionAlias: input.sourceAlias,
+      boundSessionAlias: internalAlias,
+      concurrencyKey: internalAlias,
+      // The trusted completion envelope is NOT carried as prompt text — the
+      // runner disarms all user text before composing its prompt, so a
+      // pre-rendered trusted XML wrapper would be escaped into inert text.
+      // Instead the structured completion rides the queue and the
+      // SessionTurnRunner builds the server-owned envelope itself.
+      text: "",
+      senderId: "agent-messaging",
+      promptRequestId: input.requestMessageId,
+      isPeerMessage: true,
+      allowRestoreArchived: false,
+      preserveCoordinatorRoute: true,
+      trustedPeerCompletion: input.completion,
+    });
+    return admission;
   }
 
   /** Remove a pending queued prompt (by id) before it drains. No-ops (returns
@@ -1473,6 +1532,21 @@ export class ControlService {
     return await this.deps.agentMessaging.deliverInbound(input);
   }
 
+  async deliverPeerCompletion(input: {
+    requestMessageId: string;
+    source: { nodeId: string; endpointId: string };
+    target: { nodeId: string; endpointId: string };
+    status: "completed" | "failed" | "cancelled";
+    result?: string;
+    error?: string;
+    completedAt: number;
+  }): Promise<{ ok: boolean; deduplicated?: boolean; error?: string }> {
+    if (!this.deps.agentMessaging?.deliverInboundCompletion) {
+      throw new Error("Agent messaging is not configured on this daemon");
+    }
+    return await this.deps.agentMessaging.deliverInboundCompletion(input);
+  }
+
   async getPublishedAgentEndpoints(): Promise<
     Array<{
       nodeId: string;
@@ -1519,6 +1593,9 @@ export class ControlService {
         interrupt: boolean;
         conversation?: boolean;
       };
+      /** Remote-published presentation context, preserved verbatim. */
+      endpointKind?: "logical" | "worker";
+      channelId?: string;
     }>,
   ): void {
     this.deps.agentMessaging?.syncRemoteDirectorySnapshot?.(endpoints);

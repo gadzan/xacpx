@@ -217,6 +217,21 @@ export interface MessageChannelRuntime {
     deduplicated?: boolean;
   }>;
 
+  /** Relay-capable channels: route an Agent Message completion back to the source node. */
+  sendAgentMessageCompletion?(payload: {
+    requestMessageId: string;
+    source: { nodeId: string; endpointId: string };
+    target: { nodeId: string; endpointId: string };
+    status: "completed" | "failed" | "cancelled";
+    result?: string;
+    error?: string;
+    completedAt: number;
+  }): Promise<{
+    ok: boolean;
+    deduplicated?: boolean;
+    error?: string;
+  }>;
+
   /** Relay-capable channels: publish this instance's agent endpoint directory to
    *  the hub. The FULL snapshot replaces the previous one (no delta protocol). */
   syncAgentEndpoints?(endpoints: unknown[]): void;

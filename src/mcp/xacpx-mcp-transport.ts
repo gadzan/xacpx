@@ -19,6 +19,7 @@ import type {
 } from "../orchestration/orchestration-types";
 import type {
   AgentEndpointView,
+  AgentMessageCompletionMode,
   AgentMessageMode,
   AgentMessageReceipt,
   AgentTargetSelector,
@@ -107,6 +108,7 @@ export interface XacpxMcpAgentSendArgs extends XacpxMcpAgentListArgs {
   message: string;
   mode?: AgentMessageMode;
   replyTo?: string;
+  completion?: AgentMessageCompletionMode;
 }
 export interface XacpxMcpTransport {
   delegateRequest: (input: XacpxMcpDelegateRequest) => Promise<RequestDelegateRpcResult>;

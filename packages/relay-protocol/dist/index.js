@@ -148,6 +148,7 @@ var MSG = {
   instanceAgentEndpointsSync: "instance.agent-endpoints.sync",
   agentMessageRoute: "instance.agent-message.route",
   agentMessageDeliver: "instance.agent-message.deliver",
+  agentMessageCompletion: "instance.agent-message.completion",
   agentDirectorySnapshot: "instance.agent-directory.snapshot",
   agentDirectoryQuery: "instance.agent-directory.query"
 };
@@ -281,7 +282,8 @@ var CONTROL_EVENT_TYPE_MAP = {
   "orchestration-changed": true,
   "terminal-output": true,
   "terminal-exit": true,
-  "agent-message": true
+  "agent-message": true,
+  "agent-message-completion": true
 };
 var CONTROL_EVENT_TYPES = new Set(Object.keys(CONTROL_EVENT_TYPE_MAP));
 var TOOL_STEP_KINDS = new Set(["read", "search", "execute", "edit", "think", "other"]);
@@ -345,6 +347,8 @@ function validToolStep(s) {
   if (c.durationMs !== undefined && !finiteNonNegative(c.durationMs))
     return false;
   if (!optStr(c.error))
+    return false;
+  if (!optStr(c.agentMessageId))
     return false;
   if (c.detail !== undefined) {
     if (typeof c.detail !== "object" || c.detail === null)
@@ -429,7 +433,25 @@ function validPeerMessageHistoryEntry(m) {
     return false;
   if (entry.status !== undefined && !["sending", "sent", "queued", "delivered", "failed"].includes(entry.status))
     return false;
+  if (entry.completion !== undefined && !["none", "notify", "result"].includes(entry.completion))
+    return false;
+  if (entry.completionStatus !== undefined && !["pending", "completed", "failed", "cancelled"].includes(entry.completionStatus))
+    return false;
   return true;
+}
+function validAgentAddress(a) {
+  if (typeof a !== "object" || a === null)
+    return false;
+  const addr = a;
+  return typeof addr.nodeId === "string" && typeof addr.endpointId === "string";
+}
+function validPeerTurnOrigin(o) {
+  if (o === undefined)
+    return true;
+  if (typeof o !== "object" || o === null)
+    return false;
+  const origin = o;
+  return typeof origin.requestMessageId === "string" && typeof origin.completion === "string" && ["none", "notify", "result"].includes(origin.completion) && validAgentAddress(origin.source) && validAgentAddress(origin.target);
 }
 function validControlEvent(e) {
   if (typeof e !== "object" || e === null)
@@ -442,11 +464,11 @@ function validControlEvent(e) {
     case "turn-output":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
     case "turn-finished":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean" && optStr(c.text) && optStr(c.recoveryId) && optStr(c.errorMessage) && optBool(c.cancelled);
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean" && optStr(c.text) && optStr(c.recoveryId) && optStr(c.errorMessage) && optBool(c.cancelled) && validPeerTurnOrigin(c.peerOrigin);
     case "scheduled-changed":
       return typeof c.chatKey === "string";
     case "turn-started":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && optStr(c.prompt) && optStr(c.queueItemId) && optStr(c.promptRequestId) && validScheduledOrigin(c.scheduled);
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && optStr(c.prompt) && optStr(c.queueItemId) && optStr(c.promptRequestId) && validScheduledOrigin(c.scheduled) && validPeerTurnOrigin(c.peerOrigin);
     case "turn-thought":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
     case "plan":
@@ -467,6 +489,8 @@ function validControlEvent(e) {
       return typeof c.terminalId === "string" && typeof c.code === "number";
     case "agent-message":
       return typeof c.sessionAlias === "string" && optStr(c.chatKey) && validPeerMessageHistoryEntry(c.message);
+    case "agent-message-completion":
+      return typeof c.sessionAlias === "string" && optStr(c.messageId) && (c.completionStatus === "completed" || c.completionStatus === "failed" || c.completionStatus === "cancelled");
     case "sessions-changed":
     case "workspaces-changed":
     case "orchestration-changed":
