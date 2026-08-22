@@ -202,6 +202,9 @@ export class AgentMessageRouter {
       persisted: boolean;
       /** Retained so a failed outbox upsert can be retried by the sweep. */
       completionForPersist?: AgentMessageCompletion;
+      kindForPersist?: "local" | "remote";
+      requestMessageIdForPersist?: string;
+      senderForPersist?: string;
     }
   >();
   private deliveryRetryTimer: NodeJS.Timeout | undefined;
@@ -211,7 +214,7 @@ export class AgentMessageRouter {
    * obligation is delivered, expires, or its contract is compensated — so two
    * requests accepted before either completes cannot both fit a cap=1 outbox.
    */
-  private readonly outboxReservations = new Set<string>();
+  private readonly outboxReservations = new Map<string, number>();
 
 
 
@@ -544,6 +547,11 @@ export class AgentMessageRouter {
           // Hydrated entries came FROM the durable outbox.
           persisted: true,
           completionForPersist: entry.completion,
+          kindForPersist: entry.kind,
+          requestMessageIdForPersist: entry.requestMessageId,
+          ...(entry.senderSessionAlias !== undefined
+            ? { senderForPersist: entry.senderSessionAlias }
+            : {}),
         });
       }
       if (this.deliveryPending.size > 0) this.armDeliveryRetryTimer();
@@ -1039,6 +1047,14 @@ export class AgentMessageRouter {
         this.outboxReservations.delete(key);
       }
     }
+    // Reservations are held only until their contract TTL: an ambiguous
+    // outcome (e.g. DELIVERY_TIMEOUT) must not consume a target slot
+    // forever. Expired reservations are released here, before counting.
+    const contractTtlMs =
+      this.deps.limits?.pendingCompletion?.ttlMs ?? 24 * 60 * 60_000;
+    for (const [id, expiresAt] of [...this.outboxReservations]) {
+      if (expiresAt <= now) this.outboxReservations.delete(id);
+    }
     if (requestMessageId !== undefined) {
       // A reservation for THIS request may already exist (retry of an
       // obligation whose delivery failed) — it reuses its slot.
@@ -1054,8 +1070,11 @@ export class AgentMessageRouter {
         "Terminal completion outbox at capacity; existing obligations are never evicted.",
       );
     }
-    if (requestMessageId !== undefined) {
-      this.outboxReservations.add(requestMessageId);
+    if (requestMessageId !== undefined && contractTtlMs > 0) {
+      this.outboxReservations.set(
+        requestMessageId,
+        now + contractTtlMs,
+      );
     }
   }
 
@@ -1796,7 +1815,19 @@ export class AgentMessageRouter {
       nextAttemptAt: now + AgentMessageRouter.COMPLETION_RETRY_SWEEP_MS,
       expiresAt: now + ttlMs,
       persisted: false,
-      ...(entry !== undefined ? { completionForPersist: entry.completion } : {}),
+      // Retained so a FAILED durable upsert can be retried by the sweep
+      // with the exact same durable shape (kind + sender) — never a
+      // degraded guess that would reroute the obligation.
+      ...(entry !== undefined
+        ? {
+            completionForPersist: entry.completion,
+            kindForPersist: entry.kind,
+            requestMessageIdForPersist: entry.requestMessageId,
+            ...(entry.senderSessionAlias !== undefined
+              ? { senderForPersist: entry.senderSessionAlias }
+              : {}),
+          }
+        : {}),
     };
     this.deliveryPending.set(key, task);
     if (entry) {
@@ -1852,13 +1883,22 @@ export class AgentMessageRouter {
     for (const [key, task] of [...this.deliveryPending]) {
       if (!task.persisted) {
         try {
-          if (task.completionForPersist === undefined) {
+          if (
+            task.completionForPersist === undefined ||
+            task.kindForPersist === undefined ||
+            task.requestMessageIdForPersist === undefined
+          ) {
+            // No durable shape retained for this entry (legacy/hydrated
+            // path) — nothing safe to re-persist.
             continue;
           }
           this.deps.completionOutboxStore?.upsert({
             key,
-            kind: "remote",
-            requestMessageId: key.replace(/^(?:local|remote):/, ""),
+            kind: task.kindForPersist,
+            requestMessageId: task.requestMessageIdForPersist,
+            ...(task.senderForPersist !== undefined
+              ? { senderSessionAlias: task.senderForPersist }
+              : {}),
             completion: task.completionForPersist,
             expiresAt: task.expiresAt,
           });

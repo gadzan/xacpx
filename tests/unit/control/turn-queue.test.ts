@@ -928,6 +928,119 @@ test("B1 (settled request-id tombstone): after the first completion turn RESOLVE
   h.resolveNext({ ok: true, text: "ignored" });
 });
 
+test("B1a (tombstone admission ordering): queue-full rejection does NOT poison the request id — retry after capacity frees gets a real turn", async () => {
+  const h = makeQueue();
+  const executedRequests: Array<{ text: string }> = [];
+  const origRun = (h.queue as any).deps.runTurn;
+  (h.queue as any).deps.runTurn = async (req: any, sig: any, act: any) => {
+    executedRequests.push(req);
+    return await origRun(req, sig, act);
+  };
+
+  // One live turn + a FULL queue on the lane.
+  const fill = (id: string) => ({
+    chatKey: "relay:poison-lane",
+    sessionAlias: "poison-lane",
+    concurrencyKey: "poison-lane",
+    text: `filler ${id}`,
+    senderId: "user",
+    queueable: true,
+    isPeerMessage: false,
+    allowRestoreArchived: false,
+  });
+  // submit() settles only when the TURN settles — park the live one.
+  const pLive = h.queue.submit(fill("live"));
+  await tick();
+  expect(h.queue.isBusy("relay:poison-lane", "poison-lane", "poison-lane")).toBe(true);
+  for (let i = 0; i < QUEUE_MAX_DEPTH; i++) {
+    expect(await h.queue.submit(fill(`q${i}`))).toMatchObject({ ok: true, queued: true });
+  }
+
+  // X arrives against the full lane: rejected queue-full — the tombstone
+  // must NOT be recorded for a rejected admission.
+  const x = h.queue.submitPeerTurn({
+    chatKey: "relay:poison-lane",
+    sessionAlias: "poison-lane",
+    concurrencyKey: "poison-lane",
+    text: "request X",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_b1a_reject_then_retry",
+    isPeerMessage: true,
+    allowRestoreArchived: false,
+  });
+  expect(x).toEqual({ status: "rejected", reason: "queue-full" });
+
+  // Capacity frees: the live turn resolves and drains the queue.
+  h.resolveNext({ ok: true, text: "done" });
+  await pLive;
+  let guard = 0;
+  while (h.queue.queueLength("relay:poison-lane", "poison-lane", "poison-lane") > 0 && guard++ < 50) {
+    h.resolveNext({ ok: true, text: "drained" });
+    await tick();
+  }
+  expect(guard).toBeLessThan(50);
+
+  // Retry X: a REAL admission (injected or queued behind the last filler),
+  // never a poisoned injected no-op. Drain until X actually RUNS.
+  const retry = h.queue.submitPeerTurn({
+    chatKey: "relay:poison-lane",
+    sessionAlias: "poison-lane",
+    concurrencyKey: "poison-lane",
+    text: "request X",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_b1a_reject_then_retry",
+    isPeerMessage: true,
+    allowRestoreArchived: false,
+  });
+  expect(["injected", "queued"]).toContain(retry.status);
+  let xDrain = 0;
+  while (
+    executedRequests.every((r) => r.text !== "request X") &&
+    xDrain++ < 50
+  ) {
+    h.resolveNext({ ok: true, text: "turn" });
+    await tick();
+  }
+  const xRuns = executedRequests.filter((r) => r.text === "request X");
+  expect(xRuns).toHaveLength(1);
+});
+
+test("B1b (tombstone TTL): an expired settled tombstone no longer absorbs a retry", async () => {
+  const h = makeQueue();
+  const executedRequests: Array<{ text: string }> = [];
+  const origRun = (h.queue as any).deps.runTurn;
+  (h.queue as any).deps.runTurn = async (req: any, sig: any, act: any) => {
+    executedRequests.push(req);
+    return await origRun(req, sig, act);
+  };
+  const params = {
+    chatKey: "relay:ttl-lane",
+    sessionAlias: "ttl-lane",
+    concurrencyKey: "ttl-lane",
+    text: "ttl probe",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_b1b_ttl",
+    isPeerMessage: true,
+    allowRestoreArchived: false,
+  };
+
+  expect(h.queue.submitPeerTurn(params).status).toBe("injected");
+  h.resolveNext({ ok: true, text: "done" });
+  await tick();
+  expect(executedRequests).toHaveLength(1);
+
+  // Age the tombstone past its 24h TTL.
+  const tombstones = (h.queue as any).settledRequestIds as Map<string, number>;
+  expect(tombstones.has("msg_b1b_ttl")).toBe(true);
+  tombstones.set("msg_b1b_ttl", Date.now() - 1);
+
+  // The retry now runs a REAL turn again.
+  expect(h.queue.submitPeerTurn(params).status).toBe("injected");
+  h.resolveNext({ ok: true, text: "second real turn" });
+  await tick();
+  expect(executedRequests).toHaveLength(2);
+});
+
 test("Phase 7 (Gate L): busy source session queues completion turn and drains sequentially without parallel turn", async () => {
   const h = makeQueue();
   const executedRequests: Array<{ text: string; isPeerMessage?: boolean; peerOrigin?: unknown }> = [];

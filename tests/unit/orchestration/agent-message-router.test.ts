@@ -2620,92 +2620,143 @@ test("Round-6 follow-up 2 (target-side outbox reservation): a saturated terminal
   expect(recovered.status).toBe("queued");
 });
 
-test("M3: two completion-bearing requests accepted while neither is terminal — cap=1 outbox refuses the second at ACCEPTANCE, then admits after #1 delivers", async () => {
-  const events = createControlEventBus();
-  let relayReachable = false;
+test("M2: A accepted but NOT terminal yet — B is rejected at cap=1 at ACCEPTANCE time", async () => {
   let idSeq = 0;
-
-  // This daemon accepts remote completion-bearing requests; its own peer
-  // turns complete with the relay initially DOWN, so accepted obligations
-  // pile into the terminal outbox.
-  const remoteRoute = new RelayAgentMessageRoute({
-    sendAgentMessageRoute: async () => ({ messageId: "x", status: "queued" }),
-    sendAgentMessageCompletion: async () => {
-      if (!relayReachable) {
-        throw Object.assign(new Error("relay down"), { code: "DELIVERY_TIMEOUT" });
-      }
-      return { ok: true };
-    },
-  });
-
-  let admissionFail = true;
-  const deliveredCompletions: string[] = [];
   const { router, state } = makeRouter({
-    events,
     createId: () => `uuid-${++idSeq}`,
-    remoteRoute,
     limits: { pendingCompletion: { maxEntries: 1, ttlMs: 60 * 60_000 } },
-    delivery: {
-      deliver: async () => ({ status: "queued" as const, modeUsed: "queue" as const }),
-      deliverCompletion: async (_alias, completion) => {
-        if (admissionFail) {
-          return { status: "rejected" as const, reason: "queue-full" };
-        }
-        deliveredCompletions.push(completion.result ?? "");
-        return { status: "injected" as const };
-      },
-    },
   });
   addLogicalPeers(state);
 
-  const accept = (id: string, content: string) =>
+  const accept = (id: string) =>
     router.deliverInbound({
       sourceNodeId: nodeId,
       sourceEndpointId: "endpoint_remote_source",
       targetEndpointId: LOGICAL_TARGET_ID,
       messageId: id,
-      content,
+      content: "work",
       requestedMode: "queue",
       replyable: false,
       completion: "result",
     });
 
-  // Request A: accepted (slot reserved at acceptance time).
-  const receiptA = await accept("msg_m3_a", "work A");
+  // A accepted: slot reserved at acceptance — A's peer turn has NOT even
+  // been submitted yet, let alone completed.
+  const receiptA = await accept("msg_m2_a");
   expect(receiptA.status).toBe("queued");
 
-  // A's peer turn completes while the relay is down → obligation lands in
-  // the outbox (slot converted to a live entry).
-  await router.completePeerTurn(
+  // B arrives while A is merely accepted (not terminal): refused.
+  await expect(accept("msg_m2_b")).rejects.toMatchObject({
+    code: "MESSAGE_QUEUE_FULL",
+  });
+});
+
+test("B2: an accepted-but-stale reservation EXPIRES at its contract TTL — the slot frees without any terminal outcome", async () => {
+  let idSeq = 0;
+  let now = 1_000_000;
+  const { router, state } = makeRouter({
+    createId: () => `uuid-${++idSeq}`,
+    now: () => now,
+    limits: { pendingCompletion: { maxEntries: 1, ttlMs: 60 * 60_000 } },
+  });
+  addLogicalPeers(state);
+
+  const accept = (id: string) =>
+    router.deliverInbound({
+      sourceNodeId: nodeId,
+      sourceEndpointId: "endpoint_remote_source",
+      targetEndpointId: LOGICAL_TARGET_ID,
+      messageId: id,
+      content: "work",
+      requestedMode: "queue",
+      replyable: false,
+      completion: "result",
+    });
+
+  // A accepted (slot reserved). Ambiguous outcome: A never completes, the
+  // reservation is never explicitly released.
+  const receiptA = await accept("msg_b2_a");
+  expect(receiptA.status).toBe("queued");
+  await expect(accept("msg_b2_b")).rejects.toMatchObject({
+    code: "MESSAGE_QUEUE_FULL",
+  });
+
+  // Contract TTL elapses: the expired reservation is pruned before the
+  // capacity count, so B is admitted.
+  now += 61 * 60_000;
+  const receiptB = await accept("msg_b2_c");
+  expect(receiptB.status).toBe("queued");
+});
+
+
+test("M1: persist-recovery preserves kind=local + senderSessionAlias — a failed local outbox upsert is retried with its exact durable shape", async () => {
+  const events = createControlEventBus();
+  let idSeq = 0;
+  let storeHealthy = false;
+  const upserts: Array<{
+    key: string;
+    kind: string;
+    requestMessageId: string;
+    senderSessionAlias?: string;
+  }> = [];
+
+  const { router, state } = makeRouter({
+    events,
+    createId: () => `uuid-${++idSeq}`,
+    limits: { pendingCompletion: { maxEntries: 10, ttlMs: 60 * 60_000 } },
+    completionOutboxStore: {
+      load: () => [],
+      upsert: (entry) => {
+        if (!storeHealthy) throw new Error("disk full");
+        upserts.push({
+          key: entry.key,
+          kind: entry.kind,
+          requestMessageId: entry.requestMessageId,
+          ...(entry.senderSessionAlias !== undefined
+            ? { senderSessionAlias: entry.senderSessionAlias }
+            : {}),
+        });
+      },
+      delete: () => {},
+    },
+    delivery: {
+      deliver: async () => ({ status: "queued" as const, modeUsed: "queue" as const }),
+      // Local sender lane admission keeps failing → the local completion
+      // obligation lands in the retry outbox.
+      deliverCompletion: async () => ({ status: "rejected", reason: "busy-until-restart" }),
+    },
+  });
+  addLogicalPeers(state);
+
+  // Real send with completion=result from the local coordinator session.
+  const receipt = await router.send(LOGICAL_SENDER, {
+    to: encodeAgentHandle({ nodeId, endpointId: LOGICAL_TARGET_ID }),
+    content: "work",
+    completion: "result",
+  });
+
+  // Target turn completes; the LOCAL delivery cannot be admitted → scheduled
+  // with kind:"local" + senderSessionAlias; the durable upsert FAILS (disk).
+  const completion = await router.completePeerTurn(
     {
-      requestMessageId: receiptA.messageId,
+      requestMessageId: receipt.messageId,
       completion: "result",
       source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
       target: { nodeId, endpointId: LOGICAL_TARGET_ID },
     },
-    { ok: true, text: "answer A" },
+    { ok: true, text: "answer" },
   );
-  expect(
-    (router as unknown as { deliveryPending: Map<string, unknown> }).deliveryPending
-      .size,
-  ).toBe(1);
+  expect(completion?.status).toBe("completed");
+  expect(upserts).toHaveLength(0); // persist failed
 
-  // Request B: accepted while obligation #1 is still undelivered — the
-  // acceptance-time reservation must refuse it (cap=1).
-  await expect(accept("msg_m3_b", "work B")).rejects.toMatchObject({
-    code: "MESSAGE_QUEUE_FULL",
-  });
-
-  // Recovery: the source lane admits again AND the relay is reachable.
-  admissionFail = false;
-  relayReachable = true;
+  // Storage recovers: the sweep recovery pass re-persists with the EXACT
+  // durable shape — kind:"local" (not "remote") and the sender alias.
+  storeHealthy = true;
   await router.sweepPendingCompletionDeliveries(true);
-  expect(deliveredCompletions).toEqual(["answer A"]);
-
-  // Request B is now admitted (a fresh request id — the tombstoned
-  // msg_m3_b rejection stays terminal by design).
-  const receiptB = await accept("msg_m3_c", "work B");
-  expect(receiptB.status).toBe("queued");
+  expect(upserts).toHaveLength(1);
+  expect(upserts[0]!.kind).toBe("local");
+  expect(upserts[0]!.senderSessionAlias).toBe("main");
+  expect(upserts[0]!.requestMessageId).toBe(receipt.messageId);
 });
 
 test("Guards untouched: completion cycle does not consume conversation depth, volume, rate limit, or duplicate counters", async () => {

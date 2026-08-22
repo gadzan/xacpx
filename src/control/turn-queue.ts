@@ -181,8 +181,9 @@ export class TurnQueue {
     // queued — is absorbed idempotently. A retry after an ambiguous outcome
     // must never admit a second turn for the same request.
     if (params.promptRequestId !== undefined && params.isPeerMessage) {
-      // Settled tombstone first: covers turns that already RAN.
-      if (this.settledRequestIds.has(params.promptRequestId)) {
+      // Settled tombstone first: covers turns that already RAN. The
+      // tombstone is only consulted while its TTL holds.
+      if (this.hasSettledRequestId(params.promptRequestId)) {
         return { status: "injected" };
       }
       const queuedDup = (this.queues.get(key) ?? []).some(
@@ -193,18 +194,6 @@ export class TurnQueue {
         inFlightEntry?.promptRequestId === params.promptRequestId;
       if (queuedDup || inFlightDup) {
         return { status: "injected" };
-      }
-      // Reserve the id now so concurrent same-tick submissions also dedupe.
-      this.settledRequestIds.set(
-        params.promptRequestId,
-        Date.now() + 24 * 60 * 60_000,
-      );
-      while (
-        this.settledRequestIds.size > TurnQueue.SETTLED_REQUEST_IDS_MAX
-      ) {
-        const oldest = this.settledRequestIds.keys().next().value;
-        if (oldest === undefined) break;
-        this.settledRequestIds.delete(oldest);
       }
     }
     const existing = this.inFlight.get(key);
@@ -242,6 +231,10 @@ export class TurnQueue {
       q.push(item);
       this.queues.set(key, q);
       this.emitQueueUpdated(params.chatKey, params.sessionAlias, key);
+      // Admitted (queued): NOW the request id is terminal-safe to tombstone.
+      // A queue-full rejection above returns WITHOUT recording, so a retry
+      // after capacity frees still gets a real turn.
+      this.recordSettledRequestId(params.promptRequestId);
       return { status: "queued" };
     }
 
@@ -251,7 +244,32 @@ export class TurnQueue {
       isPeerMessage: true,
       allowRestoreArchived: false,
     });
+    // Admitted (injected): submit's synchronous prefix registers inFlight
+    // before any await (see the SYNCHRONOUS PREFIX note in submit), so by
+    // this line the turn genuinely holds the lane. Same-tick duplicates now
+    // dedupe via the tombstone.
+    this.recordSettledRequestId(params.promptRequestId);
     return { status: "injected" };
+  }
+
+  private hasSettledRequestId(id: string): boolean {
+    const expiresAt = this.settledRequestIds.get(id);
+    if (expiresAt === undefined) return false;
+    if (expiresAt <= Date.now()) {
+      this.settledRequestIds.delete(id);
+      return false;
+    }
+    return true;
+  }
+
+  private recordSettledRequestId(id: string | undefined): void {
+    if (id === undefined) return;
+    this.settledRequestIds.set(id, Date.now() + 24 * 60 * 60_000);
+    while (this.settledRequestIds.size > TurnQueue.SETTLED_REQUEST_IDS_MAX) {
+      const oldest = this.settledRequestIds.keys().next().value;
+      if (oldest === undefined) break;
+      this.settledRequestIds.delete(oldest);
+    }
   }
 
   private emitQueueUpdated(chatKey: string, sessionAlias: string, queueKey?: string): void {
