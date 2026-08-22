@@ -53,6 +53,24 @@ function makeRouter(
       }): void;
       delete(key: string): void;
     };
+    pendingCompletionStore?: {
+      load(): Array<{
+        requestMessageId: string;
+        source: { nodeId: string; endpointId: string };
+        target: { nodeId: string; endpointId: string };
+        mode: "notify" | "result";
+        expiresAt: number;
+        state: "pending" | "delivered";
+      }>;
+      save(grants: Array<{
+        requestMessageId: string;
+        source: { nodeId: string; endpointId: string };
+        target: { nodeId: string; endpointId: string };
+        mode: "notify" | "result";
+        expiresAt: number;
+        state: "pending" | "delivered";
+      }>): void;
+    };
   } = {},
 ) {
   const state = createEmptyState();
@@ -124,6 +142,7 @@ function makeRouter(
     logger: options.logger,
     events: options.events,
     completionOutboxStore: options.completionOutboxStore,
+    pendingCompletionStore: options.pendingCompletionStore,
   });
   return { router, deliveries, state, registry };
 }
@@ -2007,8 +2026,13 @@ test("Round-3: capacity is BACKPRESSURE — the oldest active contract is never 
   );
   expect(firstCompletion?.status).toBe("completed");
   expect(deliveredCompletions).toHaveLength(1);
-  // Retired on delivery → capacity returned.
-  expect((router as unknown as { pendingCompletions: Map<string, unknown> }).pendingCompletions.has(r1.messageId)).toBe(false);
+  // Delivered on delivery → row retained as a terminal tombstone (state
+  // flips to delivered; capacity counts only pending contracts).
+  expect(
+    (
+      router as unknown as { pendingCompletions: Map<string, { state: string }> }
+    ).pendingCompletions.get(r1.messageId)?.state,
+  ).toBe("delivered");
 
   // A duplicate of the RETIRED contract is absorbed by the terminal tombstone
   // instead of re-denying.
@@ -2160,7 +2184,15 @@ test("Round-4 (B2): terminal outbox never evicts — saturated obligations all d
   // Grants retired; a second sweep delivers nothing further.
   await router.sweepPendingCompletionDeliveries();
   expect(deliveredCompletions).toHaveLength(3);
-  expect((router as unknown as { pendingCompletions: Map<string, unknown> }).pendingCompletions.size).toBe(0);
+  // All three grants flipped to delivered tombstones (retained until TTL;
+  // capacity counts only pending contracts).
+  {
+    const grants = (
+      router as unknown as { pendingCompletions: Map<string, { state: string }> }
+    ).pendingCompletions;
+    expect(grants.size).toBe(3);
+    for (const g of grants.values()) expect(g.state).toBe("delivered");
+  }
 });
 
 
@@ -2278,6 +2310,96 @@ test("Round-5 (Q3): the target-side terminal completion outbox is durable across
   // production the SOURCE absorbs that duplicate via its completionInjections
   // tombstone — covered by the deliverInboundCompletion dedupe tests.
 });
+
+test("Round-6 (final blocker): delivered source grant survives restart — target retry is deduplicated, zero second turn", async () => {
+  const events = createControlEventBus();
+  const deliveredCompletions: AgentMessageCompletion[] = [];
+  const grantStore = new Map<
+    string,
+    {
+      requestMessageId: string;
+      source: { nodeId: string; endpointId: string };
+      target: { nodeId: string; endpointId: string };
+      mode: "notify" | "result";
+      expiresAt: number;
+      state: "pending" | "delivered";
+    }
+  >();
+  let admissionCalls = 0;
+
+  const buildRouter = () => {
+    const { router, state } = makeRouter({
+      events,
+      delivery: {
+        deliver: async () => ({ status: "queued" as const, modeUsed: "queue" as const }),
+        deliverCompletion: async (_alias, completion) => {
+          admissionCalls += 1;
+          deliveredCompletions.push(completion);
+          return { status: "injected" as const };
+        },
+      },
+      pendingCompletionStore: {
+        load: () => [...grantStore.entries()].map(([requestMessageId, g]) => ({ requestMessageId, ...g })),
+        save: (grants) => {
+          for (const g of grants) grantStore.set(g.requestMessageId, g);
+        },
+      },
+    });
+    addLogicalPeers(state);
+    return router;
+  };
+
+  // Process 1 (source daemon A): completion accepted and admitted.
+  const router1 = buildRouter();
+  (router1 as unknown as { pendingCompletions: Map<string, unknown> }).pendingCompletions.set(
+    "msg_final_blocker",
+    {
+      source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+      target: { nodeId, endpointId: LOGICAL_TARGET_ID },
+      mode: "result",
+      expiresAt: Date.now() + 60_000,
+      state: "pending" as const,
+    },
+  );
+
+  // First delivery attempt: admitted exactly once.
+  const res1 = await router1.deliverInboundCompletion({
+    requestMessageId: "msg_final_blocker",
+    source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+    target: { nodeId, endpointId: LOGICAL_TARGET_ID },
+    status: "completed",
+    result: "the answer",
+    completedAt: Date.now(),
+  });
+  expect(res1.ok).toBe(true);
+  expect(admissionCalls).toBe(1);
+
+  // The durable store must already read state=delivered BEFORE any restart.
+  expect(grantStore.get("msg_final_blocker")?.state).toBe("delivered");
+  // The durable store must already read state=delivered BEFORE any restart.
+
+  // ---- Source daemon RESTARTS (fresh router, same store). ----
+  const router2 = buildRouter();
+
+  // The target's durable retry arrives at the restarted source.
+  const res2 = await router2.deliverInboundCompletion({
+    requestMessageId: "msg_final_blocker",
+    source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+    target: { nodeId, endpointId: LOGICAL_TARGET_ID },
+    status: "completed",
+    result: "the answer",
+    completedAt: Date.now(),
+  });
+
+  // Deduplicated — NOT re-injected, NOT DELIVERY_DENIED.
+  expect(res2.ok).toBe(true);
+  expect(res2.deduplicated).toBe(true);
+  expect(admissionCalls).toBe(1);
+
+  // The delivered tombstone survives further restarts until TTL.
+  expect(grantStore.get("msg_final_blocker")?.state).toBe("delivered");
+});
+
 test("Guards untouched: completion cycle does not consume conversation depth, volume, rate limit, or duplicate counters", async () => {
   let clock = 10_000;
   const { router, state } = makeRouter({

@@ -171,6 +171,9 @@ export class AgentMessageRouter {
       target: AgentAddress;
       mode: "notify" | "result";
       expiresAt: number;
+      /** pending → delivered (durable, survives restart). Delivered rows are
+       *  terminal tombstones until their TTL expires. */
+      state: "pending" | "delivered";
     }
   >();
   /**
@@ -230,6 +233,7 @@ export class AgentMessageRouter {
       target,
       mode,
       expiresAt: now + ttlMs,
+      state: "pending",
     });
     // Reserve must be durable before the request leaves this daemon — a
     // persistence failure here fails the send closed with a typed error, and
@@ -258,11 +262,28 @@ export class AgentMessageRouter {
     }
   }
 
-  /** Retire the reservation once the completion was delivered/admitted. The
-   *  terminal tombstone (whose lifetime is derived from the grant) absorbs
-   *  late duplicates. */
-  private retirePendingCompletion(messageId: string): void {
-    this.releasePendingCompletion(messageId);
+  /**
+   * DURABLY transition the grant to state=delivered once its completion was
+   * delivered/admitted. The row is KEPT until its original TTL expires and
+   * becomes a terminal tombstone — a source daemon restart before the target
+   * finishes retrying therefore still answers replays with deduplicated
+   * instead of DELIVERY_DENIED. Persistence failure here cannot undo the
+   * already-performed admission, so it degrades to RAM-only protection with a
+   * loud error (the caller boundary logs it).
+   */
+  private markGrantDelivered(messageId: string): void {
+    const grant = this.pendingCompletions.get(messageId);
+    if (!grant || grant.state === "delivered") return;
+    grant.state = "delivered";
+    try {
+      this.persistPendingCompletions();
+    } catch (error) {
+      this.deps.logger?.error(
+        "agent_messaging.grant_delivered_persist_failed",
+        "failed to persist delivered completion state",
+        { requestMessageId: messageId, error: String(error) },
+      );
+    }
   }
 
   private static readonly DEFINITE_NOT_SENT_CODES: ReadonlySet<string> = new Set([
@@ -304,6 +325,7 @@ export class AgentMessageRouter {
         target: grant.target,
         mode: grant.mode,
         expiresAt: grant.expiresAt,
+        state: grant.state,
       })),
     );
   }
@@ -368,7 +390,7 @@ export class AgentMessageRouter {
       createId?: () => string;
       now?: () => number;
       limits?: AgentMessageRouterLimits;
-      logger?: Pick<AppLogger, "info">;
+      logger?: Pick<AppLogger, "info" | "error">;
       events?: ControlEventBus;
       pendingCompletionStore?: {
         load(): Array<{
@@ -377,6 +399,7 @@ export class AgentMessageRouter {
           target: AgentAddress;
           mode: "notify" | "result";
           expiresAt: number;
+          state?: "pending" | "delivered";
         }>;
         save(
           grants: Array<{
@@ -385,6 +408,7 @@ export class AgentMessageRouter {
             target: AgentAddress;
             mode: "notify" | "result";
             expiresAt: number;
+            state: "pending" | "delivered";
           }>,
         ): void;
       };
@@ -426,6 +450,7 @@ export class AgentMessageRouter {
           target: grant.target,
           mode: grant.mode,
           expiresAt: grant.expiresAt,
+          state: grant.state ?? "pending",
         });
       }
     } catch {
@@ -471,7 +496,7 @@ export class AgentMessageRouter {
                   completedAt: entry.completion.completedAt,
                 });
                 if (res.ok === true) {
-                  this.retirePendingCompletion(entry.requestMessageId);
+                  this.markGrantDelivered(entry.requestMessageId);
                   return true;
                 }
                 return false;
@@ -1286,7 +1311,7 @@ export class AgentMessageRouter {
           if (fwdRes.ok === true) {
             // Delivered to the source daemon → retire the reservation; the
             // terminal tombstone absorbs late duplicates.
-            this.retirePendingCompletion(origin.requestMessageId);
+            this.markGrantDelivered(origin.requestMessageId);
             return completion;
           }
           // Source explicitly reported NOT delivered (e.g. its queue was full).
@@ -1307,7 +1332,7 @@ export class AgentMessageRouter {
                 completedAt,
               });
               if (retryRes.ok === true) {
-                this.retirePendingCompletion(origin.requestMessageId);
+                this.markGrantDelivered(origin.requestMessageId);
                 return true;
               }
               return false;
@@ -1358,7 +1383,7 @@ export class AgentMessageRouter {
             ...(completion.error !== undefined ? { error: completion.error } : {}),
             completedAt,
           });
-          this.retirePendingCompletion(origin.requestMessageId);
+          this.markGrantDelivered(origin.requestMessageId);
           return true;
         },
         completedAt,
@@ -1444,6 +1469,27 @@ export class AgentMessageRouter {
     // instance could forge a "trusted" peer result into another agent's turn
     // lane. completion=none sends never create a grant, so they can never
     // receive completions; notify grants reject result-bearing payloads.
+    //
+    // Lifecycle-aware dedupe: a DELIVERED grant is a terminal tombstone — an
+    // exact-fingerprint replay is absorbed (the source daemon may have
+    // restarted since admission, losing its RAM tombstone); a mismatched
+    // replay stays denied.
+    const deliveredGrant = this.pendingCompletions.get(input.requestMessageId);
+    if (
+      deliveredGrant?.state === "delivered" &&
+      deliveredGrant.expiresAt > (this.deps.now ?? Date.now)()
+    ) {
+      const sameFingerprint =
+        sameAddress(deliveredGrant.source, input.source) &&
+        sameAddress(deliveredGrant.target, input.target);
+      if (sameFingerprint) {
+        return { ok: true, deduplicated: true };
+      }
+      throw new AgentMessagingError(
+        "DELIVERY_DENIED",
+        "Completion identities do not match the original request.",
+      );
+    }
     const grantError = this.checkPendingCompletion(input);
     if (grantError) {
       throw grantError;
@@ -1503,7 +1549,7 @@ export class AgentMessageRouter {
     // tombstone is written as well so late at-least-once duplicates are
     // absorbed as deduplicated instead of surfacing as retry noise.
     if (sourceIsArchived || !senderSessionAlias) {
-      this.retirePendingCompletion(input.requestMessageId);
+      this.markGrantDelivered(input.requestMessageId);
       while (
         this.completionInjections.size >=
         (this.deps.limits?.completionCache?.maxEntries ?? 2_000)
@@ -1588,7 +1634,7 @@ export class AgentMessageRouter {
     });
     // Delivered/admitted → the outward contract is fulfilled; retire it so
     // capacity returns and late hub-side duplicates hit the tombstone instead.
-    this.retirePendingCompletion(requestMessageId);
+    this.markGrantDelivered(requestMessageId);
     return true;
   }
   /** Retry cadence for pending completion deliveries. */

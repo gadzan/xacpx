@@ -365,7 +365,6 @@ test(
         40_000,
       );
 
-      console.log("REPLAY IDS:", JSON.stringify({ nodeIdA, selfEndpointId: daemonA.selfEndpointId, nodeIdB, endpointIdB }));
       // Duplicate Relay delivery (at-least-once transport): the source effect
       // must be idempotent — the router reports deduplicated and injects nothing.
       const dupRes = await daemonA.runtime.control.deliverPeerCompletion({
