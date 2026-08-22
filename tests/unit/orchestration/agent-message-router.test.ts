@@ -2515,6 +2515,96 @@ test("Round-6 (final gate): persistence failure must NEVER be published as {ok:t
   expect(admissionCalls).toBe(1);
 });
 
+
+test("Round-6 follow-up 2 (target-side outbox reservation): a saturated terminal outbox refuses NEW completion-bearing requests at ACCEPTANCE time", async () => {
+  const events = createControlEventBus();
+  const deliveredCompletions: AgentMessageCompletion[] = [];
+  let idSeq = 0;
+  let relayReachable = false;
+
+  // This daemon is the TARGET of two remote completion-bearing requests.
+  const buildRouter = () => {
+    const remoteRoute = new RelayAgentMessageRoute({
+      sendAgentMessageRoute: async () => ({ messageId: "x", status: "queued" }),
+      sendAgentMessageCompletion: async (payload) => {
+        if (!relayReachable) {
+          throw Object.assign(new Error("relay unreachable"), {
+            code: "DELIVERY_TIMEOUT",
+          });
+        }
+        deliveredCompletions.push({ result: payload.result ?? "" } as AgentMessageCompletion);
+        return { ok: true };
+      },
+    });
+    const { router, state } = makeRouter({
+      events,
+      createId: () => `uuid-${++idSeq}`,
+      remoteRoute,
+      limits: { pendingCompletion: { maxEntries: 1, ttlMs: 60 * 60_000 } },
+    });
+    addLogicalPeers(state);
+    return router;
+  };
+
+  const router = buildRouter();
+  const makeOrigin = (id: string) => ({
+    requestMessageId: id,
+    completion: "result" as const,
+    source: { nodeId: "node_remote_source", endpointId: "worker_remote_source" },
+    target: { nodeId, endpointId: LOGICAL_TARGET_ID },
+  });
+
+  // Obligation #1: peer turn finishes while the Relay is DOWN → durable outbox
+  // entry created (target retains its retry duty).
+  await router.completePeerTurn(makeOrigin("msg_obligation_1"), {
+    ok: true,
+    text: "answer 1",
+  });
+  expect(
+    (router as unknown as { deliveryPending: Map<string, unknown> }).deliveryPending
+      .size,
+  ).toBe(1);
+
+  // A NEW completion-bearing request accepted by THIS daemon must be refused
+  // at ACCEPTANCE time — the target's own outbox budget is exhausted. It does
+  // NOT depend on the remote source's grant budget.
+  await expect(
+    router.deliverInbound({
+      sourceNodeId: nodeId,
+      sourceEndpointId: "endpoint_remote_source",
+      targetEndpointId: LOGICAL_TARGET_ID,
+      messageId: "msg_new_completion_request",
+      content: "new work",
+      requestedMode: "queue",
+      replyable: false,
+      completion: "result",
+    }),
+  ).rejects.toMatchObject({ code: "MESSAGE_QUEUE_FULL" });
+
+  // Relay recovers: the sweep delivers obligation #1 exactly once and frees
+  // the slot.
+  relayReachable = true;
+  expect(deliveredCompletions).toHaveLength(0);
+  await router.sweepPendingCompletionDeliveries(true);
+  expect(deliveredCompletions).toHaveLength(1);
+  expect(
+    (router as unknown as { deliveryPending: Map<string, unknown> }).deliveryPending
+      .size,
+  ).toBe(0);
+
+  // Capacity returned: a new completion-bearing request is admitted again.
+  const recovered = await router.deliverInbound({
+    sourceNodeId: nodeId,
+    sourceEndpointId: "endpoint_remote_source",
+    targetEndpointId: LOGICAL_TARGET_ID,
+    messageId: "msg_after_recovery",
+    content: "more work",
+    requestedMode: "queue",
+    replyable: false,
+    completion: "result",
+  });
+  expect(recovered.status).toBe("queued");
+});
 test("Guards untouched: completion cycle does not consume conversation depth, volume, rate limit, or duplicate counters", async () => {
   let clock = 10_000;
   const { router, state } = makeRouter({

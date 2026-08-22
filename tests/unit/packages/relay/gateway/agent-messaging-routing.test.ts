@@ -1231,6 +1231,103 @@ test("B1 gate: same-messageId route retry after ACK loss REUSES the grant — on
   wss.close();
 });
 
+
+test("Round-6 follow-up 1: a REUSED route grant is NOT compensation-deleted when its retry gets a definite rejection", async () => {
+  const { instances, account, wss, url, pendingCompletionRouteStore } =
+    await makeGateway(1000);
+
+  const tokenA = instances.issuePairingToken(account.id, "nodeA", 600_000).token;
+  const socketA = await connect(url);
+  await authInstance(socketA, tokenA);
+  const tokenB = instances.issuePairingToken(account.id, "nodeB", 600_000).token;
+  const socketB = await connect(url);
+  await authInstance(socketB, tokenB);
+
+  publishEndpoints(socketA, [publishedEndpoint("node_a_999", "worker_a_sender")]);
+  publishEndpoints(socketB, [publishedEndpoint("node_b_123", "worker_b")]);
+  await new Promise((r) => setTimeout(r, 50));
+
+  // First deliver: accepted normally (queued). Second deliver: DEFINITE
+  // target-side rejection (status failed).
+  let deliverCalls = 0;
+  socketB.on("message", (data) => {
+    const decoded = decodeEnvelope(String(data));
+    if (
+      decoded.ok &&
+      decoded.envelope.kind === "req" &&
+      decoded.envelope.type === MSG.agentMessageDeliver
+    ) {
+      deliverCalls += 1;
+      const failed = deliverCalls >= 2;
+      socketB.send(
+        encodeEnvelope({
+          protocolVersion: RELAY_PROTOCOL_VERSION,
+          kind: "res",
+          id: decoded.envelope.id,
+          type: decoded.envelope.type,
+          payload: failed
+            ? {
+                messageId: (decoded.envelope.payload as { messageId: string }).messageId,
+                status: "failed",
+                errorCode: "TARGET_UNAVAILABLE",
+              }
+            : {
+                messageId: (decoded.envelope.payload as { messageId: string }).messageId,
+                status: "queued",
+                modeUsed: "queue",
+              },
+        }),
+      );
+    }
+  });
+
+  const sendRoute = async (id: string) => {
+    socketA.send(
+      encodeEnvelope({
+        protocolVersion: RELAY_PROTOCOL_VERSION,
+        kind: "req",
+        id,
+        type: MSG.agentMessageRoute,
+        payload: {
+          sourceNodeId: "node_a_999",
+          sourceEndpointId: "worker_a_sender",
+          targetNodeId: "node_b_123",
+          targetEndpointId: "worker_b",
+          messageId: "msg_reuse_comp",
+          content: "completion-bearing request",
+          requestedMode: "auto",
+          completion: "result",
+        },
+      }),
+    );
+    return await nextResponse(socketA);
+  };
+
+  // Attempt 1: accepted → durable grant created (state=pending).
+  const res1 = await sendRoute("route-reuse-1");
+  console.error("DBG res1:", JSON.stringify(res1.payload));
+  expect((res1.payload as { status?: string }).status).toBe("queued");
+  expect(pendingCompletionRouteStore.count()).toBe(1);
+  expect(
+    pendingCompletionRouteStore.find("msg_reuse_comp")?.state,
+  ).toBe("pending");
+
+  // Attempt 2 (ACK-loss style same-message retry): deliver is DEFINITELY
+  // rejected by the target — but the grant was CREATED by attempt 1's
+  // acceptance and must SURVIVE this attempt's failure.
+  const res2 = await sendRoute("route-reuse-2");
+  expect((res2.payload as { status?: string }).status).toBe("failed");
+  expect(deliverCalls).toBe(2);
+  expect(pendingCompletionRouteStore.count()).toBe(1);
+  expect(
+    pendingCompletionRouteStore.find("msg_reuse_comp")?.state,
+  ).toBe("pending");
+
+  socketA.close();
+  socketB.close();
+  wss.close();
+});
+
 test("M1 gate: expired route rows are removed from SQLite by the durable sweep", async () => {
   const dbPath = join(tmpdir(), `xacpx-hub-sweep-${Date.now()}.db`);
   const { instances, account, wss, url, pendingCompletionRouteStore } =

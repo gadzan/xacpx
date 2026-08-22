@@ -176,7 +176,7 @@ export class InstanceGateway {
   private recordPendingCompletionRoute(
     requestMessageId: string,
     grant: PendingCompletionRouteRow,
-  ): void {
+  ): { created: boolean } {
     // Expired rows are pruned durably (SQLite delete), not just from RAM.
     this.sweepExpiredCompletionRoutes();
 
@@ -201,7 +201,10 @@ export class InstanceGateway {
           `DELIVERY_DENIED: Request ${requestMessageId} already has a completion route with a different fingerprint`,
         );
       }
-      return; // idempotent reuse — no second INSERT
+      // Idempotent reuse — no second INSERT. The caller must NOT treat this
+      // attempt's failure as grounds to compensation-delete the standing
+      // contract (an earlier delivery may already be executing).
+      return { created: false };
     }
 
     let pendingCount = 0;
@@ -215,6 +218,7 @@ export class InstanceGateway {
     }
     this.deps.pendingCompletionRoutes?.insert(grant);
     this.pendingCompletionRoutes.set(requestMessageId, grant);
+    return { created: true };
   }
 
   /**
@@ -599,9 +603,10 @@ export class InstanceGateway {
         // accepted).
         const completionMode = routePayload.completion;
         let provisionalGrant = false;
+        let grantCreatedByThisRequest = false;
         if (completionMode === "notify" || completionMode === "result") {
           try {
-            this.recordPendingCompletionRoute(routePayload.messageId, {
+            const { created } = this.recordPendingCompletionRoute(routePayload.messageId, {
               requestMessageId: routePayload.messageId,
               accountId: authed.accountId,
               sourceInstanceId: authed.instanceId,
@@ -619,6 +624,7 @@ export class InstanceGateway {
               state: "pending" as const,
             });
             provisionalGrant = true;
+            grantCreatedByThisRequest = created;
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             const isCapacity =
@@ -668,7 +674,11 @@ export class InstanceGateway {
                   InstanceGateway.DEFINITE_ROUTE_REJECTION_CODES.has(
                     routeRes.error.code,
                   ));
-              if (definiteRejection) {
+              // Only a grant CREATED by THIS request may be compensated away
+              // on definite rejection. A REUSED grant (same-message retry of
+              // an already-accepted contract) must survive this attempt's
+              // failure — the original delivery may still be in flight.
+              if (definiteRejection && grantCreatedByThisRequest) {
                 this.deletePendingCompletionRoute(routePayload.messageId);
               }
             }

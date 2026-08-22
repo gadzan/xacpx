@@ -989,6 +989,32 @@ export class AgentMessageRouter {
     });
   }
 
+  /**
+   * TARGET-side terminal-outbox admission reservation (v0.3 round-6): a
+   * completion-bearing request accepted by THIS daemon creates an obligation
+   * to later deliver one bounded completion. Capacity is reserved HERE — at
+   * acceptance time — instead of being inferred from each source's budget,
+   * so a saturated outbox refuses NEW requests (MESSAGE_QUEUE_FULL) rather
+   * than stranding finished work. The reservation is the deliveryPending
+   * budget itself; expired entries are pruned before the check.
+   */
+  ensureTerminalOutboxCapacity(): void {
+    for (const [key, task] of [...this.deliveryPending]) {
+      if (task.expiresAt <= (this.deps.now ?? Date.now)()) {
+        this.deliveryPending.delete(key);
+        this.deps.completionOutboxStore?.delete(key);
+      }
+    }
+    const cap =
+      this.deps.limits?.pendingCompletion?.maxEntries ?? 1_000;
+    if (this.deliveryPending.size >= cap) {
+      throw new AgentMessagingError(
+        "MESSAGE_QUEUE_FULL",
+        "Terminal completion outbox at capacity; existing obligations are never evicted.",
+      );
+    }
+  }
+
   async deliverInbound(input: {
     sourceNodeId: string;
     sourceEndpointId: string;
@@ -1090,6 +1116,14 @@ export class AgentMessageRouter {
       createdAt,
       ...(input.replyTo ? { replyTo: input.replyTo } : {}),
     };
+
+    // TARGET-side outbox reservation: a completion-bearing request accepted by
+    // this daemon owes exactly one future terminal delivery. Capacity is
+    // checked HERE (acceptance time) so saturation refuses the request
+    // instead of stranding finished work later.
+    if (message.completion !== "none") {
+      this.ensureTerminalOutboxCapacity();
+    }
 
     const fromHandle = encodeAgentHandle({
       nodeId: input.sourceNodeId,
