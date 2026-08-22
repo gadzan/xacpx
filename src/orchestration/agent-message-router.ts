@@ -96,6 +96,15 @@ export interface AgentMessageRouterLimits {
   traceRingBufferSize?: number;
 }
 
+/**
+ * Inbound rejection codes that PROVE the target never admitted the request —
+ * the accepted outbox reservation is released on these. */
+const INBOUND_DEFINITE_REJECTION_CODES: ReadonlySet<string> = new Set([
+  "TARGET_UNAVAILABLE",
+  "MESSAGE_QUEUE_FULL",
+  "DELIVERY_DENIED",
+]);
+
 export class AgentMessageRouter {
   private readonly targetTails = new Map<string, Promise<void>>();
   private readonly pendingByTarget = new Map<string, number>();
@@ -188,6 +197,11 @@ export class AgentMessageRouter {
       attempt: () => Promise<boolean>;
       nextAttemptAt: number;
       expiresAt: number;
+      /** false until the durable outbox upsert has succeeded at least once
+       *  for this entry; failed upserts are retried by the sweep. */
+      persisted: boolean;
+      /** Retained so a failed outbox upsert can be retried by the sweep. */
+      completionForPersist?: AgentMessageCompletion;
     }
   >();
   private deliveryRetryTimer: NodeJS.Timeout | undefined;
@@ -527,6 +541,9 @@ export class AgentMessageRouter {
           attempt,
           nextAttemptAt: now2 + AgentMessageRouter.COMPLETION_RETRY_SWEEP_MS,
           expiresAt: entry.expiresAt,
+          // Hydrated entries came FROM the durable outbox.
+          persisted: true,
+          completionForPersist: entry.completion,
         });
       }
       if (this.deliveryPending.size > 0) this.armDeliveryRetryTimer();
@@ -1101,6 +1118,16 @@ export class AgentMessageRouter {
     } catch (error) {
       if (error instanceof AgentMessagingError) {
         this.recordInboundOutcome(input.messageId, fingerprint, { error });
+        // Definite rejections void the accepted contract → release its
+        // terminal-outbox reservation so capacity returns immediately
+        // (ambiguous outcomes keep the reservation for retry).
+        if (
+          input.completion !== undefined &&
+          input.completion !== "none" &&
+          INBOUND_DEFINITE_REJECTION_CODES.has(error.code)
+        ) {
+          this.outboxReservations.delete(input.messageId);
+        }
       }
       throw error;
     } finally {
@@ -1149,10 +1176,9 @@ export class AgentMessageRouter {
     // RESERVED here (acceptance time) so saturation refuses the request
     // instead of stranding finished work later; released when the obligation
     // converts to a live outbox entry or the contract is compensated.
-    let outboxReserved = false;
     if (message.completion !== "none") {
+      // Reserve a terminal-outbox slot for this accepted obligation.
       this.ensureTerminalOutboxCapacity(message.id);
-      outboxReserved = true;
     }
 
     const fromHandle = encodeAgentHandle({
@@ -1387,6 +1413,7 @@ export class AgentMessageRouter {
             // Delivered to the source daemon → retire the reservation; the
             // terminal tombstone absorbs late duplicates.
             this.markGrantDelivered(origin.requestMessageId);
+            this.outboxReservations.delete(origin.requestMessageId);
             return completion;
           }
           // Source explicitly reported NOT delivered (e.g. its queue was full).
@@ -1408,6 +1435,7 @@ export class AgentMessageRouter {
               });
               if (retryRes.ok === true) {
                 this.markGrantDelivered(origin.requestMessageId);
+                this.outboxReservations.delete(origin.requestMessageId);
                 return true;
               }
               return false;
@@ -1461,6 +1489,7 @@ export class AgentMessageRouter {
           // Only an explicit source acceptance retires the contract.
           if (retryRes.ok !== true) return false;
           this.markGrantDelivered(origin.requestMessageId);
+          this.outboxReservations.delete(origin.requestMessageId);
           return true;
         },
         completedAt,
@@ -1484,8 +1513,11 @@ export class AgentMessageRouter {
     }
 
     // If source session is missing or archived: do NOT wake (allowRestoreArchived
-    // semantics, Gate M). The status patch above is the durable record. No turn.
+    // semantics, Gate M). Mark the grant DELIVERED so the archived contract
+    // stops consuming pending capacity; the status patch above is the durable
+    // record. No turn.
     if (sourceIsArchived || !senderSessionAlias) {
+      this.markGrantDelivered(origin.requestMessageId);
       return completion;
     }
 
@@ -1759,17 +1791,19 @@ export class AgentMessageRouter {
     // Capacity is reserved UP FRONT at request time (see
     // reservePendingCompletion's deliveryPending backpressure), so this map is
     // bounded by construction; expired entries are pruned by the sweep.
-    this.deliveryPending.set(key, {
+    const task = {
       attempt,
       nextAttemptAt: now + AgentMessageRouter.COMPLETION_RETRY_SWEEP_MS,
       expiresAt: now + ttlMs,
-    });
+      persisted: false,
+      ...(entry !== undefined ? { completionForPersist: entry.completion } : {}),
+    };
+    this.deliveryPending.set(key, task);
     if (entry) {
       this.outboxReservations.delete(entry.requestMessageId);
-      // Persist the obligation so a daemon restart re-arms it. Best-effort:
-      // the turn already ran and cannot be re-run — a persistence failure is
-      // logged loudly by the caller boundary, and the in-RAM retry still
-      // covers this process lifetime.
+      // Persist the obligation so a daemon restart re-arms it. The turn
+      // already ran and cannot be re-run, so a failure here is LOUD: it stays
+      // observable and the sweep retries the upsert before delivering.
       try {
         this.deps.completionOutboxStore?.upsert({
           key,
@@ -1781,8 +1815,17 @@ export class AgentMessageRouter {
           completion: entry.completion,
           expiresAt: now + ttlMs,
         });
-      } catch {
-        // best-effort — see comment above
+        task.persisted = true;
+      } catch (error) {
+        this.deps.logger?.error(
+          "agent_messaging.completion_outbox_persist_failed",
+          "failed to persist terminal completion obligation; will retry",
+          {
+            key,
+            requestMessageId: entry.requestMessageId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
       }
     }
     this.armDeliveryRetryTimer();
@@ -1803,6 +1846,28 @@ export class AgentMessageRouter {
    */
   async sweepPendingCompletionDeliveries(force = false): Promise<void> {
     const now = (this.deps.now ?? Date.now)();
+    // Recovery pass: re-attempt the durable upsert for entries whose
+    // persistence failed earlier, so restart durability is restored as soon
+    // as storage recovers — before their next delivery attempt.
+    for (const [key, task] of [...this.deliveryPending]) {
+      if (!task.persisted) {
+        try {
+          if (task.completionForPersist === undefined) {
+            continue;
+          }
+          this.deps.completionOutboxStore?.upsert({
+            key,
+            kind: "remote",
+            requestMessageId: key.replace(/^(?:local|remote):/, ""),
+            completion: task.completionForPersist,
+            expiresAt: task.expiresAt,
+          });
+          task.persisted = true;
+        } catch {
+          // stays unpersisted; retried on the next sweep
+        }
+      }
+    }
     for (const [key, task] of [...this.deliveryPending]) {
       if (task.expiresAt <= now) {
         this.deliveryPending.delete(key);

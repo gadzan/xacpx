@@ -890,6 +890,44 @@ test("Round-6 (request-id admission dedupe): same-promptRequestId peer retry is 
   expect(executedRequests).toHaveLength(1);
 });
 
+test("B1 (settled request-id tombstone): after the first completion turn RESOLVES, a same-requestId retry produces no second runTurn", async () => {
+  const h = makeQueue();
+  const executedRequests: Array<{ text: string }> = [];
+  const origRun = (h.queue as any).deps.runTurn;
+  (h.queue as any).deps.runTurn = async (req: any, sig: any, act: any) => {
+    executedRequests.push(req);
+    return await origRun(req, sig, act);
+  };
+
+  const params = {
+    chatKey: "relay:source-lane",
+    sessionAlias: "source-lane",
+    concurrencyKey: "source-lane",
+    text: "",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_b1_tombstone",
+    isPeerMessage: true,
+    allowRestoreArchived: false,
+  };
+
+  // First admission + full resolution of runTurn.
+  const first = h.queue.submitPeerTurn(params);
+  expect(first.status).toBe("injected");
+  h.resolveNext({ ok: true, text: "done" });
+  await tick();
+  expect(executedRequests).toHaveLength(1);
+
+  // Late target retry AFTER the first turn settled: absorbed by the settled
+  // request-id tombstone — no second turn, no queue growth.
+  const retry = h.queue.submitPeerTurn(params);
+  expect(retry.status).toBe("injected");
+  await tick();
+  expect(executedRequests).toHaveLength(1);
+  expect(h.queue.queueLength("relay:source-lane", "source-lane")).toBe(0);
+
+  h.resolveNext({ ok: true, text: "ignored" });
+});
+
 test("Phase 7 (Gate L): busy source session queues completion turn and drains sequentially without parallel turn", async () => {
   const h = makeQueue();
   const executedRequests: Array<{ text: string; isPeerMessage?: boolean; peerOrigin?: unknown }> = [];

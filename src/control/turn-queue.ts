@@ -104,6 +104,14 @@ export class TurnQueue {
     string,
     { controller: AbortController; settled: Promise<void>; promptRequestId?: string }
   >();
+  /**
+   * Settled request-id tombstones (v0.3): a completion delivery whose
+   * promptRequestId already RAN to completion must not be re-admitted by a
+   * late retry — the in-flight/queued dedupe above no longer covers it once
+   * the turn resolved. Bounded FIFO eviction.
+   */
+  private readonly settledRequestIds = new Map<string, number>();
+  private static readonly SETTLED_REQUEST_IDS_MAX = 2_000;
 
   // Per-session FIFO queue of prompts that arrived while a turn was already running. Only
   // interactive submissions with `queueable: true` enqueue; non-queueable (scheduled) turns
@@ -173,6 +181,10 @@ export class TurnQueue {
     // queued — is absorbed idempotently. A retry after an ambiguous outcome
     // must never admit a second turn for the same request.
     if (params.promptRequestId !== undefined && params.isPeerMessage) {
+      // Settled tombstone first: covers turns that already RAN.
+      if (this.settledRequestIds.has(params.promptRequestId)) {
+        return { status: "injected" };
+      }
       const queuedDup = (this.queues.get(key) ?? []).some(
         (item) => item.promptRequestId === params.promptRequestId,
       );
@@ -181,6 +193,18 @@ export class TurnQueue {
         inFlightEntry?.promptRequestId === params.promptRequestId;
       if (queuedDup || inFlightDup) {
         return { status: "injected" };
+      }
+      // Reserve the id now so concurrent same-tick submissions also dedupe.
+      this.settledRequestIds.set(
+        params.promptRequestId,
+        Date.now() + 24 * 60 * 60_000,
+      );
+      while (
+        this.settledRequestIds.size > TurnQueue.SETTLED_REQUEST_IDS_MAX
+      ) {
+        const oldest = this.settledRequestIds.keys().next().value;
+        if (oldest === undefined) break;
+        this.settledRequestIds.delete(oldest);
       }
     }
     const existing = this.inFlight.get(key);
