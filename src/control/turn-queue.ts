@@ -100,7 +100,10 @@ export class TurnQueue {
 
   // Each in-flight turn carries its AbortController plus a `settled` promise that resolves
   // once the turn has fully unwound (transport cancelled, inFlight cleared).
-  private readonly inFlight = new Map<string, { controller: AbortController; settled: Promise<void> }>();
+  private readonly inFlight = new Map<
+    string,
+    { controller: AbortController; settled: Promise<void>; promptRequestId?: string }
+  >();
 
   // Per-session FIFO queue of prompts that arrived while a turn was already running. Only
   // interactive submissions with `queueable: true` enqueue; non-queueable (scheduled) turns
@@ -164,6 +167,21 @@ export class TurnQueue {
     const key = this.resolveKey(params.chatKey, params.sessionAlias, params.concurrencyKey);
     if (this.removing.has(key)) {
       return { status: "rejected", reason: "target-unavailable" };
+    }
+    // Request-id admission dedupe (v0.3): a completion delivery whose
+    // promptRequestId already sits in this session's lane — in flight OR
+    // queued — is absorbed idempotently. A retry after an ambiguous outcome
+    // must never admit a second turn for the same request.
+    if (params.promptRequestId !== undefined && params.isPeerMessage) {
+      const queuedDup = (this.queues.get(key) ?? []).some(
+        (item) => item.promptRequestId === params.promptRequestId,
+      );
+      const inFlightEntry = this.inFlight.get(key);
+      const inFlightDup =
+        inFlightEntry?.promptRequestId === params.promptRequestId;
+      if (queuedDup || inFlightDup) {
+        return { status: "injected" };
+      }
     }
     const existing = this.inFlight.get(key);
     const busy =
@@ -303,7 +321,13 @@ export class TurnQueue {
     // parallel turn. Pinned by turn-queue.test.ts "submit's busy-decision + enqueue is a
     // synchronous prefix (same tick, zero await)": that mutation reddens its zero-await
     // queueLength===1 / isBusy===true assertions.
-    this.inFlight.set(key, { controller, settled });
+    this.inFlight.set(key, {
+      controller,
+      settled,
+      ...(params.promptRequestId !== undefined
+        ? { promptRequestId: params.promptRequestId }
+        : {}),
+    });
     // A drained head turn has now re-registered its own inFlight synchronously (no await since
     // the finished turn's finally). Clear the hand-off guard: the slot is genuinely held again,
     // so the temporary `draining` busy marker is no longer needed.

@@ -191,6 +191,13 @@ export class AgentMessageRouter {
     }
   >();
   private deliveryRetryTimer: NodeJS.Timeout | undefined;
+  /**
+   * Accepted-but-not-yet-terminal completion obligations. A slot is reserved
+   * at ACCEPTANCE time (ensureTerminalOutboxCapacity) and released when the
+   * obligation is delivered, expires, or its contract is compensated — so two
+   * requests accepted before either completes cannot both fit a cap=1 outbox.
+   */
+  private readonly outboxReservations = new Set<string>();
 
 
 
@@ -215,8 +222,13 @@ export class AgentMessageRouter {
     for (const [id, grant] of [...this.pendingCompletions]) {
       if (grant.expiresAt <= now) this.pendingCompletions.delete(id);
     }
+    // Delivered tombstones are retained until TTL but never consume contract
+    // capacity — only state=pending grants count toward the budget.
+    const pendingContracts = [...this.pendingCompletions.values()].filter(
+      (g) => g.state === "pending",
+    ).length;
     if (
-      this.pendingCompletions.size >= maxEntries ||
+      pendingContracts >= maxEntries ||
       this.deliveryPending.size >= maxEntries
     ) {
       // Backpressure refuses the NEW contract instead of ever evicting an
@@ -255,6 +267,8 @@ export class AgentMessageRouter {
    *  accepted the request, so the reservation is released. */
   private releasePendingCompletion(messageId: string): void {
     if (!this.pendingCompletions.delete(messageId)) return;
+    // The contract is voided → its outbox reservation (if any) is released.
+    this.outboxReservations.delete(messageId);
     try {
       this.persistPendingCompletions();
     } catch {
@@ -275,6 +289,7 @@ export class AgentMessageRouter {
     const grant = this.pendingCompletions.get(messageId);
     if (!grant || grant.state === "delivered") return;
     grant.state = "delivered";
+    this.outboxReservations.delete(messageId);
     try {
       this.persistPendingCompletions();
     } catch (error) {
@@ -998,20 +1013,32 @@ export class AgentMessageRouter {
    * than stranding finished work. The reservation is the deliveryPending
    * budget itself; expired entries are pruned before the check.
    */
-  ensureTerminalOutboxCapacity(): void {
+  ensureTerminalOutboxCapacity(requestMessageId?: string): void {
+    const now = (this.deps.now ?? Date.now)();
     for (const [key, task] of [...this.deliveryPending]) {
-      if (task.expiresAt <= (this.deps.now ?? Date.now)()) {
+      if (task.expiresAt <= now) {
         this.deliveryPending.delete(key);
         this.deps.completionOutboxStore?.delete(key);
+        this.outboxReservations.delete(key);
       }
     }
+    if (requestMessageId !== undefined) {
+      // A reservation for THIS request may already exist (retry of an
+      // obligation whose delivery failed) — it reuses its slot.
+      if (this.outboxReservations.has(requestMessageId)) return;
+    }
+    const outstanding =
+      this.deliveryPending.size + this.outboxReservations.size;
     const cap =
       this.deps.limits?.pendingCompletion?.maxEntries ?? 1_000;
-    if (this.deliveryPending.size >= cap) {
+    if (outstanding >= cap) {
       throw new AgentMessagingError(
         "MESSAGE_QUEUE_FULL",
         "Terminal completion outbox at capacity; existing obligations are never evicted.",
       );
+    }
+    if (requestMessageId !== undefined) {
+      this.outboxReservations.add(requestMessageId);
     }
   }
 
@@ -1118,11 +1145,14 @@ export class AgentMessageRouter {
     };
 
     // TARGET-side outbox reservation: a completion-bearing request accepted by
-    // this daemon owes exactly one future terminal delivery. Capacity is
-    // checked HERE (acceptance time) so saturation refuses the request
-    // instead of stranding finished work later.
+    // this daemon owes exactly one future terminal delivery. A slot is
+    // RESERVED here (acceptance time) so saturation refuses the request
+    // instead of stranding finished work later; released when the obligation
+    // converts to a live outbox entry or the contract is compensated.
+    let outboxReserved = false;
     if (message.completion !== "none") {
-      this.ensureTerminalOutboxCapacity();
+      this.ensureTerminalOutboxCapacity(message.id);
+      outboxReserved = true;
     }
 
     const fromHandle = encodeAgentHandle({
@@ -1304,19 +1334,23 @@ export class AgentMessageRouter {
         (this.deps.limits?.completionCache?.ttlMs ?? 24 * 60 * 60_000),
     });
 
-    // Resolve the sender session alias (for the status patch event + local
-    // injection). Cache first, then authoritative registry lookup.
+    // Resolve the sender session alias + AUTHORITATIVE archive lifecycle.
+    // The outbound cache only seeds the alias; archived state is ALWAYS read
+    // from the registry — a cached alias from before the user archived the
+    // session must not bypass Gate M.
     const cachedOutbound = this.outboundMessages.get(origin.requestMessageId);
     let senderSessionAlias = cachedOutbound?.senderSessionAlias;
     let sourceIsArchived = false;
-    if (!senderSessionAlias && this.deps.registry.findLocalSessionByEndpointId) {
+    if (this.deps.registry.findLocalSessionByEndpointId) {
       try {
         const sourceSession =
           await this.deps.registry.findLocalSessionByEndpointId(
             origin.source.endpointId,
           );
         if (sourceSession) {
-          senderSessionAlias = sourceSession.alias;
+          if (!senderSessionAlias) {
+            senderSessionAlias = sourceSession.alias;
+          }
           sourceIsArchived = sourceSession.archived;
         }
       } catch {
@@ -1415,7 +1449,7 @@ export class AgentMessageRouter {
           if (!this.deps.remoteRoute || !this.deps.remoteRoute.isAvailable()) {
             return false;
           }
-          await this.deps.remoteRoute.sendCompletion({
+          const retryRes = await this.deps.remoteRoute.sendCompletion({
             requestMessageId: origin.requestMessageId,
             source: origin.source,
             target: origin.target,
@@ -1424,6 +1458,8 @@ export class AgentMessageRouter {
             ...(completion.error !== undefined ? { error: completion.error } : {}),
             completedAt,
           });
+          // Only an explicit source acceptance retires the contract.
+          if (retryRes.ok !== true) return false;
           this.markGrantDelivered(origin.requestMessageId);
           return true;
         },
@@ -1550,7 +1586,8 @@ export class AgentMessageRouter {
       completedAt: input.completedAt,
     };
 
-    // 3. Resolve the sender session alias (patch event + local injection).
+    // 3. Resolve the sender session alias + AUTHORITATIVE archive lifecycle
+    // (same rationale as completePeerTurn — cache never bypasses Gate M).
     const cachedOutbound = this.outboundMessages.get(input.requestMessageId);
     let senderSessionAlias = cachedOutbound?.senderSessionAlias;
     let sourceIsArchived = false;
@@ -1728,6 +1765,7 @@ export class AgentMessageRouter {
       expiresAt: now + ttlMs,
     });
     if (entry) {
+      this.outboxReservations.delete(entry.requestMessageId);
       // Persist the obligation so a daemon restart re-arms it. Best-effort:
       // the turn already ran and cannot be re-run — a persistence failure is
       // logged loudly by the caller boundary, and the in-RAM retry still
@@ -1768,6 +1806,7 @@ export class AgentMessageRouter {
     for (const [key, task] of [...this.deliveryPending]) {
       if (task.expiresAt <= now) {
         this.deliveryPending.delete(key);
+        this.outboxReservations.delete(key);
         this.deps.completionOutboxStore?.delete(key);
         continue;
       }
@@ -1776,6 +1815,7 @@ export class AgentMessageRouter {
         const admitted = await task.attempt();
         if (admitted) {
           this.deliveryPending.delete(key);
+          this.outboxReservations.delete(key.replace(/^(?:local|remote):/, ""));
           this.deps.completionOutboxStore?.delete(key);
         } else {
           task.nextAttemptAt =

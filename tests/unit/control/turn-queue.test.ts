@@ -851,6 +851,45 @@ test("Phase 6: injected peer turn on idle target attaches peerOrigin directly", 
   h.resolveNext();
 });
 
+
+test("Round-6 (request-id admission dedupe): same-promptRequestId peer retry is absorbed as injected — no second turn", async () => {
+  const h = makeQueue();
+  const executedRequests: Array<{ text: string; turnStarted?: { promptRequestId?: string } }> = [];
+  const origRun = (h.queue as any).deps.runTurn;
+  (h.queue as any).deps.runTurn = async (req: any, sig: any, act: any) => {
+    executedRequests.push(req);
+    return await origRun(req, sig, act);
+  };
+
+  const params = {
+    chatKey: "relay:source-lane",
+    sessionAlias: "source-lane",
+    concurrencyKey: "source-lane",
+    text: "",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_dedupe_1",
+    isPeerMessage: true,
+    allowRestoreArchived: false,
+  };
+
+  // First admission on an idle session → injected, turn runs.
+  const first = h.queue.submitPeerTurn(params);
+  expect(first.status).toBe("injected");
+  await tick();
+  expect(executedRequests).toHaveLength(1);
+
+  // Retry while the completion turn is IN FLIGHT → absorbed idempotently.
+  const retryInFlight = h.queue.submitPeerTurn(params);
+  expect(retryInFlight.status).toBe("injected");
+  expect(h.queue.queueLength("relay:source-lane", "source-lane")).toBe(0);
+
+  h.resolveNext({ ok: true, text: "done" });
+  await tick();
+
+  // Exactly ONE turn ran for this request id.
+  expect(executedRequests).toHaveLength(1);
+});
+
 test("Phase 7 (Gate L): busy source session queues completion turn and drains sequentially without parallel turn", async () => {
   const h = makeQueue();
   const executedRequests: Array<{ text: string; isPeerMessage?: boolean; peerOrigin?: unknown }> = [];
