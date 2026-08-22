@@ -1581,6 +1581,28 @@ export async function buildApp(
         agentEndpointRegistry.syncRemoteDirectorySnapshot(endpoints),
       getTraceRecords: (limit) => agentMessaging.getTraceRecords(limit),
     },
+    // v0.3: a queued peer item carrying a completion contract was removed
+    // before it could start (cancel / clear / archive). No turn-finished
+    // will ever fire for it — resolve the source's contract with exactly
+    // one terminal cancelled outcome through the same state machine.
+    onQueuedPeerCancelled: (detail) => {
+      void agentMessaging
+        .completePeerTurn(detail.peerOrigin, {
+          ok: false,
+          cancelled: true,
+          errorMessage: "peer turn cancelled before execution",
+        })
+        .catch((error) => {
+          void logger.error(
+            "agent_messaging.queued_peer_cancel_failed",
+            "failed to deliver terminal cancellation for removed queued peer item",
+            {
+              requestMessageId: detail.peerOrigin.requestMessageId,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+        });
+    },
   });
   controlRef = control;
   controlEvents.subscribe((event) => {

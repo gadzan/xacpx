@@ -2759,6 +2759,151 @@ test("M1: persist-recovery preserves kind=local + senderSessionAlias — a faile
   expect(upserts[0]!.requestMessageId).toBe(receipt.messageId);
 });
 
+
+test("Medium-1: deliverInbound independently rejects completion=result for a target without completion capability, consuming no outbox slot", async () => {
+  let idSeq = 0;
+  const { router, state } = makeRouter({
+    createId: () => `uuid-${++idSeq}`,
+    limits: { pendingCompletion: { maxEntries: 1, ttlMs: 60 * 60_000 } },
+  });
+  // Target WITHOUT completion capability.
+  addLogicalPeers(state);
+  const reg = (router as unknown as { deps: { registry: { resolveLocalTargetByEndpointId: (id: string) => Promise<unknown> } } }).deps.registry;
+  const origResolve = reg.resolveLocalTargetByEndpointId.bind(reg);
+  (reg as { resolveLocalTargetByEndpointId: (id: string) => Promise<unknown> }).resolveLocalTargetByEndpointId =
+    async (id: string) => {
+      const resolved = (await origResolve(id)) as {
+        endpoint: { capabilities: Record<string, unknown> };
+      };
+      if (resolved && id === LOGICAL_TARGET_ID) {
+        resolved.endpoint.capabilities.completion = false;
+      }
+      return resolved;
+    };
+
+  const accept = (id: string) =>
+    router.deliverInbound({
+      sourceNodeId: nodeId,
+      sourceEndpointId: "endpoint_remote_source",
+      targetEndpointId: LOGICAL_TARGET_ID,
+      messageId: id,
+      content: "work",
+      requestedMode: "queue",
+      replyable: false,
+      completion: "result",
+    });
+
+  await expect(accept("msg_cap_1")).rejects.toMatchObject({
+    code: "COMPLETION_NOT_SUPPORTED",
+  });
+
+  // No terminal-outbox slot was consumed: the reservation was never made.
+  const reservations = (router as unknown as { outboxReservations: Map<string, unknown> }).outboxReservations;
+  expect(reservations.size).toBe(0);
+});
+
+test("Medium-2: an expired pending grant resolves the sender card with a terminal cancelled patch instead of silent deletion", async () => {
+  const events = createControlEventBus();
+  const emitted: ControlEvent[] = [];
+  events.subscribe((e) => emitted.push(e));
+  let idSeq = 0;
+  let now = 1_000_000;
+
+  const { router, state } = makeRouter({
+    events,
+    createId: () => `uuid-${++idSeq}`,
+    now: () => now,
+    limits: { pendingCompletion: { maxEntries: 5, ttlMs: 60 * 60_000 } },
+  });
+  addLogicalPeers(state);
+
+  // Real completion-bearing send creates the pending grant.
+  const receipt = await router.send(LOGICAL_SENDER, {
+    to: encodeAgentHandle({ nodeId, endpointId: LOGICAL_TARGET_ID }),
+    content: "long task",
+    completion: "notify",
+  });
+  expect(
+    (router as unknown as { pendingCompletions: Map<string, { state: string }> })
+      .pendingCompletions.get(receipt.messageId)?.state,
+  ).toBe("pending");
+
+  // TTL elapses with NO terminal outcome. The next router activity (a new
+  // send) runs the resolving pass.
+  now += 61 * 60_000;
+  await router.send(LOGICAL_SENDER, {
+    to: encodeAgentHandle({ nodeId, endpointId: LOGICAL_TARGET_ID }),
+    content: "another task",
+    completion: "none",
+  });
+
+  // The sender card got exactly one terminal CANCELLED patch for the
+  // expired contract — never left Waiting.
+  const patches = emitted.filter(
+    (e): e is Extract<ControlEvent, { type: "agent-message-completion" }> =>
+      e.type === "agent-message-completion",
+  );
+  expect(patches).toHaveLength(1);
+  expect(patches[0]!.messageId).toBe(receipt.messageId);
+  expect(patches[0]!.completionStatus).toBe("cancelled");
+
+  // Capacity freed: the expired grant no longer counts.
+  expect(
+    (router as unknown as { pendingCompletions: Map<string, { state: string }> })
+      .pendingCompletions.has(receipt.messageId),
+  ).toBe(false);
+});
+
+test("Medium-3: admission dedupe survives TurnQueue tombstone eviction — a duplicate completion is absorbed by the router-owned tombstone", async () => {
+  const events = createControlEventBus();
+  let idSeq = 0;
+  let delivered = 0;
+
+  const { router, state } = makeRouter({
+    events,
+    createId: () => `uuid-${++idSeq}`,
+    delivery: {
+      deliver: async () => ({ status: "queued" as const, modeUsed: "queue" as const }),
+      deliverCompletion: async (_alias: string, completion: { result?: string }) => {
+        delivered++;
+        expect(completion.result).toBe("answer");
+        return { status: "injected" as const };
+      },
+    },
+  });
+  addLogicalPeers(state);
+
+  const receipt = await router.send(LOGICAL_SENDER, {
+    to: encodeAgentHandle({ nodeId, endpointId: LOGICAL_TARGET_ID }),
+    content: "work",
+    completion: "result",
+  });
+
+  const origin = {
+    requestMessageId: receipt.messageId,
+    completion: "result" as const,
+    source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+    target: { nodeId, endpointId: LOGICAL_TARGET_ID },
+  };
+
+  // First completion: admitted + delivered once.
+  const first = await router.completePeerTurn(origin, { ok: true, text: "answer" });
+  expect(first?.status).toBe("completed");
+  expect(delivered).toBe(1);
+
+  // The ROUTER-owned tombstone (markGrantDelivered → completionInjections,
+  // durable-first) is the dedupe under test here — it must absorb the
+  // duplicate independently of the TurnQueue's bounded FIFO. (The TurnQueue
+  // layer sits behind ControlService and is gated separately.)
+
+  // Duplicate terminal delivery (at-least-once retry from the target):
+  // absorbed — no second deliverCompletion.
+  const dup = await router.completePeerTurn(origin, { ok: true, text: "answer" });
+  expect(dup?.status).toBe("completed");
+  expect(delivered).toBe(1);
+});
+
+
 test("Guards untouched: completion cycle does not consume conversation depth, volume, rate limit, or duplicate counters", async () => {
   let clock = 10_000;
   const { router, state } = makeRouter({

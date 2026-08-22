@@ -235,6 +235,15 @@ export interface ControlServiceDeps {
   onTurnIdleTimeout?: (detail: TurnIdleTimeoutDetail) => void;
   // Test override for how long clearSession waits for an aborted turn to unwind before
   cancelDrainTimeoutMs?: number;
+  // v0.3: forwarded to the TurnQueue — fires when a queued peer item carrying a
+  // completion contract is removed before execution (cancel/clear/archive), so
+  // the caller can resolve the source's contract with a terminal cancelled outcome.
+  onQueuedPeerCancelled?: (detail: {
+    chatKey: string;
+    sessionAlias: string;
+    peerOrigin: PeerTurnOrigin;
+    promptRequestId?: string;
+  }) => void;
   agentMessaging?: {
     deliverInbound(input: {
       sourceNodeId: string;
@@ -429,6 +438,9 @@ export class ControlService {
         : {}),
       ...(this.deps.cancelDrainTimeoutMs !== undefined
         ? { cancelDrainTimeoutMs: this.deps.cancelDrainTimeoutMs }
+        : {}),
+      ...(this.deps.onQueuedPeerCancelled
+        ? { onQueuedPeerCancelled: this.deps.onQueuedPeerCancelled }
         : {}),
       emitQueueUpdated: (chatKey, sessionAlias, items) =>
         this.deps.events.emit({

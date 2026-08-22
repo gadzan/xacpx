@@ -928,6 +928,178 @@ test("B1 (settled request-id tombstone): after the first completion turn RESOLVE
   h.resolveNext({ ok: true, text: "ignored" });
 });
 
+test("B1 (aborted-but-unsettled predecessor): completion X is NOT false-injected and NOT tombstone-poisoned; exactly one X turn runs after unwind", async () => {
+  const h = makeQueue();
+  const executedRequests: Array<{ text: string }> = [];
+  const origRun = (h.queue as any).deps.runTurn;
+  (h.queue as any).deps.runTurn = async (req: any, sig: any, act: any) => {
+    executedRequests.push(req);
+    return await origRun(req, sig, act);
+  };
+
+  // Running turn on the lane.
+  const p1 = h.queue.submit({
+    chatKey: "relay:abort-lane",
+    sessionAlias: "abort-lane",
+    concurrencyKey: "abort-lane",
+    text: "running",
+    senderId: "user",
+    queueable: true,
+    isPeerMessage: false,
+    allowRestoreArchived: false,
+  });
+  await tick();
+
+  // Abort the live turn but keep its runTurn UNRESOLVED (Stop unwinding).
+  const entry = (h.queue as any).inFlight.get("abort-lane") as {
+    controller: AbortController;
+  };
+  expect(entry).toBeDefined();
+  entry.controller.abort();
+
+  // Completion X arrives in the aborted-but-unsettled window.
+  const x = h.queue.submitPeerTurn({
+    chatKey: "relay:abort-lane",
+    sessionAlias: "abort-lane",
+    concurrencyKey: "abort-lane",
+    text: "request X",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_b1_abort_window",
+    isPeerMessage: true,
+    allowRestoreArchived: false,
+  });
+  // Synchronous admission only: X must be QUEUED (never a false injected).
+  expect(x).toEqual({ status: "queued" });
+
+  // The predecessor unwinds.
+  h.resolveNext({ ok: false, cancelled: true });
+  await p1;
+
+  // Drain until X executes — exactly one X turn, no duplicates.
+  let guard = 0;
+  while (executedRequests.every((r) => r.text !== "request X") && guard++ < 50) {
+    h.resolveNext({ ok: true, text: "x ran" });
+    await tick();
+  }
+  expect(
+    executedRequests.filter((r) => r.text === "request X"),
+  ).toHaveLength(1);
+});
+
+test("B2-1 (cancelQueuedItem): a queued peer completion=result item cancelled before start resolves its contract exactly once and never executes", async () => {
+  const cancelled: Array<{ peerOrigin: unknown; promptRequestId?: string }> = [];
+  const h = makeQueue({
+    cancelDrainTimeoutMs: 10,
+    onQueuedPeerCancelled: (detail) => cancelled.push(detail),
+  });
+  const executedRequests: Array<{ text: string }> = [];
+  const origRun = (h.queue as any).deps.runTurn;
+  (h.queue as any).deps.runTurn = async (req: any, sig: any, act: any) => {
+    executedRequests.push(req);
+    return await origRun(req, sig, act);
+  };
+
+  const peerOrigin = {
+    requestMessageId: "msg_b2_cancel",
+    completion: "result",
+    source: { nodeId: "n", endpointId: "src" },
+    target: { nodeId: "n", endpointId: "tgt" },
+  };
+
+  // Running turn A keeps the lane busy; the completion-bearing B queues.
+  const p1 = h.queue.submit({
+    chatKey: "relay:b2-lane",
+    sessionAlias: "b2-lane",
+    concurrencyKey: "b2-lane",
+    text: "turn A",
+    senderId: "user",
+    queueable: true,
+    isPeerMessage: false,
+    allowRestoreArchived: false,
+  });
+  await tick();
+  const admission = h.queue.submitPeerTurn({
+    chatKey: "relay:b2-lane",
+    sessionAlias: "b2-lane",
+    concurrencyKey: "b2-lane",
+    text: "request B",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_b2_cancel",
+    isPeerMessage: true,
+    allowRestoreArchived: false,
+    peerOrigin,
+  });
+  expect(admission.status).toBe("queued");
+
+  // Snapshot the queue to find B's item id, then cancel it pre-start.
+  const q = (h.queue as any).queues.get("b2-lane") as Array<{ id: string }>;
+  const itemId = q.find(() => true)!.id;
+  expect(h.queue.cancelQueuedItem("relay:b2-lane", "b2-lane", itemId, "b2-lane")).toEqual({ cancelled: true });
+
+  // Exactly ONE terminal cancellation carries B's contract.
+  expect(cancelled).toHaveLength(1);
+  expect(cancelled[0]!.peerOrigin).toEqual(peerOrigin);
+  expect(cancelled[0]!.promptRequestId).toBe("msg_b2_cancel");
+
+  // A unwinds; B NEVER executes.
+  h.resolveNext({ ok: true, text: "A done" });
+  await p1;
+  await tick();
+  await tick();
+  expect(executedRequests.filter((r) => r.text === "request B")).toHaveLength(0);
+  // And no late duplicate cancellation from the drain of an empty queue.
+  expect(cancelled).toHaveLength(1);
+});
+
+test("B2-2 (clearSession/archive): queued peer completion=result items dropped by clearSession resolve their contracts exactly once", async () => {
+  const cancelled: Array<{ peerOrigin: unknown }> = [];
+  const h = makeQueue({
+    cancelDrainTimeoutMs: 10,
+    onQueuedPeerCancelled: (detail) => cancelled.push(detail),
+  });
+
+  const peerOrigin = {
+    requestMessageId: "msg_b2_clear",
+    completion: "result",
+    source: { nodeId: "n", endpointId: "src" },
+    target: { nodeId: "n", endpointId: "tgt" },
+  };
+
+  const p1 = h.queue.submit({
+    chatKey: "relay:b2c-lane",
+    sessionAlias: "b2c-lane",
+    concurrencyKey: "b2c-lane",
+    text: "turn A",
+    senderId: "user",
+    queueable: true,
+    isPeerMessage: false,
+    allowRestoreArchived: false,
+  });
+  await tick();
+  const admission = h.queue.submitPeerTurn({
+    chatKey: "relay:b2c-lane",
+    sessionAlias: "b2c-lane",
+    concurrencyKey: "b2c-lane",
+    text: "request B",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_b2_clear",
+    isPeerMessage: true,
+    allowRestoreArchived: false,
+    peerOrigin,
+  });
+  expect(admission.status).toBe("queued");
+
+  // Archive/teardown clears the session — the queued peer item is dropped.
+  await h.queue.clearSession("relay:b2c-lane", "b2c-lane", "b2c-lane");
+  h.resolveNext({ ok: false, cancelled: true });
+  await p1;
+  h.queue.finishClear("relay:b2c-lane", "b2c-lane", "b2c-lane");
+
+  // Exactly ONE terminal cancellation, carrying the contract.
+  expect(cancelled).toHaveLength(1);
+  expect(cancelled[0]!.peerOrigin).toEqual(peerOrigin);
+});
+
 test("B1a (tombstone admission ordering): queue-full rejection does NOT poison the request id — retry after capacity frees gets a real turn", async () => {
   const h = makeQueue();
   const executedRequests: Array<{ text: string }> = [];
