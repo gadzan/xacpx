@@ -2904,6 +2904,220 @@ test("Medium-3: admission dedupe survives TurnQueue tombstone eviction — a dup
 });
 
 
+
+test("#295a: stale-capability rejection compensates the SOURCE grant — target returns COMPLETION_NOT_SUPPORTED over relay", async () => {
+  let idSeq = 0;
+  const remoteRoute = new RelayAgentMessageRoute({
+    // The hub forwards the target's definite capability rejection; the route
+    // layer rethrows it as a typed AgentMessagingError.
+    sendAgentMessageRoute: async () => {
+      throw Object.assign(new Error("COMPLETION_NOT_SUPPORTED"), {
+        code: "COMPLETION_NOT_SUPPORTED",
+      });
+    },
+  });
+  const { router, state, registry } = makeRouter({
+    createId: () => `uuid-${++idSeq}`,
+    remoteRoute,
+  });
+  addLogicalPeers(state);
+  // Source snapshot: the remote endpoint STILL advertised completion.
+  registry.updateRemoteEndpoints("node_remote_x", [
+    {
+      address: { nodeId: "node_remote_x", endpointId: "ep_remote" },
+      handle: encodeAgentHandle({ nodeId: "node_remote_x", endpointId: "ep_remote" }),
+      node: "Remote X",
+      displayName: "Remote X",
+      agent: "claude",
+      state: "idle",
+      activity: { status: "idle" },
+      capabilities: {
+        receive: true,
+        steer: false,
+        queue: true,
+        interrupt: false,
+        conversation: true,
+        completion: true,
+      },
+    },
+  ]);
+
+  await expect(
+    router.send(LOGICAL_SENDER, {
+      to: encodeAgentHandle({ nodeId: "node_remote_x", endpointId: "ep_remote" }),
+      content: "stale directory race",
+      completion: "result",
+    }),
+  ).rejects.toMatchObject({ code: "COMPLETION_NOT_SUPPORTED" });
+
+  // The stale source grant was compensated immediately — not left to TTL.
+  expect(
+    (router as unknown as { pendingCompletions: Map<string, unknown> })
+      .pendingCompletions.size,
+  ).toBe(0);
+});
+
+test("#296: grants expired DURING downtime are terminalized on the first pass after restart — sender card patched, durable row pruned", async () => {
+  const events = createControlEventBus();
+  const emitted: ControlEvent[] = [];
+  events.subscribe((e) => emitted.push(e));
+  let now = 1_000_000;
+
+  const savedGrants: Array<{ requestMessageId: string; state?: string }> = [];
+  const { router, registry } = makeRouter({
+    events,
+    now: () => now,
+    pendingCompletionStore: {
+      load: () => [
+        {
+          requestMessageId: "msg_expired_downtime",
+          source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+          target: { nodeId, endpointId: LOGICAL_TARGET_ID },
+          mode: "notify" as const,
+          expiresAt: 900_000, // EXPIRED while the daemon was down
+          state: "pending" as const,
+        },
+        {
+          requestMessageId: "msg_still_live",
+          source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+          target: { nodeId, endpointId: LOGICAL_TARGET_ID },
+          mode: "notify" as const,
+          expiresAt: 2_000_000, // still valid
+          state: "pending" as const,
+        },
+      ],
+      save: (grants) => {
+        savedGrants.push(...grants.map((g) => ({ ...g })));
+      },
+    },
+  });
+  // Registry reverse-lookup seam (wired in production from main.ts).
+  (registry as unknown as {
+    findLocalSessionByEndpointId: (id: string) => Promise<{ alias: string; archived: boolean; isLogical: boolean } | null>;
+  }).findLocalSessionByEndpointId = async (endpointId: string) =>
+    endpointId === "22222222-2222-4222-8222-222222222222"
+      ? { alias: "main", archived: false, isLogical: true }
+      : null;
+
+  // Restart hydration must NOT silently drop the expired pending row:
+  // the first expirePendingCompletions pass terminalizes it.
+  await (
+    (
+      router as unknown as {
+        expirePendingCompletions: () => Promise<void>;
+      }
+    ).expirePendingCompletions()
+  );
+
+  const patches = emitted.filter(
+    (e): e is Extract<ControlEvent, { type: "agent-message-completion" }> =>
+      e.type === "agent-message-completion",
+  );
+  expect(patches).toHaveLength(1);
+  expect(patches[0]!.messageId).toBe("msg_expired_downtime");
+  expect(patches[0]!.completionStatus).toBe("cancelled");
+  // The alias resolved via registry reverse lookup even without an outbound cache.
+  expect(patches[0]!.sessionAlias).toBe("main");
+
+  // The pruned set is persisted: only the live row survives on disk.
+  expect(savedGrants.map((g) => g.requestMessageId)).toEqual(["msg_still_live"]);
+});
+
+test("#297: durable-mark failure after admission keeps an admitted-pending state — the retry re-marks ONLY and never re-admits through the delivery seam", async () => {
+  const events = createControlEventBus();
+  let idSeq = 0;
+  let admissionCalls = 0;
+  let failSave = false;
+  const saves: Array<Array<{ requestMessageId: string; state: string }>> = [];
+
+  const { router, state } = makeRouter({
+    events,
+    createId: () => `uuid-${++idSeq}`,
+    pendingCompletionStore: {
+      load: () => [],
+      save: (grants) => {
+        if (failSave) throw new Error("disk full");
+        saves.push(grants.map((g) => ({ requestMessageId: g.requestMessageId, state: g.state })));
+      },
+    },
+    delivery: {
+      deliver: async () => ({ status: "queued" as const, modeUsed: "queue" as const }),
+      deliverCompletion: async (_alias: string, completion: { result?: string }) => {
+        admissionCalls++;
+        expect(completion.result).toBe("answer");
+        return { status: "injected" as const };
+      },
+    },
+  });
+  addLogicalPeers(state);
+
+  const receipt = await router.send(LOGICAL_SENDER, {
+    to: encodeAgentHandle({ nodeId, endpointId: LOGICAL_TARGET_ID }),
+    content: "work",
+    completion: "result",
+  });
+  expect(saves.length).toBeGreaterThanOrEqual(1); // reserve persisted fine
+
+  const origin = {
+    requestMessageId: receipt.messageId,
+    completion: "result" as const,
+    source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+    target: { nodeId, endpointId: LOGICAL_TARGET_ID },
+  };
+  const completion = {
+    requestMessageId: receipt.messageId,
+    from: origin.target,
+    status: "completed" as const,
+    result: "answer",
+    completedAt: Date.now(),
+  };
+
+  // Attempt 1: TurnQueue admission succeeds (call #1) but the durable mark
+  // FAILS — the admitted turn must stay tracked as persist-pending.
+  failSave = true;
+  const first = await router.deliverInboundCompletion({
+    requestMessageId: receipt.messageId,
+    source: origin.source,
+    target: origin.target,
+    status: "completed",
+    result: "answer",
+    completedAt: Date.now(),
+  });
+  expect(first.ok).toBe(false); // retryable failure, Hub keeps its grant
+  expect(admissionCalls).toBe(1);
+
+  // Attempt 2 (the target's durable outbox retries): storage recovered.
+  failSave = false;
+  const second = await router.deliverInboundCompletion({
+    requestMessageId: receipt.messageId,
+    source: origin.source,
+    target: origin.target,
+    status: "completed",
+    result: "answer",
+    completedAt: Date.now(),
+  });
+  expect(second.ok).toBe(true);
+  // The lane was NEVER touched again — only the durable mark was retried.
+  expect(admissionCalls).toBe(1);
+  expect(saves.at(-1)).toEqual([
+    { requestMessageId: receipt.messageId, state: "delivered" },
+  ]);
+
+  // A third replay is absorbed by the delivered tombstone as before.
+  const third = await router.deliverInboundCompletion({
+    requestMessageId: receipt.messageId,
+    source: origin.source,
+    target: origin.target,
+    status: "completed",
+    result: "answer",
+    completedAt: Date.now(),
+  });
+  expect(third.ok).toBe(true);
+  expect(third.deduplicated).toBe(true);
+  expect(admissionCalls).toBe(1);
+});
+
+
 test("Guards untouched: completion cycle does not consume conversation depth, volume, rate limit, or duplicate counters", async () => {
   let clock = 10_000;
   const { router, state } = makeRouter({

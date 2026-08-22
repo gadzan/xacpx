@@ -109,6 +109,27 @@ const INBOUND_DEFINITE_REJECTION_CODES: ReadonlySet<string> = new Set([
 export class AgentMessageRouter {
   private readonly targetTails = new Map<string, Promise<void>>();
   private readonly pendingByTarget = new Map<string, number>();
+  /**
+   * Pending grants that were ALREADY EXPIRED at constructor hydration
+   * (#296): they never enter pendingCompletions (so they cannot be
+   * mis-attributed), but their sender cards must still be terminalized —
+   * expirePendingCompletions emits one cancelled patch for each and prunes
+   * the durable row on its first pass.
+   */
+  private hydratedExpiredPending: Array<{
+    requestMessageId: string;
+    sourceEndpointId: string;
+  }> = [];
+  /**
+   * Admitted-but-terminal-persist-pending (issue #297): a completion whose
+   * TurnQueue admission SUCCEEDED but whose durable `delivered` transition
+   * failed. The turn is already in the target lane — a retry must re-attempt
+   * ONLY the durable mark, never re-admit through the delivery seam (whose
+   * own FIFO tombstone can be evicted by unrelated peer traffic). In-RAM by
+   * design: across a restart neither the lane nor its tombstone exists, so
+   * post-restart dedupe stays with the durable grant state.
+   */
+  private readonly admittedPendingPersist = new Set<string>();
   private readonly rateWindows = new Map<string, number[]>();
   private readonly receipts = new Map<
     string,
@@ -340,6 +361,7 @@ export class AgentMessageRouter {
     "TARGET_AMBIGUOUS",
     "TARGET_UNAVAILABLE",
     "DELIVERY_DENIED",
+    "COMPLETION_NOT_SUPPORTED",
     "CONVERSATION_LIMIT_REACHED",
     "DUPLICATE_MESSAGE",
     "MESSAGE_RATE_LIMITED",
@@ -377,6 +399,16 @@ export class AgentMessageRouter {
         expiredPending.push({ id, endpointId: grant.source.endpointId });
       }
     }
+    // Grants that expired during daemon downtime (#296): hydration could not
+    // admit them, but their sender cards still need the terminal patch.
+    for (const stale of this.hydratedExpiredPending) {
+      changed = true;
+      expiredPending.push({
+        id: stale.requestMessageId,
+        endpointId: stale.sourceEndpointId,
+      });
+    }
+    this.hydratedExpiredPending = [];
     if (!changed) return;
     for (const { id, endpointId } of expiredPending) {
       const alias =
@@ -544,7 +576,18 @@ export class AgentMessageRouter {
     const now = (this.deps.now ?? Date.now)();
     try {
       for (const grant of this.deps.pendingCompletionStore?.load() ?? []) {
-        if (grant.expiresAt <= now) continue;
+        if (grant.expiresAt <= now) {
+          // Expired PENDING contracts must still resolve their sender card
+          // (issue #296): collect for one terminal patch on the first
+          // expirePendingCompletions pass instead of vanishing silently.
+          if ((grant.state ?? "pending") === "pending") {
+            this.hydratedExpiredPending.push({
+              requestMessageId: grant.requestMessageId,
+              sourceEndpointId: grant.source.endpointId,
+            });
+          }
+          continue;
+        }
         this.pendingCompletions.set(grant.requestMessageId, {
           source: grant.source,
           target: grant.target,
@@ -1834,6 +1877,19 @@ export class AgentMessageRouter {
     ) {
       return true; // already admitted idempotently — absorb
     }
+    // Admitted-but-persist-pending (#297): the turn is ALREADY in the lane —
+    // a retry re-attempts ONLY the durable mark. It must never pass through
+    // the delivery seam again: that seam's own FIFO tombstone can have been
+    // evicted by unrelated peer traffic, and a second admission would run a
+    // duplicate turn.
+    if (this.admittedPendingPersist.has(requestMessageId)) {
+      // Throws on storage failure — the entry stays pending-persist and the
+      // caller schedules the next retry as before.
+      this.markGrantDelivered(requestMessageId);
+      this.admittedPendingPersist.delete(requestMessageId);
+      this.writeCompletionTombstone(requestMessageId);
+      return true;
+    }
     if (!this.deps.delivery.deliverCompletion) {
       return false;
     }
@@ -1845,13 +1901,25 @@ export class AgentMessageRouter {
     if (result.status === "rejected") {
       return false;
     }
-    // Durable-first: the delivered transition is persisted BEFORE any
-    // {ok:true} can escape. A storage failure THROWS so callers fail closed
-    // (retryable failure) instead of announcing a terminal ACK whose
-    // tombstone would not survive a restart.
+    // Durable-first: record admission BEFORE persisting so a storage failure
+    // cannot lose track of an admitted turn (#297). The transition THROWS on
+    // storage failure so callers fail closed (retryable failure) instead of
+    // announcing a terminal ACK whose tombstone would not survive a restart;
+    // the entry stays in admittedPendingPersist for the retry.
+    this.admittedPendingPersist.add(requestMessageId);
+    // Throws on storage failure — the entry stays admitted-pending-persist
+    // so a retry re-attempts only the durable mark (#297).
     this.markGrantDelivered(requestMessageId);
-    // Tombstone must outlive the authorization contract it deduplicates:
-    // expiry is anchored to the grant's own expiresAt when one still exists.
+    this.admittedPendingPersist.delete(requestMessageId);
+    this.writeCompletionTombstone(requestMessageId);
+    return true;
+  }
+
+  /**
+   * Tombstone must outlive the authorization contract it deduplicates:
+   * expiry is anchored to the grant's own expiresAt when one still exists.
+   */
+  private writeCompletionTombstone(requestMessageId: string): void {
     const now = (this.deps.now ?? Date.now)();
     const grantExpiry =
       this.pendingCompletions.get(requestMessageId)?.expiresAt ?? 0;
@@ -1868,7 +1936,6 @@ export class AgentMessageRouter {
     this.completionInjections.set(requestMessageId, {
       expiresAt: tombstoneExpiresAt,
     });
-    return true;
   }
   /** Retry cadence for pending completion deliveries. */
   private static readonly COMPLETION_RETRY_SWEEP_MS = 5_000;

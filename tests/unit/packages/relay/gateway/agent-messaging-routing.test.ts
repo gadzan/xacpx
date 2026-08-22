@@ -982,6 +982,100 @@ test("Relay Hub isolates completions across different accounts", async () => {
 
 
 
+test("#295b: Hub compensates its route grant when the target definitely rejects with COMPLETION_NOT_SUPPORTED", async () => {
+  const { instances, account, wss, url } = await makeGateway();
+
+  const tokenA = instances.issuePairingToken(account.id, "nodeA", 600_000).token;
+  const socketA = await connect(url);
+  await authInstance(socketA, tokenA);
+  const tokenB = instances.issuePairingToken(account.id, "nodeB", 600_000).token;
+  const socketB = await connect(url);
+  await authInstance(socketB, tokenB);
+
+  publishEndpoints(socketA, [publishedEndpoint("node_a_999", "worker_a_sender")]);
+  publishEndpoints(socketB, [publishedEndpoint("node_b_123", "worker_b")]);
+  await new Promise((r) => setTimeout(r, 50));
+
+  // Target's CURRENT state contradicts the source's stale snapshot: the
+  // receiver-side capability gate definitely rejects the completion-bearing
+  // request AT ACCEPTANCE.
+  socketB.on("message", (data) => {
+    const decoded = decodeEnvelope(String(data));
+    if (
+      decoded.ok &&
+      decoded.envelope.kind === "req" &&
+      decoded.envelope.type === MSG.agentMessageDeliver
+    ) {
+      socketB.send(
+        encodeEnvelope({
+          protocolVersion: RELAY_PROTOCOL_VERSION,
+          kind: "res",
+          id: decoded.envelope.id,
+          type: decoded.envelope.type,
+          payload: {
+            messageId: (decoded.envelope.payload as { messageId: string }).messageId,
+            status: "failed",
+            error: {
+              code: "COMPLETION_NOT_SUPPORTED",
+              message: "target does not advertise completion capability",
+            },
+          },
+        }),
+      );
+    }
+  });
+
+  // Route the completion-bearing request: the definite rejection propagates
+  // back to A, and the Hub compensates the grant it created for THIS request.
+  socketA.send(
+    encodeEnvelope({
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "route-295",
+      type: MSG.agentMessageRoute,
+      payload: {
+        sourceNodeId: "node_a_999",
+        sourceEndpointId: "worker_a_sender",
+        targetNodeId: "node_b_123",
+        targetEndpointId: "worker_b",
+        messageId: "msg_295_stale_cap",
+        content: "completion-bearing request",
+        requestedMode: "auto",
+        completion: "result",
+      },
+    }),
+  );
+  const routeRes = await nextResponse(socketA);
+  expect(
+    (routeRes.payload as { error?: { code?: string } }).error?.code,
+  ).toBe("COMPLETION_NOT_SUPPORTED");
+
+  // The route grant is GONE: a completion for that messageId is denied
+  // instead of routed — no dead grant lingers until TTL.
+  socketB.send(
+    encodeEnvelope({
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "comp-295",
+      type: MSG.agentMessageCompletion,
+      payload: {
+        requestMessageId: "msg_295_stale_cap",
+        source: { nodeId: "node_a_999", endpointId: "worker_a_sender" },
+        target: { nodeId: "node_b_123", endpointId: "worker_b" },
+        status: "completed",
+        result: "never delivered",
+        completedAt: Date.now(),
+      },
+    }),
+  );
+  const compRes = await nextResponse(socketB);
+  expect(
+    (compRes.payload as { error?: { code?: string } }).error?.code,
+  ).toBe("DELIVERY_DENIED");
+
+  await wss.close();
+});
+
 test("Relay Hub retains the route grant when the source returns an APPLICATION error — the target's retry then succeeds (B1)", async () => {
   const { instances, account, wss, url } = await makeGateway();
 
