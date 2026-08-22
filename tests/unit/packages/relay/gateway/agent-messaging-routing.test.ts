@@ -23,7 +23,17 @@ import { InstanceStore } from "../../../../../packages/relay/src/stores/instance
 import { InstanceGateway } from "../../../../../packages/relay/src/gateway/instance-gateway";
 import { PendingCompletionRouteStore } from "../../../../../packages/relay/src/stores/pending-completion-routes";
 
-async function makeGateway(requestTimeoutMs = 1000, dbPath?: string) {
+async function makeGateway(
+  requestTimeoutMs = 1000,
+  dbPath?: string,
+  options?: {
+    dropRequestResponse?: (
+      instanceId: string,
+      type: string,
+      payload: unknown,
+    ) => boolean;
+  },
+) {
   const db = await createSqlDriver(dbPath ?? ":memory:");
   initSchema(db);
   const accounts = new AccountStore(db);
@@ -42,6 +52,9 @@ async function makeGateway(requestTimeoutMs = 1000, dbPath?: string) {
     accounts,
     requestTimeoutMs,
     pendingCompletionRoutes: pendingCompletionRouteStore,
+    ...(options?.dropRequestResponse
+      ? { dropRequestResponse: options.dropRequestResponse }
+      : {}),
     onEvent: (instanceId, accountId, envelope) =>
       events.push({ instanceId, accountId, type: envelope.type }),
   });
@@ -51,6 +64,7 @@ async function makeGateway(requestTimeoutMs = 1000, dbPath?: string) {
   const port = (wss.address() as { port: number }).port;
   return {
     gateway,
+    pendingCompletionRouteStore,
     instances,
     accounts,
     account,
@@ -670,7 +684,6 @@ async function establishCompletionRoute(opts: {
     }),
   );
   const res = await nextResponse(opts.socketA);
-  console.error("DBG route res:", JSON.stringify(res.payload));
   expect((res.payload as { status: string }).status).toBe("queued");
   const deadline = Date.now() + 2000;
   while (!deliverSeen && Date.now() < deadline) {
@@ -1100,6 +1113,158 @@ test("Relay Hub retains the route grant when the source returns an APPLICATION e
   wss.close();
 });
 
+
+test("B1 gate: same-messageId route retry after ACK loss REUSES the grant — one SQLite row, delivery succeeds", async () => {
+  let dropNextDeliverAck = true;
+  const { instances, account, wss, url, pendingCompletionRouteStore } =
+    await makeGateway(1000, undefined, {
+      // Simulate the Hub→source-style ACK loss on the deliver leg: the FIRST
+      // deliver response is swallowed so the source experiences an ambiguous
+      // outcome; the retry's ACK goes through.
+      dropRequestResponse: (_iid: string, type: string) => {
+        if (type === MSG.agentMessageDeliver && dropNextDeliverAck) {
+          dropNextDeliverAck = false;
+          return true;
+        }
+        return false;
+      },
+    });
+
+  const tokenA = instances.issuePairingToken(account.id, "nodeA", 600_000).token;
+  const socketA = await connect(url);
+  await authInstance(socketA, tokenA);
+  const tokenB = instances.issuePairingToken(account.id, "nodeB", 600_000).token;
+  const socketB = await connect(url);
+  await authInstance(socketB, tokenB);
+
+  publishEndpoints(socketA, [publishedEndpoint("node_a_999", "worker_a_sender")]);
+  publishEndpoints(socketB, [publishedEndpoint("node_b_123", "worker_b")]);
+  await new Promise((r) => setTimeout(r, 50));
+
+  let deliverCalls = 0;
+  socketB.on("message", (data) => {
+    const decoded = decodeEnvelope(String(data));
+    if (
+      decoded.ok &&
+      decoded.envelope.kind === "req" &&
+      decoded.envelope.type === MSG.agentMessageDeliver
+    ) {
+      deliverCalls += 1;
+      socketB.send(
+        encodeEnvelope({
+          protocolVersion: RELAY_PROTOCOL_VERSION,
+          kind: "res",
+          id: decoded.envelope.id,
+          type: decoded.envelope.type,
+          payload: {
+            messageId: (decoded.envelope.payload as { messageId: string }).messageId,
+            status: "queued",
+            modeUsed: "queue",
+          },
+        }),
+      );
+    }
+  });
+
+  const sendRoute = async (id: string) => {
+    socketA.send(
+      encodeEnvelope({
+        protocolVersion: RELAY_PROTOCOL_VERSION,
+        kind: "req",
+        id,
+        type: MSG.agentMessageRoute,
+        payload: {
+          sourceNodeId: "node_a_999",
+          sourceEndpointId: "worker_a_sender",
+          targetNodeId: "node_b_123",
+          targetEndpointId: "worker_b",
+          messageId: "msg_ack_loss_1",
+          content: "completion-bearing request",
+          requestedMode: "auto",
+          completion: "result",
+        },
+      }),
+    );
+    return await nextResponse(socketA);
+  };
+
+  // First route: the deliver ACK is lost → ambiguous failure for the source.
+  const res1 = await sendRoute("route-try-1");
+  expect((res1.payload as { error?: { code: string } }).error?.code).toBeDefined();
+
+  // Same-messageId retry: the EXISTING grant is reused (no UNIQUE violation,
+  // no second row) and the request is forwarded again.
+  const res2 = await sendRoute("route-try-2");
+  expect((res2.payload as { status?: string }).status).toBe("queued");
+
+  await Bun.sleep(30);
+  expect(deliverCalls).toBe(2);
+  expect(pendingCompletionRouteStore.count()).toBe(1);
+
+  // Fingerprint conflict: same id, different target → denied, original intact.
+  socketA.send(
+    encodeEnvelope({
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "route-conflict",
+      type: MSG.agentMessageRoute,
+      payload: {
+        sourceNodeId: "node_a_999",
+        sourceEndpointId: "worker_a_sender",
+        targetNodeId: "node_b_123",
+        targetEndpointId: "worker_b",
+        messageId: "msg_ack_loss_1",
+        content: "forged retry",
+        requestedMode: "auto",
+        completion: "notify",
+      },
+    }),
+  );
+  const res3 = await nextResponse(socketA);
+  expect((res3.payload as { error?: { code: string } }).error?.code).toBe(
+    "DELIVERY_DENIED",
+  );
+  expect(pendingCompletionRouteStore.count()).toBe(1);
+
+  socketA.close();
+  socketB.close();
+  wss.close();
+});
+
+test("M1 gate: expired route rows are removed from SQLite by the durable sweep", async () => {
+  const dbPath = join(tmpdir(), `xacpx-hub-sweep-${Date.now()}.db`);
+  const { instances, account, wss, url, pendingCompletionRouteStore } =
+    await makeGateway(1000, dbPath);
+
+  const tokenA = instances.issuePairingToken(account.id, "nodeA", 600_000).token;
+  const socketA = await connect(url);
+  await authInstance(socketA, tokenA);
+  const tokenB = instances.issuePairingToken(account.id, "nodeB", 600_000).token;
+  const socketB = await connect(url);
+  await authInstance(socketB, tokenB);
+
+  publishEndpoints(socketA, [publishedEndpoint("node_a_999", "worker_a_sender")]);
+  publishEndpoints(socketB, [publishedEndpoint("node_b_123", "worker_b")]);
+  await new Promise((r) => setTimeout(r, 50));
+
+  await establishCompletionRoute({
+    socketA,
+    socketB,
+    routeId: "route-sweep",
+    messageId: "msg_sweep_1",
+    mode: "result",
+  });
+  expect(pendingCompletionRouteStore.count()).toBe(1);
+
+  // TTL passes → the durable sweep removes the row from SQLITE.
+  expect(pendingCompletionRouteStore.sweepExpired(Date.now() + 25 * 60 * 60_000)).toBe(1);
+  expect(pendingCompletionRouteStore.count()).toBe(0);
+
+  socketA.close();
+  socketB.close();
+  wss.close();
+});
+
 test("Relay Hub pending completion ROUTE grants SURVIVE a full gateway restart on the same SQLite database", async () => {
   const dbPath = join(tmpdir(), `xacpx-hub-grants-${Date.now()}.db`);
 
@@ -1188,9 +1353,7 @@ test("Relay Hub pending completion ROUTE grants SURVIVE a full gateway restart o
       }),
     );
 
-    console.log("SENDING COMPLETION after restart");
     const resB = await nextResponse(socketB);
-    console.log("RES B:", resB.kind, JSON.stringify(resB.payload));
     expect(resB.kind).toBe("res");
     expect((resB.payload as { ok?: boolean }).ok).toBe(true);
     expect(receivedCompletion).toBeDefined();

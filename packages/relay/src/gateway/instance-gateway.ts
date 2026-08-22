@@ -69,6 +69,8 @@ export interface InstanceGatewayDeps {
     insert(grant: PendingCompletionRouteRow): void;
     markDelivered(requestMessageId: string): void;
     delete(requestMessageId: string): void;
+    /** Durable TTL cleanup — must reach SQLite, not only RAM. */
+    sweepExpired(now: number): number;
   };
   /**
    * Test seam: called when an authenticated instance delivers an RPC response
@@ -175,14 +177,35 @@ export class InstanceGateway {
     requestMessageId: string,
     grant: PendingCompletionRouteRow,
   ): void {
-    let pendingCount = 0;
-    for (const [id, g] of [...this.pendingCompletionRoutes]) {
-      if (g.expiresAt <= Date.now()) {
-        this.pendingCompletionRoutes.delete(id);
-        continue;
+    // Expired rows are pruned durably (SQLite delete), not just from RAM.
+    this.sweepExpiredCompletionRoutes();
+
+    // Same-message retry support (source ACK-loss / ambiguous outcome): a retry
+    // of an ALREADY-RESERVED request must reuse the existing grant, never
+    // re-insert. Fingerprints bind account + both instance ids + both
+    // endpoints + mode — any difference is a forgery attempt on a live
+    // contract and is denied without touching the original row.
+    const existing = this.pendingCompletionRoutes.get(requestMessageId);
+    if (existing) {
+      const sameFingerprint =
+        existing.accountId === grant.accountId &&
+        existing.sourceInstanceId === grant.sourceInstanceId &&
+        existing.source.nodeId === grant.source.nodeId &&
+        existing.source.endpointId === grant.source.endpointId &&
+        existing.targetInstanceId === grant.targetInstanceId &&
+        existing.target.nodeId === grant.target.nodeId &&
+        existing.target.endpointId === grant.target.endpointId &&
+        existing.mode === grant.mode;
+      if (!sameFingerprint) {
+        throw new Error(
+          `DELIVERY_DENIED: Request ${requestMessageId} already has a completion route with a different fingerprint`,
+        );
       }
-      // Delivered tombstones do not consume contract capacity; they expire
-      // with their TTL.
+      return; // idempotent reuse — no second INSERT
+    }
+
+    let pendingCount = 0;
+    for (const [, g] of [...this.pendingCompletionRoutes]) {
       if (g.state === "pending") pendingCount += 1;
     }
     if (
@@ -190,8 +213,6 @@ export class InstanceGateway {
     ) {
       throw new Error("PENDING_COMPLETION_ROUTE_CAPACITY");
     }
-    // INSERT-only: an existing id is never overwritten here. Fingerprint
-    // conflicts are rejected by the completion handler's find() comparison.
     this.deps.pendingCompletionRoutes?.insert(grant);
     this.pendingCompletionRoutes.set(requestMessageId, grant);
   }
@@ -205,6 +226,26 @@ export class InstanceGateway {
   private deletePendingCompletionRoute(requestMessageId: string): void {
     this.deps.pendingCompletionRoutes?.delete(requestMessageId);
     this.pendingCompletionRoutes.delete(requestMessageId);
+  }
+
+  /**
+   * Durably remove every expired route row (pending or delivered tombstone).
+   * Called from the reservation path and safe to call periodically — TTL
+   * cleanup must reach SQLite, not only the RAM map, or a long-running Hub
+   * accumulates rows forever.
+   */
+  sweepExpiredCompletionRoutes(): void {
+    const now = Date.now();
+    if (this.deps.pendingCompletionRoutes) {
+      this.deps.pendingCompletionRoutes.sweepExpired(now);
+      for (const [id, g] of [...this.pendingCompletionRoutes]) {
+        if (g.expiresAt <= now) this.pendingCompletionRoutes.delete(id);
+      }
+      return;
+    }
+    for (const [id, g] of [...this.pendingCompletionRoutes]) {
+      if (g.expiresAt <= now) this.pendingCompletionRoutes.delete(id);
+    }
   }
 
 
@@ -579,17 +620,24 @@ export class InstanceGateway {
             });
             provisionalGrant = true;
           } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
             const isCapacity =
-              err instanceof Error &&
-              err.message === "PENDING_COMPLETION_ROUTE_CAPACITY";
+              message === "PENDING_COMPLETION_ROUTE_CAPACITY";
+            const isFingerprintConflict = message.startsWith(
+              "DELIVERY_DENIED: Request",
+            );
             respond(
               errorPayload(
-                isCapacity ? "MESSAGE_QUEUE_FULL" : "DELIVERY_FAILED",
+                isCapacity
+                  ? "MESSAGE_QUEUE_FULL"
+                  : isFingerprintConflict
+                    ? "DELIVERY_DENIED"
+                    : "DELIVERY_FAILED",
                 isCapacity
                   ? "Hub pending completion capacity reached; request not sent"
-                  : `Completion route could not be persisted; request not sent: ${
-                      err instanceof Error ? err.message : String(err)
-                    }`,
+                  : isFingerprintConflict
+                    ? message
+                    : `Completion route could not be persisted; request not sent: ${message}`,
               ),
             );
             return;
@@ -668,7 +716,7 @@ export class InstanceGateway {
           completionPayload.requestMessageId,
         );
         if (!grant || grant.expiresAt <= Date.now()) {
-          if (grant) this.pendingCompletionRoutes.delete(completionPayload.requestMessageId);
+          if (grant) this.deletePendingCompletionRoute(completionPayload.requestMessageId);
           respond(
             errorPayload(
               "DELIVERY_DENIED",
@@ -747,19 +795,30 @@ export class InstanceGateway {
             // Retire the route grant ONLY when the source daemon explicitly
             // accepted ({ ok: true }). Application error payloads resolve as
             // normal responses — treating them as success would sever the
-            // contract while the target is still retrying. On acceptance the
-            // row becomes a TERMINAL TOMBSTONE (state=delivered) so ACK-loss
-            // replays are answered deduplicated instead of denied.
+            // contract while the target is still retrying.
+            //
+            // DB-FIRST durable transition: the SQLite row must read
+            // state='delivered' BEFORE the target is told the contract is
+            // terminal. A storage failure here keeps RAM + DB pending and
+            // responds a RETRYABLE failure — the target's durable outbox
+            // retries, the source dedupe absorbs the duplicate, and the
+            // durable transition eventually completes.
             if ((res as { ok?: boolean }).ok === true) {
-              grant.state = "delivered";
               try {
                 this.deps.pendingCompletionRoutes?.markDelivered(
                   completionPayload.requestMessageId,
                 );
-              } catch {
-                // Store update is best-effort on the happy path: the in-memory
-                // state already answers replays for this process lifetime, and
-                // the row expires with its TTL regardless.
+                grant.state = "delivered";
+              } catch (err) {
+                respond(
+                  errorPayload(
+                    "DELIVERY_FAILED",
+                    `Completion delivered but terminal state could not be made durable; retry: ${
+                      err instanceof Error ? err.message : String(err)
+                    }`,
+                  ),
+                );
+                return;
               }
             }
             respond(res);

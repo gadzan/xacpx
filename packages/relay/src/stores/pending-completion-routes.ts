@@ -99,4 +99,25 @@ export class PendingCompletionRouteStore {
       [requestMessageId],
     );
   }
+
+  /** Number of durable rows (pending + delivered tombstones). */
+  count(): number {
+    const row = this.db.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM pending_completion_routes",
+    );
+    return row?.n ?? 0;
+  }
+
+  /** Durably delete every row whose TTL has passed as of `now`. Returns the
+   *  number of removed rows. This is the single TTL-cleanup path — expiry
+   *  must reach SQLite, not only the RAM map. */
+  sweepExpired(now: number): number {
+    const before = this.count();
+    if (before === 0) return 0;
+    this.db.run(
+      "DELETE FROM pending_completion_routes WHERE expires_at <= ?",
+      [now],
+    );
+    return before - this.count();
+  }
 }

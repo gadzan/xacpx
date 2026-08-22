@@ -660,7 +660,6 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     },
   });
   gatewayRef = gateway;
-
   const app = createApp({
     accounts, instances, messages, gateway, webRoot: options.webRoot,
     historyRetentionDays: options.historyRetentionDays ?? 30,
@@ -672,7 +671,26 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     checkUpdate: createRelayUpdateChecker({ current: readRelayVersion() }),
     logger,
   });
-  return { db, accounts, instances, messages, recoveryReceipts, gateway, webGateway, stateSnapshot, app, close: () => db.close() };
+  const completionRouteSweepTimer = setInterval(
+    () => gateway.sweepExpiredCompletionRoutes(),
+    60 * 60_000,
+  );
+  completionRouteSweepTimer.unref?.();
+  return {
+    db,
+    accounts,
+    instances,
+    messages,
+    recoveryReceipts,
+    gateway,
+    webGateway,
+    stateSnapshot,
+    app,
+    close: () => {
+      clearInterval(completionRouteSweepTimer);
+      db.close();
+    },
+  };
 }
 
 export interface StartRelayOptions {

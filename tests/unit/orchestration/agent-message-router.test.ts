@@ -2199,7 +2199,7 @@ test("Round-5 (Q2): admission failure returns ok:false so the Hub keeps its dura
   expect(res.ok).toBe(false);
 });
 
-test("Round-5 (Q3): the terminal completion outbox is durable across router recreation", async () => {
+test("Round-5 (Q3): the target-side terminal completion outbox is durable across router recreation", async () => {
   const events = createControlEventBus();
   const deliveredCompletions: AgentMessageCompletion[] = [];
   const outboxEntries = new Map<
@@ -2214,21 +2214,29 @@ test("Round-5 (Q3): the terminal completion outbox is durable across router recr
     }
   >();
   let idSeq = 0;
-
-  const buildRouter = (admissionSucceeds: boolean) => {
+  // The TARGET daemon (B): its peer turn finished, but the reverse Relay
+  // delivery initially fails (Relay offline / source busy). The obligation
+  // lands in B's DURABLE outbox.
+  let sendCompletionCalls = 0;
+  const deliveredPayloadResults: string[] = [];
+  const buildRouter = (relayUp: boolean) => {
+    const remoteRoute = new RelayAgentMessageRoute({
+      sendAgentMessageRoute: async () => ({ messageId: "x", status: "queued" }),
+      sendAgentMessageCompletion: async (payload) => {
+        sendCompletionCalls += 1;
+        if (!relayUp) {
+          throw Object.assign(new Error("relay unreachable"), {
+            code: "DELIVERY_TIMEOUT",
+          });
+        }
+        deliveredPayloadResults.push(payload.result ?? "");
+        return { ok: true };
+      },
+    });
     const { router, state } = makeRouter({
       events,
       createId: () => `uuid-${++idSeq}`,
-      delivery: {
-        deliver: async () => ({ status: "queued" as const, modeUsed: "queue" as const }),
-        deliverCompletion: async (_alias, completion) => {
-          if (!admissionSucceeds) {
-            return { status: "rejected" as const, reason: "queue-full" };
-          }
-          deliveredCompletions.push(completion);
-          return { status: "injected" as const };
-        },
-      },
+      remoteRoute,
       completionOutboxStore: {
         load: () => [...outboxEntries.values()],
         upsert: (entry) => void outboxEntries.set(entry.key, entry),
@@ -2239,55 +2247,37 @@ test("Round-5 (Q3): the terminal completion outbox is durable across router recr
     return router;
   };
 
-  // Process 1: completion arrives; admission fails → obligation persisted.
   const router1 = buildRouter(false);
-  (router1 as unknown as { pendingCompletions: Map<string, unknown> }).pendingCompletions.set(
-    "msg_outbox_restart",
-    {
-      source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
-      target: { nodeId, endpointId: LOGICAL_TARGET_ID },
-      mode: "result",
-      expiresAt: Date.now() + 60_000,
-    },
-  );
-  await router1.deliverInboundCompletion({
+  const origin = {
     requestMessageId: "msg_outbox_restart",
-    source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
+    completion: "result" as const,
+    source: { nodeId: "node_remote_source", endpointId: "worker_remote_source" },
     target: { nodeId, endpointId: LOGICAL_TARGET_ID },
-    status: "completed",
-    result: "survives restart",
-    completedAt: Date.now(),
-  });
+  };
+
+  // B's peer turn finishes while the Relay is DOWN: ambiguous outcome, the
+  // obligation is durably persisted for retry.
+  await router1.completePeerTurn(origin, { ok: true, text: "survives restart" });
   expect(outboxEntries.size).toBe(1);
   expect(deliveredCompletions).toHaveLength(0);
 
-  // Process 2: daemon restarted — a FRESH router hydrates from the same store.
+  // Daemon restart: a FRESH router hydrates the outbox and re-arms retries.
   const router2 = buildRouter(true);
   expect(
     (router2 as unknown as { deliveryPending: Map<string, unknown> }).deliveryPending
       .size,
   ).toBe(1);
-  await router2.sweepPendingCompletionDeliveries(true);
 
-  // The obligation was fulfilled exactly once after the restart.
-  expect(deliveredCompletions).toHaveLength(1);
-  expect(deliveredCompletions[0]!.result).toBe("survives restart");
+  // Relay recovers: the sweep delivers the completion exactly once.
+  await router2.sweepPendingCompletionDeliveries(true);
+  expect(deliveredPayloadResults).toEqual(["survives restart"]);
   expect(outboxEntries.size).toBe(0);
 
-  // A duplicate of the same request is absorbed by the tombstone.
-  const dup = await router2.deliverInboundCompletion({
-    requestMessageId: "msg_outbox_restart",
-    source: { nodeId, endpointId: "22222222-2222-4222-8222-222222222222" },
-    target: { nodeId, endpointId: LOGICAL_TARGET_ID },
-    status: "completed",
-    result: "replayed after restart",
-    completedAt: Date.now(),
-  });
-  expect(dup.ok).toBe(true);
-  expect(dup.deduplicated).toBe(true);
-  expect(deliveredCompletions).toHaveLength(1);
+  // Note: a duplicate TERMINAL replayed on the restarted router would forward
+  // again at this layer (the target outcomes cache is per-process); in
+  // production the SOURCE absorbs that duplicate via its completionInjections
+  // tombstone — covered by the deliverInboundCompletion dedupe tests.
 });
-
 test("Guards untouched: completion cycle does not consume conversation depth, volume, rate limit, or duplicate counters", async () => {
   let clock = 10_000;
   const { router, state } = makeRouter({

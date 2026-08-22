@@ -1530,30 +1530,14 @@ export class AgentMessageRouter {
       completion,
     );
     if (!admitted) {
-      // Retry scheduling must use the LOCAL clock: completedAt is the peer's
-      // timestamp and clock skew would corrupt nextAttemptAt/expiresAt.
-      this.scheduleCompletionDelivery(
-        `local:${input.requestMessageId}`,
-        async () =>
-          await this.attemptCompletionAdmission(
-            input.requestMessageId,
-            senderSessionAlias!,
-            completion,
-          ),
-        (this.deps.now ?? Date.now)(),
-        {
-          kind: "local",
-          requestMessageId: input.requestMessageId,
-          senderSessionAlias,
-          completion,
-        },
-      );
-      // DURABLE ACK RULE: {ok:true} may only be returned once the completion
-      // actually entered the source TurnQueue. Admission failed (queue-full /
-      // unavailable) and the retry lives in a RAM outbox — reporting success
-      // would let the Hub retire its durable route grant while the only copy
-      // of this result sits in volatile memory. Returning failure keeps the
-      // Hub grant live so the TARGET keeps retrying.
+      // DURABLE ACK RULE + SINGLE RETRY OWNER (v0.3 round-5 review): a Relay
+      // inbound completion has a durable retry chain already — the target's
+      // persisted remote outbox plus the Hub's pending route grant. Scheduling
+      // a SECOND source-local retry here would create dual ownership whose
+      // tombstones diverge after a restart. Returning {ok:false} keeps that
+      // durable chain alive: the Hub forwards the failure to the target, which
+      // retains its grant and retries. {ok:true} is returned only on real
+      // admission.
       return {
         ok: false,
         error: "source session busy; completion delivery pending",
