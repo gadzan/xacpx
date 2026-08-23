@@ -1,4 +1,16 @@
 # Changelog
+## [0.23.0-beta.5] - 2026-08-23
+
+### Fixed
+
+- `agent_send` card anchoring for omp-driven sessions (production follow-up to beta.4): omp executes MCP calls as `xd://` device writes, so the ACP display title is the model intent and never carries an `agent_send` suffix. `streaming-prompt` now derives the stable machine identity from the `xd://mcp__xacpx_agent_send` path (start frame) or the terminal-frame `rawOutput.details.xdev.tool` via `ompXdevMachineToolName` (driver-gated on `omp`).
+
+## [channel-relay 0.7.0-beta.5] - 2026-08-23
+
+### Fixed
+
+- `tool-presentation` extractor additionally scans the `rawOutput.content` text block for the `xacpx-agent-send-receipt:v1` marker (the omp seam carries the receipt in the content text, not `structuredContent`). Real-seam gates replay production-captured frames.
+
 ## [0.23.0-beta.4] - 2026-08-23
 
 ### Fixed
