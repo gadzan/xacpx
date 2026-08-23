@@ -1,4 +1,21 @@
 # Changelog
+## [0.23.0-beta.4] - 2026-08-23
+
+### Fixed
+
+- Sent `agent-message` cards no longer misplace to the top of the sender-side message list (presentation correlation regression found in beta.3 production use).
+
+### Added
+
+- `ToolUseEvent.machineToolName`: stable machine tool identity extracted from provider metadata (Claude `_meta.claudeCode.toolName`, Qoder `_meta.qoder.toolName`, Cursor `rawInput._toolName`, all driver-gated; Codex MCP calls derived from `rawInput.{server,tool}` matching the real codex-acp `title: mcp.<server>.<tool>` shape). The ACP `title` is a display phrase and must not be used for protocol identity.
+- `agent_send` MCP results append a versioned receipt marker line `xacpx-agent-send-receipt:v1 {messageId,status}` for durable correlation.
+
+## [channel-relay 0.7.0-beta.4] - 2026-08-23
+
+### Fixed
+
+- `agent_send` card anchoring now correlates on the machine tool identity instead of the display title; the receipt extractor parses the versioned marker from the content block, `rawOutput.result.content`, or bare `rawOutput` after machine-identity confirmation. New real-seam gates cover Claude and Codex (real MCP server → ACP frames → `toolUseEventToStepDto` → `agentMessageId` join).
+
 ## [0.23.0-beta.3] - 2026-08-23
 
 ### Added

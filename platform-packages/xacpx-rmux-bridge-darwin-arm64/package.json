@@ -1,6 +1,6 @@
 {
   "name": "@ganglion/xacpx-rmux-bridge-darwin-arm64",
-  "version": "0.7.0-beta.3",
+  "version": "0.7.0-beta.4",
   "description": "Process-owned xacpx RMUX bridge binary for darwin-arm64.",
   "license": "MIT",
   "os": [
