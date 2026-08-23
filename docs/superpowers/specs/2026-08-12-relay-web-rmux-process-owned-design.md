@@ -18,6 +18,22 @@ Ship the Relay Web terminal **without modifying `../rmux`**. The connector owns 
 
 `terminal.enabled` remains default **false**.
 
+## Daemon endpoint isolation
+
+Each native bridge process uses a fresh RMUX endpoint label
+`xacpx-relay-<pid>-<startup nonce>` resolved through `rmux-ipc::endpoint_for_label`; it never
+connects to RMUX's user-level default endpoint. This is part of process ownership, not merely
+namespacing:
+
+- a plugin/package upgrade cannot make a new bridge connect to a daemon whose executable is still
+  mapped from an npm `.old-*` directory;
+- a replacement after a hard bridge crash cannot adopt the old daemon or its sessions;
+- the old endpoint becomes clientless, while `KillOnOwnerExit` bounds session cleanup and RMUX's
+  normal empty-daemon lifecycle can retire the daemon.
+
+The label is intentionally per bridge process rather than stable per installation. Stable labels
+would reintroduce cross-process daemon adoption after a crash or binary replacement.
+
 ## Non-goals
 
 - No `adopt` / `abandon` / fencing APIs against a foreign owner

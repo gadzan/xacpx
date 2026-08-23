@@ -4,6 +4,7 @@ Process-owned RMUX sidecar for `@ganglion/xacpx-channel-relay`.
 
 - Depends on published `rmux-sdk = "=0.10.0"` (crates.io only — no `../rmux` path dep).
 - Does **not** implement cross-process `adopt` / `abandon`. Normal shutdown kills sessions; hard crash relies on RMUX `KillOnOwnerExit` lease TTL.
+- Uses a fresh process-scoped RMUX endpoint instead of the user default socket, so a restarted or upgraded bridge never reconnects a daemon from an older package installation.
 - Opt-in real-daemon contract:
 
 ```bash

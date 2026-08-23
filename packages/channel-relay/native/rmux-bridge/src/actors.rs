@@ -10,11 +10,11 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rmux_sdk::{
     CleanupPolicy, NewWindowBuilder, OwnedSession, PaneId, PaneRecoveryEvent,
-    PaneRecoveryRebaseReason, Rmux, SessionName,
+    PaneRecoveryRebaseReason, Rmux, RmuxBuilder, SessionName,
 };
 use tokio::sync::{mpsc, Mutex};
 
@@ -38,6 +38,7 @@ const INITIAL_REBASE_TIMEOUT: Duration = Duration::from_secs(10);
 const POSIX_WEB_TERMINAL_DIALECT: &str = "xterm-256color";
 const POSIX_WEB_TERMINAL_DIALECT_CAPABILITY: &str =
     "terminal.posix-dialect.xterm-256color.v1";
+const RMUX_ENDPOINT_LABEL_PREFIX: &str = "xacpx-relay";
 
 pub struct BridgeState {
     rmux: Rmux,
@@ -56,8 +57,11 @@ struct SessionActor {
 }
 
 pub async fn connect_bridge() -> Result<Arc<BridgeState>, String> {
-    let rmux = Rmux::builder()
-        .default_timeout(Duration::from_secs(15))
+    let startup_nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| format!("rmux endpoint clock failed: {e}"))?
+        .as_nanos();
+    let rmux = process_scoped_rmux_builder(std::process::id(), startup_nonce)?
         .connect_or_start()
         .await
         .map_err(|e| format!("rmux connect failed: {e}"))?;
@@ -66,6 +70,33 @@ pub async fn connect_bridge() -> Result<Arc<BridgeState>, String> {
         sessions: Mutex::new(HashMap::new()),
         panes: Mutex::new(HashMap::new()),
     }))
+}
+
+fn process_scoped_rmux_builder(pid: u32, startup_nonce: u128) -> Result<RmuxBuilder, String> {
+    let label = format!("{RMUX_ENDPOINT_LABEL_PREFIX}-{pid}-{startup_nonce:x}");
+    let endpoint = rmux_ipc::endpoint_for_label(&label)
+        .map_err(|e| format!("rmux endpoint resolution failed: {e}"))?;
+    let builder = Rmux::builder().default_timeout(Duration::from_secs(15));
+
+    #[cfg(unix)]
+    {
+        Ok(builder.unix_socket(endpoint.into_path()))
+    }
+    #[cfg(windows)]
+    {
+        Ok(builder.windows_pipe(
+            endpoint
+                .as_path()
+                .as_os_str()
+                .to_string_lossy()
+                .into_owned(),
+        ))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (builder, endpoint);
+        Err("RMUX endpoint isolation is unsupported on this platform".to_owned())
+    }
 }
 
 impl BridgeState {
@@ -650,6 +681,17 @@ mod tests {
             POSIX_WEB_TERMINAL_DIALECT_CAPABILITY,
             "terminal.posix-dialect.xterm-256color.v1"
         );
+    }
+
+    #[test]
+    fn bridge_rmux_endpoint_is_process_scoped_instead_of_default() {
+        let first = process_scoped_rmux_builder(42, 0xabc).expect("process endpoint");
+        let second = process_scoped_rmux_builder(43, 0xdef).expect("process endpoint");
+
+        assert!(!first.configured_endpoint().is_default());
+        assert!(!second.configured_endpoint().is_default());
+        assert_ne!(first.configured_endpoint(), second.configured_endpoint());
+        assert!(format!("{:?}", first.configured_endpoint()).contains("xacpx-relay-42-abc"));
     }
 
     #[test]
