@@ -1,4 +1,33 @@
 # Changelog
+## [0.23.0-beta.3] - 2026-08-23
+
+### Added
+
+- Agent Messaging Collaboration UX v0.3: completion-card anchoring, context-aware `@Agent` ranking, and a completion policy (spec: `docs/superpowers/specs/2026-08-21-xacpx-agent-message-collaboration-ux-v0.3.md`).
+
+### Fixed
+
+- Completion lifecycle follow-ups (#295/#296/#297): definite route rejection now compensates both stale capability grants instead of waiting for TTL; expiry during downtime terminalizes the sender card on restart with a single cancelled patch; router-owned admitted-pending-persist state guarantees `deliverCompletion` runs exactly once even when the durable mark fails mid-admission.
+
+## [relay-protocol 0.5.0-beta.3] - 2026-08-23
+
+### Added
+
+- Collaboration v0.3 DTOs and messages: completion-route payloads, card-anchor fields, and updated agent-directory types for the ranking UI.
+
+## [relay 0.13.0-beta.3] - 2026-08-23
+
+### Added
+
+- Hub-side collaboration v0.3 routing and persistence: pending-completion routes, completion grant/compensation handling in the gateway, and agent-message store extensions.
+- relay-web dashboard collaboration v0.3 UI: anchored completion cards (`AgentMessageCard`), context-aware `@Agent` ranking in the prompt input, and turn presentation.
+
+## [channel-relay 0.7.0-beta.3] - 2026-08-23
+
+### Added
+
+- Upward tool-presentation and control-bridge updates for collaboration v0.3 (agent turn/tool presentation over the relay link).
+
 ## [0.23.0-beta.2] - 2026-08-20
 
 ### Added
