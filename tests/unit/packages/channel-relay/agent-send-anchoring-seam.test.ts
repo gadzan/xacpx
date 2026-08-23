@@ -142,32 +142,99 @@ test("Claude seam: display title ≠ agent_send, machine name in _meta.claudeCod
   expect(step.agentMessageId).toBe(RECEIPT.messageId);
 });
 
-test("Codex seam: no machine name, structuredContent dropped — display title + versioned text marker still anchors", async () => {
+test("Codex seam (real codex-acp shape): title mcp.server.tool, rawInput {server,tool}, receipt under rawOutput.result — anchors via structuredContent", async () => {
   const result = await callRealAgentSend();
+  // Exact codex-acp createMcpToolCallUpdate frame shape (verified against
+  // @agentclientprotocol/codex-acp): title `mcp.${server}.${tool}`,
+  // rawInput {server, tool, arguments}, rawOutput {result, error},
+  // _meta {is_mcp_tool_call: true}.
   const events = streamAcpFrames("codex", [
     {
       sessionUpdate: "tool_call",
       toolCallId: "call_as_1",
       kind: "other",
-      // Codex presents the MCP tool BY NAME in the title and forwards only the
-      // text content (structuredContent lost across the adapter).
-      title: "agent_send",
-      rawInput: { to: "agent:node-local:endpoint-peer", message: "ping" },
+      title: "mcp.xacpx.agent_send",
+      rawInput: {
+        server: "xacpx",
+        tool: "agent_send",
+        arguments: { to: "agent:node-local:endpoint-peer", message: "ping" },
+      },
       status: "pending",
+      _meta: { is_mcp_tool_call: true },
     },
     {
       sessionUpdate: "tool_call_update",
       toolCallId: "call_as_1",
       status: "completed",
-      rawOutput: result.text,
+      rawOutput: {
+        result: {
+          content: [{ type: "text", text: result.text }],
+          structuredContent: result.structuredContent,
+        },
+        error: null,
+      },
+      _meta: { is_mcp_tool_call: true },
     },
   ]);
 
   const terminal = events.at(-1)!;
-  expect(terminal.machineToolName).toBeUndefined();
+  // Display title is the dotted mcp.server.tool phrase — it must NOT match the
+  // agent_send correlation on its own.
+  expect(terminal.toolName).toBe("mcp.xacpx.agent_send");
+  // The stable identity comes from rawInput.tool.
+  expect(terminal.machineToolName).toBe("agent_send");
   expect(terminal.status).toBe("success");
 
   const step = toolUseEventToStepDto(terminal);
+  expect(step.agentMessageId).toBe(RECEIPT.messageId);
+});
+
+test("Codex seam, structuredContent dropped: the versioned marker under rawOutput.result.content anchors", async () => {
+  const result = await callRealAgentSend();
+  const events = streamAcpFrames("codex", [
+    {
+      sessionUpdate: "tool_call",
+      toolCallId: "call_as_2",
+      kind: "other",
+      title: "mcp.xacpx.agent_send",
+      rawInput: { server: "xacpx", tool: "agent_send", arguments: { to: "agent:node-local:endpoint-peer", message: "ping" } },
+      status: "pending",
+      _meta: { is_mcp_tool_call: true },
+    },
+    {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "call_as_2",
+      status: "completed",
+      // Adapter variant that drops structuredContent: only the text content
+      // survives inside result.content, carrying the versioned marker.
+      rawOutput: {
+        result: { content: [{ type: "text", text: result.text }] },
+        error: null,
+      },
+      _meta: { is_mcp_tool_call: true },
+    },
+  ]);
+
+  const step = toolUseEventToStepDto(events.at(-1)!);
+  expect(step.agentMessageId).toBe(RECEIPT.messageId);
+});
+
+test("Codex non-MCP tools (title is the machine name) keep bare-name correlation", async () => {
+  const result = await callRealAgentSend();
+  const events = streamAcpFrames("codex", [
+    {
+      sessionUpdate: "tool_call",
+      toolCallId: "call_as_3",
+      kind: "other",
+      // Dynamic (non-MCP) codex tools report the bare tool name as title and
+      // no {server,tool} rawInput — display fallback stays valid.
+      title: "agent_send",
+      rawInput: { arguments: { to: "agent:node-local:endpoint-peer", message: "ping" } },
+      status: "completed",
+      rawOutput: { result: { content: [{ type: "text", text: result.text }] }, error: null },
+    },
+  ]);
+  const step = toolUseEventToStepDto(events.at(-1)!);
   expect(step.agentMessageId).toBe(RECEIPT.messageId);
 });
 

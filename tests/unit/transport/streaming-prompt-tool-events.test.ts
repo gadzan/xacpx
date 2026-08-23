@@ -459,6 +459,45 @@ test("qoder and cursor machine tool names are extracted from their metadata name
     }),
   ).toMatchObject({ machineToolName: "mcp__xacpx__agent_send" });
 
+  // The `_toolName` rawInput marker is a cursor-agent convention — it must not
+  // be trusted from other drivers.
+  expect(
+    (collect("codex", {
+      sessionUpdate: "tool_call",
+      toolCallId: "c2",
+      kind: "other",
+      title: "Send message",
+      rawInput: { _toolName: "mcp__xacpx__agent_send", to: "agent:node_2:endpoint_b" },
+      status: "pending",
+    }) as Partial<ToolUseEvent>).machineToolName,
+  ).toBeUndefined();
+
+  // codex MCP calls: title is `mcp.<server>.<tool>` (display), rawInput
+  // {server, tool, arguments} carries the stable identity.
+  expect(
+    collect("codex", {
+      sessionUpdate: "tool_call",
+      toolCallId: "cx1",
+      kind: "other",
+      title: "mcp.xacpx.agent_send",
+      rawInput: { server: "xacpx", tool: "agent_send", arguments: { to: "agent:node_2:endpoint_b" } },
+      status: "pending",
+      _meta: { is_mcp_tool_call: true },
+    }),
+  ).toMatchObject({ machineToolName: "agent_send", toolName: "mcp.xacpx.agent_send" });
+
+  // codex non-MCP calls (no {server,tool} rawInput) expose no machine name.
+  expect(
+    (collect("codex", {
+      sessionUpdate: "tool_call",
+      toolCallId: "cx2",
+      kind: "other",
+      title: "agent_send",
+      rawInput: { arguments: { to: "agent:node_2:endpoint_b" } },
+      status: "pending",
+    }) as Partial<ToolUseEvent>).machineToolName,
+  ).toBeUndefined();
+
   // No provider metadata → no machine name (display title alone must not be
   // mistaken for one).
   expect(

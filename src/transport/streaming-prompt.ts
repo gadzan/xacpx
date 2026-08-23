@@ -525,7 +525,8 @@ function buildToolUseEvent(
   const machineToolName =
     (isClaudeDriver ? update._meta?.claudeCode?.toolName?.trim() : "") ||
     (driver === "qoder" ? update._meta?.qoder?.toolName?.trim() : "") ||
-    machineToolNameFromCursorInput(update.rawInput) ||
+    (driver === "codex" ? codexMcpMachineToolName(update.rawInput) : "") ||
+    (driver === "cursor" ? machineToolNameFromCursorInput(update.rawInput) : "") ||
     undefined;
   const parentToolCallId = claudeMeta?.parentToolUseId?.trim() || update.parentToolCallId?.trim();
   const isSubagent = (claudeMeta?.toolName === "Agent")
@@ -551,6 +552,20 @@ function buildToolUseEvent(
 
 /** Internal marker cursor-agent injects into `rawInput` to name the tool. */
 export const CURSOR_TOOL_NAME_KEY = "_toolName";
+
+/** Codex-acp reports MCP calls as `title: mcp.<server>.<tool>` with
+ *  `rawInput: {server, tool, arguments}` — the stable machine identity is the
+ *  tool field, NOT the dotted display title (see @agentclientprotocol/codex-acp
+ *  createMcpToolCallUpdate). Returns "" for non-MCP codex calls (their title is
+ *  already the machine name and needs no separate identity). */
+function codexMcpMachineToolName(rawInput: unknown): string {
+  if (!isRecord(rawInput)) return "";
+  const server = rawInput.server;
+  const tool = rawInput.tool;
+  if (typeof server !== "string" || server.trim().length === 0) return "";
+  if (typeof tool !== "string" || tool.trim().length === 0) return "";
+  return tool.trim();
+}
 
 /** Cursor's stable machine tool name, when the rawInput marker carries one. */
 function machineToolNameFromCursorInput(rawInput: unknown): string | undefined {

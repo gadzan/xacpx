@@ -148,22 +148,19 @@ function extractAgentMessageId(event: ToolUseEvent): string | undefined {
   // Host stringified the MCP result into text blocks: whole-block JSON first,
   // then the versioned marker line (adapters that keep the human line + marker
   // in one block, or drop structuredContent entirely).
-  const blocks = blocksOf(event.content);
-  const block = blocks[0];
-  if (block && block.type === "text" && typeof block.text === "string") {
-    try {
-      return agentReceiptMessageId(JSON.parse(block.text));
-    } catch {
-      // not JSON — fall through to the marker scan
-    }
-    const marker = block.text.match(AGENT_SEND_RECEIPT_MARKER_RE);
-    if (marker?.[1]) {
-      try {
-        return agentReceiptMessageId(JSON.parse(marker[1]));
-      } catch {
-        // malformed marker payload — nothing structured to read
-      }
-    }
+  const blockReceipt = textBlockOf(blocksOf(event.content)[0] ?? {});
+  if (blockReceipt) {
+    const found = receiptFromText(blockReceipt.text);
+    if (found) return found;
+  }
+  // codex-acp wraps the MCP CallToolResult as rawOutput.result and keeps the
+  // text blocks (with the versioned marker) inside result.content — scanned
+  // with the same structured-shape rules, never display-text scraping.
+  for (const block of blocksOf(result.content)) {
+    const tb = textBlockOf(block);
+    if (!tb) continue;
+    const found = receiptFromText(tb.text);
+    if (found) return found;
   }
   // Adapter kept no content blocks but passed the MCP text through as a bare
   // rawOutput string (or an output/text field) — same versioned marker scan.
@@ -172,13 +169,36 @@ function extractAgentMessageId(event: ToolUseEvent): string | undefined {
       ? event.rawOutput
       : (asString(output.output) ?? asString(output.text));
   if (rawText !== undefined) {
-    const marker = rawText.match(AGENT_SEND_RECEIPT_MARKER_RE);
-    if (marker?.[1]) {
-      try {
-        return agentReceiptMessageId(JSON.parse(marker[1]));
-      } catch {
-        // malformed marker payload — nothing structured to read
-      }
+    const found = receiptFromText(rawText);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/** A text content block that can be probed for a structured receipt. */
+function textBlockOf(
+  block: Record<string, unknown>,
+): { text: string } | undefined {
+  return block && block.type === "text" && typeof block.text === "string"
+    ? { text: block.text }
+    : undefined;
+}
+
+/** Receipt from one text surface: whole-block JSON, else the versioned marker
+ *  line. Returns undefined for anything else (incl. the human display line). */
+function receiptFromText(text: string): string | undefined {
+  try {
+    const direct = agentReceiptMessageId(JSON.parse(text));
+    if (direct) return direct;
+  } catch {
+    // not JSON — fall through to the marker scan
+  }
+  const marker = text.match(AGENT_SEND_RECEIPT_MARKER_RE);
+  if (marker?.[1]) {
+    try {
+      return agentReceiptMessageId(JSON.parse(marker[1]));
+    } catch {
+      // malformed marker payload — nothing structured to read
     }
   }
   return undefined;
