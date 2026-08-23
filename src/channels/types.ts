@@ -254,8 +254,17 @@ export interface ToolUseEvent {
   parentToolCallId?: string;
   /** This tool call represents a delegated subagent task rather than an ordinary tool. */
   isSubagent?: boolean;
-  /** Free-form tool name from the agent (e.g. "Read File", "Bash"). */
+  /** Free-form tool name from the agent (e.g. "Read File", "Bash"). This is the
+   *  ACP DISPLAY title — a human phrase, not a stable protocol identity, and may
+   *  differ from the underlying machine tool name on every driver. Presentation
+   *  only; NEVER use for protocol/tool-identity decisions (see machineToolName). */
   toolName: string;
+  /** Stable machine tool name extracted from provider metadata (Claude
+   *  `_meta.claudeCode.toolName`, Qoder `_meta.qoder.toolName`, Cursor
+   *  `rawInput._toolName`). Absent when the driver exposes none (e.g. Codex).
+   *  This is the ONLY field protocol-level tool identification (agent_send
+   *  correlation) may match on when present. */
+  machineToolName?: string;
   /** Coarse classifier produced by the transport from the agent's tool kind; channels use it to pick an icon. */
   kind: ToolUseKind;
   /** Best-effort one-line summary derived from `rawInput`. */

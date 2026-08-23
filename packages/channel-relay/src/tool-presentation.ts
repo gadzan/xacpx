@@ -124,11 +124,18 @@ function agentReceiptMessageId(v: unknown): string | undefined {
   return typeof r.status === "string" && AGENT_RECEIPT_STATUSES[r.status] === true ? messageId : undefined;
 }
 
+/** Versioned machine-readable receipt marker appended to agent_send's text
+ *  result (see src/mcp/xacpx-mcp-tools.ts). Parsed ONLY after the tool has been
+ *  identified as agent_send via its machine tool identity — never regex-scraped
+ *  out of arbitrary display text. */
+const AGENT_SEND_RECEIPT_MARKER_RE = /xacpx-agent-send-receipt:v1 (\{[^\n]*\})/;
+
 /** Extract the Agent Messaging receipt messageId from an agent_send tool event.
  * Structured shapes only: MCP structuredContent, a receipt-shaped rawOutput, a
- * JSON-RPC result envelope, or a single content text block that JSON-parses to
- * a receipt. The human display line ("Peer message msg_… accepted…") is never
- * parsed. Pure and total: malformed input yields undefined, never an exception. */
+ * JSON-RPC result envelope, a single content text block that JSON-parses to a
+ * receipt, or the versioned xacpx receipt marker inside a text block. The human
+ * display line ("Peer message msg_… accepted…") is never parsed. Pure and
+ * total: malformed input yields undefined, never an exception. */
 function extractAgentMessageId(event: ToolUseEvent): string | undefined {
   const output = rec(event.rawOutput);
   // Host preserved the MCP tool result's structured output.
@@ -138,14 +145,40 @@ function extractAgentMessageId(event: ToolUseEvent): string | undefined {
   const result = rec(output.result);
   const enveloped = agentReceiptMessageId(result.structuredContent) ?? agentReceiptMessageId(result);
   if (enveloped) return enveloped;
-  // Host stringified the MCP result into a single text block.
+  // Host stringified the MCP result into text blocks: whole-block JSON first,
+  // then the versioned marker line (adapters that keep the human line + marker
+  // in one block, or drop structuredContent entirely).
   const blocks = blocksOf(event.content);
   const block = blocks[0];
   if (block && block.type === "text" && typeof block.text === "string") {
     try {
       return agentReceiptMessageId(JSON.parse(block.text));
     } catch {
-      // not JSON (e.g. the human display line) — nothing structured to read
+      // not JSON — fall through to the marker scan
+    }
+    const marker = block.text.match(AGENT_SEND_RECEIPT_MARKER_RE);
+    if (marker?.[1]) {
+      try {
+        return agentReceiptMessageId(JSON.parse(marker[1]));
+      } catch {
+        // malformed marker payload — nothing structured to read
+      }
+    }
+  }
+  // Adapter kept no content blocks but passed the MCP text through as a bare
+  // rawOutput string (or an output/text field) — same versioned marker scan.
+  const rawText =
+    typeof event.rawOutput === "string"
+      ? event.rawOutput
+      : (asString(output.output) ?? asString(output.text));
+  if (rawText !== undefined) {
+    const marker = rawText.match(AGENT_SEND_RECEIPT_MARKER_RE);
+    if (marker?.[1]) {
+      try {
+        return agentReceiptMessageId(JSON.parse(marker[1]));
+      } catch {
+        // malformed marker payload — nothing structured to read
+      }
     }
   }
   return undefined;
@@ -176,8 +209,13 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
   // Agent Messaging correlation: only the agent_send tool (bare or MCP-qualified
   // as mcp__xacpx__agent_send — tight suffix match, no fuzzy contains) and only
   // a valid structured receipt may anchor a messageId to the step.
+  // Protocol identity is the MACHINE tool name when the driver exposed one
+  // (Claude `_meta.claudeCode.toolName`, Qoder, Cursor `_toolName`); the ACP
+  // display title in `toolName` is a human phrase ("Send peer message…") and is
+  // only consulted as a fallback for drivers without machine names (Codex).
+  const toolIdentity = event.machineToolName ?? event.toolName;
   const agentMessageId =
-    event.toolName === "agent_send" || /__?agent_send$/.test(event.toolName)
+    toolIdentity === "agent_send" || /__?agent_send$/.test(toolIdentity)
       ? extractAgentMessageId(event)
       : undefined;
   const base: Omit<ToolStepDto, "title" | "detail"> = {

@@ -584,8 +584,17 @@ export function buildXacpxMcpToolRegistry(input: {
             completionHint =
               " xacpx will return the peer's final result to this session when it completes. Do not poll or send acknowledgement messages.";
           }
+          // Machine-readable receipt marker (v0.3 presentation correlation):
+          // some ACP adapters drop MCP structuredContent and only forward text,
+          // so the human line alone is not a durable correlation source. The
+          // marker is versioned JSON and parsed ONLY by hosts that have already
+          // identified the tool as agent_send via its machine tool name.
+          const receiptMarker = `xacpx-agent-send-receipt:v1 ${JSON.stringify({
+            messageId: receipt.messageId,
+            status: receipt.status,
+          })}`;
           return createSuccessResult(
-            `Peer message ${receipt.messageId} accepted with status=${receipt.status}${receipt.modeUsed ? ` via ${receipt.modeUsed}` : ""}.${completionHint}`,
+            `Peer message ${receipt.messageId} accepted with status=${receipt.status}${receipt.modeUsed ? ` via ${receipt.modeUsed}` : ""}.${completionHint}\n${receiptMarker}`,
             receipt,
           );
         }),
