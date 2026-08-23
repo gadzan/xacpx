@@ -162,6 +162,15 @@ function extractAgentMessageId(event: ToolUseEvent): string | undefined {
     const found = receiptFromText(tb.text);
     if (found) return found;
   }
+  // omp (Oh My Pi) wraps the xd-device MCP result as rawOutput.content blocks
+  // next to its details.xdev execution metadata (verified against captured
+  // production frames) — same structured rules.
+  for (const block of blocksOf(output.content)) {
+    const tb = textBlockOf(block);
+    if (!tb) continue;
+    const found = receiptFromText(tb.text);
+    if (found) return found;
+  }
   // Adapter kept no content blocks but passed the MCP text through as a bare
   // rawOutput string (or an output/text field) — same versioned marker scan.
   const rawText =
