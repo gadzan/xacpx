@@ -285,6 +285,72 @@ test("late-join regression: running frame (no receipt) → sparse terminal frame
   expect(terminalStep.agentMessageId).toBe(RECEIPT.messageId);
 });
 
+test("omp seam (captured production frames): intent display title + xd:// write — machine identity from rawInput.path and details.xdev, receipt from rawOutput.content marker", async () => {
+  const result = await callRealAgentSend();
+  // Frames below are the ACTUAL captured production emission for my own
+  // agent_send call (xacpx session stream, driver "omp"): the display title
+  // is the MODEL INTENT, the tool identity rides rawInput.path (start) and
+  // rawOutput.details.xdev.tool (terminal), and the MCP result text (with the
+  // versioned marker) sits in rawOutput.content.
+  const events = streamAcpFrames("omp", [
+    {
+      sessionUpdate: "tool_call",
+      toolCallId: "call_cd61dee8f0404322b7dc960d",
+      title: "Send comm test to 发版 agent",
+      kind: "other",
+      rawInput: {
+        path: "xd://mcp__xacpx_agent_send",
+        content: JSON.stringify({ to: "agent:node_dfeca37e-158e-470f-9d44-0a52ce7a21a2:042495af-2662-439a-8979-0e12f15af05c", message: "通讯测试", completion: "result" }),
+      },
+      status: "pending",
+    },
+    {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "call_cd61dee8f0404322b7dc960d",
+      status: "completed",
+      rawOutput: {
+        content: [{ type: "text", text: result.text }],
+        details: {
+          xdev: {
+            tool: "mcp__xacpx_agent_send",
+            mode: "execute",
+            args: { to: "agent:node_dfeca37e-158e-470f-9d44-0a52ce7a21a2:042495af-2662-439a-8979-0e12f15af05c" },
+          },
+        },
+      },
+    },
+  ]);
+
+  const runningIdx = events.findIndex((e) => e.status === "running");
+  expect(runningIdx).toBe(0);
+  // Running frame: identity already resolvable from rawInput.path.
+  expect(events[0]!.machineToolName).toBe("mcp__xacpx_agent_send");
+  expect(events[0]!.toolName).toBe("Send comm test to 发版 agent");
+  expect(toolUseEventToStepDto(events[0]!).agentMessageId).toBeUndefined();
+
+  const terminal = events.at(-1)!;
+  // Terminal frame: identity re-confirmed from details.xdev; display stays intent.
+  expect(terminal.machineToolName).toBe("mcp__xacpx_agent_send");
+  expect(terminal.toolName).toBe("Send comm test to 发版 agent");
+  expect(terminal.status).toBe("success");
+
+  const step = toolUseEventToStepDto(terminal);
+  expect(step.agentMessageId).toBe(RECEIPT.messageId);
+});
+
+test("omp seam: intent-only title with NO machine identity never correlates (negative)", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "t",
+    toolName: "Request beta release from 发版 agent",
+    kind: "other",
+    status: "success",
+    rawOutput: {
+      content: [{ type: "text", text: `Peer message msg_${"a".repeat(8)} accepted with status=queued.\nxacpx-agent-send-receipt:v1 ${JSON.stringify({ messageId: `msg_${"a".repeat(8)}`, status: "queued" })}` }],
+    },
+  });
+  expect(step.agentMessageId).toBeUndefined();
+});
+
 test("a display title that merely MENTIONS agent_send never correlates when the machine name says otherwise", () => {
   const step = toolUseEventToStepDto({
     toolCallId: "t",

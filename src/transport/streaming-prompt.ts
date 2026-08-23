@@ -527,6 +527,9 @@ function buildToolUseEvent(
     (driver === "qoder" ? update._meta?.qoder?.toolName?.trim() : "") ||
     (driver === "codex" ? codexMcpMachineToolName(update.rawInput) : "") ||
     (driver === "cursor" ? machineToolNameFromCursorInput(update.rawInput) : "") ||
+    (driver === "omp"
+      ? ompXdevMachineToolName(update.rawInput, update.rawOutput)
+      : "") ||
     undefined;
   const parentToolCallId = claudeMeta?.parentToolUseId?.trim() || update.parentToolCallId?.trim();
   const isSubagent = (claudeMeta?.toolName === "Agent")
@@ -565,6 +568,34 @@ function codexMcpMachineToolName(rawInput: unknown): string {
   if (typeof server !== "string" || server.trim().length === 0) return "";
   if (typeof tool !== "string" || tool.trim().length === 0) return "";
   return tool.trim();
+}
+
+/** omp (Oh My Pi) executes MCP tools through xd:// device writes, and its ACP
+ *  display title is the MODEL'S INTENT (e.g. "Request beta release from …") —
+ *  never the tool name. The stable machine identity rides elsewhere (both
+ *  verified against captured production frames):
+ *  - start frame:     rawInput.path === "xd://<machineToolName>"
+ *  - terminal frame:  rawOutput.details.xdev.tool === "<machineToolName>"
+ */
+function ompXdevMachineToolName(rawInput: unknown, rawOutput: unknown): string {
+  const details = isRecord(rawOutput) ? rec2(rawOutput.details) : undefined;
+  const xdev = details ? rec2(details.xdev) : undefined;
+  if (typeof xdev?.tool === "string" && xdev.tool.trim().length > 0) {
+    return xdev.tool.trim();
+  }
+  const path =
+    isRecord(rawInput) && typeof rawInput.path === "string"
+      ? rawInput.path.trim()
+      : "";
+  if (path.toLowerCase().startsWith("xd://")) {
+    const name = path.slice(5).split(/[/?#]/)[0] ?? "";
+    if (name.length > 0) return name;
+  }
+  return "";
+}
+
+function rec2(v: unknown): Record<string, unknown> | undefined {
+  return isRecord(v) ? v : undefined;
 }
 
 /** Cursor's stable machine tool name, when the rawInput marker carries one. */

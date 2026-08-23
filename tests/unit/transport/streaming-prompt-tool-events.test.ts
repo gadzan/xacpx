@@ -520,6 +520,59 @@ test("qoder and cursor machine tool names are extracted from their metadata name
   ).toBeUndefined();
 });
 
+test("omp xdev machine identity: rawInput xd:// path (start) and rawOutput.details.xdev.tool (terminal) override the intent display title", () => {
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, { driver: "omp", onToolEvent: (e) => { events.push(e); } });
+  const send = (update: Record<string, unknown>) =>
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+
+  send({
+    sessionUpdate: "tool_call",
+    toolCallId: "xd-1",
+    kind: "other",
+    title: "Request beta release from 发版 agent",
+    rawInput: { path: "xd://mcp__xacpx_agent_send", content: "{}" },
+    status: "pending",
+  });
+  send({
+    sessionUpdate: "tool_call_update",
+    toolCallId: "xd-1",
+    status: "completed",
+    rawOutput: {
+      content: [{ type: "text", text: "ok" }],
+      details: { xdev: { tool: "mcp__xacpx_agent_send", mode: "execute" } },
+    },
+  });
+
+  expect(events.at(-1)).toMatchObject({
+    toolCallId: "xd-1",
+    toolName: "Request beta release from 发版 agent",
+    machineToolName: "mcp__xacpx_agent_send",
+    status: "success",
+  });
+});
+
+test("omp machine identity is driver-gated: non-omp drivers ignore xdev metadata and xd:// paths", () => {
+  const collect = (driver: string | undefined, update: Record<string, unknown>): ToolUseEvent | undefined => {
+    const events: ToolUseEvent[] = [];
+    const state = createStreamingPromptState(false, { driver, onToolEvent: (e) => { events.push(e); } });
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+    return events[0];
+  };
+  const frame = {
+    sessionUpdate: "tool_call",
+    toolCallId: "xd-g",
+    kind: "other",
+    title: "Send message",
+    rawInput: { path: "xd://mcp__xacpx_agent_send", content: "{}" },
+    rawOutput: { details: { xdev: { tool: "mcp__xacpx_agent_send" } } },
+    status: "pending",
+  };
+  expect((collect("claude", frame) as Partial<ToolUseEvent>).machineToolName).toBeUndefined();
+  expect((collect(undefined, frame) as Partial<ToolUseEvent>).machineToolName).toBeUndefined();
+  expect((collect("omp", frame) as Partial<ToolUseEvent>).machineToolName).toBe("mcp__xacpx_agent_send");
+});
+
 test("Claude Agent and its nested tools preserve subagent hierarchy across sparse updates", () => {
   const events: ToolUseEvent[] = [];
   const state = createStreamingPromptState(false, (event) => events.push(event));
