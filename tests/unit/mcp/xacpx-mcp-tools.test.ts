@@ -1347,6 +1347,7 @@ test("agent_send returns tailored success text for none, notify, and result comp
     coordinatorSession: "backend:main",
   });
   const sendTool = registry.find((tool) => tool.name === "agent_send");
+  const marker = `\nxacpx-agent-send-receipt:v1 ${JSON.stringify({ messageId: receipt.messageId, status: receipt.status })}`;
 
   // none / unset
   const resNone = await sendTool?.handler({
@@ -1354,7 +1355,7 @@ test("agent_send returns tailored success text for none, notify, and result comp
     message: "msg",
   });
   expect(resNone && "content" in resNone ? resNone.content[0]?.text : "").toBe(
-    "Peer message msg-123 accepted with status=queued.",
+    `Peer message msg-123 accepted with status=queued.${marker}`,
   );
 
   // notify
@@ -1364,7 +1365,7 @@ test("agent_send returns tailored success text for none, notify, and result comp
     completion: "notify",
   });
   expect(resNotify && "content" in resNotify ? resNotify.content[0]?.text : "").toBe(
-    "Peer message msg-123 accepted with status=queued. xacpx will notify this session when the peer turn completes. Do not poll or send acknowledgement messages.",
+    `Peer message msg-123 accepted with status=queued. xacpx will notify this session when the peer turn completes. Do not poll or send acknowledgement messages.${marker}`,
   );
 
   // result
@@ -1374,6 +1375,6 @@ test("agent_send returns tailored success text for none, notify, and result comp
     completion: "result",
   });
   expect(resResult && "content" in resResult ? resResult.content[0]?.text : "").toBe(
-    "Peer message msg-123 accepted with status=queued. xacpx will return the peer's final result to this session when it completes. Do not poll or send acknowledgement messages.",
+    `Peer message msg-123 accepted with status=queued. xacpx will return the peer's final result to this session when it completes. Do not poll or send acknowledgement messages.${marker}`,
   );
 });

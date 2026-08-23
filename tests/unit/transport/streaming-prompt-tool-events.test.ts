@@ -392,6 +392,134 @@ test("Claude sparse toolResponse update is terminal even when status is omitted"
   });
 });
 
+test("machine tool identity survives Claude display titles and sparse updates (agent_send correlation seam)", () => {
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, { onToolEvent: (e) => { events.push(e); } });
+  const send = (update: Record<string, unknown>) =>
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+
+  send({
+    sessionUpdate: "tool_call",
+    toolCallId: "as-1",
+    kind: "other",
+    title: "Send peer message to Worker B",
+    rawInput: { to: "agent:node_2:endpoint_b", message: "ping" },
+    status: "pending",
+    _meta: { claudeCode: { toolName: "mcp__xacpx__agent_send" } },
+  });
+  send({
+    sessionUpdate: "tool_call_update",
+    toolCallId: "as-1",
+    _meta: {
+      claudeCode: {
+        toolName: "mcp__xacpx__agent_send",
+        toolResponse: { messageId: "msg_1", status: "queued" },
+      },
+    },
+  });
+
+  expect(events.at(-1)).toMatchObject({
+    toolCallId: "as-1",
+    // Display title stays a display title — presentation only.
+    toolName: "Send peer message to Worker B",
+    // The stable machine identity is carried separately.
+    machineToolName: "mcp__xacpx__agent_send",
+    status: "success",
+    rawOutput: { messageId: "msg_1", status: "queued" },
+  });
+});
+
+test("qoder and cursor machine tool names are extracted from their metadata namespaces", () => {
+  const collect = (driver: string | undefined, update: Record<string, unknown>): ToolUseEvent | undefined => {
+    const events: ToolUseEvent[] = [];
+    const state = createStreamingPromptState(false, { driver, onToolEvent: (e) => { events.push(e); } });
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+    return events[0];
+  };
+
+  expect(
+    collect("qoder", {
+      sessionUpdate: "tool_call",
+      toolCallId: "q1",
+      kind: "other",
+      title: "发送同伴消息",
+      status: "pending",
+      _meta: { qoder: { toolName: "mcp__xacpx__agent_send" } },
+    }),
+  ).toMatchObject({ machineToolName: "mcp__xacpx__agent_send", toolName: "发送同伴消息" });
+
+  expect(
+    collect("cursor", {
+      sessionUpdate: "tool_call",
+      toolCallId: "c1",
+      kind: "other",
+      title: "Send message",
+      rawInput: { _toolName: "mcp__xacpx__agent_send", to: "agent:node_2:endpoint_b" },
+      status: "pending",
+    }),
+  ).toMatchObject({ machineToolName: "mcp__xacpx__agent_send" });
+
+  // The `_toolName` rawInput marker is a cursor-agent convention — it must not
+  // be trusted from other drivers.
+  expect(
+    (collect("codex", {
+      sessionUpdate: "tool_call",
+      toolCallId: "c2",
+      kind: "other",
+      title: "Send message",
+      rawInput: { _toolName: "mcp__xacpx__agent_send", to: "agent:node_2:endpoint_b" },
+      status: "pending",
+    }) as Partial<ToolUseEvent>).machineToolName,
+  ).toBeUndefined();
+
+  // codex MCP calls: title is `mcp.<server>.<tool>` (display), rawInput
+  // {server, tool, arguments} carries the stable identity.
+  expect(
+    collect("codex", {
+      sessionUpdate: "tool_call",
+      toolCallId: "cx1",
+      kind: "other",
+      title: "mcp.xacpx.agent_send",
+      rawInput: { server: "xacpx", tool: "agent_send", arguments: { to: "agent:node_2:endpoint_b" } },
+      status: "pending",
+      _meta: { is_mcp_tool_call: true },
+    }),
+  ).toMatchObject({ machineToolName: "agent_send", toolName: "mcp.xacpx.agent_send" });
+
+  // codex non-MCP calls (no {server,tool} rawInput) expose no machine name.
+  expect(
+    (collect("codex", {
+      sessionUpdate: "tool_call",
+      toolCallId: "cx2",
+      kind: "other",
+      title: "agent_send",
+      rawInput: { arguments: { to: "agent:node_2:endpoint_b" } },
+      status: "pending",
+    }) as Partial<ToolUseEvent>).machineToolName,
+  ).toBeUndefined();
+
+  // No provider metadata → no machine name (display title alone must not be
+  // mistaken for one).
+  expect(
+    collect("codex", {
+      sessionUpdate: "tool_call",
+      toolCallId: "x1",
+      kind: "other",
+      title: "agent_send",
+      status: "pending",
+    }),
+  ).toMatchObject({ toolName: "agent_send" });
+  expect(
+    (collect("codex", {
+      sessionUpdate: "tool_call",
+      toolCallId: "x1",
+      kind: "other",
+      title: "agent_send",
+      status: "pending",
+    }) as Partial<ToolUseEvent>).machineToolName,
+  ).toBeUndefined();
+});
+
 test("Claude Agent and its nested tools preserve subagent hierarchy across sparse updates", () => {
   const events: ToolUseEvent[] = [];
   const state = createStreamingPromptState(false, (event) => events.push(event));
@@ -480,6 +608,8 @@ test("Qoder Agent metadata produces a subagent event across a sparse terminal up
     toolCallId: "qoder-agent-1",
     isSubagent: true,
     toolName: "Agent",
+    // qoder metadata names the machine tool — carried as stable identity.
+    machineToolName: "Agent",
     kind: "think",
     summary: "general-purpose: Pick a random number 1-100",
     rawInput: {

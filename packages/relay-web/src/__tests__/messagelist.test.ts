@@ -519,6 +519,37 @@ describe("MessageList", () => {
     expect(anchored.element.compareDocumentPosition(mds[2]!.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it("late-joins the anchored card when the terminal step arrives after the standalone row (running → receipt update, same toolCallId)", async () => {
+    // The transport seam reality: while the MCP agent_send call is in flight the
+    // step is running with NO agentMessageId, so the sent card renders standalone.
+    const runningStep = { ...sendStep("send-late"), status: "running" as const, agentMessageId: undefined };
+    const runningTurn = msg({
+      direction: "out",
+      text: "running",
+      status: "streaming",
+      structured: { parts: [{ type: "tool", step: runningStep }] },
+    });
+    const wrapper = mount(MessageList, {
+      props: { messages: [runningTurn, sentCard("m1")], liveTurn: null },
+    });
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
+    // Standalone row is visible BEFORE correlation exists.
+    expect(wrapper.find('[data-test="msg-out"] [data-test="turn-agent-message"]').exists()).toBe(false);
+
+    // The sparse terminal update replaces the running step with one carrying
+    // agentMessageId (upsertTool semantics) — the standalone row must be
+    // suppressed and the card re-anchored after the exact toolCallId.
+    await wrapper.setProps({
+      messages: [turnWithSend("m1"), sentCard("m1")],
+    });
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
+    const anchored = wrapper.find('[data-test="msg-out"] [data-test="turn-agent-message"]');
+    expect(anchored.exists()).toBe(true);
+    const tool = wrapper.find('[data-test="tool-step-card"]');
+    expect(tool.exists()).toBe(true);
+    expect(tool.element.compareDocumentPosition(anchored.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("keeps a received card standalone even when a turn step references its message id (Gate B)", () => {
     const wrapper = mount(MessageList, {
       props: {

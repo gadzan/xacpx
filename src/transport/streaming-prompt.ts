@@ -517,6 +517,17 @@ function buildToolUseEvent(
   const content = update.content;
   const rawOutput = update.rawOutput ?? claudeToolResponse;
   const locations = update.locations;
+  // Stable machine tool identity for protocol decisions (agent_send correlation):
+  // the ACP `title` is a DISPLAY phrase ("Send peer message…"), not the tool name.
+  // Providers stamp the real machine name in their own metadata namespaces:
+  // Claude Code `_meta.claudeCode.toolName` (e.g. "mcp__xacpx__agent_send"),
+  // Qoder `_meta.qoder.toolName`, Cursor a `_toolName` marker in rawInput.
+  const machineToolName =
+    (isClaudeDriver ? update._meta?.claudeCode?.toolName?.trim() : "") ||
+    (driver === "qoder" ? update._meta?.qoder?.toolName?.trim() : "") ||
+    (driver === "codex" ? codexMcpMachineToolName(update.rawInput) : "") ||
+    (driver === "cursor" ? machineToolNameFromCursorInput(update.rawInput) : "") ||
+    undefined;
   const parentToolCallId = claudeMeta?.parentToolUseId?.trim() || update.parentToolCallId?.trim();
   const isSubagent = (claudeMeta?.toolName === "Agent")
     || (driver === "qoder" && update._meta?.qoder?.toolName === "Agent")
@@ -528,6 +539,7 @@ function buildToolUseEvent(
     ...(parentToolCallId ? { parentToolCallId } : {}),
     ...(isSubagent ? { isSubagent: true } : {}),
     toolName,
+    ...(machineToolName ? { machineToolName } : {}),
     kind,
     ...(summary ? { summary } : {}),
     ...(rawInput !== undefined ? { rawInput } : {}),
@@ -540,6 +552,29 @@ function buildToolUseEvent(
 
 /** Internal marker cursor-agent injects into `rawInput` to name the tool. */
 export const CURSOR_TOOL_NAME_KEY = "_toolName";
+
+/** Codex-acp reports MCP calls as `title: mcp.<server>.<tool>` with
+ *  `rawInput: {server, tool, arguments}` — the stable machine identity is the
+ *  tool field, NOT the dotted display title (see @agentclientprotocol/codex-acp
+ *  createMcpToolCallUpdate). Returns "" for non-MCP codex calls (their title is
+ *  already the machine name and needs no separate identity). */
+function codexMcpMachineToolName(rawInput: unknown): string {
+  if (!isRecord(rawInput)) return "";
+  const server = rawInput.server;
+  const tool = rawInput.tool;
+  if (typeof server !== "string" || server.trim().length === 0) return "";
+  if (typeof tool !== "string" || tool.trim().length === 0) return "";
+  return tool.trim();
+}
+
+/** Cursor's stable machine tool name, when the rawInput marker carries one. */
+function machineToolNameFromCursorInput(rawInput: unknown): string | undefined {
+  if (!isRecord(rawInput)) return undefined;
+  const declared = rawInput[CURSOR_TOOL_NAME_KEY];
+  if (typeof declared !== "string") return undefined;
+  const trimmed = declared.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
 
 const CURSOR_PLAN_TOOL_NAMES = new Set([
   "todowrite", "createplan", "updateplan", "plan", "updatetodos", "todoread",
