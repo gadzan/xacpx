@@ -12,8 +12,8 @@ Ship the Relay Web terminal **without modifying `../rmux`**. The connector owns 
 |---|---|
 | Browser refresh / hub disconnect | Detach viewers only; shell stays |
 | Multi-viewer / take-control / rebase | Unchanged |
-| Normal xacpx / sidecar stop | Durable `reaping` → explicit kill |
-| Hard crash | Daemon reaps within `ownerLeaseTtlSeconds` |
+| Normal xacpx / sidecar stop | Durable `reaping` → explicit `Rmux::shutdown()` |
+| Hard crash | Daemon reaps sessions within `ownerLeaseTtlSeconds`, then forced `exit-empty=on` retires it |
 | New process start | **Never adopt**; reap leftover registry / inventory names |
 
 `terminal.enabled` remains default **false**.
@@ -29,10 +29,17 @@ namespacing:
   mapped from an npm `.old-*` directory;
 - a replacement after a hard bridge crash cannot adopt the old daemon or its sessions;
 - the old endpoint becomes clientless, while `KillOnOwnerExit` bounds session cleanup and RMUX's
-  normal empty-daemon lifecycle can retire the daemon.
+  forced empty-config `exit-empty=on` lifecycle retires the daemon.
 
 The label is intentionally per bridge process rather than stable per installation. Stable labels
 would reintroduce cross-process daemon adoption after a crash or binary replacement.
+
+Bridge bootstrap is lazy: handshake and diagnostics do not call `connect_or_start`; the first real
+session create starts the private daemon. Clean bridge shutdown explicitly calls `Rmux::shutdown()`
+and is a no-op when the bridge stayed dormant. The supervisor forces the child-only
+`RMUX_CONFIG_FILE` to `/dev/null` (Unix) or `NUL` (Windows), so user configuration cannot turn off
+`exit-empty` for this private daemon. Together with `KillOnOwnerExit`, this also bounds daemon
+retirement after a hard bridge crash without depending on a future process adopting the endpoint.
 
 ## Non-goals
 

@@ -89,6 +89,28 @@ test("supervisor starts injected driver once and exposes supervised proxy", asyn
   await supervisor.stop();
 });
 
+test("production spawn isolates the endpoint and ignores user RMUX config", async () => {
+  const child = makeFakeChild({ autoHandshake: true });
+  let capturedEnv: NodeJS.ProcessEnv | undefined;
+  const labels = ["xacpx-relay-4242-first", "xacpx-relay-4242-second"];
+  const supervisor = new RmuxSidecarSupervisor({
+    config: parseRelayTerminalConfig({ enabled: true }),
+    spawnFn: (((_command, _args, options) => {
+      capturedEnv = options?.env;
+      return child;
+    }) as unknown as typeof spawn),
+    endpointLabelFactory: () => labels.shift() ?? "unexpected",
+    maxRestarts: 0,
+  });
+
+  await supervisor.start();
+  expect(capturedEnv?.XACPX_RMUX_ENDPOINT_LABEL).toBe("xacpx-relay-4242-first");
+  expect(capturedEnv?.RMUX_CONFIG_FILE).toBe(
+    process.platform === "win32" ? "NUL" : "/dev/null",
+  );
+  await supervisor.stop();
+});
+
 test("supervised proxy fences when supervisor has no live driver", async () => {
   const supervisor = new RmuxSidecarSupervisor({
     config: parseRelayTerminalConfig({ enabled: true }),
@@ -253,12 +275,21 @@ test("createProductionTerminalDriver stops the supervisor when handshake fails",
 test("handshake-ok then immediate crash is capped at 1 + maxRestarts spawns with growing backoff", async () => {
   let spawns = 0;
   const delays: number[] = [];
+  const endpointLabels = [
+    "endpoint-1",
+    "endpoint-2",
+    "endpoint-3",
+    "endpoint-4",
+  ];
+  const spawnedLabels: Array<string | undefined> = [];
   const supervisor = new RmuxSidecarSupervisor({
     config: parseRelayTerminalConfig({ enabled: true }),
-    spawnFn: ((() => {
+    spawnFn: (((_command, _args, options) => {
       spawns += 1;
+      spawnedLabels.push(options?.env?.XACPX_RMUX_ENDPOINT_LABEL);
       return makeFakeChild({ autoHandshake: true, exitAfterHandshake: true });
     }) as unknown as typeof spawn),
+    endpointLabelFactory: () => endpointLabels.shift() ?? "unexpected",
     requestTimeoutMs: 40,
     sleep: async (ms) => {
       delays.push(ms);
@@ -274,5 +305,11 @@ test("handshake-ok then immediate crash is capped at 1 + maxRestarts spawns with
   await Bun.sleep(40);
   expect(spawns).toBe(4);
   expect(delays).toEqual([500, 1000, 2000]);
+  expect(spawnedLabels).toEqual([
+    "endpoint-1",
+    "endpoint-2",
+    "endpoint-3",
+    "endpoint-4",
+  ]);
   await supervisor.stop();
 });

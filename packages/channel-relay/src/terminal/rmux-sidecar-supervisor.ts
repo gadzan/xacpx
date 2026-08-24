@@ -3,6 +3,7 @@
 // Never runs two sidecars that could double-write the same RMUX names.
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomUUID } from "node:crypto";
 
 import type { RelayTerminalConfig } from "../config.js";
 import {
@@ -37,7 +38,14 @@ export interface RmuxSidecarSupervisorOptions {
   stableAfterMs?: number;
   /** Invoked after the live child exits unexpectedly (before restart). */
   onChildExit?: () => void;
+  /** Test seam; production mints a fresh label for every native sidecar spawn. */
+  endpointLabelFactory?: () => string;
 }
+
+const emptyRmuxConfigPath = (): string =>
+  process.platform === "win32" ? "NUL" : "/dev/null";
+const newEndpointLabel = (): string =>
+  `xacpx-relay-${process.pid}-${randomUUID().replaceAll("-", "")}`;
 
 /**
  * Stable driver handle for the lifetime of a supervisor. Forwards to the
@@ -183,6 +191,12 @@ export class RmuxSidecarSupervisor {
       if (binaries.rmuxCommand) {
         env.RMUX_SDK_DAEMON_BINARY = binaries.rmuxCommand;
       }
+      // This daemon is private to one sidecar process. User RMUX config must
+      // not disable exit-empty, otherwise a hard owner crash could leave its
+      // never-adopted endpoint alive forever after leases reap the sessions.
+      env.RMUX_CONFIG_FILE = emptyRmuxConfigPath();
+      env.XACPX_RMUX_ENDPOINT_LABEL =
+        (this.opts.endpointLabelFactory ?? newEndpointLabel)();
 
       spawned = spawnFn(binaries.bridgeCommand, [], {
         stdio: ["pipe", "pipe", "pipe"],

@@ -8,6 +8,7 @@
 //! 4. resize the work window + set `history-limit` on the stable pane id
 
 use std::collections::HashMap;
+use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -39,11 +40,20 @@ const POSIX_WEB_TERMINAL_DIALECT: &str = "xterm-256color";
 const POSIX_WEB_TERMINAL_DIALECT_CAPABILITY: &str =
     "terminal.posix-dialect.xterm-256color.v1";
 const RMUX_ENDPOINT_LABEL_PREFIX: &str = "xacpx-relay";
+const RMUX_ENDPOINT_LABEL_ENV: &str = "XACPX_RMUX_ENDPOINT_LABEL";
 
 pub struct BridgeState {
     rmux: Rmux,
+    daemon: Mutex<DaemonLifecycle>,
     sessions: Mutex<HashMap<String, SessionActor>>,
     panes: Mutex<HashMap<String, String>>, // pane_id → session_id
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DaemonLifecycle {
+    Dormant,
+    Live,
+    Shutdown,
 }
 
 struct SessionActor {
@@ -57,24 +67,63 @@ struct SessionActor {
 }
 
 pub async fn connect_bridge() -> Result<Arc<BridgeState>, String> {
+    let pid = std::process::id();
     let startup_nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| format!("rmux endpoint clock failed: {e}"))?
         .as_nanos();
-    let rmux = process_scoped_rmux_builder(std::process::id(), startup_nonce)?
-        .connect_or_start()
-        .await
-        .map_err(|e| format!("rmux connect failed: {e}"))?;
+    let label = match env::var_os(RMUX_ENDPOINT_LABEL_ENV) {
+        Some(value) => validate_endpoint_label(value.into_string().map_err(|_| {
+            "rmux endpoint label must be valid Unicode".to_owned()
+        })?)?,
+        None => process_scoped_endpoint_label(pid, startup_nonce),
+    };
+    new_bridge_state_for_label(&label)
+}
+
+#[cfg(test)]
+fn new_bridge_state(pid: u32, startup_nonce: u128) -> Result<Arc<BridgeState>, String> {
+    let label = process_scoped_endpoint_label(pid, startup_nonce);
+    new_bridge_state_for_label(&label)
+}
+
+fn new_bridge_state_for_label(label: &str) -> Result<Arc<BridgeState>, String> {
+    let rmux = rmux_builder_for_label(label)?.build();
     Ok(Arc::new(BridgeState {
         rmux,
+        daemon: Mutex::new(DaemonLifecycle::Dormant),
         sessions: Mutex::new(HashMap::new()),
         panes: Mutex::new(HashMap::new()),
     }))
 }
 
+#[cfg(test)]
 fn process_scoped_rmux_builder(pid: u32, startup_nonce: u128) -> Result<RmuxBuilder, String> {
-    let label = format!("{RMUX_ENDPOINT_LABEL_PREFIX}-{pid}-{startup_nonce:x}");
-    let endpoint = rmux_ipc::endpoint_for_label(&label)
+    let label = process_scoped_endpoint_label(pid, startup_nonce);
+    rmux_builder_for_label(&label)
+}
+
+fn process_scoped_endpoint_label(pid: u32, startup_nonce: u128) -> String {
+    format!("{RMUX_ENDPOINT_LABEL_PREFIX}-{pid}-{startup_nonce:x}")
+}
+
+fn validate_endpoint_label(label: String) -> Result<String, String> {
+    if label.is_empty()
+        || label.len() > 96
+        || !label
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(
+            "rmux endpoint label must contain only ASCII letters, digits, '-' or '_' and be at most 96 bytes"
+                .to_owned(),
+        );
+    }
+    Ok(label)
+}
+
+fn rmux_builder_for_label(label: &str) -> Result<RmuxBuilder, String> {
+    let endpoint = rmux_ipc::endpoint_for_label(label)
         .map_err(|e| format!("rmux endpoint resolution failed: {e}"))?;
     let builder = Rmux::builder().default_timeout(Duration::from_secs(15));
 
@@ -100,6 +149,34 @@ fn process_scoped_rmux_builder(pid: u32, startup_nonce: u128) -> Result<RmuxBuil
 }
 
 impl BridgeState {
+    async fn ensure_daemon(&self) -> Result<(), String> {
+        let mut lifecycle = self.daemon.lock().await;
+        match *lifecycle {
+            DaemonLifecycle::Live => return Ok(()),
+            DaemonLifecycle::Shutdown => return Err("rmux bridge is shutting down".to_owned()),
+            DaemonLifecycle::Dormant => {}
+        }
+
+        let connected = Rmux::builder()
+            .endpoint(self.rmux.endpoint().clone())
+            .default_timeout(Duration::from_secs(15))
+            .connect_or_start()
+            .await
+            .map_err(|e| format!("rmux connect failed: {e}"))?;
+        drop(connected);
+        *lifecycle = DaemonLifecycle::Live;
+        Ok(())
+    }
+
+    async fn daemon_is_live(&self) -> bool {
+        *self.daemon.lock().await == DaemonLifecycle::Live
+    }
+
+    #[cfg(test)]
+    async fn daemon_lifecycle(&self) -> DaemonLifecycle {
+        *self.daemon.lock().await
+    }
+
     pub async fn create(
         &self,
         name: String,
@@ -110,6 +187,7 @@ impl BridgeState {
         tags: Vec<String>,
         owner_lease_ttl_seconds: u32,
     ) -> Result<(String, String, String, Vec<String>), String> {
+        self.ensure_daemon().await?;
         {
             let sessions = self.sessions.lock().await;
             if sessions.values().any(|s| s.name == name) {
@@ -205,6 +283,9 @@ impl BridgeState {
     }
 
     pub async fn list(&self) -> Vec<InventoryEntryDto> {
+        if !self.daemon_is_live().await {
+            return Vec::new();
+        }
         let sessions = self.sessions.lock().await;
         let mut entries: Vec<InventoryEntryDto> = sessions
             .values()
@@ -239,6 +320,9 @@ impl BridgeState {
     }
 
     pub async fn kill(&self, session_id: &str) -> Result<(), String> {
+        if !self.daemon_is_live().await {
+            return Ok(());
+        }
         let mut sessions = self.sessions.lock().await;
         if let Some(mut actor) = sessions.remove(session_id) {
             if let Some(handle) = actor.recover_abort.take() {
@@ -463,12 +547,41 @@ impl BridgeState {
     }
 
     pub async fn shutdown_all(&self) {
-        let keys: Vec<String> = {
-            let sessions = self.sessions.lock().await;
-            sessions.keys().cloned().collect()
+        let should_shutdown = {
+            let mut lifecycle = self.daemon.lock().await;
+            match *lifecycle {
+                DaemonLifecycle::Dormant => {
+                    *lifecycle = DaemonLifecycle::Shutdown;
+                    false
+                }
+                DaemonLifecycle::Live => {
+                    *lifecycle = DaemonLifecycle::Shutdown;
+                    true
+                }
+                DaemonLifecycle::Shutdown => false,
+            }
         };
-        for key in keys {
-            let _ = self.kill(&key).await;
+        if !should_shutdown {
+            return;
+        }
+
+        {
+            let mut sessions = self.sessions.lock().await;
+            for actor in sessions.values_mut() {
+                if let Some(handle) = actor.recover_abort.take() {
+                    handle.abort();
+                }
+            }
+        }
+
+        let builder = Rmux::builder()
+            .endpoint(self.rmux.endpoint().clone())
+            .default_timeout(Duration::from_secs(15));
+        let Ok(rmux) = builder.connect().await else {
+            return;
+        };
+        if let Err(err) = rmux.shutdown().await {
+            eprintln!("xacpx-rmux-bridge daemon shutdown failed: {err}");
         }
     }
 
@@ -686,12 +799,29 @@ mod tests {
     #[test]
     fn bridge_rmux_endpoint_is_process_scoped_instead_of_default() {
         let first = process_scoped_rmux_builder(42, 0xabc).expect("process endpoint");
-        let second = process_scoped_rmux_builder(43, 0xdef).expect("process endpoint");
+        let second = process_scoped_rmux_builder(42, 0xdef).expect("process endpoint");
 
         assert!(!first.configured_endpoint().is_default());
         assert!(!second.configured_endpoint().is_default());
         assert_ne!(first.configured_endpoint(), second.configured_endpoint());
         assert!(format!("{:?}", first.configured_endpoint()).contains("xacpx-relay-42-abc"));
+    }
+
+    #[test]
+    fn injected_endpoint_label_rejects_paths_and_accepts_supervisor_labels() {
+        assert!(validate_endpoint_label("../default".to_owned()).is_err());
+        assert!(validate_endpoint_label("xacpx-relay-42_nonce".to_owned()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn bridge_stays_dormant_until_terminal_work_and_dormant_shutdown_starts_nothing() {
+        let bridge = new_bridge_state(42, 0xabc).expect("bridge state");
+
+        assert_eq!(bridge.daemon_lifecycle().await, DaemonLifecycle::Dormant);
+        assert!(bridge.list().await.is_empty());
+        assert_eq!(bridge.daemon_lifecycle().await, DaemonLifecycle::Dormant);
+        bridge.shutdown_all().await;
+        assert_eq!(bridge.daemon_lifecycle().await, DaemonLifecycle::Shutdown);
     }
 
     #[test]

@@ -1,7 +1,8 @@
 /**
  * Production-platform-package smoke: resolve the bridge + bundled RMUX from
  * the real npm layout, then run a live create → input → recover → resize → kill
- * cycle with a HOSTILE fake RMUX on PATH that must never be executed.
+ * cycle with a HOSTILE fake RMUX on PATH and a poisoned user-default daemon;
+ * neither may be used by the production bridge.
  *
  * Requires (publish workflow / Windows CI only, never default CI):
  *   XACPX_RMUX_PLATFORM_PACKAGE=1
@@ -101,7 +102,7 @@ function collectUntil(
   })();
 }
 
-test.skipIf(!enabled)("bundled RMUX daemon is resolved over a hostile PATH fake; live lifecycle works and the fake is never executed", async () => {
+test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default daemon; private lifecycle is lazy and retired", async () => {
   // --- Hostile environment: fake rmux 0.9-ish at the FRONT of PATH -----------
   const hostileDir = tempDir("rmux-hostile-");
   const marker = join(hostileDir, "fake-ran.marker");
@@ -114,13 +115,20 @@ test.skipIf(!enabled)("bundled RMUX daemon is resolved over a hostile PATH fake;
     marker,
   );
   const hostilePath = hostileDir + delimiter + (process.env.PATH ?? "");
+  const hostileConfig = join(hostileDir, "rmux.conf");
+  writeFileSync(hostileConfig, "set-option -g exit-empty off\n");
+  const endpointLabel = `xacpx-relay-smoke-${process.pid}-${Date.now()}`;
+  const poisonName = `xacpx-default-poison-${process.pid}-${Date.now()}`;
 
   // Resolution AND the production lifecycle must see the hostile PATH. The
   // supervisor reads process.env.PATH at resolution time and the bridge child
   // inherits { ...process.env }, so swapping PATH for the whole lifecycle
   // proves the fake can never be selected or executed anywhere in the chain.
   const oldPath = process.env.PATH;
+  const oldRmuxConfig = process.env.RMUX_CONFIG_FILE;
+  let bundledCliForCleanup: string | undefined;
   process.env.PATH = hostilePath;
+  process.env.RMUX_CONFIG_FILE = hostileConfig;
   try {
     // --- Production resolution must pick the bundled platform-package daemon -
     const resolved = resolveRmuxBinaries({
@@ -142,15 +150,45 @@ test.skipIf(!enabled)("bundled RMUX daemon is resolved over a hostile PATH fake;
       resolved.rmuxCommand!.slice(0, -basename(resolved.rmuxCommand!).length),
       process.platform === "win32" ? "rmux.exe" : "rmux",
     );
+    bundledCliForCleanup = bundledCli;
     const probe = Bun.spawnSync([bundledCli, "-V"], { encoding: "utf8" });
     expect(probe.exitCode).toBe(0);
     expect(`${probe.stdout}${probe.stderr}`).toContain(`rmux ${RMUX_BUNDLED_VERSION}`);
 
+    // Occupy the user default endpoint with a daemon that deterministically
+    // kills every subsequently-created default-command pane. If the bridge
+    // ever regresses to the default endpoint, the production lifecycle below
+    // fails immediately. exit-empty=off also keeps the poison observable.
+    Bun.spawnSync([bundledCli, "kill-server"], { encoding: "utf8" });
+    const poisonCreate = Bun.spawnSync(
+      [bundledCli, "new-session", "-d", "-s", poisonName],
+      { encoding: "utf8" },
+    );
+    expect(poisonCreate.exitCode).toBe(0);
+    expect(Bun.spawnSync(
+      [bundledCli, "set-option", "-g", "exit-empty", "off"],
+      { encoding: "utf8" },
+    ).exitCode).toBe(0);
+    expect(Bun.spawnSync(
+      [bundledCli, "set-option", "-g", "default-command", "exit 97"],
+      { encoding: "utf8" },
+    ).exitCode).toBe(0);
+
     // --- Live lifecycle through the PRODUCTION sidecar (no explicit commands) --
     const cwd = tempDir("rmux-smoke-pkg-");
     const config = parseRelayTerminalConfig({ enabled: true, ownerLeaseTtlSeconds: 30 });
-    const prod = await createProductionTerminalDriver(config);
+    const prod = await createProductionTerminalDriver(config, {
+      endpointLabelFactory: () => endpointLabel,
+    });
     live.push(prod);
+
+    // Handshake/diagnostics are sidecar-local: terminal.enabled alone must not
+    // start an RMUX daemon before the first true terminal operation.
+    const lazyProbe = Bun.spawnSync(
+      [bundledCli, "-L", endpointLabel, "kill-server"],
+      { encoding: "utf8" },
+    );
+    expect(lazyProbe.exitCode, "bridge bootstrap must leave RMUX dormant").not.toBe(0);
 
     const name = `xacpx-pkg-smoke-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
     const handle = await prod.driver.create({
@@ -177,6 +215,16 @@ test.skipIf(!enabled)("bundled RMUX daemon is resolved over a hostile PATH fake;
     expect(initialRebase!.cols).toBe(132);
     expect(initialRebase!.rows).toBe(47);
 
+    // The parent test process advertises a hostile exit-empty=off config, but
+    // the private process-owned daemon must ignore it so a hard bridge crash
+    // can retire after KillOnOwnerExit reaps its final session.
+    const exitEmpty = Bun.spawnSync(
+      [bundledCli, "-L", endpointLabel, "show-options", "-gqv", "exit-empty"],
+      { encoding: "utf8" },
+    );
+    expect(exitEmpty.exitCode).toBe(0);
+    expect(exitEmpty.stdout.trim()).toBe("on");
+
     // The exact production package must also prove that a subsequent resize
     // reaches the native RMUX pane. Starting a fresh recovery after resize gives
     // us an authoritative rebase geometry instead of merely checking that the
@@ -195,14 +243,52 @@ test.skipIf(!enabled)("bundled RMUX daemon is resolved over a hostile PATH fake;
     await prod.driver.kill(handle.sessionId);
     expect((await prod.driver.list()).every((e) => e.name !== name)).toBe(true);
 
+    // The dedicated lifecycle must not mutate or shut down the poisoned user
+    // default daemon.
+    expect(Bun.spawnSync(
+      [bundledCli, "has-session", "-t", poisonName],
+      { encoding: "utf8" },
+    ).exitCode).toBe(0);
+
+    // Leave one private session live so supervisor.stop must use the bridge's
+    // explicit Rmux::shutdown path; an already-empty daemon could otherwise
+    // disappear via exit-empty and give a false-positive retirement check.
+    const shutdownSentinel = await prod.driver.create({
+      name: `xacpx-pkg-shutdown-${Date.now()}`,
+      cwd,
+      cols: 80,
+      rows: 24,
+      historyLimit: 200,
+      tags: ["xacpx:relay", "smoke:shutdown-sentinel"],
+      ownerLeaseTtlSeconds: 30,
+    });
+    expect(
+      (await prod.driver.list()).some(
+        (entry) => entry.sessionId === shutdownSentinel.sessionId,
+      ),
+    ).toBe(true);
+
     // --- Hostile regression proof: the PATH fake(s) were never executed ------
     // PATH is still hostile here; the marker would exist if anything on PATH
     // had been invoked by the resolver, the sidecar, or the terminal shell.
     await live.pop()?.supervisor.stop();
+    const retiredProbe = Bun.spawnSync(
+      [bundledCli, "-L", endpointLabel, "kill-server"],
+      { encoding: "utf8" },
+    );
+    expect(
+      retiredProbe.exitCode,
+      "clean stop must explicitly retire the private daemon",
+    ).not.toBe(0);
     expect(existsSync(marker), "PATH fake rmux must never execute").toBe(false);
     expect(hostilePath.includes(hostileDir)).toBe(true);
   } finally {
+    if (bundledCliForCleanup) {
+      Bun.spawnSync([bundledCliForCleanup, "kill-server"], { encoding: "utf8" });
+    }
     process.env.PATH = oldPath;
+    if (oldRmuxConfig === undefined) delete process.env.RMUX_CONFIG_FILE;
+    else process.env.RMUX_CONFIG_FILE = oldRmuxConfig;
   }
 
   // Sanity: the fake would have marked if actually invoked.
