@@ -568,3 +568,12 @@ test("the built cli runs when invoked via a bin-style symlink (not named cli.js)
   expect(`${run.stdout}${run.stderr}`).toContain("xacpx-relay");
   expect(run.status).not.toBe(0);
 });
+
+test("parseStartOptions reads vapid flags", () => {
+  const o = parseStartOptions(["start", "--vapid-subject", "mailto:a@b.c", "--vapid-public-key", "PK", "--vapid-private-key", "SK"]);
+  expect(o).toMatchObject({ vapidSubject: "mailto:a@b.c", vapidPublicKey: "PK", vapidPrivateKey: "SK" });
+});
+
+test("parseStartOptions omits vapid when flags absent", () => {
+  expect(parseStartOptions(["start"]).vapidSubject).toBeUndefined();
+});

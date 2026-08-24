@@ -269,3 +269,35 @@ test("a finish with no buffer and empty-string text persists an empty reply row"
     .toEqual([["out", ""]]);
   runtime.close();
 });
+
+test("task-completion notice fans out to push; other kinds do not", async () => {
+  const runtime = await createRelayRuntime(":memory:", {
+    vapid: { subject: "s", publicKey: "pk", privateKey: "sk" },
+  });
+  runtime.db.run("INSERT INTO accounts (id, username, created_at) VALUES (?,?,?)", ["a1", "u", "t"]);
+  runtime.db.run("INSERT INTO instances (id, account_id, name, credential_hash, created_at) VALUES (?,?,?,?,?)", ["i1", "a1", "pc", "h", "t"]);
+  runtime.pushSubscriptions.upsert({ accountId: "a1", endpoint: "https://push/e1", p256dh: "k", auth: "a" });
+
+  const sent: Array<{ endpoint: string; payload: string }> = [];
+  (runtime.pushNotifier as unknown as { _setWebPushForTests(w: unknown): void })._setWebPushForTests({
+    setVapidDetails: () => {},
+    sendNotification: async (sub: { endpoint: string }, payload: string) => {
+      sent.push({ endpoint: sub.endpoint, payload });
+    },
+  });
+
+  const notice = (payload: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceNotice, payload,
+  });
+
+  notice({ kind: "task-completion", text: "all done", taskId: "t1" });
+  await new Promise((r) => setTimeout(r, 10)); // fire-and-forget fan-out
+  expect(sent).toHaveLength(1);
+  expect(JSON.parse(sent[0]!.payload)).toEqual({ title: "pc", body: "all done", instanceId: "i1", url: "/" });
+
+  notice({ kind: "task-progress", text: "halfway" });
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(1); // progress never pushes
+
+  runtime.close();
+});

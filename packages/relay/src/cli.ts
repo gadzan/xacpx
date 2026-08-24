@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import { createRelayRuntime, startRelayServer } from "./server.js";
 import { handleRelayUpdate } from "./cli-update.js";
 import { createRelayLogger } from "./logging.js";
+import { vapidFromEnv, type VapidConfig } from "./push.js";
+import webpush from "web-push";
 
 export interface RelayCliIo {
   print(line: string): void;
@@ -45,11 +47,13 @@ const USAGE = [
   "Usage: xacpx-relay <command>",
   "  start      [--db <path>] [--web-root <dir>] [--host 0.0.0.0] [--http-port 8787] [--ws-port <n>] [--history-retention-days 30] [--request-timeout-ms 120000] [--trust-proxy]",
   "             (--ws-port omitted = gateway merged onto the HTTP port; pass it only for a dedicated gateway port)",
+  "             [--vapid-subject <s>] [--vapid-public-key <k>] [--vapid-private-key <k>]   (web push; or env XACPX_RELAY_VAPID_*)",
   "  add token  [--label <note>] [--db <path>]",
   "  add invite [--label <note>] [--ttl <n>{m|h|d}] [--url <base>] [--db <path>]",
   "  ls         [--db <path>]",
   "  rm token <value-or-id> [--db <path>]",
   "  rm invite <code-or-id> [--db <path>]",
+  "  push-keys generate   (print a VAPID keypair for web push)",
   "  update     [--check]   (self-update @ganglion/xacpx-relay; --check only reports)",
   "",
   "  Defaults: --db ~/.xacpx-relay/relay.db   --web-root auto-detects the bundled dashboard",
@@ -94,6 +98,9 @@ export interface StartOptions {
   historyRetentionDays: number | undefined;
   requestTimeoutMs: number | undefined;
   trustProxy: boolean;
+  vapidSubject: string | undefined;
+  vapidPublicKey: string | undefined;
+  vapidPrivateKey: string | undefined;
 }
 
 /** Pure arg-parser for the `start` subcommand — testable without starting a server. */
@@ -112,11 +119,22 @@ export function parseStartOptions(args: string[]): StartOptions {
     historyRetentionDays: retentionDays !== undefined && !Number.isNaN(retentionDays) ? retentionDays : undefined,
     requestTimeoutMs: requestTimeoutMs !== undefined && !Number.isNaN(requestTimeoutMs) ? requestTimeoutMs : undefined,
     trustProxy: hasFlag(args, "--trust-proxy"),
+    vapidSubject: flag(args, "--vapid-subject"),
+    vapidPublicKey: flag(args, "--vapid-public-key"),
+    vapidPrivateKey: flag(args, "--vapid-private-key"),
   };
 }
-
 export async function runRelayCli(args: string[], io: RelayCliIo): Promise<number> {
   const dbPath = flag(args, "--db") ?? defaultDbPath();
+
+
+  // push-keys generate — print a VAPID keypair for web push configuration.
+  if (args[0] === "push-keys" && args[1] === "generate") {
+    const keys = webpush.generateVAPIDKeys();
+    io.print(JSON.stringify({ subject: "mailto:you@example.com", publicKey: keys.publicKey, privateKey: keys.privateKey }, null, 2));
+    io.print("Set via env XACPX_RELAY_VAPID_SUBJECT / XACPX_RELAY_VAPID_PUBLIC_KEY / XACPX_RELAY_VAPID_PRIVATE_KEY or start flags --vapid-*.");
+    return 0;
+  }
 
   // start
   if (args[0] === "start") {
@@ -125,7 +143,14 @@ export async function runRelayCli(args: string[], io: RelayCliIo): Promise<numbe
       startOpts.webRoot = resolveBundledWebRoot();
     }
     const logger = createRelayLogger();
-    const running = await startRelayServer({ ...startOpts, logger });
+    const vapidFromFlags = startOpts.vapidPublicKey && startOpts.vapidPrivateKey
+      ? {
+          subject: startOpts.vapidSubject ?? vapidFromEnv(process.env)?.subject ?? "mailto:relay@localhost",
+          publicKey: startOpts.vapidPublicKey,
+          privateKey: startOpts.vapidPrivateKey,
+        }
+      : (vapidFromEnv(process.env) as VapidConfig | null);
+    const running = await startRelayServer({ ...startOpts, vapid: vapidFromFlags, logger });
     const gatewayDesc = running.wsPort !== null
       ? `instance ws :${running.wsPort}`
       : `instance gateway: merged on http :${running.httpPort} (path / or /gateway)`;
@@ -247,6 +272,7 @@ export async function runRelayCli(args: string[], io: RelayCliIo): Promise<numbe
         return 1;
       }
       runtime.accounts.deleteAccountCascade(accountId);
+      runtime.pushSubscriptions.deleteByAccount(accountId);
       io.print("removed");
       return 0;
     } finally {
