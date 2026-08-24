@@ -3,6 +3,7 @@ import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
 import { nextTick } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import StreamMarkdown from "../components/StreamMarkdown.vue";
+import ImageLightbox from "../components/ImageLightbox.vue";
 import MermaidViewer from "../components/MermaidViewer.vue";
 import { renderMarkdown } from "../lib/render-markdown";
 import { useThemeStore } from "../stores/theme";
@@ -419,5 +420,26 @@ describe("StreamMarkdown image lightbox delegation", () => {
     imgEl.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await nextTick();
     expect(useImageLightbox().state.value).toBeNull();
+  });
+
+  test("duplicate srcs: clicking the second occurrence pages at its own position", async () => {
+    renderSpy.mockImplementationOnce(
+      (_text: string) =>
+        '<p><img src="data:image/png;base64,AA" alt="a"> <img src="data:image/png;base64,BB" alt="b"> <img src="data:image/png;base64,AA" alt="a-again"></p>',
+    );
+    const wrapper = mountWith("ignored");
+    const imgs = wrapper.element.querySelectorAll("img");
+    expect(imgs.length).toBe(3);
+    // Same src as the FIRST image, but element identity must win.
+    (imgs[2]!).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await nextTick();
+    expect(useImageLightbox().state.value).toMatchObject({ index: 2 });
+    expect(useImageLightbox().state.value!.images).toHaveLength(3);
+    expect(useImageLightbox().counter.value).toBe("3 / 3");
+  });
+
+  test("StreamMarkdown renders no viewer of its own (App shell owns the single instance)", () => {
+    const wrapper = mountWith("plain **text**, no images");
+    expect(wrapper.findComponent(ImageLightbox).exists()).toBe(false);
   });
 });

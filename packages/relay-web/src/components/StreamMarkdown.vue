@@ -5,7 +5,6 @@ import { renderMarkdown } from "../lib/render-markdown";
 import { hydrateMermaidBlocks, resetMermaidBlocks } from "../lib/render-mermaid";
 import { enhanceMermaidBlock } from "../lib/inline-mermaid";
 import MermaidViewer from "./MermaidViewer.vue";
-import ImageLightbox from "./ImageLightbox.vue";
 import { useThemeStore } from "../stores/theme";
 import { openLightbox, type LightboxImage } from "../lib/use-image-lightbox";
 
@@ -46,12 +45,10 @@ function onViewableImg(img: HTMLImageElement): boolean {
   const src = (img.getAttribute("src") ?? "").trim().toLowerCase();
   return /^(https?:)?\/\//.test(src) || src.startsWith("data:") || src.startsWith("blob:");
 }
-function segmentImages(): LightboxImage[] {
+function segmentImageEls(): HTMLImageElement[] {
   const root = rootEl.value;
   if (!root) return [];
-  return Array.from(root.querySelectorAll<HTMLImageElement>("img"))
-    .filter(onViewableImg)
-    .map((img) => ({ src: img.getAttribute("src") ?? "", alt: img.alt || undefined }));
+  return Array.from(root.querySelectorAll<HTMLImageElement>("img")).filter(onViewableImg);
 }
 function onRootClick(e: MouseEvent): void {
   const target = e.target as HTMLElement | null;
@@ -59,10 +56,12 @@ function onRootClick(e: MouseEvent): void {
   const img = target as HTMLImageElement;
   if (!onViewableImg(img)) return;
   e.preventDefault();
-  // Match on the raw attribute (see onViewableImg) — the resolved .src differs.
-  const clicked = img.getAttribute("src") ?? "";
-  const images = segmentImages();
-  openLightbox(images, Math.max(0, images.findIndex((candidate) => candidate.src === clicked)));
+  // Element identity, not src matching: the same image can appear twice in one
+  // segment and each occurrence must page at its own position.
+  const els = segmentImageEls();
+  const index = Math.max(0, els.indexOf(img));
+  const images: LightboxImage[] = els.map((el) => ({ src: el.getAttribute("src") ?? "", alt: el.alt || undefined }));
+  openLightbox(images, index);
 }
 
 // Mermaid blocks are hydrated only when NOT streaming: a mid-stream fence (auto-closed by
@@ -220,7 +219,6 @@ onBeforeUnmount(() => {
   <!-- eslint-disable-next-line vue/no-v-html -- input is sanitized by renderMarkdown (DOMPurify) -->
   <div ref="rootEl" class="stream-md text-sm" v-bind="$attrs" v-html="html" />
   <MermaidViewer v-if="viewerSvg" :svg="viewerSvg" @close="viewerSvg = null" />
-  <ImageLightbox />
 </template>
 
 <style>

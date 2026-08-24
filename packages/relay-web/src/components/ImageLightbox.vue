@@ -2,12 +2,30 @@
 import { onBeforeUnmount, onMounted, ref } from "vue";
 import { ChevronLeft, ChevronRight, X } from "lucide-vue-next";
 import { closeLightbox, stepLightbox, useImageLightbox } from "../lib/use-image-lightbox";
+import { useModalA11y } from "../lib/use-modal-a11y";
 
 // Fullscreen image viewer for message images (attachment thumbnails and
-// markdown-embedded images). Rendered only while a set is open (parent v-if /
-// internal state): mount == open. Esc / tap-on-empty-black / ✕ close; arrow keys,
-// buttons and horizontal swipe move within the bubble's image list.
+// markdown-embedded images). The parent gates this component with v-if on the
+// singleton state (App.vue), so mount == open and every side effect below
+// (scroll lock, focus, key handling) is installed/torn down exactly once per
+// open/close cycle. Esc + focus trap/restore come from the shared modal stack
+// (useModalA11y), so a lightbox opened above another dialog closes alone.
 const { state, current, counter, hasPrev, hasNext } = useImageLightbox();
+
+const dialogEl = ref<HTMLElement | null>(null);
+useModalA11y(dialogEl, closeLightbox);
+
+// Scroll lock for the open duration. Safe to do in mount/unmount ONLY because the
+// parent gates this component with v-if on the singleton state (mount == open);
+// a permanently-mounted instance would lock scrolling for the whole app session.
+let prevOverflow = "";
+onMounted(() => {
+  prevOverflow = document.body.style.overflow;
+  document.body.style.overflow = "hidden";
+});
+onBeforeUnmount(() => {
+  document.body.style.overflow = prevOverflow;
+});
 
 // Swipe: one active pointer; a clearly-horizontal drag ≥48px flips pages and the
 // image follows the finger live. Dragging past an end does nothing.
@@ -58,48 +76,24 @@ function onPointerCancel(): void {
   dragging = false;
   dragDx.value = 0;
 }
-
-function onKeydown(e: KeyboardEvent): void {
-  if (e.key === "Escape") {
-    e.preventDefault();
-    closeLightbox();
-  } else if (e.key === "ArrowLeft" && hasPrev.value) {
-    stepLightbox(-1);
-  } else if (e.key === "ArrowRight" && hasNext.value) {
-    stepLightbox(1);
-  }
-}
-
-// Light focus + scroll-lock treatment (MermaidViewer-style): lock body overflow
-// while open and restore both scroll and focus on unmount.
-let prevOverflow = "";
-let previouslyFocused: HTMLElement | null = null;
-onMounted(() => {
-  previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  prevOverflow = document.body.style.overflow;
-  document.body.style.overflow = "hidden";
-  document.addEventListener("keydown", onKeydown);
-});
-onBeforeUnmount(() => {
-  document.removeEventListener("keydown", onKeydown);
-  document.body.style.overflow = prevOverflow;
-  previouslyFocused?.focus?.();
-});
 </script>
 
 <template>
   <Teleport to="body">
     <div
-      v-if="state"
-      class="fixed inset-0 z-[110] select-none bg-black/90 backdrop-blur-sm"
+      ref="dialogEl"
+      class="fixed inset-0 z-[110] select-none bg-black/90 outline-none backdrop-blur-sm"
       data-test="image-lightbox"
       role="dialog"
       aria-modal="true"
+      tabindex="-1"
       :aria-label="current?.alt || $t('chat.lightboxLabel')"
       @pointerdown="onPointerDown"
       @pointermove="onPointerMove"
       @pointerup="onPointerUp"
       @pointercancel="onPointerCancel"
+      @keydown.left.prevent="hasPrev && stepLightbox(-1)"
+      @keydown.right.prevent="hasNext && stepLightbox(1)"
     >
       <!-- Top bar: position counter + filename, then close. -->
       <div class="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center gap-3 p-3 text-white/90">

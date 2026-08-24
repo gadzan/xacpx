@@ -1,12 +1,12 @@
 import { mount } from "@vue/test-utils";
-import { afterEach, beforeEach, expect, test } from "vitest";
-import { defineComponent, h, nextTick } from "vue";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { defineComponent, h, nextTick, ref } from "vue";
 import type { AttachmentMetadata } from "@ganglion/xacpx-relay-protocol";
 
 import MessageAttachments from "../components/MessageAttachments.vue";
 import ImageLightbox from "../components/ImageLightbox.vue";
 import { closeLightbox, useImageLightbox } from "../lib/use-image-lightbox";
-
+import { useModalA11y } from "../lib/use-modal-a11y";
 import type { VueWrapper } from "@vue/test-utils";
 
 // Track every mount: the singleton lightbox state outlives a single wrapper, and a
@@ -35,21 +35,25 @@ const img = (id: string, previewUrl: string): AttachmentMetadata => ({
   previewUrl,
 });
 
-// The viewer lives in App.vue (singleton state), so the harness pairs the list
-// renderer with one viewer instance the way the real app shell does.
+// Mirrors the real app shell: the viewer mounts only while the singleton state
+// exists (App.vue uses v-if), so mount == open and lifecycle side effects are
+// exercised exactly as in production.
 const Harness = defineComponent(
   (props: { attachments: AttachmentMetadata[] }) => {
+    const { state } = useImageLightbox();
     return () =>
       h("div", [
         h(MessageAttachments, { attachments: props.attachments }),
-        h(ImageLightbox),
+        state.value ? h(ImageLightbox) : null,
       ]);
   },
   { props: { attachments: { type: Array, required: true } } },
 );
 
+// attachTo: focus() must move document.activeElement, which jsdom only does for
+// nodes in the document (a detached wrapper subtree won't take focus).
 function mountHarness(attachments: AttachmentMetadata[]) {
-  const wrapper = mount(Harness, { props: { attachments } });
+  const wrapper = mount(Harness, { props: { attachments }, attachTo: document.body });
   wrappers.push(wrapper);
   return wrapper;
 }
@@ -107,4 +111,79 @@ test("viewer pages prev/next within the bubble's image set and stops at the ends
   (document.querySelector<HTMLButtonElement>('[data-test="lightbox-close"]')!).click();
   await nextTick();
   expect(useImageLightbox().state.value).toBeNull();
+});
+
+test("closed viewer leaves body scroll untouched; open locks and close restores it without unmount", async () => {
+  document.body.style.overflow = "auto";
+  const wrapper = mountHarness([img("a", "data:image/png;base64,AA")]);
+  await nextTick();
+  // Never opened: no scroll lock, no overlay.
+  expect(document.body.style.overflow).toBe("auto");
+  expect(document.querySelector('[data-test="image-lightbox"]')).toBeNull();
+
+  await wrapper.find('[data-test="att-image"]').trigger("click");
+  await nextTick();
+  expect(document.body.style.overflow).toBe("hidden");
+
+  (document.querySelector<HTMLButtonElement>('[data-test="lightbox-close"]')!).click();
+  await nextTick();
+  expect(useImageLightbox().state.value).toBeNull();
+  expect(document.querySelector('[data-test="image-lightbox"]')).toBeNull();
+  // Restored WITHOUT unmounting the harness.
+  expect(document.body.style.overflow).toBe("auto");
+  document.body.style.overflow = "";
+});
+
+test("focus moves into the viewer while open and returns to the trigger on close", async () => {
+  const wrapper = mountHarness([img("a", "data:image/png;base64,AA"), img("b", "data:image/png;base64,BB")]);
+  const thumbEl = wrapper.findAll('[data-test="att-image"]')[1]!.element as HTMLElement;
+  thumbEl.focus();
+  expect(document.activeElement).toBe(thumbEl);
+
+  await wrapper.findAll('[data-test="att-image"]')[1]!.trigger("click");
+  await nextTick();
+  // useModalA11y focuses the first focusable (the ✕ button) on mount; the key
+  // invariant is that focus LIVES INSIDE the overlay while open.
+  const overlay = document.querySelector<HTMLElement>('[data-test="image-lightbox"]')!;
+  expect(overlay).not.toBeNull();
+  expect(overlay.contains(document.activeElement)).toBe(true);
+
+  (document.querySelector<HTMLButtonElement>('[data-test="lightbox-close"]')!).click();
+  await nextTick();
+  expect(document.activeElement).toBe(thumbEl);
+});
+
+test("Escape closes only the lightbox, not an underlying modal-stack dialog", async () => {
+  const events: string[] = [];
+  // A stand-in for SubagentTraceDialog: registered in the same shared stack.
+  const underDialogClose = vi.fn(() => events.push("under"));
+  const Under = defineComponent({
+    setup() {
+      const el = ref<HTMLElement | null>(null);
+      useModalA11y(el, underDialogClose);
+      return () =>
+        h(
+          "div",
+          { ref: el, tabindex: "-1", role: "dialog", "aria-modal": "true", "data-test": "under-dialog" },
+          [h(MessageAttachments, { attachments: [img("a", "data:image/png;base64,AA")] }), h(ImageLightboxGate)],
+        );
+    },
+  });
+  // Lightbox must be mounted AFTER the underlying dialog so it sits on top of the stack.
+  const ImageLightboxGate = defineComponent({
+    setup() {
+      const { state } = useImageLightbox();
+      return () => (state.value ? h(ImageLightbox) : null);
+    },
+  });
+  const wrapper = mount(Under);
+  wrappers.push(wrapper);
+  await wrapper.find('[data-test="att-image"]').trigger("click");
+  await nextTick();
+
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+  await nextTick();
+  expect(events).toEqual([]); // lightbox handled it first
+  expect(useImageLightbox().state.value).toBeNull(); // lightbox closed…
+  expect(underDialogClose).not.toHaveBeenCalled(); // …underlying dialog did NOT
 });
