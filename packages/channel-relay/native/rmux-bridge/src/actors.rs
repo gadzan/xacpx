@@ -330,14 +330,22 @@ impl BridgeState {
                 handle.abort();
             }
             self.panes.lock().await.remove(&actor.pane_id);
-            let _ = actor.owned.cleanup().await;
             let became_empty = sessions.is_empty();
             drop(sessions);
             if became_empty {
+                // Do not let exit-empty race the next create on Windows. The
+                // managed endpoint generation can remain Running briefly
+                // after owned.cleanup removes the last session, causing a
+                // reconnect to join a daemon that is already shutting down.
+                // KillServer while the daemon is known live and wait for its
+                // transport to close before publishing Empty.
+                self.shutdown_daemon().await;
                 let mut lifecycle = self.daemon.lock().await;
                 if *lifecycle == DaemonLifecycle::Live {
                     *lifecycle = DaemonLifecycle::Empty;
                 }
+            } else {
+                let _ = actor.owned.cleanup().await;
             }
             return Ok(());
         }
@@ -583,6 +591,10 @@ impl BridgeState {
             }
         }
 
+        self.shutdown_daemon().await;
+    }
+
+    async fn shutdown_daemon(&self) {
         let builder = Rmux::builder()
             .endpoint(self.rmux.endpoint().clone())
             .default_timeout(Duration::from_secs(15));

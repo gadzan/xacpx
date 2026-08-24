@@ -43,9 +43,10 @@ this private daemon: on Unix the supervisor points the SDK launcher back at the 
 The Unix wrapper leaves `HOME` and `XDG_CONFIG_HOME` unchanged, so daemon isolation does not alter
 the environment inherited by terminal shells. Together with `KillOnOwnerExit`, this bounds daemon
 retirement after a hard bridge crash without depending on a future process adopting the endpoint.
-When an explicit terminal kill removes the bridge's final registered session, the bridge marks the
-daemon lifecycle `Empty`: list remains daemon-free, while the next create runs `connect_or_start`
-again because forced `exit-empty=on` may already have retired the previous daemon.
+When an explicit terminal kill removes the bridge's final registered session, the bridge explicitly
+shuts down the still-live daemon before marking the lifecycle `Empty`. This avoids joining a Windows
+managed endpoint generation that is asynchronously exiting; list remains daemon-free, while the
+next create runs `connect_or_start` on a retired endpoint generation.
 
 ## Non-goals
 
