@@ -17,10 +17,11 @@ export const useAuthStore = defineStore("auth", () => {
     error.value = "";
     try {
       account.value = await api.post<Account>("/api/login", { token });
-      // Ownership transfer: bind any browser-held push subscription to THIS
-      // account (the previous holder must have released it at logout, but a
-      // crashed tab may have left it behind).
-      void reconcileExistingSubscription();
+      // Ownership transfer is part of the auth contract and MUST complete (or
+      // have destroyed the local subscription) before we report success —
+      // otherwise a crashed tab's stale binding could leak the previous
+      // account's notifications to this one.
+      await reconcileExistingSubscription();
       return true;
     } catch (e) {
       error.value = e instanceof ApiError ? e.code : "request-failed";
@@ -32,9 +33,9 @@ export const useAuthStore = defineStore("auth", () => {
   async function fetchMe(): Promise<boolean> {
     try {
       account.value = await api.get<Account>("/api/me");
-      // Page reload with a live session: same ownership-transfer contract as
-      // login() — rebind whatever subscription the browser still holds.
-      void reconcileExistingSubscription();
+      // Page reload with a live session: same fail-closed ownership-transfer
+      // contract as login().
+      await reconcileExistingSubscription();
       return true;
     } catch {
       account.value = null;

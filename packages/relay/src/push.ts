@@ -53,12 +53,16 @@ export function validateVapidConfig(config: VapidConfig | null): VapidConfig | n
     return null;
   }
   // P-256 public keys are uncompressed EC points: 65 raw bytes → 87 base64url
-  // chars. Private keys: 32 bytes → 43 base64url chars.
+  // chars. Private keys: 32 raw bytes → 43 base64url chars. Node's base64
+  // decoder is lenient, so also verify the DECODED lengths — "x"-style garbage
+  // would otherwise slip past a non-empty check.
   const b64url = (v: string) => v.replace(/-/g, "+").replace(/_/g, "/");
-  if (b64url(config.publicKey).length !== 87 || !config.privateKey) return null;
+  if (b64url(config.publicKey).length !== 87 || b64url(config.privateKey).length !== 43) {
+    return null;
+  }
   try {
-    Buffer.from(b64url(config.publicKey), "base64");
-    Buffer.from(b64url(config.privateKey), "base64");
+    if (Buffer.from(b64url(config.publicKey), "base64").length !== 65) return null;
+    if (Buffer.from(b64url(config.privateKey), "base64").length !== 32) return null;
   } catch {
     return null;
   }

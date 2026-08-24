@@ -7,6 +7,7 @@ const lib = vi.hoisted(() => ({
   fetchVapidPublicKey: vi.fn(),
   enableDesktopNotifications: vi.fn(),
   disableDesktopNotifications: vi.fn(),
+  subscriptionMatchesKey: vi.fn(),
 }));
 
 vi.mock("../lib/web-push", () => lib);
@@ -46,6 +47,7 @@ describe("settings notifications section", () => {
     lib.fetchVapidPublicKey.mockResolvedValue("PK");
     lib.enableDesktopNotifications.mockResolvedValue(undefined);
     lib.disableDesktopNotifications.mockResolvedValue(undefined);
+    lib.subscriptionMatchesKey.mockReturnValue(true);
   });
   it("renders 已开启 when a probe subscription exists", async () => {
     vi.stubGlobal("navigator", {

@@ -18,7 +18,7 @@ import { PendingCompletionRouteStore } from "./stores/pending-completion-routes.
 import { RecoveryReceiptStore } from "./stores/recovery-receipts.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS, InstanceGateway } from "./gateway/instance-gateway.js";
 import { WebGateway } from "./gateway/web-gateway.js";
-import { PushNotifier, vapidFromEnv, type VapidConfig } from "./push.js";
+import { PushNotifier, vapidFromEnv, validateVapidConfig, type VapidConfig } from "./push.js";
 import { PushSubscriptionStore } from "./stores/push-subscriptions.js";
 import { handleConnectorTerminalEvent, handleWebClientMessage } from "./gateway/web-inbound.js";
 import { createApp } from "./http/app.js";
@@ -140,8 +140,14 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     },
   });
   const pushSubscriptions = new PushSubscriptionStore(db);
-  const vapid = options.vapid !== undefined ? options.vapid : vapidFromEnv(process.env);
-  if (!vapid) {
+  // Validate ONCE here; both the notifier and the public-key endpoint use this
+  // effective config, so a malformed key downgrades to fully-disabled instead
+  // of leaving the browser half-configured against a broken sender.
+  const rawVapid = options.vapid !== undefined ? options.vapid : vapidFromEnv(process.env);
+  const vapid = validateVapidConfig(rawVapid);
+  if (rawVapid && !vapid) {
+    logger.warn("relay.push.disabled", "web push disabled: invalid VAPID config (subject must be mailto:/https:, keys must be valid P-256 base64url material)");
+  } else if (!vapid) {
     logger.warn("relay.push.disabled", "web push disabled: no VAPID config (XACPX_RELAY_VAPID_* env or --vapid-* flags)");
   }
   const pushNotifier = new PushNotifier({ config: vapid, subscriptions: pushSubscriptions, logger });

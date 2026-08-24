@@ -66,7 +66,10 @@ async function probeNotifications(): Promise<void> {
   try {
     const reg = await navigator.serviceWorker.ready;
     const sub = await reg.pushManager.getSubscription();
-    notifState.value = sub ? "subscribed" : "idle";
+    if (!sub) { notifState.value = "idle"; return; }
+    // A sub minted under an older VAPID key can never receive pushes — show
+    // it as off; reconcileExistingSubscription (auth load) re-mints it.
+    notifState.value = subscriptionMatchesKey(sub, key) ? "subscribed" : "idle";
   } catch {
     notifState.value = "idle";
   }

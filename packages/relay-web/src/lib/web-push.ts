@@ -119,26 +119,44 @@ export async function releaseSubscriptionOwnership(): Promise<void> {
   }
 }
 
-/** Reconcile AFTER authentication: rebind or refresh the browser subscription.
- *  No-op when there is nothing to bind or the hub has push disabled. */
+/**
+ * Auth-switch ownership transfer — FAIL-CLOSED.
+ *
+ * Called by login()/fetchMe() and AWAITED before they report success: either
+ * the browser-held endpoint is successfully rebound to the current account, or
+ * the local subscription is destroyed so no stale binding can survive. Any
+ * failure along the way unsubscribes locally (belt) and throws (suspenders) —
+ * the caller surfaces it instead of silently leaving a leak window.
+ *
+ * No-op when there is nothing to bind or the hub has push disabled.
+ */
 export async function reconcileExistingSubscription(): Promise<void> {
   if (!pushSupported()) return;
+  const reg = await getReadyRegistration();
+  const sub = await reg.pushManager.getSubscription();
+  if (!sub) return; // nothing held → no transfer needed
   try {
-    const reg = await getReadyRegistration();
-    const sub = await reg.pushManager.getSubscription();
-    if (!sub) return;
     const publicKey = await fetchVapidPublicKey();
-    if (!publicKey) return; // hub push disabled: leave the local subscription alone
+    if (!publicKey) {
+      // Hub push disabled → the old row can never be used to push again from
+      // any account; still destroy the local binding for hygiene.
+      await sub.unsubscribe().catch(() => {});
+      return;
+    }
     if (!subscriptionMatchesKey(sub, publicKey)) {
-      // Stale VAPID key: pushes to this subscription can never succeed. Re-mint.
+      // Stale VAPID key: pushes can never succeed. Destroy + re-mint.
       const endpoint = sub.endpoint;
       await sub.unsubscribe();
       await api.del("/api/web-push/subscriptions", { endpoint }).catch(() => {});
       await enableDesktopNotifications(publicKey);
       return;
     }
+    // Key matches → rebind to the CURRENT account. If this PUT fails the old
+    // binding may still point at the previous account → fail closed below.
     await api.put("/api/web-push/subscriptions", sub.toJSON());
-  } catch {
-    // best-effort: the settings toggle remains the authoritative path
+  } catch (err) {
+    // Fail closed: a half-transferred ownership is worse than no subscription.
+    await sub.unsubscribe().catch(() => {});
+    throw err;
   }
 }

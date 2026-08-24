@@ -80,10 +80,23 @@ test("sendTaskCompletion never rejects even when the transport explodes synchron
   const db = await createSqlDriver(":memory:");
   initSchema(db);
   const subscriptions = new PushSubscriptionStore(db);
-  const notifier = new PushNotifier({ config: { subject: "mailto:a@b.c", publicKey: "pk", privateKey: "sk" }, subscriptions });
+  const notifier = new PushNotifier({ config: { subject: "mailto:a@b.c", publicKey: "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U", privateKey: "w7gAGvS_Do-fQS4qrv63qkIsaqw6ni5nyJoh3ud-BRU" }, subscriptions });
   notifier._setWebPushForTests({
     setVapidDetails: () => { throw new Error("boom at init"); },
     sendNotification: async () => {},
   });
   await expect(notifier.sendTaskCompletion("a1", { instanceId: "i1", instanceName: "n", text: "t" })).resolves.toBeUndefined();
+});
+
+test("validateVapidConfig enforces decoded key lengths (65/32 bytes)", () => {
+  const { validateVapidConfig } = require("../../../../packages/relay/src/push");
+  const goodPk = "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U";
+  const goodSk = "w7gAGvS_Do-fQS4qrv63qkIsaqw6ni5nyJoh3ud-BRU";
+  expect(validateVapidConfig({ subject: "mailto:a@b.c", publicKey: goodPk, privateKey: goodSk })).not.toBeNull();
+  // Truncated private key: right-ish shape, wrong decoded length.
+  expect(validateVapidConfig({ subject: "mailto:a@b.c", publicKey: goodPk, privateKey: goodSk.slice(0, 20) })).toBeNull();
+  // Undecodable garbage (invalid base64 chars survive strict decode check via length mismatch):
+  expect(validateVapidConfig({ subject: "mailto:a@b.c", publicKey: goodPk.slice(0, 40), privateKey: goodSk })).toBeNull();
+  // Bad subject scheme:
+  expect(validateVapidConfig({ subject: "ftp://a@b.c", publicKey: goodPk, privateKey: goodSk })).toBeNull();
 });

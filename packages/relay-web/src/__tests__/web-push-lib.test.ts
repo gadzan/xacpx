@@ -198,3 +198,61 @@ describe("review fixes", () => {
     delete (window as unknown as Record<string, unknown>).Notification;
   });
 });
+
+describe("auth lifecycle ownership (fail-closed contract)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("reconcile failure destroys the local subscription instead of leaving a stale binding", async () => {
+    // A→B leak window scenario: tab crashed before cleanup, subscription still
+    // bound to account A. New login for B must either rebind or DESTROY the
+    // local sub — never leave it half-transferred. Simulate hub PUT failure.
+    const mod = await import("../lib/web-push");
+    (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
+    (window as unknown as Record<string, unknown>).Notification = function FakeNotification() {};
+    const k = "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U";
+    apiMocks.get.mockResolvedValue({ publicKey: k }); // key matches → PUT path
+    apiMocks.put.mockRejectedValueOnce(new Error("hub write failed"));
+    const unsubscribe = vi.fn().mockResolvedValue(true);
+    const staleSub = {
+      endpoint: "https://fcm.googleapis.com/fcm/send/stale",
+      options: { applicationServerKey: urlBase64ToUint8Array2(k).buffer },
+      unsubscribe,
+      toJSON() { return { endpoint: this.endpoint }; },
+    };
+    stubNavigator({
+      ready: Promise.resolve({
+        pushManager: {
+          getSubscription: vi.fn().mockResolvedValue(staleSub),
+        },
+      }),
+    });
+    await expect(mod.reconcileExistingSubscription()).rejects.toThrow("hub write failed");
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    delete (window as unknown as Record<string, unknown>).PushManager;
+    delete (window as unknown as Record<string, unknown>).Notification;
+  });
+
+  it("reconcile with disabled hub push destroys the local subscription", async () => {
+    const mod = await import("../lib/web-push");
+    (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
+    (window as unknown as Record<string, unknown>).Notification = function FakeNotification() {};
+    apiMocks.get.mockResolvedValue({ publicKey: null }); // hub push off
+    const unsubscribe = vi.fn().mockResolvedValue(true);
+    stubNavigator({
+      ready: Promise.resolve({
+        pushManager: {
+          getSubscription: vi.fn().mockResolvedValue({
+            endpoint: "https://fcm.googleapis.com/fcm/send/any",
+            options: { applicationServerKey: urlBase64ToUint8Array2(
+              "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U").buffer },
+            unsubscribe,
+          }),
+        },
+      }),
+    });
+    await mod.reconcileExistingSubscription();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    delete (window as unknown as Record<string, unknown>).PushManager;
+    delete (window as unknown as Record<string, unknown>).Notification;
+  });
+});
