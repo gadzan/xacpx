@@ -14,6 +14,7 @@
  * dedicated rmux-daemon, never the public rmux CLI).
  */
 import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, delimiter, join } from "node:path";
@@ -23,6 +24,7 @@ import {
   createProductionTerminalDriver,
   type RmuxSidecarSupervisor,
 } from "../../packages/channel-relay/src/terminal/rmux-sidecar-supervisor";
+import { RmuxSidecarDriver } from "../../packages/channel-relay/src/terminal/rmux-sidecar-driver";
 import { resolveRmuxBinaries, RMUX_BUNDLED_VERSION } from "../../packages/channel-relay/src/terminal/resolve-rmux-binaries";
 import type { RmuxRecoveryEvent, RmuxTerminalDriver } from "../../packages/channel-relay/src/terminal/rmux-driver";
 
@@ -141,6 +143,11 @@ test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default 
   const oldXdgConfigHome = process.env.XDG_CONFIG_HOME;
   const oldRmuxConfig = process.env.RMUX_CONFIG_FILE;
   let bundledCliForCleanup: string | undefined;
+  let poisonedDefault: {
+    child: ChildProcessWithoutNullStreams;
+    driver: RmuxSidecarDriver;
+    stderr: string;
+  } | undefined;
   process.env.PATH = hostilePath;
   process.env.HOME = hostileHome;
   delete process.env.XDG_CONFIG_HOME;
@@ -172,24 +179,70 @@ test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default 
     expect(probe.exitCode).toBe(0);
     expect(`${probe.stdout}${probe.stderr}`).toContain(`rmux ${RMUX_BUNDLED_VERSION}`);
 
-    // Occupy the user default endpoint with a daemon that deterministically
-    // kills every subsequently-created default-command pane. If the bridge
-    // ever regresses to the default endpoint, the production lifecycle below
-    // fails immediately. exit-empty=off also keeps the poison observable.
+    // Occupy the user default endpoint through the exact packed bridge and
+    // resolved daemon. Do not ask the public CLI to cold-start here: on the
+    // Windows split layout its full helper lives under libexec/rmux while the
+    // dedicated daemon lives under bin, so that is not a valid production
+    // daemon-resolution path. Once the daemon exists, the CLI can safely
+    // connect to label `default` for option mutation and assertions.
     Bun.spawnSync([bundledCli, "kill-server"], { encoding: "utf8" });
-    const poisonCreate = Bun.spawnSync(
-      [bundledCli, "new-session", "-d", "-s", poisonName],
-      { encoding: "utf8" },
-    );
-    expect(poisonCreate.exitCode).toBe(0);
+    const poisonEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      RMUX_SDK_DAEMON_BINARY: resolved.rmuxCommand!,
+      XACPX_RMUX_ENDPOINT_LABEL: "default",
+    };
+    delete poisonEnv.XACPX_RMUX_DAEMON_BINARY;
+    if (process.platform === "win32") poisonEnv.RMUX_CONFIG_FILE = hostileConfig;
+    else delete poisonEnv.RMUX_CONFIG_FILE;
+    const poisonChild = spawn(resolved.bridgeCommand, [], {
+      env: poisonEnv,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    poisonedDefault = {
+      child: poisonChild,
+      driver: new RmuxSidecarDriver({
+        stdin: poisonChild.stdin,
+        stdout: poisonChild.stdout,
+        stderr: poisonChild.stderr,
+        kill: (signal) => poisonChild.kill(signal),
+        on: (event, listener) => poisonChild.on(event, listener as never),
+      }),
+      stderr: "",
+    };
+    poisonChild.stderr.on("data", (chunk: Buffer | string) => {
+      if (poisonedDefault) {
+        poisonedDefault.stderr = `${poisonedDefault.stderr}${chunk}`.slice(-4 * 1024);
+      }
+    });
+    try {
+      await poisonedDefault.driver.handshake();
+      await poisonedDefault.driver.create({
+        name: poisonName,
+        cwd: hostileHome,
+        cols: 80,
+        rows: 24,
+        historyLimit: 200,
+        tags: ["xacpx:relay", "smoke:poisoned-default"],
+        ownerLeaseTtlSeconds: 30,
+      });
+    } catch (error) {
+      throw new Error(
+        `poisoned default bootstrap failed; bridge stderr=${poisonedDefault.stderr || "<empty>"}`,
+        { cause: error },
+      );
+    }
     const poisonedExitEmpty = Bun.spawnSync(
-      [bundledCli, "show-options", "-gqv", "exit-empty"],
+      [bundledCli, "-L", "default", "show-options", "-gqv", "exit-empty"],
       { encoding: "utf8" },
     );
-    expect(poisonedExitEmpty.exitCode).toBe(0);
+    expect(
+      poisonedExitEmpty.exitCode,
+      `poisoned default option probe failed: stdout=${poisonedExitEmpty.stdout} stderr=${poisonedExitEmpty.stderr}`,
+    ).toBe(0);
     expect(poisonedExitEmpty.stdout.trim()).toBe("off");
     expect(Bun.spawnSync(
-      [bundledCli, "set-option", "-g", "default-command", "exit 97"],
+      [bundledCli, "-L", "default", "set-option", "-g", "default-command", "exit 97"],
       { encoding: "utf8" },
     ).exitCode).toBe(0);
 
@@ -273,10 +326,9 @@ test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default 
 
     // The dedicated lifecycle must not mutate or shut down the poisoned user
     // default daemon.
-    expect(Bun.spawnSync(
-      [bundledCli, "has-session", "-t", poisonName],
-      { encoding: "utf8" },
-    ).exitCode).toBe(0);
+    expect(
+      (await poisonedDefault.driver.list()).some((entry) => entry.name === poisonName),
+    ).toBe(true);
 
     // Leave one private session live so supervisor.stop must use the bridge's
     // explicit Rmux::shutdown path; an already-empty daemon could otherwise
@@ -311,8 +363,17 @@ test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default 
     expect(existsSync(marker), "PATH fake rmux must never execute").toBe(false);
     expect(hostilePath.includes(hostileDir)).toBe(true);
   } finally {
+    if (poisonedDefault) {
+      try {
+        await poisonedDefault.driver.shutdown();
+      } catch {
+        poisonedDefault.child.kill("SIGTERM");
+      }
+    }
     if (bundledCliForCleanup) {
-      Bun.spawnSync([bundledCliForCleanup, "kill-server"], { encoding: "utf8" });
+      Bun.spawnSync([bundledCliForCleanup, "-L", "default", "kill-server"], {
+        encoding: "utf8",
+      });
     }
     process.env.PATH = oldPath;
     if (oldHome === undefined) delete process.env.HOME;
