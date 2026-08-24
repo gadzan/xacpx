@@ -38,9 +38,9 @@ const presentation = computed(() =>
                       :default-open="false" />
       <ToolStepCard v-else-if="item.type === 'tool'" :step="item.step" :ensure-full="ensureFull" />
       <!-- Sent peer-message card joined to the agent_send step right above it;
-           indented to read as nested inside the turn, not a standalone row. -->
-      <div v-else-if="item.type === 'agent-message'" data-test="turn-agent-message" class="pl-2">
-        <AgentMessageCard :message="item.message" />
+           left-aligned flush with the tool steps (no chat-bubble right shift). -->
+      <div v-else-if="item.type === 'agent-message'" data-test="turn-agent-message">
+        <AgentMessageCard :message="item.message" anchored />
       </div>
       <SubagentStepCard v-else :step="item.step" :children="item.children" :ensure-full="ensureFull" />
     </template>
