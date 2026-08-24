@@ -9,6 +9,7 @@ import { AccountStore } from "../../../../packages/relay/src/stores/accounts";
 import { InstanceStore } from "../../../../packages/relay/src/stores/instances";
 import { MessageStore } from "../../../../packages/relay/src/stores/messages";
 import { createApp, GLOBAL_MAX_FAILURES, LOGIN_MAX_FAILURES } from "../../../../packages/relay/src/http/app";
+import { PushSubscriptionStore } from "../../../../packages/relay/src/stores/push-subscriptions";
 import { createRelayRuntime } from "../../../../packages/relay/src/server";
 import type { RelayLogger } from "../../../../packages/relay/src/logging";
 
@@ -1128,4 +1129,49 @@ test("invite tombstone POST /api/invites still 404; redeem logs never contain th
   const { token } = await ok.json() as { token: string };
   expect(JSON.stringify(logs)).not.toContain(code);
   expect(JSON.stringify(logs)).not.toContain(token);
+});
+test("web-push: vapid key endpoint reflects config; subscriptions require auth + JSON", async () => {
+  const db = await createSqlDriver(":memory:");
+  initSchema(db);
+  const accounts = new AccountStore(db);
+  const admin = accounts.createAccount("admin");
+  const { token } = accounts.createLoginToken(admin.id, "t");
+  const pushSubscriptions = new PushSubscriptionStore(db);
+  const app = createApp({
+    accounts, instances: new InstanceStore(db), gateway: { isOnline: () => true, sendRequest: async () => ({}) },
+    messages: new MessageStore(db),
+    vapidPublicKey: () => "PK",
+    pushSubscriptions,
+  });
+  const res = await app.request("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) });
+  const cookie = res.headers.get("set-cookie")!.split(";")[0]!;
+
+  const key = await app.request("/api/web-push/vapid-public-key", { headers: { cookie } });
+  expect(await key.json()).toEqual({ publicKey: "PK" });
+
+  const unauth = await app.request("/api/web-push/vapid-public-key");
+  expect(unauth.status).toBe(401);
+
+  const noJson = await app.request("/api/web-push/subscriptions", { method: "PUT", headers: { cookie }, body: "x" });
+  expect(noJson.status).toBe(415);
+
+  const bad = await app.request("/api/web-push/subscriptions", {
+    method: "PUT", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ endpoint: "http://insecure", keys: {} }),
+  });
+  expect(bad.status).toBe(400);
+
+  const ok = await app.request("/api/web-push/subscriptions", {
+    method: "PUT", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ endpoint: "https://push/e1", keys: { p256dh: "k", auth: "a" } }),
+  });
+  expect(ok.status).toBe(200);
+  expect(pushSubscriptions.listByAccount(admin.id)).toHaveLength(1);
+
+  const del = await app.request("/api/web-push/subscriptions", {
+    method: "DELETE", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ endpoint: "https://push/e1" }),
+  });
+  expect(del.status).toBe(200);
+  expect(pushSubscriptions.listByAccount(admin.id)).toHaveLength(0);
 });

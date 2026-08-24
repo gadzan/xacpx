@@ -17,6 +17,7 @@ import {
 import type { AccountRow, AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
 import type { MessageStore } from "../stores/messages.js";
+import type { PushSubscriptionStore } from "../stores/push-subscriptions.js";
 import type { RelayLogger } from "../logging.js";
 import { clientIp } from "./client-ip.js";
 import { compactHistoryMessage } from "./compact-history.js";
@@ -51,6 +52,10 @@ export interface AppDeps {
   trustProxy?: boolean;
   now?: () => Date;
   logger?: RelayLogger;
+  /** Web push: current VAPID public key, or null when push is not configured. */
+  vapidPublicKey?: () => string | null;
+  /** Web push: browser subscription storage; omitted = push routes 503. */
+  pushSubscriptions?: PushSubscriptionStore;
 }
 
 const SESSION_COOKIE = "xrelay_session";
@@ -408,6 +413,39 @@ export function createApp(deps: AppDeps): Hono<Vars> {
     const check = deps.checkUpdate
       ?? (async (): Promise<UpdateCheck> => ({ current: readRelayVersion(), latest: null, updateAvailable: false }));
     return c.json(await check());
+  });
+  app.get("/api/web-push/vapid-public-key", (c) => {
+    return c.json({ publicKey: deps.vapidPublicKey ? deps.vapidPublicKey() : null });
+  });
+
+  app.put("/api/web-push/subscriptions", async (c) => {
+    if (!requireJson(c.req.header("content-type"))) return c.json({ error: "unsupported-media-type" }, 415);
+    if (!deps.pushSubscriptions) return c.json({ error: "push-disabled" }, 503);
+    const account = c.get("account");
+    const body = (await c.req.json().catch(() => ({}))) as {
+      endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown };
+    };
+    const endpoint = typeof body.endpoint === "string" ? body.endpoint : "";
+    const p256dh = typeof body.keys?.p256dh === "string" ? body.keys.p256dh : "";
+    const auth = typeof body.keys?.auth === "string" ? body.keys.auth : "";
+    let httpsEndpoint = false;
+    try { httpsEndpoint = new URL(endpoint).protocol === "https:"; } catch { /* invalid */ }
+    if (!httpsEndpoint || !p256dh || !auth || endpoint.length > 2048 || p256dh.length > 512 || auth.length > 512) {
+      return c.json({ error: "invalid-payload" }, 400);
+    }
+    deps.pushSubscriptions.upsert({ accountId: account.id, endpoint, p256dh, auth });
+    return c.json({ ok: true });
+  });
+
+  app.delete("/api/web-push/subscriptions", async (c) => {
+    if (!requireJson(c.req.header("content-type"))) return c.json({ error: "unsupported-media-type" }, 415);
+    if (!deps.pushSubscriptions) return c.json({ error: "push-disabled" }, 503);
+    const account = c.get("account");
+    const body = (await c.req.json().catch(() => ({}))) as { endpoint?: unknown };
+    const endpoint = typeof body.endpoint === "string" ? body.endpoint : "";
+    if (!endpoint || endpoint.length > 2048) return c.json({ error: "invalid-payload" }, 400);
+    deps.pushSubscriptions.deleteByEndpointAndAccount(account.id, endpoint);
+    return c.json({ ok: true });
   });
 
   app.get("/api/instances", (c) => {
