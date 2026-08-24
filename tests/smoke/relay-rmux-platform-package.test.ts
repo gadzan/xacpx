@@ -275,8 +275,10 @@ test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default 
     // last session, the bridge must retire the current generation and reopen
     // it for the immediately following create (not leave lifecycle=Live on a
     // dead endpoint/pipe).
-    const invalidCwd = join(cwd, "not-a-directory");
-    writeFileSync(invalidCwd, "intentionally not a directory\n");
+    // Embedded NUL reaches the native new-window/spawn boundary on both
+    // POSIX and Windows, where it is unrepresentable. A path to a regular file
+    // is not sufficient here: Windows RMUX can fall back and create the pane.
+    const invalidCwd = "\0";
     let failedCreateError: unknown;
     try {
       await prod.driver.create({
@@ -293,7 +295,7 @@ test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default 
     }
     expect(
       failedCreateError,
-      "invalid cwd must fail after allocating the temporary RMUX session",
+      "NUL cwd must fail after allocating the temporary RMUX session",
     ).toBeInstanceOf(Error);
 
     const name = `xacpx-pkg-smoke-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
