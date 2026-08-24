@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import { ControlService } from "../../../src/control/control-service";
 import { createControlEventBus } from "../../../src/control/control-event-bus";
 import { UploadStore } from "../../../src/control/upload-store";
+import { AgentMessagingError } from "../../../src/orchestration/agent-messaging-error";
 
 function makeControlService(agentMessagingDeps?: unknown) {
   const events = createControlEventBus();
@@ -146,7 +147,7 @@ test("Phase 6: ControlService.submitPeerTurn passes peerOrigin to TurnQueue", as
     peerOrigin,
   });
 
-  expect(res).toEqual({ status: "injected" });
+  expect(res).toEqual({ status: "injected", modeUsed: "queue" });
   expect(capturedParams).toMatchObject({
     chatKey: "relay:agent-message:main",
     sessionAlias: "main",
@@ -157,6 +158,124 @@ test("Phase 6: ControlService.submitPeerTurn passes peerOrigin to TurnQueue", as
     isPeerMessage: true,
     peerOrigin,
   });
+});
+
+// White-box seam: `turnQueue` and `deps.sessions` are private on ControlService.
+// The stubs pin the ROUTING contract (which TurnQueue API a requestedMode picks,
+// and how admissions map to receipts) without a real lane underneath.
+interface LaneQueueStub {
+  submitPeerTurn: (params: Record<string, unknown>) => unknown;
+  submitPeerInterrupt: (params: Record<string, unknown>) => unknown;
+}
+function exposeLane(service: ControlService): {
+  queue: LaneQueueStub;
+  setSession: (session: { alias: string; archived?: boolean } | undefined) => void;
+} {
+  const internals = service as unknown as {
+    turnQueue: LaneQueueStub;
+    deps: {
+      sessions: {
+        getSession: (alias: string) => Promise<{ alias: string; archived?: boolean } | undefined>;
+      };
+    };
+  };
+  return {
+    queue: internals.turnQueue,
+    setSession: (session) => {
+      internals.deps.sessions.getSession = async () => session;
+    },
+  };
+}
+
+test("v0.4: submitPeerTurn(requestedMode=interrupt) routes through TurnQueue.submitPeerInterrupt with mapped receipts", async () => {
+  const { service } = makeControlService();
+  const lane = exposeLane(service);
+  lane.setSession({ alias: "main", archived: false });
+
+  const capturedParams: Array<Record<string, unknown>> = [];
+  let nextAdmission: unknown = { status: "queued", modeUsed: "interrupt", queueItemId: "qi_1" };
+  lane.queue.submitPeerInterrupt = (params) => {
+    capturedParams.push(params);
+    return nextAdmission;
+  };
+
+  const peerOrigin = {
+    requestMessageId: "msg_intr_1",
+    completion: "result" as const,
+    source: { nodeId: "node-1", endpointId: "ep-1" },
+    target: { nodeId: "node-2", endpointId: "ep-2" },
+  };
+
+  // Busy target: reservation receipt (spec §6.4).
+  const busy = await service.submitPeerTurn({
+    chatKey: "relay:agent-message:main",
+    sessionAlias: "main",
+    boundSessionAlias: "main",
+    text: "<xacpx-message>preempt</xacpx-message>",
+    senderId: "agent-messaging",
+    messageId: "msg_intr_1",
+    requestedMode: "interrupt",
+    peerOrigin,
+  });
+  expect(busy).toEqual({ status: "queued", modeUsed: "interrupt", targetState: "running" });
+  expect(capturedParams[0]).toMatchObject({
+    promptRequestId: "msg_intr_1",
+    isPeerMessage: true,
+    peerOrigin,
+  });
+
+  // Idle target: ordinary admission receipt, zero cancellations.
+  nextAdmission = { status: "injected", modeUsed: "prompt" };
+  const idle = await service.submitPeerTurn({
+    chatKey: "relay:agent-message:main",
+    sessionAlias: "main",
+    boundSessionAlias: "main",
+    text: "<xacpx-message>preempt</xacpx-message>",
+    senderId: "agent-messaging",
+    messageId: "msg_intr_2",
+    requestedMode: "interrupt",
+  });
+  expect(idle).toEqual({ status: "injected", modeUsed: "prompt", targetState: "idle" });
+
+  // One-slot rule: the pending-interrupt rejection maps to MESSAGE_QUEUE_FULL
+  // with the interrupt-specific detail (spec §16).
+  nextAdmission = { status: "rejected", reason: "queue-full" };
+  try {
+    await service.submitPeerTurn({
+      chatKey: "relay:agent-message:main",
+      sessionAlias: "main",
+      boundSessionAlias: "main",
+      text: "x",
+      senderId: "agent-messaging",
+      messageId: "msg_intr_3",
+      requestedMode: "interrupt",
+    });
+    throw new Error("expected MESSAGE_QUEUE_FULL");
+  } catch (error) {
+    expect(error).toBeInstanceOf(AgentMessagingError);
+    expect((error as AgentMessagingError).code).toBe("MESSAGE_QUEUE_FULL");
+    expect((error as AgentMessagingError).message).toContain("pending peer interrupt");
+  }
+});
+
+test("v0.4 G12: default/auto peer turns never touch the interrupt admission path", async () => {
+  const { service } = makeControlService();
+  const lane = exposeLane(service);
+  lane.setSession({ alias: "main", archived: false });
+  lane.queue.submitPeerInterrupt = () => {
+    throw new Error("interrupt admission must not run for default/auto modes");
+  };
+  lane.queue.submitPeerTurn = () => ({ status: "injected" });
+
+  const res = await service.submitPeerTurn({
+    chatKey: "relay:agent-message:main",
+    sessionAlias: "main",
+    boundSessionAlias: "main",
+    text: "plain",
+    senderId: "agent-messaging",
+    messageId: "msg_plain_1",
+  });
+  expect(res).toEqual({ status: "injected", modeUsed: "queue" });
 });
 
 test("Phase 7: ControlService.submitCompletionTurn passes the STRUCTURED completion to TurnQueue (never pre-rendered prompt text)", async () => {

@@ -1261,7 +1261,7 @@ export async function buildApp(
         return null;
       }
     },
-    deliverLogicalTurn: async (alias, renderedText, messageId, peerOrigin) => {
+    deliverLogicalTurn: async (alias, renderedText, messageId, peerOrigin, requestedMode) => {
       if (controlRef) {
         const chatKey = `relay:agent-message:${alias}`;
         return await controlRef.submitPeerTurn({
@@ -1271,10 +1271,11 @@ export async function buildApp(
           text: renderedText,
           senderId: "agent-messaging",
           messageId,
+          requestedMode,
           peerOrigin,
         });
       }
-      return { status: "queued" };
+      return { status: "queued", modeUsed: "queue" };
     },
     deliverCompletionTurn: async (alias, completion, requestMessageId) => {
       if (controlRef) {

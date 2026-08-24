@@ -163,10 +163,12 @@ test("fails closed when the configured transport cannot inject messages", async 
 });
 test("Phase 6: delivers logical endpoint through deliverLogicalTurn with exact peerOrigin", async () => {
   let capturedArgs: any = null;
-  const deliverLogicalTurn = mock(async (alias, renderedText, messageId, peerOrigin) => {
-    capturedArgs = { alias, renderedText, messageId, peerOrigin };
-    return { status: "queued" as const };
-  });
+  const deliverLogicalTurn = mock(
+    async (alias, renderedText, messageId, peerOrigin, requestedMode) => {
+      capturedArgs = { alias, renderedText, messageId, peerOrigin, requestedMode };
+      return { status: "queued" as const };
+    },
+  );
 
   const delivery = new LocalAgentMessageDeliveryAdapter({
     transport: { injectMessage: async () => ({ status: "queued", modeUsed: "queue" }) },
@@ -205,7 +207,48 @@ test("Phase 6: delivers logical endpoint through deliverLogicalTurn with exact p
       source: { nodeId: "node_src", endpointId: "ep_src" },
       target: logicalTarget.endpoint.address,
     },
+      requestedMode: "queue",
   });
+});
+
+test("v0.4: logical interrupt rides deliverLogicalTurn and never touches transport.injectMessage", async () => {
+  const injectMessage = mock(async () => ({
+    status: "injected" as const,
+    modeUsed: "interrupt" as const,
+  }));
+  const deliverLogicalTurn = mock(async () => ({
+    status: "queued" as const,
+    modeUsed: "interrupt" as const,
+    targetState: "running" as const,
+  }));
+  const delivery = new LocalAgentMessageDeliveryAdapter({
+    transport: { injectMessage },
+    resolveLogicalSession: async () => logicalSession,
+    resolveWorkerSession: () => null,
+    deliverLogicalTurn,
+  });
+
+  const interruptMsg: AgentMessage = {
+    id: "msg_interrupt_1",
+    conversationId: "conv_i",
+    depth: 0,
+    from: { nodeId: "node_src", endpointId: "ep_src" },
+    to: logicalTarget.endpoint.address,
+    content: "preempt",
+    requestedMode: "interrupt",
+    createdAt: 12345,
+  };
+  const res = await delivery.deliver(
+    logicalTarget,
+    interruptMsg,
+    "<xacpx-message>preempt</xacpx-message>",
+  );
+
+  // The control-plane receipt passes through verbatim; the provider-specific
+  // injectMessage primitive is never consulted for managed logical sessions.
+  expect(res).toEqual({ status: "queued", modeUsed: "interrupt", targetState: "running" });
+  expect(deliverLogicalTurn).toHaveBeenCalledTimes(1);
+  expect(injectMessage).not.toHaveBeenCalled();
 });
 
 test("Phase 7: delivers completion turn through deliverCompletionTurn", async () => {

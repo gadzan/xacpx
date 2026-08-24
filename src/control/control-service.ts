@@ -5,6 +5,7 @@ import type {
   ResolvedSession,
   SessionTransport,
 } from "../transport/types";
+import type { SessionMessageReceipt } from "../transport/message-injection";
 import type { ActiveTurnRegistry } from "../sessions/active-turn-registry";
 import type {
   CreateScheduledTaskInput,
@@ -17,7 +18,10 @@ import type {
   OrchestrationTaskFilter,
 } from "../orchestration/orchestration-service";
 import type { OrchestrationTaskRecord } from "../orchestration/orchestration-types";
-import type { AgentMessageCompletion } from "../orchestration/agent-messaging-types";
+import type {
+  AgentMessageCompletion,
+  AgentMessageMode,
+} from "../orchestration/agent-messaging-types";
 import {
   getChannelIdFromChatKey,
   isSessionAliasVisibleInChannel,
@@ -1365,8 +1369,16 @@ export class ControlService {
     text: string;
     senderId: string;
     messageId: string;
+    /** v0.4: "interrupt" routes through TurnQueue.submitPeerInterrupt (reserve →
+     *  abort → true-settle → priority drain); every other mode keeps the
+     *  non-cancelling peer path. */
+    requestedMode?: AgentMessageMode;
     peerOrigin?: PeerTurnOrigin;
-  }): Promise<{ status: "injected" | "queued" }> {
+  }): Promise<{
+    status: "injected" | "queued";
+    modeUsed: "prompt" | "queue" | "interrupt";
+    targetState?: "idle" | "running";
+  }> {
     const channelId = getChannelIdFromChatKey(input.chatKey);
     const internalAlias =
       input.boundSessionAlias ??
@@ -1382,7 +1394,7 @@ export class ControlService {
         "The target Agent session is not currently available or is archived.",
       );
     }
-    const admission = this.turnQueue.submitPeerTurn({
+    const peerParams = {
       chatKey: input.chatKey,
       sessionAlias: input.sessionAlias,
       boundSessionAlias: internalAlias,
@@ -1394,26 +1406,49 @@ export class ControlService {
       allowRestoreArchived: false,
       preserveCoordinatorRoute: true,
       peerOrigin: input.peerOrigin,
-    });
+    };
+    if (input.requestedMode === "interrupt") {
+      const admission = this.turnQueue.submitPeerInterrupt(peerParams);
+      if (admission.status === "rejected") {
+        this.throwPeerAdmissionError(admission.reason, "interrupt");
+      }
+      // Receipt mapping (spec §6.4): idle target → injected/prompt/idle with
+      // zero cancellations; busy target → queued/interrupt/running (the
+      // reservation is held and the predecessor cancel already signalled).
+      return admission.status === "injected"
+        ? { status: "injected", modeUsed: "prompt", targetState: "idle" }
+        : { status: "queued", modeUsed: "interrupt", targetState: "running" };
+    }
+    const admission = this.turnQueue.submitPeerTurn(peerParams);
     if (admission.status === "rejected") {
-      if (admission.reason === "queue-full") {
-        throw new AgentMessagingError(
-          "MESSAGE_QUEUE_FULL",
-          "The target Agent's message queue is full.",
-        );
-      }
-      if (admission.reason === "target-unavailable") {
-        throw new AgentMessagingError(
-          "TARGET_UNAVAILABLE",
-          "The target Agent session is currently being removed or archived.",
-        );
-      }
+      this.throwPeerAdmissionError(admission.reason, "peer");
+    }
+    return { status: admission.status, modeUsed: "queue" };
+  }
+
+  // Map TurnQueue admission rejections onto the existing typed wire errors.
+  // In interrupt mode "queue-full" can only mean the one-pending-interrupt
+  // slot rule (TurnQueue.submitPeerInterrupt never consults QUEUE_MAX_DEPTH),
+  // so the detail names the real cause (spec §16).
+  private throwPeerAdmissionError(reason: string, mode: "peer" | "interrupt"): never {
+    if (reason === "queue-full") {
       throw new AgentMessagingError(
-        "DELIVERY_FAILED",
-        `Peer turn admission rejected: ${admission.reason}`,
+        "MESSAGE_QUEUE_FULL",
+        mode === "interrupt"
+          ? "The target Agent already has a pending peer interrupt; only one interrupt may be reserved at a time."
+          : "The target Agent's message queue is full.",
       );
     }
-    return { status: admission.status };
+    if (reason === "target-unavailable") {
+      throw new AgentMessagingError(
+        "TARGET_UNAVAILABLE",
+        "The target Agent session is currently being removed or archived.",
+      );
+    }
+    throw new AgentMessagingError(
+      "DELIVERY_FAILED",
+      `Peer turn admission rejected: ${reason}`,
+    );
   }
 
   async submitCompletionTurn(input: {

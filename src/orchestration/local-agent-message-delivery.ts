@@ -5,7 +5,11 @@ import {
   type SessionMessageReceipt,
 } from "../transport/message-injection";
 import type { ResolvedAgentEndpoint } from "./agent-endpoint-registry";
-import type { AgentMessage, AgentMessageCompletion } from "./agent-messaging-types";
+import type {
+  AgentMessage,
+  AgentMessageCompletion,
+  AgentMessageMode,
+} from "./agent-messaging-types";
 import { AgentMessagingError } from "./agent-messaging-error";
 
 export class LocalAgentMessageDeliveryAdapter {
@@ -23,7 +27,14 @@ export class LocalAgentMessageDeliveryAdapter {
         renderedText: string,
         messageId: string,
         peerOrigin?: PeerTurnOrigin,
-      ) => Promise<{ status: "injected" | "queued" }>;
+        /** v0.4: "interrupt" selects the TurnQueue control-plane preempt path;
+         *  every other mode keeps the non-cancelling peer turn path. */
+        requestedMode?: AgentMessageMode,
+      ) => Promise<{
+        status: "injected" | "queued";
+        modeUsed?: "prompt" | "queue" | "interrupt";
+        targetState?: "idle" | "running";
+      }>;
       deliverCompletionTurn?: (
         alias: string,
         completion: AgentMessageCompletion,
@@ -55,10 +66,12 @@ export class LocalAgentMessageDeliveryAdapter {
         renderedText,
         message.id,
         peerOrigin,
+        message.requestedMode,
       );
       return {
         status: res.status,
-        modeUsed: "queue",
+        modeUsed: res.modeUsed ?? "queue",
+        ...(res.targetState ? { targetState: res.targetState } : {}),
       };
     }
     const session =
