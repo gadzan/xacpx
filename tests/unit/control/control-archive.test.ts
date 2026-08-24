@@ -19,6 +19,7 @@ function makeDeps() {
   const session = {
     alias: "relay:backend",
     agent: "claude",
+    driver: "claude",
     workspace: "/ws/backend",
     transportSession: "xacpx-backend",
     archived: true,
@@ -115,10 +116,13 @@ test("removeSession routes through removeSessionWithTransport (real delete), not
   expect(seen).toContainEqual({ type: "sessions-changed" });
 });
 
-test("listSessions includes the archived flag on each session", () => {
+test("listSessions includes the archived flag and the resolved driver on each session", () => {
   const { deps } = makeDeps();
   const control = new ControlService(deps as never);
   const sessions = control.listSessions("relay:acct");
   expect(sessions).toHaveLength(1);
   expect(sessions[0]?.archived).toBe(true);
+  // Sleeping sessions render their brand icon from this field — the web cannot
+  // re-derive it from an agents map once the row leaves the active list.
+  expect(sessions[0]?.driver).toBe("claude");
 });

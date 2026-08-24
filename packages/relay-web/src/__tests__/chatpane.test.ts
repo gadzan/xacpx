@@ -117,6 +117,29 @@ it("stacks status, plan, and composer as document-flow layers (status → plan �
   expect(kids.indexOf(planEl)).toBeLessThan(kids.indexOf(composerEl!));
 });
 
+it("renders the brand icon for a sleeping (archived) session from the row's driver, without an agents map", async () => {
+  // Sleeping rows can be absent from inst.sessions (grouped sidebar keeps them in
+  // groupArchived) and inst.agents may not be loaded — only SessionDto.driver works.
+  const instances = useInstancesStore();
+  instances.instances.push({
+    id: "i1", name: "prod-box", online: true, lastSeenAt: null,
+    sessions: [{ alias: "sleepy", agent: "my-kimi", driver: "kimi", workspace: "ws", archived: true }],
+    agents: [], workspaces: [], agentCatalog: [],
+  } as never);
+  const chat = useChatStore();
+  chat.select("i1", "sleepy");
+  // The avatar rides the assistant bubble row — seed one so it renders.
+  chat.messages.push({
+    instanceId: "i1", sessionAlias: "sleepy", direction: "out",
+    text: "hello", createdAt: new Date().toISOString(),
+  } as never);
+  const w = mount(ChatPane);
+  await w.vm.$nextTick();
+  const icon = w.find('[data-test="agent-icon"]');
+  expect(icon.exists()).toBe(true);
+  expect(icon.attributes("data-driver")).toBe("kimi");
+});
+
 it("localizes the empty-state prompt when locale is zh-CN", () => {
   i18n.global.locale.value = "zh-CN";
   const w = mount(ChatPane); // no session selected → empty state

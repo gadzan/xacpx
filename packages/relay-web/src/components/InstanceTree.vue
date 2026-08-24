@@ -28,9 +28,14 @@ const centerTabs = useCenterTabsStore();
 const terminals = useTerminalStore();
 const { t } = useI18n();
 
-// A session row carries the agent NAME; the brand glyph keys on its driver. Resolve via the
-// instance's configured agents (AgentDto maps name→driver). Undefined → AgentIcon falls back.
-function driverFor(inst: InstanceView, agentName: string): string | undefined {
+// A session row carries the agent NAME; the brand glyph keys on its driver. Prefer the
+// driver carried on the row itself (server-resolved; sleeping rows live outside the
+// active list, so the agents map below is only a fallback for old instances).
+function driverFor(inst: InstanceView, s: Pick<InstanceView["sessions"][number], "agent" | "driver">): string | undefined {
+  return s.driver ?? inst.agents.find((a) => a.name === s.agent)?.driver;
+}
+// Agent-mode group headers key on the agent NAME (no row) — agents map only.
+function driverForAgentName(inst: InstanceView, agentName: string): string | undefined {
   return inst.agents.find((a) => a.name === agentName)?.driver;
 }
 const emit = defineEmits<{ select: [instanceId: string, alias: string] }>();
@@ -418,7 +423,7 @@ const rowSwipes = computed(() => {
               <ChevronDown v-if="!isGroupCollapsed(inst, grp.key)" :size="11" class="shrink-0 text-fg-muted" />
               <ChevronRight v-else :size="11" class="shrink-0 text-fg-muted" />
               <Folder v-if="groupModeOf(inst) === 'workspace'" :size="12" class="shrink-0 text-fg-muted" />
-              <AgentIcon v-else :driver="driverFor(inst, grp.key)" :title="grp.key" :size="13" />
+              <AgentIcon v-else :driver="driverForAgentName(inst, grp.key)" :title="grp.key" :size="13" />
               <span data-test="group-name" class="min-w-0 truncate text-[11.5px] font-semibold text-fg-muted">{{ grp.key }}</span>
               <span data-test="group-count" class="shrink-0 font-mono text-[10px] tabular-nums text-fg-muted">{{ grp.sessions.length }}</span>
             </button>
@@ -464,7 +469,7 @@ const rowSwipes = computed(() => {
                   <!-- Agent brand glyph (driver icon) BEFORE the name, in place of a text badge —
                        saves horizontal space; the agent name stays available on hover. Redundant
                        inside an agent-mode group (the group header already carries it) → dropped. -->
-                  <AgentIcon v-if="groupModeOf(inst) !== 'agent'" :driver="driverFor(inst, s.agent)" :title="s.agent" :size="14"
+                  <AgentIcon v-if="groupModeOf(inst) !== 'agent'" :driver="driverFor(inst, s)" :title="s.agent" :size="14"
                              :class="s.archived ? 'opacity-60' : ''" />
                   <input v-if="renamingFor === `${inst.id}:${s.alias}`" data-test="rename-input"
                          v-model="renameDraft" :maxlength="60" :placeholder="$t('instance.sessionRenamePlaceholder')"

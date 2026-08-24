@@ -57,11 +57,15 @@ const instance = computed(() => (chat.instanceId ? instances.byId(chat.instanceI
 const currentSession = computed(() =>
   instance.value?.sessions.find((s) => s.alias === chat.sessionAlias),
 );
-// The session's acpx driver (codex/claude/…), resolved from the instance's configured
-// agents (session carries the agent NAME; AgentDto maps name→driver). Drives the
-// assistant avatar glyph. Undefined until agents load → AgentIcon shows its fallback.
-const currentDriver = computed(() =>
-  instance.value?.agents.find((a) => a.name === currentSession.value?.agent)?.driver,
+// The session's acpx driver (codex/claude/…), driving the assistant avatar glyph.
+// Prefer the driver carried on the session row itself (resolved server-side) — the
+// agents-map fallback fails exactly when a sleeping (archived) row is selected from
+// the sidebar without its group/section being in the active list. Undefined until
+// either source loads → AgentIcon shows its fallback.
+const currentDriver = computed(
+  () =>
+    currentSession.value?.driver
+    ?? instance.value?.agents.find((a) => a.name === currentSession.value?.agent)?.driver,
 );
 
 // Booting state: an optimistic session whose create RPC is still cold-starting the agent.
