@@ -116,6 +116,14 @@
   helper），完全离线可装、无需 PATH 上有任何 RMUX。发布包：https://github.com/Helvesec/rmux/releases
   （`rmux-0.10.0-windows-x86_64.zip`，固定 SHA-256 在 `scripts/rmux-release.mjs`）。
 
+## Web Push（task-completion 桌面通知）
+
+- 用途：实例产生 `notice.kind === "task-completion"` 时，向该账号已订阅的浏览器推系统通知（标签页在后台或已关闭也能收到）；`task-progress` / `coordinator-message` 仅走 WS 广播。设计 spec：docs/superpowers/specs/2026-08-24-web-push-task-completion-design.md。
+- 配置：`xacpx-relay push-keys generate` 打印 VAPID 密钥对；经环境变量 `XACPX_RELAY_VAPID_SUBJECT` / `XACPX_RELAY_VAPID_PUBLIC_KEY` / `XACPX_RELAY_VAPID_PRIVATE_KEY` 或 start 子命令 `--vapid-subject/--vapid-public-key/--vapid-private-key` 注入。未配置则推送禁用（log warn），WS 通道不受影响。
+- 存储：`push_subscriptions` 表（account_id + endpoint 主键，endpoint 全局唯一索引）。API：`GET /api/web-push/vapid-public-key`、`PUT/DELETE /api/web-push/subscriptions`（authed + requireJson）。
+- 发送：server.ts 的 instanceNotice 分支 fire-and-forget fan-out；payload `{title=实例名, body=text 截断200, instanceId, url:"/"}`，TTL 3600；410/404 自动删订阅行。
+- Web 端：SettingsView「桌面通知」开关（五态状态机）+ main.ts 启动对账（SW 已存订阅静默重挂到 hub）。SW 推送处理器为 public/push-sw.js，经 pwa-options 的 workbox.importScripts 注入。
+
 ## 阶段三服务端接缝（Web 看板扇出）
 
 服务端为 Web 看板新增的接缝（见 docs/relay-web-module.md）：
