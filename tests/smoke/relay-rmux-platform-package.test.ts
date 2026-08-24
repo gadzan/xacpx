@@ -59,6 +59,10 @@ function tempDir(prefix: string): string {
   return d;
 }
 
+function outputText(value: string | Uint8Array): string {
+  return typeof value === "string" ? value : Buffer.from(value).toString("utf8");
+}
+
 /** Real PE (Windows) or sh script (POSIX) that marks a file when executed. */
 function fabricateHostileFake(dir: string, name: string, marker: string): string {
   const path = join(dir, name);
@@ -238,9 +242,9 @@ test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default 
     );
     expect(
       poisonedExitEmpty.exitCode,
-      `poisoned default option probe failed: stdout=${poisonedExitEmpty.stdout} stderr=${poisonedExitEmpty.stderr}`,
+      `poisoned default option probe failed: stdout=${outputText(poisonedExitEmpty.stdout)} stderr=${outputText(poisonedExitEmpty.stderr)}`,
     ).toBe(0);
-    expect(poisonedExitEmpty.stdout.trim()).toBe("off");
+    expect(outputText(poisonedExitEmpty.stdout).trim()).toBe("off");
     expect(Bun.spawnSync(
       [bundledCli, "-L", "default", "set-option", "-g", "default-command", "exit 97"],
       { encoding: "utf8" },
@@ -304,7 +308,7 @@ test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default 
       { encoding: "utf8" },
     );
     expect(exitEmpty.exitCode).toBe(0);
-    expect(exitEmpty.stdout.trim()).toBe("on");
+    expect(outputText(exitEmpty.stdout).trim()).toBe("on");
 
     // The exact production package must also prove that a subsequent resize
     // reaches the native RMUX pane. Starting a fresh recovery after resize gives
