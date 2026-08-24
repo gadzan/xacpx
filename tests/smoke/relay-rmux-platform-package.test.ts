@@ -102,6 +102,15 @@ function collectUntil(
   })();
 }
 
+function recoveryText(events: RmuxRecoveryEvent[]): string {
+  return Buffer.concat(
+    events
+      .filter((event): event is Extract<RmuxRecoveryEvent, { type: "bytes" }> =>
+        event.type === "bytes")
+      .map((event) => Buffer.from(event.data)),
+  ).toString("utf8");
+}
+
 test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default daemon; private lifecycle is lazy and retired", async () => {
   // --- Hostile environment: fake rmux 0.9-ish at the FRONT of PATH -----------
   const hostileDir = tempDir("rmux-hostile-");
@@ -115,7 +124,10 @@ test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default 
     marker,
   );
   const hostilePath = hostileDir + delimiter + (process.env.PATH ?? "");
-  const hostileConfig = join(hostileDir, "rmux.conf");
+  const hostileHome = tempDir("rmux-hostile-home-");
+  const hostileConfig = process.platform === "win32"
+    ? join(hostileDir, "rmux.conf")
+    : join(hostileHome, ".rmux.conf");
   writeFileSync(hostileConfig, "set-option -g exit-empty off\n");
   const endpointLabel = `xacpx-relay-smoke-${process.pid}-${Date.now()}`;
   const poisonName = `xacpx-default-poison-${process.pid}-${Date.now()}`;
@@ -125,10 +137,15 @@ test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default 
   // inherits { ...process.env }, so swapping PATH for the whole lifecycle
   // proves the fake can never be selected or executed anywhere in the chain.
   const oldPath = process.env.PATH;
+  const oldHome = process.env.HOME;
+  const oldXdgConfigHome = process.env.XDG_CONFIG_HOME;
   const oldRmuxConfig = process.env.RMUX_CONFIG_FILE;
   let bundledCliForCleanup: string | undefined;
   process.env.PATH = hostilePath;
-  process.env.RMUX_CONFIG_FILE = hostileConfig;
+  process.env.HOME = hostileHome;
+  delete process.env.XDG_CONFIG_HOME;
+  if (process.platform === "win32") process.env.RMUX_CONFIG_FILE = hostileConfig;
+  else delete process.env.RMUX_CONFIG_FILE;
   try {
     // --- Production resolution must pick the bundled platform-package daemon -
     const resolved = resolveRmuxBinaries({
@@ -165,10 +182,12 @@ test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default 
       { encoding: "utf8" },
     );
     expect(poisonCreate.exitCode).toBe(0);
-    expect(Bun.spawnSync(
-      [bundledCli, "set-option", "-g", "exit-empty", "off"],
+    const poisonedExitEmpty = Bun.spawnSync(
+      [bundledCli, "show-options", "-gqv", "exit-empty"],
       { encoding: "utf8" },
-    ).exitCode).toBe(0);
+    );
+    expect(poisonedExitEmpty.exitCode).toBe(0);
+    expect(poisonedExitEmpty.stdout.trim()).toBe("off");
     expect(Bun.spawnSync(
       [bundledCli, "set-option", "-g", "default-command", "exit 97"],
       { encoding: "utf8" },
@@ -203,10 +222,15 @@ test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default 
 
     const recoveryP = collectUntil(
       prod.driver.recover(handle.paneId),
-      (events) => events.some((e) => e.type === "rebase") && events.some((e) => e.type === "bytes" && e.data.byteLength > 0),
+      (events) =>
+        events.some((event) => event.type === "rebase")
+        && recoveryText(events).includes("pkg-smoke-ok"),
     );
     await Bun.sleep(200);
-    await prod.driver.input(handle.paneId, new TextEncoder().encode("echo pkg-smoke-ok\n"));
+    const smokeCommand = process.platform === "win32"
+      ? "echo pkg-smoke-ok\n"
+      : "printf 'pkg-smoke-ok|%s\\n' \"$HOME\"\n";
+    await prod.driver.input(handle.paneId, new TextEncoder().encode(smokeCommand));
     const events = await recoveryP;
     const initialRebase = events.find(
       (event): event is Extract<RmuxRecoveryEvent, { type: "rebase" }> => event.type === "rebase",
@@ -214,6 +238,10 @@ test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default 
     expect(initialRebase).toBeDefined();
     expect(initialRebase!.cols).toBe(132);
     expect(initialRebase!.rows).toBe(47);
+    expect(recoveryText(events)).toContain("pkg-smoke-ok");
+    if (process.platform !== "win32") {
+      expect(recoveryText(events)).toContain(hostileHome);
+    }
 
     // The parent test process advertises a hostile exit-empty=off config, but
     // the private process-owned daemon must ignore it so a hard bridge crash
@@ -287,6 +315,10 @@ test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default 
       Bun.spawnSync([bundledCliForCleanup, "kill-server"], { encoding: "utf8" });
     }
     process.env.PATH = oldPath;
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+    if (oldXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = oldXdgConfigHome;
     if (oldRmuxConfig === undefined) delete process.env.RMUX_CONFIG_FILE;
     else process.env.RMUX_CONFIG_FILE = oldRmuxConfig;
   }

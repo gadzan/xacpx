@@ -36,9 +36,12 @@ would reintroduce cross-process daemon adoption after a crash or binary replacem
 
 Bridge bootstrap is lazy: handshake and diagnostics do not call `connect_or_start`; the first real
 session create starts the private daemon. Clean bridge shutdown explicitly calls `Rmux::shutdown()`
-and is a no-op when the bridge stayed dormant. The supervisor forces the child-only
-`RMUX_CONFIG_FILE` to `/dev/null` (Unix) or `NUL` (Windows), so user configuration cannot turn off
-`exit-empty` for this private daemon. Together with `KillOnOwnerExit`, this also bounds daemon
+and is a no-op when the bridge stayed dormant. User configuration cannot turn off `exit-empty` for
+this private daemon: on Unix the supervisor points the SDK launcher back at the bridge, whose
+`--__internal-daemon` path execs the resolved daemon after replacing `--config-default` with
+`--config-file /dev/null`; on Windows RMUX 0.10 supports child-only `RMUX_CONFIG_FILE=NUL` directly.
+The Unix wrapper leaves `HOME` and `XDG_CONFIG_HOME` unchanged, so daemon isolation does not alter
+the environment inherited by terminal shells. Together with `KillOnOwnerExit`, this bounds daemon
 retirement after a hard bridge crash without depending on a future process adopting the endpoint.
 
 ## Non-goals

@@ -171,6 +171,9 @@ export class RmuxSidecarSupervisor {
       const binaries: ResolvedRmuxBinaries = this.opts.spawnFn
         ? {
             bridgeCommand: this.opts.config.bridgeCommand ?? "test-bridge",
+            ...(this.opts.config.rmuxCommand
+              ? { rmuxCommand: this.opts.config.rmuxCommand }
+              : {}),
             source: { bridge: "config" },
           }
         : resolveRmuxBinaries({
@@ -188,13 +191,25 @@ export class RmuxSidecarSupervisor {
           delete env[key];
         }
       }
-      if (binaries.rmuxCommand) {
-        env.RMUX_SDK_DAEMON_BINARY = binaries.rmuxCommand;
+      delete env.RMUX_SDK_DAEMON_BINARY;
+      delete env.RMUX_CONFIG_FILE;
+
+      if (process.platform === "win32") {
+        if (binaries.rmuxCommand) {
+          env.RMUX_SDK_DAEMON_BINARY = binaries.rmuxCommand;
+        }
+        // RMUX 0.10 honors RMUX_CONFIG_FILE on Windows.
+        env.RMUX_CONFIG_FILE = emptyRmuxConfigPath();
+      } else if (binaries.rmuxCommand) {
+        // RMUX 0.10 ignores RMUX_CONFIG_FILE on Unix. Point the SDK daemon
+        // launcher at this bridge; its --__internal-daemon wrapper execs the
+        // resolved daemon after replacing --config-default with an explicit
+        // /dev/null config, while preserving HOME/XDG for terminal shells.
+        env.RMUX_SDK_DAEMON_BINARY = binaries.bridgeCommand;
+        env.XACPX_RMUX_DAEMON_BINARY = binaries.rmuxCommand;
+      } else if (!this.opts.spawnFn) {
+        throw new Error("process-owned RMUX requires a resolved daemon binary on Unix");
       }
-      // This daemon is private to one sidecar process. User RMUX config must
-      // not disable exit-empty, otherwise a hard owner crash could leave its
-      // never-adopted endpoint alive forever after leases reap the sessions.
-      env.RMUX_CONFIG_FILE = emptyRmuxConfigPath();
       env.XACPX_RMUX_ENDPOINT_LABEL =
         (this.opts.endpointLabelFactory ?? newEndpointLabel)();
 

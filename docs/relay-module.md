@@ -78,8 +78,10 @@
   旧 `.old-*` 安装目录的 daemon，新 sidecar 也不会复用它；hard crash 后的新 sidecar 同样换 endpoint，
   旧 endpoint 上的 session 由 `KillOnOwnerExit` lease 回收，符合 no-adopt 边界。bridge handshake/diagnostics
   不启动 daemon，首次 create 才 lazy `connect_or_start`；clean shutdown 显式 `Rmux::shutdown()`。sidecar
-  子进程强制使用空 RMUX 配置（Unix `/dev/null`、Windows `NUL`），保证私有 daemon 的 `exit-empty=on`
-  不会被用户配置关闭，因此 hard crash 在 lease 清空 session 后也能回收 daemon。
+  强制私有 daemon 使用空 RMUX 配置：Unix 由 bridge daemon-launcher 把 SDK 的 `--config-default` 改写为
+  `--config-file /dev/null` 后 exec 真正 daemon（不改 bridge 的 `HOME` / `XDG_CONFIG_HOME`，shell 环境保持原样）；
+  Windows 使用 RMUX 0.10 实际支持的 child-only `RMUX_CONFIG_FILE=NUL`。因此私有 daemon 的
+  `exit-empty=on` 不会被用户配置关闭，hard crash 在 lease 清空 session 后也能回收 daemon。
   同一 pane 的 `recover` / `stop-recover` 在 `RmuxSidecarDriver` 里按 FIFO 串行，避免旧 attachment 的 teardown 杀掉新 attachment 的 recovery。最后一个 subscriber 离开后排入的 `stop-recover` **必须执行**，即使 replacement 已经 join；replacement 在旧 stream 停掉、新 recover ack 之前保持 unarmed，因此 first event 只能是 fresh rebase。pane start barrier 让同时 attach 的 viewer 共享同一次 `recover` RPC（成功则一起 catch-up，失败则一起收到错误，不会有人永久 waiting）。显式 `recover` 在 Rust 侧**总是 restart** recovery task，并且 **RPC 成功 = 已经拿到 initial Rebase**（不是仅仅 spawn 了 task；首包 `None`/`Err`/非 rebase 会让 RPC 失败）。sidecar 在把 initial Rebase 写入 stdout 队列之后才 spawn 后续 Bytes reader；`pane_by_id` / `recover_output` / 首个 Rebase 共用 10s 截止。stdin 循环里**只有 Recover** 异步 dispatch（Create/List/Kill/Input 仍串行，避免 reconciler 看到半创建 session）。一个坏 pane 的 `recover_output` 仍可能占住全局 sessions mutex 最多约 10s（后续可拆 per-session lock）。Node 只在 start barrier 发送 `recover`；已 live 的 late viewer 只 fan-out。catch-up cache 超预算时的 snapshot refresh 同样进入 stopping barrier，并复用同一 start barrier；Node 的 stop-recover 超时不会取消 native RPC，也不解除 stopping，要等下一次 recover ACK（或 crash）才清；replacement recover 失败会 close 该 pane 全部 subscriber。initial Rebase 之后底层 stream 的 `Err`/`None` 发 `recovery-stream-failed` / `recovery-stream-ended`；`PaneRecoveryEvent::End` 发 `exit` 后 reader 立即结束，不会把随后的 EOF 再包装成 transport failure。普通 subscriber/iterator 错误发 `terminal-recovery-failed` 并**保留** RMUX shell。`RmuxDriverCrashedError` / sidecar process 退出走 owner-loss，按进程退出 reap。
 - **持久化**：`<xacpx-home>/relay/` 下 `terminal-owner.json` + `terminals.json`（与 `credential.json` 同目录惯例）；
   文件 mode `0600`。owner identity 在 cleanup-pending / kill 超时后仍保留，供后续 reconcile / lease TTL 回收。

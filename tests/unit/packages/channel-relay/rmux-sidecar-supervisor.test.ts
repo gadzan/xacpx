@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
+import { resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
@@ -93,8 +94,14 @@ test("production spawn isolates the endpoint and ignores user RMUX config", asyn
   const child = makeFakeChild({ autoHandshake: true });
   let capturedEnv: NodeJS.ProcessEnv | undefined;
   const labels = ["xacpx-relay-4242-first", "xacpx-relay-4242-second"];
+  const bridgeCommand = resolve("fake-xacpx-rmux-bridge");
+  const daemonCommand = resolve("fake-rmux-daemon");
   const supervisor = new RmuxSidecarSupervisor({
-    config: parseRelayTerminalConfig({ enabled: true }),
+    config: parseRelayTerminalConfig({
+      enabled: true,
+      bridgeCommand,
+      rmuxCommand: daemonCommand,
+    }),
     spawnFn: (((_command, _args, options) => {
       capturedEnv = options?.env;
       return child;
@@ -105,9 +112,15 @@ test("production spawn isolates the endpoint and ignores user RMUX config", asyn
 
   await supervisor.start();
   expect(capturedEnv?.XACPX_RMUX_ENDPOINT_LABEL).toBe("xacpx-relay-4242-first");
-  expect(capturedEnv?.RMUX_CONFIG_FILE).toBe(
-    process.platform === "win32" ? "NUL" : "/dev/null",
-  );
+  if (process.platform === "win32") {
+    expect(capturedEnv?.RMUX_SDK_DAEMON_BINARY).toBe(daemonCommand);
+    expect(capturedEnv?.RMUX_CONFIG_FILE).toBe("NUL");
+    expect(capturedEnv?.XACPX_RMUX_DAEMON_BINARY).toBeUndefined();
+  } else {
+    expect(capturedEnv?.RMUX_SDK_DAEMON_BINARY).toBe(bridgeCommand);
+    expect(capturedEnv?.XACPX_RMUX_DAEMON_BINARY).toBe(daemonCommand);
+    expect(capturedEnv?.RMUX_CONFIG_FILE).toBeUndefined();
+  }
   await supervisor.stop();
 });
 
