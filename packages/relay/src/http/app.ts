@@ -18,6 +18,7 @@ import type { AccountRow, AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
 import type { MessageStore } from "../stores/messages.js";
 import type { PushSubscriptionStore } from "../stores/push-subscriptions.js";
+import { isAllowedPushEndpoint } from "../push.js";
 import type { RelayLogger } from "../logging.js";
 import { clientIp } from "./client-ip.js";
 import { compactHistoryMessage } from "./compact-history.js";
@@ -428,9 +429,11 @@ export function createApp(deps: AppDeps): Hono<Vars> {
     const endpoint = typeof body.endpoint === "string" ? body.endpoint : "";
     const p256dh = typeof body.keys?.p256dh === "string" ? body.keys.p256dh : "";
     const auth = typeof body.keys?.auth === "string" ? body.keys.auth : "";
-    let httpsEndpoint = false;
-    try { httpsEndpoint = new URL(endpoint).protocol === "https:"; } catch { /* invalid */ }
-    if (!httpsEndpoint || !p256dh || !auth || endpoint.length > 2048 || p256dh.length > 512 || auth.length > 512) {
+    // Blind-SSRF guard: the hub POSTes to each stored endpoint from its own
+    // network. Only known browser push-service origins are accepted — an
+    // arbitrary client-supplied HTTPS URL would be a server-side POST primitive.
+    const allowedEndpoint = isAllowedPushEndpoint(endpoint);
+    if (!allowedEndpoint || !p256dh || !auth || endpoint.length > 2048 || p256dh.length > 512 || auth.length > 512) {
       return c.json({ error: "invalid-payload" }, 400);
     }
     deps.pushSubscriptions.upsert({ accountId: account.id, endpoint, p256dh, auth });

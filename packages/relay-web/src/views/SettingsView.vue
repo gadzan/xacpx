@@ -9,7 +9,7 @@ import { confirm } from "../lib/use-confirm";
 import { useLocaleStore } from "../stores/locale";
 import { SUPPORTED_LOCALES } from "../i18n";
 import { useI18n } from "vue-i18n";
-import { pushSupported, fetchVapidPublicKey, enableDesktopNotifications, disableDesktopNotifications } from "../lib/web-push";
+import { pushSupported, fetchVapidPublicKey, enableDesktopNotifications, disableDesktopNotifications, subscriptionMatchesKey } from "../lib/web-push";
 
 const auth = useAuthStore();
 const theme = useThemeStore();

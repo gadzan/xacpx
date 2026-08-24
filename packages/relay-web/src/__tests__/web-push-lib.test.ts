@@ -28,6 +28,12 @@ function stubNavigator(serviceWorker: unknown): void {
   vi.stubGlobal("navigator", { ...navigator, serviceWorker });
 }
 
+function urlBase64ToUint8Array2(base64: string) {
+  const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+  const raw = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(raw, (ch) => ch.charCodeAt(0));
+}
+
 describe("web-push lib", () => {
   beforeEach(() => {
     apiMocks.get.mockReset().mockResolvedValue({ publicKey: "PK" });
@@ -78,7 +84,7 @@ describe("web-push lib", () => {
         return { endpoint: this.endpoint, keys: this.keys };
       },
     });
-    stubNavigator({ ready: Promise.resolve({ pushManager: { subscribe } }) });
+    stubNavigator({ ready: Promise.resolve({ pushManager: { subscribe, getSubscription: vi.fn().mockResolvedValue(null) } }) });
 
     await enableDesktopNotifications("PK");
     expect(requestPermission).toHaveBeenCalledTimes(1);
@@ -112,19 +118,22 @@ describe("web-push lib", () => {
     expect(apiMocks.del).not.toHaveBeenCalled();
   });
 
-  it("reconcileExistingSubscription PUTs an existing subscription; skips otherwise", async () => {
+  it("reconcileExistingSubscription PUTs a matching subscription; skips otherwise", async () => {
     // pushSupported() gates reconcile: provide the full environment.
     (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
     (window as unknown as Record<string, unknown>).Notification = function FakeNotification() {};
+    // Key minted by the same VAPID public key the hub serves ("PK" → base64url).
+    const mod = await import("../lib/web-push");
+    // A real 65-byte P-256 point, base64url — same shape as a live VAPID key.
+    const hubKey = "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U";
+    apiMocks.get.mockResolvedValue({ publicKey: hubKey });
     const getSubscription = vi.fn().mockResolvedValue({
       endpoint: "https://push/e1",
+      options: { applicationServerKey: urlBase64ToUint8Array2(hubKey).buffer },
       toJSON() {
         return { endpoint: this.endpoint };
       },
     });
-    stubNavigator({ ready: Promise.resolve({ pushManager: { getSubscription } }) });
-    await reconcileExistingSubscription();
-    expect(apiMocks.put).toHaveBeenCalledWith("/api/web-push/subscriptions", { endpoint: "https://push/e1" });
 
     apiMocks.put.mockClear();
     getSubscription.mockResolvedValue(null);
@@ -133,6 +142,57 @@ describe("web-push lib", () => {
     // Hub errors are swallowed: reconcile stays best-effort.
     getSubscription.mockRejectedValue(new Error("boom"));
     await expect(reconcileExistingSubscription()).resolves.toBeUndefined();
+
+    delete (window as unknown as Record<string, unknown>).PushManager;
+    delete (window as unknown as Record<string, unknown>).Notification;
+  });
+});
+
+describe("review fixes", () => {
+  beforeEach(() => {
+    apiMocks.get.mockReset().mockResolvedValue({ publicKey: "PK" });
+    apiMocks.put.mockReset().mockResolvedValue({ ok: true });
+    apiMocks.del.mockReset().mockResolvedValue({ ok: true });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("reconcileExistingSubscription resubscribes when VAPID key rotated", async () => {
+    // Old key minted into the stored subscription; hub now serves a NEW key.
+    // Both reconcile's probe AND enable()'s internal stale-check see the stale
+    // sub (shared registration mock) → unsubscribe fires twice, subscribe once,
+    // and the hub receives the NEW endpoint via PUT.
+    const oldSub = {
+      endpoint: "https://fcm.googleapis.com/fcm/send/old",
+      options: { applicationServerKey: urlBase64ToUint8Array2("BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U").buffer },
+      unsubscribe: vi.fn().mockResolvedValue(true),
+    };
+    const getSubscription = vi.fn().mockResolvedValue(oldSub);
+    (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
+    // enableDesktopNotifications() skips requestPermission when already granted;
+    // include requestPermission anyway in case permission isn't granted yet.
+    const grantedStub = { permission: "granted", requestPermission: vi.fn().mockResolvedValue("granted") };
+    (window as unknown as Record<string, unknown>).Notification = grantedStub;
+
+    const mod = await import("../lib/web-push");
+    const subscribe = vi.fn().mockResolvedValue({
+      endpoint: "https://fcm.googleapis.com/fcm/send/new",
+      keys: { p256dh: "k2", auth: "a2" },
+      toJSON() {
+        return { endpoint: this.endpoint, keys: this.keys };
+      },
+    });
+    stubNavigator({ ready: Promise.resolve({ pushManager: { getSubscription, subscribe } }) });
+
+    console.log("NOTIF:", typeof Notification, (globalThis as { Notification?: { permission?: string } }).Notification?.permission);
+    await mod.reconcileExistingSubscription();
+    expect(getSubscription).toHaveBeenCalledTimes(2); // probe + enable stale-check
+    expect(oldSub.unsubscribe.mock.calls.length).toBeGreaterThanOrEqual(1);
+    expect(subscribe).toHaveBeenCalledWith(expect.objectContaining({ userVisibleOnly: true }));
+    expect(apiMocks.del).toHaveBeenCalledWith("/api/web-push/subscriptions", { endpoint: "https://fcm.googleapis.com/fcm/send/old" });
+    expect(apiMocks.put).toHaveBeenCalledWith("/api/web-push/subscriptions", {
+      endpoint: "https://fcm.googleapis.com/fcm/send/new",
+      keys: { p256dh: "k2", auth: "a2" },
+    });
 
     delete (window as unknown as Record<string, unknown>).PushManager;
     delete (window as unknown as Record<string, unknown>).Notification;

@@ -272,7 +272,7 @@ test("a finish with no buffer and empty-string text persists an empty reply row"
 
 test("task-completion notice fans out to push; other kinds do not", async () => {
   const runtime = await createRelayRuntime(":memory:", {
-    vapid: { subject: "s", publicKey: "pk", privateKey: "sk" },
+    vapid: { subject: "mailto:test@example.com", publicKey: "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U", privateKey: "w7gAGvS_Do-fQS4qrv63qkIsaqw6ni5nyJoh3ud-BRU" },
   });
   runtime.db.run("INSERT INTO accounts (id, username, created_at) VALUES (?,?,?)", ["a1", "u", "t"]);
   runtime.db.run("INSERT INTO instances (id, account_id, name, credential_hash, created_at) VALUES (?,?,?,?,?)", ["i1", "a1", "pc", "h", "t"]);

@@ -272,7 +272,6 @@ export async function runRelayCli(args: string[], io: RelayCliIo): Promise<numbe
         return 1;
       }
       runtime.accounts.deleteAccountCascade(accountId);
-      runtime.pushSubscriptions.deleteByAccount(accountId);
       io.print("removed");
       return 0;
     } finally {

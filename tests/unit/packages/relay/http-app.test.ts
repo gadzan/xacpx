@@ -1163,15 +1163,52 @@ test("web-push: vapid key endpoint reflects config; subscriptions require auth +
 
   const ok = await app.request("/api/web-push/subscriptions", {
     method: "PUT", headers: { cookie, "content-type": "application/json" },
-    body: JSON.stringify({ endpoint: "https://push/e1", keys: { p256dh: "k", auth: "a" } }),
+    body: JSON.stringify({ endpoint: "https://fcm.googleapis.com/fcm/send/abc", keys: { p256dh: "k", auth: "a" } }),
   });
   expect(ok.status).toBe(200);
   expect(pushSubscriptions.listByAccount(admin.id)).toHaveLength(1);
 
   const del = await app.request("/api/web-push/subscriptions", {
     method: "DELETE", headers: { cookie, "content-type": "application/json" },
-    body: JSON.stringify({ endpoint: "https://push/e1" }),
+    body: JSON.stringify({ endpoint: "https://fcm.googleapis.com/fcm/send/abc" }),
   });
   expect(del.status).toBe(200);
   expect(pushSubscriptions.listByAccount(admin.id)).toHaveLength(0);
+});
+
+test("web-push: PUT rejects non-push-service endpoints (SSRF allowlist)", async () => {
+  const db = await createSqlDriver(":memory:");
+  initSchema(db);
+  const accounts = new AccountStore(db);
+  const admin = accounts.createAccount("admin");
+  const { token } = accounts.createLoginToken(admin.id, "t");
+  const pushSubscriptions = new PushSubscriptionStore(db);
+  const app = createApp({
+    accounts, instances: new InstanceStore(db), gateway: { isOnline: () => true, sendRequest: async () => ({}) },
+    messages: new MessageStore(db),
+    vapidPublicKey: () => "PK",
+    pushSubscriptions,
+  });
+  const res = await app.request("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) });
+  const cookie = res.headers.get("set-cookie")!.split(";")[0]!;
+
+  for (const endpoint of [
+    "https://127.0.0.1:8443/push",
+    "http://fcm.googleapis.com/x",                       // right host, wrong scheme → origin mismatch
+    "https://evil.example.com/fcm",                      // arbitrary https host
+    "https://fcm.googleapis.com.attacker.io/x",          // suffix spoof (origin differs)
+  ]) {
+    const bad = await app.request("/api/web-push/subscriptions", {
+      method: "PUT", headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ endpoint, keys: { p256dh: "k", auth: "a" } }),
+    });
+    expect(bad.status).toBe(400);
+  }
+  // The real FCM origin is accepted.
+  const ok = await app.request("/api/web-push/subscriptions", {
+    method: "PUT", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ endpoint: "https://fcm.googleapis.com/fcm/send/abc", keys: { p256dh: "k", auth: "a" } }),
+  });
+  expect(ok.status).toBe(200);
+  expect(pushSubscriptions.listByAccount(admin.id)).toHaveLength(1);
 });
