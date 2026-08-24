@@ -121,6 +121,10 @@ export default {
       cumulative: "Cumulative",
     },
     attach: { add: "Attach file", remove: "Remove", tooMany: "Up to 5 files per message", tooLarge: "{name} is too large (max 10MB)" },
+    lightboxLabel: "Image viewer",
+    lightboxOpen: "View fullscreen",
+    lightboxPrev: "Previous image",
+    lightboxNext: "Next image",
   },
   session: {
     newSession: "New session",

@@ -5,7 +5,9 @@ import { renderMarkdown } from "../lib/render-markdown";
 import { hydrateMermaidBlocks, resetMermaidBlocks } from "../lib/render-mermaid";
 import { enhanceMermaidBlock } from "../lib/inline-mermaid";
 import MermaidViewer from "./MermaidViewer.vue";
+import ImageLightbox from "./ImageLightbox.vue";
 import { useThemeStore } from "../stores/theme";
+import { openLightbox, type LightboxImage } from "../lib/use-image-lightbox";
 
 defineOptions({ inheritAttrs: false });
 
@@ -31,6 +33,36 @@ function cancelTimer(): void {
     clearTimeout(timer);
     timer = null;
   }
+}
+
+// Message images embedded in markdown (agent output like ![alt](data:...) or a
+// workspace URL) open fullscreen in the lightbox. One delegated click listener on
+// the root handles every re-render without rebinding per <img>; the swipeable set
+// is the ordered images of this rendered segment, so a bubble with several inline
+// images can be paged through. Only http(s)/data/blob srcs are viewable.
+function onViewableImg(img: HTMLImageElement): boolean {
+  // Use the RAW attribute: the DOM-resolved .src turns relative paths into
+  // absolute http(s) URLs, which would admit broken relative links.
+  const src = (img.getAttribute("src") ?? "").trim().toLowerCase();
+  return /^(https?:)?\/\//.test(src) || src.startsWith("data:") || src.startsWith("blob:");
+}
+function segmentImages(): LightboxImage[] {
+  const root = rootEl.value;
+  if (!root) return [];
+  return Array.from(root.querySelectorAll<HTMLImageElement>("img"))
+    .filter(onViewableImg)
+    .map((img) => ({ src: img.getAttribute("src") ?? "", alt: img.alt || undefined }));
+}
+function onRootClick(e: MouseEvent): void {
+  const target = e.target as HTMLElement | null;
+  if (!target || target.tagName !== "IMG") return;
+  const img = target as HTMLImageElement;
+  if (!onViewableImg(img)) return;
+  e.preventDefault();
+  // Match on the raw attribute (see onViewableImg) — the resolved .src differs.
+  const clicked = img.getAttribute("src") ?? "";
+  const images = segmentImages();
+  openLightbox(images, Math.max(0, images.findIndex((candidate) => candidate.src === clicked)));
 }
 
 // Mermaid blocks are hydrated only when NOT streaming: a mid-stream fence (auto-closed by
@@ -131,7 +163,10 @@ function render(): void {
 }
 
 render(); // initial synchronous render (also seeds the throttle clock)
-onMounted(() => scheduleHydrate(false)); // rootEl exists only after mount
+onMounted(() => {
+  scheduleHydrate(false); // rootEl exists only after mount
+  rootEl.value?.addEventListener("click", onRootClick);
+});
 
 watch(
   () => props.text,
@@ -177,6 +212,7 @@ onBeforeUnmount(() => {
   disposed = true;
   cancelTimer();
   detachEnhancers();
+  rootEl.value?.removeEventListener("click", onRootClick);
 });
 </script>
 
@@ -184,6 +220,7 @@ onBeforeUnmount(() => {
   <!-- eslint-disable-next-line vue/no-v-html -- input is sanitized by renderMarkdown (DOMPurify) -->
   <div ref="rootEl" class="stream-md text-sm" v-bind="$attrs" v-html="html" />
   <MermaidViewer v-if="viewerSvg" :svg="viewerSvg" @close="viewerSvg = null" />
+  <ImageLightbox />
 </template>
 
 <style>

@@ -1,11 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, test, vi } from "vitest";
-import { mount, flushPromises } from "@vue/test-utils";
+import { mount, flushPromises, type VueWrapper } from "@vue/test-utils";
 import { nextTick } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import StreamMarkdown from "../components/StreamMarkdown.vue";
 import MermaidViewer from "../components/MermaidViewer.vue";
 import { renderMarkdown } from "../lib/render-markdown";
 import { useThemeStore } from "../stores/theme";
+import { closeLightbox, useImageLightbox } from "../lib/use-image-lightbox";
+
+// Stale wrappers keep reactive effects alive across tests; the singleton lightbox
+// state would make them re-patch cleared DOM. Unmount everything in afterEach.
+const wrappers: VueWrapper[] = [];
 
 // Count parses without paying for the real pipeline (healing + markdown-it + DOMPurify).
 vi.mock("../lib/render-markdown", () => ({
@@ -59,7 +64,10 @@ beforeEach(() => {
   detachCalls.length = 0;
   enhanceSeq = 0;
 });
+
 afterEach(() => {
+  while (wrappers.length) void wrappers.pop()!.unmount();
+  closeLightbox();
   vi.useRealTimers();
 });
 
@@ -368,5 +376,48 @@ describe("StreamMarkdown mermaid hydration", () => {
     expect(viewer.props("svg")).toContain('data-test="d"');
     hydrate.mockImplementation(async () => {});
     wrapper.unmount();
+  });
+});
+
+describe("StreamMarkdown image lightbox delegation", () => {
+  afterEach(() => {
+    closeLightbox();
+  });
+
+  function mountWith(text: string) {
+    const wrapper = mount(StreamMarkdown, {
+      props: { text, streaming: false },
+      global: { stubs: { MermaidViewer: true } },
+    });
+    wrappers.push(wrapper);
+    return wrapper;
+  }
+
+  test("a delegated img click opens the fullscreen viewer on the clicked image", async () => {
+    // The suite mocks renderMarkdown, so inject real <img> markup the way the
+    // real pipeline emits for ![alt](data:...) — via the mocked renderer itself.
+    renderSpy.mockImplementationOnce(
+      (_text: string) =>
+        '<p><img src="data:image/png;base64,AA" alt="one"> and <img src="data:image/png;base64,BB" alt="two"></p>',
+    );
+    const wrapper = mountWith("ignored");
+    const imgs = wrapper.element.querySelectorAll("img");
+    expect(imgs.length).toBe(2);
+    (imgs[1]!).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await nextTick();
+    expect(useImageLightbox().state.value).toMatchObject({ index: 1 });
+    expect(useImageLightbox().state.value!.images).toHaveLength(2);
+    expect(useImageLightbox().current.value?.src).toBe("data:image/png;base64,BB");
+  });
+
+  test("non-viewable srcs never open the viewer", async () => {
+    // A relative src resolves to an absolute http URL on .src; the raw-attribute
+    // check must still reject it.
+    renderSpy.mockImplementationOnce((_text: string) => '<p><img src="relative.png" alt="x"></p>');
+    const wrapper = mountWith("ignored");
+    const imgEl = wrapper.element.querySelector("img")!;
+    imgEl.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await nextTick();
+    expect(useImageLightbox().state.value).toBeNull();
   });
 });

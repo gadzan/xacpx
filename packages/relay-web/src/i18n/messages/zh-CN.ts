@@ -119,6 +119,10 @@ export default {
       cumulative: "累计",
     },
     attach: { add: "添加附件", remove: "移除", tooMany: "每条消息最多 5 个文件", tooLarge: "{name} 太大（最大 10MB）" },
+    lightboxLabel: "图片查看器",
+    lightboxOpen: "全屏查看",
+    lightboxPrev: "上一张",
+    lightboxNext: "下一张",
   },
   session: {
     newSession: "新建会话",

@@ -585,17 +585,35 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 ### 渲染
 
 - **`MessageAttachments.vue`**：
-  - 图片（`kind: "image"`）显示缩略图（来自持久化的 `previewUrl`，点击可放大）。
+  - 图片（`kind: "image"`）显示缩略图（来自持久化的 `previewUrl`）。
   - 非图片文件（`kind: "file"`）显示文件卡片（文件名 + 大小）。
 - **`MessageList.vue`**：每条消息若含 `attachments`，在气泡下方插入 `<MessageAttachments>`。
 - **历史重显**：页面刷新后，附件从服务端持久化的 `MessageRecordDto.attachments` 中恢复，
   图片缩略图和文件卡片均可再次显示。
 
+### 图片全屏查看（lightbox）
+
+- **触发**：两类消息图片均可点击进入全屏查看——附件缩略图
+  （`MessageAttachments.vue`，按钮语义 + `cursor-zoom-in`）与 Markdown 正文内嵌的
+  `<img>`（`StreamMarkdown.vue` 在根元素上做一次委托 click 监听，仅放行
+  `http(s)/data/blob:` src，防止 `javascript:` 之类 URL 进入查看器）。
+- **翻页范围 = 单个气泡/渲染段内的全部可看图片**（按出现顺序）：打开的是点击那张，
+  左右箭头按钮 / 键盘 ←→ / 移动端横向滑动手势（≥48px，跟随手指位移）在组内切换上一张、
+  下一张；顶部显示 `n / total` 计数与文件名。到头时箭头隐藏、键盘停住（不循环）。
+- **关闭**：Esc、点击空白遮罩（拖动不误关）、右上角 ✕；打开期间锁定 body 滚动，
+  关闭后恢复焦点与滚动。
+- **实现**：状态是模块级单例 `src/lib/use-image-lightbox.ts`
+  （`openLightbox(images, index)` / `closeLightbox()` / `stepLightbox(±1)`），
+  查看器组件 `ImageLightbox.vue` 全局挂载在 `App.vue`（Teleport 到 body，z-[110]），
+  任何渲染器无需逐层透传 props 即可打开。
+
 ### 相关文件
 
 - `packages/relay-web/src/components/PromptInput.vue` — 上传触发 + chip UI
-- `packages/relay-web/src/components/MessageAttachments.vue` — 附件渲染
+- `packages/relay-web/src/components/MessageAttachments.vue` — 附件渲染 + 缩略图点击
 - `packages/relay-web/src/components/MessageList.vue` — 附件在消息气泡下插入
+- `packages/relay-web/src/components/ImageLightbox.vue` — 全屏图片查看器
+- `packages/relay-web/src/lib/use-image-lightbox.ts` — lightbox 状态单例
 - `packages/relay-web/src/stores/chat.ts` — 发送时调用 upload + 附件随 media 字段传出
 
 ## 阶段范围边界
