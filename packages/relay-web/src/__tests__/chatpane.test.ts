@@ -148,14 +148,15 @@ it("grouped sidebar: sleeping row lives only in groupArchived — avatar still s
   expect(icon.attributes("data-driver")).toBe("kimi");
 });
 
-it("flat sidebar: archiving the selected session keeps the avatar driver across a refresh that drops the row", async () => {
-  // Production shape: archive → sessions-changed → loadSessions replace; without
-  // a loaded full snapshot the active-only page no longer contains the just-slept
-  // row. The open chat must keep resolving its driver.
+it("flat sidebar: archiving the SELECTED session keeps the avatar driver through the real transition", async () => {
+  // The full production sequence: row starts ACTIVE (archived:false) →
+  // archiveSession RPC → optimistic archived flag → loadSessions replace whose
+  // active-only page no longer contains the row → keep-rule retains it →
+  // findSessionRow still resolves the open chat's driver.
   const instances = useInstancesStore();
   instances.instances.push({
     id: "i1", name: "prod-box", online: true, lastSeenAt: null,
-    sessions: [{ alias: "main", agent: "my-kimi", driver: "kimi", workspace: "ws", archived: true }],
+    sessions: [{ alias: "main", agent: "my-kimi", driver: "kimi", workspace: "ws", transportSession: "t1", running: false, archived: false }],
     agents: [], workspaces: [], agentCatalog: [],
   } as never);
   const chat = useChatStore();
@@ -164,27 +165,48 @@ it("flat sidebar: archiving the selected session keeps the avatar driver across 
     instanceId: "i1", sessionAlias: "main", direction: "out",
     text: "hello", createdAt: new Date().toISOString(),
   } as never);
-  // The post-archive replace: an active-only page WITHOUT the selected (now
-  // sleeping) row. Both the sessions page and the agents side-call must resolve.
+
   const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id: string, type: string) => {
+    if (type === "control.sessions.archive") return {}; // connector returns {} — no row back
     if (type === "control.agents.list") return { agents: [] };
+    // Post-archive refresh: active-only page WITHOUT the just-slept row.
     return {
       sessions: [{ alias: "other", agent: "codex", workspace: "ws2", transportSession: "t2", running: false, archived: false }],
       hasMore: false,
     };
   });
-  await instances.loadSessions("i1");
+  await instances.archiveSession("i1", "main");
   rpc.mockRestore();
-  // The replace KEEPS the selected archived row (fetchSessionsPage retain rule), so
-  // the open chat's header/driver survive until a full snapshot re-homes the row.
+
+  // The optimistic flag + retain rule kept the selected row across the refresh…
   const kept = instances.byId("i1")!.sessions.find((s) => s.alias === "main");
   expect(kept?.archived).toBe(true);
+  // …and findSessionRow (what ChatPane resolves with) still yields the driver.
+  expect(instances.findSessionRow("i1", "main")?.driver).toBe("kimi");
 
   const w = mount(ChatPane);
   await w.vm.$nextTick();
   const icon = w.find('[data-test="agent-icon"]');
   expect(icon.exists()).toBe(true);
   expect(icon.attributes("data-driver")).toBe("kimi");
+});
+
+it("flat sidebar: a failed archive rolls the optimistic archived flag back", async () => {
+  const instances = useInstancesStore();
+  instances.instances.push({
+    id: "i1", name: "prod-box", online: true, lastSeenAt: null,
+    sessions: [{ alias: "main", agent: "my-kimi", driver: "kimi", workspace: "ws", transportSession: "t1", running: false, archived: false }],
+    agents: [], workspaces: [], agentCatalog: [],
+  } as never);
+  const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id: string, type: string) => {
+    if (type === "control.sessions.archive") throw new Error("archive failed");
+    if (type === "control.agents.list") return { agents: [] };
+    return { sessions: [], hasMore: false };
+  });
+  await expect(instances.archiveSession("i1", "main")).rejects.toThrow("archive failed");
+  rpc.mockRestore();
+  // Rollback: the row stays active-looking so the sidebar doesn't grey a live session.
+  expect(instances.byId("i1")!.sessions.find((s) => s.alias === "main")?.archived).toBe(false);
 });
 
 it("localizes the empty-state prompt when locale is zh-CN", () => {

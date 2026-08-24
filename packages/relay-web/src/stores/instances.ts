@@ -704,7 +704,21 @@ export const useInstancesStore = defineStore("instances", () => {
   }
 
   async function archiveSession(instanceId: string, alias: string): Promise<void> {
-    await api.rpc(instanceId, "control.sessions.archive", { alias });
+    // Optimistic archived flag: the connector's archive RPC returns {} without the
+    // updated row, and core's `sessions-changed` only triggers a refetch — nothing
+    // else flips the local row. Marking it here (rolling back on failure, mirroring
+    // chat.send's warm/archived optimistic clear) lets the post-archive
+    // loadSessions replace recognize the selected row as archived and retain it,
+    // instead of dropping it from the active list mid-transition.
+    const sessionRow = byId(instanceId)?.sessions.find((s) => s.alias === alias);
+    const prevArchived = sessionRow?.archived === true;
+    if (sessionRow) sessionRow.archived = true;
+    try {
+      await api.rpc(instanceId, "control.sessions.archive", { alias });
+    } catch (error) {
+      if (sessionRow && !prevArchived) sessionRow.archived = false;
+      throw error;
+    }
     // No cache purge: a sleeping session stays resumable, and its cached tail
     // lets waking it paint instantly.
     await loadSessions(instanceId);
