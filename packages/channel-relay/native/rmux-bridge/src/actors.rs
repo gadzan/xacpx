@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -46,6 +47,7 @@ pub struct BridgeState {
     endpoint_label: String,
     rmux: RwLock<Rmux>,
     daemon: Mutex<DaemonLifecycle>,
+    fail_create_after_owned_once: AtomicBool,
     sessions: Mutex<HashMap<String, SessionActor>>,
     panes: Mutex<HashMap<String, String>>, // pane_id → session_id
 }
@@ -68,7 +70,7 @@ struct SessionActor {
     recover_abort: Option<tokio::task::JoinHandle<()>>,
 }
 
-pub async fn connect_bridge() -> Result<Arc<BridgeState>, String> {
+pub async fn connect_bridge(fail_create_after_owned_once: bool) -> Result<Arc<BridgeState>, String> {
     let pid = std::process::id();
     let startup_nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -80,21 +82,25 @@ pub async fn connect_bridge() -> Result<Arc<BridgeState>, String> {
         })?)?,
         None => process_scoped_endpoint_label(pid, startup_nonce),
     };
-    new_bridge_state_for_label(&label)
+    new_bridge_state_for_label(&label, fail_create_after_owned_once)
 }
 
 #[cfg(test)]
 fn new_bridge_state(pid: u32, startup_nonce: u128) -> Result<Arc<BridgeState>, String> {
     let label = process_scoped_endpoint_label(pid, startup_nonce);
-    new_bridge_state_for_label(&label)
+    new_bridge_state_for_label(&label, false)
 }
 
-fn new_bridge_state_for_label(label: &str) -> Result<Arc<BridgeState>, String> {
+fn new_bridge_state_for_label(
+    label: &str,
+    fail_create_after_owned_once: bool,
+) -> Result<Arc<BridgeState>, String> {
     let rmux = rmux_builder_for_label(label)?.build();
     Ok(Arc::new(BridgeState {
         endpoint_label: label.to_owned(),
         rmux: RwLock::new(rmux),
         daemon: Mutex::new(DaemonLifecycle::Dormant),
+        fail_create_after_owned_once: AtomicBool::new(fail_create_after_owned_once),
         sessions: Mutex::new(HashMap::new()),
         panes: Mutex::new(HashMap::new()),
     }))
@@ -211,6 +217,13 @@ impl BridgeState {
                 .await
                 .map_err(|e| format!("owned_session create failed: {e}"))?
         };
+        if self
+            .fail_create_after_owned_once
+            .swap(false, Ordering::AcqRel)
+        {
+            self.cleanup_failed_create(owned).await;
+            return Err("injected create failure after owned session".to_owned());
+        }
 
         let work_builder = owned
             .new_window_with()

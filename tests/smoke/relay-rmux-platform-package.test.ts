@@ -255,10 +255,7 @@ test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default 
     const config = parseRelayTerminalConfig({ enabled: true, ownerLeaseTtlSeconds: 30 });
     const prod = await createProductionTerminalDriver(config, {
       endpointLabelFactory: () => endpointLabel,
-      // A deliberately invalid cwd can take the bridge's full RMUX request
-      // timeout before it reports the initialization failure. Keep the test
-      // driver alive long enough to observe the bridge's cleanup and retry.
-      requestTimeoutMs: 45_000,
+      injectCreateFailureAfterOwnedOnce: true,
     });
     live.push(prod);
 
@@ -270,20 +267,16 @@ test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default 
     );
     expect(lazyProbe.exitCode, "bridge bootstrap must leave RMUX dormant").not.toBe(0);
 
-    // A first create can allocate its temporary OwnedSession and then fail
-    // while initializing the work window. Because that removes the daemon's
-    // last session, the bridge must retire the current generation and reopen
-    // it for the immediately following create (not leave lifecycle=Live on a
-    // dead endpoint/pipe).
-    // Embedded NUL reaches the native new-window/spawn boundary on both
-    // POSIX and Windows, where it is unrepresentable. A path to a regular file
-    // is not sufficient here: Windows RMUX can fall back and create the pane.
-    const invalidCwd = "\0";
+    // Inject a first-create initialization failure immediately after the
+    // temporary OwnedSession exists. Because cleanup removes the daemon's last
+    // session, the bridge must retire the real generation and reopen it for
+    // the immediately following create (not leave lifecycle=Live on a dead
+    // endpoint/pipe).
     let failedCreateError: unknown;
     try {
       await prod.driver.create({
         name: `xacpx-pkg-failed-create-${Date.now()}`,
-        cwd: invalidCwd,
+        cwd,
         cols: 80,
         rows: 24,
         historyLimit: 200,
@@ -295,7 +288,7 @@ test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default 
     }
     expect(
       failedCreateError,
-      "NUL cwd must fail after allocating the temporary RMUX session",
+      "injected initialization failure must occur after allocating the temporary RMUX session",
     ).toBeInstanceOf(Error);
 
     const name = `xacpx-pkg-smoke-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;

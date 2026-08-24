@@ -18,6 +18,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
 const INTERNAL_DAEMON_FLAG: &str = "--__internal-daemon";
+const TEST_FAIL_CREATE_AFTER_OWNED_ONCE_FLAG: &str =
+    "--__test-fail-create-after-owned-once";
 const DAEMON_BINARY_ENV: &str = "XACPX_RMUX_DAEMON_BINARY";
 
 #[tokio::main]
@@ -34,7 +36,10 @@ async fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    if let Err(err) = run().await {
+    let fail_create_after_owned_once = args
+        .iter()
+        .any(|arg| arg == OsStr::new(TEST_FAIL_CREATE_AFTER_OWNED_ONCE_FLAG));
+    if let Err(err) = run(fail_create_after_owned_once).await {
         eprintln!("xacpx-rmux-bridge fatal: {err}");
         return ExitCode::from(1);
     }
@@ -119,10 +124,10 @@ fn rewrite_daemon_args(args: Vec<OsString>) -> Result<Vec<OsString>, String> {
     Ok(rewritten)
 }
 
-async fn run() -> Result<(), String> {
+async fn run(fail_create_after_owned_once: bool) -> Result<(), String> {
     let (out_tx, mut out_rx) = mpsc::channel::<ServerMessage>(512);
 
-    let bridge = connect_bridge()
+    let bridge = connect_bridge(fail_create_after_owned_once)
         .await
         .map_err(|e| format!("bridge connect: {e}"))?;
 

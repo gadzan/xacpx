@@ -90,9 +90,10 @@ test("supervisor starts injected driver once and exposes supervised proxy", asyn
   await supervisor.stop();
 });
 
-test("production spawn isolates the endpoint and ignores user RMUX config", async () => {
+test("production spawn isolates the endpoint, ignores user RMUX config, and supports failed-create injection", async () => {
   const child = makeFakeChild({ autoHandshake: true });
   let capturedEnv: NodeJS.ProcessEnv | undefined;
+  let capturedArgs: readonly string[] | undefined;
   const labels = ["xacpx-relay-4242-first", "xacpx-relay-4242-second"];
   const bridgeCommand = resolve("fake-xacpx-rmux-bridge");
   const daemonCommand = resolve("fake-rmux-daemon");
@@ -102,15 +103,18 @@ test("production spawn isolates the endpoint and ignores user RMUX config", asyn
       bridgeCommand,
       rmuxCommand: daemonCommand,
     }),
-    spawnFn: (((_command, _args, options) => {
+    spawnFn: (((_command, args, options) => {
+      capturedArgs = args;
       capturedEnv = options?.env;
       return child;
     }) as unknown as typeof spawn),
     endpointLabelFactory: () => labels.shift() ?? "unexpected",
+    injectCreateFailureAfterOwnedOnce: true,
     maxRestarts: 0,
   });
 
   await supervisor.start();
+  expect(capturedArgs).toEqual(["--__test-fail-create-after-owned-once"]);
   expect(capturedEnv?.XACPX_RMUX_ENDPOINT_LABEL).toBe("xacpx-relay-4242-first");
   if (process.platform === "win32") {
     expect(capturedEnv?.RMUX_SDK_DAEMON_BINARY).toBe(daemonCommand);

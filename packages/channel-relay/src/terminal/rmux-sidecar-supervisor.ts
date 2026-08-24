@@ -40,6 +40,8 @@ export interface RmuxSidecarSupervisorOptions {
   onChildExit?: () => void;
   /** Test seam; production mints a fresh label for every native sidecar spawn. */
   endpointLabelFactory?: () => string;
+  /** Test seam: fail the first create after its temporary OwnedSession exists. */
+  injectCreateFailureAfterOwnedOnce?: boolean;
 }
 
 const emptyRmuxConfigPath = (): string =>
@@ -213,7 +215,10 @@ export class RmuxSidecarSupervisor {
       env.XACPX_RMUX_ENDPOINT_LABEL =
         (this.opts.endpointLabelFactory ?? newEndpointLabel)();
 
-      spawned = spawnFn(binaries.bridgeCommand, [], {
+      const bridgeArgs = this.opts.injectCreateFailureAfterOwnedOnce
+        ? ["--__test-fail-create-after-owned-once"]
+        : [];
+      spawned = spawnFn(binaries.bridgeCommand, bridgeArgs, {
         stdio: ["pipe", "pipe", "pipe"],
         env,
         windowsHide: true,
