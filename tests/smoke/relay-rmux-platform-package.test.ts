@@ -330,9 +330,14 @@ test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default 
 
     // The dedicated lifecycle must not mutate or shut down the poisoned user
     // default daemon.
+    const poisonStillLive = Bun.spawnSync(
+      [bundledCli, "-L", "default", "has-session", "-t", poisonName],
+      { encoding: "utf8" },
+    );
     expect(
-      (await poisonedDefault.driver.list()).some((entry) => entry.name === poisonName),
-    ).toBe(true);
+      poisonStillLive.exitCode,
+      `poisoned default disappeared: stdout=${outputText(poisonStillLive.stdout)} stderr=${outputText(poisonStillLive.stderr)} bridge-stderr=${poisonedDefault.stderr || "<empty>"}`,
+    ).toBe(0);
 
     // Leave one private session live so supervisor.stop must use the bridge's
     // explicit Rmux::shutdown path; an already-empty daemon could otherwise
@@ -368,11 +373,7 @@ test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default 
     expect(hostilePath.includes(hostileDir)).toBe(true);
   } finally {
     if (poisonedDefault) {
-      try {
-        await poisonedDefault.driver.shutdown();
-      } catch {
-        poisonedDefault.child.kill("SIGTERM");
-      }
+      poisonedDefault.child.kill("SIGTERM");
     }
     if (bundledCliForCleanup) {
       Bun.spawnSync([bundledCliForCleanup, "-L", "default", "kill-server"], {
