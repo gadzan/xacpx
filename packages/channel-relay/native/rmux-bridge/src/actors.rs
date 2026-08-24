@@ -203,7 +203,7 @@ impl BridgeState {
             SessionName::new(&name).map_err(|e| format!("invalid session name: {e}"))?;
         let ttl = Duration::from_secs(u64::from(owner_lease_ttl_seconds.max(15)));
 
-        let mut owned = {
+        let owned = {
             let rmux = self.rmux.read().await;
             rmux.owned_session(session_name)
                 .cleanup_policy(CleanupPolicy::KillOnOwnerExit)
@@ -221,7 +221,7 @@ impl BridgeState {
         let work = match work_builder.await {
             Ok(w) => w,
             Err(e) => {
-                let _ = owned.cleanup().await;
+                self.cleanup_failed_create(owned).await;
                 return Err(format!("new_window failed: {e}"));
             }
         };
@@ -234,21 +234,21 @@ impl BridgeState {
         // relay-web needs the PTY/window itself to match the browser viewport,
         // so use the SDK's authoritative ResizeWindow request instead.
         if let Err(e) = work.resize(Some(cols), Some(rows)).await {
-            let _ = owned.cleanup().await;
+            self.cleanup_failed_create(owned).await;
             return Err(format!("window resize failed: {e}"));
         }
 
         let panes = match work.panes().await {
             Ok(p) => p,
             Err(e) => {
-                let _ = owned.cleanup().await;
+                self.cleanup_failed_create(owned).await;
                 return Err(format!("list panes failed: {e}"));
             }
         };
         let pane_meta = match panes.into_iter().next() {
             Some(p) => p,
             None => {
-                let _ = owned.cleanup().await;
+                self.cleanup_failed_create(owned).await;
                 return Err("work window has no pane".to_owned());
             }
         };
@@ -256,7 +256,7 @@ impl BridgeState {
         let pane = match owned.pane_by_id(pane_id).await {
             Ok(p) => p,
             Err(e) => {
-                let _ = owned.cleanup().await;
+                self.cleanup_failed_create(owned).await;
                 return Err(format!("pane_by_id failed: {e}"));
             }
         };
@@ -338,17 +338,7 @@ impl BridgeState {
             let became_empty = sessions.is_empty();
             drop(sessions);
             if became_empty {
-                // Do not let exit-empty race the next create on Windows. The
-                // managed endpoint generation can remain Running briefly
-                // after owned.cleanup removes the last session, causing a
-                // reconnect to join a daemon that is already shutting down.
-                // KillServer while the daemon is known live and wait for its
-                // transport to close before publishing Empty.
-                self.shutdown_daemon().await;
-                let mut lifecycle = self.daemon.lock().await;
-                if *lifecycle == DaemonLifecycle::Live {
-                    *lifecycle = DaemonLifecycle::Empty;
-                }
+                self.retire_live_daemon().await;
             } else {
                 let _ = actor.owned.cleanup().await;
             }
@@ -609,6 +599,32 @@ impl BridgeState {
         };
         if let Err(err) = rmux.shutdown().await {
             eprintln!("xacpx-rmux-bridge daemon shutdown failed: {err}");
+        }
+    }
+
+    async fn cleanup_failed_create(&self, mut owned: OwnedSession) {
+        if self.sessions.lock().await.is_empty() {
+            // The temporary OwnedSession is the daemon's only bridge-owned
+            // session. Retire while it is still alive so exit-empty cannot
+            // race a retry onto a retiring Windows pipe generation.
+            self.retire_live_daemon().await;
+        } else {
+            // Preserve the live generation and its committed sessions; only
+            // remove the uncommitted session created by this failed request.
+            let _ = owned.cleanup().await;
+        }
+    }
+
+    async fn retire_live_daemon(&self) {
+        // Do not let exit-empty race the next create on Windows. The managed
+        // endpoint generation can remain Running briefly after cleanup removes
+        // the last session, causing a reconnect to join a daemon that is
+        // already shutting down. KillServer while the daemon is known live and
+        // wait for its transport to close before publishing Empty.
+        self.shutdown_daemon().await;
+        let mut lifecycle = self.daemon.lock().await;
+        if *lifecycle == DaemonLifecycle::Live {
+            *lifecycle = DaemonLifecycle::Empty;
         }
     }
 

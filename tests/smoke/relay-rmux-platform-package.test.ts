@@ -255,6 +255,10 @@ test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default 
     const config = parseRelayTerminalConfig({ enabled: true, ownerLeaseTtlSeconds: 30 });
     const prod = await createProductionTerminalDriver(config, {
       endpointLabelFactory: () => endpointLabel,
+      // A deliberately invalid cwd can take the bridge's full RMUX request
+      // timeout before it reports the initialization failure. Keep the test
+      // driver alive long enough to observe the bridge's cleanup and retry.
+      requestTimeoutMs: 45_000,
     });
     live.push(prod);
 
@@ -265,6 +269,32 @@ test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default 
       { encoding: "utf8" },
     );
     expect(lazyProbe.exitCode, "bridge bootstrap must leave RMUX dormant").not.toBe(0);
+
+    // A first create can allocate its temporary OwnedSession and then fail
+    // while initializing the work window. Because that removes the daemon's
+    // last session, the bridge must retire the current generation and reopen
+    // it for the immediately following create (not leave lifecycle=Live on a
+    // dead endpoint/pipe).
+    const invalidCwd = join(cwd, "not-a-directory");
+    writeFileSync(invalidCwd, "intentionally not a directory\n");
+    let failedCreateError: unknown;
+    try {
+      await prod.driver.create({
+        name: `xacpx-pkg-failed-create-${Date.now()}`,
+        cwd: invalidCwd,
+        cols: 80,
+        rows: 24,
+        historyLimit: 200,
+        tags: ["xacpx:relay", "smoke:failed-create"],
+        ownerLeaseTtlSeconds: 30,
+      });
+    } catch (error) {
+      failedCreateError = error;
+    }
+    expect(
+      failedCreateError,
+      "invalid cwd must fail after allocating the temporary RMUX session",
+    ).toBeInstanceOf(Error);
 
     const name = `xacpx-pkg-smoke-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
     const handle = await prod.driver.create({
