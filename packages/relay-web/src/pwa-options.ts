@@ -41,6 +41,9 @@ export const pwaOptions: Partial<VitePWAOptions> = {
     // shadow the relay hub's API / WebSocket endpoints.
     navigateFallback: "/index.html",
     navigateFallbackDenylist: [/^\/api/, /^\/ws/],
+    // Push handlers live in a classic-script island injected into the generated
+    // SW: generateSW owns precaching; importScripts keeps our handlers unbundled.
+    importScripts: ["/push-sw.js"],
     // skipWaiting + clientsClaim are BOTH required for the autoUpdate flow to
     // actually reload an open tab: vite-plugin-pwa's autoUpdate registerSW only
     // reloads on the new worker's `activated` event, and a freshly-installed
