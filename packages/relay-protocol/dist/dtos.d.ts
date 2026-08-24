@@ -2,6 +2,11 @@
 export interface SessionDto {
     alias: string;
     agent: string;
+    /** The acpx driver backing `agent` (codex/claude/…), resolved from the instance's
+     *  agent config. Lets the web render the brand icon without a second agents lookup
+     *  — critical for sleeping (archived) sessions, whose rows can live outside the
+     *  active session list. Omitted by old instances; web falls back to its agents map. */
+    driver?: string;
     workspace: string;
     transportSession: string;
     running: boolean;

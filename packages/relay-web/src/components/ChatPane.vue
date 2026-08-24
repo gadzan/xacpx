@@ -54,8 +54,14 @@ watch(
 // instance name. Branch comes from the read-only git summary (undefined until the
 // backend ever adds it to the diff result).
 const instance = computed(() => (chat.instanceId ? instances.byId(chat.instanceId) : undefined));
+// Resolve the selected row across every list the dashboard keeps it in — NOT just
+// inst.sessions. Sleeping rows deliberately live outside that list (grouped sidebar
+// pages them into groupArchived; flat-mode archive can drop the selected row until a
+// full snapshot loads), and the chat pane must keep its header/driver while one is open.
 const currentSession = computed(() =>
-  instance.value?.sessions.find((s) => s.alias === chat.sessionAlias),
+  chat.instanceId && chat.sessionAlias
+    ? instances.findSessionRow(chat.instanceId, chat.sessionAlias)
+    : undefined,
 );
 // The session's acpx driver (codex/claude/…), driving the assistant avatar glyph.
 // Prefer the driver carried on the session row itself (resolved server-side) — the

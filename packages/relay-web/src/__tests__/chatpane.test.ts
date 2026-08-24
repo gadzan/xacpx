@@ -9,6 +9,7 @@ vi.mock("../api/client", () => ({
 }));
 
 import ChatPane from "../components/ChatPane.vue";
+import { api } from "../api/client";
 import { useChatStore } from "../stores/chat";
 import { useInstancesStore } from "../stores/instances";
 import { useFilesStore } from "../stores/files";
@@ -117,13 +118,20 @@ it("stacks status, plan, and composer as document-flow layers (status → plan �
   expect(kids.indexOf(planEl)).toBeLessThan(kids.indexOf(composerEl!));
 });
 
-it("renders the brand icon for a sleeping (archived) session from the row's driver, without an agents map", async () => {
-  // Sleeping rows can be absent from inst.sessions (grouped sidebar keeps them in
-  // groupArchived) and inst.agents may not be loaded — only SessionDto.driver works.
+it("grouped sidebar: sleeping row lives only in groupArchived — avatar still shows its driver", async () => {
+  // Production shape (grouped sidebar): archived rows are paged into
+  // inst.groupArchived[*].sessions and stay OUT of inst.sessions. inst.agents is
+  // not loaded. Only the row's own SessionDto.driver can drive the icon.
   const instances = useInstancesStore();
   instances.instances.push({
     id: "i1", name: "prod-box", online: true, lastSeenAt: null,
-    sessions: [{ alias: "sleepy", agent: "my-kimi", driver: "kimi", workspace: "ws", archived: true }],
+    sessions: [{ alias: "active", agent: "codex", workspace: "ws" }],
+    groupArchived: {
+      "workspace:ws": {
+        sessions: [{ alias: "sleepy", agent: "my-kimi", driver: "kimi", workspace: "ws", archived: true }],
+        loaded: true, hasMore: false, nextOffset: 1,
+      },
+    },
     agents: [], workspaces: [], agentCatalog: [],
   } as never);
   const chat = useChatStore();
@@ -133,6 +141,45 @@ it("renders the brand icon for a sleeping (archived) session from the row's driv
     instanceId: "i1", sessionAlias: "sleepy", direction: "out",
     text: "hello", createdAt: new Date().toISOString(),
   } as never);
+  const w = mount(ChatPane);
+  await w.vm.$nextTick();
+  const icon = w.find('[data-test="agent-icon"]');
+  expect(icon.exists()).toBe(true);
+  expect(icon.attributes("data-driver")).toBe("kimi");
+});
+
+it("flat sidebar: archiving the selected session keeps the avatar driver across a refresh that drops the row", async () => {
+  // Production shape: archive → sessions-changed → loadSessions replace; without
+  // a loaded full snapshot the active-only page no longer contains the just-slept
+  // row. The open chat must keep resolving its driver.
+  const instances = useInstancesStore();
+  instances.instances.push({
+    id: "i1", name: "prod-box", online: true, lastSeenAt: null,
+    sessions: [{ alias: "main", agent: "my-kimi", driver: "kimi", workspace: "ws", archived: true }],
+    agents: [], workspaces: [], agentCatalog: [],
+  } as never);
+  const chat = useChatStore();
+  chat.select("i1", "main");
+  chat.messages.push({
+    instanceId: "i1", sessionAlias: "main", direction: "out",
+    text: "hello", createdAt: new Date().toISOString(),
+  } as never);
+  // The post-archive replace: an active-only page WITHOUT the selected (now
+  // sleeping) row. Both the sessions page and the agents side-call must resolve.
+  const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id: string, type: string) => {
+    if (type === "control.agents.list") return { agents: [] };
+    return {
+      sessions: [{ alias: "other", agent: "codex", workspace: "ws2", transportSession: "t2", running: false, archived: false }],
+      hasMore: false,
+    };
+  });
+  await instances.loadSessions("i1");
+  rpc.mockRestore();
+  // The replace KEEPS the selected archived row (fetchSessionsPage retain rule), so
+  // the open chat's header/driver survive until a full snapshot re-homes the row.
+  const kept = instances.byId("i1")!.sessions.find((s) => s.alias === "main");
+  expect(kept?.archived).toBe(true);
+
   const w = mount(ChatPane);
   await w.vm.$nextTick();
   const icon = w.find('[data-test="agent-icon"]');
