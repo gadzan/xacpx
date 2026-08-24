@@ -536,6 +536,7 @@ name = "xacpx-rmux-bridge"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "rmux-ipc",
  "rmux-sdk",
  "serde",
  "serde_json",

@@ -3,6 +3,7 @@
 // Never runs two sidecars that could double-write the same RMUX names.
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomUUID } from "node:crypto";
 
 import type { RelayTerminalConfig } from "../config.js";
 import {
@@ -37,7 +38,16 @@ export interface RmuxSidecarSupervisorOptions {
   stableAfterMs?: number;
   /** Invoked after the live child exits unexpectedly (before restart). */
   onChildExit?: () => void;
+  /** Test seam; production mints a fresh label for every native sidecar spawn. */
+  endpointLabelFactory?: () => string;
+  /** Test seam: fail the first create after its temporary OwnedSession exists. */
+  injectCreateFailureAfterOwnedOnce?: boolean;
 }
+
+const emptyRmuxConfigPath = (): string =>
+  process.platform === "win32" ? "NUL" : "/dev/null";
+const newEndpointLabel = (): string =>
+  `xacpx-relay-${process.pid}-${randomUUID().replaceAll("-", "")}`;
 
 /**
  * Stable driver handle for the lifetime of a supervisor. Forwards to the
@@ -163,6 +173,9 @@ export class RmuxSidecarSupervisor {
       const binaries: ResolvedRmuxBinaries = this.opts.spawnFn
         ? {
             bridgeCommand: this.opts.config.bridgeCommand ?? "test-bridge",
+            ...(this.opts.config.rmuxCommand
+              ? { rmuxCommand: this.opts.config.rmuxCommand }
+              : {}),
             source: { bridge: "config" },
           }
         : resolveRmuxBinaries({
@@ -180,11 +193,32 @@ export class RmuxSidecarSupervisor {
           delete env[key];
         }
       }
-      if (binaries.rmuxCommand) {
-        env.RMUX_SDK_DAEMON_BINARY = binaries.rmuxCommand;
-      }
+      delete env.RMUX_SDK_DAEMON_BINARY;
+      delete env.RMUX_CONFIG_FILE;
 
-      spawned = spawnFn(binaries.bridgeCommand, [], {
+      if (process.platform === "win32") {
+        if (binaries.rmuxCommand) {
+          env.RMUX_SDK_DAEMON_BINARY = binaries.rmuxCommand;
+        }
+        // RMUX 0.10 honors RMUX_CONFIG_FILE on Windows.
+        env.RMUX_CONFIG_FILE = emptyRmuxConfigPath();
+      } else if (binaries.rmuxCommand) {
+        // RMUX 0.10 ignores RMUX_CONFIG_FILE on Unix. Point the SDK daemon
+        // launcher at this bridge; its --__internal-daemon wrapper execs the
+        // resolved daemon after replacing --config-default with an explicit
+        // /dev/null config, while preserving HOME/XDG for terminal shells.
+        env.RMUX_SDK_DAEMON_BINARY = binaries.bridgeCommand;
+        env.XACPX_RMUX_DAEMON_BINARY = binaries.rmuxCommand;
+      } else if (!this.opts.spawnFn) {
+        throw new Error("process-owned RMUX requires a resolved daemon binary on Unix");
+      }
+      env.XACPX_RMUX_ENDPOINT_LABEL =
+        (this.opts.endpointLabelFactory ?? newEndpointLabel)();
+
+      const bridgeArgs = this.opts.injectCreateFailureAfterOwnedOnce
+        ? ["--__test-fail-create-after-owned-once"]
+        : [];
+      spawned = spawnFn(binaries.bridgeCommand, bridgeArgs, {
         stdio: ["pipe", "pipe", "pipe"],
         env,
         windowsHide: true,

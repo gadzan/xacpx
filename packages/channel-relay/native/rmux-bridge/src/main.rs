@@ -3,7 +3,9 @@
 mod actors;
 mod protocol;
 
-use std::process::ExitCode;
+use std::ffi::{OsStr, OsString};
+use std::path::PathBuf;
+use std::process::{Command, ExitCode};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -15,25 +17,117 @@ use protocol::{
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
+const INTERNAL_DAEMON_FLAG: &str = "--__internal-daemon";
+const TEST_FAIL_CREATE_AFTER_OWNED_ONCE_FLAG: &str =
+    "--__test-fail-create-after-owned-once";
+const DAEMON_BINARY_ENV: &str = "XACPX_RMUX_DAEMON_BINARY";
+
 #[tokio::main]
 async fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--version" || a == "-V") {
+    let args: Vec<OsString> = std::env::args_os().collect();
+    if let Some(exit) = delegate_daemon_if_requested(&args) {
+        return exit;
+    }
+    if args
+        .iter()
+        .any(|arg| arg == OsStr::new("--version") || arg == OsStr::new("-V"))
+    {
         println!("xacpx-rmux-bridge {BRIDGE_VERSION} (process-owned; rmux-sdk=0.10.0)");
         return ExitCode::SUCCESS;
     }
 
-    if let Err(err) = run().await {
+    let fail_create_after_owned_once = args
+        .iter()
+        .any(|arg| arg == OsStr::new(TEST_FAIL_CREATE_AFTER_OWNED_ONCE_FLAG));
+    if let Err(err) = run(fail_create_after_owned_once).await {
         eprintln!("xacpx-rmux-bridge fatal: {err}");
         return ExitCode::from(1);
     }
     ExitCode::SUCCESS
 }
 
-async fn run() -> Result<(), String> {
+fn delegate_daemon_if_requested(args: &[OsString]) -> Option<ExitCode> {
+    if args.get(1).map(OsString::as_os_str) != Some(OsStr::new(INTERNAL_DAEMON_FLAG)) {
+        return None;
+    }
+
+    let daemon = match std::env::var_os(DAEMON_BINARY_ENV).map(PathBuf::from) {
+        Some(path) if path.is_absolute() => path,
+        _ => {
+            eprintln!("xacpx-rmux-bridge fatal: missing absolute {DAEMON_BINARY_ENV}");
+            return Some(ExitCode::from(1));
+        }
+    };
+    let rewritten = match rewrite_daemon_args(args.iter().skip(1).cloned().collect()) {
+        Ok(args) => args,
+        Err(err) => {
+            eprintln!("xacpx-rmux-bridge fatal: {err}");
+            return Some(ExitCode::from(1));
+        }
+    };
+    let mut command = Command::new(daemon);
+    command.args(rewritten).env_remove(DAEMON_BINARY_ENV);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+
+        let err = command.exec();
+        eprintln!("xacpx-rmux-bridge fatal: daemon exec failed: {err}");
+        Some(ExitCode::from(1))
+    }
+    #[cfg(windows)]
+    {
+        match command.status() {
+            Ok(status) => Some(ExitCode::from(
+                status.code().and_then(|code| u8::try_from(code).ok()).unwrap_or(1),
+            )),
+            Err(err) => {
+                eprintln!("xacpx-rmux-bridge fatal: daemon spawn failed: {err}");
+                Some(ExitCode::from(1))
+            }
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = command;
+        eprintln!("xacpx-rmux-bridge fatal: daemon delegation unsupported on this platform");
+        Some(ExitCode::from(1))
+    }
+}
+
+fn rewrite_daemon_args(args: Vec<OsString>) -> Result<Vec<OsString>, String> {
+    if args.first().map(OsString::as_os_str) != Some(OsStr::new(INTERNAL_DAEMON_FLAG)) {
+        return Err("daemon delegation requires --__internal-daemon".to_owned());
+    }
+
+    let mut rewritten = Vec::with_capacity(args.len() + 1);
+    let mut replaced_default = false;
+    for arg in args {
+        if arg == OsStr::new("--config-file") {
+            return Err("unexpected explicit RMUX config from SDK launcher".to_owned());
+        }
+        if arg == OsStr::new("--config-default") {
+            if replaced_default {
+                return Err("duplicate --config-default from SDK launcher".to_owned());
+            }
+            rewritten.push(OsString::from("--config-file"));
+            rewritten.push(OsString::from(if cfg!(windows) { "NUL" } else { "/dev/null" }));
+            replaced_default = true;
+        } else {
+            rewritten.push(arg);
+        }
+    }
+    if !replaced_default {
+        return Err("SDK daemon launcher omitted --config-default".to_owned());
+    }
+    Ok(rewritten)
+}
+
+async fn run(fail_create_after_owned_once: bool) -> Result<(), String> {
     let (out_tx, mut out_rx) = mpsc::channel::<ServerMessage>(512);
 
-    let bridge = connect_bridge()
+    let bridge = connect_bridge(fail_create_after_owned_once)
         .await
         .map_err(|e| format!("bridge connect: {e}"))?;
 
@@ -180,6 +274,37 @@ fn request_id(msg: &ClientMessage) -> &str {
         | ClientMessage::StopRecover { id, .. }
         | ClientMessage::Diagnostics { id }
         | ClientMessage::Shutdown { id } => id,
+    }
+}
+
+#[cfg(test)]
+mod daemon_launcher_tests {
+    use std::ffi::OsString;
+
+    use super::rewrite_daemon_args;
+
+    #[test]
+    fn daemon_launcher_replaces_default_config_with_explicit_empty_config() {
+        let rewritten = rewrite_daemon_args(vec![
+            OsString::from("--__internal-daemon"),
+            OsString::from("endpoint"),
+            OsString::from("--config-default"),
+            OsString::from("--config-quiet"),
+            OsString::from("--config-cwd"),
+            OsString::from("workspace"),
+        ])
+        .expect("daemon args rewrite");
+
+        assert!(!rewritten.iter().any(|arg| arg == "--config-default"));
+        let config_index = rewritten
+            .iter()
+            .position(|arg| arg == "--config-file")
+            .expect("explicit config flag");
+        assert_eq!(
+            rewritten.get(config_index + 1),
+            Some(&OsString::from(if cfg!(windows) { "NUL" } else { "/dev/null" })),
+        );
+        assert!(rewritten.iter().any(|arg| arg == "--config-cwd"));
     }
 }
 

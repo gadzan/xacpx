@@ -12,11 +12,42 @@ Ship the Relay Web terminal **without modifying `../rmux`**. The connector owns 
 |---|---|
 | Browser refresh / hub disconnect | Detach viewers only; shell stays |
 | Multi-viewer / take-control / rebase | Unchanged |
-| Normal xacpx / sidecar stop | Durable `reaping` → explicit kill |
-| Hard crash | Daemon reaps within `ownerLeaseTtlSeconds` |
+| Normal xacpx / sidecar stop | Durable `reaping` → explicit `Rmux::shutdown()` |
+| Hard crash | Daemon reaps sessions within `ownerLeaseTtlSeconds`, then forced `exit-empty=on` retires it |
 | New process start | **Never adopt**; reap leftover registry / inventory names |
 
 `terminal.enabled` remains default **false**.
+
+## Daemon endpoint isolation
+
+Each native bridge process uses a fresh RMUX endpoint label
+`xacpx-relay-<pid>-<startup nonce>` resolved through `rmux-ipc::endpoint_for_label`; it never
+connects to RMUX's user-level default endpoint. This is part of process ownership, not merely
+namespacing:
+
+- a plugin/package upgrade cannot make a new bridge connect to a daemon whose executable is still
+  mapped from an npm `.old-*` directory;
+- a replacement after a hard bridge crash cannot adopt the old daemon or its sessions;
+- the old endpoint becomes clientless, while `KillOnOwnerExit` bounds session cleanup and RMUX's
+  forced empty-config `exit-empty=on` lifecycle retires the daemon.
+
+The label is intentionally per bridge process rather than stable per installation. Stable labels
+would reintroduce cross-process daemon adoption after a crash or binary replacement.
+
+Bridge bootstrap is lazy: handshake and diagnostics do not call `connect_or_start`; the first real
+session create starts the private daemon. Clean bridge shutdown explicitly calls `Rmux::shutdown()`
+and is a no-op when the bridge stayed dormant. User configuration cannot turn off `exit-empty` for
+this private daemon: on Unix the supervisor points the SDK launcher back at the bridge, whose
+`--__internal-daemon` path execs the resolved daemon after replacing `--config-default` with
+`--config-file /dev/null`; on Windows RMUX 0.10 supports child-only `RMUX_CONFIG_FILE=NUL` directly.
+The Unix wrapper leaves `HOME` and `XDG_CONFIG_HOME` unchanged, so daemon isolation does not alter
+the environment inherited by terminal shells. Together with `KillOnOwnerExit`, this bounds daemon
+retirement after a hard bridge crash without depending on a future process adopting the endpoint.
+When an explicit terminal kill removes the bridge's final registered session, the bridge explicitly
+shuts down the still-live daemon before marking the lifecycle `Empty`. This avoids joining a Windows
+managed endpoint generation that is asynchronously exiting; list remains daemon-free, while the
+next create re-resolves the original label before `connect_or_start`. Re-resolution is required on
+Windows because managed labels rotate to a new concrete pipe generation after daemon shutdown.
 
 ## Non-goals
 

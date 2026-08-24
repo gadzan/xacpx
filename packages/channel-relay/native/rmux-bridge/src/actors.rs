@@ -8,15 +8,17 @@
 //! 4. resize the work window + set `history-limit` on the stable pane id
 
 use std::collections::HashMap;
+use std::env;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rmux_sdk::{
     CleanupPolicy, NewWindowBuilder, OwnedSession, PaneId, PaneRecoveryEvent,
-    PaneRecoveryRebaseReason, Rmux, SessionName,
+    PaneRecoveryRebaseReason, Rmux, RmuxBuilder, SessionName,
 };
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, RwLock};
 
 use crate::protocol::{
     encode_b64, encode_rebase_events, redact_error_message, InventoryEntryDto, RecoveryEventDto,
@@ -38,11 +40,24 @@ const INITIAL_REBASE_TIMEOUT: Duration = Duration::from_secs(10);
 const POSIX_WEB_TERMINAL_DIALECT: &str = "xterm-256color";
 const POSIX_WEB_TERMINAL_DIALECT_CAPABILITY: &str =
     "terminal.posix-dialect.xterm-256color.v1";
+const RMUX_ENDPOINT_LABEL_PREFIX: &str = "xacpx-relay";
+const RMUX_ENDPOINT_LABEL_ENV: &str = "XACPX_RMUX_ENDPOINT_LABEL";
 
 pub struct BridgeState {
-    rmux: Rmux,
+    endpoint_label: String,
+    rmux: RwLock<Rmux>,
+    daemon: Mutex<DaemonLifecycle>,
+    fail_create_after_owned_once: AtomicBool,
     sessions: Mutex<HashMap<String, SessionActor>>,
     panes: Mutex<HashMap<String, String>>, // pane_id → session_id
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DaemonLifecycle {
+    Dormant,
+    Live,
+    Empty,
+    Shutdown,
 }
 
 struct SessionActor {
@@ -55,20 +70,123 @@ struct SessionActor {
     recover_abort: Option<tokio::task::JoinHandle<()>>,
 }
 
-pub async fn connect_bridge() -> Result<Arc<BridgeState>, String> {
-    let rmux = Rmux::builder()
-        .default_timeout(Duration::from_secs(15))
-        .connect_or_start()
-        .await
-        .map_err(|e| format!("rmux connect failed: {e}"))?;
+pub async fn connect_bridge(fail_create_after_owned_once: bool) -> Result<Arc<BridgeState>, String> {
+    let pid = std::process::id();
+    let startup_nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| format!("rmux endpoint clock failed: {e}"))?
+        .as_nanos();
+    let label = match env::var_os(RMUX_ENDPOINT_LABEL_ENV) {
+        Some(value) => validate_endpoint_label(value.into_string().map_err(|_| {
+            "rmux endpoint label must be valid Unicode".to_owned()
+        })?)?,
+        None => process_scoped_endpoint_label(pid, startup_nonce),
+    };
+    new_bridge_state_for_label(&label, fail_create_after_owned_once)
+}
+
+#[cfg(test)]
+fn new_bridge_state(pid: u32, startup_nonce: u128) -> Result<Arc<BridgeState>, String> {
+    let label = process_scoped_endpoint_label(pid, startup_nonce);
+    new_bridge_state_for_label(&label, false)
+}
+
+fn new_bridge_state_for_label(
+    label: &str,
+    fail_create_after_owned_once: bool,
+) -> Result<Arc<BridgeState>, String> {
+    let rmux = rmux_builder_for_label(label)?.build();
     Ok(Arc::new(BridgeState {
-        rmux,
+        endpoint_label: label.to_owned(),
+        rmux: RwLock::new(rmux),
+        daemon: Mutex::new(DaemonLifecycle::Dormant),
+        fail_create_after_owned_once: AtomicBool::new(fail_create_after_owned_once),
         sessions: Mutex::new(HashMap::new()),
         panes: Mutex::new(HashMap::new()),
     }))
 }
 
+#[cfg(test)]
+fn process_scoped_rmux_builder(pid: u32, startup_nonce: u128) -> Result<RmuxBuilder, String> {
+    let label = process_scoped_endpoint_label(pid, startup_nonce);
+    rmux_builder_for_label(&label)
+}
+
+fn process_scoped_endpoint_label(pid: u32, startup_nonce: u128) -> String {
+    format!("{RMUX_ENDPOINT_LABEL_PREFIX}-{pid}-{startup_nonce:x}")
+}
+
+fn validate_endpoint_label(label: String) -> Result<String, String> {
+    if label.is_empty()
+        || label.len() > 96
+        || !label
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(
+            "rmux endpoint label must contain only ASCII letters, digits, '-' or '_' and be at most 96 bytes"
+                .to_owned(),
+        );
+    }
+    Ok(label)
+}
+
+fn rmux_builder_for_label(label: &str) -> Result<RmuxBuilder, String> {
+    let endpoint = rmux_ipc::endpoint_for_label(label)
+        .map_err(|e| format!("rmux endpoint resolution failed: {e}"))?;
+    let builder = Rmux::builder().default_timeout(Duration::from_secs(15));
+
+    #[cfg(unix)]
+    {
+        Ok(builder.unix_socket(endpoint.into_path()))
+    }
+    #[cfg(windows)]
+    {
+        Ok(builder.windows_pipe(
+            endpoint
+                .as_path()
+                .as_os_str()
+                .to_string_lossy()
+                .into_owned(),
+        ))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (builder, endpoint);
+        Err("RMUX endpoint isolation is unsupported on this platform".to_owned())
+    }
+}
+
 impl BridgeState {
+    async fn ensure_daemon(&self) -> Result<(), String> {
+        let mut lifecycle = self.daemon.lock().await;
+        match *lifecycle {
+            DaemonLifecycle::Live => return Ok(()),
+            DaemonLifecycle::Shutdown => return Err("rmux bridge is shutting down".to_owned()),
+            DaemonLifecycle::Dormant | DaemonLifecycle::Empty => {}
+        }
+
+        // Re-resolve the label on every Dormant/Empty start. Windows managed
+        // endpoints rotate their pipe generation after daemon shutdown; a
+        // cached concrete pipe can only rejoin the retired generation.
+        let connected = rmux_builder_for_label(&self.endpoint_label)?
+            .connect_or_start()
+            .await
+            .map_err(|e| format!("rmux connect failed: {e}"))?;
+        *self.rmux.write().await = connected;
+        *lifecycle = DaemonLifecycle::Live;
+        Ok(())
+    }
+
+    async fn daemon_is_live(&self) -> bool {
+        *self.daemon.lock().await == DaemonLifecycle::Live
+    }
+
+    #[cfg(test)]
+    async fn daemon_lifecycle(&self) -> DaemonLifecycle {
+        *self.daemon.lock().await
+    }
+
     pub async fn create(
         &self,
         name: String,
@@ -79,6 +197,7 @@ impl BridgeState {
         tags: Vec<String>,
         owner_lease_ttl_seconds: u32,
     ) -> Result<(String, String, String, Vec<String>), String> {
+        self.ensure_daemon().await?;
         {
             let sessions = self.sessions.lock().await;
             if sessions.values().any(|s| s.name == name) {
@@ -90,13 +209,21 @@ impl BridgeState {
             SessionName::new(&name).map_err(|e| format!("invalid session name: {e}"))?;
         let ttl = Duration::from_secs(u64::from(owner_lease_ttl_seconds.max(15)));
 
-        let mut owned = self
-            .rmux
-            .owned_session(session_name)
-            .cleanup_policy(CleanupPolicy::KillOnOwnerExit)
-            .lease_ttl(ttl)
-            .await
-            .map_err(|e| format!("owned_session create failed: {e}"))?;
+        let owned = {
+            let rmux = self.rmux.read().await;
+            rmux.owned_session(session_name)
+                .cleanup_policy(CleanupPolicy::KillOnOwnerExit)
+                .lease_ttl(ttl)
+                .await
+                .map_err(|e| format!("owned_session create failed: {e}"))?
+        };
+        if self
+            .fail_create_after_owned_once
+            .swap(false, Ordering::AcqRel)
+        {
+            self.cleanup_failed_create(owned).await;
+            return Err("injected create failure after owned session".to_owned());
+        }
 
         let work_builder = owned
             .new_window_with()
@@ -107,7 +234,7 @@ impl BridgeState {
         let work = match work_builder.await {
             Ok(w) => w,
             Err(e) => {
-                let _ = owned.cleanup().await;
+                self.cleanup_failed_create(owned).await;
                 return Err(format!("new_window failed: {e}"));
             }
         };
@@ -120,21 +247,21 @@ impl BridgeState {
         // relay-web needs the PTY/window itself to match the browser viewport,
         // so use the SDK's authoritative ResizeWindow request instead.
         if let Err(e) = work.resize(Some(cols), Some(rows)).await {
-            let _ = owned.cleanup().await;
+            self.cleanup_failed_create(owned).await;
             return Err(format!("window resize failed: {e}"));
         }
 
         let panes = match work.panes().await {
             Ok(p) => p,
             Err(e) => {
-                let _ = owned.cleanup().await;
+                self.cleanup_failed_create(owned).await;
                 return Err(format!("list panes failed: {e}"));
             }
         };
         let pane_meta = match panes.into_iter().next() {
             Some(p) => p,
             None => {
-                let _ = owned.cleanup().await;
+                self.cleanup_failed_create(owned).await;
                 return Err("work window has no pane".to_owned());
             }
         };
@@ -142,7 +269,7 @@ impl BridgeState {
         let pane = match owned.pane_by_id(pane_id).await {
             Ok(p) => p,
             Err(e) => {
-                let _ = owned.cleanup().await;
+                self.cleanup_failed_create(owned).await;
                 return Err(format!("pane_by_id failed: {e}"));
             }
         };
@@ -174,6 +301,9 @@ impl BridgeState {
     }
 
     pub async fn list(&self) -> Vec<InventoryEntryDto> {
+        if !self.daemon_is_live().await {
+            return Vec::new();
+        }
         let sessions = self.sessions.lock().await;
         let mut entries: Vec<InventoryEntryDto> = sessions
             .values()
@@ -188,7 +318,8 @@ impl BridgeState {
 
         // Also surface daemon-wide xacpx-relay-* names so a maintenance
         // sidecar can reconcile leftovers owned by another process.
-        if let Ok(names) = self.rmux.list_sessions().await {
+        let rmux = self.rmux.read().await;
+        if let Ok(names) = rmux.list_sessions().await {
             let known: std::collections::HashSet<String> =
                 entries.iter().map(|e| e.session_id.clone()).collect();
             for name in names {
@@ -208,13 +339,22 @@ impl BridgeState {
     }
 
     pub async fn kill(&self, session_id: &str) -> Result<(), String> {
+        if !self.daemon_is_live().await {
+            return Ok(());
+        }
         let mut sessions = self.sessions.lock().await;
         if let Some(mut actor) = sessions.remove(session_id) {
             if let Some(handle) = actor.recover_abort.take() {
                 handle.abort();
             }
             self.panes.lock().await.remove(&actor.pane_id);
-            let _ = actor.owned.cleanup().await;
+            let became_empty = sessions.is_empty();
+            drop(sessions);
+            if became_empty {
+                self.retire_live_daemon().await;
+            } else {
+                let _ = actor.owned.cleanup().await;
+            }
             return Ok(());
         }
         drop(sessions);
@@ -225,11 +365,11 @@ impl BridgeState {
         // leave a live shell behind after a false inventory miss.
         let name = SessionName::new(session_id)
             .map_err(|e| format!("invalid session name for kill: {e}"))?;
-        match self.rmux.has_session(name.clone()).await {
+        let rmux = self.rmux.read().await;
+        match rmux.has_session(name.clone()).await {
             Ok(false) => Ok(()), // already gone — idempotent
             Ok(true) => {
-                let session = self
-                    .rmux
+                let session = rmux
                     .session(name)
                     .await
                     .map_err(|e| format!("session lookup for kill failed: {e}"))?;
@@ -432,12 +572,72 @@ impl BridgeState {
     }
 
     pub async fn shutdown_all(&self) {
-        let keys: Vec<String> = {
-            let sessions = self.sessions.lock().await;
-            sessions.keys().cloned().collect()
+        let should_shutdown = {
+            let mut lifecycle = self.daemon.lock().await;
+            match *lifecycle {
+                DaemonLifecycle::Dormant => {
+                    *lifecycle = DaemonLifecycle::Shutdown;
+                    false
+                }
+                DaemonLifecycle::Live | DaemonLifecycle::Empty => {
+                    *lifecycle = DaemonLifecycle::Shutdown;
+                    true
+                }
+                DaemonLifecycle::Shutdown => false,
+            }
         };
-        for key in keys {
-            let _ = self.kill(&key).await;
+        if !should_shutdown {
+            return;
+        }
+
+        {
+            let mut sessions = self.sessions.lock().await;
+            for actor in sessions.values_mut() {
+                if let Some(handle) = actor.recover_abort.take() {
+                    handle.abort();
+                }
+            }
+        }
+
+        self.shutdown_daemon().await;
+    }
+
+    async fn shutdown_daemon(&self) {
+        let endpoint = self.rmux.read().await.endpoint().clone();
+        let builder = Rmux::builder()
+            .endpoint(endpoint)
+            .default_timeout(Duration::from_secs(15));
+        let Ok(rmux) = builder.connect().await else {
+            return;
+        };
+        if let Err(err) = rmux.shutdown().await {
+            eprintln!("xacpx-rmux-bridge daemon shutdown failed: {err}");
+        }
+    }
+
+    async fn cleanup_failed_create(&self, mut owned: OwnedSession) {
+        if self.sessions.lock().await.is_empty() {
+            // The temporary OwnedSession is the daemon's only bridge-owned
+            // session. Retire while it is still alive so exit-empty cannot
+            // race a retry onto a retiring Windows pipe generation.
+            self.retire_live_daemon().await;
+        } else {
+            // Preserve the live generation and its committed sessions; only
+            // remove the uncommitted session created by this failed request.
+            let _ = owned.cleanup().await;
+        }
+    }
+
+    async fn retire_live_daemon(&self) {
+        // Do not let exit-empty race the next create on Windows. The managed
+        // endpoint generation can remain Running briefly after cleanup removes
+        // the last session, causing a reconnect to join a daemon that is
+        // already shutting down. KillServer while the daemon is known live and
+        // wait for its transport to close before publishing Empty.
+        self.shutdown_daemon().await;
+        let mut lifecycle = self.daemon.lock().await;
+        if *lifecycle == DaemonLifecycle::Live {
+            *lifecycle = DaemonLifecycle::Empty;
         }
     }
 
@@ -650,6 +850,34 @@ mod tests {
             POSIX_WEB_TERMINAL_DIALECT_CAPABILITY,
             "terminal.posix-dialect.xterm-256color.v1"
         );
+    }
+
+    #[test]
+    fn bridge_rmux_endpoint_is_process_scoped_instead_of_default() {
+        let first = process_scoped_rmux_builder(42, 0xabc).expect("process endpoint");
+        let second = process_scoped_rmux_builder(42, 0xdef).expect("process endpoint");
+
+        assert!(!first.configured_endpoint().is_default());
+        assert!(!second.configured_endpoint().is_default());
+        assert_ne!(first.configured_endpoint(), second.configured_endpoint());
+        assert!(format!("{:?}", first.configured_endpoint()).contains("xacpx-relay-42-abc"));
+    }
+
+    #[test]
+    fn injected_endpoint_label_rejects_paths_and_accepts_supervisor_labels() {
+        assert!(validate_endpoint_label("../default".to_owned()).is_err());
+        assert!(validate_endpoint_label("xacpx-relay-42_nonce".to_owned()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn bridge_stays_dormant_until_terminal_work_and_dormant_shutdown_starts_nothing() {
+        let bridge = new_bridge_state(42, 0xabc).expect("bridge state");
+
+        assert_eq!(bridge.daemon_lifecycle().await, DaemonLifecycle::Dormant);
+        assert!(bridge.list().await.is_empty());
+        assert_eq!(bridge.daemon_lifecycle().await, DaemonLifecycle::Dormant);
+        bridge.shutdown_all().await;
+        assert_eq!(bridge.daemon_lifecycle().await, DaemonLifecycle::Shutdown);
     }
 
     #[test]
