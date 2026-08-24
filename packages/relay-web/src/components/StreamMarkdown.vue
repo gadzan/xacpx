@@ -6,6 +6,7 @@ import { hydrateMermaidBlocks, resetMermaidBlocks } from "../lib/render-mermaid"
 import { enhanceMermaidBlock } from "../lib/inline-mermaid";
 import MermaidViewer from "./MermaidViewer.vue";
 import { useThemeStore } from "../stores/theme";
+import { openLightbox, type LightboxImage } from "../lib/use-image-lightbox";
 
 defineOptions({ inheritAttrs: false });
 
@@ -31,6 +32,36 @@ function cancelTimer(): void {
     clearTimeout(timer);
     timer = null;
   }
+}
+
+// Message images embedded in markdown (agent output like ![alt](data:...) or a
+// workspace URL) open fullscreen in the lightbox. One delegated click listener on
+// the root handles every re-render without rebinding per <img>; the swipeable set
+// is the ordered images of this rendered segment, so a bubble with several inline
+// images can be paged through. Only http(s)/data/blob srcs are viewable.
+function onViewableImg(img: HTMLImageElement): boolean {
+  // Use the RAW attribute: the DOM-resolved .src turns relative paths into
+  // absolute http(s) URLs, which would admit broken relative links.
+  const src = (img.getAttribute("src") ?? "").trim().toLowerCase();
+  return /^(https?:)?\/\//.test(src) || src.startsWith("data:") || src.startsWith("blob:");
+}
+function segmentImageEls(): HTMLImageElement[] {
+  const root = rootEl.value;
+  if (!root) return [];
+  return Array.from(root.querySelectorAll<HTMLImageElement>("img")).filter(onViewableImg);
+}
+function onRootClick(e: MouseEvent): void {
+  const target = e.target as HTMLElement | null;
+  if (!target || target.tagName !== "IMG") return;
+  const img = target as HTMLImageElement;
+  if (!onViewableImg(img)) return;
+  e.preventDefault();
+  // Element identity, not src matching: the same image can appear twice in one
+  // segment and each occurrence must page at its own position.
+  const els = segmentImageEls();
+  const index = Math.max(0, els.indexOf(img));
+  const images: LightboxImage[] = els.map((el) => ({ src: el.getAttribute("src") ?? "", alt: el.alt || undefined }));
+  openLightbox(images, index);
 }
 
 // Mermaid blocks are hydrated only when NOT streaming: a mid-stream fence (auto-closed by
@@ -131,7 +162,10 @@ function render(): void {
 }
 
 render(); // initial synchronous render (also seeds the throttle clock)
-onMounted(() => scheduleHydrate(false)); // rootEl exists only after mount
+onMounted(() => {
+  scheduleHydrate(false); // rootEl exists only after mount
+  rootEl.value?.addEventListener("click", onRootClick);
+});
 
 watch(
   () => props.text,
@@ -177,6 +211,7 @@ onBeforeUnmount(() => {
   disposed = true;
   cancelTimer();
   detachEnhancers();
+  rootEl.value?.removeEventListener("click", onRootClick);
 });
 </script>
 
