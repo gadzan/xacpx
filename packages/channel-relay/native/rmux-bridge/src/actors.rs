@@ -53,6 +53,7 @@ pub struct BridgeState {
 enum DaemonLifecycle {
     Dormant,
     Live,
+    Empty,
     Shutdown,
 }
 
@@ -154,7 +155,7 @@ impl BridgeState {
         match *lifecycle {
             DaemonLifecycle::Live => return Ok(()),
             DaemonLifecycle::Shutdown => return Err("rmux bridge is shutting down".to_owned()),
-            DaemonLifecycle::Dormant => {}
+            DaemonLifecycle::Dormant | DaemonLifecycle::Empty => {}
         }
 
         let connected = Rmux::builder()
@@ -330,6 +331,14 @@ impl BridgeState {
             }
             self.panes.lock().await.remove(&actor.pane_id);
             let _ = actor.owned.cleanup().await;
+            let became_empty = sessions.is_empty();
+            drop(sessions);
+            if became_empty {
+                let mut lifecycle = self.daemon.lock().await;
+                if *lifecycle == DaemonLifecycle::Live {
+                    *lifecycle = DaemonLifecycle::Empty;
+                }
+            }
             return Ok(());
         }
         drop(sessions);
@@ -554,7 +563,7 @@ impl BridgeState {
                     *lifecycle = DaemonLifecycle::Shutdown;
                     false
                 }
-                DaemonLifecycle::Live => {
+                DaemonLifecycle::Live | DaemonLifecycle::Empty => {
                     *lifecycle = DaemonLifecycle::Shutdown;
                     true
                 }
