@@ -207,4 +207,44 @@ describe("AgentMessageCard", () => {
     });
     expect(cancelled.find('[data-test="msg-status-cancelled"]').text()).toContain("Cancelled");
   });
+
+  it("standalone sent card keeps chat-bubble alignment and accent skin", () => {
+    const base = {
+      kind: "agent_message" as const,
+      direction: "sent" as const,
+      conversationId: "conv",
+      peer: { handle: "agent:n:e", displayName: "Peer", agent: "codex" },
+      content: "x",
+      createdAt: 1771234567890,
+      status: "sent" as const,
+      messageId: "msg_s",
+    };
+    const wrapper = mount(AgentMessageCard, { props: { message: base } });
+    const cls = wrapper.find('[data-test="agent-message-card"]').classes();
+    expect(cls).toContain("mx-auto");
+    expect(cls).not.toContain("ml-auto");
+    expect(cls).toContain("border-accent/25");
+    expect(cls).toContain("bg-accent/5");
+    expect(cls).not.toContain("shadow-sm");
+  });
+
+  it("anchored sent card left-aligns but keeps accent skin", () => {
+    const base = {
+      kind: "agent_message" as const,
+      direction: "sent" as const,
+      conversationId: "conv",
+      peer: { handle: "agent:n:e", displayName: "Peer", agent: "codex" },
+      content: "x",
+      createdAt: 1771234567890,
+      status: "sent" as const,
+    };
+    const wrapper = mount(AgentMessageCard, { props: { message: { ...base, messageId: "msg_a" }, anchored: true } });
+    const cls = wrapper.find('[data-test="agent-message-card"]').classes();
+    expect(cls).toContain("mr-auto");
+    expect(cls).not.toContain("ml-auto");
+    expect(cls).not.toContain("mx-auto");
+    expect(cls).toContain("border-accent/25");
+    expect(cls).toContain("bg-accent/5");
+    expect(cls).not.toContain("shadow-sm");
+  });
 });
