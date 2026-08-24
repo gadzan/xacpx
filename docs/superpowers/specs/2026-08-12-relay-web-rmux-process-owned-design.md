@@ -46,7 +46,8 @@ retirement after a hard bridge crash without depending on a future process adopt
 When an explicit terminal kill removes the bridge's final registered session, the bridge explicitly
 shuts down the still-live daemon before marking the lifecycle `Empty`. This avoids joining a Windows
 managed endpoint generation that is asynchronously exiting; list remains daemon-free, while the
-next create runs `connect_or_start` on a retired endpoint generation.
+next create re-resolves the original label before `connect_or_start`. Re-resolution is required on
+Windows because managed labels rotate to a new concrete pipe generation after daemon shutdown.
 
 ## Non-goals
 
