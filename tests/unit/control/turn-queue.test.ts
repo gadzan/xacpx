@@ -1309,7 +1309,7 @@ test("v0.4 G1.1: busy interrupt reserves, aborts the predecessor exactly once, a
   });
   // Synchronous acceptance: reservation owned + predecessor signalled, ACK returned
   // before the predecessor has unwound.
-  expect(res).toEqual({ status: "queued", modeUsed: "interrupt" });
+  expect(res).toMatchObject({ status: "queued", modeUsed: "interrupt" });
   expect(aborts()).toBe(1);
   expect(h.started).toEqual(["old"]);
   // Old runTurn deliberately held unresolved: no X execution may start.
@@ -1319,7 +1319,7 @@ test("v0.4 G1.1: busy interrupt reserves, aborts the predecessor exactly once, a
   await pOld;
   await tick();
   expect(h.started).toEqual(["old", "X"]);
-  expect(h.pendingReqs()[1]!.turnStarted?.promptRequestId).toBe("msg_x");
+  expect(h.pendingReqs()[0]!.turnStarted?.promptRequestId).toBe("msg_x");
   h.resolveNext();
 });
 
@@ -1336,7 +1336,7 @@ test("v0.4 G1.2: aborted-but-unsettled predecessor is NOT aborted again; interru
     promptRequestId: "msg_x2",
     isPeerMessage: true,
   });
-  expect(res).toEqual({ status: "queued", modeUsed: "interrupt" });
+  expect(res).toMatchObject({ status: "queued", modeUsed: "interrupt" });
   expect(aborts()).toBe(0); // no second abort in the aborted-but-unsettled window
   expect(h.started).toEqual(["old"]); // no false admission before settle
   await tick();
@@ -1383,7 +1383,7 @@ test("v0.4 G1.4: a full normal queue does not consume or block the free interrup
     promptRequestId: "msg_i4",
     isPeerMessage: true,
   });
-  expect(res).toEqual({ status: "queued", modeUsed: "interrupt" });
+  expect(res).toMatchObject({ status: "queued", modeUsed: "interrupt" });
   expect(h.queue.queueLength("c", "s")).toBe(QUEUE_MAX_DEPTH); // normal queue unchanged
   h.resolveNext();
   await pCur;
@@ -1401,7 +1401,7 @@ test("v0.4 G1.5: a second DISTINCT interrupt is rejected queue-full while one is
   const pOld = h.queue.submit({ ...BASE, text: "old", queueable: true });
   await tick();
   const aborts = trackAborts(h);
-  expect(h.queue.submitPeerInterrupt({ ...BASE, text: "I1", senderId: "agent-messaging", promptRequestId: "msg_i1", isPeerMessage: true })).toEqual({
+  expect(h.queue.submitPeerInterrupt({ ...BASE, text: "I1", senderId: "agent-messaging", promptRequestId: "msg_i1", isPeerMessage: true })).toMatchObject({
     status: "queued",
     modeUsed: "interrupt",
   });
@@ -1424,11 +1424,11 @@ test("v0.4 G1.6: a duplicate interrupt retry (same promptRequestId) is deduped â
   const pOld = h.queue.submit({ ...BASE, text: "old", queueable: true });
   await tick();
   const aborts = trackAborts(h);
-  expect(h.queue.submitPeerInterrupt({ ...BASE, text: "I1", senderId: "agent-messaging", promptRequestId: "msg_p", isPeerMessage: true })).toEqual({
+  expect(h.queue.submitPeerInterrupt({ ...BASE, text: "I1", senderId: "agent-messaging", promptRequestId: "msg_p", isPeerMessage: true })).toMatchObject({
     status: "queued",
     modeUsed: "interrupt",
   });
-  expect(h.queue.submitPeerInterrupt({ ...BASE, text: "I1", senderId: "agent-messaging", promptRequestId: "msg_p", isPeerMessage: true })).toEqual({
+  expect(h.queue.submitPeerInterrupt({ ...BASE, text: "I1", senderId: "agent-messaging", promptRequestId: "msg_p", isPeerMessage: true })).toMatchObject({
     status: "queued",
     modeUsed: "interrupt",
   });
@@ -1504,10 +1504,14 @@ test("v0.4 G1.7b: clearSession drops the pending interrupt and resolves its comp
     isPeerMessage: true,
     peerOrigin,
   }).status).toBe("queued");
-  expect(await h.queue.clearSession("c", "s")).toEqual({ cleared: true });
+  // clearSession aborts the predecessor and waits (bounded) for it to unwind â€”
+  // settle it DURING that window so the teardown reports a clean clear.
+  const clearedP = h.queue.clearSession("c", "s");
+  await tick();
+  h.resolveNext({ ok: false, errorMessage: "aborted" });
+  expect(await clearedP).toEqual({ cleared: true });
   expect(cancelled).toHaveLength(1);
   expect(cancelled[0]!.peerOrigin).toEqual(peerOrigin);
-  h.resolveNext({ ok: false, errorMessage: "aborted" });
   await pOld;
   await tick();
   expect(h.started).toEqual(["old"]); // never executed on the dead session

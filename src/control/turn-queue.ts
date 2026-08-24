@@ -55,6 +55,23 @@ export interface TurnQueueDeps {
     peerOrigin: PeerTurnOrigin;
     promptRequestId?: string;
   }) => void;
+  // v0.4 Peer Interrupt Delivery: structured lifecycle events (spec §17) —
+  // reserved / abort_signalled / started / cancelled_before_start /
+  // rejected_pending. Best-effort: a throwing observer never affects lane
+  // state. Ids and lane keys only — never message content.
+  onPeerInterruptEvent?: (event: {
+    kind:
+      | "reserved"
+      | "abort_signalled"
+      | "started"
+      | "cancelled_before_start"
+      | "rejected_pending";
+    chatKey: string;
+    sessionAlias: string;
+    requestMessageId?: string;
+    promptRequestId?: string;
+    predecessorWasAlreadyAborted?: boolean;
+  }) => void;
 }
 
 export interface SubmitParams {
@@ -77,6 +94,7 @@ export interface SubmitParams {
   allowRestoreArchived?: boolean;
   preserveCoordinatorRoute?: boolean;
   /** Hub-issued pre-write correlation; stored on the queue item and carried onto the
+
    *  drained turn-started so the hub can correlate a queue item back to its
    *  pre-written inbound row (see PromptPayload.promptRequestId). */
   promptRequestId?: string;
@@ -94,6 +112,16 @@ export interface SubmitParams {
 }
 
 export type SubmitResult = TurnResult | { ok: true; queued: true; queueItemId: string };
+/** v0.4: result of `submitPeerInterrupt`. `queued`+`interrupt` = busy target:
+ * the reservation is held and the predecessor cancel has been signalled.
+ * `injected`+`prompt` = idle target: ordinary synchronous peer admission with
+ * zero cancellations. Rejections reuse the existing reasons ("target-unavailable",
+ * "queue-full" — the latter also enforces the one-pending-interrupt slot rule,
+ * spec §8/§16). */
+export type PeerInterruptAdmission =
+  | { status: "injected"; modeUsed: "prompt" }
+  | { status: "queued"; modeUsed: "interrupt"; queueItemId: string }
+  | { status: "rejected"; reason: string };
 
 // The three-state concurrency gate (inFlight/queues/draining) that used to live inline in
 // ControlService.executeTurn. Session-free by design: post-turn sessions-changed detection is
@@ -130,6 +158,13 @@ export class TurnQueue {
   // keep rejecting immediately. Drained by the turn-finish hand-off in advanceQueue.
   private readonly queues = new Map<string, QueuedPrompt[]>();
 
+  // v0.4 Peer Interrupt Delivery: at most ONE reserved interrupt per lane, held
+  // OUTSIDE the normal FIFO (spec §7): in-flight → pending interrupt → normal
+  // queue. The slot is independent of QUEUE_MAX_DEPTH and never evicts or
+  // reorders queued prompts. advanceQueue drains it ahead of the FIFO head
+  // after the predecessor has TRULY settled (inFlight cleared).
+  private readonly pendingInterrupts = new Map<string, QueuedPrompt>();
+
   // Set synchronously during a turn-finish drain hand-off: the finished turn has cleared its
   // inFlight entry but the drained head has not yet re-registered its own. The enqueue gate
   // treats `draining.has(key)` as busy so nothing starts a parallel turn in that window. The
@@ -153,7 +188,8 @@ export class TurnQueue {
       this.inFlight.has(directKey) ||
       this.queues.has(directKey) ||
       this.draining.has(directKey) ||
-      this.removing.has(directKey)
+      this.removing.has(directKey) ||
+      this.pendingInterrupts.has(directKey)
     ) {
       return directKey;
     }
@@ -168,6 +204,9 @@ export class TurnQueue {
       if (k === directKey || k.endsWith(":" + cleanAlias) || k.endsWith(" " + cleanAlias) || k === cleanAlias) return k;
     }
     for (const k of this.removing) {
+      if (k === directKey || k.endsWith(":" + cleanAlias) || k.endsWith(" " + cleanAlias) || k === cleanAlias) return k;
+    }
+    for (const k of this.pendingInterrupts.keys()) {
       if (k === directKey || k.endsWith(":" + cleanAlias) || k.endsWith(" " + cleanAlias) || k === cleanAlias) return k;
     }
     return directKey;
@@ -268,6 +307,143 @@ export class TurnQueue {
     // dedupe via the tombstone.
     this.recordSettledRequestId(params.promptRequestId);
     return { status: "injected" };
+  }
+
+  /** v0.4 test/observability seam: 1 when a reserved-but-not-started peer
+   *  interrupt occupies the lane's slot, else 0 (spec §7: at most one). */
+  pendingInterruptCount(chatKey: string, sessionAlias: string, concurrencyKey?: string): number {
+    return this.pendingInterrupts.has(this.resolveKey(chatKey, sessionAlias, concurrencyKey)) ? 1 : 0;
+  }
+
+  /**
+   * v0.4 Peer Interrupt Delivery (spec §6.4/§9): atomic reserve → abort →
+   * true-settle → priority-drain, owned entirely by this lane. Synchronous:
+   * by the time the accepted result returns, the reservation exists in the
+   * lane and a live predecessor's AbortController has been signalled. The
+   * interrupting turn itself starts only after the predecessor's `settled`
+   * resolves and its inFlight entry is gone (drain hand-off in advanceQueue).
+   * Router-level cancel();submit() races are impossible by construction here.
+   */
+  submitPeerInterrupt(params: SubmitParams): PeerInterruptAdmission {
+    const key = this.resolveKey(params.chatKey, params.sessionAlias, params.concurrencyKey);
+    if (this.removing.has(key)) {
+      return { status: "rejected", reason: "target-unavailable" };
+    }
+    // Request-id dedupe (spec §13) participates in the SAME lookup family as
+    // submitPeerTurn: pending interrupt slot, settled tombstones, normal
+    // queue, in-flight. A duplicate returns the ORIGINAL accepted semantic —
+    // queued/interrupt while the reservation is pending, injected/prompt once
+    // the turn was admitted through the ordinary path. Never a second abort.
+    if (params.promptRequestId !== undefined && params.isPeerMessage) {
+      const pendingDup = this.pendingInterrupts.get(key);
+      if (pendingDup?.promptRequestId === params.promptRequestId) {
+        return { status: "queued", modeUsed: "interrupt", queueItemId: pendingDup.id };
+      }
+      if (this.hasSettledRequestId(params.promptRequestId)) {
+        return { status: "injected", modeUsed: "prompt" };
+      }
+      const queuedDup = (this.queues.get(key) ?? []).some(
+        (item) => item.promptRequestId === params.promptRequestId,
+      );
+      const inFlightDup = this.inFlight.get(key)?.promptRequestId === params.promptRequestId;
+      if (queuedDup || inFlightDup) {
+        return { status: "injected", modeUsed: "prompt" };
+      }
+    }
+    const existing = this.inFlight.get(key);
+    // Busy determination (spec §9): draining OR any registered inFlight entry,
+    // even an already-aborted one — the predecessor owns the lane until its
+    // `settled` resolves (mirrors the v0.3 peer-admission fix).
+    const busy = this.draining.has(key) || existing !== undefined;
+    if (!busy) {
+      // Idle target: NO cancellation — an ordinary synchronous peer admission
+      // (spec G1: cancel count = 0, receipt injected/prompt).
+      const idle = this.submitPeerTurn(params);
+      if (idle.status === "rejected") return idle;
+      if (idle.status === "queued") {
+        // Unreachable: submitPeerTurn queues only when the lane reads busy,
+        // and the gate above proved it idle. Fail closed rather than invent
+        // a receipt shape.
+        return { status: "rejected", reason: "queue-full" };
+      }
+      return { status: "injected", modeUsed: "prompt" };
+    }
+    // One-slot rule (spec §8): a DIFFERENT interrupt never replaces, cancels
+    // again, or silently downgrades to the ordinary queue.
+    const pending = this.pendingInterrupts.get(key);
+    if (pending) {
+      this.emitPeerInterrupt("rejected_pending", params.chatKey, params.sessionAlias, pending);
+      return { status: "rejected", reason: "queue-full" };
+    }
+    const id = randomUUID();
+    const item: QueuedPrompt = {
+      id,
+      text: params.text,
+      enqueuedAt: new Date().toISOString(),
+      senderId: params.senderId,
+      executionContext: {
+        chatKey: params.chatKey,
+        sessionAlias: params.sessionAlias,
+        ...(params.boundSessionAlias ? { boundSessionAlias: params.boundSessionAlias } : {}),
+      },
+      concurrencyKey: params.concurrencyKey,
+      isPeerMessage: true,
+      allowRestoreArchived: false,
+      ...(params.isOwner !== undefined ? { isOwner: params.isOwner } : {}),
+      ...(params.preserveCoordinatorRoute !== undefined ? { preserveCoordinatorRoute: params.preserveCoordinatorRoute } : {}),
+      ...(params.accountId !== undefined ? { accountId: params.accountId } : {}),
+      ...(params.media !== undefined ? { media: params.media } : {}),
+      ...(params.agentMentions !== undefined ? { agentMentions: params.agentMentions } : {}),
+      ...(params.promptRequestId !== undefined ? { promptRequestId: params.promptRequestId } : {}),
+      ...(params.peerOrigin !== undefined ? { peerOrigin: params.peerOrigin } : {}),
+      ...(params.trustedPeerCompletion !== undefined ? { trustedPeerCompletion: params.trustedPeerCompletion } : {}),
+    };
+    // Reservation FIRST (synchronous acceptance invariant, spec §9.1): the ACK
+    // may return before the predecessor unwinds because the lane already owns
+    // the next turn. Tombstone only AFTER the reservation exists, mirroring
+    // submitPeerTurn's ordering (a rejection must never poison the request id).
+    this.pendingInterrupts.set(key, item);
+    this.recordSettledRequestId(params.promptRequestId);
+    const predecessorWasAlreadyAborted = existing?.controller.signal.aborted ?? false;
+    this.emitPeerInterrupt("reserved", params.chatKey, params.sessionAlias, item, {
+      predecessorWasAlreadyAborted,
+    });
+    // Exactly-once cancel: a pre-aborted predecessor (user Stop unwinding) is
+    // never aborted again (spec §6.4 aborted-but-unsettled). AbortController
+    // abort() is idempotent; the guard keeps the intent explicit.
+    if (existing && !predecessorWasAlreadyAborted) {
+      existing.controller.abort();
+      this.emitPeerInterrupt("abort_signalled", params.chatKey, params.sessionAlias, item);
+    }
+    return { status: "queued", modeUsed: "interrupt", queueItemId: id };
+  }
+
+  // Best-effort structured observability (spec §17): a throwing observer never
+  // affects lane state; events carry ids and lane keys, never message content.
+  private emitPeerInterrupt(
+    kind: "reserved" | "abort_signalled" | "started" | "cancelled_before_start" | "rejected_pending",
+    chatKey: string,
+    sessionAlias: string,
+    item: QueuedPrompt | undefined,
+    extra?: { predecessorWasAlreadyAborted?: boolean },
+  ): void {
+    if (!this.deps.onPeerInterruptEvent) return;
+    try {
+      this.deps.onPeerInterruptEvent({
+        kind,
+        chatKey,
+        sessionAlias,
+        ...(item?.peerOrigin?.requestMessageId !== undefined
+          ? { requestMessageId: item.peerOrigin.requestMessageId }
+          : {}),
+        ...(item?.promptRequestId !== undefined ? { promptRequestId: item.promptRequestId } : {}),
+        ...(extra?.predecessorWasAlreadyAborted !== undefined
+          ? { predecessorWasAlreadyAborted: extra.predecessorWasAlreadyAborted }
+          : {}),
+      });
+    } catch {
+      // observer errors are swallowed by contract
+    }
   }
 
   private hasSettledRequestId(id: string): boolean {
@@ -473,14 +649,14 @@ export class TurnQueue {
       result = { ok: false, errorMessage: String(error) };
     } finally {
       if (idleTimer) this.clearTimer(idleTimer);
-      // If a queued head is waiting, mark `draining` synchronously NOW — before the slot is
+      // If a queued head OR a reserved peer interrupt is waiting, mark `draining` synchronously NOW — before the slot is
       // parallel turn during the release→drain window, even for an *aborted* turn whose
       // lingering inFlight entry no longer reads as busy. This is the single writer of the
       // hand-off guard; advanceQueue (called synchronously below) relies on it already being
       // set and the drained turn clears it once it re-registers its own inFlight. When the
       // queue is empty, this turn's still-present inFlight entry is itself the busy marker (a
       // normally-finished turn's controller is not aborted), so no drain is possible.
-      if ((this.queues.get(key)?.length ?? 0) > 0) {
+      if ((this.queues.get(key)?.length ?? 0) > 0 || this.pendingInterrupts.has(key)) {
         this.draining.add(key);
       }
       // Post-turn `sessions-changed` detection runs HERE, after `draining` is set. A transport
@@ -509,59 +685,35 @@ export class TurnQueue {
     };
   }
 
-  // Advances the per-session FIFO queue after a turn ends. If a head exists, starts it as the
-  // next (drained) turn while holding the busy slot via `draining`; otherwise releases the
-  // inFlight slot. Must be called exactly once per ended turn. Fully synchronous: `draining` is
-  // added BEFORE the fire-and-forget drained `submit`, whose `inFlight.set` runs synchronously
-  // before its first await — so there is no window in which an incoming submission could
-  // observe a not-busy session between the ended turn and the drained turn.
+  // Advances the per-session lane after a turn ends. Drain priority (spec §10):
+  // 1. pending interrupt, 2. normal FIFO head, 3. idle release. The chosen head
+  // starts as the next (drained) turn while holding the busy slot via `draining`.
+  // Must be called exactly once per ended turn. Fully synchronous: `draining` is
+  // added BEFORE the fire-and-forget drained `submit`, whose `inFlight.set` runs
+  // synchronously before its first await — so there is no window in which an
+  // incoming submission could observe a not-busy session between the ended turn
+  // and the drained turn.
   private advanceQueue(key: string): void {
+    const interrupt = this.pendingInterrupts.get(key);
+    if (interrupt) {
+      // Removed from the slot SYNCHRONOUSLY before it re-registers as inFlight
+      // (spec §10) — a cancel racing after this point addresses a running turn,
+      // not a reservable slot.
+      this.pendingInterrupts.delete(key);
+      this.emitPeerInterrupt(
+        "started",
+        interrupt.executionContext.chatKey,
+        interrupt.executionContext.sessionAlias,
+        interrupt,
+      );
+      this.drainQueuedPrompt(key, interrupt);
+      return;
+    }
     const q = this.queues.get(key);
     const next = q?.shift();
     if (q && q.length === 0) this.queues.delete(key);
     if (next) {
-      // `draining` is already set here: this runs synchronously inside submit's finally, which
-      // set `draining` (when the queue was non-empty) before calling advanceQueue. That guard
-      // stays up across the fire-and-forget drained submit below until the drained turn
-      // re-registers its own inFlight, so a submit landing in that gap sees a busy gate rather
-      // than starting a parallel turn — pinned by turn-queue.test.ts "a submit arriving during
-      // the drain hand-off enqueues (no parallel turn)".
-      // The head was already popped above; emit the shorter snapshot.
-      this.emitQueueUpdated(
-        next.executionContext.chatKey,
-        next.executionContext.sessionAlias,
-        key,
-      );
-      // Fire-and-forget: the drained turn drives its own settled lifecycle. It bypasses the
-      // busy gate (drained: true), re-registers inFlight and clears `draining` at its top — all
-      // synchronously before the first await — so there is no parallel-turn window. The
-      // prompt and queueItemId let web clients associate the optimistic enqueue-time bubble
-      // with this execution-time event without guessing by message text.
-      const concurrencyKey = next.concurrencyKey ?? key;
-      const turnStarted = next.isPeerMessage
-        ? { queueItemId: next.id, ...(next.promptRequestId !== undefined ? { promptRequestId: next.promptRequestId } : {}) }
-        : { prompt: next.text, queueItemId: next.id, ...(next.promptRequestId !== undefined ? { promptRequestId: next.promptRequestId } : {}) };
-      void this.submit({
-        chatKey: next.executionContext.chatKey,
-        sessionAlias: next.executionContext.sessionAlias,
-        boundSessionAlias: next.executionContext.boundSessionAlias,
-        concurrencyKey,
-        text: next.text,
-        senderId: next.senderId,
-        queueable: true,
-        drained: true,
-        isPeerMessage: next.isPeerMessage,
-        allowRestoreArchived: next.allowRestoreArchived,
-        preserveCoordinatorRoute: next.preserveCoordinatorRoute,
-        promptRequestId: next.promptRequestId,
-        peerOrigin: next.peerOrigin,
-        trustedPeerCompletion: next.trustedPeerCompletion,
-        ...(next.isOwner !== undefined ? { isOwner: next.isOwner } : {}),
-        ...(next.accountId !== undefined ? { accountId: next.accountId } : {}),
-        ...(next.media !== undefined ? { media: next.media } : {}),
-        ...(next.agentMentions !== undefined ? { agentMentions: next.agentMentions } : {}),
-        turnStarted,
-      });
+      this.drainQueuedPrompt(key, next);
     } else {
       // The queue emptied during the drain hand-off (e.g. a cancel removed the only queued
       // item while the finally's post-turn detection was in flight, after the finally set
@@ -571,6 +723,52 @@ export class TurnQueue {
       this.draining.delete(key);
       this.inFlight.delete(key);
     }
+  }
+
+  // Fire-and-forget drained-turn start (shared by interrupt + FIFO heads): the
+  // drained turn drives its own settled lifecycle. It bypasses the busy gate
+  // (drained: true), re-registers inFlight and clears `draining` at its top —
+  // all synchronously before the first await — so there is no parallel-turn
+  // window. The prompt and queueItemId let web clients associate the optimistic
+  // enqueue-time bubble with this execution-time event without guessing by
+  // message text.
+  private drainQueuedPrompt(key: string, next: QueuedPrompt): void {
+    // `draining` is already set here: this runs synchronously inside submit's finally, which
+    // set `draining` (when the queue was non-empty) before calling advanceQueue. That guard
+    // stays up across the fire-and-forget drained submit below until the drained turn
+    // re-registers its own inFlight, so a submit landing in that gap sees a busy gate rather
+    // than starting a parallel turn — pinned by turn-queue.test.ts "a submit arriving during
+    // the drain hand-off enqueues (no parallel turn)".
+    this.emitQueueUpdated(
+      next.executionContext.chatKey,
+      next.executionContext.sessionAlias,
+      key,
+    );
+    const concurrencyKey = next.concurrencyKey ?? key;
+    const turnStarted = next.isPeerMessage
+      ? { queueItemId: next.id, ...(next.promptRequestId !== undefined ? { promptRequestId: next.promptRequestId } : {}) }
+      : { prompt: next.text, queueItemId: next.id, ...(next.promptRequestId !== undefined ? { promptRequestId: next.promptRequestId } : {}) };
+    void this.submit({
+      chatKey: next.executionContext.chatKey,
+      sessionAlias: next.executionContext.sessionAlias,
+      boundSessionAlias: next.executionContext.boundSessionAlias,
+      concurrencyKey,
+      text: next.text,
+      senderId: next.senderId,
+      queueable: true,
+      drained: true,
+      isPeerMessage: next.isPeerMessage,
+      allowRestoreArchived: next.allowRestoreArchived,
+      preserveCoordinatorRoute: next.preserveCoordinatorRoute,
+      promptRequestId: next.promptRequestId,
+      peerOrigin: next.peerOrigin,
+      trustedPeerCompletion: next.trustedPeerCompletion,
+      ...(next.isOwner !== undefined ? { isOwner: next.isOwner } : {}),
+      ...(next.accountId !== undefined ? { accountId: next.accountId } : {}),
+      ...(next.media !== undefined ? { media: next.media } : {}),
+      ...(next.agentMentions !== undefined ? { agentMentions: next.agentMentions } : {}),
+      turnStarted,
+    });
   }
 
   cancelTurn(chatKey: string, sessionAlias: string, concurrencyKey?: string): boolean {
@@ -608,6 +806,17 @@ export class TurnQueue {
       this.emitQueueUpdated(chatKey, sessionAlias, key);
       this.notifyQueuedPeerCancelled(droppedFirst);
     }
+    const droppedInterruptFirst = this.pendingInterrupts.get(key);
+    if (droppedInterruptFirst) {
+      this.pendingInterrupts.delete(key);
+      this.emitPeerInterrupt(
+        "cancelled_before_start",
+        droppedInterruptFirst.executionContext.chatKey,
+        droppedInterruptFirst.executionContext.sessionAlias,
+        droppedInterruptFirst,
+      );
+      this.notifyQueuedPeerCancelled([droppedInterruptFirst]);
+    }
     const entry = this.inFlight.get(key);
     if (entry) {
       entry.controller.abort();
@@ -620,10 +829,25 @@ export class TurnQueue {
         this.emitQueueUpdated(chatKey, sessionAlias, key);
         this.notifyQueuedPeerCancelled(droppedSecond);
       }
+      // Same window applies to a peer interrupt reserved DURING the unwind: the
+      // aborted-but-registered predecessor reads as busy, so submitPeerInterrupt
+      // reserves instead of rejecting — drop that reservation too.
+      const droppedInterruptSecond = this.pendingInterrupts.get(key);
+      if (droppedInterruptSecond) {
+        this.pendingInterrupts.delete(key);
+        this.emitPeerInterrupt(
+          "cancelled_before_start",
+          droppedInterruptSecond.executionContext.chatKey,
+          droppedInterruptSecond.executionContext.sessionAlias,
+          droppedInterruptSecond,
+        );
+        this.notifyQueuedPeerCancelled([droppedInterruptSecond]);
+      }
     }
     // Re-check rather than trusting the race: `inFlight` still present means the turn
     // outlived the timeout (or a fresh turn started); `draining` means a hand-off is live.
-    const cleared = !this.inFlight.has(key) && !this.draining.has(key);
+    const cleared =
+      !this.inFlight.has(key) && !this.draining.has(key) && !this.pendingInterrupts.has(key);
     // Hold the teardown guard across the caller's transport removal so a scheduled
     // (non-queueable) turn firing in that window is rejected, not run on a dying session.
     if (cleared) {
@@ -645,6 +869,21 @@ export class TurnQueue {
    *  a turn that is already running (use `cancelTurn`). */
   cancelQueuedItem(chatKey: string, sessionAlias: string, itemId: string, concurrencyKey?: string): { cancelled: boolean } {
     const key = this.resolveKey(chatKey, sessionAlias, concurrencyKey);
+    const pendingInterrupt = this.pendingInterrupts.get(key);
+    if (pendingInterrupt?.id === itemId) {
+      this.pendingInterrupts.delete(key);
+      this.emitQueueUpdated(chatKey, sessionAlias, key);
+      this.emitPeerInterrupt(
+        "cancelled_before_start",
+        pendingInterrupt.executionContext.chatKey,
+        pendingInterrupt.executionContext.sessionAlias,
+        pendingInterrupt,
+      );
+      // The reservation will never start: its completion contract is resolved
+      // as terminal cancelled through the SAME path as ordinary queued peers.
+      this.notifyQueuedPeerCancelled([pendingInterrupt]);
+      return { cancelled: true };
+    }
     const q = this.queues.get(key);
     if (!q) return { cancelled: false };
     const i = q.findIndex((x) => x.id === itemId);
