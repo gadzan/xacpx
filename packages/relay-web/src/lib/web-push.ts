@@ -52,8 +52,23 @@ export function subscriptionMatchesKey(sub: PushSubscription, publicKey: string)
   return subB64 === paddedHub;
 }
 
-async function getReadyRegistration(): Promise<ServiceWorkerRegistration> {
-  return navigator.serviceWorker.ready;
+/**
+ * Resolve the active SW registration, or null when none appears within
+ * `timeoutMs`. navigator.serviceWorker.ready NEVER settles on dev servers /
+ * insecure contexts where no worker registers — callers must not block auth
+ * on it.
+ */
+async function getReadyRegistration(timeoutMs = 3_000): Promise<ServiceWorkerRegistration | null> {
+  const ready = navigator.serviceWorker.ready as Promise<ServiceWorkerRegistration>;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), timeoutMs);
+  });
+  try {
+    return await Promise.race([ready, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function fetchVapidPublicKey(): Promise<string | null> {
@@ -71,6 +86,7 @@ export async function enableDesktopNotifications(publicKey: string): Promise<voi
     if (permission !== "granted") throw new Error("permission-denied");
   }
   const reg = await getReadyRegistration();
+  if (!reg) throw new Error("sw-not-ready");
   // A subscription minted under an older VAPID key would silently never receive
   // pushes after a hub re-key — replace it instead of failing downstream.
   const existing = await reg.pushManager.getSubscription();
@@ -89,6 +105,7 @@ export async function enableDesktopNotifications(publicKey: string): Promise<voi
 
 export async function disableDesktopNotifications(): Promise<void> {
   const reg = await getReadyRegistration();
+  if (!reg) return; // no active worker: there is no subscription to drop
   const sub = await reg.pushManager.getSubscription();
   if (!sub) return;
   const endpoint = sub.endpoint;
@@ -109,6 +126,7 @@ export async function releaseSubscriptionOwnership(): Promise<void> {
   if (!pushSupported()) return;
   try {
     const reg = await getReadyRegistration();
+    if (!reg) return; // no active worker: no subscription can exist
     const sub = await reg.pushManager.getSubscription();
     if (!sub) return;
     const endpoint = sub.endpoint;
@@ -133,6 +151,7 @@ export async function releaseSubscriptionOwnership(): Promise<void> {
 export async function reconcileExistingSubscription(): Promise<void> {
   if (!pushSupported()) return;
   const reg = await getReadyRegistration();
+  if (!reg) return; // no active worker (dev/insecure context): nothing held
   const sub = await reg.pushManager.getSubscription();
   if (!sub) return; // nothing held → no transfer needed
   try {

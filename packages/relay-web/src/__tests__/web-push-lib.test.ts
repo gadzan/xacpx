@@ -232,6 +232,18 @@ describe("auth lifecycle ownership (fail-closed contract)", () => {
     delete (window as unknown as Record<string, unknown>).Notification;
   });
 
+  it("returns within 3s when serviceWorker.ready never resolves (dev/no-SW contexts)", async () => {
+    // E2E/dev servers register no worker → navigator.serviceWorker.ready never
+    // settles. Reconcile must time out and return instead of hanging auth.
+    const mod = await import("../lib/web-push");
+    (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
+    (window as unknown as Record<string, unknown>).Notification = function FakeNotification() {};
+    vi.stubGlobal("navigator", { ...navigator, serviceWorker: { ready: new Promise<void>(() => {}) } });
+    await expect(mod.reconcileExistingSubscription()).resolves.toBeUndefined();
+    delete (window as unknown as Record<string, unknown>).PushManager;
+    delete (window as unknown as Record<string, unknown>).Notification;
+  });
+
   it("reconcile with disabled hub push destroys the local subscription", async () => {
     const mod = await import("../lib/web-push");
     (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
