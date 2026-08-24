@@ -32,5 +32,8 @@ registerSW({
     // Intentionally not torn down: the update schedule should live for the whole
     // page lifetime. onRegisteredSW fires once per registration, so it doesn't stack.
     schedulePwaUpdateChecks(registration);
+    // Re-sync any pre-existing push subscription to the hub (survives hub DB
+    // loss or VAPID re-key). Best-effort; the settings toggle is authoritative.
+    void import("./lib/web-push").then((m) => m.reconcileExistingSubscription());
   },
 });

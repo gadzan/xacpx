@@ -26,9 +26,12 @@ export async function enableDesktopNotifications(publicKey: string): Promise<voi
     if (permission !== "granted") throw new Error("permission-denied");
   }
   const reg = await navigator.serviceWorker.ready;
+  const keyBytes = urlBase64ToUint8Array(publicKey);
   const sub = await reg.pushManager.subscribe({
     userVisibleOnly: true,
-    applicationServerKey: urlBase64ToUint8Array(publicKey),
+    // BufferSource: hand over the exact ArrayBuffer slice (TS lib types the
+    // generic buffer loosely, so assert once at this boundary).
+    applicationServerKey: keyBytes.buffer.slice(keyBytes.byteOffset, keyBytes.byteOffset + keyBytes.byteLength) as ArrayBuffer,
   });
   await api.put("/api/web-push/subscriptions", sub.toJSON());
 }
