@@ -83,8 +83,14 @@ test("worker lists same-coordinator peers without private runtime metadata", asy
   expect(
     endpoints.every((endpoint) => endpoint.capabilities.steer === false),
   ).toBe(true);
+  // v0.4: the logical peer (main) advertises control-plane interrupt; worker
+  // peers never do (spec §14.1).
   expect(
-    endpoints.every((endpoint) => endpoint.capabilities.interrupt === false),
+    endpoints.every(
+      (endpoint) =>
+        endpoint.capabilities.interrupt ===
+        (endpoint.address.endpointId === "22222222-2222-4222-8222-222222222222"),
+    ),
   ).toBe(true);
   expect(endpoints.every((endpoint) => !("cwd" in endpoint))).toBe(true);
   expect(
@@ -659,4 +665,40 @@ test("syncRemoteDirectorySnapshot preserves remote context fields and accepts le
   expect(legacy).toBeDefined();
   expect("endpointKind" in (legacy ?? {})).toBe(false);
   expect("channelId" in (legacy ?? {})).toBe(false);
+});
+
+test("v0.4: getPublishedEndpoints advertises control-plane interrupt for logical sessions only", async () => {
+  const state = createEmptyState();
+  state.sessions.logical = {
+    alias: "omp-main",
+    agent: "codex",
+    workspace: "project",
+    transport_session: "coordinator",
+    logical_session_id: "99999999-9999-4999-8999-999999999999",
+    created_at: "2026-08-18T00:00:00.000Z",
+    last_used_at: "2026-08-18T00:00:00.000Z",
+  };
+  state.orchestration.workerBindings.workerA = {
+    sourceHandle: "workerA",
+    agentEndpointId: "endpoint_worker-a",
+    coordinatorSession: "coordinator",
+    workspace: "project",
+    targetAgent: "claude",
+  };
+
+  const reg = new AgentEndpointRegistry({
+    nodeId,
+    loadState: async () => state,
+  });
+
+  const endpoints = await reg.getPublishedEndpoints();
+  const logicalEp = endpoints.find(
+    (e) => e.endpointId === "99999999-9999-4999-8999-999999999999",
+  );
+  const workerEp = endpoints.find((e) => e.endpointId === "endpoint_worker-a");
+  // Managed logical sessions run on the TurnQueue/SessionTurnRunner lane, so
+  // xacpx can safely preempt them (spec §14.1). Workers stay false.
+  expect(logicalEp?.capabilities.interrupt).toBe(true);
+  expect(logicalEp?.capabilities.completion).toBe(true);
+  expect(workerEp?.capabilities.interrupt).toBe(false);
 });

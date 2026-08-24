@@ -104,6 +104,7 @@ const INBOUND_DEFINITE_REJECTION_CODES: ReadonlySet<string> = new Set([
   "MESSAGE_QUEUE_FULL",
   "DELIVERY_DENIED",
   "COMPLETION_NOT_SUPPORTED",
+  "TARGET_NOT_INTERRUPTIBLE",
 ]);
 
 export class AgentMessageRouter {
@@ -1298,6 +1299,20 @@ export class AgentMessageRouter {
       createdAt,
       ...(input.replyTo ? { replyTo: input.replyTo } : {}),
     };
+
+    // v0.4 receiver-side fail-closed (spec §14.2): the source's directory
+    // snapshot may be stale — the destination re-resolves the target and
+    // rejects a non-interrupt-capable one BEFORE any cancellation side
+    // effect (no abort, no peer turn, no outbox reservation).
+    if (
+      message.requestedMode === "interrupt" &&
+      target.endpoint.capabilities.interrupt !== true
+    ) {
+      throw new AgentMessagingError(
+        "TARGET_NOT_INTERRUPTIBLE",
+        "The target does not support explicit interrupt delivery.",
+      );
+    }
 
     // TARGET-side outbox reservation: a completion-bearing request accepted by
     // this daemon owes exactly one future terminal delivery. A slot is

@@ -3395,6 +3395,52 @@ test("deliverInboundCompletion does not wake archived source session", async () 
   expect(deliveredCount).toBe(0); // No turn injected for archived session
 });
 
+test("v0.4 G14: deliverInbound fail-closed rejects interrupt for a target whose CURRENT resolution lacks interrupt capability", async () => {
+  let idSeq = 0;
+  let deliverCalls = 0;
+  const { router, state } = makeRouter({
+    createId: () => `uuid-${++idSeq}`,
+    deliver: async () => {
+      deliverCalls++;
+      return { status: "injected", modeUsed: "prompt" };
+    },
+  });
+  addLogicalPeers(state);
+  // The source's directory snapshot advertised interrupt=true, but the
+  // destination's CURRENT resolution says false (stale capability). The
+  // destination must revalidate BEFORE any cancellation side effect
+  // (spec §14.2): typed rejection, zero deliveries, no peer turn.
+  const registryDeps = (router as unknown as {
+    // White-box: the registry is a private router dependency; the test pins
+    // the revalidation contract at the same seam as Medium-1.
+    deps: { registry: { resolveLocalTargetByEndpointId: (id: string) => Promise<unknown> } };
+  }).deps.registry;
+  const origResolve = registryDeps.resolveLocalTargetByEndpointId.bind(registryDeps);
+  registryDeps.resolveLocalTargetByEndpointId = async (id: string) => {
+    const resolved = (await origResolve(id)) as {
+      endpoint: { capabilities: Record<string, unknown> };
+    };
+    if (resolved && id === LOGICAL_TARGET_ID) {
+      resolved.endpoint.capabilities.interrupt = false;
+    }
+    return resolved;
+  };
+
+  await expect(
+    router.deliverInbound({
+      sourceNodeId: nodeId,
+      sourceEndpointId: "endpoint_remote_source",
+      targetEndpointId: LOGICAL_TARGET_ID,
+      messageId: "msg_stale_intr_1",
+      content: "preempt",
+      requestedMode: "interrupt",
+      replyable: false,
+    }),
+  ).rejects.toMatchObject({ code: "TARGET_NOT_INTERRUPTIBLE" });
+
+  expect(deliverCalls).toBe(0); // no peer turn started, no cancel signalled
+});
+
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
