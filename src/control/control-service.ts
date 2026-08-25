@@ -60,14 +60,15 @@ import type {
   AgentMessageTraceRecord,
 } from "../orchestration/agent-messaging-types";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
-import type { UploadStore } from "./upload-store.js";
-import { SessionTurnRunner } from "./session-turn-runner";
-import { TurnQueue } from "./turn-queue";
 import {
   buildControlMetadata,
   type TurnIdleTimeoutDetail,
   type PeerTurnOrigin,
 } from "./turn-support";
+import type { PeerInterruptEvent } from "./turn-queue";
+import type { UploadStore } from "./upload-store.js";
+import { SessionTurnRunner } from "./session-turn-runner";
+import { TurnQueue } from "./turn-queue";
 import {
   BRIDGE_REQUEST_TIMEOUT_GRACE_MS,
   DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS,
@@ -254,6 +255,9 @@ export interface ControlServiceDeps {
     peerOrigin: PeerTurnOrigin;
     promptRequestId?: string;
   }) => void;
+  // v0.4: forwarded to the TurnQueue — structured peer-interrupt lifecycle
+  // events (spec §17). main.ts wires this to the app logger.
+  onPeerInterruptEvent?: (event: PeerInterruptEvent) => void;
   agentMessaging?: {
     deliverInbound(input: {
       sourceNodeId: string;
@@ -451,6 +455,9 @@ export class ControlService {
         : {}),
       ...(this.deps.onQueuedPeerCancelled
         ? { onQueuedPeerCancelled: this.deps.onQueuedPeerCancelled }
+        : {}),
+      ...(this.deps.onPeerInterruptEvent
+        ? { onPeerInterruptEvent: this.deps.onPeerInterruptEvent }
         : {}),
       emitQueueUpdated: (chatKey, sessionAlias, items) =>
         this.deps.events.emit({

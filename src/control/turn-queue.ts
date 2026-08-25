@@ -58,20 +58,24 @@ export interface TurnQueueDeps {
   // v0.4 Peer Interrupt Delivery: structured lifecycle events (spec §17) —
   // reserved / abort_signalled / started / cancelled_before_start /
   // rejected_pending. Best-effort: a throwing observer never affects lane
-  // state. Ids and lane keys only — never message content.
-  onPeerInterruptEvent?: (event: {
-    kind:
-      | "reserved"
-      | "abort_signalled"
-      | "started"
-      | "cancelled_before_start"
-      | "rejected_pending";
-    chatKey: string;
-    sessionAlias: string;
-    requestMessageId?: string;
-    promptRequestId?: string;
-    predecessorWasAlreadyAborted?: boolean;
-  }) => void;
+  // state.
+  onPeerInterruptEvent?: (event: PeerInterruptEvent) => void;
+}
+
+/** v0.4: structured peer-interrupt lifecycle event (spec §17). Ids and lane
+ *  keys only — never message content. */
+export interface PeerInterruptEvent {
+  kind:
+    | "reserved"
+    | "abort_signalled"
+    | "started"
+    | "cancelled_before_start"
+    | "rejected_pending";
+  chatKey: string;
+  sessionAlias: string;
+  requestMessageId?: string;
+  promptRequestId?: string;
+  predecessorWasAlreadyAborted?: boolean;
 }
 
 export interface SubmitParams {

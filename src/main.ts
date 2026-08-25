@@ -1567,6 +1567,21 @@ export async function buildApp(
         },
       );
     },
+    onPeerInterruptEvent: (event) => {
+      void logger.info(`agent_messaging.peer_interrupt_${event.kind}`, "peer interrupt lane event", {
+        chatKey: event.chatKey,
+        sessionAlias: event.sessionAlias,
+        ...(event.requestMessageId !== undefined
+          ? { requestMessageId: event.requestMessageId }
+          : {}),
+        ...(event.promptRequestId !== undefined
+          ? { promptRequestId: event.promptRequestId }
+          : {}),
+        ...(event.predecessorWasAlreadyAborted !== undefined
+          ? { predecessorWasAlreadyAborted: event.predecessorWasAlreadyAborted }
+          : {}),
+      });
+    },
     agentMessaging: {
       deliverInbound: async (input) =>
         await agentMessaging.deliverInbound(input),
