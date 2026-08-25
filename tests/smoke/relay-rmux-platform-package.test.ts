@@ -49,7 +49,16 @@ afterEach(async () => {
   }
   while (dirs.length > 0) {
     const d = dirs.pop();
-    if (d) rmSync(d, { recursive: true, force: true });
+    if (d) {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        try {
+          rmSync(d, { recursive: true, force: true });
+          break;
+        } catch {
+          await Bun.sleep(250);
+        }
+      }
+    }
   }
 });
 
@@ -306,7 +315,9 @@ test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default 
       prod.driver.recover(handle.paneId),
       (events) =>
         events.some((event) => event.type === "rebase")
-        && recoveryText(events).includes("pkg-smoke-ok"),
+        && (process.platform === "win32"
+          ? recoveryText(events).includes("pkg-smoke-ok")
+          : recoveryText(events).includes(`pkg-smoke-ok|${hostileHome}`)),
     );
     await Bun.sleep(200);
     const smokeCommand = process.platform === "win32"
@@ -398,7 +409,17 @@ test.skipIf(!enabled)("bundled RMUX ignores hostile PATH and a poisoned default 
     expect(hostilePath.includes(hostileDir)).toBe(true);
   } finally {
     if (poisonedDefault) {
-      poisonedDefault.child.kill("SIGTERM");
+      const child = poisonedDefault.child;
+      child.kill("SIGTERM");
+      if (child.exitCode === null && child.signalCode === null) {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 5_000);
+          child.once("exit", () => {
+            clearTimeout(timer);
+            resolve();
+          });
+        });
+      }
     }
     if (bundledCliForCleanup) {
       Bun.spawnSync([bundledCliForCleanup, "-L", "default", "kill-server"], {
