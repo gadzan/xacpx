@@ -154,25 +154,24 @@ describe("web-push lib", () => {
     expect(apiMocks.del).not.toHaveBeenCalled();
   });
 
-  it("disableDesktopNotifications rejects when unsubscribe fails and Hub DELETE returns deleted: false", async () => {
+  it("disableDesktopNotifications rejects when local destroy is unproven (even if Hub DELETE returns deleted: true)", async () => {
     const unsubscribe = vi.fn().mockRejectedValue(new Error("unsub failed"));
     const getSubscription = vi.fn().mockResolvedValue({ endpoint: "https://push/e1", unsubscribe });
     const unregister = vi.fn().mockResolvedValue(false); // unproven
-    apiMocks.del.mockResolvedValue({ ok: true, deleted: false }); // hub did not delete
+    apiMocks.del.mockResolvedValue({ ok: true, deleted: true }); // hub confirmed deletion, but local remains
     stubNavigator({ registration: { pushManager: { getSubscription }, unregister } });
 
     await expect(disableDesktopNotifications()).rejects.toThrow("push-subscription-destroy-failed");
   });
 
-  it("disableDesktopNotifications resolves when unsubscribe fails but Hub DELETE returns deleted: true", async () => {
-    const unsubscribe = vi.fn().mockRejectedValue(new Error("unsub failed"));
+  it("disableDesktopNotifications resolves when local destroy is proven even if Hub DELETE fails", async () => {
+    const unsubscribe = vi.fn().mockResolvedValue(true);
     const getSubscription = vi.fn().mockResolvedValue({ endpoint: "https://push/e1", unsubscribe });
-    const unregister = vi.fn().mockResolvedValue(false);
-    apiMocks.del.mockResolvedValue({ ok: true, deleted: true }); // hub confirmed deletion
-    stubNavigator({ registration: { pushManager: { getSubscription }, unregister } });
+    apiMocks.del.mockRejectedValue(new Error("hub offline"));
+    stubNavigator({ registration: { pushManager: { getSubscription } } });
 
     await expect(disableDesktopNotifications()).resolves.toBeUndefined();
-    expect(apiMocks.del).toHaveBeenCalledWith("/api/web-push/subscriptions", { endpoint: "https://push/e1" });
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
   it("reconcileExistingSubscription PUTs a matching subscription; skips otherwise", async () => {
@@ -776,6 +775,32 @@ describe("Safari / Apple Web Push support", () => {
 
     await expect(releaseSubscriptionOwnership()).resolves.toBeUndefined();
     expect(apiMocks.del).toHaveBeenCalledWith("/api/web-push/subscriptions", { endpoint: "https://web.push.apple.com/Q-origin-dead" });
+
+    delete (window as unknown as Record<string, unknown>).pushManager;
+    delete (window as unknown as Record<string, unknown>).PushManager;
+    delete (window as unknown as Record<string, unknown>).Notification;
+  });
+
+  it("unsubscribe resolves but window.pushManager verification rejects -> destroyProven fails closed (rejects)", async () => {
+    const unsubscribe = vi.fn().mockResolvedValue(true); // sub says unsubscribed
+    const safariSub = {
+      endpoint: "https://web.push.apple.com/Q-origin-flaky",
+      unsubscribe,
+      toJSON() { return { endpoint: this.endpoint }; },
+    };
+    // 1st getSubscription probe returns safariSub; 2nd inside destroyProven rejects with DOMException/AbortError
+    const winGetSub = vi.fn()
+      .mockResolvedValueOnce(safariSub)
+      .mockRejectedValueOnce(new DOMException("query aborted", "AbortError"))
+      .mockRejectedValue(new DOMException("query aborted", "AbortError"));
+    const winPushManager = { getSubscription: winGetSub };
+    (window as unknown as Record<string, unknown>).pushManager = winPushManager;
+    (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
+    (window as unknown as Record<string, unknown>).Notification = function FakeNotification() {};
+    stubNavigator({ registration: null });
+
+    await expect(releaseSubscriptionOwnership()).rejects.toThrow("push-subscription-destroy-failed");
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
 
     delete (window as unknown as Record<string, unknown>).pushManager;
     delete (window as unknown as Record<string, unknown>).PushManager;

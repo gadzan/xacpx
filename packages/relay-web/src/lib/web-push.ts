@@ -167,16 +167,14 @@ export async function disableDesktopNotifications(): Promise<void> {
   if (!target.sub) return;
   const endpoint = target.sub.endpoint;
 
-  const hubDeleted = await api
-    .del<{ ok: boolean; deleted: boolean }>("/api/web-push/subscriptions", { endpoint })
-    .then((r) => r.deleted === true)
-    .catch(() => false);
+  // Local destruction MUST be proven so same-account reload (reconcile)
+  // cannot resurrect the subscription.
+  await destroyProven(target);
 
-  try {
-    await destroyProven(target);
-  } catch (err) {
-    if (!hubDeleted) throw err;
-  }
+  // Hub binding cleanup: best-effort delete on the server.
+  await api
+    .del("/api/web-push/subscriptions", { endpoint })
+    .catch(() => {});
 }
 
 /**
@@ -198,9 +196,10 @@ async function destroyProven(target: {
     try {
       await target.sub.unsubscribe();
       // If window.pushManager exists, verify that the origin-level subscription
-      // is genuinely dead (null). If it still returns a subscription, fall through.
+      // is genuinely dead (null). A rejection during verification is NOT proof
+      // of absence — do NOT catch-to-null.
       if (winPm) {
-        const stillThere = await winPm.getSubscription().catch(() => null);
+        const stillThere = await winPm.getSubscription();
         if (stillThere === null) return;
       } else {
         return;
@@ -209,7 +208,6 @@ async function destroyProven(target: {
       // fall through to registration & origin unregister/probe
     }
   }
-
   // 2. If a SW registration exists, try unregistering it.
   if (target.reg) {
     try {
