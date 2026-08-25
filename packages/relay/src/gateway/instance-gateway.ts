@@ -144,6 +144,13 @@ export class InstanceGateway {
       "CONVERSATION_LIMIT_REACHED",
       "DUPLICATE_MESSAGE",
       "MESSAGE_RATE_LIMITED",
+      // v0.4: the destination's capability revalidation fires BEFORE any
+      // cancellation — a stale source directory (interrupt=true) routed to a
+      // target that currently resolves interrupt=false is a definite
+      // not-sent: zero target admission, zero cancel, so BOTH the source's
+      // completion grant and the Hub's provisional route grant must
+      // compensate immediately instead of lingering to TTL.
+      "TARGET_NOT_INTERRUPTIBLE",
     ]);
 
 

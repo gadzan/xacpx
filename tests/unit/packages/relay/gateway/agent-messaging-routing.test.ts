@@ -1555,3 +1555,190 @@ test("Relay Hub pending completion ROUTE grants SURVIVE a full gateway restart o
     wss.close();
   }
 }, { timeout: 60_000 });
+
+test("v0.4 G14 Hub: a TARGET_NOT_INTERRUPTIBLE rejection compensates the route grant created by THIS request", async () => {
+  const { instances, account, wss, url, pendingCompletionRouteStore } =
+    await makeGateway();
+
+  const tokenA = instances.issuePairingToken(account.id, "nodeA", 600_000).token;
+  const socketA = await connect(url);
+  await authInstance(socketA, tokenA);
+  const tokenB = instances.issuePairingToken(account.id, "nodeB", 600_000).token;
+  const socketB = await connect(url);
+  await authInstance(socketB, tokenB);
+
+  publishEndpoints(socketA, [publishedEndpoint("node_a_999", "worker_a_sender")]);
+  publishEndpoints(socketB, [publishedEndpoint("node_b_123", "worker_b")]);
+  await new Promise((r) => setTimeout(r, 50));
+
+  // Stale-directory race: the source snapshot said interrupt=true, but the
+  // destination's CURRENT revalidation fails closed BEFORE any cancellation
+  // — a typed definite rejection with zero target admission.
+  socketB.on("message", (data) => {
+    const decoded = decodeEnvelope(String(data));
+    if (
+      decoded.ok &&
+      decoded.envelope.kind === "req" &&
+      decoded.envelope.type === MSG.agentMessageDeliver
+    ) {
+      socketB.send(
+        encodeEnvelope({
+          protocolVersion: RELAY_PROTOCOL_VERSION,
+          kind: "res",
+          id: decoded.envelope.id,
+          type: decoded.envelope.type,
+          payload: {
+            messageId: (decoded.envelope.payload as { messageId: string }).messageId,
+            status: "failed",
+            error: {
+              code: "TARGET_NOT_INTERRUPTIBLE",
+              message: "the target does not support explicit interrupt delivery",
+            },
+          },
+        }),
+      );
+    }
+  });
+
+  socketA.send(
+    encodeEnvelope({
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "route-intr-1",
+      type: MSG.agentMessageRoute,
+      payload: {
+        sourceNodeId: "node_a_999",
+        sourceEndpointId: "worker_a_sender",
+        targetNodeId: "node_b_123",
+        targetEndpointId: "worker_b",
+        messageId: "msg_intr_stale_cap",
+        content: "interrupt with completion",
+        requestedMode: "interrupt",
+        completion: "result",
+      },
+    }),
+  );
+  const routeRes = await nextResponse(socketA);
+  expect(
+    (routeRes.payload as { error?: { code?: string } }).error?.code,
+  ).toBe("TARGET_NOT_INTERRUPTIBLE");
+
+  // The Hub's provisional route grant is compensated IMMEDIATELY — not left
+  // to the 24h TTL.
+  expect(pendingCompletionRouteStore.count()).toBe(0);
+
+  // A completion for that messageId is therefore denied, not routed.
+  socketB.send(
+    encodeEnvelope({
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "req",
+      id: "comp-intr-1",
+      type: MSG.agentMessageCompletion,
+      payload: {
+        requestMessageId: "msg_intr_stale_cap",
+        source: { nodeId: "node_a_999", endpointId: "worker_a_sender" },
+        target: { nodeId: "node_b_123", endpointId: "worker_b" },
+        status: "completed",
+        result: "never delivered",
+        completedAt: Date.now(),
+      },
+    }),
+  );
+  const compRes = await nextResponse(socketB);
+  expect(
+    (compRes.payload as { error?: { code?: string } }).error?.code,
+  ).toBe("DELIVERY_DENIED");
+
+  await wss.close();
+});
+
+test("v0.4 G14 reused-grant safety: a TARGET_NOT_INTERRUPTIBLE rejection on a same-message retry does NOT delete the pre-existing standing grant", async () => {
+  const { instances, account, wss, url, pendingCompletionRouteStore } =
+    await makeGateway();
+
+  const tokenA = instances.issuePairingToken(account.id, "nodeA", 600_000).token;
+  const socketA = await connect(url);
+  await authInstance(socketA, tokenA);
+  const tokenB = instances.issuePairingToken(account.id, "nodeB", 600_000).token;
+  const socketB = await connect(url);
+  await authInstance(socketB, tokenB);
+
+  publishEndpoints(socketA, [publishedEndpoint("node_a_999", "worker_a_sender")]);
+  publishEndpoints(socketB, [publishedEndpoint("node_b_123", "worker_b")]);
+  await new Promise((r) => setTimeout(r, 50));
+
+  // Attempt 1: accepted normally (grant created). Attempt 2 (same-messageId
+  // retry): the target now fails closed with TARGET_NOT_INTERRUPTIBLE.
+  let deliverCalls = 0;
+  socketB.on("message", (data) => {
+    const decoded = decodeEnvelope(String(data));
+    if (
+      decoded.ok &&
+      decoded.envelope.kind === "req" &&
+      decoded.envelope.type === MSG.agentMessageDeliver
+    ) {
+      deliverCalls += 1;
+      const rejected = deliverCalls >= 2;
+      socketB.send(
+        encodeEnvelope({
+          protocolVersion: RELAY_PROTOCOL_VERSION,
+          kind: "res",
+          id: decoded.envelope.id,
+          type: decoded.envelope.type,
+          payload: rejected
+            ? {
+                messageId: (decoded.envelope.payload as { messageId: string }).messageId,
+                status: "failed",
+                error: {
+                  code: "TARGET_NOT_INTERRUPTIBLE",
+                  message: "capability changed between attempts",
+                },
+              }
+            : {
+                messageId: (decoded.envelope.payload as { messageId: string }).messageId,
+                status: "queued",
+                modeUsed: "queue",
+              },
+        }),
+      );
+    }
+  });
+
+  const sendRoute = async (id: string) => {
+    socketA.send(
+      encodeEnvelope({
+        protocolVersion: RELAY_PROTOCOL_VERSION,
+        kind: "req",
+        id,
+        type: MSG.agentMessageRoute,
+        payload: {
+          sourceNodeId: "node_a_999",
+          sourceEndpointId: "worker_a_sender",
+          targetNodeId: "node_b_123",
+          targetEndpointId: "worker_b",
+          messageId: "msg_intr_reuse",
+          content: "interrupt with completion",
+          requestedMode: "interrupt",
+          completion: "result",
+        },
+      }),
+    );
+    return await nextResponse(socketA);
+  };
+
+  // Attempt 1: accepted → standing grant created.
+  const res1 = await sendRoute("route-intr-reuse-1");
+  expect((res1.payload as { status?: string }).status).toBe("queued");
+  expect(pendingCompletionRouteStore.count()).toBe(1);
+  expect(pendingCompletionRouteStore.find("msg_intr_reuse")?.state).toBe("pending");
+
+  // Attempt 2: definite rejection — but the grant was created by attempt 1's
+  // acceptance (created=false on this attempt) and MUST survive.
+  const res2 = await sendRoute("route-intr-reuse-2");
+  expect((res2.payload as { status?: string }).status).toBe("failed");
+  expect(deliverCalls).toBe(2);
+  expect(pendingCompletionRouteStore.count()).toBe(1);
+  expect(pendingCompletionRouteStore.find("msg_intr_reuse")?.state).toBe("pending");
+
+  await wss.close();
+});
