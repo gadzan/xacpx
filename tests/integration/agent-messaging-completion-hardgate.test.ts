@@ -181,7 +181,7 @@ async function waitUntil(
     if (await fn()) return;
     await Bun.sleep(50);
   }
-  const extra = context ? ` (${context()})` : "";
+  const extra = context ? ` (${await context()})` : "";
   throw new Error(`waitUntil timed out after ${timeoutMs}ms${extra}`);
 }
 
@@ -488,4 +488,293 @@ test(
     }
   },
   { timeout: 120_000 },
+);
+
+test(
+  "Peer Interrupt Hard Gate (G10+G11): interrupting a completion-bearing peer turn cancels the old contract exactly once; the interrupt's own result contract stays independent",
+  async () => {
+    const hub = await setupHub();
+    const daemonA = await setupDaemon("A", hub, { alias: "interruptor" });
+    const daemonB = await setupDaemon("B", hub, { alias: "worker" });
+    const daemonC = await setupDaemon("C", hub, { alias: "requester" });
+
+    try {
+      const discover = async (daemon: RealDaemon) => {
+        let handle = "";
+        await waitUntil(async () => {
+          const peers = await daemon.runtime.agentMessaging!.listReachable({
+            coordinatorSession: daemon.coordinatorSession,
+          });
+          const peerB = peers.find(
+            (p) =>
+              p.sessionAlias === "worker" &&
+              p.endpointKind === "logical" &&
+              p.capabilities.interrupt === true,
+          );
+          if (!peerB) return false;
+          handle = encodeAgentHandle(peerB.address);
+          return true;
+        });
+        return handle;
+      };
+      const handleB = await discover(daemonA);
+
+      // 1. C → B: a completion=result peer request whose turn BLOCKS while
+      // already emitting partial assistant text (real busy predecessor).
+      const cSend = JSON.parse(
+        await daemonC.runtime.orchestration.server.handleLine(
+          JSON.stringify({
+            id: "c-send-1",
+            method: "agent.send",
+            params: {
+              coordinatorSession: daemonC.coordinatorSession,
+              to: handleB,
+              message: "delay-9000-partial old-schema migration",
+              completion: "result",
+            },
+          }),
+        ),
+      );
+      expect(cSend.ok).toBe(true);
+      const cMsgId = cSend.result.messageId as string;
+
+      // 2. B is really running C's peer turn, partial output already emitted.
+      await waitUntil(
+        async () =>
+          (await daemonB.readPrompts()).some((t) => t.includes(cMsgId)),
+        40_000,
+      );
+
+      // 3. A interrupts B through the REAL relay route.
+      const aSend = JSON.parse(
+        await daemonA.runtime.orchestration.server.handleLine(
+          JSON.stringify({
+            id: "a-send-1",
+            method: "agent.send",
+            params: {
+              coordinatorSession: daemonA.coordinatorSession,
+              to: handleB,
+              message: "FINAL_INTERRUPT_RESULT switch to the new schema now",
+              mode: "interrupt",
+              completion: "result",
+            },
+          }),
+        ),
+      );
+      expect(aSend.ok).toBe(true);
+      // Busy-target receipt (spec §6.4): reservation held, cancel signalled.
+      expect(aSend.result).toMatchObject({
+        status: "queued",
+        modeUsed: "interrupt",
+        targetState: "running",
+      });
+
+      // 4. C's contract terminates EXACTLY once (G10). The terminal STATUS is
+      // transport-owned: whether acpx's cancel unwinds the in-flight prompt as
+      // "cancelled" or the provider finishes the turn is below the v0.4
+      // boundary (plan principle 2 — no acpx/ACP changes). v0.4 owns the
+      // exactly-once terminal routing and the lane ordering, both asserted
+      // deterministically at the TurnQueue seam (G1.7a/b).
+      await waitUntil(
+        async () =>
+          (await daemonC.readPrompts()).filter(
+            (t) =>
+              t.includes("xacpx-peer-completion") ||
+              t.includes("xacpx-peer-result"),
+          ).length === 1,
+        40_000,
+        async () =>
+          `C prompts: ${JSON.stringify(await daemonC.readPrompts())} | B prompts: ${JSON.stringify((await daemonB.readPrompts()).map((t) => t.slice(0, 200)))}`,
+      );
+      const cCompletions = (await daemonC.readPrompts()).filter(
+        (t) =>
+          t.includes("xacpx-peer-completion") || t.includes("xacpx-peer-result"),
+      );
+      expect(cCompletions).toHaveLength(1);
+      expect(cCompletions[0]).toContain(`request-id="${cMsgId}"`);
+
+      // 5. A's own result contract completes with ONLY the new peer turn's
+      // output — the cancelled predecessor's partial text never leaks (G11).
+      await waitUntil(
+        async () =>
+          (await daemonA.readPrompts()).some((t) =>
+            t.includes("<xacpx-peer-result"),
+          ),
+        40_000,
+      );
+      const aResults = (await daemonA.readPrompts()).filter((t) =>
+        t.includes("<xacpx-peer-result"),
+      );
+      expect(aResults).toHaveLength(1);
+      expect(aResults[0]).toContain('status="completed"');
+      expect(aResults[0]).toContain("FINAL_INTERRUPT_RESULT");
+      expect(aResults[0]).not.toContain("delay-9000-partial");
+
+      // 6. B ran A's interrupt turn exactly once, after the old turn settled.
+      const bPrompts = await daemonB.readPrompts();
+      expect(
+        bPrompts.filter((t) => t.includes("FINAL_INTERRUPT_RESULT")),
+      ).toHaveLength(1);
+    } finally {
+      await daemonA.dispose();
+      await daemonB.dispose();
+      await daemonC.dispose();
+      await hub.close();
+    }
+  },
+  { timeout: 120_000 },
+);
+
+test(
+  "Peer Interrupt Hard Gate (G13+G9): same-account relay interrupt runs once on the target daemon; archiving the target before settlement terminates the interrupt without resurrection",
+  async () => {
+    const hub = await setupHub();
+    const daemonA = await setupDaemon("A", hub, { alias: "interruptor" });
+    const daemonB = await setupDaemon("B", hub, { alias: "worker" });
+
+    try {
+      let handleB = "";
+      await waitUntil(async () => {
+        const peers = await daemonA.runtime.agentMessaging!.listReachable({
+          coordinatorSession: daemonA.coordinatorSession,
+        });
+        const peerB = peers.find(
+          (p) =>
+            p.sessionAlias === "worker" &&
+            p.endpointKind === "logical" &&
+            p.capabilities.interrupt === true,
+        );
+        if (!peerB) return false;
+        handleB = encodeAgentHandle(peerB.address);
+        return true;
+      });
+
+      // B busy on a REAL human turn that blocks with partial output. Fire-and-
+      // forget: control.prompt resolves only when the TURN completes, and the
+      // gate must interrupt while it is still running. The promise resolves
+      // {ok:false} once the interrupt cancels it — intentionally unobserved.
+      void daemonB.runtime.control.prompt({
+        chatKey: daemonB.chatKey,
+        sessionAlias: daemonB.sessionAlias,
+        text: "delay-9000-partial human baseline work",
+        senderId: "human",
+      });
+      await waitUntil(
+        async () =>
+          (await daemonB.readPrompts()).some((t) =>
+            t.includes("human baseline work"),
+          ),
+        40_000,
+      );
+
+      // A → B interrupt across the hub. The source daemon never touches B's
+      // lane: all preemption happens inside B's TurnQueue.
+      const aSend = JSON.parse(
+        await daemonA.runtime.orchestration.server.handleLine(
+          JSON.stringify({
+            id: "a-send-2",
+            method: "agent.send",
+            params: {
+              coordinatorSession: daemonA.coordinatorSession,
+              to: handleB,
+              message: "RELAY_INTERRUPT_MARKER deliver next",
+              mode: "interrupt",
+              completion: "result",
+            },
+          }),
+        ),
+      );
+      expect(aSend.ok).toBe(true);
+      expect(aSend.result).toMatchObject({
+        status: "queued",
+        modeUsed: "interrupt",
+        targetState: "running",
+      });
+
+      // Exactly one interrupt turn on B; its result crosses the hub back to A.
+      await waitUntil(
+        async () =>
+          (await daemonB.readPrompts()).filter((t) =>
+            t.includes("RELAY_INTERRUPT_MARKER"),
+          ).length === 1,
+        40_000,
+      );
+      await waitUntil(
+        async () =>
+          (await daemonA.readPrompts()).some((t) =>
+            t.includes("<xacpx-peer-result") &&
+            t.includes('status="completed"'),
+          ),
+        40_000,
+      );
+      // A's result can only arrive after B's interrupt turn FINISHED, so this
+      // assertion needs no settle sleep: a duplicate execution would already
+      // be visible here.
+      expect(
+        (await daemonB.readPrompts()).filter((t) =>
+          t.includes("RELAY_INTERRUPT_MARKER"),
+        ).length,
+      ).toBe(1); // no duplicate execution after settle
+
+      // --- Archive race (G9 through the real lifecycle): B busy again, A
+      // interrupts, then B's session is cleared BEFORE the interrupt settles.
+      void daemonB.runtime.control.prompt({
+        chatKey: daemonB.chatKey,
+        sessionAlias: daemonB.sessionAlias,
+        text: "delay-9000-partial human second round",
+        senderId: "human",
+      });
+      await waitUntil(
+        async () =>
+          (await daemonB.readPrompts()).some((t) =>
+            t.includes("human second round"),
+          ),
+        40_000,
+      );
+      const aSend2 = JSON.parse(
+        await daemonA.runtime.orchestration.server.handleLine(
+          JSON.stringify({
+            id: "a-send-3",
+            method: "agent.send",
+            params: {
+              coordinatorSession: daemonA.coordinatorSession,
+              to: handleB,
+              message: "ARCHIVE_RACE_MARKER never deliver",
+              mode: "interrupt",
+              completion: "result",
+            },
+          }),
+        ),
+      );
+      expect(aSend2.ok).toBe(true);
+      expect(aSend2.result.status).toBe("queued");
+      const aMsg2 = aSend2.result.messageId as string;
+
+      // Lifecycle teardown while the predecessor unwinds: drops the pending
+      // interrupt and resolves A's contract as terminal cancelled.
+      await daemonB.runtime.control.clearSession(daemonB.chatKey, daemonB.sessionAlias);
+
+      await waitUntil(
+        async () =>
+          (await daemonA.readPrompts()).some(
+            (t) =>
+              t.includes("xacpx-peer-completion") &&
+              t.includes(`request-id="${aMsg2}"`) &&
+              t.includes('status="cancelled"'),
+          ),
+        40_000,
+      );
+      // No resurrection: the archived target never executes the interrupt.
+      expect(
+        (await daemonB.readPrompts()).filter((t) =>
+          t.includes("ARCHIVE_RACE_MARKER"),
+        ),
+      ).toHaveLength(0);
+    } finally {
+      await daemonA.dispose();
+      await daemonB.dispose();
+      await hub.close();
+    }
+  },
+  { timeout: 180_000 },
 );

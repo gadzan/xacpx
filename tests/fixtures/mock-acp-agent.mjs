@@ -38,6 +38,9 @@ function recordPrompt(text) {
   }
 }
 const sessions = new Map();
+// In-flight delayed prompts: JSON-RPC request id -> { sessionId, timer }.
+// session/cancel terminates these the way a real agent aborts a turn.
+const pendingPrompts = new Map();
 let nextSessionSeq = 1;
 function loadState() {
   try {
@@ -192,21 +195,56 @@ rl.on("line", (line) => {
           ? params.sessionId
           : "mock-prompt";
       const text = promptText(params?.prompt);
+      // Delayed prompts track their pending JSON-RPC request so a later
+      // session/cancel can terminate the turn the way a real agent does —
+      // respond stopReason "cancelled" NOW instead of letting the timer fire.
+      const settleLater = (ms, fn) => {
+        const timer = setTimeout(() => {
+          pendingPrompts.delete(id);
+          fn();
+        }, ms);
+        pendingPrompts.set(id, { sessionId, timer });
+      };
+      // `delay-<ms>-partial` emits its echo chunk IMMEDIATELY (partial assistant
+      // output) but keeps the prompt request unresolved for <ms> — lets hard
+      // gates hold a real busy turn that has already produced partial text.
+      const partial = text.match(/delay-(\d+)-partial/);
+      if (partial) {
+        const ms = parseInt(partial[1], 10) || 500;
+        handlePrompt(sessionId, text);
+        settleLater(ms, () => respond(id, { sessionId, stopReason: "end_turn" }));
+        break;
+      }
       if (text.startsWith("delay-")) {
         const ms = parseInt(text.slice(6), 10) || 500;
-        setTimeout(() => {
+        settleLater(ms, () => {
           handlePrompt(sessionId, text);
           respond(id, { sessionId, stopReason: "end_turn" });
-        }, ms);
+        });
         break;
       }
       handlePrompt(sessionId, text);
       respond(id, { sessionId, stopReason: "end_turn" });
       break;
     }
-    case "session/cancel":
+    case "session/cancel": {
+      // Terminate every pending delayed prompt (a real agent aborts the
+      // session's in-flight turn): clear timers, respond stopReason
+      // "cancelled" for the outstanding request ids.
+      for (const [pendingId, pending] of [...pendingPrompts]) {
+        if (
+          typeof params?.sessionId === "string" &&
+          pending.sessionId !== params.sessionId
+        ) {
+          continue;
+        }
+        clearTimeout(pending.timer);
+        pendingPrompts.delete(pendingId);
+        respond(pendingId, { sessionId: pending.sessionId, stopReason: "cancelled" });
+      }
       respond(id, { cancelled: true });
       break;
+    }
     case "session/list": {
       const list = [];
       for (const [sessionId, state] of sessions) {
