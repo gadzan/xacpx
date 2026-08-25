@@ -46,16 +46,21 @@ export const useAuthStore = defineStore("auth", () => {
   async function fetchMe(): Promise<boolean> {
     try {
       account.value = await api.get<Account>("/api/me");
-      // Page reload with a live session: same fail-closed ownership-transfer
-      // contract as login(). Reconcile failures here do NOT revoke the
-      // session (the user is already logged in; revoking would be surprising)
-      // — the error propagates so the router can decide.
-      await reconcileExistingSubscription();
-      return true;
-    } catch (e) {
+    } catch {
       account.value = null;
       return false;
     }
+    // Once /api/me succeeds, authentication is established and MUST NOT be
+    // downgraded to unauthenticated (redirecting to /login while a 7-day
+    // session cookie remains live). Reconcile is same-account maintenance;
+    // failures degrade notifications rather than breaking page navigation.
+    try {
+      await reconcileExistingSubscription();
+    } catch {
+      // Best-effort same-account reconcile: notification degradation must not
+      // break page navigation or revoke valid auth.
+    }
+    return true;
   }
 
   async function logout(): Promise<void> {

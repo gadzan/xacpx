@@ -136,12 +136,13 @@ test("login returns false and revokes server session when reconcile rejects (loc
   expect(postCalls).toEqual(["login", "logout"]);
 });
 
-test("fetchMe also awaits reconcile before reporting success", async () => {
+test("fetchMe preserves authenticated state even if same-account reconcile throws", async () => {
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ username: "u" }), { status: 200 })));
   reconcileMock.mockRejectedValueOnce(new Error("hub unreachable"));
   const auth = useAuthStore();
-  expect(await auth.fetchMe()).toBe(false);
-  expect(auth.account).toBeNull();
+  expect(await auth.fetchMe()).toBe(true);
+  expect(auth.account?.username).toBe("u");
+  expect(reconcileMock).toHaveBeenCalledTimes(1);
 });
 
 test("login throws when session rollback /api/logout fails", async () => {
