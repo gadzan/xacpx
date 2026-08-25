@@ -5,7 +5,11 @@
 // session-free by design; the sessions-changed compare is threaded in via
 // deps.detectSessionsChanged).
 import { expect, test } from "bun:test";
-import { TurnQueue, type TurnQueueDeps } from "../../../src/control/turn-queue";
+import {
+  TurnQueue,
+  type PeerInterruptEvent,
+  type TurnQueueDeps,
+} from "../../../src/control/turn-queue";
 import type {
   TurnRequest,
   TurnResult,
@@ -1264,4 +1268,505 @@ test("Phase 7 (Gate L): busy source session queues completion turn and drains se
   h.resolveNext({ ok: true, text: "completion turn finished" });
   await tick();
   expect(h.queue.isBusy("relay:source-lane", "source-lane")).toBe(false);
+});
+
+// ---------------------------------------------------------------------------
+// v0.4 Peer Interrupt Delivery — TurnQueue lane semantics (spec §19 hard gates).
+// submitPeerInterrupt owns atomic reserve→abort→true-settle→priority-drain; the
+// tests below pin that state machine at the TurnQueue seam before implementation.
+// -------------------------------------------------------------------------
+
+// Count abort signals on the currently running turn's controller.
+function trackAborts(h: { head(): { signal: AbortSignal } | undefined }): () => number {
+  let aborts = 0;
+  h.head()?.signal.addEventListener("abort", () => aborts++);
+  return () => aborts;
+}
+
+test("v0.4 idle-interrupt: an interrupt on an idle target starts an ordinary peer turn with zero cancellations", async () => {
+  const h = makeQueue();
+  const res = h.queue.submitPeerInterrupt({
+    ...BASE,
+    text: "I",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_idle_i",
+    isPeerMessage: true,
+  });
+  expect(res).toEqual({ status: "injected", modeUsed: "prompt" });
+  await tick();
+  expect(h.started).toEqual(["I"]);
+  expect(h.head()!.signal.aborted).toBe(false);
+  h.resolveNext();
+});
+
+test("v0.4 G1.1: busy interrupt reserves, aborts the predecessor exactly once, and starts only after true settlement", async () => {
+  const h = makeQueue();
+  const pOld = h.queue.submit({ ...BASE, text: "old", queueable: true });
+  await tick();
+  const aborts = trackAborts(h);
+  const res = h.queue.submitPeerInterrupt({
+    ...BASE,
+    text: "X",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_x",
+    isPeerMessage: true,
+  });
+  // Synchronous acceptance: reservation owned + predecessor signalled, ACK returned
+  // before the predecessor has unwound.
+  expect(res).toMatchObject({ status: "queued", modeUsed: "interrupt" });
+  expect(aborts()).toBe(1);
+  expect(h.started).toEqual(["old"]);
+  // Old runTurn deliberately held unresolved: no X execution may start.
+  await tick();
+  expect(h.started).toEqual(["old"]);
+  h.resolveNext({ ok: false, errorMessage: "aborted" });
+  await pOld;
+  await tick();
+  expect(h.started).toEqual(["old", "X"]);
+  expect(h.pendingReqs()[0]!.turnStarted?.promptRequestId).toBe("msg_x");
+  h.resolveNext();
+});
+
+test("v0.4 G1.2: aborted-but-unsettled predecessor is NOT aborted again; interrupt reserves and waits for true settle", async () => {
+  const h = makeQueue();
+  const pOld = h.queue.submit({ ...BASE, text: "old", queueable: true });
+  await tick();
+  h.queue.cancelTurn("c", "s"); // first (user Stop) abort; runTurn still unresolved
+  const aborts = trackAborts(h);
+  const res = h.queue.submitPeerInterrupt({
+    ...BASE,
+    text: "X",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_x2",
+    isPeerMessage: true,
+  });
+  expect(res).toMatchObject({ status: "queued", modeUsed: "interrupt" });
+  expect(aborts()).toBe(0); // no second abort in the aborted-but-unsettled window
+  expect(h.started).toEqual(["old"]); // no false admission before settle
+  await tick();
+  expect(h.started).toEqual(["old"]);
+  h.resolveNext({ ok: false, errorMessage: "aborted" });
+  await pOld;
+  await tick();
+  expect(h.started).toEqual(["old", "X"]); // exactly one X execution after settle
+  h.resolveNext();
+});
+
+test("v0.4 G1.3: a reserved interrupt drains ahead of ordinary queued prompts without evicting them", async () => {
+  const h = makeQueue();
+  const pCur = h.queue.submit({ ...BASE, text: "cur", queueable: true });
+  await tick();
+  expect(h.queue.submitPeerTurn({ ...BASE, text: "Q1", senderId: "agent-messaging", promptRequestId: "q1", isPeerMessage: true }).status).toBe("queued");
+  expect(h.queue.submitPeerTurn({ ...BASE, text: "Q2", senderId: "agent-messaging", promptRequestId: "q2", isPeerMessage: true }).status).toBe("queued");
+  expect(h.queue.submitPeerInterrupt({ ...BASE, text: "I", senderId: "agent-messaging", promptRequestId: "msg_i3", isPeerMessage: true }).status).toBe("queued");
+  h.resolveNext();
+  await pCur;
+  await tick();
+  expect(h.started).toEqual(["cur", "I"]);
+  h.resolveNext();
+  await tick();
+  expect(h.started).toEqual(["cur", "I", "Q1"]);
+  h.resolveNext();
+  await tick();
+  expect(h.started).toEqual(["cur", "I", "Q1", "Q2"]);
+  h.resolveNext();
+});
+
+test("v0.4 G1.4: a full normal queue does not consume or block the free interrupt slot", async () => {
+  const h = makeQueue();
+  const pCur = h.queue.submit({ ...BASE, text: "cur", queueable: true });
+  await tick();
+  for (let i = 0; i < QUEUE_MAX_DEPTH; i++) {
+    expect(h.queue.submitPeerTurn({ ...BASE, text: `Q${i}`, senderId: "agent-messaging", promptRequestId: `q${i}`, isPeerMessage: true }).status).toBe("queued");
+  }
+  expect(h.queue.queueLength("c", "s")).toBe(QUEUE_MAX_DEPTH);
+  const res = h.queue.submitPeerInterrupt({
+    ...BASE,
+    text: "I",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_i4",
+    isPeerMessage: true,
+  });
+  expect(res).toMatchObject({ status: "queued", modeUsed: "interrupt" });
+  expect(h.queue.queueLength("c", "s")).toBe(QUEUE_MAX_DEPTH); // normal queue unchanged
+  h.resolveNext();
+  await pCur;
+  await tick();
+  const expected = ["cur", "I", ...Array.from({ length: QUEUE_MAX_DEPTH }, (_, i) => `Q${i}`)];
+  for (let i = 1; i < expected.length; i++) {
+    expect(h.started).toEqual(expected.slice(0, i + 1));
+    h.resolveNext();
+    await tick();
+  }
+});
+
+test("v0.4 G1.5: a second DISTINCT interrupt is rejected queue-full while one is reserved; the reservation survives", async () => {
+  const h = makeQueue();
+  const pOld = h.queue.submit({ ...BASE, text: "old", queueable: true });
+  await tick();
+  const aborts = trackAborts(h);
+  expect(h.queue.submitPeerInterrupt({ ...BASE, text: "I1", senderId: "agent-messaging", promptRequestId: "msg_i1", isPeerMessage: true })).toMatchObject({
+    status: "queued",
+    modeUsed: "interrupt",
+  });
+  expect(h.queue.submitPeerInterrupt({ ...BASE, text: "I2", senderId: "agent-messaging", promptRequestId: "msg_i2", isPeerMessage: true })).toEqual({
+    status: "rejected",
+    reason: "queue-full",
+  });
+  expect(aborts()).toBe(1); // no second cancel
+  h.resolveNext();
+  await pOld;
+  await tick();
+  expect(h.started).toEqual(["old", "I1"]); // I1 kept, I2 never runs (not downgraded)
+  h.resolveNext();
+  await tick();
+  expect(h.started).toEqual(["old", "I1"]);
+});
+
+test("v0.4 G1.6: a duplicate interrupt retry (same promptRequestId) is deduped — one reservation, one abort, one run", async () => {
+  const h = makeQueue();
+  const pOld = h.queue.submit({ ...BASE, text: "old", queueable: true });
+  await tick();
+  const aborts = trackAborts(h);
+  expect(h.queue.submitPeerInterrupt({ ...BASE, text: "I1", senderId: "agent-messaging", promptRequestId: "msg_p", isPeerMessage: true })).toMatchObject({
+    status: "queued",
+    modeUsed: "interrupt",
+  });
+  expect(h.queue.submitPeerInterrupt({ ...BASE, text: "I1", senderId: "agent-messaging", promptRequestId: "msg_p", isPeerMessage: true })).toMatchObject({
+    status: "queued",
+    modeUsed: "interrupt",
+  });
+  expect(aborts()).toBe(1);
+  h.resolveNext();
+  await pOld;
+  await tick();
+  expect(h.started).toEqual(["old", "I1"]);
+  h.resolveNext();
+  await tick();
+  // Retry after the interrupt turn started/completed: still deduped, never a second turn.
+  expect(h.queue.submitPeerInterrupt({ ...BASE, text: "I1", senderId: "agent-messaging", promptRequestId: "msg_p", isPeerMessage: true })).toEqual({
+    status: "injected",
+    modeUsed: "prompt",
+  });
+  await tick();
+  expect(h.started).toEqual(["old", "I1"]);
+});
+
+test("v0.4 G1.7a: cancelQueuedItem removes a pending interrupt before it runs and resolves its completion contract once", async () => {
+  const cancelled: Array<{ peerOrigin: unknown; promptRequestId?: string }> = [];
+  const h = makeQueue({
+    cancelDrainTimeoutMs: 10,
+    onQueuedPeerCancelled: (detail) => cancelled.push(detail),
+  });
+  const pOld = h.queue.submit({ ...BASE, text: "old", queueable: true });
+  await tick();
+  const peerOrigin = {
+    requestMessageId: "msg_i7",
+    completion: "result" as const,
+    source: { nodeId: "n", endpointId: "src" },
+    target: { nodeId: "n", endpointId: "dst" },
+  };
+  const res = h.queue.submitPeerInterrupt({
+    ...BASE,
+    text: "I",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_i7",
+    isPeerMessage: true,
+    peerOrigin,
+  });
+  if (res.status !== "queued") throw new Error("expected queued");
+  const removed = h.queue.cancelQueuedItem("c", "s", res.queueItemId);
+  expect(removed.cancelled).toBe(true);
+  expect(cancelled).toHaveLength(1);
+  expect(cancelled[0]!.peerOrigin).toEqual(peerOrigin);
+  expect(cancelled[0]!.promptRequestId).toBe("msg_i7");
+  h.resolveNext();
+  await pOld;
+  await tick();
+  expect(h.started).toEqual(["old"]); // the interrupt never executes
+});
+
+test("v0.4 G1.7b: clearSession drops the pending interrupt and resolves its completion contract once", async () => {
+  const cancelled: Array<{ peerOrigin: unknown }> = [];
+  const h = makeQueue({
+    cancelDrainTimeoutMs: 10,
+    onQueuedPeerCancelled: (detail) => cancelled.push(detail),
+  });
+  const pOld = h.queue.submit({ ...BASE, text: "old", queueable: true });
+  await tick();
+  const peerOrigin = {
+    requestMessageId: "msg_i8",
+    completion: "result" as const,
+    source: { nodeId: "n", endpointId: "src" },
+    target: { nodeId: "n", endpointId: "dst" },
+  };
+  expect(h.queue.submitPeerInterrupt({
+    ...BASE,
+    text: "I",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_i8",
+    isPeerMessage: true,
+    peerOrigin,
+  }).status).toBe("queued");
+  // clearSession aborts the predecessor and waits (bounded) for it to unwind —
+  // settle it DURING that window so the teardown reports a clean clear.
+  const clearedP = h.queue.clearSession("c", "s");
+  await tick();
+  h.resolveNext({ ok: false, errorMessage: "aborted" });
+  expect(await clearedP).toEqual({ cleared: true });
+  expect(cancelled).toHaveLength(1);
+  expect(cancelled[0]!.peerOrigin).toEqual(peerOrigin);
+  await pOld;
+  await tick();
+  expect(h.started).toEqual(["old"]); // never executed on the dead session
+});
+
+test("v0.4 lifecycle: interrupt on a removing/archived target is rejected target-unavailable", async () => {
+  const h = makeQueue();
+  // Arm the teardown guard the real way: a successful clearSession on an idle lane.
+  expect(await h.queue.clearSession("c", "s")).toEqual({ cleared: true });
+  expect(h.queue.submitPeerInterrupt({
+    ...BASE,
+    text: "I",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_i9",
+    isPeerMessage: true,
+  })).toEqual({ status: "rejected", reason: "target-unavailable" });
+  h.queue.finishClear("c", "s");
+});
+
+test("v0.4 state hygiene: the interrupt slot empties on start, on cancel, and on clear — no stale keys", async () => {
+  const h = makeQueue();
+  expect(h.queue.pendingInterruptCount("c", "s")).toBe(0);
+  const pOld = h.queue.submit({ ...BASE, text: "old", queueable: true });
+  await tick();
+  h.queue.submitPeerInterrupt({ ...BASE, text: "I", senderId: "agent-messaging", promptRequestId: "msg_h1", isPeerMessage: true });
+  expect(h.queue.pendingInterruptCount("c", "s")).toBe(1);
+  h.resolveNext();
+  await pOld;
+  await tick();
+  expect(h.started).toEqual(["old", "I"]); // slot consumed by start
+  expect(h.queue.pendingInterruptCount("c", "s")).toBe(0);
+  h.resolveNext();
+  await tick();
+  // Reserve again, then cancel via lifecycle and confirm the map is empty.
+  const p2 = h.queue.submit({ ...BASE, text: "old2", queueable: true });
+  await tick();
+  const res = h.queue.submitPeerInterrupt({ ...BASE, text: "I2", senderId: "agent-messaging", promptRequestId: "msg_h2", isPeerMessage: true });
+  if (res.status !== "queued") throw new Error("expected queued");
+  h.queue.cancelQueuedItem("c", "s", res.queueItemId);
+  expect(h.queue.pendingInterruptCount("c", "s")).toBe(0);
+  h.resolveNext();
+  await p2;
+  await tick();
+  expect(h.queue.pendingInterruptCount("c", "s")).toBe(0);
+});
+
+test("v0.4 P1: an interrupt arriving DURING clearSession's unwind window is rejected target-unavailable and never resurrects on the dying session", async () => {
+  const h = makeQueue();
+  const pOld = h.queue.submit({ ...BASE, text: "old", queueable: true });
+  await tick();
+
+  // clearSession starts: drops slots, aborts old, parks on its settled promise.
+  const clearedP = h.queue.clearSession("c", "s");
+  await tick(); // let clearSession reach the abort + await window
+
+  // The dangerous window: old is aborted-but-registered, removing is armed.
+  // The interrupt MUST fail closed — not reserve, not drain after settle.
+  expect(h.queue.submitPeerInterrupt({
+    ...BASE,
+    text: "I",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_p1_i",
+    isPeerMessage: true,
+  })).toEqual({ status: "rejected", reason: "target-unavailable" });
+  // Peer turns are equally fail-closed for the whole clear lifecycle.
+  expect(h.queue.submitPeerTurn({
+    ...BASE,
+    text: "P",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_p1_p",
+    isPeerMessage: true,
+  })).toEqual({ status: "rejected", reason: "target-unavailable" });
+
+  h.resolveNext({ ok: false, errorMessage: "aborted" });
+  expect(await clearedP).toEqual({ cleared: true });
+  await pOld;
+  await tick();
+
+  // No resurrection: the interrupt never executed and the slot is empty.
+  expect(h.started).toEqual(["old"]);
+  expect(h.queue.pendingInterruptCount("c", "s")).toBe(0);
+  h.queue.finishClear("c", "s");
+});
+
+test("v0.4 P1: a FAILED clear (wedged turn) releases the teardown guard so the lane stays usable for retry", async () => {
+  const h = makeQueue({ cancelDrainTimeoutMs: 10 });
+  const pOld = h.queue.submit({ ...BASE, text: "old", queueable: true });
+  await tick();
+
+  // Old never settles within the drain timeout → cleared:false.
+  expect(await h.queue.clearSession("c", "s")).toEqual({ cleared: false });
+
+  // The guard was released: the lane accepts peer work again (busy-interrupt
+  // semantics against the still-registered aborted predecessor).
+  expect(h.queue.submitPeerInterrupt({
+    ...BASE,
+    text: "I",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_p1_retry",
+    isPeerMessage: true,
+  }).status).toBe("queued");
+  h.resolveNext({ ok: false, errorMessage: "aborted" });
+  await pOld;
+  await tick();
+  expect(h.started).toEqual(["old", "I"]); // reserved interrupt drains normally
+  h.resolveNext();
+});
+
+test("v0.4 P2: the reservation publishes a kind:interrupt snapshot item that the existing per-item cancel surface can address", async () => {
+  const snapshots: Array<Array<{ id: string; kind?: string }>> = [];
+  const h = makeQueue({
+    emitQueueUpdated: (_c, _s, items) => snapshots.push(items),
+  });
+  const pOld = h.queue.submit({ ...BASE, text: "old", queueable: true });
+  await tick();
+  h.queue.submitPeerTurn({ ...BASE, text: "Q1", senderId: "agent-messaging", promptRequestId: "q1", isPeerMessage: true });
+
+  const res = h.queue.submitPeerInterrupt({
+    ...BASE,
+    text: "I",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_p2",
+    isPeerMessage: true,
+  });
+  if (res.status !== "queued") throw new Error("expected queued");
+
+  // The reservation published the interrupt as the snapshot's FIRST item,
+  // ahead of the ordinary FIFO — this is what makes cancelQueuedItem(id)
+  // reachable from the production queue surface.
+  const latest = snapshots[snapshots.length - 1]!;
+  expect(latest[0]).toMatchObject({ id: res.queueItemId, kind: "interrupt", textPreview: "I" });
+  expect(latest).toHaveLength(2); // interrupt + Q1, FIFO untouched
+
+  // The existing per-item cancel path removes exactly that item.
+  expect(h.queue.cancelQueuedItem("c", "s", res.queueItemId).cancelled).toBe(true);
+  const afterCancel = snapshots[snapshots.length - 1]!;
+  expect(afterCancel).toHaveLength(1);
+  expect(afterCancel[0]!.kind).toBeUndefined();
+
+  // After the interrupt drains, the snapshot no longer lists it.
+  h.queue.submitPeerInterrupt({
+    ...BASE,
+    text: "I2",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_p2b",
+    isPeerMessage: true,
+  });
+  h.resolveNext();
+  await pOld;
+  await tick();
+  const afterDrain = snapshots[snapshots.length - 1]!;
+  expect(afterDrain.some((item) => item.kind === "interrupt")).toBe(false);
+  h.resolveNext();
+  await tick();
+  h.resolveNext();
+});
+
+test("v0.4 P3: rejected_pending carries the REJECTED request's ids plus the occupied reservation's id", async () => {
+  const events: PeerInterruptEvent[] = [];
+  const h = makeQueue({ onPeerInterruptEvent: (event) => events.push(event) });
+  const pOld = h.queue.submit({ ...BASE, text: "old", queueable: true });
+  await tick();
+
+  h.queue.submitPeerInterrupt({
+    ...BASE,
+    text: "I1",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_p3_i1",
+    isPeerMessage: true,
+    peerOrigin: {
+      requestMessageId: "msg_p3_i1",
+      completion: "none",
+      source: { nodeId: "n", endpointId: "a" },
+      target: { nodeId: "n", endpointId: "b" },
+    },
+  });
+  expect(h.queue.submitPeerInterrupt({
+    ...BASE,
+    text: "I2",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_p3_i2",
+    isPeerMessage: true,
+    peerOrigin: {
+      requestMessageId: "msg_p3_i2",
+      completion: "none",
+      source: { nodeId: "n", endpointId: "a" },
+      target: { nodeId: "n", endpointId: "b" },
+    },
+  }).status).toBe("rejected");
+
+  const rejected = events.find((event) => event.kind === "rejected_pending")!;
+  expect(rejected.requestMessageId).toBe("msg_p3_i2"); // the REJECTED request, not I1
+  expect(rejected.promptRequestId).toBe("msg_p3_i2");
+  expect(rejected.pendingRequestMessageId).toBe("msg_p3_i1"); // the slot occupant
+  h.resolveNext();
+  await pOld;
+  await tick();
+  h.resolveNext();
+});
+
+test("v0.4 P2 follow-up: clearSession republishes the queue snapshot after dropping a pending interrupt (no stale kind:interrupt item)", async () => {
+  // Scenario A: interrupt only → final snapshot [].
+  const snapshotsA: Array<Array<{ id: string; kind?: string }>> = [];
+  const hA = makeQueue({
+    emitQueueUpdated: (_c, _s, items) => snapshotsA.push(items),
+  });
+  const pOldA = hA.queue.submit({ ...BASE, text: "old", queueable: true });
+  await tick();
+  hA.queue.submitPeerInterrupt({
+    ...BASE,
+    text: "I",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_p2c_a",
+    isPeerMessage: true,
+  });
+  expect(snapshotsA[snapshotsA.length - 1]![0]!.kind).toBe("interrupt");
+
+  const clearedA = hA.queue.clearSession("c", "s");
+  await tick();
+  hA.resolveNext({ ok: false, errorMessage: "aborted" });
+  expect(await clearedA).toEqual({ cleared: true });
+  await pOldA;
+  await tick();
+  expect(snapshotsA[snapshotsA.length - 1]!.some((item) => item.kind === "interrupt")).toBe(false);
+  hA.queue.finishClear("c", "s");
+
+  // Scenario B: interrupt + ordinary FIFO → the interleaved drops still end
+  // at [], never a stale [interrupt].
+  const snapshotsB: Array<Array<{ id: string; kind?: string }>> = [];
+  const hB = makeQueue({
+    emitQueueUpdated: (_c, _s, items) => snapshotsB.push(items),
+  });
+  const pOldB = hB.queue.submit({ ...BASE, text: "old", queueable: true });
+  await tick();
+  hB.queue.submitPeerTurn({ ...BASE, text: "Q1", senderId: "agent-messaging", promptRequestId: "q1", isPeerMessage: true });
+  hB.queue.submitPeerTurn({ ...BASE, text: "Q2", senderId: "agent-messaging", promptRequestId: "q2", isPeerMessage: true });
+  hB.queue.submitPeerInterrupt({
+    ...BASE,
+    text: "I",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_p2c_b",
+    isPeerMessage: true,
+  });
+  expect(snapshotsB[snapshotsB.length - 1]!.map((item) => item.kind)).toEqual(["interrupt", undefined, undefined]);
+
+  const clearedB = hB.queue.clearSession("c", "s");
+  await tick();
+  hB.resolveNext({ ok: false, errorMessage: "aborted" });
+  expect(await clearedB).toEqual({ cleared: true });
+  await pOldB;
+  await tick();
+  expect(snapshotsB[snapshotsB.length - 1]!).toEqual([]);
+  hB.queue.finishClear("c", "s");
 });

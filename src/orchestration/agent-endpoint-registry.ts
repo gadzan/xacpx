@@ -607,7 +607,7 @@ export class AgentEndpointRegistry {
       activity: {
         status: isRunning ? "working" : "idle",
       },
-      capabilities: queueOnlyCapabilities({ completion: true }),
+      capabilities: queueOnlyCapabilities({ completion: true, interrupt: true }),
       endpointKind: "logical",
       // Channel ownership is derived from the internal alias namespace (the
       // authoritative channel-scoping record) via the single-home helper in
@@ -681,12 +681,20 @@ function findLogicalSession(
     .sort((left, right) => left.alias.localeCompare(right.alias))[0];
 }
 
-function queueOnlyCapabilities(options?: { completion?: boolean }): AgentCapabilities {
+function queueOnlyCapabilities(options?: {
+  completion?: boolean;
+  /** v0.4: true ONLY for endpoints controlled by the xacpx TurnQueue/
+   *  SessionTurnRunner lane (managed logical sessions) — xacpx can safely
+   *  preempt the target's current managed turn and schedule a peer turn after
+   *  true settlement (spec §14). Never derived from steer or provider name;
+   *  workers and external coordinators stay false. */
+  interrupt?: boolean;
+}): AgentCapabilities {
   return {
     receive: true,
     steer: false,
     queue: true,
-    interrupt: false,
+    interrupt: options?.interrupt ?? false,
     conversation: true,
     // v0.3: completion signals require the canonical TurnQueue/SessionTurnRunner
     // path (PeerTurnOrigin → turn-finished). Only logical sessions run on that
