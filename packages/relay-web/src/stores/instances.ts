@@ -693,7 +693,9 @@ export const useInstancesStore = defineStore("instances", () => {
   }
 
   async function removeSession(instanceId: string, alias: string): Promise<void> {
-    await api.rpc(instanceId, "control.sessions.remove", { alias });
+    // unwrap: a connector-side business error arrives as HTTP 200 {error:…} —
+    // without this the purge below would run on a failed removal.
+    unwrap(await api.rpc(instanceId, "control.sessions.remove", { alias }));
     // Event-driven tail-cache purge (spec #205): a removed session must never
     // resurface as a ghost transcript from the cache. Routed through the chat
     // store so a pending debounced write-back targeting it is cancelled too.
@@ -714,7 +716,9 @@ export const useInstancesStore = defineStore("instances", () => {
     const prevArchived = sessionRow?.archived === true;
     if (sessionRow) sessionRow.archived = true;
     try {
-      await api.rpc(instanceId, "control.sessions.archive", { alias });
+      // unwrap: a connector business error (e.g. session-missing, still draining)
+      // arrives as HTTP 200 {error:…} and must also trigger the rollback below.
+      unwrap(await api.rpc(instanceId, "control.sessions.archive", { alias }));
     } catch (error) {
       if (sessionRow && !prevArchived) sessionRow.archived = false;
       throw error;
@@ -727,7 +731,7 @@ export const useInstancesStore = defineStore("instances", () => {
   }
 
   async function unarchiveSession(instanceId: string, alias: string): Promise<void> {
-    await api.rpc(instanceId, "control.sessions.unarchive", { alias });
+    unwrap(await api.rpc(instanceId, "control.sessions.unarchive", { alias }));
     if (byId(instanceId)?.archivedSessionsLoaded) await loadArchivedSessions(instanceId);
     else await loadSessions(instanceId);
     refreshLoadedGroupArchivedSessions(instanceId);

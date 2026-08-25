@@ -191,7 +191,7 @@ it("flat sidebar: archiving the SELECTED session keeps the avatar driver through
   expect(icon.attributes("data-driver")).toBe("kimi");
 });
 
-it("flat sidebar: a failed archive rolls the optimistic archived flag back", async () => {
+it("flat sidebar: a failed archive rolls the optimistic archived flag back (transport throw)", async () => {
   const instances = useInstancesStore();
   instances.instances.push({
     id: "i1", name: "prod-box", online: true, lastSeenAt: null,
@@ -207,6 +207,29 @@ it("flat sidebar: a failed archive rolls the optimistic archived flag back", asy
   rpc.mockRestore();
   // Rollback: the row stays active-looking so the sidebar doesn't grey a live session.
   expect(instances.byId("i1")!.sessions.find((s) => s.alias === "main")?.archived).toBe(false);
+});
+
+it("flat sidebar: a connector ErrorPayload (HTTP 200 {error:…}) archive also rolls back", async () => {
+  // The control bridge wraps connector business errors as a RESOLVED {error:{code,
+  // message}} payload — api.rpc does NOT reject. Only unwrap() surfaces it, so this
+  // test locks that archiveSession routes through unwrap and the optimistic flag
+  // still rolls back (the gap called out in #304 review round 3).
+  const instances = useInstancesStore();
+  instances.instances.push({
+    id: "i1", name: "prod-box", online: true, lastSeenAt: null,
+    sessions: [{ alias: "main", agent: "my-kimi", driver: "kimi", workspace: "ws", transportSession: "t1", running: false, archived: false }],
+    agents: [], workspaces: [], agentCatalog: [],
+  } as never);
+  const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id: string, type: string) => {
+    if (type === "control.sessions.archive") return { error: { code: "session-still-draining", message: "session \"main\" is still finishing a stopped turn; retry in a moment" } };
+    if (type === "control.agents.list") return { agents: [] };
+    return { sessions: [], hasMore: false };
+  });
+  await expect(instances.archiveSession("i1", "main")).rejects.toThrow("still finishing a stopped turn");
+  rpc.mockRestore();
+  expect(instances.byId("i1")!.sessions.find((s) => s.alias === "main")?.archived).toBe(false);
+  // The follow-up refetch never ran either (the RPC aborted before loadSessions).
+  expect(rpc).not.toHaveBeenCalledWith("i1", "control.sessions.list", expect.anything());
 });
 
 it("localizes the empty-state prompt when locale is zh-CN", () => {
