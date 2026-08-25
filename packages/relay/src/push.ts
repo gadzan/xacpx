@@ -47,19 +47,27 @@ export function vapidFromEnv(env: Record<string, string | undefined>): VapidConf
  * fire-and-forget fan-out — the exact failure mode this module must prevent.
  * Returns null for configs that cannot work.
  */
+// Mirrors web-push's own validation so an accepted config is one the library
+// will actually accept at send time — not just a lookalike.
+const STRICT_B64URL = /^[A-Za-z0-9_-]+$/;
+
 export function validateVapidConfig(config: VapidConfig | null): VapidConfig | null {
   if (!config) return null;
-  if (!/^(mailto:|https:\/\/)/.test(config.subject)) {
+  // web-push does `new URL(subject)`: only absolute mailto:/https: URLs pass.
+  try {
+    const u = new URL(config.subject);
+    if (u.protocol !== "mailto:" && u.protocol !== "https:") return null;
+  } catch {
     return null;
   }
-  // P-256 public keys are uncompressed EC points: 65 raw bytes → 87 base64url
-  // chars. Private keys: 32 raw bytes → 43 base64url chars. Node's base64
-  // decoder is lenient, so also verify the DECODED lengths — "x"-style garbage
-  // would otherwise slip past a non-empty check.
+  // Keys must be STRICT URL-safe base64 (web-push rejects '+'/'/'/'='), then
+  // decode to exact P-256 material sizes: public = uncompressed point (65
+  // bytes), private = scalar (32 bytes). Node's decoder is lenient about
+  // garbage like '!' — strict alphabet + decoded length together close that.
+  const b64urlOk = (v: string) => STRICT_B64URL.test(v);
   const b64url = (v: string) => v.replace(/-/g, "+").replace(/_/g, "/");
-  if (b64url(config.publicKey).length !== 87 || b64url(config.privateKey).length !== 43) {
-    return null;
-  }
+  if (!b64urlOk(config.publicKey) || !b64urlOk(config.privateKey)) return null;
+  if (config.publicKey.length !== 87 || config.privateKey.length !== 43) return null;
   try {
     if (Buffer.from(b64url(config.publicKey), "base64").length !== 65) return null;
     if (Buffer.from(b64url(config.privateKey), "base64").length !== 32) return null;

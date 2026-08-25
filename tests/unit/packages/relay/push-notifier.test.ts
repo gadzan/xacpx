@@ -95,8 +95,11 @@ test("validateVapidConfig enforces decoded key lengths (65/32 bytes)", () => {
   expect(validateVapidConfig({ subject: "mailto:a@b.c", publicKey: goodPk, privateKey: goodSk })).not.toBeNull();
   // Truncated private key: right-ish shape, wrong decoded length.
   expect(validateVapidConfig({ subject: "mailto:a@b.c", publicKey: goodPk, privateKey: goodSk.slice(0, 20) })).toBeNull();
-  // Undecodable garbage (invalid base64 chars survive strict decode check via length mismatch):
+  // Truncated public key:
   expect(validateVapidConfig({ subject: "mailto:a@b.c", publicKey: goodPk.slice(0, 40), privateKey: goodSk })).toBeNull();
   // Bad subject scheme:
   expect(validateVapidConfig({ subject: "ftp://a@b.c", publicKey: goodPk, privateKey: goodSk })).toBeNull();
+  // Subject that passes a prefix regex but is not an absolute URL (web-push
+  // does new URL(subject)):
+  expect(validateVapidConfig({ subject: "https://", publicKey: goodPk, privateKey: goodSk })).toBeNull();
 });

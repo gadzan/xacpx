@@ -24,8 +24,23 @@ import {
   reconcileExistingSubscription,
 } from "../lib/web-push";
 
-function stubNavigator(serviceWorker: unknown): void {
-  vi.stubGlobal("navigator", { ...navigator, serviceWorker });
+interface StubSW {
+  /** Registration handed to getRegistration(); omit → none exists. */
+  registration?: unknown;
+  /** Optional active-worker surface for code paths using .ready. */
+  readyPushManager?: unknown;
+}
+
+function stubNavigator(sw: StubSW): void {
+  const regMock = vi.fn().mockResolvedValue(sw.registration ?? null);
+  vi.stubGlobal("navigator", {
+    ...navigator,
+    serviceWorker: {
+      getRegistration: regMock,
+      ...(sw.readyPushManager ? { ready: Promise.resolve({ pushManager: sw.readyPushManager }) } : {}),
+    },
+    __regMock: regMock,
+  });
 }
 
 function urlBase64ToUint8Array2(base64: string) {
@@ -56,12 +71,12 @@ describe("web-push lib", () => {
   it("pushSupported requires serviceWorker + PushManager + Notification", async () => {
     // jsdom lacks all three; start from a clean slate.
     vi.stubGlobal("Notification", undefined);
-    stubNavigator(undefined);
+    stubNavigator({});
     expect(pushSupported()).toBe(false);
 
     (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
     (window as unknown as Record<string, unknown>).Notification = function FakeNotification() {};
-    stubNavigator({ ready: Promise.resolve({}) });
+    stubNavigator({ registration: null });
     expect(pushSupported()).toBe(true);
 
     delete (window as unknown as Record<string, unknown>).PushManager;
@@ -84,7 +99,7 @@ describe("web-push lib", () => {
         return { endpoint: this.endpoint, keys: this.keys };
       },
     });
-    stubNavigator({ ready: Promise.resolve({ pushManager: { subscribe, getSubscription: vi.fn().mockResolvedValue(null) } }) });
+    stubNavigator({ readyPushManager: { subscribe, getSubscription: vi.fn().mockResolvedValue(null) } });
 
     await enableDesktopNotifications("PK");
     expect(requestPermission).toHaveBeenCalledTimes(1);
@@ -97,7 +112,7 @@ describe("web-push lib", () => {
 
   it("enableDesktopNotifications throws permission-denied when denied", async () => {
     vi.stubGlobal("Notification", { permission: "default", requestPermission: vi.fn().mockResolvedValue("denied") });
-    stubNavigator({ ready: Promise.resolve({ pushManager: {} }) });
+    stubNavigator({});
     await expect(enableDesktopNotifications("PK")).rejects.toThrow("permission-denied");
     expect(apiMocks.put).not.toHaveBeenCalled();
   });
@@ -105,7 +120,7 @@ describe("web-push lib", () => {
   it("disableDesktopNotifications unsubscribes and DELETEs", async () => {
     const unsubscribe = vi.fn().mockResolvedValue(true);
     const getSubscription = vi.fn().mockResolvedValue({ endpoint: "https://push/e1", unsubscribe });
-    stubNavigator({ ready: Promise.resolve({ pushManager: { getSubscription } }) });
+    stubNavigator({ registration: { pushManager: { getSubscription } } });
 
     await disableDesktopNotifications();
     expect(unsubscribe).toHaveBeenCalledTimes(1);
@@ -181,7 +196,7 @@ describe("review fixes", () => {
         return { endpoint: this.endpoint, keys: this.keys };
       },
     });
-    stubNavigator({ ready: Promise.resolve({ pushManager: { getSubscription, subscribe } }) });
+    stubNavigator({ readyPushManager: { getSubscription, subscribe }, registration: { pushManager: { getSubscription, subscribe } } });
 
     console.log("NOTIF:", typeof Notification, (globalThis as { Notification?: { permission?: string } }).Notification?.permission);
     await mod.reconcileExistingSubscription();
@@ -200,6 +215,11 @@ describe("review fixes", () => {
 });
 
 describe("auth lifecycle ownership (fail-closed contract)", () => {
+  beforeEach(() => {
+    apiMocks.get.mockReset().mockResolvedValue({ publicKey: "PK" });
+    apiMocks.put.mockReset().mockResolvedValue({ ok: true });
+    apiMocks.del.mockReset().mockResolvedValue({ ok: true });
+  });
   afterEach(() => vi.unstubAllGlobals());
 
   it("reconcile failure destroys the local subscription instead of leaving a stale binding", async () => {
@@ -219,27 +239,50 @@ describe("auth lifecycle ownership (fail-closed contract)", () => {
       unsubscribe,
       toJSON() { return { endpoint: this.endpoint }; },
     };
-    stubNavigator({
-      ready: Promise.resolve({
-        pushManager: {
-          getSubscription: vi.fn().mockResolvedValue(staleSub),
-        },
-      }),
-    });
+    stubNavigator({ registration: { pushManager: { getSubscription: vi.fn().mockResolvedValue(staleSub) }, unregister: vi.fn() } });
     await expect(mod.reconcileExistingSubscription()).rejects.toThrow("hub write failed");
     expect(unsubscribe).toHaveBeenCalledTimes(1);
     delete (window as unknown as Record<string, unknown>).PushManager;
     delete (window as unknown as Record<string, unknown>).Notification;
   });
 
-  it("returns within 3s when serviceWorker.ready never resolves (dev/no-SW contexts)", async () => {
-    // E2E/dev servers register no worker → navigator.serviceWorker.ready never
-    // settles. Reconcile must time out and return instead of hanging auth.
+  it("returns immediately when no registration exists (dev/no-SW contexts, ready never settles)", async () => {
+    // E2E/dev servers register no worker → getRegistration resolves undefined
+    // while navigator.serviceWorker.ready would never settle. Ownership probe
+    // must use getRegistration and return without touching ready.
     const mod = await import("../lib/web-push");
     (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
     (window as unknown as Record<string, unknown>).Notification = function FakeNotification() {};
-    vi.stubGlobal("navigator", { ...navigator, serviceWorker: { ready: new Promise<void>(() => {}) } });
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      serviceWorker: {
+        ready: new Promise<void>(() => {}), // would hang if probed
+        getRegistration: vi.fn().mockResolvedValue(undefined),
+      },
+    });
     await expect(mod.reconcileExistingSubscription()).resolves.toBeUndefined();
+    expect(apiMocks.get).not.toHaveBeenCalled(); // no registration → no hub call
+    delete (window as unknown as Record<string, unknown>).PushManager;
+    delete (window as unknown as Record<string, unknown>).Notification;
+  });
+
+  it("fail-closed: getSubscription rejection destroys the registration and propagates", async () => {
+    const mod = await import("../lib/web-push");
+    (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
+    (window as unknown as Record<string, unknown>).Notification = function FakeNotification() {};
+    const unregister = vi.fn().mockResolvedValue(true);
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      serviceWorker: {
+        ready: new Promise<void>(() => {}),
+        getRegistration: vi.fn().mockResolvedValue({
+          pushManager: { getSubscription: vi.fn().mockRejectedValue(new DOMException("aborted", "AbortError")) },
+          unregister,
+        }),
+      },
+    });
+    await expect(mod.reconcileExistingSubscription()).rejects.toThrow();
+    expect(unregister).toHaveBeenCalledTimes(1);
     delete (window as unknown as Record<string, unknown>).PushManager;
     delete (window as unknown as Record<string, unknown>).Notification;
   });
@@ -250,18 +293,16 @@ describe("auth lifecycle ownership (fail-closed contract)", () => {
     (window as unknown as Record<string, unknown>).Notification = function FakeNotification() {};
     apiMocks.get.mockResolvedValue({ publicKey: null }); // hub push off
     const unsubscribe = vi.fn().mockResolvedValue(true);
-    stubNavigator({
-      ready: Promise.resolve({
-        pushManager: {
-          getSubscription: vi.fn().mockResolvedValue({
-            endpoint: "https://fcm.googleapis.com/fcm/send/any",
-            options: { applicationServerKey: urlBase64ToUint8Array2(
-              "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U").buffer },
-            unsubscribe,
-          }),
-        },
-      }),
-    });
+    stubNavigator({ registration: {
+          pushManager: {
+            getSubscription: vi.fn().mockResolvedValue({
+              endpoint: "https://fcm.googleapis.com/fcm/send/any",
+              options: { applicationServerKey: urlBase64ToUint8Array2(
+                "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U").buffer },
+              unsubscribe,
+            }),
+          },
+        } });
     await mod.reconcileExistingSubscription();
     expect(unsubscribe).toHaveBeenCalledTimes(1);
     delete (window as unknown as Record<string, unknown>).PushManager;

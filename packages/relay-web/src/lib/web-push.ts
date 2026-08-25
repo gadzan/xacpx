@@ -53,22 +53,17 @@ export function subscriptionMatchesKey(sub: PushSubscription, publicKey: string)
 }
 
 /**
- * Resolve the active SW registration, or null when none appears within
- * `timeoutMs`. navigator.serviceWorker.ready NEVER settles on dev servers /
- * insecure contexts where no worker registers — callers must not block auth
- * on it.
+ * The EXISTING registration for this origin (scope "/"), or null when none has
+ * ever been created. Unlike navigator.serviceWorker.ready — which never
+ * settles on dev servers / insecure contexts where nothing registers —
+ * getRegistration() answers immediately in every environment, so auth can
+ * probe for leftover push state without waiting.
+ *
+ * `ready` remains correct for CREATING a subscription (enable path), where an
+ * active worker is genuinely required.
  */
-async function getReadyRegistration(timeoutMs = 3_000): Promise<ServiceWorkerRegistration | null> {
-  const ready = navigator.serviceWorker.ready as Promise<ServiceWorkerRegistration>;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<null>((resolve) => {
-    timer = setTimeout(() => resolve(null), timeoutMs);
-  });
-  try {
-    return await Promise.race([ready, timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
+async function getExistingRegistration(): Promise<ServiceWorkerRegistration | null> {
+  return (await navigator.serviceWorker.getRegistration("/")) ?? null;
 }
 
 export async function fetchVapidPublicKey(): Promise<string | null> {
@@ -85,8 +80,9 @@ export async function enableDesktopNotifications(publicKey: string): Promise<voi
     const permission = await Notification.requestPermission();
     if (permission !== "granted") throw new Error("permission-denied");
   }
-  const reg = await getReadyRegistration();
-  if (!reg) throw new Error("sw-not-ready");
+  // Creating a subscription requires an ACTIVE worker → ready (which waits
+  // for activation) is correct here, unlike the ownership probe below.
+  const reg = await navigator.serviceWorker.ready;
   // A subscription minted under an older VAPID key would silently never receive
   // pushes after a hub re-key — replace it instead of failing downstream.
   const existing = await reg.pushManager.getSubscription();
@@ -104,8 +100,8 @@ export async function enableDesktopNotifications(publicKey: string): Promise<voi
 }
 
 export async function disableDesktopNotifications(): Promise<void> {
-  const reg = await getReadyRegistration();
-  if (!reg) return; // no active worker: there is no subscription to drop
+  const reg = await getExistingRegistration();
+  if (!reg) return; // no registration: there is no subscription to drop
   const sub = await reg.pushManager.getSubscription();
   if (!sub) return;
   const endpoint = sub.endpoint;
@@ -125,8 +121,8 @@ export async function disableDesktopNotifications(): Promise<void> {
 export async function releaseSubscriptionOwnership(): Promise<void> {
   if (!pushSupported()) return;
   try {
-    const reg = await getReadyRegistration();
-    if (!reg) return; // no active worker: no subscription can exist
+    const reg = await getExistingRegistration();
+    if (!reg) return; // no registration: no subscription can exist
     const sub = await reg.pushManager.getSubscription();
     if (!sub) return;
     const endpoint = sub.endpoint;
@@ -150,32 +146,63 @@ export async function releaseSubscriptionOwnership(): Promise<void> {
  */
 export async function reconcileExistingSubscription(): Promise<void> {
   if (!pushSupported()) return;
-  const reg = await getReadyRegistration();
-  if (!reg) return; // no active worker (dev/insecure context): nothing held
-  const sub = await reg.pushManager.getSubscription();
-  if (!sub) return; // nothing held → no transfer needed
+  // Probe the EXISTING registration (never `ready`): it settles immediately in
+  // every environment and cannot confuse "no registration yet" with "worker
+  // still activating". Everything below is fail-closed: if we cannot PROVE the
+  // leftover subscription's ownership was transferred, destroy it locally.
+  const reg = await getExistingRegistration();
+
+  async function destroy(): Promise<void> {
+    if (sub) await sub.unsubscribe().catch(() => {});
+    else if (reg) await reg.unregister().catch(() => {});
+  }
+
+  // getSubscription can reject (e.g. AbortError when the registration's active
+  // worker is gone). Ownership is then UNPROVABLE → destroy the registration
+  // and fail closed rather than assume "nothing held".
+  let sub: PushSubscription | null = null;
+  if (reg) {
+    try {
+      sub = await reg.pushManager.getSubscription();
+    } catch (err) {
+      await destroy();
+      throw err;
+    }
+  }
+  if (!sub) return; // provably nothing held → no transfer needed
+
+  if (!sub) return; // provably nothing held → no transfer needed
+
+  let publicKey: string | null = null;
   try {
-    const publicKey = await fetchVapidPublicKey();
-    if (!publicKey) {
-      // Hub push disabled → the old row can never be used to push again from
-      // any account; still destroy the local binding for hygiene.
-      await sub.unsubscribe().catch(() => {});
-      return;
-    }
-    if (!subscriptionMatchesKey(sub, publicKey)) {
-      // Stale VAPID key: pushes can never succeed. Destroy + re-mint.
-      const endpoint = sub.endpoint;
-      await sub.unsubscribe();
-      await api.del("/api/web-push/subscriptions", { endpoint }).catch(() => {});
-      await enableDesktopNotifications(publicKey);
-      return;
-    }
-    // Key matches → rebind to the CURRENT account. If this PUT fails the old
-    // binding may still point at the previous account → fail closed below.
+    publicKey = await fetchVapidPublicKey();
+  } catch (err) {
+    // Cannot even ask the hub → ownership unknown → fail closed.
+    await destroy();
+    throw err;
+  }
+  if (!publicKey) {
+    // Hub push disabled → the row can never fire for any account; destroy the
+    // local binding for hygiene.
+    await destroy();
+    return;
+  }
+  if (!subscriptionMatchesKey(sub, publicKey)) {
+    // Stale VAPID key: pushes can never succeed. Destroy + re-mint under the
+    // current key.
+    const endpoint = sub.endpoint;
+    await sub.unsubscribe();
+    await api.del("/api/web-push/subscriptions", { endpoint }).catch(() => {});
+    await enableDesktopNotifications(publicKey);
+    return;
+  }
+  // Key matches → rebind to the CURRENT account. If this PUT fails, the old
+  // binding may still point at the previous account → fail closed below.
+  try {
     await api.put("/api/web-push/subscriptions", sub.toJSON());
   } catch (err) {
     // Fail closed: a half-transferred ownership is worse than no subscription.
-    await sub.unsubscribe().catch(() => {});
+    await destroy();
     throw err;
   }
 }
