@@ -152,9 +152,28 @@ export async function reconcileExistingSubscription(): Promise<void> {
   // leftover subscription's ownership was transferred, destroy it locally.
   const reg = await getExistingRegistration();
 
+  // Destroy must PROVE success: unsubscribe() can reject or resolve false, in
+  // which case fall through to unregistering the whole registration. Only when
+  // one of the two confirms destruction does cleanup count as done — otherwise
+  // a stale subscription would silently survive an account switch.
+  let destroyed = false;
   async function destroy(): Promise<void> {
-    if (sub) await sub.unsubscribe().catch(() => {});
-    else if (reg) await reg.unregister().catch(() => {});
+    destroyed = false;
+    if (sub) {
+      const unsubscribed = await sub.unsubscribe().catch(() => false);
+      if (unsubscribed === true) {
+        destroyed = true;
+        return;
+      }
+    }
+    if (reg) {
+      const unregistered = await reg.unregister().catch(() => false);
+      if (unregistered === true) {
+        destroyed = true;
+        return;
+      }
+    }
+    throw new Error("push-subscription-destroy-failed");
   }
 
   // getSubscription can reject (e.g. AbortError when the registration's active
@@ -171,8 +190,6 @@ export async function reconcileExistingSubscription(): Promise<void> {
   }
   if (!sub) return; // provably nothing held → no transfer needed
 
-  if (!sub) return; // provably nothing held → no transfer needed
-
   let publicKey: string | null = null;
   try {
     publicKey = await fetchVapidPublicKey();
@@ -182,8 +199,9 @@ export async function reconcileExistingSubscription(): Promise<void> {
     throw err;
   }
   if (!publicKey) {
-    // Hub push disabled → the row can never fire for any account; destroy the
-    // local binding for hygiene.
+    // Hub push disabled → the row can never fire for any account. Destroy the
+    // local binding: destroy() throws if neither unsubscribe nor unregister
+    // confirmed success, failing login rather than leaving an unproven sub.
     await destroy();
     return;
   }

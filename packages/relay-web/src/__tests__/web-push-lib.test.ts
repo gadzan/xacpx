@@ -309,3 +309,77 @@ describe("auth lifecycle ownership (fail-closed contract)", () => {
     delete (window as unknown as Record<string, unknown>).Notification;
   });
 });
+
+describe("destroy() failure semantics (round-4)", () => {
+  const K = "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U";
+
+  function makeStaleSub(unsubscribe: ReturnType<typeof vi.fn>) {
+    return {
+      endpoint: "https://fcm.googleapis.com/fcm/send/stale",
+      options: { applicationServerKey: urlBase64ToUint8Array2(K).buffer },
+      unsubscribe,
+      toJSON() { return { endpoint: this.endpoint }; },
+    };
+  }
+
+  // pushSupported() gates reconcile — provide the browser surface.
+  beforeEach(() => {
+    (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
+    (window as unknown as Record<string, unknown>).Notification = function FakeNotification() {};
+  });
+
+  afterEach(() => {
+    delete (window as unknown as Record<string, unknown>).PushManager;
+    delete (window as unknown as Record<string, unknown>).Notification;
+  });
+
+  it("unsubscribe resolves false → falls back to registration.unregister()", async () => {
+    apiMocks.get.mockResolvedValue({ publicKey: null }); // hub push off → destroy path
+    const unregister = vi.fn().mockResolvedValue(true);
+    stubNavigator({
+      registration: {
+        pushManager: { getSubscription: vi.fn().mockResolvedValue(makeStaleSub(vi.fn().mockResolvedValue(false))) },
+        unregister,
+      },
+    });
+    await expect(reconcileExistingSubscription()).resolves.toBeUndefined();
+    expect(unregister).toHaveBeenCalledTimes(1);
+  });
+
+  it("unsubscribe rejects → falls back to registration.unregister()", async () => {
+    apiMocks.get.mockResolvedValue({ publicKey: null });
+    const unregister = vi.fn().mockResolvedValue(true);
+    stubNavigator({
+      registration: {
+        pushManager: { getSubscription: vi.fn().mockResolvedValue(makeStaleSub(vi.fn().mockRejectedValue(new Error("SW died")))) },
+        unregister,
+      },
+    });
+    await expect(reconcileExistingSubscription()).resolves.toBeUndefined();
+    expect(unregister).toHaveBeenCalledTimes(1);
+  });
+
+  it("both unsubscribe and unregister fail → reconcile rejects (login must not succeed)", async () => {
+    apiMocks.get.mockResolvedValue({ publicKey: null });
+    const unsubscribe = vi.fn().mockRejectedValue(new Error("nope"));
+    stubNavigator({
+      registration: {
+        pushManager: { getSubscription: vi.fn().mockResolvedValue(makeStaleSub(unsubscribe)) },
+        unregister: vi.fn().mockRejectedValue(new Error("also nope")),
+      },
+    });
+    await expect(reconcileExistingSubscription()).rejects.toThrow("push-subscription-destroy-failed");
+  });
+
+  it("unregister resolves false too → reconcile rejects", async () => {
+    apiMocks.get.mockResolvedValue({ publicKey: null });
+    const unsubscribe = vi.fn().mockResolvedValue(false);
+    stubNavigator({
+      registration: {
+        pushManager: { getSubscription: vi.fn().mockResolvedValue(makeStaleSub(unsubscribe)) },
+        unregister: vi.fn().mockResolvedValue(false),
+      },
+    });
+    await expect(reconcileExistingSubscription()).rejects.toThrow("push-subscription-destroy-failed");
+  });
+});
