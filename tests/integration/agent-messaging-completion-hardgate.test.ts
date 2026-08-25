@@ -520,7 +520,8 @@ test(
       const handleB = await discover(daemonA);
 
       // 1. C → B: a completion=result peer request whose turn BLOCKS while
-      // already emitting partial assistant text (real busy predecessor).
+      // already emitting partial assistant text (real busy predecessor). The
+      // OLD_PREDECESSOR_OUTPUT marker must never leak into A's result (G11).
       const cSend = JSON.parse(
         await daemonC.runtime.orchestration.server.handleLine(
           JSON.stringify({
@@ -529,7 +530,7 @@ test(
             params: {
               coordinatorSession: daemonC.coordinatorSession,
               to: handleB,
-              message: "delay-9000-partial old-schema migration",
+              message: "OLD_PREDECESSOR_OUTPUT delay-9000-partial old-schema migration",
               completion: "result",
             },
           }),
@@ -569,12 +570,14 @@ test(
         targetState: "running",
       });
 
-      // 4. C's contract terminates EXACTLY once (G10). The terminal STATUS is
-      // transport-owned: whether acpx's cancel unwinds the in-flight prompt as
-      // "cancelled" or the provider finishes the turn is below the v0.4
-      // boundary (plan principle 2 — no acpx/ACP changes). v0.4 owns the
-      // exactly-once terminal routing and the lane ordering, both asserted
-      // deterministically at the TurnQueue seam (G1.7a/b).
+      // 4. C's contract terminates EXACTLY once (G10). The split of ownership:
+      //   status  → transport-owned (cancelled if the transport ended the turn
+      //             early, completed if it ran to natural completion)
+      //   exactly-once terminal routing + correct contract binding → xacpx-owned
+      // So the gate pins: exactly one terminal completion, bound to C's
+      // requestMessageId, with NO duplicate, NO cross-contract completion (C
+      // must never receive a terminal for A's interrupt message), and NO
+      // dangling contract.
       await waitUntil(
         async () =>
           (await daemonC.readPrompts()).filter(
@@ -586,15 +589,18 @@ test(
         async () =>
           `C prompts: ${JSON.stringify(await daemonC.readPrompts())} | B prompts: ${JSON.stringify((await daemonB.readPrompts()).map((t) => t.slice(0, 200)))}`,
       );
+      const aMsgId = aSend.result.messageId as string;
       const cCompletions = (await daemonC.readPrompts()).filter(
         (t) =>
           t.includes("xacpx-peer-completion") || t.includes("xacpx-peer-result"),
       );
       expect(cCompletions).toHaveLength(1);
       expect(cCompletions[0]).toContain(`request-id="${cMsgId}"`);
-
+      // Cross-contract guard: C never sees a terminal for A's interrupt.
+      expect(cCompletions[0]).not.toContain(`request-id="${aMsgId}"`);
       // 5. A's own result contract completes with ONLY the new peer turn's
-      // output — the cancelled predecessor's partial text never leaks (G11).
+      // output — the predecessor's partial text never leaks into it (G11),
+      // however the predecessor terminalized.
       await waitUntil(
         async () =>
           (await daemonA.readPrompts()).some((t) =>
@@ -608,7 +614,9 @@ test(
       expect(aResults).toHaveLength(1);
       expect(aResults[0]).toContain('status="completed"');
       expect(aResults[0]).toContain("FINAL_INTERRUPT_RESULT");
-      expect(aResults[0]).not.toContain("delay-9000-partial");
+      expect(aResults[0]).not.toContain("OLD_PREDECESSOR_OUTPUT");
+      // Envelope leakage guard: no predecessor completion envelope either.
+      expect(aResults[0]).not.toContain("xacpx-peer-completion");
 
       // 6. B ran A's interrupt turn exactly once, after the old turn settled.
       const bPrompts = await daemonB.readPrompts();
@@ -653,6 +661,9 @@ test(
       // forget: control.prompt resolves only when the TURN completes, and the
       // gate must interrupt while it is still running. The promise resolves
       // {ok:false} once the interrupt cancels it — intentionally unobserved.
+      // NO deadline assumption: whether acpx ends this turn early or lets it
+      // run to natural completion is transport-owned; the gate asserts only
+      // xacpx-owned invariants (single cancel request, no overlap, priority).
       void daemonB.runtime.control.prompt({
         chatKey: daemonB.chatKey,
         sessionAlias: daemonB.sessionAlias,
@@ -666,6 +677,22 @@ test(
           ),
         40_000,
       );
+
+      // Ordinary FIFO Q1/Q2 arrive while B is busy — the interrupt must run
+      // AHEAD of them without deleting them (spec §10 drain priority). They
+      // enqueue (busy gate); execution order is asserted after settlement.
+      void daemonB.runtime.control.prompt({
+        chatKey: daemonB.chatKey,
+        sessionAlias: daemonB.sessionAlias,
+        text: "FIFO_Q1 ordinary queued work",
+        senderId: "human",
+      });
+      void daemonB.runtime.control.prompt({
+        chatKey: daemonB.chatKey,
+        sessionAlias: daemonB.sessionAlias,
+        text: "FIFO_Q2 ordinary queued work",
+        senderId: "human",
+      });
 
       // A → B interrupt across the hub. The source daemon never touches B's
       // lane: all preemption happens inside B's TurnQueue.
@@ -691,22 +718,50 @@ test(
         targetState: "running",
       });
 
-      // Exactly one interrupt turn on B; its result crosses the hub back to A.
+      // Exactly one interrupt turn on B; Q1/Q2 execute AFTER it, in FIFO order;
+      // the result crosses the hub back to A. The prompt-record ORDER in B's
+      // file is the execution order (the mock appends at turn start, and acpx
+      // runs one turn per session at a time) — so this simultaneously proves
+      // no-overlap and settle-before-start at the production seam.
       await waitUntil(
-        async () =>
-          (await daemonB.readPrompts()).filter((t) =>
-            t.includes("RELAY_INTERRUPT_MARKER"),
-          ).length === 1,
-        40_000,
+        async () => {
+          const prompts = await daemonB.readPrompts();
+          return (
+            prompts.filter((t) => t.includes("RELAY_INTERRUPT_MARKER")).length === 1 &&
+            prompts.some((t) => t.includes("FIFO_Q2"))
+          );
+        },
+        60_000,
       );
       await waitUntil(
         async () =>
-          (await daemonA.readPrompts()).some((t) =>
-            t.includes("<xacpx-peer-result") &&
-            t.includes('status="completed"'),
+          (await daemonA.readPrompts()).some(
+            (t) =>
+              t.includes("<xacpx-peer-result") &&
+              t.includes('status="completed"'),
           ),
         40_000,
       );
+      const bPrompts = await daemonB.readPrompts();
+      // Exactly-once is an xacpx guarantee for the INTERRUPT turn only. The
+      // PREDECESSOR's prompt may legitimately be re-issued by acpx's queue
+      // owner after a forced cancel unwind (transport-owned resilience), so
+      // predecessor/Q1/Q2 use first-execution ORDER, not execution count.
+      const firstIndexOf = (marker: string) => {
+        const idx = bPrompts.findIndex((t) => t.includes(marker));
+        expect(idx, `marker executed at least once: ${marker}`).toBeGreaterThanOrEqual(0);
+        return idx;
+      };
+      const predecessorIdx = firstIndexOf("human baseline work");
+      const interruptIdx = firstIndexOf("RELAY_INTERRUPT_MARKER");
+      const q1Idx = firstIndexOf("FIFO_Q1");
+      const q2Idx = firstIndexOf("FIFO_Q2");
+      // No-overlap + true settlement: the interrupt turn started only after
+      // the predecessor turn (strictly later execution slot).
+      expect(interruptIdx).toBeGreaterThan(predecessorIdx);
+      // Priority: interrupt ahead of the ordinary FIFO, FIFO order preserved.
+      expect(interruptIdx).toBeLessThan(q1Idx);
+      expect(q1Idx).toBeLessThan(q2Idx);
       // A's result can only arrive after B's interrupt turn FINISHED, so this
       // assertion needs no settle sleep: a duplicate execution would already
       // be visible here.
