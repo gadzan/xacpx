@@ -96,7 +96,7 @@ v0.1 必须支持：
 - Agent A 向 Agent B 发送消息；B 能用相同 tool 回复 A。
 - B 正在运行且支持 steering 时，可向 B 的当前 turn 注入。
 - B 不支持 steering 时，安全降级到 B 的 next-turn queue。
-- 调用方可显式选择 interrupt + new prompt；默认绝不自动 interrupt。
+- 调用方可显式选择 interrupt + new prompt；默认绝不自动 interrupt。（v0.4 起实现说明：受管逻辑会话的显式 interrupt 由 xacpx TurnQueue 的 cancel + 真实 settle + 下一 turn 投递实现，不依赖 acpx/provider 的 live-input 能力；原生 steer 仍是独立可选项。见 `2026-08-24-xacpx-agent-messaging-peer-interrupt-delivery-v0.4-spec.md`。）
 - 每条消息有稳定 messageId，replyTo 用于逻辑关联。
 - 同一 target 的实时消息按提交顺序投递。
 - 调用只等待 delivery ACK，不等待 B 的模型输出。
