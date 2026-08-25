@@ -32,5 +32,8 @@ registerSW({
     // Intentionally not torn down: the update schedule should live for the whole
     // page lifetime. onRegisteredSW fires once per registration, so it doesn't stack.
     schedulePwaUpdateChecks(registration);
+    // Push-subscription ownership is reconciled by auth.login()/fetchMe() as
+    // part of the fail-closed auth contract — NOT here: an unauthenticated
+    // page load must not rebind a subscription to an unknown account.
   },
 });

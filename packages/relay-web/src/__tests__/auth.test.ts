@@ -77,3 +77,102 @@ test("logout clears account-owned view state before another user can reuse the s
   expect(files.tree).toEqual({});
   expect(files.gitSummary).toBeNull();
 });
+
+// ── push-subscription ownership contract (fail-closed auth switch) ──────────
+
+vi.mock("../lib/web-push", () => ({
+  releaseSubscriptionOwnership: vi.fn(),
+  transferSubscriptionOwnership: vi.fn(),
+  reconcileExistingSubscription: vi.fn(),
+}));
+
+import {
+  releaseSubscriptionOwnership,
+  transferSubscriptionOwnership,
+  reconcileExistingSubscription,
+} from "../lib/web-push";
+
+const transferMock = vi.mocked(transferSubscriptionOwnership);
+const reconcileMock = vi.mocked(reconcileExistingSubscription);
+const releaseMock = vi.mocked(releaseSubscriptionOwnership);
+test("login awaits reconcile and reports failure when ownership transfer fails (A→B leak window closed)", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ username: "bob" }), { status: 200 })));
+  // Simulate the crashed-tab case: browser still holds A's subscription and
+  // the rebind PUT fails → reconcile rejects → login must NOT report success.
+  let resolveTransfer!: (v: void) => void;
+  transferMock.mockReturnValue(new Promise<void>((r) => { resolveTransfer = r; }));
+
+  const auth = useAuthStore();
+  const loginPromise = auth.login("b-token");
+  let settled = false;
+  loginPromise.then(() => { settled = true; });
+  await Promise.resolve(); await Promise.resolve();
+  // /api/login succeeded but reconcile is still pending → no success yet:
+  expect(settled).toBe(false);
+  resolveTransfer();
+  expect(await loginPromise).toBe(true);
+});
+
+test("login returns false and revokes server session when reconcile rejects (local subscription destroyed)", async () => {
+  const postCalls: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    const p = String(url);
+    if (init?.method === "POST" && p === "/api/login") {
+      postCalls.push("login");
+      return new Response(JSON.stringify({ username: "bob" }), { status: 200 });
+    }
+    if (init?.method === "POST" && p === "/api/logout") {
+      postCalls.push("logout");
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ error: "not-found" }), { status: 404 });
+  }));
+  transferMock.mockRejectedValueOnce(new Error("rebind failed"));
+  const auth = useAuthStore();
+  const ok = await auth.login("b-token");
+  expect(ok).toBe(false);
+  expect(auth.account).toBeNull();
+  expect(transferMock).toHaveBeenCalledTimes(1);
+  expect(postCalls).toEqual(["login", "logout"]);
+});
+
+test("fetchMe preserves authenticated state even if same-account reconcile throws", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ username: "u" }), { status: 200 })));
+  reconcileMock.mockRejectedValueOnce(new Error("hub unreachable"));
+  const auth = useAuthStore();
+  expect(await auth.fetchMe()).toBe(true);
+  expect(auth.account?.username).toBe("u");
+  expect(reconcileMock).toHaveBeenCalledTimes(1);
+});
+
+test("login throws when session rollback /api/logout fails", async () => {
+  vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    const p = String(url);
+    if (init?.method === "POST" && p === "/api/login") {
+      return new Response(JSON.stringify({ username: "bob" }), { status: 200 });
+    }
+    if (init?.method === "POST" && p === "/api/logout") {
+      return new Response(JSON.stringify({ error: "network-error" }), { status: 500 });
+    }
+    return new Response(JSON.stringify({ error: "not-found" }), { status: 404 });
+  }));
+  transferMock.mockRejectedValueOnce(new Error("rebind failed"));
+  const auth = useAuthStore();
+  await expect(auth.login("b-token")).rejects.toThrow();
+});
+
+test("logout releases subscription ownership BEFORE clearing the session", async () => {
+  const callOrder: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+    // auth.logout POSTs /api/logout; record where it lands relative to release.
+    if (init?.method === "POST") callOrder.push("logout-post");
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  }));
+  releaseMock.mockImplementation(async () => { callOrder.push("release"); });
+
+  const auth = useAuthStore();
+  auth.account = { username: "alice" };
+  await auth.logout();
+  expect(releaseMock).toHaveBeenCalledTimes(1);
+  expect(callOrder).toEqual(["release", "logout-post"]);
+});

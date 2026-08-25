@@ -18,6 +18,8 @@ import { PendingCompletionRouteStore } from "./stores/pending-completion-routes.
 import { RecoveryReceiptStore } from "./stores/recovery-receipts.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS, InstanceGateway } from "./gateway/instance-gateway.js";
 import { WebGateway } from "./gateway/web-gateway.js";
+import { PushNotifier, vapidFromEnv, validateVapidConfig, type VapidConfig } from "./push.js";
+import { PushSubscriptionStore } from "./stores/push-subscriptions.js";
 import { handleConnectorTerminalEvent, handleWebClientMessage } from "./gateway/web-inbound.js";
 import { createApp } from "./http/app.js";
 import { createRelayUpdateChecker, readRelayVersion } from "./version.js";
@@ -100,6 +102,8 @@ export interface RelayRuntime {
   instances: InstanceStore;
   messages: MessageStore;
   recoveryReceipts: RecoveryReceiptStore;
+  pushSubscriptions: PushSubscriptionStore;
+  pushNotifier: PushNotifier;
   gateway: InstanceGateway;
   webGateway: WebGateway;
   stateSnapshot(instanceId: string): InstanceStateSnapshotDto;
@@ -112,6 +116,8 @@ export interface CreateRuntimeOptions {
   historyRetentionDays?: number;
   requestTimeoutMs?: number;
   trustProxy?: boolean;
+  /** Web push VAPID config; omitted = resolve from env, null = force-disable. */
+  vapid?: VapidConfig | null;
   logger?: RelayLogger;
 }
 
@@ -133,6 +139,18 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
       });
     },
   });
+  const pushSubscriptions = new PushSubscriptionStore(db);
+  // Validate ONCE here; both the notifier and the public-key endpoint use this
+  // effective config, so a malformed key downgrades to fully-disabled instead
+  // of leaving the browser half-configured against a broken sender.
+  const rawVapid = options.vapid !== undefined ? options.vapid : vapidFromEnv(process.env);
+  const vapid = validateVapidConfig(rawVapid);
+  if (rawVapid && !vapid) {
+    logger.warn("relay.push.disabled", "web push disabled: invalid VAPID config (subject must be mailto:/https:, keys must be valid P-256 base64url material)");
+  } else if (!vapid) {
+    logger.warn("relay.push.disabled", "web push disabled: no VAPID config (XACPX_RELAY_VAPID_* env or --vapid-* flags)");
+  }
+  const pushNotifier = new PushNotifier({ config: vapid, subscriptions: pushSubscriptions, logger });
 
   // Accumulate streaming turn state per (instance, session); flush to history on finish.
   // `parts` records text / reasoning / tool events in arrival order so the web can
@@ -652,7 +670,14 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             throw err;
           }
         } else if (envelope.type === MSG.instanceNotice) {
-          webGateway.broadcast(accountId, { kind: "notice", instanceId, notice: envelope.payload as InstanceNoticePayload });
+          const notice = envelope.payload as InstanceNoticePayload;
+          webGateway.broadcast(accountId, { kind: "notice", instanceId, notice });
+          if (notice.kind === "task-completion") {
+            const instanceName = instances.getOwned(instanceId, accountId)?.name ?? instanceId;
+            // Fire-and-forget: push delivery must never block the WS broadcast or
+            // the persist path; failures are logged inside PushNotifier.
+            void pushNotifier.sendTaskCompletion(accountId, { instanceId, instanceName, text: notice.text });
+          }
         }
       } catch (err) {
         logger.error("relay.event.persist_failed", "failed to persist instance event", { instanceId, error: String(err) });
@@ -670,6 +695,8 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     trustProxy: options.trustProxy,
     checkUpdate: createRelayUpdateChecker({ current: readRelayVersion() }),
     logger,
+    vapidPublicKey: vapid ? () => vapid.publicKey : undefined,
+    pushSubscriptions,
   });
   const completionRouteSweepTimer = setInterval(
     () => gateway.sweepExpiredCompletionRoutes(),
@@ -682,6 +709,8 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     instances,
     messages,
     recoveryReceipts,
+    pushSubscriptions,
+    pushNotifier,
     gateway,
     webGateway,
     stateSnapshot,
@@ -707,6 +736,8 @@ export interface StartRelayOptions {
   historyRetentionDays?: number;
   requestTimeoutMs?: number;
   trustProxy?: boolean;
+  /** Web push VAPID config; forwarded to createRelayRuntime. */
+  vapid?: VapidConfig | null;
   logger?: RelayLogger;
 }
 
@@ -723,6 +754,7 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
     webRoot: options.webRoot,
     historyRetentionDays: options.historyRetentionDays,
     requestTimeoutMs: options.requestTimeoutMs,
+    vapid: options.vapid,
     trustProxy: options.trustProxy,
     logger: options.logger,
   });

@@ -236,6 +236,7 @@ export class AccountStore {
       this.db.run("DELETE FROM instances WHERE account_id = ?", [accountId]);
       this.db.run("DELETE FROM pairing_tokens WHERE account_id = ?", [accountId]);
       this.db.run("DELETE FROM web_sessions WHERE account_id = ?", [accountId]);
+      this.db.run("DELETE FROM push_subscriptions WHERE account_id = ?", [accountId]);
       this.db.run("DELETE FROM login_tokens WHERE account_id = ?", [accountId]);
       this.db.run("DELETE FROM accounts WHERE id = ?", [accountId]);
       this.db.exec("COMMIT");

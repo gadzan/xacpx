@@ -9,6 +9,7 @@ import { AccountStore } from "../../../../packages/relay/src/stores/accounts";
 import { InstanceStore } from "../../../../packages/relay/src/stores/instances";
 import { MessageStore } from "../../../../packages/relay/src/stores/messages";
 import { createApp, GLOBAL_MAX_FAILURES, LOGIN_MAX_FAILURES } from "../../../../packages/relay/src/http/app";
+import { PushSubscriptionStore } from "../../../../packages/relay/src/stores/push-subscriptions";
 import { createRelayRuntime } from "../../../../packages/relay/src/server";
 import type { RelayLogger } from "../../../../packages/relay/src/logging";
 
@@ -1128,4 +1129,132 @@ test("invite tombstone POST /api/invites still 404; redeem logs never contain th
   const { token } = await ok.json() as { token: string };
   expect(JSON.stringify(logs)).not.toContain(code);
   expect(JSON.stringify(logs)).not.toContain(token);
+});
+test("web-push: vapid key endpoint reflects config; subscriptions require auth + JSON", async () => {
+  const db = await createSqlDriver(":memory:");
+  initSchema(db);
+  const accounts = new AccountStore(db);
+  const admin = accounts.createAccount("admin");
+  const { token } = accounts.createLoginToken(admin.id, "t");
+  const pushSubscriptions = new PushSubscriptionStore(db);
+  const app = createApp({
+    accounts, instances: new InstanceStore(db), gateway: { isOnline: () => true, sendRequest: async () => ({}) },
+    messages: new MessageStore(db),
+    vapidPublicKey: () => "PK",
+    pushSubscriptions,
+  });
+  const res = await app.request("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) });
+  const cookie = res.headers.get("set-cookie")!.split(";")[0]!;
+
+  const key = await app.request("/api/web-push/vapid-public-key", { headers: { cookie } });
+  expect(await key.json()).toEqual({ publicKey: "PK" });
+
+  const unauth = await app.request("/api/web-push/vapid-public-key");
+  expect(unauth.status).toBe(401);
+
+  const noJson = await app.request("/api/web-push/subscriptions", { method: "PUT", headers: { cookie }, body: "x" });
+  expect(noJson.status).toBe(415);
+
+  const bad = await app.request("/api/web-push/subscriptions", {
+    method: "PUT", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ endpoint: "http://insecure", keys: {} }),
+  });
+  expect(bad.status).toBe(400);
+
+  const validKeys = {
+    p256dh: "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U",
+    auth: "AAAAAAAAAAAAAAAAAAAAAA",
+  };
+
+  const ok = await app.request("/api/web-push/subscriptions", {
+    method: "PUT", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ endpoint: "https://fcm.googleapis.com/fcm/send/abc", keys: validKeys }),
+  });
+  expect(ok.status).toBe(200);
+  expect(pushSubscriptions.listByAccount(admin.id)).toHaveLength(1);
+
+  // M6: Invalid p256dh (not 65 bytes or not 0x04) or short auth (< 16 bytes) -> 400
+  const badCrypto = await app.request("/api/web-push/subscriptions", {
+    method: "PUT", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ endpoint: "https://fcm.googleapis.com/fcm/send/abc", keys: { p256dh: "k", auth: "a" } }),
+  });
+  expect(badCrypto.status).toBe(400);
+
+  // M6: 65 bytes with 0x04 but NOT on prime256v1 curve -> 400
+  const offCurveCrypto = await app.request("/api/web-push/subscriptions", {
+    method: "PUT", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({
+      endpoint: "https://fcm.googleapis.com/fcm/send/abc",
+      keys: {
+        p256dh: "BAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+        auth: "AAAAAAAAAAAAAAAAAAAAAA",
+      },
+    }),
+  });
+  expect(offCurveCrypto.status).toBe(400);
+  // B2: DELETE returns real deletion status ({deleted: true/false})
+  const del = await app.request("/api/web-push/subscriptions", {
+    method: "DELETE", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ endpoint: "https://fcm.googleapis.com/fcm/send/abc" }),
+  });
+  expect(del.status).toBe(200);
+  expect(await del.json()).toEqual({ ok: true, deleted: true });
+  expect(pushSubscriptions.listByAccount(admin.id)).toHaveLength(0);
+
+  // Deleting again (already deleted) reports deleted: false
+  const delAgain = await app.request("/api/web-push/subscriptions", {
+    method: "DELETE", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ endpoint: "https://fcm.googleapis.com/fcm/send/abc" }),
+  });
+  expect(delAgain.status).toBe(200);
+  expect(await delAgain.json()).toEqual({ ok: true, deleted: false });
+});
+
+test("web-push: PUT rejects non-push-service endpoints (SSRF allowlist)", async () => {
+  const db = await createSqlDriver(":memory:");
+  initSchema(db);
+  const accounts = new AccountStore(db);
+  const admin = accounts.createAccount("admin");
+  const { token } = accounts.createLoginToken(admin.id, "t");
+  const pushSubscriptions = new PushSubscriptionStore(db);
+  const app = createApp({
+    accounts, instances: new InstanceStore(db), gateway: { isOnline: () => true, sendRequest: async () => ({}) },
+    messages: new MessageStore(db),
+    vapidPublicKey: () => "PK",
+    pushSubscriptions,
+  });
+  const res = await app.request("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token }) });
+  const cookie = res.headers.get("set-cookie")!.split(";")[0]!;
+
+  for (const endpoint of [
+    "https://127.0.0.1:8443/push",
+    "http://fcm.googleapis.com/x",                       // right host, wrong scheme → origin mismatch
+    "https://evil.example.com/fcm",                      // arbitrary https host
+    "https://fcm.googleapis.com.attacker.io/x",          // suffix spoof (origin differs)
+  ]) {
+    const bad = await app.request("/api/web-push/subscriptions", {
+      method: "PUT", headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        endpoint,
+        keys: {
+          p256dh: "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U",
+          auth: "AAAAAAAAAAAAAAAAAAAAAA",
+        },
+      }),
+    });
+    expect(bad.status).toBe(400);
+  }
+  // The real FCM origin is accepted.
+  const ok = await app.request("/api/web-push/subscriptions", {
+    method: "PUT", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({
+      endpoint: "https://fcm.googleapis.com/fcm/send/abc",
+      keys: {
+        p256dh: "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U",
+        auth: "AAAAAAAAAAAAAAAAAAAAAA",
+      },
+    }),
+  });
+  expect(ok.status).toBe(200);
+  expect(pushSubscriptions.listByAccount(admin.id)).toHaveLength(1);
 });

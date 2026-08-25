@@ -192,6 +192,15 @@ export function initSchema(db: SqlDriver): void {
       expires_at INTEGER NOT NULL,
       state TEXT NOT NULL DEFAULT 'pending'
     );
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      account_id TEXT NOT NULL,
+      endpoint TEXT NOT NULL,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (account_id, endpoint)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_push_subscriptions_endpoint ON push_subscriptions (endpoint);
   `);
 
   // Idempotent column add for pre-existing local dev DBs (create-only schema otherwise).

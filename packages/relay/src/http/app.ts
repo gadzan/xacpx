@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { serveStatic } from "@hono/node-server/serve-static";
-import { randomUUID } from "node:crypto";
+import { createECDH, randomUUID } from "node:crypto";
 
 import {
   isErrorPayload,
@@ -17,6 +17,8 @@ import {
 import type { AccountRow, AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
 import type { MessageStore } from "../stores/messages.js";
+import type { PushSubscriptionStore } from "../stores/push-subscriptions.js";
+import { isAllowedPushEndpoint } from "../push.js";
 import type { RelayLogger } from "../logging.js";
 import { clientIp } from "./client-ip.js";
 import { compactHistoryMessage } from "./compact-history.js";
@@ -51,6 +53,10 @@ export interface AppDeps {
   trustProxy?: boolean;
   now?: () => Date;
   logger?: RelayLogger;
+  /** Web push: current VAPID public key, or null when push is not configured. */
+  vapidPublicKey?: () => string | null;
+  /** Web push: browser subscription storage; omitted = push routes 503. */
+  pushSubscriptions?: PushSubscriptionStore;
 }
 
 const SESSION_COOKIE = "xrelay_session";
@@ -408,6 +414,65 @@ export function createApp(deps: AppDeps): Hono<Vars> {
     const check = deps.checkUpdate
       ?? (async (): Promise<UpdateCheck> => ({ current: readRelayVersion(), latest: null, updateAvailable: false }));
     return c.json(await check());
+  });
+  app.get("/api/web-push/vapid-public-key", (c) => {
+    return c.json({ publicKey: deps.vapidPublicKey ? deps.vapidPublicKey() : null });
+  });
+
+  app.put("/api/web-push/subscriptions", async (c) => {
+    if (!requireJson(c.req.header("content-type"))) return c.json({ error: "unsupported-media-type" }, 415);
+    if (!deps.pushSubscriptions) return c.json({ error: "push-disabled" }, 503);
+    const account = c.get("account");
+    const body = (await c.req.json().catch(() => ({}))) as {
+      endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown };
+    };
+    const endpoint = typeof body.endpoint === "string" ? body.endpoint : "";
+    const p256dh = typeof body.keys?.p256dh === "string" ? body.keys.p256dh : "";
+    const auth = typeof body.keys?.auth === "string" ? body.keys.auth : "";
+    // Blind-SSRF guard: the hub POSTes to each stored endpoint from its own
+    // network. Only known browser push-service origins are accepted — an
+    // arbitrary client-supplied HTTPS URL would be a server-side POST primitive.
+    const allowedEndpoint = isAllowedPushEndpoint(endpoint);
+    // Deep-validate the crypto material: p256dh is an UNCOMPRESSED P-256 point
+    // (65 bytes, 0x04 prefix) and auth is ≥16 bytes of keying material — both
+    // strict URL-safe base64. Lenient checks would let a broken/malicious
+    // client persist subscriptions that fail crypto on every completion.
+    const STRICT_B64URL = /^[A-Za-z0-9_-]+$/;
+    let materialOk = false;
+    try {
+      const p256dhBytes = Buffer.from(p256dh.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+      const authBytes = Buffer.from(auth.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+      if (
+        STRICT_B64URL.test(p256dh) && p256dh.length === 87
+        && STRICT_B64URL.test(auth) && auth.length <= 64
+        && p256dhBytes.length === 65 && p256dhBytes[0] === 0x04
+        && authBytes.length >= 16
+      ) {
+        const ecdh = createECDH("prime256v1");
+        ecdh.generateKeys();
+        ecdh.computeSecret(p256dhBytes);
+        materialOk = true;
+      }
+    } catch { materialOk = false; }
+    if (!allowedEndpoint || !materialOk || endpoint.length > 2048) {
+      return c.json({ error: "invalid-payload" }, 400);
+    }
+    deps.pushSubscriptions.upsert({ accountId: account.id, endpoint, p256dh, auth });
+    return c.json({ ok: true });
+  });
+
+  app.delete("/api/web-push/subscriptions", async (c) => {
+    if (!requireJson(c.req.header("content-type"))) return c.json({ error: "unsupported-media-type" }, 415);
+    if (!deps.pushSubscriptions) return c.json({ error: "push-disabled" }, 503);
+    const account = c.get("account");
+    const body = (await c.req.json().catch(() => ({}))) as { endpoint?: unknown };
+    const endpoint = typeof body.endpoint === "string" ? body.endpoint : "";
+    if (!endpoint || endpoint.length > 2048) return c.json({ error: "invalid-payload" }, 400);
+    // Real deletion semantics: a 200 with deleted:false means the endpoint was
+    // not found under THIS account (other-account rows are never deleted) —
+    // the client must not treat that as a proven server-side teardown.
+    const deleted = deps.pushSubscriptions.deleteByEndpointAndAccount(account.id, endpoint);
+    return c.json({ ok: true, deleted });
   });
 
   app.get("/api/instances", (c) => {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { LogOut } from "lucide-vue-next";
 import { api } from "../api/client";
@@ -9,6 +9,7 @@ import { confirm } from "../lib/use-confirm";
 import { useLocaleStore } from "../stores/locale";
 import { SUPPORTED_LOCALES } from "../i18n";
 import { useI18n } from "vue-i18n";
+import { pushSupported, fetchVapidPublicKey, enableDesktopNotifications, disableDesktopNotifications, subscriptionMatchesKey } from "../lib/web-push";
 
 const auth = useAuthStore();
 const theme = useThemeStore();
@@ -47,6 +48,62 @@ async function onLogout() {
   await auth.logout();
   router.push({ name: "login" });
 }
+
+type NotifState = "unsupported" | "server-disabled" | "denied" | "idle" | "subscribed";
+const notifState = ref<NotifState>("idle");
+const notifBusy = ref(false);
+let vapidKey: string | null = null;
+
+async function probeNotifications(): Promise<void> {
+  if (!pushSupported()) { notifState.value = "unsupported"; return; }
+  if (typeof Notification !== "undefined" && Notification.permission === "denied") {
+    notifState.value = "denied";
+    return;
+  }
+  const key = await fetchVapidPublicKey();
+  if (!key) { notifState.value = "server-disabled"; return; }
+  vapidKey = key;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (!sub) { notifState.value = "idle"; return; }
+    // A sub minted under an older VAPID key can never receive pushes — show
+    // it as off; reconcileExistingSubscription (auth load) re-mints it.
+    notifState.value = subscriptionMatchesKey(sub, key) ? "subscribed" : "idle";
+  } catch {
+    notifState.value = "idle";
+  }
+}
+
+async function toggleNotifications(): Promise<void> {
+  if (notifBusy.value) return;
+  notifBusy.value = true;
+  try {
+    if (notifState.value === "subscribed") {
+      await disableDesktopNotifications();
+      notifState.value = "idle";
+    } else if (vapidKey) {
+      await enableDesktopNotifications(vapidKey);
+      notifState.value = "subscribed";
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message === "permission-denied") notifState.value = "denied";
+    else if (err instanceof Error && err.message === "push-endpoint-unsupported") notifState.value = "unsupported";
+    // other failures keep the current state; a toast would be noise here
+  } finally {
+    notifBusy.value = false;
+  }
+}
+
+const notifStateLabel = computed(() => ({
+  unsupported: t("settings.notifUnsupported"),
+  "server-disabled": t("settings.notifServerDisabled"),
+  denied: t("settings.notifDenied"),
+  idle: t("settings.notifOff"),
+  subscribed: t("settings.notifOn"),
+}[notifState.value]));
+
+void onMounted(() => { void probeNotifications(); });
 </script>
 
 <template>
@@ -121,6 +178,20 @@ async function onLogout() {
       </p>
     </section>
 
+    <section class="mb-8" data-test="notif-setting">
+      <h2 class="mb-2 text-sm font-semibold uppercase text-fg-muted">{{ $t("settings.notifTitle") }}</h2>
+      <div class="flex items-center gap-3">
+        <span data-test="notif-state" class="text-sm text-fg-muted">{{ notifStateLabel }}</span>
+        <button
+          v-if="notifState === 'subscribed' || notifState === 'idle'"
+          data-test="notif-toggle"
+          :disabled="notifBusy"
+          class="rounded bg-accent px-3 py-1 text-sm text-white hover:bg-accent-hover disabled:opacity-50"
+          @click="toggleNotifications"
+        >{{ notifState === "subscribed" ? $t("settings.notifDisable") : $t("settings.notifEnable") }}</button>
+      </div>
+      <p v-if="notifState === 'denied'" class="mt-1 text-xs text-fg-muted">{{ $t("settings.notifDeniedHint") }}</p>
+    </section>
     <section>
       <h2 class="mb-2 text-sm font-semibold uppercase text-fg-muted">{{ $t("settings.account") }}</h2>
       <button
