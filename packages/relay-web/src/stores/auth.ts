@@ -3,7 +3,11 @@ import { ref } from "vue";
 import { ApiError, api } from "../api/client";
 import { dropAll as dropAllTailCaches } from "../lib/session-tail-cache";
 import { dropAll as dropAllViewSnapshots } from "../lib/view-snapshot-cache";
-import { releaseSubscriptionOwnership, reconcileExistingSubscription } from "../lib/web-push";
+import {
+  releaseSubscriptionOwnership,
+  transferSubscriptionOwnership,
+  reconcileExistingSubscription,
+} from "../lib/web-push";
 
 export interface Account {
   username: string;
@@ -15,20 +19,24 @@ export const useAuthStore = defineStore("auth", () => {
 
   async function login(token: string): Promise<boolean> {
     error.value = "";
+    let loggedIn = false;
     try {
       account.value = await api.post<Account>("/api/login", { token });
+      loggedIn = true;
       // Ownership transfer is part of the auth contract and MUST complete (or
       // have destroyed the local subscription) before we report success —
       // otherwise a crashed tab's stale binding could leak the previous
       // account's notifications to this one.
-      await reconcileExistingSubscription();
+      await transferSubscriptionOwnership();
       return true;
     } catch (e) {
-      // /api/login already created a server session + HttpOnly cookie before
-      // reconcile ran. A "failed" login must not leave that session behind —
-      // revoke it, otherwise a refresh or another tab enters the account
-      // despite the visible failure.
-      await api.post("/api/logout").catch(() => {});
+      if (loggedIn) {
+        // /api/login already created a server session + HttpOnly cookie before
+        // transfer ran. Revoke the freshly minted server session. If revocation
+        // fails, we MUST throw rather than return false, so a failed rollback
+        // is never hidden.
+        await api.post("/api/logout");
+      }
       error.value = e instanceof ApiError ? e.code : "request-failed";
       account.value = null;
       return false;

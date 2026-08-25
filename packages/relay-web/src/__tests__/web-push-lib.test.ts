@@ -257,7 +257,7 @@ describe("auth lifecycle ownership (fail-closed contract)", () => {
       toJSON() { return { endpoint: this.endpoint }; },
     };
     stubNavigator({ registration: { pushManager: { getSubscription: vi.fn().mockResolvedValue(staleSub) }, unregister: vi.fn() } });
-    await expect(mod.reconcileExistingSubscription()).rejects.toThrow("hub write failed");
+    await expect(mod.transferSubscriptionOwnership()).rejects.toThrow("hub write failed");
     expect(unsubscribe).toHaveBeenCalledTimes(1);
     delete (window as unknown as Record<string, unknown>).PushManager;
     delete (window as unknown as Record<string, unknown>).Notification;
@@ -298,7 +298,7 @@ describe("auth lifecycle ownership (fail-closed contract)", () => {
         }),
       },
     });
-    await expect(mod.reconcileExistingSubscription()).rejects.toThrow();
+    await expect(mod.transferSubscriptionOwnership()).rejects.toThrow();
     expect(unregister).toHaveBeenCalledTimes(1);
     delete (window as unknown as Record<string, unknown>).PushManager;
     delete (window as unknown as Record<string, unknown>).Notification;

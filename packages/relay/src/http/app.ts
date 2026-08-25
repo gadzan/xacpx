@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { serveStatic } from "@hono/node-server/serve-static";
-import { randomUUID } from "node:crypto";
+import { createECDH, randomUUID } from "node:crypto";
 
 import {
   isErrorPayload,
@@ -442,11 +442,17 @@ export function createApp(deps: AppDeps): Hono<Vars> {
     try {
       const p256dhBytes = Buffer.from(p256dh.replace(/-/g, "+").replace(/_/g, "/"), "base64");
       const authBytes = Buffer.from(auth.replace(/-/g, "+").replace(/_/g, "/"), "base64");
-      materialOk =
-        STRICT_B64URL.test(p256dh) && p256dh.length <= 128
+      if (
+        STRICT_B64URL.test(p256dh) && p256dh.length === 87
         && STRICT_B64URL.test(auth) && auth.length <= 64
         && p256dhBytes.length === 65 && p256dhBytes[0] === 0x04
-        && authBytes.length >= 16;
+        && authBytes.length >= 16
+      ) {
+        const ecdh = createECDH("prime256v1");
+        ecdh.generateKeys();
+        ecdh.computeSecret(p256dhBytes);
+        materialOk = true;
+      }
     } catch { materialOk = false; }
     if (!allowedEndpoint || !materialOk || endpoint.length > 2048) {
       return c.json({ error: "invalid-payload" }, 400);

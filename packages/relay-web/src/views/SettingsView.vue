@@ -88,6 +88,7 @@ async function toggleNotifications(): Promise<void> {
     }
   } catch (err) {
     if (err instanceof Error && err.message === "permission-denied") notifState.value = "denied";
+    else if (err instanceof Error && err.message === "push-endpoint-unsupported") notifState.value = "unsupported";
     // other failures keep the current state; a toast would be noise here
   } finally {
     notifBusy.value = false;

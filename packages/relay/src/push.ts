@@ -1,3 +1,4 @@
+import { createECDH } from "node:crypto";
 import webpush from "web-push";
 import type { PushSubscriptionStore } from "./stores/push-subscriptions.js";
 import type { RelayLogger } from "./logging.js";
@@ -69,8 +70,12 @@ export function validateVapidConfig(config: VapidConfig | null): VapidConfig | n
   if (!b64urlOk(config.publicKey) || !b64urlOk(config.privateKey)) return null;
   if (config.publicKey.length !== 87 || config.privateKey.length !== 43) return null;
   try {
-    if (Buffer.from(b64url(config.publicKey), "base64").length !== 65) return null;
-    if (Buffer.from(b64url(config.privateKey), "base64").length !== 32) return null;
+    const pkBytes = Buffer.from(b64url(config.publicKey), "base64");
+    const skBytes = Buffer.from(b64url(config.privateKey), "base64");
+    if (pkBytes.length !== 65 || pkBytes[0] !== 0x04 || skBytes.length !== 32) return null;
+    const ecdh = createECDH("prime256v1");
+    ecdh.generateKeys();
+    ecdh.computeSecret(pkBytes);
   } catch {
     return null;
   }

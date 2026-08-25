@@ -145,11 +145,16 @@ async function destroyProven(target: {
     // unregister() === true does NOT prove the push binding died (a concurrent
     // register() can resurrect the registration, and "/"-scope unregister need
     // not deactivate push subscriptions). Prove by re-querying: the push
-    // subscription must be GONE.
+    // subscription must PROVABLY resolve null. If getSubscription rejects or
+    // returns non-null, it is unproven.
     const unregistered = await target.reg.unregister().catch(() => false);
     if (unregistered === true) {
-      const gone = await target.reg.pushManager.getSubscription().catch(() => null);
-      if (gone === null) return;
+      try {
+        const gone = await target.reg.pushManager.getSubscription();
+        if (gone === null) return;
+      } catch {
+        // rejection on re-query does NOT prove gone; fall through to throw
+      }
     }
   }
   throw new Error("push-subscription-destroy-failed");
@@ -194,25 +199,16 @@ export async function releaseSubscriptionOwnership(): Promise<void> {
 /**
  * Auth-switch ownership transfer — FAIL-CLOSED.
  *
- * Called by login()/fetchMe() and AWAITED before they report success: either
- * the browser-held endpoint is successfully rebound to the current account, or
- * the local subscription is destroyed so no stale binding can survive. Any
- * failure along the way unsubscribes locally (belt) and throws (suspenders) —
- * the caller surfaces it instead of silently leaving a leak window.
+ * Called on LOGIN with a new token and AWAITED before login reports success:
+ * either the browser-held endpoint is successfully rebound to the new account,
+ * or the local subscription is destroyed so no stale binding can survive.
  *
- * No-op when there is nothing to bind or the hub has push disabled.
+ * Any network or hub failure during ownership transfer fails closed (destroys
+ * local subscription and throws), allowing login() to abort and revoke.
  */
-export async function reconcileExistingSubscription(): Promise<void> {
+export async function transferSubscriptionOwnership(): Promise<void> {
   if (!pushSupported()) return;
-  // Probe the EXISTING registration (never `ready`): it settles immediately in
-  // every environment and cannot confuse "no registration yet" with "worker
-  // still activating". Everything below is fail-closed: if we cannot PROVE the
-  // leftover subscription's ownership was transferred, destroy it locally.
   const reg = await getExistingRegistration();
-
-  // getSubscription can reject (e.g. AbortError when the registration's active
-  // worker is gone). Ownership is then UNPROVABLE → destroy the registration
-  // and fail closed rather than assume "nothing held".
   let sub: PushSubscription | null = null;
   if (reg) {
     try {
@@ -222,37 +218,75 @@ export async function reconcileExistingSubscription(): Promise<void> {
       throw err;
     }
   }
-  if (!sub) return; // provably nothing held → no transfer needed
+  if (!sub) return;
 
   let publicKey: string | null = null;
   try {
     publicKey = await fetchVapidPublicKey();
   } catch (err) {
-    // Cannot even ask the hub → ownership unknown → fail closed.
     await destroyProven({ sub, reg });
     throw err;
   }
   if (!publicKey) {
-    // Hub push disabled → the row can never fire for any account. Destroy the
-    // local binding: destroyProven throws if neither unsubscribe nor unregister
-    // confirmed success, failing login rather than leaving an unproven sub.
+    // Hub push disabled -> destroy local sub for hygiene.
     await destroyProven({ sub, reg });
     return;
   }
   if (!subscriptionMatchesKey(sub, publicKey)) {
-    // Stale VAPID key: pushes can never succeed. Destroy (proven) + re-mint.
+    // Stale VAPID key -> destroy old and re-mint under new key.
     await destroyProven({ sub, reg });
     await api.del("/api/web-push/subscriptions", { endpoint: sub.endpoint }).catch(() => {});
     await enableDesktopNotifications(publicKey);
     return;
   }
-  // Key matches → rebind to the CURRENT account. If this PUT fails, the old
-  // binding may still point at the previous account → fail closed below.
   try {
     await api.put("/api/web-push/subscriptions", sub.toJSON());
   } catch (err) {
-    // Fail closed: a half-transferred ownership is worse than no subscription.
     await destroyProven({ sub, reg });
     throw err;
   }
+}
+
+/**
+ * Same-account session restore reconcile — PRESERVES SUBSCRIPTION on transient network errors.
+ *
+ * Called by fetchMe() on reload of an existing session:
+ * - If the hub explicitly reports push disabled (404/null) -> destroys local sub.
+ * - If VAPID key rotated -> destroys old sub and re-mints under new key.
+ * - If key matches -> ensures hub has the endpoint (best-effort PUT).
+ * - If fetchVapidPublicKey or PUT encounters a transient network error -> does NOT destroy the subscription.
+ */
+export async function reconcileExistingSubscription(): Promise<void> {
+  if (!pushSupported()) return;
+  const reg = await getExistingRegistration();
+  let sub: PushSubscription | null = null;
+  if (reg) {
+    try {
+      sub = await reg.pushManager.getSubscription();
+    } catch {
+      return; // transient local error on reload: keep registration intact
+    }
+  }
+  if (!sub) return;
+
+  let publicKey: string | null = null;
+  try {
+    publicKey = await fetchVapidPublicKey();
+  } catch {
+    // Transient network/5xx error on reload: do NOT destroy the user's subscription.
+    return;
+  }
+  if (!publicKey) {
+    // Hub explicitly predates or disabled push (404) -> destroy local sub.
+    await destroyProven({ sub, reg });
+    return;
+  }
+  if (!subscriptionMatchesKey(sub, publicKey)) {
+    // Hub rotated VAPID key -> destroy old and re-mint under new key.
+    await destroyProven({ sub, reg });
+    await api.del("/api/web-push/subscriptions", { endpoint: sub.endpoint }).catch(() => {});
+    await enableDesktopNotifications(publicKey);
+    return;
+  }
+  await api.put("/api/web-push/subscriptions", sub.toJSON()).catch(() => {});
 }

@@ -1180,6 +1180,18 @@ test("web-push: vapid key endpoint reflects config; subscriptions require auth +
   });
   expect(badCrypto.status).toBe(400);
 
+  // M6: 65 bytes with 0x04 but NOT on prime256v1 curve -> 400
+  const offCurveCrypto = await app.request("/api/web-push/subscriptions", {
+    method: "PUT", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({
+      endpoint: "https://fcm.googleapis.com/fcm/send/abc",
+      keys: {
+        p256dh: "BAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+        auth: "AAAAAAAAAAAAAAAAAAAAAA",
+      },
+    }),
+  });
+  expect(offCurveCrypto.status).toBe(400);
   // B2: DELETE returns real deletion status ({deleted: true/false})
   const del = await app.request("/api/web-push/subscriptions", {
     method: "DELETE", headers: { cookie, "content-type": "application/json" },

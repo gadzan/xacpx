@@ -82,20 +82,25 @@ test("logout clears account-owned view state before another user can reuse the s
 
 vi.mock("../lib/web-push", () => ({
   releaseSubscriptionOwnership: vi.fn(),
+  transferSubscriptionOwnership: vi.fn(),
   reconcileExistingSubscription: vi.fn(),
 }));
 
-import { releaseSubscriptionOwnership, reconcileExistingSubscription } from "../lib/web-push";
+import {
+  releaseSubscriptionOwnership,
+  transferSubscriptionOwnership,
+  reconcileExistingSubscription,
+} from "../lib/web-push";
 
+const transferMock = vi.mocked(transferSubscriptionOwnership);
 const reconcileMock = vi.mocked(reconcileExistingSubscription);
 const releaseMock = vi.mocked(releaseSubscriptionOwnership);
-
 test("login awaits reconcile and reports failure when ownership transfer fails (A→B leak window closed)", async () => {
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ username: "bob" }), { status: 200 })));
   // Simulate the crashed-tab case: browser still holds A's subscription and
   // the rebind PUT fails → reconcile rejects → login must NOT report success.
-  let resolveReconcile!: (v: void) => void;
-  reconcileMock.mockReturnValue(new Promise<void>((r) => { resolveReconcile = r; }));
+  let resolveTransfer!: (v: void) => void;
+  transferMock.mockReturnValue(new Promise<void>((r) => { resolveTransfer = r; }));
 
   const auth = useAuthStore();
   const loginPromise = auth.login("b-token");
@@ -104,8 +109,7 @@ test("login awaits reconcile and reports failure when ownership transfer fails (
   await Promise.resolve(); await Promise.resolve();
   // /api/login succeeded but reconcile is still pending → no success yet:
   expect(settled).toBe(false);
-
-  resolveReconcile();
+  resolveTransfer();
   expect(await loginPromise).toBe(true);
 });
 
@@ -123,12 +127,12 @@ test("login returns false and revokes server session when reconcile rejects (loc
     }
     return new Response(JSON.stringify({ error: "not-found" }), { status: 404 });
   }));
-  reconcileMock.mockRejectedValueOnce(new Error("rebind failed"));
+  transferMock.mockRejectedValueOnce(new Error("rebind failed"));
   const auth = useAuthStore();
   const ok = await auth.login("b-token");
   expect(ok).toBe(false);
   expect(auth.account).toBeNull();
-  expect(reconcileMock).toHaveBeenCalledTimes(1);
+  expect(transferMock).toHaveBeenCalledTimes(1);
   expect(postCalls).toEqual(["login", "logout"]);
 });
 
@@ -138,6 +142,22 @@ test("fetchMe also awaits reconcile before reporting success", async () => {
   const auth = useAuthStore();
   expect(await auth.fetchMe()).toBe(false);
   expect(auth.account).toBeNull();
+});
+
+test("login throws when session rollback /api/logout fails", async () => {
+  vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    const p = String(url);
+    if (init?.method === "POST" && p === "/api/login") {
+      return new Response(JSON.stringify({ username: "bob" }), { status: 200 });
+    }
+    if (init?.method === "POST" && p === "/api/logout") {
+      return new Response(JSON.stringify({ error: "network-error" }), { status: 500 });
+    }
+    return new Response(JSON.stringify({ error: "not-found" }), { status: 404 });
+  }));
+  transferMock.mockRejectedValueOnce(new Error("rebind failed"));
+  const auth = useAuthStore();
+  await expect(auth.login("b-token")).rejects.toThrow();
 });
 
 test("logout releases subscription ownership BEFORE clearing the session", async () => {
