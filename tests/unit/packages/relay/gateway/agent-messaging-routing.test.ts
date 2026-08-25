@@ -1588,8 +1588,11 @@ test("v0.4 G14 Hub: a TARGET_NOT_INTERRUPTIBLE rejection compensates the route g
           id: decoded.envelope.id,
           type: decoded.envelope.type,
           payload: {
+            // Real control-bridge rejection shape: an ADMISSION response
+            // carrying a typed error (NOT status:"failed" — that alone would
+            // classify as definite without consulting the allowlist). This
+            // gate proves TARGET_NOT_INTERRUPTIBLE itself is allowlisted.
             messageId: (decoded.envelope.payload as { messageId: string }).messageId,
-            status: "failed",
             error: {
               code: "TARGET_NOT_INTERRUPTIBLE",
               message: "the target does not support explicit interrupt delivery",
@@ -1687,8 +1690,9 @@ test("v0.4 G14 reused-grant safety: a TARGET_NOT_INTERRUPTIBLE rejection on a sa
           type: decoded.envelope.type,
           payload: rejected
             ? {
+                // Error-only admission shape (no status:"failed") — forces
+                // classification through DEFINITE_ROUTE_REJECTION_CODES.
                 messageId: (decoded.envelope.payload as { messageId: string }).messageId,
-                status: "failed",
                 error: {
                   code: "TARGET_NOT_INTERRUPTIBLE",
                   message: "capability changed between attempts",
@@ -1735,7 +1739,9 @@ test("v0.4 G14 reused-grant safety: a TARGET_NOT_INTERRUPTIBLE rejection on a sa
   // Attempt 2: definite rejection — but the grant was created by attempt 1's
   // acceptance (created=false on this attempt) and MUST survive.
   const res2 = await sendRoute("route-intr-reuse-2");
-  expect((res2.payload as { status?: string }).status).toBe("failed");
+  expect(
+    (res2.payload as { error?: { code?: string } }).error?.code,
+  ).toBe("TARGET_NOT_INTERRUPTIBLE");
   expect(deliverCalls).toBe(2);
   expect(pendingCompletionRouteStore.count()).toBe(1);
   expect(pendingCompletionRouteStore.find("msg_intr_reuse")?.state).toBe("pending");

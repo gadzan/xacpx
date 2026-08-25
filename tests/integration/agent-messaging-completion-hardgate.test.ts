@@ -171,6 +171,8 @@ async function setupDaemon(
   };
 }
 
+
+
 async function waitUntil(
   fn: () => boolean | Promise<boolean>,
   timeoutMs = 30_000,
@@ -655,6 +657,7 @@ test(
 
     try {
       let handleB = "";
+      let endpointIdB = "";
       await waitUntil(async () => {
         const peers = await daemonA.runtime.agentMessaging!.listReachable({
           coordinatorSession: daemonA.coordinatorSession,
@@ -667,6 +670,7 @@ test(
         );
         if (!peerB) return false;
         handleB = encodeAgentHandle(peerB.address);
+        endpointIdB = peerB.address.endpointId;
         return true;
       });
 
@@ -783,6 +787,34 @@ test(
           t.includes("RELAY_INTERRUPT_MARKER"),
         ).length,
       ).toBe(1); // no duplicate execution after settle
+
+      // Duplicate Relay request (ACK-loss retry): the Hub redelivers the SAME
+      // agentMessageDeliver to the target daemon. Drive the exact production
+      // destination seam — runtime.agentMessaging.deliverInbound with the
+      // original messageId. The inbound tombstone must dedupe: same receipt
+      // semantics, NO second reservation, NO second abort, NO second turn.
+      const peerAFromB = (await daemonB.runtime.agentMessaging!.listReachable({
+        coordinatorSession: daemonB.coordinatorSession,
+      })).find((p) => p.sessionAlias === "interruptor")!;
+      const dupReceipt = await daemonB.runtime.agentMessaging!.deliverInbound({
+        sourceNodeId: peerAFromB.address.nodeId,
+        sourceEndpointId: peerAFromB.address.endpointId,
+        targetEndpointId: endpointIdB,
+        messageId: aSend.result.messageId as string,
+        conversationId: aSend.result.messageId as string,
+        depth: 0,
+        content: "RELAY_INTERRUPT_MARKER deliver next",
+        requestedMode: "interrupt",
+        replyable: false,
+        completion: "result",
+      });
+      expect(dupReceipt.deduplicated).toBe(true);
+      expect(["injected", "queued"]).toContain(dupReceipt.status);
+      expect(
+        (await daemonB.readPrompts()).filter((t) =>
+          t.includes("RELAY_INTERRUPT_MARKER"),
+        ).length,
+      ).toBe(1); // dedupe held: still exactly one interrupt turn
 
       // --- Archive race (G9 through the real lifecycle): B busy again, A
       // interrupts, then B's session is cleared BEFORE the interrupt settles.
