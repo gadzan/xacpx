@@ -258,6 +258,74 @@ test("v0.4: submitPeerTurn(requestedMode=interrupt) routes through TurnQueue.sub
   }
 });
 
+// Zero-delay macrotask boundary (same helper as turn-queue.test.ts) — lets
+// queued promise continuations (turn starts, drain hand-offs) land before
+// asserting. Not a wall-clock wait.
+const tick = () => {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, 0);
+  return promise;
+};
+
+test("v0.4 contract boundary: interrupt signals the running turn once, never overlaps it, and starts only after natural settlement", async () => {
+  const { service } = makeControlService();
+  const lane = exposeLane(service);
+  lane.setSession({ alias: "main", archived: false });
+
+  // A transport/agent that IGNORES cancellation: chat() parks until the TEST
+  // settles it, recording every signal it received. This is the worst case
+  // the contract boundary allows — the cancel request has no early effect.
+  const chatSignals: AbortSignal[] = [];
+  const chatSettled = Promise.withResolvers<{ text: string }>();
+  const internals = service as unknown as {
+    // White-box: deps.agent is the ChatAgent the SessionTurnRunner drives.
+    deps: { agent: { chat: (req: { abortSignal?: AbortSignal }) => Promise<{ text: string }> } };
+  };
+  internals.deps.agent.chat = (req) => {
+    chatSignals.push(req.abortSignal ?? new AbortController().signal);
+    return chatSettled.promise;
+  };
+
+  // 1. Predecessor turn runs and parks (busy lane).
+  const promptPromise = service.prompt({
+    chatKey: "c",
+    sessionAlias: "main",
+    text: "old turn",
+    senderId: "human",
+  });
+  await tick();
+  expect(chatSignals).toHaveLength(1);
+
+  // 2. Interrupt arrives: accepted queued/interrupt; the parked predecessor's
+  //    signal is aborted — exactly ONE cancellation request.
+  const admission = await service.submitPeerTurn({
+    chatKey: "c",
+    sessionAlias: "main",
+    boundSessionAlias: "main",
+    text: "<xacpx-message>interrupt content</xacpx-message>",
+    senderId: "agent-messaging",
+    messageId: "msg_seam_i",
+    requestedMode: "interrupt",
+  });
+  expect(admission).toEqual({ status: "queued", modeUsed: "interrupt", targetState: "running" });
+  expect(chatSignals).toHaveLength(1);
+  expect(chatSignals[0]!.aborted).toBe(true);
+
+  // 3. The transport ignores the cancel: while the predecessor stays
+  //    unresolved, the interrupt turn MUST NOT start (no overlap).
+  await tick();
+  expect(chatSignals).toHaveLength(1);
+
+  // 4. The transport finishes the predecessor NATURALLY. The interrupt turn
+  //    starts only after true settlement, with a FRESH (non-aborted) signal —
+  //    and the predecessor's result is whatever the transport produced.
+  chatSettled.resolve({ text: "natural completion" });
+  await promptPromise;
+  await tick();
+  expect(chatSignals).toHaveLength(2);
+  expect(chatSignals[1]!.aborted).toBe(false);
+});
+
 test("v0.4 G12: default/auto peer turns never touch the interrupt admission path", async () => {
   const { service } = makeControlService();
   const lane = exposeLane(service);

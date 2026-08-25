@@ -2886,7 +2886,9 @@ test("buildApp provisions acpx agent overlays before transport creation", async 
   }
 });
 
-test("config hot reload provisions overlays for newly added agents", async () => {
+test(
+  "config hot reload provisions overlays for newly added agents",
+  async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-main-"));
   try {
     const configPath = join(dir, "config.json");
@@ -2931,7 +2933,11 @@ test("config hot reload provisions overlays for newly added agents", async () =>
       }),
     );
     await readJsonWithRetry<{ agents?: unknown }>(configPath).then(async () => {
-      for (let attempt = 0; attempt < 50 && provisioned.length < 2; attempt += 1) {
+      // The config watcher debounces 100ms and then reloads asynchronously;
+      // under the load of the 40+ buildApp tests above, fs.watch delivery can
+      // push the provision past a 1s window (observed ~30-50% flake on both
+      // main and feature branches). 5s keeps the poll bounded and robust.
+      for (let attempt = 0; attempt < 250 && provisioned.length < 2; attempt += 1) {
         await Bun.sleep(20);
       }
     });
@@ -2943,7 +2949,11 @@ test("config hot reload provisions overlays for newly added agents", async () =>
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
-});
+  },
+  // The in-test poll budget is 5s (watcher debounce + async reload); Bun's
+  // default ~5s test timeout would race it. Give the test explicit headroom.
+  { timeout: 15_000 },
+);
 
 // ── legacy logical_session_id startup migration ──────────────────────────────
 

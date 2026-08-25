@@ -8,12 +8,16 @@ v0.1 mode matrix, with Codex same-turn steering, authoritative capability
 discovery, explicit interrupt, owner-side race handling, and end-to-end proof
 that the target turn id does not change.
 
-> **Superseded (2026-08-24), interrupt portion only:** as of Peer Interrupt
-> Delivery v0.4, explicit `mode: "interrupt"` for managed logical sessions is
-> implemented by xacpx's own TurnQueue (reserve → cancel → true-settle →
-> next-turn delivery) and does NOT require the acpx live-input runtime, the
-> codex-acp steering extension, or any provider extension described below.
-> Native same-turn `steer` remains an optional, separate capability. See
+> **Superseded (2026-08-24; semantics refined 2026-08-25), interrupt portion only:**
+> as of Peer Interrupt Delivery v0.4, explicit `mode: "interrupt"` for managed
+> logical sessions is implemented by xacpx's own TurnQueue as a
+> cancellation-request + true-settlement + priority-next-turn primitive — it
+> does NOT require the acpx live-input runtime, the codex-acp steering
+> extension, or any provider extension described below, and it does NOT claim
+> provider-level hard preemption (the predecessor may terminalize as
+> `cancelled` or `completed`; xacpx guarantees lane ordering, no overlap, and
+> exactly-once contracts). Native same-turn `steer` remains an optional,
+> separate capability. See
 > `../specs/2026-08-24-xacpx-agent-messaging-peer-interrupt-delivery-v0.4-spec.md`.
 
 **Architecture:** acpx becomes the deep live-input module. Its production

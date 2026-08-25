@@ -238,6 +238,24 @@ async function waitForPrompts(
   return observed;
 }
 
+async function waitForPromptMarker(
+  daemon: RealDaemon,
+  marker: string,
+  deadlineMs = 60_000,
+): Promise<string[]> {
+  const deadline = Date.now() + deadlineMs;
+  while (Date.now() < deadline) {
+    try {
+      const prompts = JSON.parse(await readFile(daemon.promptsFile, "utf8")) as string[];
+      if (prompts.some((prompt) => prompt.includes(marker))) return prompts;
+    } catch {
+      // file not written yet
+    }
+    await Bun.sleep(100);
+  }
+  throw new Error(`prompt marker did not arrive: ${marker}`);
+}
+
 async function waitForDirectory(
   daemon: RealDaemon,
   predicate: (endpoints: AgentEndpointView[]) => boolean,
@@ -471,6 +489,7 @@ test(
       ).rejects.toMatchObject({
         code: "ROUTE_UNAVAILABLE",
       });
+
     } finally {
       await daemonA.dispose().catch(() => {});
       await daemonB.dispose().catch(() => {});
@@ -480,6 +499,176 @@ test(
         else process.env[key] = value;
       }
       savedEnv.clear();
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = savedUserProfile;
+      await rm(acpxHome, { recursive: true, force: true }).catch(() => {});
+    }
+  },
+  { timeout: 240_000 },
+);
+test(
+  "G13: real Relay ACK-loss retry of an interrupt is deduplicated with one reservation, one cancel request, and one interrupt turn",
+  // This is a real two-daemon/acpx integration gate. The Hub deliberately
+  // drops the first ACK; the retry waits on the real Relay request timeout.
+  async () => {
+    let dropped = false;
+    const hub = await setupHub({
+      dropRequestResponse: (_instanceId, type) => {
+        if (!dropped && type === MSG.agentMessageDeliver) {
+          dropped = true;
+          return true;
+        }
+        return false;
+      },
+    });
+
+    const savedHome = process.env.HOME;
+    const savedUserProfile = process.env.USERPROFILE;
+    const acpxHome = await mkdtemp(join(tmpdir(), "xacpx-g13-acpxhome-"));
+    process.env.HOME = acpxHome;
+    if (process.platform === "win32") process.env.USERPROFILE = acpxHome;
+
+    const tokenA = hub.instances.issuePairingToken(
+      hub.account.id,
+      "nodeA",
+      600_000,
+    ).token;
+    const tokenB = hub.instances.issuePairingToken(
+      hub.account.id,
+      "nodeB",
+      600_000,
+    ).token;
+    const daemonA = await makeRealDaemon("G13-A", hub.hubUrl, tokenA);
+    const daemonB = await makeRealDaemon("G13-B", hub.hubUrl, tokenB);
+
+    try {
+      const sessionB = await daemonB.runtime.control.createSession(
+        daemonB.chatKey,
+        daemonB.sessionAlias,
+        "custom",
+        "ws",
+      );
+      daemonB.coordinatorSession = sessionB.transportSession;
+      const warmTurnB = await daemonB.runtime.control.prompt({
+        chatKey: daemonB.chatKey,
+        sessionAlias: daemonB.sessionAlias,
+        text: "G13_B_WARMUP",
+        senderId: "hardgate",
+        isOwner: true,
+      });
+      expect(warmTurnB.ok).toBe(true);
+      const sessionA = await daemonA.runtime.control.createSession(
+        daemonA.chatKey,
+        daemonA.sessionAlias,
+        "custom",
+        "ws",
+      );
+      daemonA.coordinatorSession = sessionA.transportSession;
+      const warmTurnA = await daemonA.runtime.control.prompt({
+        chatKey: daemonA.chatKey,
+        sessionAlias: daemonA.sessionAlias,
+        text: "G13_A_WARMUP",
+        senderId: "hardgate",
+        isOwner: true,
+      });
+      expect(warmTurnA.ok).toBe(true);
+      await waitForPrompts(daemonB, 1);
+      await waitForPrompts(daemonA, 1);
+
+      const bPublished = await daemonB.publishedEndpoints();
+      const aPublished = await daemonA.publishedEndpoints();
+      expect(bPublished).toHaveLength(1);
+      expect(aPublished).toHaveLength(1);
+      const bEndpoint = bPublished[0]!;
+      const seenByA = await waitForDirectory(
+        daemonA,
+        (list) =>
+          list.some(
+            (endpoint) =>
+              endpoint.address.nodeId === bEndpoint.nodeId &&
+              endpoint.address.endpointId === bEndpoint.endpointId &&
+              endpoint.capabilities.interrupt === true,
+          ),
+      );
+      const targetB = seenByA.find(
+        (endpoint) =>
+          endpoint.address.nodeId === bEndpoint.nodeId &&
+          endpoint.address.endpointId === bEndpoint.endpointId,
+      )!;
+
+      // A real unresolved predecessor on B. delay-9000-partial emits the
+      // OLD_PREDECESSOR_OUTPUT marker immediately but keeps the turn active;
+      // no deadline is asserted — early cancellation is transport-owned.
+      void daemonB.runtime.control.prompt({
+        chatKey: daemonB.chatKey,
+        sessionAlias: daemonB.sessionAlias,
+        text: "G13_OLD_PREDECESSOR_OUTPUT delay-9000-partial",
+        senderId: "hardgate",
+      });
+      await waitForPromptMarker(daemonB, "G13_OLD_PREDECESSOR_OUTPUT");
+
+      // Ordinary FIFO items are submitted before the interrupt. The target
+      // lane must drain interrupt first, then Q1, then Q2 after settlement.
+      void daemonB.runtime.control.prompt({
+        chatKey: daemonB.chatKey,
+        sessionAlias: daemonB.sessionAlias,
+        text: "G13_FIFO_Q1",
+        senderId: "hardgate",
+      });
+      void daemonB.runtime.control.prompt({
+        chatKey: daemonB.chatKey,
+        sessionAlias: daemonB.sessionAlias,
+        text: "G13_FIFO_Q2",
+        senderId: "hardgate",
+      });
+
+      const receipt = await daemonA.runtime.agentMessaging.send(
+        { coordinatorSession: daemonA.coordinatorSession },
+        {
+          to: targetB.handle,
+          content: "G13_FINAL_INTERRUPT_RESULT",
+          mode: "interrupt",
+          completion: "result",
+        },
+      );
+      expect(dropped).toBe(true);
+      expect(receipt).toMatchObject({
+        status: "queued",
+        modeUsed: "interrupt",
+        targetState: "running",
+        deduplicated: true,
+        route: "relay",
+      });
+
+      const promptsB = await waitForPromptMarker(daemonB, "G13_FIFO_Q2");
+      const firstIndex = (marker: string): number => {
+        const index = promptsB.findIndex((prompt) => prompt.includes(marker));
+        expect(index, `marker must execute: ${marker}`).toBeGreaterThanOrEqual(0);
+        return index;
+      };
+      const predecessorIndex = firstIndex("G13_OLD_PREDECESSOR_OUTPUT");
+      const interruptIndex = firstIndex("G13_FINAL_INTERRUPT_RESULT");
+      const q1Index = firstIndex("G13_FIFO_Q1");
+      const q2Index = firstIndex("G13_FIFO_Q2");
+      expect(interruptIndex).toBeGreaterThan(predecessorIndex);
+      expect(interruptIndex).toBeLessThan(q1Index);
+      expect(q1Index).toBeLessThan(q2Index);
+      expect(
+        promptsB.filter((prompt) => prompt.includes("G13_FINAL_INTERRUPT_RESULT")),
+      ).toHaveLength(1);
+
+      await waitForPromptMarker(daemonA, "G13_FINAL_INTERRUPT_RESULT");
+      const completionPromptsA = (await readFile(daemonA.promptsFile, "utf8"))
+        .split("\n")
+        .filter((prompt) => prompt.includes("xacpx-peer-result"));
+      expect(completionPromptsA).toHaveLength(1);
+      expect(completionPromptsA[0]).toContain("G13_FINAL_INTERRUPT_RESULT");
+    } finally {
+      await daemonA.dispose().catch(() => {});
+      await daemonB.dispose().catch(() => {});
+      await hub.close();
       if (savedHome === undefined) delete process.env.HOME;
       else process.env.HOME = savedHome;
       if (savedUserProfile === undefined) delete process.env.USERPROFILE;
