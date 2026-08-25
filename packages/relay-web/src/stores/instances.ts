@@ -445,7 +445,7 @@ export const useInstancesStore = defineStore("instances", () => {
         const rows = sessions.map((session) => overlaySessionRename(instanceId, session, confirmedRevisionsAtRequest));
         const archived = replace && inst.archivedSessionsLoaded ? inst.sessions.filter((session) => session.archived) : [];
         if (replace) {
-          // A replace snapshot is authoritative for the rows it contains, but two
+          // A replace snapshot is authoritative for the rows it contains, but these
           // kinds of local row must survive it:
           //  - an optimistic create still booting (RPC in flight, or a 504 whose
           //    session arrives later via sessions-changed) — dropping it would
@@ -455,11 +455,18 @@ export const useInstancesStore = defineStore("instances", () => {
           //    with more actives than one page the new one sits past the boundary.
           //    Kept only while hasMore — a COMPLETE list omitting the alias is the
           //    server saying the session is gone.
+          //  - the SELECTED session if it just went archived: archive → sessions-changed
+          //    → this replace runs before any full archived snapshot loads, and the
+          //    active-only page no longer contains the row. Dropping it would blank the
+          //    open chat's header/driver. Kept until a full snapshot (loadArchivedSessions)
+          //    re-homes it authoritatively.
           // Mirrors loadArchivedSessions' transient handling.
+          const chat = useChatStore();
           const keep = inst.sessions.filter((row) =>
             row.creating
             || row.createError
             || (row.justCreated === true && hasMore && !rows.some((r) => r.alias === row.alias))
+            || (row.archived === true && instanceId === chat.instanceId && row.alias === chat.sessionAlias),
           );
           for (const row of keep) {
             if (!rows.some((r) => r.alias === row.alias)) {
@@ -697,7 +704,21 @@ export const useInstancesStore = defineStore("instances", () => {
   }
 
   async function archiveSession(instanceId: string, alias: string): Promise<void> {
-    await api.rpc(instanceId, "control.sessions.archive", { alias });
+    // Optimistic archived flag: the connector's archive RPC returns {} without the
+    // updated row, and core's `sessions-changed` only triggers a refetch — nothing
+    // else flips the local row. Marking it here (rolling back on failure, mirroring
+    // chat.send's warm/archived optimistic clear) lets the post-archive
+    // loadSessions replace recognize the selected row as archived and retain it,
+    // instead of dropping it from the active list mid-transition.
+    const sessionRow = byId(instanceId)?.sessions.find((s) => s.alias === alias);
+    const prevArchived = sessionRow?.archived === true;
+    if (sessionRow) sessionRow.archived = true;
+    try {
+      await api.rpc(instanceId, "control.sessions.archive", { alias });
+    } catch (error) {
+      if (sessionRow && !prevArchived) sessionRow.archived = false;
+      throw error;
+    }
     // No cache purge: a sleeping session stays resumable, and its cached tail
     // lets waking it paint instantly.
     await loadSessions(instanceId);
@@ -813,6 +834,23 @@ export const useInstancesStore = defineStore("instances", () => {
   function byId(id: string): InstanceView | undefined {
     return instances.value.find((i) => i.id === id);
   }
+  /** Resolve a session row by alias across EVERY list the dashboard keeps it in:
+   *  the active list AND per-group sleeping pages. Sleeping rows deliberately live
+   *  outside `sessions` (grouped sidebar), and flat-mode archive can drop the
+   *  selected row entirely until a full snapshot loads — consumers that must keep
+   *  working while a sleeping session is selected (chat header/avatar, driver)
+   *  resolve through here instead of `inst.sessions.find`. */
+  function findSessionRow(instanceId: string, alias: string): SessionRow | undefined {
+    const inst = byId(instanceId);
+    if (!inst) return undefined;
+    const active = inst.sessions.find((s) => s.alias === alias);
+    if (active) return active;
+    for (const state of Object.values(inst.groupArchived ?? {})) {
+      const row = state.sessions.find((s) => s.alias === alias);
+      if (row) return row;
+    }
+    return undefined;
+  }
 
-  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, listModelSuggestions, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId };
+  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, listModelSuggestions, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId, findSessionRow };
 });

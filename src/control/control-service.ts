@@ -92,6 +92,12 @@ export interface ModelSetRequestOptions {
 export interface ControlSessionInfo {
   alias: string;
   agent: string;
+  /** The acpx driver backing `agent`, resolved from the agent's config at listing
+   *  time. Lets the web render the brand icon without an agents-map lookup — which
+   *  fails for sleeping sessions whose rows live outside the active session list.
+   *  Optional: mirrors ResolvedSession.driver (custom agents always resolve one,
+   *  but the type stays tolerant). */
+  driver?: string;
   workspace: string;
   transportSession: string;
   running: boolean;
@@ -944,6 +950,7 @@ export class ControlService {
         return {
           alias: toDisplaySessionAlias(session.alias),
           agent: session.agent,
+          driver: session.driver,
           workspace: session.workspace,
           transportSession: session.transportSession,
           running,
