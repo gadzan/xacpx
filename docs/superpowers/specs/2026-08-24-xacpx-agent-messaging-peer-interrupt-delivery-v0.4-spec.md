@@ -153,7 +153,7 @@ The tool description MUST make the side effect explicit.
 
 Recommended semantics text:
 
-> `mode="interrupt"` cancels the target Agent's current turn, waits for it to stop, then delivers this message as the target's next turn. Use it only when waiting for the current turn would materially harm the task. The default/auto mode never cancels another Agent's work.
+> `mode="interrupt"` requests cancellation of the target Agent's current turn and reserves this message as its highest-priority next turn. xacpx waits for the current turn to fully settle before starting the message and never runs the two turns in parallel. Some runtimes may finish the current turn instead of stopping immediately. Use it only when waiting behind ordinary queued work would materially harm the task. The default/auto mode never selects interrupt.
 
 The model may explicitly choose interrupt. xacpx never makes that choice from message content.
 
@@ -296,7 +296,8 @@ before:
   Q3
 
 interrupt I arrives:
-  current is cancelled
+  cancellation requested; predecessor settles (cancelled OR completed —
+  transport-owned)
 
 execution:
   I
@@ -684,7 +685,7 @@ current running
 Q1 queued
 Q2 queued
 interrupt I arrives
-→ cancel current
+→ request cancellation / signal predecessor exactly once
 → execution order after settle = I, Q1, Q2
 ```
 

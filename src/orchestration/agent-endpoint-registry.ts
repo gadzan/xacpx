@@ -684,10 +684,13 @@ function findLogicalSession(
 function queueOnlyCapabilities(options?: {
   completion?: boolean;
   /** v0.4: true ONLY for endpoints controlled by the xacpx TurnQueue/
-   *  SessionTurnRunner lane (managed logical sessions) — xacpx can safely
-   *  preempt the target's current managed turn and schedule a peer turn after
-   *  true settlement (spec §14). Never derived from steer or provider name;
-   *  workers and external coordinators stay false. */
+   *  SessionTurnRunner lane (managed logical sessions) — xacpx owns and can
+   *  enforce: a cancellation request against the current managed turn, a
+   *  true-settlement barrier, no-overlap between predecessor and interrupt
+   *  turn, and priority-next-turn execution after settlement (spec §14).
+   *  It does NOT claim provider-level hard preemption: whether the runtime
+   *  ends the active turn early is transport-owned. Never derived from steer
+   *  or provider name; workers and external coordinators stay false. */
   interrupt?: boolean;
 }): AgentCapabilities {
   return {
