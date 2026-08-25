@@ -61,8 +61,11 @@ export interface AppDeps {
   onWebPromptCreated?: (input: { promptRequestId: string; instanceId: string; sessionAlias: string }) => void;
   /** Web push / provenance: called when an interactive prompt fails before execution. */
   onWebPromptRejected?: (promptRequestId: string) => void;
+  /** Web push / provenance: called when an interactive prompt is queued by the connector. */
+  onWebPromptQueued?: (input: { promptRequestId: string; instanceId: string; queueItemId: string }) => void;
+  /** Web push / provenance: called when a queued prompt is cancelled via Web RPC. */
+  onWebPromptQueueCancelled?: (instanceId: string, queueItemId: string) => void;
 }
-
 const SESSION_COOKIE = "xrelay_session";
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;
 export const LOGIN_MAX_FAILURES = 10;
@@ -683,13 +686,29 @@ export function createApp(deps: AppDeps): Hono<Vars> {
         && (result as { queued?: unknown }).queued === true
         && typeof (result as { queueItemId?: unknown }).queueItemId === "string") {
         const p = payload as { sessionAlias: string };
+        const queueItemId = (result as { queueItemId: string }).queueItemId;
         deps.messages.markQueued(persistedPromptId, {
           instanceId: instance.id,
           sessionAlias: p.sessionAlias,
-          queueItemId: (result as { queueItemId: string }).queueItemId,
+          queueItemId,
         });
+        if (webPromptRequestId) {
+          deps.onWebPromptQueued?.({
+            promptRequestId: webPromptRequestId,
+            instanceId: instance.id,
+            queueItemId,
+          });
+        }
       }
-      // A real delete has two histories: the connector-owned acpx record and the
+      if (body.type === MSG.queueCancel && !isErrorPayload(result)) {
+        const p = payload as { itemId?: string };
+        if (typeof p.itemId === "string") {
+          const cancelResult = result as { cancelled?: boolean };
+          if (cancelResult.cancelled !== false) {
+            deps.onWebPromptQueueCancelled?.(instance.id, p.itemId);
+          }
+        }
+      }
       // Hub-owned Web transcript. Purge the latter only after the connector confirms
       // success; archive intentionally keeps both histories.
       if (removeInput && !isErrorPayload(result)) {

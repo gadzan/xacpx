@@ -407,14 +407,29 @@ test("Gate 3: orchestration task completion sends task push without duplicate or
   runtime.close();
 });
 
-test("Gate 4: scheduled turn-started triggers 0 ordinary pushes", async () => {
-  const { runtime, sent, fire } = await setupPushRuntime();
+test("Gate 4: scheduled turn-started with matching web provenance triggers 0 ordinary pushes", async () => {
+  const { runtime, sent, cookie, fire } = await setupPushRuntime();
+
+  let registeredId: string | undefined;
+  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, _type: string, payload: unknown) => {
+    registeredId = (payload as { promptRequestId?: string }).promptRequestId;
+    return { ok: true };
+  };
+
+  const res = await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "scheduled task" } }),
+  });
+  expect(res.status).toBe(200);
+  expect(registeredId).toBeString();
+  expect(runtime.pendingWebPromptsCount?.()).toBe(1);
 
   fire({
     type: "turn-started",
     chatKey: "relay:a1",
     sessionAlias: "backend",
-    promptRequestId: "sched-req-1",
+    promptRequestId: registeredId,
     scheduled: { taskId: "task1", executeAt: new Date().toISOString() },
   });
   fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "scheduled result" });
@@ -425,20 +440,35 @@ test("Gate 4: scheduled turn-started triggers 0 ordinary pushes", async () => {
   runtime.close();
 });
 
-test("Gate 5: peer turn-started triggers 0 pushes", async () => {
-  const { runtime, sent, fire } = await setupPushRuntime();
+test("Gate 5: peer turn-started with matching web provenance triggers 0 pushes", async () => {
+  const { runtime, sent, cookie, fire } = await setupPushRuntime();
+
+  let registeredId: string | undefined;
+  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, _type: string, payload: unknown) => {
+    registeredId = (payload as { promptRequestId?: string }).promptRequestId;
+    return { ok: true };
+  };
+
+  const res = await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "peer task" } }),
+  });
+  expect(res.status).toBe(200);
+  expect(registeredId).toBeString();
+  expect(runtime.pendingWebPromptsCount?.()).toBe(1);
 
   const peerOrigin = {
-    sourceNodeId: "node-1",
-    sourceHandle: "agent:test",
     requestMessageId: "msg-1",
     completion: "result" as const,
+    source: { nodeId: "node-1", endpointId: "ep-1" },
+    target: { nodeId: "node-2", endpointId: "ep-2" },
   };
   fire({
     type: "turn-started",
     chatKey: "relay:a1",
     sessionAlias: "backend",
-    promptRequestId: "peer-req-1",
+    promptRequestId: registeredId,
     peerOrigin,
   });
   fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "peer result" });
@@ -550,19 +580,40 @@ test("Gate 8: queued prompt pushes only when drained turn actually finishes", as
   runtime.close();
 });
 
-test("Gate 9: queued prompt never started produces 0 pushes", async () => {
-  const { runtime, sent, cookie } = await setupPushRuntime();
+test("Gate 9: queueCancel RPC cleans up pending provenance and produces 0 pushes", async () => {
+  const { runtime, sent, cookie, fire } = await setupPushRuntime();
 
-  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async () => {
-    return { ok: true, queued: true, queueItemId: "q1" };
+  let bReqId: string | undefined;
+  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, type: string, payload: unknown) => {
+    if (type === MSG.prompt) {
+      bReqId = (payload as { promptRequestId?: string }).promptRequestId;
+      return { ok: true, queued: true, queueItemId: "q1" };
+    }
+    if (type === MSG.queueCancel) {
+      return { ok: true, cancelled: true };
+    }
+    return { ok: true };
   };
 
-  await runtime.app.request("/api/instances/i1/rpc", {
+  const resPrompt = await runtime.app.request("/api/instances/i1/rpc", {
     method: "POST",
     headers: { cookie, "content-type": "application/json" },
     body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "will cancel" } }),
   });
+  expect(resPrompt.status).toBe(200);
+  expect(bReqId).toBeString();
+  expect(runtime.pendingWebPromptsCount?.()).toBe(1);
 
+  const resCancel = await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.queueCancel, payload: { sessionAlias: "backend", itemId: "q1" } }),
+  });
+  expect(resCancel.status).toBe(200);
+  expect(runtime.pendingWebPromptsCount?.()).toBe(0);
+
+  // If turn-finished of prior turn arrives, 0 push
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
   await new Promise((r) => setTimeout(r, 10));
   expect(sent).toHaveLength(0);
   runtime.close();

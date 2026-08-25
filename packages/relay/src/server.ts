@@ -108,6 +108,7 @@ export interface RelayRuntime {
   webGateway: WebGateway;
   stateSnapshot(instanceId: string): InstanceStateSnapshotDto;
   app: ReturnType<typeof createApp>;
+  pendingWebPromptsCount?(): number;
   close(): void;
 }
 
@@ -176,17 +177,64 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     instanceId: string;
     sessionAlias: string;
     createdAt: number;
+    queueItemId?: string;
   }
   const pendingWebPrompts = new Map<string, PendingWebPrompt>();
+  const queueItemToPromptRequestId = new Map<string, string>();
+  const PENDING_WEB_PROMPTS_MAX = 4096;
   const PENDING_WEB_PROMPT_TTL_MS = 24 * 60 * 60_000;
+
+  const queueKey = (instanceId: string, queueItemId: string) => `${instanceId}\0${queueItemId}`;
+
+  const removePendingWebPrompt = (promptRequestId: string) => {
+    const entry = pendingWebPrompts.get(promptRequestId);
+    if (entry) {
+      if (entry.queueItemId) {
+        queueItemToPromptRequestId.delete(queueKey(entry.instanceId, entry.queueItemId));
+      }
+      pendingWebPrompts.delete(promptRequestId);
+    }
+  };
+
   const prunePendingWebPrompts = () => {
     const now = Date.now();
     for (const [id, entry] of pendingWebPrompts) {
       if (now - entry.createdAt > PENDING_WEB_PROMPT_TTL_MS) {
-        pendingWebPrompts.delete(id);
+        removePendingWebPrompt(id);
       }
     }
   };
+
+  const recordPendingWebPrompt = (promptRequestId: string, instanceId: string, sessionAlias: string) => {
+    prunePendingWebPrompts();
+    while (pendingWebPrompts.size >= PENDING_WEB_PROMPTS_MAX) {
+      const oldestId = pendingWebPrompts.keys().next().value;
+      if (!oldestId) break;
+      removePendingWebPrompt(oldestId);
+    }
+    pendingWebPrompts.set(promptRequestId, {
+      instanceId,
+      sessionAlias,
+      createdAt: Date.now(),
+    });
+  };
+
+  const associateQueueItem = (promptRequestId: string, instanceId: string, queueItemId: string) => {
+    const entry = pendingWebPrompts.get(promptRequestId);
+    if (entry && entry.instanceId === instanceId) {
+      entry.queueItemId = queueItemId;
+      queueItemToPromptRequestId.set(queueKey(instanceId, queueItemId), promptRequestId);
+    }
+  };
+
+  const cancelPendingQueueItem = (instanceId: string, queueItemId: string) => {
+    const qKey = queueKey(instanceId, queueItemId);
+    const promptRequestId = queueItemToPromptRequestId.get(qKey);
+    if (promptRequestId) {
+      removePendingWebPrompt(promptRequestId);
+    }
+  };
+
   const key = (instanceId: string, alias: string) => `${instanceId}\0${alias}`;
   // Content fingerprints (`instanceId, alias, prompt, outText`) of finishedOffline
   // entries this runtime has already persisted from an `instance.state.sync`. A sync
@@ -381,7 +429,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               const pending = pendingWebPrompts.get(event.promptRequestId);
               if (pending && pending.instanceId === instanceId && pending.sessionAlias === event.sessionAlias) {
                 notification = { origin: "relay-web", promptRequestId: event.promptRequestId };
-                pendingWebPrompts.delete(event.promptRequestId);
+                removePendingWebPrompt(event.promptRequestId);
               }
             }
             // Reconcile the inbound prompt FIRST (queued promotion / pre-write
@@ -751,15 +799,16 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     vapidPublicKey: vapid ? () => vapid.publicKey : undefined,
     pushSubscriptions,
     onWebPromptCreated: ({ promptRequestId, instanceId, sessionAlias }) => {
-      prunePendingWebPrompts();
-      pendingWebPrompts.set(promptRequestId, {
-        instanceId,
-        sessionAlias,
-        createdAt: Date.now(),
-      });
+      recordPendingWebPrompt(promptRequestId, instanceId, sessionAlias);
     },
     onWebPromptRejected: (promptRequestId) => {
-      pendingWebPrompts.delete(promptRequestId);
+      removePendingWebPrompt(promptRequestId);
+    },
+    onWebPromptQueued: ({ promptRequestId, instanceId, queueItemId }) => {
+      associateQueueItem(promptRequestId, instanceId, queueItemId);
+    },
+    onWebPromptQueueCancelled: (instanceId, queueItemId) => {
+      cancelPendingQueueItem(instanceId, queueItemId);
     },
   });
   const completionRouteSweepTimer = setInterval(
@@ -778,6 +827,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     gateway,
     webGateway,
     stateSnapshot,
+    pendingWebPromptsCount: () => pendingWebPrompts.size,
     app,
     close: () => {
       clearInterval(completionRouteSweepTimer);
