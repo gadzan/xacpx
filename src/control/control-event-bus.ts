@@ -16,6 +16,9 @@ export interface QueuedItemInfo {
   id: string;
   textPreview: string;
   enqueuedAt: string;
+  /** v0.4: present ONLY for a reserved-but-not-started peer interrupt
+   *  (snapshot-first item). Additive and backward compatible. */
+  kind?: "interrupt";
 }
 
 export type ControlEvent =

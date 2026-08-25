@@ -5,7 +5,11 @@
 // session-free by design; the sessions-changed compare is threaded in via
 // deps.detectSessionsChanged).
 import { expect, test } from "bun:test";
-import { TurnQueue, type TurnQueueDeps } from "../../../src/control/turn-queue";
+import {
+  TurnQueue,
+  type PeerInterruptEvent,
+  type TurnQueueDeps,
+} from "../../../src/control/turn-queue";
 import type {
   TurnRequest,
   TurnResult,
@@ -1556,4 +1560,158 @@ test("v0.4 state hygiene: the interrupt slot empties on start, on cancel, and on
   await p2;
   await tick();
   expect(h.queue.pendingInterruptCount("c", "s")).toBe(0);
+});
+
+test("v0.4 P1: an interrupt arriving DURING clearSession's unwind window is rejected target-unavailable and never resurrects on the dying session", async () => {
+  const h = makeQueue();
+  const pOld = h.queue.submit({ ...BASE, text: "old", queueable: true });
+  await tick();
+
+  // clearSession starts: drops slots, aborts old, parks on its settled promise.
+  const clearedP = h.queue.clearSession("c", "s");
+  await tick(); // let clearSession reach the abort + await window
+
+  // The dangerous window: old is aborted-but-registered, removing is armed.
+  // The interrupt MUST fail closed — not reserve, not drain after settle.
+  expect(h.queue.submitPeerInterrupt({
+    ...BASE,
+    text: "I",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_p1_i",
+    isPeerMessage: true,
+  })).toEqual({ status: "rejected", reason: "target-unavailable" });
+  // Peer turns are equally fail-closed for the whole clear lifecycle.
+  expect(h.queue.submitPeerTurn({
+    ...BASE,
+    text: "P",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_p1_p",
+    isPeerMessage: true,
+  })).toEqual({ status: "rejected", reason: "target-unavailable" });
+
+  h.resolveNext({ ok: false, errorMessage: "aborted" });
+  expect(await clearedP).toEqual({ cleared: true });
+  await pOld;
+  await tick();
+
+  // No resurrection: the interrupt never executed and the slot is empty.
+  expect(h.started).toEqual(["old"]);
+  expect(h.queue.pendingInterruptCount("c", "s")).toBe(0);
+  h.queue.finishClear("c", "s");
+});
+
+test("v0.4 P1: a FAILED clear (wedged turn) releases the teardown guard so the lane stays usable for retry", async () => {
+  const h = makeQueue({ cancelDrainTimeoutMs: 10 });
+  const pOld = h.queue.submit({ ...BASE, text: "old", queueable: true });
+  await tick();
+
+  // Old never settles within the drain timeout → cleared:false.
+  expect(await h.queue.clearSession("c", "s")).toEqual({ cleared: false });
+
+  // The guard was released: the lane accepts peer work again (busy-interrupt
+  // semantics against the still-registered aborted predecessor).
+  expect(h.queue.submitPeerInterrupt({
+    ...BASE,
+    text: "I",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_p1_retry",
+    isPeerMessage: true,
+  }).status).toBe("queued");
+  h.resolveNext({ ok: false, errorMessage: "aborted" });
+  await pOld;
+  await tick();
+  expect(h.started).toEqual(["old", "I"]); // reserved interrupt drains normally
+  h.resolveNext();
+});
+
+test("v0.4 P2: the reservation publishes a kind:interrupt snapshot item that the existing per-item cancel surface can address", async () => {
+  const snapshots: Array<Array<{ id: string; kind?: string }>> = [];
+  const h = makeQueue({
+    emitQueueUpdated: (_c, _s, items) => snapshots.push(items),
+  });
+  const pOld = h.queue.submit({ ...BASE, text: "old", queueable: true });
+  await tick();
+  h.queue.submitPeerTurn({ ...BASE, text: "Q1", senderId: "agent-messaging", promptRequestId: "q1", isPeerMessage: true });
+
+  const res = h.queue.submitPeerInterrupt({
+    ...BASE,
+    text: "I",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_p2",
+    isPeerMessage: true,
+  });
+  if (res.status !== "queued") throw new Error("expected queued");
+
+  // The reservation published the interrupt as the snapshot's FIRST item,
+  // ahead of the ordinary FIFO — this is what makes cancelQueuedItem(id)
+  // reachable from the production queue surface.
+  const latest = snapshots[snapshots.length - 1]!;
+  expect(latest[0]).toMatchObject({ id: res.queueItemId, kind: "interrupt", textPreview: "I" });
+  expect(latest).toHaveLength(2); // interrupt + Q1, FIFO untouched
+
+  // The existing per-item cancel path removes exactly that item.
+  expect(h.queue.cancelQueuedItem("c", "s", res.queueItemId).cancelled).toBe(true);
+  const afterCancel = snapshots[snapshots.length - 1]!;
+  expect(afterCancel).toHaveLength(1);
+  expect(afterCancel[0]!.kind).toBeUndefined();
+
+  // After the interrupt drains, the snapshot no longer lists it.
+  h.queue.submitPeerInterrupt({
+    ...BASE,
+    text: "I2",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_p2b",
+    isPeerMessage: true,
+  });
+  h.resolveNext();
+  await pOld;
+  await tick();
+  const afterDrain = snapshots[snapshots.length - 1]!;
+  expect(afterDrain.some((item) => item.kind === "interrupt")).toBe(false);
+  h.resolveNext();
+  await tick();
+  h.resolveNext();
+});
+
+test("v0.4 P3: rejected_pending carries the REJECTED request's ids plus the occupied reservation's id", async () => {
+  const events: PeerInterruptEvent[] = [];
+  const h = makeQueue({ onPeerInterruptEvent: (event) => events.push(event) });
+  const pOld = h.queue.submit({ ...BASE, text: "old", queueable: true });
+  await tick();
+
+  h.queue.submitPeerInterrupt({
+    ...BASE,
+    text: "I1",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_p3_i1",
+    isPeerMessage: true,
+    peerOrigin: {
+      requestMessageId: "msg_p3_i1",
+      completion: "none",
+      source: { nodeId: "n", endpointId: "a" },
+      target: { nodeId: "n", endpointId: "b" },
+    },
+  });
+  expect(h.queue.submitPeerInterrupt({
+    ...BASE,
+    text: "I2",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_p3_i2",
+    isPeerMessage: true,
+    peerOrigin: {
+      requestMessageId: "msg_p3_i2",
+      completion: "none",
+      source: { nodeId: "n", endpointId: "a" },
+      target: { nodeId: "n", endpointId: "b" },
+    },
+  }).status).toBe("rejected");
+
+  const rejected = events.find((event) => event.kind === "rejected_pending")!;
+  expect(rejected.requestMessageId).toBe("msg_p3_i2"); // the REJECTED request, not I1
+  expect(rejected.promptRequestId).toBe("msg_p3_i2");
+  expect(rejected.pendingRequestMessageId).toBe("msg_p3_i1"); // the slot occupant
+  h.resolveNext();
+  await pOld;
+  await tick();
+  h.resolveNext();
 });

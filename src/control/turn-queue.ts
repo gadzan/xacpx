@@ -19,6 +19,10 @@ export interface QueuedItemSnapshot {
   id: string;
   textPreview: string;
   enqueuedAt: string;
+  /** v0.4: present ONLY for a reserved-but-not-started peer interrupt
+   *  (snapshot-first item). Lets the existing per-item cancel surface reach
+   *  the interrupt slot by id (spec §11.1) without a new RPC. */
+  kind?: "interrupt";
 }
 
 export interface TurnQueueDeps {
@@ -75,6 +79,9 @@ export interface PeerInterruptEvent {
   sessionAlias: string;
   requestMessageId?: string;
   promptRequestId?: string;
+  /** rejected_pending only: requestMessageId of the reservation that occupied
+   *  the slot (the event's own ids describe the REJECTED request). */
+  pendingRequestMessageId?: string;
   predecessorWasAlreadyAborted?: boolean;
 }
 
@@ -376,7 +383,14 @@ export class TurnQueue {
     // again, or silently downgrades to the ordinary queue.
     const pending = this.pendingInterrupts.get(key);
     if (pending) {
-      this.emitPeerInterrupt("rejected_pending", params.chatKey, params.sessionAlias, pending);
+      // The event describes the REJECTED request (I2), not the reservation
+      // that occupied the slot — the rejected ids come from the incoming
+      // params; the occupied reservation's id rides along for storm analysis.
+      this.emitPeerInterrupt("rejected_pending", params.chatKey, params.sessionAlias, pending, {
+        requestMessageId: params.peerOrigin?.requestMessageId,
+        promptRequestId: params.promptRequestId,
+        pendingRequestMessageId: pending.peerOrigin?.requestMessageId,
+      });
       return { status: "rejected", reason: "queue-full" };
     }
     const id = randomUUID();
@@ -419,6 +433,10 @@ export class TurnQueue {
       existing.controller.abort();
       this.emitPeerInterrupt("abort_signalled", params.chatKey, params.sessionAlias, item);
     }
+    // Publish the reservation: the snapshot leads with the kind:"interrupt"
+    // item, so the existing per-item cancel surface can address this slot by
+    // id (spec §11.1) — no new RPC, no receipt-shape change.
+    this.emitQueueUpdated(params.chatKey, params.sessionAlias, key);
     return { status: "queued", modeUsed: "interrupt", queueItemId: id };
   }
 
@@ -429,7 +447,14 @@ export class TurnQueue {
     chatKey: string,
     sessionAlias: string,
     item: QueuedPrompt | undefined,
-    extra?: { predecessorWasAlreadyAborted?: boolean },
+    ids?: {
+      requestMessageId?: string;
+      promptRequestId?: string;
+      /** rejected_pending only: requestMessageId of the reservation that
+       *  occupied the slot. */
+      pendingRequestMessageId?: string;
+      predecessorWasAlreadyAborted?: boolean;
+    },
   ): void {
     if (!this.deps.onPeerInterruptEvent) return;
     try {
@@ -437,12 +462,21 @@ export class TurnQueue {
         kind,
         chatKey,
         sessionAlias,
-        ...(item?.peerOrigin?.requestMessageId !== undefined
-          ? { requestMessageId: item.peerOrigin.requestMessageId }
+        ...(ids?.requestMessageId !== undefined
+          ? { requestMessageId: ids.requestMessageId }
+          : item?.peerOrigin?.requestMessageId !== undefined
+            ? { requestMessageId: item.peerOrigin.requestMessageId }
+            : {}),
+        ...(ids?.promptRequestId !== undefined
+          ? { promptRequestId: ids.promptRequestId }
+          : item?.promptRequestId !== undefined
+            ? { promptRequestId: item.promptRequestId }
+            : {}),
+        ...(ids?.pendingRequestMessageId !== undefined
+          ? { pendingRequestMessageId: ids.pendingRequestMessageId }
           : {}),
-        ...(item?.promptRequestId !== undefined ? { promptRequestId: item.promptRequestId } : {}),
-        ...(extra?.predecessorWasAlreadyAborted !== undefined
-          ? { predecessorWasAlreadyAborted: extra.predecessorWasAlreadyAborted }
+        ...(ids?.predecessorWasAlreadyAborted !== undefined
+          ? { predecessorWasAlreadyAborted: ids.predecessorWasAlreadyAborted }
           : {}),
       });
     } catch {
@@ -492,11 +526,25 @@ export class TurnQueue {
 
   private emitQueueUpdated(chatKey: string, sessionAlias: string, queueKey?: string): void {
     const key = queueKey ?? this.resolveKey(chatKey, sessionAlias);
-    const items = (this.queues.get(key) ?? []).map((q) => ({
-      id: q.id,
-      textPreview: q.text.length > QUEUE_PREVIEW_MAX ? q.text.slice(0, QUEUE_PREVIEW_MAX) : q.text,
-      enqueuedAt: q.enqueuedAt,
-    }));
+    const interrupt = this.pendingInterrupts.get(key);
+    const items: QueuedItemSnapshot[] = interrupt
+      ? [{
+          id: interrupt.id,
+          textPreview:
+            interrupt.text.length > QUEUE_PREVIEW_MAX
+              ? interrupt.text.slice(0, QUEUE_PREVIEW_MAX)
+              : interrupt.text,
+          enqueuedAt: interrupt.enqueuedAt,
+          kind: "interrupt",
+        }]
+      : [];
+    for (const q of this.queues.get(key) ?? []) {
+      items.push({
+        id: q.id,
+        textPreview: q.text.length > QUEUE_PREVIEW_MAX ? q.text.slice(0, QUEUE_PREVIEW_MAX) : q.text,
+        enqueuedAt: q.enqueuedAt,
+      });
+    }
     this.deps.emitQueueUpdated(chatKey, sessionAlias, items);
   }
 
@@ -798,12 +846,26 @@ export class TurnQueue {
    *  in-flight turn and dropped every queued prompt (emitting `queue-updated([])`). The caller
    *  should surface a retry, not present the failure as a no-op.
    *
-   *  On `cleared: true` it arms a teardown guard (the busy gate now rejects new turns for this
-   *  session) so a scheduled turn cannot cold-start during the caller's transport teardown. The
-   *  caller MUST call `finishClear` once teardown settles (success or failure) to release it. */
+   *  The teardown guard (`removing`) is armed SYNCHRONOUSLY on ENTRY — before
+   *  any await — so peer admissions (`submitPeerTurn` / `submitPeerInterrupt`)
+   *  fail closed `target-unavailable` for the ENTIRE clear lifecycle; a peer
+   *  interrupt arriving mid-unwind can never be reserved and drained onto the
+   *  dying session. On `cleared: true` the guard stays armed across the
+   *  caller's transport teardown; on `cleared: false` it is released so a
+   *  retry sees a usable lane. The caller MUST call `finishClear` once
+   *  teardown settles (success or failure) to release the guard. */
   async clearSession(chatKey: string, sessionAlias: string, concurrencyKey?: string): Promise<{ cleared: boolean }> {
     const key = this.resolveKey(chatKey, sessionAlias, concurrencyKey);
-    // queues never holds empty arrays, so a successful delete means items were dropped.
+    // v0.4 P1: arm the teardown guard SYNCHRONOUSLY, BEFORE any await. The
+    // unwind window below (awaiting the aborted turn's `settled`) otherwise
+    // lets a fresh submitPeerTurn/submitPeerInterrupt read the lane as merely
+    // busy: the interrupt would be RESERVED, then the old turn's finally
+    // drains it straight onto the dying session — teardown resurrection
+    // (spec §11.2). With the guard up, both peer admissions fail closed
+    // `target-unavailable` for the whole clear lifecycle. Released below on
+    // `cleared: false` so a retryable failure leaves the lane usable.
+    const guardPreexisting = this.removing.has(key);
+    this.removing.add(key);
     const droppedFirst = this.queues.get(key);
     if (droppedFirst) {
       this.queues.delete(key);
@@ -852,10 +914,15 @@ export class TurnQueue {
     // outlived the timeout (or a fresh turn started); `draining` means a hand-off is live.
     const cleared =
       !this.inFlight.has(key) && !this.draining.has(key) && !this.pendingInterrupts.has(key);
-    // Hold the teardown guard across the caller's transport removal so a scheduled
-    // (non-queueable) turn firing in that window is rejected, not run on a dying session.
     if (cleared) {
-      this.removing.add(key);
+      // Hold the teardown guard across the caller's transport removal so a
+      // scheduled (non-queueable) turn firing in that window is rejected, not
+      // run on a dying session. `finishClear` releases it.
+    } else if (!guardPreexisting) {
+      // Failed clear: release the entry guard so the lane stays usable for the
+      // caller's retry. A pre-existing guard (concurrent clear) is not ours to
+      // drop.
+      this.removing.delete(key);
     }
     return { cleared };
   }
