@@ -140,6 +140,7 @@ describe("web-push lib", () => {
   it("disableDesktopNotifications unsubscribes and DELETEs", async () => {
     const unsubscribe = vi.fn().mockResolvedValue(true);
     const getSubscription = vi.fn().mockResolvedValue({ endpoint: "https://push/e1", unsubscribe });
+    apiMocks.del.mockResolvedValue({ ok: true, deleted: true });
     stubNavigator({ registration: { pushManager: { getSubscription } } });
 
     await disableDesktopNotifications();
@@ -151,6 +152,27 @@ describe("web-push lib", () => {
     getSubscription.mockResolvedValue(null);
     await disableDesktopNotifications();
     expect(apiMocks.del).not.toHaveBeenCalled();
+  });
+
+  it("disableDesktopNotifications rejects when unsubscribe fails and Hub DELETE returns deleted: false", async () => {
+    const unsubscribe = vi.fn().mockRejectedValue(new Error("unsub failed"));
+    const getSubscription = vi.fn().mockResolvedValue({ endpoint: "https://push/e1", unsubscribe });
+    const unregister = vi.fn().mockResolvedValue(false); // unproven
+    apiMocks.del.mockResolvedValue({ ok: true, deleted: false }); // hub did not delete
+    stubNavigator({ registration: { pushManager: { getSubscription }, unregister } });
+
+    await expect(disableDesktopNotifications()).rejects.toThrow("push-subscription-destroy-failed");
+  });
+
+  it("disableDesktopNotifications resolves when unsubscribe fails but Hub DELETE returns deleted: true", async () => {
+    const unsubscribe = vi.fn().mockRejectedValue(new Error("unsub failed"));
+    const getSubscription = vi.fn().mockResolvedValue({ endpoint: "https://push/e1", unsubscribe });
+    const unregister = vi.fn().mockResolvedValue(false);
+    apiMocks.del.mockResolvedValue({ ok: true, deleted: true }); // hub confirmed deletion
+    stubNavigator({ registration: { pushManager: { getSubscription }, unregister } });
+
+    await expect(disableDesktopNotifications()).resolves.toBeUndefined();
+    expect(apiMocks.del).toHaveBeenCalledWith("/api/web-push/subscriptions", { endpoint: "https://push/e1" });
   });
 
   it("reconcileExistingSubscription PUTs a matching subscription; skips otherwise", async () => {

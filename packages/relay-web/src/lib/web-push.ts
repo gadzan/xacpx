@@ -166,15 +166,25 @@ export async function disableDesktopNotifications(): Promise<void> {
   const target = await getExistingSubscriptionTarget();
   if (!target.sub) return;
   const endpoint = target.sub.endpoint;
-  await target.sub.unsubscribe().catch(() => {});
-  await api.del("/api/web-push/subscriptions", { endpoint });
+
+  const hubDeleted = await api
+    .del<{ ok: boolean; deleted: boolean }>("/api/web-push/subscriptions", { endpoint })
+    .then((r) => r.deleted === true)
+    .catch(() => false);
+
+  try {
+    await destroyProven(target);
+  } catch (err) {
+    if (!hubDeleted) throw err;
+  }
 }
 
 /**
  * The ONE destruction contract for every path that must prove a push binding
- * is dead: unsubscribe() first; on rejection or a `false` return, fall back to
- * unregistering the whole registration; if neither confirms, THROW — a stale
- * binding surviving an account switch is worse than any error.
+ * is dead: unsubscribe() first (fulfilling — true or false — confirms deactivation);
+ * on rejection, fall back to unregistering the registration and verifying that
+ * both window.pushManager and reg.pushManager resolve null; if neither confirms,
+ * THROW — a stale binding surviving an account switch is worse than any error.
  */
 async function destroyProven(target: {
   sub: PushSubscription | null;
