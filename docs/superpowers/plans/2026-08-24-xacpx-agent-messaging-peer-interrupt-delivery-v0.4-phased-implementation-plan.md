@@ -633,14 +633,19 @@ A sends interrupt to B
 Assert:
 
 ```text
-B old peer turn cancelled
-C gets exactly one cancelled completion
+the predecessor settles (terminal status transport-owned:
+cancelled OR completed)
+C gets exactly ONE terminal completion for msg_C, bound to C's
+requestMessageId (status = actual predecessor outcome; no duplicate,
+no cross-contract completion, no dangling contract)
 A interrupt turn starts after B old turn settles
 ```
 
 ## Hard gate 5.2 — Interrupt request completion=result
 
-Have the cancelled old turn emit partial assistant text.
+Have the old turn emit partial assistant text (marker
+OLD_PREDECESSOR_OUTPUT) — whether it later terminalizes as cancelled or
+completed is transport-owned.
 
 Have the interrupting peer turn return:
 
@@ -654,7 +659,8 @@ Assert A receives only:
 FINAL_INTERRUPT_RESULT
 ```
 
-and never the cancelled predecessor's partial output.
+and never the predecessor's partial output or completion envelope,
+regardless of how the predecessor terminalized.
 
 ## Hard gate 5.3 — Pending interrupt removed pre-start
 
@@ -772,11 +778,14 @@ and preserves old values.
 
 Update `agent_send` description with explicit consequences:
 
-```text
-mode="interrupt" cancels the target's current turn and delivers this message
-as the next turn. Use only when waiting would materially harm the task.
-Default/auto never cancels another Agent's work.
-```
+mode="interrupt" requests cancellation of the target's current turn and
+reserves this message as its highest-priority next turn. xacpx waits for
+the current turn to fully settle before starting the message and never
+runs the two turns in parallel. Some runtimes may finish the current
+turn instead of stopping immediately. Use only when waiting behind
+ordinary queued work would materially harm the task.
+Default/auto never selects interrupt, and xacpx never escalates a
+message to interrupt based on its wording.
 
 Avoid language that encourages routine interruption.
 
@@ -870,7 +879,10 @@ build:packages
 - [ ] G7 duplicate retry one abort/one turn.
 - [ ] G8 cancel pending interrupt.
 - [ ] G9 archive/clear pending interrupt.
-- [ ] G10 interrupted predecessor's completion cancels correctly.
+- [ ] G10 interrupted completion-bearing predecessor: exactly ONE terminal
+      completion bound to its own requestMessageId; status = actual
+      predecessor outcome (cancelled OR completed, transport-owned);
+      no duplicate, no cross-contract completion, no dangling contract.
 - [ ] G11 interrupt completion result uses only new peer turn.
 - [ ] G12 auto/queue never cancel.
 - [ ] G13 real two-daemon Relay interrupt.
@@ -894,9 +906,12 @@ Recommended note:
 
 ```text
 As of Peer Interrupt Delivery v0.4, explicit interrupt for managed logical
-sessions is implemented by xacpx TurnQueue cancel + true-settle + next-turn
-delivery. Native provider steering remains optional and separate.
-```
+sessions is implemented by xacpx TurnQueue as a cancellation-request +
+true-settlement + priority-next-turn primitive with strict no-overlap.
+Whether the underlying transport actually terminates the active model turn
+early is transport-owned; the predecessor may terminalize as cancelled or
+completed and xacpx never rewrites natural completion into cancellation.
+Native provider steering remains optional and separate.
 
 Do not delete historical plans; mark the interrupt portion superseded.
 

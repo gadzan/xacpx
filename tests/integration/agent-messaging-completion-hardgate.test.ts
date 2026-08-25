@@ -623,6 +623,19 @@ test(
       expect(
         bPrompts.filter((t) => t.includes("FINAL_INTERRUPT_RESULT")),
       ).toHaveLength(1);
+
+      // 7. Late cross-contract guard: A's interrupt contract has now fully
+      // terminalized (its result was received above). Re-read C — if a buggy
+      // late route ever delivered A's terminal to C, it would be visible only
+      // AFTER A's completion. C must still hold EXACTLY ONE terminal, bound
+      // to C's own requestMessageId, with no trace of A's.
+      const finalCCompletions = (await daemonC.readPrompts()).filter(
+        (t) =>
+          t.includes("xacpx-peer-completion") || t.includes("xacpx-peer-result"),
+      );
+      expect(finalCCompletions).toHaveLength(1);
+      expect(finalCCompletions[0]).toContain(`request-id="${cMsgId}"`);
+      expect(finalCCompletions[0]).not.toContain(`request-id="${aMsgId}"`);
     } finally {
       await daemonA.dispose();
       await daemonB.dispose();
