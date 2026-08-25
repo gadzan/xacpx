@@ -57,6 +57,10 @@ export interface AppDeps {
   vapidPublicKey?: () => string | null;
   /** Web push: browser subscription storage; omitted = push routes 503. */
   pushSubscriptions?: PushSubscriptionStore;
+  /** Web push / provenance: called when an interactive prompt is initiated via Web RPC. */
+  onWebPromptCreated?: (input: { promptRequestId: string; instanceId: string; sessionAlias: string }) => void;
+  /** Web push / provenance: called when an interactive prompt fails before execution. */
+  onWebPromptRejected?: (promptRequestId: string) => void;
 }
 
 const SESSION_COOKIE = "xrelay_session";
@@ -591,6 +595,7 @@ export function createApp(deps: AppDeps): Hono<Vars> {
     }
     const releaseSessionRpcLocks: Array<() => void> = [];
     let persistedPromptId: number | undefined;
+    let webPromptRequestId: string | undefined;
     try {
       // Shape-validate the RPCs the hub persists BEFORE forwarding, so a malformed frame
       // can't poison history ahead of the connector's own boundary check. Error body carries
@@ -655,13 +660,24 @@ export function createApp(deps: AppDeps): Hono<Vars> {
           // queue item still correlates back to this exact row via promptRequestId —
           // text matching cannot distinguish a redelivery from a duplicate prompt.
           const promptRequestId = randomUUID();
+          if (body.type === MSG.prompt) {
+            webPromptRequestId = promptRequestId;
+          }
           persistedPromptId = deps.messages.append(instance.id, p.sessionAlias, "in", p.text, undefined, attachments, promptRequestId);
           if (body.type === MSG.prompt && typeof payload === "object" && payload !== null) {
             (payload as Record<string, unknown>).promptRequestId = promptRequestId;
+            deps.onWebPromptCreated?.({
+              promptRequestId,
+              instanceId: instance.id,
+              sessionAlias: p.sessionAlias,
+            });
           }
         }
       }
       const result = await deps.gateway.sendRequest(instance.id, body.type, payload);
+      if (webPromptRequestId && isErrorPayload(result)) {
+        deps.onWebPromptRejected?.(webPromptRequestId);
+      }
       if (body.type === MSG.prompt && persistedPromptId !== undefined
         && typeof result === "object" && result !== null
         && (result as { queued?: unknown }).queued === true
@@ -686,10 +702,10 @@ export function createApp(deps: AppDeps): Hono<Vars> {
       }
       return c.json({ result });
     } catch (error) {
+      if (webPromptRequestId) {
+        deps.onWebPromptRejected?.(webPromptRequestId);
+      }
       const message = error instanceof Error ? error.message : String(error);
-      // 503: transient availability — the instance is offline, or the connection was
-      // superseded by a reconnect before the RPC could be answered (the caller may
-      // retry). 504: the request budget expired. Anything else is a server error.
       if (message === "instance-offline" || message === "instance-reconnected") return c.json({ error: message }, 503);
       if (message === "timeout") return c.json({ error: message }, 504);
       return c.json({ error: message }, 500);

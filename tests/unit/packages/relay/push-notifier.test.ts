@@ -154,3 +154,81 @@ test("sendTaskCompletion fans out to both FCM and Apple endpoints and cleans up 
   // 410 should have cleaned up both expired subscriptions
   expect(subscriptions.listByAccount("a1")).toHaveLength(0);
 });
+
+test("sendTurnCompletion pushes success with custom title and capped body", async () => {
+  const sent: SentCall[] = [];
+  const { notifier, subscriptions } = await makeNotifier(sent);
+  subscriptions.upsert({ accountId: "a1", endpoint: "https://push/e1", p256dh: "k1", auth: "a1" });
+
+  await notifier.sendTurnCompletion("a1", {
+    instanceId: "i1",
+    instanceName: "MacBook",
+    sessionAlias: "backend",
+    text: "done with everything ".repeat(20),
+    ok: true,
+  });
+
+  expect(sent).toHaveLength(1);
+  expect(sent[0]!.ttl).toBe(PUSH_TTL_SECONDS);
+  const payload = JSON.parse(sent[0]!.payload);
+  expect(payload.title).toBe("MacBook · backend");
+  expect(payload.body).toHaveLength(200);
+  expect(payload.instanceId).toBe("i1");
+  expect(payload.url).toBe("/");
+});
+
+test("sendTurnCompletion uses Task completed fallback when success text is empty", async () => {
+  const sent: SentCall[] = [];
+  const { notifier, subscriptions } = await makeNotifier(sent);
+  subscriptions.upsert({ accountId: "a1", endpoint: "https://push/e1", p256dh: "k1", auth: "a1" });
+
+  await notifier.sendTurnCompletion("a1", {
+    instanceId: "i1",
+    instanceName: "MacBook",
+    sessionAlias: "backend",
+    text: "   ",
+    ok: true,
+  });
+
+  expect(sent).toHaveLength(1);
+  const payload = JSON.parse(sent[0]!.payload);
+  expect(payload.title).toBe("MacBook · backend");
+  expect(payload.body).toBe("Task completed");
+});
+
+test("sendTurnCompletion formats failure error message", async () => {
+  const sent: SentCall[] = [];
+  const { notifier, subscriptions } = await makeNotifier(sent);
+  subscriptions.upsert({ accountId: "a1", endpoint: "https://push/e1", p256dh: "k1", auth: "a1" });
+
+  await notifier.sendTurnCompletion("a1", {
+    instanceId: "i1",
+    instanceName: "MacBook",
+    sessionAlias: "backend",
+    ok: false,
+    errorMessage: "provider unavailable",
+  });
+
+  expect(sent).toHaveLength(1);
+  const payload = JSON.parse(sent[0]!.payload);
+  expect(payload.title).toBe("MacBook · backend");
+  expect(payload.body).toBe("Task failed: provider unavailable");
+});
+
+test("sendTurnCompletion formats failure fallback when errorMessage is missing", async () => {
+  const sent: SentCall[] = [];
+  const { notifier, subscriptions } = await makeNotifier(sent);
+  subscriptions.upsert({ accountId: "a1", endpoint: "https://push/e1", p256dh: "k1", auth: "a1" });
+
+  await notifier.sendTurnCompletion("a1", {
+    instanceId: "i1",
+    instanceName: "MacBook",
+    sessionAlias: "backend",
+    ok: false,
+  });
+
+  expect(sent).toHaveLength(1);
+  const payload = JSON.parse(sent[0]!.payload);
+  expect(payload.title).toBe("MacBook · backend");
+  expect(payload.body).toBe("Task failed: Unknown error");
+});

@@ -677,6 +677,13 @@ export class TurnQueue {
     };
     let result: TurnResult | undefined;
     try {
+      const turnStarted = params.turnStarted
+        ? (params.promptRequestId !== undefined && params.turnStarted.promptRequestId === undefined
+            ? { ...params.turnStarted, promptRequestId: params.promptRequestId }
+            : params.turnStarted)
+        : (params.promptRequestId !== undefined
+            ? { promptRequestId: params.promptRequestId }
+            : undefined);
       result = await this.deps.runTurn(
         {
           chatKey: params.chatKey,
@@ -686,7 +693,7 @@ export class TurnQueue {
           senderId: params.senderId,
           isOwner: params.isOwner,
           accountId: params.accountId,
-          turnStarted: params.turnStarted,
+          turnStarted,
           media: params.media,
           agentMentions: params.agentMentions,
           allowRestoreArchived: params.allowRestoreArchived,

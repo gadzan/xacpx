@@ -158,8 +158,35 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   // remain for the flat fallback + the persisted `text` column. `truncated` rides the
   // state sync: a connector that capped this turn at STATE_SYNC_TEXT_CAP marks it so
   // the final flush persists structured.truncated instead of a silently-gappy reply.
-  interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reasoning: string; parts: TurnPartDto[]; startedAt: number; truncated?: boolean }
+  interface TurnNotificationContext {
+    origin: "relay-web";
+    promptRequestId: string;
+  }
+  interface TurnAccumulator {
+    text: string;
+    steps: Map<string, ToolStepDto>;
+    reasoning: string;
+    parts: TurnPartDto[];
+    startedAt: number;
+    truncated?: boolean;
+    notification?: TurnNotificationContext;
+  }
   const turnBuffers = new Map<string, TurnAccumulator>();
+  interface PendingWebPrompt {
+    instanceId: string;
+    sessionAlias: string;
+    createdAt: number;
+  }
+  const pendingWebPrompts = new Map<string, PendingWebPrompt>();
+  const PENDING_WEB_PROMPT_TTL_MS = 24 * 60 * 60_000;
+  const prunePendingWebPrompts = () => {
+    const now = Date.now();
+    for (const [id, entry] of pendingWebPrompts) {
+      if (now - entry.createdAt > PENDING_WEB_PROMPT_TTL_MS) {
+        pendingWebPrompts.delete(id);
+      }
+    }
+  };
   const key = (instanceId: string, alias: string) => `${instanceId}\0${alias}`;
   // Content fingerprints (`instanceId, alias, prompt, outText`) of finishedOffline
   // entries this runtime has already persisted from an `instance.state.sync`. A sync
@@ -349,6 +376,14 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           webGateway.broadcast(accountId, { kind: "control-event", instanceId, event });
           if (event.type === "turn-started") {
             const k = key(instanceId, event.sessionAlias);
+            let notification: TurnNotificationContext | undefined;
+            if (!event.scheduled && !event.peerOrigin && typeof event.promptRequestId === "string") {
+              const pending = pendingWebPrompts.get(event.promptRequestId);
+              if (pending && pending.instanceId === instanceId && pending.sessionAlias === event.sessionAlias) {
+                notification = { origin: "relay-web", promptRequestId: event.promptRequestId };
+                pendingWebPrompts.delete(event.promptRequestId);
+              }
+            }
             // Reconcile the inbound prompt FIRST (queued promotion / pre-write
             // correlation / scheduled append) and only install the streaming buffer
             // once it succeeded. A persistence failure here is NOT silent: it forces a
@@ -361,7 +396,14 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 { prompt: event.prompt, queueItemId: event.queueItemId, scheduled: event.scheduled, promptRequestId: event.promptRequestId },
                 true,
               );
-              turnBuffers.set(k, { text: "", steps: new Map(), reasoning: "", parts: [], startedAt: Date.now() });
+              turnBuffers.set(k, {
+                text: "",
+                steps: new Map(),
+                reasoning: "",
+                parts: [],
+                startedAt: Date.now(),
+                ...(notification ? { notification } : {}),
+              });
             } catch (err) {
               turnBuffers.delete(k);
               gateway.disconnect(instanceId);
@@ -458,6 +500,17 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               gateway.sendEvent(instanceId, MSG.instanceRecoveryAck, { recoveryIds: [recoveryId] } satisfies InstanceRecoveryAckPayload);
             } else {
               flush();
+            }
+            if (a?.notification?.origin === "relay-web" && !event.peerOrigin && event.cancelled !== true) {
+              const instanceName = instances.getOwned(instanceId, accountId)?.name ?? instanceId;
+              void pushNotifier.sendTurnCompletion(accountId, {
+                instanceId,
+                instanceName,
+                sessionAlias: event.sessionAlias,
+                text: a.text || event.text,
+                ok: event.ok,
+                errorMessage: event.errorMessage,
+              });
             }
           } else if (event.type === "turn-usage") {
             // Retain the latest usage per session (replace) so a refreshed web client can
@@ -697,6 +750,17 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     logger,
     vapidPublicKey: vapid ? () => vapid.publicKey : undefined,
     pushSubscriptions,
+    onWebPromptCreated: ({ promptRequestId, instanceId, sessionAlias }) => {
+      prunePendingWebPrompts();
+      pendingWebPrompts.set(promptRequestId, {
+        instanceId,
+        sessionAlias,
+        createdAt: Date.now(),
+      });
+    },
+    onWebPromptRejected: (promptRequestId) => {
+      pendingWebPrompts.delete(promptRequestId);
+    },
   });
   const completionRouteSweepTimer = setInterval(
     () => gateway.sweepExpiredCompletionRoutes(),

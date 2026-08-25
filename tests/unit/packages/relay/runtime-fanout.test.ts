@@ -301,3 +301,313 @@ test("task-completion notice fans out to push; other kinds do not", async () => 
 
   runtime.close();
 });
+
+async function setupPushRuntime() {
+  const runtime = await createRelayRuntime(":memory:", {
+    vapid: {
+      subject: "mailto:test@example.com",
+      publicKey: "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U",
+      privateKey: "w7gAGvS_Do-fQS4qrv63qkIsaqw6ni5nyJoh3ud-BRU",
+    },
+  });
+  runtime.db.run("INSERT INTO accounts (id, username, created_at) VALUES (?,?,?)", ["a1", "u", "t"]);
+  runtime.db.run("INSERT INTO instances (id, account_id, name, credential_hash, created_at) VALUES (?,?,?,?,?)", ["i1", "a1", "MacBook", "h", "t"]);
+  runtime.pushSubscriptions.upsert({ accountId: "a1", endpoint: "https://push/e1", p256dh: "k", auth: "a" });
+
+  const sent: Array<{ endpoint: string; payload: string }> = [];
+  (runtime.pushNotifier as unknown as { _setWebPushForTests(w: unknown): void })._setWebPushForTests({
+    setVapidDetails: () => {},
+    sendNotification: async (sub: { endpoint: string }, payload: string) => {
+      sent.push({ endpoint: sub.endpoint, payload });
+    },
+  });
+
+  const { token: loginToken } = runtime.accounts.createLoginToken("a1", "test");
+  const loginRes = await runtime.app.request("/api/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token: loginToken }),
+  });
+  const cookie = loginRes.headers.get("set-cookie")?.split(";")[0] ?? "";
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+
+  const notice = (payload: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceNotice, payload,
+  });
+
+  return { runtime, sent, cookie, fire, notice };
+}
+
+test("Gate 1: ordinary relay-web prompt completion fans out exactly 1 push with custom title and body", async () => {
+  const { runtime, sent, cookie, fire } = await setupPushRuntime();
+
+  let forwardedPromptRequestId: string | undefined;
+  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, _type: string, payload: unknown) => {
+    forwardedPromptRequestId = (payload as { promptRequestId?: string }).promptRequestId;
+    return { ok: true };
+  };
+
+  const rpcPromise = runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "fix bug" } }),
+  });
+  const res = await rpcPromise;
+  expect(res.status).toBe(200);
+  expect(forwardedPromptRequestId).toBeString();
+
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", promptRequestId: forwardedPromptRequestId });
+  fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "bug fixed" });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
+
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(1);
+  expect(JSON.parse(sent[0]!.payload)).toEqual({
+    title: "MacBook · backend",
+    body: "bug fixed",
+    instanceId: "i1",
+    url: "/",
+  });
+  runtime.close();
+});
+
+test("Gate 2: turn-finished without prompt provenance triggers 0 pushes", async () => {
+  const { runtime, sent, fire } = await setupPushRuntime();
+
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend" });
+  fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "done" });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
+
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(0);
+  runtime.close();
+});
+
+test("Gate 3: orchestration task completion sends task push without duplicate ordinary turn push", async () => {
+  const { runtime, sent, fire, notice } = await setupPushRuntime();
+
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "orch-worker" });
+  fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "orch-worker", chunk: "subtask done" });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "orch-worker", ok: true });
+
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(0);
+
+  notice({ kind: "task-completion", text: "orchestration finished", taskId: "t1" });
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(1);
+  expect(JSON.parse(sent[0]!.payload)).toEqual({
+    title: "MacBook",
+    body: "orchestration finished",
+    instanceId: "i1",
+    url: "/",
+  });
+  runtime.close();
+});
+
+test("Gate 4: scheduled turn-started triggers 0 ordinary pushes", async () => {
+  const { runtime, sent, fire } = await setupPushRuntime();
+
+  fire({
+    type: "turn-started",
+    chatKey: "relay:a1",
+    sessionAlias: "backend",
+    promptRequestId: "sched-req-1",
+    scheduled: { taskId: "task1", executeAt: new Date().toISOString() },
+  });
+  fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "scheduled result" });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
+
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(0);
+  runtime.close();
+});
+
+test("Gate 5: peer turn-started triggers 0 pushes", async () => {
+  const { runtime, sent, fire } = await setupPushRuntime();
+
+  const peerOrigin = {
+    sourceNodeId: "node-1",
+    sourceHandle: "agent:test",
+    requestMessageId: "msg-1",
+    completion: "result" as const,
+  };
+  fire({
+    type: "turn-started",
+    chatKey: "relay:a1",
+    sessionAlias: "backend",
+    promptRequestId: "peer-req-1",
+    peerOrigin,
+  });
+  fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "peer result" });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true, peerOrigin });
+
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(0);
+  runtime.close();
+});
+
+test("Gate 6: cancelled turn-finished triggers 0 pushes", async () => {
+  const { runtime, sent, cookie, fire } = await setupPushRuntime();
+
+  let reqId: string | undefined;
+  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, _type: string, payload: unknown) => {
+    reqId = (payload as { promptRequestId?: string }).promptRequestId;
+    return { ok: true };
+  };
+
+  await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "cancel me" } }),
+  });
+
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", promptRequestId: reqId });
+  fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "partial" });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: false, cancelled: true });
+
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(0);
+  runtime.close();
+});
+
+test("Gate 7: failed turn-finished triggers 1 failure push", async () => {
+  const { runtime, sent, cookie, fire } = await setupPushRuntime();
+
+  let reqId: string | undefined;
+  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, _type: string, payload: unknown) => {
+    reqId = (payload as { promptRequestId?: string }).promptRequestId;
+    return { ok: true };
+  };
+
+  await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "fail task" } }),
+  });
+
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", promptRequestId: reqId });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: false, errorMessage: "provider unavailable" });
+
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(1);
+  expect(JSON.parse(sent[0]!.payload)).toEqual({
+    title: "MacBook · backend",
+    body: "Task failed: provider unavailable",
+    instanceId: "i1",
+    url: "/",
+  });
+  runtime.close();
+});
+
+test("Gate 8: queued prompt pushes only when drained turn actually finishes", async () => {
+  const { runtime, sent, cookie, fire } = await setupPushRuntime();
+
+  let bReqId: string | undefined;
+  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, _type: string, payload: unknown) => {
+    bReqId = (payload as { promptRequestId?: string }).promptRequestId;
+    return { ok: true, queued: true, queueItemId: "q1" };
+  };
+
+  const resB = await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "prompt B" } }),
+  });
+  expect(resB.status).toBe(200);
+  expect(bReqId).toBeString();
+
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(0);
+
+  // A finishes (A had no web provenance)
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(0);
+
+  // B drains and starts
+  fire({
+    type: "turn-started",
+    chatKey: "relay:a1",
+    sessionAlias: "backend",
+    queueItemId: "q1",
+    promptRequestId: bReqId,
+    prompt: "prompt B",
+  });
+  fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "B complete" });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
+
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(1);
+  expect(JSON.parse(sent[0]!.payload)).toEqual({
+    title: "MacBook · backend",
+    body: "B complete",
+    instanceId: "i1",
+    url: "/",
+  });
+  runtime.close();
+});
+
+test("Gate 9: queued prompt never started produces 0 pushes", async () => {
+  const { runtime, sent, cookie } = await setupPushRuntime();
+
+  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async () => {
+    return { ok: true, queued: true, queueItemId: "q1" };
+  };
+
+  await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "will cancel" } }),
+  });
+
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(0);
+  runtime.close();
+});
+
+test("Gate 10: finish without live TurnAccumulator produces 0 push", async () => {
+  const { runtime, sent, fire } = await setupPushRuntime();
+
+  fire({
+    type: "turn-finished",
+    chatKey: "relay:a1",
+    sessionAlias: "backend",
+    text: "finished while hub down",
+    ok: true,
+  });
+
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(0);
+  runtime.close();
+});
+
+test("Gate 11: duplicate turn-finished produces exactly 1 push", async () => {
+  const { runtime, sent, cookie, fire } = await setupPushRuntime();
+
+  let reqId: string | undefined;
+  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, _type: string, payload: unknown) => {
+    reqId = (payload as { promptRequestId?: string }).promptRequestId;
+    return { ok: true };
+  };
+
+  await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "hi" } }),
+  });
+
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", promptRequestId: reqId });
+  fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "first" });
+
+  // First finish
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
+  // Duplicate finish
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
+
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(1);
+  runtime.close();
+});
