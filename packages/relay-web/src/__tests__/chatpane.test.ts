@@ -191,7 +191,7 @@ it("flat sidebar: archiving the SELECTED session keeps the avatar driver through
   expect(icon.attributes("data-driver")).toBe("kimi");
 });
 
-it("flat sidebar: a failed archive rolls the optimistic archived flag back", async () => {
+it("flat sidebar: a failed archive rolls the optimistic archived flag back (transport throw)", async () => {
   const instances = useInstancesStore();
   instances.instances.push({
     id: "i1", name: "prod-box", online: true, lastSeenAt: null,
@@ -207,6 +207,71 @@ it("flat sidebar: a failed archive rolls the optimistic archived flag back", asy
   rpc.mockRestore();
   // Rollback: the row stays active-looking so the sidebar doesn't grey a live session.
   expect(instances.byId("i1")!.sessions.find((s) => s.alias === "main")?.archived).toBe(false);
+});
+
+it("flat sidebar: a connector ErrorPayload (HTTP 200 {error:…}) archive also rolls back", async () => {
+  // The control bridge wraps connector business errors as a RESOLVED {error:{code,
+  // message}} payload — api.rpc does NOT reject. Only unwrap() surfaces it, so this
+  // test locks that archiveSession routes through unwrap and the optimistic flag
+  // still rolls back (the gap called out in #304 review round 3).
+  const instances = useInstancesStore();
+  instances.instances.push({
+    id: "i1", name: "prod-box", online: true, lastSeenAt: null,
+    sessions: [{ alias: "main", agent: "my-kimi", driver: "kimi", workspace: "ws", transportSession: "t1", running: false, archived: false }],
+    agents: [], workspaces: [], agentCatalog: [],
+  } as never);
+  const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id: string, type: string) => {
+    if (type === "control.sessions.archive") return { error: { code: "session-still-draining", message: "session \"main\" is still finishing a stopped turn; retry in a moment" } };
+    if (type === "control.agents.list") return { agents: [] };
+    return { sessions: [], hasMore: false };
+  });
+  await expect(instances.archiveSession("i1", "main")).rejects.toThrow("still finishing a stopped turn");
+  // Assert BEFORE mockRestore: Vitest's mockRestore runs mockReset first, which
+  // clears the call history — after restore, "not called" is vacuously true.
+  // The follow-up refetch never ran (the RPC aborted before loadSessions).
+  expect(rpc).not.toHaveBeenCalledWith("i1", "control.sessions.list", expect.anything());
+  rpc.mockRestore();
+  expect(instances.byId("i1")!.sessions.find((s) => s.alias === "main")?.archived).toBe(false);
+});
+
+it("removeSession: a connector ErrorPayload rejects before any purge or refetch", async () => {
+  // The store's remove purges the tail cache + view snapshots then refetches —
+  // all of that must be gated on a successful delete, not a resolved {error:…}.
+  const instances = useInstancesStore();
+  instances.instances.push({
+    id: "i1", name: "prod-box", online: true, lastSeenAt: null,
+    sessions: [{ alias: "main", agent: "my-kimi", driver: "kimi", workspace: "ws", transportSession: "t1", running: false, archived: false }],
+    agents: [], workspaces: [], agentCatalog: [],
+  } as never);
+  const chat = useChatStore();
+  const purgeSpy = vi.spyOn(chat, "purgeTailCache").mockImplementation(() => {});
+  const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id: string, type: string) => {
+    if (type === "control.sessions.remove") return { error: { code: "still-finishing-turn", message: "session \"main\" is still finishing a stopped turn; retry in a moment" } };
+    if (type === "control.agents.list") return { agents: [] };
+    return { sessions: [], hasMore: false };
+  });
+  await expect(instances.removeSession("i1", "main")).rejects.toThrow("still finishing a stopped turn");
+  expect(purgeSpy).not.toHaveBeenCalled();
+  expect(rpc).not.toHaveBeenCalledWith("i1", "control.sessions.list", expect.anything());
+  rpc.mockRestore();
+  purgeSpy.mockRestore();
+});
+
+it("unarchiveSession: a connector ErrorPayload rejects without a follow-up reload", async () => {
+  const instances = useInstancesStore();
+  instances.instances.push({
+    id: "i1", name: "prod-box", online: true, lastSeenAt: null,
+    sessions: [{ alias: "main", agent: "my-kimi", driver: "kimi", workspace: "ws", transportSession: "t1", running: false, archived: true }],
+    agents: [], workspaces: [], agentCatalog: [],
+  } as never);
+  const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id: string, type: string) => {
+    if (type === "control.sessions.unarchive") return { error: { code: "session-missing", message: "session \"main\" does not exist" } };
+    if (type === "control.agents.list") return { agents: [] };
+    return { sessions: [], hasMore: false };
+  });
+  await expect(instances.unarchiveSession("i1", "main")).rejects.toThrow("does not exist");
+  expect(rpc).not.toHaveBeenCalledWith("i1", "control.sessions.list", expect.anything());
+  rpc.mockRestore();
 });
 
 it("localizes the empty-state prompt when locale is zh-CN", () => {

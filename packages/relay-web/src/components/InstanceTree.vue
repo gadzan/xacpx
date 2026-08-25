@@ -295,24 +295,42 @@ function onRowTap(id: string, alias: string) {
 async function onArchive(id: string, alias: string) {
   openMenuFor.value = null;
   openSwipeFor.value = null;
+  // RPC FIRST: a connector business error (HTTP 200 {error:…} surfaced by the
+  // store's unwrap) must leave the UI untouched — tearing down tabs/terminal or
+  // showing the undo toast before the RPC settles produced a fake success on
+  // failure. Teardown runs only once the archive actually landed.
+  try {
+    await store.archiveSession(id, alias);
+  } catch (e) {
+    pushToast("error", "instance.sessionArchiveFailed", { alias, msg: e instanceof Error ? e.message : String(e) });
+    return;
+  }
   // Drop this session's center tabs. TerminalTab unmount detaches the viewer;
   // channel-relay retires the durable resource — browser must not terminate/kill.
   const key = sessionKey(id, alias);
   detachSessionTerminal(key, id, alias, terminals);
   centerTabs.clearSession(key);
-  await store.archiveSession(id, alias).catch(() => {});
   showUndoToast(id, alias);
 }
 async function onUnarchive(id: string, alias: string) {
   openMenuFor.value = null;
   openSwipeFor.value = null;
-  await store.unarchiveSession(id, alias).catch(() => {});
+  try {
+    await store.unarchiveSession(id, alias);
+  } catch (e) {
+    pushToast("error", "instance.sessionUnarchiveFailed", { alias, msg: e instanceof Error ? e.message : String(e) });
+  }
 }
 function showUndoToast(id: string, alias: string) {
   showActionToast({
     message: t("instance.sessionArchivedToast", { alias }),
     actionLabel: t("instance.undo"),
-    action: () => { void store.unarchiveSession(id, alias).catch(() => {}); },
+    // Reuse onUnarchive (NOT a raw store call): runToastAction clears this toast
+    // BEFORE the action runs, so a connector business error must surface as an
+    // error toast via the same handler the ⋯-menu Wake path uses — otherwise the
+    // user loses the undo affordance AND gets no failure feedback while the
+    // session stays archived.
+    action: () => { void onUnarchive(id, alias); },
   });
 }
 
@@ -330,12 +348,20 @@ async function askDelete(id: string, alias: string) {
   // Deleting the session you're viewing drops the view back to the empty "no session"
   // state rather than leaving a stale, now-broken selection pointed at it.
   const wasActive = isSelected(id, alias);
+  // RPC FIRST (same rationale as onArchive): a rejected removal must keep the tabs,
+  // terminal viewer and selection intact. The tail-cache purge inside the store
+  // already only runs on a successful delete.
+  try {
+    await store.removeSession(id, alias);
+  } catch (e) {
+    pushToast("error", "instance.sessionDeleteFailed", { alias, msg: e instanceof Error ? e.message : String(e) });
+    return;
+  }
   // Drop this session's center tabs so they unmount along with it. Browser detaches only;
   // channel-relay owns resource retirement for deleted sessions.
   const key = sessionKey(id, alias);
   detachSessionTerminal(key, id, alias, terminals);
   centerTabs.clearSession(key);
-  void store.removeSession(id, alias).catch(() => {});
   if (wasActive) chat.clearSelection();
 }
 
