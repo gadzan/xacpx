@@ -678,7 +678,13 @@ export function createApp(deps: AppDeps): Hono<Vars> {
         }
       }
       const result = await deps.gateway.sendRequest(instance.id, body.type, payload);
-      if (webPromptRequestId && isErrorPayload(result)) {
+      const isPromptRejection =
+        body.type === MSG.prompt
+        && typeof result === "object"
+        && result !== null
+        && "ok" in result
+        && result.ok === false;
+      if (webPromptRequestId && (isErrorPayload(result) || isPromptRejection)) {
         deps.onWebPromptRejected?.(webPromptRequestId);
       }
       if (body.type === MSG.prompt && persistedPromptId !== undefined

@@ -425,11 +425,13 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           if (event.type === "turn-started") {
             const k = key(instanceId, event.sessionAlias);
             let notification: TurnNotificationContext | undefined;
-            if (!event.scheduled && !event.peerOrigin && typeof event.promptRequestId === "string") {
+            if (typeof event.promptRequestId === "string") {
               const pending = pendingWebPrompts.get(event.promptRequestId);
               if (pending && pending.instanceId === instanceId && pending.sessionAlias === event.sessionAlias) {
-                notification = { origin: "relay-web", promptRequestId: event.promptRequestId };
                 removePendingWebPrompt(event.promptRequestId);
+                if (!event.scheduled && !event.peerOrigin) {
+                  notification = { origin: "relay-web", promptRequestId: event.promptRequestId };
+                }
               }
             }
             // Reconcile the inbound prompt FIRST (queued promotion / pre-write

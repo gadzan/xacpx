@@ -432,6 +432,7 @@ test("Gate 4: scheduled turn-started with matching web provenance triggers 0 ord
     promptRequestId: registeredId,
     scheduled: { taskId: "task1", executeAt: new Date().toISOString() },
   });
+  expect(runtime.pendingWebPromptsCount?.()).toBe(0);
   fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "scheduled result" });
   fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
 
@@ -471,6 +472,7 @@ test("Gate 5: peer turn-started with matching web provenance triggers 0 pushes",
     promptRequestId: registeredId,
     peerOrigin,
   });
+  expect(runtime.pendingWebPromptsCount?.()).toBe(0);
   fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "peer result" });
   fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true, peerOrigin });
 
@@ -616,6 +618,26 @@ test("Gate 9: queueCancel RPC cleans up pending provenance and produces 0 pushes
   fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
   await new Promise((r) => setTimeout(r, 10));
   expect(sent).toHaveLength(0);
+  runtime.close();
+});
+
+test("prompt business rejection (e.g. queue-full) cleans up pending provenance immediately", async () => {
+  const { runtime, cookie } = await setupPushRuntime();
+
+  let registeredId: string | undefined;
+  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, _type: string, payload: unknown) => {
+    registeredId = (payload as { promptRequestId?: string }).promptRequestId;
+    return { ok: false, errorMessage: "queue-full" };
+  };
+
+  const res = await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "overflow task" } }),
+  });
+  expect(res.status).toBe(200);
+  expect(registeredId).toBeString();
+  expect(runtime.pendingWebPromptsCount?.()).toBe(0);
   runtime.close();
 });
 
