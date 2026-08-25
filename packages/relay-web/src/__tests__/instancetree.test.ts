@@ -7,7 +7,7 @@ import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useTerminalStore, terminalLocalKey } from "../stores/terminal";
 import { settleConfirm, useConfirmState } from "../lib/use-confirm";
-
+import { useActionToastState, dismissToast } from "../lib/use-action-toast";
 const instance = (sessions: unknown[] = [], sessionsLoaded = true) => ({
   id: "i1", name: "pc", online: true, lastSeenAt: null, sessions, sessionsLoaded, agents: [], workspaces: [],
 });
@@ -397,6 +397,56 @@ describe("InstanceTree session management", () => {
     await flushPromises();
     expect(clearSession).toHaveBeenCalledWith(key);
     expect(centerTabs.tabsFor(key)).toEqual([]);
+  });
+
+  // A connector business error (HTTP 200 {error:…} surfaced by the store) must
+  // leave the UI untouched: no tab teardown, no terminal detach, no undo toast —
+  // only an error toast. The pre-PR order tore everything down BEFORE the RPC
+  // settled, producing a fake success.
+  it("keeps center tabs and shows an error toast when the archive RPC rejects", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
+    vi.spyOn(store, "archiveSession").mockRejectedValue(new Error("still finishing a stopped turn"));
+    const centerTabs = useCenterTabsStore();
+    const key = sessionKey("i1", "backend");
+    centerTabs.openTerminal(key);
+    const clearSession = vi.spyOn(centerTabs, "clearSession");
+    // The undo toast is a module singleton — an earlier success-path test may have
+    // left one armed (its 6s timer outlives the test). Reset so null is meaningful.
+    dismissToast();
+    const actionToast = useActionToastState();
+    const w = mount(InstanceTree, { attachTo: document.body, global: { stubs: { NewSessionDialog: true } } });
+    await w.find('[data-test="session-menu"]').trigger("mousedown");
+    await w.find('[data-test="session-menu"]').trigger("click");
+    const item = w.find('[data-test="action-archive"]');
+    await item.trigger("mousedown");
+    await item.trigger("click");
+    await flushPromises();
+    expect(clearSession).not.toHaveBeenCalled();
+    expect(centerTabs.tabsFor(key)).toHaveLength(1);
+    // No success/undo toast — the error surfaces instead.
+    expect(actionToast.value).toBeNull();
+    w.unmount();
+  });
+
+  it("keeps the selection and center tabs when the delete RPC rejects", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
+    vi.spyOn(store, "removeSession").mockRejectedValue(new Error("still finishing a stopped turn"));
+    const chat = useChatStore();
+    chat.select("i1", "backend");
+    const centerTabs = useCenterTabsStore();
+    const key = sessionKey("i1", "backend");
+    centerTabs.openTerminal(key);
+    const clearSession = vi.spyOn(centerTabs, "clearSession");
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    await w.find('[data-test="session-menu"]').trigger("click");
+    await w.find('[data-test="delete-session"]').trigger("click");
+    settleConfirm(true);
+    await flushPromises();
+    expect(clearSession).not.toHaveBeenCalled();
+    expect(centerTabs.tabsFor(key)).toHaveLength(1);
+    expect(chat.sessionAlias).toBe("backend"); // selection kept
   });
 
   // Delete only detaches the local viewer; channel-relay retires the durable resource.

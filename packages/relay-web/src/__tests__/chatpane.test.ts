@@ -226,10 +226,52 @@ it("flat sidebar: a connector ErrorPayload (HTTP 200 {error:…}) archive also r
     return { sessions: [], hasMore: false };
   });
   await expect(instances.archiveSession("i1", "main")).rejects.toThrow("still finishing a stopped turn");
+  // Assert BEFORE mockRestore: Vitest's mockRestore runs mockReset first, which
+  // clears the call history — after restore, "not called" is vacuously true.
+  // The follow-up refetch never ran (the RPC aborted before loadSessions).
+  expect(rpc).not.toHaveBeenCalledWith("i1", "control.sessions.list", expect.anything());
   rpc.mockRestore();
   expect(instances.byId("i1")!.sessions.find((s) => s.alias === "main")?.archived).toBe(false);
-  // The follow-up refetch never ran either (the RPC aborted before loadSessions).
+});
+
+it("removeSession: a connector ErrorPayload rejects before any purge or refetch", async () => {
+  // The store's remove purges the tail cache + view snapshots then refetches —
+  // all of that must be gated on a successful delete, not a resolved {error:…}.
+  const instances = useInstancesStore();
+  instances.instances.push({
+    id: "i1", name: "prod-box", online: true, lastSeenAt: null,
+    sessions: [{ alias: "main", agent: "my-kimi", driver: "kimi", workspace: "ws", transportSession: "t1", running: false, archived: false }],
+    agents: [], workspaces: [], agentCatalog: [],
+  } as never);
+  const chat = useChatStore();
+  const purgeSpy = vi.spyOn(chat, "purgeTailCache").mockImplementation(() => {});
+  const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id: string, type: string) => {
+    if (type === "control.sessions.remove") return { error: { code: "still-finishing-turn", message: "session \"main\" is still finishing a stopped turn; retry in a moment" } };
+    if (type === "control.agents.list") return { agents: [] };
+    return { sessions: [], hasMore: false };
+  });
+  await expect(instances.removeSession("i1", "main")).rejects.toThrow("still finishing a stopped turn");
+  expect(purgeSpy).not.toHaveBeenCalled();
   expect(rpc).not.toHaveBeenCalledWith("i1", "control.sessions.list", expect.anything());
+  rpc.mockRestore();
+  purgeSpy.mockRestore();
+});
+
+it("unarchiveSession: a connector ErrorPayload rejects without a follow-up reload", async () => {
+  const instances = useInstancesStore();
+  instances.instances.push({
+    id: "i1", name: "prod-box", online: true, lastSeenAt: null,
+    sessions: [{ alias: "main", agent: "my-kimi", driver: "kimi", workspace: "ws", transportSession: "t1", running: false, archived: true }],
+    agents: [], workspaces: [], agentCatalog: [],
+  } as never);
+  const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id: string, type: string) => {
+    if (type === "control.sessions.unarchive") return { error: { code: "session-missing", message: "session \"main\" does not exist" } };
+    if (type === "control.agents.list") return { agents: [] };
+    return { sessions: [], hasMore: false };
+  });
+  await expect(instances.unarchiveSession("i1", "main")).rejects.toThrow("does not exist");
+  expect(rpc).not.toHaveBeenCalledWith("i1", "control.sessions.list", expect.anything());
+  rpc.mockRestore();
 });
 
 it("localizes the empty-state prompt when locale is zh-CN", () => {
