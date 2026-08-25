@@ -325,7 +325,12 @@ function showUndoToast(id: string, alias: string) {
   showActionToast({
     message: t("instance.sessionArchivedToast", { alias }),
     actionLabel: t("instance.undo"),
-    action: () => { void store.unarchiveSession(id, alias).catch(() => {}); },
+    // Reuse onUnarchive (NOT a raw store call): runToastAction clears this toast
+    // BEFORE the action runs, so a connector business error must surface as an
+    // error toast via the same handler the ⋯-menu Wake path uses — otherwise the
+    // user loses the undo affordance AND gets no failure feedback while the
+    // session stays archived.
+    action: () => { void onUnarchive(id, alias); },
   });
 }
 

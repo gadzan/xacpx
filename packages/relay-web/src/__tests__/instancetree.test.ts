@@ -7,7 +7,8 @@ import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useTerminalStore, terminalLocalKey } from "../stores/terminal";
 import { settleConfirm, useConfirmState } from "../lib/use-confirm";
-import { useActionToastState, dismissToast } from "../lib/use-action-toast";
+import { useActionToastState, dismissToast, runToastAction } from "../lib/use-action-toast";
+import { useToasts } from "../lib/use-toasts";
 const instance = (sessions: unknown[] = [], sessionsLoaded = true) => ({
   id: "i1", name: "pc", online: true, lastSeenAt: null, sessions, sessionsLoaded, agents: [], workspaces: [],
 });
@@ -447,6 +448,31 @@ describe("InstanceTree session management", () => {
     expect(clearSession).not.toHaveBeenCalled();
     expect(centerTabs.tabsFor(key)).toHaveLength(1);
     expect(chat.sessionAlias).toBe("backend"); // selection kept
+  });
+
+  it("Undo on the archived toast surfaces an error toast when the wake RPC rejects", async () => {
+    // archive succeeds → Undo fires → unarchive rejects (connector business
+    // error). runToastAction clears the undo toast BEFORE the action, so without
+    // routing through onUnarchive's error handling the failure would be silent
+    // and the session would stay archived with no feedback.
+    const store = useInstancesStore();
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
+    vi.spyOn(store, "archiveSession").mockResolvedValue();
+    vi.spyOn(store, "unarchiveSession").mockRejectedValue(new Error("session not found"));
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    await w.find('[data-test="session-menu"]').trigger("click");
+    const item = w.find('[data-test="action-archive"]');
+    await item.trigger("mousedown");
+    await item.trigger("click");
+    await flushPromises();
+    // Undo toast armed by the successful archive; consume it like ActionToast does.
+    const toasts = useToasts();
+    toasts.value = [];
+    runToastAction();
+    await flushPromises();
+    expect(useActionToastState().value).toBeNull(); // undo toast consumed
+    const error = toasts.value.find((x) => x.key === "instance.sessionUnarchiveFailed");
+    expect(error).toMatchObject({ tone: "error", params: { alias: "backend", msg: "session not found" } });
   });
 
   // Delete only detaches the local viewer; channel-relay retires the durable resource.
