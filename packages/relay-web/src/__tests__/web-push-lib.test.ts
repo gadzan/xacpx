@@ -22,6 +22,7 @@ import {
   enableDesktopNotifications,
   disableDesktopNotifications,
   reconcileExistingSubscription,
+  releaseSubscriptionOwnership,
 } from "../lib/web-push";
 
 interface StubSW {
@@ -32,7 +33,10 @@ interface StubSW {
 }
 
 function stubNavigator(sw: StubSW): void {
-  const regMock = vi.fn().mockResolvedValue(sw.registration ?? null);
+  const regMock = vi.fn().mockImplementation(async (scope: string) => {
+    console.log("GETREG scope:", scope, "keys:", sw.registration ? Object.keys(sw.registration as object) : null);
+    return sw.registration ?? null;
+  });
   vi.stubGlobal("navigator", {
     ...navigator,
     serviceWorker: {
@@ -198,7 +202,6 @@ describe("review fixes", () => {
     });
     stubNavigator({ readyPushManager: { getSubscription, subscribe }, registration: { pushManager: { getSubscription, subscribe } } });
 
-    console.log("NOTIF:", typeof Notification, (globalThis as { Notification?: { permission?: string } }).Notification?.permission);
     await mod.reconcileExistingSubscription();
     expect(getSubscription).toHaveBeenCalledTimes(2); // probe + enable stale-check
     expect(oldSub.unsubscribe.mock.calls.length).toBeGreaterThanOrEqual(1);
@@ -381,5 +384,138 @@ describe("destroy() failure semantics (round-4)", () => {
       },
     });
     await expect(reconcileExistingSubscription()).rejects.toThrow("push-subscription-destroy-failed");
+  });
+});
+
+describe("release ownership (round-5 strict contract)", () => {
+  beforeEach(() => {
+    apiMocks.get.mockReset().mockResolvedValue({ publicKey: "PK" });
+    apiMocks.put.mockReset().mockResolvedValue({ ok: true });
+    apiMocks.del.mockReset().mockResolvedValue({ ok: true });
+    // pushSupported() gates release — provide the browser surface.
+    (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
+    (window as unknown as Record<string, unknown>).Notification = function FakeNotification() {};
+  });
+  afterEach(() => vi.unstubAllGlobals());
+  const K = "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U";
+
+  function makeSub(unsubscribe: ReturnType<typeof vi.fn>) {
+    return {
+      endpoint: "https://fcm.googleapis.com/fcm/send/owned",
+      options: { applicationServerKey: urlBase64ToUint8Array2(K).buffer },
+      unsubscribe,
+      toJSON() { return { endpoint: this.endpoint }; },
+    };
+  }
+
+  afterEach(() => {
+    delete (window as unknown as Record<string, unknown>).PushManager;
+    delete (window as unknown as Record<string, unknown>).Notification;
+  });
+
+  it("unsubscribe=false + hub DELETE fails → rejects (no silent leak)", async () => {
+    apiMocks.del.mockRejectedValueOnce(new Error("hub unreachable"));
+    stubNavigator({
+      registration: {
+        pushManager: {
+          getSubscription: vi.fn().mockResolvedValue(makeSub(vi.fn().mockResolvedValue(false))),
+          unregister: vi.fn().mockResolvedValue(false), // local destroy also unproven
+        },
+      },
+    });
+    await expect(releaseSubscriptionOwnership()).rejects.toThrow();
+  });
+
+  it("unsubscribe=false but hub DELETE succeeded → resolves (endpoint dead server-side)", async () => {
+    apiMocks.del.mockResolvedValue({ ok: true });
+    stubNavigator({
+      registration: {
+        pushManager: {
+          getSubscription: vi.fn().mockResolvedValue(makeSub(vi.fn().mockResolvedValue(false))),
+          unregister: vi.fn().mockResolvedValue(false),
+        },
+      },
+    });
+    await expect(releaseSubscriptionOwnership()).resolves.toBeUndefined();
+    expect(apiMocks.del).toHaveBeenCalledWith("/api/web-push/subscriptions", { endpoint: "https://fcm.googleapis.com/fcm/send/owned" });
+  });
+
+  it("hub DELETE fails but unsubscribe=true → resolves (endpoint dead at push service)", async () => {
+    apiMocks.del.mockRejectedValueOnce(new Error("hub unreachable"));
+    stubNavigator({
+      registration: {
+        pushManager: {
+          getSubscription: vi.fn().mockResolvedValue(makeSub(vi.fn().mockResolvedValue(true))),
+          unregister: vi.fn(),
+        },
+      },
+    });
+    await expect(releaseSubscriptionOwnership()).resolves.toBeUndefined();
+  });
+
+  it("stale-key rotation path uses destroyProven: unsub=false → unregister fallback", async () => {
+    (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
+    vi.stubGlobal("Notification", { permission: "granted", requestPermission: vi.fn().mockResolvedValue("granted") });
+    apiMocks.get.mockResolvedValue({ publicKey: "NEWKEY_NEWKEY_NEWKEY_NEWKEY_NEWKEY_NEWKEY_NEWKEY_NEWKEY_NEWK" });
+    apiMocks.del.mockResolvedValue({ ok: true });
+
+    const unregister = vi.fn().mockResolvedValue(false); // local destroy unproven
+    const unregisterReg = vi.fn().mockResolvedValue(true); // fallback proven
+    const subscribe = vi.fn().mockResolvedValue({
+      endpoint: "https://fcm.googleapis.com/fcm/send/new",
+      keys: { p256dh: "k2", auth: "a2" },
+      toJSON() { return { endpoint: this.endpoint, keys: this.keys }; },
+    });
+    const unsubscribe = vi.fn().mockResolvedValue(false);
+    const oldSub = {
+      endpoint: "https://fcm.googleapis.com/fcm/send/old",
+      options: { applicationServerKey: urlBase64ToUint8Array2(K).buffer },
+      unsubscribe,
+      toJSON() { return { endpoint: this.endpoint }; },
+    };
+    const existingReg = { pushManager: { getSubscription: vi.fn().mockResolvedValue(oldSub) }, unregister: unregisterReg };
+    const readyReg = { pushManager: { subscribe, getSubscription: vi.fn().mockResolvedValue(null) } };
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      serviceWorker: { getRegistration: vi.fn().mockResolvedValue(existingReg), ready: Promise.resolve(readyReg) },
+    });
+
+    await reconcileExistingSubscription();
+    expect(unsubscribe).toHaveBeenCalledTimes(1); // attempted, unproven
+    expect(unregisterReg).toHaveBeenCalledTimes(1); // fallback proven
+    expect(apiMocks.del).toHaveBeenCalledWith("/api/web-push/subscriptions", { endpoint: "https://fcm.googleapis.com/fcm/send/old" });
+    expect(subscribe).toHaveBeenCalled(); // re-mint under new key
+    expect(apiMocks.put).toHaveBeenCalledWith("/api/web-push/subscriptions", {
+      endpoint: "https://fcm.googleapis.com/fcm/send/new",
+      keys: { p256dh: "k2", auth: "a2" },
+    });
+    delete (window as unknown as Record<string, unknown>).PushManager;
+    delete (window as unknown as Record<string, unknown>).Notification;
+  });
+
+  it("stale-key rotation with unproven destroy → rejects (no silent keep)", async () => {
+    (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
+    vi.stubGlobal("Notification", { permission: "granted", requestPermission: vi.fn().mockResolvedValue("granted") });
+    apiMocks.get.mockResolvedValue({ publicKey: "NEWKEY_NEWKEY_NEWKEY_NEWKEY_NEWKEY_NEWKEY_NEWKEY_NEWKEY_NEWK" });
+
+    const unregister = vi.fn().mockResolvedValue(false); // unproven
+    const unregisterReg = vi.fn().mockRejectedValue(new Error("unregister dead")); // also unproven
+    const unsubscribe = vi.fn().mockResolvedValue(false);
+    const oldSub = {
+      endpoint: "https://fcm.googleapis.com/fcm/send/old",
+      options: { applicationServerKey: urlBase64ToUint8Array2(K).buffer },
+      unsubscribe,
+      toJSON() { return { endpoint: this.endpoint }; },
+    };
+    const existingReg = { pushManager: { getSubscription: vi.fn().mockResolvedValue(oldSub) }, unregister: unregisterReg };
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      serviceWorker: { getRegistration: vi.fn().mockResolvedValue(existingReg), ready: Promise.resolve({ pushManager: { subscribe: vi.fn() } }) },
+    });
+
+    await expect(reconcileExistingSubscription()).rejects.toThrow("push-subscription-destroy-failed");
+    expect(unregisterReg).toHaveBeenCalledTimes(1);
+    delete (window as unknown as Record<string, unknown>).PushManager;
+    delete (window as unknown as Record<string, unknown>).Notification;
   });
 });

@@ -110,6 +110,28 @@ export async function disableDesktopNotifications(): Promise<void> {
 }
 
 /**
+ * The ONE destruction contract for every path that must prove a push binding
+ * is dead: unsubscribe() first; on rejection or a `false` return, fall back to
+ * unregistering the whole registration; if neither confirms, THROW — a stale
+ * binding surviving an account switch is worse than any error.
+ */
+async function destroyProven(target: {
+  sub: PushSubscription | null;
+  reg: ServiceWorkerRegistration | null;
+}): Promise<void> {
+  console.log("DP_ENTRY sub:", !!target.sub, "regKeys:", target.reg ? Object.keys(target.reg) : null);
+  if (target.sub) {
+    const unsubscribed = await target.sub.unsubscribe().catch(() => false);
+    if (unsubscribed === true) return;
+  }
+  if (target.reg) {
+    const unregistered = await target.reg.unregister().catch(() => false);
+    if (unregistered === true) return;
+  }
+  throw new Error("push-subscription-destroy-failed");
+}
+
+/**
  * Auth-lifecycle ownership transfer.
  *
  * - On LOGOUT: drop the browser↔account binding BEFORE /api/logout clears the
@@ -120,16 +142,25 @@ export async function disableDesktopNotifications(): Promise<void> {
  */
 export async function releaseSubscriptionOwnership(): Promise<void> {
   if (!pushSupported()) return;
+  const reg = await getExistingRegistration();
+  const sub = reg ? await reg.pushManager.getSubscription() : null;
+  if (!sub) return; // nothing held → nothing to release
+
+  // Hub binding first: the session cookie is still valid here, so this is the
+  // only chance to delete the server-side row.
+  const hubDeleted = await api
+    .del("/api/web-push/subscriptions", { endpoint: sub.endpoint })
+    .then(() => true)
+    .catch(() => false);
+
+  // Local destruction must be PROVEN. If it is not, the only safe outcome is a
+  // deleted hub row (endpoint can never receive pushes again) — otherwise
+  // throw: logout aborts and the user stays logged in as themselves rather
+  // than leaving a live, hub-bound subscription on a shared machine.
   try {
-    const reg = await getExistingRegistration();
-    if (!reg) return; // no registration: no subscription can exist
-    const sub = await reg.pushManager.getSubscription();
-    if (!sub) return;
-    const endpoint = sub.endpoint;
-    await sub.unsubscribe().catch(() => {});
-    await api.del("/api/web-push/subscriptions", { endpoint }).catch(() => {});
-  } catch {
-    // best-effort: logout must proceed even if the SW/push layer misbehaves
+    await destroyProven({ sub, reg });
+  } catch (err) {
+    if (!hubDeleted) throw err;
   }
 }
 
@@ -152,30 +183,6 @@ export async function reconcileExistingSubscription(): Promise<void> {
   // leftover subscription's ownership was transferred, destroy it locally.
   const reg = await getExistingRegistration();
 
-  // Destroy must PROVE success: unsubscribe() can reject or resolve false, in
-  // which case fall through to unregistering the whole registration. Only when
-  // one of the two confirms destruction does cleanup count as done — otherwise
-  // a stale subscription would silently survive an account switch.
-  let destroyed = false;
-  async function destroy(): Promise<void> {
-    destroyed = false;
-    if (sub) {
-      const unsubscribed = await sub.unsubscribe().catch(() => false);
-      if (unsubscribed === true) {
-        destroyed = true;
-        return;
-      }
-    }
-    if (reg) {
-      const unregistered = await reg.unregister().catch(() => false);
-      if (unregistered === true) {
-        destroyed = true;
-        return;
-      }
-    }
-    throw new Error("push-subscription-destroy-failed");
-  }
-
   // getSubscription can reject (e.g. AbortError when the registration's active
   // worker is gone). Ownership is then UNPROVABLE → destroy the registration
   // and fail closed rather than assume "nothing held".
@@ -184,7 +191,7 @@ export async function reconcileExistingSubscription(): Promise<void> {
     try {
       sub = await reg.pushManager.getSubscription();
     } catch (err) {
-      await destroy();
+      await destroyProven({ sub: null, reg });
       throw err;
     }
   }
@@ -195,22 +202,20 @@ export async function reconcileExistingSubscription(): Promise<void> {
     publicKey = await fetchVapidPublicKey();
   } catch (err) {
     // Cannot even ask the hub → ownership unknown → fail closed.
-    await destroy();
+    await destroyProven({ sub, reg });
     throw err;
   }
   if (!publicKey) {
     // Hub push disabled → the row can never fire for any account. Destroy the
-    // local binding: destroy() throws if neither unsubscribe nor unregister
+    // local binding: destroyProven throws if neither unsubscribe nor unregister
     // confirmed success, failing login rather than leaving an unproven sub.
-    await destroy();
+    await destroyProven({ sub, reg });
     return;
   }
   if (!subscriptionMatchesKey(sub, publicKey)) {
-    // Stale VAPID key: pushes can never succeed. Destroy + re-mint under the
-    // current key.
-    const endpoint = sub.endpoint;
-    await sub.unsubscribe();
-    await api.del("/api/web-push/subscriptions", { endpoint }).catch(() => {});
+    // Stale VAPID key: pushes can never succeed. Destroy (proven) + re-mint.
+    await destroyProven({ sub, reg });
+    await api.del("/api/web-push/subscriptions", { endpoint: sub.endpoint }).catch(() => {});
     await enableDesktopNotifications(publicKey);
     return;
   }
@@ -220,7 +225,7 @@ export async function reconcileExistingSubscription(): Promise<void> {
     await api.put("/api/web-push/subscriptions", sub.toJSON());
   } catch (err) {
     // Fail closed: a half-transferred ownership is worse than no subscription.
-    await destroy();
+    await destroyProven({ sub, reg });
     throw err;
   }
 }
