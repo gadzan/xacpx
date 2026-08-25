@@ -9,7 +9,14 @@ import { confirm } from "../lib/use-confirm";
 import { useLocaleStore } from "../stores/locale";
 import { SUPPORTED_LOCALES } from "../i18n";
 import { useI18n } from "vue-i18n";
-import { pushSupported, fetchVapidPublicKey, enableDesktopNotifications, disableDesktopNotifications, subscriptionMatchesKey } from "../lib/web-push";
+import {
+  pushSupported,
+  fetchVapidPublicKey,
+  enableDesktopNotifications,
+  disableDesktopNotifications,
+  subscriptionMatchesKey,
+  getExistingSubscription,
+} from "../lib/web-push";
 
 const auth = useAuthStore();
 const theme = useThemeStore();
@@ -64,8 +71,7 @@ async function probeNotifications(): Promise<void> {
   if (!key) { notifState.value = "server-disabled"; return; }
   vapidKey = key;
   try {
-    const reg = await navigator.serviceWorker.ready;
-    const sub = await reg.pushManager.getSubscription();
+    const sub = await getExistingSubscription();
     if (!sub) { notifState.value = "idle"; return; }
     // A sub minted under an older VAPID key can never receive pushes — show
     // it as off; reconcileExistingSubscription (auth load) re-mints it.
@@ -74,6 +80,11 @@ async function probeNotifications(): Promise<void> {
     notifState.value = "idle";
   }
 }
+
+const isIos = typeof navigator !== "undefined" && (
+  /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (/Macintosh/.test(navigator.userAgent) && (navigator.maxTouchPoints ?? 0) > 1)
+);
 
 async function toggleNotifications(): Promise<void> {
   if (notifBusy.value) return;
@@ -191,6 +202,7 @@ void onMounted(() => { void probeNotifications(); });
         >{{ notifState === "subscribed" ? $t("settings.notifDisable") : $t("settings.notifEnable") }}</button>
       </div>
       <p v-if="notifState === 'denied'" class="mt-1 text-xs text-fg-muted">{{ $t("settings.notifDeniedHint") }}</p>
+      <p v-if="isIos" class="mt-1 text-xs text-fg-muted" data-test="notif-ios-hint">{{ $t("settings.notifIosHint") }}</p>
     </section>
     <section>
       <h2 class="mb-2 text-sm font-semibold uppercase text-fg-muted">{{ $t("settings.account") }}</h2>

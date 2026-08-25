@@ -16,19 +16,35 @@ const BODY_CAP = 200;
 const GONE_STATUS = new Set([404, 410]);
 
 /**
- * Only endpoints on these origins are accepted. The hub POSTes to each stored
- * endpoint from its own network context — accepting arbitrary HTTPS URLs would
- * hand every account a blind server-side POST primitive (SSRF). Chrome routes
- * through FCM; widen deliberately if Firefox/Safari support ever lands.
+ * Only endpoints on known, standards-based push services are accepted.
+ * The hub POSTes to each stored endpoint from its own network context —
+ * accepting arbitrary HTTPS URLs would hand every account a blind server-side
+ * POST primitive (SSRF).
+ *
+ * Allowed providers:
+ * - Google FCM: fcm.googleapis.com, fcm.notifications.google.com
+ * - Apple APNs: *.push.apple.com (Safari on macOS, iOS/iPadOS Home Screen Web Apps)
  */
-const ALLOWED_ENDPOINT_ORIGINS: Record<string, true> = {
-  "https://fcm.googleapis.com": true,
-  "https://fcm.notifications.google.com": true,
-};
-
 export function isAllowedPushEndpoint(endpoint: string): boolean {
   try {
-    return ALLOWED_ENDPOINT_ORIGINS[new URL(endpoint).origin] === true;
+    const url = new URL(endpoint);
+    if (url.protocol !== "https:") return false;
+    // Push services should only be reachable over normal HTTPS (implicit or 443).
+    if (url.port !== "" && url.port !== "443") return false;
+
+    if (
+      url.hostname === "fcm.googleapis.com" ||
+      url.hostname === "fcm.notifications.google.com"
+    ) {
+      return true;
+    }
+
+    // Apple officially requires allowing any subdomain of push.apple.com.
+    if (url.hostname.endsWith(".push.apple.com")) {
+      return true;
+    }
+
+    return false;
   } catch {
     return false;
   }

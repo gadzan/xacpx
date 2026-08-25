@@ -23,6 +23,8 @@ import {
   disableDesktopNotifications,
   reconcileExistingSubscription,
   releaseSubscriptionOwnership,
+  transferSubscriptionOwnership,
+  isAllowedPushEndpoint,
 } from "../lib/web-push";
 
 interface StubSW {
@@ -138,6 +140,7 @@ describe("web-push lib", () => {
   it("disableDesktopNotifications unsubscribes and DELETEs", async () => {
     const unsubscribe = vi.fn().mockResolvedValue(true);
     const getSubscription = vi.fn().mockResolvedValue({ endpoint: "https://push/e1", unsubscribe });
+    apiMocks.del.mockResolvedValue({ ok: true, deleted: true });
     stubNavigator({ registration: { pushManager: { getSubscription } } });
 
     await disableDesktopNotifications();
@@ -149,6 +152,26 @@ describe("web-push lib", () => {
     getSubscription.mockResolvedValue(null);
     await disableDesktopNotifications();
     expect(apiMocks.del).not.toHaveBeenCalled();
+  });
+
+  it("disableDesktopNotifications rejects when local destroy is unproven (even if Hub DELETE returns deleted: true)", async () => {
+    const unsubscribe = vi.fn().mockRejectedValue(new Error("unsub failed"));
+    const getSubscription = vi.fn().mockResolvedValue({ endpoint: "https://push/e1", unsubscribe });
+    const unregister = vi.fn().mockResolvedValue(false); // unproven
+    apiMocks.del.mockResolvedValue({ ok: true, deleted: true }); // hub confirmed deletion, but local remains
+    stubNavigator({ registration: { pushManager: { getSubscription }, unregister } });
+
+    await expect(disableDesktopNotifications()).rejects.toThrow("push-subscription-destroy-failed");
+  });
+
+  it("disableDesktopNotifications resolves when local destroy is proven even if Hub DELETE fails", async () => {
+    const unsubscribe = vi.fn().mockResolvedValue(true);
+    const getSubscription = vi.fn().mockResolvedValue({ endpoint: "https://push/e1", unsubscribe });
+    apiMocks.del.mockRejectedValue(new Error("hub offline"));
+    stubNavigator({ registration: { pushManager: { getSubscription } } });
+
+    await expect(disableDesktopNotifications()).resolves.toBeUndefined();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
   it("reconcileExistingSubscription PUTs a matching subscription; skips otherwise", async () => {
@@ -544,6 +567,242 @@ describe("release ownership (round-5 strict contract)", () => {
 
     await expect(reconcileExistingSubscription()).rejects.toThrow("push-subscription-destroy-failed");
     expect(unregisterReg).toHaveBeenCalledTimes(1);
+    delete (window as unknown as Record<string, unknown>).PushManager;
+    delete (window as unknown as Record<string, unknown>).Notification;
+  });
+});
+
+describe("Safari / Apple Web Push support", () => {
+  beforeEach(() => {
+    apiMocks.get.mockReset().mockResolvedValue({ publicKey: "PK" });
+    apiMocks.put.mockReset().mockResolvedValue({ ok: true });
+    apiMocks.del.mockReset().mockResolvedValue({ ok: true });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("isAllowedPushEndpoint accept and reject matrix", () => {
+    // Accept matrix
+    for (const ep of [
+      "https://fcm.googleapis.com/fcm/send/abc",
+      "https://fcm.notifications.google.com/fcm/send/abc",
+      "https://web.push.apple.com/Q-xxxxx",
+      "https://foo.push.apple.com/abc",
+      "https://foo.bar.push.apple.com/abc",
+      "https://web.push.apple.com:443/abc",
+    ]) {
+      expect(isAllowedPushEndpoint(ep)).toBe(true);
+    }
+
+    // Reject matrix
+    for (const ep of [
+      "http://web.push.apple.com/abc",
+      "https://web.push.apple.com:8443/abc",
+      "https://push.apple.com.evil.com/abc",
+      "https://evilpush.apple.com/abc",
+      "https://push.apple.com@evil.com/abc",
+      "https://push.apple.com/abc",
+      "https://evil.com/push.apple.com",
+      "https://127.0.0.1/",
+      "https://localhost/",
+      "https://169.254.169.254/",
+      "https://10.0.0.1/",
+      "https://example.com/",
+      "not-a-url",
+      "https://foo.push.apple.com.evil.example/path",
+    ]) {
+      expect(isAllowedPushEndpoint(ep)).toBe(false);
+    }
+  });
+
+  it("enableDesktopNotifications succeeds for Safari endpoint without unsubscribe", async () => {
+    const requestPermission = vi.fn().mockResolvedValue("granted");
+    vi.stubGlobal("Notification", { permission: "default", requestPermission });
+    const unsubscribe = vi.fn().mockResolvedValue(true);
+    const subscribe = vi.fn().mockResolvedValue({
+      endpoint: "https://web.push.apple.com/Q-safari-12345",
+      keys: { p256dh: "k-safari", auth: "a-safari" },
+      unsubscribe,
+      toJSON() {
+        return { endpoint: this.endpoint, keys: this.keys };
+      },
+    });
+    stubNavigator({ readyPushManager: { subscribe, getSubscription: vi.fn().mockResolvedValue(null) } });
+
+    await enableDesktopNotifications("PK");
+    expect(requestPermission).toHaveBeenCalledTimes(1);
+    expect(unsubscribe).not.toHaveBeenCalled();
+    expect(apiMocks.put).toHaveBeenCalledWith("/api/web-push/subscriptions", {
+      endpoint: "https://web.push.apple.com/Q-safari-12345",
+      keys: { p256dh: "k-safari", auth: "a-safari" },
+    });
+  });
+
+  it("transferSubscriptionOwnership transfers an existing Safari subscription", async () => {
+    const safariSub = {
+      endpoint: "https://web.push.apple.com/Q-safari-owned",
+      options: { applicationServerKey: urlBase64ToUint8Array2("BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U").buffer },
+      unsubscribe: vi.fn().mockResolvedValue(true),
+      toJSON() { return { endpoint: this.endpoint, keys: { p256dh: "k", auth: "a" } }; },
+    };
+    (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
+    (window as unknown as Record<string, unknown>).Notification = function FakeNotification() {};
+    apiMocks.get.mockResolvedValue({ publicKey: "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U" });
+    apiMocks.put.mockResolvedValue({ ok: true });
+    stubNavigator({ registration: { pushManager: { getSubscription: vi.fn().mockResolvedValue(safariSub) } } });
+
+    await transferSubscriptionOwnership();
+    expect(safariSub.unsubscribe).not.toHaveBeenCalled();
+    expect(apiMocks.put).toHaveBeenCalledWith("/api/web-push/subscriptions", {
+      endpoint: "https://web.push.apple.com/Q-safari-owned",
+      keys: { p256dh: "k", auth: "a" },
+    });
+
+    delete (window as unknown as Record<string, unknown>).PushManager;
+    delete (window as unknown as Record<string, unknown>).Notification;
+  });
+
+  it("releaseSubscriptionOwnership deletes Safari subscription from hub and unsubscribes locally", async () => {
+    (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
+    (window as unknown as Record<string, unknown>).Notification = function FakeNotification() {};
+    const unsubscribe = vi.fn().mockResolvedValue(true);
+    const safariSub = {
+      endpoint: "https://web.push.apple.com/Q-safari-release",
+      unsubscribe,
+      toJSON() { return { endpoint: this.endpoint }; },
+    };
+    apiMocks.del.mockResolvedValue({ ok: true, deleted: true });
+    stubNavigator({ registration: { pushManager: { getSubscription: vi.fn().mockResolvedValue(safariSub) } } });
+
+    await releaseSubscriptionOwnership();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(apiMocks.del).toHaveBeenCalledWith("/api/web-push/subscriptions", { endpoint: "https://web.push.apple.com/Q-safari-release" });
+
+    delete (window as unknown as Record<string, unknown>).PushManager;
+    delete (window as unknown as Record<string, unknown>).Notification;
+  });
+
+  it("window.pushManager has Safari sub + getRegistration() null -> logout DELETEs + unsubscribes", async () => {
+    const unsubscribe = vi.fn().mockResolvedValue(true);
+    const safariSub = {
+      endpoint: "https://web.push.apple.com/Q-origin-level",
+      unsubscribe,
+      toJSON() { return { endpoint: this.endpoint }; },
+    };
+    const winPushManager = { getSubscription: vi.fn().mockResolvedValue(safariSub) };
+    (window as unknown as Record<string, unknown>).pushManager = winPushManager;
+    (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
+    (window as unknown as Record<string, unknown>).Notification = function FakeNotification() {};
+    apiMocks.del.mockResolvedValue({ ok: true, deleted: true });
+    stubNavigator({ registration: null }); // No SW registration
+
+    await releaseSubscriptionOwnership();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(apiMocks.del).toHaveBeenCalledWith("/api/web-push/subscriptions", { endpoint: "https://web.push.apple.com/Q-origin-level" });
+
+    delete (window as unknown as Record<string, unknown>).pushManager;
+    delete (window as unknown as Record<string, unknown>).PushManager;
+    delete (window as unknown as Record<string, unknown>).Notification;
+  });
+
+  it("window.pushManager has Safari sub + getRegistration() null -> login transfer PUTs/rebinds", async () => {
+    const safariSub = {
+      endpoint: "https://web.push.apple.com/Q-origin-level-login",
+      options: { applicationServerKey: urlBase64ToUint8Array2("BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U").buffer },
+      unsubscribe: vi.fn().mockResolvedValue(true),
+      toJSON() { return { endpoint: this.endpoint, keys: { p256dh: "k", auth: "a" } }; },
+    };
+    const winPushManager = { getSubscription: vi.fn().mockResolvedValue(safariSub) };
+    (window as unknown as Record<string, unknown>).pushManager = winPushManager;
+    (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
+    (window as unknown as Record<string, unknown>).Notification = function FakeNotification() {};
+    apiMocks.get.mockResolvedValue({ publicKey: "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U" });
+    apiMocks.put.mockResolvedValue({ ok: true });
+    stubNavigator({ registration: null }); // No SW registration
+
+    await transferSubscriptionOwnership();
+    expect(safariSub.unsubscribe).not.toHaveBeenCalled();
+    expect(apiMocks.put).toHaveBeenCalledWith("/api/web-push/subscriptions", {
+      endpoint: "https://web.push.apple.com/Q-origin-level-login",
+      keys: { p256dh: "k", auth: "a" },
+    });
+
+    delete (window as unknown as Record<string, unknown>).pushManager;
+    delete (window as unknown as Record<string, unknown>).PushManager;
+    delete (window as unknown as Record<string, unknown>).Notification;
+  });
+
+  it("unregister=true and reg.pushManager null but window.pushManager non-null -> destroyProven rejects", async () => {
+    const unsubscribe = vi.fn().mockRejectedValue(new Error("unsub failed"));
+    const safariSub = {
+      endpoint: "https://web.push.apple.com/Q-lingering-origin",
+      unsubscribe,
+      toJSON() { return { endpoint: this.endpoint }; },
+    };
+    const winPushManager = { getSubscription: vi.fn().mockResolvedValue(safariSub) }; // Still non-null!
+    (window as unknown as Record<string, unknown>).pushManager = winPushManager;
+    (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
+    (window as unknown as Record<string, unknown>).Notification = function FakeNotification() {};
+    apiMocks.del.mockResolvedValue({ ok: true });
+
+    const unregisterReg = vi.fn().mockResolvedValue(true);
+    const existingReg = { pushManager: { getSubscription: vi.fn().mockResolvedValue(null) }, unregister: unregisterReg };
+    stubNavigator({ registration: existingReg });
+
+    await expect(releaseSubscriptionOwnership()).rejects.toThrow("push-subscription-destroy-failed");
+
+    delete (window as unknown as Record<string, unknown>).pushManager;
+    delete (window as unknown as Record<string, unknown>).PushManager;
+    delete (window as unknown as Record<string, unknown>).Notification;
+  });
+
+  it("window.pushManager.getSubscription()=null proves origin binding is dead when unsub failed", async () => {
+    const unsubscribe = vi.fn().mockRejectedValue(new Error("unsub failed"));
+    const safariSub = {
+      endpoint: "https://web.push.apple.com/Q-origin-dead",
+      unsubscribe,
+      toJSON() { return { endpoint: this.endpoint }; },
+    };
+    // 1st getSubscription probe returns safariSub; 2nd inside destroyProven returns null (dead)
+    const winGetSub = vi.fn()
+      .mockResolvedValueOnce(safariSub)
+      .mockResolvedValueOnce(null);
+    const winPushManager = { getSubscription: winGetSub };
+    (window as unknown as Record<string, unknown>).pushManager = winPushManager;
+    (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
+    (window as unknown as Record<string, unknown>).Notification = function FakeNotification() {};
+    apiMocks.del.mockResolvedValue({ ok: true, deleted: true });
+    stubNavigator({ registration: null });
+
+    await expect(releaseSubscriptionOwnership()).resolves.toBeUndefined();
+    expect(apiMocks.del).toHaveBeenCalledWith("/api/web-push/subscriptions", { endpoint: "https://web.push.apple.com/Q-origin-dead" });
+
+    delete (window as unknown as Record<string, unknown>).pushManager;
+    delete (window as unknown as Record<string, unknown>).PushManager;
+    delete (window as unknown as Record<string, unknown>).Notification;
+  });
+
+  it("unsubscribe resolves but window.pushManager verification rejects -> destroyProven fails closed (rejects)", async () => {
+    const unsubscribe = vi.fn().mockResolvedValue(true); // sub says unsubscribed
+    const safariSub = {
+      endpoint: "https://web.push.apple.com/Q-origin-flaky",
+      unsubscribe,
+      toJSON() { return { endpoint: this.endpoint }; },
+    };
+    // 1st getSubscription probe returns safariSub; 2nd inside destroyProven rejects with DOMException/AbortError
+    const winGetSub = vi.fn()
+      .mockResolvedValueOnce(safariSub)
+      .mockRejectedValueOnce(new DOMException("query aborted", "AbortError"))
+      .mockRejectedValue(new DOMException("query aborted", "AbortError"));
+    const winPushManager = { getSubscription: winGetSub };
+    (window as unknown as Record<string, unknown>).pushManager = winPushManager;
+    (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
+    (window as unknown as Record<string, unknown>).Notification = function FakeNotification() {};
+    stubNavigator({ registration: null });
+
+    await expect(releaseSubscriptionOwnership()).rejects.toThrow("push-subscription-destroy-failed");
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+
+    delete (window as unknown as Record<string, unknown>).pushManager;
     delete (window as unknown as Record<string, unknown>).PushManager;
     delete (window as unknown as Record<string, unknown>).Notification;
   });
