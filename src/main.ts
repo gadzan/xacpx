@@ -1577,6 +1577,9 @@ export async function buildApp(
         ...(event.promptRequestId !== undefined
           ? { promptRequestId: event.promptRequestId }
           : {}),
+        ...(event.pendingRequestMessageId !== undefined
+          ? { pendingRequestMessageId: event.pendingRequestMessageId }
+          : {}),
         ...(event.predecessorWasAlreadyAborted !== undefined
           ? { predecessorWasAlreadyAborted: event.predecessorWasAlreadyAborted }
           : {}),

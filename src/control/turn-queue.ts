@@ -882,6 +882,10 @@ export class TurnQueue {
         droppedInterruptFirst,
       );
       this.notifyQueuedPeerCancelled([droppedInterruptFirst]);
+      // Republish: queue-updated is a REPLACE snapshot and the web cannot
+      // infer the interrupt's removal — without this the UI keeps showing
+      // the dropped reservation (P2 follow-up).
+      this.emitQueueUpdated(chatKey, sessionAlias, key);
     }
     const entry = this.inFlight.get(key);
     if (entry) {
@@ -908,6 +912,8 @@ export class TurnQueue {
           droppedInterruptSecond,
         );
         this.notifyQueuedPeerCancelled([droppedInterruptSecond]);
+        // Same REPLACE-snapshot contract as the first-window drop above.
+        this.emitQueueUpdated(chatKey, sessionAlias, key);
       }
     }
     // Re-check rather than trusting the race: `inFlight` still present means the turn

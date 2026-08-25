@@ -1715,3 +1715,58 @@ test("v0.4 P3: rejected_pending carries the REJECTED request's ids plus the occu
   await tick();
   h.resolveNext();
 });
+
+test("v0.4 P2 follow-up: clearSession republishes the queue snapshot after dropping a pending interrupt (no stale kind:interrupt item)", async () => {
+  // Scenario A: interrupt only → final snapshot [].
+  const snapshotsA: Array<Array<{ id: string; kind?: string }>> = [];
+  const hA = makeQueue({
+    emitQueueUpdated: (_c, _s, items) => snapshotsA.push(items),
+  });
+  const pOldA = hA.queue.submit({ ...BASE, text: "old", queueable: true });
+  await tick();
+  hA.queue.submitPeerInterrupt({
+    ...BASE,
+    text: "I",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_p2c_a",
+    isPeerMessage: true,
+  });
+  expect(snapshotsA[snapshotsA.length - 1]![0]!.kind).toBe("interrupt");
+
+  const clearedA = hA.queue.clearSession("c", "s");
+  await tick();
+  hA.resolveNext({ ok: false, errorMessage: "aborted" });
+  expect(await clearedA).toEqual({ cleared: true });
+  await pOldA;
+  await tick();
+  expect(snapshotsA[snapshotsA.length - 1]!.some((item) => item.kind === "interrupt")).toBe(false);
+  hA.queue.finishClear("c", "s");
+
+  // Scenario B: interrupt + ordinary FIFO → the interleaved drops still end
+  // at [], never a stale [interrupt].
+  const snapshotsB: Array<Array<{ id: string; kind?: string }>> = [];
+  const hB = makeQueue({
+    emitQueueUpdated: (_c, _s, items) => snapshotsB.push(items),
+  });
+  const pOldB = hB.queue.submit({ ...BASE, text: "old", queueable: true });
+  await tick();
+  hB.queue.submitPeerTurn({ ...BASE, text: "Q1", senderId: "agent-messaging", promptRequestId: "q1", isPeerMessage: true });
+  hB.queue.submitPeerTurn({ ...BASE, text: "Q2", senderId: "agent-messaging", promptRequestId: "q2", isPeerMessage: true });
+  hB.queue.submitPeerInterrupt({
+    ...BASE,
+    text: "I",
+    senderId: "agent-messaging",
+    promptRequestId: "msg_p2c_b",
+    isPeerMessage: true,
+  });
+  expect(snapshotsB[snapshotsB.length - 1]!.map((item) => item.kind)).toEqual(["interrupt", undefined, undefined]);
+
+  const clearedB = hB.queue.clearSession("c", "s");
+  await tick();
+  hB.resolveNext({ ok: false, errorMessage: "aborted" });
+  expect(await clearedB).toEqual({ cleared: true });
+  await pOldB;
+  await tick();
+  expect(snapshotsB[snapshotsB.length - 1]!).toEqual([]);
+  hB.queue.finishClear("c", "s");
+});
