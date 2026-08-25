@@ -8,6 +8,7 @@ const lib = vi.hoisted(() => ({
   enableDesktopNotifications: vi.fn(),
   disableDesktopNotifications: vi.fn(),
   subscriptionMatchesKey: vi.fn(),
+  getExistingSubscription: vi.fn(),
 }));
 
 vi.mock("../lib/web-push", () => lib);
@@ -48,14 +49,10 @@ describe("settings notifications section", () => {
     lib.enableDesktopNotifications.mockResolvedValue(undefined);
     lib.disableDesktopNotifications.mockResolvedValue(undefined);
     lib.subscriptionMatchesKey.mockReturnValue(true);
+    lib.getExistingSubscription.mockResolvedValue(null);
   });
   it("renders 已开启 when a probe subscription exists", async () => {
-    vi.stubGlobal("navigator", {
-      ...navigator,
-      serviceWorker: {
-        ready: Promise.resolve({ pushManager: { getSubscription: vi.fn().mockResolvedValue({ endpoint: "https://push/e1" }) } }),
-      },
-    });
+    lib.getExistingSubscription.mockResolvedValue({ endpoint: "https://push/e1" });
     const w = mountSettings();
     await flush();
     expect(w.find('[data-test="notif-state"]').text()).toBe("On");
@@ -99,12 +96,7 @@ describe("settings notifications section", () => {
   });
 
   it("toggle-off calls disableDesktopNotifications and flips to 未开启", async () => {
-    vi.stubGlobal("navigator", {
-      ...navigator,
-      serviceWorker: {
-        ready: Promise.resolve({ pushManager: { getSubscription: vi.fn().mockResolvedValue({ endpoint: "https://push/e1" }) } }),
-      },
-    });
+    lib.getExistingSubscription.mockResolvedValue({ endpoint: "https://push/e1" });
     const w = mountSettings();
     await flush();
     await w.find('[data-test="notif-toggle"]').trigger("click");
@@ -129,11 +121,20 @@ describe("settings notifications section", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders iOS / iPadOS Home Screen notification hint", async () => {
-    const w = mountSettings();
+  it("renders iOS / iPadOS Home Screen notification hint only on iOS/iPadOS", async () => {
+    // 1. Desktop UA -> hint not rendered
+    vi.stubGlobal("navigator", { ...navigator, userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", maxTouchPoints: 0 });
+    const wDesktop = mountSettings();
     await flush();
-    const hint = w.find('[data-test="notif-ios-hint"]');
+    expect(wDesktop.find('[data-test="notif-ios-hint"]').exists()).toBe(false);
+
+    // 2. iOS UA -> hint rendered
+    vi.stubGlobal("navigator", { ...navigator, userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", maxTouchPoints: 5 });
+    const wIos = mountSettings();
+    await flush();
+    const hint = wIos.find('[data-test="notif-ios-hint"]');
     expect(hint.exists()).toBe(true);
     expect(hint.text()).toContain("Home Screen");
+    vi.unstubAllGlobals();
   });
 });

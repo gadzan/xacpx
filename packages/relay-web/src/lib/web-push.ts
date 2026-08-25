@@ -42,7 +42,10 @@ export function urlBase64ToUint8Array(base64: string): Uint8Array {
 }
 
 export function pushSupported(): boolean {
-  return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  return (
+    ("serviceWorker" in navigator && "PushManager" in window && "Notification" in window) ||
+    ("pushManager" in window && "Notification" in window)
+  );
 }
 
 /** Compare a stored subscription's applicationServerKey with the hub's current
@@ -65,18 +68,54 @@ export function subscriptionMatchesKey(sub: PushSubscription, publicKey: string)
   return subB64 === paddedHub;
 }
 
+type WindowWithPushManager = Window & {
+  pushManager?: PushManager;
+};
+
+function getWindowPushManager(): PushManager | null {
+  if (typeof window === "undefined") return null;
+  return (window as WindowWithPushManager).pushManager ?? null;
+}
+
+export interface ExistingSubscriptionTarget {
+  sub: PushSubscription | null;
+  reg: ServiceWorkerRegistration | null;
+  winPm: PushManager | null;
+}
+
 /**
- * The EXISTING registration for this origin (scope "/"), or null when none has
- * ever been created. Unlike navigator.serviceWorker.ready — which never
- * settles on dev servers / insecure contexts where nothing registers —
- * getRegistration() answers immediately in every environment, so auth can
- * probe for leftover push state without waiting.
- *
- * `ready` remains correct for CREATING a subscription (enable path), where an
- * active worker is genuinely required.
+ * Probe for an existing push subscription across both the origin-level
+ * window.pushManager (Safari 18.4+ Declarative Web Push) and the root-scoped
+ * ServiceWorkerRegistration.
  */
-async function getExistingRegistration(): Promise<ServiceWorkerRegistration | null> {
-  return (await navigator.serviceWorker.getRegistration("/")) ?? null;
+export async function getExistingSubscriptionTarget(): Promise<ExistingSubscriptionTarget> {
+  const winPm = getWindowPushManager();
+  let reg: ServiceWorkerRegistration | null = null;
+  if (
+    typeof navigator !== "undefined" &&
+    "serviceWorker" in navigator &&
+    typeof navigator.serviceWorker?.getRegistration === "function"
+  ) {
+    reg = (await navigator.serviceWorker.getRegistration("/")) ?? null;
+  }
+
+  let sub: PushSubscription | null = null;
+  // In Safari 18.4+ / Declarative Web Push, window.pushManager represents the
+  // origin-level subscription authority and may exist even when no root SW
+  // registration is active. Query window.pushManager first.
+  if (winPm) {
+    sub = (await winPm.getSubscription()) ?? null;
+  }
+  if (!sub && reg) {
+    sub = (await reg.pushManager.getSubscription()) ?? null;
+  }
+
+  return { sub, reg, winPm };
+}
+
+export async function getExistingSubscription(): Promise<PushSubscription | null> {
+  const target = await getExistingSubscriptionTarget();
+  return target.sub;
 }
 
 export async function fetchVapidPublicKey(): Promise<string | null> {
@@ -113,8 +152,8 @@ export async function enableDesktopNotifications(publicKey: string): Promise<voi
     // generic buffer loosely, so assert once at this boundary).
     applicationServerKey: keyBytes.buffer.slice(keyBytes.byteOffset, keyBytes.byteOffset + keyBytes.byteLength) as ArrayBuffer,
   });
-  // The hub only POSTes to allowlisted Chrome push-service origins — a
-  // non-Chrome browser would subscribe fine and then fail on the PUT. Detect
+  // The hub only POSTes to allowlisted push-service origins (FCM, Apple APNs) — a
+  // non-allowlisted browser would subscribe fine and then fail on the PUT. Detect
   // that here, clean up, and surface as unsupported.
   if (!isAllowedPushEndpoint(sub.endpoint)) {
     await sub.unsubscribe().catch(() => {});
@@ -124,12 +163,10 @@ export async function enableDesktopNotifications(publicKey: string): Promise<voi
 }
 
 export async function disableDesktopNotifications(): Promise<void> {
-  const reg = await getExistingRegistration();
-  if (!reg) return; // no registration: there is no subscription to drop
-  const sub = await reg.pushManager.getSubscription();
-  if (!sub) return;
-  const endpoint = sub.endpoint;
-  await sub.unsubscribe();
+  const target = await getExistingSubscriptionTarget();
+  if (!target.sub) return;
+  const endpoint = target.sub.endpoint;
+  await target.sub.unsubscribe().catch(() => {});
   await api.del("/api/web-push/subscriptions", { endpoint });
 }
 
@@ -142,37 +179,63 @@ export async function disableDesktopNotifications(): Promise<void> {
 async function destroyProven(target: {
   sub: PushSubscription | null;
   reg: ServiceWorkerRegistration | null;
+  winPm?: PushManager | null;
 }): Promise<void> {
-  // Push API: unsubscribe() fulfilling — true OR false — means the
-  // subscription is deactivated and can no longer receive pushes. Both count
-  // as proven destruction.
+  const winPm = target.winPm ?? getWindowPushManager();
+
+  // 1. If we have a subscription object, try unsubscribing it directly.
   if (target.sub) {
     try {
       await target.sub.unsubscribe();
-      return;
-    } catch {
-      // fall through to registration-level proof
-    }
-  }
-  if (target.reg) {
-    // unregister() === true does NOT prove the push binding died (a concurrent
-    // register() can resurrect the registration, and "/"-scope unregister need
-    // not deactivate push subscriptions). Prove by re-querying: the push
-    // subscription must PROVABLY resolve null. If getSubscription rejects or
-    // returns non-null, it is unproven.
-    const unregistered = await target.reg.unregister().catch(() => false);
-    if (unregistered === true) {
-      try {
-        const gone = await target.reg.pushManager.getSubscription();
-        if (gone === null) return;
-      } catch {
-        // rejection on re-query does NOT prove gone; fall through to throw
+      // If window.pushManager exists, verify that the origin-level subscription
+      // is genuinely dead (null). If it still returns a subscription, fall through.
+      if (winPm) {
+        const stillThere = await winPm.getSubscription().catch(() => null);
+        if (stillThere === null) return;
+      } else {
+        return;
       }
+    } catch {
+      // fall through to registration & origin unregister/probe
     }
   }
+
+  // 2. If a SW registration exists, try unregistering it.
+  if (target.reg) {
+    try {
+      await target.reg.unregister();
+    } catch {
+      // ignore
+    }
+  }
+
+  // 3. Prove that NO subscription remains across both window.pushManager and reg.pushManager:
+  let winPmDead = true;
+  if (winPm) {
+    try {
+      const gone = await winPm.getSubscription();
+      if (gone !== null) winPmDead = false;
+    } catch {
+      winPmDead = false;
+    }
+  }
+
+  let regDead = true;
+  if (target.reg) {
+    try {
+      const gone = await target.reg.pushManager.getSubscription();
+      if (gone !== null) regDead = false;
+    } catch {
+      regDead = false;
+    }
+  }
+
+  if (winPmDead && regDead && (target.sub || target.reg || winPm)) {
+    return;
+  }
+
   throw new Error("push-subscription-destroy-failed");
 }
-
 /**
  * Auth-lifecycle ownership transfer.
  *
@@ -184,9 +247,8 @@ async function destroyProven(target: {
  */
 export async function releaseSubscriptionOwnership(): Promise<void> {
   if (!pushSupported()) return;
-  const reg = await getExistingRegistration();
-  const sub = reg ? await reg.pushManager.getSubscription() : null;
-  if (!sub) return; // nothing held → nothing to release
+  const target = await getExistingSubscriptionTarget();
+  if (!target.sub) return; // nothing held → nothing to release
 
   // Hub binding first: the session cookie is still valid here, so this is the
   // only chance to delete the server-side row.
@@ -194,7 +256,7 @@ export async function releaseSubscriptionOwnership(): Promise<void> {
   // deleted:false (endpoint missing or owned by another account) is NOT a
   // proven server-side teardown.
   const hubDeleted = await api
-    .del<{ ok: boolean; deleted: boolean }>("/api/web-push/subscriptions", { endpoint: sub.endpoint })
+    .del<{ ok: boolean; deleted: boolean }>("/api/web-push/subscriptions", { endpoint: target.sub.endpoint })
     .then((r) => r.deleted === true)
     .catch(() => false);
 
@@ -203,7 +265,7 @@ export async function releaseSubscriptionOwnership(): Promise<void> {
   // throw: logout aborts and the user stays logged in as themselves rather
   // than leaving a live, hub-bound subscription on a shared machine.
   try {
-    await destroyProven({ sub, reg });
+    await destroyProven(target);
   } catch (err) {
     if (!hubDeleted) throw err;
   }
@@ -221,33 +283,43 @@ export async function releaseSubscriptionOwnership(): Promise<void> {
  */
 export async function transferSubscriptionOwnership(): Promise<void> {
   if (!pushSupported()) return;
-  const reg = await getExistingRegistration();
-  let sub: PushSubscription | null = null;
-  if (reg) {
+  let reg: ServiceWorkerRegistration | null = null;
+  if (
+    typeof navigator !== "undefined" &&
+    "serviceWorker" in navigator &&
+    typeof navigator.serviceWorker?.getRegistration === "function"
+  ) {
     try {
-      sub = await reg.pushManager.getSubscription();
-    } catch (err) {
-      await destroyProven({ sub: null, reg });
-      throw err;
+      reg = (await navigator.serviceWorker.getRegistration("/")) ?? null;
+    } catch {
+      reg = null;
     }
   }
-  if (!sub) return;
+  let target: ExistingSubscriptionTarget;
+  try {
+    target = await getExistingSubscriptionTarget();
+  } catch (err) {
+    await destroyProven({ sub: null, reg });
+    throw err;
+  }
+  if (!target.sub) return;
 
+  const sub = target.sub;
   let publicKey: string | null = null;
   try {
     publicKey = await fetchVapidPublicKey();
   } catch (err) {
-    await destroyProven({ sub, reg });
+    await destroyProven(target);
     throw err;
   }
   if (!publicKey) {
     // Hub push disabled -> destroy local sub for hygiene.
-    await destroyProven({ sub, reg });
+    await destroyProven(target);
     return;
   }
   if (!subscriptionMatchesKey(sub, publicKey)) {
     // Stale VAPID key -> destroy old and re-mint under new key.
-    await destroyProven({ sub, reg });
+    await destroyProven(target);
     await api.del("/api/web-push/subscriptions", { endpoint: sub.endpoint }).catch(() => {});
     await enableDesktopNotifications(publicKey);
     return;
@@ -255,7 +327,7 @@ export async function transferSubscriptionOwnership(): Promise<void> {
   try {
     await api.put("/api/web-push/subscriptions", sub.toJSON());
   } catch (err) {
-    await destroyProven({ sub, reg });
+    await destroyProven(target);
     throw err;
   }
 }
@@ -271,17 +343,15 @@ export async function transferSubscriptionOwnership(): Promise<void> {
  */
 export async function reconcileExistingSubscription(): Promise<void> {
   if (!pushSupported()) return;
-  const reg = await getExistingRegistration();
-  let sub: PushSubscription | null = null;
-  if (reg) {
-    try {
-      sub = await reg.pushManager.getSubscription();
-    } catch {
-      return; // transient local error on reload: keep registration intact
-    }
+  let target: ExistingSubscriptionTarget;
+  try {
+    target = await getExistingSubscriptionTarget();
+  } catch {
+    return; // transient local error on reload: keep registration intact
   }
-  if (!sub) return;
+  if (!target.sub) return;
 
+  const sub = target.sub;
   let publicKey: string | null = null;
   try {
     publicKey = await fetchVapidPublicKey();
@@ -291,12 +361,12 @@ export async function reconcileExistingSubscription(): Promise<void> {
   }
   if (!publicKey) {
     // Hub explicitly predates or disabled push (404) -> destroy local sub.
-    await destroyProven({ sub, reg });
+    await destroyProven(target);
     return;
   }
   if (!subscriptionMatchesKey(sub, publicKey)) {
     // Hub rotated VAPID key -> destroy old and re-mint under new key.
-    await destroyProven({ sub, reg });
+    await destroyProven(target);
     await api.del("/api/web-push/subscriptions", { endpoint: sub.endpoint }).catch(() => {});
     await enableDesktopNotifications(publicKey);
     return;

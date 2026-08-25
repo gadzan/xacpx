@@ -659,4 +659,104 @@ describe("Safari / Apple Web Push support", () => {
     delete (window as unknown as Record<string, unknown>).PushManager;
     delete (window as unknown as Record<string, unknown>).Notification;
   });
+
+  it("window.pushManager has Safari sub + getRegistration() null -> logout DELETEs + unsubscribes", async () => {
+    const unsubscribe = vi.fn().mockResolvedValue(true);
+    const safariSub = {
+      endpoint: "https://web.push.apple.com/Q-origin-level",
+      unsubscribe,
+      toJSON() { return { endpoint: this.endpoint }; },
+    };
+    const winPushManager = { getSubscription: vi.fn().mockResolvedValue(safariSub) };
+    (window as unknown as Record<string, unknown>).pushManager = winPushManager;
+    (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
+    (window as unknown as Record<string, unknown>).Notification = function FakeNotification() {};
+    apiMocks.del.mockResolvedValue({ ok: true, deleted: true });
+    stubNavigator({ registration: null }); // No SW registration
+
+    await releaseSubscriptionOwnership();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(apiMocks.del).toHaveBeenCalledWith("/api/web-push/subscriptions", { endpoint: "https://web.push.apple.com/Q-origin-level" });
+
+    delete (window as unknown as Record<string, unknown>).pushManager;
+    delete (window as unknown as Record<string, unknown>).PushManager;
+    delete (window as unknown as Record<string, unknown>).Notification;
+  });
+
+  it("window.pushManager has Safari sub + getRegistration() null -> login transfer PUTs/rebinds", async () => {
+    const safariSub = {
+      endpoint: "https://web.push.apple.com/Q-origin-level-login",
+      options: { applicationServerKey: urlBase64ToUint8Array2("BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U").buffer },
+      unsubscribe: vi.fn().mockResolvedValue(true),
+      toJSON() { return { endpoint: this.endpoint, keys: { p256dh: "k", auth: "a" } }; },
+    };
+    const winPushManager = { getSubscription: vi.fn().mockResolvedValue(safariSub) };
+    (window as unknown as Record<string, unknown>).pushManager = winPushManager;
+    (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
+    (window as unknown as Record<string, unknown>).Notification = function FakeNotification() {};
+    apiMocks.get.mockResolvedValue({ publicKey: "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U" });
+    apiMocks.put.mockResolvedValue({ ok: true });
+    stubNavigator({ registration: null }); // No SW registration
+
+    await transferSubscriptionOwnership();
+    expect(safariSub.unsubscribe).not.toHaveBeenCalled();
+    expect(apiMocks.put).toHaveBeenCalledWith("/api/web-push/subscriptions", {
+      endpoint: "https://web.push.apple.com/Q-origin-level-login",
+      keys: { p256dh: "k", auth: "a" },
+    });
+
+    delete (window as unknown as Record<string, unknown>).pushManager;
+    delete (window as unknown as Record<string, unknown>).PushManager;
+    delete (window as unknown as Record<string, unknown>).Notification;
+  });
+
+  it("unregister=true and reg.pushManager null but window.pushManager non-null -> destroyProven rejects", async () => {
+    const unsubscribe = vi.fn().mockRejectedValue(new Error("unsub failed"));
+    const safariSub = {
+      endpoint: "https://web.push.apple.com/Q-lingering-origin",
+      unsubscribe,
+      toJSON() { return { endpoint: this.endpoint }; },
+    };
+    const winPushManager = { getSubscription: vi.fn().mockResolvedValue(safariSub) }; // Still non-null!
+    (window as unknown as Record<string, unknown>).pushManager = winPushManager;
+    (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
+    (window as unknown as Record<string, unknown>).Notification = function FakeNotification() {};
+    apiMocks.del.mockResolvedValue({ ok: true });
+
+    const unregisterReg = vi.fn().mockResolvedValue(true);
+    const existingReg = { pushManager: { getSubscription: vi.fn().mockResolvedValue(null) }, unregister: unregisterReg };
+    stubNavigator({ registration: existingReg });
+
+    await expect(releaseSubscriptionOwnership()).rejects.toThrow("push-subscription-destroy-failed");
+
+    delete (window as unknown as Record<string, unknown>).pushManager;
+    delete (window as unknown as Record<string, unknown>).PushManager;
+    delete (window as unknown as Record<string, unknown>).Notification;
+  });
+
+  it("window.pushManager.getSubscription()=null proves origin binding is dead when unsub failed", async () => {
+    const unsubscribe = vi.fn().mockRejectedValue(new Error("unsub failed"));
+    const safariSub = {
+      endpoint: "https://web.push.apple.com/Q-origin-dead",
+      unsubscribe,
+      toJSON() { return { endpoint: this.endpoint }; },
+    };
+    // 1st getSubscription probe returns safariSub; 2nd inside destroyProven returns null (dead)
+    const winGetSub = vi.fn()
+      .mockResolvedValueOnce(safariSub)
+      .mockResolvedValueOnce(null);
+    const winPushManager = { getSubscription: winGetSub };
+    (window as unknown as Record<string, unknown>).pushManager = winPushManager;
+    (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
+    (window as unknown as Record<string, unknown>).Notification = function FakeNotification() {};
+    apiMocks.del.mockResolvedValue({ ok: true, deleted: true });
+    stubNavigator({ registration: null });
+
+    await expect(releaseSubscriptionOwnership()).resolves.toBeUndefined();
+    expect(apiMocks.del).toHaveBeenCalledWith("/api/web-push/subscriptions", { endpoint: "https://web.push.apple.com/Q-origin-dead" });
+
+    delete (window as unknown as Record<string, unknown>).pushManager;
+    delete (window as unknown as Record<string, unknown>).PushManager;
+    delete (window as unknown as Record<string, unknown>).Notification;
+  });
 });
