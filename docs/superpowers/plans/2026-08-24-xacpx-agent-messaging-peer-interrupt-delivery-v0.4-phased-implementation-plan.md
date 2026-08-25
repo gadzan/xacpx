@@ -6,7 +6,16 @@ Spec: `xacpx-agent-messaging-peer-interrupt-delivery-v0.4-spec.md`
 
 ## 1. Goal
 
-Implement explicit cross-session preemption without relying on provider-specific steer/message-injection support.
+Implement explicit cross-session preemption INTENT without relying on provider-specific steer/message-injection support.
+
+> **Contract boundary (refined 2026-08-25):** Peer Interrupt Delivery is an
+> xacpx-managed cancellation-request + true-settlement + priority-next-turn
+> primitive. xacpx guarantees lane ordering and no overlap. Whether the
+> existing underlying transport actually terminates the active model turn
+> early is transport-owned and is not strengthened by this feature. The
+> predecessor may terminalize as `cancelled` OR `completed`; xacpx never
+> rewrites a natural completion into a cancellation. See the spec's
+> "Contract boundary" section for the authoritative wording.
 
 Public behavior:
 
@@ -23,8 +32,8 @@ Busy target behavior:
 
 ```text
 reserve one interrupt slot
-→ cancel current xacpx-managed turn
-→ wait for true settlement
+→ request cancellation of the current xacpx-managed turn (exactly once)
+→ wait for true settlement (early-cancelled OR naturally completed)
 → run interrupt peer turn before ordinary FIFO
 ```
 

@@ -7,7 +7,7 @@ Supersedes for interrupt semantics: the provider-owned interrupt portion of `202
 
 ## 1. Summary
 
-Peer Interrupt Delivery allows one Agent to explicitly preempt another Agent's **current turn** without requiring the target Agent/provider to implement same-turn steering.
+Peer Interrupt Delivery allows one Agent to explicitly request preemption of another Agent's **current turn** without requiring the target Agent/provider to implement same-turn steering.
 
 The mechanism is:
 
@@ -24,16 +24,31 @@ target xacpx TurnQueue
   │
   └─ target busy
        ├─ reserve ONE pending peer interrupt
-       ├─ abort/cancel current turn through the existing xacpx turn-control path
+       ├─ request cancellation of the current turn through the existing
+       │  xacpx turn-control path (AbortController signal + transport cancel)
        ├─ wait until the old turn has REALLY settled
        └─ run the peer message as the next ordinary turn,
           ahead of the normal FIFO queue
 ```
 
+**Contract boundary.** Peer Interrupt Delivery guarantees **interrupt intent, no-overlap, and next-turn priority**. It does NOT guarantee that every underlying transport/provider will terminate the active model turn immediately after the cancellation request. xacpx reliably guarantees:
+
+1. an exclusive pending-interrupt reservation for the target lane;
+2. exactly one cancellation signal/request against the active predecessor (an already-aborted predecessor is never signalled again);
+3. the interrupt ACK returns synchronously once the reservation exists;
+4. the interrupt peer turn NEVER starts before the predecessor has truly settled — no overlap, even if the transport ignores the cancellation entirely;
+5. drain priority `pending interrupt → normal FIFO → idle` after settlement;
+6. the ordinary FIFO is never deleted, replaced, or reordered by an interrupt;
+7. duplicate request/message retries cause no second abort and no second peer turn;
+8. lifecycle/archive/clear can still cancel the reservation before it executes;
+9. local and same-account Relay routes share the same target-side state machine.
+
+xacpx does NOT independently guarantee that the predecessor terminal status is `cancelled`. If the transport/runtime responds to the cancellation request and ends the turn early, the predecessor terminalizes as `cancelled`; if the runtime lets the turn finish naturally, it terminalizes as `completed`. Either outcome is contract-conformant.
+
 This is **not steering**.
 
 - `steer`: injects into the same active model turn; provider/runtime support is required.
-- `interrupt`: cancels the old turn, then starts a new ordinary peer turn; provider-specific steering is not required.
+- `interrupt`: requests cancellation of the old turn, waits for its true settlement, then starts a new ordinary peer turn with next-turn priority; provider-specific steering is not required.
 - `queue`: leaves the current turn untouched and waits for the ordinary next-turn queue.
 
 The default path remains non-preemptive. xacpx MUST NOT infer urgency from text and MUST NOT automatically escalate a normal message into an interrupt.
@@ -79,18 +94,18 @@ That transport primitive remains a legacy/optional runtime capability. v0.4 inte
 
 v0.4 must provide:
 
-1. Explicit Agent-selected preemption with `agent_send(mode="interrupt")`.
+1. Explicit Agent-selected preemption INTENT with `agent_send(mode="interrupt")`.
 2. No provider-specific steer requirement.
 3. No ACP protocol extension requirement.
 4. No automatic interruption from the default `agent_send` path.
-5. Exactly one cancellation request against the currently active target turn.
-6. No new target peer turn until the cancelled predecessor has truly unwound.
+5. Exactly one xacpx cancellation signal/request against the currently active target turn.
+6. No new target peer turn until the predecessor has truly unwound — regardless of whether the predecessor terminalized as `cancelled` or `completed`.
 7. The interrupting peer turn executes before the target's existing ordinary queued turns.
 8. Existing queued turns are preserved; interrupt does not clear the queue.
 9. One pending interrupt reservation per target lane.
 10. Duplicate retries of the same message/request remain idempotent.
-11. Completion contracts (`none` / `notify` / `result`) remain attached to the **new interrupting peer turn**, never to the cancelled predecessor.
-12. If the cancelled predecessor itself came from a completion-bearing peer request, its original source receives a terminal `cancelled` completion exactly once.
+11. Completion contracts (`none` / `notify` / `result`) remain attached to the **new interrupting peer turn**, never to the predecessor.
+12. If the predecessor itself came from a completion-bearing peer request, its original source receives exactly ONE terminal completion whose status reflects the ACTUAL predecessor outcome (`cancelled` when the transport ended it early, `completed` when it ran to natural completion). xacpx guarantees exactly-once delivery and correct contract binding — not a specific terminal status.
 13. Local and same-account Relay routes have identical target-side interrupt semantics.
 14. Archived/removing targets are never restored merely to receive an interrupt.
 15. `auto` never interrupts.
@@ -197,10 +212,18 @@ interrupt request
 ```text
 interrupt request
 → install target-lane interrupt reservation
-→ abort current in-flight turn exactly once
+→ signal the predecessor's AbortController exactly once
+→ the existing transport cancellation path is invoked (TransportInvoker
+  cancel request to the underlying runtime)
 → return accepted receipt
 → wait for predecessor true settlement
 → run interrupt reservation before ordinary queue
+```
+
+The predecessor may terminalize as either `cancelled` or `completed`, depending on the behavior of the existing underlying transport/runtime. xacpx does not rewrite a naturally-completed predecessor into `cancelled`. The invariant that xacpx fully owns:
+
+```text
+the interrupt turn MUST NEVER start before predecessor settlement.
 ```
 
 Receipt:
@@ -418,14 +441,15 @@ Sequence:
 ```text
 A reserves completion contract for msg_X
 → B accepts interrupt msg_X
-→ B current turn cancelled
-→ B old turn fully settles
+→ B requests cancellation of the current turn (exactly once)
+→ B old turn fully settles (terminal status transport-owned:
+  cancelled or completed)
 → B starts peer turn for msg_X
 → B peer turn finishes
 → completion(result) for msg_X routes back to A
 ```
 
-The old cancelled turn's partial assistant text MUST NOT become `msg_X`'s result.
+The predecessor's output — partial or final — MUST NOT become `msg_X`'s result, regardless of how the predecessor terminalized.
 
 ### 12.1 Interrupting a completion-bearing peer turn
 
@@ -440,12 +464,14 @@ A → B: msg_A interrupt
 Then:
 
 ```text
-msg_C → terminal cancelled completion to C exactly once
+msg_C → exactly ONE terminal completion to C, with the status matching the
+        ACTUAL predecessor outcome (cancelled when the transport ended it
+        early, completed when it ran to natural completion)
 msg_A → becomes next turn
 msg_A completion → independent normal completion lifecycle
 ```
 
-This falls out of the existing `peerOrigin` + terminal completion machinery and must be protected by an integration gate.
+xacpx's strong guarantee is **exactly-once delivery and correct contract binding** (right requestMessageId, no duplicates, no dangling contract, no cross-contract leakage) — NOT a specific terminal status. This falls out of the existing `peerOrigin` + terminal completion machinery and must be protected by an integration gate.
 
 ## 13. Idempotency
 
@@ -473,9 +499,12 @@ current in-flight request id
 
 It means:
 
-> xacpx can safely preempt the target's current managed turn through its control plane and schedule a new peer turn after true settlement.
+> xacpx owns and can enforce, through its control plane: a cancellation
+> request against the current managed turn, a true-settlement barrier,
+> no-overlap between the predecessor and the interrupting turn, and
+> priority-next-turn execution after settlement.
 
-It does **not** mean the target Agent/provider has a native interrupt-message primitive.
+It does **not** mean the target Agent/provider has a native interrupt-message primitive, and it does **NOT** claim provider-level hard preemption: whether the underlying runtime actually terminates the active model turn early is transport-owned.
 
 ### 14.1 v0.4 capability policy
 
@@ -707,7 +736,10 @@ Same as G8 through the real lifecycle path.
 ```text
 C's completion-bearing peer turn is currently running on B
 A interrupts B
-→ C receives cancelled completion once
+→ C receives EXACTLY ONE terminal completion for msg_C
+  (status = actual predecessor outcome: cancelled OR completed —
+   transport-owned; exactly-once + contract binding = xacpx-owned)
+→ no duplicate completion, no cross-contract completion, no dangling Waiting
 → A's peer turn starts after settlement
 → A's completion lifecycle remains independent
 ```
@@ -716,11 +748,12 @@ A interrupts B
 
 ```text
 A interrupt(result) B
-→ old B turn partial output exists
-→ old turn cancelled
-→ new peer turn returns FINAL_NEW
-→ A completion result == FINAL_NEW
-→ old partial output absent from result
+→ old B turn partial output exists (marker OLD_PREDECESSOR_OUTPUT)
+→ old turn settles (cancelled or completed — transport-owned)
+→ new peer turn returns FINAL_INTERRUPT_RESULT
+→ A completion result contains FINAL_INTERRUPT_RESULT
+→ A completion result does NOT contain OLD_PREDECESSOR_OUTPUT
+  (no partial output, no final output, no completion-envelope leakage)
 ```
 
 ### G12 — Auto/queue never cancel
@@ -740,13 +773,27 @@ Real two-daemon Relay hard gate:
 
 ```text
 A on node 1
-B busy on node 2
+B busy on node 2 (real long-running turn; NO deadline assumption on how
+  early the transport ends it)
 A sends interrupt
-→ target node abort count 1
-→ source node cannot directly cancel target
-→ B new peer turn starts after old target turn settles
-→ receipt and optional completion cross Relay correctly
+→ target node reserves ONE interrupt
+→ target AbortController signalled exactly once
+→ TransportInvoker cancel path invoked exactly once
+→ while predecessor unresolved: interrupt peer turn execution count = 0
+→ no overlap between predecessor and interrupt turn
+→ once predecessor truly settles (early-cancelled OR naturally completed):
+  interrupt turn executes next, exactly once
+→ with Q1/Q2 already queued: execution order = interrupt, Q1, Q2
+→ receipt and completion=result cross Relay correctly
+→ duplicate Relay request: no second abort, no second reservation,
+  no second peer execution
 ```
+
+Observability aid: the harness may record predecessorStartedAt /
+predecessorFinishedAt / interruptStartedAt and assert
+`interruptStartedAt >= predecessorFinishedAt`. It must NOT assert
+`interruptStartedAt < predecessor natural deadline` — early termination
+effectiveness is transport-owned, not an xacpx guarantee.
 
 ### G14 — Destination capability fail-closed
 
@@ -764,12 +811,15 @@ Stale source directory says `interrupt=true`, target currently resolves as unsup
 v0.4 is complete only when all of the following are true:
 
 - `agent_send(mode="interrupt")` no longer depends on an Agent/provider-native interrupt implementation for managed logical sessions.
-- Busy interrupt causes exactly one cancel signal.
-- No new turn begins before the old one really settles.
+- Busy interrupt causes exactly one xacpx cancellation signal/request.
+- No new turn begins before the old one really settles (no overlap).
 - Interrupt executes before ordinary queued prompts without deleting them.
 - Default/auto path never cancels.
 - Duplicate retries cannot cause repeated cancellation or duplicate peer turns.
-- Completion contracts survive the new lifecycle without cross-contamination.
+- Completion contracts survive the new lifecycle without cross-contamination;
+  an interrupted completion-bearing predecessor yields exactly one terminal
+  outcome bound to its own contract, with the status reflecting the actual
+  predecessor result (cancelled or completed).
 - Local and Relay routes use the same target-side state machine.
 - Archived/removing targets remain fail-closed.
 - Hard gates G1–G14 pass through production seams.
