@@ -1161,19 +1161,41 @@ test("web-push: vapid key endpoint reflects config; subscriptions require auth +
   });
   expect(bad.status).toBe(400);
 
+  const validKeys = {
+    p256dh: "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U",
+    auth: "AAAAAAAAAAAAAAAAAAAAAA",
+  };
+
   const ok = await app.request("/api/web-push/subscriptions", {
     method: "PUT", headers: { cookie, "content-type": "application/json" },
-    body: JSON.stringify({ endpoint: "https://fcm.googleapis.com/fcm/send/abc", keys: { p256dh: "k", auth: "a" } }),
+    body: JSON.stringify({ endpoint: "https://fcm.googleapis.com/fcm/send/abc", keys: validKeys }),
   });
   expect(ok.status).toBe(200);
   expect(pushSubscriptions.listByAccount(admin.id)).toHaveLength(1);
 
+  // M6: Invalid p256dh (not 65 bytes or not 0x04) or short auth (< 16 bytes) -> 400
+  const badCrypto = await app.request("/api/web-push/subscriptions", {
+    method: "PUT", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ endpoint: "https://fcm.googleapis.com/fcm/send/abc", keys: { p256dh: "k", auth: "a" } }),
+  });
+  expect(badCrypto.status).toBe(400);
+
+  // B2: DELETE returns real deletion status ({deleted: true/false})
   const del = await app.request("/api/web-push/subscriptions", {
     method: "DELETE", headers: { cookie, "content-type": "application/json" },
     body: JSON.stringify({ endpoint: "https://fcm.googleapis.com/fcm/send/abc" }),
   });
   expect(del.status).toBe(200);
+  expect(await del.json()).toEqual({ ok: true, deleted: true });
   expect(pushSubscriptions.listByAccount(admin.id)).toHaveLength(0);
+
+  // Deleting again (already deleted) reports deleted: false
+  const delAgain = await app.request("/api/web-push/subscriptions", {
+    method: "DELETE", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ endpoint: "https://fcm.googleapis.com/fcm/send/abc" }),
+  });
+  expect(delAgain.status).toBe(200);
+  expect(await delAgain.json()).toEqual({ ok: true, deleted: false });
 });
 
 test("web-push: PUT rejects non-push-service endpoints (SSRF allowlist)", async () => {
@@ -1200,14 +1222,26 @@ test("web-push: PUT rejects non-push-service endpoints (SSRF allowlist)", async 
   ]) {
     const bad = await app.request("/api/web-push/subscriptions", {
       method: "PUT", headers: { cookie, "content-type": "application/json" },
-      body: JSON.stringify({ endpoint, keys: { p256dh: "k", auth: "a" } }),
+      body: JSON.stringify({
+        endpoint,
+        keys: {
+          p256dh: "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U",
+          auth: "AAAAAAAAAAAAAAAAAAAAAA",
+        },
+      }),
     });
     expect(bad.status).toBe(400);
   }
   // The real FCM origin is accepted.
   const ok = await app.request("/api/web-push/subscriptions", {
     method: "PUT", headers: { cookie, "content-type": "application/json" },
-    body: JSON.stringify({ endpoint: "https://fcm.googleapis.com/fcm/send/abc", keys: { p256dh: "k", auth: "a" } }),
+    body: JSON.stringify({
+      endpoint: "https://fcm.googleapis.com/fcm/send/abc",
+      keys: {
+        p256dh: "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U",
+        auth: "AAAAAAAAAAAAAAAAAAAAAA",
+      },
+    }),
   });
   expect(ok.status).toBe(200);
   expect(pushSubscriptions.listByAccount(admin.id)).toHaveLength(1);

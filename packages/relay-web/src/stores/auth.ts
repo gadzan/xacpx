@@ -24,6 +24,11 @@ export const useAuthStore = defineStore("auth", () => {
       await reconcileExistingSubscription();
       return true;
     } catch (e) {
+      // /api/login already created a server session + HttpOnly cookie before
+      // reconcile ran. A "failed" login must not leave that session behind —
+      // revoke it, otherwise a refresh or another tab enters the account
+      // despite the visible failure.
+      await api.post("/api/logout").catch(() => {});
       error.value = e instanceof ApiError ? e.code : "request-failed";
       account.value = null;
       return false;
@@ -34,10 +39,12 @@ export const useAuthStore = defineStore("auth", () => {
     try {
       account.value = await api.get<Account>("/api/me");
       // Page reload with a live session: same fail-closed ownership-transfer
-      // contract as login().
+      // contract as login(). Reconcile failures here do NOT revoke the
+      // session (the user is already logged in; revoking would be surprising)
+      // — the error propagates so the router can decide.
       await reconcileExistingSubscription();
       return true;
-    } catch {
+    } catch (e) {
       account.value = null;
       return false;
     }
@@ -47,6 +54,10 @@ export const useAuthStore = defineStore("auth", () => {
     // Release the browser↔account push binding BEFORE /api/logout clears the
     // session cookie: after it, the hub would reject the DELETE as 401 and the
     // endpoint would keep pointing at this account for anyone logging in next.
+    // releaseSubscriptionOwnership is fail-closed — if it cannot PROVE the
+    // binding is dead it throws, and logout ABORTS (user stays logged in as
+    // themselves, which is safe) instead of leaving a live binding on a shared
+    // machine for the next account.
     await releaseSubscriptionOwnership();
     await api.post("/api/logout").catch(() => {});
     account.value = null;

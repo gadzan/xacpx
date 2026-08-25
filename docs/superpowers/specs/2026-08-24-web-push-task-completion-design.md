@@ -126,9 +126,9 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 - 关闭：`subscription.unsubscribe()` → DELETE。
 - 权限拒绝不是报错：进入 denied 态明示原因与恢复路径。
 
-### 4.3 对账（main.ts）
+### 4.3 对账（认证生命周期；实现修订）
 
-SW 注册成功后调 `getSubscription()`：存在订阅则静默 PUT 给 hub（hub 重启丢库或换钥后浏览器侧自愈）。逻辑抽 `lib/web-push.ts`（urlBase64ToUint8Array、对账函数），vitest 可测。
+> **实现修订（round-3/5 评审后）**：reconcile 不在 main.ts 做未认证对账，而是属于认证生命周期——`login()`/`fetchMe()` **await** fail-closed 的所有权转移（失败即登录失败；login 路径还会撤销刚创建的服务器 session），`logout()` 先解绑（销毁未证明则中止 logout）。逻辑抽 `lib/web-push.ts`（urlBase64ToUint8Array、subscriptionMatchesKey、reconcileExistingSubscription），vitest 可测。
 
 ### 4.4 i18n
 

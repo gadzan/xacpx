@@ -33,10 +33,7 @@ interface StubSW {
 }
 
 function stubNavigator(sw: StubSW): void {
-  const regMock = vi.fn().mockImplementation(async (scope: string) => {
-    console.log("GETREG scope:", scope, "keys:", sw.registration ? Object.keys(sw.registration as object) : null);
-    return sw.registration ?? null;
-  });
+  const regMock = vi.fn().mockResolvedValue(sw.registration ?? null);
   vi.stubGlobal("navigator", {
     ...navigator,
     serviceWorker: {
@@ -87,18 +84,20 @@ describe("web-push lib", () => {
     delete (window as unknown as Record<string, unknown>).Notification;
   });
 
-  it("fetchVapidPublicKey returns the key, or null on hub errors", async () => {
+  it("fetchVapidPublicKey returns the key; 404 → null; other errors throw", async () => {
     expect(await fetchVapidPublicKey()).toBe("PK");
-    apiMocks.get.mockRejectedValueOnce(new Error("404"));
-    expect(await fetchVapidPublicKey()).toBeNull();
+    apiMocks.get.mockRejectedValueOnce(new Error("network down"));
+    await expect(fetchVapidPublicKey()).rejects.toThrow("network down");
   });
 
   it("enableDesktopNotifications requests permission, subscribes, PUTs the JSON", async () => {
     const requestPermission = vi.fn().mockResolvedValue("granted");
     vi.stubGlobal("Notification", { permission: "default", requestPermission });
+    const unsubscribe = vi.fn().mockResolvedValue(true);
     const subscribe = vi.fn().mockResolvedValue({
-      endpoint: "https://push/e1",
+      endpoint: "https://fcm.googleapis.com/fcm/send/abc",
       keys: { p256dh: "k", auth: "a" },
+      unsubscribe,
       toJSON() {
         return { endpoint: this.endpoint, keys: this.keys };
       },
@@ -109,9 +108,24 @@ describe("web-push lib", () => {
     expect(requestPermission).toHaveBeenCalledTimes(1);
     expect(subscribe).toHaveBeenCalledWith(expect.objectContaining({ userVisibleOnly: true }));
     expect(apiMocks.put).toHaveBeenCalledWith("/api/web-push/subscriptions", {
-      endpoint: "https://push/e1",
+      endpoint: "https://fcm.googleapis.com/fcm/send/abc",
       keys: { p256dh: "k", auth: "a" },
     });
+  });
+
+  it("enableDesktopNotifications cleans up and throws for non-allowlisted endpoints (Firefox etc.)", async () => {
+    const unsubscribe = vi.fn().mockResolvedValue(true);
+    const subscribe = vi.fn().mockResolvedValue({
+      endpoint: "https://updates.push.services.mozilla.com/push/abc", // Firefox endpoint
+      unsubscribe,
+      toJSON() { return { endpoint: this.endpoint }; },
+    });
+    vi.stubGlobal("Notification", { permission: "granted" });
+    stubNavigator({ readyPushManager: { subscribe, getSubscription: vi.fn().mockResolvedValue(null) } });
+
+    await expect(enableDesktopNotifications("PK")).rejects.toThrow("push-endpoint-unsupported");
+    expect(unsubscribe).toHaveBeenCalledTimes(1); // cleaned up
+    expect(apiMocks.put).not.toHaveBeenCalled();
   });
 
   it("enableDesktopNotifications throws permission-denied when denied", async () => {
@@ -336,8 +350,8 @@ describe("destroy() failure semantics (round-4)", () => {
     delete (window as unknown as Record<string, unknown>).Notification;
   });
 
-  it("unsubscribe resolves false → falls back to registration.unregister()", async () => {
-    apiMocks.get.mockResolvedValue({ publicKey: null }); // hub push off → destroy path
+  it("unsubscribe resolves false → PROVEN (deactivated), no fallback", async () => {
+    apiMocks.get.mockResolvedValue({ publicKey: null });
     const unregister = vi.fn().mockResolvedValue(true);
     stubNavigator({
       registration: {
@@ -346,44 +360,41 @@ describe("destroy() failure semantics (round-4)", () => {
       },
     });
     await expect(reconcileExistingSubscription()).resolves.toBeUndefined();
-    expect(unregister).toHaveBeenCalledTimes(1);
+    expect(unregister).not.toHaveBeenCalled(); // fulfilled unsubscribe = proven
   });
 
-  it("unsubscribe rejects → falls back to registration.unregister()", async () => {
+  it("unsubscribe rejects → unregister fallback + re-query proves gone", async () => {
     apiMocks.get.mockResolvedValue({ publicKey: null });
     const unregister = vi.fn().mockResolvedValue(true);
+    // reconcile's probe (outer) returns the stale sub; destroyProven's
+    // re-query (inner, same pushManager) returns null → proven gone.
+    const innerGetSubscription = vi.fn()
+      .mockResolvedValueOnce(makeStaleSub(vi.fn().mockRejectedValue(new Error("SW died"))))
+      .mockResolvedValueOnce(null);
     stubNavigator({
       registration: {
-        pushManager: { getSubscription: vi.fn().mockResolvedValue(makeStaleSub(vi.fn().mockRejectedValue(new Error("SW died")))) },
+        pushManager: { getSubscription: innerGetSubscription },
         unregister,
       },
     });
     await expect(reconcileExistingSubscription()).resolves.toBeUndefined();
     expect(unregister).toHaveBeenCalledTimes(1);
+    expect(innerGetSubscription).toHaveBeenCalledTimes(2);
   });
 
-  it("both unsubscribe and unregister fail → reconcile rejects (login must not succeed)", async () => {
-    apiMocks.get.mockResolvedValue({ publicKey: null });
-    const unsubscribe = vi.fn().mockRejectedValue(new Error("nope"));
-    stubNavigator({
-      registration: {
-        pushManager: { getSubscription: vi.fn().mockResolvedValue(makeStaleSub(unsubscribe)) },
-        unregister: vi.fn().mockRejectedValue(new Error("also nope")),
-      },
-    });
-    await expect(reconcileExistingSubscription()).rejects.toThrow("push-subscription-destroy-failed");
-  });
-
-  it("unregister resolves false too → reconcile rejects", async () => {
+  it("unsubscribe fulfilled false → proven; unregister never consulted", async () => {
     apiMocks.get.mockResolvedValue({ publicKey: null });
     const unsubscribe = vi.fn().mockResolvedValue(false);
+    const unregister = vi.fn().mockResolvedValue(true);
     stubNavigator({
       registration: {
         pushManager: { getSubscription: vi.fn().mockResolvedValue(makeStaleSub(unsubscribe)) },
-        unregister: vi.fn().mockResolvedValue(false),
+        unregister,
       },
     });
-    await expect(reconcileExistingSubscription()).rejects.toThrow("push-subscription-destroy-failed");
+    await expect(reconcileExistingSubscription()).resolves.toBeUndefined();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+    expect(unregister).not.toHaveBeenCalled();
   });
 });
 
@@ -413,13 +424,26 @@ describe("release ownership (round-5 strict contract)", () => {
     delete (window as unknown as Record<string, unknown>).Notification;
   });
 
-  it("unsubscribe=false + hub DELETE fails → rejects (no silent leak)", async () => {
+  it("unsubscribe fulfilled false = proven → resolves even if hub DELETE fails (endpoint dead at push service)", async () => {
     apiMocks.del.mockRejectedValueOnce(new Error("hub unreachable"));
     stubNavigator({
       registration: {
         pushManager: {
           getSubscription: vi.fn().mockResolvedValue(makeSub(vi.fn().mockResolvedValue(false))),
-          unregister: vi.fn().mockResolvedValue(false), // local destroy also unproven
+          unregister: vi.fn().mockResolvedValue(false),
+        },
+      },
+    });
+    await expect(releaseSubscriptionOwnership()).resolves.toBeUndefined();
+  });
+
+  it("unsubscribe REJECTS + hub DELETE fails → rejects (no silent leak)", async () => {
+    apiMocks.del.mockRejectedValueOnce(new Error("hub unreachable"));
+    stubNavigator({
+      registration: {
+        pushManager: {
+          getSubscription: vi.fn().mockResolvedValue(makeSub(vi.fn().mockRejectedValue(new Error("SW died")))),
+          unregister: vi.fn().mockResolvedValue(false),
         },
       },
     });
@@ -453,27 +477,31 @@ describe("release ownership (round-5 strict contract)", () => {
     await expect(releaseSubscriptionOwnership()).resolves.toBeUndefined();
   });
 
-  it("stale-key rotation path uses destroyProven: unsub=false → unregister fallback", async () => {
+  it("stale-key rotation path uses destroyProven: unsub rejects → unregister fallback", async () => {
     (window as unknown as Record<string, unknown>).PushManager = function FakePushManager() {};
     vi.stubGlobal("Notification", { permission: "granted", requestPermission: vi.fn().mockResolvedValue("granted") });
     apiMocks.get.mockResolvedValue({ publicKey: "NEWKEY_NEWKEY_NEWKEY_NEWKEY_NEWKEY_NEWKEY_NEWKEY_NEWKEY_NEWK" });
     apiMocks.del.mockResolvedValue({ ok: true });
 
-    const unregister = vi.fn().mockResolvedValue(false); // local destroy unproven
     const unregisterReg = vi.fn().mockResolvedValue(true); // fallback proven
     const subscribe = vi.fn().mockResolvedValue({
       endpoint: "https://fcm.googleapis.com/fcm/send/new",
       keys: { p256dh: "k2", auth: "a2" },
       toJSON() { return { endpoint: this.endpoint, keys: this.keys }; },
     });
-    const unsubscribe = vi.fn().mockResolvedValue(false);
+    const unsubscribe = vi.fn().mockRejectedValue(new Error("unsub failed"));
     const oldSub = {
       endpoint: "https://fcm.googleapis.com/fcm/send/old",
       options: { applicationServerKey: urlBase64ToUint8Array2(K).buffer },
       unsubscribe,
       toJSON() { return { endpoint: this.endpoint }; },
     };
-    const existingReg = { pushManager: { getSubscription: vi.fn().mockResolvedValue(oldSub) }, unregister: unregisterReg };
+    // 1st getSubscription: probe returns oldSub
+    // 2nd getSubscription: inside destroyProven to verify unregister proved gone -> returns null
+    const existingGetSub = vi.fn()
+      .mockResolvedValueOnce(oldSub)
+      .mockResolvedValueOnce(null);
+    const existingReg = { pushManager: { getSubscription: existingGetSub }, unregister: unregisterReg };
     const readyReg = { pushManager: { subscribe, getSubscription: vi.fn().mockResolvedValue(null) } };
     vi.stubGlobal("navigator", {
       ...navigator,
@@ -481,8 +509,9 @@ describe("release ownership (round-5 strict contract)", () => {
     });
 
     await reconcileExistingSubscription();
-    expect(unsubscribe).toHaveBeenCalledTimes(1); // attempted, unproven
+    expect(unsubscribe).toHaveBeenCalledTimes(1); // attempted, rejected
     expect(unregisterReg).toHaveBeenCalledTimes(1); // fallback proven
+    expect(existingGetSub).toHaveBeenCalledTimes(2); // probe + verified gone
     expect(apiMocks.del).toHaveBeenCalledWith("/api/web-push/subscriptions", { endpoint: "https://fcm.googleapis.com/fcm/send/old" });
     expect(subscribe).toHaveBeenCalled(); // re-mint under new key
     expect(apiMocks.put).toHaveBeenCalledWith("/api/web-push/subscriptions", {
@@ -498,9 +527,8 @@ describe("release ownership (round-5 strict contract)", () => {
     vi.stubGlobal("Notification", { permission: "granted", requestPermission: vi.fn().mockResolvedValue("granted") });
     apiMocks.get.mockResolvedValue({ publicKey: "NEWKEY_NEWKEY_NEWKEY_NEWKEY_NEWKEY_NEWKEY_NEWKEY_NEWKEY_NEWK" });
 
-    const unregister = vi.fn().mockResolvedValue(false); // unproven
-    const unregisterReg = vi.fn().mockRejectedValue(new Error("unregister dead")); // also unproven
-    const unsubscribe = vi.fn().mockResolvedValue(false);
+    const unregisterReg = vi.fn().mockRejectedValue(new Error("unregister dead")); // unproven
+    const unsubscribe = vi.fn().mockRejectedValue(new Error("unsub dead")); // unproven
     const oldSub = {
       endpoint: "https://fcm.googleapis.com/fcm/send/old",
       options: { applicationServerKey: urlBase64ToUint8Array2(K).buffer },
@@ -508,9 +536,10 @@ describe("release ownership (round-5 strict contract)", () => {
       toJSON() { return { endpoint: this.endpoint }; },
     };
     const existingReg = { pushManager: { getSubscription: vi.fn().mockResolvedValue(oldSub) }, unregister: unregisterReg };
+    const readyReg = { pushManager: { subscribe: vi.fn(), getSubscription: vi.fn().mockResolvedValue(null) } };
     vi.stubGlobal("navigator", {
       ...navigator,
-      serviceWorker: { getRegistration: vi.fn().mockResolvedValue(existingReg), ready: Promise.resolve({ pushManager: { subscribe: vi.fn() } }) },
+      serviceWorker: { getRegistration: vi.fn().mockResolvedValue(existingReg), ready: Promise.resolve(readyReg) },
     });
 
     await expect(reconcileExistingSubscription()).rejects.toThrow("push-subscription-destroy-failed");

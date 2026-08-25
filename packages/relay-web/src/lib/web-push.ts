@@ -1,4 +1,4 @@
-import { api } from "../api/client";
+import { ApiError, api } from "../api/client";
 
 /**
  * Push endpoints we accept. This PR supports Chrome only, and the hub POSTes
@@ -70,8 +70,12 @@ export async function fetchVapidPublicKey(): Promise<string | null> {
   try {
     const r = await api.get<{ publicKey: string | null }>("/api/web-push/vapid-public-key");
     return r.publicKey ?? null;
-  } catch {
-    return null; // hub older than this feature: treat as disabled
+  } catch (err) {
+    // Only a 404 means "hub predates this feature" → push disabled. Network
+    // failures and 5xx must propagate: treating them as disabled would let
+    // reconcile destroy a perfectly good subscription on a transient blip.
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
   }
 }
 
@@ -96,6 +100,13 @@ export async function enableDesktopNotifications(publicKey: string): Promise<voi
     // generic buffer loosely, so assert once at this boundary).
     applicationServerKey: keyBytes.buffer.slice(keyBytes.byteOffset, keyBytes.byteOffset + keyBytes.byteLength) as ArrayBuffer,
   });
+  // The hub only POSTes to allowlisted Chrome push-service origins — a
+  // non-Chrome browser would subscribe fine and then fail on the PUT. Detect
+  // that here, clean up, and surface as unsupported.
+  if (!isAllowedPushEndpoint(sub.endpoint)) {
+    await sub.unsubscribe().catch(() => {});
+    throw new Error("push-endpoint-unsupported");
+  }
   await api.put("/api/web-push/subscriptions", sub.toJSON());
 }
 
@@ -119,14 +130,27 @@ async function destroyProven(target: {
   sub: PushSubscription | null;
   reg: ServiceWorkerRegistration | null;
 }): Promise<void> {
-  console.log("DP_ENTRY sub:", !!target.sub, "regKeys:", target.reg ? Object.keys(target.reg) : null);
+  // Push API: unsubscribe() fulfilling — true OR false — means the
+  // subscription is deactivated and can no longer receive pushes. Both count
+  // as proven destruction.
   if (target.sub) {
-    const unsubscribed = await target.sub.unsubscribe().catch(() => false);
-    if (unsubscribed === true) return;
+    try {
+      await target.sub.unsubscribe();
+      return;
+    } catch {
+      // fall through to registration-level proof
+    }
   }
   if (target.reg) {
+    // unregister() === true does NOT prove the push binding died (a concurrent
+    // register() can resurrect the registration, and "/"-scope unregister need
+    // not deactivate push subscriptions). Prove by re-querying: the push
+    // subscription must be GONE.
     const unregistered = await target.reg.unregister().catch(() => false);
-    if (unregistered === true) return;
+    if (unregistered === true) {
+      const gone = await target.reg.pushManager.getSubscription().catch(() => null);
+      if (gone === null) return;
+    }
   }
   throw new Error("push-subscription-destroy-failed");
 }
@@ -148,9 +172,12 @@ export async function releaseSubscriptionOwnership(): Promise<void> {
 
   // Hub binding first: the session cookie is still valid here, so this is the
   // only chance to delete the server-side row.
+  // The hub reports real deletion semantics ({deleted}) — a 200 with
+  // deleted:false (endpoint missing or owned by another account) is NOT a
+  // proven server-side teardown.
   const hubDeleted = await api
-    .del("/api/web-push/subscriptions", { endpoint: sub.endpoint })
-    .then(() => true)
+    .del<{ ok: boolean; deleted: boolean }>("/api/web-push/subscriptions", { endpoint: sub.endpoint })
+    .then((r) => r.deleted === true)
     .catch(() => false);
 
   // Local destruction must be PROVEN. If it is not, the only safe outcome is a

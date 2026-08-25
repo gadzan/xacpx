@@ -109,14 +109,27 @@ test("login awaits reconcile and reports failure when ownership transfer fails (
   expect(await loginPromise).toBe(true);
 });
 
-test("login returns false when reconcile rejects (local subscription destroyed)", async () => {
-  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ username: "bob" }), { status: 200 })));
+test("login returns false and revokes server session when reconcile rejects (local subscription destroyed)", async () => {
+  const postCalls: string[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    const p = String(url);
+    if (init?.method === "POST" && p === "/api/login") {
+      postCalls.push("login");
+      return new Response(JSON.stringify({ username: "bob" }), { status: 200 });
+    }
+    if (init?.method === "POST" && p === "/api/logout") {
+      postCalls.push("logout");
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ error: "not-found" }), { status: 404 });
+  }));
   reconcileMock.mockRejectedValueOnce(new Error("rebind failed"));
   const auth = useAuthStore();
   const ok = await auth.login("b-token");
   expect(ok).toBe(false);
   expect(auth.account).toBeNull();
   expect(reconcileMock).toHaveBeenCalledTimes(1);
+  expect(postCalls).toEqual(["login", "logout"]);
 });
 
 test("fetchMe also awaits reconcile before reporting success", async () => {

@@ -433,7 +433,22 @@ export function createApp(deps: AppDeps): Hono<Vars> {
     // network. Only known browser push-service origins are accepted — an
     // arbitrary client-supplied HTTPS URL would be a server-side POST primitive.
     const allowedEndpoint = isAllowedPushEndpoint(endpoint);
-    if (!allowedEndpoint || !p256dh || !auth || endpoint.length > 2048 || p256dh.length > 512 || auth.length > 512) {
+    // Deep-validate the crypto material: p256dh is an UNCOMPRESSED P-256 point
+    // (65 bytes, 0x04 prefix) and auth is ≥16 bytes of keying material — both
+    // strict URL-safe base64. Lenient checks would let a broken/malicious
+    // client persist subscriptions that fail crypto on every completion.
+    const STRICT_B64URL = /^[A-Za-z0-9_-]+$/;
+    let materialOk = false;
+    try {
+      const p256dhBytes = Buffer.from(p256dh.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+      const authBytes = Buffer.from(auth.replace(/-/g, "+").replace(/_/g, "/"), "base64");
+      materialOk =
+        STRICT_B64URL.test(p256dh) && p256dh.length <= 128
+        && STRICT_B64URL.test(auth) && auth.length <= 64
+        && p256dhBytes.length === 65 && p256dhBytes[0] === 0x04
+        && authBytes.length >= 16;
+    } catch { materialOk = false; }
+    if (!allowedEndpoint || !materialOk || endpoint.length > 2048) {
       return c.json({ error: "invalid-payload" }, 400);
     }
     deps.pushSubscriptions.upsert({ accountId: account.id, endpoint, p256dh, auth });
@@ -447,8 +462,11 @@ export function createApp(deps: AppDeps): Hono<Vars> {
     const body = (await c.req.json().catch(() => ({}))) as { endpoint?: unknown };
     const endpoint = typeof body.endpoint === "string" ? body.endpoint : "";
     if (!endpoint || endpoint.length > 2048) return c.json({ error: "invalid-payload" }, 400);
-    deps.pushSubscriptions.deleteByEndpointAndAccount(account.id, endpoint);
-    return c.json({ ok: true });
+    // Real deletion semantics: a 200 with deleted:false means the endpoint was
+    // not found under THIS account (other-account rows are never deleted) —
+    // the client must not treat that as a proven server-side teardown.
+    const deleted = deps.pushSubscriptions.deleteByEndpointAndAccount(account.id, endpoint);
+    return c.json({ ok: true, deleted });
   });
 
   app.get("/api/instances", (c) => {

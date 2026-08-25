@@ -143,6 +143,12 @@ export async function runRelayCli(args: string[], io: RelayCliIo): Promise<numbe
       startOpts.webRoot = resolveBundledWebRoot();
     }
     const logger = createRelayLogger();
+    const vapidFlagCount = [startOpts.vapidSubject, startOpts.vapidPublicKey, startOpts.vapidPrivateKey]
+      .filter((v) => v !== undefined).length;
+    if (vapidFlagCount > 0 && vapidFlagCount < 3) {
+      io.print("error: --vapid-subject/--vapid-public-key/--vapid-private-key must be provided together");
+      return 1;
+    }
     const vapidFromFlags = startOpts.vapidPublicKey && startOpts.vapidPrivateKey
       ? {
           subject: startOpts.vapidSubject ?? vapidFromEnv(process.env)?.subject ?? "mailto:relay@localhost",
