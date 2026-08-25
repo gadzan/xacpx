@@ -206,6 +206,9 @@ export interface QueueItemDto {
     id: string;
     textPreview: string;
     enqueuedAt: string;
+    /** v0.4: present ONLY for a reserved-but-not-started peer interrupt
+     *  (snapshot-first item). Additive and backward compatible. */
+    kind?: "interrupt";
 }
 /** Wire mirror of src/control ControlEvent (tool-event carries the NORMALIZED step). */
 export type ControlEventDto = {

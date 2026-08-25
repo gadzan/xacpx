@@ -1,4 +1,41 @@
 # Changelog
+## [0.23.0-beta.6] - 2026-08-25
+
+### Added
+
+- Peer interrupt delivery (agent-messaging v0.4): `TurnQueue` peer-interrupt reservation with snapshot-first `kind: "interrupt"` items, interrupt routing through the managed turn lane, control-plane interrupt advertisement/revalidation, and explicit peer-interrupt semantics in the MCP docs.
+- Align the peer-interrupt contract with the transport boundary + Relay Hub grant compensation.
+
+### Fixed
+
+- Republish the queue snapshot after `clearSession` drops a pending interrupt (no stale snapshot).
+
+## [relay-protocol 0.5.0-beta.4] - 2026-08-25
+
+### Added
+
+- `SessionDto.driver`: the acpx driver backing `agent`, resolved from the instance's agent config — lets the web render the brand icon without a second agents lookup (critical for sleeping/archived sessions). Omitted by old instances; web falls back to its agents map.
+- `QueueItemDto.kind?: "interrupt"`: present only for a reserved-but-not-started peer interrupt (snapshot-first item). Additive, backward compatible.
+
+## [relay 0.13.0-beta.4] - 2026-08-25
+
+### Added
+
+- Web-push task-completion notifications: `PushNotifier` web-push sender with gone-subscription cleanup, web-push subscription HTTP routes, and fan-out of task-completion notices via web push + VAPID CLI.
+- Relay-web dashboard: push service worker island (importScripts), subscription helpers with API put/del-with-body, desktop notification settings section + startup subscription reconcile.
+
+### Fixed
+
+- Fail-closed auth reconcile across review rounds: strict VAPID validator + P-256 curve point validation, `destroy()` proves success before reconcile reports done, fetchMe preserves auth on push reconcile failure, session revoked on login fail, unified `destroyProven` across all paths.
+- Bounded `serviceWorker.ready` wait in push reconcile (E2E hang).
+- Carry session driver on `SessionDto` — sleeping sessions keep their brand icon.
+
+## [channel-relay 0.7.0-beta.6] - 2026-08-25
+
+### Fixed
+
+- Isolate the RMUX daemon per bridge process (`rmux-sidecar-supervisor`) — no cross-session daemon interference.
+
 ## [0.23.0-beta.5] - 2026-08-23
 
 ### Fixed
