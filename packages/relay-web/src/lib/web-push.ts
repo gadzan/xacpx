@@ -1,21 +1,34 @@
 import { ApiError, api } from "../api/client";
 
 /**
- * Push endpoints we accept. This PR supports Chrome only, and the hub POSTes
- * to each endpoint from its own network context — an arbitrary client-supplied
- * HTTPS URL would be a blind SSRF primitive. Restrict to Google's public push
- * service (Chrome routes FCM endpoints); widen deliberately if Firefox/Safari
- * support ever lands (then: mozilla + apple push origins).
+ * Push endpoints we accept. The hub POSTes to each endpoint from its own
+ * network context — an arbitrary client-supplied HTTPS URL would be a blind
+ * SSRF primitive.
+ *
+ * Allowed providers:
+ * - Google FCM: fcm.googleapis.com, fcm.notifications.google.com (Chrome/Chromium)
+ * - Apple APNs: *.push.apple.com (Safari on macOS, iOS/iPadOS Home Screen Web Apps)
  */
-const ALLOWED_ENDPOINT_ORIGINS: Record<string, true> = {
-  "https://fcm.googleapis.com": true,
-  "https://fcm.notifications.google.com": true,
-};
-
-/** True when a subscription endpoint is one this hub will actually POST to. */
 export function isAllowedPushEndpoint(endpoint: string): boolean {
   try {
-    return ALLOWED_ENDPOINT_ORIGINS[new URL(endpoint).origin] === true;
+    const url = new URL(endpoint);
+    if (url.protocol !== "https:") return false;
+    // Push services should only be reachable over normal HTTPS (implicit or 443).
+    if (url.port !== "" && url.port !== "443") return false;
+
+    if (
+      url.hostname === "fcm.googleapis.com" ||
+      url.hostname === "fcm.notifications.google.com"
+    ) {
+      return true;
+    }
+
+    // Apple officially requires allowing any subdomain of push.apple.com.
+    if (url.hostname.endsWith(".push.apple.com")) {
+      return true;
+    }
+
+    return false;
   } catch {
     return false;
   }

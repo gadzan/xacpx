@@ -118,9 +118,16 @@
 
 ## Web Push（task-completion 桌面通知）
 
-- 用途：实例产生 `notice.kind === "task-completion"` 时，向该账号已订阅的浏览器推系统通知（标签页在后台或已关闭也能收到）；`task-progress` / `coordinator-message` 仅走 WS 广播。设计 spec：docs/superpowers/specs/2026-08-24-web-push-task-completion-design.md。
+- 用途：基于 W3C 标准 Web Push / VAPID 协议，实例产生 `notice.kind === "task-completion"` 时向该账号已订阅的浏览器推送系统通知（标签页在后台或已关闭也能收到）；`task-progress` / `coordinator-message` 仅走 WS 广播。支持浏览器覆盖：
+  - **Chrome / Chromium**
+  - **macOS Safari**（Safari 16.1+ / macOS Ventura+）
+  - **iOS / iPadOS 主屏幕 Web App**（iOS/iPadOS 16.4+，添加到主屏幕并从主屏幕打开）
+  设计 specs：`docs/superpowers/specs/2026-08-24-web-push-task-completion-design.md`、`docs/superpowers/specs/2026-08-25-support-apple-web-push.md`。
+- 网络出站要求：Hub 出站网络需允许连接以下 Push 服务的标准 443 端口：
+  - `fcm.googleapis.com`、`fcm.notifications.google.com`（Chrome / Chromium）
+  - `*.push.apple.com`（Apple Safari / APNs）
 - 配置：`xacpx-relay push-keys generate` 打印 VAPID 密钥对；经环境变量 `XACPX_RELAY_VAPID_SUBJECT` / `XACPX_RELAY_VAPID_PUBLIC_KEY` / `XACPX_RELAY_VAPID_PRIVATE_KEY` 或 start 子命令 `--vapid-subject/--vapid-public-key/--vapid-private-key` 注入。未配置则推送禁用（log warn），WS 通道不受影响。
-- 存储：`push_subscriptions` 表（account_id + endpoint 主键，endpoint 全局唯一索引）。API：`GET /api/web-push/vapid-public-key`、`PUT/DELETE /api/web-push/subscriptions`（authed + requireJson）。
+- 存储：`push_subscriptions` 表（account_id + endpoint 主键，endpoint 全局唯一索引）。API：`GET /api/web-push/vapid-public-key`、`PUT/DELETE /api/web-push/subscriptions`（authed + requireJson，严格校验 endpoint allowlist 防 SSRF）。
 - 发送：server.ts 的 instanceNotice 分支 fire-and-forget fan-out；payload `{title=实例名, body=text 截断200, instanceId, url:"/"}`，TTL 3600；410/404 自动删订阅行。
 - Web 端：SettingsView「桌面通知」开关（五态状态机）；订阅所有权转移属于认证生命周期——login fail-closed 转移（失败撤销 session），fetchMe 认证成功后 best-effort 维护同账号订阅，logout 先解绑再清 session。SW 推送处理器为 public/push-sw.js，经 pwa-options 的 workbox.importScripts 注入。
 

@@ -60,6 +60,7 @@ export default {
     notifServerDisabled: "Not enabled on server",
     notifDenied: "Notification permission denied",
     notifDeniedHint: "Allow notifications in the browser site settings, then retry.",
+    notifIosHint: "On iPhone and iPad, add XACPX to the Home Screen and open it from there before enabling notifications.",
     notifEnable: "Enable notifications",
     notifDisable: "Disable notifications",
     account: "Account",

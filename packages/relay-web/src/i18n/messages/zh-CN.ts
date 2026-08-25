@@ -58,6 +58,7 @@ export default {
     notifServerDisabled: "服务端未启用",
     notifDenied: "浏览器已拒绝通知权限",
     notifDeniedHint: "在浏览器站点设置中允许通知后重试。",
+    notifIosHint: "iPhone/iPad 需要先将 XACPX 添加到主屏幕，并从主屏幕打开后才能启用通知。",
     notifEnable: "开启通知",
     notifDisable: "关闭通知",
     account: "账户",

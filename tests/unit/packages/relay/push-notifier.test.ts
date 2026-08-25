@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { createSqlDriver, initSchema } from "../../../../packages/relay/src/db";
 import { PushSubscriptionStore } from "../../../../packages/relay/src/stores/push-subscriptions";
-import { PushNotifier, vapidFromEnv, PUSH_TTL_SECONDS } from "../../../../packages/relay/src/push";
+import { PushNotifier, vapidFromEnv, PUSH_TTL_SECONDS, isAllowedPushEndpoint } from "../../../../packages/relay/src/push";
 
 type SentCall = { endpoint: string; payload: string; ttl: number };
 
@@ -102,4 +102,55 @@ test("validateVapidConfig enforces decoded key lengths (65/32 bytes)", () => {
   // Subject that passes a prefix regex but is not an absolute URL (web-push
   // does new URL(subject)):
   expect(validateVapidConfig({ subject: "https://", publicKey: goodPk, privateKey: goodSk })).toBeNull();
+});
+
+test("isAllowedPushEndpoint accepts FCM and *.push.apple.com, rejects SSRF and spoof attempts", () => {
+  // Accept matrix
+  for (const ep of [
+    "https://fcm.googleapis.com/fcm/send/abc",
+    "https://fcm.notifications.google.com/fcm/send/abc",
+    "https://web.push.apple.com/Q-xxxxx",
+    "https://foo.push.apple.com/abc",
+    "https://foo.bar.push.apple.com/abc",
+    "https://web.push.apple.com:443/abc",
+  ]) {
+    expect(isAllowedPushEndpoint(ep)).toBe(true);
+  }
+
+  // Reject matrix (SSRF / non-https / wrong ports / invalid domains / suffix spoofs)
+  for (const ep of [
+    "http://web.push.apple.com/abc",
+    "https://web.push.apple.com:8443/abc",
+    "https://push.apple.com.evil.com/abc",
+    "https://evilpush.apple.com/abc",
+    "https://push.apple.com@evil.com/abc",
+    "https://push.apple.com/abc",
+    "https://evil.com/push.apple.com",
+    "https://127.0.0.1/",
+    "https://localhost/",
+    "https://169.254.169.254/",
+    "https://10.0.0.1/",
+    "https://example.com/",
+    "not-a-url",
+    "https://foo.push.apple.com.evil.example/path",
+  ]) {
+    expect(isAllowedPushEndpoint(ep)).toBe(false);
+  }
+});
+
+test("sendTaskCompletion fans out to both FCM and Apple endpoints and cleans up Apple 410", async () => {
+  const sent: SentCall[] = [];
+  // Simulate Apple returning 410 gone
+  const { notifier, subscriptions } = await makeNotifier(sent, { statusCode: 410 });
+  subscriptions.upsert({ accountId: "a1", endpoint: "https://web.push.apple.com/sub1", p256dh: "k1", auth: "a1" });
+  subscriptions.upsert({ accountId: "a1", endpoint: "https://fcm.googleapis.com/fcm/send/sub2", p256dh: "k2", auth: "a2" });
+
+  await notifier.sendTaskCompletion("a1", { instanceId: "i1", instanceName: "inst", text: "done" });
+  expect(sent).toHaveLength(2);
+  expect(sent.map((s) => s.endpoint).sort()).toEqual([
+    "https://fcm.googleapis.com/fcm/send/sub2",
+    "https://web.push.apple.com/sub1",
+  ]);
+  // 410 should have cleaned up both expired subscriptions
+  expect(subscriptions.listByAccount("a1")).toHaveLength(0);
 });

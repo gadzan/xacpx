@@ -1231,6 +1231,9 @@ test("web-push: PUT rejects non-push-service endpoints (SSRF allowlist)", async 
     "http://fcm.googleapis.com/x",                       // right host, wrong scheme → origin mismatch
     "https://evil.example.com/fcm",                      // arbitrary https host
     "https://fcm.googleapis.com.attacker.io/x",          // suffix spoof (origin differs)
+    "https://web.push.apple.com.attacker.example/path",  // Apple subdomain spoof
+    "http://web.push.apple.com/x",                       // Apple non-https
+    "https://evilpush.apple.com/x",                      // Apple evil prefix
   ]) {
     const bad = await app.request("/api/web-push/subscriptions", {
       method: "PUT", headers: { cookie, "content-type": "application/json" },
@@ -1257,4 +1260,18 @@ test("web-push: PUT rejects non-push-service endpoints (SSRF allowlist)", async 
   });
   expect(ok.status).toBe(200);
   expect(pushSubscriptions.listByAccount(admin.id)).toHaveLength(1);
+
+  // Safari / Apple APNs endpoint is also accepted.
+  const okApple = await app.request("/api/web-push/subscriptions", {
+    method: "PUT", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({
+      endpoint: "https://web.push.apple.com/Q-safari-token",
+      keys: {
+        p256dh: "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U",
+        auth: "AAAAAAAAAAAAAAAAAAAAAA",
+      },
+    }),
+  });
+  expect(okApple.status).toBe(200);
+  expect(pushSubscriptions.listByAccount(admin.id)).toHaveLength(2);
 });

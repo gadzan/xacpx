@@ -128,4 +128,12 @@ describe("settings notifications section", () => {
     expect(w.text()).toContain("browser site settings");
     vi.unstubAllGlobals();
   });
+
+  it("renders iOS / iPadOS Home Screen notification hint", async () => {
+    const w = mountSettings();
+    await flush();
+    const hint = w.find('[data-test="notif-ios-hint"]');
+    expect(hint.exists()).toBe(true);
+    expect(hint.text()).toContain("Home Screen");
+  });
 });
