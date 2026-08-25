@@ -2931,7 +2931,11 @@ test("config hot reload provisions overlays for newly added agents", async () =>
       }),
     );
     await readJsonWithRetry<{ agents?: unknown }>(configPath).then(async () => {
-      for (let attempt = 0; attempt < 50 && provisioned.length < 2; attempt += 1) {
+      // The config watcher debounces 100ms and then reloads asynchronously;
+      // under the load of the 40+ buildApp tests above, fs.watch delivery can
+      // push the provision past a 1s window (observed ~30-50% flake on both
+      // main and feature branches). 5s keeps the poll bounded and robust.
+      for (let attempt = 0; attempt < 250 && provisioned.length < 2; attempt += 1) {
         await Bun.sleep(20);
       }
     });
