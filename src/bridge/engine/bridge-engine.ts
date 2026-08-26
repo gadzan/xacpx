@@ -56,20 +56,25 @@ export interface EngineSessionInput {
   effort?: string;
   mcpCoordinatorSession?: string;
   mcpSourceHandle?: string;
+  /** Immutable logical-session id from the daemon; preferred affinity key. */
+  logicalSessionId?: string;
+  /** Daemon-declared persisted engine for this session (plan §48). */
+  transportEngine?: "cli" | "runtime";
 }
 
 export interface EngineListInput {
   agent: string;
+  driver?: string;
+  settingsPolicy?: ClaudeSettingsPolicy;
   agentCommand?: string;
   acpxAgent?: string;
   rawCommand?: string;
   agentArgv?: string[];
-  driver?: string;
-  settingsPolicy?: ClaudeSettingsPolicy;
   cwd: string;
   cursor?: string;
   filterCwd?: string;
 }
+
 
 export interface EnginePromptInput extends EngineSessionInput {
   text: string;

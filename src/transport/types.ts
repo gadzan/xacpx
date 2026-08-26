@@ -103,6 +103,8 @@ export interface ResolvedSession {
   agentSessionTitle?: string;
   agentSessionUpdatedAt?: string;
   attachedAt?: string;
+  /** Immutable logical-session identity; sent as bridge logicalSessionId (plan §9.1). */
+  logicalSessionId?: string;
   mcpCoordinatorSession?: string;
   mcpSourceHandle?: string;
   /** Bridge engine affinity resolved for this session ("cli" | "runtime"). */

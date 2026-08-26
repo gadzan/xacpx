@@ -692,7 +692,17 @@ function agentLaunchSelection(params: Record<string, unknown>) {
     acpxAgent: asOptionalString(params.acpxAgent),
     rawCommand: asOptionalString(params.rawCommand),
     agentArgv: asOptionalStringArray(params.agentArgv),
+    // Worker-ownership identity + persisted engine affinity (plan §9.1/§48).
+    logicalSessionId: asOptionalString(params.logicalSessionId),
+    transportEngine: asDeclaredTransportEngine(params.transportEngine),
   };
+}
+
+/** Validates the optional declared-engine param; anything non-cli/runtime is a hard error. */
+function asDeclaredTransportEngine(value: unknown): "cli" | "runtime" | undefined {
+  if (value === undefined) return undefined;
+  if (value === "cli" || value === "runtime") return value;
+  throw new BridgeInvalidRequestError('transportEngine must be "cli" or "runtime" when provided');
 }
 
 function agentExecutionSettings(params: Record<string, unknown>) {

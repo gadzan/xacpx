@@ -323,6 +323,9 @@ export class AcpxBridgeTransport implements SessionTransport {
       mcpCoordinatorSession: session.mcpCoordinatorSession,
       mcpSourceHandle: session.mcpSourceHandle,
       replyMode: session.effectiveReplyMode ?? session.replyMode ?? "verbose",
+      // Stable worker-ownership identity + persisted engine affinity (plan §9.1/§48).
+      logicalSessionId: session.logicalSessionId,
+      transportEngine: session.transportEngine ?? "cli",
       ...(session.model?.trim() ? { model: session.model.trim() } : {}),
       ...(session.effort?.trim() ? { effort: session.effort.trim() } : {}),
     };

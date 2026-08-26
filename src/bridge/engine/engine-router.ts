@@ -24,8 +24,15 @@ export class EngineRouter implements BridgeEngine {
     private readonly runtime?: BridgeEngine,
   ) {}
 
-  private engineFor(input: { name: string; sessionKey?: string; transportEngine?: unknown }): BridgeEngine {
-    const key = input.sessionKey ?? input.name;
+  private engineFor(input: {
+    name: string;
+    sessionKey?: string;
+    logicalSessionId?: string;
+    transportEngine?: unknown;
+  }): BridgeEngine {
+    // Stable ownership identity first (plan §9.1): the immutable
+    // logical-session id survives alias renames; fall back to sessionKey/name.
+    const key = input.logicalSessionId ?? input.sessionKey ?? input.name;
     // Wave B sends transportEngine in bridge params; until then it is absent.
     const declared =
       input.transportEngine === "cli" || input.transportEngine === "runtime" ? input.transportEngine : undefined;

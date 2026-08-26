@@ -908,7 +908,7 @@ export class SessionService {
       workspace: session.workspace,
       transportSession: session.transport_session,
       transportEngine: session.transport_engine,
-      source: session.source,
+      logicalSessionId: session.logical_session_id,
       agentSessionId: session.agent_session_id,
       agentSessionTitle: session.agent_session_title,
       agentSessionUpdatedAt: session.agent_session_updated_at,
