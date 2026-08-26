@@ -592,23 +592,21 @@ export const useChatStore = defineStore("chat", () => {
       applyStateSnapshot(event.instanceId, event.turns, event.usage, event.commands);
       return;
     }
-    if (event.kind === "notice") {
-      if (event.notice.kind === "turn-completion" && event.notice.sessionAlias) {
-        const alias = event.notice.sessionAlias;
-        const selected = event.instanceId === instanceId.value && alias === sessionAlias.value;
-        const isActiveInAnyTab = isSessionActiveInAnyTab(event.instanceId, alias, selected);
-        if (!isActiveInAnyTab && claimNotificationSlot(event.instanceId, alias)) {
-          const instancesStore = useInstancesStore();
-          const instName = instancesStore.byId(event.instanceId)?.name ?? event.instanceId;
-          void showLocalTurnNotification({
-            instanceId: event.instanceId,
-            instanceName: instName,
-            sessionAlias: alias,
-            ok: event.notice.ok !== false,
-            text: event.notice.text,
-            errorMessage: event.notice.errorMessage,
-          });
-        }
+    if (event.kind === "turn-completion") {
+      const alias = event.sessionAlias;
+      const selected = event.instanceId === instanceId.value && alias === sessionAlias.value;
+      const isActiveInAnyTab = isSessionActiveInAnyTab(event.instanceId, alias, selected);
+      if (!isActiveInAnyTab && claimNotificationSlot(event.notificationId)) {
+        const instancesStore = useInstancesStore();
+        const instName = instancesStore.byId(event.instanceId)?.name ?? event.instanceId;
+        void showLocalTurnNotification({
+          instanceId: event.instanceId,
+          instanceName: instName,
+          sessionAlias: alias,
+          ok: event.ok !== false,
+          text: event.text,
+          errorMessage: event.errorMessage,
+        });
       }
       return;
     }

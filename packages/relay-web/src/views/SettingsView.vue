@@ -5,10 +5,10 @@ import { LogOut } from "lucide-vue-next";
 import { api } from "../api/client";
 import { useAuthStore } from "../stores/auth";
 import { useThemeStore } from "../stores/theme";
-import { confirm } from "../lib/use-confirm";
 import { useLocaleStore } from "../stores/locale";
-import { SUPPORTED_LOCALES } from "../i18n";
 import { useI18n } from "vue-i18n";
+import { SUPPORTED_LOCALES } from "../i18n";
+import { confirm } from "../lib/use-confirm";
 import {
   pushSupported,
   fetchVapidPublicKey,
@@ -17,7 +17,6 @@ import {
   subscriptionMatchesKey,
   getExistingSubscription,
 } from "../lib/web-push";
-
 const auth = useAuthStore();
 const theme = useThemeStore();
 const router = useRouter();

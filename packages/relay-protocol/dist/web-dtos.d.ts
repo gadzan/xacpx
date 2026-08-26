@@ -117,6 +117,14 @@ export type WebServerEvent = {
     instanceId: string;
     notice: InstanceNoticePayload;
 } | {
+    kind: "turn-completion";
+    instanceId: string;
+    sessionAlias: string;
+    notificationId: string;
+    ok: boolean;
+    text: string;
+    errorMessage?: string;
+} | {
     kind: "agent-directory";
     endpoints: WebAgentDirectoryEndpointDto[];
 } | {

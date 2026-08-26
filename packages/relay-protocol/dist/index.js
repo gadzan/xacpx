@@ -254,8 +254,8 @@ var WEB_EVENT_KINDS = new Set([
   "control-event",
   "state-snapshot",
   "notice",
+  "turn-completion",
   "agent-directory",
-  "terminal-opened",
   "terminal-request-failed",
   "terminal-recovery-failed",
   "terminal-rebase-start",
@@ -501,7 +501,7 @@ function validControlEvent(e) {
     }
   }
 }
-var NOTICE_KINDS = new Set(["task-completion", "task-progress", "coordinator-message", "turn-completion"]);
+var NOTICE_KINDS = new Set(["task-completion", "task-progress", "coordinator-message"]);
 function validInstanceStateSync(p) {
   if (typeof p !== "object" || p === null)
     return false;
@@ -592,6 +592,9 @@ function parseWebServerEvent(envelope) {
     return null;
   if (candidate.kind === "notice" && !validNotice(candidate.notice))
     return null;
+  if (candidate.kind === "turn-completion") {
+    return isBoundedStr(candidate.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && typeof candidate.sessionAlias === "string" && typeof candidate.notificationId === "string" && typeof candidate.ok === "boolean" && typeof candidate.text === "string" && (candidate.errorMessage === undefined || typeof candidate.errorMessage === "string") ? payload : null;
+  }
   if (candidate.kind.startsWith("terminal-") && !validTargetedTerminalEvent(candidate))
     return null;
   return payload;

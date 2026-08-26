@@ -200,16 +200,15 @@ export function isSessionActiveInAnyTab(
 }
 
 /**
- * Claims the notification slot for this (instanceId, sessionAlias) turn finish.
+ * Claims the notification slot for this unique notificationId turn finish.
  * Returns true if this tab is the first to claim the slot; false if another tab claimed it.
  */
 export function claimNotificationSlot(
-  instanceId: string,
-  sessionAlias: string,
+  notificationId: string,
   windowMs = DEDUP_SLOT_WINDOW_MS,
 ): boolean {
   if (typeof localStorage === "undefined") return true;
-  const key = `${NOTIF_SLOT_PREFIX}${instanceId}:${sessionAlias}`;
+  const key = `${NOTIF_SLOT_PREFIX}${notificationId}`;
   const now = Date.now();
   try {
     const raw = localStorage.getItem(key);

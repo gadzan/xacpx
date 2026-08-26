@@ -193,13 +193,10 @@ export interface InstanceStateSyncPayload {
     }>;
 }
 export interface InstanceNoticePayload {
-    kind: "task-completion" | "task-progress" | "coordinator-message" | "turn-completion";
+    kind: "task-completion" | "task-progress" | "coordinator-message";
     text: string;
     taskId?: string;
     chatKey?: string;
-    sessionAlias?: string;
-    ok?: boolean;
-    errorMessage?: string;
 }
 /** Recovery ids acked by the hub AFTER their rows (messages + receipt) committed to
  *  SQLite. The connector confirms (drops) the corresponding finished-offline entries

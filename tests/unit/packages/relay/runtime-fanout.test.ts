@@ -375,22 +375,18 @@ test("Gate 1: ordinary relay-web prompt completion fans out exactly 1 push with 
     url: "/",
   });
 
-  const webNotices = web.sent
+  const webCompletions = web.sent
     .map((raw) => decodeEnvelope(raw))
     .filter((d) => d.ok)
     .map((d) => parseWebServerEvent(d.envelope))
-    .filter((e) => e?.kind === "notice" && e.notice.kind === "turn-completion");
-  expect(webNotices).toHaveLength(1);
-  expect(webNotices[0]).toEqual({
-    kind: "notice",
+    .filter((e) => e?.kind === "turn-completion");
+  expect(webCompletions).toHaveLength(1);
+  expect(webCompletions[0]).toMatchObject({
+    kind: "turn-completion",
     instanceId: "i1",
-    notice: {
-      kind: "turn-completion",
-      text: "bug fixed",
-      sessionAlias: "backend",
-      ok: true,
-      errorMessage: undefined,
-    },
+    sessionAlias: "backend",
+    text: "bug fixed",
+    ok: true,
   });
   runtime.close();
 });
@@ -403,6 +399,22 @@ test("Gate 2: turn-finished without prompt provenance triggers 0 pushes", async 
 
   await new Promise((r) => setTimeout(r, 10));
   expect(sent).toHaveLength(0);
+  runtime.close();
+});
+
+test("connector sending MSG.instanceNotice(kind='turn-completion') is rejected and never broadcast as turn-completion", async () => {
+  const { runtime, sent, notice, web } = await setupPushRuntime();
+
+  notice({ kind: "turn-completion", text: "spoofed completion", sessionAlias: "backend", ok: true });
+  await new Promise((r) => setTimeout(r, 10));
+
+  expect(sent).toHaveLength(0);
+  const webCompletions = web.sent
+    .map((raw) => decodeEnvelope(raw))
+    .filter((d) => d.ok)
+    .map((d) => parseWebServerEvent(d.envelope))
+    .filter((e) => e?.kind === "turn-completion");
+  expect(webCompletions).toHaveLength(0);
   runtime.close();
 });
 

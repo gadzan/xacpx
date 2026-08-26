@@ -6,6 +6,7 @@ import {
   isSessionActiveInAnyTab,
   claimNotificationSlot,
   recordTabFocus,
+  initTabFocusTracker,
   setNotificationClickHandler,
   triggerNotificationClick,
   LOCAL_NOTIFICATION_BODY_CAP,
@@ -189,32 +190,30 @@ describe("cross-tab active session suppression and slot deduplication", () => {
   it("suppresses notification when session is active in another tab via focus heartbeat", () => {
     localStorage.setItem(
       "xrelay.activeFocus",
-      JSON.stringify({ instanceId: "i1", sessionAlias: "backend", at: Date.now() - 1000 }),
+      JSON.stringify({ tabId: "tab-other", instanceId: "i1", sessionAlias: "backend", at: Date.now() - 1000 }),
     );
 
     const isActive = isSessionActiveInAnyTab("i1", "backend", false);
     expect(isActive).toBe(true);
   });
 
-  it("does not suppress notification if the other tab focus heartbeat is expired (>4s ago)", () => {
+  it("does not suppress notification if the other tab focus heartbeat is expired (>3.5s ago)", () => {
     localStorage.setItem(
       "xrelay.activeFocus",
-      JSON.stringify({ instanceId: "i1", sessionAlias: "backend", at: Date.now() - 5000 }),
+      JSON.stringify({ tabId: "tab-other", instanceId: "i1", sessionAlias: "backend", at: Date.now() - 5000 }),
     );
 
     const isActive = isSessionActiveInAnyTab("i1", "backend", false);
     expect(isActive).toBe(false);
   });
 
-  it("deduplicates notifications across multiple background tabs via claimNotificationSlot", () => {
-    const tabAClaim = claimNotificationSlot("i1", "backend", 3000);
-    expect(tabAClaim).toBe(true);
+  it("deduplicates notifications for the same notificationId, but allows different notificationIds in same session", () => {
+    // Turn A with notificationId notif-1
+    expect(claimNotificationSlot("notif-1", 3000)).toBe(true);
+    expect(claimNotificationSlot("notif-1", 3000)).toBe(false);
 
-    const tabBClaim = claimNotificationSlot("i1", "backend", 3000);
-    expect(tabBClaim).toBe(false);
-
-    const otherSessionClaim = claimNotificationSlot("i1", "other", 3000);
-    expect(otherSessionClaim).toBe(true);
+    // Turn B in the same session with notificationId notif-2 (both must be notified)
+    expect(claimNotificationSlot("notif-2", 3000)).toBe(true);
   });
 
   it("records tab focus state to localStorage when window is active", () => {
@@ -224,6 +223,31 @@ describe("cross-tab active session suppression and slot deduplication", () => {
     const parsed = JSON.parse(raw!);
     expect(parsed.instanceId).toBe("i1");
     expect(parsed.sessionAlias).toBe("backend");
+  });
+
+  it("initTabFocusTracker lifecycle: maintains heartbeat while focused and clears on blur/visibility", () => {
+    const tracker = initTabFocusTracker("tab-A");
+    tracker.updateFocus("i1", "backend");
+
+    // Heartbeat written
+    const raw1 = localStorage.getItem("xrelay.activeFocus");
+    expect(raw1).toBeTruthy();
+    expect(JSON.parse(raw1!).tabId).toBe("tab-A");
+
+    // Window blur event (e.g. user Alt-Tabs to VS Code) -> immediately removes Tab A's focus
+    window.dispatchEvent(new Event("blur"));
+    expect(localStorage.getItem("xrelay.activeFocus")).toBeNull();
+
+    // Window focus restored -> writes heartbeat back
+    window.dispatchEvent(new Event("focus"));
+    expect(localStorage.getItem("xrelay.activeFocus")).toBeTruthy();
+
+    // Tab B's blur does not erase Tab A's record
+    const trackerB = initTabFocusTracker("tab-B");
+    window.dispatchEvent(new Event("blur")); // Tab B blur
+    // Tab B's cleanup will not touch Tab A's key because tabId is tab-B (and current focus is tab-A)
+    tracker.dispose();
+    trackerB.dispose();
   });
 });
 
@@ -274,14 +298,12 @@ describe("chat store local notification integration", () => {
     chatStore.select("i1", "backend");
 
     chatStore.applyEvent({
-      kind: "notice",
+      kind: "turn-completion",
       instanceId: "i1",
-      notice: {
-        kind: "turn-completion",
-        sessionAlias: "backend",
-        ok: true,
-        text: "Finished task",
-      },
+      sessionAlias: "backend",
+      notificationId: "notif-1",
+      ok: true,
+      text: "Finished task",
     });
 
     await vi.waitFor(() => {
@@ -299,14 +321,12 @@ describe("chat store local notification integration", () => {
     chatStore.select("i1", "backend");
 
     chatStore.applyEvent({
-      kind: "notice",
+      kind: "turn-completion",
       instanceId: "i1",
-      notice: {
-        kind: "turn-completion",
-        sessionAlias: "backend",
-        ok: true,
-        text: "Finished background task",
-      },
+      sessionAlias: "backend",
+      notificationId: "notif-1",
+      ok: true,
+      text: "Finished background task",
     });
 
     await vi.waitFor(() => {
@@ -326,14 +346,12 @@ describe("chat store local notification integration", () => {
     chatStore.select("i1", "other-session");
 
     chatStore.applyEvent({
-      kind: "notice",
+      kind: "turn-completion",
       instanceId: "i1",
-      notice: {
-        kind: "turn-completion",
-        sessionAlias: "backend",
-        ok: true,
-        text: "Finished other session task",
-      },
+      sessionAlias: "backend",
+      notificationId: "notif-1",
+      ok: true,
+      text: "Finished other session task",
     });
 
     await vi.waitFor(() => {
@@ -369,21 +387,18 @@ describe("chat store local notification integration", () => {
     });
   });
 
-  it("does not emit notification when turn was cancelled by user", async () => {
+  it("does not emit notification on connector instanceNotice (only on Hub turn-completion)", async () => {
     Object.defineProperty(document, "hidden", { value: true, writable: true, configurable: true });
 
     const chatStore = useChatStore();
     chatStore.select("i1", "backend");
 
     chatStore.applyEvent({
-      kind: "control-event",
+      kind: "notice",
       instanceId: "i1",
-      event: {
-        type: "turn-finished",
-        chatKey: "relay:a1",
-        sessionAlias: "backend",
-        cancelled: true,
-        ok: false,
+      notice: {
+        kind: "task-progress",
+        text: "progress update",
       },
     });
 

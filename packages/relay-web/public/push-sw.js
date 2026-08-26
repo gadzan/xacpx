@@ -36,10 +36,17 @@ self.addEventListener("notificationclick", (event) => {
 
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clientList) => {
+      if (instanceId && sessionAlias) {
+        for (const client of clientList) {
+          if ("postMessage" in client) {
+            client.postMessage({ type: "SELECT_SESSION", instanceId: instanceId, sessionAlias: sessionAlias });
+          }
+        }
+      }
       for (const client of clientList) {
         if ("focus" in client) {
-          if (instanceId && sessionAlias && "postMessage" in client) {
-            client.postMessage({ type: "SELECT_SESSION", instanceId: instanceId, sessionAlias: sessionAlias });
+          if ("navigate" in client && (!instanceId || !sessionAlias)) {
+            client.navigate(targetUrl).catch(() => {});
           }
           return client.focus();
         }

@@ -587,6 +587,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             if (a?.notification?.origin === "relay-web" && !event.peerOrigin && event.cancelled !== true) {
               const instanceName = instances.getOwned(instanceId, accountId)?.name ?? instanceId;
               const completedText = a.text || event.text || "";
+              const notifId = `turn-${instanceId}-${event.sessionAlias}-${promptRequestId ?? recoveryId ?? Date.now()}`;
               void pushNotifier.sendTurnCompletion(accountId, {
                 instanceId,
                 instanceName,
@@ -596,15 +597,13 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 errorMessage: event.errorMessage,
               });
               webGateway.broadcast(accountId, {
-                kind: "notice",
+                kind: "turn-completion",
                 instanceId,
-                notice: {
-                  kind: "turn-completion",
-                  text: completedText,
-                  sessionAlias: event.sessionAlias,
-                  ok: event.ok,
-                  errorMessage: event.errorMessage,
-                },
+                sessionAlias: event.sessionAlias,
+                notificationId: notifId,
+                ok: event.ok,
+                text: completedText,
+                errorMessage: event.errorMessage,
               });
             }
           } else if (event.type === "turn-usage") {
@@ -779,12 +778,23 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               }
               if (grant && !finished.scheduled && finished.cancelled !== true) {
                 const instanceName = instances.getOwned(instanceId, accountId)?.name ?? instanceId;
+                const completedText = text ?? "";
+                const notifId = `turn-${instanceId}-${finished.sessionAlias}-${finished.promptRequestId ?? recoveryId ?? fingerprint}`;
                 void pushNotifier.sendTurnCompletion(accountId, {
                   instanceId,
                   instanceName,
                   sessionAlias: finished.sessionAlias,
-                  text: text,
+                  text: completedText,
                   ok: finished.ok,
+                  errorMessage: finished.errorMessage,
+                });
+                webGateway.broadcast(accountId, {
+                  kind: "turn-completion",
+                  instanceId,
+                  sessionAlias: finished.sessionAlias,
+                  notificationId: notifId,
+                  ok: finished.ok,
+                  text: completedText,
                   errorMessage: finished.errorMessage,
                 });
               }

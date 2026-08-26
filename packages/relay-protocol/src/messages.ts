@@ -250,13 +250,10 @@ export interface InstanceStateSyncPayload {
   }>;
 }
 export interface InstanceNoticePayload {
-  kind: "task-completion" | "task-progress" | "coordinator-message" | "turn-completion";
+  kind: "task-completion" | "task-progress" | "coordinator-message";
   text: string;
   taskId?: string;
   chatKey?: string;
-  sessionAlias?: string;
-  ok?: boolean;
-  errorMessage?: string;
 }
 
 // --- hub → connector delivery confirmation ---
