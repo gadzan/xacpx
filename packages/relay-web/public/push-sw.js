@@ -43,13 +43,27 @@ self.addEventListener("notificationclick", (event) => {
           }
         }
       }
+      let chosenClient = null;
       for (const client of clientList) {
-        if ("focus" in client) {
-          if ("navigate" in client && (!instanceId || !sessionAlias)) {
-            client.navigate(targetUrl).catch(() => {});
+        try {
+          const u = new URL(client.url, self.location.origin);
+          if (u.pathname === "/" || u.pathname === "") {
+            chosenClient = client;
+            break;
           }
-          return client.focus();
+        } catch (_e) {}
+      }
+      if (!chosenClient && clientList.length > 0) {
+        chosenClient = clientList[0];
+        if ("navigate" in chosenClient) {
+          chosenClient.navigate(targetUrl).catch(() => {});
         }
+      }
+      if (chosenClient && (!instanceId || !sessionAlias) && "navigate" in chosenClient) {
+        chosenClient.navigate(targetUrl).catch(() => {});
+      }
+      if (chosenClient && "focus" in chosenClient) {
+        return chosenClient.focus();
       }
       return self.clients.openWindow(targetUrl);
     }),

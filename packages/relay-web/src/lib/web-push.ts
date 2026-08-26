@@ -145,36 +145,36 @@ export async function fetchVapidPublicKey(): Promise<string | null> {
     throw err;
   }
 }
-export async function enableDesktopNotifications(publicKey: string): Promise<void> {
+export async function enableDesktopNotifications(publicKey?: string | null): Promise<void> {
   if (typeof Notification !== "undefined" && Notification.permission !== "granted") {
     const permission = await Notification.requestPermission();
     if (permission !== "granted") throw new Error("permission-denied");
   }
-  try {
-    // Creating a subscription requires an ACTIVE worker → ready (which waits
-    // for activation) is correct here, unlike the ownership probe below.
-    const reg = await navigator.serviceWorker.ready;
-    // A subscription minted under an older VAPID key would silently never receive
-    // pushes after a hub re-key — replace it instead of failing downstream.
-    const existing = await reg.pushManager.getSubscription();
-    if (existing && !subscriptionMatchesKey(existing, publicKey)) {
-      await existing.unsubscribe();
-    }
-    const keyBytes = urlBase64ToUint8Array(publicKey);
-    const sub = await reg.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: keyBytes.buffer.slice(keyBytes.byteOffset, keyBytes.byteOffset + keyBytes.byteLength) as ArrayBuffer,
-    });
-    if (!isAllowedPushEndpoint(sub.endpoint)) {
-      await sub.unsubscribe().catch(() => {});
-      throw new Error("push-endpoint-unsupported");
-    }
-    await api.put("/api/web-push/subscriptions", sub.toJSON());
-    setDesktopNotificationsEnabled(true);
-  } catch (err) {
-    setDesktopNotificationsEnabled(false);
-    throw err;
+  setDesktopNotificationsEnabled(true);
+  if (!publicKey) return;
+
+  // Creating a subscription requires an ACTIVE worker → ready (which waits
+  // for activation) is correct here, unlike the ownership probe below.
+  const reg = await navigator.serviceWorker.ready;
+  // A subscription minted under an older VAPID key would silently never receive
+  // pushes after a hub re-key — replace it instead of failing downstream.
+  const existing = await reg.pushManager.getSubscription();
+  if (existing && !subscriptionMatchesKey(existing, publicKey)) {
+    await existing.unsubscribe();
   }
+  const keyBytes = urlBase64ToUint8Array(publicKey);
+  const sub = await reg.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: keyBytes.buffer.slice(keyBytes.byteOffset, keyBytes.byteOffset + keyBytes.byteLength) as ArrayBuffer,
+  });
+  // The hub only POSTes to allowlisted push-service origins (FCM, Apple APNs) — a
+  // non-allowlisted browser would subscribe fine and then fail on the PUT. Detect
+  // that here, clean up, and surface as unsupported.
+  if (!isAllowedPushEndpoint(sub.endpoint)) {
+    await sub.unsubscribe().catch(() => {});
+    throw new Error("push-endpoint-unsupported");
+  }
+  await api.put("/api/web-push/subscriptions", sub.toJSON());
 }
 
 export async function disableDesktopNotifications(): Promise<void> {
