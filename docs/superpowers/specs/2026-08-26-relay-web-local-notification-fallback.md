@@ -11,7 +11,7 @@
 开发者日常工作场景中，绝大多数时候会将 Relay-Web 标签页保留在浏览器后台，切换至 VS Code、终端、微信等其他应用工作。此时前端 WebSocket 连接保持活跃，通过 WebSocket 接收到的 `turn-finished` 事件直接调用浏览器本地系统通知，能够实现：
 - **100% 本地环境与网络直连可用**（零外部 FCM/APNs 依赖，零代理配置要求）；
 - **秒级系统原生横幅弹出**（带提示音、完成摘要、失败错误原因）；
-- **点击通知自动聚焦/切换到对应会话**。
+- **点击通知自动聚焦/切换到对应会话**（支持 SW postMessage / deep-link 与 DOM Notification 点击路由）。
 
 ---
 
@@ -33,25 +33,27 @@
 
 ## 二、核心设计原则
 
-### 1. 免打扰前台抑制（Active Tab Suppression）
-只有当 **用户未在当前标签页聚焦关注该会话** 时，才发出桌面通知：
-- 页面处于后台或最小化：`document.hidden === true`；
-- 浏览器窗口未聚焦（用户在其他软件中）：`!document.hasFocus()`；
-- 用户在 Relay-Web 中正在查看其他会话：`!isViewingThisSession`。
+### 1. 多标签页免打扰前台抑制（Cross-Tab Active Tab Suppression）
+- 单标签页判定：若当前标签页正处于前台聚焦并查看该会话（`selected && !document.hidden && document.hasFocus()`），静音不弹通知；
+- 跨标签页判定：通过 `localStorage` 维护跨标签页活跃聚焦状态（`xrelay.activeFocus`）。当标签页 A 正在前台查看该会话时，后台的标签页 B 自动识别并抑制本地通知，避免用户正在屏幕前看回复时被后台标签页弹窗打扰；
+- 跨标签页并发去重（Slot Claim）：多后台标签页同时收到 `turn-finished` 时，通过 `claimNotificationSlot` 选举唯一通知发送者，避免产生重复弹窗。
 
-如果用户当前正停留在该会话、窗口处于聚焦状态盯着屏幕看 Agent 输出，则**静音不弹通知**，避免干扰。
+### 2. 统一 Tag 会话隔离与去重
+- 通知 Tag 采用按会话隔离命名：`xacpx-turn:${instanceId}:${sessionAlias}`；
+- 既保证支持平台原生替换合并，又避免同一实例下不同并发会话的完成通知互相覆盖。
 
-### 2. 与 Web Push 统一 Tag 去重
-- 本地通知与 Web Push 使用完全相同的 `tag`（`xacpx-task:${instanceId}`）。
-- 操作系统通知中心会自动按 `tag` 覆盖合并，确保即便两条路径均送达，也绝不会出现重复横幅。
+### 3. 点击通知路由至目标会话
+- **Service Worker 路径**：在 `push-sw.js` 的 `notificationclick` 事件中，优先向已打开的 client 发送 `{ type: "SELECT_SESSION", instanceId, sessionAlias }` 并聚焦窗口；若无已打开窗口则附带 query params 打开新窗口；
+- **DOM Notification 路径**：在 `onclick` 中调用全局注册的点击回调，直接切换至目标会话并聚焦窗口；
+- **页面挂载**：`DashboardView.vue` 统一监听 SW 消息与 URL query 参数（`instanceId` & `sessionAlias`），实现无缝跳转。
 
-### 3. 取消（Cancelled）不通知
-- 用户主动点击 Cancel / Stop（`e.cancelled === true`）不发出通知。
-- 仅在正常完成（`status === "done"`）或失败报错（`status === "error"`）时触发。
+### 4. 独立、持久化的开关控制与 i18n 国际化
+- 本地通知受持久化设置 `xrelay.desktopNotificationsEnabled` 控制，用户在 Settings 页面关闭桌面通知后本地通知立即停止；
+- 通知标题与提示文案（如 `Task completed` / `任务已完成`、`Task failed: {error}` / `任务失败: {error}`、`Unknown error` / `未知错误`）严格遵循中英双语目录国际化规范。
 
-### 4. 零配置与权限复用
-- 复用现有 Settings 页面「桌面通知」权限。
-- 只要浏览器授予了 `Notification.permission === "granted"`，本地通知即自动生效，无需额外配置开关。
+### 5. 有界超时的 Service Worker 探测
+- 不无条件无限期等待 `navigator.serviceWorker.ready`；
+- 先通过 `getRegistration()` 探测活跃 worker，未就绪时设置 250ms 有界竞态超时，超时或无 active worker 立即平滑降级为标准 DOM `new Notification()`。
 
 ---
 
@@ -60,116 +62,24 @@
 | 字段 | 规则 | 示例 |
 |---|---|---|
 | **title** | `<instance name> · <session alias>` | `MacBook · backend` |
-| **body** (成功) | 取 Agent 最终回复前 200 字；空文本回退为 `"Task completed"` | `Fixed unit tests in auth.ts...` |
-| **body** (失败) | `Task failed: <errorMessage>` | `Task failed: provider unavailable` |
+| **body** (成功) | 取 Agent 最终回复前 200 字；空文本回退为国际化 `"Task completed"` | `Fixed unit tests in auth.ts...` |
+| **body** (失败) | 国际化格式 `"Task failed: <errorMessage>"` | `Task failed: provider unavailable` |
 | **icon** | `/pwa-192x192.png` | |
-| **tag** | `xacpx-task:<instanceId>` | `xacpx-task:d02c617e-...` |
+| **tag** | `xacpx-turn:<instanceId>:<sessionAlias>` | `xacpx-turn:d02c617e-...:backend` |
 | **data** | `{ instanceId, sessionAlias, url: "/" }` | |
 
 ---
 
-## 四、技术实现设计
+## 四、测试与验证计划
 
-### 1. 独立工具模块：`packages/relay-web/src/lib/local-notification.ts`
-
-```ts
-export interface LocalTurnNotificationInput {
-  instanceId: string;
-  instanceName: string;
-  sessionAlias: string;
-  ok: boolean;
-  text?: string;
-  errorMessage?: string;
-}
-
-const BODY_CAP = 200;
-
-export async function showLocalTurnNotification(input: LocalTurnNotificationInput): Promise<void> {
-  if (typeof window === "undefined" || !("Notification" in window)) return;
-  if (Notification.permission !== "granted") return;
-
-  const title = `${input.instanceName} · ${input.sessionAlias}`;
-  let body: string;
-  if (input.ok) {
-    const trimmed = (input.text ?? "").trim();
-    body = (trimmed.length > 0 ? trimmed : "Task completed").slice(0, BODY_CAP);
-  } else {
-    const errMsg = (input.errorMessage ?? "").trim();
-    body = `Task failed: ${errMsg || "Unknown error"}`.slice(0, BODY_CAP);
-  }
-
-  const options: NotificationOptions = {
-    body,
-    tag: `xacpx-task:${input.instanceId}`,
-    icon: "/pwa-192x192.png",
-    data: {
-      instanceId: input.instanceId,
-      sessionAlias: input.sessionAlias,
-      url: "/",
-    },
-  };
-
-  // 1. 优先通过 ServiceWorker 发送（支持点击自动导航并复用 push-sw.js）
-  try {
-    if ("serviceWorker" in navigator) {
-      const reg = await navigator.serviceWorker.ready;
-      if (reg && "showNotification" in reg) {
-        await reg.showNotification(title, options);
-        return;
-      }
-    }
-  } catch {
-    // 降级使用标准 Notification API
-  }
-
-  // 2. 降级使用标准 Notification API
-  try {
-    const n = new Notification(title, options);
-    n.onclick = () => {
-      window.focus();
-      n.close();
-    };
-  } catch {
-    // 忽略特定环境不支持的抛错
-  }
-}
-```
-
-### 2. 接缝调用：`packages/relay-web/src/stores/chat.ts`
-
-在 `applyEvent` 处理 `turn-finished` 时：
-```ts
-    } else if (e.type === "turn-finished") {
-      const status: TurnStatus = e.cancelled ? "cancelled" : e.ok ? "done" : "error";
-      const selected = event.instanceId === instanceId.value && e.sessionAlias === sessionAlias.value;
-      ...
-      // 本地桌面通知 Fallback（后台免打扰抑制）：
-      if (!e.cancelled && (status === "done" || status === "error")) {
-        const isViewingThisSession = selected && typeof document !== "undefined" && !document.hidden && (typeof document.hasFocus !== "function" || document.hasFocus());
-        if (!isViewingThisSession) {
-          const instancesStore = useInstancesStore();
-          const instName = instancesStore.byId(event.instanceId)?.name ?? event.instanceId;
-          void showLocalTurnNotification({
-            instanceId: event.instanceId,
-            instanceName: instName,
-            sessionAlias: e.sessionAlias,
-            ok: e.ok,
-            text: e.text,
-            errorMessage: e.errorMessage,
-          });
-        }
-      }
-```
-
----
-
-## 五、测试与验证计划
-
-1. **单元测试** (`packages/relay-web/src/__tests__/local-notification.test.ts`)
-   - 验证权限未授予时不触发通知；
-   - 验证成功与失败时标题、截断 Body、tag 组装；
-   - 验证 `cancelled === true` 时不触发通知；
-   - 验证 `document.hidden` 及跨 Session 查看场景下的触发条件。
-2. **构建与类型验证**
+1. **单元测试** (`packages/relay-web/src/__tests__/local-notification.test.ts`)：
+   - 权限未授予或设置被用户关闭时不触发通知；
+   - 标题、截断 Body、tag 组装与 i18n 翻译；
+   - 单标签页与跨标签页前台活跃抑制；
+   - 多后台标签页并发去重 slot claim；
+   - 点击通知后触发会话选择回调；
+   - Service Worker ready 挂起时的超时降级；
+   - `cancelled === true` 时不触发通知。
+2. **构建与类型验证**：
    - `vue-tsc --noEmit` 0 报错；
    - `vitest run` 全通过。

@@ -7,7 +7,7 @@ import * as tailCache from "../lib/session-tail-cache";
 import { useAuthStore } from "./auth";
 import { useInstancesStore } from "./instances";
 import { useSessionControlsStore } from "./session-controls";
-import { showLocalTurnNotification } from "../lib/local-notification";
+import { showLocalTurnNotification, isSessionActiveInAnyTab, claimNotificationSlot, recordTabFocus } from "../lib/local-notification";
 
 // Remember which session was open so a page refresh returns to it (selection is not
 // part of the route). Paired with the active-turn snapshot, a refresh mid-turn lands
@@ -356,6 +356,7 @@ export const useChatStore = defineStore("chat", () => {
     instanceId.value = id;
     sessionAlias.value = alias;
     persistSelection(id, alias);
+    recordTabFocus(id, alias);
     messages.value = [];
     touchTranscript();
     historyRequestSequence += 1;
@@ -405,6 +406,7 @@ export const useChatStore = defineStore("chat", () => {
     pendingSeed = null;
     instanceId.value = null;
     sessionAlias.value = null;
+    recordTabFocus(null, null);
     clearPersistedSelection();
     messages.value = [];
     touchTranscript();
@@ -728,14 +730,10 @@ export const useChatStore = defineStore("chat", () => {
         next.add(k);
         unread.value = next;
       }
-      // Local desktop notification fallback (Active tab suppression):
+      // Local desktop notification fallback (Active tab suppression & cross-tab deduplication):
       if (!e.cancelled && (status === "done" || status === "error")) {
-        const isViewingThisSession =
-          selected &&
-          typeof document !== "undefined" &&
-          !document.hidden &&
-          (typeof document.hasFocus !== "function" || document.hasFocus());
-        if (!isViewingThisSession) {
+        const isActiveInAnyTab = isSessionActiveInAnyTab(event.instanceId, e.sessionAlias, selected);
+        if (!isActiveInAnyTab && claimNotificationSlot(event.instanceId, e.sessionAlias)) {
           const instancesStore = useInstancesStore();
           const instName = instancesStore.byId(event.instanceId)?.name ?? event.instanceId;
           void showLocalTurnNotification({

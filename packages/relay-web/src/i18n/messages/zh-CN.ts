@@ -542,4 +542,9 @@ export default {
     delivered: "已送达",
     sending: "发送中",
   },
+  notifications: {
+    taskCompleted: "任务已完成",
+    taskFailed: "任务失败: {error}",
+    unknownError: "未知错误",
+  },
 };

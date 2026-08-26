@@ -544,4 +544,9 @@ export default {
     delivered: "Delivered",
     sending: "Sending",
   },
+  notifications: {
+    taskCompleted: "Task completed",
+    taskFailed: "Task failed: {error}",
+    unknownError: "Unknown error",
+  },
 } as const;

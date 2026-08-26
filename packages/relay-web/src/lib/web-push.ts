@@ -33,6 +33,18 @@ export function isAllowedPushEndpoint(endpoint: string): boolean {
     return false;
   }
 }
+export const DESKTOP_NOTIFICATIONS_ENABLED_KEY = "xrelay.desktopNotificationsEnabled";
+
+export function isDesktopNotificationsEnabled(): boolean {
+  try {
+    const val = localStorage.getItem(DESKTOP_NOTIFICATIONS_ENABLED_KEY);
+    if (val === "false") return false;
+    if (val === "true") return true;
+    return typeof Notification !== "undefined" && Notification.permission === "granted";
+  } catch {
+    return false;
+  }
+}
 
 /** VAPID public keys are base64url without padding — restore padding before atob. */
 export function urlBase64ToUint8Array(base64: string): Uint8Array {
@@ -132,11 +144,11 @@ export async function fetchVapidPublicKey(): Promise<string | null> {
 }
 
 export async function enableDesktopNotifications(publicKey: string): Promise<void> {
+  try { localStorage.setItem(DESKTOP_NOTIFICATIONS_ENABLED_KEY, "true"); } catch {}
   if (typeof Notification !== "undefined" && Notification.permission !== "granted") {
     const permission = await Notification.requestPermission();
     if (permission !== "granted") throw new Error("permission-denied");
   }
-  // Creating a subscription requires an ACTIVE worker → ready (which waits
   // for activation) is correct here, unlike the ownership probe below.
   const reg = await navigator.serviceWorker.ready;
   // A subscription minted under an older VAPID key would silently never receive
@@ -163,10 +175,10 @@ export async function enableDesktopNotifications(publicKey: string): Promise<voi
 }
 
 export async function disableDesktopNotifications(): Promise<void> {
+  try { localStorage.setItem(DESKTOP_NOTIFICATIONS_ENABLED_KEY, "false"); } catch {}
   const target = await getExistingSubscriptionTarget();
   if (!target.sub) return;
   const endpoint = target.sub.endpoint;
-
   // Local destruction MUST be proven so same-account reload (reconcile)
   // cannot resurrect the subscription.
   await destroyProven(target);
