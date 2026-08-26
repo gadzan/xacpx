@@ -74,7 +74,12 @@ export function encodeWorkerMessage(message: RuntimeWorkerRequest | RuntimeWorke
   return `${JSON.stringify(message)}\n`;
 }
 
-export function parseWorkerLine(line: string): RuntimeWorkerRequest | null {
+export type ParsedWorkerLine =
+  | { kind: "request"; message: RuntimeWorkerRequest }
+  | { kind: "response" | "event"; message: Record<string, unknown> };
+
+/** Parses any worker-line shape: host→worker requests, worker→host responses/events. */
+export function parseWorkerLine(line: string): ParsedWorkerLine | null {
   let value: unknown;
   try {
     value = JSON.parse(line);
@@ -84,6 +89,10 @@ export function parseWorkerLine(line: string): RuntimeWorkerRequest | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   if (typeof record.id !== "string" || record.id.length === 0) return null;
-  if (typeof record.method !== "string") return null;
-  return { id: record.id, method: record.method as RuntimeWorkerRequestMethod, params: record.params };
+  if (typeof record.method === "string") {
+    return { kind: "request", message: { id: record.id, method: record.method as RuntimeWorkerRequestMethod, params: record.params } };
+  }
+  if ("ok" in record) return { kind: "response", message: record };
+  if (typeof record.event === "string") return { kind: "event", message: record };
+  return null;
 }

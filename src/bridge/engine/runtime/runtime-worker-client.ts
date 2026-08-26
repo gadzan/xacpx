@@ -71,12 +71,12 @@ export class RuntimeWorkerClient {
   }
 
   private handleLine(line: string): void {
-    const message = parseWorkerLine(line);
-    if (!message || !("ok" in message)) return; // events are consumed by prompt() callers
-    const pending = this.pending.get(message.id);
+    const parsed = parseWorkerLine(line);
+    if (!parsed || parsed.kind !== "response") return; // events are consumed by prompt() callers
+    const response = parsed.message as unknown as RuntimeWorkerResponse;
+    const pending = this.pending.get(response.id);
     if (!pending) return;
-    const response = message as unknown as RuntimeWorkerResponse;
-    this.pending.delete(message.id);
+    this.pending.delete(response.id);
     if (response.ok) pending.resolve(response.result);
     else pending.reject(new WorkerRpcError(response.error.code, response.error.message));
   }

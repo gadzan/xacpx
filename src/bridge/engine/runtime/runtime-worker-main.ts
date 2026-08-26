@@ -152,9 +152,9 @@ async function dispatch(request: RuntimeWorkerRequest): Promise<void> {
 
 const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
 rl.on("line", (line) => {
-  const request = parseWorkerLine(line);
-  if (!request) return;
-  void dispatch(request);
+  const parsed = parseWorkerLine(line);
+  if (!parsed || parsed.kind !== "request") return;
+  void dispatch(parsed.message);
 });
 // stdin EOF means the host is gone (crash or deliberate kill path) — exit so no
 // orphaned adapter children outlive an absent owner.
