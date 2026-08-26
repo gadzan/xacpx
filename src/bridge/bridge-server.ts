@@ -21,6 +21,8 @@ import { MessageInjectionError } from "../transport/message-injection";
 import type { PromptMedia, PromptMediaInput } from "../transport/types";
 import { BridgeRequestScheduler, type BridgeRequestLane } from "./bridge-request-scheduler";
 import { BridgeRuntime, CommandTimeoutError, EnsureSessionFailedError } from "./bridge-runtime";
+import { CliEngine } from "./engine/cli/cli-engine";
+import { EngineRouter, SessionEngineBinding, type BridgeEngine } from "./engine";
 
 interface BridgeRequest {
   id: string;
@@ -85,7 +87,16 @@ export class BridgeServer {
     cleanup(): void;
   }>();
 
-  constructor(private readonly runtime: BridgeRuntime, private readonly daemonRequestTimeoutMs = 10_000) {}
+  private readonly engines: BridgeEngine;
+
+  constructor(runtime: BridgeRuntime | BridgeEngine, private readonly daemonRequestTimeoutMs = 10_000) {
+    // Any engine-capable instance works: a raw BridgeRuntime (legacy tests,
+    // bridge-main) is wrapped as CliEngine behind an EngineRouter so session
+    // affinity routing exists from day one.
+    this.engines = runtime instanceof EngineRouter
+      ? runtime
+      : new EngineRouter(new SessionEngineBinding(), new CliEngine(runtime as BridgeRuntime));
+  }
 
   async handleLine(line: string, writeLine?: (line: string) => void): Promise<string | null> {
     if (writeLine) this.daemonWriter = writeLine;
@@ -250,15 +261,15 @@ export class BridgeServer {
       case "ping":
         return {};
       case "shutdown":
-        return await this.runtime.shutdown();
+        return await this.engines.shutdown();
       case "updatePermissionPolicy":
-        return await this.runtime.updatePermissionPolicy({
+        return await this.engines.updatePermissionPolicy({
           permissionMode: requirePermissionMode(params, "permissionMode"),
           nonInteractivePermissions: requireNonInteractivePermissions(params, "nonInteractivePermissions"),
           permissionPolicy: asOptionalString(params.permissionPolicy),
         });
       case "hasSession":
-        return await this.runtime.hasSession({
+        return await this.engines.hasSession({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
@@ -267,7 +278,7 @@ export class BridgeServer {
           name: requireString(params, "name"),
         });
       case "tailSessionHistory":
-        return await this.runtime.tailSessionHistory({
+        return await this.engines.tailSessionHistory({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
@@ -277,7 +288,7 @@ export class BridgeServer {
           lines: requirePositiveInt(params, "lines"),
         });
       case "listAgentSessions":
-        return await this.runtime.listAgentSessions({
+        return await this.engines.listAgentSessions({
           agent: requireString(params, "agent"),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
@@ -288,7 +299,7 @@ export class BridgeServer {
           filterCwd: asOptionalString(params.filterCwd),
         });
       case "ensureSession":
-        return await this.runtime.ensureSession({
+        return await this.engines.ensureSession({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
@@ -317,7 +328,7 @@ export class BridgeServer {
       case "prompt":
         const media = asOptionalPromptMediaInput(params.media);
         const resolvedToolEventMode = asOptionalToolEventMode(params.toolEventMode);
-        return await this.runtime.prompt({
+        return await this.engines.prompt({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
@@ -378,7 +389,7 @@ export class BridgeServer {
           }
         });
       case "injectMessage":
-        return await this.runtime.injectMessage({
+        return await this.engines.injectMessage({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
@@ -395,7 +406,7 @@ export class BridgeServer {
           messageId: requireString(params, "messageId"),
         });
       case "resumeAgentSession":
-        return await this.runtime.resumeAgentSession({
+        return await this.engines.resumeAgentSession({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
@@ -405,7 +416,7 @@ export class BridgeServer {
           agentSessionId: requireString(params, "agentSessionId"),
         });
       case "setMode":
-        return await this.runtime.setMode({
+        return await this.engines.setMode({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
@@ -415,7 +426,7 @@ export class BridgeServer {
           modeId: requireString(params, "modeId"),
         });
       case "setModel":
-        return await this.runtime.setModel({
+        return await this.engines.setModel({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
@@ -425,7 +436,7 @@ export class BridgeServer {
           modelId: requireString(params, "modelId"),
         });
       case "getSessionModel":
-        return await this.runtime.getSessionModel({
+        return await this.engines.getSessionModel({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
@@ -434,7 +445,7 @@ export class BridgeServer {
           name: requireString(params, "name"),
         });
       case "setSessionEffort":
-        return await this.runtime.setSessionEffort({
+        return await this.engines.setSessionEffort({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
@@ -444,7 +455,7 @@ export class BridgeServer {
           effort: requireString(params, "effort"),
         });
       case "getSessionEffort":
-        return await this.runtime.getSessionEffort({
+        return await this.engines.getSessionEffort({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
@@ -453,7 +464,7 @@ export class BridgeServer {
           name: requireString(params, "name"),
         });
       case "cancel":
-        return await this.runtime.cancel({
+        return await this.engines.cancel({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
@@ -462,7 +473,7 @@ export class BridgeServer {
           name: requireString(params, "name"),
         });
       case "removeSession":
-        return await this.runtime.removeSession({
+        return await this.engines.removeSession({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
@@ -471,7 +482,7 @@ export class BridgeServer {
           name: requireString(params, "name"),
         });
       case "deleteSession":
-        return await this.runtime.deleteSession({
+        return await this.engines.deleteSession({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
@@ -480,7 +491,7 @@ export class BridgeServer {
           name: requireString(params, "name"),
         });
       case "freeWarmProcess":
-        return await this.runtime.freeWarmProcess({
+        return await this.engines.freeWarmProcess({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
@@ -489,7 +500,7 @@ export class BridgeServer {
           name: requireString(params, "name"),
         });
       case "isSessionWarm":
-        return await this.runtime.isSessionWarm({
+        return await this.engines.isSessionWarm({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
@@ -498,7 +509,7 @@ export class BridgeServer {
           name: requireString(params, "name"),
         });
       case "getAgentSessionId":
-        return await this.runtime.getAgentSessionId({
+        return await this.engines.getAgentSessionId({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
