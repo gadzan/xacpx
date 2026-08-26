@@ -57,8 +57,17 @@ export interface AppDeps {
   vapidPublicKey?: () => string | null;
   /** Web push: browser subscription storage; omitted = push routes 503. */
   pushSubscriptions?: PushSubscriptionStore;
+  /** Web push / provenance: called when an interactive prompt is initiated via Web RPC. */
+  onWebPromptCreated?: (input: { promptRequestId: string; instanceId: string; sessionAlias: string }) => void;
+  /** Web push / provenance: called when an interactive prompt fails before execution. */
+  onWebPromptRejected?: (promptRequestId: string) => void;
+  /** Web push / provenance: called when an interactive prompt is queued by the connector. */
+  onWebPromptQueued?: (input: { promptRequestId: string; instanceId: string; queueItemId: string }) => void;
+  /** Web push / provenance: called when a queued prompt is cancelled via Web RPC. */
+  onWebPromptQueueCancelled?: (instanceId: string, queueItemId: string) => void;
+  /** Web push / provenance: called when a session is archived or removed, clearing pending queues. */
+  onWebPromptSessionCleared?: (instanceId: string, sessionAlias: string) => void;
 }
-
 const SESSION_COOKIE = "xrelay_session";
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;
 export const LOGIN_MAX_FAILURES = 10;
@@ -591,6 +600,7 @@ export function createApp(deps: AppDeps): Hono<Vars> {
     }
     const releaseSessionRpcLocks: Array<() => void> = [];
     let persistedPromptId: number | undefined;
+    let webPromptRequestId: string | undefined;
     try {
       // Shape-validate the RPCs the hub persists BEFORE forwarding, so a malformed frame
       // can't poison history ahead of the connector's own boundary check. Error body carries
@@ -655,23 +665,63 @@ export function createApp(deps: AppDeps): Hono<Vars> {
           // queue item still correlates back to this exact row via promptRequestId —
           // text matching cannot distinguish a redelivery from a duplicate prompt.
           const promptRequestId = randomUUID();
+          if (body.type === MSG.prompt) {
+            webPromptRequestId = promptRequestId;
+          }
           persistedPromptId = deps.messages.append(instance.id, p.sessionAlias, "in", p.text, undefined, attachments, promptRequestId);
           if (body.type === MSG.prompt && typeof payload === "object" && payload !== null) {
             (payload as Record<string, unknown>).promptRequestId = promptRequestId;
+            deps.onWebPromptCreated?.({
+              promptRequestId,
+              instanceId: instance.id,
+              sessionAlias: p.sessionAlias,
+            });
           }
         }
       }
       const result = await deps.gateway.sendRequest(instance.id, body.type, payload);
+      const isPromptRejection =
+        body.type === MSG.prompt
+        && typeof result === "object"
+        && result !== null
+        && "ok" in result
+        && result.ok === false;
+      if (webPromptRequestId && (isErrorPayload(result) || isPromptRejection)) {
+        deps.onWebPromptRejected?.(webPromptRequestId);
+      }
       if (body.type === MSG.prompt && persistedPromptId !== undefined
         && typeof result === "object" && result !== null
         && (result as { queued?: unknown }).queued === true
         && typeof (result as { queueItemId?: unknown }).queueItemId === "string") {
         const p = payload as { sessionAlias: string };
+        const queueItemId = (result as { queueItemId: string }).queueItemId;
         deps.messages.markQueued(persistedPromptId, {
           instanceId: instance.id,
           sessionAlias: p.sessionAlias,
-          queueItemId: (result as { queueItemId: string }).queueItemId,
+          queueItemId,
         });
+        if (webPromptRequestId) {
+          deps.onWebPromptQueued?.({
+            promptRequestId: webPromptRequestId,
+            instanceId: instance.id,
+            queueItemId,
+          });
+        }
+      }
+      if (body.type === MSG.queueCancel && !isErrorPayload(result)) {
+        const p = payload as { itemId?: string };
+        if (typeof p.itemId === "string") {
+          const cancelResult = result as { cancelled?: boolean };
+          if (cancelResult.cancelled !== false) {
+            deps.onWebPromptQueueCancelled?.(instance.id, p.itemId);
+          }
+        }
+      }
+      if ((body.type === MSG.sessionsRemove || body.type === MSG.sessionsArchive) && !isErrorPayload(result)) {
+        const targetAlias = removeInput ? removeInput.alias : (typeof payload === "object" && payload !== null && "alias" in payload && typeof payload.alias === "string" ? payload.alias : undefined);
+        if (targetAlias) {
+          deps.onWebPromptSessionCleared?.(instance.id, targetAlias);
+        }
       }
       // A real delete has two histories: the connector-owned acpx record and the
       // Hub-owned Web transcript. Purge the latter only after the connector confirms
@@ -687,9 +737,10 @@ export function createApp(deps: AppDeps): Hono<Vars> {
       return c.json({ result });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      // 503: transient availability — the instance is offline, or the connection was
-      // superseded by a reconnect before the RPC could be answered (the caller may
-      // retry). 504: the request budget expired. Anything else is a server error.
+      const isAmbiguousTransportError = message === "instance-offline" || message === "instance-reconnected" || message === "timeout";
+      if (webPromptRequestId && !isAmbiguousTransportError) {
+        deps.onWebPromptRejected?.(webPromptRequestId);
+      }
       if (message === "instance-offline" || message === "instance-reconnected") return c.json({ error: message }, 503);
       if (message === "timeout") return c.json({ error: message }, 504);
       return c.json({ error: message }, 500);

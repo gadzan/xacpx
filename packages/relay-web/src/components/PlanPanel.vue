@@ -13,9 +13,8 @@ const props = withDefaults(
 );
 // `expanded` is a two-way model so ChatPane can own it and preserve the expand/collapse
 // state across composer-stack rerenders. When no v-model is bound (standalone use /
-// tests) it is a local ref seeded below.
-const expanded = defineModel<boolean>("expanded", { default: undefined });
-if (expanded.value === undefined) expanded.value = props.active ?? true;
+// tests) it defaults to expanded (true).
+const expanded = defineModel<boolean>("expanded", { default: true });
 const listEl = ref<HTMLUListElement | null>(null);
 const done = computed(() => props.entries.filter((e) => e.status === "completed").length);
 const activeIndex = computed(() => {

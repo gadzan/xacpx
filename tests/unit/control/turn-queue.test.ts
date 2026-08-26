@@ -128,6 +128,16 @@ test("a queued prompt carries promptRequestId onto the drained turn-started", as
   await p1;
 });
 
+test("an immediate prompt carries promptRequestId onto turnStarted", async () => {
+  const { queue, pendingReqs, resolveNext } = makeQueue();
+  const p = queue.submit({ ...BASE, text: "immediate", queueable: true, promptRequestId: "req-imm-1" });
+  await tick();
+  const turnStarted = pendingReqs()[0]?.turnStarted;
+  expect(turnStarted).toEqual({ promptRequestId: "req-imm-1" });
+  resolveNext();
+  await p;
+});
+
 test("a non-queueable submit while busy rejects immediately with turn-already-running", async () => {
   const { queue, resolveNext } = makeQueue();
   const p1 = queue.submit({ ...BASE, text: "first", queueable: true });

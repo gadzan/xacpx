@@ -116,21 +116,24 @@
   helper），完全离线可装、无需 PATH 上有任何 RMUX。发布包：https://github.com/Helvesec/rmux/releases
   （`rmux-0.10.0-windows-x86_64.zip`，固定 SHA-256 在 `scripts/rmux-release.mjs`）。
 
-## Web Push（task-completion 桌面通知）
+## Web Push（桌面系统通知）
 
-- 用途：基于 W3C 标准 Web Push / VAPID 协议，实例产生 `notice.kind === "task-completion"` 时向该账号已订阅的浏览器推送系统通知（标签页在后台或已关闭也能收到）；`task-progress` / `coordinator-message` 仅走 WS 广播。支持浏览器覆盖：
-  - **Chrome / Chromium**
-  - **macOS Safari**（Safari 16.1+ / macOS Ventura+）
-  - **iOS / iPadOS 主屏幕 Web App**（iOS/iPadOS 16.4+，添加到主屏幕并从主屏幕打开）
-  设计 specs：`docs/superpowers/specs/2026-08-24-web-push-task-completion-design.md`、`docs/superpowers/specs/2026-08-25-support-apple-web-push.md`。
+- 用途：基于 W3C 标准 Web Push / VAPID 协议，在任务或交互回合完成时向该账号已订阅的浏览器推送系统通知（标签页在后台或已关闭也能收到）。触发来源：
+  1. **Orchestration Task 完成**：实例产生 `notice.kind === "task-completion"` 时推送。
+  2. **Relay-Web 交互回合完成**：用户经 Web RPC `MSG.prompt` 发起的普通 Agent Turn 完成或失败时推送（标题为 `<instance> · <session>`，内容为回复截断 200 字或失败原因）。
+  - **过滤防线**：`task-progress` / `coordinator-message` 仅走 WS 广播；`scheduled` 定时任务、`peerOrigin` 跨 Agent 消息、用户主动 `cancelled` 以及 Hub 重启后的无凭证历史回放均不触发普通回合 Web Push。
+  - **支持浏览器覆盖**：
+    - **Chrome / Chromium**
+    - **macOS Safari**（Safari 16.1+ / macOS Ventura+）
+    - **iOS / iPadOS 主屏幕 Web App**（iOS/iPadOS 16.4+，添加到主屏幕并从主屏幕打开）
+  设计 specs：`docs/superpowers/specs/2026-08-24-web-push-task-completion-design.md`、`docs/superpowers/specs/2026-08-25-support-apple-web-push.md`、`docs/superpowers/specs/2026-08-25-agent-turn-web-push.md`。
 - 网络出站要求：Hub 出站网络需允许连接以下 Push 服务的标准 443 端口：
   - `fcm.googleapis.com`、`fcm.notifications.google.com`（Chrome / Chromium）
   - `*.push.apple.com`（Apple Safari / APNs）
 - 配置：`xacpx-relay push-keys generate` 打印 VAPID 密钥对；经环境变量 `XACPX_RELAY_VAPID_SUBJECT` / `XACPX_RELAY_VAPID_PUBLIC_KEY` / `XACPX_RELAY_VAPID_PRIVATE_KEY` 或 start 子命令 `--vapid-subject/--vapid-public-key/--vapid-private-key` 注入。未配置则推送禁用（log warn），WS 通道不受影响。
 - 存储：`push_subscriptions` 表（account_id + endpoint 主键，endpoint 全局唯一索引）。API：`GET /api/web-push/vapid-public-key`、`PUT/DELETE /api/web-push/subscriptions`（authed + requireJson，严格校验 endpoint allowlist 防 SSRF）。
-- 发送：server.ts 的 instanceNotice 分支 fire-and-forget fan-out；payload `{title=实例名, body=text 截断200, instanceId, url:"/"}`，TTL 3600；410/404 自动删订阅行。
+- 发送：`PushNotifier` 提供 `sendTaskCompletion()` 与 `sendTurnCompletion()`；支持结构化日志（`relay.push.fanout` / `sent` / `no_subscriptions` / `send_failed`，仅记录 host 避免泄露完整 endpoint），TTL 3600；410/404 自动删订阅行。
 - Web 端：SettingsView「桌面通知」开关（五态状态机）；订阅所有权转移属于认证生命周期——login fail-closed 转移（失败撤销 session），fetchMe 认证成功后 best-effort 维护同账号订阅，logout 先解绑再清 session。SW 推送处理器为 public/push-sw.js，经 pwa-options 的 workbox.importScripts 注入。
-
 ## 阶段三服务端接缝（Web 看板扇出）
 
 服务端为 Web 看板新增的接缝（见 docs/relay-web-module.md）：

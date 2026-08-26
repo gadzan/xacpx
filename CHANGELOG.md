@@ -1,4 +1,22 @@
 # Changelog
+## [0.23.0-beta.7] - 2026-08-25
+
+### Added
+
+- `TurnQueue`: pass `promptRequestId` to `turnStarted` on immediate execution path as well as queued drain path so `turn-started` event reliably carries provenance.
+
+## [relay 0.13.0-beta.5] - 2026-08-25
+
+### Added
+
+- Web Push for interactive agent turn completion: users prompting an agent from relay-web receive desktop push notifications when turns finish, with custom `<instance> · <session>` titles and result snippets.
+- Provenance registry with automatic TTL pruning to track relay-web interactive prompts and prevent unsolicited notifications for scheduled turns, peer agent messaging, and background orchestration workers.
+- `PushNotifier`: added `sendTurnCompletion()` with structured logging for fanout, delivery, failure, and missing subscriptions.
+
+### Fixed
+
+- `relay-web`: fixed `PlanPanel` model type compatibility under `vue-tsc`.
+
 ## [0.23.0-beta.6] - 2026-08-25
 
 ### Added

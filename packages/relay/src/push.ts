@@ -151,43 +151,114 @@ export class PushNotifier {
    *  persist path (server.ts calls this fire-and-forget). */
   async sendTaskCompletion(accountId: string, notice: { instanceId: string; instanceName: string; text: string }): Promise<void> {
     try {
-      await this.sendTaskCompletionInner(accountId, notice);
+      await this.sendToAccount(accountId, {
+        kind: "task-completion",
+        instanceId: notice.instanceId,
+        title: notice.instanceName,
+        body: notice.text.slice(0, BODY_CAP),
+        url: "/",
+      });
     } catch (err) {
       // Belt-and-braces: even a bug above must never reject into the caller.
       this.deps.logger?.warn("relay.push.fanout_failed", "push fan-out aborted unexpectedly", { error: String(err) });
     }
   }
 
-  private async sendTaskCompletionInner(accountId: string, notice: { instanceId: string; instanceName: string; text: string }): Promise<void> {
+  /** Fan out a turn-completion notification to every subscription of the account.
+   *  Never throws or rejects. */
+  async sendTurnCompletion(
+    accountId: string,
+    notice: {
+      instanceId: string;
+      instanceName: string;
+      sessionAlias: string;
+      text?: string;
+      ok: boolean;
+      errorMessage?: string;
+    },
+  ): Promise<void> {
+    try {
+      const title = `${notice.instanceName} · ${notice.sessionAlias}`;
+      let body: string;
+      if (notice.ok) {
+        const trimmed = (notice.text ?? "").trim();
+        body = (trimmed.length > 0 ? trimmed : "Task completed").slice(0, BODY_CAP);
+      } else {
+        const errMsg = (notice.errorMessage ?? "").trim();
+        body = `Task failed: ${errMsg || "Unknown error"}`.slice(0, BODY_CAP);
+      }
+      await this.sendToAccount(accountId, {
+        kind: "turn-completion",
+        instanceId: notice.instanceId,
+        title,
+        body,
+        url: "/",
+      });
+    } catch (err) {
+      this.deps.logger?.warn("relay.push.fanout_failed", "push fan-out aborted unexpectedly", { error: String(err) });
+    }
+  }
+
+  private async sendToAccount(
+    accountId: string,
+    params: {
+      kind: "task-completion" | "turn-completion";
+      instanceId: string;
+      title: string;
+      body: string;
+      url: string;
+    },
+  ): Promise<void> {
     if (!this.ensureDetails()) return;
-    const payload = JSON.stringify({
-      title: notice.instanceName,
-      body: notice.text.slice(0, BODY_CAP),
-      instanceId: notice.instanceId,
-      url: "/",
+    const subs = this.deps.subscriptions.listByAccount(accountId);
+    if (subs.length === 0) {
+      this.deps.logger?.info("relay.push.no_subscriptions", "no push subscriptions for account", {
+        kind: params.kind,
+        instanceId: params.instanceId,
+      });
+      return;
+    }
+    this.deps.logger?.info("relay.push.fanout", "fanning out push notification", {
+      kind: params.kind,
+      instanceId: params.instanceId,
+      subscriptionCount: subs.length,
     });
-    for (const sub of this.deps.subscriptions.listByAccount(accountId)) {
+    const payload = JSON.stringify({
+      title: params.title,
+      body: params.body,
+      instanceId: params.instanceId,
+      url: params.url,
+    });
+    for (const sub of subs) {
       try {
         await this.wp.sendNotification(
           { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
           payload,
           { TTL: PUSH_TTL_SECONDS },
         );
+        this.deps.logger?.info("relay.push.sent", "push notification sent", {
+          kind: params.kind,
+          instanceId: params.instanceId,
+          endpointHost: safeHost(sub.endpoint),
+        });
       } catch (err) {
-        const statusCode = (err as { statusCode?: unknown }).statusCode;
-        if (typeof statusCode === "number" && GONE_STATUS.has(statusCode)) {
+        const statusCode = err && typeof err === "object" && "statusCode" in err && typeof err.statusCode === "number"
+          ? err.statusCode
+          : undefined;
+        if (statusCode !== undefined && GONE_STATUS.has(statusCode)) {
           this.deps.subscriptions.deleteByEndpoint(sub.endpoint);
         } else {
           this.deps.logger?.warn("relay.push.send_failed", "web push delivery failed", {
+            kind: params.kind,
+            instanceId: params.instanceId,
             endpointHost: safeHost(sub.endpoint),
-            statusCode: typeof statusCode === "number" ? statusCode : undefined,
+            ...(statusCode !== undefined ? { statusCode } : {}),
           });
         }
       }
     }
   }
 }
-
 /** Log only the push endpoint's host — the full URL is a bearer-ish secret. */
 function safeHost(endpoint: string): string {
   try {

@@ -24,5 +24,6 @@ packages/docs/.vitepress/cache
 packages/docs/.vitepress/dist
 .superpowers/
 .gstack/
+.reasonix/
 
 .mock-agent-*.json

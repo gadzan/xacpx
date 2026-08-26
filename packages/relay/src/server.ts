@@ -108,6 +108,7 @@ export interface RelayRuntime {
   webGateway: WebGateway;
   stateSnapshot(instanceId: string): InstanceStateSnapshotDto;
   app: ReturnType<typeof createApp>;
+  pendingWebPromptsCount?(): number;
   close(): void;
 }
 
@@ -119,6 +120,7 @@ export interface CreateRuntimeOptions {
   /** Web push VAPID config; omitted = resolve from env, null = force-disable. */
   vapid?: VapidConfig | null;
   logger?: RelayLogger;
+  now?: () => Date;
 }
 
 /** Testable assembly without any network listener. */
@@ -126,6 +128,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   const db = await createSqlDriver(dbPath);
   initSchema(db);
   const logger = options.logger ?? createNoopRelayLogger();
+  const nowMs = () => (options.now ? options.now().getTime() : Date.now());
   const accounts = new AccountStore(db);
   const instances = new InstanceStore(db);
   const messages = new MessageStore(db);
@@ -158,8 +161,105 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   // remain for the flat fallback + the persisted `text` column. `truncated` rides the
   // state sync: a connector that capped this turn at STATE_SYNC_TEXT_CAP marks it so
   // the final flush persists structured.truncated instead of a silently-gappy reply.
-  interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reasoning: string; parts: TurnPartDto[]; startedAt: number; truncated?: boolean }
+  interface TurnNotificationContext {
+    origin: "relay-web";
+    promptRequestId: string;
+  }
+  interface TurnAccumulator {
+    text: string;
+    steps: Map<string, ToolStepDto>;
+    reasoning: string;
+    parts: TurnPartDto[];
+    startedAt: number;
+    truncated?: boolean;
+    notification?: TurnNotificationContext;
+  }
   const turnBuffers = new Map<string, TurnAccumulator>();
+  interface WebPromptGrant {
+    instanceId: string;
+    sessionAlias: string;
+    createdAt: number;
+    queueItemId?: string;
+    state: "pending" | "active";
+  }
+  const pendingWebPrompts = new Map<string, WebPromptGrant>();
+  const queueItemToPromptRequestId = new Map<string, string>();
+  const PENDING_WEB_PROMPTS_MAX = 4096;
+  const PENDING_WEB_PROMPT_TTL_MS = 24 * 60 * 60_000;
+  const queueKey = (instanceId: string, queueItemId: string) => `${instanceId}\0${queueItemId}`;
+
+  const removePendingWebPrompt = (promptRequestId: string) => {
+    const entry = pendingWebPrompts.get(promptRequestId);
+    if (entry) {
+      if (entry.queueItemId) {
+        queueItemToPromptRequestId.delete(queueKey(entry.instanceId, entry.queueItemId));
+      }
+      pendingWebPrompts.delete(promptRequestId);
+    }
+  };
+
+  const prunePendingWebPrompts = () => {
+    const now = nowMs();
+    for (const [id, entry] of pendingWebPrompts) {
+      if (entry.state === "pending" && now - entry.createdAt > PENDING_WEB_PROMPT_TTL_MS) {
+        removePendingWebPrompt(id);
+      }
+    }
+  };
+
+  const recordPendingWebPrompt = (promptRequestId: string, instanceId: string, sessionAlias: string): boolean => {
+    prunePendingWebPrompts();
+    while (pendingWebPrompts.size >= PENDING_WEB_PROMPTS_MAX) {
+      // Evict oldest pending grant first to protect active turns under load
+      let victimId: string | undefined;
+      for (const [id, grant] of pendingWebPrompts) {
+        if (grant.state === "pending") {
+          victimId = id;
+          break;
+        }
+      }
+      if (!victimId) {
+        logger.warn("relay.web_prompt.capacity_exhausted", "web prompt grant capacity exhausted by active turns", {
+          instanceId,
+          sessionAlias,
+          capacity: PENDING_WEB_PROMPTS_MAX,
+        });
+        return false;
+      }
+      removePendingWebPrompt(victimId);
+    }
+    pendingWebPrompts.set(promptRequestId, {
+      instanceId,
+      sessionAlias,
+      createdAt: nowMs(),
+      state: "pending",
+    });
+    return true;
+  };
+
+  const associateQueueItem = (promptRequestId: string, instanceId: string, queueItemId: string) => {
+    const entry = pendingWebPrompts.get(promptRequestId);
+    if (entry && entry.instanceId === instanceId) {
+      entry.queueItemId = queueItemId;
+      queueItemToPromptRequestId.set(queueKey(instanceId, queueItemId), promptRequestId);
+    }
+  };
+
+  const cancelPendingQueueItem = (instanceId: string, queueItemId: string) => {
+    const qKey = queueKey(instanceId, queueItemId);
+    const promptRequestId = queueItemToPromptRequestId.get(qKey);
+    if (promptRequestId) {
+      removePendingWebPrompt(promptRequestId);
+    }
+  };
+
+  const clearPendingForSession = (instanceId: string, sessionAlias: string) => {
+    for (const [id, grant] of pendingWebPrompts) {
+      if (grant.instanceId === instanceId && grant.sessionAlias === sessionAlias && grant.state === "pending") {
+        removePendingWebPrompt(id);
+      }
+    }
+  };
   const key = (instanceId: string, alias: string) => `${instanceId}\0${alias}`;
   // Content fingerprints (`instanceId, alias, prompt, outText`) of finishedOffline
   // entries this runtime has already persisted from an `instance.state.sync`. A sync
@@ -349,6 +449,19 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           webGateway.broadcast(accountId, { kind: "control-event", instanceId, event });
           if (event.type === "turn-started") {
             const k = key(instanceId, event.sessionAlias);
+            let notification: TurnNotificationContext | undefined;
+            if (typeof event.promptRequestId === "string") {
+              const grant = pendingWebPrompts.get(event.promptRequestId);
+              if (grant && grant.instanceId === instanceId && grant.sessionAlias === event.sessionAlias) {
+                if (!event.scheduled && !event.peerOrigin) {
+                  grant.state = "active";
+                  grant.createdAt = nowMs();
+                  notification = { origin: "relay-web", promptRequestId: event.promptRequestId };
+                } else {
+                  removePendingWebPrompt(event.promptRequestId);
+                }
+              }
+            }
             // Reconcile the inbound prompt FIRST (queued promotion / pre-write
             // correlation / scheduled append) and only install the streaming buffer
             // once it succeeded. A persistence failure here is NOT silent: it forces a
@@ -361,7 +474,14 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 { prompt: event.prompt, queueItemId: event.queueItemId, scheduled: event.scheduled, promptRequestId: event.promptRequestId },
                 true,
               );
-              turnBuffers.set(k, { text: "", steps: new Map(), reasoning: "", parts: [], startedAt: Date.now() });
+              turnBuffers.set(k, {
+                text: "",
+                steps: new Map(),
+                reasoning: "",
+                parts: [],
+                startedAt: nowMs(),
+                ...(notification ? { notification } : {}),
+              });
             } catch (err) {
               turnBuffers.delete(k);
               gateway.disconnect(instanceId);
@@ -388,8 +508,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             const k = key(instanceId, event.sessionAlias);
             const a = turnBuffers.get(k);
             turnBuffers.delete(k);
-            // Persist the reply row(s), shared by the live path and the transactional
-            // recovery-ack path below. A turn with no content is a warning, not a row.
+            const promptRequestId = a?.notification?.promptRequestId;
             const flush = (): void => {
               if (!a) {
                 // No buffer (e.g. hub restarted mid-turn and the offline sweep dropped it).
@@ -455,9 +574,26 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 gateway.disconnect(instanceId);
                 throw err;
               }
+              if (promptRequestId) {
+                removePendingWebPrompt(promptRequestId);
+              }
               gateway.sendEvent(instanceId, MSG.instanceRecoveryAck, { recoveryIds: [recoveryId] } satisfies InstanceRecoveryAckPayload);
             } else {
               flush();
+              if (promptRequestId) {
+                removePendingWebPrompt(promptRequestId);
+              }
+            }
+            if (a?.notification?.origin === "relay-web" && !event.peerOrigin && event.cancelled !== true) {
+              const instanceName = instances.getOwned(instanceId, accountId)?.name ?? instanceId;
+              void pushNotifier.sendTurnCompletion(accountId, {
+                instanceId,
+                instanceName,
+                sessionAlias: event.sessionAlias,
+                text: a.text || event.text,
+                ok: event.ok,
+                errorMessage: event.errorMessage,
+              });
             }
           } else if (event.type === "turn-usage") {
             // Retain the latest usage per session (replace) so a refreshed web client can
@@ -559,6 +695,13 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               // trust the running turn; it will flush normally. Different turns on the
               // same alias are both persisted.
               if (finished.recoveryId && activeRecoveryIds.has(finished.recoveryId)) continue;
+              let grant: WebPromptGrant | undefined;
+              if (typeof finished.promptRequestId === "string") {
+                const g = pendingWebPrompts.get(finished.promptRequestId);
+                if (g && g.instanceId === instanceId && g.sessionAlias === finished.sessionAlias) {
+                  grant = g;
+                }
+              }
               // A failed turn with no (or an empty) reply must surface its error text,
               // never an empty out row: the connector's accumulator starts text at ""
               // and a legacy/buggy sync may ship text:"" alongside errorMessage.
@@ -570,10 +713,18 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 // Already committed (live flush or a previous sync) but the connector
                 // never got the ack — re-ack so its FIFO can finally drop the entry.
                 ackedRecoveryIds.push(recoveryId);
+                if (grant && finished.promptRequestId) {
+                  removePendingWebPrompt(finished.promptRequestId);
+                }
                 continue;
               }
               const fingerprint = `${instanceId}\0${finished.sessionAlias}\0${finished.prompt ?? ""}\0${text ?? ""}`;
-              if (!recoveryId && recoveredFingerprints.has(fingerprint)) continue;
+              if (!recoveryId && recoveredFingerprints.has(fingerprint)) {
+                if (grant && finished.promptRequestId) {
+                  removePendingWebPrompt(finished.promptRequestId);
+                }
+                continue;
+              }
               const alreadyPersisted = !recoveryId && text !== undefined
                 ? finished.prompt !== undefined
                   ? hasRecentTurnPair(finished.sessionAlias, finished.prompt, text)
@@ -604,9 +755,26 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                   recoveryReceipts.remember(instanceId, recoveryId);
                 });
                 ackedRecoveryIds.push(recoveryId);
+                if (grant && finished.promptRequestId) {
+                  removePendingWebPrompt(finished.promptRequestId);
+                }
               } else {
                 persist();
                 rememberFingerprint(fingerprint);
+                if (grant && finished.promptRequestId) {
+                  removePendingWebPrompt(finished.promptRequestId);
+                }
+              }
+              if (grant && !finished.scheduled && finished.cancelled !== true) {
+                const instanceName = instances.getOwned(instanceId, accountId)?.name ?? instanceId;
+                void pushNotifier.sendTurnCompletion(accountId, {
+                  instanceId,
+                  instanceName,
+                  sessionAlias: finished.sessionAlias,
+                  text: text,
+                  ok: finished.ok,
+                  errorMessage: finished.errorMessage,
+                });
               }
             }
             if (ackedRecoveryIds.length > 0) {
@@ -628,6 +796,15 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             for (const k of sessionUsage.keys()) if (k.startsWith(prefix)) sessionUsage.delete(k);
             for (const k of sessionCommands.keys()) if (k.startsWith(prefix)) sessionCommands.delete(k);
             for (const turn of sync.turns) {
+              let notification: TurnNotificationContext | undefined;
+              if (!turn.scheduled && typeof turn.promptRequestId === "string") {
+                const grant = pendingWebPrompts.get(turn.promptRequestId);
+                if (grant && grant.instanceId === instanceId && grant.sessionAlias === turn.sessionAlias) {
+                  grant.state = "active";
+                  grant.createdAt = nowMs();
+                  notification = { origin: "relay-web", promptRequestId: turn.promptRequestId };
+                }
+              }
               const text = turn.text.slice(0, STATE_SYNC_TEXT_CAP);
               const reasoning = turn.reasoning.slice(0, REASONING_CAP);
               const steps = turn.steps.slice(0, MAX_TOOL_STEPS).map(capToolStep);
@@ -653,6 +830,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 // final flush persists structured.truncated instead of a gappy reply
                 // that reads as complete.
                 ...(turn.truncated ? { truncated: true } : {}),
+                ...(notification ? { notification } : {}),
               });
             }
             for (const meter of sync.usage) {
@@ -693,10 +871,25 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     sessionUsage: listSessionUsage,
     sessionCommands: listSessionCommands,
     trustProxy: options.trustProxy,
+    now: options.now,
     checkUpdate: createRelayUpdateChecker({ current: readRelayVersion() }),
-    logger,
     vapidPublicKey: vapid ? () => vapid.publicKey : undefined,
     pushSubscriptions,
+    onWebPromptCreated: ({ promptRequestId, instanceId, sessionAlias }) => {
+      recordPendingWebPrompt(promptRequestId, instanceId, sessionAlias);
+    },
+    onWebPromptRejected: (promptRequestId) => {
+      removePendingWebPrompt(promptRequestId);
+    },
+    onWebPromptQueued: ({ promptRequestId, instanceId, queueItemId }) => {
+      associateQueueItem(promptRequestId, instanceId, queueItemId);
+    },
+    onWebPromptQueueCancelled: (instanceId, queueItemId) => {
+      cancelPendingQueueItem(instanceId, queueItemId);
+    },
+    onWebPromptSessionCleared: (instanceId, sessionAlias) => {
+      clearPendingForSession(instanceId, sessionAlias);
+    },
   });
   const completionRouteSweepTimer = setInterval(
     () => gateway.sweepExpiredCompletionRoutes(),
@@ -714,6 +907,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     gateway,
     webGateway,
     stateSnapshot,
+    pendingWebPromptsCount: () => pendingWebPrompts.size,
     app,
     close: () => {
       clearInterval(completionRouteSweepTimer);
