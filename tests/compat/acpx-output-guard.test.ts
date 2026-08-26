@@ -71,7 +71,7 @@ test("official acpx 0.13 queue stays healthy behind the xacpx ACP output guard",
     };
 
     const acpxPackage = JSON.parse(await readFile(join(process.cwd(), "node_modules", "acpx", "package.json"))) as { version?: string };
-    expect(acpxPackage.version).toBe("0.13.0");
+    expect(acpxPackage.version?.startsWith("0.13.")).toBe(true);
     transport = new AcpxCliTransport({
       command: ACPX,
       permissionMode: "approve-all",
