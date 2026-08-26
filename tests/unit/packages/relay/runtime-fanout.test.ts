@@ -1129,3 +1129,128 @@ test("finishedOffline persistence failure-injection: first persist throws -> gra
   expect(runtime.pendingWebPromptsCount?.()).toBe(0);
   runtime.close();
 });
+
+test("finishedOffline with matching promptRequestId but wrong session does not push and does not delete grant", async () => {
+  const { runtime, sent, cookie } = await setupPushRuntime();
+
+  let reqId: string | undefined;
+  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, _type: string, payload: unknown) => {
+    reqId = (payload as { promptRequestId?: string }).promptRequestId;
+    return { ok: true };
+  };
+
+  await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "task on backend" } }),
+  });
+
+  expect(reqId).toBeString();
+  expect(runtime.pendingWebPromptsCount?.()).toBe(1);
+
+  const syncEvent = (payload: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceStateSync, payload,
+  });
+  syncEvent({
+    instanceId: "i1",
+    turns: [],
+    usage: [],
+    commands: [],
+    finishedOffline: [
+      {
+        sessionAlias: "other-session",
+        chatKey: "relay:a1",
+        startedAt: Date.now() - 5000,
+        text: "done on other",
+        prompt: "task on backend",
+        promptRequestId: reqId,
+        ok: true,
+      },
+    ],
+  });
+
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(0);
+  expect(runtime.pendingWebPromptsCount?.()).toBe(1);
+  runtime.close();
+});
+
+test("capacity saturation with only active grants rejects new registration without evicting active grants", async () => {
+  const { runtime, sent, cookie, fire } = await setupPushRuntime();
+
+  const activeIds: string[] = [];
+  for (let i = 0; i < 4096; i++) {
+    const alias = `active-session-${i}`;
+    let registeredId: string | undefined;
+    (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, _type: string, payload: unknown) => {
+      registeredId = (payload as { promptRequestId?: string }).promptRequestId;
+      return { ok: true };
+    };
+    await runtime.app.request("/api/instances/i1/rpc", {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: alias, text: `task-${i}` } }),
+    });
+    fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: alias, promptRequestId: registeredId });
+    activeIds.push(registeredId!);
+  }
+
+  expect(runtime.pendingWebPromptsCount?.()).toBe(4096);
+
+  let overflowId: string | undefined;
+  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, _type: string, payload: unknown) => {
+    overflowId = (payload as { promptRequestId?: string }).promptRequestId;
+    return { ok: true };
+  };
+  await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "overflow-session", text: "overflow" } }),
+  });
+
+  expect(runtime.pendingWebPromptsCount?.()).toBe(4096);
+
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "active-session-0", ok: true, text: "done 0" });
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(1);
+  expect(JSON.parse(sent[0]!.payload).title).toBe("MacBook · active-session-0");
+  runtime.close();
+});
+
+test("active grant is NOT pruned by 24h pending TTL", async () => {
+  const { runtime, sent, cookie, fire } = await setupPushRuntime();
+
+  let activeId: string | undefined;
+  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, _type: string, payload: unknown) => {
+    activeId = (payload as { promptRequestId?: string }).promptRequestId;
+    return { ok: true };
+  };
+
+  await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "multi-day task" } }),
+  });
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", promptRequestId: activeId });
+  expect(runtime.pendingWebPromptsCount?.()).toBe(1);
+
+  // Register another prompt with normal clock to run prunePendingWebPrompts
+  await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "other", text: "trigger prune" } }),
+  });
+
+  expect(runtime.pendingWebPromptsCount?.()).toBe(2);
+
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true, text: "finally done" });
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(1);
+  expect(JSON.parse(sent[0]!.payload)).toEqual({
+    title: "MacBook · backend",
+    body: "finally done",
+    instanceId: "i1",
+    url: "/",
+  });
+  runtime.close();
+});

@@ -711,14 +711,14 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 // Already committed (live flush or a previous sync) but the connector
                 // never got the ack — re-ack so its FIFO can finally drop the entry.
                 ackedRecoveryIds.push(recoveryId);
-                if (finished.promptRequestId) {
+                if (grant && finished.promptRequestId) {
                   removePendingWebPrompt(finished.promptRequestId);
                 }
                 continue;
               }
               const fingerprint = `${instanceId}\0${finished.sessionAlias}\0${finished.prompt ?? ""}\0${text ?? ""}`;
               if (!recoveryId && recoveredFingerprints.has(fingerprint)) {
-                if (finished.promptRequestId) {
+                if (grant && finished.promptRequestId) {
                   removePendingWebPrompt(finished.promptRequestId);
                 }
                 continue;
@@ -753,13 +753,13 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                   recoveryReceipts.remember(instanceId, recoveryId);
                 });
                 ackedRecoveryIds.push(recoveryId);
-                if (finished.promptRequestId) {
+                if (grant && finished.promptRequestId) {
                   removePendingWebPrompt(finished.promptRequestId);
                 }
               } else {
                 persist();
                 rememberFingerprint(fingerprint);
-                if (finished.promptRequestId) {
+                if (grant && finished.promptRequestId) {
                   removePendingWebPrompt(finished.promptRequestId);
                 }
               }
