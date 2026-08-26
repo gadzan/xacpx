@@ -208,9 +208,19 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   const recordPendingWebPrompt = (promptRequestId: string, instanceId: string, sessionAlias: string) => {
     prunePendingWebPrompts();
     while (pendingWebPrompts.size >= PENDING_WEB_PROMPTS_MAX) {
-      const oldestId = pendingWebPrompts.keys().next().value;
-      if (!oldestId) break;
-      removePendingWebPrompt(oldestId);
+      // Evict oldest pending grant first to protect active turns under load
+      let victimId: string | undefined;
+      for (const [id, grant] of pendingWebPrompts) {
+        if (grant.state === "pending") {
+          victimId = id;
+          break;
+        }
+      }
+      if (!victimId) {
+        victimId = pendingWebPrompts.keys().next().value;
+      }
+      if (!victimId) break;
+      removePendingWebPrompt(victimId);
     }
     pendingWebPrompts.set(promptRequestId, {
       instanceId,
@@ -438,6 +448,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               if (grant && grant.instanceId === instanceId && grant.sessionAlias === event.sessionAlias) {
                 if (!event.scheduled && !event.peerOrigin) {
                   grant.state = "active";
+                  grant.createdAt = Date.now();
                   notification = { origin: "relay-web", promptRequestId: event.promptRequestId };
                 } else {
                   removePendingWebPrompt(event.promptRequestId);
@@ -490,9 +501,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             const k = key(instanceId, event.sessionAlias);
             const a = turnBuffers.get(k);
             turnBuffers.delete(k);
-            if (a?.notification?.promptRequestId) {
-              removePendingWebPrompt(a.notification.promptRequestId);
-            }
+            const promptRequestId = a?.notification?.promptRequestId;
             const flush = (): void => {
               if (!a) {
                 // No buffer (e.g. hub restarted mid-turn and the offline sweep dropped it).
@@ -558,9 +567,15 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 gateway.disconnect(instanceId);
                 throw err;
               }
+              if (promptRequestId) {
+                removePendingWebPrompt(promptRequestId);
+              }
               gateway.sendEvent(instanceId, MSG.instanceRecoveryAck, { recoveryIds: [recoveryId] } satisfies InstanceRecoveryAckPayload);
             } else {
               flush();
+              if (promptRequestId) {
+                removePendingWebPrompt(promptRequestId);
+              }
             }
             if (a?.notification?.origin === "relay-web" && !event.peerOrigin && event.cancelled !== true) {
               const instanceName = instances.getOwned(instanceId, accountId)?.name ?? instanceId;
@@ -678,7 +693,6 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 const g = pendingWebPrompts.get(finished.promptRequestId);
                 if (g && g.instanceId === instanceId && g.sessionAlias === finished.sessionAlias) {
                   grant = g;
-                  removePendingWebPrompt(finished.promptRequestId);
                 }
               }
               // A failed turn with no (or an empty) reply must surface its error text,
@@ -726,11 +740,17 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                   recoveryReceipts.remember(instanceId, recoveryId);
                 });
                 ackedRecoveryIds.push(recoveryId);
+                if (finished.promptRequestId) {
+                  removePendingWebPrompt(finished.promptRequestId);
+                }
               } else {
                 persist();
                 rememberFingerprint(fingerprint);
+                if (finished.promptRequestId) {
+                  removePendingWebPrompt(finished.promptRequestId);
+                }
               }
-              if (grant && grant.state === "active" && !finished.scheduled && finished.cancelled !== true) {
+              if (grant && !finished.scheduled && finished.cancelled !== true) {
                 const instanceName = instances.getOwned(instanceId, accountId)?.name ?? instanceId;
                 void pushNotifier.sendTurnCompletion(accountId, {
                   instanceId,
@@ -766,6 +786,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 const grant = pendingWebPrompts.get(turn.promptRequestId);
                 if (grant && grant.instanceId === instanceId && grant.sessionAlias === turn.sessionAlias) {
                   grant.state = "active";
+                  grant.createdAt = Date.now();
                   notification = { origin: "relay-web", promptRequestId: turn.promptRequestId };
                 }
               }

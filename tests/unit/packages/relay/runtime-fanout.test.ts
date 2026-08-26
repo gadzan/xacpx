@@ -873,3 +873,170 @@ test("session archive RPC clears pending web prompts for that session", async ()
   expect(runtime.pendingWebPromptsCount?.()).toBe(0);
   runtime.close();
 });
+
+test("ambiguous prompt goes directly pending -> finishedOffline on reconnect (no turn-started on Hub) and triggers exactly 1 push", async () => {
+  const { runtime, sent, cookie } = await setupPushRuntime();
+
+  let reqId: string | undefined;
+  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, _type: string, payload: unknown) => {
+    reqId = (payload as { promptRequestId?: string }).promptRequestId;
+    throw new Error("instance-reconnected");
+  };
+
+  const res = await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "ambiguous finished offline" } }),
+  });
+  expect(res.status).toBe(503);
+  expect(reqId).toBeString();
+  expect(runtime.pendingWebPromptsCount?.()).toBe(1);
+
+  // Connector completes the turn entirely in outage and sends ONLY finishedOffline (no sync.turns)
+  const syncEvent = (payload: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceStateSync, payload,
+  });
+  syncEvent({
+    instanceId: "i1",
+    turns: [],
+    usage: [],
+    commands: [],
+    finishedOffline: [
+      {
+        sessionAlias: "backend",
+        chatKey: "relay:a1",
+        startedAt: Date.now() - 5000,
+        text: "direct finish in outage",
+        prompt: "ambiguous finished offline",
+        promptRequestId: reqId,
+        ok: true,
+      },
+    ],
+  });
+
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(1);
+  expect(JSON.parse(sent[0]!.payload)).toEqual({
+    title: "MacBook · backend",
+    body: "direct finish in outage",
+    instanceId: "i1",
+    url: "/",
+  });
+  expect(runtime.pendingWebPromptsCount?.()).toBe(0);
+  runtime.close();
+});
+
+test("live Web turn failure-injection: first DB transaction throws -> grant stays alive -> reconnect state-sync retry triggers exactly 1 push", async () => {
+  const { runtime, sent, cookie, fire } = await setupPushRuntime();
+
+  let reqId: string | undefined;
+  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, _type: string, payload: unknown) => {
+    reqId = (payload as { promptRequestId?: string }).promptRequestId;
+    return { ok: true };
+  };
+
+  await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "flaky db prompt" } }),
+  });
+
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", promptRequestId: reqId });
+  fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "flaky done" });
+
+  // Mock db.transaction to fail once
+  const origTransaction = runtime.db.transaction.bind(runtime.db);
+  let failOnce = true;
+  runtime.db.transaction = (fn: () => void) => {
+    if (failOnce) {
+      failOnce = false;
+      throw new Error("simulated disk error");
+    }
+    return origTransaction(fn);
+  };
+  // First finish fails transaction, logs persist_failed, and forces disconnect (swallowed at onEvent boundary)
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true, recoveryId: "rec-1" });
+  expect(sent).toHaveLength(0);
+  // Grant must STILL be present in memory for the retry
+  expect(runtime.pendingWebPromptsCount?.()).toBe(1);
+  // Connector reconnects and re-sends via finishedOffline
+  const syncEvent = (payload: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceStateSync, payload,
+  });
+  syncEvent({
+    instanceId: "i1",
+    turns: [],
+    usage: [],
+    commands: [],
+    finishedOffline: [
+      {
+        sessionAlias: "backend",
+        chatKey: "relay:a1",
+        startedAt: Date.now() - 5000,
+        text: "flaky done",
+        prompt: "flaky db prompt",
+        promptRequestId: reqId,
+        recoveryId: "rec-1",
+        ok: true,
+      },
+    ],
+  });
+
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(1);
+  expect(JSON.parse(sent[0]!.payload)).toEqual({
+    title: "MacBook · backend",
+    body: "flaky done",
+    instanceId: "i1",
+    url: "/",
+  });
+  expect(runtime.pendingWebPromptsCount?.()).toBe(0);
+  runtime.close();
+});
+
+test("capacity pressure evicts oldest pending grant while protecting active grants", async () => {
+  const { runtime, sent, cookie, fire } = await setupPushRuntime();
+
+  let activeReqId: string | undefined;
+  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, _type: string, payload: unknown) => {
+    activeReqId = (payload as { promptRequestId?: string }).promptRequestId;
+    return { ok: true };
+  };
+
+  // Submit active prompt and start it
+  await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "active prompt" } }),
+  });
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", promptRequestId: activeReqId });
+  fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "running" });
+
+  // Flood with 5000 queued/pending prompts to trigger capacity eviction (limit 4096)
+  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, _type: string, _payload: unknown) => {
+    return { ok: true, queued: true, queueItemId: "q-flood" };
+  };
+  for (let i = 0; i < 4100; i++) {
+    await runtime.app.request("/api/instances/i1/rpc", {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: `s-${i}`, text: `flood-${i}` } }),
+    });
+  }
+
+  // Capacity capped at 4096, and active grant was NOT evicted
+  expect(runtime.pendingWebPromptsCount?.()).toBe(4096);
+
+  // Active turn finishes and sends push successfully
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
+
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(1);
+  expect(JSON.parse(sent[0]!.payload)).toEqual({
+    title: "MacBook · backend",
+    body: "running",
+    instanceId: "i1",
+    url: "/",
+  });
+  runtime.close();
+});
