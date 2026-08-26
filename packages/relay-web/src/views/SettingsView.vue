@@ -16,6 +16,7 @@ import {
   disableDesktopNotifications,
   subscriptionMatchesKey,
   getExistingSubscription,
+  isDesktopNotificationsEnabled,
 } from "../lib/web-push";
 const auth = useAuthStore();
 const theme = useThemeStore();
@@ -61,22 +62,29 @@ const notifBusy = ref(false);
 let vapidKey: string | null = null;
 
 async function probeNotifications(): Promise<void> {
-  if (!pushSupported()) { notifState.value = "unsupported"; return; }
   if (typeof Notification !== "undefined" && Notification.permission === "denied") {
     notifState.value = "denied";
     return;
   }
+  if (!pushSupported()) {
+    notifState.value = isDesktopNotificationsEnabled() ? "subscribed" : "unsupported";
+    return;
+  }
   const key = await fetchVapidPublicKey();
-  if (!key) { notifState.value = "server-disabled"; return; }
+  if (!key) {
+    notifState.value = isDesktopNotificationsEnabled() ? "subscribed" : "server-disabled";
+    return;
+  }
   vapidKey = key;
   try {
     const sub = await getExistingSubscription();
-    if (!sub) { notifState.value = "idle"; return; }
-    // A sub minted under an older VAPID key can never receive pushes — show
-    // it as off; reconcileExistingSubscription (auth load) re-mints it.
-    notifState.value = subscriptionMatchesKey(sub, key) ? "subscribed" : "idle";
+    if (sub && subscriptionMatchesKey(sub, key)) {
+      notifState.value = "subscribed";
+      return;
+    }
+    notifState.value = isDesktopNotificationsEnabled() ? "subscribed" : "idle";
   } catch {
-    notifState.value = "idle";
+    notifState.value = isDesktopNotificationsEnabled() ? "subscribed" : "idle";
   }
 }
 
@@ -89,16 +97,19 @@ async function toggleNotifications(): Promise<void> {
   if (notifBusy.value) return;
   notifBusy.value = true;
   try {
-    if (notifState.value === "subscribed") {
+    if (notifState.value === "subscribed" || isDesktopNotificationsEnabled()) {
       await disableDesktopNotifications();
       notifState.value = "idle";
-    } else if (vapidKey) {
+    } else {
       await enableDesktopNotifications(vapidKey);
       notifState.value = "subscribed";
     }
   } catch (err) {
-    if (err instanceof Error && err.message === "permission-denied") notifState.value = "denied";
-    else if (err instanceof Error && err.message === "push-endpoint-unsupported") notifState.value = "unsupported";
+    if (err instanceof Error && err.message === "permission-denied") {
+      notifState.value = "denied";
+    } else if (err instanceof Error && err.message === "push-endpoint-unsupported") {
+      notifState.value = isDesktopNotificationsEnabled() ? "subscribed" : "unsupported";
+    }
     // other failures keep the current state; a toast would be noise here
   } finally {
     notifBusy.value = false;

@@ -9,6 +9,7 @@ const lib = vi.hoisted(() => ({
   disableDesktopNotifications: vi.fn(),
   subscriptionMatchesKey: vi.fn(),
   getExistingSubscription: vi.fn(),
+  isDesktopNotificationsEnabled: vi.fn(),
 }));
 
 vi.mock("../lib/web-push", () => lib);
@@ -50,6 +51,7 @@ describe("settings notifications section", () => {
     lib.disableDesktopNotifications.mockResolvedValue(undefined);
     lib.subscriptionMatchesKey.mockReturnValue(true);
     lib.getExistingSubscription.mockResolvedValue(null);
+    lib.isDesktopNotificationsEnabled.mockReturnValue(false);
   });
   it("renders 已开启 when a probe subscription exists", async () => {
     lib.getExistingSubscription.mockResolvedValue({ endpoint: "https://push/e1" });
@@ -73,6 +75,19 @@ describe("settings notifications section", () => {
     vi.unstubAllGlobals();
   });
 
+  it("renders On and allows disabling when local notifications are enabled even if VAPID is null", async () => {
+    lib.fetchVapidPublicKey.mockResolvedValue(null);
+    lib.isDesktopNotificationsEnabled.mockReturnValue(true);
+    const w = mountSettings();
+    await flush();
+    expect(w.find('[data-test="notif-state"]').text()).toBe("On");
+    expect(w.find('[data-test="notif-toggle"]').exists()).toBe(true);
+    await w.find('[data-test="notif-toggle"]').trigger("click");
+    await flush();
+    expect(lib.disableDesktopNotifications).toHaveBeenCalledTimes(1);
+    expect(w.find('[data-test="notif-state"]').text()).toBe("Off");
+    vi.unstubAllGlobals();
+  });
   it("unsupported environment renders 当前环境不支持 without probing", async () => {
     lib.pushSupported.mockReturnValue(false);
     const w = mountSettings();
