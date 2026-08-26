@@ -1,4 +1,61 @@
 # Changelog
+## [0.23.0] - 2026-08-26
+
+### Added
+
+- Agent Messaging (MCP-driven agent-to-agent channel): local queue delivery and multi-node federation with presence sync (v0.1); Collaboration UX v0.2 (conversation threading, loop guards, trace buffer) and v0.3 (completion-card anchoring, context-aware `@Agent` ranking, completion policy); `sessionAlias`-preferring `@agent` target resolution.
+- Peer interrupt delivery (v0.4): `TurnQueue` peer-interrupt reservation with snapshot-first items and control-plane interrupt advertisement.
+- Control API `browseDirectories`: workspace-independent directory picker over the instance host.
+- `ToolUseEvent.machineToolName` stable machine tool identity and versioned `xacpx-agent-send-receipt:v1` marker; reliable `agent_send` card anchoring incl. omp-driven sessions.
+- `TurnQueue` passes `promptRequestId` to `turnStarted` on immediate and queued paths.
+
+### Changed
+
+- Bump bundled `acpx` dependency from 0.13.0 to 0.13.1 (transport runtime).
+
+### Fixed
+
+- `agent-message` card placement on the sender side; definite-route rejection compensation; pending-interrupt snapshot republish after `clearSession`; exactly-once `deliverCompletion` on mid-admission durable-mark failure.
+
+## [relay-protocol 0.5.0] - 2026-08-26
+
+### Added
+
+- Agent Messaging wire protocol: peer message frames, remote delivery, and collaboration v0.2/v0.3 message types (completion routes, card-anchor fields, agent-directory updates).
+- `turn-completion` `WebServerEvent` kind (isolated from notices, dedup by `notificationId`).
+- `PublishedAgentEndpointDto.sessionAlias?`; instance-tagged web agent-directory events.
+- `control.fs.browse` message with `FsBrowsePayload` / `FsBrowseEntry` / `FsBrowseResult` DTOs.
+
+## [relay 0.13.0] - 2026-08-26
+
+### Added
+
+- Route peer agent messages between authenticated instances with sender identity enforcement; relay-web Agent Messaging collaboration UX (threaded conversation, reply, anchored completion cards, `@Agent` ranking).
+- Web Push for interactive turn/task completion (VAPID, Apple Web Push support, provenance registry with TTL pruning, local desktop-notification fallback).
+- Cross-instance directory picker for new-session workspace cwd; carry `SessionDto.driver` for brand icons.
+- Switch relay-web terminal renderer to xterm.js (`@xterm/xterm` 6); host-authoritative terminal open geometry.
+
+### Fixed
+
+- Fail-closed auth reconcile across review rounds (strict VAPID/P-256 validation, `destroyProven`); restore `terminal-opened` in `WEB_EVENT_KINDS`; bounded `serviceWorker.ready` wait.
+
+## [channel-relay 0.7.0] - 2026-08-26
+
+### Added
+
+- Bundle and select the dedicated RMUX daemon in the `xacpx-rmux-bridge-*` platform packages; POSIX `TERM=xterm-256color` terminal dialect matching the xterm.js renderer.
+- Upward tool-presentation and control-bridge updates for collaboration v0.3; forward `control.fs.browse` to the instance host.
+
+### Fixed
+
+- Isolate the RMUX daemon per bridge process (`rmux-sidecar-supervisor`); terminal open geometry host-authoritative on open; `agent_send` card anchoring on machine tool identity with versioned receipt parsing.
+
+## [channel-feishu 0.8.0] - 2026-08-26
+
+### Added
+
+- Opt-in `trustGroupOwner` for group-owner command authorization: asserts `isOwner` on group turns from the chat owner (cached 5 min with fail-closed lookups), records an explicit owner boolean per group turn; off by default.
+
 ## [0.23.0-beta.8] - 2026-08-26
 
 ### Changed
