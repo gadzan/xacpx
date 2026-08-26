@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -11,20 +11,7 @@ import { createXacpxRuntimeAdapter } from "../../../../../src/bridge/engine/runt
 // the same stateDir store the CLI uses (record compatibility, plan §12).
 const MOCK_AGENT = resolve(import.meta.dir, "../../../../fixtures/mock-acp-agent.mjs");
 
-const acpxAvailable = (() => {
-  try {
-    void resolve(import.meta.dir, "../../../../node_modules/acpx/dist/runtime.js");
-    return true;
-  } catch {
-    return false;
-  }
-})();
-
 test("runtime adapter drives a full turn through real acpx runtime + mock ACP agent", async () => {
-  if (!acpxAvailable) {
-    console.warn("acpx dist not installed; skipping live runtime probe");
-    return;
-  }
   const stateDir = await mkdtemp(join(tmpdir(), "xacpx-runtime-poc-"));
   try {
     const adapter = createXacpxRuntimeAdapter({
@@ -72,20 +59,14 @@ test("runtime adapter drives a full turn through real acpx runtime + mock ACP ag
   }
 }, 30_000);
 
-test("adapter-scoped ensure/startTurn/cancel surface through the narrow interface", async () => {
-  if (!acpxAvailable) return;
-  const stateDir = await mkdtemp(join(tmpdir(), "xacpx-runtime-poc2-"));
-  try {
-    const adapter = createXacpxRuntimeAdapter({
-      stateDir,
-      permissionMode: "approve-all",
-      nonInteractivePermissions: "deny",
-    });
-    expect(typeof adapter.ensure).toBe("function");
-    expect(typeof adapter.startTurn).toBe("function");
-    expect(typeof adapter.setMode).toBe("function");
-    expect(typeof adapter.close).toBe("function");
-  } finally {
-    await rm(stateDir, { recursive: true, force: true });
-  }
+test("adapter-scoped ensure/startTurn/cancel surface through the narrow interface", () => {
+  const adapter = createXacpxRuntimeAdapter({
+    stateDir: join(tmpdir(), "unused-poc2"),
+    permissionMode: "approve-all",
+    nonInteractivePermissions: "deny",
+  });
+  expect(typeof adapter.ensure).toBe("function");
+  expect(typeof adapter.startTurn).toBe("function");
+  expect(typeof adapter.setMode).toBe("function");
+  expect(typeof adapter.close).toBe("function");
 });

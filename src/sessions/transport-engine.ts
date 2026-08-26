@@ -15,6 +15,8 @@ export interface ResolveTransportEngineInput {
   config: { type: TransportConfig["type"]; command?: string; engine?: BridgeEngineMode };
   /** Existing persisted binding. `undefined` = brand-new session with no record. */
   session?: { transport_engine?: SessionTransportEngine };
+  /** True only once the bridge actually hosts a RuntimeEngine (Wave B+). */
+  runtimeAvailable?: boolean;
 }
 
 export interface TransportEngineChoice {
@@ -31,6 +33,12 @@ export interface TransportEngineChoice {
  *    `engine: "runtime"` this is a configuration error, not a silent fallback.
  * 3. Config mode decides for new sessions: development-phase default is cli;
  *    "auto" also resolves to cli until the Runtime gates (G1–G13) go green.
+ *
+ * Strict `engine: "runtime"` is honored ONLY when a RuntimeEngine is actually
+ * wired into the bridge (runtimeAvailable). Until the worker infrastructure
+ * lands, strict mode fails loudly at session creation (plan §5.2: 不能静默
+ * fallback) instead of silently running on the CLI engine while state claims
+ * runtime — which would violate §3-R1's single-owner rule.
  */
 export function resolveTransportEngine(input: ResolveTransportEngineInput): TransportEngineChoice {
   const persisted = input.session?.transport_engine;
@@ -44,18 +52,23 @@ export function resolveTransportEngine(input: ResolveTransportEngineInput): Tran
       : "cli";
   const hasExplicitCommand = typeof input.config.command === "string" && input.config.command.trim().length > 0;
 
-  if (configured === "runtime" && hasExplicitCommand) {
-    throw new Error(
-      'transport.engine = "runtime" conflicts with explicit transport.command (self-provided acpx); remove one of them',
-    );
-  }
   if (configured === "runtime") {
+    if (hasExplicitCommand) {
+      throw new Error(
+        'transport.engine = "runtime" conflicts with explicit transport.command (self-provided acpx); remove one of them',
+      );
+    }
+    if (!input.runtimeAvailable) {
+      throw new Error(
+        'transport.engine = "runtime" requires acpx Runtime worker support, which this build does not enable yet',
+      );
+    }
     return { engine: "runtime" };
   }
   if (hasExplicitCommand) {
     return { engine: "cli", reason: "explicit-acpx-command" };
   }
-  // configured === "auto" stays on cli this wave: Runtime selection unlocks only
-  // after the worker infrastructure lands and G1–G13 pass.
+  // configured === "auto"/absent stays on cli until G1–G13 pass and the default
+  // switch PR flips auto to consult the eligibility probe.
   return { engine: "cli" };
 }

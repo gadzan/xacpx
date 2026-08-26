@@ -19,15 +19,18 @@ test("explicit transport.command forces cli and is reported", () => {
   expect(choice.reason).toBe("explicit-acpx-command");
 });
 
-test("strict runtime engine with explicit transport.command throws a diagnostic error", () => {
-  expect(() =>
-    resolveTransportEngine({ config: { ...baseConfig, command: "/opt/acpx/bin", engine: "runtime" } }),
-  ).toThrow(/transport\.engine = "runtime" conflicts with explicit transport\.command/);
+test("strict runtime engine without runtime support throws instead of silently binding cli", () => {
+  expect(() => resolveTransportEngine({ config: { ...baseConfig, engine: "runtime" } })).toThrow(
+    /requires acpx Runtime worker support/,
+  );
 });
 
-test("strict runtime engine without command binds runtime", () => {
-  expect(resolveTransportEngine({ config: { ...baseConfig, engine: "runtime" } })).toEqual({ engine: "runtime" });
+test("strict runtime engine binds runtime once runtimeAvailable is true", () => {
+  expect(resolveTransportEngine({ config: { ...baseConfig, engine: "runtime" }, runtimeAvailable: true })).toEqual({
+    engine: "runtime",
+  });
 });
+
 
 test("auto mode stays on cli until the Runtime gates pass", () => {
   const choice = resolveTransportEngine({ config: { ...baseConfig, engine: "auto" } });

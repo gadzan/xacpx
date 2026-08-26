@@ -7,6 +7,8 @@ import { join } from "node:path";
 
 const ROOT = new URL("../src", import.meta.url).pathname;
 const ALLOWED_FILE = join(ROOT, "bridge/engine/runtime/runtime-adapter.ts");
+// Legacy lazy require for install-hint flows; Wave B folds it into the adapter.
+const ALLOWED_LAZY_FILES = new Set([join(ROOT, "transport/agent-registry.ts")]);
 const ALLOWED_SPEC = "acpx/runtime";
 
 const violations = [];
@@ -20,11 +22,18 @@ function walk(dir) {
     } else if (full.endsWith(".ts")) {
       const lines = readFileSync(full, "utf8").split("\n");
       lines.forEach((line, idx) => {
-        const match = line.match(/from\s+["'](acpx[^"']*)["']/);
-        if (!match) return;
-        const spec = match[1];
-        if (spec === ALLOWED_SPEC && full === ALLOWED_FILE) return;
-        violations.push(`${full}:${idx + 1}: imports "${spec}"`);
+        // Static: from "acpx..." — dynamic: import("acpx...") / require("acpx...")
+        const matches = [
+          line.match(/from\s+["'](acpx[^"']*)["']/),
+          line.match(/import\(\s*["'](acpx[^"']*)["']\s*\)/),
+          line.match(/require\(\s*["'](acpx[^"']*)["']\s*\)/),
+        ].filter(Boolean);
+        for (const match of matches) {
+          const spec = match[1];
+          if (spec === ALLOWED_SPEC && full === ALLOWED_FILE) continue;
+          if (spec === ALLOWED_SPEC && ALLOWED_LAZY_FILES.has(full)) continue;
+          violations.push(`${full}:${idx + 1}: imports "${spec}"`);
+        }
       });
     }
   }

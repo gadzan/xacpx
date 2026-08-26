@@ -135,7 +135,9 @@ export class EngineRouter implements BridgeEngine {
     nonInteractivePermissions: NonInteractivePermissions;
     permissionPolicy?: string;
   }): Promise<Record<string, never>> {
-    // Fan out: policy applies to whichever engines exist.
+    // Wave A: only the CLI engine exists, so this delegates. Wave B MUST fan
+    // out to the runtime engine too (plan §32: atomic generation bump, no
+    // half-updated worker fleet).
     return this.cli.updatePermissionPolicy(policy);
   }
 
