@@ -28,6 +28,7 @@
       ],
       "workspace": "backend",
       "transportSession": "backend:relay:demo",
+      "logicalSessionId": "<logical-session-id>",
       "cwd": "/tmp/backend",
       "archived": false
     }
