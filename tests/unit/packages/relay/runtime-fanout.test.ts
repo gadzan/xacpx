@@ -684,3 +684,192 @@ test("Gate 11: duplicate turn-finished produces exactly 1 push", async () => {
   expect(sent).toHaveLength(1);
   runtime.close();
 });
+
+test("state-sync restores notification provenance for matching active turn and completes with exactly 1 push", async () => {
+  const { runtime, sent, cookie, fire } = await setupPushRuntime();
+
+  let reqId: string | undefined;
+  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, _type: string, payload: unknown) => {
+    reqId = (payload as { promptRequestId?: string }).promptRequestId;
+    return { ok: true };
+  };
+
+  await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "long running" } }),
+  });
+
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", promptRequestId: reqId });
+  fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "partial" });
+
+  const syncEvent = (payload: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceStateSync, payload,
+  });
+  syncEvent({
+    instanceId: "i1",
+    turns: [
+      {
+        sessionAlias: "backend",
+        chatKey: "relay:a1",
+        startedAt: Date.now() - 5000,
+        text: "partial",
+        steps: [],
+        reasoning: "",
+        promptRequestId: reqId,
+      },
+    ],
+    usage: [],
+    commands: [],
+    finishedOffline: [],
+  });
+
+  fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: " complete" });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
+
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(1);
+  expect(JSON.parse(sent[0]!.payload)).toEqual({
+    title: "MacBook · backend",
+    body: "partial complete",
+    instanceId: "i1",
+    url: "/",
+  });
+  expect(runtime.pendingWebPromptsCount?.()).toBe(0);
+  runtime.close();
+});
+
+test("ambiguous transport error preserves pending grant for state-sync recovery and push", async () => {
+  const { runtime, sent, cookie, fire } = await setupPushRuntime();
+
+  let reqId: string | undefined;
+  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, _type: string, payload: unknown) => {
+    reqId = (payload as { promptRequestId?: string }).promptRequestId;
+    throw new Error("instance-reconnected");
+  };
+
+  const res = await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "ambiguous prompt" } }),
+  });
+  expect(res.status).toBe(503);
+  expect(reqId).toBeString();
+  expect(runtime.pendingWebPromptsCount?.()).toBe(1);
+
+  const syncEvent = (payload: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceStateSync, payload,
+  });
+  syncEvent({
+    instanceId: "i1",
+    turns: [
+      {
+        sessionAlias: "backend",
+        chatKey: "relay:a1",
+        startedAt: Date.now() - 5000,
+        text: "working",
+        steps: [],
+        reasoning: "",
+        promptRequestId: reqId,
+      },
+    ],
+    usage: [],
+    commands: [],
+    finishedOffline: [],
+  });
+
+  fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: " done" });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
+
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(1);
+  expect(JSON.parse(sent[0]!.payload)).toEqual({
+    title: "MacBook · backend",
+    body: "working done",
+    instanceId: "i1",
+    url: "/",
+  });
+  expect(runtime.pendingWebPromptsCount?.()).toBe(0);
+  runtime.close();
+});
+
+test("active Web turn completed during connector outage sends delayed push on finishedOffline sync", async () => {
+  const { runtime, sent, cookie, fire } = await setupPushRuntime();
+
+  let reqId: string | undefined;
+  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, _type: string, payload: unknown) => {
+    reqId = (payload as { promptRequestId?: string }).promptRequestId;
+    return { ok: true };
+  };
+
+  await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "run in outage" } }),
+  });
+
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", promptRequestId: reqId });
+
+  const syncEvent = (payload: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceStateSync, payload,
+  });
+  syncEvent({
+    instanceId: "i1",
+    turns: [],
+    usage: [],
+    commands: [],
+    finishedOffline: [
+      {
+        sessionAlias: "backend",
+        chatKey: "relay:a1",
+        startedAt: Date.now() - 5000,
+        text: "outage result",
+        prompt: "run in outage",
+        promptRequestId: reqId,
+        ok: true,
+      },
+    ],
+  });
+
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(1);
+  expect(JSON.parse(sent[0]!.payload)).toEqual({
+    title: "MacBook · backend",
+    body: "outage result",
+    instanceId: "i1",
+    url: "/",
+  });
+  expect(runtime.pendingWebPromptsCount?.()).toBe(0);
+  runtime.close();
+});
+
+test("session archive RPC clears pending web prompts for that session", async () => {
+  const { runtime, cookie } = await setupPushRuntime();
+
+  let reqId: string | undefined;
+  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, type: string, payload: unknown) => {
+    if (type === MSG.prompt) {
+      reqId = (payload as { promptRequestId?: string }).promptRequestId;
+      return { ok: true, queued: true, queueItemId: "q1" };
+    }
+    return { ok: true };
+  };
+
+  const resPrompt = await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "will be archived" } }),
+  });
+  expect(resPrompt.status).toBe(200);
+  expect(reqId).toBeString();
+  expect(runtime.pendingWebPromptsCount?.()).toBe(1);
+
+  const resArchive = await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.sessionsArchive, payload: { alias: "backend" } }),
+  });
+  expect(resArchive.status).toBe(200);
+  expect(runtime.pendingWebPromptsCount?.()).toBe(0);
+  runtime.close();
+});

@@ -65,6 +65,8 @@ export interface AppDeps {
   onWebPromptQueued?: (input: { promptRequestId: string; instanceId: string; queueItemId: string }) => void;
   /** Web push / provenance: called when a queued prompt is cancelled via Web RPC. */
   onWebPromptQueueCancelled?: (instanceId: string, queueItemId: string) => void;
+  /** Web push / provenance: called when a session is archived or removed, clearing pending queues. */
+  onWebPromptSessionCleared?: (instanceId: string, sessionAlias: string) => void;
 }
 const SESSION_COOKIE = "xrelay_session";
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;
@@ -715,6 +717,13 @@ export function createApp(deps: AppDeps): Hono<Vars> {
           }
         }
       }
+      if ((body.type === MSG.sessionsRemove || body.type === MSG.sessionsArchive) && !isErrorPayload(result)) {
+        const targetAlias = removeInput ? removeInput.alias : (typeof payload === "object" && payload !== null && "alias" in payload && typeof payload.alias === "string" ? payload.alias : undefined);
+        if (targetAlias) {
+          deps.onWebPromptSessionCleared?.(instance.id, targetAlias);
+        }
+      }
+      // A real delete has two histories: the connector-owned acpx record and the
       // Hub-owned Web transcript. Purge the latter only after the connector confirms
       // success; archive intentionally keeps both histories.
       if (removeInput && !isErrorPayload(result)) {
@@ -727,10 +736,11 @@ export function createApp(deps: AppDeps): Hono<Vars> {
       }
       return c.json({ result });
     } catch (error) {
-      if (webPromptRequestId) {
+      const message = error instanceof Error ? error.message : String(error);
+      const isAmbiguousTransportError = message === "instance-offline" || message === "instance-reconnected" || message === "timeout";
+      if (webPromptRequestId && !isAmbiguousTransportError) {
         deps.onWebPromptRejected?.(webPromptRequestId);
       }
-      const message = error instanceof Error ? error.message : String(error);
       if (message === "instance-offline" || message === "instance-reconnected") return c.json({ error: message }, 503);
       if (message === "timeout") return c.json({ error: message }, 504);
       return c.json({ error: message }, 500);
