@@ -10,12 +10,14 @@
 ### Added
 
 - Web Push for interactive agent turn completion: users prompting an agent from relay-web receive desktop push notifications when turns finish, with custom `<instance> · <session>` titles and result snippets.
+- Apple Web Push support for macOS Safari and iOS Home Screen Web Apps (origin-level `window.pushManager` ownership isolation).
 - Provenance registry with automatic TTL pruning to track relay-web interactive prompts and prevent unsolicited notifications for scheduled turns, peer agent messaging, and background orchestration workers.
 - `PushNotifier`: added `sendTurnCompletion()` with structured logging for fanout, delivery, failure, and missing subscriptions.
 
 ### Fixed
 
 - `relay-web`: fixed `PlanPanel` model type compatibility under `vue-tsc`.
+- `relay-web`: fail-closed teardown proof on `disableDesktopNotifications` (no catch-to-null in `destroyProven`).
 
 ## [0.23.0-beta.6] - 2026-08-25
 
