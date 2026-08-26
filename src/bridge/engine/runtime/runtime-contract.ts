@@ -40,6 +40,8 @@ export interface XacpxTurnHandle {
   promptStarted: Promise<void>;
   events: AsyncIterable<XacpxRuntimeEvent>;
   result: Promise<XacpxTurnResult>;
+  /** Aborts the in-flight turn; resolves when cancellation is delivered. */
+  cancel(): Promise<void>;
 }
 
 export interface XacpxRuntimeSessionHandle {

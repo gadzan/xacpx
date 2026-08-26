@@ -90,6 +90,7 @@ export function createXacpxRuntimeAdapter(options: CreateXacpxRuntimeAdapterOpti
         promptStarted: turn.promptStarted,
         events: mapEvents(turn.events),
         result: mapResult(turn.result),
+        cancel: (inputArgs?: { reason?: string }) => turn.cancel(inputArgs),
       };
     },
     async setMode(handle, mode) {
