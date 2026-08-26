@@ -174,6 +174,7 @@ test("sendTurnCompletion pushes success with custom title and capped body", asyn
   expect(payload.title).toBe("MacBook · backend");
   expect(payload.body).toHaveLength(200);
   expect(payload.instanceId).toBe("i1");
+  expect(payload.sessionAlias).toBe("backend");
   expect(payload.url).toBe("/");
 });
 

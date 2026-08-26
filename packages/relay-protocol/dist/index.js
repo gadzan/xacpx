@@ -501,7 +501,7 @@ function validControlEvent(e) {
     }
   }
 }
-var NOTICE_KINDS = new Set(["task-completion", "task-progress", "coordinator-message"]);
+var NOTICE_KINDS = new Set(["task-completion", "task-progress", "coordinator-message", "turn-completion"]);
 function validInstanceStateSync(p) {
   if (typeof p !== "object" || p === null)
     return false;

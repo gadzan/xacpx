@@ -592,6 +592,26 @@ export const useChatStore = defineStore("chat", () => {
       applyStateSnapshot(event.instanceId, event.turns, event.usage, event.commands);
       return;
     }
+    if (event.kind === "notice") {
+      if (event.notice.kind === "turn-completion" && event.notice.sessionAlias) {
+        const alias = event.notice.sessionAlias;
+        const selected = event.instanceId === instanceId.value && alias === sessionAlias.value;
+        const isActiveInAnyTab = isSessionActiveInAnyTab(event.instanceId, alias, selected);
+        if (!isActiveInAnyTab && claimNotificationSlot(event.instanceId, alias)) {
+          const instancesStore = useInstancesStore();
+          const instName = instancesStore.byId(event.instanceId)?.name ?? event.instanceId;
+          void showLocalTurnNotification({
+            instanceId: event.instanceId,
+            instanceName: instName,
+            sessionAlias: alias,
+            ok: event.notice.ok !== false,
+            text: event.notice.text,
+            errorMessage: event.notice.errorMessage,
+          });
+        }
+      }
+      return;
+    }
     if (event.kind !== "control-event") return;
     const e = event.event;
     if (e.type === "turn-started") {
@@ -729,22 +749,6 @@ export const useChatStore = defineStore("chat", () => {
         const next = new Set(unread.value);
         next.add(k);
         unread.value = next;
-      }
-      // Local desktop notification fallback (Active tab suppression & cross-tab deduplication):
-      if (!e.cancelled && (status === "done" || status === "error")) {
-        const isActiveInAnyTab = isSessionActiveInAnyTab(event.instanceId, e.sessionAlias, selected);
-        if (!isActiveInAnyTab && claimNotificationSlot(event.instanceId, e.sessionAlias)) {
-          const instancesStore = useInstancesStore();
-          const instName = instancesStore.byId(event.instanceId)?.name ?? event.instanceId;
-          void showLocalTurnNotification({
-            instanceId: event.instanceId,
-            instanceName: instName,
-            sessionAlias: e.sessionAlias,
-            ok: e.ok,
-            text: e.text,
-            errorMessage: e.errorMessage,
-          });
-        }
       }
     }
   }

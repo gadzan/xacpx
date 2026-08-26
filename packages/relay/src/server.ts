@@ -586,13 +586,25 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             }
             if (a?.notification?.origin === "relay-web" && !event.peerOrigin && event.cancelled !== true) {
               const instanceName = instances.getOwned(instanceId, accountId)?.name ?? instanceId;
+              const completedText = a.text || event.text || "";
               void pushNotifier.sendTurnCompletion(accountId, {
                 instanceId,
                 instanceName,
                 sessionAlias: event.sessionAlias,
-                text: a.text || event.text,
+                text: completedText,
                 ok: event.ok,
                 errorMessage: event.errorMessage,
+              });
+              webGateway.broadcast(accountId, {
+                kind: "notice",
+                instanceId,
+                notice: {
+                  kind: "turn-completion",
+                  text: completedText,
+                  sessionAlias: event.sessionAlias,
+                  ok: event.ok,
+                  errorMessage: event.errorMessage,
+                },
               });
             }
           } else if (event.type === "turn-usage") {

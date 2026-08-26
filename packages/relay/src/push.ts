@@ -190,6 +190,7 @@ export class PushNotifier {
       await this.sendToAccount(accountId, {
         kind: "turn-completion",
         instanceId: notice.instanceId,
+        sessionAlias: notice.sessionAlias,
         title,
         body,
         url: "/",
@@ -204,6 +205,7 @@ export class PushNotifier {
     params: {
       kind: "task-completion" | "turn-completion";
       instanceId: string;
+      sessionAlias?: string;
       title: string;
       body: string;
       url: string;
@@ -227,6 +229,7 @@ export class PushNotifier {
       title: params.title,
       body: params.body,
       instanceId: params.instanceId,
+      ...(params.sessionAlias ? { sessionAlias: params.sessionAlias } : {}),
       url: params.url,
     });
     for (const sub of subs) {

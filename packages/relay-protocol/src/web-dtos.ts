@@ -507,7 +507,7 @@ export function validControlEvent(e: unknown): boolean {
   }
 }
 
-const NOTICE_KINDS = new Set(["task-completion", "task-progress", "coordinator-message"]);
+const NOTICE_KINDS = new Set(["task-completion", "task-progress", "coordinator-message", "turn-completion"]);
 
 /** Deep-validate an `instance.state.sync` payload with the same posture as
  *  `validControlEvent`: discriminant-free, but every field the hub will read must

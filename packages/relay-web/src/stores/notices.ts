@@ -16,7 +16,7 @@ export const useNoticesStore = defineStore("notices", () => {
   let seq = 0;
 
   function applyEvent(event: WebServerEvent): void {
-    if (event.kind !== "notice") return;
+    if (event.kind !== "notice" || event.notice.kind === "turn-completion") return;
     items.value.unshift({ id: ++seq, instanceId: event.instanceId, kind: event.notice.kind, text: event.notice.text });
     if (items.value.length > MAX) items.value.length = MAX;
   }

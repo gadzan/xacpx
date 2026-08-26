@@ -274,11 +274,10 @@ describe("chat store local notification integration", () => {
     chatStore.select("i1", "backend");
 
     chatStore.applyEvent({
-      kind: "control-event",
+      kind: "notice",
       instanceId: "i1",
-      event: {
-        type: "turn-finished",
-        chatKey: "relay:a1",
+      notice: {
+        kind: "turn-completion",
         sessionAlias: "backend",
         ok: true,
         text: "Finished task",
@@ -300,11 +299,10 @@ describe("chat store local notification integration", () => {
     chatStore.select("i1", "backend");
 
     chatStore.applyEvent({
-      kind: "control-event",
+      kind: "notice",
       instanceId: "i1",
-      event: {
-        type: "turn-finished",
-        chatKey: "relay:a1",
+      notice: {
+        kind: "turn-completion",
         sessionAlias: "backend",
         ok: true,
         text: "Finished background task",
@@ -328,11 +326,10 @@ describe("chat store local notification integration", () => {
     chatStore.select("i1", "other-session");
 
     chatStore.applyEvent({
-      kind: "control-event",
+      kind: "notice",
       instanceId: "i1",
-      event: {
-        type: "turn-finished",
-        chatKey: "relay:a1",
+      notice: {
+        kind: "turn-completion",
         sessionAlias: "backend",
         ok: true,
         text: "Finished other session task",
@@ -346,6 +343,30 @@ describe("chat store local notification integration", () => {
     const [title, options] = showNotificationMock.mock.calls[0] as [string, NotificationOptions];
     expect(title).toBe("MacBook Pro · backend");
     expect(options.body).toBe("Finished other session task");
+  });
+
+  it("does not emit notification on raw turn-finished (only on authoritative turn-completion notice)", async () => {
+    Object.defineProperty(document, "hidden", { value: true, writable: true, configurable: true });
+
+    const chatStore = useChatStore();
+    chatStore.select("i1", "backend");
+
+    chatStore.applyEvent({
+      kind: "control-event",
+      instanceId: "i1",
+      event: {
+        type: "turn-finished",
+        chatKey: "relay:a1",
+        sessionAlias: "backend",
+        cancelled: false,
+        ok: true,
+        text: "raw turn finished",
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(showNotificationMock).not.toHaveBeenCalled();
+    });
   });
 
   it("does not emit notification when turn was cancelled by user", async () => {

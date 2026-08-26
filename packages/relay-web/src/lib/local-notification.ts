@@ -13,11 +13,14 @@ export interface LocalTurnNotificationInput {
 export const LOCAL_NOTIFICATION_BODY_CAP = 200;
 const ACTIVE_FOCUS_KEY = "xrelay.activeFocus";
 const NOTIF_SLOT_PREFIX = "xrelay.notif_slot:";
-const FOCUS_HEARTBEAT_WINDOW_MS = 4000;
+const FOCUS_HEARTBEAT_WINDOW_MS = 3500;
 const DEDUP_SLOT_WINDOW_MS = 4000;
 
 type NotificationClickHandler = (instanceId: string, sessionAlias: string) => void;
 let globalClickHandler: NotificationClickHandler | null = null;
+let currentTrackedInstance: string | null = null;
+let currentTrackedAlias: string | null = null;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
 export function setNotificationClickHandler(handler: NotificationClickHandler | null): void {
   globalClickHandler = handler;
@@ -25,7 +28,9 @@ export function setNotificationClickHandler(handler: NotificationClickHandler | 
 
 export function triggerNotificationClick(instanceId: string, sessionAlias: string): void {
   if (typeof window !== "undefined") {
-    try { window.focus(); } catch { /* ignore */ }
+    try {
+      if (typeof window.focus === "function") window.focus();
+    } catch { /* ignore */ }
   }
   if (globalClickHandler && instanceId && sessionAlias) {
     try { globalClickHandler(instanceId, sessionAlias); } catch { /* ignore */ }
@@ -33,10 +38,113 @@ export function triggerNotificationClick(instanceId: string, sessionAlias: strin
 }
 
 /**
- * Records that the current window is focused and viewing the specified session.
- * Used for cross-tab active tab suppression so background tabs don't pop alerts.
+ * Initializes cross-tab focus lifecycle & heartbeat tracking.
+ * Automatically clears active focus on blur/visibilitychange/beforeunload so switching
+ * to VS Code or other applications immediately unblocks turn completion notifications.
  */
+export function initTabFocusTracker(tabId = Math.random().toString(36).slice(2)): {
+  updateFocus: (instanceId?: string | null, sessionAlias?: string | null) => void;
+  dispose: () => void;
+} {
+  function writeHeartbeat(): void {
+    if (typeof localStorage === "undefined" || typeof document === "undefined") return;
+    if (document.hidden || (typeof document.hasFocus === "function" && !document.hasFocus())) {
+      clearHeartbeat();
+      return;
+    }
+    if (currentTrackedInstance && currentTrackedAlias) {
+      try {
+        localStorage.setItem(
+          ACTIVE_FOCUS_KEY,
+          JSON.stringify({ tabId, instanceId: currentTrackedInstance, sessionAlias: currentTrackedAlias, at: Date.now() }),
+        );
+      } catch { /* ignore */ }
+    } else {
+      clearHeartbeat();
+    }
+  }
+
+  function clearHeartbeat(): void {
+    if (typeof localStorage === "undefined") return;
+    try {
+      const raw = localStorage.getItem(ACTIVE_FOCUS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { tabId?: unknown };
+        if (!parsed.tabId || parsed.tabId === tabId) {
+          localStorage.removeItem(ACTIVE_FOCUS_KEY);
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  function startHeartbeat(): void {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    writeHeartbeat();
+    if (typeof window !== "undefined") {
+      heartbeatTimer = setInterval(writeHeartbeat, 1500);
+    }
+  }
+
+  function stopHeartbeat(): void {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+    clearHeartbeat();
+  }
+
+  function onFocus(): void {
+    startHeartbeat();
+  }
+
+  function onBlur(): void {
+    stopHeartbeat();
+  }
+
+  function onVisibilityChange(): void {
+    if (typeof document !== "undefined" && document.hidden) {
+      stopHeartbeat();
+    } else {
+      startHeartbeat();
+    }
+  }
+
+  if (typeof window !== "undefined") {
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("blur", onBlur);
+    window.addEventListener("beforeunload", onBlur);
+  }
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", onVisibilityChange);
+  }
+
+  return {
+    updateFocus(instanceId?: string | null, sessionAlias?: string | null) {
+      currentTrackedInstance = instanceId ?? null;
+      currentTrackedAlias = sessionAlias ?? null;
+      if (currentTrackedInstance && currentTrackedAlias) {
+        startHeartbeat();
+      } else {
+        stopHeartbeat();
+      }
+    },
+    dispose() {
+      stopHeartbeat();
+      if (typeof window !== "undefined") {
+        window.removeEventListener("focus", onFocus);
+        window.removeEventListener("blur", onBlur);
+        window.removeEventListener("beforeunload", onBlur);
+      }
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
+    },
+  };
+}
+
 export function recordTabFocus(instanceId?: string | null, sessionAlias?: string | null): void {
+  currentTrackedInstance = instanceId ?? null;
+  currentTrackedAlias = sessionAlias ?? null;
   if (typeof localStorage === "undefined") return;
   if (!instanceId || !sessionAlias) {
     try { localStorage.removeItem(ACTIVE_FOCUS_KEY); } catch { /* ignore */ }
@@ -144,14 +252,12 @@ export function formatNotificationBody(ok: boolean, text?: string, errorMessage?
 async function getReadyServiceWorker(timeoutMs = 250): Promise<ServiceWorkerRegistration | null> {
   if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return null;
   try {
-    // 1. Fast path: check if registration is already active
     if (typeof navigator.serviceWorker.getRegistration === "function") {
       const reg = await navigator.serviceWorker.getRegistration();
       if (reg && reg.active && typeof reg.showNotification === "function") {
         return reg;
       }
     }
-    // 2. Bounded race with ready promise to avoid hanging forever
     const readyPromise = navigator.serviceWorker.ready;
     const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs));
     const readyReg = await Promise.race([readyPromise, timeoutPromise]);
