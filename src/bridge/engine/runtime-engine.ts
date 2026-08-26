@@ -1,7 +1,7 @@
 import { statSync } from "node:fs";
 import { join } from "node:path";
 
-import { resolveAcpxHomeDir } from "../../transport/acpx-session-files";
+import { deleteAcpxSessionFiles, resolveAcpxHomeDir } from "../../transport/acpx-session-files";
 import type {
   AgentSessionListResult,
   SessionEffortState,
@@ -39,6 +39,7 @@ function defaultWorkerEntry(): string {
   return WORKER_ENTRY_CANDIDATES[0]!;
 }
 
+
 /**
  * Executes Runtime-bound sessions through per-session workers (plan §9+).
  * The worker process IS the release primitive: cooling/TTL kill it without
@@ -50,6 +51,7 @@ export class RuntimeEngine implements BridgeEngine {
   private readonly manager: RuntimeWorkerManager | undefined;
   private readonly coolPending = new Set<string>();
   private readonly activeTurns = new Set<string>();
+  private permissionGeneration = 0;
 
   constructor(private readonly options: RuntimeEngineOptions) {
     const entry = options.workerEntryPath ?? defaultWorkerEntry();
@@ -82,9 +84,16 @@ export class RuntimeEngine implements BridgeEngine {
       throw new WorkerUnavailableError(error instanceof Error ? error.message : String(error));
     }
     try {
+      // A successful RPC proves bootstrap completed → §15 warm (ready/idle).
+      client.lifecycle = "ready";
       return await run(client);
     } catch (error) {
-      if (error instanceof WorkerRpcError && error.code === "RUNTIME_WORKER_CRASHED") throw error;
+      // Worker death mid-call: normalize to the §43 crash code so the daemon
+      // sees RUNTIME_WORKER_CRASHED (bridge-server maps it 1:1).
+      if (error instanceof WorkerCrashError) {
+        this.activeTurns.delete(key);
+        client.lifecycle = "failed";
+      }
       throw error;
     }
   }
@@ -241,14 +250,48 @@ export class RuntimeEngine implements BridgeEngine {
 
   async deleteSession(input: EngineSessionInput): Promise<Record<string, never>> {
     const key = this.workerKey(input);
+    // Plan §19 order: cancel the active turn first so a discard-close cannot
+    // race an in-flight checkpoint.
     const client = this.manager?.get(key);
     if (client && client.alive) {
+      if (this.activeTurns.has(key)) {
+        await client.request("cancel").catch(() => {});
+      }
       await client.request("close").catch(() => {});
       await client.terminate();
     }
     this.activeTurns.delete(key);
     this.coolPending.delete(key);
+    // G4: record + history files must be gone regardless of worker state
+    // (cooled workers must not turn delete into a silent no-op).
+    await this.deleteRecordFiles(input);
     return {};
+  }
+
+  /** Resolves the acpx record id via the worker when possible; deletes files with bounded retry. */
+  private async deleteRecordFiles(input: EngineSessionInput): Promise<void> {
+    let recordId = input.logicalSessionId;
+    try {
+      const client = this.ensureWorker({ ...input });
+      const status = (await client.request<{ acpxRecordId?: string }>("status")) ?? {};
+      recordId = status.acpxRecordId ?? recordId;
+      await client.shutdown();
+    } catch {
+      // Worker unavailable: fall back to the logical id as the record name.
+    }
+    if (recordId === undefined) return; // no identity to delete against — nothing known on disk
+    const deadline = Date.now() + 5_000;
+    for (;;) {
+      try {
+        await deleteAcpxSessionFiles({ acpxRecordId: recordId });
+        return;
+      } catch (error) {
+        if (Date.now() >= deadline) {
+          throw new RuntimeError("RUNTIME_INIT_FAILED", `failed to delete acpx session files for "${recordId}": ${error instanceof Error ? error.message : String(error)}`);
+        }
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    }
   }
 
   async freeWarmProcess(input: EngineSessionInput): Promise<Record<string, never>> {
@@ -282,9 +325,22 @@ export class RuntimeEngine implements BridgeEngine {
     nonInteractivePermissions: NonInteractivePermissions;
     permissionPolicy?: string;
   }): Promise<Record<string, never>> {
+    // Atomic snapshot swap (plan §32): validate+assign first, then push the
+    // new generation to every live worker. Workers accept strictly increasing
+    // generations (§33) so out-of-order delivery is harmless.
     this.options.permissionMode = policy.permissionMode;
     this.options.nonInteractivePermissions = policy.nonInteractivePermissions;
     this.options.permissionPolicy = policy.permissionPolicy;
+    const generation = ++this.permissionGeneration;
+    await Promise.allSettled(
+      [...(this.manager?.workers() ?? [])].map((worker) =>
+        worker.request("permission.update", {
+          generation,
+          permissionMode: policy.permissionMode,
+          ...(policy.nonInteractivePermissions ? { nonInteractivePermissions: policy.nonInteractivePermissions } : {}),
+        }),
+      ),
+    );
     return {};
   }
 

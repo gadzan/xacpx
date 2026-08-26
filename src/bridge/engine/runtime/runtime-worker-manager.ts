@@ -15,7 +15,7 @@ export interface RuntimeWorkerManagerOptions {
 }
 
 export class RuntimeWorkerManager {
-  private readonly workers = new Map<string, RuntimeWorkerClient>();
+  private readonly workersByKey = new Map<string, RuntimeWorkerClient>();
   private readonly restarts = new Map<string, number[]>();
 
   constructor(private readonly options: RuntimeWorkerManagerOptions) {
@@ -25,36 +25,40 @@ export class RuntimeWorkerManager {
   }
 
   get(key: string): RuntimeWorkerClient | undefined {
-    return this.workers.get(key);
+    return this.workersByKey.get(key);
   }
 
   lifecycleFor(key: string): WorkerLifecycle {
-    return this.workers.get(key)?.lifecycle ?? "stopped";
+    return this.workersByKey.get(key)?.lifecycle ?? "stopped";
   }
 
   /** Warm = process alive AND bootstrap complete AND not shutting down (plan §15). */
   isWarm(key: string): boolean {
-    const worker = this.workers.get(key);
+    const worker = this.workersByKey.get(key);
     return worker !== undefined && (worker.lifecycle === "ready" || worker.lifecycle === "busy" || worker.lifecycle === "idle") && worker.alive;
   }
 
   ensureWorker(logicalSessionId: string): RuntimeWorkerClient {
-    let worker = this.workers.get(logicalSessionId);
+    let worker = this.workersByKey.get(logicalSessionId);
     if (worker && worker.alive) return worker;
     this.assertRestartBudget(logicalSessionId);
-    worker = new RuntimeWorkerClient(this.options.entryPath, logicalSessionId, undefined, () =>
-      this.handleExit(logicalSessionId),
+    worker = new RuntimeWorkerClient(this.options.entryPath, logicalSessionId, undefined, (client, code) =>
+      this.handleExit(logicalSessionId, client, code),
     );
     worker.spawn();
-    this.workers.set(logicalSessionId, worker);
+    this.workersByKey.set(logicalSessionId, worker);
     return worker;
   }
 
   async shutdownAll(graceMs = 2_000): Promise<void> {
-    await Promise.allSettled([...this.workers.values()].map((worker) => worker.shutdown(graceMs)));
-    this.workers.clear();
+    await Promise.allSettled([...this.workersByKey.values()].map((worker) => worker.shutdown(graceMs)));
+    this.workersByKey.clear();
   }
 
+  /** Live worker clients, for policy fan-out and shutdown orchestration. */
+  workers(): RuntimeWorkerClient[] {
+    return [...this.workersByKey.values()];
+  }
   private assertRestartBudget(logicalSessionId: string): void {
     const windowMs = this.options.restartWindowMs ?? 60_000;
     const max = this.options.maxRestartsPerWindow ?? 5;
@@ -65,14 +69,24 @@ export class RuntimeWorkerManager {
         `runtime worker for session "${logicalSessionId}" crashed ${recent.length} times in ${windowMs / 1000}s; marking unhealthy`,
       );
     }
-    recent.push(now);
-    this.restarts.set(logicalSessionId, recent);
   }
 
-  private handleExit(logicalSessionId: string): void {
-    // Crash bookkeeping happens at respawn (ensureWorker); here we only drop
-    // the dead client so the next operation respawns cleanly.
-    this.workers.delete(logicalSessionId);
+  private handleExit(logicalSessionId: string, client: RuntimeWorkerClient, code: number | null): void {
+    this.workersByKey.delete(logicalSessionId);
+    // Plan §43 scopes the guard to REAL crashes. Deliberate stops (graceful
+    // shutdown, freeWarm cooling) exit 0 and are NOT charged; a nonzero/signal
+    // exit while calls were in flight is.
+    if (client.lifecycle !== "failed") return;
+    const windowMs = this.options.restartWindowMs ?? 60_000;
+    const now = Date.now();
+    const recent = (this.restarts.get(logicalSessionId) ?? []).filter((t) => now - t < windowMs);
+    recent.push(now);
+    this.restarts.set(logicalSessionId, recent);
+    if (recent.length > (this.options.maxRestartsPerWindow ?? 5)) {
+      throw new Error(
+        `runtime worker for session "${logicalSessionId}" crashed ${recent.length} times in ${windowMs / 1000}s; marking unhealthy`,
+      );
+    }
   }
 }
 

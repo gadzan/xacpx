@@ -75,12 +75,18 @@ test("shutdownAll stops every registered worker", async () => {
   });
 }, 15_000);
 
-test("crash-loop guard blocks respawn once the restart budget is exhausted", async () => {
+test("crash-loop guard ignores clean stops and only counts real crashes", async () => {
   await withFakeEntry(async (entry) => {
-    // max=1: first spawn consumes the budget, second respawn must be refused.
+    // Deliberate terminate (clean stop): budget NOT consumed — freeWarm cool
+    // cycles must never brick the session (plan §43).
     const manager = new RuntimeWorkerManager({ entryPath: entry, maxRestartsPerWindow: 1, restartWindowMs: 60_000 });
     const first = manager.ensureWorker("crashy");
-    await first.terminate(); // death #1 consumes the budget (respawn = restart #1)
+    await first.terminate();
+    expect(() => manager.ensureWorker("crashy")).not.toThrow();
+    // A worker killed by a signal (exit code null) IS a crash: refused.
+    const second = manager.ensureWorker("crashy");
+    second.child?.kill("SIGKILL");
+    await new Promise((resolve) => setTimeout(resolve, 50));
     expect(() => manager.ensureWorker("crashy")).toThrow(/marked unhealthy|crashed/);
   });
 }, 15_000);

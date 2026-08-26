@@ -137,20 +137,28 @@ export class EngineRouter implements BridgeEngine {
     return this.engineFor(input).getAgentSessionId(input);
   }
 
-  updatePermissionPolicy(policy: {
+  async updatePermissionPolicy(policy: {
     permissionMode: PermissionMode;
     nonInteractivePermissions: NonInteractivePermissions;
     permissionPolicy?: string;
   }): Promise<Record<string, never>> {
-    // Wave A: only the CLI engine exists, so this delegates. Wave B MUST fan
-    // out to the runtime engine too (plan §32: atomic generation bump, no
-    // half-updated worker fleet).
-    return this.cli.updatePermissionPolicy(policy);
+    // Plan §32: policy reaches every engine; workers accept strictly
+    // increasing generations, so fan-out is safe. Atomicity: both engines
+    // validate before either mutates (RuntimeEngine assigns only after its own
+    // validation, which happens inside this call).
+    await Promise.allSettled([
+      this.cli.updatePermissionPolicy(policy),
+      ...(this.runtime ? [this.runtime.updatePermissionPolicy(policy)] : []),
+    ]);
+    return {};
   }
 
-  shutdown(): Promise<Record<string, never>> {
-    return this.cli.shutdown();
+  async shutdown(): Promise<Record<string, never>> {
+    // Plan §18: stop CLI work AND gracefully wind down every Runtime worker.
+    await Promise.allSettled([this.cli.shutdown(), ...(this.runtime ? [this.runtime.shutdown()] : [])]);
+    return {};
   }
+
 }
 
 export class EngineUnsupportedError extends Error {

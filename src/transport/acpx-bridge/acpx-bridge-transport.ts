@@ -57,17 +57,9 @@ export class AcpxBridgeTransport implements SessionTransport {
   }
 
   async resumeAgentSession(session: ResolvedSession, agentSessionId: string): Promise<void> {
-    await this.client.request("resumeAgentSession", {
-      agent: session.agent,
-      driver: session.driver,
-      settingsPolicy: session.settingsPolicy,
-      ...(session.agentCommand ? { agentCommand: session.agentCommand } : {}),
-      ...(session.acpxAgent ? { acpxAgent: session.acpxAgent } : {}),
-      ...(session.rawCommand ? { rawCommand: session.rawCommand } : {}),
-      cwd: session.cwd,
-      name: session.transportSession,
-      agentSessionId,
-    });
+    // Identity + engine affinity MUST ride along (plan §48): a hand-built
+    // param set would silently re-key the session on the host side.
+    await this.client.request("resumeAgentSession", { ...this.toParams(session), agentSessionId });
   }
 
   async prompt(

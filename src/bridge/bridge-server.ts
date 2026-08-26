@@ -23,6 +23,8 @@ import { BridgeRequestScheduler, type BridgeRequestLane } from "./bridge-request
 import { BridgeRuntime, CommandTimeoutError, EnsureSessionFailedError } from "./bridge-runtime";
 import { CliEngine } from "./engine/cli/cli-engine";
 import { EngineRouter, SessionEngineBinding, type BridgeEngine } from "./engine";
+import { EngineMismatchError, EngineUnsupportedError } from "./engine/engine-router";
+import { RuntimeError } from "./engine/runtime-engine";
 
 interface BridgeRequest {
   id: string;
@@ -140,6 +142,8 @@ export class BridgeServer {
         ? error.code
         : error instanceof MessageInjectionError
           ? error.code
+        : error instanceof EngineUnsupportedError || error instanceof EngineMismatchError || error instanceof RuntimeError
+          ? "code" in error && typeof error.code === "string" ? error.code : "RUNTIME_ENGINE_UNSUPPORTED"
         : error instanceof BridgeInvalidRequestError
           ? "BRIDGE_INVALID_REQUEST"
           : "BRIDGE_INTERNAL_ERROR";

@@ -56,9 +56,15 @@ export class RuntimeWorkerClient {
     this.child = spawn(process.execPath, [this.entryPath], { stdio: ["pipe", "pipe", "pipe"] });
     this.ref.pid = this.child.pid ?? -1;
     this.child.on("exit", (code) => {
-      this.lifecycle = this.lifecycle === "failed" ? "failed" : "stopped";
+      // Preserve WHY the worker died: deliberate terminate() marks "cooling"
+      // BEFORE calling kill; an unexpected exit here is recorded as failed so
+      // the manager can charge the crash budget (plan §43).
+      const unexpected = code !== 0 && this.lifecycle !== "cooling";
+      this.lifecycle = unexpected || this.lifecycle === "failed" ? "failed" : "stopped";
+      // Plan §43: an exit while calls are in flight IS a worker crash — the
+      // daemon must see RUNTIME_WORKER_CRASHED, never a generic error.
       for (const pending of this.pending.values()) {
-        pending.reject(new Error("runtime worker exited before responding"));
+        pending.reject(new WorkerCrashError(`runtime worker (pid ${this.ref.pid}) exited with code ${code ?? "signal"}`));
       }
       this.pending.clear();
       this.onExit?.(this, code);
@@ -115,6 +121,9 @@ export class RuntimeWorkerClient {
 
   async terminate(): Promise<void> {
     if (!this.child || this.ref.pid <= 0) return;
+    // Deliberate host-side stop (cooling/freeWarm/delete): lifecycle "cooling"
+    // tells the manager this is NOT a crash (plan §43).
+    this.lifecycle = "cooling";
     // Host-side kill is the release primitive; the child's stdin EOF handler
     // exits it cleanly, terminateProcessTree covers hung adapters.
     try {

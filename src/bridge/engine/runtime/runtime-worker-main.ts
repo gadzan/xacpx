@@ -40,8 +40,24 @@ function respond(response: RuntimeWorkerResponse): void {
   process.stdout.write(encodeWorkerMessage(response));
 }
 
+function sameEnsureParams(a: RuntimeWorkerEnsureParams | undefined, b: RuntimeWorkerEnsureParams): boolean {
+  if (!a) return false;
+  return (
+    a.sessionKey === b.sessionKey &&
+    a.agent === b.agent &&
+    a.cwd === b.cwd &&
+    a.stateDir === b.stateDir &&
+    a.permissionMode === b.permissionMode &&
+    a.nonInteractivePermissions === b.nonInteractivePermissions &&
+    JSON.stringify(a.agentOverrides ?? null) === JSON.stringify(b.agentOverrides ?? null)
+  );
+}
+
 async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: string }> {
-  if (!state.adapter || !state.handle || state.ensureParams !== params) {
+  // Value comparison: each request's params are a fresh JSON.parse result, so
+  // reference equality would rebuild the AcpRuntime on EVERY ensure (leaking
+  // the previous one and defeating warm reuse).
+  if (!state.adapter || !state.handle || !sameEnsureParams(state.ensureParams, params)) {
     state.adapter = createXacpxRuntimeAdapter({
       stateDir: params.stateDir,
       permissionMode: params.permissionMode,
