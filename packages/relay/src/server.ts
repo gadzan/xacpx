@@ -199,13 +199,13 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   const prunePendingWebPrompts = () => {
     const now = Date.now();
     for (const [id, entry] of pendingWebPrompts) {
-      if (now - entry.createdAt > PENDING_WEB_PROMPT_TTL_MS) {
+      if (entry.state === "pending" && now - entry.createdAt > PENDING_WEB_PROMPT_TTL_MS) {
         removePendingWebPrompt(id);
       }
     }
   };
 
-  const recordPendingWebPrompt = (promptRequestId: string, instanceId: string, sessionAlias: string) => {
+  const recordPendingWebPrompt = (promptRequestId: string, instanceId: string, sessionAlias: string): boolean => {
     prunePendingWebPrompts();
     while (pendingWebPrompts.size >= PENDING_WEB_PROMPTS_MAX) {
       // Evict oldest pending grant first to protect active turns under load
@@ -217,9 +217,13 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         }
       }
       if (!victimId) {
-        victimId = pendingWebPrompts.keys().next().value;
+        logger.warn("relay.web_prompt.capacity_exhausted", "web prompt grant capacity exhausted by active turns", {
+          instanceId,
+          sessionAlias,
+          capacity: PENDING_WEB_PROMPTS_MAX,
+        });
+        return false;
       }
-      if (!victimId) break;
       removePendingWebPrompt(victimId);
     }
     pendingWebPrompts.set(promptRequestId, {
@@ -228,6 +232,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
       createdAt: Date.now(),
       state: "pending",
     });
+    return true;
   };
 
   const associateQueueItem = (promptRequestId: string, instanceId: string, queueItemId: string) => {
@@ -706,10 +711,18 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 // Already committed (live flush or a previous sync) but the connector
                 // never got the ack — re-ack so its FIFO can finally drop the entry.
                 ackedRecoveryIds.push(recoveryId);
+                if (finished.promptRequestId) {
+                  removePendingWebPrompt(finished.promptRequestId);
+                }
                 continue;
               }
               const fingerprint = `${instanceId}\0${finished.sessionAlias}\0${finished.prompt ?? ""}\0${text ?? ""}`;
-              if (!recoveryId && recoveredFingerprints.has(fingerprint)) continue;
+              if (!recoveryId && recoveredFingerprints.has(fingerprint)) {
+                if (finished.promptRequestId) {
+                  removePendingWebPrompt(finished.promptRequestId);
+                }
+                continue;
+              }
               const alreadyPersisted = !recoveryId && text !== undefined
                 ? finished.prompt !== undefined
                   ? hasRecentTurnPair(finished.sessionAlias, finished.prompt, text)

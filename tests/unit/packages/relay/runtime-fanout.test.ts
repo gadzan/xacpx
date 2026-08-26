@@ -1040,3 +1040,92 @@ test("capacity pressure evicts oldest pending grant while protecting active gran
   });
   runtime.close();
 });
+
+test("finishedOffline persistence failure-injection: first persist throws -> grant stays alive -> re-sent finishedOffline succeeds and pushes exactly once", async () => {
+  const { runtime, sent, cookie } = await setupPushRuntime();
+
+  let reqId: string | undefined;
+  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, _type: string, payload: unknown) => {
+    reqId = (payload as { promptRequestId?: string }).promptRequestId;
+    return { ok: true };
+  };
+
+  await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "flaky offline prompt" } }),
+  });
+
+  expect(reqId).toBeString();
+  expect(runtime.pendingWebPromptsCount?.()).toBe(1);
+
+  // Mock db.transaction to fail once on first state-sync
+  const origTransaction = runtime.db.transaction.bind(runtime.db);
+  let failOnce = true;
+  runtime.db.transaction = (fn: () => void) => {
+    if (failOnce) {
+      failOnce = false;
+      throw new Error("simulated sync disk error");
+    }
+    return origTransaction(fn);
+  };
+
+  const syncEvent = (payload: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceStateSync, payload,
+  });
+
+  // First sync throws, logs persist_failed, and forces disconnect
+  syncEvent({
+    instanceId: "i1",
+    turns: [],
+    usage: [],
+    commands: [],
+    finishedOffline: [
+      {
+        sessionAlias: "backend",
+        chatKey: "relay:a1",
+        startedAt: Date.now() - 5000,
+        text: "flaky offline done",
+        prompt: "flaky offline prompt",
+        promptRequestId: reqId,
+        recoveryId: "rec-offline-1",
+        ok: true,
+      },
+    ],
+  });
+
+  expect(sent).toHaveLength(0);
+  // Grant must still be present for the retry
+  expect(runtime.pendingWebPromptsCount?.()).toBe(1);
+
+  // Second sync succeeds
+  syncEvent({
+    instanceId: "i1",
+    turns: [],
+    usage: [],
+    commands: [],
+    finishedOffline: [
+      {
+        sessionAlias: "backend",
+        chatKey: "relay:a1",
+        startedAt: Date.now() - 5000,
+        text: "flaky offline done",
+        prompt: "flaky offline prompt",
+        promptRequestId: reqId,
+        recoveryId: "rec-offline-1",
+        ok: true,
+      },
+    ],
+  });
+
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(1);
+  expect(JSON.parse(sent[0]!.payload)).toEqual({
+    title: "MacBook · backend",
+    body: "flaky offline done",
+    instanceId: "i1",
+    url: "/",
+  });
+  expect(runtime.pendingWebPromptsCount?.()).toBe(0);
+  runtime.close();
+});
