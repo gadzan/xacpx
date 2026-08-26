@@ -7,6 +7,7 @@ import * as tailCache from "../lib/session-tail-cache";
 import { useAuthStore } from "./auth";
 import { useInstancesStore } from "./instances";
 import { useSessionControlsStore } from "./session-controls";
+import { showLocalTurnNotification, isSessionActiveInAnyTab, claimNotificationSlot, recordTabFocus } from "../lib/local-notification";
 
 // Remember which session was open so a page refresh returns to it (selection is not
 // part of the route). Paired with the active-turn snapshot, a refresh mid-turn lands
@@ -355,6 +356,7 @@ export const useChatStore = defineStore("chat", () => {
     instanceId.value = id;
     sessionAlias.value = alias;
     persistSelection(id, alias);
+    recordTabFocus(id, alias);
     messages.value = [];
     touchTranscript();
     historyRequestSequence += 1;
@@ -404,6 +406,7 @@ export const useChatStore = defineStore("chat", () => {
     pendingSeed = null;
     instanceId.value = null;
     sessionAlias.value = null;
+    recordTabFocus(null, null);
     clearPersistedSelection();
     messages.value = [];
     touchTranscript();
@@ -587,6 +590,24 @@ export const useChatStore = defineStore("chat", () => {
     }
     if (event.kind === "state-snapshot") {
       applyStateSnapshot(event.instanceId, event.turns, event.usage, event.commands);
+      return;
+    }
+    if (event.kind === "turn-completion") {
+      const alias = event.sessionAlias;
+      const selected = event.instanceId === instanceId.value && alias === sessionAlias.value;
+      const isActiveInAnyTab = isSessionActiveInAnyTab(event.instanceId, alias, selected);
+      if (!isActiveInAnyTab && claimNotificationSlot(event.notificationId)) {
+        const instancesStore = useInstancesStore();
+        const instName = instancesStore.byId(event.instanceId)?.name ?? event.instanceId;
+        void showLocalTurnNotification({
+          instanceId: event.instanceId,
+          instanceName: instName,
+          sessionAlias: alias,
+          ok: event.ok !== false,
+          text: event.text,
+          errorMessage: event.errorMessage,
+        });
+      }
       return;
     }
     if (event.kind !== "control-event") return;

@@ -33,6 +33,21 @@ export function isAllowedPushEndpoint(endpoint: string): boolean {
     return false;
   }
 }
+export const DESKTOP_NOTIFICATIONS_ENABLED_KEY = "xrelay.desktopNotificationsEnabled";
+
+export function isDesktopNotificationsEnabled(): boolean {
+  try {
+    return localStorage.getItem(DESKTOP_NOTIFICATIONS_ENABLED_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function setDesktopNotificationsEnabled(enabled: boolean): void {
+  try {
+    localStorage.setItem(DESKTOP_NOTIFICATIONS_ENABLED_KEY, enabled ? "true" : "false");
+  } catch { /* ignore */ }
+}
 
 /** VAPID public keys are base64url without padding — restore padding before atob. */
 export function urlBase64ToUint8Array(base64: string): Uint8Array {
@@ -130,12 +145,14 @@ export async function fetchVapidPublicKey(): Promise<string | null> {
     throw err;
   }
 }
-
-export async function enableDesktopNotifications(publicKey: string): Promise<void> {
+export async function enableDesktopNotifications(publicKey?: string | null): Promise<void> {
   if (typeof Notification !== "undefined" && Notification.permission !== "granted") {
     const permission = await Notification.requestPermission();
     if (permission !== "granted") throw new Error("permission-denied");
   }
+  setDesktopNotificationsEnabled(true);
+  if (!publicKey) return;
+
   // Creating a subscription requires an ACTIVE worker → ready (which waits
   // for activation) is correct here, unlike the ownership probe below.
   const reg = await navigator.serviceWorker.ready;
@@ -148,8 +165,6 @@ export async function enableDesktopNotifications(publicKey: string): Promise<voi
   const keyBytes = urlBase64ToUint8Array(publicKey);
   const sub = await reg.pushManager.subscribe({
     userVisibleOnly: true,
-    // BufferSource: hand over the exact ArrayBuffer slice (TS lib types the
-    // generic buffer loosely, so assert once at this boundary).
     applicationServerKey: keyBytes.buffer.slice(keyBytes.byteOffset, keyBytes.byteOffset + keyBytes.byteLength) as ArrayBuffer,
   });
   // The hub only POSTes to allowlisted push-service origins (FCM, Apple APNs) — a
@@ -163,10 +178,10 @@ export async function enableDesktopNotifications(publicKey: string): Promise<voi
 }
 
 export async function disableDesktopNotifications(): Promise<void> {
+  setDesktopNotificationsEnabled(false);
   const target = await getExistingSubscriptionTarget();
   if (!target.sub) return;
   const endpoint = target.sub.endpoint;
-
   // Local destruction MUST be proven so same-account reload (reconcile)
   // cannot resurrect the subscription.
   await destroyProven(target);

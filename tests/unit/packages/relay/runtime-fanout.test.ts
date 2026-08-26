@@ -338,11 +338,13 @@ async function setupPushRuntime(opts?: { now?: () => Date }) {
     protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceNotice, payload,
   });
 
-  return { runtime, sent, cookie, fire, notice };
-}
+  const web = new FakeSocket();
+  runtime.webGateway.register("a1", web as never);
 
+  return { runtime, sent, cookie, fire, notice, web };
+}
 test("Gate 1: ordinary relay-web prompt completion fans out exactly 1 push with custom title and body", async () => {
-  const { runtime, sent, cookie, fire } = await setupPushRuntime();
+  const { runtime, sent, cookie, fire, web } = await setupPushRuntime();
 
   let forwardedPromptRequestId: string | undefined;
   (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, _type: string, payload: unknown) => {
@@ -369,11 +371,25 @@ test("Gate 1: ordinary relay-web prompt completion fans out exactly 1 push with 
     title: "MacBook · backend",
     body: "bug fixed",
     instanceId: "i1",
+    sessionAlias: "backend",
     url: "/",
+  });
+
+  const webCompletions = web.sent
+    .map((raw) => decodeEnvelope(raw))
+    .filter((d) => d.ok)
+    .map((d) => parseWebServerEvent(d.envelope))
+    .filter((e) => e?.kind === "turn-completion");
+  expect(webCompletions).toHaveLength(1);
+  expect(webCompletions[0]).toMatchObject({
+    kind: "turn-completion",
+    instanceId: "i1",
+    sessionAlias: "backend",
+    text: "bug fixed",
+    ok: true,
   });
   runtime.close();
 });
-
 test("Gate 2: turn-finished without prompt provenance triggers 0 pushes", async () => {
   const { runtime, sent, fire } = await setupPushRuntime();
 
@@ -383,6 +399,22 @@ test("Gate 2: turn-finished without prompt provenance triggers 0 pushes", async 
 
   await new Promise((r) => setTimeout(r, 10));
   expect(sent).toHaveLength(0);
+  runtime.close();
+});
+
+test("connector sending MSG.instanceNotice(kind='turn-completion') is rejected and never broadcast as turn-completion", async () => {
+  const { runtime, sent, notice, web } = await setupPushRuntime();
+
+  notice({ kind: "turn-completion", text: "spoofed completion", sessionAlias: "backend", ok: true });
+  await new Promise((r) => setTimeout(r, 10));
+
+  expect(sent).toHaveLength(0);
+  const webCompletions = web.sent
+    .map((raw) => decodeEnvelope(raw))
+    .filter((d) => d.ok)
+    .map((d) => parseWebServerEvent(d.envelope))
+    .filter((e) => e?.kind === "turn-completion");
+  expect(webCompletions).toHaveLength(0);
   runtime.close();
 });
 
@@ -530,6 +562,7 @@ test("Gate 7: failed turn-finished triggers 1 failure push", async () => {
     title: "MacBook · backend",
     body: "Task failed: provider unavailable",
     instanceId: "i1",
+    sessionAlias: "backend",
     url: "/",
   });
   runtime.close();
@@ -578,6 +611,7 @@ test("Gate 8: queued prompt pushes only when drained turn actually finishes", as
     title: "MacBook · backend",
     body: "B complete",
     instanceId: "i1",
+    sessionAlias: "backend",
     url: "/",
   });
   runtime.close();
@@ -734,6 +768,7 @@ test("state-sync restores notification provenance for matching active turn and c
     title: "MacBook · backend",
     body: "partial complete",
     instanceId: "i1",
+    sessionAlias: "backend",
     url: "/",
   });
   expect(runtime.pendingWebPromptsCount?.()).toBe(0);
@@ -788,6 +823,7 @@ test("ambiguous transport error preserves pending grant for state-sync recovery 
     title: "MacBook · backend",
     body: "working done",
     instanceId: "i1",
+    sessionAlias: "backend",
     url: "/",
   });
   expect(runtime.pendingWebPromptsCount?.()).toBe(0);
@@ -838,6 +874,7 @@ test("active Web turn completed during connector outage sends delayed push on fi
     title: "MacBook · backend",
     body: "outage result",
     instanceId: "i1",
+    sessionAlias: "backend",
     url: "/",
   });
   expect(runtime.pendingWebPromptsCount?.()).toBe(0);
@@ -921,6 +958,7 @@ test("ambiguous prompt goes directly pending -> finishedOffline on reconnect (no
     title: "MacBook · backend",
     body: "direct finish in outage",
     instanceId: "i1",
+    sessionAlias: "backend",
     url: "/",
   });
   expect(runtime.pendingWebPromptsCount?.()).toBe(0);
@@ -989,6 +1027,7 @@ test("live Web turn failure-injection: first DB transaction throws -> grant stay
     title: "MacBook · backend",
     body: "flaky done",
     instanceId: "i1",
+    sessionAlias: "backend",
     url: "/",
   });
   expect(runtime.pendingWebPromptsCount?.()).toBe(0);
@@ -1037,6 +1076,7 @@ test("capacity pressure evicts oldest pending grant while protecting active gran
     title: "MacBook · backend",
     body: "running",
     instanceId: "i1",
+    sessionAlias: "backend",
     url: "/",
   });
   runtime.close();
@@ -1125,6 +1165,7 @@ test("finishedOffline persistence failure-injection: first persist throws -> gra
     title: "MacBook · backend",
     body: "flaky offline done",
     instanceId: "i1",
+    sessionAlias: "backend",
     url: "/",
   });
   expect(runtime.pendingWebPromptsCount?.()).toBe(0);
@@ -1270,7 +1311,7 @@ test("active grant is NOT pruned by 24h pending TTL while pending grants expire"
     title: "MacBook · backend",
     body: "finally done",
     instanceId: "i1",
+    sessionAlias: "backend",
     url: "/",
   });
-  runtime.close();
 });

@@ -5,10 +5,10 @@ import { LogOut } from "lucide-vue-next";
 import { api } from "../api/client";
 import { useAuthStore } from "../stores/auth";
 import { useThemeStore } from "../stores/theme";
-import { confirm } from "../lib/use-confirm";
 import { useLocaleStore } from "../stores/locale";
-import { SUPPORTED_LOCALES } from "../i18n";
 import { useI18n } from "vue-i18n";
+import { SUPPORTED_LOCALES } from "../i18n";
+import { confirm } from "../lib/use-confirm";
 import {
   pushSupported,
   fetchVapidPublicKey,
@@ -16,8 +16,8 @@ import {
   disableDesktopNotifications,
   subscriptionMatchesKey,
   getExistingSubscription,
+  isDesktopNotificationsEnabled,
 } from "../lib/web-push";
-
 const auth = useAuthStore();
 const theme = useThemeStore();
 const router = useRouter();
@@ -60,25 +60,30 @@ type NotifState = "unsupported" | "server-disabled" | "denied" | "idle" | "subsc
 const notifState = ref<NotifState>("idle");
 const notifBusy = ref(false);
 let vapidKey: string | null = null;
-
 async function probeNotifications(): Promise<void> {
-  if (!pushSupported()) { notifState.value = "unsupported"; return; }
-  if (typeof Notification !== "undefined" && Notification.permission === "denied") {
+  // Capability boundary first: no Notification API at all -> unsupported, never toggleable.
+  if (typeof Notification === "undefined") {
+    notifState.value = "unsupported";
+    return;
+  }
+  if (Notification.permission === "denied") {
     notifState.value = "denied";
     return;
   }
-  const key = await fetchVapidPublicKey();
-  if (!key) { notifState.value = "server-disabled"; return; }
-  vapidKey = key;
+  // Master switch status is purely user-intent driven
+  notifState.value = isDesktopNotificationsEnabled() ? "subscribed" : "idle";
+
+  if (!pushSupported()) return;
   try {
+    const key = await fetchVapidPublicKey();
+    if (!key) return;
+    vapidKey = key;
     const sub = await getExistingSubscription();
-    if (!sub) { notifState.value = "idle"; return; }
-    // A sub minted under an older VAPID key can never receive pushes — show
-    // it as off; reconcileExistingSubscription (auth load) re-mints it.
-    notifState.value = subscriptionMatchesKey(sub, key) ? "subscribed" : "idle";
-  } catch {
-    notifState.value = "idle";
-  }
+    // If user has enabled notifications and a key exists, reconcile subscription
+    if (sub && isDesktopNotificationsEnabled() && !subscriptionMatchesKey(sub, key)) {
+      await enableDesktopNotifications(key).catch(() => {});
+    }
+  } catch { /* best-effort background push probe */ }
 }
 
 const isIos = typeof navigator !== "undefined" && (
@@ -90,17 +95,21 @@ async function toggleNotifications(): Promise<void> {
   if (notifBusy.value) return;
   notifBusy.value = true;
   try {
-    if (notifState.value === "subscribed") {
+    if (notifState.value === "subscribed" || isDesktopNotificationsEnabled()) {
       await disableDesktopNotifications();
       notifState.value = "idle";
-    } else if (vapidKey) {
+    } else {
       await enableDesktopNotifications(vapidKey);
       notifState.value = "subscribed";
     }
   } catch (err) {
-    if (err instanceof Error && err.message === "permission-denied") notifState.value = "denied";
-    else if (err instanceof Error && err.message === "push-endpoint-unsupported") notifState.value = "unsupported";
-    // other failures keep the current state; a toast would be noise here
+    if (err instanceof Error && err.message === "permission-denied") {
+      notifState.value = "denied";
+      return;
+    }
+    // Web Push transport failed AFTER intent may already have been written true.
+    // Always re-read the single source of truth instead of leaving stale UI.
+    notifState.value = isDesktopNotificationsEnabled() ? "subscribed" : "idle";
   } finally {
     notifBusy.value = false;
   }
@@ -194,7 +203,7 @@ void onMounted(() => { void probeNotifications(); });
       <div class="flex items-center gap-3">
         <span data-test="notif-state" class="text-sm text-fg-muted">{{ notifStateLabel }}</span>
         <button
-          v-if="notifState === 'subscribed' || notifState === 'idle'"
+          v-if="notifState === 'subscribed' || notifState === 'idle' || notifState === 'server-disabled'"
           data-test="notif-toggle"
           :disabled="notifBusy"
           class="rounded bg-accent px-3 py-1 text-sm text-white hover:bg-accent-hover disabled:opacity-50"

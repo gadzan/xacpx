@@ -28,6 +28,7 @@ import BrandLogo from "../components/BrandLogo.vue";
 import { useThemeStore } from "../stores/theme";
 import { createEdgeSwipe } from "../lib/edge-swipe";
 import { clampPanelWidth, createPanelResize } from "../lib/resize-panel";
+import { setNotificationClickHandler, initTabFocusTracker } from "../lib/local-notification";
 import { Search, Moon, Sun, Settings, X, Menu, FileText, List, PanelLeftClose, PanelLeftOpen, SquareTerminal } from "lucide-vue-next";
 
 const theme = useThemeStore();
@@ -40,6 +41,12 @@ const conn = useConnectionStore();
 const centerTabs = useCenterTabsStore();
 const { t } = useI18n();
 let disconnect: (() => void) | null = null;
+let focusTracker: ReturnType<typeof initTabFocusTracker> | null = null;
+function onSwMessage(event: MessageEvent): void {
+  if (event.data?.type === "SELECT_SESSION" && typeof event.data.instanceId === "string" && typeof event.data.sessionAlias === "string") {
+    onSelect(event.data.instanceId, event.data.sessionAlias);
+  }
+}
 
 // Mobile-only drawer state. On desktop (lg:) both panels are static columns and
 // these flags are visually irrelevant because the lg: classes override the transform.
@@ -323,22 +330,47 @@ onMounted(async () => {
     notices.applyEvent(event);
     terminals.applyEvent(event);
   }, onStatus);
-  // Return to the session that was open before the refresh. Gate only on the instance
-  // existing (the eager session list may still be loading); loadHistory handles a
-  // since-deleted session gracefully by showing an empty pane.
-  const prior = loadPersistedSelection();
-  if (prior && instances.byId(prior.instanceId)) {
-    onSelect(prior.instanceId, prior.alias);
+  // Setup notification click routing
+  setNotificationClickHandler((instId, alias) => onSelect(instId, alias));
+  if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+    navigator.serviceWorker.addEventListener("message", onSwMessage);
+  }
+  focusTracker = initTabFocusTracker();
+  watch([() => chat.instanceId, () => chat.sessionAlias], ([inst, alias]) => {
+    focusTracker?.updateFocus(inst, alias);
+  }, { immediate: true });
+
+  // Return to query param session if opened from notification, else prior session
+  const searchParams = typeof window !== "undefined" && window.location ? new URLSearchParams(window.location.search) : null;
+  const qInst = searchParams?.get("instanceId");
+  const qAlias = searchParams?.get("sessionAlias");
+  if (qInst && qAlias) {
+    onSelect(qInst, qAlias);
+    try {
+      if (typeof window !== "undefined" && window.history && typeof window.history.replaceState === "function") {
+        window.history.replaceState({}, "", window.location.pathname);
+      }
+    } catch { /* ignore */ }
+  } else {
+    const prior = loadPersistedSelection();
+    if (prior && instances.byId(prior.instanceId)) {
+      onSelect(prior.instanceId, prior.alias);
+    }
   }
 });
 
 onUnmounted(() => {
+  focusTracker?.dispose();
+  focusTracker = null;
+  setNotificationClickHandler(null);
+  if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+    navigator.serviceWorker.removeEventListener("message", onSwMessage);
+  }
   window.removeEventListener("keydown", onGlobalKey);
   desktopMql?.removeEventListener("change", onDesktopChange);
   disconnect?.();
 });
 </script>
-
 <template>
   <div class="flex h-dvh flex-col bg-bg text-fg"
        @touchstart.passive="swipe.onTouchStart"

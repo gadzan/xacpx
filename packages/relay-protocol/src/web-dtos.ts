@@ -129,6 +129,15 @@ export type WebServerEvent =
   | { kind: "control-event"; instanceId: string; event: ControlEventDto }
   | ({ kind: "state-snapshot"; instanceId: string } & InstanceStateSnapshotDto)
   | { kind: "notice"; instanceId: string; notice: InstanceNoticePayload }
+  | {
+      kind: "turn-completion";
+      instanceId: string;
+      sessionAlias: string;
+      notificationId: string;
+      ok: boolean;
+      text: string;
+      errorMessage?: string;
+    }
   | { kind: "agent-directory"; endpoints: WebAgentDirectoryEndpointDto[] }
   | {
       kind: "terminal-opened";
@@ -220,6 +229,7 @@ const WEB_EVENT_KINDS = new Set([
   "control-event",
   "state-snapshot",
   "notice",
+  "turn-completion",
   "agent-directory",
   "terminal-opened",
   "terminal-request-failed",
@@ -648,6 +658,16 @@ export function parseWebServerEvent(envelope: RelayEnvelope): WebServerEvent | n
   if (candidate.kind === "control-event" && !validControlEvent(candidate.event)) return null;
   if (candidate.kind === "state-snapshot" && !validStateSnapshot(candidate)) return null;
   if (candidate.kind === "notice" && !validNotice(candidate.notice)) return null;
+  if (candidate.kind === "turn-completion") {
+    return isBoundedStr(candidate.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
+      && typeof candidate.sessionAlias === "string"
+      && typeof candidate.notificationId === "string"
+      && typeof candidate.ok === "boolean"
+      && typeof candidate.text === "string"
+      && (candidate.errorMessage === undefined || typeof candidate.errorMessage === "string")
+      ? (payload as WebServerEvent)
+      : null;
+  }
   if (candidate.kind.startsWith("terminal-") && !validTargetedTerminalEvent(candidate)) return null;
   return payload as WebServerEvent;
 }
