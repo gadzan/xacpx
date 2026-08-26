@@ -547,8 +547,17 @@ export interface LiveTurn {
   实时 streaming 与历史回放使用同一派生规则。
 - 旧历史没有 `parts` 时回退到聚合 `ToolCallPanel` + markdown/reasoning，其中工具面板与 reasoning 同样默认折叠。
 
-## 消息附件（图片 / 文件上传）
+## 桌面系统通知（Web Push 与 本地 Notification Fallback）
 
+Relay-Web 支持双轨桌面系统通知，在任务或会话回合完成/失败时提醒用户：
+
+1. **服务端 Web Push**：基于 W3C 标准 VAPID 协议，由 Hub 发送至厂商推送端点（Chrome FCM、Apple APNs），即便浏览器标签页完全关闭也能接收。
+2. **前端本地 Notification Fallback**：前端通过 WebSocket 接收 `turn-finished` 事件。在用户切到其他窗口（`document.hidden` 或 `!document.hasFocus()`）或正在查看其他会话时，直接调用浏览器 Notification API 弹出系统原生横幅。
+   - **零外网依赖**：在境内或内网未配置 FCM 代理时，只要标签页挂在后台，也能 100% 弹出通知。
+   - **统一 Tag 合并**：使用与 Web Push 相同的 `xacpx-task:${instanceId}` tag，避免多端/双轨产生重复弹窗。
+   - **设计 spec**：`docs/superpowers/specs/2026-08-26-relay-web-local-notification-fallback.md`。
+
+## 消息附件（图片 / 文件上传）
 用户可在 `PromptInput.vue` 随 prompt 一并发送图片或文件；附件经 `control.upload` RPC
 上传到 daemon，再随 `control.prompt` 的 `media` 字段转发给 agent。
 
