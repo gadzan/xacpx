@@ -61,7 +61,12 @@ const notifState = ref<NotifState>("idle");
 const notifBusy = ref(false);
 let vapidKey: string | null = null;
 async function probeNotifications(): Promise<void> {
-  if (typeof Notification !== "undefined" && Notification.permission === "denied") {
+  // Capability boundary first: no Notification API at all -> unsupported, never toggleable.
+  if (typeof Notification === "undefined") {
+    notifState.value = "unsupported";
+    return;
+  }
+  if (Notification.permission === "denied") {
     notifState.value = "denied";
     return;
   }
@@ -100,9 +105,11 @@ async function toggleNotifications(): Promise<void> {
   } catch (err) {
     if (err instanceof Error && err.message === "permission-denied") {
       notifState.value = "denied";
-    } else if (err instanceof Error && err.message === "push-endpoint-unsupported") {
-      notifState.value = "unsupported";
+      return;
     }
+    // Web Push transport failed AFTER intent may already have been written true.
+    // Always re-read the single source of truth instead of leaving stale UI.
+    notifState.value = isDesktopNotificationsEnabled() ? "subscribed" : "idle";
   } finally {
     notifBusy.value = false;
   }

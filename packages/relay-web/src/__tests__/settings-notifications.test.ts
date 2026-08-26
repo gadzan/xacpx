@@ -42,9 +42,15 @@ async function flush(): Promise<void> {
 }
 
 describe("settings notifications section", () => {
+  // jsdom/bun does not ship a Notification global; SettingsView probes
+  // `typeof Notification === "undefined"` as its capability boundary, so most
+  // tests need a minimal granted-permission stub installed.
+  const notificationStub = Object.assign(function () {}, { permission: "granted" });
+
   beforeEach(() => {
     setActivePinia(createPinia());
     vi.clearAllMocks();
+    globalThis.Notification = notificationStub as unknown as typeof Notification;
     lib.pushSupported.mockReturnValue(true);
     lib.fetchVapidPublicKey.mockResolvedValue("PK");
     lib.enableDesktopNotifications.mockResolvedValue(undefined);
@@ -140,6 +146,42 @@ describe("settings notifications section", () => {
     expect(w.find('[data-test="notif-state"]').text()).toBe("Notification permission denied");
     expect(w.text()).toContain("browser site settings");
     vi.unstubAllGlobals();
+  });
+
+  it("shows On when Web Push transport fails after intent was written true", async () => {
+    // enableDesktopNotifications() writes intent=true BEFORE the transport step,
+    // so the mock flips the source of truth when called (simulating real behavior).
+    lib.enableDesktopNotifications.mockImplementationOnce(async () => {
+      lib.isDesktopNotificationsEnabled.mockReturnValue(true);
+      throw new Error("network down");
+    });
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      serviceWorker: { ready: Promise.resolve({ pushManager: { getSubscription: vi.fn().mockResolvedValue(null) } }) },
+    });
+    const w = mountSettings();
+    await flush();
+    await w.find('[data-test="notif-toggle"]').trigger("click");
+    await flush();
+    expect(w.find('[data-test="notif-state"]').text()).toBe("On");
+    expect(w.find('[data-test="notif-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-test="notif-toggle"]').text()).toBe("Disable notifications");
+    vi.unstubAllGlobals();
+  });
+
+  it("renders Unsupported and hides toggle when Notification API is missing", async () => {
+    lib.pushSupported.mockReturnValue(false);
+    const saved = globalThis.Notification;
+    try {
+      // @ts-expect-error simulating an environment without the Notification API
+      delete globalThis.Notification;
+      const w = mountSettings();
+      await flush();
+      expect(w.find('[data-test="notif-state"]').text()).toBe("Not supported in this environment");
+      expect(w.find('[data-test="notif-toggle"]').exists()).toBe(false);
+    } finally {
+      globalThis.Notification = saved;
+    }
   });
 
   it("renders iOS / iPadOS Home Screen notification hint only on iOS/iPadOS", async () => {
