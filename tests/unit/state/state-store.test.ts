@@ -340,6 +340,7 @@ test("persists sessions and chat context", async () => {
         transport_session: "backend:api-fix",
         logical_session_id: "33333333-3333-4333-8333-333333333333",
         transport_agent_command: "npx @zed-industries/codex-acp@^0.9.5",
+        transport_engine: "cli",
         created_at: "2026-03-24T10:00:00.000Z",
         last_used_at: "2026-03-24T10:00:00.000Z",
       },
@@ -1779,6 +1780,8 @@ test("load migrates legacy sessions missing logical_session_id, persists them, a
   expect(report?.dropped).toEqual([]);
   expect(report?.migrated).toEqual([
     { section: "sessions", key: "legacy", reason: expect.stringContaining("logical_session_id") },
+    { section: "sessions", key: "legacy", reason: expect.stringContaining("transport_engine") },
+    { section: "sessions", key: "current", reason: expect.stringContaining("transport_engine") },
   ]);
 
   // the migration is durable BEFORE load() returns: the file on disk already
@@ -1871,7 +1874,9 @@ test("a present-but-invalid logical_session_id is quarantined, never migrated", 
   const report = store.lastLoadReport;
   expect(report?.dropped).toHaveLength(3);
   expect(report?.dropped.every((record) => record.reason === "malformed session record")).toBe(true);
-  expect(report?.migrated ?? []).toEqual([]);
+  expect(report?.migrated).toEqual([
+    { section: "sessions", key: "good", reason: expect.stringContaining("transport_engine") },
+  ]);
 
   await rm(dir, { recursive: true, force: true });
 });
@@ -1894,6 +1899,7 @@ test("inspect reports pending id migrations without writing anything", async () 
   expect(inspection.report?.dropped).toEqual([]);
   expect(inspection.report?.migrated).toEqual([
     { section: "sessions", key: "legacy", reason: expect.stringContaining("logical_session_id") },
+    { section: "sessions", key: "legacy", reason: expect.stringContaining("transport_engine") },
   ]);
   // side-effect free: nothing persisted, no backup files
   expect(await readFile(path, "utf8")).toBe(raw);

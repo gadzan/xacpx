@@ -665,6 +665,7 @@ function isSessionRecord(value: unknown): value is MaybeLegacySession {
     isOptionalString(value.transport_agent_command) &&
     isOptionalString(value.transport_acpx_agent) &&
     (value.transport_agent_argv === undefined || isStringArray(value.transport_agent_argv)) &&
+    (value.transport_engine === undefined || value.transport_engine === "cli" || value.transport_engine === "runtime") &&
     isOptionalString(value.mode_id) &&
     isOptionalString(value.effort) &&
     (value.reply_mode === undefined || isReplyMode(value.reply_mode)) &&
@@ -687,18 +688,27 @@ function parseSessions(
     if (value.logical_session_id === undefined) {
       // Legacy record from before logical_session_id existed: assign a fresh
       // UUIDv4 exactly once. StateStore.load() persists this synchronously
-      // before returning (failing closed when the save fails); inspect() keeps
-      // it in-memory only. Reports list this under `migrated`, never under
-      // `dropped` — a migration is not a quarantined corrupt record.
+      // before returning (failing closed when the save fails); inspect()
+      // keeps it in-memory only.
       migrated.push({
         section: "sessions",
         key: alias,
         reason: "legacy record missing logical_session_id; assigned a new UUIDv4",
       });
     }
+    if (value.transport_engine === undefined) {
+      // Fail-safe engine binding (plan §47): never auto-upgrade existing
+      // sessions onto the Runtime — default them to cli once, durably.
+      migrated.push({
+        section: "sessions",
+        key: alias,
+        reason: "legacy record missing transport_engine; defaulted to cli",
+      });
+    }
     sessions[alias] = {
       ...value,
       logical_session_id: value.logical_session_id ?? randomUUID(),
+      transport_engine: value.transport_engine ?? "cli",
     };
   }
   return sessions;

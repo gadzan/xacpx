@@ -186,6 +186,15 @@ export function parseConfig(
     throw new Error("transport.permissionMode must be approve-all, approve-reads, or deny-all");
   }
   if (
+    "engine" in transport &&
+    transport.engine !== undefined &&
+    transport.engine !== "auto" &&
+    transport.engine !== "cli" &&
+    transport.engine !== "runtime"
+  ) {
+    throw new Error("transport.engine must be auto, cli, or runtime");
+  }
+  if (
     "nonInteractivePermissions" in transport &&
     transport.nonInteractivePermissions !== "deny" &&
     transport.nonInteractivePermissions !== "fail"
@@ -373,8 +382,11 @@ export function parseConfig(
       ...(typeof transport.sessionInitTimeoutMs === "number"
         ? { sessionInitTimeoutMs: transport.sessionInitTimeoutMs }
         : {}),
-      ...(typeof transport.permissionPolicy === "string" ? { permissionPolicy: transport.permissionPolicy } : {}),
       ...(typeof transport.preferLocalAgents === "boolean" ? { preferLocalAgents: transport.preferLocalAgents } : {}),
+      ...(transport.engine === "auto" || transport.engine === "cli" || transport.engine === "runtime"
+        ? { engine: transport.engine }
+        : {}),
+      ...(typeof transport.permissionPolicy === "string" ? { permissionPolicy: transport.permissionPolicy } : {}),
       ...(adapterVersions ? { adapterVersions } : {}),
       ...(adapterRegistry ? { adapterRegistry } : {}),
       ...(typeof transport.turnIdleTimeoutSeconds === "number"

@@ -16,6 +16,7 @@ import { sameCoordinatorSession, stableCoordinatorSession } from "../orchestrati
 import type { StateStore } from "../state/state-store";
 import { replaceRuntimeState } from "../state/replace-runtime-state";
 import type { AppState, BackgroundResult, ChatContextState, LogicalSession } from "../state/types";
+import { resolveTransportEngine } from "./transport-engine";
 import type { SessionResourceLifecyclePublishInput } from "./session-resource-catalog";
 import type { AgentSession, ResolvedSession } from "../transport/types";
 import {
@@ -906,6 +907,7 @@ export class SessionService {
       displayName: session.display_name,
       workspace: session.workspace,
       transportSession: session.transport_session,
+      transportEngine: session.transport_engine,
       source: session.source,
       agentSessionId: session.agent_session_id,
       agentSessionTitle: session.agent_session_title,
@@ -1236,6 +1238,11 @@ export class SessionService {
         effort: sameAgentExisting?.effort,
         reply_mode: sameAgentExisting?.reply_mode,
         display_name: sameAgentExisting?.display_name,
+        // Persist the engine binding BEFORE any owner can launch for this
+        // record (plan §45). A recreated same-agent alias keeps its binding;
+        // otherwise the config decides (development default: cli).
+        transport_engine:
+          sameAgentExisting?.transport_engine ?? resolveTransportEngine({ config: this.config.transport }).engine,
         created_at: existingSession?.created_at ?? now,
         last_used_at: now,
       };

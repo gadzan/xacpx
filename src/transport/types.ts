@@ -1,4 +1,5 @@
 import type { NonInteractivePermissions, PermissionMode } from "../config/types";
+import type { SessionTransportEngine } from "../state/types";
 import type { ClaudeSettingsPolicy } from "../adapters/claude-settings-policy";
 import type { QuotaManager } from "../weixin/messaging/quota-manager.js";
 import type { PlanEntry, ToolUseEvent } from "../channels/types.js";
@@ -104,6 +105,8 @@ export interface ResolvedSession {
   attachedAt?: string;
   mcpCoordinatorSession?: string;
   mcpSourceHandle?: string;
+  /** Bridge engine affinity resolved for this session ("cli" | "runtime"). */
+  transportEngine?: SessionTransportEngine;
   modeId?: string;
   replyMode?: "stream" | "final" | "verbose";
   /**
