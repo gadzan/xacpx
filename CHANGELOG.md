@@ -1,4 +1,28 @@
 # Changelog
+## [0.23.0-beta.8] - 2026-08-26
+
+### Changed
+
+- Bump bundled `acpx` dependency from 0.13.0 to 0.13.1 (transport runtime).
+
+## [relay-protocol 0.5.0-beta.5] - 2026-08-26
+
+### Added
+
+- New `turn-completion` `WebServerEvent` kind: isolated from the generic notice stream, carries `sessionAlias`, `notificationId` (dedup key), `ok`, `text`, and optional `errorMessage`.
+
+## [relay 0.13.0-beta.6] - 2026-08-26
+
+### Added
+
+- relay-web local desktop notification fallback on turn completion: settings master switch is purely intent-driven and allows enabling local-only notifications when VAPID is unavailable; Settings re-reads intent after transport failure and gates on `Notification` capability.
+- Turn-completion events now flow as their own `turn-completion` WebServerEvent (isolated from notices), deduplicated by `notificationId`, carrying `sessionAlias` for routing.
+- Active-tab focus heartbeat for notification routing; `push.send_failed` log now includes the underlying error message.
+
+### Fixed
+
+- Restore `terminal-opened` in `WEB_EVENT_KINDS`; `notificationclick` prefers the dashboard client.
+
 ## [0.23.0-beta.7] - 2026-08-25
 
 ### Added
