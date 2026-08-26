@@ -120,6 +120,7 @@ export interface CreateRuntimeOptions {
   /** Web push VAPID config; omitted = resolve from env, null = force-disable. */
   vapid?: VapidConfig | null;
   logger?: RelayLogger;
+  now?: () => Date;
 }
 
 /** Testable assembly without any network listener. */
@@ -127,6 +128,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   const db = await createSqlDriver(dbPath);
   initSchema(db);
   const logger = options.logger ?? createNoopRelayLogger();
+  const nowMs = () => (options.now ? options.now().getTime() : Date.now());
   const accounts = new AccountStore(db);
   const instances = new InstanceStore(db);
   const messages = new MessageStore(db);
@@ -197,7 +199,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   };
 
   const prunePendingWebPrompts = () => {
-    const now = Date.now();
+    const now = nowMs();
     for (const [id, entry] of pendingWebPrompts) {
       if (entry.state === "pending" && now - entry.createdAt > PENDING_WEB_PROMPT_TTL_MS) {
         removePendingWebPrompt(id);
@@ -229,7 +231,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     pendingWebPrompts.set(promptRequestId, {
       instanceId,
       sessionAlias,
-      createdAt: Date.now(),
+      createdAt: nowMs(),
       state: "pending",
     });
     return true;
@@ -453,7 +455,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               if (grant && grant.instanceId === instanceId && grant.sessionAlias === event.sessionAlias) {
                 if (!event.scheduled && !event.peerOrigin) {
                   grant.state = "active";
-                  grant.createdAt = Date.now();
+                  grant.createdAt = nowMs();
                   notification = { origin: "relay-web", promptRequestId: event.promptRequestId };
                 } else {
                   removePendingWebPrompt(event.promptRequestId);
@@ -477,7 +479,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 steps: new Map(),
                 reasoning: "",
                 parts: [],
-                startedAt: Date.now(),
+                startedAt: nowMs(),
                 ...(notification ? { notification } : {}),
               });
             } catch (err) {
@@ -799,7 +801,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 const grant = pendingWebPrompts.get(turn.promptRequestId);
                 if (grant && grant.instanceId === instanceId && grant.sessionAlias === turn.sessionAlias) {
                   grant.state = "active";
-                  grant.createdAt = Date.now();
+                  grant.createdAt = nowMs();
                   notification = { origin: "relay-web", promptRequestId: turn.promptRequestId };
                 }
               }
@@ -869,8 +871,8 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     sessionUsage: listSessionUsage,
     sessionCommands: listSessionCommands,
     trustProxy: options.trustProxy,
+    now: options.now,
     checkUpdate: createRelayUpdateChecker({ current: readRelayVersion() }),
-    logger,
     vapidPublicKey: vapid ? () => vapid.publicKey : undefined,
     pushSubscriptions,
     onWebPromptCreated: ({ promptRequestId, instanceId, sessionAlias }) => {

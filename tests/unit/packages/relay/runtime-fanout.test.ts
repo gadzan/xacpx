@@ -302,13 +302,14 @@ test("task-completion notice fans out to push; other kinds do not", async () => 
   runtime.close();
 });
 
-async function setupPushRuntime() {
+async function setupPushRuntime(opts?: { now?: () => Date }) {
   const runtime = await createRelayRuntime(":memory:", {
     vapid: {
       subject: "mailto:test@example.com",
       publicKey: "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U",
       privateKey: "w7gAGvS_Do-fQS4qrv63qkIsaqw6ni5nyJoh3ud-BRU",
     },
+    ...(opts?.now ? { now: opts.now } : {}),
   });
   runtime.db.run("INSERT INTO accounts (id, username, created_at) VALUES (?,?,?)", ["a1", "u", "t"]);
   runtime.db.run("INSERT INTO instances (id, account_id, name, credential_hash, created_at) VALUES (?,?,?,?,?)", ["i1", "a1", "MacBook", "h", "t"]);
@@ -1216,33 +1217,52 @@ test("capacity saturation with only active grants rejects new registration witho
   expect(JSON.parse(sent[0]!.payload).title).toBe("MacBook · active-session-0");
   runtime.close();
 });
+test("active grant is NOT pruned by 24h pending TTL while pending grants expire", async () => {
+  let currentTime = Date.now();
+  const { runtime, sent, cookie, fire } = await setupPushRuntime({
+    now: () => new Date(currentTime),
+  });
+  let pendingId: string | undefined;
+  (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, _type: string, payload: unknown) => {
+    pendingId = (payload as { promptRequestId?: string }).promptRequestId;
+    return { ok: true, queued: true, queueItemId: "q-stale" };
+  };
+  await runtime.app.request("/api/instances/i1/rpc", {
+    method: "POST",
+    headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "pending-session", text: "abandoned" } }),
+  });
+  expect(runtime.pendingWebPromptsCount?.()).toBe(1);
 
-test("active grant is NOT pruned by 24h pending TTL", async () => {
-  const { runtime, sent, cookie, fire } = await setupPushRuntime();
-
+  // 2. Submit active prompt and start it
   let activeId: string | undefined;
   (runtime.gateway as unknown as { sendRequest: unknown }).sendRequest = async (_instanceId: string, _type: string, payload: unknown) => {
     activeId = (payload as { promptRequestId?: string }).promptRequestId;
     return { ok: true };
   };
-
   await runtime.app.request("/api/instances/i1/rpc", {
     method: "POST",
     headers: { cookie, "content-type": "application/json" },
     body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "backend", text: "multi-day task" } }),
   });
   fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", promptRequestId: activeId });
-  expect(runtime.pendingWebPromptsCount?.()).toBe(1);
+  expect(runtime.pendingWebPromptsCount?.()).toBe(2);
 
-  // Register another prompt with normal clock to run prunePendingWebPrompts
+  // 3. Advance clock by 48 hours (well past 24h TTL)
+  currentTime += 48 * 60 * 60_000;
+
+  // 4. Register another prompt at current time to trigger prunePendingWebPrompts()
   await runtime.app.request("/api/instances/i1/rpc", {
     method: "POST",
     headers: { cookie, "content-type": "application/json" },
-    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "other", text: "trigger prune" } }),
+    body: JSON.stringify({ type: MSG.prompt, payload: { sessionAlias: "new-session", text: "trigger prune" } }),
   });
 
+  // The expired pending grant was pruned, but the 48h-old active grant was preserved!
+  // Count: 2 (active grant + new trigger grant)
   expect(runtime.pendingWebPromptsCount?.()).toBe(2);
 
+  // 5. Active turn finishes and successfully pushes
   fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true, text: "finally done" });
   await new Promise((r) => setTimeout(r, 10));
   expect(sent).toHaveLength(1);
