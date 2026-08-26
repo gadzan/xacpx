@@ -1,0 +1,81 @@
+/**
+ * xacpx-owned narrow view of the acpx Runtime public contract (plan §11/§42).
+ * NO acpx imports here — this file is the stable internal vocabulary; only
+ * runtime-adapter.ts may import "acpx/runtime" and translate to these types.
+ */
+
+export type XacpxPermissionMode = "approve-all" | "approve-reads" | "deny-all";
+export type XacpxNonInteractivePermissions = "deny" | "fail";
+
+/** Streamed runtime turn event, shaped for the bridge prompt.* mapping. */
+export type XacpxRuntimeEvent =
+  | { type: "text_delta"; text: string; stream?: "output" | "thought" }
+  | {
+      type: "status";
+      text: string;
+      used?: number;
+      size?: number;
+      cost?: { amount?: number; currency?: string };
+      breakdown?: UsageBreakdownLike;
+      availableCommands?: Array<{ name: string; description?: string }>;
+    }
+  | { type: "tool_call"; text: string; toolCallId?: string; status?: string; title?: string };
+
+export interface UsageBreakdownLike {
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedReadTokens?: number;
+  cachedWriteTokens?: number;
+  thoughtTokens?: number;
+  totalTokens?: number;
+}
+
+export type XacpxTurnResult =
+  | { status: "completed"; stopReason?: string }
+  | { status: "cancelled"; stopReason?: string }
+  | { status: "failed"; error: { message: string; code?: string; detailCode?: string; retryable?: boolean } };
+
+export interface XacpxTurnHandle {
+  requestId: string;
+  promptStarted: Promise<void>;
+  events: AsyncIterable<XacpxRuntimeEvent>;
+  result: Promise<XacpxTurnResult>;
+}
+
+export interface XacpxRuntimeSessionHandle {
+  sessionKey: string;
+  runtimeSessionName: string;
+  acpxRecordId?: string;
+  agentSessionId?: string;
+}
+
+/** Stable xacpx-internal error codes — never expose upstream detailCodes. */
+export type RuntimeBridgeErrorCode =
+  | "RUNTIME_SESSION_MISSING"
+  | "RUNTIME_INIT_FAILED"
+  | "RUNTIME_TURN_FAILED"
+  | "RUNTIME_TURN_CANCELLED"
+  | "RUNTIME_PERMISSION_DENIED"
+  | "RUNTIME_WORKER_CRASHED"
+  | "RUNTIME_QUEUE_OVERFLOW"
+  | "RUNTIME_ENGINE_UNSUPPORTED";
+
+export function mapRuntimeError(err: unknown): { code: RuntimeBridgeErrorCode; message: string } {
+  const message = err instanceof Error ? err.message : String(err);
+  const name = (err as { name?: string } | null)?.name ?? "";
+  const rawCode = (err as { code?: unknown } | null)?.code;
+  const codeText = typeof rawCode === "string" ? rawCode : "";
+  if (/not found|missing|no such session|unknown session/i.test(message) || codeText === "ACP_BACKEND_MISSING") {
+    return { code: "RUNTIME_SESSION_MISSING", message };
+  }
+  if (/cancel/i.test(message)) {
+    return { code: "RUNTIME_TURN_CANCELLED", message };
+  }
+  if (/permission/i.test(message)) {
+    return { code: "RUNTIME_PERMISSION_DENIED", message };
+  }
+  if (name === "AcpRuntimeError" || /runtime|init|backend/i.test(message)) {
+    return { code: "RUNTIME_INIT_FAILED", message };
+  }
+  return { code: "RUNTIME_TURN_FAILED", message };
+}
