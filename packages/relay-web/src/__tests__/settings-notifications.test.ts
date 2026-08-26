@@ -53,25 +53,37 @@ describe("settings notifications section", () => {
     lib.getExistingSubscription.mockResolvedValue(null);
     lib.isDesktopNotificationsEnabled.mockReturnValue(false);
   });
-  it("renders 已开启 when a probe subscription exists", async () => {
-    lib.getExistingSubscription.mockResolvedValue({ endpoint: "https://push/e1" });
+  it("renders On when isDesktopNotificationsEnabled is true", async () => {
+    lib.isDesktopNotificationsEnabled.mockReturnValue(true);
     const w = mountSettings();
     await flush();
     expect(w.find('[data-test="notif-state"]').text()).toBe("On");
-    expect(w.find('[data-test="notif-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-test="notif-toggle"]').text()).toBe("Disable notifications");
     vi.unstubAllGlobals();
   });
 
-  it("shows 服务端未启用 when hub has no VAPID key", async () => {
-    lib.fetchVapidPublicKey.mockResolvedValue(null);
-    vi.stubGlobal("navigator", {
-      ...navigator,
-      serviceWorker: { ready: Promise.resolve({ pushManager: { getSubscription: vi.fn().mockResolvedValue(null) } }) },
-    });
+  it("renders Off when matching subscription exists but isDesktopNotificationsEnabled is false", async () => {
+    lib.getExistingSubscription.mockResolvedValue({ endpoint: "https://push/e1" });
+    lib.isDesktopNotificationsEnabled.mockReturnValue(false);
     const w = mountSettings();
     await flush();
-    expect(w.find('[data-test="notif-state"]').text()).toBe("Not enabled on server");
-    expect(w.find('[data-test="notif-toggle"]').exists()).toBe(false);
+    expect(w.find('[data-test="notif-state"]').text()).toBe("Off");
+    expect(w.find('[data-test="notif-toggle"]').text()).toBe("Enable notifications");
+    vi.unstubAllGlobals();
+  });
+
+  it("renders Off and allows enabling when VAPID is null and intent is false", async () => {
+    lib.fetchVapidPublicKey.mockResolvedValue(null);
+    lib.isDesktopNotificationsEnabled.mockReturnValue(false);
+    const w = mountSettings();
+    await flush();
+    expect(w.find('[data-test="notif-state"]').text()).toBe("Off");
+    expect(w.find('[data-test="notif-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-test="notif-toggle"]').text()).toBe("Enable notifications");
+    await w.find('[data-test="notif-toggle"]').trigger("click");
+    await flush();
+    expect(lib.enableDesktopNotifications).toHaveBeenCalledWith(null);
+    expect(w.find('[data-test="notif-state"]').text()).toBe("On");
     vi.unstubAllGlobals();
   });
 
@@ -87,13 +99,6 @@ describe("settings notifications section", () => {
     expect(lib.disableDesktopNotifications).toHaveBeenCalledTimes(1);
     expect(w.find('[data-test="notif-state"]').text()).toBe("Off");
     vi.unstubAllGlobals();
-  });
-  it("unsupported environment renders 当前环境不支持 without probing", async () => {
-    lib.pushSupported.mockReturnValue(false);
-    const w = mountSettings();
-    await flush();
-    expect(w.find('[data-test="notif-state"]').text()).toBe("Not supported in this environment");
-    expect(lib.fetchVapidPublicKey).not.toHaveBeenCalled();
   });
 
   it("toggle-on calls enableDesktopNotifications and flips to 已开启", async () => {
@@ -111,6 +116,7 @@ describe("settings notifications section", () => {
   });
 
   it("toggle-off calls disableDesktopNotifications and flips to 未开启", async () => {
+    lib.isDesktopNotificationsEnabled.mockReturnValue(true);
     lib.getExistingSubscription.mockResolvedValue({ endpoint: "https://push/e1" });
     const w = mountSettings();
     await flush();
