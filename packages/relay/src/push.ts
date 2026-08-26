@@ -253,6 +253,7 @@ export class PushNotifier {
             instanceId: params.instanceId,
             endpointHost: safeHost(sub.endpoint),
             ...(statusCode !== undefined ? { statusCode } : {}),
+            error: err instanceof Error ? err.message : String(err),
           });
         }
       }
