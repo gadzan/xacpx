@@ -256,6 +256,7 @@ var WEB_EVENT_KINDS = new Set([
   "notice",
   "turn-completion",
   "agent-directory",
+  "terminal-opened",
   "terminal-request-failed",
   "terminal-recovery-failed",
   "terminal-rebase-start",
