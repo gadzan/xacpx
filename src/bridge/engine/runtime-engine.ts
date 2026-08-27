@@ -59,20 +59,30 @@ export interface RuntimeEngineOptions {
   workerClientDeps?: RuntimeWorkerClientDeps;
 }
 
-const WORKER_ENTRY_CANDIDATES = [
-  // Bundled layout: dist/bridge/engine/ → ../../../runtime-worker-main.js
-  resolvePath(dirname(fileURLToPath(import.meta.url)), "../../../../runtime-worker-main.js"),
-];
+export function defaultWorkerEntryCandidates(fromUrl = import.meta.url): string[] {
+  const here = dirname(fileURLToPath(fromUrl));
+  return [
+    // 1. When bundled into dist/bridge/bridge-main.js -> dist/bridge/engine/runtime/runtime-worker-main.js
+    resolvePath(here, "./engine/runtime/runtime-worker-main.js"),
+    // 2. When evaluated from dist/bridge/engine/ -> dist/bridge/engine/runtime/runtime-worker-main.js
+    resolvePath(here, "./runtime/runtime-worker-main.js"),
+    // 3. When evaluated directly from source at src/bridge/engine/runtime-engine.ts
+    resolvePath(here, "../../../dist/bridge/engine/runtime/runtime-worker-main.js"),
+    // 4. When evaluated from root / testing directory
+    resolvePath(process.cwd(), "dist/bridge/engine/runtime/runtime-worker-main.js"),
+  ];
+}
 
-function defaultWorkerEntry(): string {
-  for (const candidate of WORKER_ENTRY_CANDIDATES) {
+export function defaultWorkerEntry(fromUrl?: string): string {
+  const candidates = defaultWorkerEntryCandidates(fromUrl);
+  for (const candidate of candidates) {
     try {
       if (statSync(candidate).isFile()) return candidate;
     } catch {
       /* keep looking */
     }
   }
-  return WORKER_ENTRY_CANDIDATES[0]!;
+  return candidates[0]!;
 }
 
 

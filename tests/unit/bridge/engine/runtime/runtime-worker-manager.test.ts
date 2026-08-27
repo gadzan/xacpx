@@ -2,8 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-
-import { RuntimeWorkerManager } from "../../../../../src/bridge/engine/runtime/runtime-worker-manager";
+import { RuntimeWorkerManager, WorkerTeardownPendingError } from "../../../../../src/bridge/engine/runtime/runtime-worker-manager";
 
 async function withFakeEntry(run: (entryPath: string) => Promise<void>): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "worker-mgr-"));
@@ -103,6 +102,43 @@ test("ensureWorker returns a ref carrying stable identity fields", async () => {
     expect(worker.ref.logicalSessionId).toBe("identity-check");
     expect(worker.ref.generation).toMatch(/^[0-9a-z]+-[0-9a-z]+$/);
     expect(worker.ref.startedAt).toBeTypeOf("string");
+    await manager.shutdownAll();
+  });
+}, 15_000);
+
+test("ensureWorker refuses duplicate spawn when existing worker is still alive in cooling/stopped state", async () => {
+  await withFakeEntry(async (entry) => {
+    const manager = new RuntimeWorkerManager({ entryPath: entry });
+    const workerA = manager.ensureWorker("sess-cooldown");
+    // Simulate worker undergoing teardown while still alive
+    workerA.lifecycle = "cooling";
+    expect(() => manager.ensureWorker("sess-cooldown")).toThrow(WorkerTeardownPendingError);
+
+    workerA.lifecycle = "stopped";
+    expect(() => manager.ensureWorker("sess-cooldown")).toThrow(WorkerTeardownPendingError);
+
+    workerA.lifecycle = "failed";
+    expect(() => manager.ensureWorker("sess-cooldown")).toThrow(WorkerTeardownPendingError);
+
+    await workerA.terminate();
+  });
+}, 15_000);
+
+test("stale exit callback from previous generation never deletes newer replacement worker", async () => {
+  await withFakeEntry(async (entry) => {
+    const manager = new RuntimeWorkerManager({ entryPath: entry });
+    const workerA = manager.ensureWorker("sess-gen");
+
+    // Manually register replacement worker B for the same session
+    const workerB = manager["ensureWorker"]("sess-gen-other");
+    manager["workersByKey"].set("sess-gen", workerB);
+
+    // Stale exit arrives from worker A
+    manager["handleExit"]("sess-gen", workerA, 0);
+
+    // worker B is preserved in the manager (never deleted by stale exit from A)
+    expect(manager.get("sess-gen")).toBe(workerB);
+
     await manager.shutdownAll();
   });
 }, 15_000);

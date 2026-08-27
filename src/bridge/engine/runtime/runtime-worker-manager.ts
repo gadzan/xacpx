@@ -40,19 +40,29 @@ export class RuntimeWorkerManager {
   }
 
   ensureWorker(logicalSessionId: string): RuntimeWorkerClient {
-    let worker = this.workersByKey.get(logicalSessionId);
-    if (
-      worker &&
-      worker.alive &&
-      worker.lifecycle !== "stopped" &&
-      worker.lifecycle !== "failed" &&
-      worker.lifecycle !== "cooling"
-    ) {
-      return worker;
+    const existing = this.workersByKey.get(logicalSessionId);
+    if (existing && existing.alive) {
+      // If the current worker is still alive but undergoing teardown (cooling,
+      // stopped, or termination failed), fail closed — never spawn a concurrent
+      // duplicate owner for the same logical session (plan §3-R1 / §9.1).
+      if (
+        existing.lifecycle === "cooling" ||
+        existing.lifecycle === "stopped" ||
+        existing.lifecycle === "failed"
+      ) {
+        throw new WorkerTeardownPendingError(
+          `runtime worker for session "${logicalSessionId}" is still shutting down (lifecycle: ${existing.lifecycle}); refusing duplicate worker spawn`,
+        );
+      }
+      return existing;
     }
+
     this.assertRestartBudget(logicalSessionId);
-    worker = new RuntimeWorkerClient(this.options.entryPath, logicalSessionId, undefined, (client, code) =>
-      this.handleExit(logicalSessionId, client, code),
+    const worker = new RuntimeWorkerClient(
+      this.options.entryPath,
+      logicalSessionId,
+      undefined,
+      (client, code) => this.handleExit(logicalSessionId, client, code),
       this.options.clientDeps,
     );
     worker.spawn();
@@ -82,7 +92,12 @@ export class RuntimeWorkerManager {
   }
 
   private handleExit(logicalSessionId: string, client: RuntimeWorkerClient, code: number | null): void {
-    this.workersByKey.delete(logicalSessionId);
+    // Identity guard: only drop the map entry if the exiting client is STILL
+    // the registered client for this session. A stale exit from an older
+    // generation must never delete a newer replacement worker.
+    if (this.workersByKey.get(logicalSessionId) === client) {
+      this.workersByKey.delete(logicalSessionId);
+    }
     // Plan §43 scopes the guard to REAL crashes. Deliberate stops (graceful
     // shutdown, freeWarm cooling) exit 0 and are NOT charged; a nonzero/signal
     // exit while calls were in flight is.
@@ -97,6 +112,14 @@ export class RuntimeWorkerManager {
         `runtime worker for session "${logicalSessionId}" crashed ${recent.length} times in ${windowMs / 1000}s; marking unhealthy`,
       );
     }
+  }
+}
+
+export class WorkerTeardownPendingError extends Error {
+  readonly code = "RUNTIME_WORKER_TEARDOWN_PENDING";
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkerTeardownPendingError";
   }
 }
 
