@@ -518,14 +518,14 @@ const rowSwipes = computed(() => {
                   </span>
                   <span
                     v-else-if="hasOpenTerminal(inst.id, s.alias)"
-                    data-test="terminal-open-marker"
                     class="relative w-0 shrink-0 self-end"
-                    :title="$t('instance.sessionTerminalOpenTitle')"
-                    :aria-label="$t('instance.sessionTerminalOpenTitle')"
                   >
-                    <span class="absolute bottom-1 right-0 grid h-2.5 w-2.5 -translate-x-0.5 place-items-center rounded-sm bg-surface text-accent ring-1 ring-accent/50">
-                      <SquareTerminal :size="8" :stroke-width="2.5" />
-                    </span>
+                    <span
+                      data-test="terminal-open-marker"
+                      class="absolute bottom-1 right-0 grid h-2.5 w-2.5 -translate-x-0.5 place-items-center rounded-sm bg-surface text-accent ring-1 ring-accent/50"
+                      :title="$t('instance.sessionTerminalOpenTitle')"
+                      :aria-label="$t('instance.sessionTerminalOpenTitle')"
+                    ><SquareTerminal :size="8" :stroke-width="2.5" /></span>
                   </span>
                   <input v-if="renamingFor === `${inst.id}:${s.alias}`" data-test="rename-input"
                          v-model="renameDraft" :maxlength="60" :placeholder="$t('instance.sessionRenamePlaceholder')"
