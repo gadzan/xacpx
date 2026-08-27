@@ -49,8 +49,8 @@ test("Scenario 1: Windows identity probe is a hard gate — RPCs await probe res
         probeResolved = true;
         return { status: "found", identity: { pid, creationDate: res.identity.creationDate } };
       },
+      terminateProcessTree: async () => ({ rootOutcome: "killed", outcomes: [] }),
     });
-
     // Initiate request: should await the identity probe before completing
     const reqPromise = client.request("ensure", {});
     expect(probeResolved).toBe(false);
