@@ -173,8 +173,19 @@ export class EngineRouter implements BridgeEngine {
     return {};
   }
   async shutdown(): Promise<Record<string, never>> {
-    // Plan §18: stop CLI work AND gracefully wind down every Runtime worker.
-    await Promise.allSettled([this.cli.shutdown(), ...(this.runtime ? [this.runtime.shutdown()] : [])]);
+    // Plan §18: attempt cleanup on both CLI and Runtime so all resources are
+    // addressed; fail closed by propagating any cleanup failure.
+    const results = await Promise.allSettled([
+      this.cli.shutdown(),
+      ...(this.runtime ? [this.runtime.shutdown()] : []),
+    ]);
+    const failures = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    if (failures.length > 0) {
+      const messages = failures
+        .map((f) => (f.reason instanceof Error ? f.reason.message : String(f.reason)))
+        .join("; ");
+      throw new Error(`engine shutdown failed (${failures.length} engine(s) reported errors): ${messages}`);
+    }
     return {};
   }
 

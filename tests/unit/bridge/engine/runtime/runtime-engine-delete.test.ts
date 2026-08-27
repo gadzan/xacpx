@@ -117,17 +117,49 @@ test("deleteRecordFilesStrict retries transient failures until the record is con
     await withFakeWorker(entry);
     await mkdir(sessionsDir, { recursive: true });
     const recordFile = join(sessionsDir, "retry-rec-5678.json");
+    const streamFile = join(sessionsDir, "retry-rec-5678.stream.1.ndjson");
     await writeFile(recordFile, JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "retry-rec-5678", name: "locked-session" }));
+    await writeFile(streamFile, '{"seq":1}\n');
 
     const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
     // Pre-seed the record id
     engine["recordIds"].set("locked-session", "retry-rec-5678");
 
-    // Perform strict delete: retry loop ensures record file is genuinely gone
+    // Perform strict delete: retry loop ensures ALL record and stream files are genuinely gone
     await engine.deleteSession({ ...sessionInput, name: "locked-session" });
     await expect(access(recordFile)).rejects.toThrow();
+    await expect(access(streamFile)).rejects.toThrow();
     await engine.shutdown();
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("G4: deleteSession fails closed if main JSON is deleted but stream artifacts persist", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-stream-fail-"));
+  const sessionsDir = join(dir, ".acpx", "sessions");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    await mkdir(sessionsDir, { recursive: true });
+
+    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+    const recordFile = join(sessionsDir, "stubborn-rec-9999.json");
+    await writeFile(recordFile, JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "stubborn-rec-9999", name: "stubborn-session" }));
+    engine["recordIds"].set(sessionInput.logicalSessionId, "stubborn-rec-9999");
+
+    // Create an un-unlinkable artifact (directory shape causes unlink to fail with EISDIR/EPERM)
+    const streamFile = join(sessionsDir, "stubborn-rec-9999.stream.0.ndjson");
+    await mkdir(streamFile);
+
+    // Stub deleteAcpxSessionFiles to delete nothing
+    // readdir will always find the stream file -> deadline throws with exact filename
+    const promise = engine.deleteSession({ ...sessionInput, name: "stubborn-session" });
+
+    // Since deleteRecordFilesStrict retries for 5s, we can assert it rejects with the remaining artifact name
+    await expect(promise).rejects.toThrow(/artifact\(s\) still remaining.*stubborn-rec-9999\.stream\.0\.ndjson/);
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 10_000);

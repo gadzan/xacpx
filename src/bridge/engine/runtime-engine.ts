@@ -411,37 +411,44 @@ export class RuntimeEngine implements BridgeEngine {
     return undefined;
   }
   /**
-   * Strict delete (G4): best-effort unlink helper is NOT trusted as the oracle.
-   * After unlinking, VERIFY the record json is actually gone from disk;
-   * transient failures (Windows file locks) retry until a bounded deadline,
-   * and a still-present file at deadline is a hard error — never silent success.
+   * Strict delete (G4): verified complete eradication of all record and history artifacts.
+   * Unlinks the main .json record AND all stream/history files matching the record id.
+   * Every retry iteration re-enumerates the directory; success is returned ONLY when
+   * zero matching artifacts remain on disk.
    */
   private async deleteRecordFilesStrict(recordId: string): Promise<void> {
     const dir = this.sessionsDir();
     const safeId = encodeURIComponent(recordId);
-    const recordPath = join(dir, `${safeId}.json`);
+    const mainJson = `${safeId}.json`;
     const deadline = Date.now() + 5_000;
+
     for (;;) {
       await deleteAcpxSessionFiles({ acpxRecordId: recordId, sessionsDir: dir }).catch(() => {});
-      await unlink(recordPath).catch(() => {});
+
+      let remaining: string[] = [];
       try {
         const entries = await readdir(dir);
-        for (const file of entries.filter((name) => name.startsWith(`${safeId}.stream.`))) {
+        // Match ALL artifacts for this session: the index json and any stream segments
+        const matching = entries.filter((name) => name === mainJson || name.startsWith(`${safeId}.stream.`));
+        for (const file of matching) {
           await unlink(join(dir, file)).catch(() => {});
         }
+        // Re-read directory to verify whether any artifacts remain on disk
+        const afterEntries = await readdir(dir);
+        remaining = afterEntries.filter((name) => name === mainJson || name.startsWith(`${safeId}.stream.`));
       } catch {
-        // directory already gone
+        // sessions dir gone or unreadable -> no artifacts remain
+        return;
       }
-      try {
-        await access(recordPath);
-        // Still present → deletion did not take (locked or raced). Retry.
-      } catch {
-        return; // ENOENT: the record is genuinely gone.
+
+      if (remaining.length === 0) {
+        return; // Complete verification: zero record or history artifacts remain on disk.
       }
+
       if (Date.now() >= deadline) {
         throw new RuntimeError(
           "RUNTIME_INIT_FAILED",
-          `acpx session record "${recordId}" still exists after delete deadline`,
+          `acpx session record "${recordId}" has ${remaining.length} artifact(s) still remaining after delete deadline: ${remaining.join(", ")}`,
         );
       }
       await sleep(100);
@@ -576,11 +583,12 @@ function emitPromptEvent(event: XacpxRuntimeEvent, onEvent?: (event: EnginePromp
   } else if (event.type === "tool_call") {
     onEvent({ type: "prompt.tool_event", event: { toolCallId: event.toolCallId, title: event.title, status: event.status } as never });
   } else if (event.type === "status") {
-    if (event.used !== undefined || event.size !== undefined) {
+    // G9: missing usage means unknown, NOT zero. Never fabricate 0 for undefined fields.
+    if (typeof event.used === "number" && typeof event.size === "number") {
       onEvent({
         type: "prompt.usage",
-        used: event.used ?? 0,
-        size: event.size ?? 0,
+        used: event.used,
+        size: event.size,
         ...(event.cost ? { cost: event.cost as never } : {}),
         ...(event.breakdown ? { breakdown: event.breakdown as never } : {}),
       });

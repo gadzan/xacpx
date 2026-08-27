@@ -142,3 +142,28 @@ test("stale exit callback from previous generation never deletes newer replaceme
     await manager.shutdownAll();
   });
 }, 15_000);
+
+test("shutdownAll propagates termination failures and retains failing workers in tracking", async () => {
+  await withFakeEntry(async (entry) => {
+    const manager = new RuntimeWorkerManager({ entryPath: entry });
+    const workerGood = manager.ensureWorker("sess-good");
+    const workerBad = manager.ensureWorker("sess-bad");
+
+    // Stub bad worker's shutdown to simulate a Windows termination / process-tree error
+    workerBad.shutdown = async () => {
+      throw new Error("Windows tree termination access-denied (simulated)");
+    };
+
+    // shutdownAll must reject with the error message
+    await expect(manager.shutdownAll()).rejects.toThrow(/Windows tree termination access-denied/);
+
+    // workerGood was successfully stopped and removed from tracking
+    expect(manager.get("sess-good")).toBeUndefined();
+
+    // workerBad FAILED to stop, so ownership is RETAINED (never forgotten)
+    expect(manager.get("sess-bad")).toBe(workerBad);
+
+    // Clean up bad worker
+    await workerBad.terminate();
+  });
+}, 15_000);

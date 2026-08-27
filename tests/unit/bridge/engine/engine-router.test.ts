@@ -163,6 +163,22 @@ test("updatePermissionPolicy fans out to the cli engine", async () => {
   expect(log).toEqual(["cli:updatePermissionPolicy"]);
 });
 
+test("shutdown attempts both engines and propagates errors when any engine fails", async () => {
+  const log: string[] = [];
+  const cli = stubEngine("cli", log);
+  const runtime = stubEngine("runtime", log);
+  runtime.shutdown = async () => {
+    log.push("runtime:shutdown-fail");
+    throw new Error("worker tree cleanup error (simulated)");
+  };
+  const router = new EngineRouter(new SessionEngineBinding(), cli, runtime);
+
+  // Router shutdown must attempt CLI cleanup even when Runtime fails, and then propagate the error
+  await expect(router.shutdown()).rejects.toThrow(/engine shutdown failed.*worker tree cleanup error/);
+
+  expect(log).toContain("cli:shutdown");
+  expect(log).toContain("runtime:shutdown-fail");
+});
 function sessionKeyInput(key: string): EngineSessionInput {
   return { ...sessionInput, sessionKey: key };
 }

@@ -71,8 +71,28 @@ export class RuntimeWorkerManager {
   }
 
   async shutdownAll(graceMs = 2_000): Promise<void> {
-    await Promise.allSettled([...this.workersByKey.values()].map((worker) => worker.shutdown(graceMs)));
-    this.workersByKey.clear();
+    const entries = [...this.workersByKey.entries()];
+    const results = await Promise.allSettled(
+      entries.map(async ([key, worker]) => {
+        await worker.shutdown(graceMs);
+        // Only delete if the worker confirmed it has stopped / is no longer alive
+        if (!worker.alive || worker.lifecycle === "stopped") {
+          if (this.workersByKey.get(key) === worker) {
+            this.workersByKey.delete(key);
+          }
+        }
+      }),
+    );
+    const failures = results
+      .map((r, i) => (r.status === "rejected" ? { key: entries[i]![0], error: r.reason } : null))
+      .filter((f): f is { key: string; error: unknown } => f !== null);
+
+    if (failures.length > 0) {
+      const messages = failures
+        .map(({ key, error }) => `session "${key}": ${error instanceof Error ? error.message : String(error)}`)
+        .join("; ");
+      throw new Error(`failed to shutdown ${failures.length} runtime worker(s) (ownership retained): ${messages}`);
+    }
   }
 
   /** Live worker clients, for policy fan-out and shutdown orchestration. */

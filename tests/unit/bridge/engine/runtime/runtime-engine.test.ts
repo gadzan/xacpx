@@ -162,6 +162,80 @@ test("streaming timing regression: onSegment fires while prompt promise is still
     await rm(dir, { recursive: true, force: true });
   }
 }, 15_000);
+test("G9: usage events never fabricate 0 for unknown token fields (used-only, size-only, both, neither)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-usage-matrix-"));
+  try {
+    const entry = join(dir, "usage-worker.mjs");
+    await writeFile(
+      entry,
+      [
+        "let buffer='';",
+        "process.stdin.on('data', (d) => {",
+        "  buffer += d.toString();",
+        "  let idx;",
+        "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+        "    if (!line) continue;",
+        "    try { const msg = JSON.parse(line);",
+        "      if (msg.method === 'prompt') {",
+        "        if (msg.params?.text === 'used-only') {",
+        "          process.stdout.write(JSON.stringify({ id: msg.id, event: 'usage', payload: { type: 'status', text: 'u', used: 100 } }) + '\\n');",
+        "        } else if (msg.params?.text === 'size-only') {",
+        "          process.stdout.write(JSON.stringify({ id: msg.id, event: 'usage', payload: { type: 'status', text: 's', size: 200000 } }) + '\\n');",
+        "        } else if (msg.params?.text === 'both') {",
+        "          process.stdout.write(JSON.stringify({ id: msg.id, event: 'usage', payload: { type: 'status', text: 'b', used: 100, size: 200000 } }) + '\\n');",
+        "        } else if (msg.params?.text === 'neither') {",
+        "          process.stdout.write(JSON.stringify({ id: msg.id, event: 'usage', payload: { type: 'status', text: 'status msg' } }) + '\\n');",
+        "        }",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { result: { status: 'completed' }, finalText: 'done' } }) + '\\n');",
+        "      } else if (msg.method === 'ensure') {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true, sessionKey: msg.params?.sessionKey, acpxRecordId: 'rec-u' } }) + '\\n');",
+        "      } else {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "      }",
+        "      if (msg.method === 'shutdown') process.exit(0);",
+        "    } catch {}",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all" });
+
+    // 1. used-only: must NOT fabricate size: 0
+    const usedOnlyEvents: Array<{ type: string; used?: number; size?: number }> = [];
+    await engine.prompt({ ...sessionInput, text: "used-only" }, (e) => {
+      if (e.type === "prompt.usage") usedOnlyEvents.push(e);
+    });
+    expect(usedOnlyEvents.length).toBe(0);
+
+    // 2. size-only: must NOT fabricate used: 0
+    const sizeOnlyEvents: Array<{ type: string; used?: number; size?: number }> = [];
+    await engine.prompt({ ...sessionInput, text: "size-only" }, (e) => {
+      if (e.type === "prompt.usage") sizeOnlyEvents.push(e);
+    });
+    expect(sizeOnlyEvents.length).toBe(0);
+
+    // 3. both: emits prompt.usage with real values
+    const bothEvents: Array<{ type: string; used?: number; size?: number }> = [];
+    await engine.prompt({ ...sessionInput, text: "both" }, (e) => {
+      if (e.type === "prompt.usage") bothEvents.push(e);
+    });
+    expect(bothEvents.length).toBe(1);
+    expect(bothEvents[0]!.used).toBe(100);
+    expect(bothEvents[0]!.size).toBe(200000);
+
+    // 4. neither: no prompt.usage event
+    const neitherEvents: Array<{ type: string }> = [];
+    await engine.prompt({ ...sessionInput, text: "neither" }, (e) => {
+      if (e.type === "prompt.usage") neitherEvents.push(e);
+    });
+    expect(neitherEvents.length).toBe(0);
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("WorkerUnavailableError carries the unsupported code", () => {
   expect(new WorkerUnavailableError("nope").code).toBe("RUNTIME_ENGINE_UNSUPPORTED");
