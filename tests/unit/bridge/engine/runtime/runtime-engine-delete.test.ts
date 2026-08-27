@@ -121,13 +121,12 @@ test("deleteRecordFilesStrict retries transient failures until the record is con
     await mkdir(sessionsDir, { recursive: true });
     const recordFile = join(sessionsDir, "retry-rec-5678.json");
     const streamFile = join(sessionsDir, "retry-rec-5678.stream.1.ndjson");
-    await writeFile(recordFile, JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "retry-rec-5678", name: "locked-session" }));
+    await writeFile(recordFile, JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "retry-rec-5678", name: "locked-session", cwd: sessionInput.cwd }));
     await writeFile(streamFile, '{"seq":1}\n');
 
     const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
     // Pre-seed the record id
-    engine["recordIds"].set("locked-session", "retry-rec-5678");
-
+    engine["recordIds"].set(sessionInput.logicalSessionId, "retry-rec-5678");
     // Perform strict delete: retry loop ensures ALL record and stream files are genuinely gone
     await engine.deleteSession({ ...sessionInput, name: "locked-session" });
     await expect(access(recordFile)).rejects.toThrow();
@@ -294,8 +293,7 @@ test("G4 recovery across restart: tombstone allows cold delete to find recordId 
     await writeFile(streamFile, "orphan stream data");
 
     const tombstoneFile = join(sessionsDir, ".xacpx-delete-tombstone-tombstone-rec-2.json");
-    await writeFile(tombstoneFile, JSON.stringify({ name: "tombstone-session", recordId: "tombstone-rec-2" }));
-
+    await writeFile(tombstoneFile, JSON.stringify({ logicalSessionId: sessionInput.logicalSessionId, name: "tombstone-session", cwd: sessionInput.cwd, recordId: "tombstone-rec-2" }));
     // Fresh RuntimeEngine instance (simulating restart: memory cache is empty)
     const freshEngine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
 
@@ -632,6 +630,194 @@ test("G4 identity 4: ambiguous tombstones fail closed and do not delete", async 
     // Neither tombstone was removed
     await access(tomb1);
     await access(tomb2);
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("G4 indeterminate 1: candidate matches name but lacks cwd when criteria has cwd -> rejects and leaves file intact", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-missing-cwd-"));
+  const sessionsDir = join(dir, ".acpx", "sessions");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    await mkdir(sessionsDir, { recursive: true });
+
+    // Candidate has name="backend" and acpx_record_id="rec-missing-cwd" but NO cwd field!
+    const recFile = join(sessionsDir, "rec-missing-cwd.json");
+    await writeFile(
+      recFile,
+      JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "rec-missing-cwd", name: "backend" }),
+    );
+
+    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+
+    // Criteria specifies cwd="/repo/b". Candidate cannot prove identity -> MUST fail closed!
+    await expect(
+      engine.deleteSession({
+        ...sessionInput,
+        name: "backend",
+        cwd: "/repo/b",
+      }),
+    ).rejects.toMatchObject({
+      code: "RUNTIME_INIT_FAILED",
+    });
+
+    // File was NOT deleted
+    await access(recFile);
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("G4 indeterminate 2: candidate matches name and cwd but lacks agent_command when criteria has agent -> rejects", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-missing-agent-"));
+  const sessionsDir = join(dir, ".acpx", "sessions");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    await mkdir(sessionsDir, { recursive: true });
+
+    // Candidate has name="backend", cwd="/repo/b" but NO agent_command field!
+    const recFile = join(sessionsDir, "rec-missing-agent.json");
+    await writeFile(
+      recFile,
+      JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "rec-missing-agent", name: "backend", cwd: "/repo/b" }),
+    );
+
+    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+
+    // Criteria specifies agentCommand="codex" -> candidate cannot prove agent identity -> fail closed!
+    await expect(
+      engine.deleteSession({
+        ...sessionInput,
+        name: "backend",
+        cwd: "/repo/b",
+        agentCommand: "codex",
+      }),
+    ).rejects.toMatchObject({
+      code: "RUNTIME_INIT_FAILED",
+    });
+
+    // File was NOT deleted
+    await access(recFile);
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("G4 indeterminate 3: acpxAgent criterion alone participates in match and rejects non-matching agent_command", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-acpx-agent-"));
+  const sessionsDir = join(dir, ".acpx", "sessions");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    await mkdir(sessionsDir, { recursive: true });
+
+    // Candidate has name="backend", cwd="/repo/b", agent_command="claude"
+    const recFile = join(sessionsDir, "rec-claude.json");
+    await writeFile(
+      recFile,
+      JSON.stringify({
+        schema: "acpx.session.v1",
+        acpx_record_id: "rec-claude",
+        name: "backend",
+        cwd: "/repo/b",
+        agent_command: "claude",
+      }),
+    );
+
+    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+
+    // Criteria specifies only acpxAgent="codex" (no agentCommand / rawCommand)
+    // Deleting session with acpxAgent="codex" must NOT match claude record -> resolves as absent (idempotent success)
+    await expect(
+      engine.deleteSession({
+        ...sessionInput,
+        name: "backend",
+        cwd: "/repo/b",
+        agent: "codex",
+        acpxAgent: "codex",
+        agentCommand: undefined,
+        rawCommand: undefined,
+      }),
+    ).resolves.toEqual({});
+
+    // claude record remains completely untouched on disk!
+    await access(recFile);
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("G4 indeterminate 4: legacy tombstone with different agentCommand is not claimed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-tomb-agent-"));
+  const sessionsDir = join(dir, ".acpx", "sessions");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    await mkdir(sessionsDir, { recursive: true });
+
+    // Legacy tombstone for claude
+    const tombFile = join(sessionsDir, ".xacpx-delete-tombstone-rec-claude.json");
+    await writeFile(
+      tombFile,
+      JSON.stringify({
+        name: "backend",
+        cwd: "/repo/shared",
+        agentCommand: "claude",
+        recordId: "rec-claude-tomb",
+      }),
+    );
+
+    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+
+    // Deleting codex session (without logicalSessionId) -> agentCommand mismatch -> tombstone is NOT claimed
+    await expect(
+      engine.deleteSession({
+        ...sessionInput,
+        logicalSessionId: undefined,
+        name: "backend",
+        cwd: "/repo/shared",
+        agentCommand: "codex",
+      }),
+    ).resolves.toEqual({});
+
+    // Claude tombstone remains on disk
+    await access(tombFile);
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("G4 indeterminate 5: tombstone scan non-ENOENT error causes resolveRecordId to fail closed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-tomb-readdir-fail-"));
+  const sessionsDir = join(dir, "sessions-file");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    // Create a regular file at sessionsDir to cause readdir to fail with ENOTDIR (non-ENOENT)
+    await writeFile(sessionsDir, "not-a-directory");
+
+    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+    await expect(
+      engine.deleteSession({
+        ...sessionInput,
+        name: "test-session",
+        cwd: "/repo/test",
+      }),
+    ).rejects.toMatchObject({
+      code: "RUNTIME_INIT_FAILED",
+    });
 
     await engine.shutdown();
   } finally {

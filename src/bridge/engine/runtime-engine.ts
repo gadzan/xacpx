@@ -34,6 +34,8 @@ export type RecordLookupResult =
  * Scans the sessions directory for an acpx record matching the session name (plan §39).
  * Fails closed if the directory or any candidate file is unreadable (G4).
  */
+export type IdentityMatch = "match" | "no-match" | "indeterminate";
+
 export interface SessionRecordMatchCriteria {
   name: string;
   cwd?: string;
@@ -59,34 +61,48 @@ function normalizePathForComparison(p?: string): string | undefined {
 export function matchSessionRecord(
   parsed: Record<string, unknown>,
   criteria: SessionRecordMatchCriteria,
-): boolean {
-  // 1. Name must match exactly
-  if (parsed.name !== criteria.name) return false;
+): IdentityMatch {
+  if (typeof parsed.name !== "string" || parsed.name !== criteria.name) {
+    return "no-match";
+  }
+  if (typeof parsed.acpx_record_id !== "string" || !parsed.acpx_record_id) {
+    return "indeterminate";
+  }
 
-  // 2. Cwd matching: if criteria specifies cwd and parsed has cwd, normalized paths must match
-  if (criteria.cwd && typeof parsed.cwd === "string") {
+  // Cwd matching: if criteria specifies cwd, candidate MUST prove matching cwd
+  if (criteria.cwd) {
+    if (typeof parsed.cwd !== "string" || !parsed.cwd) {
+      return "indeterminate"; // required identity field missing -> fail closed
+    }
     const criteriaCwd = normalizePathForComparison(criteria.cwd);
     const parsedCwd = normalizePathForComparison(parsed.cwd);
-    if (criteriaCwd && parsedCwd && criteriaCwd !== parsedCwd) {
-      return false;
+    if (criteriaCwd !== parsedCwd) {
+      return "no-match";
     }
   }
 
-  // 3. Agent command matching: if criteria specifies agentCommand (or rawCommand/acpxAgent), match if present
-  const targetCmd = criteria.agentCommand ?? criteria.rawCommand;
-  if (targetCmd && typeof parsed.agent_command === "string") {
-    if (parsed.agent_command !== targetCmd && parsed.agent_command !== criteria.acpxAgent) {
-      return false;
+  // Agent matching: build accepted identities set
+  const acceptedAgents = new Set(
+    [criteria.agentCommand, criteria.rawCommand, criteria.acpxAgent].filter(
+      (v): v is string => typeof v === "string" && v.length > 0,
+    ),
+  );
+  if (acceptedAgents.size > 0) {
+    if (typeof parsed.agent_command !== "string" || !parsed.agent_command) {
+      return "indeterminate"; // required agent identity missing -> fail closed
+    }
+    if (!acceptedAgents.has(parsed.agent_command)) {
+      return "no-match";
     }
   }
 
-  return typeof parsed.acpx_record_id === "string";
+  return "match";
 }
 
 /**
  * Scans the sessions directory for an acpx record matching the session criteria (plan §39).
- * Fails closed if the directory or any candidate file is unreadable or if multiple matching
- * records exist on disk (G4).
+ * Fails closed if the directory or any candidate file is unreadable, if any candidate identity
+ * is indeterminate, or if multiple matching records exist on disk (G4).
  */
 export async function findAcpxRecordIdFromDisk(
   criteria: string | SessionRecordMatchCriteria,
@@ -109,14 +125,18 @@ export async function findAcpxRecordIdFromDisk(
   }
 
   const matches: Array<{ recordId: string; file: string }> = [];
+  const indeterminateCandidates: string[] = [];
 
   for (const file of entries) {
     if (!file.endsWith(".json") || file === "index.json" || file.startsWith(".xacpx-delete-tombstone-")) continue;
     try {
       const content = await readFile(join(sessionsDir, file), "utf8");
       const parsed = JSON.parse(content) as Record<string, unknown>;
-      if (matchSessionRecord(parsed, matchCriteria)) {
+      const matchResult = matchSessionRecord(parsed, matchCriteria);
+      if (matchResult === "match") {
         matches.push({ recordId: parsed.acpx_record_id as string, file });
+      } else if (matchResult === "indeterminate") {
+        indeterminateCandidates.push(file);
       }
     } catch (error) {
       if (!isEnoent(error)) {
@@ -126,6 +146,16 @@ export async function findAcpxRecordIdFromDisk(
         };
       }
     }
+  }
+
+  // Fail closed if any candidate was indeterminate (G4: cannot prove identity != identity matches)
+  if (indeterminateCandidates.length > 0) {
+    return {
+      kind: "failed",
+      error: new Error(
+        `cannot prove session record identity for candidate(s) in "${sessionsDir}" (${indeterminateCandidates.join(", ")}): missing required identity fields (cwd / agent_command); fail closed`,
+      ),
+    };
   }
 
   if (matches.length === 0) {
@@ -190,48 +220,89 @@ async function removeTombstoneStrict(sessionsDir: string, safeId: string): Promi
 
 export function matchTombstoneRecord(
   parsed: DeleteTombstoneRecord,
-  criteria: { logicalSessionId?: string; name: string; cwd?: string; agentCommand?: string },
-): boolean {
+  criteria: {
+    logicalSessionId?: string;
+    name: string;
+    cwd?: string;
+    agentCommand?: string;
+    rawCommand?: string;
+    acpxAgent?: string;
+  },
+): IdentityMatch {
   // 1. Immutable logicalSessionId exact match (highest priority, plan §48)
   if (criteria.logicalSessionId && parsed.logicalSessionId) {
-    return parsed.logicalSessionId === criteria.logicalSessionId;
+    return parsed.logicalSessionId === criteria.logicalSessionId ? "match" : "no-match";
   }
 
   // 2. Name must match
-  if (parsed.name !== criteria.name) return false;
+  if (parsed.name !== criteria.name) return "no-match";
+  if (typeof parsed.recordId !== "string" || !parsed.recordId) return "indeterminate";
 
-  // 3. Normalized cwd match if both present
-  if (criteria.cwd && parsed.cwd) {
+  // 3. Normalized cwd match: if criteria specifies cwd, candidate MUST have valid matching cwd
+  if (criteria.cwd) {
+    if (typeof parsed.cwd !== "string" || !parsed.cwd) {
+      return "indeterminate";
+    }
     const criteriaCwd = normalizePathForComparison(criteria.cwd);
     const parsedCwd = normalizePathForComparison(parsed.cwd);
-    if (criteriaCwd && parsedCwd && criteriaCwd !== parsedCwd) {
-      return false;
+    if (criteriaCwd !== parsedCwd) {
+      return "no-match";
     }
   }
 
-  return typeof parsed.recordId === "string";
+  // 4. Agent match: build accepted identities set
+  const acceptedAgents = new Set(
+    [criteria.agentCommand, criteria.rawCommand, criteria.acpxAgent].filter(
+      (v): v is string => typeof v === "string" && v.length > 0,
+    ),
+  );
+  if (acceptedAgents.size > 0) {
+    if (typeof parsed.agentCommand !== "string" || !parsed.agentCommand) {
+      return "indeterminate";
+    }
+    if (!acceptedAgents.has(parsed.agentCommand)) {
+      return "no-match";
+    }
+  }
+
+  return "match";
 }
 
 async function findTombstoneRecordId(
-  criteria: { logicalSessionId?: string; name: string; cwd?: string; agentCommand?: string },
+  criteria: {
+    logicalSessionId?: string;
+    name: string;
+    cwd?: string;
+    agentCommand?: string;
+    rawCommand?: string;
+    acpxAgent?: string;
+  },
   sessionsDir: string,
 ): Promise<string | undefined> {
   let entries: string[];
   try {
     entries = await readdir(sessionsDir);
-  } catch {
-    return undefined;
+  } catch (error) {
+    if (isEnoent(error)) return undefined;
+    throw new RuntimeError(
+      "RUNTIME_INIT_FAILED",
+      `failed to scan sessions directory for tombstones in "${sessionsDir}": ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 
   const matchingTombstones: Array<{ recordId: string; file: string }> = [];
+  const indeterminateTombstones: string[] = [];
 
   for (const file of entries) {
     if (!file.startsWith(".xacpx-delete-tombstone-") || !file.endsWith(".json")) continue;
     try {
       const content = await readFile(join(sessionsDir, file), "utf8");
       const parsed = JSON.parse(content) as DeleteTombstoneRecord;
-      if (matchTombstoneRecord(parsed, criteria)) {
+      const matchResult = matchTombstoneRecord(parsed, criteria);
+      if (matchResult === "match") {
         matchingTombstones.push({ recordId: parsed.recordId, file });
+      } else if (matchResult === "indeterminate") {
+        indeterminateTombstones.push(file);
       }
     } catch (error) {
       if (!isEnoent(error)) {
@@ -243,8 +314,16 @@ async function findTombstoneRecordId(
     }
   }
 
+  if (indeterminateTombstones.length > 0) {
+    throw new RuntimeError(
+      "RUNTIME_INIT_FAILED",
+      `cannot prove delete tombstone identity for candidate(s) in "${sessionsDir}" (${indeterminateTombstones.join(", ")}): missing required identity fields; fail closed`,
+    );
+  }
+
   if (matchingTombstones.length === 0) return undefined;
   if (matchingTombstones.length === 1 && matchingTombstones[0]) return matchingTombstones[0].recordId;
+
   // Ambiguous tombstones: fail closed!
   throw new RuntimeError(
     "RUNTIME_INIT_FAILED",
@@ -590,7 +669,7 @@ export class RuntimeEngine implements BridgeEngine {
       logicalSessionId: input.logicalSessionId,
       name: input.name,
       cwd: input.cwd,
-      agentCommand: input.agentCommand ?? input.rawCommand,
+      agentCommand: input.agentCommand ?? input.rawCommand ?? input.acpxAgent,
       recordId,
     });
     // 4. Terminate live worker (cancel active turn first, close with discard).
@@ -644,7 +723,9 @@ export class RuntimeEngine implements BridgeEngine {
         logicalSessionId: input.logicalSessionId,
         name: input.name,
         cwd: input.cwd,
-        agentCommand: input.agentCommand ?? input.rawCommand,
+        agentCommand: input.agentCommand,
+        rawCommand: input.rawCommand,
+        acpxAgent: input.acpxAgent,
       },
       this.sessionsDir(),
     );
