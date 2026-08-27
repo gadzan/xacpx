@@ -12,7 +12,7 @@ import type { BridgeEngine, EngineInjectInput, EngineListInput, EnginePromptInpu
 import { mapRuntimeError, type XacpxRuntimeEvent, type XacpxTurnResult, type RuntimeBridgeErrorCode } from "./runtime/runtime-contract";
 import type { RuntimeWorkerClient, RuntimeWorkerClientDeps } from "./runtime/runtime-worker-client";
 import { WorkerCrashError } from "./runtime/runtime-worker-client";
-import { RuntimeWorkerManager } from "./runtime/runtime-worker-manager";
+import { RuntimeWorkerManager, WorkerTeardownPendingError } from "./runtime/runtime-worker-manager";
 import { resolve as resolvePath, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -142,6 +142,9 @@ export class RuntimeEngine implements BridgeEngine {
     try {
       client = this.ensureWorker(input);
     } catch (error) {
+      if (error instanceof WorkerTeardownPendingError) {
+        throw new RuntimeError(error.code, error.message);
+      }
       throw new WorkerUnavailableError(error instanceof Error ? error.message : String(error));
     }
     try {
