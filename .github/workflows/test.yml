@@ -284,8 +284,7 @@ jobs:
         run: bun test tests/unit/process/ipc-guard.test.ts
 
       - name: Windows handle-stable process identity and tree termination
-        run: bun test tests/unit/process/windows-process-identity.test.ts tests/unit/process/windows-process-tree.test.ts
-
+        run: bun test tests/unit/process/windows-process-identity.test.ts tests/unit/process/windows-process-tree.test.ts tests/unit/bridge/engine/runtime/runtime-worker-windows.test.ts
       - name: Windows daemon stop, fencing, and orphan convergence
         run: bun test tests/unit/daemon/daemon-controller.test.ts tests/unit/transport/orphan-registry.test.ts tests/unit/transport/windows-orphan-reaper.test.ts tests/unit/transport/launch-intent-coordinator.test.ts tests/unit/transport/acpx-queue-owner-launcher.test.ts
 

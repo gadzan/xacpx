@@ -298,7 +298,7 @@ export class RuntimeWorkerClient {
     if (this.exitPromise && this.alive) {
       await this.exitPromise.catch(() => {});
     }
-    this.lifecycle = isCrashCleanup ? "failed" : "stopped";
+    this.lifecycle = "stopped";
   }
 }
 

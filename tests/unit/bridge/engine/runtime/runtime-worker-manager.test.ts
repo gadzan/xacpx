@@ -210,11 +210,16 @@ test("deliberate root exit holds terminateProcessTree pending and concurrent ens
 test("unexpected worker crash cleans up process tree before allowing replacement spawn", async () => {
   await withFakeEntry(async (entry) => {
     let cleanupRun = false;
+    let termResolve: (() => void) | undefined;
+    const termPromise = new Promise<void>((r) => { termResolve = r; });
+
     const manager = new RuntimeWorkerManager({
       entryPath: entry,
+      maxRestartsPerWindow: 5,
       clientDeps: {
         terminateProcessTree: async () => {
           cleanupRun = true;
+          await termPromise;
           return { rootOutcome: "killed", outcomes: [] };
         },
       },
@@ -226,11 +231,23 @@ test("unexpected worker crash cleans up process tree before allowing replacement
     // Kill worker root abruptly to simulate unexpected crash
     process.kill(client.ref.pid, "SIGKILL");
 
-    // Wait for exit handler to complete asynchronous tree cleanup
-    await new Promise((r) => setTimeout(r, 100));
+    // Give a short tick for exit event to fire and start cleanup
+    await new Promise((r) => setTimeout(r, 20));
+
+    // While tree cleanup is in flight, concurrent ensureWorker MUST reject
+    expect(() => manager.ensureWorker("sess-crash-clean")).toThrow(WorkerTeardownPendingError);
+
+    // Release tree termination
+    termResolve?.();
+
+    // Wait for tree cleanup to finish
+    await new Promise((r) => setTimeout(r, 50));
 
     // Process tree cleanup was executed
     expect(cleanupRun).toBe(true);
+
+    // After cleanup is verified complete, replacement spawn is allowed within budget!
+    expect(() => manager.ensureWorker("sess-crash-clean")).not.toThrow();
 
     await manager.shutdownAll();
   });
