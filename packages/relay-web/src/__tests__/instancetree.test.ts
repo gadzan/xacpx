@@ -448,12 +448,15 @@ describe("InstanceTree session management", () => {
     expect(centerTabs.tabsFor(key)).toHaveLength(1);
     const clearSession = vi.spyOn(centerTabs, "clearSession");
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    expect(w.find('[data-test="terminal-open-marker"]').exists()).toBe(true);
     await w.find('[data-test="session-menu"]').trigger("click");
     await w.find('[data-test="delete-session"]').trigger("click");
     settleConfirm(true);
     await flushPromises();
     expect(clearSession).toHaveBeenCalledWith(key);
     expect(centerTabs.tabsFor(key)).toEqual([]);
+    await w.vm.$nextTick();
+    expect(w.find('[data-test="terminal-open-marker"]').exists()).toBe(false);
   });
 
   // A connector business error (HTTP 200 {error:…} surfaced by the store) must

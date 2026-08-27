@@ -65,16 +65,21 @@ describe("InstanceTree grouped rendering", () => {
     expect(w.find('[data-test="session-row"]').findComponent({ name: "AgentIcon" }).exists()).toBe(false);
   });
 
-  it("still shows the terminal-open marker in agent mode without inserting a per-row agent icon", () => {
+  it("still shows the terminal-open marker in agent mode without inserting a per-row agent icon or a flex host", () => {
     const store = useInstancesStore();
     store.setGroupMode("i1", "agent");
     store.instances = [instance([sess("web-claude", "web", "claude")])] as never;
     useCenterTabsStore().openTerminal(sessionKey("i1", "web-claude"));
     const w = mountTree();
-    expect(w.find('[data-test="session-row"]').findComponent({ name: "AgentIcon" }).exists()).toBe(false);
-    const marker = w.find('[data-test="terminal-open-marker"]');
+    const row = w.find('[data-test="session-row"]');
+    expect(row.findComponent({ name: "AgentIcon" }).exists()).toBe(false);
+    const marker = row.find('[data-test="terminal-open-marker"]');
     expect(marker.exists()).toBe(true);
     expect(marker.attributes("title")).toBe("Terminal tab is open");
+    // Out of the flex flow: absolute on the row button, no w-0 gap-consuming host.
+    expect(marker.classes()).toContain("absolute");
+    expect(marker.element.closest(".w-0")).toBeNull();
+    expect(marker.element.closest("button")).not.toBeNull();
   });
 
   it("collapses and re-expands a group via its header (view-state only)", async () => {

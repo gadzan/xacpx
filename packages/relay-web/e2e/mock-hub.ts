@@ -70,7 +70,8 @@ function canonicalBase64(text: string): string {
   return Buffer.from(text, "utf8").toString("base64");
 }
 
-export async function startMockHub(): Promise<MockHub> {
+export async function startMockHub(opts?: { extraAliases?: string[] }): Promise<MockHub> {
+  const sessionAliases = [SESSION_ALIAS, ...(opts?.extraAliases ?? [])];
   const sockets: WebSocket[] = [];
   const resizes: Array<{ cols: number; rows: number }> = [];
   const inputs: string[] = [];
@@ -123,16 +124,16 @@ export async function startMockHub(): Promise<MockHub> {
       if (type === "control.sessions.list") {
         json(res, 200, {
           result: {
-            sessions: [{
-              alias: SESSION_ALIAS,
+            sessions: sessionAliases.map((alias, i) => ({
+              alias,
               agent: "codex",
               workspace: "/w",
-              transportSession: "t1",
+              transportSession: `t${i + 1}`,
               running: true,
               archived: false,
-            }],
+            })),
             hasMore: false,
-            nextOffset: 1,
+            nextOffset: sessionAliases.length,
           },
         });
         return;
@@ -262,6 +263,16 @@ export async function startMockHub(): Promise<MockHub> {
         attachmentId: ATTACHMENT_ID,
         role: "controller",
         viewerCount: 1,
+      });
+      return;
+    }
+    if (msg.kind === "terminal-terminate") {
+      send({
+        kind: "terminal-request-failed",
+        requestId: msg.requestId,
+        instanceId: INSTANCE_ID,
+        code: "terminated",
+        message: "terminated",
       });
       return;
     }

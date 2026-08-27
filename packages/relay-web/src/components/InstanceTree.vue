@@ -63,8 +63,9 @@ function isSelected(instanceId: string, alias: string): boolean {
 
 // Terminal-open marker: the center-tabs store already keeps a Terminal tab per session
 // (including background sessions). Overlay it on the agent glyph so the row width and
-// title space stay unchanged. Agent-grouping drops the glyph, so that path uses a
-// zero-width host that overflows into the left padding instead of inserting a new icon.
+// title space stay unchanged. Agent-grouping drops the glyph, so that path pins the
+// badge with position:absolute in the button's left padding — out of the flex flow,
+// so it neither consumes gap-2 nor overlaps the attention-dot.
 function hasOpenTerminal(instanceId: string, alias: string): boolean {
   return centerTabs.hasTerminal(sessionKey(instanceId, alias));
 }
@@ -491,7 +492,7 @@ const rowSwipes = computed(() => {
                 <!-- Selected row: left accent bar. -->
                 <span v-if="isSelected(inst.id, s.alias)" class="absolute bottom-1 left-0 top-1 w-[3px] rounded-full bg-accent" />
                 <button
-                  class="flex min-w-0 flex-1 items-center gap-2 py-2 pl-2.5 pr-1.5 text-left"
+                  class="relative flex min-w-0 flex-1 items-center gap-2 py-2 pl-2.5 pr-1.5 text-left"
                   @click="onRowTap(inst.id, s.alias)"
                 >
                   <Loader2 v-if="s.creating" data-test="session-creating" :size="12" class="shrink-0 animate-spin motion-reduce:animate-none text-accent" />
@@ -504,7 +505,7 @@ const rowSwipes = computed(() => {
                        saves horizontal space; the agent name stays available on hover. Redundant
                        inside an agent-mode group (the group header already carries it) → dropped.
                        Terminal-open is a corner overlay on this glyph so it does not steal title
-                       space; agent-mode uses a zero-width host in the same slot. -->
+                       space. Agent-mode pins the same badge into the button's left padding. -->
                   <span v-if="groupModeOf(inst) !== 'agent'" class="relative shrink-0">
                     <AgentIcon :driver="driverFor(inst, s)" :title="s.agent" :size="14"
                                :class="s.archived ? 'opacity-60' : ''" />
@@ -516,17 +517,16 @@ const rowSwipes = computed(() => {
                       :aria-label="$t('instance.sessionTerminalOpenTitle')"
                     ><SquareTerminal :size="8" :stroke-width="2.5" /></span>
                   </span>
+                  <!-- Agent grouping: out-of-flow, in pl-2.5 (10px) × py-2 bottom padding.
+                       left-0.5 keeps it off the 3px selected bar; bottom-0.5 keeps it below
+                       the vertically-centered attention-dot so the two do not cover each other. -->
                   <span
                     v-else-if="hasOpenTerminal(inst.id, s.alias)"
-                    class="relative w-0 shrink-0 self-end"
-                  >
-                    <span
-                      data-test="terminal-open-marker"
-                      class="absolute bottom-1 right-0 grid h-2.5 w-2.5 -translate-x-0.5 place-items-center rounded-sm bg-surface text-accent ring-1 ring-accent/50"
-                      :title="$t('instance.sessionTerminalOpenTitle')"
-                      :aria-label="$t('instance.sessionTerminalOpenTitle')"
-                    ><SquareTerminal :size="8" :stroke-width="2.5" /></span>
-                  </span>
+                    data-test="terminal-open-marker"
+                    class="absolute bottom-0.5 left-0.5 grid h-2.5 w-2.5 place-items-center rounded-sm bg-surface text-accent ring-1 ring-accent/50"
+                    :title="$t('instance.sessionTerminalOpenTitle')"
+                    :aria-label="$t('instance.sessionTerminalOpenTitle')"
+                  ><SquareTerminal :size="8" :stroke-width="2.5" /></span>
                   <input v-if="renamingFor === `${inst.id}:${s.alias}`" data-test="rename-input"
                          v-model="renameDraft" :maxlength="60" :placeholder="$t('instance.sessionRenamePlaceholder')"
                          class="min-w-0 flex-1 rounded border border-accent bg-bg px-1 py-px text-[13px] text-fg outline-none"
