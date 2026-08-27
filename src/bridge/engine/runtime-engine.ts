@@ -88,6 +88,8 @@ export class RuntimeEngine implements BridgeEngine {
   private permissionGeneration = 0;
   /** worker key → real acpxRecordId from the runtime handle (delete identity). */
   private readonly recordIds = new Map<string, string>();
+  private policyTransitionLock: Promise<void> | null = null;
+  private policyLockRelease?: () => void;
 
   constructor(private readonly options: RuntimeEngineOptions) {
     const entry = options.workerEntryPath ?? defaultWorkerEntry();
@@ -116,6 +118,10 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   private async withWorker<T>(input: EngineSessionInput, run: (client: RuntimeWorkerClient) => Promise<T>): Promise<T> {
+    // Await in-flight policy transition so prompts don't cross transition boundary
+    if (this.policyTransitionLock) {
+      await this.policyTransitionLock;
+    }
     const key = this.workerKey(input);
     let client: RuntimeWorkerClient;
     try {
@@ -213,35 +219,44 @@ export class RuntimeEngine implements BridgeEngine {
     input: EnginePromptInput,
     onEvent?: (event: EnginePromptStreamEvent) => void,
   ): Promise<{ text: string }> {
+    if (this.policyTransitionLock) {
+      await this.policyTransitionLock;
+    }
     const key = this.workerKey(input);
-    return await this.withWorker(input, async (client) => {
-      await this.ensureSessionHandle(input, client);
-      client.lifecycle = "busy";
-      this.activeTurns.add(key);
-      try {
-        const outcome = await client.request<{ result: XacpxTurnResult; finalText: string }>(
-          "prompt",
-          { text: input.text },
-          // Real-time streaming (plan §41): each worker event frame is
-          // forwarded to the bridge sink the moment it arrives — never
-          // batched after turn completion.
-          { onEvent: (payload) => emitPromptEvent(payload as XacpxRuntimeEvent, onEvent) },
-        );
-        if (outcome.result.status === "failed") {
-          const mapped = mapRuntimeError(new Error(outcome.result.error.message));
-          throw new RuntimeError(mapped.code, mapped.message);
+    // Mark the turn active IMMEDIATELY so preflight on concurrent policy
+    // updates detects the in-flight turn and fails closed (plan §32).
+    this.activeTurns.add(key);
+    try {
+      return await this.withWorker(input, async (client) => {
+        client.lifecycle = "busy";
+        await this.ensureSessionHandle(input, client);
+        try {
+          const outcome = await client.request<{ result: XacpxTurnResult; finalText: string }>(
+            "prompt",
+            { text: input.text },
+            // Real-time streaming (plan §41): each worker event frame is
+            // forwarded to the bridge sink the moment it arrives — never
+            // batched after turn completion.
+            { onEvent: (payload) => emitPromptEvent(payload as XacpxRuntimeEvent, onEvent) },
+          );
+          if (outcome.result.status === "failed") {
+            const mapped = mapRuntimeError(new Error(outcome.result.error.message));
+            throw new RuntimeError(mapped.code, mapped.message);
+          }
+          return { text: outcome.finalText };
+        } finally {
+          client.lifecycle = "idle";
         }
-        return { text: outcome.finalText };
-      } finally {
-        this.activeTurns.delete(key);
-        client.lifecycle = "idle";
-        if (this.coolPending.has(key)) {
-          this.coolPending.delete(key);
-          await client.terminate();
-          client.lifecycle = "stopped";
-        }
+      });
+    } finally {
+      this.activeTurns.delete(key);
+      const client = this.manager?.get(key);
+      if (client && this.coolPending.has(key)) {
+        this.coolPending.delete(key);
+        await client.terminate();
+        client.lifecycle = "stopped";
       }
-    });
+    }
   }
 
   async injectMessage(input: EngineInjectInput): Promise<never> {
@@ -440,44 +455,78 @@ export class RuntimeEngine implements BridgeEngine {
     });
   }
 
+  private async acquirePolicyLock(): Promise<void> {
+    while (this.policyTransitionLock) {
+      await this.policyTransitionLock;
+    }
+    const { promise, resolve } = Promise.withResolvers<void>();
+    this.policyTransitionLock = promise;
+    this.policyLockRelease = resolve;
+  }
+
+  private releasePolicyLock(): void {
+    this.policyLockRelease?.();
+    this.policyTransitionLock = null;
+    this.policyLockRelease = undefined;
+  }
+
+  /**
+   * Transactional prepare (plan §32):
+   * 1. Acquire transition lock to serialize updates and block new prompts.
+   * 2. Preflight: if ANY session is active/busy, fail closed immediately.
+   * 3. Rotation: terminate all idle warm workers so no worker running the old
+   *    policy survives. (Workers exit cleanly without closing the session record).
+   */
+  async preparePolicyTransition(): Promise<void> {
+    await this.acquirePolicyLock();
+    try {
+      const live = this.manager?.workers() ?? [];
+      for (const worker of live) {
+        if (this.activeTurns.has(worker.ref.logicalSessionId) || worker.lifecycle === "busy") {
+          throw new RuntimeError(
+            "RUNTIME_PERMISSION_BUSY",
+            `cannot update permission policy while session "${worker.ref.logicalSessionId}" has an active turn (fail closed)`,
+          );
+        }
+      }
+      // Deliberate termination: rotation does NOT consume crash budget (plan §43)
+      await Promise.all(live.map((w) => w.terminate()));
+    } catch (error) {
+      this.releasePolicyLock();
+      throw error;
+    }
+  }
+
+  /** Transactional commit: snapshot new policy into RuntimeEngine; next spawns use it. */
+  async commitPolicyTransition(policy: {
+    permissionMode: PermissionMode;
+    nonInteractivePermissions: NonInteractivePermissions;
+    permissionPolicy?: string;
+  }): Promise<void> {
+    try {
+      this.options.permissionMode = policy.permissionMode;
+      this.options.nonInteractivePermissions = policy.nonInteractivePermissions;
+      this.options.permissionPolicy = policy.permissionPolicy;
+      this.permissionGeneration++;
+    } finally {
+      this.releasePolicyLock();
+    }
+  }
+
+  /** Transactional rollback: release lock without committing when CLI update fails. */
+  async rollbackPolicyTransition(): Promise<void> {
+    this.releasePolicyLock();
+  }
+
   async updatePermissionPolicy(policy: {
     permissionMode: PermissionMode;
     nonInteractivePermissions: NonInteractivePermissions;
     permissionPolicy?: string;
   }): Promise<Record<string, never>> {
-    // Snapshot swap (plan §32) with FAILURE PROPAGATION: the /pm flow rolls
-    // config back when this rejects, so success must mean every live worker
-    // acknowledged the new generation. Options are only committed locally when
-    // the push succeeds — a rejected push leaves the previous snapshot active.
-    const generation = ++this.permissionGeneration;
-    const live = this.manager?.workers() ?? [];
-    const results = await Promise.allSettled(
-      live.map((worker) =>
-        worker.request("permission.update", {
-          generation,
-          permissionMode: policy.permissionMode,
-          ...(policy.nonInteractivePermissions ? { nonInteractivePermissions: policy.nonInteractivePermissions } : {}),
-        }),
-      ),
-    );
-    const failures = results
-      .map((result, index) => (result.status === "rejected" ? { worker: live[index], reason: result.reason } : null))
-      .filter((entry): entry is { worker: RuntimeWorkerClient; reason: unknown } => entry !== null);
-    if (failures.length > 0) {
-      const detail = failures
-        .map(({ worker, reason }) => `worker ${worker.ref.logicalSessionId}: ${reason instanceof Error ? reason.message : String(reason)}`)
-        .join("; ");
-      throw new RuntimeError(
-        "RUNTIME_PERMISSION_DENIED",
-        `permission update failed on ${failures.length} worker(s); config NOT applied — ${detail}`,
-      );
-    }
-    this.options.permissionMode = policy.permissionMode;
-    this.options.nonInteractivePermissions = policy.nonInteractivePermissions;
-    this.options.permissionPolicy = policy.permissionPolicy;
+    await this.preparePolicyTransition();
+    await this.commitPolicyTransition(policy);
     return {};
   }
-
   async shutdown(): Promise<Record<string, never>> {
     await this.manager?.shutdownAll();
     return {};

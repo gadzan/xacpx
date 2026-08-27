@@ -142,16 +142,36 @@ export class EngineRouter implements BridgeEngine {
     nonInteractivePermissions: NonInteractivePermissions;
     permissionPolicy?: string;
   }): Promise<Record<string, never>> {
-    // Plan §32 with failure propagation: /pm rolls its config back only when
-    // this rejects, so success must mean every engine applied the policy.
-    // Promise.all preserves the first rejection and lets the caller roll back.
-    await Promise.all([
-      this.cli.updatePermissionPolicy(policy),
-      ...(this.runtime ? [this.runtime.updatePermissionPolicy(policy)] : []),
-    ]);
+    // Transactional fanout (plan §32):
+    // 1. Runtime preflight + rotation: verify all workers are idle, terminate
+    //    them, and hold the transition lock so no new prompts sneak through.
+    //    If ANY worker is busy, this rejects immediately (fail closed) before CLI changes.
+    const hasRuntimePrepare = typeof this.runtime?.preparePolicyTransition === "function";
+    if (hasRuntimePrepare) {
+      await this.runtime!.preparePolicyTransition!();
+    }
+
+    // 2. CLI update (must succeed before committing the new Runtime snapshot)
+    try {
+      await this.cli.updatePermissionPolicy(policy);
+    } catch (error) {
+      // 3. Compensation: if CLI fails, release the Runtime lock WITHOUT
+      //    committing. Old policy remains active; next spawn uses old policy.
+      if (hasRuntimePrepare) {
+        await this.runtime?.rollbackPolicyTransition?.().catch(() => {});
+      }
+      throw error;
+    }
+
+    // 4. Runtime commit: snapshot new policy into RuntimeEngine and release the lock.
+    if (typeof this.runtime?.commitPolicyTransition === "function") {
+      await this.runtime.commitPolicyTransition(policy);
+    } else if (this.runtime) {
+      await this.runtime.updatePermissionPolicy(policy);
+    }
+
     return {};
   }
-
   async shutdown(): Promise<Record<string, never>> {
     // Plan §18: stop CLI work AND gracefully wind down every Runtime worker.
     await Promise.allSettled([this.cli.shutdown(), ...(this.runtime ? [this.runtime.shutdown()] : [])]);

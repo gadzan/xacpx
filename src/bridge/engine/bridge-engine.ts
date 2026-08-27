@@ -37,6 +37,16 @@ export interface BridgeEngine {
     nonInteractivePermissions: NonInteractivePermissions;
     permissionPolicy?: string;
   }): Promise<Record<string, never>>;
+  /** Transactional prepare: preflight idle workers + rotate (plan §32). */
+  preparePolicyTransition?(): Promise<void>;
+  /** Transactional commit: snapshot new policy after all engines prepared (plan §32). */
+  commitPolicyTransition?(policy: {
+    permissionMode: PermissionMode;
+    nonInteractivePermissions: NonInteractivePermissions;
+    permissionPolicy?: string;
+  }): Promise<void>;
+  /** Transactional rollback: release locks without committing when CLI update fails. */
+  rollbackPolicyTransition?(): Promise<void>;
   shutdown(): Promise<Record<string, never>>;
 }
 

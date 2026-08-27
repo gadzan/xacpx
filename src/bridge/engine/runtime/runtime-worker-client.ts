@@ -10,7 +10,7 @@ import {
 } from "./runtime-worker-protocol";
 import { mapRuntimeError } from "./runtime-contract";
 import { terminateProcessTree } from "../../../process/terminate-process-tree";
-import { probeWindowsProcessIdentity } from "../../../process/windows-process-tree";
+import { probeWindowsProcessIdentity, type WindowsProbeStatus } from "../../../process/windows-process-tree";
 
 export interface RuntimeWorkerRef {
   pid: number;
@@ -20,6 +20,10 @@ export interface RuntimeWorkerRef {
   generation: string;
   /** Windows creation date for verified tree termination (prevent PID reuse). */
   creationDate?: string | null;
+}
+
+export interface RuntimeWorkerClientDeps {
+  probeWindowsIdentity?: (pid: number) => Promise<WindowsProbeStatus>;
 }
 
 export type WorkerLifecycle = "starting" | "ready" | "busy" | "idle" | "cooling" | "stopped" | "failed";
@@ -43,12 +47,14 @@ export class RuntimeWorkerClient {
   private nextRequestId = 1;
   /** True only when the host deliberately requested cooling, shutdown, or delete. */
   private deliberateShutdown = false;
+  private bootstrapPromise?: Promise<void>;
 
   constructor(
     private readonly entryPath: string,
     private readonly logicalSessionId: string,
     private readonly generation = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     private readonly onExit?: (client: RuntimeWorkerClient, code: number | null) => void,
+    private readonly deps?: RuntimeWorkerClientDeps,
   ) {
     this.ref = { pid: -1, logicalSessionId, startedAt: new Date().toISOString(), generation };
   }
@@ -61,11 +67,31 @@ export class RuntimeWorkerClient {
     if (this.child) return;
     this.child = spawn(process.execPath, [this.entryPath], { stdio: ["pipe", "pipe", "pipe"] });
     this.ref.pid = this.child.pid ?? -1;
-    if (process.platform === "win32" && this.ref.pid > 0) {
-      void probeWindowsProcessIdentity(this.ref.pid).then((res) => {
-        if (res.status === "found") this.ref.creationDate = res.identity.creationDate;
+
+    // Windows bootstrap gate (plan §44): identity MUST be verified before the
+    // worker accepts RPCs or is treated as ready. Never fire-and-forget.
+    if ((process.platform === "win32" || this.deps?.probeWindowsIdentity) && this.ref.pid > 0) {
+      const probeFn = this.deps?.probeWindowsIdentity ?? probeWindowsProcessIdentity;
+      this.bootstrapPromise = probeFn(this.ref.pid).then((res) => {
+        if (res.status !== "found") {
+          this.lifecycle = "failed";
+          try {
+            this.child?.kill("SIGTERM");
+          } catch {
+            // best-effort cleanup on bootstrap fail
+          }
+          throw new WorkerBootstrapError(
+            `Windows process identity probe failed for worker pid ${this.ref.pid} (status: ${res.status}); fail closed`,
+          );
+        }
+        // Immutable identity: once captured, never mutated or re-probed
+        this.ref.creationDate = res.identity.creationDate;
       });
+      // Register handled branch to avoid unhandled rejection if spawn() is
+      // invoked directly; request() still awaits this.bootstrapPromise directly.
+      this.bootstrapPromise.catch(() => {});
     }
+
     this.child.on("exit", (code) => {
       // Plan §43: deliberate stop vs unexpected crash is classified by INTENT,
       // not raw exit code. Signal exits and clean-exit crashes are both caught.
@@ -108,9 +134,13 @@ export class RuntimeWorkerClient {
     else pending.reject(new WorkerRpcError(response.error.code, response.error.message));
   }
 
-  request<T>(method: RuntimeWorkerRequestMethod, params?: unknown, options?: { onEvent?: (payload: unknown) => void }): Promise<T> {
+  async request<T>(method: RuntimeWorkerRequestMethod, params?: unknown, options?: { onEvent?: (payload: unknown) => void }): Promise<T> {
     if (!this.alive) {
       this.spawn();
+    }
+    // Hard gate: identity capture must settle before any business RPC enters the worker
+    if (this.bootstrapPromise) {
+      await this.bootstrapPromise;
     }
     const id = `w${this.nextRequestId++}`;
     const payload: RuntimeWorkerRequest = { id, method, ...(params !== undefined ? { params } : {}) };
@@ -150,13 +180,32 @@ export class RuntimeWorkerClient {
     } catch {
       /* already closed */
     }
-    // Verified tree termination (plan §44): pass creation date on Windows
-    // to prevent accidental kill if the PID was recycled by the OS.
-    await terminateProcessTree({
-      pid: this.ref.pid,
-      creationDate: this.ref.creationDate ?? null,
-    });
+
+    if (process.platform === "win32" || this.deps?.probeWindowsIdentity) {
+      if (!this.ref.creationDate) {
+        // Hard rule (plan §44): Windows terminate MUST NOT fall back to bare PID.
+        // If identity was never verified, fail closed.
+        this.lifecycle = "stopped";
+        throw new Error(
+          `cannot terminate Windows worker (pid ${this.ref.pid}) without verified creationDate; refusing bare PID kill`,
+        );
+      }
+      await terminateProcessTree({
+        pid: this.ref.pid,
+        creationDate: this.ref.creationDate,
+      });
+    } else {
+      await terminateProcessTree(this.ref.pid);
+    }
     this.lifecycle = "stopped";
+  }
+}
+
+export class WorkerBootstrapError extends Error {
+  readonly code = "RUNTIME_WORKER_BOOTSTRAP_FAILED";
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkerBootstrapError";
   }
 }
 
@@ -172,4 +221,3 @@ export class WorkerRpcError extends Error {
     super(message);
   }
 }
-

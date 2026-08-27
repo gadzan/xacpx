@@ -1,6 +1,6 @@
 import { statSync } from "node:fs";
 
-import { RuntimeWorkerClient, type WorkerLifecycle, type RuntimeWorkerRef } from "./runtime-worker-client";
+import { RuntimeWorkerClient, type WorkerLifecycle, type RuntimeWorkerRef, type RuntimeWorkerClientDeps } from "./runtime-worker-client";
 
 /**
  * Host-side registry of per-session Runtime Workers (plan PR3). One session →
@@ -12,6 +12,7 @@ export interface RuntimeWorkerManagerOptions {
   entryPath: string;
   maxRestartsPerWindow?: number;
   restartWindowMs?: number;
+  clientDeps?: RuntimeWorkerClientDeps;
 }
 
 export class RuntimeWorkerManager {
@@ -44,6 +45,7 @@ export class RuntimeWorkerManager {
     this.assertRestartBudget(logicalSessionId);
     worker = new RuntimeWorkerClient(this.options.entryPath, logicalSessionId, undefined, (client, code) =>
       this.handleExit(logicalSessionId, client, code),
+      this.options.clientDeps,
     );
     worker.spawn();
     this.workersByKey.set(logicalSessionId, worker);
