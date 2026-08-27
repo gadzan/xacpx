@@ -190,6 +190,28 @@ export class RuntimeWorkerClient {
     }
   }
 
+  /**
+   * Internal control RPC path (e.g. graceful shutdown): delivers the message
+   * to the child process during teardown without triggering the public
+   * WorkerTeardownPendingError guard meant for external business RPCs.
+   */
+  private sendControlMessage<T>(method: RuntimeWorkerRequestMethod, params?: unknown): Promise<T> {
+    if (!this.child || !this.alive || this.child.stdin?.writableEnded) {
+      return Promise.reject(new Error("cannot send control message to closed worker"));
+    }
+    const id = `w${this.nextRequestId++}`;
+    const payload: RuntimeWorkerRequest = { id, method, ...(params !== undefined ? { params } : {}) };
+    return new Promise<T>((resolve, reject) => {
+      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
+      this.child!.stdin!.write(encodeWorkerMessage(payload), (error) => {
+        if (error) {
+          this.pending.delete(id);
+          reject(error);
+        }
+      });
+    });
+  }
+
   /** Graceful shutdown request, then hard kill after a bounded grace (plan §16). */
   async shutdown(graceMs = 2_000): Promise<void> {
     if (!this.alive) return;
@@ -198,7 +220,7 @@ export class RuntimeWorkerClient {
     if (!this.child?.stdin?.writableEnded) {
       try {
         await Promise.race([
-          this.request("shutdown"),
+          this.sendControlMessage("shutdown"),
           new Promise<never>((_, reject) => setTimeout(() => reject(new Error("grace elapsed")), graceMs).unref()),
         ]);
       } catch {

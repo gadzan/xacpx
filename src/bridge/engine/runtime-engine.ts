@@ -1,4 +1,4 @@
-import { access, readdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { access, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { statSync } from "node:fs";
 import { join } from "node:path";
 
@@ -74,19 +74,45 @@ function tombstonePath(sessionsDir: string, safeId: string): string {
   return join(sessionsDir, `.xacpx-delete-tombstone-${safeId}.json`);
 }
 
-async function writeTombstone(sessionsDir: string, safeId: string, record: { name: string; recordId: string }): Promise<void> {
+async function writeTombstoneStrict(sessionsDir: string, safeId: string, record: { name: string; recordId: string }): Promise<void> {
+  const target = tombstonePath(sessionsDir, safeId);
+  const tmp = join(sessionsDir, `.xacpx-delete-tombstone-${safeId}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
   try {
-    await writeFile(tombstonePath(sessionsDir, safeId), JSON.stringify(record), "utf8");
-  } catch {
-    // best-effort persistence
+    await writeFile(tmp, JSON.stringify(record), "utf8");
+    await rename(tmp, target);
+    // Strict verify: ensure the tombstone is actually readable on disk
+    const content = await readFile(target, "utf8");
+    const parsed = JSON.parse(content) as { recordId?: string };
+    if (parsed.recordId !== record.recordId) {
+      throw new Error("tombstone content mismatch after atomic write");
+    }
+  } catch (error) {
+    try { await unlink(tmp); } catch {}
+    throw new RuntimeError(
+      "RUNTIME_INIT_FAILED",
+      `failed to persist delete tombstone for record "${record.recordId}" in "${sessionsDir}": ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
-async function removeTombstone(sessionsDir: string, safeId: string): Promise<void> {
+async function removeTombstoneStrict(sessionsDir: string, safeId: string): Promise<void> {
+  const target = tombstonePath(sessionsDir, safeId);
   try {
-    await unlink(tombstonePath(sessionsDir, safeId));
-  } catch {
-    // already unlinked
+    await unlink(target);
+  } catch (error) {
+    if (isEnoent(error)) return; // genuinely gone
+    throw new RuntimeError(
+      "RUNTIME_INIT_FAILED",
+      `failed to remove delete tombstone "${target}": ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  try {
+    await access(target);
+    // Still accessible -> unlink did not take
+    throw new RuntimeError("RUNTIME_INIT_FAILED", `delete tombstone "${target}" still exists after unlink`);
+  } catch (error) {
+    if (isEnoent(error)) return; // verified gone
+    throw error;
   }
 }
 
@@ -429,11 +455,25 @@ export class RuntimeEngine implements BridgeEngine {
       await this.policyTransitionLock;
     }
     const key = this.workerKey(input);
-    // 1. Resolve REAL record id (plan §19 order). Never fallback to logicalSessionId.
     const client = this.manager?.get(key);
+
+    // 1. Resolve REAL record id (plan §19 order). Never fallback to logicalSessionId.
     const recordId = await this.resolveRecordId(input, client);
 
-    // 2. Terminate live worker (cancel active turn first).
+    // 2. If no record exists on disk or memory, idempotent success (G4).
+    if (!recordId) {
+      this.recordIds.delete(key);
+      return {};
+    }
+
+    const safeId = encodeURIComponent(recordId);
+    const sessionsDir = this.sessionsDir();
+
+    // 3. STRICT TRANSACTION BOUNDARY (G4): persist delete intent BEFORE any destructive operations!
+    // If tombstone write fails, deleteSession aborts immediately without touching worker or files.
+    await writeTombstoneStrict(sessionsDir, safeId, { name: input.name, recordId });
+
+    // 4. Terminate live worker (cancel active turn first, close with discard).
     if (client && client.alive) {
       if (this.activeTurns.has(key)) {
         await client.request("cancel").catch(() => {});
@@ -444,26 +484,14 @@ export class RuntimeEngine implements BridgeEngine {
     this.activeTurns.delete(key);
     this.coolPending.delete(key);
 
-    // 3. If no record exists on disk or memory, idempotent success (G4).
-    if (!recordId) {
-      this.recordIds.delete(key);
-      return {};
-    }
-
-    const safeId = encodeURIComponent(recordId);
-    const sessionsDir = this.sessionsDir();
-    // Persist delete intent (G4 crash safety): survives process crash/restart
-    // so retries after partial unlinks still know the real recordId
-    await writeTombstone(sessionsDir, safeId, { name: input.name, recordId });
-
     try {
-      // 4. Strict deletion with post-verification and retry.
+      // 5. Strict deletion with post-verification and retry.
       await this.deleteRecordFilesStrict(recordId);
-      // Clean up tombstone + memory cache ONLY after all artifacts are verified gone
-      await removeTombstone(sessionsDir, safeId);
+      // Clean up tombstone & memory cache ONLY after all artifacts are verified gone (G4).
+      await removeTombstoneStrict(sessionsDir, safeId);
       this.recordIds.delete(key);
     } catch (error) {
-      // Deletion did not complete (e.g. stubborn stream file).
+      // Deletion did not complete (e.g. stubborn stream file or tombstone unlink failure).
       // Keep memory cache AND tombstone on disk so retries still know recordId!
       throw error;
     }

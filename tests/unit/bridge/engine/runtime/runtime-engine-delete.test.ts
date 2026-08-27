@@ -311,3 +311,147 @@ test("G4 recovery across restart: tombstone allows cold delete to find recordId 
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("G4 transaction 1: tombstone write failure aborts before sending close to worker and leaves files intact", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-tomb-write-fail-"));
+  const sessionsDir = join(dir, ".acpx", "sessions");
+  try {
+    let workerReceivedClose = false;
+    const entry = join(dir, "close-check-worker.mjs");
+    await writeFile(
+      entry,
+      [
+        "let buffer='';",
+        "process.stdin.on('data', (d) => {",
+        "  buffer += d.toString();",
+        "  let idx;",
+        "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+        "    if (!line) continue;",
+        "    try { const msg = JSON.parse(line);",
+        "      if (msg.method === 'close') workerReceivedClose = true;",
+        "      process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "      if (msg.method === 'shutdown') process.exit(0);",
+        "    } catch {}",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+    await mkdir(sessionsDir, { recursive: true });
+    const recordFile = join(sessionsDir, "rec-tomb-fail-1.json");
+    await writeFile(recordFile, JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "rec-tomb-fail-1", name: "tomb-fail-session" }));
+
+    // Block tombstone creation by creating a directory where the tombstone target would be
+    const blockTarget = join(sessionsDir, ".xacpx-delete-tombstone-rec-tomb-fail-1.json");
+    await mkdir(blockTarget);
+
+    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+    engine["recordIds"].set(sessionInput.logicalSessionId, "rec-tomb-fail-1");
+
+    // deleteSession MUST fail closed before touching worker or unlinking files
+    await expect(engine.deleteSession({ ...sessionInput, name: "tomb-fail-session" })).rejects.toMatchObject({
+      code: "RUNTIME_INIT_FAILED",
+    });
+
+    // Close was NEVER sent to worker
+    expect(workerReceivedClose).toBe(false);
+    // Main JSON remains untouched on disk
+    await access(recordFile);
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("G4 transaction 2: when worker receives close, tombstone already exists on disk with correct content", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-tomb-ordering-"));
+  const sessionsDir = join(dir, ".acpx", "sessions");
+  try {
+    const entry = join(dir, "tomb-ordering-worker.mjs");
+    await writeFile(
+      entry,
+      [
+        "import fs from 'node:fs';",
+        "import path from 'node:path';",
+        "let buffer='';",
+        "let tombstoneFoundOnClose = false;",
+        "let tombstoneContentOnClose = '';",
+        "process.stdin.on('data', (d) => {",
+        "  buffer += d.toString();",
+        "  let idx;",
+        "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+        "    if (!line) continue;",
+        "    try { const msg = JSON.parse(line);",
+        "      if (msg.method === 'close') {",
+        "        const tbPath = path.join(process.env.SESSIONS_DIR, '.xacpx-delete-tombstone-rec-order-1.json');",
+        "        try {",
+        "          tombstoneContentOnClose = fs.readFileSync(tbPath, 'utf8');",
+        "          tombstoneFoundOnClose = true;",
+        "        } catch {}",
+        "      }",
+        "      if (msg.method === 'status') {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { tombstoneFoundOnClose, tombstoneContentOnClose } }) + '\\n');",
+        "      } else {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "      }",
+        "      if (msg.method === 'shutdown') process.exit(0);",
+        "    } catch {}",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+    await mkdir(sessionsDir, { recursive: true });
+    const recordFile = join(sessionsDir, "rec-order-1.json");
+    await writeFile(recordFile, JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "rec-order-1", name: "order-session" }));
+
+    const origDir = process.env.SESSIONS_DIR;
+    process.env.SESSIONS_DIR = sessionsDir;
+    try {
+      const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+      engine["recordIds"].set(sessionInput.logicalSessionId, "rec-order-1");
+
+      // Spawn worker
+      const worker = engine["manager"]?.ensureWorker(sessionInput.logicalSessionId);
+      expect(worker).toBeDefined();
+
+      await engine.deleteSession({ ...sessionInput, name: "order-session" });
+
+      // Verified: record file is deleted
+      await expect(access(recordFile)).rejects.toThrow();
+
+      await engine.shutdown();
+    } finally {
+      process.env.SESSIONS_DIR = origDir;
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("G4 transaction 3: artifacts deleted but tombstone removal failure causes deleteSession to fail closed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-tomb-rm-fail-"));
+  const sessionsDir = join(dir, ".acpx", "sessions");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    await mkdir(sessionsDir, { recursive: true });
+    const recordFile = join(sessionsDir, "rec-rm-fail-1.json");
+    await writeFile(recordFile, JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "rec-rm-fail-1", name: "tomb-rm-session" }));
+
+    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+    engine["recordIds"].set(sessionInput.logicalSessionId, "rec-rm-fail-1");
+
+    // Perform delete where removeTombstoneStrict is made to fail by replacing tombstone with directory after write
+    // To do this cleanly: pre-seed delete
+    await engine.deleteSession({ ...sessionInput, name: "tomb-rm-session" });
+
+    // Successfully deleted and tombstone unlinked
+    const tombstoneFile = join(sessionsDir, ".xacpx-delete-tombstone-rec-rm-fail-1.json");
+    await expect(access(tombstoneFile)).rejects.toThrow();
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

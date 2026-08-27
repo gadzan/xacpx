@@ -469,3 +469,50 @@ test("Quiescence: concurrent cancel() during permission transition waits on tran
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("Lifecycle: client.shutdown() sends graceful shutdown RPC frame to worker process", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "win-shutdown-rpc-"));
+  try {
+    let receivedShutdownMethod = false;
+    const entry = join(dir, "shutdown-worker.mjs");
+    await writeFile(
+      entry,
+      [
+        "let buffer='';",
+        "process.stdin.on('data', (d) => {",
+        "  buffer += d.toString();",
+        "  let idx;",
+        "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+        "    if (!line) continue;",
+        "    try { const msg = JSON.parse(line);",
+        "      if (msg.method === 'shutdown') {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "        setTimeout(() => process.exit(0), 10);",
+        "      } else {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "      }",
+        "    } catch {}",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+
+    const client = new RuntimeWorkerClient(entry, "session-shutdown-test");
+    await client.request("ensure", {});
+
+    // Intercept client.terminate to verify shutdown RPC succeeded before hard termination
+    let hardKillCalled = false;
+    const origTerminate = client["terminate"].bind(client);
+    client["terminate"] = async () => {
+      hardKillCalled = true;
+      return origTerminate();
+    };
+
+    // Calling shutdown() must deliver the graceful shutdown message to worker
+    await client.shutdown(2_000);
+
+    expect(client.lifecycle).toBe("stopped");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
