@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { ArchiveRestore, ChevronDown, ChevronRight, Folder, Link2, Loader2, Moon, MoreHorizontal, Pencil, Plus, Settings2, Trash2, Unplug } from "lucide-vue-next";
+import { ArchiveRestore, ChevronDown, ChevronRight, Folder, Link2, Loader2, Moon, MoreHorizontal, Pencil, Plus, Settings2, SquareTerminal, Trash2, Unplug } from "lucide-vue-next";
 import { useInstancesStore, groupArchivedKey, parseGroupArchivedKey } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
@@ -59,6 +59,14 @@ function elapsedLabel(instanceId: string, alias: string): string {
 
 function isSelected(instanceId: string, alias: string): boolean {
   return chat.instanceId === instanceId && chat.sessionAlias === alias;
+}
+
+// Terminal-open marker: the center-tabs store already keeps a Terminal tab per session
+// (including background sessions). Overlay it on the agent glyph so the row width and
+// title space stay unchanged. Agent-grouping drops the glyph, so that path uses a
+// zero-width host that overflows into the left padding instead of inserting a new icon.
+function hasOpenTerminal(instanceId: string, alias: string): boolean {
+  return centerTabs.hasTerminal(sessionKey(instanceId, alias));
 }
 
 // Per-instance collapse state (expanded by default). Sessions are loaded by an explicit
@@ -494,9 +502,31 @@ const rowSwipes = computed(() => {
                   <span v-else-if="!s.archived && s.running" data-test="attention-dot" data-attention="running" class="h-2 w-2 shrink-0 rounded-full bg-run" />
                   <!-- Agent brand glyph (driver icon) BEFORE the name, in place of a text badge —
                        saves horizontal space; the agent name stays available on hover. Redundant
-                       inside an agent-mode group (the group header already carries it) → dropped. -->
-                  <AgentIcon v-if="groupModeOf(inst) !== 'agent'" :driver="driverFor(inst, s)" :title="s.agent" :size="14"
-                             :class="s.archived ? 'opacity-60' : ''" />
+                       inside an agent-mode group (the group header already carries it) → dropped.
+                       Terminal-open is a corner overlay on this glyph so it does not steal title
+                       space; agent-mode uses a zero-width host in the same slot. -->
+                  <span v-if="groupModeOf(inst) !== 'agent'" class="relative shrink-0">
+                    <AgentIcon :driver="driverFor(inst, s)" :title="s.agent" :size="14"
+                               :class="s.archived ? 'opacity-60' : ''" />
+                    <span
+                      v-if="hasOpenTerminal(inst.id, s.alias)"
+                      data-test="terminal-open-marker"
+                      class="absolute -bottom-px -right-px grid h-2.5 w-2.5 place-items-center rounded-sm bg-surface text-accent ring-1 ring-accent/50"
+                      :title="$t('instance.sessionTerminalOpenTitle')"
+                      :aria-label="$t('instance.sessionTerminalOpenTitle')"
+                    ><SquareTerminal :size="8" :stroke-width="2.5" /></span>
+                  </span>
+                  <span
+                    v-else-if="hasOpenTerminal(inst.id, s.alias)"
+                    data-test="terminal-open-marker"
+                    class="relative w-0 shrink-0 self-end"
+                    :title="$t('instance.sessionTerminalOpenTitle')"
+                    :aria-label="$t('instance.sessionTerminalOpenTitle')"
+                  >
+                    <span class="absolute bottom-1 right-0 grid h-2.5 w-2.5 -translate-x-0.5 place-items-center rounded-sm bg-surface text-accent ring-1 ring-accent/50">
+                      <SquareTerminal :size="8" :stroke-width="2.5" />
+                    </span>
+                  </span>
                   <input v-if="renamingFor === `${inst.id}:${s.alias}`" data-test="rename-input"
                          v-model="renameDraft" :maxlength="60" :placeholder="$t('instance.sessionRenamePlaceholder')"
                          class="min-w-0 flex-1 rounded border border-accent bg-bg px-1 py-px text-[13px] text-fg outline-none"

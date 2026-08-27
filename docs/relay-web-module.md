@@ -202,6 +202,10 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   仅「醒着且 `warm === false`」的会话行显示 `Unplug` 小图标（`data-test="cold-indicator"`，
   title = `instance.sessionColdTitle`：进程已退出，下条消息将冷启动）；`warm` 缺失（老实例）或已睡眠
   的行不显示。Hub 对 RPC 响应透传，老实例无需升级即可兼容。
+- **打开终端指示器**：会话行不另占标题空间。`center-tabs` 里该会话仍挂着 Terminal tab 时，在
+  左侧 Agent 图标右下角叠一个极小的 `SquareTerminal` 角标（`data-test="terminal-open-marker"`，
+  title = `instance.sessionTerminalOpenTitle`）。切到其他会话时角标留在原行；关掉该 tab、睡眠或
+  删除会话后消失。Agent 分组下行内无品牌图标，角标以零宽度叠进左侧 padding，同样不挤标题。
 
 ## 实例配置管理 Modal（`ManageInstanceDialog.vue`）
 

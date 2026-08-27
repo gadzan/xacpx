@@ -156,6 +156,20 @@ describe("center-tabs store", () => {
     expect(term).toEqual({ kind: "terminal", id: "terminal" });
   });
 
+  it("hasTerminal tracks the Terminal tab independently of the active tab and of other sessions", () => {
+    const s = useCenterTabsStore();
+    const K2 = sessionKey("i1", "s2");
+    expect(s.hasTerminal(K)).toBe(false);
+    s.openTerminal(K);
+    s.openFile(K2, "a.ts");
+    expect(s.hasTerminal(K)).toBe(true);
+    expect(s.hasTerminal(K2)).toBe(false);
+    s.setActive(K, "chat"); // tab still open, just not focused
+    expect(s.hasTerminal(K)).toBe(true);
+    s.closeTab(K, "terminal");
+    expect(s.hasTerminal(K)).toBe(false);
+  });
+
   it("persists tab state to sessionStorage after the debounce window", async () => {
     vi.useFakeTimers();
     try {

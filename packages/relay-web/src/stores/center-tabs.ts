@@ -80,6 +80,11 @@ export const useCenterTabsStore = defineStore("center-tabs", () => {
     return bySession.value[key]?.activeId ?? "chat";
   }
 
+  /** True while this session still has a Terminal tab in the center pane (including background sessions). */
+  function hasTerminal(key: string): boolean {
+    return (bySession.value[key]?.tabs ?? []).some((t) => t.kind === "terminal");
+  }
+
   /** Insert-or-activate a tab by id: existing id just activates; new id is appended and activated. */
   function upsertAndActivate(key: string, tab: CenterTab): void {
     const current = bySession.value[key] ?? { tabs: [], activeId: "chat" };
@@ -190,7 +195,7 @@ export const useCenterTabsStore = defineStore("center-tabs", () => {
   }
 
   return {
-    tabsFor, activeFor,
+    tabsFor, activeFor, hasTerminal,
     openFile, openDiff, openTerminal,
     setActive, closeTab, reorder, clearSession, allOpenTabs,
     setDirty, isDirty, closeTabGuarded,

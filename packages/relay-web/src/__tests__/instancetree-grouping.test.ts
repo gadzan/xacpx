@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import InstanceTree from "../components/InstanceTree.vue";
 import ManageInstanceDialog from "../components/ManageInstanceDialog.vue";
 import { useInstancesStore } from "../stores/instances";
+import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { loadGroupMode } from "../lib/sidebar-group-mode";
 
 const sess = (alias: string, workspace: string, agent: string, archived = false) => ({
@@ -62,6 +63,18 @@ describe("InstanceTree grouped rendering", () => {
     expect(w.find('[data-test="session-name"]').text()).toBe("web");
     // The row's AgentIcon is dropped in agent mode; the group header carries the brand icon.
     expect(w.find('[data-test="session-row"]').findComponent({ name: "AgentIcon" }).exists()).toBe(false);
+  });
+
+  it("still shows the terminal-open marker in agent mode without inserting a per-row agent icon", () => {
+    const store = useInstancesStore();
+    store.setGroupMode("i1", "agent");
+    store.instances = [instance([sess("web-claude", "web", "claude")])] as never;
+    useCenterTabsStore().openTerminal(sessionKey("i1", "web-claude"));
+    const w = mountTree();
+    expect(w.find('[data-test="session-row"]').findComponent({ name: "AgentIcon" }).exists()).toBe(false);
+    const marker = w.find('[data-test="terminal-open-marker"]');
+    expect(marker.exists()).toBe(true);
+    expect(marker.attributes("title")).toBe("Terminal tab is open");
   });
 
   it("collapses and re-expands a group via its header (view-state only)", async () => {
