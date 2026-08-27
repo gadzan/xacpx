@@ -24,7 +24,6 @@ async function createEchoWorker(entry: string): Promise<void> {
       "    if (!line) continue;",
       "    try { const msg = JSON.parse(line);",
       "      process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true } }) + '\\n');",
-      "      if (msg.method === 'shutdown') process.exit(0);",
       "    } catch {}",
       "  }",
       "});",
