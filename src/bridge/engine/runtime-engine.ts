@@ -477,10 +477,15 @@ export class RuntimeEngine implements BridgeEngine {
     }
   }
   private buildEnsureParams(input: EngineSessionInput, options?: { resumeSessionId?: string }) {
-    // Exact structured argv (plan §35 / G8): when xacpx resolved an explicit argv,
-    // runtimeAgentName (acpxAgent ?? agent) is the registry alias — passed verbatim
-    // as a registry override under the same alias ensure resolves.
+    // Exact structured argv / raw command (plan §35 / G8): when xacpx resolved an explicit
+    // argv or raw command string, runtimeAgentName (acpxAgent ?? agent) is the registry alias.
     const runtimeAgentName = input.acpxAgent ?? input.agent;
+    const overrideValue =
+      input.agentArgv && input.agentArgv.length > 0
+        ? [...input.agentArgv]
+        : input.rawCommand
+          ? input.rawCommand
+          : undefined;
     return {
       sessionKey: input.name,
       agent: runtimeAgentName,
@@ -488,7 +493,7 @@ export class RuntimeEngine implements BridgeEngine {
       stateDir: this.sessionsDir(),
       permissionMode: this.options.permissionMode,
       ...(this.options.permissionPolicy !== undefined ? { permissionPolicy: this.options.permissionPolicy } : {}),
-      ...(input.agentArgv && input.agentArgv.length > 0 ? { agentOverrides: { [runtimeAgentName]: [...input.agentArgv] } } : {}),
+      ...(overrideValue !== undefined ? { agentOverrides: { [runtimeAgentName]: overrideValue } } : {}),
       ...(this.options.nonInteractivePermissions ? { nonInteractivePermissions: this.options.nonInteractivePermissions } : {}),
       ...(options?.resumeSessionId ? { resumeSessionId: options.resumeSessionId } : {}),
       ...(input.model ? { model: input.model } : {}),
@@ -539,15 +544,19 @@ export class RuntimeEngine implements BridgeEngine {
     }
     const sessionsDir = this.sessionsDir();
     const safeId = encodeURIComponent(recordId);
-    const entries = await readdir(sessionsDir).catch(() => []);
-    const streamFiles = entries
-      .filter((file) => file.startsWith(`${safeId}.stream.`) && file.endsWith(".ndjson"))
-      .sort((a, b) => {
-        const seqA = parseInt(a.split(".")[2] ?? "0", 10);
-        const seqB = parseInt(b.split(".")[2] ?? "0", 10);
-        return seqA - seqB;
-      });
+    const entries: string[] = await readdir(sessionsDir).catch(() => []);
 
+    // Pinned acpx 0.13.1 stream rotation layout:
+    // .stream.N.ndjson (N descending from highest to 1) -> active .stream.ndjson
+    const numberedStreams = entries
+      .filter((file) => file.startsWith(`${safeId}.stream.`) && file.endsWith(".ndjson") && file !== `${safeId}.stream.ndjson`)
+      .sort((a, b) => {
+        const numA = parseInt(a.slice(`${safeId}.stream.`.length, -".ndjson".length), 10) || 0;
+        const numB = parseInt(b.slice(`${safeId}.stream.`.length, -".ndjson".length), 10) || 0;
+        return numB - numA; // Older rotations first (e.g. 2 -> 1)
+      });
+    const activeStream: string[] = entries.includes(`${safeId}.stream.ndjson`) ? [`${safeId}.stream.ndjson`] : [];
+    const streamFiles: string[] = [...numberedStreams, ...activeStream];
     const collectedLines: string[] = [];
     for (const file of streamFiles) {
       try {
@@ -555,11 +564,10 @@ export class RuntimeEngine implements BridgeEngine {
         for (const line of content.split("\n")) {
           if (!line.trim()) continue;
           try {
-            const parsed = JSON.parse(line) as { text?: string; type?: string; delta?: string };
-            if (parsed.type === "text_delta" && typeof parsed.text === "string") {
-              collectedLines.push(parsed.text);
-            } else if (typeof parsed.text === "string") {
-              collectedLines.push(parsed.text);
+            const parsed = JSON.parse(line) as Record<string, unknown>;
+            const texts = extractTextFromAcpMessage(parsed);
+            for (const t of texts) {
+              if (t) collectedLines.push(t);
             }
           } catch {
             collectedLines.push(line);
@@ -573,8 +581,22 @@ export class RuntimeEngine implements BridgeEngine {
     if (collectedLines.length === 0) {
       try {
         const mainContent = await readFile(join(sessionsDir, `${safeId}.json`), "utf8");
-        const parsed = JSON.parse(mainContent) as { turns?: Array<{ text?: string }> };
-        if (Array.isArray(parsed.turns)) {
+        const parsed = JSON.parse(mainContent) as {
+          messages?: Array<{ role?: string; content?: string | Array<{ type?: string; text?: string }> }>;
+          turns?: Array<{ text?: string }>;
+        };
+        if (Array.isArray(parsed.messages)) {
+          for (const m of parsed.messages) {
+            if (typeof m.content === "string") {
+              collectedLines.push(m.content);
+            } else if (Array.isArray(m.content)) {
+              for (const c of m.content) {
+                if (typeof c === "string") collectedLines.push(c);
+                else if (typeof c?.text === "string") collectedLines.push(c.text);
+              }
+            }
+          }
+        } else if (Array.isArray(parsed.turns)) {
           for (const t of parsed.turns) {
             if (typeof t.text === "string") collectedLines.push(t.text);
           }
@@ -617,11 +639,10 @@ export class RuntimeEngine implements BridgeEngine {
     // Mark the turn active IMMEDIATELY so preflight on concurrent policy
     // updates detects the in-flight turn and fails closed (plan §32).
     this.activeTurns.add(key);
-    const toolEventMode = input.toolEventMode ?? (input.toolEvents ? "events" : "text");
+    const toolEventMode = input.toolEventMode ?? (input.toolEvents ? "structured" : "text");
     const renderText = toolEventMode === "text" || toolEventMode === "both";
-    const renderStructured = toolEventMode === "events" || toolEventMode === "both" || input.toolEvents === true;
+    const renderStructured = toolEventMode === "structured" || toolEventMode === "both" || input.toolEvents === true;
     const textRenderState = { emittedToolCallIds: new Set<string>() };
-
     try {
       return await this.withWorker(input, async (client) => {
         client.lifecycle = "busy";
@@ -690,10 +711,15 @@ export class RuntimeEngine implements BridgeEngine {
     } finally {
       this.activeTurns.delete(key);
       const client = this.manager?.get(key);
-      if (client && this.coolPending.has(key)) {
-        this.coolPending.delete(key);
-        await client.terminate();
-        client.lifecycle = "stopped";
+      if (client) {
+        if (this.coolPending.has(key)) {
+          this.coolPending.delete(key);
+          await client.terminate();
+          client.lifecycle = "stopped";
+          this.manager?.deleteWorker(key, client);
+        } else if (client.alive && (client.lifecycle === "idle" || client.lifecycle === "ready") && !this.activeTurns.has(key)) {
+          this.scheduleIdleTtl(key, client);
+        }
       }
     }
   }
@@ -706,7 +732,6 @@ export class RuntimeEngine implements BridgeEngine {
       `injectMessage mode "${input.mode}" is not supported by the runtime engine yet`,
     );
   }
-
   async setMode(input: EngineSessionInput & { modeId: string }) {
     await this.withWorker(input, async (client) => {
       await this.ensureSessionHandle(input, client);
@@ -807,6 +832,7 @@ export class RuntimeEngine implements BridgeEngine {
       agentCommand: input.agentCommand ?? input.rawCommand ?? input.acpxAgent,
       recordId,
     });
+
     // 4. Terminate live worker (cancel active turn first, close with discard).
     if (client && client.alive) {
       if (this.activeTurns.has(key)) {
@@ -814,6 +840,9 @@ export class RuntimeEngine implements BridgeEngine {
       }
       await client.request("close").catch(() => {});
       await client.terminate();
+      if (client.lifecycle === "stopped") {
+        this.manager?.deleteWorker(key, client);
+      }
     }
     this.activeTurns.delete(key);
     this.coolPending.delete(key);
@@ -831,6 +860,28 @@ export class RuntimeEngine implements BridgeEngine {
     }
 
     return {};
+  }
+
+  async freeWarmProcess(input: EngineSessionInput): Promise<Record<string, never>> {
+    const key = this.workerKey(input);
+    const timer = this.idleTimers.get(key);
+    if (timer) {
+      clearTimeout(timer);
+      this.idleTimers.delete(key);
+    }
+    const client = this.manager?.get(key);
+    if (client && client.alive) {
+      await client.shutdown();
+      if (client.lifecycle === "stopped") {
+        this.manager?.deleteWorker(key, client);
+      }
+    }
+    return {};
+  }
+
+  async isSessionWarm(input: EngineSessionInput): Promise<{ warm: boolean }> {
+    const key = this.workerKey(input);
+    return { warm: this.manager?.isWarm(key) === true };
   }
 
   /** Obtains the real acpx record id without creating phantom records on cold delete. */
@@ -946,23 +997,6 @@ export class RuntimeEngine implements BridgeEngine {
     }
   }
 
-  async freeWarmProcess(input: EngineSessionInput): Promise<Record<string, never>> {
-    const key = this.workerKey(input);
-    const client = this.manager?.get(key);
-    if (!client || !client.alive) return {};
-    if (this.activeTurns.has(key)) {
-      // Active turn: mark and settle later — never kill mid-turn (plan §14).
-      this.coolPending.add(key);
-      return {};
-    }
-    await client.terminate();
-    return {};
-  }
-
-  async isSessionWarm(input: EngineSessionInput): Promise<{ warm: boolean }> {
-    return { warm: this.manager?.isWarm(this.workerKey(input)) ?? false };
-  }
-
   async getAgentSessionId(input: EngineSessionInput): Promise<{ agentSessionId: string | undefined }> {
     return await this.withWorker(input, async (client) => {
       await this.ensureSessionHandle(input, client);
@@ -1010,6 +1044,11 @@ export class RuntimeEngine implements BridgeEngine {
       }
       // Deliberate termination: rotation does NOT consume crash budget (plan §43)
       await Promise.all(live.map((w) => w.terminate()));
+      for (const w of live) {
+        if (!w.alive && w.lifecycle === "stopped") {
+          this.manager?.deleteWorker(w.ref.logicalSessionId, w);
+        }
+      }
     } catch (error) {
       this.releasePolicyLock();
       throw error;
@@ -1108,6 +1147,38 @@ export function mapRuntimeToolEvent(event: {
   };
 }
 
+export function extractTextFromAcpMessage(parsed: Record<string, unknown>): string[] {
+  const results: string[] = [];
+  const update = (parsed.params as { update?: Record<string, unknown> } | undefined)?.update;
+  if (update) {
+    if (typeof update.text === "string" && update.text) {
+      results.push(update.text);
+    }
+    if (typeof update.content === "string" && update.content) {
+      results.push(update.content);
+    } else if (Array.isArray(update.content)) {
+      for (const item of update.content) {
+        if (typeof item === "string" && item) results.push(item);
+        else if (item && typeof (item as { text?: string }).text === "string" && (item as { text: string }).text) {
+          results.push((item as { text: string }).text);
+        }
+      }
+    } else if (update.content && typeof (update.content as { text?: string }).text === "string") {
+      results.push((update.content as { text: string }).text);
+    }
+    if (update.delta && typeof (update.delta as { text?: string }).text === "string") {
+      results.push((update.delta as { text: string }).text);
+    }
+  }
+  if (results.length === 0) {
+    if (typeof parsed.text === "string" && parsed.text) {
+      results.push(parsed.text);
+    } else if (typeof parsed.content === "string" && parsed.content) {
+      results.push(parsed.content);
+    }
+  }
+  return results;
+}
 function emitPromptEvent(event: XacpxRuntimeEvent, onEvent?: (event: EnginePromptStreamEvent) => void): void {
   if (!onEvent) return;
   if (event.type === "text_delta") {

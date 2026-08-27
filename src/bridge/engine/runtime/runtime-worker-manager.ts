@@ -46,20 +46,29 @@ export class RuntimeWorkerManager {
 
   ensureWorker(logicalSessionId: string): RuntimeWorkerClient {
     const existing = this.workersByKey.get(logicalSessionId);
-    if (existing && existing.alive) {
-      // If the current worker is still alive but undergoing teardown (cooling,
-      // stopped, or termination failed), fail closed — never spawn a concurrent
-      // duplicate owner for the same logical session (plan §3-R1 / §9.1).
-      if (
-        existing.lifecycle === "cooling" ||
-        existing.lifecycle === "stopped" ||
-        existing.lifecycle === "failed"
-      ) {
+    if (existing) {
+      if (existing.alive) {
+        if (
+          existing.lifecycle === "cooling" ||
+          existing.lifecycle === "stopped" ||
+          existing.lifecycle === "failed"
+        ) {
+          throw new WorkerTeardownPendingError(
+            `runtime worker for session "${logicalSessionId}" is still shutting down (lifecycle: ${existing.lifecycle}); refusing duplicate worker spawn`,
+          );
+        }
+        return existing;
+      }
+      // Not alive: if still in teardown or failed termination, refuse spawn
+      if (existing.lifecycle === "cooling" || existing.lifecycle === "failed") {
         throw new WorkerTeardownPendingError(
-          `runtime worker for session "${logicalSessionId}" is still shutting down (lifecycle: ${existing.lifecycle}); refusing duplicate worker spawn`,
+          `runtime worker for session "${logicalSessionId}" is in teardown or failed termination (lifecycle: ${existing.lifecycle}); refusing duplicate worker spawn`,
         );
       }
-      return existing;
+      // If it fully finished stopping (!alive && lifecycle === "stopped"), clean it up and allow fresh spawn
+      if (existing.lifecycle === "stopped" && !existing.alive) {
+        this.workersByKey.delete(logicalSessionId);
+      }
     }
 
     this.assertRestartBudget(logicalSessionId);
@@ -80,11 +89,8 @@ export class RuntimeWorkerManager {
     const results = await Promise.allSettled(
       entries.map(async ([key, worker]) => {
         await worker.shutdown(graceMs);
-        // Only delete if the worker confirmed it has stopped / is no longer alive
-        if (!worker.alive || worker.lifecycle === "stopped") {
-          if (this.workersByKey.get(key) === worker) {
-            this.workersByKey.delete(key);
-          }
+        if (!worker.alive && worker.lifecycle === "stopped") {
+          this.deleteWorker(key, worker);
         }
       }),
     );
@@ -97,6 +103,12 @@ export class RuntimeWorkerManager {
         .map(({ key, error }) => `session "${key}": ${error instanceof Error ? error.message : String(error)}`)
         .join("; ");
       throw new Error(`failed to shutdown ${failures.length} runtime worker(s) (ownership retained): ${messages}`);
+    }
+  }
+
+  deleteWorker(logicalSessionId: string, client?: RuntimeWorkerClient): void {
+    if (!client || this.workersByKey.get(logicalSessionId) === client) {
+      this.workersByKey.delete(logicalSessionId);
     }
   }
 
@@ -117,10 +129,9 @@ export class RuntimeWorkerManager {
   }
 
   private handleExit(logicalSessionId: string, client: RuntimeWorkerClient, code: number | null): void {
-    // Identity guard: only drop the map entry if the exiting client is STILL
-    // the registered client for this session. A stale exit from an older
-    // generation must never delete a newer replacement worker.
-    if (this.workersByKey.get(logicalSessionId) === client) {
+    // Unexpected crash: drop the client so restart budget logic can take over.
+    // Deliberate shutdown: RETAIN the client in the manager until tree cleanup / termination confirms completion!
+    if (!client.isDeliberateShutdown && this.workersByKey.get(logicalSessionId) === client) {
       this.workersByKey.delete(logicalSessionId);
     }
     // Plan §43 scopes the guard to REAL crashes. Deliberate stops (graceful

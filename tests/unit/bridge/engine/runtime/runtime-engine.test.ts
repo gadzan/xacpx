@@ -317,12 +317,11 @@ test("hasSession and tailSessionHistory read state without heating a cold worker
       recFile,
       JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "rec-hist-1", name: "hist-session", cwd: sessionInput.cwd }),
     );
-    // Stream chunks
-    const stream0 = join(sessionsDir, "rec-hist-1.stream.0.ndjson");
+    // Stream chunks (stream.1.ndjson is older rotated, stream.ndjson is active newest)
     const stream1 = join(sessionsDir, "rec-hist-1.stream.1.ndjson");
-    await writeFile(stream0, '{"type":"text_delta","text":"line 1"}\n{"type":"text_delta","text":"line 2"}\n');
-    await writeFile(stream1, '{"type":"text_delta","text":"line 3"}\n{"type":"text_delta","text":"line 4"}\n');
-
+    const streamActive = join(sessionsDir, "rec-hist-1.stream.ndjson");
+    await writeFile(stream1, '{"type":"text_delta","text":"line 1"}\n{"type":"text_delta","text":"line 2"}\n');
+    await writeFile(streamActive, '{"type":"text_delta","text":"line 3"}\n{"type":"text_delta","text":"line 4"}\n');
     const engine = new RuntimeEngine({ workerEntryPath: "/nonexistent.js", stateDir: sessionsDir, permissionMode: "approve-all" });
 
     // hasSession returns true for existing on-disk record
@@ -469,6 +468,204 @@ test("terminal turn cancelled throws RUNTIME_TURN_CANCELLED and failed maps erro
     await expect(engine.prompt({ ...sessionInput, text: "fail" })).rejects.toMatchObject({
       code: "RUNTIME_SESSION_MISSING",
     });
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("G8 raw command launch: buildEnsureParams sets string override for explicit rawCommand", async () => {
+  const engine = new RuntimeEngine({ workerEntryPath: "/fake/worker.js", permissionMode: "approve-all" });
+  const params = engine["buildEnsureParams"]({
+    ...sessionInput,
+    agent: "user-alias",
+    acpxAgent: "codex",
+    agentCommand: "/custom/my-acp --arg 1",
+    rawCommand: "/custom/my-acp --arg 1",
+    agentArgv: undefined,
+  });
+
+  expect(params.agent).toBe("codex");
+  expect(params.agentOverrides).toEqual({
+    codex: "/custom/my-acp --arg 1",
+  });
+});
+
+test("prompt lifecycle: prompt starts idle TTL timer and automatically reaps worker when idle", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-prompt-ttl-"));
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", idleTtlMs: 60 });
+
+    const reply = await engine.prompt({ ...sessionInput, text: "hi" });
+    expect(reply.text).toBe("hi");
+    expect((await engine.isSessionWarm(sessionInput)).warm).toBe(true);
+
+    // Wait for idle TTL to expire
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    expect((await engine.isSessionWarm(sessionInput)).warm).toBe(false);
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("prompt lifecycle: new prompt before idle TTL resets the timer and keeps worker warm", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-prompt-reset-"));
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", idleTtlMs: 80 });
+
+    await engine.prompt({ ...sessionInput, text: "hi 1" });
+    expect((await engine.isSessionWarm(sessionInput)).warm).toBe(true);
+
+    // Sleep less than TTL (40ms < 80ms)
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect((await engine.isSessionWarm(sessionInput)).warm).toBe(true);
+
+    // Second prompt resets timer
+    await engine.prompt({ ...sessionInput, text: "hi 2" });
+
+    // Sleep another 40ms: still warm because timer was reset
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect((await engine.isSessionWarm(sessionInput)).warm).toBe(true);
+
+    // Sleep beyond new TTL (80ms + 40ms = 120ms total from second prompt)
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    expect((await engine.isSessionWarm(sessionInput)).warm).toBe(false);
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("toolEventMode structured emits structured event but skips text segment formatting", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-structured-only-"));
+  try {
+    const entry = join(dir, "tool-worker.mjs");
+    await writeFile(
+      entry,
+      [
+        "let buffer='';",
+        "process.stdin.on('data', (d) => {",
+        "  buffer += d.toString();",
+        "  let idx;",
+        "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+        "    if (!line) continue;",
+        "    try { const msg = JSON.parse(line);",
+        "      if (msg.method === 'prompt') {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, event: 'tool', payload: { type: 'tool_call', text: 'Reading file', toolCallId: 'call-struct-1', title: 'Read File', kind: 'read', status: 'completed' } }) + '\\n');",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { result: { status: 'completed' }, finalText: 'done' } }) + '\\n');",
+        "      } else if (msg.method === 'ensure') {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true, sessionKey: msg.params?.sessionKey } }) + '\\n');",
+        "      } else {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "      }",
+        "      if (msg.method === 'shutdown') process.exit(0);",
+        "    } catch {}",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all" });
+    const events: unknown[] = [];
+    await engine.prompt(
+      { ...sessionInput, text: "run-tool", toolEventMode: "structured" },
+      (e) => events.push(e),
+    );
+
+    const toolUseEvent = events.find((e: any) => e.type === "prompt.tool_event") as any;
+    expect(toolUseEvent).toBeDefined();
+    expect(toolUseEvent.event.toolCallId).toBe("call-struct-1");
+
+    // Must NOT emit prompt.segment with tool text formatting
+    const toolSegment = events.find((e: any) => e.type === "prompt.segment" && e.text.includes("Read File"));
+    expect(toolSegment).toBeUndefined();
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("tailSessionHistory parses real acpx 0.13.1 stream rotation and JSON-RPC message formats", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-acpx-history-"));
+  const sessionsDir = join(dir, ".acpx", "sessions");
+  try {
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(sessionsDir, { recursive: true });
+
+    // Main JSON record
+    const recFile = join(sessionsDir, "rec-acpx-rot-1.json");
+    await writeFile(
+      recFile,
+      JSON.stringify({
+        schema: "acpx.session.v1",
+        acpx_record_id: "rec-acpx-rot-1",
+        name: "acpx-rot-session",
+        cwd: sessionInput.cwd,
+        messages: [{ role: "user", content: "initial prompt" }],
+      }),
+    );
+
+    // Stream rotation files:
+    // .stream.2.ndjson (oldest rotated)
+    const stream2 = join(sessionsDir, "rec-acpx-rot-1.stream.2.ndjson");
+    await writeFile(
+      stream2,
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: { sessionId: "s1", update: { type: "text_delta", text: "message from stream 2" } },
+      }) + "\n",
+    );
+
+    // .stream.1.ndjson (newer rotated)
+    const stream1 = join(sessionsDir, "rec-acpx-rot-1.stream.1.ndjson");
+    await writeFile(
+      stream1,
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: { sessionId: "s1", update: { content: [{ type: "text", text: "message from stream 1" }] } },
+      }) + "\n",
+    );
+
+    // .stream.ndjson (active newest stream)
+    const streamActive = join(sessionsDir, "rec-acpx-rot-1.stream.ndjson");
+    await writeFile(
+      streamActive,
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: { sessionId: "s1", update: { content: { type: "text", text: "message from active stream" } } },
+      }) + "\n",
+    );
+
+    const engine = new RuntimeEngine({ workerEntryPath: "/fake/worker.js", stateDir: sessionsDir, permissionMode: "approve-all" });
+
+    // tail 3 lines: must arrive in exact chronological order (stream 2 -> stream 1 -> active stream)
+    const tail3 = await engine.tailSessionHistory({
+      ...sessionInput,
+      name: "acpx-rot-session",
+      lines: 3,
+    });
+    expect(tail3.text).toBe("message from stream 2\nmessage from stream 1\nmessage from active stream");
+
+    // tail 2 lines: last 2 lines
+    const tail2 = await engine.tailSessionHistory({
+      ...sessionInput,
+      name: "acpx-rot-session",
+      lines: 2,
+    });
+    expect(tail2.text).toBe("message from stream 1\nmessage from active stream");
 
     await engine.shutdown();
   } finally {

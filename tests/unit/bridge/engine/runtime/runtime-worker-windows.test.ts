@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -577,15 +577,16 @@ test("Windows lifecycle: graceful shutdown when creationDate identity probe is s
     await rm(dir, { recursive: true, force: true });
   }
 });
-test("G10 lifecycle: shutdown always cleans up entire worker process tree including descendants", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "g10-tree-shutdown-"));
+test("G10 lifecycle: production shutdown cleans up real OS descendant process tree", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "g10-real-descendant-"));
+  const pidFile = join(dir, "descendant.pid");
   try {
-    let treeTerminatedTarget: unknown = undefined;
     const entry = join(dir, "descendant-worker.mjs");
     await writeFile(
       entry,
       [
         "import { spawn } from 'node:child_process';",
+        "import fs from 'node:fs';",
         "let buffer='';",
         "let child=null;",
         "process.stdin.on('data', (d) => {",
@@ -596,8 +597,8 @@ test("G10 lifecycle: shutdown always cleans up entire worker process tree includ
         "    if (!line) continue;",
         "    try { const msg = JSON.parse(line);",
         "      if (msg.method === 'ensure') {",
-        "        // Simulate worker launching an adapter child process",
         "        child = spawn(process.execPath, ['-e', 'setInterval(()=>{}, 1000)'], { stdio: 'ignore' });",
+        `        fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid), 'utf8');`,
         "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true } }) + '\\n');",
         "      } else if (msg.method === 'shutdown') {",
         "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
@@ -611,27 +612,32 @@ test("G10 lifecycle: shutdown always cleans up entire worker process tree includ
       ].join("\n"),
     );
 
-    const client = new RuntimeWorkerClient(
-      entry,
-      "session-g10-tree",
-      undefined,
-      undefined,
-      {
-        terminateProcessTree: async (target) => {
-          treeTerminatedTarget = target;
-          return { rootOutcome: "killed", outcomes: [] };
-        },
-      },
-    );
-
+    // Production client (no terminateProcessTree stub)
+    const client = new RuntimeWorkerClient(entry, "session-g10-real-tree");
     await client.request("ensure", {});
     expect(client.alive).toBe(true);
 
-    // Call shutdown: worker exits 0 AND terminateProcessTree is invoked to clean up all descendants
+    const descendantPid = parseInt(await readFile(pidFile, "utf8"), 10);
+    expect(descendantPid).toBeGreaterThan(0);
+    // Confirm descendant is currently running in OS
+    expect(() => process.kill(descendantPid, 0)).not.toThrow();
+
+    // Call shutdown: worker root exits 0 and process group termination kills descendant
     await client.shutdown(2_000);
 
     expect(client.lifecycle).toBe("stopped");
-    expect(treeTerminatedTarget).toBe(client.ref.pid);
+    // Verify descendant is dead in OS
+    let descendantRunning = true;
+    for (let i = 0; i < 30; i++) {
+      try {
+        process.kill(descendantPid, 0);
+        await new Promise((r) => setTimeout(r, 50));
+      } catch {
+        descendantRunning = false;
+        break;
+      }
+    }
+    expect(descendantRunning).toBe(false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -56,6 +56,9 @@ export class RuntimeWorkerClient {
   get isBootstrapVerified(): boolean {
     return this._bootstrapVerified;
   }
+  get isDeliberateShutdown(): boolean {
+    return this.deliberateShutdown;
+  }
 
   get inFlightCount(): number {
     return Math.max(this.inFlightLeases, this.pending.size);
@@ -76,7 +79,12 @@ export class RuntimeWorkerClient {
   }
 
   get alive(): boolean {
-    return this.child !== undefined && this.child.exitCode === null && this.child.pid !== undefined;
+    return (
+      this.child !== undefined &&
+      this.child.exitCode === null &&
+      this.child.signalCode === null &&
+      this.child.pid !== undefined
+    );
   }
 
   spawn(): void {
@@ -84,7 +92,10 @@ export class RuntimeWorkerClient {
     this.exitPromise = new Promise<number | null>((resolve) => {
       this.resolveExit = resolve;
     });
-    this.child = spawn(process.execPath, [this.entryPath], { stdio: ["pipe", "pipe", "pipe"] });
+    this.child = spawn(process.execPath, [this.entryPath], {
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32",
+    });
     this.ref.pid = this.child.pid ?? -1;
     const isWindows = process.platform === "win32" || Boolean(this.deps?.probeWindowsIdentity);
     if (isWindows && this.ref.pid > 0) {
@@ -274,8 +285,11 @@ export class RuntimeWorkerClient {
       );
       assertProcessTreeTerminated(result, { pid: this.ref.pid, creationDate: this.ref.creationDate });
     } else {
-      const result = await termFn(this.ref.pid, {}, platform);
+      const result = await termFn(this.ref.pid, { detachedProcessGroup: true }, platform);
       assertProcessTreeTerminated(result, { pid: this.ref.pid });
+    }
+    if (this.exitPromise && this.alive) {
+      await this.exitPromise.catch(() => {});
     }
     this.lifecycle = "stopped";
   }
