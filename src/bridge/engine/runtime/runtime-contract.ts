@@ -19,8 +19,18 @@ export type XacpxRuntimeEvent =
       breakdown?: UsageBreakdownLike;
       availableCommands?: Array<{ name: string; description?: string }>;
     }
-  | { type: "tool_call"; text: string; toolCallId?: string; status?: string; title?: string };
-
+  | {
+      type: "tool_call";
+      text: string;
+      toolCallId?: string;
+      status?: string;
+      title?: string;
+      kind?: string;
+      locations?: unknown;
+      rawInput?: unknown;
+      rawOutput?: unknown;
+      content?: unknown;
+    };
 export interface UsageBreakdownLike {
   inputTokens?: number;
   outputTokens?: number;
@@ -69,16 +79,16 @@ export function mapRuntimeError(err: unknown): { code: RuntimeBridgeErrorCode; m
   const name = (err as { name?: string } | null)?.name ?? "";
   const rawCode = (err as { code?: unknown } | null)?.code;
   const codeText = typeof rawCode === "string" ? rawCode : "";
+  if (codeText === "RUNTIME_TURN_CANCELLED" || /cancel/i.test(message) || /cancel/i.test(codeText)) {
+    return { code: "RUNTIME_TURN_CANCELLED", message };
+  }
   if (/not found|missing|no such session|unknown session/i.test(message) || codeText === "ACP_BACKEND_MISSING") {
     return { code: "RUNTIME_SESSION_MISSING", message };
   }
-  if (/cancel/i.test(message)) {
-    return { code: "RUNTIME_TURN_CANCELLED", message };
-  }
-  if (/permission/i.test(message)) {
+  if (/permission/i.test(message) || codeText === "PERMISSION_DENIED" || codeText === "RUNTIME_PERMISSION_DENIED") {
     return { code: "RUNTIME_PERMISSION_DENIED", message };
   }
-  if (name === "AcpRuntimeError" || /runtime|init|backend/i.test(message)) {
+  if (name === "AcpRuntimeError" || /runtime|init|backend/i.test(message) || codeText === "RUNTIME_INIT_FAILED") {
     return { code: "RUNTIME_INIT_FAILED", message };
   }
   return { code: "RUNTIME_TURN_FAILED", message };

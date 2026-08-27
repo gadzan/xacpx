@@ -50,6 +50,8 @@ function sameEnsureParams(a: RuntimeWorkerEnsureParams | undefined, b: RuntimeWo
     a.stateDir === b.stateDir &&
     a.permissionMode === b.permissionMode &&
     a.nonInteractivePermissions === b.nonInteractivePermissions &&
+    a.resumeSessionId === b.resumeSessionId &&
+    a.model === b.model &&
     JSON.stringify(a.permissionPolicy ?? null) === JSON.stringify(b.permissionPolicy ?? null) &&
     JSON.stringify(a.agentOverrides ?? null) === JSON.stringify(b.agentOverrides ?? null)
   );
@@ -74,6 +76,8 @@ async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: 
       sessionKey: params.sessionKey,
       agent: params.agent,
       ...(params.cwd ? { cwd: params.cwd } : {}),
+      ...(params.resumeSessionId ? { resumeSessionId: params.resumeSessionId } : {}),
+      ...(params.model ? { sessionOptions: { model: params.model } } : {}),
     });
   }
   const handle = state.handle!;

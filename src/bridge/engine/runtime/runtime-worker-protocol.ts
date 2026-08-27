@@ -32,6 +32,10 @@ export interface RuntimeWorkerEnsureParams {
   permissionPolicy?: unknown;
   /** Narrow argv overrides for this worker only (plan §35). */
   agentOverrides?: Record<string, string | string[]>;
+  /** Optional native session identifier to resume (plan §13). */
+  resumeSessionId?: string;
+  /** Optional initial model for sessionOptions (plan §9.1). */
+  model?: string;
 }
 export interface RuntimeWorkerPromptParams {
   text: string;

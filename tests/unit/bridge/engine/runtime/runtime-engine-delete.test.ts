@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { access, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -312,12 +312,13 @@ test("G4 recovery across restart: tombstone allows cold delete to find recordId 
 test("G4 transaction 1: tombstone write failure aborts before sending close to worker and leaves files intact", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-del-tomb-write-fail-"));
   const sessionsDir = join(dir, ".acpx", "sessions");
+  const closeMarker = join(dir, "worker-received-close.marker");
   try {
-    let workerReceivedClose = false;
     const entry = join(dir, "close-check-worker.mjs");
     await writeFile(
       entry,
       [
+        "import fs from 'node:fs';",
         "let buffer='';",
         "process.stdin.on('data', (d) => {",
         "  buffer += d.toString();",
@@ -326,7 +327,7 @@ test("G4 transaction 1: tombstone write failure aborts before sending close to w
         "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
         "    if (!line) continue;",
         "    try { const msg = JSON.parse(line);",
-        "      if (msg.method === 'close') workerReceivedClose = true;",
+        `      if (msg.method === 'close') fs.writeFileSync(${JSON.stringify(closeMarker)}, 'closed');`,
         "      process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
         "      if (msg.method === 'shutdown') process.exit(0);",
         "    } catch {}",
@@ -336,7 +337,7 @@ test("G4 transaction 1: tombstone write failure aborts before sending close to w
     );
     await mkdir(sessionsDir, { recursive: true });
     const recordFile = join(sessionsDir, "rec-tomb-fail-1.json");
-    await writeFile(recordFile, JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "rec-tomb-fail-1", name: "tomb-fail-session" }));
+    await writeFile(recordFile, JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "rec-tomb-fail-1", name: "tomb-fail-session", cwd: sessionInput.cwd }));
 
     // Block tombstone creation by creating a directory where the tombstone target would be
     const blockTarget = join(sessionsDir, ".xacpx-delete-tombstone-rec-tomb-fail-1.json");
@@ -350,8 +351,8 @@ test("G4 transaction 1: tombstone write failure aborts before sending close to w
       code: "RUNTIME_INIT_FAILED",
     });
 
-    // Close was NEVER sent to worker
-    expect(workerReceivedClose).toBe(false);
+    // Close was NEVER sent to worker (proven by absence of close marker file on disk)
+    await expect(access(closeMarker)).rejects.toThrow();
     // Main JSON remains untouched on disk
     await access(recordFile);
 
@@ -364,6 +365,7 @@ test("G4 transaction 1: tombstone write failure aborts before sending close to w
 test("G4 transaction 2: when worker receives close, tombstone already exists on disk with correct content", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-del-tomb-ordering-"));
   const sessionsDir = join(dir, ".acpx", "sessions");
+  const observedMarker = join(dir, "tombstone-observed-on-close.json");
   try {
     const entry = join(dir, "tomb-ordering-worker.mjs");
     await writeFile(
@@ -372,8 +374,6 @@ test("G4 transaction 2: when worker receives close, tombstone already exists on 
         "import fs from 'node:fs';",
         "import path from 'node:path';",
         "let buffer='';",
-        "let tombstoneFoundOnClose = false;",
-        "let tombstoneContentOnClose = '';",
         "process.stdin.on('data', (d) => {",
         "  buffer += d.toString();",
         "  let idx;",
@@ -384,15 +384,13 @@ test("G4 transaction 2: when worker receives close, tombstone already exists on 
         "      if (msg.method === 'close') {",
         "        const tbPath = path.join(process.env.SESSIONS_DIR, '.xacpx-delete-tombstone-rec-order-1.json');",
         "        try {",
-        "          tombstoneContentOnClose = fs.readFileSync(tbPath, 'utf8');",
-        "          tombstoneFoundOnClose = true;",
-        "        } catch {}",
+        "          const content = fs.readFileSync(tbPath, 'utf8');",
+        `          fs.writeFileSync(${JSON.stringify(observedMarker)}, content, 'utf8');`,
+        "        } catch (e) {",
+        `          fs.writeFileSync(${JSON.stringify(observedMarker)}, JSON.stringify({ error: e.message }), 'utf8');`,
+        "        }",
         "      }",
-        "      if (msg.method === 'status') {",
-        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { tombstoneFoundOnClose, tombstoneContentOnClose } }) + '\\n');",
-        "      } else {",
-        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
-        "      }",
+        "      process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
         "      if (msg.method === 'shutdown') process.exit(0);",
         "    } catch {}",
         "  }",
@@ -401,7 +399,7 @@ test("G4 transaction 2: when worker receives close, tombstone already exists on 
     );
     await mkdir(sessionsDir, { recursive: true });
     const recordFile = join(sessionsDir, "rec-order-1.json");
-    await writeFile(recordFile, JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "rec-order-1", name: "order-session" }));
+    await writeFile(recordFile, JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "rec-order-1", name: "order-session", cwd: sessionInput.cwd }));
 
     const origDir = process.env.SESSIONS_DIR;
     process.env.SESSIONS_DIR = sessionsDir;
@@ -414,6 +412,12 @@ test("G4 transaction 2: when worker receives close, tombstone already exists on 
       expect(worker).toBeDefined();
 
       await engine.deleteSession({ ...sessionInput, name: "order-session" });
+
+      // Verified: worker observed tombstone file on disk at the exact moment close arrived!
+      const observedContent = await readFile(observedMarker, "utf8");
+      const parsedObserved = JSON.parse(observedContent);
+      expect(parsedObserved.recordId).toBe("rec-order-1");
+      expect(parsedObserved.name).toBe("order-session");
 
       // Verified: record file is deleted
       await expect(access(recordFile)).rejects.toThrow();
@@ -818,6 +822,51 @@ test("G4 indeterminate 5: tombstone scan non-ENOENT error causes resolveRecordId
     ).rejects.toMatchObject({
       code: "RUNTIME_INIT_FAILED",
     });
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("G4 indeterminate 6: matching logicalSessionId with empty/corrupt recordId in tombstone rejects deleteSession", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-tomb-bad-recid-"));
+  const sessionsDir = join(dir, ".acpx", "sessions");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    await mkdir(sessionsDir, { recursive: true });
+
+    // Corrupted tombstone on disk: matching logicalSessionId but empty recordId
+    const tombFile = join(sessionsDir, ".xacpx-delete-tombstone-bad.json");
+    await writeFile(
+      tombFile,
+      JSON.stringify({
+        logicalSessionId: sessionInput.logicalSessionId,
+        name: "bad-tomb-session",
+        cwd: sessionInput.cwd,
+        recordId: "", // empty / corrupted
+      }),
+    );
+
+    // Orphan stream on disk
+    const orphanStream = join(sessionsDir, "bad-rec.stream.0.ndjson");
+    await writeFile(orphanStream, "orphan stream data\n");
+
+    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+
+    // deleteSession MUST fail closed because tombstone cannot prove physical record identity
+    await expect(
+      engine.deleteSession({
+        ...sessionInput,
+        name: "bad-tomb-session",
+      }),
+    ).rejects.toMatchObject({
+      code: "RUNTIME_INIT_FAILED",
+    });
+
+    // Stream and tombstone are untouched
+    await access(orphanStream);
+    await access(tombFile);
 
     await engine.shutdown();
   } finally {

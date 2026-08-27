@@ -38,6 +38,10 @@ export interface XacpxEnsureInput {
   sessionKey: string;
   agent: string;
   cwd?: string;
+  resumeSessionId?: string;
+  sessionOptions?: {
+    model?: string;
+  };
 }
 
 export interface XacpxRuntimeAdapter {
@@ -75,6 +79,8 @@ export function createXacpxRuntimeAdapter(options: CreateXacpxRuntimeAdapterOpti
         agent: input.agent,
         mode: "persistent",
         ...(input.cwd ? { cwd: input.cwd } : {}),
+        ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
+        ...(input.sessionOptions ? { sessionOptions: input.sessionOptions } : {}),
       });
       return handle as unknown as XacpxRuntimeSessionHandle;
     },
@@ -139,6 +145,11 @@ async function* mapEvents(events: AsyncIterable<AcpRuntimeEvent>): AsyncIterable
         ...(event.toolCallId ? { toolCallId: event.toolCallId } : {}),
         ...(event.status ? { status: event.status } : {}),
         ...(event.title ? { title: event.title } : {}),
+        ...(event.kind ? { kind: event.kind } : {}),
+        ...(event.locations !== undefined ? { locations: event.locations } : {}),
+        ...(event.rawInput !== undefined ? { rawInput: event.rawInput } : {}),
+        ...(event.rawOutput !== undefined ? { rawOutput: event.rawOutput } : {}),
+        ...(event.content !== undefined ? { content: event.content } : {}),
       };
     }
     // "done"/"error" only surface via runTurn(); startTurn uses .result instead.

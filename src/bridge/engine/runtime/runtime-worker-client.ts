@@ -216,9 +216,9 @@ export class RuntimeWorkerClient {
     });
   }
 
-  /** Graceful shutdown request, then hard kill after a bounded grace (plan §16). */
+  /** Graceful shutdown request, then process tree cleanup after a bounded grace (plan §16, §18). */
   async shutdown(graceMs = 2_000): Promise<void> {
-    if (!this.alive) return;
+    if (!this.child || this.ref.pid <= 0) return;
     this.deliberateShutdown = true;
     this.lifecycle = "cooling";
     if (!this.child?.stdin?.writableEnded) {
@@ -234,17 +234,12 @@ export class RuntimeWorkerClient {
         }
       }
     }
-    // If the child exited within the grace window, we're done (plan §16)
-    if (!this.alive) {
-      this.lifecycle = "stopped";
-      return;
-    }
-    // Grace elapsed and child is still alive: perform hard termination
+    // G10 (§18): Clean up the ENTIRE worker process tree (including child ACP adapter descendants).
     await this.terminate();
   }
 
   async terminate(): Promise<void> {
-    if (!this.alive || !this.child || this.ref.pid <= 0) return;
+    if (!this.child || this.ref.pid <= 0) return;
     this.deliberateShutdown = true;
     this.lifecycle = "cooling";
     try {
@@ -257,12 +252,17 @@ export class RuntimeWorkerClient {
 
     if (platform === "win32" || this.deps?.probeWindowsIdentity) {
       if (!this.ref.creationDate) {
-        // Hard rule (plan §44): Windows terminate MUST NOT fall back to bare PID.
-        // If identity was never verified, fail closed.
-        this.lifecycle = "failed";
-        throw new Error(
-          `cannot terminate Windows worker (pid ${this.ref.pid}) without verified creationDate; refusing bare PID kill`,
-        );
+        if (this.alive) {
+          // Hard rule (plan §44): Windows terminate MUST NOT fall back to bare PID.
+          // If identity was never verified on an active process, fail closed.
+          this.lifecycle = "failed";
+          throw new Error(
+            `cannot terminate Windows worker (pid ${this.ref.pid}) without verified creationDate; refusing bare PID kill`,
+          );
+        }
+        // Worker root already exited and identity was never verified (e.g. bootstrap pending during shutdown)
+        this.lifecycle = "stopped";
+        return;
       }
       const result = await termFn(
         {

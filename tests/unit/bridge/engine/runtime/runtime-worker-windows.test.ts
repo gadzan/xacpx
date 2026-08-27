@@ -577,3 +577,62 @@ test("Windows lifecycle: graceful shutdown when creationDate identity probe is s
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("G10 lifecycle: shutdown always cleans up entire worker process tree including descendants", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "g10-tree-shutdown-"));
+  try {
+    let treeTerminatedTarget: unknown = undefined;
+    const entry = join(dir, "descendant-worker.mjs");
+    await writeFile(
+      entry,
+      [
+        "import { spawn } from 'node:child_process';",
+        "let buffer='';",
+        "let child=null;",
+        "process.stdin.on('data', (d) => {",
+        "  buffer += d.toString();",
+        "  let idx;",
+        "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+        "    if (!line) continue;",
+        "    try { const msg = JSON.parse(line);",
+        "      if (msg.method === 'ensure') {",
+        "        // Simulate worker launching an adapter child process",
+        "        child = spawn(process.execPath, ['-e', 'setInterval(()=>{}, 1000)'], { stdio: 'ignore' });",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true } }) + '\\n');",
+        "      } else if (msg.method === 'shutdown') {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "        setTimeout(() => process.exit(0), 10);",
+        "      } else {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "      }",
+        "    } catch {}",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+
+    const client = new RuntimeWorkerClient(
+      entry,
+      "session-g10-tree",
+      undefined,
+      undefined,
+      {
+        terminateProcessTree: async (target) => {
+          treeTerminatedTarget = target;
+          return { rootOutcome: "killed", outcomes: [] };
+        },
+      },
+    );
+
+    await client.request("ensure", {});
+    expect(client.alive).toBe(true);
+
+    // Call shutdown: worker exits 0 AND terminateProcessTree is invoked to clean up all descendants
+    await client.shutdown(2_000);
+
+    expect(client.lifecycle).toBe("stopped");
+    expect(treeTerminatedTarget).toBe(client.ref.pid);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
