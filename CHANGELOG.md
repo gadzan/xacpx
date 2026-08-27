@@ -1,4 +1,14 @@
 # Changelog
+## [relay 0.14.1-beta.0] - 2026-08-27
+
+### Added
+
+- relay-web: mark sidebar agent-group rows with an open terminal tab (open-terminal marker, PR #314).
+
+### Fixed
+
+- Pin the agent-group terminal marker out of the flex flow so it does not shift layout.
+
 ## [relay 0.14.0] - 2026-08-27
 
 ### Added
