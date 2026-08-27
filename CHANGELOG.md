@@ -1,4 +1,17 @@
 # Changelog
+## [relay 0.14.0] - 2026-08-27
+
+### Added
+
+- relay-web composer polish: composer stack aligned with the transcript column, icon-only mobile send, unified queue layer, and a stable sleep transition (PR #313).
+- Provisional `archivedAt` on the archive-session row so it never disappears between click and refetch.
+
+### Fixed
+
+- Compile arbitrary `z-[25]` utility in relay-web.
+- Invalidate in-flight group fetches on group hand-off (no stale sleeping/awake rows).
+- Scope provisional `archivedAt` strictly to the `archiveSession` call frame (roll-back complete on failure).
+
 ## [relay 0.14.0-beta.0] - 2026-08-27
 
 ### Added
