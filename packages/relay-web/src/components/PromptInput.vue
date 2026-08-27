@@ -1096,9 +1096,10 @@ function onInput() {
               (!text.trim() &&
                 !composer.pending.filter((p) => p.status === 'ready').length)
             "
-            class="flex items-center gap-1.5 whitespace-nowrap pl-3 pr-2.5 py-1.5 rounded-md bg-accent text-white text-[12.5px] font-semibold shadow-e1 hover:bg-accent-hover hover:shadow-e2 transition-all disabled:bg-fg/10 disabled:text-fg-muted disabled:shadow-none"
+            class="flex items-center gap-1.5 whitespace-nowrap rounded-md bg-accent p-2 text-[12.5px] font-semibold text-white shadow-e1 transition-all hover:bg-accent-hover hover:shadow-e2 disabled:bg-fg/10 disabled:text-fg-muted disabled:shadow-none sm:pl-3 sm:pr-2.5"
+            :aria-label="$t('chat.send')"
           >
-            {{ $t("chat.send") }}
+            <span class="hidden sm:inline">{{ $t("chat.send") }}</span>
             <Send :size="14" />
           </button>
         </div>

@@ -28,6 +28,9 @@ const keyboardInset = useVirtualKeyboardInset();
 // Keep expansion state here so toggles survive stack rerenders.
 const planExpanded = ref(chat.busy);
 const showPlan = computed(() => (chat.sessionPlan?.length ?? 0) > 0);
+// Pending-prompt queue joins the same document-flow stack as its own layer
+// (between plan and input).
+const showQueue = computed(() => chat.sessionQueue.length > 0);
 
 function onSend(
   text: string,
@@ -211,6 +214,10 @@ const verb = computed(() => {
       <div class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5"
            :style="keyboardInset ? { paddingBottom: '0.5rem' } : undefined"
            data-test="composer-area">
+        <!-- Same centered 48rem column as the transcript rows (MessageList mx-auto
+             max-w-3xl), so status/plan/composer never outgrow the conversation on
+             wide panes. Narrow screens ignore the cap (w-full). -->
+        <div class="mx-auto w-full max-w-3xl">
         <!-- Document-flow stack: status (bottom) → plan (middle) → input (top).
              Overlap is visual only — lower layers reserve padding-bottom equal to the
              pull-up so content stays fully visible. -->
@@ -234,16 +241,17 @@ const verb = computed(() => {
           <PlanPanel v-if="showPlan" key="plan-layer" v-model:expanded="planExpanded" :entries="chat.sessionPlan!" :active="chat.busy" variant="stack"
                      class="stack-layer stack-layer--plan relative z-20 mx-2 pb-[var(--stack-overlap)] shadow-e3 sm:mx-3"
                      :class="{ 'stack-layer--pull': chat.busy }" />
+          <QueueStrip v-if="showQueue" key="queue-layer"
+                      class="stack-layer stack-layer--queue relative z-[25] mx-2 pb-[var(--stack-overlap)] shadow-e2 rounded-lg sm:mx-3"
+                      :class="{ 'stack-layer--pull': chat.busy || showPlan }" />
           <div key="composer-layer" class="stack-layer stack-layer--composer relative z-30"
-               :class="{ 'stack-layer--pull': chat.busy || showPlan }">
-            <div class="space-y-2">
-              <QueueStrip />
-              <PromptInput :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`"
-                           :instance-id="chat.instanceId" :session-alias="chat.sessionAlias"
-                           @send="onSend" @cancel="chat.cancel" />
-            </div>
+               :class="{ 'stack-layer--pull': chat.busy || showPlan || showQueue }">
+            <PromptInput :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`"
+                         :instance-id="chat.instanceId" :session-alias="chat.sessionAlias"
+                         @send="onSend" @cancel="chat.cancel" />
           </div>
         </TransitionGroup>
+        </div>
       </div>
       </template>
     </template>
