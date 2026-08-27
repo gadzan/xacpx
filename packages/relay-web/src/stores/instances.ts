@@ -169,12 +169,6 @@ export const useInstancesStore = defineStore("instances", () => {
       { mode: "agent", groupKey: row.agent },
     ];
   }
-
-  // Provisional archivedAt stamps set during an optimistic archive so a failed RPC
-  // can restore the pre-hand-off value. Keyed `${instanceId}\0${alias}` → old value
-  // (undefined when the row never had one).
-  const handOffArchiveStamps = new Map<string, string | undefined>();
-
   /** Mirror `archived` for `row` into every LOADED group page covering it.
    *  Unloaded pages are skipped — they must not materialise half-truths. */
   function handOffRowToGroups(instanceId: string, row: SessionRow, archived: boolean): void {
@@ -191,21 +185,12 @@ export const useInstancesStore = defineStore("instances", () => {
       if (state.loading) pendingGroupArchivedRefreshes.add(groupArchivedPendingKey(instanceId, mode, groupKey));
       if (archived) {
         if (state.sessions.some((s) => s.alias === row.alias)) continue;
-        // Provisional archivedAt keeps the newly-slept row FIRST under the
-        // sidebar's archivedLast() sort instead of sinking to the bottom until
-        // the authoritative refresh delivers the server timestamp. If the RPC
-        // later fails, the caller restores the original value via the stamp map.
-        if (!handOffArchiveStamps.has(`${instanceId}\0${row.alias}`)) {
-          handOffArchiveStamps.set(`${instanceId}\0${row.alias}`, row.archivedAt);
-        }
-        if (!row.archivedAt) row.archivedAt = new Date().toISOString();
         inst.groupArchived[key] = { ...state, sessions: [...state.sessions, { ...row }] };
       } else if (state.sessions.some((s) => s.alias === row.alias)) {
         inst.groupArchived[key] = { ...state, sessions: state.sessions.filter((s) => s.alias !== row.alias) };
       }
     }
   }
-
   /** Pop a sleeping row out of the loaded group pages on wake, returning a copy for
    *  re-insertion into inst.sessions (undefined when no page held it). */
   function takeRowFromGroups(instanceId: string, alias: string): SessionRow | undefined {
@@ -790,8 +775,13 @@ export const useInstancesStore = defineStore("instances", () => {
     // instead of dropping it from the active list mid-transition.
     const sessionRow = byId(instanceId)?.sessions.find((s) => s.alias === alias);
     const prevArchived = sessionRow?.archived === true;
+    const prevArchivedAt = sessionRow?.archivedAt;
     if (sessionRow) {
       sessionRow.archived = true;
+      // Provisional archivedAt keeps the newly-slept row FIRST under the
+      // sidebar's archivedLast() sort instead of sinking to the bottom until
+      // the authoritative refresh delivers the server timestamp.
+      if (!sessionRow.archivedAt) sessionRow.archivedAt = new Date().toISOString();
       // Move the row into any LOADED per-group sleeping page in the same tick so the
       // grouped sidebar shows it as sleeping immediately (no remove-then-reappear).
       // On failure the rollback below undoes both flips.
@@ -804,19 +794,13 @@ export const useInstancesStore = defineStore("instances", () => {
     } catch (error) {
       if (sessionRow && !prevArchived) {
         sessionRow.archived = false;
+        sessionRow.archivedAt = prevArchivedAt;
         // Mirror the rollback: pull the row back out of any loaded group page so
-        // the sidebar returns to its pre-archive state, provisional archivedAt
-        // included.
+        // the sidebar returns to its pre-archive state.
         takeRowFromGroups(instanceId, alias);
-        const stampKey = `${instanceId}\0${alias}`;
-        if (handOffArchiveStamps.has(stampKey)) {
-          sessionRow.archivedAt = handOffArchiveStamps.get(stampKey);
-          handOffArchiveStamps.delete(stampKey);
-        }
       }
       throw error;
     }
-    handOffArchiveStamps.delete(`${instanceId}\0${alias}`);
     // No cache purge: a sleeping session stays resumable, and its cached tail
     // lets waking it paint instantly.
     await loadSessions(instanceId);

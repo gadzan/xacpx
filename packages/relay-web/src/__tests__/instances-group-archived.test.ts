@@ -369,3 +369,45 @@ test("archive failure restores the pre-hand-off archivedAt (stamp rollback)", as
   expect(store.byId("i1")!.groupArchived![groupArchivedKey("workspace", "backend")]!.sessions.map((s) => s.alias)).toEqual([]);
   vi.restoreAllMocks();
 });
+
+test("wake fails -> wake succeeds -> archive fails preserves correct archivedAt across transactions (no stamp leakage)", async () => {
+  const store = seed();
+  const { api } = await import("../api/client");
+  const initialTimestamp = "2024-01-01T12:00:00Z";
+  const rpc = vi.spyOn(api, "rpc").mockResolvedValue({
+    sessions: [{ ...sleeping("s1"), archivedAt: initialTimestamp }],
+    hasMore: false,
+  });
+  await store.loadGroupArchivedSessions("i1", "workspace", "backend");
+  rpc.mockClear();
+
+  // Step 1: Wake fails -> rollback must not leak any archive stamp into future transactions.
+  rpc.mockRejectedValueOnce(new Error("gateway timeout"));
+  await expect(store.unarchiveSession("i1", "s1")).rejects.toThrow("gateway timeout");
+  expect(store.byId("i1")!.groupArchived![groupArchivedKey("workspace", "backend")]!.sessions[0].archivedAt).toBe(initialTimestamp);
+
+  // Step 2: Wake succeeds -> row is now active in inst.sessions (no archivedAt).
+  rpc.mockReset();
+  rpc.mockImplementation(async (_iid: string, type: string) => {
+    if (type === "control.sessions.list") {
+      return { sessions: [awake("s1"), awake("active")], hasMore: false };
+    }
+    return {};
+  });
+  await store.unarchiveSession("i1", "s1");
+  const activeRow = store.byId("i1")!.sessions.find((s) => s.alias === "s1")!;
+  expect(activeRow.archived).toBe(false);
+  expect(activeRow.archivedAt).toBeUndefined();
+
+  // Step 3: Archive fails -> rollback must restore archivedAt to UNDEFINED (the pre-archive
+  // state of this transaction), NOT the stale initialTimestamp from Step 1.
+  rpc.mockReset();
+  rpc.mockImplementation(async (_iid: string, type: string) => {
+    if (type === "control.sessions.archive") throw new Error("network down");
+    return { sessions: [], hasMore: false };
+  });
+  await expect(store.archiveSession("i1", "s1")).rejects.toThrow("network down");
+  expect(activeRow.archived).toBe(false);
+  expect(activeRow.archivedAt).toBeUndefined();
+  vi.restoreAllMocks();
+});
