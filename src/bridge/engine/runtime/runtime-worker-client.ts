@@ -10,7 +10,7 @@ import {
 } from "./runtime-worker-protocol";
 import { mapRuntimeError } from "./runtime-contract";
 import { terminateProcessTree } from "../../../process/terminate-process-tree";
-import { probeWindowsProcessIdentity, type WindowsProbeStatus } from "../../../process/windows-process-tree";
+import { probeWindowsProcessIdentity, type WindowsProbeStatus, type TerminateProcessTreeResult, type KillOutcome } from "../../../process/windows-process-tree";
 
 export interface RuntimeWorkerRef {
   pid: number;
@@ -24,8 +24,9 @@ export interface RuntimeWorkerRef {
 
 export interface RuntimeWorkerClientDeps {
   probeWindowsIdentity?: (pid: number) => Promise<WindowsProbeStatus>;
+  terminateProcessTree?: typeof terminateProcessTree;
+  platform?: NodeJS.Platform;
 }
-
 export type WorkerLifecycle = "starting" | "ready" | "busy" | "idle" | "cooling" | "stopped" | "failed";
 
 interface PendingCall {
@@ -180,22 +181,30 @@ export class RuntimeWorkerClient {
     } catch {
       /* already closed */
     }
+    const platform = this.deps?.platform ?? process.platform;
+    const termFn = this.deps?.terminateProcessTree ?? terminateProcessTree;
 
-    if (process.platform === "win32" || this.deps?.probeWindowsIdentity) {
+    if (platform === "win32" || this.deps?.probeWindowsIdentity) {
       if (!this.ref.creationDate) {
         // Hard rule (plan §44): Windows terminate MUST NOT fall back to bare PID.
         // If identity was never verified, fail closed.
-        this.lifecycle = "stopped";
+        this.lifecycle = "failed";
         throw new Error(
           `cannot terminate Windows worker (pid ${this.ref.pid}) without verified creationDate; refusing bare PID kill`,
         );
       }
-      await terminateProcessTree({
-        pid: this.ref.pid,
-        creationDate: this.ref.creationDate,
-      });
+      const result = await termFn(
+        {
+          pid: this.ref.pid,
+          creationDate: this.ref.creationDate,
+        },
+        {},
+        platform,
+      );
+      assertProcessTreeTerminated(result, { pid: this.ref.pid, creationDate: this.ref.creationDate });
     } else {
-      await terminateProcessTree(this.ref.pid);
+      const result = await termFn(this.ref.pid, {}, platform);
+      assertProcessTreeTerminated(result, { pid: this.ref.pid });
     }
     this.lifecycle = "stopped";
   }
@@ -213,6 +222,30 @@ export class WorkerCrashError extends Error {
   readonly code = "RUNTIME_WORKER_CRASHED";
   constructor(message: string) {
     super(message);
+  }
+}
+const SAFE_KILL_OUTCOMES = new Set<string>(["killed", "already-exited", "skipped-replaced"]);
+
+/**
+ * Validates process tree termination outcome (plan §44).
+ * Throws if the root process or any descendant failed to terminate or had an unconfirmed kill.
+ */
+export function assertProcessTreeTerminated(
+  result: void | TerminateProcessTreeResult,
+  target: { pid: number; creationDate?: string | null },
+): void {
+  if (!result || typeof result !== "object" || !("rootOutcome" in result)) return; // Unix void return
+  const root = result.rootOutcome;
+  if (!SAFE_KILL_OUTCOMES.has(root)) {
+    throw new Error(
+      `Windows process tree termination failed for root worker pid ${target.pid}: root outcome was "${root}"`,
+    );
+  }
+  const failedDescendant = result.outcomes?.find((o) => !SAFE_KILL_OUTCOMES.has(o.outcome));
+  if (failedDescendant) {
+    throw new Error(
+      `Windows process tree termination incomplete for worker pid ${target.pid}: descendant pid ${failedDescendant.target.pid} outcome was "${failedDescendant.outcome}"`,
+    );
   }
 }
 

@@ -41,7 +41,15 @@ export class RuntimeWorkerManager {
 
   ensureWorker(logicalSessionId: string): RuntimeWorkerClient {
     let worker = this.workersByKey.get(logicalSessionId);
-    if (worker && worker.alive) return worker;
+    if (
+      worker &&
+      worker.alive &&
+      worker.lifecycle !== "stopped" &&
+      worker.lifecycle !== "failed" &&
+      worker.lifecycle !== "cooling"
+    ) {
+      return worker;
+    }
     this.assertRestartBudget(logicalSessionId);
     worker = new RuntimeWorkerClient(this.options.entryPath, logicalSessionId, undefined, (client, code) =>
       this.handleExit(logicalSessionId, client, code),

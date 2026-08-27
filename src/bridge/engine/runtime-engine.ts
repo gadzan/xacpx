@@ -10,7 +10,7 @@ import type {
 import type { NonInteractivePermissions, PermissionMode } from "../../config/types";
 import type { BridgeEngine, EngineInjectInput, EngineListInput, EnginePromptInput, EnginePromptStreamEvent, EngineSessionInput } from "./bridge-engine";
 import { mapRuntimeError, type XacpxRuntimeEvent, type XacpxTurnResult, type RuntimeBridgeErrorCode } from "./runtime/runtime-contract";
-import type { RuntimeWorkerClient } from "./runtime/runtime-worker-client";
+import type { RuntimeWorkerClient, RuntimeWorkerClientDeps } from "./runtime/runtime-worker-client";
 import { WorkerCrashError } from "./runtime/runtime-worker-client";
 import { RuntimeWorkerManager } from "./runtime/runtime-worker-manager";
 import { resolve as resolvePath, dirname } from "node:path";
@@ -55,6 +55,8 @@ export interface RuntimeEngineOptions {
   permissionMode: PermissionMode;
   nonInteractivePermissions?: NonInteractivePermissions;
   permissionPolicy?: string;
+  /** Optional dependency overrides for tests (e.g. Windows termination / identity mocks). */
+  workerClientDeps?: RuntimeWorkerClientDeps;
 }
 
 const WORKER_ENTRY_CANDIDATES = [
@@ -94,7 +96,10 @@ export class RuntimeEngine implements BridgeEngine {
   constructor(private readonly options: RuntimeEngineOptions) {
     const entry = options.workerEntryPath ?? defaultWorkerEntry();
     try {
-      this.manager = new RuntimeWorkerManager({ entryPath: entry });
+      this.manager = new RuntimeWorkerManager({
+        entryPath: entry,
+        clientDeps: options.workerClientDeps,
+      });
     } catch {
       // Entry missing (dev/test without build): engine stays constructible but
       // every session-scoped call fails closed with RUNTIME_ENGINE_UNSUPPORTED.
@@ -156,6 +161,7 @@ export class RuntimeEngine implements BridgeEngine {
       cwd: input.cwd,
       stateDir: this.sessionsDir(),
       permissionMode: this.options.permissionMode,
+      ...(this.options.permissionPolicy !== undefined ? { permissionPolicy: this.options.permissionPolicy } : {}),
       ...(input.agentArgv && input.agentArgv.length > 0 ? { agentOverrides: { [agentName]: [...input.agentArgv] } } : {}),
       ...(this.options.nonInteractivePermissions ? { nonInteractivePermissions: this.options.nonInteractivePermissions } : {}),
     };

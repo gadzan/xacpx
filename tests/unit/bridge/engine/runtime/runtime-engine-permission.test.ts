@@ -21,6 +21,7 @@ async function createPolicyEchoWorker(entry: string): Promise<void> {
     [
       "let buffer='';",
       "let policyMode='unknown';",
+      "let policySpec='none';",
       "process.stdin.on('data', (d) => {",
       "  buffer += d.toString();",
       "  let idx;",
@@ -30,10 +31,11 @@ async function createPolicyEchoWorker(entry: string): Promise<void> {
       "    try { const msg = JSON.parse(line);",
       "      if (msg.method === 'ensure') {",
       "        policyMode = msg.params?.permissionMode ?? 'unknown';",
+      "        policySpec = msg.params?.permissionPolicy ?? 'none';",
       "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true, sessionKey: msg.params?.sessionKey, acpxRecordId: 'rec-p1' } }) + '\\n');",
       "      } else if (msg.method === 'prompt') {",
-      "        process.stdout.write(JSON.stringify({ id: msg.id, event: 'text_delta', payload: { type: 'text_delta', text: `policy=${policyMode}` } }) + '\\n');",
-      "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { result: { status: 'completed' }, finalText: `policy=${policyMode}` } }) + '\\n');",
+      "        process.stdout.write(JSON.stringify({ id: msg.id, event: 'text_delta', payload: { type: 'text_delta', text: `mode=${policyMode};policy=${policySpec}` } }) + '\\n');",
+      "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { result: { status: 'completed' }, finalText: `mode=${policyMode};policy=${policySpec}` } }) + '\\n');",
       "      } else {",
       "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
       "      }",
@@ -54,32 +56,32 @@ test("Scenario 1: idle warm worker is rotated on permission update and new worke
       workerEntryPath: entry,
       permissionMode: "approve-all",
       nonInteractivePermissions: "deny",
+      permissionPolicy: "autoApprove:read-files",
     });
 
-    // 1. First turn: runs with approve-all
+    // 1. First turn: runs with approve-all and policy A
     const reply1 = await engine.prompt({ ...sessionInput, text: "t1" });
-    expect(reply1.text).toBe("policy=approve-all");
+    expect(reply1.text).toBe("mode=approve-all;policy=autoApprove:read-files");
     expect((await engine.isSessionWarm(sessionInput)).warm).toBe(true);
     const oldPid = engine["manager"]?.get("logical-perm-1")?.ref.pid;
     expect(oldPid).toBeDefined();
 
-    // 2. Permission update: rotate warm worker
+    // 2. Permission update: rotate warm worker with new policy B
     await engine.updatePermissionPolicy({
       permissionMode: "deny-all",
       nonInteractivePermissions: "deny",
+      permissionPolicy: "autoDeny:all-edits",
     });
 
     // Old worker is stopped, session is not closed
     expect((await engine.isSessionWarm(sessionInput)).warm).toBe(false);
 
-    // 3. Next prompt creates new worker running the NEW deny-all policy
+    // 3. Next prompt creates new worker running the NEW deny-all and policy B
     const reply2 = await engine.prompt({ ...sessionInput, text: "t2" });
-    expect(reply2.text).toBe("policy=deny-all");
+    expect(reply2.text).toBe("mode=deny-all;policy=autoDeny:all-edits");
     const newPid = engine["manager"]?.get("logical-perm-1")?.ref.pid;
     expect(newPid).toBeDefined();
     expect(newPid).not.toBe(oldPid);
-
-    await engine.shutdown();
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -192,7 +194,7 @@ test("Scenario 3: CLI update failure causes router to rollback RuntimeEngine wit
 
     // RuntimeEngine must NOT have committed deny-all: next prompt uses OLD approve-all
     const reply = await runtime.prompt({ ...sessionInput, text: "after-rollback" });
-    expect(reply.text).toBe("policy=approve-all");
+    expect(reply.text).toBe("mode=approve-all;policy=none");
 
     await runtime.shutdown();
   } finally {
@@ -238,7 +240,7 @@ test("Scenario 4: concurrent prompt waits for active policy transition to comple
     // Prompt now completes with the newly committed deny-all policy
     const result = await promptPromise;
     expect(promptFinished).toBe(true);
-    expect(result.text).toBe("policy=deny-all");
+    expect(result.text).toBe("mode=deny-all;policy=none");
 
     await engine.shutdown();
   } finally {

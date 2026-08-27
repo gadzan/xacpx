@@ -28,10 +28,11 @@ export interface RuntimeWorkerEnsureParams {
   stateDir: string;
   permissionMode: XacpxPermissionMode;
   nonInteractivePermissions?: "deny" | "fail";
+  /** Declarative permission policy (plan §27/§32). */
+  permissionPolicy?: unknown;
   /** Narrow argv overrides for this worker only (plan §35). */
   agentOverrides?: Record<string, string | string[]>;
 }
-
 export interface RuntimeWorkerPromptParams {
   text: string;
 }

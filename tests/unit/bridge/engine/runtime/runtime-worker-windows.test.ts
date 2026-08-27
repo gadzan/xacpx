@@ -113,11 +113,17 @@ test("Scenario 4: terminate uses immutable creationDate captured at bootstrap (P
     const entry = join(dir, "worker.mjs");
     await createEchoWorker(entry);
 
+    let terminatedTarget: unknown;
     const client = new RuntimeWorkerClient(entry, "session-win-4", undefined, undefined, {
+      platform: "win32",
       probeWindowsIdentity: async (pid) => ({
         status: "found",
         identity: { pid, creationDate: "2026-08-27T01:00:00.000Z" },
       }),
+      terminateProcessTree: async (target) => {
+        terminatedTarget = target;
+        return { rootOutcome: "killed", outcomes: [] };
+      },
     });
 
     await client.request("ensure", {});
@@ -126,6 +132,51 @@ test("Scenario 4: terminate uses immutable creationDate captured at bootstrap (P
     // Terminate should use the original immutable creationDate captured at spawn
     await client.terminate();
     expect(client.lifecycle).toBe("stopped");
+    expect(terminatedTarget).toEqual({
+      pid: client.ref.pid,
+      creationDate: "2026-08-27T01:00:00.000Z",
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Scenario 4b: Windows termination outcomes matrix — confirmed safe vs unconfirmed failure", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "win-outcomes-"));
+  try {
+    const entry = join(dir, "worker.mjs");
+    await createEchoWorker(entry);
+
+    // Safe outcomes: killed, already-exited, skipped-replaced
+    for (const safeOutcome of ["killed", "already-exited", "skipped-replaced"] as const) {
+      const client = new RuntimeWorkerClient(entry, `session-safe-${safeOutcome}`, undefined, undefined, {
+        platform: "win32",
+        probeWindowsIdentity: async (pid) => ({
+          status: "found",
+          identity: { pid, creationDate: "2026-08-27T01:00:00.000Z" },
+        }),
+        terminateProcessTree: async () => ({ rootOutcome: safeOutcome, outcomes: [] }),
+      });
+      await client.request("ensure", {});
+      await expect(client.terminate()).resolves.toBeUndefined();
+      expect(client.lifecycle).toBe("stopped");
+    }
+
+    // Failure outcomes: access-denied, query-failed, kill-requested-unconfirmed
+    for (const failOutcome of ["access-denied", "query-failed", "kill-requested-unconfirmed"] as const) {
+      const client = new RuntimeWorkerClient(entry, `session-fail-${failOutcome}`, undefined, undefined, {
+        platform: "win32",
+        probeWindowsIdentity: async (pid) => ({
+          status: "found",
+          identity: { pid, creationDate: "2026-08-27T01:00:00.000Z" },
+        }),
+        terminateProcessTree: async () => ({ rootOutcome: failOutcome, outcomes: [] }),
+      });
+      await client.request("ensure", {});
+      await expect(client.terminate()).rejects.toThrow(/process tree termination failed/);
+      // Fails closed: lifecycle must NOT become stopped
+      expect(client.lifecycle).not.toBe("stopped");
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -50,6 +50,7 @@ function sameEnsureParams(a: RuntimeWorkerEnsureParams | undefined, b: RuntimeWo
     a.stateDir === b.stateDir &&
     a.permissionMode === b.permissionMode &&
     a.nonInteractivePermissions === b.nonInteractivePermissions &&
+    JSON.stringify(a.permissionPolicy ?? null) === JSON.stringify(b.permissionPolicy ?? null) &&
     JSON.stringify(a.agentOverrides ?? null) === JSON.stringify(b.agentOverrides ?? null)
   );
 }
@@ -63,6 +64,7 @@ async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: 
       stateDir: params.stateDir,
       permissionMode: params.permissionMode,
       ...(params.nonInteractivePermissions ? { nonInteractivePermissions: params.nonInteractivePermissions } : {}),
+      ...(params.permissionPolicy !== undefined ? { permissionPolicy: params.permissionPolicy } : {}),
       ...(params.agentOverrides ? { agentOverrides: params.agentOverrides } : {}),
     });
     state.ensureParams = params;
