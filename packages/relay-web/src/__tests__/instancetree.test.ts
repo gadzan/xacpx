@@ -300,6 +300,59 @@ describe("InstanceTree session management", () => {
     expect(w.find('[data-test="session-elapsed"]').exists()).toBe(false);
   });
 
+  it("shows no terminal-open marker until that session's Terminal tab is open", () => {
+    const store = useInstancesStore();
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    expect(w.find('[data-test="terminal-open-marker"]').exists()).toBe(false);
+  });
+
+  it("overlays a terminal-open marker on the agent icon when the Terminal tab is open", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
+    const centerTabs = useCenterTabsStore();
+    centerTabs.openTerminal(sessionKey("i1", "backend"));
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    const marker = w.find('[data-test="terminal-open-marker"]');
+    expect(marker.exists()).toBe(true);
+    expect(marker.attributes("title")).toBe("Terminal tab is open");
+    expect(marker.attributes("aria-label")).toBe("Terminal tab is open");
+    const row = w.find('[data-test="session-row"]');
+    expect(row.findComponent({ name: "AgentIcon" }).exists()).toBe(true);
+    expect(marker.element.parentElement?.contains(row.findComponent({ name: "AgentIcon" }).element)).toBe(true);
+  });
+
+  it("hides the terminal-open marker when that session's Terminal tab is closed", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance([{ alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false }])] as never;
+    const centerTabs = useCenterTabsStore();
+    const key = sessionKey("i1", "backend");
+    centerTabs.openTerminal(key);
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    expect(w.find('[data-test="terminal-open-marker"]').exists()).toBe(true);
+    centerTabs.closeTab(key, "terminal");
+    await w.vm.$nextTick();
+    expect(w.find('[data-test="terminal-open-marker"]').exists()).toBe(false);
+  });
+
+  it("keeps the terminal-open marker on a non-selected session that still has a Terminal tab", async () => {
+    const store = useInstancesStore();
+    store.instances = [instance([
+      { alias: "backend", agent: "claude", workspace: "home", transportSession: "t", running: false, archived: false },
+      { alias: "frontend", agent: "codex", workspace: "home", transportSession: "t2", running: false, archived: false },
+    ])] as never;
+    const chat = useChatStore();
+    chat.select("i1", "backend");
+    const centerTabs = useCenterTabsStore();
+    centerTabs.openTerminal(sessionKey("i1", "frontend"));
+    const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    const rows = w.findAll('[data-test="session-row"]');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.find('[data-test="terminal-open-marker"]').exists()).toBe(false); // selected, no terminal
+    expect(rows[1]!.find('[data-test="terminal-open-marker"]').exists()).toBe(true);  // background terminal
+    expect(rows[1]!.find('[data-test="session-name"]').text()).toBe("frontend");
+  });
+
   it("hides archived sessions from the sidebar", () => {
     const store = useInstancesStore();
     store.instances = [instance([
@@ -349,6 +402,7 @@ describe("InstanceTree session management", () => {
     expect(centerTabs.tabsFor(key)).toHaveLength(1);
     const clearSession = vi.spyOn(centerTabs, "clearSession");
     const w = mount(InstanceTree, { attachTo: document.body, global: { stubs: { NewSessionDialog: true } } });
+    expect(w.find('[data-test="terminal-open-marker"]').exists()).toBe(true);
     await w.find('[data-test="session-menu"]').trigger("mousedown");
     await w.find('[data-test="session-menu"]').trigger("click");
     const item = w.find('[data-test="action-archive"]');
@@ -357,6 +411,8 @@ describe("InstanceTree session management", () => {
     await flushPromises();
     expect(clearSession).toHaveBeenCalledWith(key);
     expect(centerTabs.tabsFor(key)).toEqual([]);
+    await w.vm.$nextTick();
+    expect(w.find('[data-test="terminal-open-marker"]').exists()).toBe(false);
     w.unmount();
   });
 
@@ -392,12 +448,15 @@ describe("InstanceTree session management", () => {
     expect(centerTabs.tabsFor(key)).toHaveLength(1);
     const clearSession = vi.spyOn(centerTabs, "clearSession");
     const w = mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
+    expect(w.find('[data-test="terminal-open-marker"]').exists()).toBe(true);
     await w.find('[data-test="session-menu"]').trigger("click");
     await w.find('[data-test="delete-session"]').trigger("click");
     settleConfirm(true);
     await flushPromises();
     expect(clearSession).toHaveBeenCalledWith(key);
     expect(centerTabs.tabsFor(key)).toEqual([]);
+    await w.vm.$nextTick();
+    expect(w.find('[data-test="terminal-open-marker"]').exists()).toBe(false);
   });
 
   // A connector business error (HTTP 200 {error:…} surfaced by the store) must

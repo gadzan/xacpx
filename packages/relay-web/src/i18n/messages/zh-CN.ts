@@ -316,6 +316,7 @@ export default {
     sessionArchivedLabel: "已睡眠",
     sleepTooltip: "睡眠会立即关闭会话进程，历史保留，发消息即唤醒",
     sessionColdTitle: "进程已退出，下条消息将冷启动",
+    sessionTerminalOpenTitle: "终端标签页已打开",
     sessionNativeBadgeTitle: "从已有的 agent 原生会话续接",
     sessionArchivedToast: "已睡眠「{alias}」，进程已关闭，发消息即唤醒",
     undo: "撤销",

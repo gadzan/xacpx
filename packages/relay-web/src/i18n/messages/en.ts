@@ -318,6 +318,7 @@ export default {
     sessionArchivedLabel: "sleeping",
     sleepTooltip: "Sleeping closes the session process immediately. History is kept — send a message to wake it.",
     sessionColdTitle: "Process exited — next message cold-starts.",
+    sessionTerminalOpenTitle: "Terminal tab is open",
     sessionNativeBadgeTitle: "Resumed from an existing agent-side session",
     sessionArchivedToast: "Slept \"{alias}\" — process closed, message to wake",
     undo: "Undo",

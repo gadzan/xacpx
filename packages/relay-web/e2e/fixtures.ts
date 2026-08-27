@@ -62,7 +62,7 @@ export async function loginAndOpenTerminal(page: Page): Promise<void> {
   }
   const termBtn = page.getByTestId("toggle-terminal");
   await expect(termBtn).toBeVisible({ timeout: 30_000 });
-  const sessionRow = page.getByTestId("session-row");
+  const sessionRow = page.getByTestId("session-row").first();
   if (!(await sessionRow.isVisible().catch(() => false))) {
     const open = page.getByTestId("open-instances");
     if (await open.isVisible().catch(() => false)) await open.click();
