@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import {
   RuntimeWorkerClient,
   WorkerBootstrapError,
+  WorkerTeardownPendingError,
 } from "../../../../../src/bridge/engine/runtime/runtime-worker-client";
 import { RuntimeWorkerManager } from "../../../../../src/bridge/engine/runtime/runtime-worker-manager";
 import { RuntimeEngine } from "../../../../../src/bridge/engine/runtime-engine";
@@ -202,24 +203,37 @@ test("Scenario 4b: Windows termination outcomes matrix — confirmed safe vs unc
     const entry = join(dir, "worker.mjs");
     await createEchoWorker(entry);
 
-    // Safe outcomes: killed, already-exited, skipped-replaced
-    for (const safeOutcome of ["killed", "already-exited", "skipped-replaced"] as const) {
-      const client = new RuntimeWorkerClient(entry, `session-safe-${safeOutcome}`, undefined, undefined, {
+    // Confirmed safe outcome: killed (tree snapshot + verified kill)
+    const client = new RuntimeWorkerClient(entry, "session-safe-killed", undefined, undefined, {
+      platform: "win32",
+      probeWindowsIdentity: async (pid) => ({
+        status: "found",
+        identity: { pid, creationDate: "2026-08-27T01:00:00.000Z" },
+      }),
+      terminateProcessTree: async () => ({ rootOutcome: "killed", outcomes: [] }),
+    });
+    await client.request("ensure", {});
+    await expect(client.terminate()).resolves.toBeUndefined();
+    expect(client.lifecycle).toBe("stopped");
+
+    // Unverified / pre-snapshot outcomes: already-exited, skipped-replaced (cannot prove descendant cleanup)
+    for (const preSnapshotOutcome of ["already-exited", "skipped-replaced"] as const) {
+      const unverifiedClient = new RuntimeWorkerClient(entry, `session-unverified-${preSnapshotOutcome}`, undefined, undefined, {
         platform: "win32",
         probeWindowsIdentity: async (pid) => ({
           status: "found",
           identity: { pid, creationDate: "2026-08-27T01:00:00.000Z" },
         }),
-        terminateProcessTree: async () => ({ rootOutcome: safeOutcome, outcomes: [] }),
+        terminateProcessTree: async () => ({ rootOutcome: preSnapshotOutcome, outcomes: [] }),
       });
-      await client.request("ensure", {});
-      await expect(client.terminate()).resolves.toBeUndefined();
-      expect(client.lifecycle).toBe("stopped");
+      await unverifiedClient.request("ensure", {});
+      await expect(unverifiedClient.terminate()).rejects.toThrow(/cannot verify Windows descendant process tree cleanup/);
+      expect(unverifiedClient.lifecycle).toBe("failed");
     }
 
     // Failure outcomes: access-denied, query-failed, kill-requested-unconfirmed
     for (const failOutcome of ["access-denied", "query-failed", "kill-requested-unconfirmed"] as const) {
-      const client = new RuntimeWorkerClient(entry, `session-fail-${failOutcome}`, undefined, undefined, {
+      const failClient = new RuntimeWorkerClient(entry, `session-fail-${failOutcome}`, undefined, undefined, {
         platform: "win32",
         probeWindowsIdentity: async (pid) => ({
           status: "found",
@@ -227,10 +241,9 @@ test("Scenario 4b: Windows termination outcomes matrix — confirmed safe vs unc
         }),
         terminateProcessTree: async () => ({ rootOutcome: failOutcome, outcomes: [] }),
       });
-      await client.request("ensure", {});
-      await expect(client.terminate()).rejects.toThrow(/process tree termination failed/);
-      // Fails closed: lifecycle must NOT become stopped
-      expect(client.lifecycle).not.toBe("stopped");
+      await failClient.request("ensure", {});
+      await expect(failClient.terminate()).rejects.toThrow(/process tree termination failed/);
+      expect(failClient.lifecycle).toBe("failed");
     }
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -647,12 +660,9 @@ test("Windows G10: unexpected root crash with already-exited root outcome fails 
     const entry = join(dir, "worker.mjs");
     await createEchoWorker(entry);
 
-    const client = new RuntimeWorkerClient(
-      entry,
-      "session-win-crash-descendant",
-      undefined,
-      undefined,
-      {
+    const manager = new RuntimeWorkerManager({
+      entryPath: entry,
+      clientDeps: {
         platform: "win32",
         probeWindowsIdentity: async (pid) => ({ status: "found", identity: { pid, creationDate: "133500000000000000" } }),
         terminateProcessTree: async () => {
@@ -660,8 +670,9 @@ test("Windows G10: unexpected root crash with already-exited root outcome fails 
           return { rootOutcome: "already-exited", outcomes: [] };
         },
       },
-    );
+    });
 
+    const client = manager.ensureWorker("session-win-crash-descendant");
     await client.request("ensure", {});
     expect(client.alive).toBe(true);
 
@@ -678,6 +689,82 @@ test("Windows G10: unexpected root crash with already-exited root outcome fails 
     await expect(client.terminate()).rejects.toThrow(/cannot verify Windows descendant process tree cleanup/);
 
     // Lifecycle must remain failed (cannot prove cleanup)
+    expect(client.lifecycle).toBe("failed");
+
+    expect(() => manager.ensureWorker("session-win-crash-descendant")).toThrow(WorkerTeardownPendingError);
+
+    await manager.shutdownAll().catch(() => {});
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Windows G10: unexpected root crash with skipped-replaced root outcome fails closed and rejects replacement spawn", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "win-crash-skipped-"));
+  try {
+    const entry = join(dir, "worker.mjs");
+    await createEchoWorker(entry);
+
+    const manager = new RuntimeWorkerManager({
+      entryPath: entry,
+      clientDeps: {
+        platform: "win32",
+        probeWindowsIdentity: async (pid) => ({ status: "found", identity: { pid, creationDate: "133500000000000000" } }),
+        terminateProcessTree: async () => {
+          // When PID was reused before termination, Windows OpenVerified returns skipped-replaced
+          return { rootOutcome: "skipped-replaced", outcomes: [] };
+        },
+      },
+    });
+
+    const client = manager.ensureWorker("session-win-crash-skipped");
+    await client.request("ensure", {});
+    expect(client.alive).toBe(true);
+
+    // Abruptly kill worker root
+    process.kill(client.ref.pid, "SIGKILL");
+
+    // Await exit
+    const deadline = Date.now() + 2_000;
+    while (client.alive && Date.now() < deadline) {
+      await new Promise<void>((r) => setTimeout(r, 5));
+    }
+
+    // Terminate returns skipped-replaced -> MUST reject fail closed!
+    await expect(client.terminate()).rejects.toThrow(/cannot verify Windows descendant process tree cleanup/);
+    expect(client.lifecycle).toBe("failed");
+
+    expect(() => manager.ensureWorker("session-win-crash-skipped")).toThrow(WorkerTeardownPendingError);
+
+    await manager.shutdownAll().catch(() => {});
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Windows G10: wasAliveBeforeTerm initially true but terminator returns already-exited must still fail closed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "win-alive-race-"));
+  try {
+    const entry = join(dir, "worker.mjs");
+    await createEchoWorker(entry);
+
+    const client = new RuntimeWorkerClient(
+      entry,
+      "session-win-alive-race",
+      undefined,
+      undefined,
+      {
+        platform: "win32",
+        probeWindowsIdentity: async (pid) => ({ status: "found", identity: { pid, creationDate: "133500000000000000" } }),
+        terminateProcessTree: async () => ({ rootOutcome: "already-exited", outcomes: [] }),
+      },
+    );
+
+    await client.request("ensure", {});
+    expect(client.alive).toBe(true);
+
+    // Terminate while alive where terminator returns already-exited (race in OpenVerified) -> MUST fail closed!
+    await expect(client.terminate()).rejects.toThrow(/cannot verify Windows descendant process tree cleanup/);
     expect(client.lifecycle).toBe("failed");
   } finally {
     await rm(dir, { recursive: true, force: true });

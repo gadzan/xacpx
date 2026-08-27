@@ -264,48 +264,55 @@ export class RuntimeWorkerClient {
     const platform = this.deps?.platform ?? process.platform;
     const termFn = this.deps?.terminateProcessTree ?? terminateProcessTree;
 
-    if (platform === "win32" || this.deps?.probeWindowsIdentity) {
-      if (!this.ref.creationDate) {
-        if (this.alive) {
-          // Hard rule (plan §44): Windows terminate MUST NOT fall back to bare PID.
-          // If identity was never verified on an active process, fail closed.
-          this.lifecycle = "failed";
+    try {
+      if (platform === "win32" || this.deps?.probeWindowsIdentity) {
+        if (!this.ref.creationDate) {
+          if (this.alive) {
+            // Hard rule (plan §44): Windows terminate MUST NOT fall back to bare PID.
+            // If identity was never verified on an active process, fail closed.
+            throw new Error(
+              `cannot terminate Windows worker (pid ${this.ref.pid}) without verified creationDate; refusing bare PID kill`,
+            );
+          }
+          // Worker root already exited during deliberate shutdown and bootstrap was never verified
+          // (no business RPC ever entered, so no adapter descendant could have been created).
+          if (this.deliberateShutdown && !isCrashCleanup) {
+            this.lifecycle = "stopped";
+            return;
+          }
           throw new Error(
-            `cannot terminate Windows worker (pid ${this.ref.pid}) without verified creationDate; refusing bare PID kill`,
+            `cannot verify Windows descendant cleanup for unverified worker (pid ${this.ref.pid}); refusing unverified replacement spawn`,
           );
         }
-        // Worker root already exited during deliberate shutdown and identity was never verified
-        if (this.deliberateShutdown && !isCrashCleanup) {
-          this.lifecycle = "stopped";
-          return;
-        }
-        this.lifecycle = "failed";
-        throw new Error(
-          `cannot verify Windows descendant cleanup for unverified worker (pid ${this.ref.pid}); refusing unverified replacement spawn`,
+        const result = await termFn(
+          {
+            pid: this.ref.pid,
+            creationDate: this.ref.creationDate,
+          },
+          {},
+          platform,
         );
-      }
-      const result = await termFn(
-        {
-          pid: this.ref.pid,
-          creationDate: this.ref.creationDate,
-        },
-        {},
-        platform,
-      );
-      // On Windows: if root was already dead before tree termination began (e.g. unexpected crash),
-      // OpenVerified(root) returned "already-exited" without taking a CIM snapshot. We cannot prove
-      // whether child adapter descendants are still alive in the OS, so we fail closed (G10).
-      if ((!wasAliveBeforeTerm || isCrashCleanup) && result && typeof result === "object" && result.rootOutcome === "already-exited") {
-        this.lifecycle = "failed";
-        throw new Error(
-          `cannot verify Windows descendant process tree cleanup for worker pid ${this.ref.pid} after unexpected root exit (root was already exited before CIM snapshot); refusing unverified replacement spawn`,
-        );
-      }
 
-      assertProcessTreeTerminated(result, { pid: this.ref.pid, creationDate: this.ref.creationDate });
-    } else {
-      const result = await termFn(this.ref.pid, { detachedProcessGroup: true }, platform);
-      assertProcessTreeTerminated(result, { pid: this.ref.pid });
+        // On Windows: if rootOutcome is "already-exited" or "skipped-replaced", the tree terminator
+        // exited BEFORE taking a CIM snapshot. Because this worker completed bootstrap and could have
+        // spawned child adapter descendants, neither outcome proves that descendant processes are dead.
+        // We must fail closed (G10 / single-owner invariant).
+        if (result && typeof result === "object") {
+          if (result.rootOutcome === "already-exited" || result.rootOutcome === "skipped-replaced") {
+            throw new Error(
+              `cannot verify Windows descendant process tree cleanup for worker pid ${this.ref.pid} (root outcome was "${result.rootOutcome}" before CIM snapshot); refusing unverified replacement spawn`,
+            );
+          }
+        }
+
+        assertProcessTreeTerminated(result, { pid: this.ref.pid, creationDate: this.ref.creationDate });
+      } else {
+        const result = await termFn(this.ref.pid, { detachedProcessGroup: true }, platform);
+        assertProcessTreeTerminated(result, { pid: this.ref.pid });
+      }
+    } catch (error) {
+      this.lifecycle = "failed";
+      throw error;
     }
     try {
       this.child.stdin?.end();
