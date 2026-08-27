@@ -9,7 +9,7 @@ const chat = useChatStore();
   <!-- Server-side pending-prompt queue for the selected session (Task 6's sessionQueue).
        Renders nothing when the queue is empty — no v-if needed at the call site. -->
   <div v-if="chat.sessionQueue.length" data-test="queue-strip"
-       class="flex items-center gap-2 rounded-lg border border-border bg-raised/60 px-3 py-1.5">
+       class="flex items-center gap-2 rounded-lg border border-border/70 bg-surface/95 px-3 py-1.5 backdrop-blur-md">
     <span class="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-fg-muted">{{ $t("chat.queuedHeader") }}</span>
     <TransitionGroup tag="div"
         move-class="transition-transform duration-200 ease-out motion-reduce:transition-none"

@@ -18,6 +18,10 @@ const sleeping = (alias: string, workspace = "backend", agent = "codex") => ({
   alias, agent, workspace, transportSession: `t-${alias}`, running: false, archived: true,
 });
 
+const awake = (alias: string, workspace = "backend", agent = "codex") => ({
+  alias, agent, workspace, transportSession: `t-${alias}`, running: false, archived: false,
+});
+
 test("loadGroupArchivedSessions fetches one archivedOnly page scoped to the group", async () => {
   const store = seed();
   const { api } = await import("../api/client");
@@ -176,5 +180,84 @@ test("unarchiveSession refreshes loaded group pages", async () => {
 
   const archivedCalls = rpc.mock.calls.filter((call) => (call[2] as { archivedOnly?: boolean })?.archivedOnly);
   expect(archivedCalls).toHaveLength(1);
+  vi.restoreAllMocks();
+});
+
+test("archive moves the row into loaded group pages synchronously (no remove-then-reappear)", async () => {
+  const store = seed();
+  const { api } = await import("../api/client");
+  // Group page for workspace "backend" is loaded BEFORE the archive.
+  const rpc = vi.spyOn(api, "rpc").mockResolvedValue({ sessions: [sleeping("s1")], hasMore: false });
+  await store.loadGroupArchivedSessions("i1", "workspace", "backend");
+  rpc.mockClear();
+  rpc.mockResolvedValue({ sessions: [], hasMore: false });
+
+  // Capture state SYNCHRONOUSLY after invoking archiveSession (not awaiting it):
+  // the point of the fix is that the row never disappears between the click and
+  // the refetch publishing.
+  const done = store.archiveSession("i1", "active");
+  expect(store.byId("i1")!.sessions.filter((s) => !s.archived).map((s) => s.alias)).toEqual([]);
+  const page = store.byId("i1")!.groupArchived![groupArchivedKey("workspace", "backend")]!;
+  expect(page.sessions.map((s) => s.alias)).toEqual(["s1", "active"]);
+  expect(page.sessions[1].archived).toBe(true);
+  await done;
+  vi.restoreAllMocks();
+});
+
+test("archive failure rolls the row back out of the group pages", async () => {
+  const store = seed();
+  const { api } = await import("../api/client");
+  const rpc = vi.spyOn(api, "rpc").mockResolvedValue({ sessions: [sleeping("s1")], hasMore: false });
+  await store.loadGroupArchivedSessions("i1", "workspace", "backend");
+  rpc.mockReset();
+  rpc.mockRejectedValue(new Error("still draining"));
+
+  await expect(store.archiveSession("i1", "active")).rejects.toThrow("still draining");
+  expect(store.byId("i1")!.sessions.find((s) => s.alias === "active")!.archived).toBe(false);
+  const page = store.byId("i1")!.groupArchived![groupArchivedKey("workspace", "backend")]!;
+  expect(page.sessions.map((s) => s.alias)).toEqual(["s1"]);
+  vi.restoreAllMocks();
+});
+
+test("unarchive pulls the row out of loaded pages into actives in one tick (and rolls back on failure)", async () => {
+  const store = seed();
+  const { api } = await import("../api/client");
+  // First (archivedOnly) load returns s1 SLEEPING; every later list call sees it AWAKE.
+  let firstList = true;
+  const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_iid: string, type: string) => {
+    if (type === "control.sessions.list") {
+      const sleepingFirst = firstList;
+      firstList = false;
+      return { sessions: [sleepingFirst ? sleeping("s1") : awake("s1")], hasMore: false };
+    }
+    return {};
+  });
+  await store.loadGroupArchivedSessions("i1", "workspace", "backend");
+  rpc.mockClear();
+
+  // Success path: synchronous move before the awaited refresh lands.
+  const done = store.unarchiveSession("i1", "s1");
+  expect(store.byId("i1")!.sessions.some((s) => s.alias === "s1" && !s.archived)).toBe(true);
+  expect(store.byId("i1")!.groupArchived![groupArchivedKey("workspace", "backend")]!.sessions.map((s) => s.alias)).toEqual([]);
+  await done;
+
+  // Failure path: wake a sleeping session whose RPC rejects. Re-seed the page with
+  // the row (as if woken then re-slept), and have every list call fail-free while
+  // the unarchive RPC itself rejects.
+  const inst = store.byId("i1")!;
+  inst.groupArchived![groupArchivedKey("workspace", "backend")] = {
+    sessions: [{ ...sleeping("s1"), archived: true }],
+    loaded: true, hasMore: false, nextOffset: 0,
+  };
+  inst.sessions = inst.sessions.filter((s) => s.alias !== "s1");
+  rpc.mockReset();
+  rpc.mockImplementation(async (_iid: string, type: string) => {
+    if (type === "control.sessions.unarchive") throw new Error("offline");
+    return { sessions: [], hasMore: false };
+  });
+  await expect(store.unarchiveSession("i1", "s1")).rejects.toThrow("offline");
+  // Back in the sleeping page (not stranded in actives), roll-back complete.
+  expect(store.byId("i1")!.groupArchived![groupArchivedKey("workspace", "backend")]!.sessions.map((s) => s.alias)).toEqual(["s1"]);
+  expect(store.byId("i1")!.sessions.some((s) => s.alias === "s1")).toBe(false);
   vi.restoreAllMocks();
 });

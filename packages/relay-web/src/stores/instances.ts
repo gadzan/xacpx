@@ -156,6 +156,54 @@ export const useInstancesStore = defineStore("instances", () => {
     return mode === "workspace" ? { workspace: groupKey } : { agent: groupKey };
   }
 
+  // Optimistic active↔sleeping hand-off for the per-group pages. The grouped sidebar
+  // renders a group's active rows from inst.sessions and its sleeping rows from
+  // groupArchived pages; flipping the archived flag alone therefore makes a row fall
+  // out of the active list while it is still missing from the (stale) page — it
+  // vanishes and only reappears when the post-RPC refetch publishes. Mirroring the
+  // flip INTO the loaded pages at the same moment lets the row move sections in one
+  // render; the authoritative refresh converges to the same content.
+  function groupModesForRow(row: Pick<SessionRow, "workspace" | "agent">): Array<{ mode: GroupArchivedMode; groupKey: string }> {
+    return [
+      { mode: "workspace", groupKey: row.workspace },
+      { mode: "agent", groupKey: row.agent },
+    ];
+  }
+
+  /** Mirror `archived` for `row` into every LOADED group page covering it.
+   *  Unloaded pages are skipped — they must not materialise half-truths. */
+  function handOffRowToGroups(instanceId: string, row: SessionRow, archived: boolean): void {
+    const inst = byId(instanceId);
+    if (!inst?.groupArchived) return;
+    for (const { mode, groupKey } of groupModesForRow(row)) {
+      const key = groupArchivedKey(mode, groupKey);
+      const state = inst.groupArchived[key];
+      if (!state?.loaded) continue;
+      if (archived) {
+        if (state.sessions.some((s) => s.alias === row.alias)) continue;
+        // Clone: page rows stay independent of the live inst.sessions object.
+        inst.groupArchived[key] = { ...state, sessions: [...state.sessions, { ...row }] };
+      } else if (state.sessions.some((s) => s.alias === row.alias)) {
+        inst.groupArchived[key] = { ...state, sessions: state.sessions.filter((s) => s.alias !== row.alias) };
+      }
+    }
+  }
+
+  /** Pop a sleeping row out of the loaded group pages on wake, returning a copy for
+   *  re-insertion into inst.sessions (undefined when no page held it). */
+  function takeRowFromGroups(instanceId: string, alias: string): SessionRow | undefined {
+    const inst = byId(instanceId);
+    let woken: SessionRow | undefined;
+    if (!inst?.groupArchived) return woken;
+    for (const [key, state] of Object.entries(inst.groupArchived)) {
+      if (!state.loaded) continue;
+      if (!state.sessions.some((s) => s.alias === alias)) continue;
+      woken ??= { ...state.sessions.find((s) => s.alias === alias)! };
+      inst.groupArchived[key] = { ...state, sessions: state.sessions.filter((s) => s.alias !== alias) };
+    }
+    return woken;
+  }
+
   // Discard-and-refetch idiom shared by every session-list loader: an event that
   // lands while a fetch is in flight leaves a pending mark; once the fetch settles,
   // re-run the work until no new mark survives a full pass.
@@ -352,7 +400,7 @@ export const useInstancesStore = defineStore("instances", () => {
       const inst = byId(instanceId);
       if (inst) {
         const key = groupArchivedKey(mode, groupKey);
-        const rows = page.sessions.map((session) => overlaySessionRename(instanceId, session, confirmedRevisionsAtRequest));
+        const rows = page.sessions.filter((session) => session.archived).map((session) => overlaySessionRename(instanceId, session, confirmedRevisionsAtRequest));
         const base = append ? (inst.groupArchived?.[key]?.sessions ?? []) : [];
         patchGroupArchivedState(instanceId, mode, groupKey, {
           sessions: [...base, ...rows.filter((row) => !base.some((old) => old.alias === row.alias))],
@@ -407,7 +455,7 @@ export const useInstancesStore = defineStore("instances", () => {
             offset, limit: Math.min(100, target - all.length), archivedOnly: true,
             ...groupArchivedFilter(mode, groupKey),
           });
-          all.push(...page.sessions.map((session) => overlaySessionRename(instanceId, session, confirmedRevisionsAtRequest)));
+          all.push(...page.sessions.filter((session) => session.archived).map((session) => overlaySessionRename(instanceId, session, confirmedRevisionsAtRequest)));
           hasMore = page.hasMore === true;
           nextOffset = page.nextOffset ?? offset + page.sessions.length;
           if (!hasMore || nextOffset <= offset) break;
@@ -714,13 +762,24 @@ export const useInstancesStore = defineStore("instances", () => {
     // instead of dropping it from the active list mid-transition.
     const sessionRow = byId(instanceId)?.sessions.find((s) => s.alias === alias);
     const prevArchived = sessionRow?.archived === true;
-    if (sessionRow) sessionRow.archived = true;
+    if (sessionRow) {
+      sessionRow.archived = true;
+      // Move the row into any LOADED per-group sleeping page in the same tick so the
+      // grouped sidebar shows it as sleeping immediately (no remove-then-reappear).
+      // On failure the rollback below undoes both flips.
+      handOffRowToGroups(instanceId, sessionRow, true);
+    }
     try {
       // unwrap: a connector business error (e.g. session-missing, still draining)
       // arrives as HTTP 200 {error:…} and must also trigger the rollback below.
       unwrap(await api.rpc(instanceId, "control.sessions.archive", { alias }));
     } catch (error) {
-      if (sessionRow && !prevArchived) sessionRow.archived = false;
+      if (sessionRow && !prevArchived) {
+        sessionRow.archived = false;
+        // Mirror the rollback: pull the row back out of any loaded group page so
+        // the sidebar returns to its pre-archive state.
+        takeRowFromGroups(instanceId, alias);
+      }
       throw error;
     }
     // No cache purge: a sleeping session stays resumable, and its cached tail
@@ -731,8 +790,29 @@ export const useInstancesStore = defineStore("instances", () => {
   }
 
   async function unarchiveSession(instanceId: string, alias: string): Promise<void> {
-    unwrap(await api.rpc(instanceId, "control.sessions.unarchive", { alias }));
-    if (byId(instanceId)?.archivedSessionsLoaded) await loadArchivedSessions(instanceId);
+    // Wake is also optimistic-first: pull the row out of any LOADED per-group page
+    // and re-insert it into the active list in the same tick, so the grouped sidebar
+    // moves it between sections in one render instead of remove-then-reappear.
+    const inst = byId(instanceId);
+    const woken = takeRowFromGroups(instanceId, alias);
+    if (inst && woken) {
+      woken.archived = false;
+      if (!inst.sessions.some((s) => s.alias === alias)) inst.sessions = [woken, ...inst.sessions];
+    }
+    try {
+      unwrap(await api.rpc(instanceId, "control.sessions.unarchive", { alias }));
+      if (inst && woken) woken.archived = false; // confirm the optimistic flip
+    } catch (error) {
+      // Roll back both halves: out of the active list, back into the group pages
+      // with its sleeping state intact.
+      if (inst && woken) {
+        if (!woken.archived) woken.archived = true;
+        handOffRowToGroups(instanceId, woken, true);
+        inst.sessions = inst.sessions.filter((s) => s.alias !== alias);
+      }
+      throw error;
+    }
+    if (inst?.archivedSessionsLoaded) await loadArchivedSessions(instanceId);
     else await loadSessions(instanceId);
     refreshLoadedGroupArchivedSessions(instanceId);
   }

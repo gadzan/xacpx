@@ -118,6 +118,30 @@ it("stacks status, plan, and composer as document-flow layers (status → plan �
   expect(kids.indexOf(planEl)).toBeLessThan(kids.indexOf(composerEl!));
 });
 
+it("stacks the pending-prompt queue as its own layer between plan and input", async () => {
+  seedInstance();
+  const chat = useChatStore();
+  chat.select("i1", "backend");
+  // Queue present without busy/plan: it alone must pull the composer up.
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: {
+    type: "queue-updated", chatKey: "c", sessionAlias: "backend",
+    items: [{ id: "q1", textPreview: "queued prompt", enqueuedAt: "t" }],
+  } } as never);
+  const w = mount(ChatPane);
+  await w.vm.$nextTick();
+
+  const stackEl = w.find('[data-test="composer-stack"]').element as HTMLElement;
+  const queue = w.find('[data-test="queue-strip"]');
+  expect(queue.exists()).toBe(true);
+  expect(queue.classes()).toContain("stack-layer--queue");
+  const composerEl = stackEl.querySelector(".stack-layer--composer") as HTMLElement;
+  // Queue visible but no status/plan: the pull-up is driven by the queue alone.
+  expect(composerEl.classList.contains("stack-layer--pull")).toBe(true);
+  // DOM order keeps the layering: status → queue → composer.
+  const kids = [...stackEl.children] as HTMLElement[];
+  expect(kids.indexOf(queue.element as HTMLElement)).toBeLessThan(kids.indexOf(composerEl));
+});
+
 it("grouped sidebar: sleeping row lives only in groupArchived — avatar still shows its driver", async () => {
   // Production shape (grouped sidebar): archived rows are paged into
   // inst.groupArchived[*].sessions and stay OUT of inst.sessions. inst.agents is
