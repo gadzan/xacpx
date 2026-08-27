@@ -51,7 +51,8 @@ export class RuntimeWorkerClient {
   private bootstrapPromise?: Promise<void>;
   private _bootstrapVerified = false;
   private inFlightLeases = 0;
-
+  private exitPromise?: Promise<number | null>;
+  private resolveExit?: (code: number | null) => void;
   get isBootstrapVerified(): boolean {
     return this._bootstrapVerified;
   }
@@ -80,9 +81,11 @@ export class RuntimeWorkerClient {
 
   spawn(): void {
     if (this.child) return;
+    this.exitPromise = new Promise<number | null>((resolve) => {
+      this.resolveExit = resolve;
+    });
     this.child = spawn(process.execPath, [this.entryPath], { stdio: ["pipe", "pipe", "pipe"] });
     this.ref.pid = this.child.pid ?? -1;
-
     const isWindows = process.platform === "win32" || Boolean(this.deps?.probeWindowsIdentity);
     if (isWindows && this.ref.pid > 0) {
       const probeFn = this.deps?.probeWindowsIdentity ?? probeWindowsProcessIdentity;
@@ -121,6 +124,7 @@ export class RuntimeWorkerClient {
         );
       }
       this.pending.clear();
+      this.resolveExit?.(code);
       this.onExit?.(this, code);
     });
     const rl = createInterface({ input: this.child.stdout!, crlfDelay: Infinity });
@@ -218,20 +222,29 @@ export class RuntimeWorkerClient {
     this.deliberateShutdown = true;
     this.lifecycle = "cooling";
     if (!this.child?.stdin?.writableEnded) {
-      try {
-        await Promise.race([
-          this.sendControlMessage("shutdown"),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("grace elapsed")), graceMs).unref()),
-        ]);
-      } catch {
-        // fall through to terminate
+      this.sendControlMessage("shutdown").catch(() => {});
+      if (this.exitPromise) {
+        try {
+          await Promise.race([
+            this.exitPromise,
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error("grace elapsed")), graceMs).unref()),
+          ]);
+        } catch {
+          // grace elapsed before child exited
+        }
       }
     }
+    // If the child exited within the grace window, we're done (plan §16)
+    if (!this.alive) {
+      this.lifecycle = "stopped";
+      return;
+    }
+    // Grace elapsed and child is still alive: perform hard termination
     await this.terminate();
   }
 
   async terminate(): Promise<void> {
-    if (!this.child || this.ref.pid <= 0) return;
+    if (!this.alive || !this.child || this.ref.pid <= 0) return;
     this.deliberateShutdown = true;
     this.lifecycle = "cooling";
     try {

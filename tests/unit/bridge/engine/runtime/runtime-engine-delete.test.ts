@@ -455,3 +455,186 @@ test("G4 transaction 3: artifacts deleted but tombstone removal failure causes d
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("G4 identity 1: two records with same name and different cwd -> deleting session B deletes only B", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-multi-ws-"));
+  const sessionsDir = join(dir, ".acpx", "sessions");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    await mkdir(sessionsDir, { recursive: true });
+
+    // Record A: name="backend", cwd="/repo/a", id="rec-a"
+    const recAFile = join(sessionsDir, "rec-a.json");
+    const recAStream = join(sessionsDir, "rec-a.stream.0.ndjson");
+    await writeFile(recAFile, JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "rec-a", name: "backend", cwd: "/repo/a" }));
+    await writeFile(recAStream, "history for A\n");
+
+    // Record B: name="backend", cwd="/repo/b", id="rec-b"
+    const recBFile = join(sessionsDir, "rec-b.json");
+    const recBStream = join(sessionsDir, "rec-b.stream.0.ndjson");
+    await writeFile(recBFile, JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "rec-b", name: "backend", cwd: "/repo/b" }));
+    await writeFile(recBStream, "history for B\n");
+
+    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+
+    // Cold delete on session B (cwd="/repo/b", name="backend")
+    await expect(
+      engine.deleteSession({
+        ...sessionInput,
+        logicalSessionId: "session-b-id",
+        name: "backend",
+        cwd: "/repo/b",
+      }),
+    ).resolves.toEqual({});
+
+    // Record B and stream B are completely gone
+    await expect(access(recBFile)).rejects.toThrow();
+    await expect(access(recBStream)).rejects.toThrow();
+
+    // Record A and stream A MUST remain completely intact!
+    await access(recAFile);
+    await access(recAStream);
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("G4 identity 2: ambiguous matching records on disk fail closed and delete nothing", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-ambig-disk-"));
+  const sessionsDir = join(dir, ".acpx", "sessions");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    await mkdir(sessionsDir, { recursive: true });
+
+    // Two records with identical name and cwd but different record IDs on disk
+    const rec1File = join(sessionsDir, "rec-ambig-1.json");
+    const rec2File = join(sessionsDir, "rec-ambig-2.json");
+    await writeFile(rec1File, JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "rec-ambig-1", name: "dup-session", cwd: "/repo/shared" }));
+    await writeFile(rec2File, JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "rec-ambig-2", name: "dup-session", cwd: "/repo/shared" }));
+
+    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+
+    // Cold delete MUST fail closed due to ambiguity
+    await expect(
+      engine.deleteSession({
+        ...sessionInput,
+        logicalSessionId: "ambig-session-id",
+        name: "dup-session",
+        cwd: "/repo/shared",
+      }),
+    ).rejects.toMatchObject({
+      code: "RUNTIME_INIT_FAILED",
+    });
+
+    // Neither record was touched or deleted!
+    await access(rec1File);
+    await access(rec2File);
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("G4 identity 3: restart tombstone recovery matches by immutable logicalSessionId", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-tomb-lid-"));
+  const sessionsDir = join(dir, ".acpx", "sessions");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    await mkdir(sessionsDir, { recursive: true });
+
+    // Tombstone 1 for logicalSessionId="session-1", name="common-name", id="rec-tomb-1"
+    const tomb1 = join(sessionsDir, ".xacpx-delete-tombstone-rec-tomb-1.json");
+    await writeFile(
+      tomb1,
+      JSON.stringify({
+        logicalSessionId: "session-1",
+        name: "common-name",
+        cwd: "/repo/one",
+        recordId: "rec-tomb-1",
+      }),
+    );
+    const stream1 = join(sessionsDir, "rec-tomb-1.stream.0.ndjson");
+    await writeFile(stream1, "stream for session 1\n");
+
+    // Tombstone 2 for logicalSessionId="session-2", name="common-name", id="rec-tomb-2"
+    const tomb2 = join(sessionsDir, ".xacpx-delete-tombstone-rec-tomb-2.json");
+    await writeFile(
+      tomb2,
+      JSON.stringify({
+        logicalSessionId: "session-2",
+        name: "common-name",
+        cwd: "/repo/two",
+        recordId: "rec-tomb-2",
+      }),
+    );
+    const stream2 = join(sessionsDir, "rec-tomb-2.stream.0.ndjson");
+    await writeFile(stream2, "stream for session 2\n");
+
+    // Fresh engine after restart
+    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+
+    // Cold delete on session-2
+    await expect(
+      engine.deleteSession({
+        ...sessionInput,
+        logicalSessionId: "session-2",
+        name: "common-name",
+        cwd: "/repo/two",
+      }),
+    ).resolves.toEqual({});
+
+    // Session 2 stream and tombstone are removed
+    await expect(access(stream2)).rejects.toThrow();
+    await expect(access(tomb2)).rejects.toThrow();
+
+    // Session 1 stream and tombstone remain completely untouched!
+    await access(stream1);
+    await access(tomb1);
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("G4 identity 4: ambiguous tombstones fail closed and do not delete", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-tomb-ambig-"));
+  const sessionsDir = join(dir, ".acpx", "sessions");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    await mkdir(sessionsDir, { recursive: true });
+
+    // Two tombstones matching the same legacy search without logicalSessionId
+    const tomb1 = join(sessionsDir, ".xacpx-delete-tombstone-rec-dup-1.json");
+    const tomb2 = join(sessionsDir, ".xacpx-delete-tombstone-rec-dup-2.json");
+    await writeFile(tomb1, JSON.stringify({ name: "legacy-dup", cwd: "/repo/dup", recordId: "rec-dup-1" }));
+    await writeFile(tomb2, JSON.stringify({ name: "legacy-dup", cwd: "/repo/dup", recordId: "rec-dup-2" }));
+
+    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+
+    // Without logicalSessionId, matching returns 2 tombstones -> fail closed!
+    await expect(
+      engine.deleteSession({
+        ...sessionInput,
+        name: "legacy-dup",
+        cwd: "/repo/dup",
+      }),
+    ).rejects.toMatchObject({
+      code: "RUNTIME_INIT_FAILED",
+    });
+
+    // Neither tombstone was removed
+    await access(tomb1);
+    await access(tomb2);
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

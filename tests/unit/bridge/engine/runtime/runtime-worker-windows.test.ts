@@ -516,3 +516,64 @@ test("Lifecycle: client.shutdown() sends graceful shutdown RPC frame to worker p
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("Windows lifecycle: graceful shutdown when creationDate identity probe is still pending succeeds without terminateProcessTree", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "win-shutdown-probe-pending-"));
+  try {
+    const entry = join(dir, "probe-pending-worker.mjs");
+    await writeFile(
+      entry,
+      [
+        "let buffer='';",
+        "process.stdin.on('data', (d) => {",
+        "  buffer += d.toString();",
+        "  let idx;",
+        "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+        "    if (!line) continue;",
+        "    try { const msg = JSON.parse(line);",
+        "      if (msg.method === 'shutdown') {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "        setTimeout(() => process.exit(0), 10);",
+        "      } else {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "      }",
+        "    } catch {}",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+
+    let terminateTreeCalled = false;
+    // Probe is intentionally held pending forever to simulate slow Windows WMI query
+    const pendingForever = new Promise<never>(() => {});
+
+    const client = new RuntimeWorkerClient(
+      entry,
+      "win-probe-pending-session",
+      undefined,
+      undefined,
+      {
+        platform: "win32",
+        probeWindowsIdentity: async () => pendingForever,
+        terminateProcessTree: async () => {
+          terminateTreeCalled = true;
+          return { status: "killed", pid: 99999 };
+        },
+      },
+    );
+
+    // Spawn the worker (probe is started in background, remaining pending)
+    client.spawn();
+
+    // Call graceful shutdown while identity probe is still pending
+    await client.shutdown(2_000);
+
+    // Assert: child exited cleanly within grace window
+    expect(client.alive).toBe(false);
+    expect(client.lifecycle).toBe("stopped");
+    // terminateProcessTree MUST NOT be called!
+    expect(terminateTreeCalled).toBe(false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

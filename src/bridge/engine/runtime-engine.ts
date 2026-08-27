@@ -34,10 +34,67 @@ export type RecordLookupResult =
  * Scans the sessions directory for an acpx record matching the session name (plan §39).
  * Fails closed if the directory or any candidate file is unreadable (G4).
  */
+export interface SessionRecordMatchCriteria {
+  name: string;
+  cwd?: string;
+  agentCommand?: string;
+  acpxAgent?: string;
+  rawCommand?: string;
+}
+
+export interface DeleteTombstoneRecord {
+  logicalSessionId?: string;
+  name: string;
+  cwd?: string;
+  agentCommand?: string;
+  recordId: string;
+}
+
+function normalizePathForComparison(p?: string): string | undefined {
+  if (!p) return undefined;
+  const resolved = resolvePath(p);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+export function matchSessionRecord(
+  parsed: Record<string, unknown>,
+  criteria: SessionRecordMatchCriteria,
+): boolean {
+  // 1. Name must match exactly
+  if (parsed.name !== criteria.name) return false;
+
+  // 2. Cwd matching: if criteria specifies cwd and parsed has cwd, normalized paths must match
+  if (criteria.cwd && typeof parsed.cwd === "string") {
+    const criteriaCwd = normalizePathForComparison(criteria.cwd);
+    const parsedCwd = normalizePathForComparison(parsed.cwd);
+    if (criteriaCwd && parsedCwd && criteriaCwd !== parsedCwd) {
+      return false;
+    }
+  }
+
+  // 3. Agent command matching: if criteria specifies agentCommand (or rawCommand/acpxAgent), match if present
+  const targetCmd = criteria.agentCommand ?? criteria.rawCommand;
+  if (targetCmd && typeof parsed.agent_command === "string") {
+    if (parsed.agent_command !== targetCmd && parsed.agent_command !== criteria.acpxAgent) {
+      return false;
+    }
+  }
+
+  return typeof parsed.acpx_record_id === "string";
+}
+
+/**
+ * Scans the sessions directory for an acpx record matching the session criteria (plan §39).
+ * Fails closed if the directory or any candidate file is unreadable or if multiple matching
+ * records exist on disk (G4).
+ */
 export async function findAcpxRecordIdFromDisk(
-  name: string,
+  criteria: string | SessionRecordMatchCriteria,
   sessionsDir = join(resolveAcpxHomeDir(), ".acpx", "sessions"),
 ): Promise<RecordLookupResult> {
+  const matchCriteria: SessionRecordMatchCriteria =
+    typeof criteria === "string" ? { name: criteria } : criteria;
+
   let entries: string[];
   try {
     entries = await readdir(sessionsDir);
@@ -51,13 +108,15 @@ export async function findAcpxRecordIdFromDisk(
     };
   }
 
+  const matches: Array<{ recordId: string; file: string }> = [];
+
   for (const file of entries) {
-    if (!file.endsWith(".json") || file === "index.json") continue;
+    if (!file.endsWith(".json") || file === "index.json" || file.startsWith(".xacpx-delete-tombstone-")) continue;
     try {
       const content = await readFile(join(sessionsDir, file), "utf8");
       const parsed = JSON.parse(content) as Record<string, unknown>;
-      if (parsed.name === name && typeof parsed.acpx_record_id === "string") {
-        return { kind: "found", recordId: parsed.acpx_record_id };
+      if (matchSessionRecord(parsed, matchCriteria)) {
+        matches.push({ recordId: parsed.acpx_record_id as string, file });
       }
     } catch (error) {
       if (!isEnoent(error)) {
@@ -68,21 +127,34 @@ export async function findAcpxRecordIdFromDisk(
       }
     }
   }
-  return { kind: "absent" };
+
+  if (matches.length === 0) {
+    return { kind: "absent" };
+  }
+  if (matches.length === 1 && matches[0]) {
+    return { kind: "found", recordId: matches[0].recordId };
+  }
+  return {
+    kind: "failed",
+    error: new Error(
+      `ambiguous session record resolution for session "${matchCriteria.name}": found ${matches.length} matching records on disk (${matches.map((m) => m.file).join(", ")})`,
+    ),
+  };
 }
+
 function tombstonePath(sessionsDir: string, safeId: string): string {
   return join(sessionsDir, `.xacpx-delete-tombstone-${safeId}.json`);
 }
 
-async function writeTombstoneStrict(sessionsDir: string, safeId: string, record: { name: string; recordId: string }): Promise<void> {
+async function writeTombstoneStrict(sessionsDir: string, safeId: string, record: DeleteTombstoneRecord): Promise<void> {
   const target = tombstonePath(sessionsDir, safeId);
   const tmp = join(sessionsDir, `.xacpx-delete-tombstone-${safeId}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
   try {
-    await writeFile(tmp, JSON.stringify(record), "utf8");
+    await writeFile(tmp, JSON.stringify(record, null, 2), "utf8");
     await rename(tmp, target);
     // Strict verify: ensure the tombstone is actually readable on disk
     const content = await readFile(target, "utf8");
-    const parsed = JSON.parse(content) as { recordId?: string };
+    const parsed = JSON.parse(content) as DeleteTombstoneRecord;
     if (parsed.recordId !== record.recordId) {
       throw new Error("tombstone content mismatch after atomic write");
     }
@@ -116,25 +188,68 @@ async function removeTombstoneStrict(sessionsDir: string, safeId: string): Promi
   }
 }
 
-async function findTombstoneRecordId(name: string, sessionsDir: string): Promise<string | undefined> {
+export function matchTombstoneRecord(
+  parsed: DeleteTombstoneRecord,
+  criteria: { logicalSessionId?: string; name: string; cwd?: string; agentCommand?: string },
+): boolean {
+  // 1. Immutable logicalSessionId exact match (highest priority, plan §48)
+  if (criteria.logicalSessionId && parsed.logicalSessionId) {
+    return parsed.logicalSessionId === criteria.logicalSessionId;
+  }
+
+  // 2. Name must match
+  if (parsed.name !== criteria.name) return false;
+
+  // 3. Normalized cwd match if both present
+  if (criteria.cwd && parsed.cwd) {
+    const criteriaCwd = normalizePathForComparison(criteria.cwd);
+    const parsedCwd = normalizePathForComparison(parsed.cwd);
+    if (criteriaCwd && parsedCwd && criteriaCwd !== parsedCwd) {
+      return false;
+    }
+  }
+
+  return typeof parsed.recordId === "string";
+}
+
+async function findTombstoneRecordId(
+  criteria: { logicalSessionId?: string; name: string; cwd?: string; agentCommand?: string },
+  sessionsDir: string,
+): Promise<string | undefined> {
+  let entries: string[];
   try {
-    const entries = await readdir(sessionsDir);
-    for (const file of entries) {
-      if (!file.startsWith(".xacpx-delete-tombstone-") || !file.endsWith(".json")) continue;
-      try {
-        const content = await readFile(join(sessionsDir, file), "utf8");
-        const parsed = JSON.parse(content) as { name?: string; recordId?: string };
-        if (parsed.name === name && typeof parsed.recordId === "string") {
-          return parsed.recordId;
-        }
-      } catch {
-        // ignore unreadable tombstone
+    entries = await readdir(sessionsDir);
+  } catch {
+    return undefined;
+  }
+
+  const matchingTombstones: Array<{ recordId: string; file: string }> = [];
+
+  for (const file of entries) {
+    if (!file.startsWith(".xacpx-delete-tombstone-") || !file.endsWith(".json")) continue;
+    try {
+      const content = await readFile(join(sessionsDir, file), "utf8");
+      const parsed = JSON.parse(content) as DeleteTombstoneRecord;
+      if (matchTombstoneRecord(parsed, criteria)) {
+        matchingTombstones.push({ recordId: parsed.recordId, file });
+      }
+    } catch (error) {
+      if (!isEnoent(error)) {
+        throw new RuntimeError(
+          "RUNTIME_INIT_FAILED",
+          `cannot read candidate delete tombstone "${file}" in "${sessionsDir}": ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
-  } catch {
-    // dir absent / unreadable
   }
-  return undefined;
+
+  if (matchingTombstones.length === 0) return undefined;
+  if (matchingTombstones.length === 1 && matchingTombstones[0]) return matchingTombstones[0].recordId;
+  // Ambiguous tombstones: fail closed!
+  throw new RuntimeError(
+    "RUNTIME_INIT_FAILED",
+    `ambiguous delete tombstone resolution for session "${criteria.name}": found ${matchingTombstones.length} matching tombstones on disk`,
+  );
 }
 
 export interface RuntimeEngineOptions {
@@ -471,8 +586,13 @@ export class RuntimeEngine implements BridgeEngine {
 
     // 3. STRICT TRANSACTION BOUNDARY (G4): persist delete intent BEFORE any destructive operations!
     // If tombstone write fails, deleteSession aborts immediately without touching worker or files.
-    await writeTombstoneStrict(sessionsDir, safeId, { name: input.name, recordId });
-
+    await writeTombstoneStrict(sessionsDir, safeId, {
+      logicalSessionId: input.logicalSessionId,
+      name: input.name,
+      cwd: input.cwd,
+      agentCommand: input.agentCommand ?? input.rawCommand,
+      recordId,
+    });
     // 4. Terminate live worker (cancel active turn first, close with discard).
     if (client && client.alive) {
       if (this.activeTurns.has(key)) {
@@ -519,14 +639,31 @@ export class RuntimeEngine implements BridgeEngine {
     }
 
     // Check for active tombstones from previous partial delete attempts
-    const tombstoneId = await findTombstoneRecordId(input.name, this.sessionsDir());
+    const tombstoneId = await findTombstoneRecordId(
+      {
+        logicalSessionId: input.logicalSessionId,
+        name: input.name,
+        cwd: input.cwd,
+        agentCommand: input.agentCommand ?? input.rawCommand,
+      },
+      this.sessionsDir(),
+    );
     if (tombstoneId) {
       this.recordIds.set(key, tombstoneId);
       return tombstoneId;
     }
 
     // Cold worker / post-restart: scan on-disk sessions without spawning a worker.
-    const lookup = await findAcpxRecordIdFromDisk(input.name, this.sessionsDir());
+    const lookup = await findAcpxRecordIdFromDisk(
+      {
+        name: input.name,
+        cwd: input.cwd,
+        agentCommand: input.agentCommand,
+        acpxAgent: input.acpxAgent,
+        rawCommand: input.rawCommand,
+      },
+      this.sessionsDir(),
+    );
     if (lookup.kind === "found") {
       this.recordIds.set(key, lookup.recordId);
       return lookup.recordId;
