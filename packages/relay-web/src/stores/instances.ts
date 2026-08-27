@@ -170,6 +170,11 @@ export const useInstancesStore = defineStore("instances", () => {
     ];
   }
 
+  // Provisional archivedAt stamps set during an optimistic archive so a failed RPC
+  // can restore the pre-hand-off value. Keyed `${instanceId}\0${alias}` → old value
+  // (undefined when the row never had one).
+  const handOffArchiveStamps = new Map<string, string | undefined>();
+
   /** Mirror `archived` for `row` into every LOADED group page covering it.
    *  Unloaded pages are skipped — they must not materialise half-truths. */
   function handOffRowToGroups(instanceId: string, row: SessionRow, archived: boolean): void {
@@ -179,9 +184,21 @@ export const useInstancesStore = defineStore("instances", () => {
       const key = groupArchivedKey(mode, groupKey);
       const state = inst.groupArchived[key];
       if (!state?.loaded) continue;
+      // An optimistic hand-off invalidates any snapshot already in flight for this
+      // group (it predates the flip). Marking the pending key makes the in-flight
+      // drain DISCARD the stale response and refetch — same idiom as sessions-changed
+      // — instead of publishing a page that resurrects/erases the moved row.
+      if (state.loading) pendingGroupArchivedRefreshes.add(groupArchivedPendingKey(instanceId, mode, groupKey));
       if (archived) {
         if (state.sessions.some((s) => s.alias === row.alias)) continue;
-        // Clone: page rows stay independent of the live inst.sessions object.
+        // Provisional archivedAt keeps the newly-slept row FIRST under the
+        // sidebar's archivedLast() sort instead of sinking to the bottom until
+        // the authoritative refresh delivers the server timestamp. If the RPC
+        // later fails, the caller restores the original value via the stamp map.
+        if (!handOffArchiveStamps.has(`${instanceId}\0${row.alias}`)) {
+          handOffArchiveStamps.set(`${instanceId}\0${row.alias}`, row.archivedAt);
+        }
+        if (!row.archivedAt) row.archivedAt = new Date().toISOString();
         inst.groupArchived[key] = { ...state, sessions: [...state.sessions, { ...row }] };
       } else if (state.sessions.some((s) => s.alias === row.alias)) {
         inst.groupArchived[key] = { ...state, sessions: state.sessions.filter((s) => s.alias !== row.alias) };
@@ -198,11 +215,17 @@ export const useInstancesStore = defineStore("instances", () => {
     for (const [key, state] of Object.entries(inst.groupArchived)) {
       if (!state.loaded) continue;
       if (!state.sessions.some((s) => s.alias === alias)) continue;
+      // Same in-flight invalidation as handOffRowToGroups (see above).
+      const parsed = parseGroupArchivedKey(key);
+      if (parsed && state.loading) {
+        pendingGroupArchivedRefreshes.add(groupArchivedPendingKey(instanceId, parsed.mode, parsed.groupKey));
+      }
       woken ??= { ...state.sessions.find((s) => s.alias === alias)! };
       inst.groupArchived[key] = { ...state, sessions: state.sessions.filter((s) => s.alias !== alias) };
     }
     return woken;
   }
+
 
   // Discard-and-refetch idiom shared by every session-list loader: an event that
   // lands while a fetch is in flight leaves a pending mark; once the fetch settles,
@@ -397,17 +420,22 @@ export const useInstancesStore = defineStore("instances", () => {
         offset, limit, archivedOnly: true,
         ...groupArchivedFilter(mode, groupKey),
       });
-      const inst = byId(instanceId);
-      if (inst) {
-        const key = groupArchivedKey(mode, groupKey);
-        const rows = page.sessions.filter((session) => session.archived).map((session) => overlaySessionRename(instanceId, session, confirmedRevisionsAtRequest));
-        const base = append ? (inst.groupArchived?.[key]?.sessions ?? []) : [];
-        patchGroupArchivedState(instanceId, mode, groupKey, {
-          sessions: [...base, ...rows.filter((row) => !base.some((old) => old.alias === row.alias))],
-          loaded: true,
-          hasMore: page.hasMore === true,
-          nextOffset: page.nextOffset ?? offset + page.sessions.length,
-        });
+      // A hand-off (or event) that landed while this page was in flight marked the
+      // pending key — discard the stale response; the drain re-runs and refetches.
+      const pk = groupArchivedPendingKey(instanceId, mode, groupKey);
+      if (!pendingGroupArchivedRefreshes.has(pk)) {
+        const inst = byId(instanceId);
+        if (inst) {
+          const key = groupArchivedKey(mode, groupKey);
+          const rows = page.sessions.filter((session) => session.archived).map((session) => overlaySessionRename(instanceId, session, confirmedRevisionsAtRequest));
+          const base = append ? (inst.groupArchived?.[key]?.sessions ?? []) : [];
+          patchGroupArchivedState(instanceId, mode, groupKey, {
+            sessions: [...base, ...rows.filter((row) => !base.some((old) => old.alias === row.alias))],
+            loaded: true,
+            hasMore: page.hasMore === true,
+            nextOffset: page.nextOffset ?? offset + page.sessions.length,
+          });
+        }
       }
     } finally {
       patchGroupArchivedState(instanceId, mode, groupKey, { loading: false });
@@ -777,11 +805,18 @@ export const useInstancesStore = defineStore("instances", () => {
       if (sessionRow && !prevArchived) {
         sessionRow.archived = false;
         // Mirror the rollback: pull the row back out of any loaded group page so
-        // the sidebar returns to its pre-archive state.
+        // the sidebar returns to its pre-archive state, provisional archivedAt
+        // included.
         takeRowFromGroups(instanceId, alias);
+        const stampKey = `${instanceId}\0${alias}`;
+        if (handOffArchiveStamps.has(stampKey)) {
+          sessionRow.archivedAt = handOffArchiveStamps.get(stampKey);
+          handOffArchiveStamps.delete(stampKey);
+        }
       }
       throw error;
     }
+    handOffArchiveStamps.delete(`${instanceId}\0${alias}`);
     // No cache purge: a sleeping session stays resumable, and its cached tail
     // lets waking it paint instantly.
     await loadSessions(instanceId);

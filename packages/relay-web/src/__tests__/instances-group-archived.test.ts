@@ -1,6 +1,7 @@
 import { setActivePinia, createPinia } from "pinia";
 import { beforeEach, expect, test, vi } from "vitest";
 import { useInstancesStore, groupArchivedKey } from "../stores/instances";
+import { archivedLast } from "../lib/sidebar-group-mode";
 
 beforeEach(() => setActivePinia(createPinia()));
 
@@ -259,5 +260,112 @@ test("unarchive pulls the row out of loaded pages into actives in one tick (and 
   // Back in the sleeping page (not stranded in actives), roll-back complete.
   expect(store.byId("i1")!.groupArchived![groupArchivedKey("workspace", "backend")]!.sessions.map((s) => s.alias)).toEqual(["s1"]);
   expect(store.byId("i1")!.sessions.some((s) => s.alias === "s1")).toBe(false);
+  vi.restoreAllMocks();
+});
+
+test("wake during an in-flight group refresh discards the stale snapshot instead of resurrecting the row", async () => {
+  const store = seed();
+  const { api } = await import("../api/client");
+  const sleepingRow = sleeping("s1");
+  const activeRow = awake("active");
+  const awakeRow = awake("s1");
+
+  // Page already published with s1.
+  const rpc = vi.spyOn(api, "rpc").mockResolvedValue({ sessions: [sleepingRow], hasMore: false });
+  await store.loadGroupArchivedSessions("i1", "workspace", "backend");
+  expect(store.byId("i1")!.groupArchived![groupArchivedKey("workspace", "backend")]!.sessions.map((s) => s.alias)).toEqual(["s1"]);
+
+  let isAwake = false;
+  let sawInFlightArchivedQuery = false;
+  const gate = Promise.withResolvers<void>();
+  rpc.mockReset();
+  rpc.mockImplementation(async (_iid: string, type: string, payload?: unknown) => {
+    if (type === "control.sessions.unarchive") {
+      isAwake = true;
+      return {};
+    }
+    if (type === "control.sessions.list") {
+      const isArchivedOnly = (payload as { archivedOnly?: boolean })?.archivedOnly === true;
+      if (isArchivedOnly) {
+        if (!sawInFlightArchivedQuery) {
+          sawInFlightArchivedQuery = true;
+          // HANG this pre-wake in-flight refresh until wake has optimistically
+          // moved s1 out of the page.
+          await gate.promise;
+          // STALE snapshot: carries s1 as sleeping; must be discarded via pending mark.
+          return { sessions: [sleepingRow], hasMore: false };
+        }
+        // Post-wake authoritative queries: s1 is awake, sleeping page is empty.
+        return { sessions: isAwake ? [] : [sleepingRow], hasMore: false };
+      }
+      // Plain (active) listing: includes s1 once awake.
+      return { sessions: isAwake ? [activeRow, awakeRow] : [activeRow], hasMore: false };
+    }
+    return {};
+  });
+
+  // Start an in-flight refresh (e.g. from sessions-changed), then wake mid-flight.
+  void store.refreshLoadedGroupArchivedSessions("i1");
+  await vi.waitFor(() => expect(store.byId("i1")!.groupArchived![groupArchivedKey("workspace", "backend")]!.loading).toBe(true));
+
+  const waking = store.unarchiveSession("i1", "s1");
+  // Synchronous contract: s1 moved to actives AND left the sleeping page in one tick.
+  expect(store.byId("i1")!.sessions.some((s) => s.alias === "s1" && !s.archived)).toBe(true);
+  expect(store.byId("i1")!.groupArchived![groupArchivedKey("workspace", "backend")]!.sessions.map((s) => s.alias)).toEqual([]);
+  gate.resolve();
+
+  await waking;
+  await vi.waitFor(() => expect(store.byId("i1")!.groupArchived![groupArchivedKey("workspace", "backend")]!.loading).toBe(false));
+  const page = store.byId("i1")!.groupArchived![groupArchivedKey("workspace", "backend")]!;
+  // The stale snapshot was discarded and replaced: no duplicate in sleeping + active.
+  expect(page.sessions.map((s) => s.alias)).toEqual([]);
+  expect(store.byId("i1")!.sessions.filter((s) => !s.archived && s.alias === "s1")).toHaveLength(1);
+  vi.restoreAllMocks();
+});
+
+test("archive hands off with provisional archivedAt that sorts FIRST in archivedLast", async () => {
+  const store = seed();
+  const { api } = await import("../api/client");
+  // Existing sleeping rows carry older timestamps; the optimistic row starts at the tail.
+  const rpc = vi.spyOn(api, "rpc").mockResolvedValue({
+    sessions: [
+      { ...sleeping("older"), archivedAt: "2024-01-01T00:00:00Z" },
+      { ...sleeping("newer"), archivedAt: "2024-06-01T00:00:00Z" },
+    ],
+    hasMore: false,
+  });
+  await store.loadGroupArchivedSessions("i1", "workspace", "backend");
+  rpc.mockClear();
+  rpc.mockResolvedValue({ sessions: [sleeping("older"), sleeping("newer"), { ...awake("active"), transportSession: "t-active" }], hasMore: false });
+
+  const done = store.archiveSession("i1", "active");
+  const page = store.byId("i1")!.groupArchived![groupArchivedKey("workspace", "backend")]!;
+  const row = page.sessions.find((s) => s.alias === "active")!;
+  // Provisional stamp exists even though inst.sessions' row had none.
+  expect(row.archivedAt).toBeTruthy();
+  // Render-order contract through archivedLast(): newest slept session first.
+  expect(archivedLast(page.sessions).map((s) => s.alias)).toEqual(["active", "newer", "older"]);
+  await done;
+  vi.restoreAllMocks();
+});
+
+test("archive failure restores the pre-hand-off archivedAt (stamp rollback)", async () => {
+  const store = seed();
+  const { api } = await import("../api/client");
+  const originalStamp = "2023-05-05T00:00:00Z";
+  // The active row ALREADY has an archivedAt (woken earlier once) — a failed archive
+  // must restore that value, not delete it.
+  store.byId("i1")!.sessions.find((s) => s.alias === "active")!.archivedAt = originalStamp;
+  const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_iid: string, type: string) => {
+    if (type === "control.sessions.archive") throw new Error("nope");
+    return { sessions: [], hasMore: false };
+  });
+  await store.loadGroupArchivedSessions("i1", "workspace", "backend");
+  await expect(store.archiveSession("i1", "active")).rejects.toThrow("nope");
+  const row = store.byId("i1")!.sessions.find((s) => s.alias === "active")!;
+  expect(row.archived).toBe(false);
+  expect(row.archivedAt).toBe(originalStamp);
+  // And it was pulled back out of the sleeping page.
+  expect(store.byId("i1")!.groupArchived![groupArchivedKey("workspace", "backend")]!.sessions.map((s) => s.alias)).toEqual([]);
   vi.restoreAllMocks();
 });
