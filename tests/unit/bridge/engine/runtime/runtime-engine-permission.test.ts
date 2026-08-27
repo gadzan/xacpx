@@ -144,6 +144,61 @@ test("Scenario 2: busy worker with in-flight turn causes updatePermissionPolicy 
   }
 }, 15_000);
 
+test("Scenario 2b: in-flight setModel RPC (non-prompt business RPC) causes updatePermissionPolicy to fail closed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-perm-rpc-busy-"));
+  try {
+    const entry = join(dir, "slow-config-worker.mjs");
+    await writeFile(
+      entry,
+      [
+        "let buffer='';",
+        "process.stdin.on('data', (d) => {",
+        "  buffer += d.toString();",
+        "  let idx;",
+        "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+        "    if (!line) continue;",
+        "    try { const msg = JSON.parse(line);",
+        "      if (msg.method === 'ensure') {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true, sessionKey: msg.params?.sessionKey, acpxRecordId: 'rec-slow-cfg' } }) + '\\n');",
+        "      } else if (msg.method === 'setConfigOption') {",
+        "        setTimeout(() => {",
+        "          process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "        }, 100);",
+        "      } else {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "      }",
+        "      if (msg.method === 'shutdown') process.exit(0);",
+        "    } catch {}",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+    const engine = new RuntimeEngine({
+      workerEntryPath: entry,
+      permissionMode: "approve-all",
+      nonInteractivePermissions: "deny",
+    });
+
+    // Start in-flight setModel (non-prompt business RPC)
+    const setModelPromise = engine.setModel({ ...sessionInput, modelId: "claude-3-5-sonnet" });
+
+    // Attempt policy update while setModel RPC is in-flight: MUST fail closed
+    await expect(
+      engine.updatePermissionPolicy({
+        permissionMode: "deny-all",
+        nonInteractivePermissions: "deny",
+      }),
+    ).rejects.toMatchObject({ code: "RUNTIME_PERMISSION_BUSY" });
+
+    // In-flight setModel completes undisturbed
+    await expect(setModelPromise).resolves.toEqual({});
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
 test("Scenario 3: CLI update failure causes router to rollback RuntimeEngine without committing", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-perm-rollback-"));
   try {

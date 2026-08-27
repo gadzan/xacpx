@@ -49,6 +49,19 @@ export class RuntimeWorkerClient {
   /** True only when the host deliberately requested cooling, shutdown, or delete. */
   private deliberateShutdown = false;
   private bootstrapPromise?: Promise<void>;
+  private _bootstrapVerified = false;
+
+  get isBootstrapVerified(): boolean {
+    return this._bootstrapVerified;
+  }
+
+  get inFlightCount(): number {
+    return this.pending.size;
+  }
+
+  get hasInFlight(): boolean {
+    return this.pending.size > 0;
+  }
 
   constructor(
     private readonly entryPath: string,
@@ -69,9 +82,8 @@ export class RuntimeWorkerClient {
     this.child = spawn(process.execPath, [this.entryPath], { stdio: ["pipe", "pipe", "pipe"] });
     this.ref.pid = this.child.pid ?? -1;
 
-    // Windows bootstrap gate (plan §44): identity MUST be verified before the
-    // worker accepts RPCs or is treated as ready. Never fire-and-forget.
-    if ((process.platform === "win32" || this.deps?.probeWindowsIdentity) && this.ref.pid > 0) {
+    const isWindows = process.platform === "win32" || Boolean(this.deps?.probeWindowsIdentity);
+    if (isWindows && this.ref.pid > 0) {
       const probeFn = this.deps?.probeWindowsIdentity ?? probeWindowsProcessIdentity;
       this.bootstrapPromise = probeFn(this.ref.pid).then((res) => {
         if (res.status !== "found") {
@@ -87,12 +99,14 @@ export class RuntimeWorkerClient {
         }
         // Immutable identity: once captured, never mutated or re-probed
         this.ref.creationDate = res.identity.creationDate;
+        this._bootstrapVerified = true;
       });
       // Register handled branch to avoid unhandled rejection if spawn() is
       // invoked directly; request() still awaits this.bootstrapPromise directly.
       this.bootstrapPromise.catch(() => {});
+    } else {
+      this._bootstrapVerified = true;
     }
-
     this.child.on("exit", (code) => {
       // Plan §43: deliberate stop vs unexpected crash is classified by INTENT,
       // not raw exit code. Signal exits and clean-exit crashes are both caught.
@@ -136,7 +150,8 @@ export class RuntimeWorkerClient {
   }
 
   async request<T>(method: RuntimeWorkerRequestMethod, params?: unknown, options?: { onEvent?: (payload: unknown) => void }): Promise<T> {
-    if (!this.alive) {
+    if (!this.alive || this.child?.stdin?.writableEnded) {
+      this.child = undefined;
       this.spawn();
     }
     // Hard gate: identity capture must settle before any business RPC enters the worker
@@ -161,13 +176,15 @@ export class RuntimeWorkerClient {
     if (!this.alive) return;
     this.deliberateShutdown = true;
     this.lifecycle = "cooling";
-    try {
-      await Promise.race([
-        this.request("shutdown"),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("grace elapsed")), graceMs).unref()),
-      ]);
-    } catch {
-      // fall through to terminate
+    if (!this.child?.stdin?.writableEnded) {
+      try {
+        await Promise.race([
+          this.request("shutdown"),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("grace elapsed")), graceMs).unref()),
+        ]);
+      } catch {
+        // fall through to terminate
+      }
     }
     await this.terminate();
   }

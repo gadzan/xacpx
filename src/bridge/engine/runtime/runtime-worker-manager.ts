@@ -36,7 +36,12 @@ export class RuntimeWorkerManager {
   /** Warm = process alive AND bootstrap complete AND not shutting down (plan §15). */
   isWarm(key: string): boolean {
     const worker = this.workersByKey.get(key);
-    return worker !== undefined && (worker.lifecycle === "ready" || worker.lifecycle === "busy" || worker.lifecycle === "idle") && worker.alive;
+    return (
+      worker !== undefined &&
+      worker.alive &&
+      worker.isBootstrapVerified &&
+      (worker.lifecycle === "ready" || worker.lifecycle === "busy" || worker.lifecycle === "idle")
+    );
   }
 
   ensureWorker(logicalSessionId: string): RuntimeWorkerClient {

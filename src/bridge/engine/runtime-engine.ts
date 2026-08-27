@@ -21,31 +21,55 @@ function sleep(ms: number): Promise<void> {
   setTimeout(resolve, ms);
   return promise;
 }
+function isEnoent(err: unknown): boolean {
+  return typeof err === "object" && err !== null && "code" in err && (err as { code?: unknown }).code === "ENOENT";
+}
+
+export type RecordLookupResult =
+  | { kind: "found"; recordId: string }
+  | { kind: "absent" }
+  | { kind: "failed"; error: Error };
+
+/**
+ * Scans the sessions directory for an acpx record matching the session name (plan §39).
+ * Fails closed if the directory or any candidate file is unreadable (G4).
+ */
 export async function findAcpxRecordIdFromDisk(
   name: string,
   sessionsDir = join(resolveAcpxHomeDir(), ".acpx", "sessions"),
-): Promise<string | undefined> {
+): Promise<RecordLookupResult> {
   let entries: string[];
   try {
     entries = await readdir(sessionsDir);
-  } catch {
-    return undefined;
+  } catch (error) {
+    if (isEnoent(error)) {
+      return { kind: "absent" };
+    }
+    return {
+      kind: "failed",
+      error: new Error(`failed to scan sessions directory "${sessionsDir}": ${error instanceof Error ? error.message : String(error)}`),
+    };
   }
+
   for (const file of entries) {
     if (!file.endsWith(".json") || file === "index.json") continue;
     try {
       const content = await readFile(join(sessionsDir, file), "utf8");
       const parsed = JSON.parse(content) as Record<string, unknown>;
       if (parsed.name === name && typeof parsed.acpx_record_id === "string") {
-        return parsed.acpx_record_id;
+        return { kind: "found", recordId: parsed.acpx_record_id };
       }
-    } catch {
-      // skip unreadable/corrupt files
+    } catch (error) {
+      if (!isEnoent(error)) {
+        return {
+          kind: "failed",
+          error: new Error(`cannot read candidate session record "${file}" in "${sessionsDir}": ${error instanceof Error ? error.message : String(error)}`),
+        };
+      }
     }
   }
-  return undefined;
+  return { kind: "absent" };
 }
-
 
 export interface RuntimeEngineOptions {
   /** Resolved worker entry; defaults to the bundled dist output. */
@@ -148,11 +172,12 @@ export class RuntimeEngine implements BridgeEngine {
       throw new WorkerUnavailableError(error instanceof Error ? error.message : String(error));
     }
     try {
-      // A successful RPC proves bootstrap completed → §15 warm (ready/idle).
-      client.lifecycle = "ready";
-      return await run(client);
+      const result = await run(client);
+      if (client.lifecycle === "starting" && client.isBootstrapVerified) {
+        client.lifecycle = "ready";
+      }
+      return result;
     } catch (error) {
-      // Worker death mid-call: normalize to the §43 crash code so the daemon
       // sees RUNTIME_WORKER_CRASHED (bridge-server maps it 1:1).
       if (error instanceof WorkerCrashError) {
         this.activeTurns.delete(key);
@@ -402,12 +427,17 @@ export class RuntimeEngine implements BridgeEngine {
     }
 
     // Cold worker / post-restart: scan on-disk sessions without spawning a worker.
-    const diskRecordId = await findAcpxRecordIdFromDisk(input.name, this.sessionsDir());
-    if (diskRecordId) {
-      this.recordIds.set(key, diskRecordId);
-      return diskRecordId;
+    const lookup = await findAcpxRecordIdFromDisk(input.name, this.sessionsDir());
+    if (lookup.kind === "found") {
+      this.recordIds.set(key, lookup.recordId);
+      return lookup.recordId;
     }
-
+    if (lookup.kind === "failed") {
+      throw new RuntimeError(
+        "RUNTIME_INIT_FAILED",
+        `failed to resolve acpx record id for delete (disk verification failed): ${lookup.error.message}`,
+      );
+    }
     return undefined;
   }
   /**
@@ -436,11 +466,19 @@ export class RuntimeEngine implements BridgeEngine {
         // Re-read directory to verify whether any artifacts remain on disk
         const afterEntries = await readdir(dir);
         remaining = afterEntries.filter((name) => name === mainJson || name.startsWith(`${safeId}.stream.`));
-      } catch {
-        // sessions dir gone or unreadable -> no artifacts remain
-        return;
+      } catch (error) {
+        if (isEnoent(error)) {
+          return; // sessions dir is genuinely gone -> zero artifacts remain
+        }
+        if (Date.now() >= deadline) {
+          throw new RuntimeError(
+            "RUNTIME_INIT_FAILED",
+            `cannot verify deletion of acpx session record "${recordId}": readdir("${dir}") failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        await sleep(100);
+        continue;
       }
-
       if (remaining.length === 0) {
         return; // Complete verification: zero record or history artifacts remain on disk.
       }
@@ -469,8 +507,7 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   async isSessionWarm(input: EngineSessionInput): Promise<{ warm: boolean }> {
-    const client = this.manager?.get(this.workerKey(input));
-    return { warm: client !== undefined && client.alive && client.lifecycle !== "starting" && client.lifecycle !== "cooling" };
+    return { warm: this.manager?.isWarm(this.workerKey(input)) ?? false };
   }
 
   async getAgentSessionId(input: EngineSessionInput): Promise<{ agentSessionId: string | undefined }> {
@@ -508,10 +545,14 @@ export class RuntimeEngine implements BridgeEngine {
     try {
       const live = this.manager?.workers() ?? [];
       for (const worker of live) {
-        if (this.activeTurns.has(worker.ref.logicalSessionId) || worker.lifecycle === "busy") {
+        if (
+          this.activeTurns.has(worker.ref.logicalSessionId) ||
+          worker.lifecycle === "busy" ||
+          worker.hasInFlight
+        ) {
           throw new RuntimeError(
             "RUNTIME_PERMISSION_BUSY",
-            `cannot update permission policy while session "${worker.ref.logicalSessionId}" has an active turn (fail closed)`,
+            `cannot update permission policy while session "${worker.ref.logicalSessionId}" has in-flight operations (fail closed)`,
           );
         }
       }

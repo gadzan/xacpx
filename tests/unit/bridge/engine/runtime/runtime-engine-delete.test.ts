@@ -52,8 +52,11 @@ test("findAcpxRecordIdFromDisk scans session files on disk without spawning work
         name: "target-session-name",
       }),
     );
-    expect(await findAcpxRecordIdFromDisk("target-session-name", dir)).toBe("019cf-test-rec");
-    expect(await findAcpxRecordIdFromDisk("non-existent-session", dir)).toBeUndefined();
+    expect(await findAcpxRecordIdFromDisk("target-session-name", dir)).toEqual({
+      kind: "found",
+      recordId: "019cf-test-rec",
+    });
+    expect(await findAcpxRecordIdFromDisk("non-existent-session", dir)).toEqual({ kind: "absent" });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -163,3 +166,79 @@ test("G4: deleteSession fails closed if main JSON is deleted but stream artifact
     await rm(dir, { recursive: true, force: true });
   }
 }, 10_000);
+
+test("G4 fail-closed 1: sessions directory ENOENT allows idempotent delete success", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-enoent-"));
+  const nonExistentDir = join(dir, "no-such-sessions-dir");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+
+    const engine = new RuntimeEngine({
+      workerEntryPath: entry,
+      stateDir: nonExistentDir,
+      permissionMode: "approve-all",
+    });
+
+    // ENOENT proves the directory / records are absent -> idempotent success
+    await expect(engine.deleteSession(sessionInput)).resolves.toEqual({});
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("G4 fail-closed 2: cold lookup unreadable directory (non-ENOENT) fails closed and rejects delete", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-unreadable-dir-"));
+  const fakeSessionsDirAsFile = join(dir, "sessions-is-a-file");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    // Creating a file where a directory is expected causes readdir to throw ENOTDIR (non-ENOENT)
+    await writeFile(fakeSessionsDirAsFile, "not-a-directory");
+
+    const engine = new RuntimeEngine({
+      workerEntryPath: entry,
+      stateDir: fakeSessionsDirAsFile,
+      permissionMode: "approve-all",
+    });
+
+    // Cannot verify whether session existed -> MUST fail closed!
+    await expect(engine.deleteSession(sessionInput)).rejects.toMatchObject({
+      code: "RUNTIME_INIT_FAILED",
+    });
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("G4 fail-closed 3: unreadable candidate file during cold lookup fails closed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-unreadable-file-"));
+  const sessionsDir = join(dir, ".acpx", "sessions");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    await mkdir(sessionsDir, { recursive: true });
+
+    // A candidate record file that is actually a directory causes readFile to throw EISDIR
+    const unreadableCandidate = join(sessionsDir, "corrupt-candidate.json");
+    await mkdir(unreadableCandidate);
+
+    const lookup = await findAcpxRecordIdFromDisk("any-session", sessionsDir);
+    expect(lookup.kind).toBe("failed");
+
+    const engine = new RuntimeEngine({
+      workerEntryPath: entry,
+      stateDir: sessionsDir,
+      permissionMode: "approve-all",
+    });
+
+    await expect(engine.deleteSession({ ...sessionInput, name: "any-session" })).rejects.toMatchObject({
+      code: "RUNTIME_INIT_FAILED",
+    });
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

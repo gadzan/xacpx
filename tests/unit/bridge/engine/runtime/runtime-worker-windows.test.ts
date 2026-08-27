@@ -68,6 +68,61 @@ test("Scenario 1: Windows identity probe is a hard gate — RPCs await probe res
   }
 });
 
+test("Scenario 1b: warmth positive whitelist — false while probe pending, true after bootstrap verified, false when stopped", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "win-warm-timing-"));
+  try {
+    const entry = join(dir, "worker.mjs");
+    await createEchoWorker(entry);
+
+    const { promise: probePromise, resolve: resolveProbe } = Promise.withResolvers<{
+      status: "found";
+      identity: { pid: number; creationDate: string };
+    }>();
+    const engine = new RuntimeEngine({
+      workerEntryPath: entry,
+      permissionMode: "approve-all",
+      workerClientDeps: {
+        platform: "win32",
+        probeWindowsIdentity: async (pid) => {
+          const res = await probePromise;
+          return { status: "found", identity: { pid, creationDate: res.identity.creationDate } };
+        },
+        terminateProcessTree: async (target) => {
+          try { process.kill(typeof target === "number" ? target : target.pid, "SIGTERM"); } catch {}
+          return { rootOutcome: "killed", outcomes: [] };
+        },
+      },
+    });
+
+    const sessionInput = {
+      agent: "codex",
+      cwd: "/repo",
+      name: "warm-timing-session",
+      logicalSessionId: "warm-timing-1",
+    };
+
+    // 1. Initiate ensureSession: probe is still pending
+    const ensurePromise = engine.ensureSession(sessionInput);
+
+    // Warmth is strictly FALSE while probe is pending
+    expect(await engine.isSessionWarm(sessionInput)).toEqual({ warm: false });
+
+    // 2. Resolve the identity probe -> ensure finishes -> worker lifecycle becomes ready
+    resolveProbe({ status: "found", identity: { pid: 9999, creationDate: "2026-08-27T12:00:00.000Z" } });
+    await ensurePromise;
+
+    // Warmth becomes TRUE only after verified bootstrap + successful RPC
+    expect(await engine.isSessionWarm(sessionInput)).toEqual({ warm: true });
+
+    // 3. Deliberate free/stop -> warmth becomes FALSE
+    await engine.freeWarmProcess(sessionInput);
+    expect(await engine.isSessionWarm(sessionInput)).toEqual({ warm: false });
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 test("Scenario 2: Windows identity probe failure fails closed (rejects bootstrap, marks failed)", async () => {
   const dir = await mkdtemp(join(tmpdir(), "win-probe-fail-"));
   try {
