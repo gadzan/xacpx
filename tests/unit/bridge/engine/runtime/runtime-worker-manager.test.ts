@@ -83,10 +83,15 @@ test("crash-loop guard ignores clean stops and only counts real crashes", async 
     const first = manager.ensureWorker("crashy");
     await first.terminate();
     expect(() => manager.ensureWorker("crashy")).not.toThrow();
-    // A worker killed by a signal (exit code null) IS a crash: refused.
+    // A worker killed unexpectedly by a signal (kill -9) IS an untracked crash:
+    // the restart budget is charged and respawn is refused.
     const second = manager.ensureWorker("crashy");
-    second.child?.kill("SIGKILL");
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    process.kill(second.ref.pid, "SIGKILL");
+    // Await exit deterministically (no arbitrary delays)
+    const deadline = Date.now() + 2_000;
+    while (manager.lifecycleFor("crashy") !== "failed" && Date.now() < deadline) {
+      await new Promise<void>((r) => setTimeout(r, 5));
+    }
     expect(() => manager.ensureWorker("crashy")).toThrow(/marked unhealthy|crashed/);
   });
 }, 15_000);

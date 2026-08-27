@@ -63,9 +63,10 @@ export interface RuntimeWorkerFailure {
 
 export type RuntimeWorkerResponse = RuntimeWorkerSuccess<unknown> | RuntimeWorkerFailure;
 
-/** Turn-scoped result shape returned by the prompt method. */
+/** Turn-scoped result returned by the prompt method. Events stream as
+ * RuntimeWorkerEvent frames DURING the turn; the response carries only the
+ * settled outcome — never a batched replay. */
 export interface RuntimeWorkerPromptResult {
-  events: XacpxRuntimeEvent[];
   result: XacpxTurnResult;
   finalText: string;
 }

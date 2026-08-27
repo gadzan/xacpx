@@ -1,3 +1,4 @@
+import { access, readdir, readFile, unlink } from "node:fs/promises";
 import { statSync } from "node:fs";
 import { join } from "node:path";
 
@@ -10,14 +11,47 @@ import type { NonInteractivePermissions, PermissionMode } from "../../config/typ
 import type { BridgeEngine, EngineInjectInput, EngineListInput, EnginePromptInput, EnginePromptStreamEvent, EngineSessionInput } from "./bridge-engine";
 import { mapRuntimeError, type XacpxRuntimeEvent, type XacpxTurnResult, type RuntimeBridgeErrorCode } from "./runtime/runtime-contract";
 import type { RuntimeWorkerClient } from "./runtime/runtime-worker-client";
+import { WorkerCrashError } from "./runtime/runtime-worker-client";
 import { RuntimeWorkerManager } from "./runtime/runtime-worker-manager";
-import { WorkerRpcError, WorkerCrashError } from "./runtime/runtime-worker-client";
 import { resolve as resolvePath, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+
+function sleep(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms);
+  return promise;
+}
+export async function findAcpxRecordIdFromDisk(
+  name: string,
+  sessionsDir = join(resolveAcpxHomeDir(), ".acpx", "sessions"),
+): Promise<string | undefined> {
+  let entries: string[];
+  try {
+    entries = await readdir(sessionsDir);
+  } catch {
+    return undefined;
+  }
+  for (const file of entries) {
+    if (!file.endsWith(".json") || file === "index.json") continue;
+    try {
+      const content = await readFile(join(sessionsDir, file), "utf8");
+      const parsed = JSON.parse(content) as Record<string, unknown>;
+      if (parsed.name === name && typeof parsed.acpx_record_id === "string") {
+        return parsed.acpx_record_id;
+      }
+    } catch {
+      // skip unreadable/corrupt files
+    }
+  }
+  return undefined;
+}
+
 
 export interface RuntimeEngineOptions {
   /** Resolved worker entry; defaults to the bundled dist output. */
   workerEntryPath?: string;
+  /** Override for the acpx sessions directory (tests / isolated daemons). */
+  stateDir?: string;
   permissionMode: PermissionMode;
   nonInteractivePermissions?: NonInteractivePermissions;
   permissionPolicy?: string;
@@ -52,6 +86,8 @@ export class RuntimeEngine implements BridgeEngine {
   private readonly coolPending = new Set<string>();
   private readonly activeTurns = new Set<string>();
   private permissionGeneration = 0;
+  /** worker key → real acpxRecordId from the runtime handle (delete identity). */
+  private readonly recordIds = new Map<string, string>();
 
   constructor(private readonly options: RuntimeEngineOptions) {
     const entry = options.workerEntryPath ?? defaultWorkerEntry();
@@ -62,6 +98,10 @@ export class RuntimeEngine implements BridgeEngine {
       // every session-scoped call fails closed with RUNTIME_ENGINE_UNSUPPORTED.
       this.manager = undefined;
     }
+  }
+
+  private sessionsDir(): string {
+    return this.options.stateDir ?? join(resolveAcpxHomeDir(), ".acpx", "sessions");
   }
 
   private workerKey(input: EngineSessionInput): string {
@@ -99,14 +139,39 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   private buildEnsureParams(input: EngineSessionInput) {
+    // Exact structured argv (plan §35): when xacpx resolved an explicit argv,
+    // it IS the launch identity — passed verbatim as a registry override so
+    // Windows path/space/quote boundaries survive to the adapter process.
+    // Never re-split from the agentCommand string.
+    const agentName = input.agent;
     return {
       sessionKey: input.name,
       agent: input.agentCommand ?? input.agent,
       cwd: input.cwd,
-      stateDir: join(resolveAcpxHomeDir(), ".acpx", "sessions"),
+      stateDir: this.sessionsDir(),
       permissionMode: this.options.permissionMode,
+      ...(input.agentArgv && input.agentArgv.length > 0 ? { agentOverrides: { [agentName]: [...input.agentArgv] } } : {}),
       ...(this.options.nonInteractivePermissions ? { nonInteractivePermissions: this.options.nonInteractivePermissions } : {}),
     };
+  }
+
+  /**
+   * Ensures the session and caches the REAL acpx record id resolved by the
+   * runtime (plan §9.1). This binding metadata is the ONLY acceptable identity
+   * for hard-delete — the logical session id is never a record id.
+   */
+  private async ensureSessionHandle(
+    input: EngineSessionInput,
+    client: RuntimeWorkerClient,
+  ): Promise<{ acpxRecordId?: string }> {
+    const handle = await client.request<{ sessionKey: string; acpxRecordId?: string; agentSessionId?: string }>(
+      "ensure",
+      this.buildEnsureParams(input),
+    );
+    if (handle.acpxRecordId) {
+      this.recordIds.set(this.workerKey(input), handle.acpxRecordId);
+    }
+    return handle;
   }
 
   async hasSession(input: EngineSessionInput): Promise<{ exists: boolean }> {
@@ -128,7 +193,7 @@ export class RuntimeEngine implements BridgeEngine {
 
   async ensureSession(input: EngineSessionInput): Promise<Record<string, never>> {
     await this.withWorker(input, async (client) => {
-      await client.request("ensure", this.buildEnsureParams(input));
+      await this.ensureSessionHandle(input, client);
       return {};
     });
     return {};
@@ -138,7 +203,7 @@ export class RuntimeEngine implements BridgeEngine {
     // Resume equals ensure against the same persistent identity; the agent
     // session id rides in the record the runtime reconnects to.
     await this.withWorker(input, async (client) => {
-      await client.request("ensure", this.buildEnsureParams(input));
+      await this.ensureSessionHandle(input, client);
       return {};
     });
     return {};
@@ -150,16 +215,18 @@ export class RuntimeEngine implements BridgeEngine {
   ): Promise<{ text: string }> {
     const key = this.workerKey(input);
     return await this.withWorker(input, async (client) => {
-      await client.request("ensure", this.buildEnsureParams(input));
+      await this.ensureSessionHandle(input, client);
       client.lifecycle = "busy";
       this.activeTurns.add(key);
       try {
-        const outcome = await client.request<{
-          events: XacpxRuntimeEvent[];
-          result: XacpxTurnResult;
-          finalText: string;
-        }>("prompt", { text: input.text });
-        emitPromptEvents(outcome.events, onEvent);
+        const outcome = await client.request<{ result: XacpxTurnResult; finalText: string }>(
+          "prompt",
+          { text: input.text },
+          // Real-time streaming (plan §41): each worker event frame is
+          // forwarded to the bridge sink the moment it arrives — never
+          // batched after turn completion.
+          { onEvent: (payload) => emitPromptEvent(payload as XacpxRuntimeEvent, onEvent) },
+        );
         if (outcome.result.status === "failed") {
           const mapped = mapRuntimeError(new Error(outcome.result.error.message));
           throw new RuntimeError(mapped.code, mapped.message);
@@ -176,6 +243,7 @@ export class RuntimeEngine implements BridgeEngine {
       }
     });
   }
+
   async injectMessage(input: EngineInjectInput): Promise<never> {
     // Queue mode arrives with the durable queue PR (plan PR6); steer stays off
     // until same-turn behavior is proven (plan §25).
@@ -187,7 +255,7 @@ export class RuntimeEngine implements BridgeEngine {
 
   async setMode(input: EngineSessionInput & { modeId: string }) {
     await this.withWorker(input, async (client) => {
-      await client.request("ensure", this.buildEnsureParams(input));
+      await this.ensureSessionHandle(input, client);
       await client.request("setMode", { mode: input.modeId });
       return {};
     });
@@ -196,7 +264,7 @@ export class RuntimeEngine implements BridgeEngine {
 
   async setModel(input: EngineSessionInput & { modelId: string }) {
     await this.withWorker(input, async (client) => {
-      await client.request("ensure", this.buildEnsureParams(input));
+      await this.ensureSessionHandle(input, client);
       await client.request("setConfigOption", { key: "model", value: input.modelId });
       return {};
     });
@@ -205,7 +273,7 @@ export class RuntimeEngine implements BridgeEngine {
 
   async getSessionModel(input: EngineSessionInput): Promise<{ current?: string; available: string[] }> {
     return await this.withWorker(input, async (client) => {
-      await client.request("ensure", this.buildEnsureParams(input));
+      await this.ensureSessionHandle(input, client);
       const status = (await client.request<{ models?: { currentModelId?: string; availableModelIds: string[] } }>("status")) ?? {};
       return {
         current: status.models?.currentModelId,
@@ -220,7 +288,7 @@ export class RuntimeEngine implements BridgeEngine {
 
   private async applyConfigOption(input: EngineSessionInput, key: string, value: string): Promise<Record<string, never>> {
     await this.withWorker(input, async (client) => {
-      await client.request("ensure", this.buildEnsureParams(input));
+      await this.ensureSessionHandle(input, client);
       await client.request("setConfigOption", { key, value });
       return {};
     });
@@ -233,10 +301,14 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   async cancel(input: EngineSessionInput): Promise<{ cancelled: boolean; message: string }> {
-    return await this.withWorker(input, async (client) => {
-      const result = await client.request<{ cancelled: boolean }>("cancel");
-      return { cancelled: result.cancelled === true, message: "cancel delivered to runtime worker" };
-    });
+    const key = this.workerKey(input);
+    const client = this.manager?.get(key);
+    if (!client || !client.alive) {
+      // Cold session: do NOT spawn a worker just to cancel an idle state (plan §24).
+      return { cancelled: false, message: "no active runtime worker for session" };
+    }
+    const result = await client.request<{ cancelled: boolean }>("cancel");
+    return { cancelled: result.cancelled === true, message: "cancel delivered to runtime worker" };
   }
 
   async removeSession(input: EngineSessionInput): Promise<Record<string, never>> {
@@ -250,9 +322,11 @@ export class RuntimeEngine implements BridgeEngine {
 
   async deleteSession(input: EngineSessionInput): Promise<Record<string, never>> {
     const key = this.workerKey(input);
-    // Plan §19 order: cancel the active turn first so a discard-close cannot
-    // race an in-flight checkpoint.
+    // 1. Resolve REAL record id (plan §19 order). Never fallback to logicalSessionId.
     const client = this.manager?.get(key);
+    const recordId = await this.resolveRecordId(input, client);
+
+    // 2. Terminate live worker (cancel active turn first).
     if (client && client.alive) {
       if (this.activeTurns.has(key)) {
         await client.request("cancel").catch(() => {});
@@ -262,35 +336,81 @@ export class RuntimeEngine implements BridgeEngine {
     }
     this.activeTurns.delete(key);
     this.coolPending.delete(key);
-    // G4: record + history files must be gone regardless of worker state
-    // (cooled workers must not turn delete into a silent no-op).
-    await this.deleteRecordFiles(input);
+    this.recordIds.delete(key);
+
+    // 3. If no record exists on disk or memory, idempotent success (G4).
+    if (!recordId) {
+      return {};
+    }
+
+    // 4. Strict deletion with post-verification and retry.
+    await this.deleteRecordFilesStrict(recordId);
     return {};
   }
 
-  /** Resolves the acpx record id via the worker when possible; deletes files with bounded retry. */
-  private async deleteRecordFiles(input: EngineSessionInput): Promise<void> {
-    let recordId = input.logicalSessionId;
-    try {
-      const client = this.ensureWorker({ ...input });
-      const status = (await client.request<{ acpxRecordId?: string }>("status")) ?? {};
-      recordId = status.acpxRecordId ?? recordId;
-      await client.shutdown();
-    } catch {
-      // Worker unavailable: fall back to the logical id as the record name.
+  /** Obtains the real acpx record id without creating phantom records on cold delete. */
+  private async resolveRecordId(input: EngineSessionInput, client?: RuntimeWorkerClient): Promise<string | undefined> {
+    const key = this.workerKey(input);
+    const cached = this.recordIds.get(key);
+    if (cached) return cached;
+
+    // Live worker: ask status directly.
+    if (client && client.alive) {
+      try {
+        const status = (await client.request<{ acpxRecordId?: string }>("status")) ?? {};
+        if (status.acpxRecordId) {
+          this.recordIds.set(key, status.acpxRecordId);
+          return status.acpxRecordId;
+        }
+      } catch {
+        // ignore, fall through to disk lookup
+      }
     }
-    if (recordId === undefined) return; // no identity to delete against — nothing known on disk
+
+    // Cold worker / post-restart: scan on-disk sessions without spawning a worker.
+    const diskRecordId = await findAcpxRecordIdFromDisk(input.name, this.sessionsDir());
+    if (diskRecordId) {
+      this.recordIds.set(key, diskRecordId);
+      return diskRecordId;
+    }
+
+    return undefined;
+  }
+  /**
+   * Strict delete (G4): best-effort unlink helper is NOT trusted as the oracle.
+   * After unlinking, VERIFY the record json is actually gone from disk;
+   * transient failures (Windows file locks) retry until a bounded deadline,
+   * and a still-present file at deadline is a hard error — never silent success.
+   */
+  private async deleteRecordFilesStrict(recordId: string): Promise<void> {
+    const dir = this.sessionsDir();
+    const safeId = encodeURIComponent(recordId);
+    const recordPath = join(dir, `${safeId}.json`);
     const deadline = Date.now() + 5_000;
     for (;;) {
+      await deleteAcpxSessionFiles({ acpxRecordId: recordId, sessionsDir: dir }).catch(() => {});
+      await unlink(recordPath).catch(() => {});
       try {
-        await deleteAcpxSessionFiles({ acpxRecordId: recordId });
-        return;
-      } catch (error) {
-        if (Date.now() >= deadline) {
-          throw new RuntimeError("RUNTIME_INIT_FAILED", `failed to delete acpx session files for "${recordId}": ${error instanceof Error ? error.message : String(error)}`);
+        const entries = await readdir(dir);
+        for (const file of entries.filter((name) => name.startsWith(`${safeId}.stream.`))) {
+          await unlink(join(dir, file)).catch(() => {});
         }
-        await new Promise((r) => setTimeout(r, 100));
+      } catch {
+        // directory already gone
       }
+      try {
+        await access(recordPath);
+        // Still present → deletion did not take (locked or raced). Retry.
+      } catch {
+        return; // ENOENT: the record is genuinely gone.
+      }
+      if (Date.now() >= deadline) {
+        throw new RuntimeError(
+          "RUNTIME_INIT_FAILED",
+          `acpx session record "${recordId}" still exists after delete deadline`,
+        );
+      }
+      await sleep(100);
     }
   }
 
@@ -314,7 +434,7 @@ export class RuntimeEngine implements BridgeEngine {
 
   async getAgentSessionId(input: EngineSessionInput): Promise<{ agentSessionId: string | undefined }> {
     return await this.withWorker(input, async (client) => {
-      await client.request("ensure", this.buildEnsureParams(input));
+      await this.ensureSessionHandle(input, client);
       const status = (await client.request<{ acpxRecordId?: string; agentSessionId?: string }>("status")) ?? {};
       return { agentSessionId: status.agentSessionId };
     });
@@ -325,15 +445,14 @@ export class RuntimeEngine implements BridgeEngine {
     nonInteractivePermissions: NonInteractivePermissions;
     permissionPolicy?: string;
   }): Promise<Record<string, never>> {
-    // Atomic snapshot swap (plan §32): validate+assign first, then push the
-    // new generation to every live worker. Workers accept strictly increasing
-    // generations (§33) so out-of-order delivery is harmless.
-    this.options.permissionMode = policy.permissionMode;
-    this.options.nonInteractivePermissions = policy.nonInteractivePermissions;
-    this.options.permissionPolicy = policy.permissionPolicy;
+    // Snapshot swap (plan §32) with FAILURE PROPAGATION: the /pm flow rolls
+    // config back when this rejects, so success must mean every live worker
+    // acknowledged the new generation. Options are only committed locally when
+    // the push succeeds — a rejected push leaves the previous snapshot active.
     const generation = ++this.permissionGeneration;
-    await Promise.allSettled(
-      [...(this.manager?.workers() ?? [])].map((worker) =>
+    const live = this.manager?.workers() ?? [];
+    const results = await Promise.allSettled(
+      live.map((worker) =>
         worker.request("permission.update", {
           generation,
           permissionMode: policy.permissionMode,
@@ -341,6 +460,21 @@ export class RuntimeEngine implements BridgeEngine {
         }),
       ),
     );
+    const failures = results
+      .map((result, index) => (result.status === "rejected" ? { worker: live[index], reason: result.reason } : null))
+      .filter((entry): entry is { worker: RuntimeWorkerClient; reason: unknown } => entry !== null);
+    if (failures.length > 0) {
+      const detail = failures
+        .map(({ worker, reason }) => `worker ${worker.ref.logicalSessionId}: ${reason instanceof Error ? reason.message : String(reason)}`)
+        .join("; ");
+      throw new RuntimeError(
+        "RUNTIME_PERMISSION_DENIED",
+        `permission update failed on ${failures.length} worker(s); config NOT applied — ${detail}`,
+      );
+    }
+    this.options.permissionMode = policy.permissionMode;
+    this.options.nonInteractivePermissions = policy.nonInteractivePermissions;
+    this.options.permissionPolicy = policy.permissionPolicy;
     return {};
   }
 
@@ -365,28 +499,26 @@ export class WorkerUnavailableError extends RuntimeError {
 // Re-exported so callers can instanceof without importing two modules.
 export { WorkerCrashError };
 
-function emitPromptEvents(events: XacpxRuntimeEvent[], onEvent?: (event: EnginePromptStreamEvent) => void): void {
+function emitPromptEvent(event: XacpxRuntimeEvent, onEvent?: (event: EnginePromptStreamEvent) => void): void {
   if (!onEvent) return;
-  for (const event of events) {
-    if (event.type === "text_delta") {
-      onEvent(event.stream === "thought"
-        ? { type: "prompt.thought", text: event.text }
-        : { type: "prompt.segment", text: event.text });
-    } else if (event.type === "tool_call") {
-      onEvent({ type: "prompt.tool_event", event: { toolCallId: event.toolCallId, title: event.title, status: event.status } as never });
-    } else if (event.type === "status") {
-      if (event.used !== undefined || event.size !== undefined) {
-        onEvent({
-          type: "prompt.usage",
-          used: event.used ?? 0,
-          size: event.size ?? 0,
-          ...(event.cost ? { cost: event.cost as never } : {}),
-          ...(event.breakdown ? { breakdown: event.breakdown as never } : {}),
-        });
-      }
-      if (event.availableCommands && event.availableCommands.length > 0) {
-        onEvent({ type: "prompt.commands", commands: event.availableCommands.map((command) => ({ name: command.name, description: command.description })) as never });
-      }
+  if (event.type === "text_delta") {
+    onEvent(event.stream === "thought"
+      ? { type: "prompt.thought", text: event.text }
+      : { type: "prompt.segment", text: event.text });
+  } else if (event.type === "tool_call") {
+    onEvent({ type: "prompt.tool_event", event: { toolCallId: event.toolCallId, title: event.title, status: event.status } as never });
+  } else if (event.type === "status") {
+    if (event.used !== undefined || event.size !== undefined) {
+      onEvent({
+        type: "prompt.usage",
+        used: event.used ?? 0,
+        size: event.size ?? 0,
+        ...(event.cost ? { cost: event.cost as never } : {}),
+        ...(event.breakdown ? { breakdown: event.breakdown as never } : {}),
+      });
+    }
+    if (event.availableCommands && event.availableCommands.length > 0) {
+      onEvent({ type: "prompt.commands", commands: event.availableCommands.map((command) => ({ name: command.name, description: command.description })) as never });
     }
   }
 }

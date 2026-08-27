@@ -142,11 +142,10 @@ export class EngineRouter implements BridgeEngine {
     nonInteractivePermissions: NonInteractivePermissions;
     permissionPolicy?: string;
   }): Promise<Record<string, never>> {
-    // Plan §32: policy reaches every engine; workers accept strictly
-    // increasing generations, so fan-out is safe. Atomicity: both engines
-    // validate before either mutates (RuntimeEngine assigns only after its own
-    // validation, which happens inside this call).
-    await Promise.allSettled([
+    // Plan §32 with failure propagation: /pm rolls its config back only when
+    // this rejects, so success must mean every engine applied the policy.
+    // Promise.all preserves the first rejection and lets the caller roll back.
+    await Promise.all([
       this.cli.updatePermissionPolicy(policy),
       ...(this.runtime ? [this.runtime.updatePermissionPolicy(policy)] : []),
     ]);

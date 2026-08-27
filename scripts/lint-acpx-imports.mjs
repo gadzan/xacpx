@@ -4,8 +4,11 @@
 // acpx/src/*, or a bare "acpx" — fails the check with a file:line list.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = new URL("../src", import.meta.url).pathname;
+// URL.pathname on Windows yields "/D:/..." which path.join mangles into
+// "D:\D:\..." — always convert through fileURLToPath for a real platform path.
+const ROOT = fileURLToPath(new URL("../src", import.meta.url));
 const ALLOWED_FILE = join(ROOT, "bridge/engine/runtime/runtime-adapter.ts");
 // Legacy lazy require for install-hint flows; Wave B folds it into the adapter.
 const ALLOWED_LAZY_FILES = new Set([join(ROOT, "transport/agent-registry.ts")]);

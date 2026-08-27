@@ -18,8 +18,8 @@ test("runtime adapter drives a full turn through real acpx runtime + mock ACP ag
       stateDir,
       permissionMode: "approve-all",
       nonInteractivePermissions: "deny",
-      // Narrow per-worker registry (plan §35): exactly one argv override.
-      agentOverrides: { mock: [process.execPath, MOCK_AGENT] },
+      // Narrow per-worker registry (plan §35): exact argv override with spaced args.
+      agentOverrides: { mock: [process.execPath, MOCK_AGENT, "--custom-arg with spaces", "quoted=value"] },
     });
     const runtime = adapter.raw();
     // Public contract only: ensureSession → startTurn → result (plan §51 fingerprint).
@@ -40,12 +40,16 @@ test("runtime adapter drives a full turn through real acpx runtime + mock ACP ag
       requestId: "poc-turn-1",
     });
     await turn.promptStarted;
-    const events: Array<{ type: string }> = [];
+    const events: Array<{ type: string; text?: string }> = [];
     for await (const event of turn.events) {
-      events.push({ type: event.type });
+      events.push({ type: event.type, ...(event.type === "text_delta" ? { text: event.text } : {}) });
     }
     const result = await turn.result;
     expect(result.status).toBe("completed");
+    // Mock agent echoes argv=<JSON> — verify exact argv boundaries survived un-split.
+    const textDelta = events.find((e) => e.type === "text_delta")?.text ?? "";
+    expect(textDelta).toContain("--custom-arg with spaces");
+    expect(textDelta).toContain("quoted=value");
 
     // Record compatibility (plan §12): the persisted acpx session record exists
     // on disk under the SAME store layout the CLI reads.

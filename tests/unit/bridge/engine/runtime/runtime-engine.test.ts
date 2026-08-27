@@ -25,7 +25,11 @@ async function withFakeWorker(entry: string): Promise<void> {
       "    if (!line) continue;",
       "    try { const msg = JSON.parse(line);",
       "      if (msg.method === 'prompt') {",
-      "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { events: [{ type: 'text_delta', text: 'hi' }], result: { status: 'completed' }, finalText: 'hi' } }) + '\\n');",
+      // Streaming shape: event frame DURING the turn, then the settled response.
+      "        process.stdout.write(JSON.stringify({ id: msg.id, event: 'text_delta', payload: { type: 'text_delta', text: 'hi' } }) + '\\n');",
+      "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { result: { status: 'completed' }, finalText: 'hi' } }) + '\\n');",
+      "      } else if (msg.method === 'ensure') {",
+      "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true, sessionKey: msg.params.sessionKey, acpxRecordId: 'rec-test-1' } }) + '\\n');",
       "      } else {",
       "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
       "      }",
@@ -99,6 +103,61 @@ test("injectMessage is rejected for every mode until the durable queue lands", a
         code: "RUNTIME_ENGINE_UNSUPPORTED",
       });
     }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+test("streaming timing regression: onSegment fires while prompt promise is still pending", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-timing-"));
+  try {
+    const entry = join(dir, "delayed-worker.mjs");
+    await writeFile(
+      entry,
+      [
+        "let buffer='';",
+        "process.stdin.on('data', (d) => {",
+        "  buffer += d.toString();",
+        "  let idx;",
+        "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+        "    if (!line) continue;",
+        "    try { const msg = JSON.parse(line);",
+        "      if (msg.method === 'prompt') {",
+        // Emit event immediately, but delay the final response by 40ms so the
+        // caller can observe that onSegment runs WHILE prompt() is still unresolved.
+        "        process.stdout.write(JSON.stringify({ id: msg.id, event: 'text_delta', payload: { type: 'text_delta', text: 'chunk-1' } }) + '\\n');",
+        "        setTimeout(() => {",
+        "          process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { result: { status: 'completed' }, finalText: 'chunk-1' } }) + '\\n');",
+        "        }, 40);",
+        "      } else if (msg.method === 'ensure') {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true, sessionKey: msg.params?.sessionKey, acpxRecordId: 'rec-1' } }) + '\\n');",
+        "      } else {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "      }",
+        "      if (msg.method === 'shutdown') process.exit(0);",
+        "    } catch {}",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all" });
+    let promptPromiseSettled = false;
+    let onSegmentRanWhilePending = false;
+
+    const promptPromise = engine.prompt({ ...sessionInput, text: "stream-test" }, (event) => {
+      if (event.type === "prompt.segment" && event.text === "chunk-1") {
+        onSegmentRanWhilePending = !promptPromiseSettled;
+      }
+    });
+    promptPromise.finally(() => {
+      promptPromiseSettled = true;
+    });
+
+    const result = await promptPromise;
+    expect(result.text).toBe("chunk-1");
+    // IRON LAW: onSegment must have been called BEFORE the prompt promise settled!
+    expect(onSegmentRanWhilePending).toBe(true);
+    await engine.shutdown();
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

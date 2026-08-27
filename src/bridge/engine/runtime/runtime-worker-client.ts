@@ -10,6 +10,7 @@ import {
 } from "./runtime-worker-protocol";
 import { mapRuntimeError } from "./runtime-contract";
 import { terminateProcessTree } from "../../../process/terminate-process-tree";
+import { probeWindowsProcessIdentity } from "../../../process/windows-process-tree";
 
 export interface RuntimeWorkerRef {
   pid: number;
@@ -17,6 +18,8 @@ export interface RuntimeWorkerRef {
   logicalSessionId: string;
   startedAt: string;
   generation: string;
+  /** Windows creation date for verified tree termination (prevent PID reuse). */
+  creationDate?: string | null;
 }
 
 export type WorkerLifecycle = "starting" | "ready" | "busy" | "idle" | "cooling" | "stopped" | "failed";
@@ -24,6 +27,8 @@ export type WorkerLifecycle = "starting" | "ready" | "busy" | "idle" | "cooling"
 interface PendingCall {
   resolve: (value: unknown) => void;
   reject: (error: unknown) => void;
+  /** Live event sink for request-scoped pushes (prompt streaming). */
+  onEvent?: (payload: unknown) => void;
 }
 
 /**
@@ -33,10 +38,11 @@ interface PendingCall {
 export class RuntimeWorkerClient {
   readonly ref: RuntimeWorkerRef;
   lifecycle: WorkerLifecycle = "starting";
-
   private child?: ChildProcess;
   private readonly pending = new Map<string, PendingCall>();
   private nextRequestId = 1;
+  /** True only when the host deliberately requested cooling, shutdown, or delete. */
+  private deliberateShutdown = false;
 
   constructor(
     private readonly entryPath: string,
@@ -55,16 +61,22 @@ export class RuntimeWorkerClient {
     if (this.child) return;
     this.child = spawn(process.execPath, [this.entryPath], { stdio: ["pipe", "pipe", "pipe"] });
     this.ref.pid = this.child.pid ?? -1;
+    if (process.platform === "win32" && this.ref.pid > 0) {
+      void probeWindowsProcessIdentity(this.ref.pid).then((res) => {
+        if (res.status === "found") this.ref.creationDate = res.identity.creationDate;
+      });
+    }
     this.child.on("exit", (code) => {
-      // Preserve WHY the worker died: deliberate terminate() marks "cooling"
-      // BEFORE calling kill; an unexpected exit here is recorded as failed so
-      // the manager can charge the crash budget (plan §43).
-      const unexpected = code !== 0 && this.lifecycle !== "cooling";
-      this.lifecycle = unexpected || this.lifecycle === "failed" ? "failed" : "stopped";
-      // Plan §43: an exit while calls are in flight IS a worker crash — the
-      // daemon must see RUNTIME_WORKER_CRASHED, never a generic error.
+      // Plan §43: deliberate stop vs unexpected crash is classified by INTENT,
+      // not raw exit code. Signal exits and clean-exit crashes are both caught.
+      const unexpected = !this.deliberateShutdown;
+      this.lifecycle = unexpected ? "failed" : "stopped";
       for (const pending of this.pending.values()) {
-        pending.reject(new WorkerCrashError(`runtime worker (pid ${this.ref.pid}) exited with code ${code ?? "signal"}`));
+        pending.reject(
+          unexpected
+            ? new WorkerCrashError(`runtime worker (pid ${this.ref.pid}) crashed unexpectedly (code ${code ?? "signal"})`)
+            : new Error("runtime worker was terminated deliberately"),
+        );
       }
       this.pending.clear();
       this.onExit?.(this, code);
@@ -78,7 +90,16 @@ export class RuntimeWorkerClient {
 
   private handleLine(line: string): void {
     const parsed = parseWorkerLine(line);
-    if (!parsed || parsed.kind !== "response") return; // events are consumed by prompt() callers
+    if (!parsed) return;
+    if (parsed.kind === "event") {
+      // Real-time push: forward to the still-pending request's sink while the
+      // RPC itself stays open — this is what keeps prompt streaming live.
+      const id = typeof parsed.message.id === "string" ? parsed.message.id : null;
+      const pending = id ? this.pending.get(id) : undefined;
+      pending?.onEvent?.(parsed.message.payload);
+      return;
+    }
+    if (parsed.kind !== "response") return;
     const response = parsed.message as unknown as RuntimeWorkerResponse;
     const pending = this.pending.get(response.id);
     if (!pending) return;
@@ -87,14 +108,14 @@ export class RuntimeWorkerClient {
     else pending.reject(new WorkerRpcError(response.error.code, response.error.message));
   }
 
-  request<T>(method: RuntimeWorkerRequestMethod, params?: unknown): Promise<T> {
+  request<T>(method: RuntimeWorkerRequestMethod, params?: unknown, options?: { onEvent?: (payload: unknown) => void }): Promise<T> {
     if (!this.alive) {
       this.spawn();
     }
     const id = `w${this.nextRequestId++}`;
     const payload: RuntimeWorkerRequest = { id, method, ...(params !== undefined ? { params } : {}) };
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
+      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, ...(options?.onEvent ? { onEvent: options.onEvent } : {}) });
       this.child!.stdin!.write(encodeWorkerMessage(payload), (error) => {
         if (error) {
           this.pending.delete(id);
@@ -107,6 +128,7 @@ export class RuntimeWorkerClient {
   /** Graceful shutdown request, then hard kill after a bounded grace (plan §16). */
   async shutdown(graceMs = 2_000): Promise<void> {
     if (!this.alive) return;
+    this.deliberateShutdown = true;
     this.lifecycle = "cooling";
     try {
       await Promise.race([
@@ -121,17 +143,19 @@ export class RuntimeWorkerClient {
 
   async terminate(): Promise<void> {
     if (!this.child || this.ref.pid <= 0) return;
-    // Deliberate host-side stop (cooling/freeWarm/delete): lifecycle "cooling"
-    // tells the manager this is NOT a crash (plan §43).
+    this.deliberateShutdown = true;
     this.lifecycle = "cooling";
-    // Host-side kill is the release primitive; the child's stdin EOF handler
-    // exits it cleanly, terminateProcessTree covers hung adapters.
     try {
       this.child.stdin?.end();
     } catch {
       /* already closed */
     }
-    await terminateProcessTree(this.ref.pid);
+    // Verified tree termination (plan §44): pass creation date on Windows
+    // to prevent accidental kill if the PID was recycled by the OS.
+    await terminateProcessTree({
+      pid: this.ref.pid,
+      creationDate: this.ref.creationDate ?? null,
+    });
     this.lifecycle = "stopped";
   }
 }

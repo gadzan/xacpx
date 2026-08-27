@@ -17,6 +17,7 @@ import type {
 import {
   encodeWorkerMessage,
   parseWorkerLine,
+  type RuntimeWorkerEvent,
   type RuntimeWorkerRequest,
   type RuntimeWorkerResponse,
   type RuntimeWorkerEnsureParams,
@@ -53,7 +54,7 @@ function sameEnsureParams(a: RuntimeWorkerEnsureParams | undefined, b: RuntimeWo
   );
 }
 
-async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: string }> {
+async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: string; acpxRecordId?: string; agentSessionId?: string }> {
   // Value comparison: each request's params are a fresh JSON.parse result, so
   // reference equality would rebuild the AcpRuntime on EVERY ensure (leaking
   // the previous one and defeating warm reuse).
@@ -73,10 +74,15 @@ async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: 
       ...(params.cwd ? { cwd: params.cwd } : {}),
     });
   }
-  return { sessionKey: state.handle!.sessionKey };
+  const handle = state.handle!;
+  return {
+    sessionKey: handle.sessionKey,
+    ...(handle.acpxRecordId ? { acpxRecordId: handle.acpxRecordId } : {}),
+    ...(handle.agentSessionId ? { agentSessionId: handle.agentSessionId } : {}),
+  };
 }
 
-async function runPrompt(params: RuntimeWorkerPromptParams): Promise<RuntimeWorkerPromptResult> {
+async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): Promise<RuntimeWorkerPromptResult> {
   if (!state.adapter || !state.handle) {
     throw new Error("worker not ensured");
   }
@@ -84,14 +90,18 @@ async function runPrompt(params: RuntimeWorkerPromptParams): Promise<RuntimeWork
   state.activeTurn = turn;
   try {
     await turn.promptStarted;
-    const events: RuntimeWorkerPromptResult["events"] = [];
     let finalText = "";
     for await (const event of turn.events) {
-      events.push(event);
+      // Real-time push (plan §41): each runtime event goes out the moment it
+      // arrives — the host forwards it to the bridge while the turn is live.
+      const wireEvent = event.type === "tool_call" ? "tool" : event.type === "status" ? "usage" : event.type;
+      process.stdout.write(
+        encodeWorkerMessage({ id: requestId, event: wireEvent, payload: event } satisfies RuntimeWorkerEvent),
+      );
       if (event.type === "text_delta" && event.stream !== "thought") finalText += event.text;
     }
     const result = await turn.result;
-    return { events, result, finalText };
+    return { result, finalText };
   } finally {
     state.activeTurn = undefined;
   }
@@ -107,12 +117,12 @@ async function dispatch(request: RuntimeWorkerRequest): Promise<void> {
   try {
     switch (method) {
       case "ensure": {
-        await ensure((request.params ?? {}) as RuntimeWorkerEnsureParams);
-        respond({ id, ok: true, result: { ready: true } });
+        const handle = await ensure((request.params ?? {}) as RuntimeWorkerEnsureParams);
+        respond({ id, ok: true, result: { ready: true, ...handle } });
         break;
       }
       case "prompt": {
-        const outcome = await runPrompt((request.params ?? {}) as RuntimeWorkerPromptParams);
+        const outcome = await runPrompt(id, (request.params ?? {}) as RuntimeWorkerPromptParams);
         respond({ id, ok: true, result: outcome });
         break;
       }
