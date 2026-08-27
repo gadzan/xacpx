@@ -330,3 +330,142 @@ test("Scenario 7: permission rotation termination does NOT consume crash budget"
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("Ownership invariant: request() during teardown rejects with WorkerTeardownPendingError and does NOT spawn another process", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "win-teardown-nospawn-"));
+  try {
+    const entry = join(dir, "worker.mjs");
+    await createEchoWorker(entry);
+
+    const { promise: termPromise, resolve: resolveTerm } = Promise.withResolvers<void>();
+
+    const client = new RuntimeWorkerClient(entry, "session-teardown-race", undefined, undefined, {
+      terminateProcessTree: async () => {
+        await termPromise;
+        return { rootOutcome: "killed", outcomes: [] };
+      },
+    });
+
+    await client.request("ensure", {});
+    const initialPid = client.ref.pid;
+    expect(initialPid).toBeGreaterThan(0);
+
+    // 1. Begin termination (held in-flight)
+    const terminateCall = client.terminate();
+    expect(client.lifecycle).toBe("cooling");
+
+    // 2. Concurrent request while teardown is pending MUST reject and MUST NOT spawn another child process
+    await expect(client.request("ensure", {})).rejects.toMatchObject({
+      code: "RUNTIME_WORKER_TEARDOWN_PENDING",
+    });
+    // Crucial: PID must NOT have changed (no second child secretly spawned)
+    expect(client.ref.pid).toBe(initialPid);
+
+    // 3. Resolve termination
+    resolveTerm();
+    await terminateCall;
+    expect(client.lifecycle).toBe("stopped");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Quiescence: Windows bootstrap probe pending causes concurrent permission update to fail closed without corrupting ensure", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "win-probe-quiesce-"));
+  try {
+    const entry = join(dir, "worker.mjs");
+    await createEchoWorker(entry);
+
+    const { promise: probePromise, resolve: resolveProbe } = Promise.withResolvers<{
+      status: "found";
+      identity: { pid: number; creationDate: string };
+    }>();
+
+    const engine = new RuntimeEngine({
+      workerEntryPath: entry,
+      permissionMode: "approve-all",
+      workerClientDeps: {
+        platform: "win32",
+        probeWindowsIdentity: async (pid) => {
+          const res = await probePromise;
+          return { status: "found", identity: { pid, creationDate: res.identity.creationDate } };
+        },
+        terminateProcessTree: async () => ({ rootOutcome: "killed", outcomes: [] }),
+      },
+    });
+
+    const sessionInput = {
+      agent: "codex",
+      cwd: "/repo",
+      name: "quiesce-probe-session",
+      logicalSessionId: "quiesce-probe-1",
+    };
+
+    // 1. Start ensureSession: probe is pending (in-flight lease is active from request entry)
+    const ensurePromise = engine.ensureSession(sessionInput);
+
+    // 2. Concurrent permission update: must detect the in-flight bootstrap operation and fail closed!
+    await expect(
+      engine.updatePermissionPolicy({
+        permissionMode: "deny-all",
+        nonInteractivePermissions: "deny",
+      }),
+    ).rejects.toMatchObject({ code: "RUNTIME_PERMISSION_BUSY" });
+
+    // 3. Resolve the probe: original ensureSession completes normally without corruption
+    resolveProbe({ status: "found", identity: { pid: 8888, creationDate: "2026-08-27T15:00:00.000Z" } });
+    await expect(ensurePromise).resolves.toEqual({});
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Quiescence: concurrent cancel() during permission transition waits on transition lock", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "win-cancel-quiesce-"));
+  try {
+    const entry = join(dir, "worker.mjs");
+    await createEchoWorker(entry);
+
+    const engine = new RuntimeEngine({
+      workerEntryPath: entry,
+      permissionMode: "approve-all",
+    });
+
+    const sessionInput = {
+      agent: "codex",
+      cwd: "/repo",
+      name: "quiesce-cancel-session",
+      logicalSessionId: "quiesce-cancel-1",
+    };
+
+    await engine.ensureSession(sessionInput);
+
+    // 1. Acquire policy transition lock (prepare)
+    await engine.preparePolicyTransition();
+
+    let cancelResolved = false;
+    // 2. Concurrent cancel while transition lock is held: MUST await the lock
+    const cancelPromise = engine.cancel(sessionInput).then((res) => {
+      cancelResolved = true;
+      return res;
+    });
+
+    expect(cancelResolved).toBe(false);
+
+    // 3. Commit transition: unblocks the cancel
+    await engine.commitPolicyTransition({
+      permissionMode: "deny-all",
+      nonInteractivePermissions: "deny",
+    });
+
+    const cancelResult = await cancelPromise;
+    expect(cancelResolved).toBe(true);
+    // After rotation the old worker is gone, so cancel on the freshly rotated session is clean
+    expect(cancelResult.cancelled).toBe(false);
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -1,6 +1,6 @@
 import { statSync } from "node:fs";
 
-import { RuntimeWorkerClient, type WorkerLifecycle, type RuntimeWorkerRef, type RuntimeWorkerClientDeps } from "./runtime-worker-client";
+import { RuntimeWorkerClient, type WorkerLifecycle, type RuntimeWorkerRef, type RuntimeWorkerClientDeps, WorkerTeardownPendingError } from "./runtime-worker-client";
 
 /**
  * Host-side registry of per-session Runtime Workers (plan PR3). One session →
@@ -140,13 +140,7 @@ export class RuntimeWorkerManager {
   }
 }
 
-export class WorkerTeardownPendingError extends Error {
-  readonly code = "RUNTIME_WORKER_TEARDOWN_PENDING";
-  constructor(message: string) {
-    super(message);
-    this.name = "WorkerTeardownPendingError";
-  }
-}
+export { WorkerTeardownPendingError };
 
 function fileExists(path: string): boolean {
   try {

@@ -50,17 +50,18 @@ export class RuntimeWorkerClient {
   private deliberateShutdown = false;
   private bootstrapPromise?: Promise<void>;
   private _bootstrapVerified = false;
+  private inFlightLeases = 0;
 
   get isBootstrapVerified(): boolean {
     return this._bootstrapVerified;
   }
 
   get inFlightCount(): number {
-    return this.pending.size;
+    return Math.max(this.inFlightLeases, this.pending.size);
   }
 
   get hasInFlight(): boolean {
-    return this.pending.size > 0;
+    return this.inFlightLeases > 0 || this.pending.size > 0 || this.lifecycle === "busy";
   }
 
   constructor(
@@ -150,25 +151,43 @@ export class RuntimeWorkerClient {
   }
 
   async request<T>(method: RuntimeWorkerRequestMethod, params?: unknown, options?: { onEvent?: (payload: unknown) => void }): Promise<T> {
-    if (!this.alive || this.child?.stdin?.writableEnded) {
-      this.child = undefined;
-      this.spawn();
-    }
-    // Hard gate: identity capture must settle before any business RPC enters the worker
-    if (this.bootstrapPromise) {
-      await this.bootstrapPromise;
-    }
-    const id = `w${this.nextRequestId++}`;
-    const payload: RuntimeWorkerRequest = { id, method, ...(params !== undefined ? { params } : {}) };
-    return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, ...(options?.onEvent ? { onEvent: options.onEvent } : {}) });
-      this.child!.stdin!.write(encodeWorkerMessage(payload), (error) => {
-        if (error) {
-          this.pending.delete(id);
-          reject(error);
-        }
+    // Register the in-flight lease immediately at entry (plan §32): ensures
+    // quiescence tracking sees this operation even while awaiting the Windows
+    // creationDate bootstrap probe.
+    this.inFlightLeases++;
+    try {
+      if (!this.child) {
+        this.spawn();
+      } else if (
+        !this.alive ||
+        this.child.stdin?.writableEnded ||
+        this.lifecycle === "cooling" ||
+        this.lifecycle === "stopped" ||
+        this.lifecycle === "failed" ||
+        this.deliberateShutdown
+      ) {
+        throw new WorkerTeardownPendingError(
+          `runtime worker client for session "${this.ref.logicalSessionId}" is closed or in teardown (lifecycle: ${this.lifecycle}); refusing request on terminating worker`,
+        );
+      }
+      // Hard gate: identity capture must settle before any business RPC enters the worker
+      if (this.bootstrapPromise) {
+        await this.bootstrapPromise;
+      }
+      const id = `w${this.nextRequestId++}`;
+      const payload: RuntimeWorkerRequest = { id, method, ...(params !== undefined ? { params } : {}) };
+      return await new Promise<T>((resolve, reject) => {
+        this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, ...(options?.onEvent ? { onEvent: options.onEvent } : {}) });
+        this.child!.stdin!.write(encodeWorkerMessage(payload), (error) => {
+          if (error) {
+            this.pending.delete(id);
+            reject(error);
+          }
+        });
       });
-    });
+    } finally {
+      this.inFlightLeases--;
+    }
   }
 
   /** Graceful shutdown request, then hard kill after a bounded grace (plan §16). */
@@ -239,6 +258,13 @@ export class WorkerCrashError extends Error {
   readonly code = "RUNTIME_WORKER_CRASHED";
   constructor(message: string) {
     super(message);
+  }
+}
+export class WorkerTeardownPendingError extends Error {
+  readonly code = "RUNTIME_WORKER_TEARDOWN_PENDING";
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkerTeardownPendingError";
   }
 }
 const SAFE_KILL_OUTCOMES = new Set<string>(["killed", "already-exited", "skipped-replaced"]);

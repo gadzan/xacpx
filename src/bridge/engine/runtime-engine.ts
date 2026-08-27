@@ -1,4 +1,4 @@
-import { access, readdir, readFile, unlink } from "node:fs/promises";
+import { access, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { statSync } from "node:fs";
 import { join } from "node:path";
 
@@ -69,6 +69,46 @@ export async function findAcpxRecordIdFromDisk(
     }
   }
   return { kind: "absent" };
+}
+function tombstonePath(sessionsDir: string, safeId: string): string {
+  return join(sessionsDir, `.xacpx-delete-tombstone-${safeId}.json`);
+}
+
+async function writeTombstone(sessionsDir: string, safeId: string, record: { name: string; recordId: string }): Promise<void> {
+  try {
+    await writeFile(tombstonePath(sessionsDir, safeId), JSON.stringify(record), "utf8");
+  } catch {
+    // best-effort persistence
+  }
+}
+
+async function removeTombstone(sessionsDir: string, safeId: string): Promise<void> {
+  try {
+    await unlink(tombstonePath(sessionsDir, safeId));
+  } catch {
+    // already unlinked
+  }
+}
+
+async function findTombstoneRecordId(name: string, sessionsDir: string): Promise<string | undefined> {
+  try {
+    const entries = await readdir(sessionsDir);
+    for (const file of entries) {
+      if (!file.startsWith(".xacpx-delete-tombstone-") || !file.endsWith(".json")) continue;
+      try {
+        const content = await readFile(join(sessionsDir, file), "utf8");
+        const parsed = JSON.parse(content) as { name?: string; recordId?: string };
+        if (parsed.name === name && typeof parsed.recordId === "string") {
+          return parsed.recordId;
+        }
+      } catch {
+        // ignore unreadable tombstone
+      }
+    }
+  } catch {
+    // dir absent / unreadable
+  }
+  return undefined;
 }
 
 export interface RuntimeEngineOptions {
@@ -360,6 +400,10 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   async cancel(input: EngineSessionInput): Promise<{ cancelled: boolean; message: string }> {
+    // Admission gate: wait for any in-flight policy transition (plan §32)
+    if (this.policyTransitionLock) {
+      await this.policyTransitionLock;
+    }
     const key = this.workerKey(input);
     const client = this.manager?.get(key);
     if (!client || !client.alive) {
@@ -380,6 +424,10 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   async deleteSession(input: EngineSessionInput): Promise<Record<string, never>> {
+    // Admission gate: wait for any in-flight policy transition
+    if (this.policyTransitionLock) {
+      await this.policyTransitionLock;
+    }
     const key = this.workerKey(input);
     // 1. Resolve REAL record id (plan §19 order). Never fallback to logicalSessionId.
     const client = this.manager?.get(key);
@@ -395,15 +443,31 @@ export class RuntimeEngine implements BridgeEngine {
     }
     this.activeTurns.delete(key);
     this.coolPending.delete(key);
-    this.recordIds.delete(key);
 
     // 3. If no record exists on disk or memory, idempotent success (G4).
     if (!recordId) {
+      this.recordIds.delete(key);
       return {};
     }
 
-    // 4. Strict deletion with post-verification and retry.
-    await this.deleteRecordFilesStrict(recordId);
+    const safeId = encodeURIComponent(recordId);
+    const sessionsDir = this.sessionsDir();
+    // Persist delete intent (G4 crash safety): survives process crash/restart
+    // so retries after partial unlinks still know the real recordId
+    await writeTombstone(sessionsDir, safeId, { name: input.name, recordId });
+
+    try {
+      // 4. Strict deletion with post-verification and retry.
+      await this.deleteRecordFilesStrict(recordId);
+      // Clean up tombstone + memory cache ONLY after all artifacts are verified gone
+      await removeTombstone(sessionsDir, safeId);
+      this.recordIds.delete(key);
+    } catch (error) {
+      // Deletion did not complete (e.g. stubborn stream file).
+      // Keep memory cache AND tombstone on disk so retries still know recordId!
+      throw error;
+    }
+
     return {};
   }
 
@@ -426,6 +490,13 @@ export class RuntimeEngine implements BridgeEngine {
       }
     }
 
+    // Check for active tombstones from previous partial delete attempts
+    const tombstoneId = await findTombstoneRecordId(input.name, this.sessionsDir());
+    if (tombstoneId) {
+      this.recordIds.set(key, tombstoneId);
+      return tombstoneId;
+    }
+
     // Cold worker / post-restart: scan on-disk sessions without spawning a worker.
     const lookup = await findAcpxRecordIdFromDisk(input.name, this.sessionsDir());
     if (lookup.kind === "found") {
@@ -438,6 +509,7 @@ export class RuntimeEngine implements BridgeEngine {
         `failed to resolve acpx record id for delete (disk verification failed): ${lookup.error.message}`,
       );
     }
+
     return undefined;
   }
   /**

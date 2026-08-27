@@ -242,3 +242,72 @@ test("G4 fail-closed 3: unreadable candidate file during cold lookup fails close
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("G4 recovery: partial delete failure retains recordId in memory so second delete removes stream and succeeds", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-partial-recovery-"));
+  const sessionsDir = join(dir, ".acpx", "sessions");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    await mkdir(sessionsDir, { recursive: true });
+
+    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+    const recordFile = join(sessionsDir, "partial-rec-1.json");
+    await writeFile(recordFile, JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "partial-rec-1", name: "partial-session" }));
+    engine["recordIds"].set(sessionInput.logicalSessionId, "partial-rec-1");
+
+    // Make stream initially un-unlinkable (stubborn directory)
+    const streamDir = join(sessionsDir, "partial-rec-1.stream.0.ndjson");
+    await mkdir(streamDir);
+
+    // 1. First delete: main JSON is unlinked, but stream fails -> deleteSession rejects
+    await expect(engine.deleteSession({ ...sessionInput, name: "partial-session" })).rejects.toThrow(/artifact\(s\) still remaining/);
+    // Main JSON is gone from disk
+    await expect(access(recordFile)).rejects.toThrow();
+
+    // 2. Unblock the stream artifact (remove directory and replace with normal unlinkable file)
+    await rm(streamDir, { recursive: true, force: true });
+    const streamFile = join(sessionsDir, "partial-rec-1.stream.0.ndjson");
+    await writeFile(streamFile, "stream data");
+
+    // 3. Second delete on the SAME engine: must NOT consider record absent!
+    // It must remember partial-rec-1, delete the stream file, and succeed!
+    await expect(engine.deleteSession({ ...sessionInput, name: "partial-session" })).resolves.toEqual({});
+    await expect(access(streamFile)).rejects.toThrow();
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test("G4 recovery across restart: tombstone allows cold delete to find recordId even after main JSON is gone", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-tombstone-restart-"));
+  const sessionsDir = join(dir, ".acpx", "sessions");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    await mkdir(sessionsDir, { recursive: true });
+
+    // Simulate state on disk after a partial delete + daemon restart:
+    // Main JSON is gone, stream file remains, tombstone file is present on disk
+    const streamFile = join(sessionsDir, "tombstone-rec-2.stream.0.ndjson");
+    await writeFile(streamFile, "orphan stream data");
+
+    const tombstoneFile = join(sessionsDir, ".xacpx-delete-tombstone-tombstone-rec-2.json");
+    await writeFile(tombstoneFile, JSON.stringify({ name: "tombstone-session", recordId: "tombstone-rec-2" }));
+
+    // Fresh RuntimeEngine instance (simulating restart: memory cache is empty)
+    const freshEngine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+
+    // deleteSession on the fresh engine finds tombstone-rec-2 via tombstone, removes stream, and cleans tombstone!
+    await expect(freshEngine.deleteSession({ ...sessionInput, name: "tombstone-session" })).resolves.toEqual({});
+
+    // Both the stream file AND the tombstone file are gone
+    await expect(access(streamFile)).rejects.toThrow();
+    await expect(access(tombstoneFile)).rejects.toThrow();
+
+    await freshEngine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
