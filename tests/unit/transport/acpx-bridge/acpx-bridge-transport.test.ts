@@ -41,11 +41,16 @@ test("proxies ensureSession through the bridge client", async () => {
     driver: undefined,
     settingsPolicy: undefined,
     agentCommand: "./node_modules/.bin/codex-acp",
+    acpxAgent: undefined,
+    rawCommand: undefined,
+    agentArgv: undefined,
     cwd: "/tmp/backend",
     name: "backend:api-fix",
     mcpCoordinatorSession: undefined,
     mcpSourceHandle: undefined,
     replyMode: "verbose",
+    logicalSessionId: undefined,
+    transportEngine: "cli",
   }, undefined);
 });
 
@@ -342,13 +347,20 @@ test("proxies setMode through the bridge client", async () => {
 
   expect(request).toHaveBeenCalledWith("setMode", {
     agent: "codex",
+    driver: undefined,
+    settingsPolicy: undefined,
     agentCommand: "./node_modules/.bin/codex-acp",
+    acpxAgent: undefined,
+    rawCommand: undefined,
+    agentArgv: undefined,
     cwd: "/tmp/backend",
     name: "backend:api-fix",
-    modeId: "plan",
     mcpCoordinatorSession: undefined,
     mcpSourceHandle: undefined,
     replyMode: "verbose",
+    logicalSessionId: undefined,
+    transportEngine: "cli",
+    modeId: "plan",
   });
 });
 
@@ -869,6 +881,25 @@ test("bridge transport proxies native session methods", async () => {
 
   expect(requests).toEqual([
     { method: "listAgentSessions", params: { agent: "codex", cwd: "/repo", filterCwd: "/repo" } },
-    { method: "resumeAgentSession", params: { agent: "codex", cwd: "/repo", name: "project:codex", agentSessionId: "thread-1" } },
+    {
+      method: "resumeAgentSession",
+      params: {
+        agent: "codex",
+        driver: undefined,
+        settingsPolicy: undefined,
+        agentCommand: undefined,
+        acpxAgent: undefined,
+        rawCommand: undefined,
+        agentArgv: undefined,
+        cwd: "/repo",
+        name: "project:codex",
+        mcpCoordinatorSession: undefined,
+        mcpSourceHandle: undefined,
+        replyMode: "verbose",
+        logicalSessionId: undefined,
+        transportEngine: "cli",
+        agentSessionId: "thread-1",
+      },
+    },
   ]);
 });
