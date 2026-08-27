@@ -255,7 +255,8 @@ export class RuntimeWorkerClient {
 
   async terminate(): Promise<void> {
     if (!this.child || this.ref.pid <= 0) return;
-    const isCrashCleanup = this.lifecycle === "failed";
+    const wasAliveBeforeTerm = this.alive;
+    const isCrashCleanup = !wasAliveBeforeTerm && !this.deliberateShutdown;
     this.deliberateShutdown = true;
     if (!isCrashCleanup) {
       this.lifecycle = "cooling";
@@ -273,9 +274,15 @@ export class RuntimeWorkerClient {
             `cannot terminate Windows worker (pid ${this.ref.pid}) without verified creationDate; refusing bare PID kill`,
           );
         }
-        // Worker root already exited and identity was never verified (e.g. bootstrap pending during shutdown)
-        this.lifecycle = isCrashCleanup ? "failed" : "stopped";
-        return;
+        // Worker root already exited during deliberate shutdown and identity was never verified
+        if (this.deliberateShutdown && !isCrashCleanup) {
+          this.lifecycle = "stopped";
+          return;
+        }
+        this.lifecycle = "failed";
+        throw new Error(
+          `cannot verify Windows descendant cleanup for unverified worker (pid ${this.ref.pid}); refusing unverified replacement spawn`,
+        );
       }
       const result = await termFn(
         {
@@ -285,6 +292,16 @@ export class RuntimeWorkerClient {
         {},
         platform,
       );
+      // On Windows: if root was already dead before tree termination began (e.g. unexpected crash),
+      // OpenVerified(root) returned "already-exited" without taking a CIM snapshot. We cannot prove
+      // whether child adapter descendants are still alive in the OS, so we fail closed (G10).
+      if ((!wasAliveBeforeTerm || isCrashCleanup) && result && typeof result === "object" && result.rootOutcome === "already-exited") {
+        this.lifecycle = "failed";
+        throw new Error(
+          `cannot verify Windows descendant process tree cleanup for worker pid ${this.ref.pid} after unexpected root exit (root was already exited before CIM snapshot); refusing unverified replacement spawn`,
+        );
+      }
+
       assertProcessTreeTerminated(result, { pid: this.ref.pid, creationDate: this.ref.creationDate });
     } else {
       const result = await termFn(this.ref.pid, { detachedProcessGroup: true }, platform);

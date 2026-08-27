@@ -641,3 +641,45 @@ test("G10 lifecycle: production shutdown cleans up real OS descendant process tr
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("Windows G10: unexpected root crash with already-exited root outcome fails closed and rejects replacement spawn", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "win-crash-descendant-"));
+  try {
+    const entry = join(dir, "worker.mjs");
+    await createEchoWorker(entry);
+
+    const client = new RuntimeWorkerClient(
+      entry,
+      "session-win-crash-descendant",
+      undefined,
+      undefined,
+      {
+        platform: "win32",
+        probeWindowsIdentity: async (pid) => ({ status: "found", identity: { pid, creationDate: "133500000000000000" } }),
+        terminateProcessTree: async () => {
+          // When root is already dead, Windows OpenVerified returns already-exited without taking CIM snapshot
+          return { rootOutcome: "already-exited", outcomes: [] };
+        },
+      },
+    );
+
+    await client.request("ensure", {});
+    expect(client.alive).toBe(true);
+
+    // Abruptly kill worker root to simulate unexpected crash
+    process.kill(client.ref.pid, "SIGKILL");
+
+    // Await exit
+    const deadline = Date.now() + 2_000;
+    while (client.alive && Date.now() < deadline) {
+      await new Promise<void>((r) => setTimeout(r, 5));
+    }
+
+    // Terminate on dead root returns already-exited -> MUST reject fail closed!
+    await expect(client.terminate()).rejects.toThrow(/cannot verify Windows descendant process tree cleanup/);
+
+    // Lifecycle must remain failed (cannot prove cleanup)
+    expect(client.lifecycle).toBe("failed");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
