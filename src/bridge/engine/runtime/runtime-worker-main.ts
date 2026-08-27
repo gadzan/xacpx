@@ -118,7 +118,15 @@ async function dispatch(request: RuntimeWorkerRequest): Promise<void> {
   if (method === "shutdown") {
     state.shuttingDown = true;
     respond({ id, ok: true, result: {} });
-    process.exit(0);
+    // Plan §16 / G10: Do NOT call process.exit(0) immediately!
+    // On Windows, the tree terminator (terminateWindowsProcessTree) MUST find the root process
+    // alive with verified creationDate in order to enumerate and kill child adapter descendants.
+    // Quiesce and let the host terminate the process tree. Keep a fallback timer in case host hangs.
+    const fallbackTimer = setTimeout(() => {
+      process.exit(0);
+    }, 10_000);
+    fallbackTimer.unref?.();
+    return;
   }
   try {
     switch (method) {

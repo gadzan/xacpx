@@ -116,17 +116,15 @@ export class RuntimeWorkerClient {
         this.ref.creationDate = res.identity.creationDate;
         this._bootstrapVerified = true;
       });
-      // Register handled branch to avoid unhandled rejection if spawn() is
-      // invoked directly; request() still awaits this.bootstrapPromise directly.
       this.bootstrapPromise.catch(() => {});
     } else {
       this._bootstrapVerified = true;
     }
     this.child.on("exit", (code) => {
-      // Plan §43: deliberate stop vs unexpected crash is classified by INTENT,
-      // not raw exit code. Signal exits and clean-exit crashes are both caught.
       const unexpected = !this.deliberateShutdown;
-      this.lifecycle = unexpected ? "failed" : "stopped";
+      if (unexpected) {
+        this.lifecycle = "failed";
+      }
       for (const pending of this.pending.values()) {
         pending.reject(
           unexpected
@@ -232,31 +230,35 @@ export class RuntimeWorkerClient {
     if (!this.child || this.ref.pid <= 0) return;
     this.deliberateShutdown = true;
     this.lifecycle = "cooling";
+    const platform = this.deps?.platform ?? process.platform;
     if (!this.child?.stdin?.writableEnded) {
-      this.sendControlMessage("shutdown").catch(() => {});
-      if (this.exitPromise) {
-        try {
-          await Promise.race([
-            this.exitPromise,
-            new Promise<never>((_, reject) => setTimeout(() => reject(new Error("grace elapsed")), graceMs).unref()),
-          ]);
-        } catch {
-          // grace elapsed before child exited
-        }
+      try {
+        await Promise.race([
+          this.sendControlMessage("shutdown"),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("grace elapsed")), graceMs).unref()),
+        ]);
+      } catch {
+        // grace elapsed or send failed
       }
     }
-    // G10 (§18): Clean up the ENTIRE worker process tree (including child ACP adapter descendants).
+    // If on Windows and creationDate was never verified, wait for child exit before terminate
+    if ((platform === "win32" || Boolean(this.deps?.probeWindowsIdentity)) && !this.ref.creationDate && this.exitPromise) {
+      try {
+        await Promise.race([
+          this.exitPromise,
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("grace elapsed")), graceMs).unref()),
+        ]);
+      } catch {}
+    }
     await this.terminate();
   }
 
   async terminate(): Promise<void> {
     if (!this.child || this.ref.pid <= 0) return;
+    const isCrashCleanup = this.lifecycle === "failed";
     this.deliberateShutdown = true;
-    this.lifecycle = "cooling";
-    try {
-      this.child.stdin?.end();
-    } catch {
-      /* already closed */
+    if (!isCrashCleanup) {
+      this.lifecycle = "cooling";
     }
     const platform = this.deps?.platform ?? process.platform;
     const termFn = this.deps?.terminateProcessTree ?? terminateProcessTree;
@@ -272,7 +274,7 @@ export class RuntimeWorkerClient {
           );
         }
         // Worker root already exited and identity was never verified (e.g. bootstrap pending during shutdown)
-        this.lifecycle = "stopped";
+        this.lifecycle = isCrashCleanup ? "failed" : "stopped";
         return;
       }
       const result = await termFn(
@@ -288,10 +290,15 @@ export class RuntimeWorkerClient {
       const result = await termFn(this.ref.pid, { detachedProcessGroup: true }, platform);
       assertProcessTreeTerminated(result, { pid: this.ref.pid });
     }
+    try {
+      this.child.stdin?.end();
+    } catch {
+      /* already closed */
+    }
     if (this.exitPromise && this.alive) {
       await this.exitPromise.catch(() => {});
     }
-    this.lifecycle = "stopped";
+    this.lifecycle = isCrashCleanup ? "failed" : "stopped";
   }
 }
 

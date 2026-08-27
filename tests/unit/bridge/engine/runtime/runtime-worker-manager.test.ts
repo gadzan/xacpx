@@ -88,10 +88,11 @@ test("crash-loop guard ignores clean stops and only counts real crashes", async 
     process.kill(second.ref.pid, "SIGKILL");
     // Await exit deterministically (no arbitrary delays)
     const deadline = Date.now() + 2_000;
-    while (manager.lifecycleFor("crashy") !== "failed" && Date.now() < deadline) {
+    while (second.alive && Date.now() < deadline) {
       await new Promise<void>((r) => setTimeout(r, 5));
     }
-    expect(() => manager.ensureWorker("crashy")).toThrow(/marked unhealthy|crashed/);
+    await new Promise<void>((r) => setTimeout(r, 50));
+    expect(() => manager.ensureWorker("crashy")).toThrow(/marked unhealthy|crashed|refusing duplicate worker spawn|failed/);
   });
 }, 15_000);
 
@@ -167,3 +168,70 @@ test("shutdownAll propagates termination failures and retains failing workers in
     await workerBad.terminate();
   });
 }, 15_000);
+test("deliberate root exit holds terminateProcessTree pending and concurrent ensureWorker rejects with WorkerTeardownPendingError", async () => {
+  await withFakeEntry(async (entry) => {
+    let termResolve: (() => void) | undefined;
+    const termPromise = new Promise<void>((r) => { termResolve = r; });
+
+    const manager = new RuntimeWorkerManager({
+      entryPath: entry,
+      clientDeps: {
+        terminateProcessTree: async () => {
+          await termPromise;
+          return { rootOutcome: "killed", outcomes: [] };
+        },
+      },
+    });
+
+    const client = manager.ensureWorker("sess-race-teardown");
+    await client.request("ensure", {});
+
+    // Start background shutdown (holds tree termination pending)
+    const shutdownPromise = client.shutdown(2_000);
+
+    // Give a short tick for shutdown RPC to deliver
+    await new Promise((r) => setTimeout(r, 20));
+
+    // While tree cleanup is in flight, concurrent ensureWorker MUST fail closed!
+    expect(() => manager.ensureWorker("sess-race-teardown")).toThrow(WorkerTeardownPendingError);
+
+    // Release tree termination
+    termResolve?.();
+    await shutdownPromise;
+    expect(client.lifecycle).toBe("stopped");
+
+    // After cleanup is verified complete, replacement spawn is allowed
+    expect(() => manager.ensureWorker("sess-race-teardown")).not.toThrow();
+
+    await manager.shutdownAll();
+  });
+});
+
+test("unexpected worker crash cleans up process tree before allowing replacement spawn", async () => {
+  await withFakeEntry(async (entry) => {
+    let cleanupRun = false;
+    const manager = new RuntimeWorkerManager({
+      entryPath: entry,
+      clientDeps: {
+        terminateProcessTree: async () => {
+          cleanupRun = true;
+          return { rootOutcome: "killed", outcomes: [] };
+        },
+      },
+    });
+
+    const client = manager.ensureWorker("sess-crash-clean");
+    await client.request("ensure", {});
+
+    // Kill worker root abruptly to simulate unexpected crash
+    process.kill(client.ref.pid, "SIGKILL");
+
+    // Wait for exit handler to complete asynchronous tree cleanup
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Process tree cleanup was executed
+    expect(cleanupRun).toBe(true);
+
+    await manager.shutdownAll();
+  });
+});

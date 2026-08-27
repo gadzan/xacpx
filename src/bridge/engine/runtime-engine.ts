@@ -544,20 +544,34 @@ export class RuntimeEngine implements BridgeEngine {
     }
     const sessionsDir = this.sessionsDir();
     const safeId = encodeURIComponent(recordId);
-    const entries: string[] = await readdir(sessionsDir).catch(() => []);
 
-    // Pinned acpx 0.13.1 stream rotation layout:
-    // .stream.N.ndjson (N descending from highest to 1) -> active .stream.ndjson
+    // 1. Authoritative conversation messages from main session record (matches CLI sessions history)
+    try {
+      const mainContent = await readFile(join(sessionsDir, `${safeId}.json`), "utf8");
+      const record = JSON.parse(mainContent) as Record<string, unknown>;
+      const history = extractConversationEntries(record);
+      if (history.length > 0) {
+        const visible = input.lines === 0 ? history : history.slice(Math.max(0, history.length - input.lines));
+        const text = visible.map((entry) => entry.textPreview).join("\n");
+        return { text };
+      }
+    } catch {
+      // Fall through to stream reading if main record not yet written or unreadable
+    }
+
+    // 2. Stream files fallback if record has not synced messages
+    const entries: string[] = await readdir(sessionsDir).catch(() => []);
     const numberedStreams = entries
       .filter((file) => file.startsWith(`${safeId}.stream.`) && file.endsWith(".ndjson") && file !== `${safeId}.stream.ndjson`)
       .sort((a, b) => {
         const numA = parseInt(a.slice(`${safeId}.stream.`.length, -".ndjson".length), 10) || 0;
         const numB = parseInt(b.slice(`${safeId}.stream.`.length, -".ndjson".length), 10) || 0;
-        return numB - numA; // Older rotations first (e.g. 2 -> 1)
+        return numB - numA;
       });
     const activeStream: string[] = entries.includes(`${safeId}.stream.ndjson`) ? [`${safeId}.stream.ndjson`] : [];
     const streamFiles: string[] = [...numberedStreams, ...activeStream];
-    const collectedLines: string[] = [];
+
+    const streamLines: string[] = [];
     for (const file of streamFiles) {
       try {
         const content = await readFile(join(sessionsDir, file), "utf8");
@@ -567,44 +581,16 @@ export class RuntimeEngine implements BridgeEngine {
             const parsed = JSON.parse(line) as Record<string, unknown>;
             const texts = extractTextFromAcpMessage(parsed);
             for (const t of texts) {
-              if (t) collectedLines.push(t);
+              if (t) streamLines.push(t);
             }
           } catch {
-            collectedLines.push(line);
-          }
-        }
-      } catch {
-        // skip unreadable stream file
-      }
-    }
-
-    if (collectedLines.length === 0) {
-      try {
-        const mainContent = await readFile(join(sessionsDir, `${safeId}.json`), "utf8");
-        const parsed = JSON.parse(mainContent) as {
-          messages?: Array<{ role?: string; content?: string | Array<{ type?: string; text?: string }> }>;
-          turns?: Array<{ text?: string }>;
-        };
-        if (Array.isArray(parsed.messages)) {
-          for (const m of parsed.messages) {
-            if (typeof m.content === "string") {
-              collectedLines.push(m.content);
-            } else if (Array.isArray(m.content)) {
-              for (const c of m.content) {
-                if (typeof c === "string") collectedLines.push(c);
-                else if (typeof c?.text === "string") collectedLines.push(c.text);
-              }
-            }
-          }
-        } else if (Array.isArray(parsed.turns)) {
-          for (const t of parsed.turns) {
-            if (typeof t.text === "string") collectedLines.push(t.text);
+            streamLines.push(line);
           }
         }
       } catch {}
     }
 
-    const text = collectedLines.slice(-input.lines).join("\n");
+    const text = streamLines.slice(-input.lines).join("\n");
     return { text };
   }
 
@@ -870,11 +856,15 @@ export class RuntimeEngine implements BridgeEngine {
       this.idleTimers.delete(key);
     }
     const client = this.manager?.get(key);
-    if (client && client.alive) {
-      await client.shutdown();
-      if (client.lifecycle === "stopped") {
-        this.manager?.deleteWorker(key, client);
-      }
+    if (!client || !client.alive) return {};
+    if (this.activeTurns.has(key)) {
+      // Active turn in flight: mark for cool-after-settle, never kill mid-turn (plan §14).
+      this.coolPending.add(key);
+      return {};
+    }
+    await client.shutdown();
+    if (client.lifecycle === "stopped") {
+      this.manager?.deleteWorker(key, client);
     }
     return {};
   }
@@ -1146,6 +1136,56 @@ export function mapRuntimeToolEvent(event: {
     ...(event.locations !== undefined ? { locations: event.locations } : {}),
   };
 }
+function userContentToText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (typeof content !== "object" || content === null) return "";
+  const c = content as Record<string, unknown>;
+  if ("Text" in c && typeof c.Text === "string") return c.Text;
+  if ("text" in c && typeof c.text === "string") return c.text;
+  if ("Mention" in c && typeof (c.Mention as { content?: string })?.content === "string") return (c.Mention as { content: string }).content;
+  if ("Image" in c) return (c.Image as { source?: string })?.source || "[image]";
+  if ("Audio" in c) return `[audio] ${(c.Audio as { mime_type?: string })?.mime_type || "audio"}`;
+  return "";
+}
+
+function agentContentToText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (typeof content !== "object" || content === null) return "";
+  const c = content as Record<string, unknown>;
+  if ("Text" in c && typeof c.Text === "string") return c.Text;
+  if ("text" in c && typeof c.text === "string") return c.text;
+  if ("Thinking" in c && typeof (c.Thinking as { text?: string })?.text === "string") return (c.Thinking as { text: string }).text;
+  if ("RedactedThinking" in c) return "[redacted_thinking]";
+  if ("ToolUse" in c && typeof (c.ToolUse as { name?: string })?.name === "string") return `[tool:${(c.ToolUse as { name: string }).name}]`;
+  return "";
+}
+
+export function extractConversationEntries(record: Record<string, unknown>): Array<{ role: string; textPreview: string }> {
+  const entries: Array<{ role: string; textPreview: string }> = [];
+  if (Array.isArray(record.messages)) {
+    for (const message of record.messages) {
+      if (message === "Resume") continue;
+      if (typeof message !== "object" || message === null) continue;
+      if ("User" in message && message.User) {
+        const userContent = Array.isArray(message.User.content) ? message.User.content : [message.User.content];
+        const text = userContent.map(userContentToText).join(" ").trim();
+        if (text) entries.push({ role: "user", textPreview: text });
+      } else if ("Agent" in message && message.Agent) {
+        const agentContent = Array.isArray(message.Agent.content) ? message.Agent.content : [message.Agent.content];
+        const text = agentContent.map(agentContentToText).join(" ").trim();
+        if (text) entries.push({ role: "assistant", textPreview: text });
+      } else if ("role" in message && typeof message.role === "string") {
+        const text = typeof message.content === "string"
+          ? message.content
+          : Array.isArray(message.content)
+            ? message.content.map((b: unknown) => typeof b === "string" ? b : typeof (b as { text?: string })?.text === "string" ? (b as { text: string }).text : "").join(" ").trim()
+            : typeof (message as { text?: string }).text === "string" ? (message as { text: string }).text : "";
+        if (text) entries.push({ role: message.role, textPreview: text });
+      }
+    }
+  }
+  return entries;
+}
 
 export function extractTextFromAcpMessage(parsed: Record<string, unknown>): string[] {
   const results: string[] = [];
@@ -1179,6 +1219,7 @@ export function extractTextFromAcpMessage(parsed: Record<string, unknown>): stri
   }
   return results;
 }
+
 function emitPromptEvent(event: XacpxRuntimeEvent, onEvent?: (event: EnginePromptStreamEvent) => void): void {
   if (!onEvent) return;
   if (event.type === "text_delta") {

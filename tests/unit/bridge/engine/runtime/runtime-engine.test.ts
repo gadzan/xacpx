@@ -611,7 +611,7 @@ test("tailSessionHistory parses real acpx 0.13.1 stream rotation and JSON-RPC me
         acpx_record_id: "rec-acpx-rot-1",
         name: "acpx-rot-session",
         cwd: sessionInput.cwd,
-        messages: [{ role: "user", content: "initial prompt" }],
+        messages: [],
       }),
     );
 
@@ -666,6 +666,121 @@ test("tailSessionHistory parses real acpx 0.13.1 stream rotation and JSON-RPC me
       lines: 2,
     });
     expect(tail2.text).toBe("message from stream 1\nmessage from active stream");
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("freeWarmProcess while prompt is active marks coolPending and terminates only after prompt settles", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-cool-pending-"));
+  const releaseFile = join(dir, "release.marker");
+  try {
+    const entry = join(dir, "slow-turn-worker.mjs");
+    await writeFile(
+      entry,
+      [
+        "import fs from 'node:fs';",
+        "let buffer='';",
+        "process.stdin.on('data', (d) => {",
+        "  buffer += d.toString();",
+        "  let idx;",
+        "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+        "    if (!line) continue;",
+        "    try { const msg = JSON.parse(line);",
+        "      if (msg.method === 'prompt') {",
+        "        const checkRelease = () => {",
+        `          if (fs.existsSync(${JSON.stringify(releaseFile)})) {`,
+        "            process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { result: { status: 'completed' }, finalText: 'done' } }) + '\\n');",
+        "          } else {",
+        "            setTimeout(checkRelease, 20);",
+        "          }",
+        "        };",
+        "        setTimeout(checkRelease, 20);",
+        "      } else if (msg.method === 'ensure') {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true, sessionKey: msg.params?.sessionKey } }) + '\\n');",
+        "      } else {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "      }",
+        "      if (msg.method === 'shutdown') process.exit(0);",
+        "    } catch {}",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all" });
+
+    // 1. Start long-running prompt
+    let promptFinished = false;
+    const promptPromise = engine.prompt({ ...sessionInput, text: "slow" }).then((res) => {
+      promptFinished = true;
+      return res;
+    });
+
+    // Wait 50ms to ensure prompt is actively inside worker
+    await new Promise((r) => setTimeout(r, 50));
+    expect(promptFinished).toBe(false);
+
+    // 2. Call freeWarmProcess while prompt is in flight
+    await engine.freeWarmProcess(sessionInput);
+
+    // Worker MUST NOT be terminated yet; prompt is still active
+    expect(promptFinished).toBe(false);
+    expect((await engine.isSessionWarm(sessionInput)).warm).toBe(true);
+
+    // 3. Write release marker file
+    await writeFile(releaseFile, "go");
+
+    // 4. Prompt settles cleanly
+    const reply = await promptPromise;
+    expect(reply.text).toBe("done");
+    expect(promptFinished).toBe(true);
+
+    // 5. Worker is now terminated and cooled down (coolPending processed in prompt.finally)
+    expect((await engine.isSessionWarm(sessionInput)).warm).toBe(false);
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("tailSessionHistory parses real acpx record.messages conversation turns", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-acpx-conv-"));
+  const sessionsDir = join(dir, ".acpx", "sessions");
+  try {
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(sessionsDir, { recursive: true });
+
+    // Real acpx record.messages format with User and Agent turns
+    const recFile = join(sessionsDir, "rec-conv-1.json");
+    await writeFile(
+      recFile,
+      JSON.stringify({
+        schema: "acpx.session.v1",
+        acpx_record_id: "rec-conv-1",
+        name: "conv-session",
+        cwd: sessionInput.cwd,
+        messages: [
+          { User: { content: [{ Text: "what is the capital of France?" }] } },
+          { Agent: { content: [{ Text: "The capital of France is Paris." }] } },
+          { User: { content: [{ Text: "what is its population?" }] } },
+          { Agent: { content: [{ Text: "Paris has about 2.1 million residents." }] } },
+        ],
+      }),
+    );
+
+    const engine = new RuntimeEngine({ workerEntryPath: "/fake/worker.js", stateDir: sessionsDir, permissionMode: "approve-all" });
+
+    // Tail last 2 conversation turns
+    const tail2 = await engine.tailSessionHistory({ ...sessionInput, name: "conv-session", lines: 2 });
+    expect(tail2.text).toBe("what is its population?\nParis has about 2.1 million residents.");
+
+    // Tail 1 conversation turn
+    const tail1 = await engine.tailSessionHistory({ ...sessionInput, name: "conv-session", lines: 1 });
+    expect(tail1.text).toBe("Paris has about 2.1 million residents.");
 
     await engine.shutdown();
   } finally {

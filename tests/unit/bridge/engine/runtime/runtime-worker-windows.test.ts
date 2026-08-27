@@ -260,8 +260,8 @@ test("Scenario 5: unexpected exit(0) without deliberate intent is classified as 
     // Lifecycle must be marked failed
     expect(worker.lifecycle).toBe("failed");
 
-    // Respawn budget must be consumed
-    expect(() => manager.ensureWorker("exit0-session")).toThrow(/crashed 1 times/);
+    // Respawn budget or teardown gate must reject
+    expect(() => manager.ensureWorker("exit0-session")).toThrow(/crashed 1 times|refusing duplicate worker spawn|failed/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

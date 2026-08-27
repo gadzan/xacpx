@@ -129,15 +129,19 @@ export class RuntimeWorkerManager {
   }
 
   private handleExit(logicalSessionId: string, client: RuntimeWorkerClient, code: number | null): void {
-    // Unexpected crash: drop the client so restart budget logic can take over.
-    // Deliberate shutdown: RETAIN the client in the manager until tree cleanup / termination confirms completion!
-    if (!client.isDeliberateShutdown && this.workersByKey.get(logicalSessionId) === client) {
-      this.workersByKey.delete(logicalSessionId);
+    const isCrash = client.lifecycle === "failed" || !client.isDeliberateShutdown;
+    if (isCrash) {
+      // Unexpected crash: asynchronously clean up any orphan process group/tree descendants
+      void client.terminate().then(() => {
+        if (this.workersByKey.get(logicalSessionId) === client && client.lifecycle === "stopped") {
+          this.workersByKey.delete(logicalSessionId);
+        }
+      }).catch(() => {});
     }
     // Plan §43 scopes the guard to REAL crashes. Deliberate stops (graceful
     // shutdown, freeWarm cooling) exit 0 and are NOT charged; a nonzero/signal
     // exit while calls were in flight is.
-    if (client.lifecycle !== "failed") return;
+    if (!isCrash) return;
     const windowMs = this.options.restartWindowMs ?? 60_000;
     const now = Date.now();
     const recent = (this.restarts.get(logicalSessionId) ?? []).filter((t) => now - t < windowMs);
