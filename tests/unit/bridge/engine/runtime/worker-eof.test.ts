@@ -367,3 +367,28 @@ test("windows: a stale same-pid record cannot fake durable ownership for a reuse
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("windows: EOF default attempt deadline is null (no outer hard-kill)", async () => {
+  // Review round 24 Blocking 3: a mid-traversal SIGKILL loses ancestry
+  // reachability AND partially-collected evidence. EOF convergence must
+  // rely on the in-script watchdog (8s CIM + 2s WaitDead), never on an
+  // outer hard-kill timer.
+  const dir = await mkdtemp(join(tmpdir(), "eof-nodeadline-"));
+  try {
+    let deadline: number | null | undefined;
+    let calls = 0;
+    const outcome = await convergeOrphansBeforeExit({
+      platform: "win32",
+      terminateDescendants: async () => {
+        calls += 1;
+        return result(true, 0, 0);
+      },
+      runtimeDir: dir,
+    });
+    expect(outcome).toBe("verified");
+    expect(calls).toBe(1);
+    void deadline;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

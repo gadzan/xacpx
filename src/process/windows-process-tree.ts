@@ -85,8 +85,9 @@ interface WorkerResponse {
 }
 
 export interface WindowsProcessWorkerOptions {
-  workerDeadlineMs?: number;
-  runWorker?: (request: WindowsWorkerRequest, deadlineMs: number) => Promise<unknown>;
+  /** Null disables the hard-kill timer (EOF convergence relies on the in-script watchdog). */
+  workerDeadlineMs?: number | null;
+  runWorker?: (request: WindowsWorkerRequest, deadlineMs: number | null) => Promise<unknown>;
 }
 
 export type WindowsWorkerRequest =
@@ -308,7 +309,7 @@ export async function terminateWindowsDescendantsOf(
   try {
     const raw = await (options.runWorker ?? runPowerShellWorker)(
       { action: "terminate-descendants-of", parentPid },
-      options.workerDeadlineMs ?? 15_000,
+      options.workerDeadlineMs === undefined ? 15_000 : options.workerDeadlineMs,
     );
     return decodeWindowsDescendantsResponse(raw, parentPid) ?? unverified;
   } catch {
@@ -328,7 +329,7 @@ export async function terminateWindowsResidual(
   } catch { return "query-failed"; }
 }
 
-async function runPowerShellWorker(request: WindowsWorkerRequest, deadlineMs: number): Promise<unknown> {
+async function runPowerShellWorker(request: WindowsWorkerRequest, deadlineMs: number | null): Promise<unknown> {
   return await new Promise((resolve, reject) => {
     // Windows PowerShell 5.1 processes `-Command -` stdin line by line and
     // silently discards any line that opens a multi-line construct (blocks,
@@ -359,10 +360,11 @@ async function runPowerShellWorker(request: WindowsWorkerRequest, deadlineMs: nu
         catch { reject(new Error(`invalid Windows worker response: ${stderr}`)); }
       }
     };
-    const timer = setTimeout(() => {
+    const timer = deadlineMs === null ? undefined : setTimeout(() => {
       child.kill("SIGKILL");
       finish(new Error("Windows process worker timed out"));
     }, deadlineMs);
+    void timer;
     child.stdout.on("data", (chunk) => { stdout += String(chunk); });
     child.stderr.on("data", (chunk) => { stderr += String(chunk); });
     child.once("error", (error) => finish(error));
@@ -464,31 +466,33 @@ if($request.action -eq 'token-snapshot'){
   $matches=@(Snapshot | Where-Object {$_.commandLine -and $_.commandLine.Contains($needle)})
   Write-Output (@{items=$matches} | ConvertTo-Json -Depth 5 -Compress);exit 0
 }
-# G10: single-snapshot closure; S2 accepts children of dead or same-identity parents.
+# G10 orphan convergence: S1 closure in one snapshot; verified handles stay
 if($request.action -eq 'terminate-descendants-of'){
 $pp=[int]$request.parentPid
-$out=@();$sn=@{};$fr=@($pp)
+$out=@();$sn=@{};$fr=@($pp);$open=@{};$safe='killed','already-exited'
 $s1=@(Snapshot)
 while($fr.Count){
 $nx=@()
 foreach($p in $s1|?{$_.parentPid -in $fr -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){
-$sn[$p.pid]=$p.creationDate;$nx+=$p.pid
+$sn[$p.pid]=$true;$nx+=$p.pid
 $c=OpenVerified $p $true
 $s=if(-not $c.ok){$c.status}elseif(-not [XacpxNativeProcess]::Alive($c.handle)){'already-exited'}elseif([XacpxNativeProcess]::Kill($c.handle)){if([XacpxNativeProcess]::WaitDead($c.handle)){'killed'}else{'kill-requested-unconfirmed'}}else{if([XacpxNativeProcess]::LastError()-eq 5){'access-denied'}else{'query-failed'}}
-try{[XacpxNativeProcess]::Close($c.handle)}catch{}
+if($c.ok){$open[$p.pid]=$c.handle}else{try{[XacpxNativeProcess]::Close($c.handle)}catch{}}
 $out+=@{pid=$p.pid;outcome=$s;creationDate=$p.creationDate;commandLine=$p.commandLine;executablePath=$p.executablePath}
 }
 $fr=$nx
 }
+try {
 $lf=@()
 $s2=@(Snapshot)
 foreach($p in $s2|?{($_.parentPid -eq $pp -or $sn.ContainsKey($_.parentPid)) -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){
-$par=@($s2|?{$_.pid -eq $p.parentPid})
-if($p.parentPid -eq $pp -or $par.Count -eq 0 -or $par[0].creationDate -eq $sn[$p.parentPid]){$lf+=@{pid=$p.pid;parentPid=$p.parentPid;creationDate=$p.creationDate;commandLine=$p.commandLine;executablePath=$p.executablePath}}
+if($p.parentPid -eq $pp -or $open.ContainsKey($p.parentPid)){$lf+=@{pid=$p.pid;parentPid=$p.parentPid;creationDate=$p.creationDate;commandLine=$p.commandLine;executablePath=$p.executablePath}}
 }
-$vf=!@($out|?{$_.outcome -notin 'killed','already-exited'}).Count -and !$lf.Count
+} finally {$open.Values|%{try{[XacpxNativeProcess]::Close($_)}catch{}}}
+$vf=!@($out|?{$_.outcome -notin $safe}).Count -and !$lf.Count
 Write-Output (@{verified=$vf;outcomes=$out;leftover=$lf}|ConvertTo-Json -Depth 8 -Compress);exit 0
-}if($request.action -eq 'terminate-one-cim'){
+}
+if($request.action -eq 'terminate-one-cim'){
   $target=[pscustomobject]@{pid=[int]$request.target.pid;creationDate=[string]$request.target.creationDate;commandLine=$request.target.commandLine;executablePath=$request.target.executablePath}
   $check=OpenVerified $target $true
   if(!$check.ok){Write-Output (@{outcome=$check.status} | ConvertTo-Json -Compress);exit 0}

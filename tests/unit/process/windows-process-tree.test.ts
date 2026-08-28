@@ -413,3 +413,19 @@ windowsTest("real worker never touches an innocent non-descendant process", asyn
     await rm(dir, { recursive: true, force: true });
   }
 }, 90_000);
+
+test("descendants protocol: explicit null deadline is forwarded to the worker (no hard-kill)", async () => {
+  // Review round 24 Blocking 3: EOF convergence must not arm an outer
+  // hard-kill timer — a mid-traversal SIGKILL loses ancestry reachability
+  // and any partially-collected evidence.
+  let received: number | null | undefined;
+  const result = await terminateWindowsDescendantsOf(4242, {
+    workerDeadlineMs: null,
+    runWorker: async (_request, deadlineMs) => {
+      received = deadlineMs;
+      return { verified: true, outcomes: [], leftover: [] };
+    },
+  });
+  expect(received).toBeNull();
+  expect(result.verified).toBe(true);
+});
