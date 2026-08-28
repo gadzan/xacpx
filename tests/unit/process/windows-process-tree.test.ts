@@ -429,3 +429,38 @@ test("descendants protocol: explicit null deadline is forwarded to the worker (n
   expect(received).toBeNull();
   expect(result.verified).toBe(true);
 });
+
+test("descendants protocol: S2-verified child decodes once and appears only in outcomes", () => {
+  // Review round 26 Blocking 2: a post-S1 child that passed OpenVerified is
+  // recorded in outcomes (killed) — it must NOT also appear in leftover, or
+  // the decoder's single seen-set rejects the whole response.
+  const payload = {
+    verified: true,
+    outcomes: [
+      descendantOutcome(5001, "killed"), // S1 parent
+      descendantOutcome(5002, "killed"), // S2 child, verified + killed
+    ],
+    leftover: [],
+  };
+  expect(decodeWindowsDescendantsResponse(payload, 4242)).toEqual({
+    verified: true,
+    outcomes: payload.outcomes,
+    leftover: [],
+  });
+});
+
+test("descendants protocol: S2 verify-failed child is unsafe evidence, never silently dropped", () => {
+  // Review round 26 Blocking 1: the S2 child whose OpenVerified failed must
+  // surface as an outcome (access-denied etc.) so verified stays false and
+  // the worker does not exit with it alive and unrecorded.
+  const payload = {
+    verified: false,
+    outcomes: [
+      descendantOutcome(5001, "killed"),        // S1 parent killed
+      descendantOutcome(5002, "access-denied"), // S2 child unverifiable
+    ],
+    leftover: [],
+  };
+  expect(decodeWindowsDescendantsResponse(payload, 4242)).not.toBeNull();
+  expect(decodeWindowsDescendantsResponse(payload, 4242)!.verified).toBe(false);
+});
