@@ -464,3 +464,30 @@ test("descendants protocol: S2 verify-failed child is unsafe evidence, never sil
   expect(decodeWindowsDescendantsResponse(payload, 4242)).not.toBeNull();
   expect(decodeWindowsDescendantsResponse(payload, 4242)!.verified).toBe(false);
 });
+
+test("descendants protocol: S2 static closure returns EVERY post-S1 descendant as independent leftover", () => {
+  // Review round 27 Blocking: a single-level S2 recorded only C, so if C
+  // exited before the reaper, G (parented by dead C) lost all durable
+  // evidence. The S2 static transitive closure must emit C AND G as
+  // separate leftovers, each with its own full fingerprint.
+  const payload = {
+    verified: false,
+    outcomes: [descendantOutcome(5001, "killed")], // S1 parent P
+    leftover: [
+      { pid: 5002, parentPid: 5001, creationDate: "133801632000000010", commandLine: "c", executablePath: "C:\\c.exe" },
+      { pid: 5003, parentPid: 5002, creationDate: "133801632000000020", commandLine: "g", executablePath: "C:\\g.exe" },
+    ],
+  };
+  const decoded = decodeWindowsDescendantsResponse(payload, 4242);
+  expect(decoded).not.toBeNull();
+  expect(decoded!.verified).toBe(false);
+  // Both levels are independently spoolable: same identity shape as outcomes.
+  expect(decoded!.leftover.map((item) => item.pid).sort((a, b) => a - b)).toEqual([5002, 5003]);
+  for (const item of decoded!.leftover) {
+    expect(item.creationDate).not.toBeNull();
+    expect(item.commandLine).not.toBeNull();
+    expect(item.executablePath).not.toBeNull();
+  }
+  // C and G do not collide with the S1 outcome (mutual exclusion holds).
+  expect(decoded!.outcomes.map((item) => item.pid)).toEqual([5001]);
+});

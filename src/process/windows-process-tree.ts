@@ -482,9 +482,17 @@ $fr=$nx
 try {
 foreach($p in $cl){VF $p}
 $lf=@()
-foreach($p in $(Snapshot)|?{($_.parentPid -eq $pp -or $open.ContainsKey($_.parentPid)) -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){
+$s2=@(Snapshot)
+$fr=@($pp)+@($cl.pid)
+while($fr.Count){
+$nx=@()
+foreach($p in $s2|?{$_.parentPid -in $fr -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){
+$sn[$p.pid]=$true
 VF $p
 $lf+=@($p)
+$nx+=$p.pid
+}
+$fr=$nx
 }
 foreach($p in $cl){
 if($open.ContainsKey($p.pid)){$h=$open[$p.pid];$s=if(-not [XacpxNativeProcess]::Alive($h)){'already-exited'}elseif([XacpxNativeProcess]::Kill($h)){if([XacpxNativeProcess]::WaitDead($h)){'killed'}else{'kill-requested-unconfirmed'}}else{if([XacpxNativeProcess]::LastError()-eq 5){'access-denied'}else{'query-failed'}}}else{$s=$ov[$p.pid]}
