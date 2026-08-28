@@ -52,6 +52,7 @@ function sameEnsureParams(a: RuntimeWorkerEnsureParams | undefined, b: RuntimeWo
     a.nonInteractivePermissions === b.nonInteractivePermissions &&
     a.resumeSessionId === b.resumeSessionId &&
     a.model === b.model &&
+    a.effort === b.effort &&
     JSON.stringify(a.permissionPolicy ?? null) === JSON.stringify(b.permissionPolicy ?? null) &&
     JSON.stringify(a.agentOverrides ?? null) === JSON.stringify(b.agentOverrides ?? null)
   );
@@ -76,9 +77,11 @@ async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: 
       sessionKey: params.sessionKey,
       agent: params.agent,
       ...(params.cwd ? { cwd: params.cwd } : {}),
-      ...(params.resumeSessionId ? { resumeSessionId: params.resumeSessionId } : {}),
       ...(params.model ? { sessionOptions: { model: params.model } } : {}),
     });
+    if (params.effort) {
+      await state.adapter.setConfigOption(state.handle!, "effort", params.effort);
+    }
   }
   const handle = state.handle!;
   return {
@@ -92,7 +95,11 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
   if (!state.adapter || !state.handle) {
     throw new Error("worker not ensured");
   }
-  const turn = state.adapter.startTurn({ handle: state.handle, text: params.text });
+  const turn = state.adapter.startTurn({
+    handle: state.handle,
+    text: params.text,
+    ...(params.attachments && params.attachments.length > 0 ? { attachments: params.attachments } : {}),
+  });
   state.activeTurn = turn;
   try {
     await turn.promptStarted;
@@ -100,7 +107,15 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
     for await (const event of turn.events) {
       // Real-time push (plan §41): each runtime event goes out the moment it
       // arrives — the host forwards it to the bridge while the turn is live.
-      const wireEvent = event.type === "tool_call" ? "tool" : event.type === "status" ? "usage" : event.type;
+      // Upstream surfaces plan as a tagged status event ("plan: ..." text).
+      const wireEvent =
+        event.type === "tool_call"
+          ? "tool"
+          : event.type === "status" && (event as { tag?: string }).tag === "plan"
+            ? "plan"
+            : event.type === "status"
+              ? "usage"
+              : event.type;
       process.stdout.write(
         encodeWorkerMessage({ id: requestId, event: wireEvent, payload: event } satisfies RuntimeWorkerEvent),
       );

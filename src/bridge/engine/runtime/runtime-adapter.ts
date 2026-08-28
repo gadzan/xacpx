@@ -43,10 +43,19 @@ export interface XacpxEnsureInput {
     model?: string;
   };
 }
+export interface XacpxTurnAttachment {
+  mediaType: string;
+  data: string;
+}
+export interface XacpxStartTurnInput {
+  handle: XacpxRuntimeSessionHandle;
+  text: string;
+  attachments?: XacpxTurnAttachment[];
+}
 
 export interface XacpxRuntimeAdapter {
   ensure(input: XacpxEnsureInput): Promise<XacpxRuntimeSessionHandle>;
-  startTurn(input: { handle: XacpxRuntimeSessionHandle; text: string }): XacpxTurnHandle;
+  startTurn(input: XacpxStartTurnInput): XacpxTurnHandle;
   setMode(handle: XacpxRuntimeSessionHandle, mode: string): Promise<void>;
   setConfigOption(handle: XacpxRuntimeSessionHandle, key: string, value: string): Promise<void>;
   getStatus(handle: XacpxRuntimeSessionHandle): Promise<unknown>;
@@ -84,10 +93,11 @@ export function createXacpxRuntimeAdapter(options: CreateXacpxRuntimeAdapterOpti
       });
       return handle as unknown as XacpxRuntimeSessionHandle;
     },
-    startTurn({ handle, text }) {
+    startTurn({ handle, text, attachments }) {
       const turn = runtime.startTurn({
         handle: toHandle(handle),
         text,
+        ...(attachments && attachments.length > 0 ? { attachments } : {}),
         mode: "prompt",
         requestId: `xacpx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       });
@@ -132,6 +142,7 @@ async function* mapEvents(events: AsyncIterable<AcpRuntimeEvent>): AsyncIterable
       yield {
         type: "status",
         text: event.text,
+        ...(event.tag ? { tag: event.tag } : {}),
         ...(event.used !== undefined ? { used: event.used } : {}),
         ...(event.size !== undefined ? { size: event.size } : {}),
         ...(event.cost ? { cost: event.cost } : {}),

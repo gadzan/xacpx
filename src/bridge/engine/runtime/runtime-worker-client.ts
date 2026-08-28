@@ -95,6 +95,7 @@ export class RuntimeWorkerClient {
     this.child = spawn(process.execPath, [this.entryPath], {
       stdio: ["pipe", "pipe", "pipe"],
       detached: process.platform !== "win32",
+      windowsHide: true,
     });
     this.ref.pid = this.child.pid ?? -1;
     const isWindows = process.platform === "win32" || Boolean(this.deps?.probeWindowsIdentity);
@@ -227,9 +228,12 @@ export class RuntimeWorkerClient {
 
   /** Graceful shutdown request, then process tree cleanup after a bounded grace (plan §16, §18). */
   async shutdown(graceMs = 2_000): Promise<void> {
+    // Idempotent: a verified-stopped worker already completed tree cleanup.
+    if (!this.alive && this.lifecycle === "stopped") return;
     if (!this.child || this.ref.pid <= 0) return;
+    // Deliberate intent is recorded BEFORE any await so a crash race is
+    // never misclassified as unexpected (plan §43).
     this.deliberateShutdown = true;
-    this.lifecycle = "cooling";
     const platform = this.deps?.platform ?? process.platform;
     if (!this.child?.stdin?.writableEnded) {
       try {
@@ -254,7 +258,8 @@ export class RuntimeWorkerClient {
   }
 
   async terminate(): Promise<void> {
-    if (!this.child || this.ref.pid <= 0) return;
+    if (!this.alive && this.lifecycle === "stopped") return;
+    if (!this.child) return;
     const wasAliveBeforeTerm = this.alive;
     const isCrashCleanup = !wasAliveBeforeTerm && !this.deliberateShutdown;
     this.deliberateShutdown = true;

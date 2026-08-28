@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -52,9 +52,15 @@ test("runtime adapter drives a full turn through real acpx runtime + mock ACP ag
     expect(textDelta).toContain("quoted=value");
 
     // Record compatibility (plan §12): the persisted acpx session record exists
-    // on disk under the SAME store layout the CLI reads.
-    const entries = await readdir(stateDir);
-    expect(entries.length).toBeGreaterThan(0);
+    // on disk at <stateDir>/sessions/<recordId>.json — the SAME layout the CLI
+    // reads. Also assert the nested sessions/sessions path does NOT exist
+    // (regression: stateDir must be the state ROOT, not the sessions dir).
+    const safeId = encodeURIComponent(handle.acpxRecordId!);
+    const recordFile = join(stateDir, "sessions", `${safeId}.json`);
+    const recordStat = await stat(recordFile);
+    expect(recordStat.isFile()).toBe(true);
+    const nestedSessions = join(stateDir, "sessions", "sessions");
+    await expect(stat(nestedSessions)).rejects.toThrow();
 
     const status = await runtime.getStatus({ handle });
     expect(status.acpxRecordId).toBe(handle.acpxRecordId);

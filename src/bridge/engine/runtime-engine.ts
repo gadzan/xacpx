@@ -12,6 +12,8 @@ import type { NonInteractivePermissions, PermissionMode } from "../../config/typ
 import type { BridgeEngine, EngineInjectInput, EngineListInput, EnginePromptInput, EnginePromptStreamEvent, EngineSessionInput } from "./bridge-engine";
 import type { PlanEntry, ToolUseEvent, ToolUseKind, ToolUseStatus } from "../../channels/types.js";
 import { formatToolUseEventForText } from "../../transport/tool-use-text-format.js";
+import { readImageFileBounded } from "../../transport/prompt-media.js";
+import type { PromptMediaInput } from "../../transport/types.js";
 import { mapRuntimeError, type XacpxRuntimeEvent, type XacpxTurnResult, type RuntimeBridgeErrorCode } from "./runtime/runtime-contract";
 import type { RuntimeWorkerClient, RuntimeWorkerClientDeps } from "./runtime/runtime-worker-client";
 import { WorkerCrashError } from "./runtime/runtime-worker-client";
@@ -345,7 +347,12 @@ async function findTombstoneRecordId(
 export interface RuntimeEngineOptions {
   /** Resolved worker entry; defaults to the bundled dist output. */
   workerEntryPath?: string;
-  /** Override for the acpx sessions directory (tests / isolated daemons). */
+  /**
+   * Override for the acpx sessions directory (tests / isolated daemons).
+   * NOTE: this is the SESSIONS directory (…/.acpx/sessions). The acpx Runtime
+   * store root (…/.acpx) is derived one level up, since createRuntimeStore
+   * joins "sessions" onto its stateDir internally.
+   */
   stateDir?: string;
   permissionMode: PermissionMode;
   nonInteractivePermissions?: NonInteractivePermissions;
@@ -411,6 +418,17 @@ export class RuntimeEngine implements BridgeEngine {
 
   private sessionsDir(): string {
     return this.options.stateDir ?? join(resolveAcpxHomeDir(), ".acpx", "sessions");
+  }
+
+  /** acpx Runtime store root: sessionsDir minus the trailing "sessions" segment. */
+  private runtimeStateRoot(): string {
+    const dir = this.sessionsDir();
+    const segments = dir.split(/[\\/]/);
+    if (segments.length > 1 && segments[segments.length - 1] === "sessions") {
+      return join(dir, "..");
+    }
+    // Sessions dir is not named "sessions" (tests): keep 1:1 mapping.
+    return dir;
   }
   private scheduleIdleTtl(key: string, client: RuntimeWorkerClient): void {
     const existing = this.idleTimers.get(key);
@@ -490,13 +508,14 @@ export class RuntimeEngine implements BridgeEngine {
       sessionKey: input.name,
       agent: runtimeAgentName,
       cwd: input.cwd,
-      stateDir: this.sessionsDir(),
+      stateDir: this.runtimeStateRoot(),
       permissionMode: this.options.permissionMode,
       ...(this.options.permissionPolicy !== undefined ? { permissionPolicy: this.options.permissionPolicy } : {}),
       ...(overrideValue !== undefined ? { agentOverrides: { [runtimeAgentName]: overrideValue } } : {}),
       ...(this.options.nonInteractivePermissions ? { nonInteractivePermissions: this.options.nonInteractivePermissions } : {}),
       ...(options?.resumeSessionId ? { resumeSessionId: options.resumeSessionId } : {}),
       ...(input.model ? { model: input.model } : {}),
+      ...(input.effort ? { effort: input.effort } : {}),
     };
   }
 
@@ -534,6 +553,14 @@ export class RuntimeEngine implements BridgeEngine {
       this.recordIds.set(key, lookup.recordId);
       return { exists: true };
     }
+    if (lookup.kind === "failed") {
+      // I/O uncertainty is NOT absence — /session attach must not be told
+      // "session not found" when the filesystem is unreadable.
+      throw new RuntimeError(
+        "RUNTIME_INIT_FAILED",
+        `cannot determine session existence for "${input.name}": ${lookup.error.message}`,
+      );
+    }
     return { exists: false };
   }
 
@@ -555,12 +582,22 @@ export class RuntimeEngine implements BridgeEngine {
         const text = visible.map((entry) => entry.textPreview).join("\n");
         return { text };
       }
-    } catch {
-      // Fall through to stream reading if main record not yet written or unreadable
+    } catch (error) {
+      if (!isEnoent(error)) {
+        // Corrupt or unreadable record: surface the failure instead of
+        // pretending there is no history.
+        throw new RuntimeError(
+          "RUNTIME_INIT_FAILED",
+          `cannot read session history for record "${recordId}": ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      // ENOENT: main record not yet written — fall through to stream reading.
     }
 
     // 2. Stream files fallback if record has not synced messages
-    const entries: string[] = await readdir(sessionsDir).catch(() => []);
+    const entries: string[] = await readdir(sessionsDir).catch(() => {
+      throw new RuntimeError("RUNTIME_INIT_FAILED", `cannot read sessions directory "${sessionsDir}" for history lookup`);
+    });
     const numberedStreams = entries
       .filter((file) => file.startsWith(`${safeId}.stream.`) && file.endsWith(".ndjson") && file !== `${safeId}.stream.ndjson`)
       .sort((a, b) => {
@@ -587,7 +624,14 @@ export class RuntimeEngine implements BridgeEngine {
             streamLines.push(line);
           }
         }
-      } catch {}
+      } catch (error) {
+        if (!isEnoent(error)) {
+          throw new RuntimeError(
+            "RUNTIME_INIT_FAILED",
+            `cannot read session history stream "${file}": ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
     }
 
     const text = streamLines.slice(-input.lines).join("\n");
@@ -634,10 +678,12 @@ export class RuntimeEngine implements BridgeEngine {
         client.lifecycle = "busy";
         await this.ensureSessionHandle(input, client);
         try {
+          // PR4: forward prompt media as ACP binary attachments (image/audio);
+          // non-image files ride along as a text attachment summary (CLI parity).
+          const attachments = await buildRuntimeAttachments(input.media);
           const outcome = await client.request<{ result: XacpxTurnResult; finalText: string }>(
             "prompt",
-            { text: input.text },
-            // Real-time streaming (plan §41): each worker event frame is
+            { text: input.text, ...(attachments.length > 0 ? { attachments } : {}) },
             // forwarded to the bridge sink the moment it arrives.
             {
               onEvent: (payload) => {
@@ -659,6 +705,12 @@ export class RuntimeEngine implements BridgeEngine {
                     }
                   }
                 } else if (event.type === "status") {
+                  // Upstream surfaces plan updates as a tagged status event; restore
+                  // the plan side-channel when the bridge subscribes (plan §41).
+                  if ((event as { tag?: string }).tag === "plan") {
+                    onEvent({ type: "prompt.plan", entries: parseRuntimePlanText(event.text) });
+                    return;
+                  }
                   if (typeof event.used === "number" && typeof event.size === "number") {
                     onEvent({
                       type: "prompt.usage",
@@ -761,10 +813,15 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   async getSessionEffort(input: EngineSessionInput): Promise<SessionEffortState> {
-    void input;
-    return { current: undefined, available: [] };
+    return await this.withWorker(input, async (client) => {
+      await this.ensureSessionHandle(input, client);
+      const status = (await client.request<{ effort?: { current?: string; available?: string[] } }>("status")) ?? {};
+      return {
+        current: status.effort?.current,
+        available: status.effort?.available ?? [],
+      };
+    });
   }
-
   async cancel(input: EngineSessionInput): Promise<{ cancelled: boolean; message: string }> {
     // Admission gate: wait for any in-flight policy transition (plan §32)
     if (this.policyTransitionLock) {
@@ -820,13 +877,27 @@ export class RuntimeEngine implements BridgeEngine {
     });
 
     // 4. Terminate live worker (cancel active turn first, close with discard).
-    if (client && client.alive) {
-      if (this.activeTurns.has(key)) {
-        await client.request("cancel").catch(() => {});
+    if (client) {
+      if (!client.alive && client.lifecycle !== "stopped") {
+        // Dead but unverified owner (crash cleanup failed / never proven): the worker's
+        // adapter descendants could not be proven gone — hard delete MUST fail closed
+        // instead of silently skipping ownership cleanup (plan §19 / single-owner).
+        throw new RuntimeError(
+          "RUNTIME_WORKER_TEARDOWN_PENDING",
+          `runtime worker for session "${key}" crashed and ownership cleanup was never verified; refusing hard delete`,
+        );
       }
-      await client.request("close").catch(() => {});
-      await client.terminate();
-      if (client.lifecycle === "stopped") {
+      if (client.alive) {
+        if (this.activeTurns.has(key)) {
+          await client.request("cancel").catch(() => {});
+        }
+        await client.request("close").catch(() => {});
+        await client.terminate();
+        if (client.lifecycle === "stopped") {
+          this.manager?.deleteWorker(key, client);
+        }
+      } else {
+        // dead + stopped: verified tree cleanup already completed
         this.manager?.deleteWorker(key, client);
       }
     }
@@ -856,7 +927,12 @@ export class RuntimeEngine implements BridgeEngine {
       this.idleTimers.delete(key);
     }
     const client = this.manager?.get(key);
-    if (!client || !client.alive) return {};
+    if (!client) return {};
+    if (!client.alive && client.lifecycle !== "stopped") {
+      // Dead but unverified owner: cannot prove descendant tree is gone; report
+      // NOT warm (no fabricated success) — the manager still fences this key.
+      return {};
+    }
     if (this.activeTurns.has(key)) {
       // Active turn in flight: mark for cool-after-settle, never kill mid-turn (plan §14).
       this.coolPending.add(key);
@@ -1098,7 +1174,41 @@ export class WorkerUnavailableError extends RuntimeError {
 
 // Re-exported so callers can instanceof without importing two modules.
 export { WorkerCrashError };
+const MAX_RUNTIME_IMAGE_BYTES = 100 * 1024 * 1024;
 
+/** PR4: convert xacpx prompt media into ACP binary attachments (image/audio)
+ *  plus a text attachment for non-binary files, matching CLI behavior. */
+async function buildRuntimeAttachments(
+  media?: PromptMediaInput,
+): Promise<Array<{ mediaType: string; data: string }>> {
+  if (!media) return [];
+  const mediaList = Array.isArray(media) ? media : [media];
+  const attachments: Array<{ mediaType: string; data: string }> = [];
+  for (const item of mediaList) {
+    if (item.type === "image") {
+      const imageData = await readImageFileBounded(item.filePath, MAX_RUNTIME_IMAGE_BYTES);
+      attachments.push({
+        mediaType: item.mimeType || "image/png",
+        data: imageData.toString("base64"),
+      });
+      continue;
+    }
+    if (item.type === "audio") {
+      const audioData = await readImageFileBounded(item.filePath, MAX_RUNTIME_IMAGE_BYTES);
+      attachments.push({ mediaType: item.mimeType || "audio/mpeg", data: audioData.toString("base64") });
+    }
+    // video/file: acpx runtime only maps image/* and audio/* to content blocks;
+    // these stay documented as unsupported in the Runtime engine.
+  }
+  return attachments;
+}
+
+/** Parse upstream "plan: <text>" status into a single PlanEntry (replace semantics). */
+function parseRuntimePlanText(text: string): PlanEntry[] {
+  const content = text.replace(/^plan:\s*/i, "").trim();
+  if (!content) return [];
+  return [{ content, status: "in_progress" }];
+}
 export function mapRuntimeToolEvent(event: {
   toolCallId?: string;
   title?: string;

@@ -36,9 +36,13 @@ export interface RuntimeWorkerEnsureParams {
   resumeSessionId?: string;
   /** Optional initial model for sessionOptions (plan §9.1). */
   model?: string;
+  /** Persisted reasoning-effort preference; reapplied on every worker respawn. */
+  effort?: string;
 }
 export interface RuntimeWorkerPromptParams {
   text: string;
+  /** Binary prompt attachments (image/audio) forwarded to ACP content blocks. */
+  attachments?: Array<{ mediaType: string; data: string }>;
 }
 
 export interface RuntimeWorkerPermissionUpdate {

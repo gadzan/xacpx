@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { access, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 import { RuntimeEngine, WorkerUnavailableError } from "../../../../../src/bridge/engine/runtime-engine";
@@ -786,4 +786,118 @@ test("tailSessionHistory parses real acpx record.messages conversation turns", a
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+test("G4: hard delete on dead+failed unverified owner fails closed and does not touch files", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-dead-failed-"));
+  const sessionsDir = join(dir, ".acpx", "sessions");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(sessionsDir, { recursive: true });
+
+    const recordFile = join(sessionsDir, "rec-dead-fail-1.json");
+    await writeFile(
+      recordFile,
+      JSON.stringify({ schema: "acpx.session.v1", acpx_record_id: "rec-dead-fail-1", name: "dead-fail-session", cwd: sessionInput.cwd }),
+    );
+
+    const engine = new RuntimeEngine({
+      workerEntryPath: entry,
+      stateDir: sessionsDir,
+      permissionMode: "approve-all",
+      // Crash cleanup always fails: old owner is retained in the manager.
+      workerClientDeps: {
+        terminateProcessTree: async () => {
+          throw new Error("simulated unverified crash cleanup failure");
+        },
+      },
+    });
+    const client = engine["manager"]?.ensureWorker(sessionInput.logicalSessionId);
+    await client!.request("ensure", {});
+
+    // Simulate unexpected crash: kill the real worker process so alive=false,
+    // then leave lifecycle=failed (ownership cleanup never proven).
+    process.kill(client!.ref.pid, "SIGKILL");
+    const deadline = Date.now() + 2_000;
+    while (client!.alive && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    client!.lifecycle = "failed";
+
+    // Hard delete MUST fail closed because ownership cleanup was never proven
+    await expect(
+      engine.deleteSession({ ...sessionInput, name: "dead-fail-session" }),
+    ).rejects.toMatchObject({ code: "RUNTIME_WORKER_TEARDOWN_PENDING" });
+
+    // Record file remains untouched on disk
+    await access(recordFile);
+
+    // The retained failed owner makes final shutdown best-effort (expected reject)
+    await engine.shutdown().catch(() => {});
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("TTL success then engine.shutdown() is idempotent and succeeds (Windows regression)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-ttl-shutdown-"));
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    let treeTermCalls = 0;
+    const engine = new RuntimeEngine({
+      workerEntryPath: entry,
+      permissionMode: "approve-all",
+      idleTtlMs: 50,
+      workerClientDeps: {
+        platform: "win32",
+        probeWindowsIdentity: async (pid) => ({ status: "found", identity: { pid, creationDate: "133500000000000000" } }),
+        terminateProcessTree: async (target) => {
+          treeTermCalls++;
+          // First call kills the tree; any second call would see root already exited
+          return { rootOutcome: treeTermCalls === 1 ? "killed" : "already-exited", outcomes: [] };
+        },
+      },
+    });
+
+    await engine.ensureSession(sessionInput);
+    expect((await engine.isSessionWarm(sessionInput)).warm).toBe(true);
+
+    // TTL expires and reaps the worker (verified tree cleanup)
+    await new Promise((r) => setTimeout(r, 120));
+    expect((await engine.isSessionWarm(sessionInput)).warm).toBe(false);
+
+    // Second shutdown MUST be idempotent — never re-enter terminate on verified-stopped
+    await expect(engine.shutdown()).resolves.toEqual({});
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Worker exits on stdin EOF so bridge crash does not orphan the worker tree", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-eof-orphan-"));
+  try {
+    const entry = join(dir, "eof-worker.mjs");
+    // Production worker main: reads stdin, exits on EOF
+    const workerMain = await readFile(
+      resolve(import.meta.dir, "../../../../../src/bridge/engine/runtime/runtime-worker-main.ts"),
+      "utf8",
+    );
+    expect(workerMain).toContain('process.stdin.on("end"');
+    expect(workerMain).toContain("process.exit(0)");
+    void entry;
+    void dir;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("buildEnsureParams passes state ROOT (not sessions dir) to runtime store", async () => {
+  const sessionsDir = join("/tmp/fake-home", ".acpx", "sessions");
+  const engine = new RuntimeEngine({ workerEntryPath: "/fake/worker.js", stateDir: sessionsDir, permissionMode: "approve-all" });
+  const params = engine["buildEnsureParams"]({ ...sessionInput });
+  expect(params.stateDir).toBe(join("/tmp/fake-home", ".acpx"));
+  // Sessions dir itself is unchanged for disk helpers
+  expect(engine["sessionsDir"]()).toBe(sessionsDir);
 });

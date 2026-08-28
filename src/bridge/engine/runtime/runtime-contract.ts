@@ -13,6 +13,7 @@ export type XacpxRuntimeEvent =
   | {
       type: "status";
       text: string;
+      tag?: string;
       used?: number;
       size?: number;
       cost?: { amount?: number; currency?: string };
