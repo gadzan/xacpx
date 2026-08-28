@@ -438,6 +438,7 @@ function OpenVerified($node, $cim) {
 }
 
 function CL($h){try{[XacpxNativeProcess]::Close($h)}catch{}}
+function VF($p){$c=OpenVerified $p $true;if($c.ok){$open[$p.pid]=$c.handle}else{$ov[$p.pid]=$c.status;CL $c.handle}}
 if($request.action -eq 'identity'){
   $h=[XacpxNativeProcess]::Open([uint32]$request.pid)
   if($h -eq [IntPtr]::Zero){
@@ -468,7 +469,7 @@ if($request.action -eq 'token-snapshot'){
   $matches=@(Snapshot | Where-Object {$_.commandLine -and $_.commandLine.Contains($needle)})
   Write-Output (@{items=$matches} | ConvertTo-Json -Depth 5 -Compress);exit 0
 }
-# G10: all fallible CIM discovery (S1 + S2 closure) precedes the first kill.
+# G10: all fallible CIM discovery precedes the first kill; S2 verify failures
 if($request.action -eq 'terminate-descendants-of'){
 $pp=[int]$request.parentPid
 $out=@();$sn=@{};$fr=@($pp);$open=@{};$ov=@{};$cl=@()
@@ -479,27 +480,19 @@ foreach($p in $s1|?{$_.parentPid -in $fr -and $_.pid -ne $pp -and -not $sn.Conta
 $fr=$nx
 }
 try {
-foreach($p in $cl){
-$c=OpenVerified $p $true
-if($c.ok){$open[$p.pid]=$c.handle}else{$ov[$p.pid]=$c.status;CL $c.handle}
-}
-$fr=@($pp)+@($cl.pid)
-while($fr.Count){
-$nx=@()
-foreach($p in $(Snapshot)|?{$_.parentPid -in $fr -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){
-$sn[$p.pid]=$true;$nx+=$p.pid
-$c=OpenVerified $p $true
-if($c.ok){$open[$p.pid]=$c.handle;$cl+=@($p)}else{$ov[$p.pid]=$c.status;CL $c.handle}
-}
-$fr=$nx
+foreach($p in $cl){VF $p}
+$lf=@()
+foreach($p in $(Snapshot)|?{($_.parentPid -eq $pp -or $open.ContainsKey($_.parentPid)) -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){
+VF $p
+$lf+=@($p)
 }
 foreach($p in $cl){
 if($open.ContainsKey($p.pid)){$h=$open[$p.pid];$s=if(-not [XacpxNativeProcess]::Alive($h)){'already-exited'}elseif([XacpxNativeProcess]::Kill($h)){if([XacpxNativeProcess]::WaitDead($h)){'killed'}else{'kill-requested-unconfirmed'}}else{if([XacpxNativeProcess]::LastError()-eq 5){'access-denied'}else{'query-failed'}}}else{$s=$ov[$p.pid]}
 $out+=@{pid=$p.pid;outcome=$s;creationDate=$p.creationDate;commandLine=$p.commandLine;executablePath=$p.executablePath}
 }
 } finally {$open.Values|%{CL $_}}
-$vf=!@($out|?{$_.outcome -notin 'killed','already-exited'}).Count
-Write-Output (@{verified=$vf;outcomes=$out;leftover=@()}|ConvertTo-Json -Depth 8 -Compress);exit 0
+$vf=!@($out|?{$_.outcome -notin 'killed','already-exited'}).Count -and !$lf.Count
+Write-Output (@{verified=$vf;outcomes=$out;leftover=$lf}|ConvertTo-Json -Depth 8 -Compress);exit 0
 }
 if($request.action -eq 'terminate-one-cim'){
   $target=[pscustomobject]@{pid=[int]$request.target.pid;creationDate=[string]$request.target.creationDate;commandLine=$request.target.commandLine;executablePath=$request.target.executablePath}
