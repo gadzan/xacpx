@@ -5,7 +5,7 @@
  * during ordinary shutdown (that would close the acpx record; plan §17).
  */
 import { createInterface } from "node:readline";
-import { terminateWindowsDescendantsOf } from "../../../process/windows-process-tree";
+import { convergeOrphansBeforeExit } from "./worker-eof";
 
 import {
   createXacpxRuntimeAdapter,
@@ -267,25 +267,14 @@ rl.on("line", (line) => {
 // no live host or RuntimeWorkerClient is required at this point:
 //   POSIX: the worker was spawned detached, so it is its own process-group
 //     leader and acpx adapter descendants inherit the group; kill the group.
-//   Windows: no parent-exit-kills-tree semantics exist; ask the verified CIM
-//     terminator to kill every transitive descendant of this worker's own pid
-//     (safe: this pid cannot be reused while we are still running).
-process.stdin.on("end", async () => {
-  try {
-    if (process.platform !== "win32") {
-      try { process.kill(-process.pid, "SIGKILL"); } catch {}
-    } else {
-      const result = await terminateWindowsDescendantsOf(process.pid);
-      const unsafe = (result?.outcomes ?? []).filter(
-        (o) => o.outcome !== "killed" && o.outcome !== "already-exited" && o.outcome !== "skipped-replaced",
-      );
-      if (unsafe.length > 0) {
-        // Fail loudly on stderr; nothing else can be done post-host.
-        process.stderr.write(`runtime worker orphan convergence failed: ${JSON.stringify(unsafe)}\n`);
-      }
-    }
-  } catch {
-    // best-effort: nothing else can be done once the host is gone
-  }
-  process.exit(0);
+//   Windows: no parent-exit-kills-tree semantics exist; converge the verified
+//     CIM descendant tree, and spool any unverified remainder as durable
+//     residual records the daemon reaper reconciles later (worker-eof.ts).
+// A hard cap prevents a hung convergence attempt from leaking the worker.
+process.stdin.on("end", () => {
+  const cap = setTimeout(() => process.exit(0), 20_000);
+  cap.unref?.();
+  void convergeOrphansBeforeExit({ agentCommand: () => state.ensureParams?.agent })
+    .catch(() => {})
+    .finally(() => process.exit(0));
 });

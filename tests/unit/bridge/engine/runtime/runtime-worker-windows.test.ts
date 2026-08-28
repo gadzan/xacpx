@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -764,6 +765,108 @@ test("Windows G10: wasAliveBeforeTerm initially true but terminator returns alre
     await expect(client.terminate()).rejects.toThrow(/cannot verify Windows descendant process tree cleanup/);
     expect(client.lifecycle).toBe("failed");
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// Real Windows convergence: stdin EOF (host death) must converge the worker's
+// descendant tree through the REAL CIM terminator — no mocked probe/terminator
+// here. Requires powershell.exe + CIM, so it only runs on win32.
+const winTest = process.platform === "win32" ? test : test.skip;
+
+winTest("host crash: real worker stdin EOF converges the adapter descendant tree", { timeout: 60_000 }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "win-eof-converge-"));
+  const pidFile = join(dir, "descendant.pid");
+  const eofModule = join(import.meta.dir, "../../../../../src/bridge/engine/runtime/worker-eof.ts");
+  let host: ReturnType<typeof spawn> | undefined;
+  let adapterPid = 0;
+  try {
+    // Harness worker mirrors runtime-worker-main.ts wiring: "ensure" spawns a
+    // stubborn adapter child; stdin EOF runs the REAL production convergence
+    // module (worker-eof.ts) against the real PowerShell worker.
+    const workerEntry = join(dir, "worker.mjs");
+    await writeFile(
+      workerEntry,
+      [
+        "import { spawn } from 'node:child_process';",
+        "import fs from 'node:fs';",
+        "let buffer='';",
+        "process.stdin.on('data', (d) => {",
+        "  buffer += d.toString();",
+        "  let idx;",
+        "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+        "    if (!line) continue;",
+        "    try { const msg = JSON.parse(line);",
+        "      if (msg.method === 'ensure') {",
+        "        const child = spawn(process.execPath, ['-e', 'setInterval(()=>{}, 1000)'], { stdio: 'ignore' });",
+        `        fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid), 'utf8');`,
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true } }) + '\\n');",
+        "      } else {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "      }",
+        "    } catch {}",
+        "  }",
+        "});",
+        'process.stdin.on("end", async () => {',
+        "  try {",
+        `    const { convergeOrphansBeforeExit } = await import(${JSON.stringify(eofModule)});`,
+        "    await convergeOrphansBeforeExit({ attemptDeadlineMs: 8000 });",
+        "  } catch {}",
+        "  process.exit(0);",
+        "});",
+      ].join("\n"),
+    );
+    const hostScript = join(dir, "host.mjs");
+    await writeFile(
+      hostScript,
+      [
+        "import { spawn } from 'node:child_process';",
+        `const worker = spawn(process.execPath, [${JSON.stringify(workerEntry)}], { stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' });`,
+        "process.stdin.on('data', (d) => worker.stdin.write(d));",
+      ].join("\n"),
+    );
+
+    host = spawn(process.execPath, [hostScript], { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } });
+    host.stderr!.on("data", () => {});
+    host.stdin!.write(JSON.stringify({ id: "h1", method: "ensure" }) + "\n");
+
+    for (let i = 0; i < 100 && !adapterPid; i++) {
+      try {
+        adapterPid = parseInt(await readFile(pidFile, "utf8"), 10);
+      } catch {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+    expect(adapterPid).toBeGreaterThan(0);
+    expect(() => process.kill(adapterPid, 0)).not.toThrow();
+
+    // Simulate bridge crash: SIGKILL the host; the worker's stdin hits EOF and
+    // the production convergence path must physically reap the adapter.
+    host.kill("SIGKILL");
+    for (let i = 0; i < 100; i++) {
+      try {
+        process.kill(host.pid!, 0);
+        await new Promise((r) => setTimeout(r, 25));
+      } catch {
+        break;
+      }
+    }
+    expect(() => process.kill(host.pid!, 0)).toThrow();
+
+    let adapterGone = false;
+    for (let i = 0; i < 400 && !adapterGone; i++) {
+      try {
+        process.kill(adapterPid, 0);
+        await new Promise((r) => setTimeout(r, 50));
+      } catch {
+        adapterGone = true;
+      }
+    }
+    expect(adapterGone).toBe(true);
+  } finally {
+    try { if (adapterPid) process.kill(adapterPid, "SIGKILL"); } catch {}
+    try { if (host?.pid) process.kill(host.pid, "SIGKILL"); } catch {}
     await rm(dir, { recursive: true, force: true });
   }
 });

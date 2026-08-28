@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test";
 import { spawn } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
+  decodeWindowsDescendantsResponse,
   decodeWindowsTreeWorkerResponse,
   probeWindowsProcessIdentity,
   queryWindowsProcessIdentity,
@@ -10,6 +14,7 @@ import {
   terminateWindowsProcessTree,
   WINDOWS_TREE_WORKER_SCRIPT,
   type BatchTarget,
+  terminateWindowsDescendantsOf,
 } from "../../../src/process/windows-process-tree";
 import { parseCanonicalFileTime } from "../../../src/process/windows-process-identity";
 
@@ -175,3 +180,133 @@ windowsTest("real worker rejects a replaced identity and kills a verified tree t
   expect(() => process.kill(rootProcess.pid!, 0)).toThrow();
   expect(() => process.kill(childPid, 0)).toThrow();
 }, 30_000);
+
+const descendantsWorker = (
+  verified: boolean,
+  outcomes: Array<Record<string, unknown>>,
+  leftover: Array<Record<string, unknown>> = [],
+) => async (): Promise<unknown> => ({ verified, outcomes, leftover });
+
+const descendantOutcome = (pid: number, outcome: string): Record<string, unknown> => ({
+  pid,
+  outcome,
+  creationDate: "133830000000000000",
+  commandLine: "node adapter.js",
+  executablePath: "C:\\Program Files\\nodejs\\node.exe",
+});
+
+test("descendants protocol: a fully successful payload without any parent entry decodes verified", async () => {
+  // Regression: this payload has NO parent-pid entry. The tree decoder demands
+  // a root entry, so reusing it here misread every successful cleanup as
+  // query-failed (review round 20, Blocking).
+  let requestedParentPid = 0;
+  const result = await terminateWindowsDescendantsOf(4242, {
+    runWorker: async (request) => {
+      requestedParentPid = "parentPid" in request ? request.parentPid : 0;
+      return {
+        verified: true,
+        outcomes: [descendantOutcome(5001, "killed"), descendantOutcome(5002, "already-exited")],
+        leftover: [],
+      };
+    },
+  });
+  expect(requestedParentPid).toBe(4242);
+  expect(result.verified).toBe(true);
+  expect(result.outcomes.map((item) => item.pid)).toEqual([5001, 5002]);
+  expect(result.outcomes[0]!.commandLine).toBe("node adapter.js");
+  expect(result.leftover).toEqual([]);
+});
+
+test("descendants protocol: unsafe outcome fails closed even when the worker claims verified", async () => {
+  const result = await terminateWindowsDescendantsOf(4242, {
+    runWorker: descendantsWorker(true, [descendantOutcome(5001, "access-denied")]),
+  });
+  expect(result.verified).toBe(false);
+});
+
+test("descendants protocol: leftover processes fail closed", async () => {
+  const result = await terminateWindowsDescendantsOf(4242, {
+    runWorker: descendantsWorker(true, [], [{ pid: 5009, parentPid: 5001, creationDate: "133830000000000000", commandLine: "x", executablePath: "C:\\x.exe" }]),
+  });
+  expect(result.verified).toBe(false);
+});
+
+test("descendants protocol: parent pid among outcomes, duplicate pids, and flag mismatch fail closed", async () => {
+  expect(decodeWindowsDescendantsResponse({ verified: true, outcomes: [descendantOutcome(4242, "killed")], leftover: [] }, 4242)).toBeNull();
+  expect(decodeWindowsDescendantsResponse({ verified: true, outcomes: [descendantOutcome(5001, "killed"), descendantOutcome(5001, "killed")], leftover: [] }, 4242)).toBeNull();
+  // Worker claims false but the evidence is all-safe: inconsistent evidence
+  // must fail closed instead of trusting either signal.
+  expect(decodeWindowsDescendantsResponse({ verified: false, outcomes: [descendantOutcome(5001, "killed")], leftover: [] }, 4242)).toBeNull();
+  expect(decodeWindowsDescendantsResponse({ verified: true, outcomes: [], leftover: [] }, 4242)).toEqual({ verified: true, outcomes: [], leftover: [] });
+});
+
+test("descendants protocol: worker failure and malformed output are unverified", async () => {
+  const rejected = await terminateWindowsDescendantsOf(4242, {
+    runWorker: async () => {
+      throw new Error("powershell worker died");
+    },
+  });
+  expect(rejected.verified).toBe(false);
+  const malformed = await terminateWindowsDescendantsOf(4242, {
+    runWorker: async () => ({ rootOutcome: "killed", outcomes: [] }),
+  });
+  expect(malformed.verified).toBe(false);
+  const invalidPid = await terminateWindowsDescendantsOf(0);
+  expect(invalidPid.verified).toBe(false);
+});
+
+windowsTest("real worker converges a three-level descendant tree and keeps the parent alive", async () => {
+  // Real-time fixture: process birth/death is platform-clock behavior; there
+  // is no deterministic clock for OS process scheduling.
+  const dir = await mkdtemp(join(tmpdir(), "descendants-tree-"));
+  const fixture = join(dir, "fixture.cjs");
+  const childPidFile = join(dir, "child.pid");
+  const grandchildPidFile = join(dir, "grandchild.pid");
+  await writeFile(fixture, [
+    "const { spawn } = require('node:child_process');",
+    "const fs = require('node:fs');",
+    "const child = spawn(process.execPath, ['-e',",
+    "  \"const {spawn}=require('node:child_process');const fs=require('node:fs');\" +",
+    "  \"const g=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});\" +",
+    "  \"fs.writeFileSync(process.argv[1],String(g.pid));setInterval(()=>{},1000)\",",
+    `  ${JSON.stringify(grandchildPidFile)}], { stdio: 'ignore' });`,
+    `fs.writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid));`,
+    "setInterval(() => {}, 1000);",
+  ].join("\n"), "utf8");
+  const rootProcess = spawn("node", [fixture], { stdio: "ignore" });
+  let childPid = 0;
+  let grandchildPid = 0;
+  try {
+    for (let i = 0; i < 200 && (!childPid || !grandchildPid); i += 1) {
+      try {
+        childPid = Number.parseInt(await readFile(childPidFile, "utf8"), 10) || 0;
+        grandchildPid = Number.parseInt(await readFile(grandchildPidFile, "utf8"), 10) || 0;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+    expect(childPid).toBeGreaterThan(0);
+    expect(grandchildPid).toBeGreaterThan(0);
+    expect(() => process.kill(rootProcess.pid!, 0)).not.toThrow();
+    expect(() => process.kill(childPid, 0)).not.toThrow();
+    expect(() => process.kill(grandchildPid, 0)).not.toThrow();
+
+    const result = await terminateWindowsDescendantsOf(rootProcess.pid!);
+    expect(result.verified).toBe(true);
+    expect(() => process.kill(rootProcess.pid!, 0)).not.toThrow();
+    let childGone = false;
+    let grandchildGone = false;
+    for (let i = 0; i < 200 && (!childGone || !grandchildGone); i += 1) {
+      try { process.kill(childPid, 0); } catch { childGone = true; }
+      try { process.kill(grandchildPid, 0); } catch { grandchildGone = true; }
+      if (!childGone || !grandchildGone) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(childGone).toBe(true);
+    expect(grandchildGone).toBe(true);
+  } finally {
+    try { if (childPid) process.kill(childPid, "SIGKILL"); } catch {}
+    try { if (grandchildPid) process.kill(grandchildPid, "SIGKILL"); } catch {}
+    try { process.kill(rootProcess.pid!, "SIGKILL"); } catch {}
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 40_000);

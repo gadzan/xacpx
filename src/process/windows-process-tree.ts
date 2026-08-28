@@ -29,6 +29,42 @@ export interface TerminateProcessTreeResult {
   outcomes: ProcessTreeOutcome[];
 }
 
+/**
+ * Per-descendant result of the `terminate-descendants-of` cleanup action.
+ * Unlike `ProcessTreeOutcome`, the parent pid is NEVER among these — the
+ * action's contract is to keep the parent alive and converge only its
+ * transitive descendants.
+ */
+export interface WindowsDescendantOutcome {
+  pid: number;
+  outcome: KillOutcome;
+  creationDate: string | null;
+  commandLine: string | null;
+  executablePath: string | null;
+}
+
+/** A process still present after convergence, parented by the worker itself or by a killed descendant. */
+export interface WindowsDescendantLeftover {
+  pid: number;
+  parentPid: number;
+  creationDate: string | null;
+  commandLine: string | null;
+  executablePath: string | null;
+}
+
+export interface TerminateDescendantsResult {
+  /**
+   * True only when every discovered descendant reached a verified safe outcome
+   * (killed / already-exited) AND a fresh final CIM snapshot shows no unhandled
+   * process remains under the parent or under a killed descendant. Any CIM,
+   * query, or kill uncertainty fails closed to false — callers must treat an
+   * unverified result as "cleanup ownership not discharged".
+   */
+  verified: boolean;
+  outcomes: WindowsDescendantOutcome[];
+  leftover: WindowsDescendantLeftover[];
+}
+
 export interface WindowsProcessIdentity {
   pid: number;
   creationDate: string;
@@ -58,7 +94,7 @@ export type WindowsWorkerRequest =
   | { action: "identity"; pid: number }
   | { action: "token-snapshot"; token: string }
   | { action: "terminate-one-cim"; target: BatchTarget }
-  | { action: "terminate-descendants-of"; parentPid: number; excludePid?: number };
+  | { action: "terminate-descendants-of"; parentPid: number };
 export type WindowsProbeStatus = { status: "found"; identity: WindowsProcessIdentity } | { status: "missing" | "unavailable" };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -114,9 +150,68 @@ export function decodeWindowsTreeWorkerResponse(value: unknown, root: BatchTarge
       ...(typeof item.executablePath === "string" ? { executablePath: item.executablePath } : {}),
     });
   }
+
   const rootEntry = outcomes.find((item) => item.target.pid === root.pid);
   if (!rootEntry || rootEntry.outcome !== response.rootOutcome) return null;
   return { rootOutcome: response.rootOutcome as KillOutcome, outcomes };
+}
+
+const DESCENDANT_SAFE_OUTCOMES: Partial<Record<KillOutcome, true>> = { killed: true, "already-exited": true };
+
+/**
+ * Dedicated decoder for the `terminate-descendants-of` protocol. This is NOT
+ * `decodeWindowsTreeWorkerResponse`: the descendants action never emits the
+ * parent pid (the parent must stay alive), so requiring a root entry like the
+ * tree decoder does would misread every fully successful cleanup as
+ * query-failed. The worker's own `verified` flag is honored only when it
+ * agrees with an independent recomputation from the returned evidence; any
+ * inconsistency, unsafe outcome, leftover, duplicate pid, or parent-pid entry
+ * fails closed.
+ */
+export function decodeWindowsDescendantsResponse(value: unknown, parentPid: number): TerminateDescendantsResult | null {
+  if (!value || typeof value !== "object") return null;
+  const response = value as Record<string, unknown>;
+  if (!Array.isArray(response.outcomes) || !Array.isArray(response.leftover)) return null;
+  if (typeof response.verified !== "boolean") return null;
+  const outcomes: WindowsDescendantOutcome[] = [];
+  const seen = new Set<number>();
+  for (const raw of response.outcomes) {
+    if (!raw || typeof raw !== "object") return null;
+    const item = raw as Record<string, unknown>;
+    if (!Number.isSafeInteger(item.pid) || Number(item.pid) <= 0) return null;
+    const pid = Number(item.pid);
+    if (pid === parentPid || seen.has(pid)) return null;
+    if (typeof item.outcome !== "string" || !OUTCOMES.has(item.outcome as KillOutcome)) return null;
+    seen.add(pid);
+    outcomes.push({
+      pid,
+      outcome: item.outcome as KillOutcome,
+      creationDate: item.creationDate === null || item.creationDate === undefined || item.creationDate === "" ? null : String(item.creationDate),
+      commandLine: typeof item.commandLine === "string" && item.commandLine.length > 0 ? item.commandLine : null,
+      executablePath: typeof item.executablePath === "string" && item.executablePath.length > 0 ? item.executablePath : null,
+    });
+  }
+  const leftover: WindowsDescendantLeftover[] = [];
+  for (const raw of response.leftover) {
+    if (!raw || typeof raw !== "object") return null;
+    const item = raw as Record<string, unknown>;
+    if (!Number.isSafeInteger(item.pid) || Number(item.pid) <= 0) return null;
+    const pid = Number(item.pid);
+    if (pid === parentPid || seen.has(pid)) return null;
+    if (!Number.isSafeInteger(item.parentPid) || Number(item.parentPid) <= 0) return null;
+    seen.add(pid);
+    leftover.push({
+      pid,
+      parentPid: Number(item.parentPid),
+      creationDate: item.creationDate === null || item.creationDate === undefined || item.creationDate === "" ? null : String(item.creationDate),
+      commandLine: typeof item.commandLine === "string" && item.commandLine.length > 0 ? item.commandLine : null,
+      executablePath: typeof item.executablePath === "string" && item.executablePath.length > 0 ? item.executablePath : null,
+    });
+  }
+  const recomputed =
+    outcomes.every((item) => DESCENDANT_SAFE_OUTCOMES[item.outcome]) && leftover.length === 0;
+  if (response.verified !== recomputed) return null;
+  return { verified: recomputed, outcomes, leftover };
 }
 
 export async function terminateWindowsProcessTree(
@@ -206,21 +301,18 @@ export async function snapshotWindowsProcessesByToken(
 
 export async function terminateWindowsDescendantsOf(
   parentPid: number,
-  excludePid?: number,
   options: WindowsProcessWorkerOptions = {},
-): Promise<TerminateProcessTreeResult> {
-  if (!Number.isSafeInteger(parentPid) || parentPid <= 0) return queryFailed({ pid: parentPid, creationDate: null });
+): Promise<TerminateDescendantsResult> {
+  const unverified: TerminateDescendantsResult = { verified: false, outcomes: [], leftover: [] };
+  if (!Number.isSafeInteger(parentPid) || parentPid <= 0) return unverified;
   try {
     const raw = await (options.runWorker ?? runPowerShellWorker)(
-      { action: "terminate-descendants-of", parentPid, ...(excludePid !== undefined ? { excludePid } : {}) },
+      { action: "terminate-descendants-of", parentPid },
       options.workerDeadlineMs ?? 15_000,
     );
-    return (
-      decodeWindowsTreeWorkerResponse(raw, { pid: parentPid, creationDate: "0", commandLine: undefined, executablePath: undefined }) ??
-      queryFailed({ pid: parentPid, creationDate: null })
-    );
+    return decodeWindowsDescendantsResponse(raw, parentPid) ?? unverified;
   } catch {
-    return queryFailed({ pid: parentPid, creationDate: null });
+    return unverified;
   }
 }
 
@@ -370,19 +462,26 @@ if($request.action -eq 'token-snapshot'){
   $matches=@(Snapshot | Where-Object {$_.commandLine -and $_.commandLine.Contains($needle)})
   Write-Output (@{items=$matches} | ConvertTo-Json -Depth 5 -Compress);exit 0
 }
-# Orphan convergence (plan §16 / G10): kill every transitive descendant of the
-# worker's own pid. Runs in the worker after host EOF — no live host needed;
-# this pid cannot be reused while the worker is still alive.
+# Orphan convergence (plan §16 / G10): after host EOF kill every transitive
+# descendant of the worker pid (parent NEVER touched); verified iff all safe.
 if($request.action -eq 'terminate-descendants-of'){
-  $out=@();$seen=@{};$front=@([int]$request.parentPid);$snap=@(Snapshot)
-  while($front.Count){$next=@()
-    foreach($p in @($snap|Where-Object{$_.parentPid -in $front -and -not $seen.ContainsKey($_.pid)})){
-      $seen[$p.pid]=$true;if($request.excludePid -and $p.pid -eq $request.excludePid){continue}
-      $c=OpenVerified $p $true;$s=if(-not $c.ok){$c.status}elseif(-not [XacpxNativeProcess]::Alive($c.handle)){'already-exited'}elseif([XacpxNativeProcess]::Kill($c.handle)){if([XacpxNativeProcess]::WaitDead($c.handle)){'killed'}else{'kill-requested-unconfirmed'}}else{if([XacpxNativeProcess]::LastError()-eq 5){'access-denied'}else{'query-failed'}}
-      try{[XacpxNativeProcess]::Close($c.handle)}catch{};$out+=@(Outcome $p $s)
-      if($s -eq 'killed' -or $s -eq 'already-exited'){$next+=@($p.pid)}
-    }$front=$next}
-  Write-Output (@{rootOutcome='killed';outcomes=$out}|ConvertTo-Json -Depth 8 -Compress);exit 0
+$pp=[int]$request.parentPid
+$out=@();$sn=@{};$fr=@($pp)
+for($i=0;$i -lt 6 -and $fr.Count;$i++){
+$nx=@()
+foreach($p in $(Snapshot)|Where-Object{$_.parentPid -in $fr -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){
+$sn[$p.pid]=$true
+$c=OpenVerified $p $true
+$s=if(-not $c.ok){$c.status}elseif(-not [XacpxNativeProcess]::Alive($c.handle)){'already-exited'}elseif([XacpxNativeProcess]::Kill($c.handle)){if([XacpxNativeProcess]::WaitDead($c.handle)){'killed'}else{'kill-requested-unconfirmed'}}else{if([XacpxNativeProcess]::LastError()-eq 5){'access-denied'}else{'query-failed'}}
+try{[XacpxNativeProcess]::Close($c.handle)}catch{}
+$out+=@(@{pid=[int]$p.pid;outcome=$s;creationDate=$p.creationDate;commandLine=$p.commandLine;executablePath=$p.executablePath})
+if($s -in 'killed','already-exited'){$nx+=@($p.pid)}
+}
+$fr=$nx
+}
+$lf=@($(Snapshot)|?{($_.parentPid -eq $pp -or $sn.ContainsKey($_.parentPid)) -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}|%{ @{pid=[int]$_.pid;parentPid=[int]$_.parentPid;creationDate=$_.creationDate;commandLine=$_.commandLine;executablePath=$_.executablePath} })
+$vf=!@($out|?{$_.outcome -notin 'killed','already-exited'}).Count -and !$lf.Count
+Write-Output (@{verified=$vf;outcomes=$out;leftover=$lf}|ConvertTo-Json -Depth 8 -Compress);exit 0
 }
 if($request.action -eq 'terminate-one-cim'){
   $target=[pscustomobject]@{pid=[int]$request.target.pid;creationDate=[string]$request.target.creationDate;commandLine=$request.target.commandLine;executablePath=$request.target.executablePath}
@@ -391,10 +490,7 @@ if($request.action -eq 'terminate-one-cim'){
   try {
     if(![XacpxNativeProcess]::Alive($check.handle)){$status='already-exited'}
     elseif(![XacpxNativeProcess]::Kill($check.handle)){
-      $code=[XacpxNativeProcess]::LastError()
-      # Ancestor kills can cascade through Job objects (libuv/Node children
-      # die with their parent), so a failed kill on an already-dying process
-      # is a confirmed exit, not a denial.
+      # Job-object cascade: a failed kill on an already-dying child is a confirmed exit.
       if([XacpxNativeProcess]::WaitDead($check.handle)){$status='already-exited'}
       else{$status=if($code -eq 5){'access-denied'}else{'query-failed'}}
     }
@@ -435,8 +531,7 @@ try {
       }
     }
   } while($added -gt 0)
-  # Exactly one append enumeration. Only children whose parent was already
-  # verified before this pass are accepted; no post-kill enumeration exists.
+  # Exactly one append enumeration; no post-kill enumeration exists.
   $append=@(Snapshot)
   $new=@($append | Where-Object {!$verified.Contains($_.pid) -and $verified.Contains($_.parentPid)})
   foreach($p in $new){if(![XacpxNativeProcess]::Alive($handles[$p.parentPid])){throw 'append parent exited or liveness unknown'}}
@@ -454,9 +549,7 @@ try {
     if(![XacpxNativeProcess]::Alive($h)){[void]$outcomes.Add((Outcome $node 'already-exited'));continue}
     if(![XacpxNativeProcess]::Kill($h)){
       $code=[XacpxNativeProcess]::LastError()
-      # Ancestor kills can cascade through Job objects (libuv/Node children
-      # die with their parent), so a failed kill on an already-dying process
-      # is a confirmed exit, not a denial.
+      # Job-object cascade: a failed kill on an already-dying child is a confirmed exit.
       if([XacpxNativeProcess]::WaitDead($h)){$status='already-exited'}
       else{$status=if($code -eq 5){'access-denied'}else{'query-failed'}}
       [void]$outcomes.Add((Outcome $node $status));continue
