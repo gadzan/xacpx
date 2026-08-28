@@ -13,10 +13,11 @@ import type { BridgeEngine, EngineInjectInput, EngineListInput, EnginePromptInpu
 import type { PlanEntry, ToolUseEvent, ToolUseKind, ToolUseStatus } from "../../channels/types.js";
 import { formatToolUseEventForText } from "../../transport/tool-use-text-format.js";
 import { readImageFileBounded } from "../../transport/prompt-media.js";
+import { parseSessionEffortRecord } from "../../transport/session-effort.js";
 import type { PromptMediaInput } from "../../transport/types.js";
 import { mapRuntimeError, type XacpxRuntimeEvent, type XacpxTurnResult, type RuntimeBridgeErrorCode } from "./runtime/runtime-contract";
-import type { RuntimeWorkerClient, RuntimeWorkerClientDeps } from "./runtime/runtime-worker-client";
 import { WorkerCrashError } from "./runtime/runtime-worker-client";
+import type { RuntimeWorkerClient, RuntimeWorkerClientDeps } from "./runtime/runtime-worker-client";
 import { RuntimeWorkerManager, WorkerTeardownPendingError } from "./runtime/runtime-worker-manager";
 
 function sleep(ms: number): Promise<void> {
@@ -420,15 +421,13 @@ export class RuntimeEngine implements BridgeEngine {
     return this.options.stateDir ?? join(resolveAcpxHomeDir(), ".acpx", "sessions");
   }
 
-  /** acpx Runtime store root: sessionsDir minus the trailing "sessions" segment. */
+  /**
+   * acpx Runtime store root: createRuntimeStore internally joins "sessions"
+   * onto stateDir, so the root is ALWAYS the parent of the sessions dir —
+   * regardless of what the sessions directory is named.
+   */
   private runtimeStateRoot(): string {
-    const dir = this.sessionsDir();
-    const segments = dir.split(/[\\/]/);
-    if (segments.length > 1 && segments[segments.length - 1] === "sessions") {
-      return join(dir, "..");
-    }
-    // Sessions dir is not named "sessions" (tests): keep 1:1 mapping.
-    return dir;
+    return dirname(this.sessionsDir());
   }
   private scheduleIdleTtl(key: string, client: RuntimeWorkerClient): void {
     const existing = this.idleTimers.get(key);
@@ -705,10 +704,12 @@ export class RuntimeEngine implements BridgeEngine {
                     }
                   }
                 } else if (event.type === "status") {
-                  // Upstream surfaces plan updates as a tagged status event; restore
-                  // the plan side-channel when the bridge subscribes (plan §41).
+                  // Plan parity gate: upstream flattens plan events to a single
+                  // status text (first entry content only). Fabricating entries
+                  // would deliver wrong data to channels, so plan is surfaced
+                  // as plain text until a public Runtime exposes structured plans.
                   if ((event as { tag?: string }).tag === "plan") {
-                    onEvent({ type: "prompt.plan", entries: parseRuntimePlanText(event.text) });
+                    onEvent({ type: "prompt.segment", text: `${event.text}\n` });
                     return;
                   }
                   if (typeof event.used === "number" && typeof event.size === "number") {
@@ -815,10 +816,20 @@ export class RuntimeEngine implements BridgeEngine {
   async getSessionEffort(input: EngineSessionInput): Promise<SessionEffortState> {
     return await this.withWorker(input, async (client) => {
       await this.ensureSessionHandle(input, client);
-      const status = (await client.request<{ effort?: { current?: string; available?: string[] } }>("status")) ?? {};
+      // Public acpx Runtime exposes config options via status.details.configOptions
+      // (same shape as the CLI record's acpx.config_options) — reuse the shared
+      // CLI effort resolver instead of a fabricated top-level field.
+      const status = (await client.request<{
+        details?: { configOptions?: unknown };
+        models?: { currentModelId?: string; availableModelIds?: string[] };
+      }>("status")) ?? {};
+      const rawConfig = JSON.stringify({
+        acpx: { config_options: status.details?.configOptions ?? [] },
+      });
+      const parsed = parseSessionEffortRecord(rawConfig);
       return {
-        current: status.effort?.current,
-        available: status.effort?.available ?? [],
+        current: parsed?.current,
+        available: parsed?.available ?? [],
       };
     });
   }
@@ -929,9 +940,13 @@ export class RuntimeEngine implements BridgeEngine {
     const client = this.manager?.get(key);
     if (!client) return {};
     if (!client.alive && client.lifecycle !== "stopped") {
-      // Dead but unverified owner: cannot prove descendant tree is gone; report
-      // NOT warm (no fabricated success) — the manager still fences this key.
-      return {};
+      // Dead but unverified owner: ownership cleanup was never proven — the
+      // Engine MUST NOT report success for a cleanup that did not happen.
+      // Archive may catch this best-effort, but the bridge RPC must reject.
+      throw new RuntimeError(
+        "RUNTIME_WORKER_TEARDOWN_PENDING",
+        `runtime worker for session "${key}" crashed and ownership cleanup was never verified; refusing freeWarmProcess`,
+      );
     }
     if (this.activeTurns.has(key)) {
       // Active turn in flight: mark for cool-after-settle, never kill mid-turn (plan §14).
@@ -1196,19 +1211,26 @@ async function buildRuntimeAttachments(
     if (item.type === "audio") {
       const audioData = await readImageFileBounded(item.filePath, MAX_RUNTIME_IMAGE_BYTES);
       attachments.push({ mediaType: item.mimeType || "audio/mpeg", data: audioData.toString("base64") });
+      continue;
     }
-    // video/file: acpx runtime only maps image/* and audio/* to content blocks;
-    // these stay documented as unsupported in the Runtime engine.
+    // video/file: pinned acpx 0.13.1 public Runtime maps ONLY image/* and
+    // audio/* attachments to ACP content blocks. Silently dropping them would
+    // make the agent unaware an attachment exists — fail closed instead
+    // (CLI lane remains available for these types).
+    throw new RuntimeError(
+      "RUNTIME_ENGINE_UNSUPPORTED",
+      `Runtime engine does not support ${item.type} attachments (pinned acpx Runtime only forwards image/audio); use the CLI engine for this session`,
+    );
   }
   return attachments;
 }
 
-/** Parse upstream "plan: <text>" status into a single PlanEntry (replace semantics). */
-function parseRuntimePlanText(text: string): PlanEntry[] {
-  const content = text.replace(/^plan:\s*/i, "").trim();
-  if (!content) return [];
-  return [{ content, status: "in_progress" }];
-}
+// Plan parity gate: pinned acpx 0.13.1 public Runtime flattens plan events to a
+// single status text ("plan: <first entry content>") — full entries and real
+// statuses are lost upstream. Fabricating a PlanEntry would feed the上层 wrong
+// data, so the plan side-channel is explicitly unsupported until a public
+// Runtime version exposes structured plan entries (plan §41 gate).
+
 export function mapRuntimeToolEvent(event: {
   toolCallId?: string;
   title?: string;

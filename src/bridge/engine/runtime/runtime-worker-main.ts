@@ -43,6 +43,10 @@ function respond(response: RuntimeWorkerResponse): void {
 
 function sameEnsureParams(a: RuntimeWorkerEnsureParams | undefined, b: RuntimeWorkerEnsureParams): boolean {
   if (!a) return false;
+  // Runtime-construction identity ONLY. `model` and `effort` are mutable config
+  // applied in place via setConfigOption on the warm handle — including them
+  // here would replace the AcpRuntime inside one worker and create a second
+  // live ACP owner (violates the single-owner invariant, plan §3-R1).
   return (
     a.sessionKey === b.sessionKey &&
     a.agent === b.agent &&
@@ -51,8 +55,6 @@ function sameEnsureParams(a: RuntimeWorkerEnsureParams | undefined, b: RuntimeWo
     a.permissionMode === b.permissionMode &&
     a.nonInteractivePermissions === b.nonInteractivePermissions &&
     a.resumeSessionId === b.resumeSessionId &&
-    a.model === b.model &&
-    a.effort === b.effort &&
     JSON.stringify(a.permissionPolicy ?? null) === JSON.stringify(b.permissionPolicy ?? null) &&
     JSON.stringify(a.agentOverrides ?? null) === JSON.stringify(b.agentOverrides ?? null)
   );
@@ -77,11 +79,17 @@ async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: 
       sessionKey: params.sessionKey,
       agent: params.agent,
       ...(params.cwd ? { cwd: params.cwd } : {}),
+      ...(params.resumeSessionId ? { resumeSessionId: params.resumeSessionId } : {}),
       ...(params.model ? { sessionOptions: { model: params.model } } : {}),
     });
     if (params.effort) {
       await state.adapter.setConfigOption(state.handle!, "effort", params.effort);
     }
+  } else if (params.effort && state.handle) {
+    // Mutable config on a warm Runtime: apply in place, never rebuild the
+    // AcpRuntime (a second live owner inside one worker violates the
+    // single-owner invariant, plan §3-R1).
+    await state.adapter.setConfigOption(state.handle, "effort", params.effort);
   }
   const handle = state.handle!;
   return {
@@ -211,6 +219,14 @@ rl.on("line", (line) => {
   if (!parsed || parsed.kind !== "request") return;
   void dispatch(parsed.message);
 });
-// stdin EOF means the host is gone (crash or deliberate kill path) — exit so no
-// orphaned adapter children outlive an absent owner.
-process.stdin.on("end", () => process.exit(0));
+// stdin EOF means the host is gone (crash or deliberate kill path). The worker
+// self-terminates AND takes down its own process group (plan §16 orphan
+// convergence): the worker is spawned detached on POSIX, so it is its own
+// process-group leader, and any acpx adapter descendants inherit that group.
+// A bare process.exit(0) would leave those descendants orphaned.
+process.stdin.on("end", () => {
+  if (process.platform !== "win32") {
+    try { process.kill(-process.pid, "SIGKILL"); } catch {}
+  }
+  process.exit(0);
+});

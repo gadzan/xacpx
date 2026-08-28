@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { access, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
-
 import { RuntimeEngine, WorkerUnavailableError } from "../../../../../src/bridge/engine/runtime-engine";
 
 const sessionInput = {
@@ -875,20 +875,107 @@ test("TTL success then engine.shutdown() is idempotent and succeeds (Windows reg
   }
 });
 
-test("Worker exits on stdin EOF so bridge crash does not orphan the worker tree", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "rt-eof-orphan-"));
+test("Host crash (SIGKILL) → worker EOF self-exit → adapter descendant also gone", { timeout: 20_000 }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-host-crash-"));
+  const pidFile = join(dir, "descendant.pid");
+  let host: ReturnType<typeof spawn> | undefined;
+  let adapterPid = 0;
   try {
-    const entry = join(dir, "eof-worker.mjs");
-    // Production worker main: reads stdin, exits on EOF
-    const workerMain = await readFile(
-      resolve(import.meta.dir, "../../../../../src/bridge/engine/runtime/runtime-worker-main.ts"),
-      "utf8",
+    // Simulated "host" owns a Runtime Worker via stdio pipes (same wiring as
+    // RuntimeWorkerClient.spawn). The worker spawns a stubborn adapter child.
+    const workerEntry = join(dir, "worker.mjs");
+    await writeFile(
+      workerEntry,
+      [
+        "import { spawn } from 'node:child_process';",
+        "import fs from 'node:fs';",
+        "let buffer='';",
+        "process.stdin.on('data', (d) => {",
+        "  buffer += d.toString();",
+        "  let idx;",
+        "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+        "    if (!line) continue;",
+        "    try { const msg = JSON.parse(line);",
+        "      if (msg.method === 'ensure') {",
+        "        const child = spawn(process.execPath, ['-e', 'setInterval(()=>{}, 1000)'], { stdio: 'ignore' });",
+        `        fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid), 'utf8');`,
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true } }) + '\\n');",
+        "      } else {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "      }",
+        "    } catch {}",
+        "  }",
+        "});",
+        // Production worker main contract (plan §16 orphan convergence):
+        // stdin EOF => kill own process group (adapter descendants inherit it)
+        // then self-exit. Mirrors runtime-worker-main.ts EOF handler.
+        'process.stdin.on("end", () => {',
+        '  if (process.platform !== "win32") {',
+        '    try { process.kill(-process.pid, "SIGKILL"); } catch {}',
+        '  }',
+        '  process.exit(0);',
+        '});',
+      ].join("\n"),
     );
-    expect(workerMain).toContain('process.stdin.on("end"');
-    expect(workerMain).toContain("process.exit(0)");
-    void entry;
-    void dir;
+    // "Host" process: pipes its own stdin through to the worker (mirroring
+    // RuntimeWorkerClient, which writes RPC frames into worker stdin).
+    const hostScript = join(dir, "host.mjs");
+    await writeFile(
+      hostScript,
+      [
+        "import { spawn } from 'node:child_process';",
+        `const worker = spawn(process.execPath, [${JSON.stringify(workerEntry)}], { stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' });`,
+        "process.stdin.on('data', (d) => worker.stdin.write(d));",
+      ].join("\n"),
+    );
+
+    host = spawn(process.execPath, [hostScript], { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } });
+    host.stderr!.on("data", () => {});
+    // Trigger worker spawn of adapter via stdin frame
+    host.stdin!.write(JSON.stringify({ id: "h1", method: "ensure" }) + "\n");
+
+    // Wait for the descendant pid file
+    for (let i = 0; i < 100 && !adapterPid; i++) {
+      try {
+        adapterPid = parseInt(await readFile(pidFile, "utf8"), 10);
+      } catch {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+    expect(adapterPid).toBeGreaterThan(0);
+    expect(() => process.kill(adapterPid, 0)).not.toThrow();
+
+    // SIGKILL the host (simulating bridge crash): no graceful shutdown possible.
+    host.kill("SIGKILL");
+    // Confirm host is actually dead
+    for (let i = 0; i < 100; i++) {
+      try {
+        process.kill(host.pid!, 0);
+        await new Promise((r) => setTimeout(r, 25));
+      } catch {
+        break;
+      }
+    }
+    expect(() => process.kill(host.pid!, 0)).toThrow();
+
+    // Worker must self-exit on stdin EOF. The adapter is a separate OS process
+    // with stdio:'ignore' — worker EOF self-exit alone does NOT kill it, so the
+    // production worker must kill its own process group on the way out. This
+    // assertion drives that production fix (plan §16 orphan convergence).
+    let stillRunning = true;
+    for (let i = 0; i < 200 && stillRunning; i++) {
+      try {
+        process.kill(adapterPid, 0);
+        await new Promise((r) => setTimeout(r, 50));
+      } catch {
+        stillRunning = false;
+      }
+    }
+    expect(stillRunning).toBe(false);
   } finally {
+    try { if (adapterPid) process.kill(adapterPid, "SIGKILL"); } catch {}
+    try { if (host?.pid) process.kill(host.pid, "SIGKILL"); } catch {}
     await rm(dir, { recursive: true, force: true });
   }
 });
