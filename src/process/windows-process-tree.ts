@@ -410,7 +410,9 @@ function Snapshot {
     if($_.CreationDate){$ticks=$_.CreationDate.ToUniversalTime().ToFileTimeUtc().ToString()}
     [pscustomobject]@{pid=[int]$_.ProcessId;parentPid=[int]$_.ParentProcessId;creationDate=$ticks;commandLine=$_.CommandLine;executablePath=$_.ExecutablePath}
   })
-  if($watch.ElapsedMilliseconds -gt 3000){throw 'CIM enumeration exceeded 3 seconds'}
+  # GH runners measure ~3s per CIM enumeration; 8s bounds while absorbing
+  # bursty snapshots.
+  if($watch.ElapsedMilliseconds -gt 8000){throw 'CIM enumeration exceeded 8 seconds'}
   return $items
 }
 function OpenVerified($node, $cim) {
