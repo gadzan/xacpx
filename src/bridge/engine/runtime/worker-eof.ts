@@ -237,13 +237,15 @@ async function delay(ms: number): Promise<void> {
 export async function convergeOrphansBeforeExit(options: ConvergeOrphansOptions = {}): Promise<OrphanConvergenceOutcome> {
   const platform = options.platform ?? process.platform;
   if (platform !== "win32") {
-    try {
-      (options.killProcessGroup ?? ((): void => {
-        process.kill(-process.pid, "SIGKILL");
-      }))();
-    } catch {
-      // Best-effort: nothing else can be done once the host is gone.
-    }
+    // G10 (cross-platform): the group kill IS the ownership discharge on
+    // POSIX. A throwing kill must NOT be upgraded to "verified" — that would
+    // let runtime-worker-main exit its root while adapter descendants may
+    // still be alive with no durable evidence. Reject instead: the caller's
+    // retry wiring (runtime-worker-main re-attempts every second) keeps the
+    // worker alive and still the accountable owner.
+    (options.killProcessGroup ?? ((): void => {
+      process.kill(-process.pid, "SIGKILL");
+    }))();
     return "verified";
   }
   // Convergence gets two bounded attempts (fresh CIM snapshots) BEFORE

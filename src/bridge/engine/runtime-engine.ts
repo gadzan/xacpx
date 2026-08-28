@@ -16,7 +16,7 @@ import { readImageFileBounded } from "../../transport/prompt-media.js";
 import { parseSessionEffortRecord } from "../../transport/session-effort.js";
 import type { PromptMediaInput } from "../../transport/types.js";
 import { mapRuntimeError, type XacpxRuntimeEvent, type XacpxTurnResult, type RuntimeBridgeErrorCode } from "./runtime/runtime-contract";
-import { WorkerCrashError } from "./runtime/runtime-worker-client";
+import { WorkerCrashError, WorkerRpcError, WorkerBootstrapError } from "./runtime/runtime-worker-client";
 import type { RuntimeWorkerClient, RuntimeWorkerClientDeps } from "./runtime/runtime-worker-client";
 import { RuntimeWorkerManager, WorkerTeardownPendingError } from "./runtime/runtime-worker-manager";
 
@@ -365,6 +365,8 @@ export interface RuntimeEngineOptions {
   idleTtlMs?: number;
   /** Optional dependency overrides for tests (e.g. Windows termination / identity mocks). */
   workerClientDeps?: RuntimeWorkerClientDeps;
+  /** Override for the durable worker-ownership fence directory (tests). Defaults to `<state root>/worker-fences`. */
+  fenceDir?: string;
 }
 export function defaultWorkerEntryCandidates(fromUrl = import.meta.url): string[] {
   const here = dirname(fileURLToPath(fromUrl));
@@ -397,6 +399,8 @@ export class RuntimeEngine implements BridgeEngine {
   private readonly manager?: RuntimeWorkerManager;
   private readonly activeTurns = new Set<string>();
   private readonly coolPending = new Set<string>();
+  /** Sessions with a worker acquisition (fence discharge + spawn) in flight. */
+  private readonly acquiring = new Set<string>();
   private readonly recordIds = new Map<string, string>();
   private readonly idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly idleTtlMs: number;
@@ -411,6 +415,10 @@ export class RuntimeEngine implements BridgeEngine {
       this.manager = new RuntimeWorkerManager({
         entryPath: entry,
         clientDeps: options.workerClientDeps,
+        // Durable worker-ownership fences (plan §43 / G10): default under the
+        // acpx state root, overridable for tests. The supplier form keeps
+        // stateDir validation lazy (operation-time, not construction).
+        fenceDir: options.fenceDir ?? ((): string => join(this.runtimeStateRoot(), "worker-fences")),
       });
     }
   }
@@ -458,13 +466,22 @@ export class RuntimeEngine implements BridgeEngine {
     this.idleTimers.set(key, timer);
   }
 
-  private ensureWorker(input: EngineSessionInput): RuntimeWorkerClient {
+  private async ensureWorker(input: EngineSessionInput): Promise<RuntimeWorkerClient> {
     if (!this.manager) {
       throw new WorkerUnavailableError("RuntimeEngine has no worker manager (worker entry not built)");
     }
-    return this.manager.ensureWorker(this.workerKey(input));
+    // Fence-aware acquire (plan §43 / G10): discharges any undischarged
+    // durable ownership fence BEFORE a fresh owner can spawn. The acquire
+    // window is tracked so a concurrent policy transition fails closed
+    // instead of racing an unregistered worker.
+    const key = this.workerKey(input);
+    this.acquiring.add(key);
+    try {
+      return await this.manager.acquire(key);
+    } finally {
+      this.acquiring.delete(key);
+    }
   }
-
   private async withWorker<T>(input: EngineSessionInput, run: (client: RuntimeWorkerClient) => Promise<T>): Promise<T> {
     // Await in-flight policy transition so prompts don't cross transition boundary
     if (this.policyTransitionLock) {
@@ -478,7 +495,7 @@ export class RuntimeEngine implements BridgeEngine {
     }
     let client: RuntimeWorkerClient;
     try {
-      client = this.ensureWorker(input);
+      client = await this.ensureWorker(input);
     } catch (error) {
       if (error instanceof WorkerTeardownPendingError) {
         throw new RuntimeError(error.code, error.message);
@@ -492,12 +509,14 @@ export class RuntimeEngine implements BridgeEngine {
       }
       return result;
     } catch (error) {
-      // sees RUNTIME_WORKER_CRASHED (bridge-server maps it 1:1).
       if (error instanceof WorkerCrashError) {
         this.activeTurns.delete(key);
         client.lifecycle = "failed";
       }
-      throw error;
+      // Stable error boundary (plan §42/§43): worker-typed failures leave the
+      // engine with a stable RuntimeBridgeErrorCode, never a raw typed error
+      // that BridgeServer would flatten to BRIDGE_INTERNAL_ERROR.
+      throw toStableRuntimeError(error);
     } finally {
       if (client.alive && (client.lifecycle === "idle" || client.lifecycle === "ready") && !this.activeTurns.has(key)) {
         this.scheduleIdleTtl(key, client);
@@ -764,9 +783,11 @@ export class RuntimeEngine implements BridgeEngine {
       if (client) {
         if (this.coolPending.has(key)) {
           this.coolPending.delete(key);
-          await client.terminate();
+          await client.terminate().catch((error) => {
+            throw toTeardownError(key, error);
+          });
           client.lifecycle = "stopped";
-          this.manager?.deleteWorker(key, client);
+          await this.manager?.release(key, client);
         } else if (client.alive && (client.lifecycle === "idle" || client.lifecycle === "ready") && !this.activeTurns.has(key)) {
           this.scheduleIdleTtl(key, client);
         }
@@ -914,9 +935,11 @@ export class RuntimeEngine implements BridgeEngine {
           await client.request("cancel").catch(() => {});
         }
         await client.request("close").catch(() => {});
-        await client.terminate();
+        await client.terminate().catch((error) => {
+          throw toTeardownError(key, error);
+        });
         if (client.lifecycle === "stopped") {
-          this.manager?.deleteWorker(key, client);
+          await this.manager?.release(key, client);
         }
       } else {
         // dead + stopped: verified tree cleanup already completed
@@ -964,9 +987,11 @@ export class RuntimeEngine implements BridgeEngine {
       this.coolPending.add(key);
       return {};
     }
-    await client.shutdown();
+    await client.shutdown().catch((error) => {
+      throw toTeardownError(key, error);
+    });
     if (client.lifecycle === "stopped") {
-      this.manager?.deleteWorker(key, client);
+      await this.manager?.release(key, client);
     }
     return {};
   }
@@ -1121,13 +1146,24 @@ export class RuntimeEngine implements BridgeEngine {
   async preparePolicyTransition(): Promise<void> {
     await this.acquirePolicyLock();
     try {
+      // Global fail-closed preflight (plan §32): an active turn or an
+      // in-flight worker acquisition on ANY session races the policy
+      // rotation — the transition must not cross that boundary.
+      if (this.activeTurns.size > 0) {
+        throw new RuntimeError(
+          "RUNTIME_PERMISSION_BUSY",
+          `cannot update permission policy while session(s) "${[...this.activeTurns].join(", ")}" have in-flight turns (fail closed)`,
+        );
+      }
+      if (this.acquiring.size > 0) {
+        throw new RuntimeError(
+          "RUNTIME_PERMISSION_BUSY",
+          `cannot update permission policy while worker acquisition(s) for session(s) "${[...this.acquiring].join(", ")}" are in flight (fail closed)`,
+        );
+      }
       const live = this.manager?.workers() ?? [];
       for (const worker of live) {
-        if (
-          this.activeTurns.has(worker.ref.logicalSessionId) ||
-          worker.lifecycle === "busy" ||
-          worker.hasInFlight
-        ) {
+        if (worker.lifecycle === "busy" || worker.hasInFlight) {
           throw new RuntimeError(
             "RUNTIME_PERMISSION_BUSY",
             `cannot update permission policy while session "${worker.ref.logicalSessionId}" has in-flight operations (fail closed)`,
@@ -1138,7 +1174,7 @@ export class RuntimeEngine implements BridgeEngine {
       await Promise.all(live.map((w) => w.terminate()));
       for (const w of live) {
         if (!w.alive && w.lifecycle === "stopped") {
-          this.manager?.deleteWorker(w.ref.logicalSessionId, w);
+          await this.manager?.release(w.ref.logicalSessionId, w);
         }
       }
     } catch (error) {
@@ -1196,6 +1232,45 @@ export class WorkerUnavailableError extends RuntimeError {
   constructor(message: string) {
     super("RUNTIME_ENGINE_UNSUPPORTED", message);
   }
+}
+
+/**
+ * Single stable error boundary (plan §42/§43): EVERY error escaping the
+ * RuntimeEngine carries a stable RuntimeBridgeErrorCode, so the BridgeServer
+ * error boundary never flattens a typed worker failure into
+ * BRIDGE_INTERNAL_ERROR.
+ */
+export function toStableRuntimeError(error: unknown): Error {
+  if (error instanceof RuntimeError) return error;
+  if (error instanceof WorkerRpcError) {
+    // Worker RPC errors are already mapped to contract codes worker-side
+    // (mapRuntimeError in runtime-worker-main) — carry the code 1:1.
+    return new RuntimeError(error.code, error.message);
+  }
+  if (error instanceof WorkerCrashError) {
+    return new RuntimeError("RUNTIME_WORKER_CRASHED", error.message);
+  }
+  if (error instanceof WorkerBootstrapError) {
+    return new RuntimeError("RUNTIME_INIT_FAILED", error.message);
+  }
+  if (error instanceof WorkerTeardownPendingError) {
+    return new RuntimeError(error.code, error.message);
+  }
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+/**
+ * Wraps a teardown/terminate failure: the worker tree was NOT verifiably
+ * discharged, so the RPC must reject with the stable teardown-pending code —
+ * never leak a raw process-tree error into BRIDGE_INTERNAL_ERROR.
+ */
+function toTeardownError(key: string, error: unknown): RuntimeError {
+  const stable = toStableRuntimeError(error);
+  if (stable instanceof RuntimeError && stable.code === "RUNTIME_WORKER_TEARDOWN_PENDING") return stable;
+  return new RuntimeError(
+    "RUNTIME_WORKER_TEARDOWN_PENDING",
+    `runtime worker for session "${key}" teardown did not verify: ${stable.message}`,
+  );
 }
 
 // Re-exported so callers can instanceof without importing two modules.

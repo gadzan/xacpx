@@ -179,15 +179,14 @@ async function dispatch(request: RuntimeWorkerRequest): Promise<void> {
   if (method === "shutdown") {
     state.shuttingDown = true;
     respond({ id, ok: true, result: {} });
-    // Plan §16 / G10: Do NOT call process.exit(0) immediately!
-    // On Windows, the tree terminator (terminateWindowsProcessTree) MUST find the root process
-    // alive with verified creationDate in order to enumerate and kill child adapter descendants.
-    // Quiesce and let the host terminate the process tree. Keep a fallback timer in case host hangs.
-    const fallbackTimer = setTimeout(() => {
-      process.exit(0);
-    }, 10_000);
-    fallbackTimer.unref?.();
-    return;
+    // Plan §16 / G10: Do NOT call process.exit(0) — not immediately, and not
+    // on any fallback timer. After the ACK the worker quiesces and exactly one
+    // of two things happens:
+    //   - the host terminates the process tree (verified kill), or
+    //   - the host dies → stdin EOF → convergeOrphansBeforeExit discharges
+    //     ownership with deliberately NO exit cap (a timed bare exit here could
+    //     cut off a >10s Windows convergence mid-transaction and orphan the
+    //     adapter tree while ownership reads "unverified").
   }
   try {
     switch (method) {

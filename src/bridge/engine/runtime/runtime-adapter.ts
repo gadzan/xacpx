@@ -1,7 +1,15 @@
 /**
- * The ONLY module in xacpx allowed to import "acpx/runtime" (plan §11, G13).
- * Everything above this file consumes the xacpx-owned types from
- * runtime-contract.ts; upstream patch-level changes are absorbed here alone.
+ * Runtime boundary for AcpRuntime/session-store access (plan §11, G13): this
+ * module owns every acpx/runtime import for the Runtime ENGINE — everything
+ * above it consumes the xacpx-owned types from runtime-contract.ts, and
+ * upstream patch-level changes to the Runtime/session store are absorbed
+ * here alone.
+ *
+ * One deliberate legacy exception (G13 lint allowlist): src/transport/
+ * agent-registry.ts lazily requires "acpx/runtime" for createAgentRegistry
+ * (install-hint flows only). It is a second public-boundary consumer until
+ * Wave B folds it into this adapter — upstream breakage there is NOT
+ * absorbed by this file.
  */
 import {
   createAcpRuntime,

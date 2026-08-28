@@ -171,7 +171,7 @@ async function reconcileOwner(
     creationDate: owner.fingerprint.creationDate,
     commandLine: owner.fingerprint.commandLine,
     executablePath: owner.fingerprint.executablePath,
-  }, workerOptions(deps));
+  }, terminateOptions(deps));
   if (!isKnownOutcome(batch.rootOutcome) || batch.outcomes.some((entry) => !isKnownOutcome(entry.outcome))) {
     result.ownersRetained += 1;
     return;
@@ -243,7 +243,7 @@ async function reconcileResidual(
     creationDate: residual.creationDate,
     commandLine: residual.commandLine,
     executablePath: residual.executablePath,
-  }, workerOptions(deps));
+  }, terminateOptions(deps));
   // A root that is already-exited/skipped-replaced does NOT discharge the
   // subtree: the tree terminator returns BEFORE any descendant snapshot in
   // that case, so descendants are unverified and MUST keep their evidence.
@@ -291,6 +291,23 @@ function sameTokenFingerprint(owner: OwnerRecord, process: WindowsTokenProcess):
 function isKnownOutcome(value: unknown): value is KillOutcome {
   return typeof value === "string" && (TERMINAL.has(value as KillOutcome)
     || RESIDUAL.has(value as KillOutcome));
+}
+
+/**
+ * Options for the tree-termination calls (owner + residual subtree kill).
+ * These are ownership-sensitive destructive transactions: an external SIGKILL
+ * arriving mid-traversal kills the PowerShell worker AFTER the root but
+ * BEFORE the evidence JSON is emitted — survivors then have no returned
+ * fingerprint and the sweep can only retain the record forever. The in-script
+ * 8s snapshot watchdog and per-handle 2s WaitDead already bound every
+ * primitive, so the outer hard-kill deadline defaults to disabled (null).
+ * A deps-provided workerDeadlineMs is still honored (tests).
+ */
+function terminateOptions(deps: WindowsOrphanReaperDeps): WindowsProcessWorkerOptions {
+  return {
+    workerDeadlineMs: deps.workerDeadlineMs ?? null,
+    ...(deps.runWorker === undefined ? {} : { runWorker: deps.runWorker }),
+  };
 }
 
 function workerOptions(deps: WindowsOrphanReaperDeps): WindowsProcessWorkerOptions {

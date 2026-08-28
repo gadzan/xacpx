@@ -504,3 +504,99 @@ test("descendants protocol: S2 frontier seeds from verified handles, never unver
   expect(WINDOWS_TREE_WORKER_SCRIPT.includes(seed)).toBe(true);
   expect(WINDOWS_TREE_WORKER_SCRIPT.includes(leakySeed)).toBe(false);
 });
+
+test("terminate-tree honors an explicit null deadline (outer SIGKILL disabled, round 29 Blocking 3)", async () => {
+  let seen: number | null | undefined;
+  let invoked = false;
+  const result = await terminateWindowsProcessTree(root, {
+    workerDeadlineMs: null,
+    runWorker: async (_request, deadlineMs) => {
+      invoked = true;
+      seen = deadlineMs;
+      return {
+        rootOutcome: "killed",
+        outcomes: [{ target: { pid: root.pid, creationDate: root.creationDate }, outcome: "killed" }],
+      };
+    },
+  });
+  expect(invoked).toBe(true);
+  expect(seen).toBeNull();
+  expect(result.rootOutcome).toBe("killed");
+});
+
+test("terminate-tree defaults to 15s ONLY when the deadline is undefined", async () => {
+  let seen: number | null | undefined = undefined;
+  await terminateWindowsProcessTree(root, {
+    runWorker: async (_request, deadlineMs) => {
+      seen = deadlineMs;
+      return { rootOutcome: "killed", outcomes: [] };
+    },
+  });
+  expect(seen).toBe(15_000);
+});
+
+windowsTest("real worker terminates a full 4-level tree through terminateWindowsProcessTree", async () => {
+  // Review round 29 Blocking 3: the ordinary terminate-tree action (used by
+  // RuntimeWorkerClient.terminate and the residual reaper) had no real
+  // deep-tree coverage — only the EOF descendants action did. It must also
+  // converge a multi-level chain with the outer hard-kill deadline disabled.
+  const dir = await mkdtemp(join(tmpdir(), "terminate-tree-chain-"));
+  const chain = join(dir, "chain.cjs");
+  await writeFile(chain, [
+    "const { spawn } = require('node:child_process');",
+    "const fs = require('node:fs');",
+    "const depth = Number(process.argv[2]);",
+    "const dir = process.argv[3];",
+    "fs.writeFileSync(require('node:path').join(dir, `pid-${depth}`), String(process.pid), 'utf8');",
+    "if (depth > 1) {",
+    "  const child = spawn(process.execPath, [__filename, String(depth - 1), dir], { stdio: 'ignore' });",
+    "}",
+    "setInterval(() => {}, 1000);",
+  ].join("\n"), "utf8");
+  const rootProcess = spawn("node", [chain, "4", dir], { stdio: "ignore" });
+  const pids: number[] = [];
+  try {
+    for (let i = 0; i < 300 && pids.length < 5; i += 1) {
+      const found: number[] = [];
+      for (let d = 1; d <= 4; d += 1) {
+        try {
+          const value = Number.parseInt(await readFile(join(dir, `pid-${d}`), "utf8"), 10);
+          if (Number.isSafeInteger(value) && value > 0) found.push(value);
+        } catch {
+          // not yet written
+        }
+      }
+      if (found.length > pids.length) pids.length = 0, pids.push(...found);
+      if (pids.length < 5) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(pids).toHaveLength(5);
+
+    // terminate-tree needs the ROOT's verified creationDate — probe it.
+    const probe = await probeWindowsProcessIdentity(rootProcess.pid!, { workerDeadlineMs: 30_000 });
+    expect(probe.status).toBe("found");
+
+    const result = await terminateWindowsProcessTree({
+      pid: rootProcess.pid!,
+      creationDate: probe.status === "found" ? probe.identity.creationDate : null,
+      workerDeadlineMs: null,
+    } as BatchTarget, { workerDeadlineMs: null });
+    expect(result.rootOutcome).toBe("killed");
+    for (const outcome of result.outcomes) {
+      expect(["killed", "already-exited"]).toContain(outcome.outcome);
+    }
+    for (let i = 0; i < 400; i += 1) {
+      const allGone = [rootProcess.pid!, ...pids].every((pid) => {
+        try { process.kill(pid, 0); return false; } catch { return true; }
+      });
+      if (allGone) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    for (const pid of [rootProcess.pid!, ...pids]) {
+      expect(() => process.kill(pid, 0)).toThrow();
+    }
+  } finally {
+    try { process.kill(rootProcess.pid!, "SIGKILL"); } catch {}
+    for (const pid of pids) { try { process.kill(pid, "SIGKILL"); } catch {} }
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 60_000);

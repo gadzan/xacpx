@@ -421,3 +421,26 @@ test("windows: a throwing attempt (S2 CIM failure) leaves the tree untouched and
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("posix: a throwing group kill REJECTS instead of reporting verified (round 29 Blocking 4)", async () => {
+  // The group kill IS the POSIX ownership discharge. A throwing kill must not
+  // be upgraded to "verified" — runtime-worker-main would exit its root while
+  // adapter descendants may still be alive with no durable evidence.
+  let attempts = 0;
+  const dir = await mkdtemp(join(tmpdir(), "eof-posix-throw-"));
+  try {
+    await expect(convergeOrphansBeforeExit({
+      platform: "darwin",
+      killProcessGroup: () => {
+        attempts += 1;
+        const error = new Error("EPERM: operation not permitted") as Error & { code?: string };
+        error.code = "EPERM";
+        throw error;
+      },
+      runtimeDir: dir,
+    })).rejects.toThrow(/EPERM/);
+    expect(attempts).toBe(1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

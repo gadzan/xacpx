@@ -225,7 +225,7 @@ export async function terminateWindowsProcessTree(
   try {
     const raw = await (options.runWorker ?? runPowerShellWorker)(
       { action: "terminate-tree", root },
-      options.workerDeadlineMs ?? 15_000,
+      options.workerDeadlineMs === undefined ? 15_000 : options.workerDeadlineMs,
     );
     return decodeWindowsTreeWorkerResponse(raw, root) ?? queryFailed(root);
   } catch {

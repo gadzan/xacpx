@@ -397,3 +397,51 @@ winTest("real sweep: residual tree reaping physically removes the residual's des
   try { process.kill(rootProcess.pid!, "SIGKILL"); } catch {}
   try { process.kill(childPid, "SIGKILL"); } catch {}
 }, 60_000);
+
+describe("sweepWindowsOrphans destructive deadline", () => {
+  test("residual subtree kill defaults to NO outer hard-kill deadline (round 29 Blocking 3)", async () => {
+    // The reaper's terminate-tree call is an ownership-sensitive destructive
+    // transaction: an external SIGKILL mid-traversal would lose the evidence
+    // JSON. The production default must therefore be workerDeadlineMs null,
+    // not the old 15s fallback.
+    const store = await registry();
+    await store.writeResidual(residual());
+    const seen: Array<number | null> = [];
+    await sweepWindowsOrphans(store, CURRENT_GENERATION, {
+      runWorker: async (request, deadlineMs) => {
+        seen.push(deadlineMs);
+        if (request.action === "terminate-tree") {
+          return {
+            rootOutcome: "killed",
+            outcomes: [{ target: { pid: 42, creationDate: "133801632000000010" }, outcome: "killed" }],
+          };
+        }
+        return { status: "missing" };
+      },
+    });
+    expect(seen.length).toBeGreaterThan(0);
+    for (const deadline of seen) expect(deadline).toBeNull();
+    expect(await store.readCategory("residuals")).toEqual([]);
+  });
+
+  test("an explicit deps workerDeadlineMs is still honored for tests", async () => {
+    const store = await registry();
+    await store.writeResidual(residual());
+    const seen: Array<number | null> = [];
+    await sweepWindowsOrphans(store, CURRENT_GENERATION, {
+      workerDeadlineMs: 1_234,
+      runWorker: async (request, deadlineMs) => {
+        seen.push(deadlineMs);
+        if (request.action === "terminate-tree") {
+          return {
+            rootOutcome: "killed",
+            outcomes: [{ target: { pid: 42, creationDate: "133801632000000010" }, outcome: "killed" }],
+          };
+        }
+        return { status: "missing" };
+      },
+    });
+    expect(seen.length).toBeGreaterThan(0);
+    for (const deadline of seen) expect(deadline).toBe(1_234);
+  });
+});

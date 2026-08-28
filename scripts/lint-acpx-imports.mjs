@@ -1,7 +1,10 @@
 #!/usr/bin/env node
-// G13 gate (plan §61): xacpx source may import ONLY "acpx/runtime", and ONLY
-// from src/bridge/engine/runtime/runtime-adapter.ts. Anything else — acpx/dist/*,
-// acpx/src/*, or a bare "acpx" — fails the check with a file:line list.
+// G13 gate (plan §61): xacpx source may import ONLY "acpx/runtime". The
+// Runtime ENGINE boundary is src/bridge/engine/runtime/runtime-adapter.ts.
+// One deliberate legacy exception: src/transport/agent-registry.ts lazily
+// requires "acpx/runtime" for createAgentRegistry (install hints). Anything
+// else — acpx/dist/*, acpx/src/*, or a bare "acpx" — fails with a file:line
+// list.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,8 +48,8 @@ function walk(dir) {
 walk(ROOT);
 
 if (violations.length > 0) {
-  console.error("acpx import policy violated (only runtime-adapter.ts may import 'acpx/runtime'):");
+  console.error("acpx import policy violated (engine boundary: runtime-adapter.ts; legacy exception: agent-registry.ts):");
   for (const v of violations) console.error(`  ${v}`);
   process.exit(1);
 }
-console.log("acpx import policy OK");
+console.log("acpx import policy OK (engine boundary: runtime-adapter.ts; legacy exception: agent-registry.ts)");

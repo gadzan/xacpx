@@ -10,7 +10,13 @@ import {
 } from "./runtime-worker-protocol";
 import { mapRuntimeError } from "./runtime-contract";
 import { terminateProcessTree } from "../../../process/terminate-process-tree";
-import { probeWindowsProcessIdentity, type WindowsProbeStatus, type TerminateProcessTreeResult, type KillOutcome } from "../../../process/windows-process-tree";
+import {
+  probeWindowsProcessIdentity,
+  terminateWindowsDescendantsOf,
+  type WindowsProbeStatus,
+  type TerminateProcessTreeResult,
+  type KillOutcome,
+} from "../../../process/windows-process-tree";
 
 export interface RuntimeWorkerRef {
   pid: number;
@@ -26,6 +32,11 @@ export interface RuntimeWorkerClientDeps {
   probeWindowsIdentity?: (pid: number) => Promise<WindowsProbeStatus>;
   terminateProcessTree?: typeof terminateProcessTree;
   platform?: NodeJS.Platform;
+  /** Invoked once the Windows identity probe verifies (fence identity upgrade). */
+  onIdentityVerified?: (client: RuntimeWorkerClient) => void;
+  /** Fence discharge seams (tests): verified orphan-tree terminator + POSIX group kill. */
+  terminateDescendantsOf?: typeof terminateWindowsDescendantsOf;
+  killProcessGroup?: (pgid: number) => void;
 }
 export type WorkerLifecycle = "starting" | "ready" | "busy" | "idle" | "cooling" | "stopped" | "failed";
 
@@ -116,6 +127,7 @@ export class RuntimeWorkerClient {
         // Immutable identity: once captured, never mutated or re-probed
         this.ref.creationDate = res.identity.creationDate;
         this._bootstrapVerified = true;
+        this.deps?.onIdentityVerified?.(this);
       });
       this.bootstrapPromise.catch(() => {});
     } else {
@@ -294,7 +306,16 @@ export class RuntimeWorkerClient {
             pid: this.ref.pid,
             creationDate: this.ref.creationDate,
           },
-          {},
+          {
+            // G10: this is an ownership-sensitive destructive transaction. An
+            // external SIGKILL mid-traversal would kill the PowerShell worker
+            // AFTER the root but BEFORE the JSON evidence — leaving survivors
+            // with no returned fingerprint and forcing fail-closed retention
+            // forever. The in-script 8s snapshot watchdog and per-handle 2s
+            // WaitDead already bound every primitive, so the outer hard-kill
+            // deadline is explicitly disabled (null), not defaulted.
+            windowsWorker: { workerDeadlineMs: null },
+          },
           platform,
         );
 
