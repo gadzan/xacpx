@@ -464,39 +464,38 @@ if($request.action -eq 'token-snapshot'){
   $matches=@(Snapshot | Where-Object {$_.commandLine -and $_.commandLine.Contains($needle)})
   Write-Output (@{items=$matches} | ConvertTo-Json -Depth 5 -Compress);exit 0
 }
-# Orphan convergence (plan §16 / G10): after host EOF kill every transitive
-# descendant of the worker pid (parent NEVER touched). Discovery closure over
-# fresh CIM snapshots never depends on kill success; verified iff all safe.
+# G10: single-snapshot closure; S2 accepts children of dead or same-identity parents.
 if($request.action -eq 'terminate-descendants-of'){
 $pp=[int]$request.parentPid
-$out=@();$sn=@{};$ki=@{};$fr=@($pp)
-# Depth-unbounded BFS to closure; the PowerShell worker deadline bounds time.
+$out=@();$sn=@{};$fr=@($pp)
+$s1=@(Snapshot)
 while($fr.Count){
 $nx=@()
-foreach($p in $(Snapshot)|?{$_.parentPid -in $fr -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){
-$sn[$p.pid]=$true;$nx+=@($p.pid)
-if(!$ki.ContainsKey($p.pid)){
-$ki[$p.pid]=$true
+foreach($p in $s1|?{$_.parentPid -in $fr -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){
+$sn[$p.pid]=$p.creationDate;$nx+=$p.pid
 $c=OpenVerified $p $true
 $s=if(-not $c.ok){$c.status}elseif(-not [XacpxNativeProcess]::Alive($c.handle)){'already-exited'}elseif([XacpxNativeProcess]::Kill($c.handle)){if([XacpxNativeProcess]::WaitDead($c.handle)){'killed'}else{'kill-requested-unconfirmed'}}else{if([XacpxNativeProcess]::LastError()-eq 5){'access-denied'}else{'query-failed'}}
 try{[XacpxNativeProcess]::Close($c.handle)}catch{}
-$out+=@{pid=[int]$p.pid;outcome=$s;creationDate=$p.creationDate;commandLine=$p.commandLine;executablePath=$p.executablePath}
-}
+$out+=@{pid=$p.pid;outcome=$s;creationDate=$p.creationDate;commandLine=$p.commandLine;executablePath=$p.executablePath}
 }
 $fr=$nx
 }
-$lf=@($(Snapshot)|?{($_.parentPid -eq $pp -or $sn.ContainsKey($_.parentPid)) -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)})
+$lf=@()
+$s2=@(Snapshot)
+foreach($p in $s2|?{($_.parentPid -eq $pp -or $sn.ContainsKey($_.parentPid)) -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){
+$par=@($s2|?{$_.pid -eq $p.parentPid})
+if($p.parentPid -eq $pp -or $par.Count -eq 0 -or $par[0].creationDate -eq $sn[$p.parentPid]){$lf+=@{pid=$p.pid;parentPid=$p.parentPid;creationDate=$p.creationDate;commandLine=$p.commandLine;executablePath=$p.executablePath}}
+}
 $vf=!@($out|?{$_.outcome -notin 'killed','already-exited'}).Count -and !$lf.Count
 Write-Output (@{verified=$vf;outcomes=$out;leftover=$lf}|ConvertTo-Json -Depth 8 -Compress);exit 0
-}
-if($request.action -eq 'terminate-one-cim'){
+}if($request.action -eq 'terminate-one-cim'){
   $target=[pscustomobject]@{pid=[int]$request.target.pid;creationDate=[string]$request.target.creationDate;commandLine=$request.target.commandLine;executablePath=$request.target.executablePath}
   $check=OpenVerified $target $true
   if(!$check.ok){Write-Output (@{outcome=$check.status} | ConvertTo-Json -Compress);exit 0}
   try {
     if(![XacpxNativeProcess]::Alive($check.handle)){$status='already-exited'}
     elseif(![XacpxNativeProcess]::Kill($check.handle)){
-      # Job-object cascade: a failed kill on an already-dying child is a confirmed exit.
+      # Job-object cascade: dying child kill = confirmed exit.
       if([XacpxNativeProcess]::WaitDead($check.handle)){$status='already-exited'}
       else{$status=if($code -eq 5){'access-denied'}else{'query-failed'}}
     }
@@ -537,7 +536,7 @@ try {
       }
     }
   } while($added -gt 0)
-  # Exactly one append enumeration; no post-kill enumeration exists.
+  # One append enumeration only.
   $append=@(Snapshot)
   $new=@($append | Where-Object {!$verified.Contains($_.pid) -and $verified.Contains($_.parentPid)})
   foreach($p in $new){if(![XacpxNativeProcess]::Alive($handles[$p.parentPid])){throw 'append parent exited or liveness unknown'}}
@@ -555,7 +554,7 @@ try {
     if(![XacpxNativeProcess]::Alive($h)){[void]$outcomes.Add((Outcome $node 'already-exited'));continue}
     if(![XacpxNativeProcess]::Kill($h)){
       $code=[XacpxNativeProcess]::LastError()
-      # Job-object cascade: a failed kill on an already-dying child is a confirmed exit.
+      # Job-object cascade: dying child kill = confirmed exit.
       if([XacpxNativeProcess]::WaitDead($h)){$status='already-exited'}
       else{$status=if($code -eq 5){'access-denied'}else{'query-failed'}}
       [void]$outcomes.Add((Outcome $node $status));continue

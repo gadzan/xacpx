@@ -368,3 +368,48 @@ windowsTest("real worker converges an 8-level descendant chain", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 }, 90_000);
+
+// Review round 23 Blocking 2: discovery graph must be identity-safe. An
+// innocent process that is NOT a descendant of the worker must never be
+// touched — the deterministic proxy for the PID-reuse skip rule (a reused
+// parent pid is attributed to the reuser, not to our tree).
+windowsTest("real worker never touches an innocent non-descendant process", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "descendants-innocent-"));
+  const fixture = join(dir, "fixture.cjs");
+  const childPidFile = join(dir, "child.pid");
+  await writeFile(fixture, [
+    "const { spawn } = require('node:child_process');",
+    "const fs = require('node:fs');",
+    "const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });",
+    `fs.writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid), 'utf8');`,
+    "setInterval(() => {}, 1000);",
+  ].join("\n"), "utf8");
+  const rootProcess = spawn("node", [fixture], { stdio: "ignore" });
+  // Innocent sibling: parented by THIS test process, not by the worker.
+  const innocent = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore" });
+  let childPid = 0;
+  try {
+    for (let i = 0; i < 200 && !childPid; i += 1) {
+      try {
+        childPid = Number.parseInt(await readFile(childPidFile, "utf8"), 10);
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+    expect(childPid).toBeGreaterThan(0);
+    const result = await terminateWindowsDescendantsOf(rootProcess.pid!, { workerDeadlineMs: 45_000 });
+    expect(result.verified).toBe(true);
+    expect(() => process.kill(rootProcess.pid!, 0)).not.toThrow();
+    for (let i = 0; i < 200; i += 1) {
+      try { process.kill(childPid, 0); await new Promise((resolve) => setTimeout(resolve, 50)); } catch { break; }
+    }
+    try { process.kill(childPid, 0); expect.unreachable("descendant still alive"); } catch { /* gone */ }
+    // The innocent must survive: it is not part of the worker's tree.
+    expect(() => process.kill(innocent.pid!, 0)).not.toThrow();
+  } finally {
+    try { if (childPid) process.kill(childPid, "SIGKILL"); } catch {}
+    try { process.kill(rootProcess.pid!, "SIGKILL"); } catch {}
+    try { innocent.kill("SIGKILL"); } catch {}
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 90_000);

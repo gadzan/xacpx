@@ -185,7 +185,7 @@ async function reconcileOwner(
     result.ownersRetained += 1;
     return;
   }
-  const residuals = buildResiduals(owner, batch.outcomes);
+  const residuals = buildResiduals({ pid: owner.pid, ownerToken: owner.token, agentCommand: owner.agentCommand, generationId: owner.generationId }, batch.outcomes);
   if (residuals === null) {
     await registry.writeOwner({ ...owner, killAttempts: owner.killAttempts + 1 });
     result.ownersRetained += 1;
@@ -201,20 +201,27 @@ async function reconcileOwner(
   result.ownersRetained += 1;
 }
 
-function buildResiduals(owner: OwnerRecord, outcomes: ProcessTreeOutcome[]): ResidualRecord[] | null {
+interface ResidualSource {
+  pid: number;
+  ownerToken: string;
+  agentCommand: string;
+  generationId: string;
+}
+
+function buildResiduals(source: ResidualSource, outcomes: ProcessTreeOutcome[]): ResidualRecord[] | null {
   const residuals: ResidualRecord[] = [];
   for (const entry of outcomes) {
-    if (entry.target.pid === owner.pid || TERMINAL.has(entry.outcome)) continue;
+    if (entry.target.pid === source.pid || TERMINAL.has(entry.outcome)) continue;
     if (!RESIDUAL.has(entry.outcome) || !entry.target.creationDate || !entry.commandLine || !entry.executablePath) return null;
     residuals.push({
       kind: "residual",
-      ownerToken: owner.token,
+      ownerToken: source.ownerToken,
       pid: entry.target.pid,
       creationDate: entry.target.creationDate,
       commandLine: entry.commandLine,
       executablePath: entry.executablePath,
-      agentCommand: owner.agentCommand,
-      generationId: owner.generationId,
+      agentCommand: source.agentCommand,
+      generationId: source.generationId,
       killAttempts: 0,
     });
   }
@@ -229,8 +236,7 @@ async function reconcileResidual(
   deps: WindowsOrphanReaperDeps,
 ): Promise<void> {
   // A residual is an UNVERIFIED SUBTREE ROOT: kill it through the verified
-  // tree terminator so anything it spawned after spooling converges too — a
-  // single-pid kill would leave its descendants orphaned with no record.
+  // tree terminator so anything it spawned after spooling converges too.
   const terminateTree = deps.terminateTree ?? terminateWindowsProcessTree;
   const batch = await terminateTree({
     pid: residual.pid,
@@ -238,17 +244,32 @@ async function reconcileResidual(
     commandLine: residual.commandLine,
     executablePath: residual.executablePath,
   }, workerOptions(deps));
-  if (!isKnownOutcome(batch.rootOutcome)) {
+  // A root that is already-exited/skipped-replaced does NOT discharge the
+  // subtree: the tree terminator returns BEFORE any descendant snapshot in
+  // that case, so descendants are unverified and MUST keep their evidence.
+  if (!isKnownOutcome(batch.rootOutcome) || batch.rootOutcome === "already-exited" || batch.rootOutcome === "skipped-replaced") {
     await registry.writeResidual({ ...residual, killAttempts: residual.killAttempts + 1 });
     result.residualsRetained += 1;
-    retainDegraded(result, deps, "residual tree termination returned an unknown outcome");
+    retainDegraded(result, deps, "residual subtree termination unavailable or root replaced before snapshot");
     return;
   }
-  if (TERMINAL.has(batch.rootOutcome)) {
+  if (batch.rootOutcome === "killed") {
+    // Migrate every unsafe descendant FIRST (same transaction as owner
+    // reconciliation): the root residual is deleted only when every unsafe
+    // descendant got its own durable residual.
+    const descendants = buildResiduals(residual, batch.outcomes);
+    if (descendants === null) {
+      await registry.writeResidual({ ...residual, killAttempts: residual.killAttempts + 1 });
+      result.residualsRetained += 1;
+      retainDegraded(result, deps, "incomplete descendant fingerprint while migrating residual subtree");
+      return;
+    }
+    for (const descendant of descendants) await registry.writeResidual(descendant);
     await registry.deleteResidual(filename);
     result.residualsDeleted += 1;
     return;
   }
+  // kill-requested-unconfirmed / access-denied / query-failed root: retain.
   await registry.writeResidual({ ...residual, killAttempts: residual.killAttempts + 1 });
   result.residualsRetained += 1;
   if (batch.rootOutcome === "query-failed" || batch.rootOutcome === "access-denied") {

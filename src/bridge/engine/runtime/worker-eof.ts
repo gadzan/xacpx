@@ -64,7 +64,12 @@ export interface ConvergeOrphansOptions {
   agentCommand?: () => string | undefined;
   generationId?: string;
   ownerToken?: string;
-  /** Deadline for each real CIM convergence attempt (ms). */
+  /**
+   * Deadline for each real CIM convergence attempt (ms). MUST exceed the
+   * in-action snapshot watchdog (8s) plus headroom for the snapshot passes:
+   * the depth-unbounded closure runs inside one deadline, and killing the
+   * worker mid-traversal would lose ancestry reachability for later rounds.
+   */
   attemptDeadlineMs?: number;
   /** Delay between convergence rounds when discharge is still incomplete (ms). */
   roundDelayMs?: number;
@@ -211,7 +216,7 @@ async function publishRequired(
 async function attemptOnce(options: ConvergeOrphansOptions): Promise<TerminateDescendantsResult> {
   const attempt = options.terminateDescendants
     ?? ((parentPid: number): Promise<TerminateDescendantsResult> =>
-      terminateWindowsDescendantsOf(parentPid, { workerDeadlineMs: options.attemptDeadlineMs ?? 6_000 }));
+      terminateWindowsDescendantsOf(parentPid, { workerDeadlineMs: options.attemptDeadlineMs ?? 20_000 }));
   return Promise.resolve(attempt(process.pid)).catch(() => ({ ...EMPTY_EVIDENCE }));
 }
 

@@ -811,7 +811,9 @@ winTest("host crash: real worker stdin EOF converges the adapter descendant tree
         'process.stdin.on("end", async () => {',
         "  try {",
         `    const { convergeOrphansBeforeExit } = await import(${JSON.stringify(eofModule)});`,
-        "    await convergeOrphansBeforeExit({ attemptDeadlineMs: 8000 });",
+        // Production default deadline (20s): the E2E must prove the REAL
+        // runtime-worker-main wiring converges, not a test-only override.
+        "    await convergeOrphansBeforeExit({});",
         "  } catch {}",
         "  process.exit(0);",
         "});",

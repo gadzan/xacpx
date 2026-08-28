@@ -216,12 +216,61 @@ describe("sweepWindowsOrphans owners", () => {
 });
 
 describe("sweepWindowsOrphans residuals and intents", () => {
-  test("residual terminal outcome deletes; uncertainty increments and reports degraded", async () => {
-    const terminalStore = await registry();
-    await terminalStore.writeResidual(residual());
-    await sweepWindowsOrphans(terminalStore, CURRENT_GENERATION, { terminateTree: async () => ({ rootOutcome: "skipped-replaced", outcomes: [] }) });
-    expect(await terminalStore.readCategory("residuals")).toEqual([]);
+  test("root killed with unsafe descendants migrates them before deleting the root", async () => {
+    // Review round 23 Blocking 1: deleting the residual root just because
+    // rootOutcome is killed would orphan a still-alive unsafe descendant
+    // with no durable ownership. It must be migrated like owner children.
+    const store = await registry();
+    await store.writeResidual(residual());
+    await sweepWindowsOrphans(store, CURRENT_GENERATION, {
+      terminateTree: async () => ({
+        rootOutcome: "killed",
+        outcomes: [
+          { target: { pid: 42, creationDate: CREATION }, outcome: "killed" },
+          { target: { pid: 43, creationDate: "133801632000000010" }, outcome: "access-denied", commandLine: "child", executablePath: "C:\\child.exe" },
+        ],
+      }),
+    });
+    expect(await store.readCategory("residuals")).toHaveLength(1);
+    const records = await store.readCategory("residuals");
+    expect((records?.[0]?.record as ResidualRecord).pid).toBe(43);
+    expect((records?.[0]?.record as ResidualRecord).ownerToken).toBe(TOKEN);
+  });
 
+  test("root killed with all-safe descendants deletes the root residual", async () => {
+    const store = await registry();
+    await store.writeResidual(residual());
+    await sweepWindowsOrphans(store, CURRENT_GENERATION, {
+      terminateTree: async () => ({
+        rootOutcome: "killed",
+        outcomes: [
+          { target: { pid: 42, creationDate: CREATION }, outcome: "killed" },
+          { target: { pid: 43, creationDate: "133801632000000010" }, outcome: "already-exited", commandLine: "child", executablePath: "C:\\child.exe" },
+        ],
+      }),
+    });
+    expect(await store.readCategory("residuals")).toEqual([]);
+  });
+
+  test("already-exited or skipped-replaced root retains the subtree evidence", async () => {
+    // The tree terminator returns BEFORE any descendant snapshot when the
+    // root is gone/replaced, so descendants are unverified: deleting the only
+    // durable record would lose their ownership (review round 23 Blocking 1).
+    for (const rootOutcome of ["already-exited", "skipped-replaced"] as const) {
+      const store = await registry();
+      await store.writeResidual(residual());
+      const result = await sweepWindowsOrphans(store, CURRENT_GENERATION, {
+        terminateTree: async () => ({ rootOutcome, outcomes: [] }),
+      });
+      const records = await store.readCategory("residuals");
+      expect(records).toHaveLength(1);
+      expect((records?.[0]?.record as ResidualRecord).killAttempts).toBe(1);
+      expect(result.residualsRetained).toBe(1);
+      expect(result.degraded).toBe(true);
+    }
+  });
+
+  test("residual query-failed retains, increments attempts, and reports degraded", async () => {
     const retryStore = await registry();
     await retryStore.writeResidual(residual());
     const result = await sweepWindowsOrphans(retryStore, CURRENT_GENERATION, { terminateTree: async () => ({ rootOutcome: "query-failed", outcomes: [] }) });
