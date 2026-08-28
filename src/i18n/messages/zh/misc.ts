@@ -10,6 +10,7 @@ export const misc: MiscMessages = {
   // plugins/known-plugins: channel descriptions
   pluginChannelFeishu: "飞书频道",
   pluginChannelYuanbao: "腾讯元宝频道",
+  pluginChannelDiscord: "Discord 频道",
   pluginChannelRelay: "Relay hub 连接器（从自托管 relay hub 遥控这台实例）",
   pluginChannelInstallHint: (channelType: string, packageName: string) =>
     `频道 ${channelType} 需要安装插件：xacpx plugin add ${packageName}`,

@@ -1,0 +1,44 @@
+{
+  "name": "@ganglion/xacpx-channel-discord",
+  "version": "0.8.0",
+  "description": "Discord channel plugin for xacpx.",
+  "license": "MIT",
+  "keywords": [
+    "xacpx",
+    "discord",
+    "channel",
+    "plugin"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gadzan/xacpx.git",
+    "directory": "packages/channel-discord"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "xacpx": ">=0.9.0-0"
+  },
+  "peerDependenciesMeta": {
+    "xacpx": {
+      "optional": true
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "discord.js": "^14.26.0"
+  }
+}

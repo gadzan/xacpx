@@ -1282,6 +1282,7 @@ export interface MiscMessages {
   // plugins/known-plugins: channel descriptions
   pluginChannelFeishu: string;
   pluginChannelYuanbao: string;
+  pluginChannelDiscord: string;
   pluginChannelRelay: string;
   pluginChannelInstallHint: (channelType: string, packageName: string) => string;
 
