@@ -57,7 +57,8 @@ export type WindowsWorkerRequest =
   | { action: "terminate-tree"; root: BatchTarget }
   | { action: "identity"; pid: number }
   | { action: "token-snapshot"; token: string }
-  | { action: "terminate-one-cim"; target: BatchTarget };
+  | { action: "terminate-one-cim"; target: BatchTarget }
+  | { action: "terminate-descendants-of"; parentPid: number; excludePid?: number };
 export type WindowsProbeStatus = { status: "found"; identity: WindowsProcessIdentity } | { status: "missing" | "unavailable" };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -201,6 +202,26 @@ export async function snapshotWindowsProcessesByToken(
     }
     return result;
   } catch { return null; }
+}
+
+export async function terminateWindowsDescendantsOf(
+  parentPid: number,
+  excludePid?: number,
+  options: WindowsProcessWorkerOptions = {},
+): Promise<TerminateProcessTreeResult> {
+  if (!Number.isSafeInteger(parentPid) || parentPid <= 0) return queryFailed({ pid: parentPid, creationDate: null });
+  try {
+    const raw = await (options.runWorker ?? runPowerShellWorker)(
+      { action: "terminate-descendants-of", parentPid, ...(excludePid !== undefined ? { excludePid } : {}) },
+      options.workerDeadlineMs ?? 15_000,
+    );
+    return (
+      decodeWindowsTreeWorkerResponse(raw, { pid: parentPid, creationDate: "0", commandLine: undefined, executablePath: undefined }) ??
+      queryFailed({ pid: parentPid, creationDate: null })
+    );
+  } catch {
+    return queryFailed({ pid: parentPid, creationDate: null });
+  }
 }
 
 export async function terminateWindowsResidual(
@@ -349,7 +370,21 @@ if($request.action -eq 'token-snapshot'){
   $matches=@(Snapshot | Where-Object {$_.commandLine -and $_.commandLine.Contains($needle)})
   Write-Output (@{items=$matches} | ConvertTo-Json -Depth 5 -Compress);exit 0
 }
-if($request.action -eq 'terminate-one-cim'){
+# Orphan convergence (plan §16 / G10): kill every transitive descendant of the
+# worker's own pid. Runs in the worker after host EOF — no live host needed;
+# this pid cannot be reused while the worker is still alive.
+if($request.action -eq 'terminate-descendants-of'){
+  $out=@();$seen=@{};$front=@([int]$request.parentPid);$snap=@(Snapshot)
+  while($front.Count){$next=@()
+    foreach($p in @($snap|Where-Object{$_.parentPid -in $front -and -not $seen.ContainsKey($_.pid)})){
+      $seen[$p.pid]=$true;if($request.excludePid -and $p.pid -eq $request.excludePid){continue}
+      $c=OpenVerified $p $true;$s=if(-not $c.ok){$c.status}elseif(-not [XacpxNativeProcess]::Alive($c.handle)){'already-exited'}elseif([XacpxNativeProcess]::Kill($c.handle)){if([XacpxNativeProcess]::WaitDead($c.handle)){'killed'}else{'kill-requested-unconfirmed'}}else{if([XacpxNativeProcess]::LastError()-eq 5){'access-denied'}else{'query-failed'}}
+      try{[XacpxNativeProcess]::Close($c.handle)}catch{};$out+=@(Outcome $p $s)
+      if($s -eq 'killed' -or $s -eq 'already-exited'){$next+=@($p.pid)}
+    }$front=$next}
+  Write-Output (@{rootOutcome='killed';outcomes=$out}|ConvertTo-Json -Depth 8 -Compress);exit 0
+}
+if($request.action -eq 'terminate-one-cim'){if($request.action -eq 'terminate-one-cim'){
   $target=[pscustomobject]@{pid=[int]$request.target.pid;creationDate=[string]$request.target.creationDate;commandLine=$request.target.commandLine;executablePath=$request.target.executablePath}
   $check=OpenVerified $target $true
   if(!$check.ok){Write-Output (@{outcome=$check.status} | ConvertTo-Json -Compress);exit 0}

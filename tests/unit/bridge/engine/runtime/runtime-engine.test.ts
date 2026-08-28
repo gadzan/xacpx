@@ -304,6 +304,74 @@ test("resumeAgentSession passes resumeSessionId to worker ensure RPC", async () 
   }
 });
 
+test("native resume followed by normal prompt keeps ONE AcpRuntime owner", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-resume-single-owner-"));
+  const acpxHome = join(dir, "home");
+  const sessionsDir = join(acpxHome, ".acpx", "sessions");
+  try {
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(sessionsDir, { recursive: true });
+
+    const entry = join(dir, "resume-single-worker.mjs");
+    await writeFile(
+      entry,
+      [
+        "let buffer='';",
+        "let adapterCreateCount = 0;",
+        "let resumedIds = [];",
+        "let lastImmutable = null;",
+        "process.stdin.on('data', (d) => {",
+        "  buffer += d.toString();",
+        "  let idx;",
+        "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+        "    if (!line) continue;",
+        "    try { const msg = JSON.parse(line);",
+        "      if (msg.method === 'ensure') {",
+        "        const p = msg.params ?? {};",
+        "        // Emulate the production sameEnsureParams immutable identity:",
+        "        // sessionKey / agent / cwd / stateDir — NOT resumeSessionId / model / effort",
+        "        const immutable = JSON.stringify([p.sessionKey, p.agent, p.cwd, p.stateDir]);",
+        "        if (immutable !== lastImmutable) { adapterCreateCount++; lastImmutable = immutable; }",
+        "        resumedIds.push(p.resumeSessionId ?? null);",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { sessionKey: p.sessionKey, resumeSessionId: p.resumeSessionId } }) + '\\n');",
+        "      } else if (msg.method === 'prompt') {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { result: { status: 'completed' }, finalText: 'ok' } }) + '\\n');",
+        "      } else if (msg.method === 'status') {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { adapterCreateCount, resumedIds } }) + '\\n');",
+        "      } else {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "      }",
+        "      if (msg.method === 'shutdown') process.exit(0);",
+        "    } catch {}",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+
+    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+
+    // 1. resume native session X
+    await engine.resumeAgentSession({ ...sessionInput, agentSessionId: "native-session-X" });
+
+    // 2. first normal prompt — MUST reuse the same adapter/owner (no second ACP runtime)
+    await engine.prompt({ ...sessionInput, text: "hello after resume" });
+
+    const client = engine["manager"]?.get(sessionInput.logicalSessionId);
+    expect(client).toBeDefined();
+    const status = await client!.request<{ adapterCreateCount: number; resumedIds: Array<string | null> }>("status");
+
+    // Exactly ONE AcpRuntime was created for this worker (single-owner invariant)
+    expect(status.adapterCreateCount).toBe(1);
+    // First ensure carried the resume id; the follow-up prompt ensure did NOT
+    expect(status.resumedIds).toEqual(["native-session-X", null]);
+
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("hasSession and tailSessionHistory read state without heating a cold worker", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-has-tail-"));
   const sessionsDir = join(dir, ".acpx", "sessions");

@@ -5,6 +5,7 @@
  * during ordinary shutdown (that would close the acpx record; plan §17).
  */
 import { createInterface } from "node:readline";
+import { terminateWindowsDescendantsOf } from "../../../process/windows-process-tree";
 
 import {
   createXacpxRuntimeAdapter,
@@ -26,6 +27,13 @@ import {
   type RuntimeWorkerPromptResult,
 } from "./runtime-worker-protocol";
 import { mapRuntimeError } from "./runtime-contract";
+import { parseSessionEffortRecord } from "../../../transport/session-effort";
+
+class RuntimeError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+  }
+}
 
 interface WorkerState {
   adapter?: XacpxRuntimeAdapter;
@@ -43,10 +51,13 @@ function respond(response: RuntimeWorkerResponse): void {
 
 function sameEnsureParams(a: RuntimeWorkerEnsureParams | undefined, b: RuntimeWorkerEnsureParams): boolean {
   if (!a) return false;
-  // Runtime-construction identity ONLY. `model` and `effort` are mutable config
-  // applied in place via setConfigOption on the warm handle — including them
-  // here would replace the AcpRuntime inside one worker and create a second
-  // live ACP owner (violates the single-owner invariant, plan §3-R1).
+  // Runtime-construction identity ONLY. Mutable per-invocation parameters are
+  // deliberately excluded:
+  //   - `model` / `effort`: applied in place via setConfigOption.
+  //   - `resumeSessionId`: a first-ensure INVOCATION parameter, not identity —
+  //     resumeAgentSession(X) is always followed by prompt ensures without it.
+  //     Including it here would rebuild the AcpRuntime inside one worker and
+  //     create a second live ACP owner (violates single-owner, plan §3-R1).
   return (
     a.sessionKey === b.sessionKey &&
     a.agent === b.agent &&
@@ -54,17 +65,44 @@ function sameEnsureParams(a: RuntimeWorkerEnsureParams | undefined, b: RuntimeWo
     a.stateDir === b.stateDir &&
     a.permissionMode === b.permissionMode &&
     a.nonInteractivePermissions === b.nonInteractivePermissions &&
-    a.resumeSessionId === b.resumeSessionId &&
     JSON.stringify(a.permissionPolicy ?? null) === JSON.stringify(b.permissionPolicy ?? null) &&
     JSON.stringify(a.agentOverrides ?? null) === JSON.stringify(b.agentOverrides ?? null)
   );
 }
 
+/** Resolve the REAL advertised effort config id (CLI parity) and write the value. */
+async function applySessionEffort(
+  adapter: XacpxRuntimeAdapter,
+  handle: XacpxRuntimeSessionHandle,
+  effort: string,
+): Promise<void> {
+  const status = await adapter.getStatus(handle);
+  const details = (status as { details?: { configOptions?: unknown } }).details;
+  const parsed = parseSessionEffortRecord(JSON.stringify({ acpx: { config_options: details?.configOptions ?? [] } }));
+  if (!parsed) throw new Error("the active agent does not advertise a reasoning-effort option");
+  if (!parsed.available.includes(effort)) {
+    throw new Error(`reasoning effort "${effort}" is not advertised by the active agent`);
+  }
+  await adapter.setConfigOption(handle, parsed.configId, effort);
+}
+
 async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: string; acpxRecordId?: string; agentSessionId?: string }> {
-  // Value comparison: each request's params are a fresh JSON.parse result, so
-  // reference equality would rebuild the AcpRuntime on EVERY ensure (leaking
-  // the previous one and defeating warm reuse).
-  if (!state.adapter || !state.handle || !sameEnsureParams(state.ensureParams, params)) {
+  // Single-owner invariant (plan §3-R1): once an adapter exists in this worker,
+  // it is NEVER replaced. The Worker process IS the AcpRuntime lifecycle
+  // primitive (plan §9.2) — a genuine immutable-identity change must fail
+  // closed so the Host tears down the whole worker and spawns a fresh one,
+  // because the pinned acpx public Runtime has no dispose primitive and a
+  // replacement here would leak the retained native ACP owner (dual owner).
+  if (state.adapter && !sameEnsureParams(state.ensureParams, params)) {
+    throw new RuntimeError(
+      "RUNTIME_INIT_FAILED",
+      `runtime worker for session "${params.sessionKey}" received ensure params that differ from its immutable launch identity ` +
+        `(existing sessionKey=${state.ensureParams?.sessionKey}, agent=${state.ensureParams?.agent}, cwd=${state.ensureParams?.cwd}; ` +
+        `got sessionKey=${params.sessionKey}, agent=${params.agent}, cwd=${params.cwd}); ` +
+        `refusing in-worker AcpRuntime replacement — tear down this worker instead`,
+    );
+  }
+  if (!state.adapter || !state.handle) {
     state.adapter = createXacpxRuntimeAdapter({
       stateDir: params.stateDir,
       permissionMode: params.permissionMode,
@@ -83,13 +121,13 @@ async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: 
       ...(params.model ? { sessionOptions: { model: params.model } } : {}),
     });
     if (params.effort) {
-      await state.adapter.setConfigOption(state.handle!, "effort", params.effort);
+      await applySessionEffort(state.adapter, state.handle!, params.effort);
     }
   } else if (params.effort && state.handle) {
     // Mutable config on a warm Runtime: apply in place, never rebuild the
     // AcpRuntime (a second live owner inside one worker violates the
     // single-owner invariant, plan §3-R1).
-    await state.adapter.setConfigOption(state.handle, "effort", params.effort);
+    await applySessionEffort(state.adapter, state.handle, params.effort);
   }
   const handle = state.handle!;
   return {
@@ -173,7 +211,12 @@ async function dispatch(request: RuntimeWorkerRequest): Promise<void> {
       case "setConfigOption": {
         const { key, value } = request.params as { key: string; value: string };
         if (!state.adapter || !state.handle) throw new Error("worker not ensured");
-        await state.adapter.setConfigOption(state.handle, key, value);
+        if (key === "effort") {
+          // Resolve the REAL advertised config id (CLI parity) instead of a hardcoded key
+          await applySessionEffort(state.adapter, state.handle, value);
+        } else {
+          await state.adapter.setConfigOption(state.handle, key, value);
+        }
         respond({ id, ok: true, result: {} });
         break;
       }
@@ -220,13 +263,29 @@ rl.on("line", (line) => {
   void dispatch(parsed.message);
 });
 // stdin EOF means the host is gone (crash or deliberate kill path). The worker
-// self-terminates AND takes down its own process group (plan §16 orphan
-// convergence): the worker is spawned detached on POSIX, so it is its own
-// process-group leader, and any acpx adapter descendants inherit that group.
-// A bare process.exit(0) would leave those descendants orphaned.
-process.stdin.on("end", () => {
-  if (process.platform !== "win32") {
-    try { process.kill(-process.pid, "SIGKILL"); } catch {}
+// converges its own orphan tree (plan §16 orphan convergence) BEFORE exiting —
+// no live host or RuntimeWorkerClient is required at this point:
+//   POSIX: the worker was spawned detached, so it is its own process-group
+//     leader and acpx adapter descendants inherit the group; kill the group.
+//   Windows: no parent-exit-kills-tree semantics exist; ask the verified CIM
+//     terminator to kill every transitive descendant of this worker's own pid
+//     (safe: this pid cannot be reused while we are still running).
+process.stdin.on("end", async () => {
+  try {
+    if (process.platform !== "win32") {
+      try { process.kill(-process.pid, "SIGKILL"); } catch {}
+    } else {
+      const result = await terminateWindowsDescendantsOf(process.pid);
+      const unsafe = (result?.outcomes ?? []).filter(
+        (o) => o.outcome !== "killed" && o.outcome !== "already-exited" && o.outcome !== "skipped-replaced",
+      );
+      if (unsafe.length > 0) {
+        // Fail loudly on stderr; nothing else can be done post-host.
+        process.stderr.write(`runtime worker orphan convergence failed: ${JSON.stringify(unsafe)}\n`);
+      }
+    }
+  } catch {
+    // best-effort: nothing else can be done once the host is gone
   }
   process.exit(0);
 });

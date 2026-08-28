@@ -350,9 +350,11 @@ export interface RuntimeEngineOptions {
   workerEntryPath?: string;
   /**
    * Override for the acpx sessions directory (tests / isolated daemons).
-   * NOTE: this is the SESSIONS directory (…/.acpx/sessions). The acpx Runtime
-   * store root (…/.acpx) is derived one level up, since createRuntimeStore
-   * joins "sessions" onto its stateDir internally.
+   * CONTRACT: this is the SESSIONS directory — the directory whose basename
+   * MUST be "sessions" (upstream acpx hard-codes `stateRoot + "/sessions"`
+   * inside createRuntimeStore, and xacpx disk helpers scan the same path).
+   * The Runtime store root is derived as dirname(this) and validated in
+   * runtimeStateRoot(); a non-"sessions" basename fails closed.
    */
   stateDir?: string;
   permissionMode: PermissionMode;
@@ -423,11 +425,20 @@ export class RuntimeEngine implements BridgeEngine {
 
   /**
    * acpx Runtime store root: createRuntimeStore internally joins "sessions"
-   * onto stateDir, so the root is ALWAYS the parent of the sessions dir —
-   * regardless of what the sessions directory is named.
+   * onto stateDir, so the root is the parent of the sessions dir. Because the
+   * sessions dir basename is a hard contract (see RuntimeEngineOptions.stateDir),
+   * a non-"sessions" basename would silently misalign disk helpers and the
+   * Runtime store — fail closed instead.
    */
   private runtimeStateRoot(): string {
-    return dirname(this.sessionsDir());
+    const sessions = this.sessionsDir();
+    if (sessions.split(/[\\/]/).pop() !== "sessions") {
+      throw new RuntimeError(
+        "RUNTIME_INIT_FAILED",
+        `RuntimeEngineOptions.stateDir must end in "sessions" (got "${sessions}") — upstream acpx createRuntimeStore hard-codes stateRoot + "/sessions"`,
+      );
+    }
+    return dirname(sessions);
   }
   private scheduleIdleTtl(key: string, client: RuntimeWorkerClient): void {
     const existing = this.idleTimers.get(key);
