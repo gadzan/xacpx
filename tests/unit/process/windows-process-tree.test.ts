@@ -491,3 +491,16 @@ test("descendants protocol: S2 static closure returns EVERY post-S1 descendant a
   // C and G do not collide with the S1 outcome (mutual exclusion holds).
   expect(decoded!.outcomes.map((item) => item.pid)).toEqual([5001]);
 });
+
+test("descendants protocol: S2 frontier seeds from verified handles, never unverified S1 pids", () => {
+  // Review round 28 Blocking: S2 must NOT seed its BFS frontier from every
+  // S1 snapshot pid — a replaced/access-denied S1 parent (no verified
+  // handle) could otherwise absorb an innocent child of a pid-reused
+  // process into leftover, causing a wrong-process kill by the reaper.
+  // Static guard: the production script seeds from $open.Keys (verified,
+  // handle-retained) and the worker root only.
+  const seed = "$fr=@($pp)+@($open.Keys)";
+  const leakySeed = "$fr=@($pp)+@($cl.pid)";
+  expect(WINDOWS_TREE_WORKER_SCRIPT.includes(seed)).toBe(true);
+  expect(WINDOWS_TREE_WORKER_SCRIPT.includes(leakySeed)).toBe(false);
+});

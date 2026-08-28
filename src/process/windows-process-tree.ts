@@ -469,7 +469,7 @@ if($request.action -eq 'token-snapshot'){
   $matches=@(Snapshot | Where-Object {$_.commandLine -and $_.commandLine.Contains($needle)})
   Write-Output (@{items=$matches} | ConvertTo-Json -Depth 5 -Compress);exit 0
 }
-# G10: all fallible CIM discovery precedes the first kill; S2 verify failures
+# G10: discovery precedes kill; S2 seeds from verified handles only.
 if($request.action -eq 'terminate-descendants-of'){
 $pp=[int]$request.parentPid
 $out=@();$sn=@{};$fr=@($pp);$open=@{};$ov=@{};$cl=@()
@@ -483,7 +483,7 @@ try {
 foreach($p in $cl){VF $p}
 $lf=@()
 $s2=@(Snapshot)
-$fr=@($pp)+@($cl.pid)
+$fr=@($pp)+@($open.Keys)
 while($fr.Count){
 $nx=@()
 foreach($p in $s2|?{$_.parentPid -in $fr -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){
