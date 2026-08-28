@@ -3,27 +3,45 @@
  *
  * The host is gone — no RuntimeWorkerClient, no graceful shutdown. The worker
  * is the ONLY remaining process that knows its adapter descendant tree, and it
- * must not exit until either (a) cleanup is VERIFIED, or (b) every unverified
- * descendant identity is spooled as a durable `ResidualRecord` in the xacpx
- * orphan registry, where the daemon reaper (`sweepWindowsOrphans`) reconciles
- * it by handle-bound identity at the next startup/periodic sweep — a primitive
- * that survives both worker AND host death.
+ * may exit ONLY after reaching one of exactly two terminal discharge states:
+ *
+ *   "verified"  — every discovered descendant reached a verified safe outcome
+ *                 and a fresh final CIM snapshot shows none remain.
+ *   "spooled"   — every still-unverified descendant identity has been durably
+ *                 published as a `ResidualRecord` in the xacpx orphan registry
+ *                 (all-or-nothing: publication counts only when EVERY required
+ *                 identity is confirmed present), where the daemon reaper
+ *                 (`sweepWindowsOrphans`) reconciles it by handle-bound
+ *                 identity at the next sweep — surviving both worker AND host
+ *                 death.
+ *
+ * Anything else — transient CIM/worker failure, a record that cannot be
+ * published — keeps the worker ALIVE and retrying. A live worker is not an
+ * orphan condition: the descendant tree still has its parent, and the worker
+ * remains the sole holder of tree knowledge. Avoiding worker self-leak must
+ * never take priority over discharging ownership evidence.
+ *
+ * Evidence is MONOTONIC: each convergence attempt is merged into the
+ * accumulated result (never overwritten), so a later total failure cannot
+ * erase identities an earlier attempt already captured.
  *
  *   POSIX: the worker is its own process-group leader and adapter descendants
  *     inherit the group; kill the group (verified by construction).
  *   Windows: no parent-exit-kills-tree semantics; converge the transitive
- *     descendant tree via the verified CIM terminator, retry once for
- *     transient CIM/worker failures, then spool whatever remains unverified.
- *
- * Exiting after spooling is correct: a hostless worker that never exits would
- * itself leak, and the residual record is exactly the "ownership evidence that
- * outlives both processes" the fail-closed policy requires.
+ *     descendant tree via the verified CIM terminator, then publish whatever
+ *     remains unverified.
  */
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 
 import { resolveConfigPathForCurrentEnv } from "../../../config/config-path";
-import { terminateWindowsDescendantsOf, type TerminateDescendantsResult } from "../../../process/windows-process-tree";
+import {
+  terminateWindowsDescendantsOf,
+  type KillOutcome,
+  type TerminateDescendantsResult,
+  type WindowsDescendantLeftover,
+  type WindowsDescendantOutcome,
+} from "../../../process/windows-process-tree";
 import {
   OrphanRegistry,
   decodeResidualRecord,
@@ -31,6 +49,8 @@ import {
 } from "../../../transport/orphan-registry";
 
 export type OrphanConvergenceOutcome = "verified" | "spooled" | "unresolved";
+
+const SAFE_OUTCOMES: Partial<Record<KillOutcome, true>> = { killed: true, "already-exited": true };
 
 export interface ConvergeOrphansOptions {
   platform?: NodeJS.Platform;
@@ -44,70 +64,147 @@ export interface ConvergeOrphansOptions {
   agentCommand?: () => string | undefined;
   generationId?: string;
   ownerToken?: string;
-  delayBeforeRetryMs?: number;
   /** Deadline for each real CIM convergence attempt (ms). */
   attemptDeadlineMs?: number;
+  /** Delay between convergence rounds when discharge is still incomplete (ms). */
+  roundDelayMs?: number;
+  /**
+   * Bound on convergence rounds for TESTS; production leaves this undefined so
+   * the worker lingers until "verified" or "spooled" instead of exiting with
+   * ownership undischarged.
+   */
+  maxRounds?: number;
+  spoolRetryPasses?: number;
+  spoolRetryDelayMs?: number;
   now?: () => number;
 }
+
+const EMPTY_EVIDENCE: TerminateDescendantsResult = { verified: false, outcomes: [], leftover: [] };
 
 function defaultRuntimeDir(): string {
   return join(dirname(resolveConfigPathForCurrentEnv()), "runtime");
 }
 
-interface SpoolCandidate {
-  pid: number;
-  creationDate: string | null;
-  commandLine: string | null;
-  executablePath: string | null;
+/**
+ * Merge one convergence attempt into the accumulated evidence. Monotonic: a
+ * later attempt can only ADD identities or RESOLVE previously unsafe ones —
+ * it can never erase evidence, so a total failure on a retry cannot discard
+ * what an earlier attempt already captured.
+ */
+export function mergeEvidence(a: TerminateDescendantsResult, b: TerminateDescendantsResult): TerminateDescendantsResult {
+  const byPid = new Map<number, WindowsDescendantOutcome>();
+  for (const item of [...a.outcomes, ...b.outcomes]) {
+    const existing = byPid.get(item.pid);
+    if (!existing || (SAFE_OUTCOMES[item.outcome] && !SAFE_OUTCOMES[existing.outcome])) byPid.set(item.pid, item);
+  }
+  const leftover = new Map<number, WindowsDescendantLeftover>();
+  for (const item of [...a.leftover, ...b.leftover]) {
+    if (!byPid.has(item.pid)) leftover.set(item.pid, item);
+  }
+  for (const pid of byPid.keys()) leftover.delete(pid);
+  const outcomes = [...byPid.values()];
+  const remaining = [...leftover.values()];
+  return {
+    verified: outcomes.every((item) => SAFE_OUTCOMES[item.outcome]) && remaining.length === 0,
+    outcomes,
+    leftover: remaining,
+  };
+}
+
+function residualFor(candidate: WindowsDescendantOutcome | WindowsDescendantLeftover, base: Omit<ResidualRecord, "pid" | "creationDate" | "commandLine" | "executablePath">): ResidualRecord {
+  return {
+    ...base,
+    pid: candidate.pid,
+    creationDate: candidate.creationDate ?? "",
+    commandLine: candidate.commandLine ?? "",
+    executablePath: candidate.executablePath ?? "",
+  };
 }
 
 /**
- * Persist durable ownership records for every descendant whose cleanup could
- * not be verified. Records lacking a complete CIM fingerprint (pid +
- * creationDate + commandLine + executablePath) are skipped: the reaper's
- * handle-bound kill requires independently captured identity, and fabricating
- * one would violate it.
+ * Publish EVERY still-unverified identity as a durable residual record.
+ * All-or-nothing: returns true only when all required records were written AND
+ * confirmed present by reading the registry back. Partial publication is
+ * failure — the caller must not exit with some required identity unpublished.
  */
-async function spoolResidualRecords(result: TerminateDescendantsResult, options: ConvergeOrphansOptions): Promise<number> {
-  const runtimeDir = options.runtimeDir ?? defaultRuntimeDir();
-  const record: Omit<ResidualRecord, "pid" | "creationDate" | "commandLine" | "executablePath"> = {
+async function publishRequired(
+  evidence: TerminateDescendantsResult,
+  published: Set<number>,
+  options: ConvergeOrphansOptions,
+): Promise<boolean> {
+  const required: Array<WindowsDescendantOutcome | WindowsDescendantLeftover> = [
+    ...evidence.outcomes.filter((item) => !SAFE_OUTCOMES[item.outcome]),
+    ...evidence.leftover,
+  ];
+  if (required.length === 0) return false;
+  const complete = required.filter((item) => item.creationDate !== null && item.commandLine !== null && item.executablePath !== null);
+  // An unverified identity without a complete CIM fingerprint cannot become a
+  // handle-bound record. Every completable record is still written (durable
+  // evidence is strictly additive), but full discharge stays impossible, so
+  // the caller can never observe "spooled" while a required identity is
+  // unpublished.
+  const fullyPublishable = complete.length === required.length;
+  const registry = new OrphanRegistry(options.runtimeDir ?? defaultRuntimeDir());
+  try {
+    await registry.initialize();
+  } catch {
+    return false;
+  }
+  const base = {
     kind: "residual",
     ownerToken: options.ownerToken ?? randomUUID(),
     agentCommand: options.agentCommand?.() ?? "runtime-worker-orphan",
     generationId: options.generationId ?? randomUUID(),
     killAttempts: 0,
-  };
-  const unsafe = result.outcomes
-    .filter((item) => item.outcome !== "killed" && item.outcome !== "already-exited")
-    .map((item): SpoolCandidate => ({ pid: item.pid, creationDate: item.creationDate, commandLine: item.commandLine, executablePath: item.executablePath }));
-  const candidates: SpoolCandidate[] = [
-    ...unsafe,
-    ...result.leftover.map((item): SpoolCandidate => ({ pid: item.pid, creationDate: item.creationDate, commandLine: item.commandLine, executablePath: item.executablePath })),
-  ];
-  const registry = new OrphanRegistry(runtimeDir);
-  await registry.initialize();
-  let written = 0;
-  for (const candidate of candidates) {
-    if (candidate.creationDate === null || candidate.commandLine === null || candidate.executablePath === null) continue;
-    const residual: ResidualRecord = {
-      ...record,
-      pid: candidate.pid,
-      creationDate: candidate.creationDate,
-      commandLine: candidate.commandLine,
-      executablePath: candidate.executablePath,
-    };
-    if (!decodeResidualRecord(residual)) continue;
-    try {
-      await registry.writeResidual(residual);
-      written += 1;
-    } catch {
-      // Keep spooling siblings; a single durable-write failure must not
-      // abandon the remaining identities.
+  } satisfies Omit<ResidualRecord, "pid" | "creationDate" | "commandLine" | "executablePath">;
+  const passes = options.spoolRetryPasses ?? 3;
+  for (let pass = 0; pass < passes; pass += 1) {
+    const pending = complete.filter((item) => !published.has(item.pid));
+    let failed = 0;
+    for (const candidate of pending) {
+      const record = residualFor(candidate, base);
+      if (!decodeResidualRecord(record)) return false;
+      try {
+        await registry.writeResidual(record);
+        published.add(candidate.pid);
+      } catch {
+        failed += 1;
+      }
+    }
+    if (pending.length === 0 || (failed === 0 && pass > 0)) break;
+    if (failed > 0) {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, options.spoolRetryDelayMs ?? 100);
+      await promise;
     }
   }
-  return written;
+  // Read-back verification: publication is proven by registry content, not by
+  // a resolved write promise alone.
+  const records = await registry.readCategory("residuals").catch(() => null);
+  if (!records) return false;
+  const present = new Set(records.map(({ record }) => ("pid" in record ? record.pid : 0)));
+  return fullyPublishable && complete.every((item) => present.has(item.pid));
 }
 
+async function attemptOnce(options: ConvergeOrphansOptions): Promise<TerminateDescendantsResult> {
+  const attempt = options.terminateDescendants
+    ?? ((parentPid: number): Promise<TerminateDescendantsResult> =>
+      terminateWindowsDescendantsOf(parentPid, { workerDeadlineMs: options.attemptDeadlineMs ?? 6_000 }));
+  return Promise.resolve(attempt(process.pid)).catch(() => ({ ...EMPTY_EVIDENCE }));
+}
+
+async function delay(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms);
+  await promise;
+}
+
+/**
+ * Discharge the orphan tree. Resolves ONLY on a terminal discharge state:
+ * "verified" or "spooled". When discharge remains impossible (and `maxRounds`
+ * is undefined — production), the promise stays pending and the worker lingers
+ * as the live, knowledgeable owner instead of exiting with evidence lost.
+ */
 export async function convergeOrphansBeforeExit(options: ConvergeOrphansOptions = {}): Promise<OrphanConvergenceOutcome> {
   const platform = options.platform ?? process.platform;
   if (platform !== "win32") {
@@ -120,21 +217,21 @@ export async function convergeOrphansBeforeExit(options: ConvergeOrphansOptions 
     }
     return "verified";
   }
-  const terminate = options.terminateDescendants
-    ?? ((parentPid: number): Promise<TerminateDescendantsResult> =>
-      terminateWindowsDescendantsOf(parentPid, { workerDeadlineMs: options.attemptDeadlineMs ?? 6_000 }));
-  let result = await terminate(process.pid).catch(() => ({ verified: false, outcomes: [], leftover: [] }) as TerminateDescendantsResult);
-  if (!result.verified) {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    setTimeout(resolve, options.delayBeforeRetryMs ?? 250);
-    await promise;
-    result = await terminate(process.pid).catch(() => ({ verified: false, outcomes: [], leftover: [] }) as TerminateDescendantsResult);
-  }
-  if (result.verified) return "verified";
-  try {
-    const spooled = await spoolResidualRecords(result, options);
-    return spooled > 0 ? "spooled" : "unresolved";
-  } catch {
-    return "unresolved";
+  let evidence = EMPTY_EVIDENCE;
+  const published = new Set<number>();
+  for (let round = 0; ; round += 1) {
+    evidence = mergeEvidence(evidence, await attemptOnce(options));
+    if (evidence.verified) return "verified";
+    // Convergence gets two bounded attempts (fresh CIM snapshots) BEFORE
+    // publication, so a transient failure on a retry cannot discard evidence
+    // an earlier attempt captured — the merge is monotonic, and publication
+    // then discharges everything still unverified in one all-or-nothing step.
+    // After the first publication pass, every further round retries both
+    // convergence and publication until discharge is terminal.
+    if (round >= 1) {
+      if (await publishRequired(evidence, published, options)) return "spooled";
+      if (options.maxRounds !== undefined && round + 1 >= options.maxRounds) return "unresolved";
+    }
+    await delay(options.roundDelayMs ?? 2_000);
   }
 }

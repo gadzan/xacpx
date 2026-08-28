@@ -263,18 +263,20 @@ rl.on("line", (line) => {
   void dispatch(parsed.message);
 });
 // stdin EOF means the host is gone (crash or deliberate kill path). The worker
-// converges its own orphan tree (plan §16 orphan convergence) BEFORE exiting —
+// discharges its orphan tree (plan §16 orphan convergence) BEFORE exiting —
 // no live host or RuntimeWorkerClient is required at this point:
 //   POSIX: the worker was spawned detached, so it is its own process-group
 //     leader and acpx adapter descendants inherit the group; kill the group.
 //   Windows: no parent-exit-kills-tree semantics exist; converge the verified
-//     CIM descendant tree, and spool any unverified remainder as durable
+//     CIM descendant tree, and durably publish any unverified remainder as
 //     residual records the daemon reaper reconciles later (worker-eof.ts).
-// A hard cap prevents a hung convergence attempt from leaking the worker.
+// There is deliberately NO hard exit cap: the worker resolves only on a
+// terminal discharge state (verified cleanup or all ownership durably
+// published). While it lingers, it is still ALIVE — the descendant tree has
+// its parent and is not orphaned — so exiting without discharge is never the
+// lesser evil (plan §16 fail-closed).
 process.stdin.on("end", () => {
-  const cap = setTimeout(() => process.exit(0), 20_000);
-  cap.unref?.();
   void convergeOrphansBeforeExit({ agentCommand: () => state.ensureParams?.agent })
     .catch(() => {})
-    .finally(() => process.exit(0));
+    .then(() => process.exit(0));
 });

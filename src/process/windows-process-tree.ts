@@ -463,23 +463,26 @@ if($request.action -eq 'token-snapshot'){
   Write-Output (@{items=$matches} | ConvertTo-Json -Depth 5 -Compress);exit 0
 }
 # Orphan convergence (plan §16 / G10): after host EOF kill every transitive
-# descendant of the worker pid (parent NEVER touched); verified iff all safe.
+# descendant of the worker pid (parent NEVER touched). Discovery closure over
+# fresh CIM snapshots never depends on kill success; verified iff all safe.
 if($request.action -eq 'terminate-descendants-of'){
 $pp=[int]$request.parentPid
-$out=@();$sn=@{};$fr=@($pp)
+$out=@();$sn=@{};$ki=@{};$fr=@($pp)
 for($i=0;$i -lt 6 -and $fr.Count;$i++){
 $nx=@()
-foreach($p in $(Snapshot)|Where-Object{$_.parentPid -in $fr -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){
-$sn[$p.pid]=$true
+foreach($p in $(Snapshot)|?{$_.parentPid -in $fr -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){
+$sn[$p.pid]=$true;$nx+=@($p.pid)
+if(!$ki.ContainsKey($p.pid)){
+$ki[$p.pid]=$true
 $c=OpenVerified $p $true
 $s=if(-not $c.ok){$c.status}elseif(-not [XacpxNativeProcess]::Alive($c.handle)){'already-exited'}elseif([XacpxNativeProcess]::Kill($c.handle)){if([XacpxNativeProcess]::WaitDead($c.handle)){'killed'}else{'kill-requested-unconfirmed'}}else{if([XacpxNativeProcess]::LastError()-eq 5){'access-denied'}else{'query-failed'}}
 try{[XacpxNativeProcess]::Close($c.handle)}catch{}
-$out+=@(@{pid=[int]$p.pid;outcome=$s;creationDate=$p.creationDate;commandLine=$p.commandLine;executablePath=$p.executablePath})
-if($s -in 'killed','already-exited'){$nx+=@($p.pid)}
+$out+=@{pid=[int]$p.pid;outcome=$s;creationDate=$p.creationDate;commandLine=$p.commandLine;executablePath=$p.executablePath}
+}
 }
 $fr=$nx
 }
-$lf=@($(Snapshot)|?{($_.parentPid -eq $pp -or $sn.ContainsKey($_.parentPid)) -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}|%{ @{pid=[int]$_.pid;parentPid=[int]$_.parentPid;creationDate=$_.creationDate;commandLine=$_.commandLine;executablePath=$_.executablePath} })
+$lf=@($(Snapshot)|?{($_.parentPid -eq $pp -or $sn.ContainsKey($_.parentPid)) -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)})
 $vf=!@($out|?{$_.outcome -notin 'killed','already-exited'}).Count -and !$lf.Count
 Write-Output (@{verified=$vf;outcomes=$out;leftover=$lf}|ConvertTo-Json -Depth 8 -Compress);exit 0
 }
