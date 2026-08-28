@@ -399,8 +399,8 @@ export class RuntimeEngine implements BridgeEngine {
   private readonly manager?: RuntimeWorkerManager;
   private readonly activeTurns = new Set<string>();
   private readonly coolPending = new Set<string>();
-  /** Sessions with a worker acquisition (fence discharge + spawn) in flight. */
-  private readonly acquiring = new Set<string>();
+  /** In-flight worker acquisitions (fence discharge + spawn), keyed by session. */
+  private readonly acquiring = new Map<string, Promise<RuntimeWorkerClient>>();
   private readonly recordIds = new Map<string, string>();
   private readonly idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly idleTtlMs: number;
@@ -475,9 +475,12 @@ export class RuntimeEngine implements BridgeEngine {
     // window is tracked so a concurrent policy transition fails closed
     // instead of racing an unregistered worker.
     const key = this.workerKey(input);
-    this.acquiring.add(key);
+    const existing = this.acquiring.get(key);
+    if (existing) return existing;
+    const acquire = this.manager.acquire(key);
+    this.acquiring.set(key, acquire);
     try {
-      return await this.manager.acquire(key);
+      return await acquire;
     } finally {
       this.acquiring.delete(key);
     }
@@ -971,6 +974,10 @@ export class RuntimeEngine implements BridgeEngine {
       clearTimeout(timer);
       this.idleTimers.delete(key);
     }
+    // A concurrently in-flight acquire must settle first: coolPending has to
+    // attach to the registered client, not race its registration.
+    const inflight = this.acquiring.get(key);
+    if (inflight) await inflight.catch(() => {});
     const client = this.manager?.get(key);
     if (!client) return {};
     if (!client.alive && client.lifecycle !== "stopped") {
@@ -1158,7 +1165,7 @@ export class RuntimeEngine implements BridgeEngine {
       if (this.acquiring.size > 0) {
         throw new RuntimeError(
           "RUNTIME_PERMISSION_BUSY",
-          `cannot update permission policy while worker acquisition(s) for session(s) "${[...this.acquiring].join(", ")}" are in flight (fail closed)`,
+          `cannot update permission policy while worker acquisition(s) for session(s) "${[...this.acquiring.keys()].join(", ")}" are in flight (fail closed)`,
         );
       }
       const live = this.manager?.workers() ?? [];

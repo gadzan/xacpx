@@ -350,8 +350,17 @@ windowsTest("real worker converges an 8-level descendant chain", async () => {
 
     // Unbounded discovery: with the old 6-pass ceiling D7/D8 were never
     // enumerated and only D7 was spooled, losing D8's ownership entirely.
-    const result = await terminateWindowsDescendantsOf(rootProcess.pid!, { workerDeadlineMs: 45_000 });
-    expect(result.verified).toBe(true);
+    // CIM visibility LAGS pid-file writes: on a loaded runner the first
+    // snapshot can see only a spawn prefix, leaving the rest as leftover
+    // (verified=false, by design). Retry — the same convergence semantics
+    // the EOF worker applies — until the whole chain is proven dead.
+    let verified = false;
+    for (let attempt = 0; attempt < 5 && !verified; attempt += 1) {
+      const result = await terminateWindowsDescendantsOf(rootProcess.pid!, { workerDeadlineMs: 45_000 });
+      verified = result.verified;
+      if (!verified) await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+    expect(verified).toBe(true);
     expect(() => process.kill(rootProcess.pid!, 0)).not.toThrow();
     for (let i = 0; i < 400; i += 1) {
       if (pids.every((pid) => {
@@ -572,7 +581,16 @@ windowsTest("real worker terminates a full 4-level tree through terminateWindows
     // The chain writes pid-1..pid-4 (the root process pid is separate).
     expect(pids).toHaveLength(4);
 
-    // terminate-tree needs the ROOT's verified creationDate — probe it.
+    // terminate-tree needs the ROOT's verified creationDate — probe it. CIM
+    // visibility also LAGS pid-file writes, and terminate-tree cannot retry
+    // after the root dies — so settle until EVERY pid is CIM-visible first.
+    for (let settle = 0; settle < 200; settle += 1) {
+      const identities = await Promise.all(
+        [rootProcess.pid!, ...pids].map((pid) => queryWindowsProcessIdentity(pid, { workerDeadlineMs: 30_000 })),
+      );
+      if (identities.every((identity) => identity !== null)) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
     const probe = await probeWindowsProcessIdentity(rootProcess.pid!, { workerDeadlineMs: 30_000 });
     expect(probe.status).toBe("found");
 
