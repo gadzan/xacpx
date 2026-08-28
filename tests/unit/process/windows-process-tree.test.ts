@@ -310,3 +310,61 @@ windowsTest("real worker converges a three-level descendant tree and keeps the p
     await rm(dir, { recursive: true, force: true });
   }
 }, 40_000);
+
+// Review round 22 Blocking 3: discovery must be a full transitive closure, not
+// a fixed 6-pass ceiling — an 8-level chain must all be discovered/killed.
+windowsTest("real worker converges an 8-level descendant chain", async () => {
+  // Real-time fixture: process birth/death is platform-clock behavior; there
+  // is no deterministic clock for OS process scheduling.
+  const dir = await mkdtemp(join(tmpdir(), "descendants-chain-"));
+  const chain = join(dir, "chain.cjs");
+  await writeFile(chain, [
+    "const { spawn } = require('node:child_process');",
+    "const fs = require('node:fs');",
+    "const depth = Number(process.argv[2]);",
+    "const dir = process.argv[3];",
+    "fs.writeFileSync(require('node:path').join(dir, `pid-${depth}`), String(process.pid), 'utf8');",
+    "if (depth > 1) {",
+    "  const child = spawn(process.execPath, [__filename, String(depth - 1), dir], { stdio: 'ignore' });",
+    "}",
+    "setInterval(() => {}, 1000);",
+  ].join("\n"), "utf8");
+  const rootProcess = spawn("node", [chain, "8", dir], { stdio: "ignore" });
+  const pids: number[] = [];
+  try {
+    for (let i = 0; i < 300 && pids.length < 8; i += 1) {
+      const found: number[] = [];
+      for (let d = 1; d <= 8; d += 1) {
+        try {
+          const value = Number.parseInt(await readFile(join(dir, `pid-${d}`), "utf8"), 10);
+          if (Number.isSafeInteger(value) && value > 0) found.push(value);
+        } catch {
+          // not yet written
+        }
+      }
+      if (found.length > pids.length) pids.length = 0, pids.push(...found);
+      if (pids.length < 8) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(pids).toHaveLength(8);
+    for (const pid of pids) expect(() => process.kill(pid, 0)).not.toThrow();
+
+    // Unbounded discovery: with the old 6-pass ceiling D7/D8 were never
+    // enumerated and only D7 was spooled, losing D8's ownership entirely.
+    const result = await terminateWindowsDescendantsOf(rootProcess.pid!, { workerDeadlineMs: 45_000 });
+    expect(result.verified).toBe(true);
+    expect(() => process.kill(rootProcess.pid!, 0)).not.toThrow();
+    for (let i = 0; i < 400; i += 1) {
+      if (pids.every((pid) => {
+        try { process.kill(pid, 0); return false; } catch { return true; }
+      })) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    for (const pid of pids) {
+      try { process.kill(pid, 0); expect.unreachable(`chain pid ${pid} still alive`); } catch { /* gone */ }
+    }
+  } finally {
+    for (const pid of pids) { try { process.kill(pid, "SIGKILL"); } catch {} }
+    try { process.kill(rootProcess.pid!, "SIGKILL"); } catch {}
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 90_000);

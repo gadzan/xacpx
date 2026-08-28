@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -68,10 +68,13 @@ test("merge: a total failure on a retry can never erase earlier evidence", () =>
 test("merge: a later safe outcome resolves an earlier unsafe identity", () => {
   const first = mergeEvidence({ verified: false, outcomes: [], leftover: [] }, result(false, 1, 0));
   const resolved = mergeEvidence(first, {
-    verified: false,
+    verified: true,
     outcomes: [{ pid: 5002, outcome: "killed", ...FULL }],
     leftover: [],
   });
+  // verified is attempt-level: this resolving attempt's own final snapshot
+  // proved every discovered descendant safe, so discharge is proven even
+  // though the accumulated evidence carried an earlier unsafe outcome.
   expect(resolved.verified).toBe(true);
   expect(resolved.outcomes.find((item) => item.pid === 5002)?.outcome).toBe("killed");
   expect(resolved.leftover).toEqual([]);
@@ -174,9 +177,11 @@ test("windows: persistent failure spools residual records the daemon reaper reco
     // sweep kills by the recorded identity and retires the records.
     const killed: number[] = [];
     const sweep = await sweepWindowsOrphans(registry, "00000000-0000-4000-8000-000000000009", {
-      terminateResidual: async (target) => {
+      // Residuals are SUBTREE ROOTS: the reaper must converge them through a
+      // verified tree terminator (kill children too), not a single-pid kill.
+      terminateTree: async (target) => {
         killed.push(target.pid);
-        return "killed";
+        return { rootOutcome: "killed", outcomes: [{ target: { pid: target.pid, creationDate: target.creationDate ?? "" }, outcome: "killed" }] };
       },
     });
     expect(killed.sort((a, b) => a - b)).toEqual([5002, 6001]);
@@ -273,6 +278,91 @@ test("windows: production default never exits with ownership undischarged", asyn
       new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 50)),
     ]);
     expect(race).toBe("pending");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("merge: two empty total-failure attempts never fabricate verified", () => {
+  // Review round 22 Blocking 1: recomputing verified from accumulated
+  // evidence made [].every() === true, so a first-round CIM failure looked
+  // like a proven-empty tree. verified must only come from a real attempt.
+  const merged = mergeEvidence(
+    { verified: false, outcomes: [], leftover: [] },
+    { verified: false, outcomes: [], leftover: [] },
+  );
+  expect(merged.verified).toBe(false);
+});
+
+test("windows: total-failure attempts on both rounds do not exit verified", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "eof-empty-fail-"));
+  try {
+    const outcome = await convergeOrphansBeforeExit({
+      platform: "win32",
+      terminateDescendants: async () => ({ verified: false, outcomes: [], leftover: [] }),
+      maxRounds: 2,
+      roundDelayMs: 1,
+      runtimeDir: dir,
+    });
+    expect(outcome).toBe("unresolved");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("merge: same pid with a different creationDate is a distinct identity", () => {
+  // Review round 22 Blocking 2: pid reuse must not let a later killed outcome
+  // for a NEW process resolve an earlier unsafe identity of a DIFFERENT one.
+  const a = mergeEvidence({ verified: false, outcomes: [], leftover: [] }, {
+    verified: false,
+    outcomes: [{ pid: 5002, outcome: "access-denied", creationDate: "133801632000000001", commandLine: "x", executablePath: "C:\\x.exe" }],
+    leftover: [],
+  });
+  const b = mergeEvidence(a, {
+    verified: false,
+    outcomes: [{ pid: 5002, outcome: "killed", creationDate: "133801632000000002", commandLine: "y", executablePath: "C:\\y.exe" }],
+    leftover: [],
+  });
+  expect(b.verified).toBe(false);
+  // The OLD process (A) is still required evidence, unresolved.
+  expect(b.outcomes.map((item) => item.pid).filter((pid) => pid === 5002)).toHaveLength(2);
+  expect(b.outcomes.find((item) => item.creationDate === "133801632000000001")?.outcome).toBe("access-denied");
+});
+
+test("windows: a stale same-pid record cannot fake durable ownership for a reused pid", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "eof-pidreuse-"));
+  try {
+    const registry = new OrphanRegistry(dir);
+    await registry.initialize();
+    // Pre-existing record from a PRIOR discharge: pid 5002, creationDate A.
+    await registry.writeResidual({
+      schemaVersion: 1, kind: "residual", ownerToken: "00000000-0000-4000-8000-0000000000aa",
+      pid: 5002, creationDate: "133801632000000001", commandLine: "old", executablePath: "C:\\old.exe",
+      agentCommand: "codex", generationId: "00000000-0000-4000-8000-000000000001", killAttempts: 0,
+    });
+    // Block the CURRENT discharge's record for pid 5002 (creationDate B):
+    // a directory at the target filename makes the durable rename fail, so
+    // only the stale A record remains in the registry.
+    const blockPath = join(dir, "orphans", "residuals", "00000000-0000-4000-8000-000000000002-5002.json");
+    await mkdir(blockPath, { recursive: true });
+    const outcome = await convergeOrphansBeforeExit({
+      platform: "win32",
+      terminateDescendants: async () => ({
+        verified: false,
+        outcomes: [{ pid: 5002, outcome: "access-denied", creationDate: "133801632000000002", commandLine: "new", executablePath: "C:\\new.exe" }],
+        leftover: [],
+      }),
+      maxRounds: 2,
+      roundDelayMs: 1,
+      runtimeDir: dir,
+      agentCommand: () => "codex",
+      generationId: "00000000-0000-4000-8000-000000000001",
+      ownerToken: "00000000-0000-4000-8000-000000000002",
+    });
+    // The read-back must match the FULL fingerprint of the required identity.
+    // The only record present is (5002, creationDate A) — a REUSED pid with a
+    // different process — so it must NOT discharge the B requirement.
+    expect(outcome).toBe("unresolved");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

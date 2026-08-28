@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import type { TerminateProcessTreeResult, WindowsTokenProcess } from "../../../src/process/windows-process-tree";
+import { queryWindowsProcessIdentity } from "../../../src/process/windows-process-tree";
 import {
   OrphanRegistry,
   type LaunchIntentRecord,
@@ -56,12 +58,12 @@ function tokenProcess(overrides: Partial<WindowsTokenProcess> = {}): WindowsToke
   return { pid: 41, ...fingerprint, ...overrides };
 }
 
-function verifiedDeps(batch: TerminateProcessTreeResult) {
+function verifiedDeps(batch: TerminateProcessTreeResult, overrides: Record<string, unknown> = {}) {
   return {
     snapshotToken: async () => [tokenProcess()],
     probeIdentity: async () => ({ status: "found" as const, identity: { pid: 41, creationDate: CREATION, executablePath: "c:\\NODE.exe" } }),
     terminateTree: async () => batch,
-    terminateResidual: async () => "access-denied" as const,
+    ...overrides,
   };
 }
 
@@ -119,12 +121,19 @@ describe("sweepWindowsOrphans owners", () => {
   test("terminal root migrates only complete explicit child outcomes to residuals", async () => {
     const store = await registry();
     await store.writeOwner(owner());
-    await sweepWindowsOrphans(store, CURRENT_GENERATION, verifiedDeps({
+    const batch: TerminateProcessTreeResult = {
       rootOutcome: "killed",
       outcomes: [
         { target: { pid: 41, creationDate: CREATION }, outcome: "killed" },
         { target: { pid: 42, creationDate: "133801632000000010" }, outcome: "access-denied", commandLine: "child", executablePath: "C:\\child.exe" },
       ],
+    };
+    await sweepWindowsOrphans(store, CURRENT_GENERATION, verifiedDeps(batch, {
+      // The migrated residual is reconciled in the same sweep: retain it
+      // (access-denied) so the assertion observes the migration result.
+      terminateTree: async (target) => target.pid === 41
+        ? batch
+        : { rootOutcome: "access-denied", outcomes: [] },
     }));
     expect(await store.readCategory("owners")).toEqual([]);
     const residuals = await store.readCategory("residuals");
@@ -154,7 +163,11 @@ describe("sweepWindowsOrphans owners", () => {
         { target: { pid: 43, creationDate: "133801632000000020" }, outcome: "query-failed", commandLine: "child-2", executablePath: "C:\\child-2.exe" },
       ],
     };
-    const result = await sweepWindowsOrphans(store, CURRENT_GENERATION, verifiedDeps(batch));
+    const result = await sweepWindowsOrphans(store, CURRENT_GENERATION, verifiedDeps(batch, {
+      terminateTree: async (target) => target.pid === 41
+        ? batch
+        : { rootOutcome: "access-denied", outcomes: [] },
+    }));
     expect(result.degraded).toBe(true);
     expect(await store.readCategory("owners")).toHaveLength(1);
     expect(await store.readCategory("residuals")).toHaveLength(1);
@@ -206,12 +219,12 @@ describe("sweepWindowsOrphans residuals and intents", () => {
   test("residual terminal outcome deletes; uncertainty increments and reports degraded", async () => {
     const terminalStore = await registry();
     await terminalStore.writeResidual(residual());
-    await sweepWindowsOrphans(terminalStore, CURRENT_GENERATION, { terminateResidual: async () => "skipped-replaced" });
+    await sweepWindowsOrphans(terminalStore, CURRENT_GENERATION, { terminateTree: async () => ({ rootOutcome: "skipped-replaced", outcomes: [] }) });
     expect(await terminalStore.readCategory("residuals")).toEqual([]);
 
     const retryStore = await registry();
     await retryStore.writeResidual(residual());
-    const result = await sweepWindowsOrphans(retryStore, CURRENT_GENERATION, { terminateResidual: async () => "query-failed" });
+    const result = await sweepWindowsOrphans(retryStore, CURRENT_GENERATION, { terminateTree: async () => ({ rootOutcome: "query-failed", outcomes: [] }) });
     const records = await retryStore.readCategory("residuals");
     expect((records?.[0]?.record as ResidualRecord).killAttempts).toBe(1);
     expect(result.degraded).toBe(true);
@@ -269,3 +282,69 @@ function intent(overrides: Partial<LaunchIntentRecord> = {}): LaunchIntentRecord
     ...overrides,
   };
 }
+
+const winTest = process.platform === "win32" ? test : test.skip;
+
+// Review round 22 Blocking 3: a residual is an UNVERIFIED SUBTREE ROOT. The
+// reaper must converge its descendants too (verified tree terminator), so the
+// child spawned after spooling cannot outlive the recorded root.
+winTest("real sweep: residual tree reaping physically removes the residual's descendants", async () => {
+  const root = await mkdtemp(join(tmpdir(), "xacpx-orphan-reaper-win-"));
+  roots.push(root);
+  const store = new OrphanRegistry(root);
+  await store.initialize();
+
+  const fixture = join(root, "fixture.cjs");
+  const childPidFile = join(root, "child.pid");
+  await writeFile(fixture, [
+    "const { spawn } = require('node:child_process');",
+    "const fs = require('node:fs');",
+    "const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });",
+    `fs.writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid), 'utf8');`,
+    "setInterval(() => {}, 1000);",
+  ].join("\n"), "utf8");
+  const rootProcess = spawn("node", [fixture], { stdio: "ignore" });
+
+  let childPid = 0;
+  for (let i = 0; i < 200 && !childPid; i += 1) {
+    try {
+      childPid = Number.parseInt(await readFile(childPidFile, "utf8"), 10);
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  expect(childPid).toBeGreaterThan(0);
+
+  const probe = await queryWindowsProcessIdentity(rootProcess.pid!);
+  if (!probe) {
+    rootProcess.kill();
+    console.warn("skipping real residual sweep: process identity worker unavailable");
+    return;
+  }
+  // Record ONLY the residual root; the child is the "spawned after spooling"
+  // descendant that must still converge during reaping.
+  await store.writeResidual({
+    schemaVersion: 1,
+    kind: "residual",
+    ownerToken: TOKEN,
+    pid: probe.pid,
+    creationDate: probe.creationDate,
+    commandLine: probe.executablePath,
+    executablePath: probe.executablePath,
+    agentCommand: "node",
+    generationId: OLD_GENERATION,
+    killAttempts: 0,
+  });
+
+  await sweepWindowsOrphans(store, CURRENT_GENERATION);
+
+  expect(() => process.kill(rootProcess.pid!, 0)).toThrow();
+  let childGone = false;
+  for (let i = 0; i < 200 && !childGone; i += 1) {
+    try { process.kill(childPid, 0); } catch { childGone = true; }
+    if (!childGone) await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  expect(childGone).toBe(true);
+  try { process.kill(rootProcess.pid!, "SIGKILL"); } catch {}
+  try { process.kill(childPid, "SIGKILL"); } catch {}
+}, 60_000);

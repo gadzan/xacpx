@@ -276,7 +276,10 @@ rl.on("line", (line) => {
 // its parent and is not orphaned — so exiting without discharge is never the
 // lesser evil (plan §16 fail-closed).
 process.stdin.on("end", () => {
-  void convergeOrphansBeforeExit({ agentCommand: () => state.ensureParams?.agent })
-    .catch(() => {})
-    .then(() => process.exit(0));
+  const attempt = (): void => {
+    void convergeOrphansBeforeExit({ agentCommand: () => state.ensureParams?.agent })
+      .then(() => process.exit(0))
+      .catch(() => setTimeout(attempt, 1_000));
+  };
+  attempt();
 });

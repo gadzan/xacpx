@@ -91,26 +91,41 @@ function defaultRuntimeDir(): string {
  * it can never erase evidence, so a total failure on a retry cannot discard
  * what an earlier attempt already captured.
  */
+/**
+ * Stable evidence identity: pid is NOT identity on Windows (reuse), so every
+ * merge/publication/verification decision is keyed on the full observed
+ * fingerprint. Two records sharing a pid but differing in creationDate are
+ * DIFFERENT processes and both stay required evidence.
+ */
+export function evidenceIdentity(item: { pid: number; creationDate: string | null; commandLine: string | null; executablePath: string | null }): string {
+  return `${item.pid}|${item.creationDate ?? ""}|${item.executablePath ?? ""}|${item.commandLine ?? ""}`;
+}
+
 export function mergeEvidence(a: TerminateDescendantsResult, b: TerminateDescendantsResult): TerminateDescendantsResult {
-  const byPid = new Map<number, WindowsDescendantOutcome>();
+  const byIdentity = new Map<string, WindowsDescendantOutcome>();
   for (const item of [...a.outcomes, ...b.outcomes]) {
-    const existing = byPid.get(item.pid);
-    if (!existing || (SAFE_OUTCOMES[item.outcome] && !SAFE_OUTCOMES[existing.outcome])) byPid.set(item.pid, item);
+    const key = evidenceIdentity(item);
+    const existing = byIdentity.get(key);
+    if (!existing || (SAFE_OUTCOMES[item.outcome] && !SAFE_OUTCOMES[existing.outcome])) byIdentity.set(key, item);
   }
-  const leftover = new Map<number, WindowsDescendantLeftover>();
+  const leftover = new Map<string, WindowsDescendantLeftover>();
   for (const item of [...a.leftover, ...b.leftover]) {
-    if (!byPid.has(item.pid)) leftover.set(item.pid, item);
+    const key = evidenceIdentity(item);
+    if (!byIdentity.has(key)) leftover.set(key, item);
   }
-  for (const pid of byPid.keys()) leftover.delete(pid);
-  const outcomes = [...byPid.values()];
+  for (const key of byIdentity.keys()) leftover.delete(key);
+  const outcomes = [...byIdentity.values()];
   const remaining = [...leftover.values()];
   return {
-    verified: outcomes.every((item) => SAFE_OUTCOMES[item.outcome]) && remaining.length === 0,
+    // Attempt-level proof, never recomputed from accumulated evidence: an
+    // empty merged set must NOT count as a verified empty tree. Only a real
+    // terminate-descendants-of attempt whose own final snapshot showed every
+    // discovered descendant safe and none remaining proves discharge.
+    verified: a.verified || b.verified,
     outcomes,
     leftover: remaining,
   };
 }
-
 function residualFor(candidate: WindowsDescendantOutcome | WindowsDescendantLeftover, base: Omit<ResidualRecord, "pid" | "creationDate" | "commandLine" | "executablePath">): ResidualRecord {
   return {
     ...base,
@@ -129,7 +144,8 @@ function residualFor(candidate: WindowsDescendantOutcome | WindowsDescendantLeft
  */
 async function publishRequired(
   evidence: TerminateDescendantsResult,
-  published: Set<number>,
+  published: Set<string>,
+  discharge: { ownerToken: string; generationId: string },
   options: ConvergeOrphansOptions,
 ): Promise<boolean> {
   const required: Array<WindowsDescendantOutcome | WindowsDescendantLeftover> = [
@@ -152,21 +168,21 @@ async function publishRequired(
   }
   const base = {
     kind: "residual",
-    ownerToken: options.ownerToken ?? randomUUID(),
+    ownerToken: discharge.ownerToken,
     agentCommand: options.agentCommand?.() ?? "runtime-worker-orphan",
-    generationId: options.generationId ?? randomUUID(),
+    generationId: discharge.generationId,
     killAttempts: 0,
   } satisfies Omit<ResidualRecord, "pid" | "creationDate" | "commandLine" | "executablePath">;
   const passes = options.spoolRetryPasses ?? 3;
   for (let pass = 0; pass < passes; pass += 1) {
-    const pending = complete.filter((item) => !published.has(item.pid));
+    const pending = complete.filter((item) => !published.has(evidenceIdentity(item)));
     let failed = 0;
     for (const candidate of pending) {
       const record = residualFor(candidate, base);
       if (!decodeResidualRecord(record)) return false;
       try {
         await registry.writeResidual(record);
-        published.add(candidate.pid);
+        published.add(evidenceIdentity(candidate));
       } catch {
         failed += 1;
       }
@@ -178,12 +194,18 @@ async function publishRequired(
       await promise;
     }
   }
-  // Read-back verification: publication is proven by registry content, not by
-  // a resolved write promise alone.
+  // Read-back verification: publication is proven by registry content whose
+  // FULL fingerprint (pid + creationDate + executablePath + commandLine)
+  // matches the required identity — a same-pid record from a different
+  // (reused) process proves nothing.
   const records = await registry.readCategory("residuals").catch(() => null);
   if (!records) return false;
-  const present = new Set(records.map(({ record }) => ("pid" in record ? record.pid : 0)));
-  return fullyPublishable && complete.every((item) => present.has(item.pid));
+  const present = new Set(
+    records.flatMap(({ record }) => ("pid" in record && "creationDate" in record
+      ? [evidenceIdentity({ pid: record.pid, creationDate: record.creationDate, commandLine: record.commandLine ?? null, executablePath: record.executablePath ?? null })]
+      : [])),
+  );
+  return fullyPublishable && complete.every((item) => present.has(evidenceIdentity(item)));
 }
 
 async function attemptOnce(options: ConvergeOrphansOptions): Promise<TerminateDescendantsResult> {
@@ -217,19 +239,28 @@ export async function convergeOrphansBeforeExit(options: ConvergeOrphansOptions 
     }
     return "verified";
   }
+  // Convergence gets two bounded attempts (fresh CIM snapshots) BEFORE
+  // publication, so a transient failure on a retry cannot discard evidence
+  // an earlier attempt captured — the merge is monotonic, and publication
+  // then discharges everything still unverified in one all-or-nothing step.
+  // After the first publication pass, every further round retries both
+  // convergence and publication until discharge is terminal.
   let evidence = EMPTY_EVIDENCE;
-  const published = new Set<number>();
+  // One stable proof namespace for the whole discharge: records published by
+  // different rounds share it, so the read-back can match them exactly.
+  const published = new Set<string>();
+  const discharge = {
+    ownerToken: options.ownerToken ?? randomUUID(),
+    generationId: options.generationId ?? randomUUID(),
+  };
   for (let round = 0; ; round += 1) {
     evidence = mergeEvidence(evidence, await attemptOnce(options));
     if (evidence.verified) return "verified";
-    // Convergence gets two bounded attempts (fresh CIM snapshots) BEFORE
-    // publication, so a transient failure on a retry cannot discard evidence
-    // an earlier attempt captured — the merge is monotonic, and publication
-    // then discharges everything still unverified in one all-or-nothing step.
-    // After the first publication pass, every further round retries both
-    // convergence and publication until discharge is terminal.
+    // Publication only after the bounded convergence attempts: a transient
+    // failure on the retry must not be outrun by an early spool, and the
+    // retry must not be skipped because round zero already published.
     if (round >= 1) {
-      if (await publishRequired(evidence, published, options)) return "spooled";
+      if (await publishRequired(evidence, published, discharge, options)) return "spooled";
       if (options.maxRounds !== undefined && round + 1 >= options.maxRounds) return "unresolved";
     }
     await delay(options.roundDelayMs ?? 2_000);

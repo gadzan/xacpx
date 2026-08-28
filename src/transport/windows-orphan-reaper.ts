@@ -2,7 +2,6 @@ import {
   probeWindowsProcessIdentity,
   snapshotWindowsProcessesByToken,
   terminateWindowsProcessTree,
-  terminateWindowsResidual,
   type KillOutcome,
   type ProcessTreeOutcome,
   type WindowsProcessWorkerOptions,
@@ -36,7 +35,6 @@ export interface WindowsOrphanReaperDeps extends WindowsProcessWorkerOptions {
   snapshotToken?: typeof snapshotWindowsProcessesByToken;
   probeIdentity?: typeof probeWindowsProcessIdentity;
   terminateTree?: typeof terminateWindowsProcessTree;
-  terminateResidual?: typeof terminateWindowsResidual;
   onWarning?: (message: string, error?: unknown) => void;
 }
 
@@ -230,21 +228,30 @@ async function reconcileResidual(
   result: WindowsOrphanSweepResult,
   deps: WindowsOrphanReaperDeps,
 ): Promise<void> {
-  const terminate = deps.terminateResidual ?? terminateWindowsResidual;
-  const outcome = await terminate({
+  // A residual is an UNVERIFIED SUBTREE ROOT: kill it through the verified
+  // tree terminator so anything it spawned after spooling converges too — a
+  // single-pid kill would leave its descendants orphaned with no record.
+  const terminateTree = deps.terminateTree ?? terminateWindowsProcessTree;
+  const batch = await terminateTree({
     pid: residual.pid,
     creationDate: residual.creationDate,
     commandLine: residual.commandLine,
     executablePath: residual.executablePath,
   }, workerOptions(deps));
-  if (TERMINAL.has(outcome)) {
+  if (!isKnownOutcome(batch.rootOutcome)) {
+    await registry.writeResidual({ ...residual, killAttempts: residual.killAttempts + 1 });
+    result.residualsRetained += 1;
+    retainDegraded(result, deps, "residual tree termination returned an unknown outcome");
+    return;
+  }
+  if (TERMINAL.has(batch.rootOutcome)) {
     await registry.deleteResidual(filename);
     result.residualsDeleted += 1;
     return;
   }
   await registry.writeResidual({ ...residual, killAttempts: residual.killAttempts + 1 });
   result.residualsRetained += 1;
-  if (!isKnownOutcome(outcome) || outcome === "query-failed" || outcome === "access-denied") {
+  if (batch.rootOutcome === "query-failed" || batch.rootOutcome === "access-denied") {
     retainDegraded(result, deps, "residual identity or termination unavailable");
   }
 }

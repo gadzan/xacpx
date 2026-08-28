@@ -468,7 +468,8 @@ if($request.action -eq 'token-snapshot'){
 if($request.action -eq 'terminate-descendants-of'){
 $pp=[int]$request.parentPid
 $out=@();$sn=@{};$ki=@{};$fr=@($pp)
-for($i=0;$i -lt 6 -and $fr.Count;$i++){
+# Depth-unbounded BFS to closure; the PowerShell worker deadline bounds time.
+while($fr.Count){
 $nx=@()
 foreach($p in $(Snapshot)|?{$_.parentPid -in $fr -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){
 $sn[$p.pid]=$true;$nx+=@($p.pid)
