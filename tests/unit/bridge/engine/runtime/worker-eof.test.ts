@@ -392,3 +392,32 @@ test("windows: EOF default attempt deadline is null (no outer hard-kill)", async
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("windows: a throwing attempt (S2 CIM failure) leaves the tree untouched and the next round retries", async () => {
+  // Review round 25 Blocking: the action now runs ALL fallible CIM discovery
+  // (S1 + S2) before the first kill, so a discovery failure returns no
+  // evidence AND mutates nothing; the discharge loop must simply retry from
+  // the intact tree. First attempt throws (worker died mid-discovery), the
+  // second verifies — exactly the retry the healthy round performs.
+  const dir = await mkdtemp(join(tmpdir(), "eof-s2retry-"));
+  try {
+    const outcomes = [
+      { verified: false, outcomes: [], leftover: [] }, // attempt 1: worker threw
+      result(true, 0, 0),                              // attempt 2: healthy
+    ];
+    let calls = 0;
+    const outcome = await convergeOrphansBeforeExit({
+      platform: "win32",
+      terminateDescendants: async () => {
+        if (calls++ === 0) throw new Error("CIM query failed in S2");
+        return outcomes[1]!;
+      },
+      roundDelayMs: 1,
+      runtimeDir: dir,
+    });
+    expect(calls).toBe(2);
+    expect(outcome).toBe("verified");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -436,6 +436,8 @@ function OpenVerified($node, $cim) {
   }
   return @{ok=$true;status=$null;handle=$h;image=$image}
 }
+
+function CL($h){try{[XacpxNativeProcess]::Close($h)}catch{}}
 if($request.action -eq 'identity'){
   $h=[XacpxNativeProcess]::Open([uint32]$request.pid)
   if($h -eq [IntPtr]::Zero){
@@ -466,30 +468,32 @@ if($request.action -eq 'token-snapshot'){
   $matches=@(Snapshot | Where-Object {$_.commandLine -and $_.commandLine.Contains($needle)})
   Write-Output (@{items=$matches} | ConvertTo-Json -Depth 5 -Compress);exit 0
 }
-# G10 orphan convergence: S1 closure in one snapshot; verified handles stay
+# G10: ALL fallible CIM discovery runs BEFORE the first kill (retryable).
 if($request.action -eq 'terminate-descendants-of'){
 $pp=[int]$request.parentPid
-$out=@();$sn=@{};$fr=@($pp);$open=@{};$safe='killed','already-exited'
+$out=@();$sn=@{};$fr=@($pp);$open=@{};$ov=@{};$cl=@()
 $s1=@(Snapshot)
 while($fr.Count){
 $nx=@()
-foreach($p in $s1|?{$_.parentPid -in $fr -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){
-$sn[$p.pid]=$true;$nx+=$p.pid
-$c=OpenVerified $p $true
-$s=if(-not $c.ok){$c.status}elseif(-not [XacpxNativeProcess]::Alive($c.handle)){'already-exited'}elseif([XacpxNativeProcess]::Kill($c.handle)){if([XacpxNativeProcess]::WaitDead($c.handle)){'killed'}else{'kill-requested-unconfirmed'}}else{if([XacpxNativeProcess]::LastError()-eq 5){'access-denied'}else{'query-failed'}}
-if($c.ok){$open[$p.pid]=$c.handle}else{try{[XacpxNativeProcess]::Close($c.handle)}catch{}}
-$out+=@{pid=$p.pid;outcome=$s;creationDate=$p.creationDate;commandLine=$p.commandLine;executablePath=$p.executablePath}
-}
+foreach($p in $s1|?{$_.parentPid -in $fr -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){$sn[$p.pid]=$true;$cl+=@($p);$nx+=$p.pid}
 $fr=$nx
 }
 try {
+foreach($p in $cl){
+$c=OpenVerified $p $true
+if($c.ok){$open[$p.pid]=$c.handle}else{$ov[$p.pid]=$c.status;CL $c.handle}
+}
 $lf=@()
-$s2=@(Snapshot)
-foreach($p in $s2|?{($_.parentPid -eq $pp -or $sn.ContainsKey($_.parentPid)) -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){
-if($p.parentPid -eq $pp -or $open.ContainsKey($p.parentPid)){$lf+=@{pid=$p.pid;parentPid=$p.parentPid;creationDate=$p.creationDate;commandLine=$p.commandLine;executablePath=$p.executablePath}}
+foreach($p in $(Snapshot)|?{($_.parentPid -eq $pp -or $open.ContainsKey($_.parentPid)) -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){
+$c=OpenVerified $p $true
+if($c.ok){$open[$p.pid]=$c.handle;$lf+=@($p)}else{CL $c.handle}
+}
+foreach($p in @($cl)+@($lf)){
+if(!($s=$ov[$p.pid])){$h=$open[$p.pid];$s=if(-not [XacpxNativeProcess]::Alive($h)){'already-exited'}elseif([XacpxNativeProcess]::Kill($h)){if([XacpxNativeProcess]::WaitDead($h)){'killed'}else{'kill-requested-unconfirmed'}}else{if([XacpxNativeProcess]::LastError()-eq 5){'access-denied'}else{'query-failed'}}}
+$out+=@{pid=$p.pid;outcome=$s;creationDate=$p.creationDate;commandLine=$p.commandLine;executablePath=$p.executablePath}
 }
 } finally {$open.Values|%{try{[XacpxNativeProcess]::Close($_)}catch{}}}
-$vf=!@($out|?{$_.outcome -notin $safe}).Count -and !$lf.Count
+$vf=!@($out|?{$_.outcome -notin 'killed','already-exited'}).Count -and !$lf.Count
 Write-Output (@{verified=$vf;outcomes=$out;leftover=$lf}|ConvertTo-Json -Depth 8 -Compress);exit 0
 }
 if($request.action -eq 'terminate-one-cim'){
