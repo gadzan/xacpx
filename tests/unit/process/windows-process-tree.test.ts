@@ -556,7 +556,7 @@ windowsTest("real worker terminates a full 4-level tree through terminateWindows
   const rootProcess = spawn("node", [chain, "4", dir], { stdio: "ignore" });
   const pids: number[] = [];
   try {
-    for (let i = 0; i < 300 && pids.length < 5; i += 1) {
+    for (let i = 0; i < 300 && pids.length < 4; i += 1) {
       const found: number[] = [];
       for (let d = 1; d <= 4; d += 1) {
         try {
@@ -567,9 +567,10 @@ windowsTest("real worker terminates a full 4-level tree through terminateWindows
         }
       }
       if (found.length > pids.length) pids.length = 0, pids.push(...found);
-      if (pids.length < 5) await new Promise((resolve) => setTimeout(resolve, 50));
+      if (pids.length < 4) await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    expect(pids).toHaveLength(5);
+    // The chain writes pid-1..pid-4 (the root process pid is separate).
+    expect(pids).toHaveLength(4);
 
     // terminate-tree needs the ROOT's verified creationDate — probe it.
     const probe = await probeWindowsProcessIdentity(rootProcess.pid!, { workerDeadlineMs: 30_000 });
