@@ -384,7 +384,7 @@ if($request.action -eq 'terminate-descendants-of'){
     }$front=$next}
   Write-Output (@{rootOutcome='killed';outcomes=$out}|ConvertTo-Json -Depth 8 -Compress);exit 0
 }
-if($request.action -eq 'terminate-one-cim'){if($request.action -eq 'terminate-one-cim'){
+if($request.action -eq 'terminate-one-cim'){
   $target=[pscustomobject]@{pid=[int]$request.target.pid;creationDate=[string]$request.target.creationDate;commandLine=$request.target.commandLine;executablePath=$request.target.executablePath}
   $check=OpenVerified $target $true
   if(!$check.ok){Write-Output (@{outcome=$check.status} | ConvertTo-Json -Compress);exit 0}
