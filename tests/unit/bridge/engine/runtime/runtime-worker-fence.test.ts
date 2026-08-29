@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -25,6 +25,7 @@ function record(overrides: Partial<RuntimeWorkerFenceRecord> = {}): RuntimeWorke
     ...overrides,
   };
 }
+
 /** Spawns a detached long-lived process that is its own group leader (POSIX).
  *  The 150ms settle is a real OS-process start wait — no fake timer can stand in. */
 async function spawnStubborn(): Promise<ChildProcess> {
@@ -48,17 +49,85 @@ test("fence store: atomic write/read roundtrip and remove", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-fence-store-"));
   try {
     const fence = new RuntimeWorkerFence(dir);
-    expect(await fence.read(KEY)).toBeNull();
+    expect(await fence.read(KEY)).toEqual({ kind: "absent" });
     await fence.write(record({ pid: 777 }));
     const read = await fence.read(KEY);
-    expect(read?.pid).toBe(777);
-    expect(read?.kind).toBe("runtime-worker-owner");
+    expect(read.kind).toBe("present");
+    if (read.kind === "present") {
+      expect(read.record.pid).toBe(777);
+      expect(read.record.kind).toBe("runtime-worker-owner");
+    }
     await fence.remove(KEY);
-    expect(await fence.read(KEY)).toBeNull();
+    expect(await fence.read(KEY)).toEqual({ kind: "absent" });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("fence store: corrupt JSON is UNREADABLE, never absent (round 30 Blocking 1)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-corrupt-"));
+  try {
+    const fence = new RuntimeWorkerFence(dir);
+    await fence.write(record());
+    const path = join(dir, `${encodeURIComponent(KEY)}.json`);
+    await writeFile(path, "{ this is not json");
+    const read = await fence.read(KEY);
+    expect(read.kind).toBe("unreadable");
+    if (read.kind === "unreadable") expect(read.reason).toContain("corrupt");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("fence store: foreign schema / key mismatch is UNREADABLE (round 30 Blocking 1)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-schema-"));
+  try {
+    const fence = new RuntimeWorkerFence(dir);
+    const path = join(dir, `${encodeURIComponent(KEY)}.json`);
+    await writeFile(path, JSON.stringify({ kind: "something-else", pid: 1 }));
+    expect((await fence.read(KEY)).kind).toBe("unreadable");
+    await writeFile(path, JSON.stringify({ ...record(), logicalSessionId: "OTHER" }));
+    expect((await fence.read(KEY)).kind).toBe("unreadable");
+    await writeFile(path, JSON.stringify({ ...record(), pid: -5 }));
+    expect((await fence.read(KEY)).kind).toBe("unreadable");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("fence store: unreadable I/O (EACCES) is UNREADABLE, never absent (round 30 Blocking 1)", async () => {
+  if (process.platform === "win32") return; // POSIX permission model only
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-eacces-"));
+  try {
+    const fence = new RuntimeWorkerFence(dir);
+    await fence.write(record());
+    await chmod(join(dir, `${encodeURIComponent(KEY)}.json`), 0o000);
+    const read = await fence.read(KEY);
+    // Running as root would bypass the mode bits — only assert when it bit.
+    if (read.kind === "unreadable") expect(read.reason).toBeTruthy();
+    else expect(process.getuid?.()).toBe(0);
+  } finally {
+    await chmod(join(dir, `${encodeURIComponent(KEY)}.json`), 0o644).catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("manager acquire: corrupt fence refuses the spawn with zero workers (round 30 Blocking 1)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-corrupt-mgr-"));
+  const fenceDir = join(dir, "worker-fences");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await writeFile(entry, "process.stdin.on('data', () => {});");
+    const fence = new RuntimeWorkerFence(fenceDir);
+    await fence.write(record({ pid: 999 }));
+    await writeFile(join(fenceDir, `${encodeURIComponent(KEY)}.json`), "CORRUPT-{");
+    const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+    await expect(manager.acquire(KEY)).rejects.toThrow(/UNREADABLE/);
+    expect(manager.get(KEY)).toBeUndefined();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
 
 test("fence discharge (POSIX): live orphan group is killed and discharge verified", async () => {
   if (process.platform === "win32") return;
@@ -99,39 +168,56 @@ test("fence discharge (POSIX): EPERM group kill refuses — never a silent disch
 });
 
 test("fence discharge (Windows): never-verified worker could not have adapters — discharged", async () => {
-  let probed = 0;
+  // Round 30 Blocking 2 makes this a hard invariant: the durable admission
+  // barrier means a never-verified fence cannot have entered a business RPC.
+  let terminated = 0;
   const outcome = await dischargeRuntimeWorkerFence(record({ bootstrapVerified: false, creationDate: null }), {
     platform: "win32",
-    probeIdentity: async () => {
-      probed += 1;
-      return { status: "missing" };
-    },
-  });
-  expect(outcome).toBe("discharged");
-  expect(probed).toBe(0);
-});
-
-test("fence discharge (Windows): reused pid REFUSES — parentPid edges are ambiguous", async () => {
-  let terminated = 0;
-  const outcome = await dischargeRuntimeWorkerFence(record({ bootstrapVerified: true, creationDate: "133800000000000000" }), {
-    platform: "win32",
-    probeIdentity: async () => ({ status: "found", identity: { pid: 4242, creationDate: "133800000000999999", executablePath: "C:\\other.exe" } }),
     terminateDescendants: async () => {
       terminated += 1;
       return { verified: true, outcomes: [], leftover: [] };
     },
   });
-  expect(outcome).toBe("refused");
+  expect(outcome).toBe("discharged");
   expect(terminated).toBe(0);
 });
 
-test("fence discharge (Windows): same-identity orphaned worker tree converges via descendants-of", async () => {
-  const outcome = await dischargeRuntimeWorkerFence(record({ bootstrapVerified: true, creationDate: "133800000000000000" }), {
-    platform: "win32",
-    probeIdentity: async () => ({ status: "found", identity: { pid: 4242, creationDate: "133800000000000000", executablePath: "C:\\worker.exe" } }),
-    terminateDescendants: async () => ({ verified: true, outcomes: [], leftover: [] }),
-  });
+test("fence discharge (Windows): verified record converges THROUGH the in-transaction parent gate (round 30 Blocking 3)", async () => {
+  let seenPid = 0;
+  let seenFingerprint = "";
+  const outcome = await dischargeRuntimeWorkerFence(
+    record({ pid: 4242, creationDate: "133800000000000000", bootstrapVerified: true }),
+    {
+      platform: "win32",
+      terminateDescendants: async (parentPid, expectedCreationDate) => {
+        seenPid = parentPid;
+        seenFingerprint = expectedCreationDate;
+        return { verified: true, outcomes: [], leftover: [] };
+      },
+    },
+  );
   expect(outcome).toBe("discharged");
+  expect(seenPid).toBe(4242);
+  // The expected parent fingerprint MUST ride into the kill transaction —
+  // a probe result is a momentary observation, not an identity capability.
+  expect(seenFingerprint).toBe("133800000000000000");
+});
+
+test("fence discharge (Windows): gate failure (dead/replaced root) refuses — no bare-pid kill", async () => {
+  let calls = 0;
+  const outcome = await dischargeRuntimeWorkerFence(
+    record({ pid: 4242, creationDate: "133800000000000000", bootstrapVerified: true }),
+    {
+      platform: "win32",
+      terminateDescendants: async () => {
+        calls += 1;
+        // Simulates the in-transaction gate observing dead/replaced parent.
+        return { verified: false, outcomes: [], leftover: [] };
+      },
+    },
+  );
+  expect(outcome).toBe("refused");
+  expect(calls).toBe(1);
 });
 
 async function withFakeWorker(entry: string): Promise<void> {
@@ -175,12 +261,15 @@ test("host restart: undischarged fence over a live orphan is discharged BEFORE t
     await exited(orphan);
     expect(orphan.exitCode === null ? orphan.signalCode : orphan.exitCode).not.toBeNull();
     const refenced = await fence.read(KEY);
-    expect(refenced?.pid).toBe(worker.ref.pid);
-    expect(worker.ref.pid).not.toBe(orphan.pid);
+    expect(refenced.kind).toBe("present");
+    if (refenced.kind === "present") {
+      expect(refenced.record.pid).toBe(worker.ref.pid);
+      expect(worker.ref.pid).not.toBe(orphan.pid);
+    }
     // Verified release removes the fence.
     worker.lifecycle = "stopped";
     await manager.release(KEY, worker);
-    expect(await fence.read(KEY)).toBeNull();
+    expect((await fence.read(KEY)).kind).toBe("absent");
     await manager.shutdownAll().catch(() => {});
   } finally {
     orphan.kill("SIGKILL");
@@ -192,7 +281,7 @@ test("host restart: an undischargeable Windows fence refuses the second owner sp
   const dir = await mkdtemp(join(tmpdir(), "rt-fence-refuse-"));
   const fenceDir = join(dir, "worker-fences");
   const fence = new RuntimeWorkerFence(fenceDir);
-  // PID-reused record: discharge must refuse, so acquire must not spawn.
+  // In-transaction gate observes a replaced/dead parent → unverified → refused.
   await fence.write(record({ pid: 4242, creationDate: "133800000000000000", bootstrapVerified: true }));
   try {
     const entry = join(dir, "fake-worker.mjs");
@@ -202,7 +291,7 @@ test("host restart: an undischargeable Windows fence refuses the second owner sp
       fenceDir,
       clientDeps: {
         platform: "win32",
-        probeWindowsIdentity: async () => ({ status: "found", identity: { pid: 4242, creationDate: "133899999999999999", executablePath: "C:\\reused.exe" } }),
+        terminateDescendantsOf: async () => ({ verified: false, outcomes: [], leftover: [] }),
       },
     });
     await expect(manager.acquire(KEY)).rejects.toThrow(/durable ownership fence/);

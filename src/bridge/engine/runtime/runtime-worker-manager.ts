@@ -99,11 +99,13 @@ export class RuntimeWorkerManager {
       (client, code) => this.handleExit(logicalSessionId, client, code),
       {
         ...this.options.clientDeps,
-        // Fence identity upgrade: once the Windows probe verifies the worker,
-        // the durable record gains its creationDate (G10 fence semantics).
-        onIdentityVerified: (client) => {
-          this.options.clientDeps?.onIdentityVerified?.(client);
-          void this.writeFence(logicalSessionId, client);
+        // Round 30 Blocking 2 — durable admission barrier: the verified
+        // fence MUST be on disk before the client marks bootstrap admissible
+        // and the first business RPC may enter. Awaited by the client's
+        // bootstrap; a failure rejects bootstrap and kills the worker.
+        onIdentityVerified: async (client) => {
+          await this.options.clientDeps?.onIdentityVerified?.(client);
+          await this.writeFence(logicalSessionId, client);
         },
       },
     );
@@ -142,16 +144,27 @@ export class RuntimeWorkerManager {
   private async dischargeStaleFence(logicalSessionId: string): Promise<void> {
     const fence = this.fence();
     if (!fence) return;
-    const record = await fence.read(logicalSessionId);
-    if (!record) return;
+    // Round 30 Blocking 1: only a PROVEN absence skips the fence check.
+    // Corrupt JSON, a schema mismatch, or any read failure refuses the spawn
+    // — unreadable ownership evidence never means "no owner".
+    const read = await fence.read(logicalSessionId);
+    if (read.kind === "absent") return;
+    if (read.kind === "unreadable") {
+      throw new WorkerTeardownPendingError(
+        `durable ownership fence for session "${logicalSessionId}" is UNREADABLE (${read.reason}); ` +
+          `refusing to spawn a second owner over evidence that cannot be read`,
+      );
+    }
+    const record = read.record;
     // A live, healthy client for this key means the fence is ours and current.
     const existing = this.workersByKey.get(logicalSessionId);
     if (existing?.alive && existing.lifecycle !== "failed" && existing.lifecycle !== "cooling") return;
     const deps = this.options.clientDeps;
     const outcome = await dischargeRuntimeWorkerFence(record, {
       platform: deps?.platform,
-      probeIdentity: deps?.probeWindowsIdentity,
-      terminateDescendants: deps?.terminateDescendantsOf,
+      terminateDescendants: deps?.terminateDescendantsOf
+        ? (parentPid, expectedCreationDate) => deps.terminateDescendantsOf!(parentPid, { expectedParentCreationDate: expectedCreationDate })
+        : undefined,
       killGroup: deps?.killProcessGroup,
     });
     if (outcome === "discharged") {

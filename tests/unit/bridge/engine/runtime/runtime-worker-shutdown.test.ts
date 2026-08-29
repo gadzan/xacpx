@@ -31,13 +31,16 @@ test("shutdown ACK: worker does NOT self-exit; it exits only via stdin-EOF conve
     windowsHide: true,
   });
   const ackLines: string[] = [];
+  const errorLines: string[] = [];
   let buffer = "";
   child.stdout!.on("data", (chunk: Buffer) => {
     buffer += chunk.toString();
     let idx: number;
     while ((idx = buffer.indexOf("\n")) >= 0) {
-      ackLines.push(buffer.slice(0, idx));
+      const frame = buffer.slice(0, idx);
       buffer = buffer.slice(idx + 1);
+      ackLines.push(frame);
+      if (frame.includes('"ok":false')) errorLines.push(frame);
     }
   });
   try {
@@ -51,7 +54,21 @@ test("shutdown ACK: worker does NOT self-exit; it exits only via stdin-EOF conve
     // behavior: the worker must still be alive with stdin held open.
     await new Promise((resolve) => setTimeout(resolve, 10_500));
     expect(child.exitCode).toBeNull();
-    expect(child.signalCode).toBeNull();
+    expect(ackLines.some((line) => line.includes('"ok":true') && line.includes('"s1"'))).toBe(true);
+    // Round 30 Medium: exactly ONE response for the shutdown request — the
+    // old fall-through emitted a second "unsupported" error frame.
+    expect(ackLines.filter((line) => line.includes('"s1"'))).toHaveLength(1);
+    // Admission is closed: a late business RPC gets exactly one stable
+    // RUNTIME_WORKER_TEARDOWN_PENDING error — never a silent success, never
+    // an entry into the quiescing worker.
+    child.stdin!.write(`${JSON.stringify({ id: "late-1", method: "ensure", params: {} })}\n`);
+    const lateDeadline = Date.now() + 3_000;
+    while (Date.now() < lateDeadline && errorLines.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(errorLines).toHaveLength(1);
+    expect(errorLines[0]).toContain("RUNTIME_WORKER_TEARDOWN_PENDING");
+    expect(errorLines[0]).toContain('"late-1"');
     // Now the host "dies": stdin EOF → convergence → clean exit.
     child.stdin!.end();
     const exitCode = await Promise.race([

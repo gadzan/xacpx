@@ -6,6 +6,7 @@
  */
 import { createInterface } from "node:readline";
 import { convergeOrphansBeforeExit } from "./worker-eof";
+import { createDispatchGate } from "./runtime-worker-gate";
 
 import {
   createXacpxRuntimeAdapter,
@@ -42,7 +43,7 @@ interface WorkerState {
   activeTurn?: XacpxTurnHandle;
   shuttingDown: boolean;
 }
-
+const gate = createDispatchGate();
 const state: WorkerState = { shuttingDown: false };
 
 function respond(response: RuntimeWorkerResponse): void {
@@ -179,14 +180,12 @@ async function dispatch(request: RuntimeWorkerRequest): Promise<void> {
   if (method === "shutdown") {
     state.shuttingDown = true;
     respond({ id, ok: true, result: {} });
-    // Plan §16 / G10: Do NOT call process.exit(0) — not immediately, and not
-    // on any fallback timer. After the ACK the worker quiesces and exactly one
-    // of two things happens:
-    //   - the host terminates the process tree (verified kill), or
-    //   - the host dies → stdin EOF → convergeOrphansBeforeExit discharges
-    //     ownership with deliberately NO exit cap (a timed bare exit here could
-    //     cut off a >10s Windows convergence mid-transaction and orphan the
-    //     adapter tree while ownership reads "unverified").
+    // Exactly ONE response (round 30 Medium): the ACK IS the reply — falling
+    // through to the switch used to emit a second "unsupported" error frame.
+    // Admission closes here too: the host is tearing this worker down, so
+    // new business RPCs are refused instead of racing the teardown.
+    void gate.close();
+    return;
   }
   try {
     switch (method) {
@@ -259,7 +258,14 @@ const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
 rl.on("line", (line) => {
   const parsed = parseWorkerLine(line);
   if (!parsed || parsed.kind !== "request") return;
-  void dispatch(parsed.message);
+  // Round 30 Blocking 4: once shutdown/EOF closed admission, a late RPC is
+  // refused with the stable teardown code — it must never spawn or mutate
+  // the owner tree behind a converging worker.
+  if (!gate.admit()) {
+    respond({ id: parsed.message.id, ok: false, error: { code: "RUNTIME_WORKER_TEARDOWN_PENDING", message: "runtime worker is shutting down; refusing new dispatch" } });
+    return;
+  }
+  void gate.track(dispatch(parsed.message));
 });
 // stdin EOF means the host is gone (crash or deliberate kill path). The worker
 // discharges its orphan tree (plan §16 orphan convergence) BEFORE exiting —
@@ -274,9 +280,16 @@ rl.on("line", (line) => {
 // published). While it lingers, it is still ALIVE — the descendant tree has
 // its parent and is not orphaned — so exiting without discharge is never the
 // lesser evil (plan §16 fail-closed).
+// Round 30 Blocking 4: convergence starts ONLY after every in-flight
+// dispatch settled. An ensure that is mid-flight when the host dies can
+// still spawn the adapter AFTER a snapshot — a "verified empty" snapshot
+// taken during that window would orphan the late child. Quiesce first; if
+// an operation cannot settle, the worker stays alive and retrying.
 process.stdin.on("end", () => {
   const attempt = (): void => {
-    void convergeOrphansBeforeExit({ agentCommand: () => state.ensureParams?.agent })
+    void gate
+      .close()
+      .then(() => convergeOrphansBeforeExit({ agentCommand: () => state.ensureParams?.agent }))
       .then(() => process.exit(0))
       .catch(() => setTimeout(attempt, 1_000));
   };

@@ -24,7 +24,6 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import {
-  probeWindowsProcessIdentity,
   terminateWindowsDescendantsOf,
   type TerminateDescendantsResult,
 } from "../../../process/windows-process-tree";
@@ -40,12 +39,17 @@ export interface RuntimeWorkerFenceRecord {
   agent: string;
 }
 
+export type FenceReadResult =
+  | { kind: "absent" }
+  | { kind: "present"; record: RuntimeWorkerFenceRecord }
+  | { kind: "unreadable"; reason: string };
+
 export type FenceDischargeOutcome = "discharged" | "refused";
 
 export interface FenceDischargeDeps {
   platform?: NodeJS.Platform;
-  probeIdentity?: typeof probeWindowsProcessIdentity;
-  terminateDescendants?: (parentPid: number) => Promise<TerminateDescendantsResult>;
+  /** Verified in-transaction subtree terminator; MUST gate on the parent fingerprint. */
+  terminateDescendants?: (parentPid: number, expectedCreationDate: string) => Promise<TerminateDescendantsResult>;
   killGroup?: (pgid: number) => void;
   isProcessGroupAlive?: (pgid: number) => boolean;
   waitMs?: (ms: number) => Promise<void>;
@@ -99,22 +103,23 @@ export async function dischargeRuntimeWorkerFence(
     return !alive(record.pid) ? "discharged" : "refused";
   }
   if (!record.bootstrapVerified || !record.creationDate) {
-    // The identity probe never verified and no business RPC could enter the
-    // worker, so no adapter descendant can exist. The worker itself (if still
-    // alive after a host death) self-terminates via stdin-EOF convergence.
+    // The admission barrier (round 30 Blocking 2) makes this a hard
+    // invariant: a fence that never saw a verified bootstrap cannot have
+    // entered a business RPC, so no adapter descendant can exist. The worker
+    // itself (if still alive after a host death) self-terminates via
+    // stdin-EOF convergence.
     return "discharged";
   }
-  const probe = await (deps.probeIdentity ?? probeWindowsProcessIdentity)(record.pid);
-  if (probe.status === "unavailable") return "refused";
-  if (probe.status === "found" && probe.identity.creationDate !== record.creationDate) {
-    // PID reused by an unrelated process: parentPid edges are ambiguous and a
-    // tree kill could hit innocent processes — never kill on a reused pid.
-    return "refused";
-  }
-  // Worker still alive (same identity — orphaned by host death) or gone
-  // without pid reuse: parentPid edges unambiguously bound our tree.
-  const result = await (deps.terminateDescendants ?? ((parentPid: number) =>
-    terminateWindowsDescendantsOf(parentPid, { workerDeadlineMs: null })))(record.pid);
+  // Round 30 Blocking 3: identity is verified INSIDE the kill transaction
+  // (retained parent handle vs expected creation date). A dead, replaced, or
+  // unprobeable parent yields verified=false — refused, never a bare
+  // historical-pid kill. A momentary probe result is not an identity
+  // capability, so no separate probe pre-check exists.
+  const result = await (deps.terminateDescendants ?? ((parentPid: number, expectedCreationDate: string) =>
+    terminateWindowsDescendantsOf(parentPid, { expectedParentCreationDate: expectedCreationDate, workerDeadlineMs: null })))(
+    record.pid,
+    record.creationDate,
+  );
   return result.verified ? "discharged" : "refused";
 }
 
@@ -146,19 +151,35 @@ export class RuntimeWorkerFence {
     await rename(tmp, path);
   }
 
-  async read(logicalSessionId: string): Promise<RuntimeWorkerFenceRecord | null> {
+  /**
+   * Round 30 Blocking 1: fence evidence is NEVER interpreted as absent when
+   * it cannot be PROVEN absent. Only ENOENT reads as "absent"; corrupt JSON,
+   * an invalid schema, or any I/O failure reads as "unreadable" — the caller
+   * MUST refuse to spawn a second owner over evidence it cannot read.
+   */
+  async read(logicalSessionId: string): Promise<FenceReadResult> {
+    let raw: string;
     try {
-      const raw = JSON.parse(await readFile(this.pathFor(logicalSessionId), "utf8")) as Record<string, unknown>;
-      if (raw.kind !== "runtime-worker-owner") return null;
-      if (typeof raw.logicalSessionId !== "string" || raw.logicalSessionId !== logicalSessionId) return null;
-      if (!Number.isSafeInteger(raw.pid) || (raw.pid as number) <= 0) return null;
-      if (raw.creationDate !== null && typeof raw.creationDate !== "string") return null;
-      if (typeof raw.bootstrapVerified !== "boolean") return null;
-      if (typeof raw.startedAt !== "string" || typeof raw.agent !== "string") return null;
-      return raw as unknown as RuntimeWorkerFenceRecord;
-    } catch {
-      return null;
+      raw = await readFile(this.pathFor(logicalSessionId), "utf8");
+    } catch (error) {
+      if ((error as { code?: unknown } | null)?.code === "ENOENT") return { kind: "absent" };
+      return { kind: "unreadable", reason: error instanceof Error ? error.message : String(error) };
     }
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return { kind: "unreadable", reason: "corrupt JSON" };
+    }
+    if (parsed.kind !== "runtime-worker-owner") return { kind: "unreadable", reason: "unknown record kind" };
+    if (typeof parsed.logicalSessionId !== "string" || parsed.logicalSessionId !== logicalSessionId) {
+      return { kind: "unreadable", reason: "logicalSessionId mismatch" };
+    }
+    if (!Number.isSafeInteger(parsed.pid) || (parsed.pid as number) <= 0) return { kind: "unreadable", reason: "invalid pid" };
+    if (parsed.creationDate !== null && typeof parsed.creationDate !== "string") return { kind: "unreadable", reason: "invalid creationDate" };
+    if (typeof parsed.bootstrapVerified !== "boolean") return { kind: "unreadable", reason: "invalid bootstrapVerified" };
+    if (typeof parsed.startedAt !== "string" || typeof parsed.agent !== "string") return { kind: "unreadable", reason: "invalid metadata" };
+    return { kind: "present", record: parsed as unknown as RuntimeWorkerFenceRecord };
   }
 
   async remove(logicalSessionId: string): Promise<void> {

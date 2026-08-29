@@ -95,7 +95,7 @@ export type WindowsWorkerRequest =
   | { action: "identity"; pid: number }
   | { action: "token-snapshot"; token: string }
   | { action: "terminate-one-cim"; target: BatchTarget }
-  | { action: "terminate-descendants-of"; parentPid: number };
+  | { action: "terminate-descendants-of"; parentPid: number; epcd?: string };
 export type WindowsProbeStatus = { status: "found"; identity: WindowsProcessIdentity } | { status: "missing" | "unavailable" };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -300,15 +300,30 @@ export async function snapshotWindowsProcessesByToken(
   } catch { return null; }
 }
 
+export interface TerminateDescendantsOptions extends WindowsProcessWorkerOptions {
+  /**
+   * Round 30 Blocking 3: when set, the parent's identity (exact canonical
+   * creation time) is verified against a RETAINED handle INSIDE the kill
+   * transaction, before any child is attributed via parentPid edges. A dead
+   * or replaced parent fails the whole action closed (unverified, nothing
+   * killed) — a bare historical parent pid is never a kill authority.
+   */
+  expectedParentCreationDate?: string;
+}
+
 export async function terminateWindowsDescendantsOf(
   parentPid: number,
-  options: WindowsProcessWorkerOptions = {},
+  options: TerminateDescendantsOptions = {},
 ): Promise<TerminateDescendantsResult> {
   const unverified: TerminateDescendantsResult = { verified: false, outcomes: [], leftover: [] };
   if (!Number.isSafeInteger(parentPid) || parentPid <= 0) return unverified;
   try {
     const raw = await (options.runWorker ?? runPowerShellWorker)(
-      { action: "terminate-descendants-of", parentPid },
+      {
+        action: "terminate-descendants-of",
+        parentPid,
+        ...(options.expectedParentCreationDate !== undefined ? { epcd: options.expectedParentCreationDate } : {}),
+      },
       options.workerDeadlineMs === undefined ? 15_000 : options.workerDeadlineMs,
     );
     return decodeWindowsDescendantsResponse(raw, parentPid) ?? unverified;
@@ -336,9 +351,13 @@ async function runPowerShellWorker(request: WindowsWorkerRequest, deadlineMs: nu
     // here-strings), so piping the script leaves the worker producing no
     // output at all. `-EncodedCommand` (base64 UTF-16LE) delivers the script
     // intact — the same transport buildWindowsLauncherScript already uses.
-    // Ceiling: the encoded script must fit the 32767-char CreateProcess
-    // command line; keep the worker script compact.
-    const encodedScript = Buffer.from(WINDOWS_TREE_WORKER_SCRIPT, "utf16le").toString("base64");
+    // Round 30 Blocking 3: the descendants action runs its own script — the
+    // parent identity gate needs encoded-command budget, and each script
+    // must independently fit the CreateProcess command-line ceiling.
+    const script = request.action === "terminate-descendants-of"
+      ? WINDOWS_DESCENDANTS_WORKER_SCRIPT
+      : WINDOWS_TREE_WORKER_SCRIPT;
+    const encodedScript = Buffer.from(script, "utf16le").toString("base64");
     const child = spawn("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedScript], {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
@@ -371,6 +390,158 @@ async function runPowerShellWorker(request: WindowsWorkerRequest, deadlineMs: nu
     child.once("close", (code) => code === 0 ? finish() : finish(new Error(`Windows process worker failed (${code}): ${stderr}`)));
   });
 }
+
+// Dedicated script for terminate-descendants-of (round 30 Blocking 3): the
+// parent identity gate needs room inside the encoded command budget. Each
+// script owns one PowerShell process end-to-end (handle capture → kill).
+export const WINDOWS_DESCENDANTS_WORKER_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:XACPX_PROCESS_REQUEST)) | ConvertFrom-Json
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class XacpxNativeProcess {
+  [StructLayout(LayoutKind.Sequential)] public struct FILETIME { public uint Low; public uint High; }
+  [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetProcessTimes(IntPtr h, out FILETIME c, out FILETIME e, out FILETIME k, out FILETIME u);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool QueryFullProcessImageName(IntPtr h, uint flags, StringBuilder value, ref uint size);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool TerminateProcess(IntPtr h, uint code);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern uint WaitForSingleObject(IntPtr h, uint ms);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool CloseHandle(IntPtr h);
+  public static IntPtr Open(uint pid) { return OpenProcess(0x00101001u, false, pid); }
+  public static int LastError() { return Marshal.GetLastWin32Error(); }
+  public static string Creation(IntPtr h) { FILETIME c,e,k,u; if(!GetProcessTimes(h,out c,out e,out k,out u)) return null; return (((ulong)c.High << 32) | c.Low).ToString(); }
+  public static string Image(IntPtr h) { uint n=32768; var b=new StringBuilder((int)n); return QueryFullProcessImageName(h,0,b,ref n) ? b.ToString() : null; }
+  public static bool Alive(IntPtr h) { return WaitForSingleObject(h,0)==0x102u; }
+  public static bool Kill(IntPtr h) { return TerminateProcess(h,1); }
+  public static bool WaitDead(IntPtr h) { return WaitForSingleObject(h,2000)==0u; }
+  public static void Close(IntPtr h) { if(h!=IntPtr.Zero) CloseHandle(h); }
+}
+'@
+function Result($rootOutcome, $outcomes) { @{rootOutcome=$rootOutcome;outcomes=@($outcomes)} | ConvertTo-Json -Depth 8 -Compress }
+function Outcome($node, $status) {
+  @{ target=@{pid=[int]$node.pid;creationDate=[string]$node.creationDate;commandLine=$node.commandLine;executablePath=$node.executablePath}; outcome=$status; commandLine=$node.commandLine; executablePath=$node.executablePath }
+}
+function Snapshot {
+  $watch=[Diagnostics.Stopwatch]::StartNew()
+  $items=@(Get-CimInstance Win32_Process | ForEach-Object {
+    $ticks=$null
+    if($_.CreationDate){$ticks=$_.CreationDate.ToUniversalTime().ToFileTimeUtc().ToString()}
+    [pscustomobject]@{pid=[int]$_.ProcessId;parentPid=[int]$_.ParentProcessId;creationDate=$ticks;commandLine=$_.CommandLine;executablePath=$_.ExecutablePath}
+  })
+  # GH runners measure ~3s per CIM enumeration; 8s bounds while absorbing
+  # bursty snapshots.
+  if($watch.ElapsedMilliseconds -gt 8000){throw 'CIM enumeration exceeded 8 seconds'}
+  return $items
+}
+function OpenVerified($node, $cim) {
+  $h=[XacpxNativeProcess]::Open([uint32]$node.pid)
+  if($h -eq [IntPtr]::Zero){
+    $code=[XacpxNativeProcess]::LastError()
+    $status=if($code -eq 5){'access-denied'}elseif($code -eq 87 -or $code -eq 1168){'already-exited'}else{'query-failed'}
+    return @{ok=$false;status=$status;handle=$h}
+  }
+  $actual=[XacpxNativeProcess]::Creation($h)
+  if(!$actual){[XacpxNativeProcess]::Close($h);return @{ok=$false;status='query-failed';handle=[IntPtr]::Zero}}
+  $delta=[Numerics.BigInteger]::Abs([Numerics.BigInteger]::Parse($actual)-[Numerics.BigInteger]::Parse([string]$node.creationDate))
+  $same=if($cim){$delta -le 9}else{$delta -eq 0}
+  if(!$same){[XacpxNativeProcess]::Close($h);return @{ok=$false;status='skipped-replaced';handle=[IntPtr]::Zero}}
+  $image=[XacpxNativeProcess]::Image($h)
+  if(!$image){[XacpxNativeProcess]::Close($h);return @{ok=$false;status='query-failed';handle=[IntPtr]::Zero}}
+  if($node.executablePath -and ![string]::Equals([string]$node.executablePath,$image,[StringComparison]::OrdinalIgnoreCase)){
+    [XacpxNativeProcess]::Close($h);return @{ok=$false;status='skipped-replaced';handle=[IntPtr]::Zero}
+  }
+  return @{ok=$true;status=$null;handle=$h;image=$image}
+}
+
+function CL($h){try{[XacpxNativeProcess]::Close($h)}catch{}}
+function VF($p){$c=OpenVerified $p $true;if($c.ok){$open[$p.pid]=$c.handle}else{$ov[$p.pid]=$c.status;CL $c.handle}}
+if($request.action -eq 'identity'){
+  $h=[XacpxNativeProcess]::Open([uint32]$request.pid)
+  if($h -eq [IntPtr]::Zero){
+    $code=[XacpxNativeProcess]::LastError()
+    $status=if($code -eq 87 -or $code -eq 1168){'missing'}else{'unavailable'}
+    Write-Output (@{status=$status} | ConvertTo-Json -Compress);exit 0
+  }
+  try {
+    $creation=[XacpxNativeProcess]::Creation($h);$image=[XacpxNativeProcess]::Image($h)
+    if(!$creation -or !$image){Write-Output (@{status='unavailable'} | ConvertTo-Json -Compress);exit 0}
+    $commandLine=$null
+    try {
+      $cim=Get-CimInstance Win32_Process -Filter ("ProcessId = "+[int]$request.pid)
+      if($cim -and $cim.CreationDate){
+        $cimCreation=$cim.CreationDate.ToUniversalTime().ToFileTimeUtc().ToString()
+        $delta=[Numerics.BigInteger]::Abs([Numerics.BigInteger]::Parse($creation)-[Numerics.BigInteger]::Parse($cimCreation))
+        if($delta -le 9 -and [string]::Equals([string]$image,[string]$cim.ExecutablePath,[StringComparison]::OrdinalIgnoreCase)){
+          $commandLine=$cim.CommandLine
+        }
+      }
+    } catch {}
+    Write-Output (@{status='found';identity=@{pid=[int]$request.pid;creationDate=$creation;executablePath=$image;commandLine=$commandLine}} | ConvertTo-Json -Depth 4 -Compress)
+    exit 0
+  } finally {[XacpxNativeProcess]::Close($h)}
+}
+if($request.action -eq 'token-snapshot'){
+  $needle='--xacpx-owner-token '+[string]$request.token
+  $matches=@(Snapshot | Where-Object {$_.commandLine -and $_.commandLine.Contains($needle)})
+  Write-Output (@{items=$matches} | ConvertTo-Json -Depth 5 -Compress);exit 0
+}
+
+
+# G10: discovery precedes kill; S2 seeds from verified handles only.
+if($request.action -eq 'terminate-descendants-of'){
+$pp=[int]$request.parentPid
+$out=@();$sn=@{};$fr=@($pp);$open=@{};$ov=@{};$cl=@();$pok=$true
+# G10 round 30 Blocking 3: the parent identity gate runs INSIDE this kill
+# transaction. An expected creation date is verified against a RETAINED
+# handle before any child attribution; a dead, replaced, or unprobeable
+# parent fails closed (no bare historical-pid kill).
+$ps='alive'
+$e=$request.epcd
+if($e){
+$h=[XacpxNativeProcess]::Open([uint32]$pp)
+if($h -eq [IntPtr]::Zero){
+$c=[XacpxNativeProcess]::LastError()
+$ps=if($c -eq 5){'access-denied'}elseif($c -eq 87 -or $c -eq 1168){'already-exited'}else{'query-failed'}
+}else{
+$a=[XacpxNativeProcess]::Creation($h)
+if(!$a -or $a -ne [string]$e){[XacpxNativeProcess]::Close($h);$ps='skipped-replaced'}
+else{$sn[$pp]=$true;$open[$pp]=$h}
+}
+}
+if($ps -ne 'alive'){Write-Output (@{verified=$false;parentStatus=$ps;outcomes=@();leftover=@()}|ConvertTo-Json -Depth 5 -Compress);exit 0}
+$s1=@(Snapshot)
+while($fr.Count){
+$nx=@()
+foreach($p in $s1|?{$_.parentPid -in $fr -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){$sn[$p.pid]=$true;$cl+=@($p);$nx+=$p.pid}
+$fr=$nx
+}
+try {
+foreach($p in $cl){VF $p}
+$lf=@()
+$s2=@(Snapshot)
+$fr=@($pp)+@($open.Keys)
+while($fr.Count){
+$nx=@()
+foreach($p in $s2|?{$_.parentPid -in $fr -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){
+$sn[$p.pid]=$true
+VF $p
+$lf+=@($p)
+$nx+=$p.pid
+}
+$fr=$nx
+}
+foreach($p in $cl){
+if($open.ContainsKey($p.pid)){$h=$open[$p.pid];$s=if(-not [XacpxNativeProcess]::Alive($h)){'already-exited'}elseif([XacpxNativeProcess]::Kill($h)){if([XacpxNativeProcess]::WaitDead($h)){'killed'}else{'kill-requested-unconfirmed'}}else{if([XacpxNativeProcess]::LastError()-eq 5){'access-denied'}else{'query-failed'}}}else{$s=$ov[$p.pid]}
+$out+=@{pid=$p.pid;outcome=$s;creationDate=$p.creationDate;commandLine=$p.commandLine;executablePath=$p.executablePath}
+}
+if($e){$h=$open[$pp];if([XacpxNativeProcess]::Alive($h)){if([XacpxNativeProcess]::Kill($h)){if(-not [XacpxNativeProcess]::WaitDead($h)){$pok=$false}}else{$pok=$false}}}
+} finally {$open.Values|%{CL $_}}
+$vf=!@($out|?{$_.outcome -notin 'killed','already-exited'}).Count -and !$lf.Count -and $pok
+Write-Output (@{verified=$vf;outcomes=$out;leftover=$lf}|ConvertTo-Json -Depth 8 -Compress);exit 0
+}
+`;
 
 // One PowerShell process owns every verified handle from identity check through
 // termination. No verified PID is ever handed to Stop-Process/taskkill later.
@@ -468,39 +639,6 @@ if($request.action -eq 'token-snapshot'){
   $needle='--xacpx-owner-token '+[string]$request.token
   $matches=@(Snapshot | Where-Object {$_.commandLine -and $_.commandLine.Contains($needle)})
   Write-Output (@{items=$matches} | ConvertTo-Json -Depth 5 -Compress);exit 0
-}
-# G10: discovery precedes kill; S2 seeds from verified handles only.
-if($request.action -eq 'terminate-descendants-of'){
-$pp=[int]$request.parentPid
-$out=@();$sn=@{};$fr=@($pp);$open=@{};$ov=@{};$cl=@()
-$s1=@(Snapshot)
-while($fr.Count){
-$nx=@()
-foreach($p in $s1|?{$_.parentPid -in $fr -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){$sn[$p.pid]=$true;$cl+=@($p);$nx+=$p.pid}
-$fr=$nx
-}
-try {
-foreach($p in $cl){VF $p}
-$lf=@()
-$s2=@(Snapshot)
-$fr=@($pp)+@($open.Keys)
-while($fr.Count){
-$nx=@()
-foreach($p in $s2|?{$_.parentPid -in $fr -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){
-$sn[$p.pid]=$true
-VF $p
-$lf+=@($p)
-$nx+=$p.pid
-}
-$fr=$nx
-}
-foreach($p in $cl){
-if($open.ContainsKey($p.pid)){$h=$open[$p.pid];$s=if(-not [XacpxNativeProcess]::Alive($h)){'already-exited'}elseif([XacpxNativeProcess]::Kill($h)){if([XacpxNativeProcess]::WaitDead($h)){'killed'}else{'kill-requested-unconfirmed'}}else{if([XacpxNativeProcess]::LastError()-eq 5){'access-denied'}else{'query-failed'}}}else{$s=$ov[$p.pid]}
-$out+=@{pid=$p.pid;outcome=$s;creationDate=$p.creationDate;commandLine=$p.commandLine;executablePath=$p.executablePath}
-}
-} finally {$open.Values|%{CL $_}}
-$vf=!@($out|?{$_.outcome -notin 'killed','already-exited'}).Count -and !$lf.Count
-Write-Output (@{verified=$vf;outcomes=$out;leftover=$lf}|ConvertTo-Json -Depth 8 -Compress);exit 0
 }
 if($request.action -eq 'terminate-one-cim'){
   $target=[pscustomobject]@{pid=[int]$request.target.pid;creationDate=[string]$request.target.creationDate;commandLine=$request.target.commandLine;executablePath=$request.target.executablePath}

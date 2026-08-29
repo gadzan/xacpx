@@ -32,8 +32,14 @@ export interface RuntimeWorkerClientDeps {
   probeWindowsIdentity?: (pid: number) => Promise<WindowsProbeStatus>;
   terminateProcessTree?: typeof terminateProcessTree;
   platform?: NodeJS.Platform;
-  /** Invoked once the Windows identity probe verifies (fence identity upgrade). */
-  onIdentityVerified?: (client: RuntimeWorkerClient) => void;
+  /**
+   * Durable admission barrier (round 30 Blocking 2): invoked with the
+   * verified Windows identity and awaited by bootstrap — the returned promise
+   * must resolve only when the verified fence is durably on disk. Bootstrap
+   * (and therefore every business RPC) stays blocked until it does; a
+   * rejection fails the worker closed.
+   */
+  onIdentityVerified?: (client: RuntimeWorkerClient) => void | Promise<void>;
   /** Fence discharge seams (tests): verified orphan-tree terminator + POSIX group kill. */
   terminateDescendantsOf?: typeof terminateWindowsDescendantsOf;
   killProcessGroup?: (pgid: number) => void;
@@ -112,7 +118,7 @@ export class RuntimeWorkerClient {
     const isWindows = process.platform === "win32" || Boolean(this.deps?.probeWindowsIdentity);
     if (isWindows && this.ref.pid > 0) {
       const probeFn = this.deps?.probeWindowsIdentity ?? probeWindowsProcessIdentity;
-      this.bootstrapPromise = probeFn(this.ref.pid).then((res) => {
+      this.bootstrapPromise = probeFn(this.ref.pid).then(async (res) => {
         if (res.status !== "found") {
           this.lifecycle = "failed";
           try {
@@ -126,8 +132,26 @@ export class RuntimeWorkerClient {
         }
         // Immutable identity: once captured, never mutated or re-probed
         this.ref.creationDate = res.identity.creationDate;
+        // Round 30 Blocking 2 — durable admission barrier: the verified
+        // fence must be ON DISK before bootstrap admissibility. In-memory
+        // verification alone races the business RPC that spawns the
+        // adapter: a host crash in that window leaves a fence that reads
+        // "never verified" while an adapter lives.
+        try {
+          await this.deps?.onIdentityVerified?.(this);
+        } catch (error) {
+          this.lifecycle = "failed";
+          try {
+            this.child?.kill("SIGTERM");
+          } catch {
+            // already dying
+          }
+          throw new WorkerBootstrapError(
+            `durable worker-ownership fence admission failed for worker pid ${this.ref.pid}: ` +
+              `${error instanceof Error ? error.message : String(error)}; no business RPC entered, worker terminated`,
+          );
+        }
         this._bootstrapVerified = true;
-        this.deps?.onIdentityVerified?.(this);
       });
       this.bootstrapPromise.catch(() => {});
     } else {

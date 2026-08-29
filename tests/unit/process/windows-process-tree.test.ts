@@ -13,6 +13,7 @@ import {
   terminateWindowsResidual,
   terminateWindowsProcessTree,
   WINDOWS_TREE_WORKER_SCRIPT,
+  WINDOWS_DESCENDANTS_WORKER_SCRIPT,
   type BatchTarget,
   terminateWindowsDescendantsOf,
 } from "../../../src/process/windows-process-tree";
@@ -510,8 +511,8 @@ test("descendants protocol: S2 frontier seeds from verified handles, never unver
   // handle-retained) and the worker root only.
   const seed = "$fr=@($pp)+@($open.Keys)";
   const leakySeed = "$fr=@($pp)+@($cl.pid)";
-  expect(WINDOWS_TREE_WORKER_SCRIPT.includes(seed)).toBe(true);
-  expect(WINDOWS_TREE_WORKER_SCRIPT.includes(leakySeed)).toBe(false);
+  expect(WINDOWS_DESCENDANTS_WORKER_SCRIPT.includes(seed)).toBe(true);
+  expect(WINDOWS_DESCENDANTS_WORKER_SCRIPT.includes(leakySeed)).toBe(false);
 });
 
 test("terminate-tree honors an explicit null deadline (outer SIGKILL disabled, round 29 Blocking 3)", async () => {
@@ -619,3 +620,74 @@ windowsTest("real worker terminates a full 4-level tree through terminateWindows
     await rm(dir, { recursive: true, force: true });
   }
 }, 60_000);
+
+test("descendants-of: a wrong expected parent fingerprint decodes as unverified — nothing attributed", async () => {
+  // Round 30 Blocking 3: the gate-fail payload (parentStatus, empty arrays)
+  // has verified=false while recomputed-from-empty is true — the decoder
+  // must REJECT that inconsistency so the caller reports unverified.
+  let invoked = false;
+  const result = await terminateWindowsDescendantsOf(100, {
+    expectedParentCreationDate: root.creationDate,
+    runWorker: async (request, deadlineMs) => {
+      invoked = true;
+      expect(deadlineMs).toBeNull();
+      expect((request as { epcd?: string }).epcd).toBe(root.creationDate);
+      return { verified: false, parentStatus: "skipped-replaced", outcomes: [], leftover: [] };
+    },
+  });
+  expect(invoked).toBe(true);
+  expect(result.verified).toBe(false);
+  expect(result.outcomes).toEqual([]);
+  expect(result.leftover).toEqual([]);
+});
+
+windowsTest("real descendants-of with a WRONG parent fingerprint never touches the live parent", async () => {
+  // The in-transaction gate is the pid-reuse defense: a held handle compared
+  // against the expected creation date — mismatch fails the whole action
+  // closed and the innocent live process is untouched.
+  const victim = spawn("node", ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const probe = await probeWindowsProcessIdentity(victim.pid!, { workerDeadlineMs: 30_000 });
+    expect(probe.status).toBe("found");
+
+    const result = await terminateWindowsDescendantsOf(victim.pid!, {
+      expectedParentCreationDate: "133800000000000000", // WRONG on purpose
+      workerDeadlineMs: null,
+    });
+    expect(result.verified).toBe(false);
+    expect(result.outcomes).toEqual([]);
+    expect(result.leftover).toEqual([]);
+    // The innocent process survives — no bare historical-pid attribution.
+    expect(() => process.kill(victim.pid!, 0)).not.toThrow();
+  } finally {
+    try { victim.kill("SIGKILL"); } catch {}
+  }
+}, 30_000);
+
+windowsTest("real descendants-of with the CORRECT parent fingerprint converges the subtree and the orphan root", async () => {
+  // The fence-discharge path: the worker root is an ORPHAN (host gone), so
+  // the gate passing means the root itself is killed through its verified
+  // retained handle — no transient overlap with a respawned owner.
+  const victim = spawn("node", ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const probe = await probeWindowsProcessIdentity(victim.pid!, { workerDeadlineMs: 30_000 });
+    expect(probe.status).toBe("found");
+
+    const result = await terminateWindowsDescendantsOf(victim.pid!, {
+      expectedParentCreationDate: probe.status === "found" ? probe.identity.creationDate : null,
+      workerDeadlineMs: null,
+    });
+    expect(result.verified).toBe(true);
+    for (let i = 0; i < 200; i += 1) {
+      let gone = false;
+      try { process.kill(victim.pid!, 0); } catch { gone = true; }
+      if (gone) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(() => process.kill(victim.pid!, 0)).toThrow();
+  } finally {
+    try { victim.kill("SIGKILL"); } catch {}
+  }
+}, 30_000);
