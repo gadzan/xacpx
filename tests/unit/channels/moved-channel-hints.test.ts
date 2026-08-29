@@ -58,6 +58,12 @@ test("core reports Feishu plugin install hint when Feishu runtime is missing", (
   );
 });
 
+test("core reports Discord plugin install hint when Discord runtime is missing", () => {
+  expect(() => createMessageChannel("discord")).toThrow(
+    "频道 discord 需要安装插件：xacpx plugin add @ganglion/xacpx-channel-discord",
+  );
+});
+
 test("channel add feishu reports the plugin install hint when the plugin is absent", async () => {
   const lines: string[] = [];
   const config = baseConfig();

@@ -29,9 +29,11 @@ export function createDiscordPreviewStream(options: DiscordPreviewStreamOptions)
   let overflow = false;
   let creating = false;
   let editing = false;
+  let closed = false;
+  let op: Promise<void> | null = null;
 
   const flush = async (): Promise<void> => {
-    if (overflow) return;
+    if (closed || overflow) return;
     if (pendingText === null) return;
     if (creating || editing) return;
     const text = pendingText;
@@ -49,20 +51,32 @@ export function createDiscordPreviewStream(options: DiscordPreviewStreamOptions)
       creating = true;
       let sentId: string | null = null;
       let createError: unknown = null;
+      const thisOp = (async (): Promise<void> => {
+        try {
+          const sent = await client.sendMessage(target, { content: text, allowedMentions: { parse: [] } });
+          sentId = sent.messageId;
+        } catch (error) {
+          createError = error;
+        }
+      })();
+      op = thisOp;
       try {
-        const sent = await client.sendMessage(target, { content: text, allowedMentions: { parse: [] } });
-        sentId = sent.messageId;
-      } catch (error) {
-        createError = error;
+        await thisOp;
+      } finally {
+        creating = false;
+        if (op === thisOp) op = null;
       }
-      creating = false;
+      if (closed) {
+        if (sentId) messageId = sentId;
+        return;
+      }
       if (createError) {
         options.onWarn?.(`discord.preview.create_failed: ${createError instanceof Error ? createError.message : String(createError)}`);
         overflow = true;
         return;
       }
       messageId = sentId!;
-      if (pendingText !== null) {
+      if (pendingText !== null && !closed && !overflow) {
         const pending: string = pendingText;
         pendingText = null;
         if (pending.length <= maxChars) {
@@ -76,19 +90,32 @@ export function createDiscordPreviewStream(options: DiscordPreviewStreamOptions)
     }
 
     editing = true;
+    let editError: unknown = null;
+    const thisEditOp = (async (): Promise<void> => {
+      try {
+        await client.editMessage(target, messageId!, { content: text, allowedMentions: { parse: [] } });
+      } catch (error) {
+        editError = error;
+      }
+    })();
+    op = thisEditOp;
     try {
-      await client.editMessage(target, messageId, { content: text, allowedMentions: { parse: [] } });
-    } catch (error) {
-      options.onWarn?.(`discord.preview.edit_failed: ${error instanceof Error ? error.message : String(error)}`);
-      overflow = true;
+      await thisEditOp;
     } finally {
       editing = false;
-      if (pendingText !== null && !overflow) schedule();
+      if (op === thisEditOp) op = null;
     }
+    if (closed) return;
+    if (editError) {
+      options.onWarn?.(`discord.preview.edit_failed: ${editError instanceof Error ? editError.message : String(editError)}`);
+      overflow = true;
+      return;
+    }
+    if (pendingText !== null && !overflow && !closed) schedule();
   };
 
   const schedule = (): void => {
-    if (timer) return;
+    if (closed || timer) return;
     timer = setTimeout(() => {
       timer = null;
       void flush();
@@ -97,7 +124,7 @@ export function createDiscordPreviewStream(options: DiscordPreviewStreamOptions)
 
   return {
     update(text: string): void {
-      if (overflow) return;
+      if (closed || overflow) return;
       if (text.length > maxChars) {
         overflow = true;
         return;
@@ -109,14 +136,22 @@ export function createDiscordPreviewStream(options: DiscordPreviewStreamOptions)
     },
 
     async cleanup(): Promise<void> {
+      closed = true;
       if (timer) {
         clearTimeout(timer);
         timer = null;
       }
-      const toDelete = messageId;
-      messageId = null;
       pendingText = null;
       overflow = false;
+      if (op) {
+        try {
+          await op;
+        } catch {
+          // ignore — error already handled in flush
+        }
+      }
+      const toDelete = messageId;
+      messageId = null;
       if (toDelete !== null) {
         try {
           await client.deleteMessage(target, toDelete);

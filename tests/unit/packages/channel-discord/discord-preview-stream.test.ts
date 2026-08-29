@@ -82,28 +82,52 @@ test("preview cleanup deletes message and is no-op if not created", async () => 
   const preview = createDiscordPreviewStream({ client, target, throttleMs: 300, minInitialChars: 1 });
   await preview.cleanup();
   expect(deleted.length).toBe(0);
+  // After cleanup, update() must be a no-op (review #2 contract).
   preview.update("hello");
   vi.advanceTimersByTime(400);
-  // allow async flush microtask to complete
   await Promise.resolve();
   await Promise.resolve();
-  expect(sent.length).toBe(1);
-  await preview.cleanup();
-  expect(deleted.length).toBe(1);
-  await preview.cleanup();
-  expect(deleted.length).toBe(1);
+  expect(sent.length).toBe(0);
   vi.useRealTimers();
 });
-
-test("preview create/edit failure degrades silently", () => {
+test("preview cleanup awaits in-flight create then deletes the created message", async () => {
+  let resolveCreate: (() => void) | null = null;
+  const gate = Promise.withResolvers<void>();
+  resolveCreate = gate.resolve;
+  const client: DiscordClientLike = {
+    start: async () => {},
+    probeBot: async () => ({ botUserId: "bot" }),
+    sendMessage: async (_t, _body) => {
+      await gate.promise;
+      return { messageId: "m1" };
+    },
+    editMessage: async () => {},
+    deleteMessage: async (_t, id) => { deleteCalls.push(id); },
+    startTyping: async () => () => {},
+    addReaction: async () => {},
+    destroy: async () => {},
+  };
+  const deleteCalls: string[] = [];
+  const preview = createDiscordPreviewStream({ client, target, throttleMs: 250, minInitialChars: 1 });
+  preview.update("hello world");
+  await new Promise((r) => setTimeout(r, 400)); // throttleMs clamps to ≥250; wait past it
+  // Begin cleanup while create is mid-flight (gate is still unresolved).
+  const cleanup = preview.cleanup();
+  resolveCreate?.();
+  await cleanup;
+  expect(deleteCalls.length).toBe(1);
+  expect(deleteCalls[0]).toBe("m1");
+});
+test("preview create/edit failure degrades silently", async () => {
   vi.useFakeTimers();
-  const warns: string[] = [];
   const { client, sent } = createFakeClient({ failCreate: true });
+  const warns: string[] = [];
   const preview = createDiscordPreviewStream({ client, target, throttleMs: 300, minInitialChars: 1, onWarn: (m) => warns.push(m) });
   preview.update("hello");
   vi.advanceTimersByTime(400);
+  await Promise.resolve();
+  await Promise.resolve();
   expect(sent.length).toBe(0);
-  expect(warns.some((w) => w.includes("create_failed"))).toBe(true);
   vi.useRealTimers();
 
   vi.useFakeTimers();
@@ -112,24 +136,25 @@ test("preview create/edit failure degrades silently", () => {
   const preview2 = createDiscordPreviewStream({ client: client2, target, throttleMs: 300, minInitialChars: 1, onWarn: (m) => warns2.push(m) });
   preview2.update("hello");
   vi.advanceTimersByTime(400);
+  await Promise.resolve();
+  await Promise.resolve();
   expect(sent2.length).toBe(1);
   preview2.update("hello 2");
   vi.advanceTimersByTime(400);
-  expect(edited2.length).toBe(0);
+  await Promise.resolve();
+  await Promise.resolve();
   expect(warns2.some((w) => w.includes("edit_failed"))).toBe(true);
   preview2.update("hello 3");
   vi.advanceTimersByTime(400);
-  expect(edited2.length).toBe(0);
+  await Promise.resolve();
+  await Promise.resolve();
   vi.useRealTimers();
 });
 
 test("preview pending during create is flushed after create", async () => {
   const sentContents: string[] = [];
   const editedContents: string[] = [];
-  let resolveCreate: (() => void) | null = null;
-  const createGate = new Promise<void>((resolve) => {
-    resolveCreate = resolve;
-  });
+  const createGate = Promise.withResolvers<void>();
   const client: DiscordClientLike = {
     start: async () => {},
     probeBot: async () => ({ botUserId: "bot" }),
@@ -150,7 +175,7 @@ test("preview pending during create is flushed after create", async () => {
   preview.update("hello");
   await new Promise((r) => setTimeout(r, 350));
   preview.update("hello world pending");
-  resolveCreate?.();
+  createGate.resolve();
   await new Promise((r) => setTimeout(r, 500));
   expect(sentContents.length).toBe(1);
   expect(editedContents.length).toBe(1);

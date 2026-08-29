@@ -199,7 +199,7 @@ test("first-party channel packages live outside core", async () => {
     .filter((name) => name.startsWith("channel-"))
     .sort();
 
-  expect(channelPackages).toEqual(["channel-feishu", "channel-relay", "channel-yuanbao"]);
+  expect(channelPackages).toEqual(["channel-discord", "channel-feishu", "channel-relay", "channel-yuanbao"]);
 });
 
 test("core does not import first-party channel plugin packages", async () => {
@@ -222,7 +222,8 @@ test("core does not import first-party channel plugin packages", async () => {
       const source = await Bun.file(path).text();
       if (source.includes("@ganglion/xacpx-channel-relay")
         || source.includes("@ganglion/xacpx-channel-feishu")
-        || source.includes("@ganglion/xacpx-channel-yuanbao")) {
+        || source.includes("@ganglion/xacpx-channel-yuanbao")
+        || source.includes("@ganglion/xacpx-channel-discord")) {
         hits.push(path.slice(repoRoot.length + 1));
       }
     }

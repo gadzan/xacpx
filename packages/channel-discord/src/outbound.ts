@@ -36,7 +36,7 @@ export interface SendReplyWithGuardInput {
   target: DeliveryTarget;
   parentTarget?: DeliveryTarget;
   body: OutboundBody;
-  loggerWarn?: (msg: string, fields?: Record<string, unknown>) => void;
+  loggerWarn?: (msg: string, fields?: Record<string, string | number | boolean | undefined>) => void;
 }
 
 export async function sendWithThreadFallback(input: SendReplyWithGuardInput): Promise<void> {

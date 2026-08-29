@@ -1,6 +1,10 @@
 import type { DeliveryTarget, DiscordInboundMessage, OutboundBody } from "./types.js";
 
 export interface DiscordClientLike {
+  /** Connect and log in. Resolves once the initial Gateway session is ready;
+   *  rejects when login fails (bad token, disallowed intents, connect error).
+   *  The long-lived connection stays open afterwards and is torn down via the
+   *  abortSignal passed to start() or via destroy(). */
   start(input: { handlers: { onMessage(m: DiscordInboundMessage): void }; abortSignal: AbortSignal }): Promise<void>;
   probeBot(): Promise<{ botUserId: string; botTag?: string }>;
   sendMessage(target: DeliveryTarget, body: OutboundBody): Promise<{ messageId: string }>;
@@ -26,6 +30,7 @@ class DiscordJsClient implements DiscordClientLike {
   private client: unknown = null;
   private readonly options: CreateDiscordClientOptions;
   private readonly typingIntervals: Set<ReturnType<typeof setInterval>> = new Set();
+  private abortCleanup: (() => void) | null = null;
 
   constructor(options: CreateDiscordClientOptions) {
     this.options = options;
@@ -72,23 +77,29 @@ class DiscordJsClient implements DiscordClientLike {
       return;
     }
 
+    // Tear down the long-running Gateway session on abort. The listener stays
+    // registered after start() resolves; destroy() removes it.
     const abortHandler = (): void => {
       client.destroy();
     };
     input.abortSignal.addEventListener("abort", abortHandler, { once: true });
+    this.abortCleanup = () => input.abortSignal.removeEventListener("abort", abortHandler);
 
-    await client.login(this.options.token);
-
-    await new Promise<void>((resolve) => {
-      if (input.abortSignal.aborted) {
-        resolve();
-        return;
+    // Resolve once the initial Gateway login reaches ready; propagate login
+    // failures (bad token, disallowed intents, connect error) so the channel
+    // can record the account startup failure (review #3).
+    try {
+      await client.login(this.options.token);
+    } catch (error) {
+      this.abortCleanup?.();
+      this.abortCleanup = null;
+      try {
+        client.destroy();
+      } catch {
+        // ignore
       }
-      input.abortSignal.addEventListener("abort", () => resolve(), { once: true });
-    });
-
-    input.abortSignal.removeEventListener("abort", abortHandler);
-    client.destroy();
+      throw error;
+    }
   }
 
   async probeBot(): Promise<{ botUserId: string; botTag?: string }> {
@@ -193,6 +204,12 @@ class DiscordJsClient implements DiscordClientLike {
   }
 
   async destroy(): Promise<void> {
+    try {
+      this.abortCleanup?.();
+    } catch {
+      // ignore
+    }
+    this.abortCleanup = null;
     const c = this.client as { destroy?: () => void } | null;
     try {
       c?.destroy?.();

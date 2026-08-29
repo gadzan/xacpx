@@ -49,6 +49,8 @@ const ACCOUNT_IDENTIFY_STAGGER_MS = 5500;
 interface DiscordChannelDeps extends CreateChannelDeps {
   createClient?: (account: DiscordResolvedAccountConfig) => DiscordClientLike;
   fetchImpl?: typeof fetch;
+  /** Override the inter-account identify stagger (test hook). */
+  identifyStaggerMs?: number;
 }
 
 interface AccountRuntime {
@@ -207,15 +209,38 @@ export class DiscordChannel implements MessageChannelRuntime {
       accounts: eligible.map((a) => a.accountId),
     });
 
-    // Stagger identify to avoid 5s window clash (D8)
+    // Stagger identify to avoid 5s window clash (D8). Each account's
+    // initial Gateway login must succeed for that account to be considered
+    // started. Failures are isolated per-account, but if every enabled
+    // account fails we must reject so MessageChannelRegistry.startAll can
+    // record the channel startup failure (review #3).
+    let startedCount = 0;
+    let lastError: unknown = null;
+    const staggerMs = this.deps.identifyStaggerMs ?? ACCOUNT_IDENTIFY_STAGGER_MS;
     for (let i = 0; i < eligible.length; i++) {
       const account = eligible[i]!;
-      if (i > 0) await sleep(ACCOUNT_IDENTIFY_STAGGER_MS);
+      if (i > 0) await sleep(staggerMs);
       if (input.abortSignal.aborted) break;
-      await this.startAccount(account, input);
+      try {
+        await this.startAccount(account, input);
+        startedCount++;
+      } catch (error) {
+        lastError = error;
+        // startAccount already logged and cleaned up the runtime entry;
+        // continue to next account so a single bad token does not block others.
+      }
     }
 
-    // Keep alive until abort. Feishu awaits Promise.all long-running WS; we do similar.
+    if (eligible.length > 0 && startedCount === 0 && !input.abortSignal.aborted) {
+      const message = lastError instanceof Error ? lastError.message : String(lastError ?? "unknown error");
+      await input.logger.error("discord.start.all_failed", "all discord accounts failed to start", {
+        accountCount: eligible.length,
+        message,
+      });
+      throw new Error(`all ${eligible.length} discord account(s) failed to start; last error: ${message}`);
+    }
+
+    // Keep alive until abort.
     if (eligible.length > 0) {
       await new Promise<void>((resolve) => {
         if (input.abortSignal.aborted) {
@@ -255,9 +280,8 @@ export class DiscordChannel implements MessageChannelRuntime {
     const runtime: AccountRuntime = { account, client, botUserId };
     this.accounts.set(account.accountId, runtime);
 
-    // Fire-and-forget WS. Errors are logged but don't block other accounts.
-    void client
-      .start({
+    try {
+      await client.start({
         handlers: {
           onMessage: (msg) => {
             void this.handleMessageEvent(account.accountId, msg).catch(async (err) => {
@@ -270,13 +294,21 @@ export class DiscordChannel implements MessageChannelRuntime {
           },
         },
         abortSignal: input.abortSignal,
-      })
-      .catch(async (error) => {
-        await input.logger.error("discord.client.start_failed", "discord client start failed", {
-          accountId: account.accountId,
-          message: error instanceof Error ? error.message : String(error),
-        });
       });
+    } catch (error) {
+      // Initial Gateway login failed — this account is not started.
+      // Remove the runtime entry so sendRouteText etc fail fast for this account,
+      // and propagate so start() can decide whether all accounts failed (review #3).
+      this.accounts.delete(account.accountId);
+      try {
+        await client.destroy();
+      } catch {}
+      await input.logger.error("discord.client.start_failed", "discord client start failed", {
+        accountId: account.accountId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   }
 
   async notifyTaskCompletion(task: OrchestrationTaskRecord): Promise<void> {
@@ -401,7 +433,7 @@ export class DiscordChannel implements MessageChannelRuntime {
                 parentTarget,
                 body: { content: chunk, allowedMentions: { parse: [] } },
                 loggerWarn: (msg, fields) => {
-                  void this.logger?.warn(msg, String(fields?.from ?? msg), fields as Record<string, unknown>);
+                  void this.logger?.warn(msg, String(fields?.from ?? msg), fields);
                 },
               });
               continue;
@@ -929,7 +961,9 @@ export class DiscordChannel implements MessageChannelRuntime {
                 target,
                 parentTarget,
                 body: { content: chunk, allowedMentions: { parse: [] } },
-                loggerWarn: (msg, fields) => { void this.logger?.warn(msg, fields as Record<string, unknown>); },
+                loggerWarn: (msg, fields) => {
+                  void this.logger?.warn(msg, String(fields?.from ?? msg), fields);
+                },
               });
               continue;
             }
@@ -998,7 +1032,7 @@ function createDiscordConsumerLock(options: ConsumerLockOptions = {}): ConsumerL
   const onDiagnostic = options.onDiagnostic;
   let lockId: string | undefined;
 
-  const emit = async (event: string, context: Record<string, unknown>): Promise<void> => {
+  const emit = async (event: string, context: Record<string, string | number | boolean | undefined>): Promise<void> => {
     if (onDiagnostic) await onDiagnostic(event, context);
   };
 

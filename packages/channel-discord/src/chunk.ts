@@ -71,33 +71,21 @@ export function chunkDiscordText(text: string, options: ChunkOptions = {}): stri
   for (let idx = 0; idx < lines.length; idx++) {
     const line = lines[idx]!;
     const isFence = isFenceLine(line);
-
-    // Handle fence open/close tracking. Fence lines themselves toggle state.
-    if (isFence) {
-      const lang = fenceLanguage(line);
-      // If we are opening a fence, record language.
-      if (openFenceLang === null) {
-        openFenceLang = lang;
-      } else {
-        // Closing fence
-        openFenceLang = null;
-      }
-    }
+    const wasInsideFence: boolean = openFenceLang !== null;
+    const isClosingFence = isFence && wasInsideFence;
 
     // Single line too long: split by maxChars
     if (line.length > maxChars) {
-      // Flush current first if not empty
       if (current.length > 0) flush();
+      if (isFence) {
+        const lang = fenceLanguage(line);
+        openFenceLang = wasInsideFence ? null : lang;
+      }
 
-      // Split long line into segments.
-      // Preserve fence context: each segment stays inside fence if open.
       const segments = splitLongLine(line, maxChars, openFenceLang);
       for (let s = 0; s < segments.length; s++) {
         const seg = segments[s]!;
-        // For first segment, account for ongoing fence reopen already in current if needed.
-        // Simplest: push segments directly as chunks (with fence wrapping already done via openFenceLang logic)
         if (current.length === 1 && openFenceLang !== null && current[0]!.startsWith(FENCE_MARKER)) {
-          // current holds reopened fence line; append segment to it if fits
           const tentative = `${current[0]}\n${seg}`;
           if (tentative.length <= maxChars) {
             current.push(seg);
@@ -105,23 +93,14 @@ export function chunkDiscordText(text: string, options: ChunkOptions = {}): stri
             currentLines += 1;
             continue;
           } else {
-            // flush fence-only line first
             flush();
           }
         }
         if (s === segments.length - 1 && openFenceLang !== null) {
-          // Last segment: keep in current for next lines to append (don't flush yet)
-          // But ensure it has fence open/close handling via flush later.
-          // We need to add segment plus maintain fence reopen semantics.
-          // Push segment to current (which may be empty after flush)
           const needed = seg.length + (current.length > 0 ? 1 : 0);
           if (currentChars + needed > maxChars) flush();
           if (current.length === 0 && openFenceLang !== null) {
-            // Need to reopen fence if we flushed and still inside fence
-            // Actually splitLongLine already accounted? For inner fence segments, we treat them as content
-            // So we ensure current starts with reopen if needed and empty.
             const hint = openFenceLang ? `${FENCE_MARKER}${openFenceLang}` : FENCE_MARKER;
-            // Only add hint if not already added
             if (openFenceLang !== null) {
               current.push(hint);
               currentChars = hint.length;
@@ -132,7 +111,6 @@ export function chunkDiscordText(text: string, options: ChunkOptions = {}): stri
           currentChars += (current.length > 1 ? 1 : 0) + seg.length;
           currentLines += 1;
         } else {
-          // Middle segments: emit as standalone chunks with fence wrapping
           if (openFenceLang !== null) {
             const hint = openFenceLang ? `${FENCE_MARKER}${openFenceLang}` : FENCE_MARKER;
             chunks.push(`${hint}\n${seg}\n${FENCE_MARKER}`);
@@ -143,22 +121,40 @@ export function chunkDiscordText(text: string, options: ChunkOptions = {}): stri
       }
       continue;
     }
-    const addLen = line.length + (current.length > 0 ? 1 : 0); // +1 for \n
-    const fenceReserve = openFenceLang !== null ? 4 : 0; // \n```
+
+    // Special path for closing fence (#4): never split on soft line limit
+    // before the closing fence, otherwise we produce an isolated "```" or an
+    // empty synthetic block. Keep it with the preceding content (allow 1 line
+    // over maxLines) to preserve per-chunk fence balance. Only the hard char
+    // limit may force a split before closing.
+    if (isClosingFence) {
+      const addLen = line.length + (current.length > 0 ? 1 : 0);
+      const wouldExceedChars = currentChars + addLen > maxChars;
+      if (wouldExceedChars && current.length > 0) {
+        flush();
+      }
+      openFenceLang = null;
+      current.push(line);
+      currentChars += addLen;
+      currentLines += 1;
+      continue;
+    }
+
+    const addLen = line.length + (current.length > 0 ? 1 : 0);
+    // Fence reserve must be computed BEFORE toggling state (review #4).
+    // If we toggle before the wouldExceed check, a closing fence at the
+    // boundary flips openFenceLang to null early, so flush() loses its
+    // synthetic closing and the next chunk starts with an isolated "```".
+    const fenceReserve = wasInsideFence ? 4 : 0;
     const wouldExceedChars = currentChars + addLen + fenceReserve > maxChars;
     const wouldExceedLines = currentLines + 1 > maxLines;
     if ((wouldExceedChars || wouldExceedLines) && current.length > 0) {
       flush();
     }
 
-    // After flush, current may contain reopened fence line.
-    // Now add the line.
-    // If current is empty and we are inside a fence, we need to ensure reopen was added;
-    // flush() already did that, but if current was empty before flush and we didn't flush, we may need to handle.
-    if (current.length === 0 && openFenceLang !== null && !isFence) {
-      // Need fence reopen at start of chunk (flush already handles when flushing; but if we didn't flush this is first line of document inside fence)
-      // Actually first chunk's opening fence is already in current if fence was opened earlier.
-      // No extra action needed.
+    if (isFence) {
+      const lang = fenceLanguage(line);
+      openFenceLang = lang;
     }
 
     current.push(line);
@@ -167,7 +163,6 @@ export function chunkDiscordText(text: string, options: ChunkOptions = {}): stri
   }
 
   if (current.length > 0) {
-    // If still inside fence, close it. But if last chunk is just a reopen hint with no content, drop it.
     if (current.length === 1 && openFenceLang !== null && current[0]!.startsWith(FENCE_MARKER)) {
       // Empty fenced chunk — discard
     } else {
