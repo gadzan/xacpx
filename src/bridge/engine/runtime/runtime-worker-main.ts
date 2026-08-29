@@ -285,20 +285,38 @@ rl.on("line", (line) => {
 // still spawn the adapter AFTER a snapshot — a "verified empty" snapshot
 // taken during that window would orphan the late child. Quiesce first; if
 // an operation cannot settle, the worker stays alive and retrying.
-// Round 31: the fence phase table carries that verdict across Host restarts.
 process.stdin.on("end", () => {
   const attempt = (): void => {
-    void gate
-      .close()
-      // Round 31: mark "discharging" BEFORE convergence so a new Host's
-      // stale-fence recovery waits for this worker's verdict instead of
-      // racing an in-flight ensure with its own kill transaction; the
-      // terminal phase (discharged/spooled) is the cross-Host proof.
-      .then(() => markRuntimeWorkerFence("discharging"))
-      .then(() => convergeOrphansBeforeExit({ agentCommand: () => state.ensureParams?.agent }))
-      .then((outcome) => markRuntimeWorkerFence(outcome === "spooled" ? "spooled" : "discharged"))
-      .then(() => process.exit(0))
-      .catch(() => setTimeout(attempt, 1_000));
+    void (async () => {
+      // Round 32 Blocking 2: gate.close() closes admission SYNCHRONOUSLY and
+      // returns the quiescence promise. The durable "discharging" mark lands
+      // BEFORE the wait — H2 arriving mid-quiescence sees discharging and
+      // waits, never an "admitted" fence it might have killed against.
+      const quiesced = gate.close();
+      await markRuntimeWorkerFence("discharging");
+      await quiesced;
+      // Round 32 Blocking 3: spooled residuals are bound to this fence
+      // generation, so the new Host's spool handshake can lift the phase
+      // once the reaper converges the namespace.
+      const outcome = await convergeOrphansBeforeExit({
+        agentCommand: () => state.ensureParams?.agent,
+        generationId: process.env.XACPX_WORKER_FENCE_GENERATION,
+      });
+      const terminal = outcome === "spooled" ? "spooled" : "discharged";
+      // Round 32 High: the terminal mark is a DURABILITY requirement — a
+      // failed write keeps the worker alive and retrying (the mark alone is
+      // retried; convergence is never re-run) instead of exiting with a
+      // "discharging" fence no later Host can lift.
+      for (;;) {
+        try {
+          await markRuntimeWorkerFence(terminal);
+          break;
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
+        }
+      }
+      process.exit(0);
+    })().catch(() => setTimeout(attempt, 1_000));
   };
   attempt();
 });

@@ -101,7 +101,7 @@ test("ensureWorker returns a ref carrying stable identity fields", async () => {
     const manager = new RuntimeWorkerManager({ entryPath: entry });
     const worker = manager.ensureWorker("identity-check");
     expect(worker.ref.logicalSessionId).toBe("identity-check");
-    expect(worker.ref.generation).toMatch(/^[0-9a-z]+-[0-9a-z]+$/);
+    expect(worker.ref.generation).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
     expect(worker.ref.startedAt).toBeTypeOf("string");
     await manager.shutdownAll();
   });

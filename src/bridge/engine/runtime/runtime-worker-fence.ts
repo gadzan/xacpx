@@ -73,7 +73,6 @@ export interface FenceDischargeDeps {
   platform?: NodeJS.Platform;
   /** Verified in-transaction subtree terminator; MUST gate on the parent fingerprint. */
   terminateDescendants?: (parentPid: number, expectedCreationDate: string) => Promise<TerminateDescendantsResult>;
-  killGroup?: (pgid: number) => void;
   /** Tri-state POSIX group probe (round 31 Blocking 4): only ESRCH proves gone. */
   probeProcessGroup?: (pgid: number) => "alive" | "gone" | "unknown";
   waitMs?: (ms: number) => Promise<void>;
@@ -82,8 +81,14 @@ export interface FenceDischargeDeps {
   selfDischargeWaitMs?: number;
   /** Re-read the fence during the discharging wait (manager: same fence+key). */
   readBack?: () => Promise<FenceReadResult>;
-  /** Persist the terminal "discharged" phase after an H2-side gated kill. */
+  /** Persist the terminal "discharged" phase. */
   markDischarged?: (record: RuntimeWorkerFenceRecord) => Promise<void>;
+  /**
+   * Round 32 Blocking 3 — spool handshake: are residuals of this fence
+   * generation still pending in the orphan registry? True = refuse, false =
+   * the phase lifts to discharged.
+   */
+  spooledResidualsRemaining?: (generationId: string) => Promise<boolean>;
 }
 
 /** Default tri-state liveness: success=alive, ESRCH=gone, anything else=unknown. */
@@ -107,82 +112,99 @@ async function defaultWaitMs(ms: number): Promise<void> {
 
 /**
  * Discharge one fenced worker tree per the phase decision table. Resolves
- * "discharged" only when a terminal proof exists (worker's own phase, or a
- * verified in-transaction kill); "refused" means the caller MUST NOT spawn a
- * second owner.
+ * "discharged" only when a terminal proof exists; "refused" means the caller
+ * MUST NOT spawn a second owner.
+ *
+ * Round 32 Blocking 2/4: the new Host NEVER externally kills a LIVE worker —
+ * neither a POSIX process group by its bare historical PGID (reuse = wrong
+ * group kill) nor a Windows root whose in-flight ensure may still spawn the
+ * adapter (descendant-set quiescence). The live worker's own EOF gate is the
+ * quiescence authority; H2 waits for its terminal phase, and a worker that
+ * never settles leaves the fence in place (refuse). The ONLY kill H2 ever
+ * performs is the DEAD-root orphan recovery — the spawner is provably gone,
+ * and attribution runs inside the gated in-transaction kill with a
+ * birth-order reuse cutoff.
  */
 export async function dischargeRuntimeWorkerFence(
   record: RuntimeWorkerFenceRecord,
   deps: FenceDischargeDeps = {},
 ): Promise<FenceDischargeOutcome> {
   const platform = deps.platform ?? process.platform;
+  const waitMs = deps.waitMs ?? defaultWaitMs;
+  const now = deps.now ?? Date.now;
+  const waitSelfMs = deps.selfDischargeWaitMs ?? 90_000;
+
+  // POSIX: the process group is only ever OBSERVED from out here. ESRCH is
+  // the one proof of gone (round 31 Blocking 4); a live or unverifiable
+  // group gets the self-discharge window, then refuses — never a kill(-pgid)
+  // on a possibly-reused group id.
   if (platform !== "win32") {
     const probe = deps.probeProcessGroup ?? probeProcessGroupDefault;
-    const state = probe(record.pid);
-    if (state === "unknown") return "refused";
-    if (state === "alive") {
-      try {
-        (deps.killGroup ?? ((pgid: number) => {
-          process.kill(-pgid, "SIGKILL");
-        }))(record.pid);
-      } catch (error) {
-        // ESRCH: group died between the probe and the kill — discharged.
-        if ((error as { code?: unknown } | null)?.code === "ESRCH") return "discharged";
-        return "refused";
-      }
+    const deadline = now() + waitSelfMs;
+    for (;;) {
+      const state = probe(record.pid);
+      if (state === "gone") return "discharged";
+      if (state === "unknown") return "refused";
+      if (now() >= deadline) return "refused";
+      await waitMs(500);
     }
-    const now = deps.now ?? Date.now;
-    const waitMs = deps.waitMs ?? defaultWaitMs;
-    const deadline = now() + 5_000;
-    while (now() < deadline) {
-      if (probe(record.pid) === "gone") return "discharged";
-      await waitMs(100);
-    }
-    return probe(record.pid) === "gone" ? "discharged" : "refused";
   }
 
   // Windows: the phase decision table. The self-discharge window is the
   // cross-Host quiescence handoff — the old worker's EOF gate drains its
-  // in-flight ensure BEFORE converging, so its terminal phase is the proof
-  // that the descendant set is final. H2 never snapshots a live, still-
-  // admitting worker unless the wait expired (fallback gated kill).
-  const waitMs = deps.waitMs ?? defaultWaitMs;
-  const now = deps.now ?? Date.now;
-  const waitSelfMs = deps.selfDischargeWaitMs ?? 90_000;
+  // in-flight dispatches BEFORE converging, so its terminal phase is the
+  // proof that the descendant set is final.
   let current = record;
   const phaseDeadline = now() + waitSelfMs;
-  while (current.phase === "discharging" && now() < phaseDeadline) {
+  for (;;) {
+    if (current.phase === "discharged") return "discharged";
+    if (current.phase === "spooled") {
+      // Round 32 Blocking 3: the spooled phase is NOT a permanent terminal —
+      // the residual namespace is bound to the fence generation, and the
+      // handshake asks the orphan registry whether EVERY residual of that
+      // namespace has been converged. Empty → the phase lifts to discharged.
+      const pending = (await deps.spooledResidualsRemaining?.(record.generation)) ?? true;
+      if (pending) return "refused";
+      await deps.markDischarged?.({ ...current, phase: "discharged" });
+      return "discharged";
+    }
+    if (current.phase === "owned" && !current.bootstrapVerified) {
+      // The admission barrier (round 30 Blocking 2, phase-serialised per
+      // round 31 Blocking 1) makes this a hard invariant: a fence that never
+      // reached "admitted" cannot have entered a business RPC, so no adapter
+      // descendant can exist. The worker itself (if still alive after a host
+      // death) self-terminates via stdin-EOF convergence.
+      return "discharged";
+    }
+    if (now() >= phaseDeadline) return "refused";
     await waitMs(500);
     const reread = await deps.readBack?.();
-    if (!reread || reread.kind !== "present") break;
+    if (!reread || reread.kind !== "present") return "refused";
     current = reread.record;
   }
-  if (current.phase === "discharged") return "discharged";
-  if (current.phase === "spooled") return "refused";
-  if (current.phase === "discharging") return "refused";
+}
 
-  if (!current.bootstrapVerified || !current.creationDate) {
-    // The admission barrier (round 30 Blocking 2, phase-serialised per
-    // round 31 Blocking 1) makes this a hard invariant: a fence that never
-    // reached "admitted" cannot have entered a business RPC, so no adapter
-    // descendant can exist. The worker itself (if still alive after a host
-    // death) self-terminates via stdin-EOF convergence.
-    return "discharged";
-  }
-  // Round 30 Blocking 3: identity is verified INSIDE the kill transaction
-  // (retained parent handle vs expected creation date). A dead, replaced, or
-  // unprobeable parent yields verified=false — refused, never a bare
-  // historical-pid kill. A dead parent ALSO means the worker exited without
-  // writing a terminal phase: crash leftovers stay fenced for the reaper.
+/**
+ * Round 32 Blocking 1: DEAD-root recovery for a Windows fence whose worker
+ * died without reaching a terminal phase (SIGKILL/crash — no EOF handler
+ * ever ran). The spawner is provably gone, so this is the ONE place H2 may
+ * kill: the in-transaction parent gate plus birth-order cutoff attributes
+ * only the dead worker's own subtree (reuser's children excluded).
+ */
+export async function recoverDeadWorkerSubtree(
+  record: RuntimeWorkerFenceRecord,
+  deps: FenceDischargeDeps = {},
+): Promise<FenceDischargeOutcome> {
+  if ((deps.platform ?? process.platform) !== "win32") return "refused";
+  if (!record.creationDate) return "refused";
   const result = await (deps.terminateDescendants ?? ((parentPid: number, expectedCreationDate: string) =>
-    terminateWindowsDescendantsOf(parentPid, { expectedParentCreationDate: expectedCreationDate, workerDeadlineMs: null })))(
-    current.pid,
-    current.creationDate,
-  );
+    terminateWindowsDescendantsOf(parentPid, {
+      expectedParentCreationDate: expectedCreationDate,
+      recoverDeadParent: true,
+      workerDeadlineMs: null,
+    })))(record.pid, record.creationDate);
   if (!result.verified) return "refused";
-  // The gated kill succeeded (subtree + orphan root verified dead): persist
-  // the terminal proof so later acquires retire instead of re-killing.
-  await deps.markDischarged?.({ ...current, phase: "discharged" });
+  await deps.markDischarged?.({ ...record, phase: "discharged" });
   return "discharged";
 }
 

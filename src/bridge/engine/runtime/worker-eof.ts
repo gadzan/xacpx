@@ -59,27 +59,40 @@ import {
  *   discharged / spooled: the terminal proof — the worker converged the
  *                tree (safe respawn) or durably published the leftovers.
  */
-export async function markRuntimeWorkerFence(phase: "discharging" | "discharged" | "spooled"): Promise<void> {
+export type FenceMarkResult = "updated" | "stale";
+
+/**
+ * Round 32 High — fence phase marking is a TRI-STATE durable write:
+ *   "updated"  the phase is durably on disk.
+ *   "stale"    the fence is absent or belongs to another generation —
+ *              nothing to mark (a newer owner owns the transaction).
+ *   throws     the write FAILED (disk full, EACCES, rename error...). The
+ *              caller MUST NOT treat this as success: the worker keeps
+ *              living and retrying the mark rather than exiting with a
+ *              "discharging" fence that no later Host can lift.
+ */
+export async function markRuntimeWorkerFence(phase: "discharging" | "discharged" | "spooled"): Promise<FenceMarkResult> {
   const path = process.env.XACPX_WORKER_FENCE;
   const generation = process.env.XACPX_WORKER_FENCE_GENERATION;
-  if (!path || !generation) return;
+  if (!path || !generation) return "stale";
+  const parsed = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  if (parsed.generation !== generation || parsed.kind !== "runtime-worker-owner") return "stale";
+  parsed.phase = phase;
+  const tmp = `${path}.tmp-${randomUUID()}`;
+  const handle = await open(tmp, "wx", 0o600);
   try {
-    const parsed = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
-    if (parsed.generation !== generation || parsed.kind !== "runtime-worker-owner") return;
-    parsed.phase = phase;
-    const tmp = `${path}.tmp-${randomUUID()}`;
-    const handle = await open(tmp, "wx", 0o600);
-    try {
-      await handle.writeFile(`${JSON.stringify(parsed, null, 2)}\n`, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await rename(tmp, path);
-  } catch {
-    // No fence file (spawn raced the initial write) or unreadable — the
-    // manager's discharge path treats evidence it cannot read as fenced.
+    await handle.writeFile(`${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
   }
+  await rename(tmp, path);
+  return "updated";
+}
+
+/** Default runtime dir for the orphan registry (config-dir based). */
+export function defaultRuntimeDir(): string {
+  return join(dirname(resolveConfigPathForCurrentEnv()), "runtime");
 }
 
 export type OrphanConvergenceOutcome = "verified" | "spooled" | "unresolved";
@@ -120,10 +133,6 @@ export interface ConvergeOrphansOptions {
 }
 
 const EMPTY_EVIDENCE: TerminateDescendantsResult = { verified: false, outcomes: [], leftover: [] };
-
-function defaultRuntimeDir(): string {
-  return join(dirname(resolveConfigPathForCurrentEnv()), "runtime");
-}
 
 /**
  * Merge one convergence attempt into the accumulated evidence. Monotonic: a

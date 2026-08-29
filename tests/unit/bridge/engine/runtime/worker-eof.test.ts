@@ -153,6 +153,12 @@ test("windows: first-attempt evidence survives a total retry failure and is spoo
     }
     const pids = new Set(residuals!.map(({ record }) => ("pid" in record ? record.pid : 0)));
     expect(pids).toEqual(new Set([5002, 6001]));
+    // Round 32 Blocking 3: the spool namespace is bound to the fence
+    // generation so the new Host's handshake can lift the phase once the
+    // reaper converges exactly these records.
+    for (const { record } of residuals!) {
+      expect(("generationId" in record ? record.generationId : "")).toBe("00000000-0000-4000-8000-000000000001");
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

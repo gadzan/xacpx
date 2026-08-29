@@ -1,8 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { join } from "node:path";
 
 import { RuntimeWorkerClient, type WorkerLifecycle, type RuntimeWorkerRef, type RuntimeWorkerClientDeps, WorkerTeardownPendingError } from "./runtime-worker-client";
-import { RuntimeWorkerFence, dischargeRuntimeWorkerFence, type RuntimeWorkerFenceRecord } from "./runtime-worker-fence";
+import { RuntimeWorkerFence, dischargeRuntimeWorkerFence, recoverDeadWorkerSubtree, type RuntimeWorkerFenceRecord } from "./runtime-worker-fence";
+import { defaultRuntimeDir } from "./worker-eof";
+import { OrphanRegistry } from "../../../transport/orphan-registry";
 
 /**
  * Host-side registry of per-session Runtime Workers (plan PR3). One session →
@@ -102,7 +105,9 @@ export class RuntimeWorkerManager {
     this.assertRestartBudget(logicalSessionId);
     // Generation-bound: the fence's phase writes are tied to THIS client
     // generation, and the worker's own EOF marker uses it via spawn env.
-    const workerGeneration = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    // UUID: the same generation binds spooled residuals, whose registry
+    // decoder requires UUID identifiers.
+    const workerGeneration = randomUUID();
     const worker = new RuntimeWorkerClient(
       this.options.entryPath,
       logicalSessionId,
@@ -221,23 +226,46 @@ export class RuntimeWorkerManager {
     const deps = this.options.clientDeps;
     const outcome = await dischargeRuntimeWorkerFence(record, {
       platform: deps?.platform,
-      terminateDescendants: deps?.terminateDescendantsOf
-        ? (parentPid, expectedCreationDate) => deps.terminateDescendantsOf!(parentPid, { expectedParentCreationDate: expectedCreationDate })
-        : undefined,
-      killGroup: deps?.killProcessGroup,
       probeProcessGroup: deps?.probeProcessGroup,
       selfDischargeWaitMs: deps?.selfDischargeWaitMs,
-      readBack: async () => {
-        const reread = await fence.read(logicalSessionId);
-        return reread;
-      },
+      readBack: async () => await fence.read(logicalSessionId),
       markDischarged: async (current) => {
         await this.enqueueFenceWrite(logicalSessionId, () => fence.write({ ...current, phase: "discharged" }));
       },
+      spooledResidualsRemaining: deps?.spooledResidualsRemaining ?? (async (generationId) => {
+        // Round 32 Blocking 3 default handshake: residuals whose
+        // generationId matches the fence generation are THIS worker's spool
+        // namespace; any survivor keeps the session fenced. An unreadable
+        // registry counts as pending (fail closed).
+        const registry = new OrphanRegistry(defaultRuntimeDir());
+        const records = await registry.readCategory("residuals").catch(() => null);
+        if (!records) return true;
+        return records.some(({ record }) => record.generationId === generationId);
+      }),
     });
     if (outcome === "discharged") {
       await this.enqueueFenceWrite(logicalSessionId, () => fence.retire(logicalSessionId));
       return;
+    }
+    // Round 32 Blocking 1 — DEAD-root orphan recovery: the worker crashed
+    // without reaching a terminal phase and its adapter subtree may still
+    // live. The recovery kill is identity-safe (in-transaction parent gate
+    // + birth-order reuse cutoff — the spawner is provably gone, so no
+    // quiescence race exists) and its verified result retires the fence.
+    if ((deps?.platform ?? process.platform) === "win32" && record.creationDate) {
+      const recovered = await recoverDeadWorkerSubtree(record, {
+        platform: "win32",
+        terminateDescendants: deps?.terminateDescendantsOf
+          ? (parentPid, expectedCreationDate) => deps.terminateDescendantsOf!(parentPid, { expectedParentCreationDate: expectedCreationDate, recoverDeadParent: true })
+          : undefined,
+        markDischarged: async (current) => {
+          await this.enqueueFenceWrite(logicalSessionId, () => fence.write({ ...current, phase: "discharged" }));
+        },
+      });
+      if (recovered === "discharged") {
+        await this.enqueueFenceWrite(logicalSessionId, () => fence.retire(logicalSessionId));
+        return;
+      }
     }
     throw new WorkerTeardownPendingError(
       `durable ownership fence for session "${logicalSessionId}" is undischarged ` +

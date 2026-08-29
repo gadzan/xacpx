@@ -415,10 +415,11 @@ export class RuntimeEngine implements BridgeEngine {
       this.manager = new RuntimeWorkerManager({
         entryPath: entry,
         clientDeps: options.workerClientDeps,
-        // Durable worker-ownership fences (plan §43 / G10): default under the
-        // acpx state root, overridable for tests. The supplier form keeps
-        // stateDir validation lazy (operation-time, not construction).
-        fenceDir: options.fenceDir ?? ((): string => join(this.runtimeStateRoot(), "worker-fences")),
+        // Durable worker-ownership fences (plan §43 / G10). Fencing needs a
+        // durable state root: it is on by default when stateDir is provided
+        // (the production shape — acpx store + fences share the root) and
+        // off for engines without one (in-memory only, tests).
+        fenceDir: options.fenceDir ?? (options.stateDir ? (): string => join(this.runtimeStateRoot(), "worker-fences") : undefined),
       });
     }
   }

@@ -47,6 +47,12 @@ export interface RuntimeWorkerClientDeps {
   probeProcessGroup?: (pgid: number) => "alive" | "gone" | "unknown";
   /** Cross-host self-discharge wait for the stale-fence phase table (ms). */
   selfDischargeWaitMs?: number;
+  /**
+   * Round 32 Blocking 3 — spool handshake: are residuals of this fence
+   * generation still pending in the orphan registry? Default scans
+   * `<config runtime>/orphans/residuals`.
+   */
+  spooledResidualsRemaining?: (generationId: string) => Promise<boolean>;
   /** Extra env passed to the worker process (durable-fence phase marking). */
   spawnEnv?: Record<string, string>;
 }
