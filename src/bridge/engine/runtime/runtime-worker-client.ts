@@ -43,6 +43,12 @@ export interface RuntimeWorkerClientDeps {
   /** Fence discharge seams (tests): verified orphan-tree terminator + POSIX group kill. */
   terminateDescendantsOf?: typeof terminateWindowsDescendantsOf;
   killProcessGroup?: (pgid: number) => void;
+  /** Tri-state POSIX group probe for fence discharge (round 31 Blocking 4). */
+  probeProcessGroup?: (pgid: number) => "alive" | "gone" | "unknown";
+  /** Cross-host self-discharge wait for the stale-fence phase table (ms). */
+  selfDischargeWaitMs?: number;
+  /** Extra env passed to the worker process (durable-fence phase marking). */
+  spawnEnv?: Record<string, string>;
 }
 export type WorkerLifecycle = "starting" | "ready" | "busy" | "idle" | "cooling" | "stopped" | "failed";
 
@@ -101,7 +107,7 @@ export class RuntimeWorkerClient {
       this.child.exitCode === null &&
       this.child.signalCode === null &&
       this.child.pid !== undefined
-    );
+  );
   }
 
   spawn(): void {
@@ -113,6 +119,9 @@ export class RuntimeWorkerClient {
       stdio: ["pipe", "pipe", "pipe"],
       detached: process.platform !== "win32",
       windowsHide: true,
+      // Durable-fence phase marking env (round 31): the worker marks its own
+      // fence discharging/discharged/spooled at EOF, generation-bound.
+      env: { ...process.env, ...(this.deps?.spawnEnv ?? {}) },
     });
     this.ref.pid = this.child.pid ?? -1;
     const isWindows = process.platform === "win32" || Boolean(this.deps?.probeWindowsIdentity);

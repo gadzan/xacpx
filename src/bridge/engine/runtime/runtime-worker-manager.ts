@@ -1,4 +1,5 @@
 import { statSync } from "node:fs";
+import { join } from "node:path";
 
 import { RuntimeWorkerClient, type WorkerLifecycle, type RuntimeWorkerRef, type RuntimeWorkerClientDeps, WorkerTeardownPendingError } from "./runtime-worker-client";
 import { RuntimeWorkerFence, dischargeRuntimeWorkerFence, type RuntimeWorkerFenceRecord } from "./runtime-worker-fence";
@@ -29,6 +30,8 @@ export class RuntimeWorkerManager {
   private readonly workersByKey = new Map<string, RuntimeWorkerClient>();
   private readonly restarts = new Map<string, number[]>();
   private fenceInstance?: RuntimeWorkerFence;
+  /** Per-session fence write chains — initial/upgrade/retire never interleave. */
+  private readonly fenceWriteChains = new Map<string, Promise<void>>();
 
   constructor(private readonly options: RuntimeWorkerManagerOptions) {
     if (!options.entryPath || !fileExists(options.entryPath)) {
@@ -43,6 +46,11 @@ export class RuntimeWorkerManager {
       typeof this.options.fenceDir === "function" ? this.options.fenceDir() : this.options.fenceDir,
     );
     return this.fenceInstance;
+  }
+
+  private fenceDirValue(): string | undefined {
+    if (!this.options.fenceDir) return undefined;
+    return typeof this.options.fenceDir === "function" ? this.options.fenceDir() : this.options.fenceDir;
   }
 
   get(key: string): RuntimeWorkerClient | undefined {
@@ -92,20 +100,52 @@ export class RuntimeWorkerManager {
     }
 
     this.assertRestartBudget(logicalSessionId);
+    // Generation-bound: the fence's phase writes are tied to THIS client
+    // generation, and the worker's own EOF marker uses it via spawn env.
+    const workerGeneration = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const worker = new RuntimeWorkerClient(
       this.options.entryPath,
       logicalSessionId,
-      undefined,
+      workerGeneration,
       (client, code) => this.handleExit(logicalSessionId, client, code),
       {
         ...this.options.clientDeps,
-        // Round 30 Blocking 2 — durable admission barrier: the verified
-        // fence MUST be on disk before the client marks bootstrap admissible
-        // and the first business RPC may enter. Awaited by the client's
-        // bootstrap; a failure rejects bootstrap and kills the worker.
+        // Fence identity + durable state: the worker's own EOF phase writes
+        // are generation-bound via spawn env.
+        spawnEnv: this.fenceDirValue() === undefined
+          ? undefined
+          : {
+              XACPX_WORKER_FENCE: join(this.fenceDirValue()!, `${encodeURIComponent(logicalSessionId)}.json`),
+              XACPX_WORKER_FENCE_GENERATION: workerGeneration,
+            },
+        // Round 30/31 Blocking 2 — durable admission barrier: the "admitted"
+        // fence (verified identity + phase) MUST be on disk AND read back
+        // verified before bootstrap admissibility, so no business RPC can
+        // enter a worker whose ownership record still reads pre-admission.
         onIdentityVerified: async (client) => {
           await this.options.clientDeps?.onIdentityVerified?.(client);
-          await this.writeFence(logicalSessionId, client);
+          // Fencing disabled (tests): nothing durable to admit — bootstrap
+          // admissibility is immediate, matching the non-fenced contract.
+          if (!this.fence()) return;
+          await this.enqueueFenceWrite(logicalSessionId, async () => {
+            await this.fence()!.write({
+              kind: "runtime-worker-owner",
+              logicalSessionId,
+              generation: workerGeneration,
+              pid: client.ref.pid,
+              creationDate: client.ref.creationDate ?? null,
+              bootstrapVerified: true,
+              phase: "admitted",
+              startedAt: client.ref.startedAt,
+              agent: "runtime-worker",
+            });
+            // Read-back: the barrier holds until the DISK copy is proven
+            // admitted — never trust the in-memory flag alone.
+            const read = await this.fence()!.read(logicalSessionId);
+            if (read.kind !== "present" || read.record.phase !== "admitted" || read.record.creationDate !== client.ref.creationDate) {
+              throw new Error(`admitted fence read-back failed (${read.kind === "present" ? `phase=${read.record.phase}` : read.kind})`);
+            }
+          });
         },
       },
     );
@@ -123,22 +163,39 @@ export class RuntimeWorkerManager {
   async acquire(logicalSessionId: string): Promise<RuntimeWorkerClient> {
     await this.dischargeStaleFence(logicalSessionId);
     const worker = this.ensureWorker(logicalSessionId);
-    await this.writeFence(logicalSessionId, worker);
+    await this.writeOwnedFence(logicalSessionId, worker);
     return worker;
   }
 
   /**
    * Verified release: the worker reached lifecycle "stopped" (tree cleanup
-   * verified), so its durable fence is removed. Non-verified removals keep
-   * the fence (use deleteWorker for those — e.g. failed teardown).
+   * verified), so its durable fence is retired. Round 31 High: retirement is
+   * never a silent best-effort — a transient unlink failure persists the
+   * terminal "discharged" phase first, so the next acquire retires instead
+   * of bricking against a dead root.
    */
   async release(logicalSessionId: string, client?: RuntimeWorkerClient): Promise<void> {
-    if (!client || this.workersByKey.get(logicalSessionId) === client) {
+    const fenced = client !== undefined && this.workersByKey.get(logicalSessionId) === client;
+    if (!client || fenced) {
       this.workersByKey.delete(logicalSessionId);
     }
     if (client && client.lifecycle === "stopped") {
-      await this.fence()?.remove(logicalSessionId);
+      const fence = this.fence();
+      if (fence) await this.enqueueFenceWrite(logicalSessionId, () => fence.retire(logicalSessionId));
     }
+  }
+
+  /**
+   * Serialized fence writes (round 31 Blocking 1): the initial "owned" write
+   * and the post-probe "admitted" upgrade are chained per session, so a slow
+   * initial write can never rename AFTER the upgrade and downgrade the disk
+   * record back to pre-admission.
+   */
+  private enqueueFenceWrite(logicalSessionId: string, write: () => Promise<void>): Promise<void> {
+    const previous = this.fenceWriteChains.get(logicalSessionId) ?? Promise.resolve();
+    const next = previous.then(write, write);
+    this.fenceWriteChains.set(logicalSessionId, next);
+    return next;
   }
 
   private async dischargeStaleFence(logicalSessionId: string): Promise<void> {
@@ -166,32 +223,46 @@ export class RuntimeWorkerManager {
         ? (parentPid, expectedCreationDate) => deps.terminateDescendantsOf!(parentPid, { expectedParentCreationDate: expectedCreationDate })
         : undefined,
       killGroup: deps?.killProcessGroup,
+      probeProcessGroup: deps?.probeProcessGroup,
+      selfDischargeWaitMs: deps?.selfDischargeWaitMs,
+      readBack: async () => {
+        const reread = await fence.read(logicalSessionId);
+        return reread;
+      },
+      markDischarged: async (current) => {
+        await this.enqueueFenceWrite(logicalSessionId, () => fence.write({ ...current, phase: "discharged" }));
+      },
     });
     if (outcome === "discharged") {
-      await fence.remove(logicalSessionId);
+      await this.enqueueFenceWrite(logicalSessionId, () => fence.retire(logicalSessionId));
       return;
     }
     throw new WorkerTeardownPendingError(
       `durable ownership fence for session "${logicalSessionId}" is undischarged ` +
-        `(worker pid ${record.pid}, started ${record.startedAt}); refusing to spawn a second owner`,
+        `(worker pid ${record.pid}, phase ${record.phase}, started ${record.startedAt}); refusing to spawn a second owner`,
     );
   }
 
-  private async writeFence(logicalSessionId: string, worker: RuntimeWorkerClient): Promise<void> {
+  private async writeOwnedFence(logicalSessionId: string, worker: RuntimeWorkerClient): Promise<void> {
     const fence = this.fence();
     if (!fence) return;
     if (!worker.alive) return;
+    // Round 31 Blocking 1: the record is built from EXPLICIT fields (never
+    // sampled from mutable client state) — the initial durable phase is
+    // "owned"; the "admitted" upgrade happens only through the barrier.
     const record: RuntimeWorkerFenceRecord = {
       kind: "runtime-worker-owner",
       logicalSessionId,
+      generation: worker.ref.generation,
       pid: worker.ref.pid,
       creationDate: worker.ref.creationDate ?? null,
       bootstrapVerified: worker.isBootstrapVerified,
+      phase: "owned",
       startedAt: worker.ref.startedAt,
       agent: "runtime-worker",
     };
     try {
-      await fence.write(record);
+      await this.enqueueFenceWrite(logicalSessionId, () => fence.write(record));
     } catch (error) {
       // Without a durable fence we cannot enforce cross-restart single
       // ownership — fail closed: kill the freshly spawned worker instead of
@@ -204,7 +275,6 @@ export class RuntimeWorkerManager {
       );
     }
   }
-
   async shutdownAll(graceMs = 2_000): Promise<void> {
     const entries = [...this.workersByKey.entries()];
     const results = await Promise.allSettled(

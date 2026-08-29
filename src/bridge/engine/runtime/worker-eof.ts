@@ -32,8 +32,8 @@
  *     remains unverified.
  */
 import { randomUUID } from "node:crypto";
+import { open, readFile, rename } from "node:fs/promises";
 import { dirname, join } from "node:path";
-
 import { resolveConfigPathForCurrentEnv } from "../../../config/config-path";
 import {
   terminateWindowsDescendantsOf,
@@ -48,8 +48,41 @@ import {
   type ResidualRecord,
 } from "../../../transport/orphan-registry";
 
-export type OrphanConvergenceOutcome = "verified" | "spooled" | "unresolved";
 
+/**
+ * Round 31 Blocking 2/3 — the worker's OWN durable phase marking. The fence
+ * path and generation arrive via spawn env; writes are generation-bound so a
+ * stale worker can never touch a newer owner's fence.
+ *   discharging: written at EOF start (BEFORE convergence snapshots) so a
+ *                new Host waits for the worker's verdict instead of racing
+ *                an in-flight ensure with its own kill transaction.
+ *   discharged / spooled: the terminal proof — the worker converged the
+ *                tree (safe respawn) or durably published the leftovers.
+ */
+export async function markRuntimeWorkerFence(phase: "discharging" | "discharged" | "spooled"): Promise<void> {
+  const path = process.env.XACPX_WORKER_FENCE;
+  const generation = process.env.XACPX_WORKER_FENCE_GENERATION;
+  if (!path || !generation) return;
+  try {
+    const parsed = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    if (parsed.generation !== generation || parsed.kind !== "runtime-worker-owner") return;
+    parsed.phase = phase;
+    const tmp = `${path}.tmp-${randomUUID()}`;
+    const handle = await open(tmp, "wx", 0o600);
+    try {
+      await handle.writeFile(`${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(tmp, path);
+  } catch {
+    // No fence file (spawn raced the initial write) or unreadable — the
+    // manager's discharge path treats evidence it cannot read as fenced.
+  }
+}
+
+export type OrphanConvergenceOutcome = "verified" | "spooled" | "unresolved";
 const SAFE_OUTCOMES: Partial<Record<KillOutcome, true>> = { killed: true, "already-exited": true };
 
 export interface ConvergeOrphansOptions {

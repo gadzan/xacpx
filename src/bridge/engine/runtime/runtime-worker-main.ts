@@ -5,7 +5,7 @@
  * during ordinary shutdown (that would close the acpx record; plan §17).
  */
 import { createInterface } from "node:readline";
-import { convergeOrphansBeforeExit } from "./worker-eof";
+import { convergeOrphansBeforeExit, markRuntimeWorkerFence } from "./worker-eof";
 import { createDispatchGate } from "./runtime-worker-gate";
 
 import {
@@ -285,11 +285,18 @@ rl.on("line", (line) => {
 // still spawn the adapter AFTER a snapshot — a "verified empty" snapshot
 // taken during that window would orphan the late child. Quiesce first; if
 // an operation cannot settle, the worker stays alive and retrying.
+// Round 31: the fence phase table carries that verdict across Host restarts.
 process.stdin.on("end", () => {
   const attempt = (): void => {
     void gate
       .close()
+      // Round 31: mark "discharging" BEFORE convergence so a new Host's
+      // stale-fence recovery waits for this worker's verdict instead of
+      // racing an in-flight ensure with its own kill transaction; the
+      // terminal phase (discharged/spooled) is the cross-Host proof.
+      .then(() => markRuntimeWorkerFence("discharging"))
       .then(() => convergeOrphansBeforeExit({ agentCommand: () => state.ensureParams?.agent }))
+      .then((outcome) => markRuntimeWorkerFence(outcome === "spooled" ? "spooled" : "discharged"))
       .then(() => process.exit(0))
       .catch(() => setTimeout(attempt, 1_000));
   };
