@@ -819,8 +819,11 @@ test("REAL Windows regression: killed worker's stubborn adapter is recovered, fe
     const read = await fence.read(KEY);
     expect(read.kind).toBe("present");
     if (read.kind === "present") {
-      expect(read.record.phase).toBe("admitted");
+      // W2 re-fences under its OWN phase: "owned" until its own admission
+      // barrier (a bun test host runs no Windows probe), "admitted" after.
+      expect(["owned", "admitted"]).toContain(read.record.phase);
       expect(read.record.pid).toBe(w2.ref.pid);
+      expect(read.record.generation).toBe(w2.ref.generation);
     }
     w2.lifecycle = "stopped";
     await manager2.release(KEY, w2);
