@@ -111,10 +111,12 @@ export class RuntimeWorkerManager {
       {
         ...this.options.clientDeps,
         // Fence identity + durable state: the worker's own EOF phase writes
-        // are generation-bound via spawn env.
+        // are generation-bound via spawn env. Caller-provided spawnEnv is
+        // MERGED (fence keys win) — never wholesale replaced.
         spawnEnv: this.fenceDirValue() === undefined
-          ? undefined
+          ? this.options.clientDeps?.spawnEnv
           : {
+              ...this.options.clientDeps?.spawnEnv,
               XACPX_WORKER_FENCE: join(this.fenceDirValue()!, `${encodeURIComponent(logicalSessionId)}.json`),
               XACPX_WORKER_FENCE_GENERATION: workerGeneration,
             },

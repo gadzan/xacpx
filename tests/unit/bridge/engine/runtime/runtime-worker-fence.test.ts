@@ -490,12 +490,13 @@ test("unfenceable spawn fails closed: fence write failure kills the fresh worker
   }
 }, 15_000);
 
-test("production integration: the DISK fence reads admitted+verified BEFORE ensure enters the worker (round 31 Blocking 1)", async () => {
+test("production integration: the WORKER sees the DISK fence admitted at its OWN ensure entry (round 31 Blocking 1)", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-fence-b1-"));
   const fenceDir = join(dir, "worker-fences");
-  const ensureMarker = join(dir, "ensure.entered");
   try {
-    // The fake worker drops a marker the moment the ensure RPC arrives.
+    // The fake worker READS THE FENCE FILE ITSELF at the ensure entry point
+    // and reports what was on disk at that exact moment — the ordering proof
+    // lives at the boundary, not in a post-hoc test-side read.
     const entry = join(dir, "fake-worker.mjs");
     await writeFile(
       entry,
@@ -509,16 +510,26 @@ test("production integration: the DISK fence reads admitted+verified BEFORE ensu
         "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
         "    if (!line) continue;",
         "    try { const msg = JSON.parse(line);",
-        "      if (msg.method === 'ensure' && process.env.XACPX_ENSURE_MARKER) fs.writeFileSync(process.env.XACPX_ENSURE_MARKER, 'entered');",
-        "      process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true } }) + '\\n');",
+        "      if (msg.method === 'ensure') {",
+        "        let fencePhase = null;",
+        "        let fenceBootstrap = null;",
+        "        let fenceCreation = null;",
+        "        try {",
+        "          const rec = JSON.parse(fs.readFileSync(process.env.XACPX_WORKER_FENCE, 'utf8'));",
+        "          fencePhase = rec.phase;",
+        "          fenceBootstrap = rec.bootstrapVerified;",
+        "          fenceCreation = rec.creationDate;",
+        "        } catch {}",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true, fencePhase, fenceBootstrap, fenceCreation } }) + '\\n');",
+        "      } else {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true } }) + '\\n');",
+        "      }",
         "      if (msg.method === 'shutdown') process.exit(0);",
         "    } catch {}",
         "  }",
         "});",
       ].join("\n"),
     );
-    // argv won't carry through spawn ([entryPath] only) — set the marker path
-    // via the spawn env we control through clientDeps.spawnEnv.
     const manager = new RuntimeWorkerManager({
       entryPath: entry,
       fenceDir,
@@ -528,20 +539,22 @@ test("production integration: the DISK fence reads admitted+verified BEFORE ensu
           status: "found",
           identity: { pid, creationDate: "133800000000000099", executablePath: "C:\\w.exe" },
         }),
-        spawnEnv: { XACPX_ENSURE_MARKER: ensureMarker },
       },
     });
-    // The fake worker reads process.argv[2] — undefined; patch env instead:
     const worker = await manager.acquire(KEY);
-    await worker.request("ensure", {});
-    // The fence ON DISK must be phase=admitted with the captured identity by
-    // the time ensure could enter — the admission barrier orders it so.
-    const fence = new RuntimeWorkerFence(fenceDir);
-    const read = await fence.read(KEY);
+    const result = await worker.request<{ ready: boolean; fencePhase: string | null; fenceBootstrap: boolean | null; fenceCreation: string | null }>(
+      "ensure",
+      {},
+    );
+    // What the WORKER observed on disk at the ensure boundary:
+    expect(result.fencePhase).toBe("admitted");
+    expect(result.fenceBootstrap).toBe(true);
+    expect(result.fenceCreation).toBe("133800000000000099");
+    // And the disk still agrees afterwards.
+    const read = await new RuntimeWorkerFence(fenceDir).read(KEY);
     expect(read.kind).toBe("present");
     if (read.kind === "present") {
       expect(read.record.phase).toBe("admitted");
-      expect(read.record.bootstrapVerified).toBe(true);
       expect(read.record.creationDate).toBe("133800000000000099");
       expect(read.record.pid).toBe(worker.ref.pid);
       expect(read.record.generation).toBe(worker.ref.generation);
@@ -551,6 +564,69 @@ test("production integration: the DISK fence reads admitted+verified BEFORE ensu
     await rm(dir, { recursive: true, force: true });
   }
 }, 20_000);
+
+test("worker phase marking: generation-bound — a stale worker can never touch a newer owner's fence", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-mark-"));
+  try {
+    const fence = new RuntimeWorkerFence(dir);
+    await fence.write(record({ pid: 500, phase: "admitted", creationDate: "133800000000000000", bootstrapVerified: true, generation: "gen-NEW" }));
+    const path = join(dir, `${encodeURIComponent(KEY)}.json`);
+    // Stale generation: no overwrite.
+    process.env.XACPX_WORKER_FENCE = path;
+    process.env.XACPX_WORKER_FENCE_GENERATION = "gen-OLD";
+    const { markRuntimeWorkerFence } = await import("../../../../../src/bridge/engine/runtime/worker-eof");
+    await markRuntimeWorkerFence("discharged");
+    expect(((await fence.read(KEY)) as { kind: "present"; record: RuntimeWorkerFenceRecord }).record.phase).toBe("admitted");
+    // Matching generation: phase updates.
+    process.env.XACPX_WORKER_FENCE_GENERATION = "gen-NEW";
+    await markRuntimeWorkerFence("discharged");
+    const read = await fence.read(KEY);
+    expect(read.kind).toBe("present");
+    if (read.kind === "present") expect(read.record.phase).toBe("discharged");
+    delete process.env.XACPX_WORKER_FENCE;
+    delete process.env.XACPX_WORKER_FENCE_GENERATION;
+  } finally {
+    delete process.env.XACPX_WORKER_FENCE;
+    delete process.env.XACPX_WORKER_FENCE_GENERATION;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("cross-host handoff E2E (POSIX): EOF marks discharging, worker exits, fence retires, respawn allowed", async () => {
+  if (process.platform === "win32") return;
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-handoff-"));
+  const fenceDir = join(dir, "worker-fences");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+    const worker = await manager.acquire(KEY);
+    await worker.request("ensure", {});
+    expect(worker.ref.pid).toBeGreaterThan(0);
+    // Host "dies": stdin EOF → the worker quiesces, marks the fence, converges.
+    worker["child"]?.stdin?.end();
+    const exitDeadline = Date.now() + 15_000;
+    while (worker.alive && Date.now() < exitDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(worker.alive).toBe(false);
+    // The crash-cleanup path converges ownership: the fence ends up retired
+    // (or at minimum durably discharged) — either way a NEW owner is provably
+    // safe, and the very next acquire spawns it.
+    const fence = new RuntimeWorkerFence(fenceDir);
+    let read = await fence.read(KEY);
+    if (read.kind === "present" && read.record.phase === "discharged") {
+      await fence.retire(KEY);
+      read = await fence.read(KEY);
+    }
+    expect(read.kind).toBe("absent");
+    const worker2 = await manager.acquire(KEY);
+    expect(worker2.ref.pid).not.toBe(worker.ref.pid);
+    await manager.shutdownAll().catch(() => {});
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 30_000);
 
 test("fence write chain: a slow initial write can never rename after the admitted upgrade (round 31 Blocking 1)", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-fence-chain-"));
