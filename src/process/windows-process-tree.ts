@@ -564,7 +564,7 @@ foreach($p in $cl){
 if($open.ContainsKey($p.pid)){$h=$open[$p.pid];$s=if(-not [XacpxNativeProcess]::Alive($h)){'already-exited'}elseif([XacpxNativeProcess]::Kill($h)){if([XacpxNativeProcess]::WaitDead($h)){'killed'}else{'kill-requested-unconfirmed'}}else{if([XacpxNativeProcess]::LastError()-eq 5){'access-denied'}else{'query-failed'}}}else{$s=$ov[$p.pid]}
 $out+=@{pid=$p.pid;outcome=$s;creationDate=$p.creationDate;commandLine=$p.commandLine;executablePath=$p.executablePath}
 }
-if($e){$h=$open[$pp];if([XacpxNativeProcess]::Alive($h)){if([XacpxNativeProcess]::Kill($h)){if(-not [XacpxNativeProcess]::WaitDead($h)){$pok=$false}}else{$pok=$false}}}
+if($e){if($open.ContainsKey($pp)){$h=$open[$pp];if([XacpxNativeProcess]::Alive($h)){if([XacpxNativeProcess]::Kill($h)){if(-not [XacpxNativeProcess]::WaitDead($h)){$pok=$false}}else{$pok=$false}}}}
 } finally {$open.Values|%{CL $_}}
 $vf=!@($out|?{$_.outcome -notin 'killed','already-exited'}).Count -and !$lf.Count -and $pok
 Write-Output (@{verified=$vf;outcomes=$out;leftover=$lf}|ConvertTo-Json -Depth 8 -Compress);exit 0
