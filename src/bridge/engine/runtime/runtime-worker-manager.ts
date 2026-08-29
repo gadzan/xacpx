@@ -252,7 +252,11 @@ export class RuntimeWorkerManager {
     // live. The recovery kill is identity-safe (in-transaction parent gate
     // + birth-order reuse cutoff — the spawner is provably gone, so no
     // quiescence race exists) and its verified result retires the fence.
-    if ((deps?.platform ?? process.platform) === "win32" && record.creationDate) {
+    // Recovery is only meaningful for a fence that reached ownership — a
+    // 'spooled' phase means the residual records are the authoritative
+    // evidence and the reaper owns convergence; killing that tree here would
+    // race the reaper's own identity-bound work.
+    if (record.phase !== "spooled" && (deps?.platform ?? process.platform) === "win32" && record.creationDate) {
       const recovered = await recoverDeadWorkerSubtree(record, {
         platform: "win32",
         terminateDescendants: deps?.terminateDescendantsOf
