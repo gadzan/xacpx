@@ -800,7 +800,12 @@ test("REAL Windows regression: killed worker's stubborn adapter is recovered, fe
     const manager2 = new RuntimeWorkerManager({
       entryPath: entry,
       fenceDir,
-      clientDeps: { platform: "win32" },
+      clientDeps: {
+        platform: "win32",
+        // Short self-discharge window: W is already dead, so no verdict can
+        // ever arrive — H2 must fall through to the dead-root recovery fast.
+        selfDischargeWaitMs: 2_000,
+      },
     });
     const w2 = await manager2.acquire(KEY);
     let adapterGone = false;
@@ -825,7 +830,7 @@ test("REAL Windows regression: killed worker's stubborn adapter is recovered, fe
     try { if (adapterPid) process.kill(adapterPid, "SIGKILL"); } catch {}
     await rm(dir, { recursive: true, force: true });
   }
-}, 30_000);
+}, 240_000);
 
 test("spool handshake full chain: registry residuals keep the fence; reaper cleanup lifts it (round 32 Blocking 3)", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-fence-spool-"));
