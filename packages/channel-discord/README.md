@@ -67,10 +67,12 @@ Discord does not render GFM tables. `tableMode` controls the fallback:
 ### ChatKey
 
 ```
-discord:<accountId>:dm:<userId>       # DM
+discord:<accountId>:dm:<dmChannelId>  # DM (Discord DM channel snowflake)
 discord:<accountId>:g:<channelId>     # guild text channel
 discord:<accountId>:t:<threadId>      # thread / forum post (always independent session)
 ```
+
+DM chat keys use the **DM channel id** (the `channelId` carried by inbound DM messages), not the peer user id. Discord DM channels are stable per 1:1 conversation, and keying on them lets outbound deliver directly via `channels.fetch(channelId)` with no extra user→DM resolution call.
 
 Threads are **always independent sessions** (`t:<threadId>`). No `Map<chatKey, threadId>` binding — see spec F1.
 
@@ -80,7 +82,7 @@ Threads are **always independent sessions** (`t:<threadId>`). No `Map<chatKey, t
 
 ### Consumer lock
 
-Each bot token allows exactly one Gateway session. The channel provides `createConsumerLock()` (file lock at `~/.xacpx/runtime/discord-consumer.lock.json`); a second `xacpx` process with the same token is rejected.
+Each bot token allows exactly one Gateway session. The channel provides `createConsumerLock()`, a file lock at `~/.xacpx/runtime/discord-consumer-<fingerprint>.lock.json` where `<fingerprint>` is a truncated SHA-256 of the enabled `accountId:token` set. A second `xacpx` process started with the same token(s) is rejected; processes running different bot tokens use distinct lock files and coexist.
 
 ### Security
 

@@ -3,8 +3,10 @@ import {
   buildDiscordChatKey,
   parseDiscordChatKey,
   buildDiscordQueueKey,
+  buildDiscordRoute,
   evaluateDiscordAccessPolicy,
   shouldHandleDiscordMessage,
+  isDiscordReplyToBot,
   cleanDiscordMention,
   resolveChannelRequireMention,
 } from "../../../../packages/channel-discord/src/inbound";
@@ -63,19 +65,35 @@ function msg(overrides: Partial<DiscordInboundMessage> = {}): DiscordInboundMess
 }
 
 describe("build/parse chatKey round-trip", () => {
-  test("dm/g/thread keys round-trip and non-discord prefix returns null", () => {
-    const dm = buildDiscordChatKey({ accountId: "a1", route: { accountId: "a1", kind: "dm", channelId: "u1" } });
-    expect(dm).toBe("discord:a1:dm:u1");
-    expect(parseDiscordChatKey(dm)!.kind).toBe("dm");
+  // Real chain only: DiscordInboundMessage -> buildDiscordRoute -> buildDiscordChatKey.
+  // Hand-built routes previously masked the DM contract (review round 2 #3):
+  // the DM segment is the DM CHANNEL snowflake, not the peer user id.
+  test("dm chat key uses the DM channel snowflake from the inbound message", () => {
+    const inbound = msg({ id: "m1", channelId: "dm-chan-123", guildId: null, author: { id: "user-999", bot: false } });
+    const route = buildDiscordRoute({ accountId: "a1", message: inbound });
+    expect(route.kind).toBe("dm");
+    expect(route.channelId).toBe("dm-chan-123");
+    const key = buildDiscordChatKey({ accountId: "a1", route });
+    expect(key).toBe("discord:a1:dm:dm-chan-123");
+    expect(key).not.toContain("user-999");
+    const parsed = parseDiscordChatKey(key)!;
+    expect(parsed.kind).toBe("dm");
+    expect(parsed.channelId).toBe("dm-chan-123");
+  });
 
-    const g = buildDiscordChatKey({ accountId: "a1", route: { accountId: "a1", kind: "guild", channelId: "c1", guildId: "g1" } });
-    expect(g).toBe("discord:a1:g:c1");
-    expect(parseDiscordChatKey(g)!.kind).toBe("guild");
+  test("guild and thread chat keys come from the real route chain", () => {
+    const guildInbound = msg({ id: "m2", channelId: "c1", guildId: "g1" });
+    const guildRoute = buildDiscordRoute({ accountId: "a1", message: guildInbound });
+    expect(guildRoute.kind).toBe("guild");
+    expect(buildDiscordChatKey({ accountId: "a1", route: guildRoute })).toBe("discord:a1:g:c1");
 
-    const t = buildDiscordChatKey({ accountId: "a1", route: { accountId: "a1", kind: "thread", channelId: "t1" } });
-    expect(t).toBe("discord:a1:t:t1");
-    expect(parseDiscordChatKey(t)!.kind).toBe("thread");
+    const threadInbound = msg({ id: "m3", channelId: "t1", guildId: "g1", isThread: true });
+    const threadRoute = buildDiscordRoute({ accountId: "a1", message: threadInbound });
+    expect(threadRoute.kind).toBe("thread");
+    expect(buildDiscordChatKey({ accountId: "a1", route: threadRoute })).toBe("discord:a1:t:t1");
+  });
 
+  test("parse rejects non-discord and malformed keys", () => {
     expect(parseDiscordChatKey("feishu:oc_xxx")).toBeNull();
     expect(parseDiscordChatKey("discord:bad")).toBeNull();
   });
@@ -83,6 +101,22 @@ describe("build/parse chatKey round-trip", () => {
   test("queue key is stable", () => {
     expect(buildDiscordQueueKey("a1", "c1", "guild")).toBe("a1:guild:c1");
     expect(buildDiscordQueueKey("a1", "c1", "dm")).toBe("a1:dm:c1");
+  });
+});
+
+describe("isDiscordReplyToBot", () => {
+  test("matches repliedUserId or mentions.repliedUser, nothing else", () => {
+    expect(isDiscordReplyToBot(msg({ repliedUserId: "bot1" }), "bot1")).toBe(true);
+    expect(isDiscordReplyToBot(msg({ mentions: { repliedUser: { id: "bot1" } } }), "bot1")).toBe(true);
+  });
+
+  test("a reply to another human is not a reply to the bot (abort-path regression)", () => {
+    expect(isDiscordReplyToBot(msg({ repliedUserId: "human2", referencedMessageId: "m0" }), "bot1")).toBe(false);
+  });
+
+  test("a bare reference id without reply metadata never counts", () => {
+    expect(isDiscordReplyToBot(msg({ referencedMessageId: "m0" }), "bot1")).toBe(false);
+    expect(isDiscordReplyToBot(msg({ repliedUserId: "bot1" }), "")).toBe(false);
   });
 });
 

@@ -15,7 +15,7 @@ import type {
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { DiscordChannelConfig, DiscordResolvedAccountConfig } from "./config.js";
 import { parseDiscordChannelConfig } from "./config.js";
 import type { DeliveryTarget, DiscordInboundMessage, DiscordRoute, OutboundBody } from "./types.js";
@@ -27,6 +27,7 @@ import {
   buildDiscordQueueKey,
   buildDiscordRoute,
   evaluateDiscordAccessPolicy,
+  isDiscordReplyToBot,
   parseDiscordChatKey,
   resolveChannelRequireMention,
   shouldHandleDiscordMessage,
@@ -186,7 +187,15 @@ export class DiscordChannel implements MessageChannelRuntime {
   }
 
   createConsumerLock(options?: ConsumerLockOptions): ConsumerLock {
-    return createDiscordConsumerLock(options);
+    // Lock file is scoped by the enabled token set (F6): same tokens -> same
+    // file -> second process rejected; different tokens -> distinct files, so
+    // independent bots coexist. The fingerprint is a truncated sha256 over
+    // accountId:token pairs — stable, non-secret, safe to use as a file name.
+    const fingerprint = discordAccountsLockFingerprint(this.config.accounts);
+    return createDiscordConsumerLock({
+      ...options,
+      lockFilePath: options?.lockFilePath ?? join(coreHomeDir(homedir()), "runtime", `discord-consumer-${fingerprint}.lock.json`),
+    });
   }
 
   configureOrchestration(callbacks: OrchestrationDeliveryCallbacks): void {
@@ -476,6 +485,16 @@ export class DiscordChannel implements MessageChannelRuntime {
     const channelId = msg.channelId;
     if (!messageId || !channelId) return;
 
+    // Self check first, before dedup and the allowBots policy: Discord echoes
+    // our own MESSAGE_CREATE back through the Gateway, and an allowBots (or
+    // requireMention:false / DM) path would feed it straight back into the
+    // agent, self-looping. Own messages are always dropped; allowBots only
+    // governs messages from OTHER bots.
+    if (runtime.botUserId && msg.author.id === runtime.botUserId) {
+      await this.logger.debug("discord.message.self_ignored", "ignoring own discord message echo", { messageId, accountId });
+      return;
+    }
+
     if (!this.dedup.tryRecord(messageId, accountId)) {
       await this.logger.info("discord.message.duplicate", "skipping duplicate discord message", { messageId, accountId });
       return;
@@ -614,7 +633,7 @@ export class DiscordChannel implements MessageChannelRuntime {
     if (!isDM && runtime.account.requireMention) {
       const mentionedViaUsers = msg.mentions?.users?.some((u) => u.id === runtime.botUserId) ?? false;
       const mentionsBot = mentionedViaUsers || msg.content.includes(`<@${runtime.botUserId}>`) || msg.content.includes(`<@!${runtime.botUserId}>`);
-      const repliesToBot = Boolean(msg.referencedMessageId);
+      const repliesToBot = isDiscordReplyToBot(msg, runtime.botUserId);
       const hasTag = rawText.includes(`<@${runtime.botUserId}>`) || rawText.includes(`<@!${runtime.botUserId}>`);
       if (!mentionsBot && !repliesToBot && !hasTag) return false;
     }
@@ -1021,12 +1040,20 @@ export class DiscordChannel implements MessageChannelRuntime {
   }
 }
 
-// Minimal consumer lock for Discord: per-token single Gateway session.
-// NOTE: single file per channel (discord-consumer.lock.json). Multi-bot with distinct tokens
-// under the same channel id will still contend on this file; per-token files would require
-// per-account lock factories which runtime-consumer-lock does not support (firstLockCreator only).
-// The lock is lockId-gated and PID-reuse hardened, so distinct-token double-run is at least detected as
-// active holder rather than stale.
+// Minimal consumer lock for Discord: one Gateway session per token (F6).
+// The lock file name embeds a fingerprint of the enabled accountId:token set,
+// so two processes running the SAME tokens contend (second is rejected), while
+// processes with different tokens use distinct files and coexist. The lock is
+// lockId-gated and PID-reuse hardened, so a live holder is never mistaken for
+// a stale one.
+function discordAccountsLockFingerprint(accounts: DiscordResolvedAccountConfig[]): string {
+  const entries = accounts
+    .filter((account) => account.enabled && account.configured)
+    .map((account) => `${account.accountId}:${account.token}`)
+    .sort();
+  return createHash("sha256").update(entries.join("\n")).digest("hex").slice(0, 16);
+}
+
 function createDiscordConsumerLock(options: ConsumerLockOptions = {}): ConsumerLock {
   const lockFilePath = options.lockFilePath ?? join(coreHomeDir(homedir()), "runtime", "discord-consumer.lock.json");
   const onDiagnostic = options.onDiagnostic;

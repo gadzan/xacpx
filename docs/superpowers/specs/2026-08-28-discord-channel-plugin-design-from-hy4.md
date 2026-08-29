@@ -16,7 +16,7 @@
 | **F3** | **token 正则不做硬门禁**。Discord token 格式有代际变化，正则硬校验会误杀合法 token。`validateConfig` 只查存在性与字符串类型；形状正则至多降为 `diagnose()` warn；真实有效性留给 `doctor --deep` 打 `GET /users/@me` | 评审意见 |
 | **F4** | **`nativeSessionListFormat` 由 `"table"` 改为 `"cards"`**。Discord 的 markdown 表格渲染成管道符，与 weixin 同病；跟随 weixin 先例（`weixin-channel.ts:35`）。消费点在核心 `native-session-handler.ts:145`。agent 输出中的表格另有 `tableMode` 兜底——原方案此处与 D5 自相矛盾，现已消除 | 评审指出矛盾；代码核验 weixin 先例与消费点 |
 | **F5** | **OutboundQuota 约定定案：只调 `onInbound`**。当前 HEAD 核验：feishu（`channel.ts:411`）、yuanbao（`channel.ts:478`）均只用 `onInbound`；`reserveFinal/enqueuePendingFinal` 仅 weixin 内置渠道实际使用（24h 窗口是微信平台语义）+ 文档示例。Discord v1 对齐既有插件行为 | 评审要求以 HEAD 代码裁决；已核验 |
-| **F6** | **`createConsumerLock()` 由"不需要"改为 P4 实现**。Discord 每 token 仅一个 Gateway 会话，同 token 双开进程互踢；weixin 有 `createWeixinConsumerLock` 先例，实现成本低。原"❌ 无互斥需求"论证不成立 | 3.8max 复核补正 |
+| **F6** | **`createConsumerLock()` 由"不需要"改为 P4 实现**。Discord 每 token 仅一个 Gateway 会话，同 token 双开进程互踢；weixin 有 `createWeixinConsumerLock` 先例，实现成本低。原"❌ 无互斥需求"论证不成立。**实现修订（review round 2）**：lock 文件名内嵌启用 `accountId:token` 集合的截断 SHA-256 fingerprint（`discord-consumer-<fingerprint>.lock.json`），使互斥真正按 token 集合界定——同 token 双开竞争同一文件被拒，不同 token 用不同文件可并存 | 3.8max 复核补正；round 2 评审指出全局单文件与"同 token 互斥"语义不符 |
 | **F7** | **附件上限数值不写死**。以 Discord 官方现行限制为准，实施前核实；默认保守、经 `media.maxBytes` 可配置 | 两案数值（8MB/25MB）均无依据 |
 
 ---
@@ -36,7 +36,7 @@ openclaw 那份 4.6 万行实现里，voice / activities(embedded app sdk) / mod
 |---|---|---|---|
 | D1 | Gateway SDK | **discord.js v14**，但收口在 `DiscordClientLike` 接口后面 | openclaw 自研（`ws`+`discord-api-types`+`undici`）是为 voice/sharding 服务的，xacpx 不需要；自研 resume/heartbeat/429 是 bug 温床 |
 | D2 | 流式策略 | **preview 仅过程展示（edit-in-place，节流 1200ms）；最终答案恒以新消息 MESSAGE_CREATE 发送**；超 2000 字符转分片 | Discord 编辑只产生 MESSAGE_UPDATE、不推未读；xacpx turn 分钟级、用户通常已切走。有意偏离 openclaw seal 语义（见 F2） |
-| D3 | chatKey | `discord:<accountId>:(dm:<userId>\|g:<channelId>\|t:<threadId>)` | 需要类型前缀消歧 Discord 的三级结构；全部是 snowflake，永久稳定 |
+| D3 | chatKey | `discord:<accountId>:(dm:<dmChannelId>\|g:<channelId>\|t:<threadId>)` | 需要类型前缀消歧 Discord 的三级结构；全部是 snowflake，永久稳定。**实现修订（review round 2）**：DM 段用 DM 频道 snowflake（入站消息自带 `channelId`），不是对端 userId——出站可凭 `channels.fetch(channelId)` 直投，省去 user→DM 解析；1:1 DM 频道 snowflake 永久稳定 |
 | D4 | Thread 归属 | **v1：thread 恒用独立 chatKey（`t:<threadId>`）、独立会话**，投递目标即 chatKey 本身，零绑定状态 | 旧 `Map<parentChatKey, threadId>` 设计多 thread 并发会串投递（见 F1）；v1 不做 autoThread；v2 升级路径见 §4 |
 | D5 | 表格 | 新增 `tableMode`，默认 `code` | Discord 不支持 GFM 表格 |
 | D6 | 安全默认 | 全局 `allowed_mentions: { parse: [] }` | 否则 agent 输出里的 `@everyone` 会真的广播 |
@@ -138,10 +138,12 @@ packages/channel-discord/
 ### 格式
 
 ```
-discord:<accountId>:dm:<userId>       # 私聊
+discord:<accountId>:dm:<dmChannelId>  # 私聊（Discord DM 频道 snowflake）
 discord:<accountId>:g:<channelId>     # 服务器文本频道（含 forum post 的父频道）
 discord:<accountId>:t:<threadId>      # thread / forum post 内（v1 恒独立会话，见 D4）
 ```
+
+- **实现修订（review round 2）**：DM 段为 DM 频道 snowflake（入站 DM 消息自带的 `channelId`），非对端 `userId`。出站凭 chatKey 直接 `channels.fetch` 投递，不需要 user→DM 解析；1:1 DM 频道 snowflake 永久稳定，满足持久化要求。
 
 - 全部段都是 Discord snowflake，**永久稳定**，可安全写入 `~/.xacpx/state.json` 做 session 绑定。
 - `channelId` 不含 `:`，满足 `registerChannelFactory` 的校验（`src/channels/create-channel.ts:29`）。

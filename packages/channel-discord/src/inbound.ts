@@ -118,7 +118,7 @@ export function shouldHandleDiscordMessage(input: {
     const effectiveRequireMention = input.requireMention ?? (input.channelRequireMention ?? input.accountRequireMention);
     if (effectiveRequireMention) {
       const mentionsBot = mentionsBotUser(message, botUserId);
-      const repliesToBot = (message.repliedUserId && message.repliedUserId === botUserId) || message.mentions?.repliedUser?.id === botUserId;
+      const repliesToBot = isDiscordReplyToBot(message, botUserId);
       if (!mentionsBot && !repliesToBot) {
         // Also allow prefix mention via content check (fallback when mentions not populated)
         const hasMentionTag = raw.includes(`<@${botUserId}>`) || raw.includes(`<@!${botUserId}>`);
@@ -128,6 +128,17 @@ export function shouldHandleDiscordMessage(input: {
   }
   const cleaned = cleanDiscordMention(raw, botUserId);
   return { handle: true, text: cleaned };
+}
+
+/**
+ * Precise "this message replies to the bot" check. A bare reference id is NOT
+ * enough — replying to another human must not count. Shared by the normal
+ * mention gate and the abort fast path so they cannot drift apart.
+ */
+export function isDiscordReplyToBot(message: DiscordInboundMessage, botUserId: string): boolean {
+  if (!botUserId) return false;
+  if (message.repliedUserId && message.repliedUserId === botUserId) return true;
+  return message.mentions?.repliedUser?.id === botUserId;
 }
 
 function mentionsBotUser(message: DiscordInboundMessage, botUserId: string): boolean {
