@@ -728,8 +728,10 @@ test("REAL Windows regression: killed worker's stubborn adapter is recovered, fe
   const dir = await mkdtemp(join(tmpdir(), "rt-fence-b1win-"));
   const fenceDir = join(dir, "worker-fences");
   const childPidFile = join(dir, "adapter.pid");
+  // Plain `node` fixtures: the CIM identity probe (production oracle) is
+  // proven against node.exe images on the runner.
   const worker = spawn(
-    process.execPath,
+    "node",
     [
       "-e",
       "const {spawn}=require('node:child_process');const fs=require('node:fs');" +
