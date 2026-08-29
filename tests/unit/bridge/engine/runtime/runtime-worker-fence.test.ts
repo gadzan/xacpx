@@ -4,6 +4,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { probeWindowsProcessIdentity } from "../../../../../src/process/windows-process-tree";
 import {
   RuntimeWorkerFence,
   dischargeRuntimeWorkerFence,
@@ -748,7 +749,7 @@ test("REAL Windows regression: killed worker's stubborn adapter is recovered, fe
     const entry = join(dir, "fake-worker.mjs");
     await writeFile(entry, "process.stdin.on('data', () => {});");
     const manager = new RuntimeWorkerManager({
-      entryPath: worker.spawnargs?.[1] ? entry : entry, // entry path unused for fence setup below
+      entryPath: entry,
       fenceDir,
       clientDeps: {
         platform: "win32",
@@ -762,7 +763,6 @@ test("REAL Windows regression: killed worker's stubborn adapter is recovered, fe
         },
       },
     });
-    void manager;
 
     const fence = new RuntimeWorkerFence(fenceDir);
     await fence.write(
@@ -777,8 +777,15 @@ test("REAL Windows regression: killed worker's stubborn adapter is recovered, fe
 
     // Worker W itself is SIGKILLed: no EOF handler can run. Adapter A survives.
     worker.kill("SIGKILL");
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(() => process.kill(adapterPid, 0)).not.toThrow();
+    // On Windows, process.kill(pid, 0) is an unreliable liveness oracle —
+    // use the same CIM identity probe production uses.
+    let adapterAlive = false;
+    for (let i = 0; i < 40 && !adapterAlive; i += 1) {
+      const probe = await probeWindowsProcessIdentity(adapterPid, { workerDeadlineMs: 30_000 });
+      adapterAlive = probe.status === "found";
+      if (!adapterAlive) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(adapterAlive).toBe(true);
 
     // Host restart: a fresh manager discharges the stale fence. The
     // dead-root recovery kills A (birth-order cutoff makes the dead parent's
@@ -789,8 +796,13 @@ test("REAL Windows regression: killed worker's stubborn adapter is recovered, fe
       clientDeps: { platform: "win32" },
     });
     const w2 = await manager2.acquire(KEY);
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(() => process.kill(adapterPid, 0)).toThrow();
+    let adapterGone = false;
+    for (let i = 0; i < 40 && !adapterGone; i += 1) {
+      const probe = await probeWindowsProcessIdentity(adapterPid, { workerDeadlineMs: 30_000 });
+      adapterGone = probe.status !== "found";
+      if (!adapterGone) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(adapterGone).toBe(true);
     const read = await fence.read(KEY);
     expect(read.kind).toBe("present");
     if (read.kind === "present") {
