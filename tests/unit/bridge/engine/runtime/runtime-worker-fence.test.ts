@@ -777,8 +777,10 @@ test("REAL Windows regression: killed worker's stubborn adapter is recovered, fe
       }),
     );
 
-    // Worker W itself is SIGKILLed: no EOF handler can run. Adapter A survives.
-    worker.kill("SIGKILL");
+    // Worker W itself is killed: no EOF handler can run. Adapter A survives.
+    // taskkill WITHOUT /T terminates W alone — the runtime kill() may take
+    // the whole tree on Windows, which would defeat the fixture.
+    spawn("taskkill", ["/PID", String(worker.pid!), "/F"], { stdio: "ignore", windowsHide: true });
     // On Windows, process.kill(pid, 0) is an unreliable liveness oracle —
     // use the same CIM identity probe production uses.
     let adapterAlive = false;
