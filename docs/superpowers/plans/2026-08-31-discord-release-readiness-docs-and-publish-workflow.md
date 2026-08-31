@@ -140,7 +140,7 @@ xacpx channel add discord --token ...
 { messageContent: true, guildMembers: false }
 ```
 
-但 Discord Developer Portal 端仍必须允许 Message Content Intent，否则 guild message content 可能拿不到。
+但 Discord Developer Portal 端仍必须允许 Message Content Intent。**（round-5 评审修正）** 由于 `messageContent` 默认为 `true`，插件在 IDENTIFY 里就会带上 `GatewayIntentBits.MessageContent`；Portal 未开启该特权 intent 时，Discord 会以 **4014（disallowed intents）** 关闭 Gateway，机器人根本上线不了——症状是"离线"，不是"guild message content 拿不到"。只有显式 `messageContent: false`（不再请求）时，才会退化成"内容为空"，且 DM / 机器人自己的消息 / @ 机器人的消息内容仍然会下发。
 
 README 要区分两层：
 
@@ -473,7 +473,8 @@ DM 不需要 mention，但仍受 `dmPolicy` / allowlist 控制。
 | Bot offline | daemon/channel startup/token | check `xacpx status`, restart, runtime log, rotate token if invalid |
 | Bot online but DM ignored | `dmPolicy=allowlist` + sender not in `allowFrom` | add User ID or explicitly set open for testing |
 | Bot online but server message ignored | guild allowlist or `requireMention=true` | add sender/role; @mention bot |
-| Bot sees events but content empty | Message Content Intent | enable in Developer Portal; keep local intent enabled |
+| Bot goes offline on connect, Gateway close `4014` | Portal Message Content Intent off while the plugin still requests it by default | enable the intent in the Developer Portal, or set `intents.messageContent: false` |
+| Bot online, `requireMention: false`, plain server messages ignored | `intents.messageContent: false` ⇒ content arrives empty and the message is dropped | enable the Portal intent and keep the local intent on |
 | Thread can read but cannot reply | missing `Send Messages in Threads` | grant channel/server permission |
 | Attachments fail | Discord permission or xacpx `media.maxBytes` | grant Attach Files / check local limit |
 | second xacpx process fails to start Discord | per-token consumer lock | stop duplicate process or use distinct bot token |
@@ -601,7 +602,7 @@ command grep -n 'build:channel-discord\|verify:publish' package.json
 - package name = `@ganglion/xacpx-channel-discord`；
 - package version 当前为 `0.8.0`（若 HEAD 已变化，以实际为准）；
 - root 存在 `build:channel-discord`；
-- `verify:publish` 已覆盖 package artifact 检查。
+- ~~`verify:publish` 已覆盖 package artifact 检查。~~ **（round-5 评审修正：这条前置判断是错的）** `verify:publish` 只校验 `scripts/verify-publish.mjs` 里 `DEFAULT_PACKAGES` 登记过的包，而该列表当时没有 `channel-discord`，所以这一步对 Discord 包是零校验、却照样显示通过。正确的核对方式是确认包已登记在 `DEFAULT_PACKAGES`（本计划执行时应在 Task 1 Step 1 就发现，实际漏了）；现在由 `tests/unit/scripts/verify-publish.test.ts` 断言 `packages/` 下每个非 private 包都已登记。
 
 ### Step 2: 创建 workflow
 
