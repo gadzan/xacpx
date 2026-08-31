@@ -238,12 +238,14 @@ export const discordCliProvider: ChannelCliProvider = {
       }
       const intents = accountOpts.intents as Record<string, unknown> | undefined;
       const messageContent = intents?.messageContent;
-      // Warn if messageContent not enabled (guild content will be empty)
+      // Warn if messageContent is off: the bot still comes online, but Discord
+      // withholds content for ordinary server messages (see the finding below).
       if (messageContent === false) {
         findings.push({
           level: "warn",
           code: "discord-message-content-disabled",
-          message: `Discord account "${accountId}" has intents.messageContent disabled — guild message content will be empty. Enable Message Content Intent in Discord Developer Portal and set intents.messageContent: true.`,
+          message: `Discord account "${accountId}" has intents.messageContent disabled, so the plugin does not request the Message Content intent. The bot still comes online, and Discord keeps delivering content for DMs, the bot's own messages and messages that @-mention it — but ordinary server messages arrive with empty content and are dropped, so a requireMention:false guild channel will not respond to plain messages.`,
+          suggestion: "Enable Message Content Intent in the Discord Developer Portal and set intents.messageContent: true, or keep it off and require an @-mention (requireMention: true) in server channels.",
         });
       }
       // Warn if token looks placeholder-ish but don't hard fail
@@ -273,7 +275,7 @@ export const discordCliProvider: ChannelCliProvider = {
       findings.push({
         level: "ok",
         code: "discord-config-ok",
-        message: "Discord config looks OK (shallow check; run with --deep for live probe)",
+        message: "Discord config looks OK. This is a static local check — it never contacts Discord, so it cannot see token validity or privileged-intent approval. Start the channel and check the log for Gateway errors (e.g. close code 4014 disallowed intents).",
       });
     }
 

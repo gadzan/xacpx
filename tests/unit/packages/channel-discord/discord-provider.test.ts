@@ -137,3 +137,35 @@ test("M1: provider verdict equals the runtime parser verdict", () => {
   }
   expect(drift).toEqual([]);
 });
+
+// Round 6 (Minor): diagnose used to assert guild content "will be empty" (it
+// is not — DMs, the bot's own messages and @-mentions still carry text) and to
+// point at a `--deep` live probe the doctor does not implement.
+const LONG_TOKEN = `tok-${"x".repeat(40)}`;
+
+async function diagnoseMessages(options: Record<string, unknown>): Promise<string[]> {
+  const findings = await discordCliProvider.diagnose(runtimeConfig(options));
+  return findings.map((finding) => finding.message);
+}
+
+test("Round 6: the messageContent warning describes the real failure mode", async () => {
+  const messages = await diagnoseMessages({
+    accounts: { east: { token: LONG_TOKEN, intents: { messageContent: false } } },
+  });
+  expect(messages.length).toBe(1);
+  const warning = messages[0]!;
+  expect(warning).not.toContain("guild message content will be empty");
+  expect(warning).toContain("The bot still comes online");
+  expect(warning).toContain("@-mention");
+  expect(warning).toContain("requireMention:false");
+});
+
+test("Round 6: the OK finding describes a static check and invents no --deep flag", async () => {
+  const findings = await discordCliProvider.diagnose(runtimeConfig({ token: LONG_TOKEN }));
+  expect(findings.length).toBe(1);
+  expect(findings[0]!.level).toBe("ok");
+  const message = findings[0]!.message;
+  expect(message).toContain("Discord config looks OK");
+  expect(message).not.toContain("--deep");
+  expect(message).toContain("static local check");
+});

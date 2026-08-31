@@ -36,7 +36,9 @@ Two layers have to agree:
 - **Portal toggle** — the server-side permission. Enable it, or turn the local request off.
 - **xacpx `options.intents.messageContent`** — what the plugin requests on connect. A local `true` does **not** enable anything in the Portal; setting it to `false` stops requesting the intent, and the bot then connects fine without Portal approval.
 
-Without the intent, Discord still delivers the content of DMs, of the bot's own messages, and of messages that @mention the bot. That covers the default `requireMention: true`, where every guild message must @mention the bot (or reply to it) anyway. It does **not** cover `requireMention: false`: there the plugin receives empty text and drops the message, so a plain sentence posted to the channel never reaches an agent.
+Without the intent, Discord still delivers the content of DMs, of the bot's own messages, and of messages that @mention the bot. A bare reply to one of the bot's messages is **not** on that list: it passes xacpx's `requireMention` gate, but its content still arrives empty, so the plugin drops it. With the intent off, only an actual `@bot` mention reaches an agent in a server — replying to the bot is **not** a substitute for Message Content access.
+
+So the default `requireMention: true` stays usable through the @mention form only, and `requireMention: false` is worse: there the plugin receives empty text and drops the message, so a plain sentence posted to the channel never reaches an agent.
 
 Recommended: enable the Portal intent and leave `intents.messageContent` at its default `true`. Set it to `false` only if you deliberately run a mention-only bot.
 
@@ -135,7 +137,7 @@ A DM doesn't need a mention, but is still gated by `dmPolicy` / `allowFrom`. Suc
 | `dmPolicy` | `allowlist` | Only senders in `allowFrom` are handled in DMs |
 | `guildPolicy` | `allowlist` | Only allowlisted senders are handled in servers |
 | `allowFrom` | *(empty)* | **Empty list rejects every sender** |
-| `requireMention` | `true` | In servers, the bot must be @-mentioned (or replied to) |
+| `requireMention` | `true` | In servers, the bot must be @-mentioned (or replied to) — but a reply only carries text if Message Content access exists, see step 3 |
 
 So adding a token is not the same as being able to chat — the bot can connect and appear online while silently ignoring messages, because no sender is allowlisted yet. Complete step 7 before expecting replies. `"*"` in `allowFrom` accepts any sender (still requires a sender id).
 
