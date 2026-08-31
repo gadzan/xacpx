@@ -18,7 +18,7 @@
 | **F5** | **OutboundQuota 约定定案：只调 `onInbound`**。当前 HEAD 核验：feishu（`channel.ts:411`）、yuanbao（`channel.ts:478`）均只用 `onInbound`；`reserveFinal/enqueuePendingFinal` 仅 weixin 内置渠道实际使用（24h 窗口是微信平台语义）+ 文档示例。Discord v1 对齐既有插件行为 | 评审要求以 HEAD 代码裁决；已核验 |
 | **F6** | **`createConsumerLock()` 由"不需要"改为实现，并在 review round 7 定案为三层互斥**。Discord 每 token 仅一个 Gateway 会话，同 token 双开进程互踢；原"❌ 无互斥需求"论证不成立。三层各封一段语义，**缺一层都会漏**：**① 配置层（进程内唯一）**——`parseDiscordChannelConfig()` 在拿到 `configuredAccounts` 后拒绝 enabled 账号间重复 resolved token（错误信息只列 accountId，不输出 token 或其 fingerprint），因为 `start()` 会逐个 eligible account 各建一个 `DiscordClient`，而 base config 继承（`resolveAccount` 的 `{...base, ...override}`）使多账号漏配 token 时轻易共享同一 token。**② 核心层（每频道一把，全部持有）**——`createRuntimeConsumerLock({ coreLock, channelLocks })` 组合 core 归属锁与**所有**声明 `createConsumerLock` 的频道锁：`cli.ts` 按 `channel.id.localeCompare` 排序后逐个建锁并保留各频道自己的诊断前缀 `${channel.id}.consumer_lock.${event}`；acquire 严格串行 `core → A → B → C`，任一失败按逆序回滚已持有的锁再抛出原错误（**不用 `Promise.all`**：并发后无从知道拿到了哪几把，也无从精确回滚）；release 同样逆序，且某个锁抛错不得阻止后续锁释放，最后重抛第一个错误。**③ Discord 锁层（跨进程 per-token）**——每个 distinct enabled token 一个锁文件 `<coreHome>/runtime/discord-consumer-<sha256(token)前16位>.lock.json`（文件名不含 accountId、不落明文 token），`createConsumerLock()` 返回按序 acquire、任一冲突回滚已持有的复合锁。**锁目录恒为 `coreHomeDir(process.env.HOME ?? homedir())/runtime`，不随 `XACPX_CONFIG` 迁移**——token 归属是"每用户 + 每 token"，不是"每配置"，否则同一 token 换两个配置根就能起两个 Gateway 会话；注入的 `lockFilePath` 只用于定位与诊断，**不再充当命名空间锚点**。**metadata 不可读时 fail closed**：`open(..., "wx")` 与随后写 JSON 之间存在发布窗口，读到空/半截 metadata 时只做少量重读（5 次 × 20ms），仍不可读则报 `lock_invalid_conflict` / `reason: existing_lock_metadata_unreadable` 并抛错，**绝不 `rm()` 后重试**——那等于抢走活跃持有者的锁。若锁文件在 `EEXIST` 与读取之间被持有者正常释放（读到 ENOENT），那是"可重试"而不是"不可读"，照常重试即可。PID 复用硬化（`processStartedAtMs` 比对）与 `lockId` 门控 release 保留，因此"metadata 可读且 pid 已死"的 stale 锁仍能被正常回收 | 3.8max 复核补正；round 2 评审指出全局单文件语义不符；round 3 评审指出集合 hash 在 `{X}` vs `{X,Y}` 与 accountId 重排下漏锁（round 3 曾改"取注入路径的目录作锚"，round 7 判定该锚点本身错位，已废）；round 4 评审指出 per-token 锁未覆盖同进程多账号同 token；round 6 评审指出 core 只 acquire `lockCreators[0]`；round 7 评审指出 metadata 发布窗口下"读不到就删"会抢锁 |
 | **F7** | **附件上限数值不写死**。以 Discord 官方现行限制为准，实施前核实；默认保守、经 `media.maxBytes` 可配置 | 两案数值（8MB/25MB）均无依据 |
-| **F8** | **归档 thread 降级收敛到一个惰性 helper**。原实现有两份同构的"发送失败→改投父频道"错误分类器：文本先向 thread 发一次、失败后再调 helper 又向 thread 发第二次（thread 被发两遍），而**出站媒体根本没有降级**——归档 thread 里的图片/文件只记一条 `discord.media.send_failed` 就丢掉。现由 `sendWithThreadFallback()` 独占该判定：它自己发首投，`resolveParentTarget()` **只在首投被判为 archived/not-found 之后才调用**（健康 thread 零成本，也不会被重复投递），最终文本、出站媒体、`sendRouteText` 三条路全部走它；父频道优先取入站消息自带的 `parentChannelId`（挂在 `ActiveTask` 上），拿不到才回查 REST。父频道不可知时**重抛原始 Discord 错误**，绝不静默成功 | round 7 评审：媒体绕过 fallback；文本重复投递；父频道字段被 `as unknown as`  cast 掉而恒为 undefined |
+| **F8** | **归档 thread 降级收敛到一个惰性 helper**。原实现有两份同构的"发送失败→改投父频道"错误分类器：文本先向 thread 发一次、失败后再调 helper 又向 thread 发第二次（thread 被发两遍），而**出站媒体根本没有降级**——归档 thread 里的图片/文件只记一条 `discord.media.send_failed` 就丢掉。现由 `sendWithThreadFallback()` 独占该判定：它自己发首投，`resolveParentTarget()` **只在首投被判为 archived/not-found 之后才调用**（健康 thread 零成本，也不会被重复投递），最终文本、出站媒体、私有 `sendRouteText()`、后台完成通知四条路全部走它（round 8 补上最后一条：通知此前仍向 thread 裸发，答案到了父频道而通知被记一条 `discord.bg_notice.failed` 丢掉）；父频道优先取入站消息自带的 `parentChannelId`（挂在 `ActiveTask` 上），拿不到才回查 REST。父频道不可知时**重抛原始 Discord 错误**，绝不静默成功 | round 7 评审：媒体绕过 fallback；文本重复投递；父频道字段被 `as unknown as`  cast 掉而恒为 undefined；round 8 复核：后台完成通知仍向 thread 裸发 |
 
 ---
 
@@ -119,7 +119,7 @@ packages/channel-discord/
     ├── provider.ts              # parseBooleanFlag / takeFlagValue 的**包内副本**
     │                            # （这两个 helper 未从 xacpx/plugin-api 运行时导出，见 §13 红线）
     ├── inbound.ts               # chatKey 构造/解析、门控、mention 清洗
-    ├── outbound.ts              # sendRouteText / sendReplyWithGuard
+    ├── outbound.ts              # sendWithThreadFallback：唯一的归档 thread 降级入口（round 8 删掉零引用的 sendRouteText helper）
     ├── preview-stream.ts        # ⭐ 过程预览流控（核心，语义见 F2）
     ├── chunk.ts                 # ⭐ 2000 字符分片器（核心）
     ├── markdown.ts              # tableMode 转换 + 出站降级
@@ -420,8 +420,8 @@ await Promise.all(longRunningPromises);   // 对齐 feishu：start() 是长跑 P
 | `createConsumerLock()` | ✅（P4） | Discord 每 token 仅一个 Gateway 会话，同 token 双开进程互踢会话；参照 weixin `createWeixinConsumerLock` 先例实现（见 F6） |
 | `configureOrchestration()` | ✅ | 存 `markDelivered` / `markFailed` |
 | `notifyTaskCompletion()` | ✅ | 先查 `task.chatKey` 前缀；失败走 `markFailed` 后 **return 而非 throw**（对齐 feishu `channel.ts:195`） |
-| `notifyTaskProgress()` | ✅ | 直接 `sendRouteText` |
-| `sendCoordinatorMessage()` | ✅ | 直接 `sendRouteText` |
+| `notifyTaskProgress()` | ✅ | 私有 `sendRouteText()`：渲染+分片后每片走 `sendWithThreadFallback`（thread 键的 chatKey 无入站元数据，父频道只能回查 REST） |
+| `sendCoordinatorMessage()` | ✅ | 同上，私有 `sendRouteText()` |
 | `sendScheduledMessage()` | ✅ | 不绑 session lane，走 `agent.chat`；不支持媒体 |
 | `nativeSessionListFormat` | ✅ | **`"cards"`**——Discord 的 markdown 表格渲染成管道符，与 weixin 同病，跟随 weixin 先例（`weixin-channel.ts:35`；消费点 `native-session-handler.ts:145`）。agent 输出表格另有 `tableMode` 兜底（见 F4） |
 | relay 三件套 | ❌ | 非结构化频道 |
@@ -629,7 +629,7 @@ Discord 附件上限：以 Discord 官方现行限制为准（普通 bot 历史�
 | R2 | **多账号 identify 限流**（5s 窗口）→ 并发登录被 4004/限流 | 启动 stagger 5500ms（D8） |
 | R3 | **编辑频率软限**（~5 次/5 秒）→ preview 太激进会被限流 | `throttleMs` 默认 1200，下限 250 |
 | R4 | **REST 429**：大量分片时堆积 | 出站串行队列；429 时按 `retry_after` 退避（discord.js 已内置，但需保证我们不并发轰炸） |
-| R5 | **Thread 自动归档**（默认 60 分钟）→ 归档后发言失败（50083） | v1 不做 autoThread；向归档 thread 发送失败时统一降级到父频道，**文本、出站媒体与 `sendRouteText` 走同一个惰性 helper**，父频道不可知则重抛原错（见 F8） |
+| R5 | **Thread 自动归档**（默认 60 分钟）→ 归档后发言失败（50083） | v1 不做 autoThread；向归档 thread 发送失败时统一降级到父频道，**文本、出站媒体、私有 `sendRouteText()` 与后台完成通知走同一个惰性 helper**，父频道不可知则重抛原错（见 F8） |
 | R6 | **token 泄露**：Discord 主动扫描公开仓库并吊销 token | README 明确警告：只用 `xacpx channel add` 写入 `~/.xacpx/config.json`，绝不进 git |
 | R7 | **`@everyone` 广播**：agent 输出里出现即真广播 | 全局 `allowed_mentions: { parse: [] }`（D6） |
 | R8 | **包体积**：discord.js ~5MB，装进 `~/.xacpx/plugins` | README 说明；若后续成为问题，改 oceanic.js 只需动 `discord-client.ts` |
@@ -682,7 +682,7 @@ Discord 附件上限：以 Discord 官方现行限制为准（普通 bot 历史�
 6. **reply-to-bot 要精确到"被回复者确实是 bot"**：只有 `repliedUserId` / `mentions.repliedUser.id` 命中 bot id 才算，光有 `referencedMessageId` 不够——那会把"回复另一个人类"当成回复 bot。正常 mention 门控与 abort 快路径共用同一个判定，且共用同一个 `effectiveRequireMention`（频道级 override 优先于账号级），二者不得各读一份。
 7. **配额重置的时序**：`quota.onInbound(chatKey)` 在消息**被接纳之后、入站附件下载之前**调用。放在下载之后，一个慢附件会把预算重置拖到下一轮，导致合法消息被限。
 8. **`parseDiscordChannelConfig()` 是语义校验的唯一权威**：构造函数调用它；`discordCliProvider.validateConfig()` 只做包装（含 `options === undefined` 也判 issue）。两处判定不一致就是 drift。
-9. **归档 thread 降级只有一个入口且惰性**（F8）：最终文本、出站媒体、`sendRouteText` 都交给 `sendWithThreadFallback()`，由它发首投；`resolveParentTarget()` 只在首投被判 archived(50083)/not-found 后调用。父频道优先 `ActiveTask.parentChannelId`（来自入站消息，`registerActiveTask` 必须真的存下来），否则回查 REST；不可知则重抛原始错误。非 thread 目标不得解析、不得使用父频道。
+9. **归档 thread 降级只有一个入口且惰性**（F8）：最终文本、出站媒体、私有 `sendRouteText()`、后台完成通知（`sendBackgroundCompletionNotice`）都交给 `sendWithThreadFallback()`，由它发首投；`resolveParentTarget()` 只在首投被判 archived(50083)/not-found 后调用。父频道优先 `ActiveTask.parentChannelId`（来自入站消息，`registerActiveTask` 必须真的存下来），否则回查 REST；不可知则重抛原始错误。非 thread 目标不得解析、不得使用父频道。通知是尽力而为：它的降级外面还包一层 catch，两处都失败只记 `discord.bg_notice.failed`，不得打断 turn 收尾。断言见 `tests/unit/packages/channel-discord/discord-thread-route.test.ts`（含"通知到了父频道"一条）。
 10. **consumer lock 三层各封一段**（F6）：配置层拒 enabled 账号重复 token；核心层 `createRuntimeConsumerLock` 持有 **core + 所有频道** 的锁，串行 acquire、逆序回滚、release 不被单个抛错中断（**禁止 `Promise.all`**）；Discord 锁文件名按 token hash 落在**用户全局** `~/.xacpx/runtime/`，不随 `XACPX_CONFIG` 或注入路径迁移；metadata 不可读时少量重读后 **fail closed，绝不删既有锁文件**。
 11. **publish 只能来自精确 tag**（`.github/workflows/publish-channel-discord.yml`）：两个按事件门控的 checkout 步骤，dispatch 走 `ref: refs/tags/${{ inputs.tag }}`，让分支名在 checkout 阶段就失败而不是以"看着像 tag"的名字发出分支 HEAD；`git show-ref --verify` + `HEAD == tag^{commit}` + `tag == channel-discord-v<package.json version>` 三条证明**必须排在 `npm publish` 之前**；`gh release create` 带 `--verify-tag`；shell 里**不得出现 `${{ }}` 内插**，外部值只经 `env:` 进入。静态守门：`tests/unit/scripts/publish-channel-discord-workflow.test.ts`。
 12. **中断发版的恢复不改状态机**（文档契约，无代码断言）：npm 已有该版本而 GitHub Release 缺失时，**不重跑 publish、不移动/重推 tag**（重推会让 tag 不再指向产出该制品的 commit）；只做 `git show-ref --verify` + `git rev-parse refs/tags/<tag>^{commit}` 校验，然后单独 `gh release create <tag> --verify-tag --title "@ganglion/xacpx-channel-discord v<version>" --generate-notes`，稳定版带 `--latest=false`、预发布版改用 `--prerelease`（与 workflow 那两步逐字一致）。完整 runbook 见 [`docs/developments.md`](../../developments.md) 与 [`docs/zh/developments_zh.md`](../../zh/developments_zh.md)。
