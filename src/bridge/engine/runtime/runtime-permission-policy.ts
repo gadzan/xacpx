@@ -74,5 +74,6 @@ export function parseXacpxPermissionPolicy(input: unknown): XacpxPermissionPolic
 export function isEligibleForRuntime(policy: XacpxPermissionPolicy | undefined, nonInteractivePermissions: string | undefined): boolean {
   if (nonInteractivePermissions === "fail") return false;
   if (policy?.escalate && policy.escalate.length > 0) return false;
+  if (policy?.defaultAction === "escalate") return false;
   return true;
 }

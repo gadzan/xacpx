@@ -26,6 +26,14 @@ import { EngineRouter, SessionEngineBinding, type BridgeEngine } from "./engine"
 import { EngineMismatchError, EngineUnsupportedError } from "./engine/engine-router";
 import { RuntimeError } from "./engine/runtime-engine";
 
+function withMcp<T extends Record<string, unknown>>(base: T, params: Record<string, unknown>): T & { mcpCoordinatorSession?: string; mcpSourceHandle?: string } {
+  return {
+    ...base,
+    mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
+    mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
+  };
+}
+
 interface BridgeRequest {
   id: string;
   method: BridgeMethod;

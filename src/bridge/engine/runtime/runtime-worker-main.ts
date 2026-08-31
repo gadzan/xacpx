@@ -118,7 +118,7 @@ async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: 
     state.permissionSnapshot = initialSnapshot;
     state.permissionGeneration = initialGen;
     const resolver = new RuntimePermissionResolver();
-    let mcpServers: import("acpx/runtime").AcpRuntimeOptions["mcpServers"] | undefined;
+    let mcpServers: import("./runtime-adapter").XacpxMcpServers | undefined;
     if (params.mcpCoordinatorSession) {
       try {
         const { buildRuntimeMcpServers } = await import("./runtime-mcp");
@@ -126,7 +126,7 @@ async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: 
           mcpCoordinatorSession: params.mcpCoordinatorSession,
           mcpSourceHandle: params.mcpSourceHandle,
         });
-        if (servers.length > 0) mcpServers = servers as unknown as import("acpx/runtime").AcpRuntimeOptions["mcpServers"];
+        if (servers.length > 0) mcpServers = servers as unknown as import("./runtime-adapter").XacpxMcpServers;
       } catch {}
     }
     state.adapter = createXacpxRuntimeAdapter({

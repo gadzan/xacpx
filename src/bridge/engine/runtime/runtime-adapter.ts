@@ -18,6 +18,9 @@ import {
   type AcpRuntime,
   type AcpRuntimeEvent,
   type AcpRuntimeHandle,
+  type AcpRuntimeOptions,
+  type AcpPermissionRequest,
+  type AcpPermissionDecision,
 } from "acpx/runtime";
 
 import type {
@@ -28,6 +31,10 @@ import type {
   XacpxTurnHandle,
   XacpxTurnResult,
 } from "./runtime-contract";
+
+export type XacpxMcpServers = AcpRuntimeOptions["mcpServers"];
+export type XacpxPermissionRequest = AcpPermissionRequest;
+export type XacpxPermissionDecision = AcpPermissionDecision;
 
 export interface CreateXacpxRuntimeAdapterOptions {
   /** acpx session store directory — must match xacpx's CLI acpx stateDir. */

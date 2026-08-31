@@ -101,19 +101,30 @@ export async function runBridgeMain(): Promise<void> {
       }),
     });
   server = new BridgeServer(runtime);
-  // PR6: prime durable runtime queues after bridge startup (real caller for restart recovery)
-  // The runtime engine is dormant this wave, so this is a no-op until runtime sessions exist,
-  // but the wiring must exist so restart recovery is not test-only.
+  // PR6: real Host restart recovery — prime durable queues from persisted state
   try {
-    const maybePrime = (server as unknown as { primeRuntimeQueues?: () => Promise<void> }).primeRuntimeQueues;
-    if (typeof maybePrime === "function") await maybePrime.call(server);
-  } catch {}
-  try {
-    const maybeEnginePrime = (runtime as unknown as { primeQueuesFromCatalog?: (s: unknown[]) => Promise<void> }).primeQueuesFromCatalog;
-    if (typeof maybeEnginePrime === "function") {
-      // Bridge restart recovery: enumerate queue journals for authoritative runtime-bound sessions
-      // The catalog is empty at this point for dormant, so this primes nothing but proves the seam exists
-      await maybeEnginePrime.call(runtime, []);
+    const { join } = await import("node:path");
+    const { homedir } = await import("node:os");
+    const { coreHomeDir } = await import("../runtime/core-home.js");
+    const { readFile } = await import("node:fs/promises");
+    const statePath = join(coreHomeDir(homedir()), "state.json");
+    const raw = await readFile(statePath, "utf8").catch(() => null);
+    if (raw) {
+      const parsed = JSON.parse(raw) as { sessions?: Array<{ alias: string; agent: string; cwd: string; logicalSessionId?: string; transportEngine?: string; mcpCoordinatorSession?: string; mcpSourceHandle?: string }> };
+      const sessions = (parsed.sessions ?? [])
+        .filter((s) => s.transportEngine === "runtime")
+        .map((s) => ({
+          agent: s.agent,
+          cwd: s.cwd,
+          name: s.alias,
+          logicalSessionId: s.logicalSessionId,
+          mcpCoordinatorSession: s.mcpCoordinatorSession,
+          mcpSourceHandle: s.mcpSourceHandle,
+        }));
+      if (sessions.length > 0) {
+        const maybePrime = (server as unknown as { primeRuntimeQueues?: (s: unknown[]) => Promise<void> }).primeRuntimeQueues;
+        if (typeof maybePrime === "function") await maybePrime.call(server, sessions);
+      }
     }
   } catch {}
   const input = createInterface({

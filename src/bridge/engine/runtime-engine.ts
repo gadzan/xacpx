@@ -415,6 +415,7 @@ export class RuntimeEngine implements BridgeEngine {
   private queueStore?: RuntimeQueueStore;
   private readonly draining = new Map<string, Promise<void>>();
   private readonly deleting = new Set<string>();
+  private shuttingDown = false;
   /** Authoritative session catalog for bridge restart recovery (logicalSessionId -> input). */
   private sessionCatalog = new Map<string, EngineSessionInput>();
   private readonly lastMcpIdentity = new Map<string, { mcpCoordinatorSession?: string; mcpSourceHandle?: string }>();
@@ -427,17 +428,19 @@ export class RuntimeEngine implements BridgeEngine {
       this.manager = new RuntimeWorkerManager({
         entryPath: entry,
         clientDeps: options.workerClientDeps,
-        fenceDir: options.fenceDir ?? join(this.xacpxRuntimeDir(), "worker-fences"),
+        ...(options.fenceDir ? { fenceDir: options.fenceDir } : options.stateDir ? { fenceDir: join(this.runtimeStateRoot(), "worker-fences") } : { fenceDir: join(this.xacpxRuntimeDir(), "worker-fences") }),
       });
     }
     if (options.queueDir) {
       this.queueStore = new RuntimeQueueStore(options.queueDir);
+    } else if (options.stateDir) {
+      try {
+        this.queueStore = new RuntimeQueueStore(join(this.runtimeStateRoot(), "runtime-queue"));
+      } catch {}
     } else {
       try {
         this.queueStore = new RuntimeQueueStore(join(this.xacpxRuntimeDir(), "runtime-queue"));
-      } catch {
-        // keep queueStore undefined and fail closed on enqueue if xacpx runtime dir unavailable
-      }
+      } catch {}
     }
   }
 
@@ -455,12 +458,12 @@ export class RuntimeEngine implements BridgeEngine {
 
   private queueDir(): string {
     if (this.options.queueDir) return this.options.queueDir;
+    if (this.options.stateDir) return join(this.runtimeStateRoot(), "runtime-queue");
     return join(this.xacpxRuntimeDir(), "runtime-queue");
   }
 
   private getQueueStore(): RuntimeQueueStore {
     if (this.queueStore) return this.queueStore;
-    // Lazily create if stateDir becomes valid later
     const dir = this.queueDir();
     this.queueStore = new RuntimeQueueStore(dir);
     return this.queueStore;
@@ -475,12 +478,6 @@ export class RuntimeEngine implements BridgeEngine {
    */
   private runtimeStateRoot(): string {
     const sessions = this.sessionsDir();
-    if (sessions.split(/[\\/]/).pop() !== "sessions") {
-      throw new RuntimeError(
-        "RUNTIME_INIT_FAILED",
-        `RuntimeEngineOptions.stateDir must end in "sessions" (got "${sessions}") — upstream acpx createRuntimeStore hard-codes stateRoot + "/sessions"`,
-      );
-    }
     return dirname(sessions);
   }
   private scheduleIdleTtl(key: string, client: RuntimeWorkerClient): void {
@@ -638,8 +635,9 @@ export class RuntimeEngine implements BridgeEngine {
         this.activeTurns.delete(key);
       }
       if (!isTerminal) {
-        // Worker crash before/during turn without terminal result — keep head for at-least-once replay, do not dequeue
-        // Return so next drain will be retried after worker recovery or next enqueue; head remains on disk
+        // Worker crash before/during turn without terminal result — keep head for at-least-once replay
+        // Schedule a re-kick after a short backoff so the queue doesn't stall until next external operation
+        setTimeout(() => this.kickDrain(input).catch(() => {}), 200);
         return;
       }
       // Atomically remove head from journal ONLY after terminal settlement (at-least-once, possible replay on crash before remove)
@@ -664,7 +662,7 @@ export class RuntimeEngine implements BridgeEngine {
     }
   }
 
-  private async checkMcpStaleAndRotate(input: EngineSessionInput, forActiveCheck: boolean): Promise<boolean> {
+  private async checkMcpStaleAndRotate(input: EngineSessionInput, _forActiveCheck: boolean): Promise<boolean> {
     const key = this.workerKey(input);
     const requestedMcp = { mcpCoordinatorSession: input.mcpCoordinatorSession, mcpSourceHandle: input.mcpSourceHandle };
     const lastMcp = this.lastMcpIdentity.get(key);
@@ -678,7 +676,7 @@ export class RuntimeEngine implements BridgeEngine {
       this.lastMcpIdentity.delete(key);
       return true;
     }
-    const isActive = forActiveCheck ? this.activeTurns.has(key) : (this.activeTurns.has(key) || existingClient.lifecycle === "busy" || existingClient.hasInFlight);
+    const isActive = this.activeTurns.has(key) || existingClient.lifecycle === "busy" || existingClient.hasInFlight;
     if (isActive) {
       this.staleAfterTurn.add(key);
       throw new RuntimeError("RUNTIME_MCP_STALE", `MCP identity changed for session "${key}" while turn active; will rotate after settle`);
@@ -929,6 +927,7 @@ export class RuntimeEngine implements BridgeEngine {
     input: EnginePromptInput,
     onEvent?: (event: EnginePromptStreamEvent) => void,
   ): Promise<{ text: string }> {
+    if (this.shuttingDown) throw new RuntimeError("RUNTIME_INIT_FAILED", "runtime engine is shutting down");
     if (this.policyTransitionLock) {
       await this.policyTransitionLock;
     }
@@ -943,13 +942,14 @@ export class RuntimeEngine implements BridgeEngine {
       return result;
     } finally {
       this.activeTurns.delete(key);
-      // PR8: retire stale MCP worker after the active turn has truly settled (activeTurns cleared)
+      // PR8: retire stale MCP worker after the active turn has truly settled (activeTurns cleared) — fail-closed on teardown uncertainty
       if (this.staleAfterTurn.has(key)) {
         this.staleAfterTurn.delete(key);
         const staleClient = this.manager?.get(key);
         if (staleClient) {
-          await staleClient.shutdown().catch(() => {});
-          if (staleClient.lifecycle === "stopped") await this.manager?.release(key, staleClient).catch(() => {});
+          await staleClient.shutdown().catch((e) => { throw toTeardownError(key, e); });
+          if (staleClient.lifecycle === "stopped") await this.manager?.release(key, staleClient).catch((e) => { throw toTeardownError(key, e); });
+          else throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `stale MCP worker for "${key}" did not reach stopped after shutdown`);
           this.lastMcpIdentity.delete(key);
         }
       }
@@ -981,6 +981,7 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   async injectMessage(input: EngineInjectInput): Promise<{ status: "queued"; modeUsed: "queue"; queueItemId: string }> {
+    if (this.shuttingDown) throw new RuntimeError("RUNTIME_INIT_FAILED", "runtime engine is shutting down");
     if (this.policyTransitionLock) {
       await this.policyTransitionLock;
     }
@@ -993,10 +994,16 @@ export class RuntimeEngine implements BridgeEngine {
       );
     }
     const mode: "queue" | "auto" = input.mode === "auto" ? "auto" : "queue";
-    // Ensure catalog for drain
-    if (!this.sessionCatalog.has(key)) {
-      this.sessionCatalog.set(key, { name: input.logicalSessionId ? key : (input as unknown as EngineSessionInput).name ?? key, logicalSessionId: input.logicalSessionId ?? key, cwd: (input as unknown as EngineSessionInput).cwd, agent: (input as unknown as EngineSessionInput).agent } as EngineSessionInput);
-    }
+    // Always refresh catalog with latest MCP identity (not just when absent) — otherwise A then B uses A drain
+    this.sessionCatalog.set(key, {
+      ...(this.sessionCatalog.get(key) ?? {}),
+      name: input.name ?? (input as unknown as EngineSessionInput).name ?? key,
+      logicalSessionId: input.logicalSessionId ?? key,
+      cwd: input.cwd ?? (input as unknown as EngineSessionInput).cwd,
+      agent: (input as unknown as EngineSessionInput).agent ?? "codex",
+      mcpCoordinatorSession: (input as unknown as EngineSessionInput).mcpCoordinatorSession,
+      mcpSourceHandle: (input as unknown as EngineSessionInput).mcpSourceHandle,
+    } as EngineSessionInput);
     const catalogInput = this.sessionCatalog.get(key)!;
     const store = this.getQueueStore();
     // Enqueue inside store lock with deleting/coolPending check atomically (no race with delete)
@@ -1109,6 +1116,7 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   async deleteSession(input: EngineSessionInput): Promise<Record<string, never>> {
+    if (this.shuttingDown) throw new RuntimeError("RUNTIME_INIT_FAILED", "runtime engine is shutting down");
     // Admission gate: wait for any in-flight policy transition
     if (this.policyTransitionLock) {
       await this.policyTransitionLock;
@@ -1116,19 +1124,19 @@ export class RuntimeEngine implements BridgeEngine {
     const key = this.workerKey(input);
     // PR6: mark deleting so new enqueue is rejected (lifecycle boundary)
     this.deleting.add(key);
-    const client = this.manager?.get(key);
+    try {
+      const client = this.manager?.get(key);
 
-    // 1. Resolve REAL record id (plan §19 order). Never fallback to logicalSessionId.
-    const recordId = await this.resolveRecordId(input, client);
+      // 1. Resolve REAL record id (plan §19 order). Never fallback to logicalSessionId.
+      const recordId = await this.resolveRecordId(input, client);
 
-    // 2. If no record exists on disk or memory, idempotent success (G4).
-    if (!recordId) {
-      this.recordIds.delete(key);
-      await this.getQueueStore().removeJournal(key);
-      this.deleting.delete(key);
-      this.sessionCatalog.delete(key);
-      return {};
-    }
+      // 2. If no record exists on disk or memory, idempotent success (G4).
+      if (!recordId) {
+        this.recordIds.delete(key);
+        await this.getQueueStore().removeJournal(key);
+        this.sessionCatalog.delete(key);
+        return {};
+      }
 
     const safeId = encodeURIComponent(recordId);
     const sessionsDir = this.sessionsDir();
@@ -1187,6 +1195,9 @@ export class RuntimeEngine implements BridgeEngine {
     }
 
     return {};
+    } finally {
+      this.deleting.delete(key);
+    }
   }
 
   async freeWarmProcess(input: EngineSessionInput): Promise<Record<string, never>> {
@@ -1443,16 +1454,7 @@ export class RuntimeEngine implements BridgeEngine {
     nonInteractivePermissions: NonInteractivePermissions;
     permissionPolicy?: string;
   }): Promise<void> {
-    // Use single source configFromRaw to avoid drift between bootstrap and update
-    const { configFromRaw } = await import("./runtime/runtime-permission-resolver");
-    let validated: ReturnType<typeof configFromRaw> | undefined;
     try {
-      validated = configFromRaw(this.permissionGeneration + 1, {
-        permissionMode: policy.permissionMode,
-        nonInteractivePermissions: policy.nonInteractivePermissions,
-        permissionPolicy: policy.permissionPolicy,
-      });
-      // Validate via parse as well for strict file-path handling (configFromRaw swallows file read errors as empty)
       if (policy.permissionPolicy !== undefined) {
         const { parseXacpxPermissionPolicy } = await import("./runtime/runtime-permission-policy");
         parseXacpxPermissionPolicy(policy.permissionPolicy);
@@ -1522,10 +1524,15 @@ export class RuntimeEngine implements BridgeEngine {
     return {};
   }
   async shutdown(): Promise<Record<string, never>> {
+    this.shuttingDown = true;
     for (const timer of this.idleTimers.values()) {
       clearTimeout(timer);
     }
     this.idleTimers.clear();
+    // Await any in-flight drains
+    if (this.draining.size > 0) {
+      await Promise.allSettled([...this.draining.values()]);
+    }
     await this.manager?.shutdownAll();
     return {};
   }

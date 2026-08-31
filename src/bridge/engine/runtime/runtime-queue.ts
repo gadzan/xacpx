@@ -201,9 +201,11 @@ export class RuntimeQueueStore {
   }
 
   async removeJournal(logicalSessionId: string): Promise<void> {
-    const file = queueFilePath(this.queueDir, logicalSessionId);
-    try { await unlink(file); } catch (err) { if (!isEnoent(err)) throw new RuntimeError("RUNTIME_INIT_FAILED", `failed to remove runtime queue journal for "${logicalSessionId}": ${err instanceof Error ? err.message : String(err)}`); }
-    try { await access(file); throw new RuntimeError("RUNTIME_INIT_FAILED", `queue journal still exists after remove for "${logicalSessionId}"`); } catch (err) { if (!isEnoent(err)) throw err; }
+    return this.withLock(logicalSessionId, async () => {
+      const file = queueFilePath(this.queueDir, logicalSessionId);
+      try { await unlink(file); } catch (err) { if (!isEnoent(err)) throw new RuntimeError("RUNTIME_INIT_FAILED", `failed to remove runtime queue journal for "${logicalSessionId}": ${err instanceof Error ? err.message : String(err)}`); }
+      try { await access(file); throw new RuntimeError("RUNTIME_INIT_FAILED", `queue journal still exists after remove for "${logicalSessionId}"`); } catch (err) { if (!isEnoent(err)) throw err; }
+    });
   }
 
   async listLogicalSessionIds(): Promise<string[]> {
