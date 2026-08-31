@@ -153,6 +153,13 @@ const outboundMedia = [
 function makeHarness(input: {
   client: ThreadClient;
   agentResult: { text?: string; media?: unknown };
+  // A sessions fake whose peekCurrentSessionAlias changes between the first
+  // call (binding the turn) and the completion check is what makes the channel
+  // post a background completion notice. See test H.
+  sessions?: {
+    peekCurrentSessionAlias(chatKey: string): string | undefined;
+    setBackgroundResult(chatKey: string, alias: string, result: unknown): Promise<void>;
+  };
 }) {
   const logger = makeLogger();
   const abort = new AbortController();
@@ -175,7 +182,7 @@ function makeHarness(input: {
     abortSignal: abort.signal,
     agent: { chat: async () => input.agentResult },
     activeTurns: null,
-    sessions: null,
+    sessions: input.sessions ?? null,
     quota: { onInbound: () => {} },
     locale: "en",
   } as unknown as ChannelStartInput);
@@ -333,6 +340,47 @@ test("archived thread with no discoverable parent rethrows the original error", 
   expect(thrown).toBeInstanceOf(Error);
   expect((thrown as Error).message).toContain("archived thread");
   expect(client.attempts.filter((a) => a.channelId === "parent-1")).toEqual([]);
+
+  harness.abort.abort();
+  await harness.startPromise;
+});
+
+// Test H (round 8): the background completion notice is an outbound surface
+// like the answer, so it goes through the same fallback. Before this round it
+// raw-sent to the thread, meaning an archived thread lost the notice for a
+// finished background turn while its answer still reached the parent.
+test("archived thread: the background completion notice falls back to the parent", async () => {
+  const client = makeThreadClient({ identity: { botUserId: "bot-1" }, failingChannelIds: ["thread-1"] });
+  const backgroundResults: string[] = [];
+  let peekCalls = 0;
+  const harness = makeHarness({
+    client,
+    agentResult: { text: "the answer" },
+    sessions: {
+      peekCurrentSessionAlias: () => (peekCalls++ === 0 ? "worker" : "worker-next"),
+      setBackgroundResult: async (chatKey: string, alias: string) => {
+        backgroundResults.push(`${chatKey}|${alias}`);
+      },
+    },
+  });
+
+  await runTurn(harness, threadMessage());
+  // Only once the notice path has been reached: asserting deliveries after that
+  // way gives a precise failure instead of a timeout.
+  await waitFor(() => backgroundResults.length === 1);
+  await settle();
+
+  expect(backgroundResults).toEqual(["discord:default:t:thread-1|worker"]);
+  // One attempt per delivery: the answer and the notice each try the thread
+  // once, then each land in the parent.
+  expect(client.tried("thread-1").length).toBe(2);
+  expect(client.tried("thread-1").every((a) => !a.delivered)).toBe(true);
+  const parentDeliveries = client.delivered("parent-1");
+  expect(parentDeliveries.map((a) => a.content)).toEqual(["the answer", "✅ worker done"]);
+  expect(parentDeliveries.every((a) => a.mentionParse?.length === 0)).toBe(true);
+  // The parent came from the turn's own inbound metadata, not from a REST lookup.
+  expect(client.parentLookups).toBe(0);
+  expect(harness.logger.errors.filter((m) => m.includes("failed to send background completion notice"))).toEqual([]);
 
   harness.abort.abort();
   await harness.startPromise;

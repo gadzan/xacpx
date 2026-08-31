@@ -1065,7 +1065,15 @@ export class DiscordChannel implements MessageChannelRuntime {
             status: turnStatus,
             finished_at: new Date().toISOString(),
           });
-          await this.sendBackgroundCompletionNotice({ runtime, channelId, guildId, messageId, boundAlias, status: turnStatus });
+          await this.sendBackgroundCompletionNotice({
+            runtime,
+            channelId,
+            guildId,
+            messageId,
+            boundAlias,
+            status: turnStatus,
+            active,
+          });
         }
       }
       const stack = this.activeTasks.get(queueKey);
@@ -1149,11 +1157,24 @@ export class DiscordChannel implements MessageChannelRuntime {
     messageId: string;
     boundAlias: string;
     status: "done" | "error";
+    active: ActiveTask;
   }): Promise<void> {
     const text = buildDiscordCompletionNotice(toDisplaySessionAlias(input.boundAlias), input.status);
     const target: DeliveryTarget = { channelId: input.channelId, ...(input.guildId ? { guildId: input.guildId } : {}) };
+    const resolveParentTarget =
+      input.active.chatKind === "thread"
+        ? () => this.resolveFinalThreadParentTarget(input.runtime, input.active, target)
+        : undefined;
     try {
-      await input.runtime.client.sendMessage(target, { content: text, allowedMentions: { parse: [] } });
+      await sendWithThreadFallback({
+        client: input.runtime.client,
+        target,
+        resolveParentTarget,
+        body: { content: text, allowedMentions: { parse: [] } },
+        loggerWarn: (msg, fields) => {
+          void this.logger?.warn(msg, String(fields?.from ?? msg), fields);
+        },
+      });
     } catch (error) {
       await this.logger?.error("discord.bg_notice.failed", "failed to send background completion notice", {
         channelId: input.channelId,
