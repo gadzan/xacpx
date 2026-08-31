@@ -19,8 +19,8 @@ test.describe("terminal input lifecycle", () => {
       fire("compositionstart");
       fire("compositionupdate", "ni");
       fire("compositionupdate", "nihao");
-      // iOS-style insertText can also fire mid-composition. The #5614 gate
-      // must still refuse it so pinyin never reaches the PTY.
+      // iOS-style insertText can also fire mid-composition. The #5836 229
+      // owner must still refuse it so pinyin never reaches the PTY.
       const keydown = new KeyboardEvent("keydown", {
         key: "Unidentified",
         bubbles: true,
@@ -50,11 +50,12 @@ test.describe("terminal input lifecycle", () => {
   });
 
   test("iOS-style composed insertText after keydown reaches the PTY once", async ({ page, hub }) => {
-    // Desktop Chromium cannot run a real iOS Chinese IME. This is the stock
-    // @xterm/xterm@6.0.0 drop path (xtermjs/xterm.js#5835): keydown sets
-    // `_keyDownSeen`, then `input` arrives with insertText / composed:true /
-    // isComposing:false. Real iOS Safari / Home Screen Web App verification
-    // is still required.
+    // Desktop Chromium cannot run a real iOS Chinese IME. This is the real
+    // dual-path race on stock @xterm/xterm@6.0.0 (xtermjs/xterm.js#5835):
+    // keydown 229 snapshots the textarea and schedules an async diff, the
+    // browser then writes textarea.value, input(insertText) fires, then
+    // keyup/timer. A lone #5614 `_inputEvent` gate double-sends here.
+    // Real iOS Safari / Home Screen Web App verification is still required.
     await loginAndOpenTerminal(page);
     await waitForTerminalScreen(page);
 
@@ -66,19 +67,22 @@ test.describe("terminal input lifecycle", () => {
 
     const inputsBefore = hub.inputs.length;
     await ta.evaluate((el) => {
-      const fireIosInsert = (data: string) => {
-        const keydown = new KeyboardEvent("keydown", {
+      const fireKey = (type: "keydown" | "keyup", keyCode: number) => {
+        const ev = new KeyboardEvent(type, {
           key: "Unidentified",
           code: "Unidentified",
           bubbles: true,
           cancelable: true,
           composed: true,
         });
-        Object.defineProperty(keydown, "keyCode", { get: () => 229 });
-        Object.defineProperty(keydown, "which", { get: () => 229 });
-        el.dispatchEvent(keydown);
-        // Do not write el.value: CompositionHelper's keyCode-229 textarea
-        // diff would otherwise also emit, masking a still-broken _inputEvent.
+        Object.defineProperty(ev, "keyCode", { get: () => keyCode });
+        Object.defineProperty(ev, "which", { get: () => keyCode });
+        el.dispatchEvent(ev);
+      };
+      const fireIosInsert = (data: string) => {
+        el.value = "";
+        fireKey("keydown", 229);
+        el.value = data;
         el.dispatchEvent(new InputEvent("input", {
           data,
           inputType: "insertText",
@@ -87,6 +91,7 @@ test.describe("terminal input lifecycle", () => {
           cancelable: true,
           composed: true,
         }));
+        fireKey("keyup", 229);
       };
       fireIosInsert("你好");
       fireIosInsert(" ");
@@ -97,7 +102,58 @@ test.describe("terminal input lifecycle", () => {
     expect(hub.inputs.slice(inputsBefore)).toEqual(["你好", " ", "，"]);
   });
 
-  test("English keypress is not doubled by the iOS insertText relaxation", async ({ page, hub }) => {
+  test("iOS double-space conversion emits 。 once, not the whole textarea", async ({ page, hub }) => {
+    await loginAndOpenTerminal(page);
+    await waitForTerminalScreen(page);
+
+    const host = page.getByTestId("terminal-host");
+    await host.click();
+    const ta = host.locator("textarea");
+    await expect(ta).toHaveCount(1);
+    await ta.focus();
+
+    const inputsBefore = hub.inputs.length;
+    await ta.evaluate((el) => {
+      const fireKey = (type: "keydown" | "keyup", keyCode: number) => {
+        const ev = new KeyboardEvent(type, {
+          key: "Unidentified",
+          code: "Unidentified",
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+        });
+        Object.defineProperty(ev, "keyCode", { get: () => keyCode });
+        Object.defineProperty(ev, "which", { get: () => keyCode });
+        el.dispatchEvent(ev);
+      };
+      el.value = "hello ";
+      fireKey("keydown", 229);
+      el.value = "hello";
+      el.dispatchEvent(new InputEvent("input", {
+        inputType: "deleteContentBackward",
+        isComposing: false,
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      }));
+      el.value = "hello。";
+      el.dispatchEvent(new InputEvent("input", {
+        data: "。",
+        inputType: "insertText",
+        isComposing: false,
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      }));
+      fireKey("keyup", 229);
+    });
+
+    await expect.poll(() => hub.inputs.slice(inputsBefore).join("")).toBe("\x7f。");
+    expect(hub.inputs.slice(inputsBefore).join("")).not.toBe("hello。");
+    expect(hub.inputs.slice(inputsBefore)).not.toContain("hello。");
+  });
+
+  test("English keypress is not doubled by the iOS 229 owner", async ({ page, hub }) => {
     await loginAndOpenTerminal(page);
     await waitForTerminalScreen(page);
     const host = page.getByTestId("terminal-host");
