@@ -1637,6 +1637,36 @@ test("serializes queue overflow with a stable error code and no giant diagnostic
   );
 });
 
+test("serializes queue overflow with confirmed cleanup preserving ownerTerminationSucceeded", async () => {
+  const runtime = {
+    prompt: async () => {
+      throw new AcpxQueueOverflowError({
+        cancelAttempted: true,
+        cancelSucceeded: true,
+        ownerTerminationAttempted: true,
+        ownerTerminationSucceeded: true,
+        diagnostic: "all good",
+      });
+    },
+  } as unknown as BridgeRuntime;
+  const server = new BridgeServer(runtime);
+
+  const response = await server.handleLine(JSON.stringify({
+    id: "queue-overflow-confirmed",
+    method: "prompt",
+    params: { agent: "codex", cwd: "/repo", name: "demo", text: "hello" },
+  }));
+  const parsed = JSON.parse(response!.trim()) as { error: { code: string; queueOverflowCleanup?: Record<string, unknown> } };
+  expect(parsed.error.code).toBe("ACPX_QUEUE_MESSAGE_OVERFLOW");
+  expect(parsed.error.queueOverflowCleanup).toEqual({
+    cancelAttempted: true,
+    cancelSucceeded: true,
+    ownerTerminationAttempted: true,
+    ownerTerminationSucceeded: true,
+    diagnostic: "all good",
+  });
+});
+
 test("serializes management timeout identity and bounded diagnostics", async () => {
   const runtime = {
     setModel: async () => {

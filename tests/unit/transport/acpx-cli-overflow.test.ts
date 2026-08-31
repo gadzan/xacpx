@@ -101,3 +101,50 @@ test("acpx-cli prompt overflow where cancel fails still produces typed error wit
     spy.mockRestore();
   }
 });
+
+test("acpx-cli transport does not misclassify provider failure when agent stdout contains overflow code", async () => {
+  const spy = spyOn(launcher, "terminateAcpxQueueOwnerVerified").mockResolvedValue(undefined as never);
+  // Custom run mock that returns provider failure with agent stdout containing overflow string
+  const run = mock(async (_command: string, args: string[]) => {
+    if (args.includes("prompt")) {
+      return {
+        code: 1,
+        stdout: JSON.stringify({
+          method: "session/update",
+          params: {
+            update: {
+              sessionUpdate: "agent_message_chunk",
+              content: { type: "text", text: "QUEUE_MESSAGE_OVERFLOW" },
+            },
+          },
+        }),
+        stderr: "provider failed",
+      };
+    }
+    if (args.includes("cancel")) {
+      return { code: 0, stdout: "cancelled", stderr: "" };
+    }
+    if (args.includes("show")) {
+      return { code: 0, stdout: JSON.stringify({ acpxRecordId: "backend:api-fix:overflow-record" }), stderr: "" };
+    }
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const transport = new AcpxCliTransport({ command: "acpx" }, run as never);
+
+  try {
+    await transport.prompt(session, "hello");
+    throw new Error("expected provider failure");
+  } catch (error) {
+    // Must remain provider failure, not overflow
+    expect(error).not.toBeInstanceOf(AcpxQueueOverflowError);
+    expect((error as Error).message).toContain("provider failed");
+    expect((error as Error).message).not.toContain("oversized ACP event");
+    // No destructive cleanup should have been triggered
+    expect(spy).not.toHaveBeenCalled();
+    const calls = (run as unknown as { mock: { calls: unknown[][] } }).mock.calls as unknown[][];
+    const argLists = calls.map((c) => (c[1] as string[]).join(" "));
+    expect(argLists.some((a) => a.includes(" cancel "))).toBe(false);
+  } finally {
+    spy.mockRestore();
+  }
+});

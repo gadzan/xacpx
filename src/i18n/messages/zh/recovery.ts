@@ -20,10 +20,9 @@ export const recovery: RecoveryMessages = {
   sessionInterruptedError: (summary) => `错误信息：${summary}`,
 
   // renderTransportError — queue overflow (soft warning)
-  queueOverflowWarning: "⚠️ 单次输出过大，已自动处理",
+  queueOverflowWarning: "⚠️ 单次输出过大",
   queueOverflowHint: "请让 agent 分步/摘要输出，或拆成多次发送；会话已就绪，可直接继续。",
   queueOverflowUnconfirmedHint: "自动清理未能确认完成，请先发送 /cancel 后重试；若仍异常，请重建会话（/session new ...）或稍后重试。",
-
   // renderSessionCreationError (AutoInstallFailedError)
   autoInstallHeadlineFixed: "⚠️ 自动安装已执行但未能修复会话启动问题",
   autoInstallHeadlineFailed: "❌ 自动安装失败",

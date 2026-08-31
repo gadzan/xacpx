@@ -56,3 +56,30 @@ test("still matches buffer overflow with surrounding text", () => {
   expect(isAcpxQueueMessageOverflow(new Error("prefix Message buffer exceeded 10485760 bytes suffix"))).toBe(true);
   expect(isAcpxQueueMessageOverflow({ stderr: "Message buffer exceeded 2048 bytes", stdout: "", message: "" })).toBe(true);
 });
+
+test("does not treat agent stdout containing overflow code as transport overflow", () => {
+  expect(isAcpxQueueMessageOverflow(new PromptCommandError("provider failed", {
+    code: 1,
+    stdout: JSON.stringify({
+      method: "session/update",
+      params: {
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "QUEUE_MESSAGE_OVERFLOW" },
+        },
+      },
+    }),
+    stderr: "provider failed",
+  }))).toBe(false);
+  expect(isAcpxQueueMessageOverflow(new PromptCommandError("provider failed", {
+    code: 1,
+    stdout: "text with ACPX_QUEUE_MESSAGE_OVERFLOW inside agent output",
+    stderr: "provider failed",
+  }))).toBe(false);
+  // stderr still trustworthy
+  expect(isAcpxQueueMessageOverflow(new PromptCommandError("overflow", {
+    code: 1,
+    stdout: "agent said QUEUE_MESSAGE_OVERFLOW",
+    stderr: "Message buffer exceeded 10485760 bytes",
+  }))).toBe(true);
+});

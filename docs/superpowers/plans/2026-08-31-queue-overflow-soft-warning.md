@@ -144,3 +144,28 @@
   2. `acpx-cli prompt overflow with termination failure is still typed but unconfirmed` — `terminate` 抛错 → `ownerTerminationSucceeded===false` / `diagnostic` 含 `terminate failed`
   3. `acpx-cli prompt overflow where cancel fails still produces typed error with cancel diagnostic` — `cancel` 返回 `No acpx session found` → `cancelSucceeded===false` 且 `diagnostic` 含该串，但仍为 confirmed（owner 已无锁），且后续 `handlePromptWithSession` 不会因此触发 recovery（见上）。
 - **额外**：`npx tsc --noEmit` 保持 0 error；`bun test` 对 7 个相关文件 186 pass，隔离 `mock.module` 污染（改用 `spyOn`）后 `bridge-runtime` 53 例在并发下亦稳定通过。
+
+---
+
+## Second Full Diff Review Fixes（2026-08-31 全量复审，1 High + 2 Medium）
+
+### High — `isAcpxQueueMessageOverflow` 信任 `stdout` 导致 agent 输出可误触发 destructive cleanup
+
+- **问题**：`isAcpxQueueMessageOverflow` 原收集 `["message","code","stdout","stderr"]` 并在每个字符串中搜索 `QUEUE_MESSAGE_OVERFLOW` 等。`PromptCommandError` 的 `stdout` 直接包含 `extractPromptOutput()` 提取的 agent 文本（`session/update → agent_message_chunk`），攻击/误触发链：
+  `agent stdout: "QUEUE_MESSAGE_OVERFLOW"` + `stderr: "provider failed", exitCode 1 → PromptCommandError(stdout=<agent>, stderr="provider failed") → isAcpx 扫描 stdout 命中 → cleanupOverflowedOwner() → /cancel + terminateAcpxQueueOwnerVerified() → 真实 provider 错误被改写为 queue overflow soft warning`。此前 negative 测试 `stdout=""` 未覆盖。
+- **修复**：
+  - `src/transport/acpx-queue-overflow.ts` 改为 **field-sensitive**：仅信任 `message / code / stderr`，**移除 `stdout`** 扫描，注释说明 `stdout` 含 agent 内容不可信。
+  - 回归：`tests/unit/transport/acpx-queue-overflow.test.ts` 新增 `does not treat agent stdout containing overflow code as transport overflow`（`PromptCommandError` 的 `stdout` 为 `session/update` JSON 含 `QUEUE_MESSAGE_OVERFLOW`，`stderr` 为 `provider failed` → `isAcpx===false`；另测 `stderr` 含 buffer overflow 仍为 `true`）；`tests/unit/transport/acpx-cli-overflow.test.ts` 新增 `acpx-cli transport does not misclassify provider failure when agent stdout contains overflow code`（`run` 返回 `stdout` 为 agent JSON 含 overflow，`stderr` 为 `provider failed` → 断言 `notToBeInstanceOf(AcpxQueueOverflowError)`，`message` 仍为 `provider failed`，`terminate`/`cancel` 0 次）。
+
+### Medium — unconfirmed 文案自相矛盾（首句仍称“已自动处理”）
+
+- **问题**：`confirmed` 与 `unconfirmed` 共用 headline `⚠️ 单次输出过大，已自动处理` / `⚠️ Output too large — handled gracefully`，但 `unconfirmed` 紧接 `自动清理未能确认完成` / `Automatic cleanup could not be confirmed`，与花大量代码建立的 `confirmed / unconfirmed` 安全边界冲突，首句仍暗示已处理完。
+- **修复**：`src/i18n/messages/{zh,en}/recovery.ts` 将 `queueOverflowWarning` 改为中性：`zh: "⚠️ 单次输出过大"`，`en: "⚠️ Output too large"`，状态完全由第二行 `hint` 承担（`queueOverflowHint`: ready；`queueOverflowUnconfirmedHint`: /cancel）。无需新增 key，`types.ts` 不变。
+
+### Medium — bridge `queueOverflowCleanup` 跨进程保真缺少真实 round-trip 回归
+
+- **问题**：生产代码已正确透传（`BridgeServer` 写 `queueOverflowCleanup`，`BridgeClient` 重建 `AcpxQueueOverflowError`），但测试未钉住该语义。`bridge-server.test.ts` 仅序列化 `all false` 场景；`bridge-client.test.ts` 的 `preserves a stable bridge error code` 仅发 `{code, message}` 无 `queueOverflowCleanup`，仅验证 generic→typed，未验证 `ownerTerminationSucceeded:true/false` 被恢复；`bridge-reconstructed` 单测直接 `new AcpxQueueOverflowError({...})` 并未走 `BridgeClient`。
+- **修复**：
+  - `tests/unit/bridge/bridge-server.test.ts` 新增 `serializes queue overflow with confirmed cleanup preserving ownerTerminationSucceeded`（`cancel/succeed true` 全 `true`，`diagnostic: "all good"`，断言 `parsed.error.queueOverflowCleanup` 全等）。
+  - `tests/unit/transport/acpx-bridge/acpx-bridge-client.test.ts` 新增 `reconstructs confirmed overflow cleanup from bridge response with queueOverflowCleanup`（`code` + `message` + `queueOverflowCleanup{true true true true}` → `expect(cleanup.ownerTerminationSucceeded).toBe(true)`）与 `reconstructs unconfirmed overflow cleanup`（`false/false` + `diagnostic: "cancel failed: No acpx session found"`）。
+  - `npx tsc --noEmit` 0 error；上述 7 文件现 `191 pass`（含新增 5 例），`bridge-runtime` 53 例并发稳定。
