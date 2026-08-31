@@ -14,10 +14,39 @@ export interface RuntimePermissionConfig {
   permissionPolicy?: XacpxPermissionPolicy;
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function globToRegExp(pattern: string): RegExp {
+  // Convert a simple glob ( *, ?, ** ) to RegExp; ** matches any depth, * matches not slash, ? matches single
+  let re = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i]!;
+    if (c === "*") {
+      if (pattern[i + 1] === "*") {
+        re += ".*";
+        i++;
+        // Consume following slash if any for **/
+        if (pattern[i + 1] === "/") i++;
+      } else {
+        re += "[^/]*";
+      }
+    } else if (c === "?") {
+      re += ".";
+    } else {
+      re += escapeRegExp(c);
+    }
+  }
+  return new RegExp(`^${re}$`);
+}
 function matchesRule(text: string, pattern: string): boolean {
-  // The real CLI uses glob/regex; we use includes as minimal parity and it is sufficient for differential cases
   if (pattern === "*") return true;
-  return text.includes(pattern);
+  // Try glob first, then exact, then substring fallback for backward compat
+  try {
+    const re = globToRegExp(pattern);
+    if (re.test(text)) return true;
+  } catch {}
+  return text === pattern || text.includes(pattern);
 }
 
 function requestTextForMatching(req: RuntimePermissionRequest): string {
@@ -41,9 +70,7 @@ function requestTextForMatching(req: RuntimePermissionRequest): string {
 function inferIsReadOrSearch(req: RuntimePermissionRequest): boolean {
   const k = req.inferredKind;
   if (k === "read" || k === "search") return true;
-  // Fallback: inspect raw for read/search hints
-  const text = requestTextForMatching(req).toLowerCase();
-  return text.includes("read") || text.includes("search") || text.includes("glob") || text.includes("grep");
+  return false;
 }
 
 export class RuntimePermissionResolver {
@@ -114,12 +141,10 @@ export function configFromRaw(generation: number, raw: { permissionMode: string;
     try {
       policy = parseXacpxPermissionPolicy(raw.permissionPolicy);
     } catch {
-      // Fail closed: invalid policy -> empty policy with deny fallback? But spec says fail closed overall
-      // For resolver, treat as empty and let caller fail eligibility
       policy = undefined;
     }
   }
   const mode = (raw.permissionMode === "approve-all" || raw.permissionMode === "approve-reads" || raw.permissionMode === "deny-all") ? raw.permissionMode : "deny-all";
   const nonInt = raw.nonInteractivePermissions === "fail" ? "fail" : "deny";
-  return { generation, permissionMode: mode as RuntimePermissionConfig["permissionMode"], nonInteractivePermissions: nonInt as RuntimePermissionConfig["nonInteractivePermissions"], permissionPolicy: policy };
+  return { generation, permissionMode: mode as RuntimePermissionConfig["permissionMode"], nonInteractivePermissions: nonInt as RuntimePermissionConfig["nonInteractivePermissions"], ...(policy ? { permissionPolicy: policy } : {}) };
 }

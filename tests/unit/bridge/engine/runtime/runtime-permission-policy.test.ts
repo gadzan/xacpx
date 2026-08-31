@@ -12,7 +12,10 @@ test("parses valid policy", () => {
 test("empty object is valid", () => {
   expect(parseXacpxPermissionPolicy({})).toEqual({});
   expect(parseXacpxPermissionPolicy(undefined)).toEqual({});
-  expect(parseXacpxPermissionPolicy(null)).toEqual({});
+});
+
+test("null fails closed", () => {
+  expect(() => parseXacpxPermissionPolicy(null)).toThrow(/permission policy must be a JSON object/);
 });
 
 test("inline JSON string is parsed", () => {
@@ -21,9 +24,8 @@ test("inline JSON string is parsed", () => {
   expect(p.defaultAction).toBe("deny");
 });
 
-test("invalid JSON string placeholder tolerated as empty", () => {
-  const p = parseXacpxPermissionPolicy("autoApprove:read-files");
-  expect(p).toEqual({});
+test("invalid JSON string placeholder fails closed", () => {
+  expect(() => parseXacpxPermissionPolicy("autoApprove:read-files")).toThrow(/invalid permission policy file/);
 });
 
 test("unknown field fails closed", () => {

@@ -108,26 +108,34 @@ async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: 
     );
   }
   if (!state.adapter || !state.handle) {
-    let initialPolicy: import("./runtime-permission-policy").XacpxPermissionPolicy | undefined;
-    if (params.permissionPolicy !== undefined) {
-      initialPolicy = parseXacpxPermissionPolicy(params.permissionPolicy);
-    }
     const initialGen = typeof params.permissionGeneration === "number" ? params.permissionGeneration : 0;
-    const initialSnapshot: RuntimePermissionConfig = {
-      generation: initialGen,
-      permissionMode: (params.permissionMode as RuntimePermissionConfig["permissionMode"]) ?? "approve-all",
-      nonInteractivePermissions: (params.nonInteractivePermissions as RuntimePermissionConfig["nonInteractivePermissions"]) ?? "deny",
-      ...(initialPolicy ? { permissionPolicy: initialPolicy } : {}),
-    };
+    const { configFromRaw } = await import("./runtime-permission-resolver");
+    const initialSnapshot = configFromRaw(initialGen, {
+      permissionMode: params.permissionMode,
+      nonInteractivePermissions: params.nonInteractivePermissions,
+      permissionPolicy: params.permissionPolicy,
+    });
     state.permissionSnapshot = initialSnapshot;
     state.permissionGeneration = initialGen;
     const resolver = new RuntimePermissionResolver();
+    let mcpServers: import("acpx/runtime").AcpRuntimeOptions["mcpServers"] | undefined;
+    if (params.mcpCoordinatorSession) {
+      try {
+        const { buildRuntimeMcpServers } = await import("./runtime-mcp");
+        const servers = buildRuntimeMcpServers({
+          mcpCoordinatorSession: params.mcpCoordinatorSession,
+          mcpSourceHandle: params.mcpSourceHandle,
+        });
+        if (servers.length > 0) mcpServers = servers as unknown as import("acpx/runtime").AcpRuntimeOptions["mcpServers"];
+      } catch {}
+    }
     state.adapter = createXacpxRuntimeAdapter({
       stateDir: params.stateDir,
       permissionMode: params.permissionMode,
       ...(params.nonInteractivePermissions ? { nonInteractivePermissions: params.nonInteractivePermissions } : {}),
       ...(params.permissionPolicy !== undefined ? { permissionPolicy: params.permissionPolicy } : {}),
       ...(params.agentOverrides ? { agentOverrides: params.agentOverrides } : {}),
+      ...(mcpServers ? { mcpServers } : {}),
       onPermissionRequest: async (req, ctx) => {
         const snap = state.permissionSnapshot;
         if (!snap) return { outcome: "reject_once" };
@@ -283,11 +291,12 @@ async function dispatch(request: RuntimeWorkerRequest): Promise<void> {
             break;
           }
         }
+        const isClear = (update as unknown as { clearPermissionPolicy?: boolean }).clearPermissionPolicy === true || update.permissionPolicy === null;
         const next: RuntimePermissionConfig = {
           generation: gen,
           permissionMode: (update.permissionMode as RuntimePermissionConfig["permissionMode"]) ?? state.permissionSnapshot?.permissionMode ?? "approve-all",
           nonInteractivePermissions: (update.nonInteractivePermissions as RuntimePermissionConfig["nonInteractivePermissions"]) ?? state.permissionSnapshot?.nonInteractivePermissions ?? "deny",
-          ...(parsedPolicy ? { permissionPolicy: parsedPolicy } : update.permissionPolicy === undefined && state.permissionSnapshot?.permissionPolicy ? { permissionPolicy: state.permissionSnapshot.permissionPolicy } : {}),
+          ...(isClear ? {} : parsedPolicy ? { permissionPolicy: parsedPolicy } : update.permissionPolicy === undefined && state.permissionSnapshot?.permissionPolicy ? { permissionPolicy: state.permissionSnapshot.permissionPolicy } : {}),
         };
         state.permissionSnapshot = next;
         state.permissionGeneration = gen;

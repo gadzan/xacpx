@@ -22,6 +22,7 @@ import { WorkerCrashError, WorkerRpcError, WorkerBootstrapError } from "./runtim
 import type { RuntimeWorkerClient, RuntimeWorkerClientDeps } from "./runtime/runtime-worker-client";
 import { RuntimeWorkerManager, WorkerTeardownPendingError } from "./runtime/runtime-worker-manager";
 import { RuntimeQueueStore } from "./runtime/runtime-queue";
+import { isEligibleForRuntime, parseXacpxPermissionPolicy } from "./runtime/runtime-permission-policy";
 function sleep(ms: number): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, ms);
@@ -654,7 +655,44 @@ export class RuntimeEngine implements BridgeEngine {
       }
     }
   }
+  private isRuntimeEligible(): boolean {
+    try {
+      const policy = this.options.permissionPolicy !== undefined ? parseXacpxPermissionPolicy(this.options.permissionPolicy) : undefined;
+      return isEligibleForRuntime(policy, this.options.nonInteractivePermissions);
+    } catch {
+      return false;
+    }
+  }
+
+  private async checkMcpStaleAndRotate(input: EngineSessionInput, forActiveCheck: boolean): Promise<boolean> {
+    const key = this.workerKey(input);
+    const requestedMcp = { mcpCoordinatorSession: input.mcpCoordinatorSession, mcpSourceHandle: input.mcpSourceHandle };
+    const lastMcp = this.lastMcpIdentity.get(key);
+    const isMcpStale =
+      lastMcp !== undefined &&
+      ((lastMcp.mcpCoordinatorSession ?? null) !== (requestedMcp.mcpCoordinatorSession ?? null) ||
+        (lastMcp.mcpSourceHandle ?? null) !== (requestedMcp.mcpSourceHandle ?? null));
+    if (!isMcpStale) return false;
+    const existingClient = this.manager?.get(key);
+    if (!existingClient) {
+      this.lastMcpIdentity.delete(key);
+      return true;
+    }
+    const isActive = forActiveCheck ? this.activeTurns.has(key) : (this.activeTurns.has(key) || existingClient.lifecycle === "busy" || existingClient.hasInFlight);
+    if (isActive) {
+      this.staleAfterTurn.add(key);
+      throw new RuntimeError("RUNTIME_MCP_STALE", `MCP identity changed for session "${key}" while turn active; will rotate after settle`);
+    }
+    await existingClient.shutdown().catch((e) => { throw toTeardownError(key, e); });
+    if (existingClient.lifecycle === "stopped") await this.manager?.release(key, existingClient).catch(() => {});
+    this.lastMcpIdentity.delete(key);
+    return true;
+  }
+
   private async ensureWorker(input: EngineSessionInput): Promise<RuntimeWorkerClient> {
+    if (!this.isRuntimeEligible()) {
+      throw new RuntimeError("RUNTIME_ENGINE_UNSUPPORTED", "runtime ineligible: nonInteractivePermissions=fail or escalate policy requires CLI");
+    }
     if (!this.manager) {
       throw new WorkerUnavailableError("RuntimeEngine has no worker manager (worker entry not built)");
     }
@@ -678,24 +716,7 @@ export class RuntimeEngine implements BridgeEngine {
       await this.policyTransitionLock;
     }
     const key = this.workerKey(input);
-    const requestedMcp = { mcpCoordinatorSession: input.mcpCoordinatorSession, mcpSourceHandle: input.mcpSourceHandle };
-    const lastMcp = this.lastMcpIdentity.get(key);
-    const isMcpStale =
-      lastMcp !== undefined &&
-      ((lastMcp.mcpCoordinatorSession ?? null) !== (requestedMcp.mcpCoordinatorSession ?? null) ||
-        (lastMcp.mcpSourceHandle ?? null) !== (requestedMcp.mcpSourceHandle ?? null));
-    if (isMcpStale) {
-      const existingClient = this.manager?.get(key);
-      if (existingClient) {
-if (this.activeTurns.has(key) || existingClient.lifecycle === "busy" || existingClient.hasInFlight) {
-          this.staleAfterTurn.add(key);
-          throw new RuntimeError("RUNTIME_MCP_STALE", `MCP identity changed for session "${key}" while turn active; will rotate after settle`);
-        }
-        await existingClient.shutdown().catch((e) => { throw toTeardownError(key, e); });
-        if (existingClient.lifecycle === "stopped") await this.manager?.release(key, existingClient).catch(() => {});
-        this.lastMcpIdentity.delete(key);
-      }
-    }
+        await this.checkMcpStaleAndRotate(input, false);
     const existingTimer = this.idleTimers.get(key);
     if (existingTimer) {
       clearTimeout(existingTimer);
@@ -704,7 +725,7 @@ if (this.activeTurns.has(key) || existingClient.lifecycle === "busy" || existing
     let client: RuntimeWorkerClient;
     try {
       client = await this.ensureWorker(input);
-      this.lastMcpIdentity.set(key, requestedMcp);
+      this.lastMcpIdentity.set(key, { mcpCoordinatorSession: input.mcpCoordinatorSession, mcpSourceHandle: input.mcpSourceHandle });
     } catch (error) {
       if (error instanceof WorkerTeardownPendingError) {
         throw new RuntimeError(error.code, error.message);
@@ -724,15 +745,6 @@ if (this.activeTurns.has(key) || existingClient.lifecycle === "busy" || existing
       }
       throw toStableRuntimeError(error);
     } finally {
-      if (this.staleAfterTurn.has(key) && !this.activeTurns.has(key)) {
-        this.staleAfterTurn.delete(key);
-        const staleClient = this.manager?.get(key);
-        if (staleClient) {
-          await staleClient.shutdown().catch(() => {});
-          if (staleClient.lifecycle === "stopped") await this.manager?.release(key, staleClient).catch(() => {});
-          this.lastMcpIdentity.delete(key);
-        }
-      }
       if (client.alive && (client.lifecycle === "idle" || client.lifecycle === "ready") && !this.activeTurns.has(key)) {
         this.scheduleIdleTtl(key, client);
       }
@@ -922,27 +934,7 @@ if (this.activeTurns.has(key) || existingClient.lifecycle === "busy" || existing
     }
     const key = this.workerKey(input);
     this.sessionCatalog.set(key, input);
-    // PR8: MCP identity fencing before marking turn active — must check before adding activeTurns
-    {
-      const requestedMcp = { mcpCoordinatorSession: input.mcpCoordinatorSession, mcpSourceHandle: input.mcpSourceHandle };
-      const lastMcp = this.lastMcpIdentity.get(key);
-      const isMcpStale =
-        lastMcp !== undefined &&
-        ((lastMcp.mcpCoordinatorSession ?? null) !== (requestedMcp.mcpCoordinatorSession ?? null) ||
-          (lastMcp.mcpSourceHandle ?? null) !== (requestedMcp.mcpSourceHandle ?? null));
-      if (isMcpStale) {
-        const existingClient = this.manager?.get(key);
-        if (existingClient) {
-          if (this.activeTurns.has(key) || existingClient.lifecycle === "busy" || existingClient.hasInFlight) {
-            this.staleAfterTurn.add(key);
-            throw new RuntimeError("RUNTIME_MCP_STALE", `MCP identity changed for session "${key}" while turn active; will rotate after settle`);
-          }
-          await existingClient.shutdown().catch((e) => { throw toTeardownError(key, e); });
-          if (existingClient.lifecycle === "stopped") await this.manager?.release(key, existingClient).catch(() => {});
-          this.lastMcpIdentity.delete(key);
-        }
-      }
-    }
+    await this.checkMcpStaleAndRotate(input, true);
     // Mark the turn active IMMEDIATELY so preflight on concurrent policy
     // updates detects the in-flight turn and fails closed (plan §32).
     this.activeTurns.add(key);
@@ -951,6 +943,16 @@ if (this.activeTurns.has(key) || existingClient.lifecycle === "busy" || existing
       return result;
     } finally {
       this.activeTurns.delete(key);
+      // PR8: retire stale MCP worker after the active turn has truly settled (activeTurns cleared)
+      if (this.staleAfterTurn.has(key)) {
+        this.staleAfterTurn.delete(key);
+        const staleClient = this.manager?.get(key);
+        if (staleClient) {
+          await staleClient.shutdown().catch(() => {});
+          if (staleClient.lifecycle === "stopped") await this.manager?.release(key, staleClient).catch(() => {});
+          this.lastMcpIdentity.delete(key);
+        }
+      }
       const client = this.manager?.get(key);
       if (client) {
         if (this.coolPending.has(key)) {
@@ -1441,15 +1443,23 @@ if (this.activeTurns.has(key) || existingClient.lifecycle === "busy" || existing
     nonInteractivePermissions: NonInteractivePermissions;
     permissionPolicy?: string;
   }): Promise<void> {
-    let parsed: import("./runtime/runtime-permission-policy").XacpxPermissionPolicy | undefined;
-    if (policy.permissionPolicy !== undefined) {
-      try {
+    // Use single source configFromRaw to avoid drift between bootstrap and update
+    const { configFromRaw } = await import("./runtime/runtime-permission-resolver");
+    let validated: ReturnType<typeof configFromRaw> | undefined;
+    try {
+      validated = configFromRaw(this.permissionGeneration + 1, {
+        permissionMode: policy.permissionMode,
+        nonInteractivePermissions: policy.nonInteractivePermissions,
+        permissionPolicy: policy.permissionPolicy,
+      });
+      // Validate via parse as well for strict file-path handling (configFromRaw swallows file read errors as empty)
+      if (policy.permissionPolicy !== undefined) {
         const { parseXacpxPermissionPolicy } = await import("./runtime/runtime-permission-policy");
-        parsed = parseXacpxPermissionPolicy(policy.permissionPolicy);
-      } catch (err) {
-        this.releasePolicyLock();
-        throw new RuntimeError("RUNTIME_INIT_FAILED", `invalid permission policy: ${err instanceof Error ? err.message : String(err)}`);
+        parseXacpxPermissionPolicy(policy.permissionPolicy);
       }
+    } catch (err) {
+      this.releasePolicyLock();
+      throw new RuntimeError("RUNTIME_INIT_FAILED", `invalid permission policy: ${err instanceof Error ? err.message : String(err)}`);
     }
     const nextGeneration = this.permissionGeneration + 1;
     const live = this.manager?.workers() ?? [];
@@ -1467,7 +1477,7 @@ if (this.activeTurns.has(key) || existingClient.lifecycle === "busy" || existing
           generation: nextGeneration,
           permissionMode: policy.permissionMode,
           nonInteractivePermissions: policy.nonInteractivePermissions,
-          ...(policy.permissionPolicy !== undefined ? { permissionPolicy: policy.permissionPolicy } : {}),
+          ...(policy.permissionPolicy !== undefined ? { permissionPolicy: policy.permissionPolicy } : { permissionPolicy: null, clearPermissionPolicy: true }),
         }),
       ),
     );

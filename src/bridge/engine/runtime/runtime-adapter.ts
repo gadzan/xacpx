@@ -41,6 +41,7 @@ export interface CreateXacpxRuntimeAdapterOptions {
    */
   agentOverrides?: Record<string, string | string[]>;
   onPermissionRequest?: (req: import("acpx/runtime").AcpPermissionRequest, ctx: { signal: AbortSignal }) => Promise<import("acpx/runtime").AcpPermissionDecision | undefined>;
+  mcpServers?: import("acpx/runtime").AcpRuntimeOptions["mcpServers"];
 }
 
 export interface XacpxEnsureInput {
@@ -85,6 +86,7 @@ export function createXacpxRuntimeAdapter(options: CreateXacpxRuntimeAdapterOpti
     ...(options.nonInteractivePermissions ? { nonInteractivePermissions: options.nonInteractivePermissions } : {}),
     ...(options.permissionPolicy !== undefined ? { permissionPolicy: options.permissionPolicy as never } : {}),
     ...(options.onPermissionRequest ? { onPermissionRequest: options.onPermissionRequest } : {}),
+    ...(options.mcpServers ? { mcpServers: options.mcpServers } : {}),
   });
 
   function toHandle(handle: XacpxRuntimeSessionHandle): AcpRuntimeHandle {

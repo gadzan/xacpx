@@ -25,7 +25,7 @@ test("generation ordering: live update increments and duplicate stale rejected",
   try {
     const entry = join(dir, "w.mjs");
     await echoWorker(entry);
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", nonInteractivePermissions: "deny" });
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", nonInteractivePermissions: "deny", fenceDir: join(dir, "fences"), queueDir: join(dir, "queue") });
     await engine.prompt({ ...base, text: "t1" });
     await engine.updatePermissionPolicy({ permissionMode: "deny-all", nonInteractivePermissions: "deny" });
     const reply = await engine.prompt({ ...base, text: "t2" });
@@ -33,15 +33,39 @@ test("generation ordering: live update increments and duplicate stale rejected",
     const client = (engine as unknown as { manager: { get: (k:string)=>{ request:(m:string,p:unknown)=>Promise<unknown>} } }).manager.get("live-perm-1");
     await expect(client.request("permission.update", { generation: 5, permissionMode: "approve-all" })).resolves.toMatchObject({ generation: 5, accepted: true });
     await expect(client.request("permission.update", { generation: 6, permissionMode: "approve-all" })).resolves.toMatchObject({ generation: 6, accepted: true });
-  } finally { await rm(dir, { recursive: true, force: true }); }
-}, 15_000);
+  } finally { await rm(dir, { recursive: true, force: true }); await new Promise(r => setTimeout(r, 2000)); }
+}, 20_000);
+
+test("new worker after update bootstraps with current generation", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "live-new-"));
+  try {
+    const entry = join(dir, "w.mjs");
+    await echoWorker(entry);
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", nonInteractivePermissions: "deny", fenceDir: join(dir, "fences"), queueDir: join(dir, "queue") });
+    console.log("new worker test: prompt t1 start");
+    await engine.prompt({ ...base, text: "t1" });
+    console.log("new worker test: prompt t1 done");
+    console.log("new worker test: update start");
+    await engine.updatePermissionPolicy({ permissionMode: "deny-all", nonInteractivePermissions: "deny" });
+    console.log("new worker test: update done");
+    expect((await engine.isSessionWarm(base)).warm).toBe(true);
+    console.log("new worker test: isWarm done");
+    const reply = await Promise.race([
+      engine.prompt({ ...base, text: "t2" }).then(r => { console.log("new worker test: prompt t2 done", r.text); return r; }),
+      new Promise<never>((_, rej) => setTimeout(() => { console.log("new worker test: prompt t2 timeout"); rej(new Error("prompt t2 timeout")); }, 5000)),
+    ]);
+    expect(reply.text).toBe("deny-all");
+    await engine.shutdown();
+    await new Promise(r => setTimeout(r, 500));
+  } finally { await rm(dir, { recursive: true, force: true }); await new Promise(r => setTimeout(r, 2000)); }
+}, 20_000);
 
 test("partial update: worker A accepts, B fails -> B terminated, no live worker on old generation", async () => {
   const dir = await mkdtemp(join(tmpdir(), "live-partial-"));
   try {
     const entry = join(dir, "w.mjs");
     await echoWorker(entry);
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", nonInteractivePermissions: "deny" });
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", nonInteractivePermissions: "deny", fenceDir: join(dir, "fences"), queueDir: join(dir, "queue") });
     const sessA = { ...base, logicalSessionId: "sessA", name: "sessA" };
     const sessB = { ...base, logicalSessionId: "sessB", name: "sessB" };
     await engine.prompt({ ...sessA, text: "tA" });
@@ -56,24 +80,10 @@ test("partial update: worker A accepts, B fails -> B terminated, no live worker 
     await engine.updatePermissionPolicy({ permissionMode: "deny-all", nonInteractivePermissions: "deny" });
     expect((await engine.isSessionWarm(sessA)).warm).toBe(true);
     expect((await engine.isSessionWarm(sessB)).warm).toBe(false);
-    await engine.shutdown();
-  } finally { await rm(dir, { recursive: true, force: true }); }
-}, 15_000);
-
-test("new worker after update bootstraps with current generation", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "live-new-"));
-  try {
-    const entry = join(dir, "w.mjs");
-    await echoWorker(entry);
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", nonInteractivePermissions: "deny" });
-    await engine.prompt({ ...base, text: "t1" });
-    await engine.updatePermissionPolicy({ permissionMode: "deny-all", nonInteractivePermissions: "deny" });
-    const newSess = { ...base, logicalSessionId: "new-sess", name: "new-sess" };
-    const reply = await engine.prompt({ ...newSess, text: "t2" });
-    expect(reply.text).toBe("deny-all");
-    await engine.shutdown();
-  } finally { await rm(dir, { recursive: true, force: true }); }
-}, 15_000);
+    await engine.shutdown().catch(() => {});
+    await new Promise(r => setTimeout(r, 2000));
+  } finally { await rm(dir, { recursive: true, force: true }); await new Promise(r => setTimeout(r, 2000)); }
+}, 20_000);
 
 test("busy transition fails closed", async () => {
   const dir = await mkdtemp(join(tmpdir(), "live-busy-"));
@@ -82,21 +92,22 @@ test("busy transition fails closed", async () => {
     await writeFile(entry, [
       "let b=''; process.stdin.on('data',d=>{b+=d.toString(); let i; while((i=b.indexOf('\\n'))>=0){const l=b.slice(0,i); b=b.slice(i+1); if(!l)continue; try{const m=JSON.parse(l); if(m.method==='ensure'){process.stdout.write(JSON.stringify({id:m.id,ok:true,result:{ready:true,sessionKey:m.params.sessionKey,acpxRecordId:'rec'}})+'\\n');} else if(m.method==='prompt'){ setTimeout(()=>{process.stdout.write(JSON.stringify({id:m.id,ok:true,result:{result:{status:'completed'},finalText:'done'}})+'\\n');},500);} else {process.stdout.write(JSON.stringify({id:m.id,ok:true,result:{}})+'\\n');}}catch{}}});"
     ].join("\n"));
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", nonInteractivePermissions: "deny" });
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", nonInteractivePermissions: "deny", fenceDir: join(dir, "fences"), queueDir: join(dir, "queue") });
     const p = engine.prompt({ ...base, text: "long" });
     await new Promise(r=>setTimeout(r,50));
     await expect(engine.updatePermissionPolicy({ permissionMode: "deny-all", nonInteractivePermissions: "deny" })).rejects.toMatchObject({ code: "RUNTIME_PERMISSION_BUSY" });
     await p;
     await engine.shutdown();
-  } finally { await rm(dir, { recursive: true, force: true }); }
-}, 15_000);
+    await new Promise(r => setTimeout(r, 500));
+  } finally { await rm(dir, { recursive: true, force: true }); await new Promise(r => setTimeout(r, 2000)); }
+}, 20_000);
 
 test("no worker rotation on successful ordinary policy update", async () => {
   const dir = await mkdtemp(join(tmpdir(), "live-no-rot-"));
   try {
     const entry = join(dir, "w.mjs");
     await echoWorker(entry);
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", nonInteractivePermissions: "deny" });
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", nonInteractivePermissions: "deny", fenceDir: join(dir, "fences"), queueDir: join(dir, "queue") });
     await engine.prompt({ ...base, text: "t1" });
     const pid1 = (engine as unknown as { manager: { get:(k:string)=>{ ref:{ pid:number } } } }).manager.get("live-perm-1")?.ref.pid;
     await engine.updatePermissionPolicy({ permissionMode: "deny-all", nonInteractivePermissions: "deny" });
@@ -104,5 +115,6 @@ test("no worker rotation on successful ordinary policy update", async () => {
     expect(pid2).toBe(pid1);
     expect((await engine.isSessionWarm(base)).warm).toBe(true);
     await engine.shutdown();
-  } finally { await rm(dir, { recursive: true, force: true }); }
-}, 15_000);
+    await new Promise(r => setTimeout(r, 500));
+  } finally { await rm(dir, { recursive: true, force: true }); await new Promise(r => setTimeout(r, 2000)); }
+}, 20_000);

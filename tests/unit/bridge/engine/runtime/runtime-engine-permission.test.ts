@@ -60,12 +60,12 @@ test("Scenario 1: idle warm worker is live-updated on permission update without 
       workerEntryPath: entry,
       permissionMode: "approve-all",
       nonInteractivePermissions: "deny",
-      permissionPolicy: "autoApprove:read-files",
+      permissionPolicy: JSON.stringify({ autoApprove: ["read-files"] }),
     });
 
     // 1. First turn: runs with approve-all and policy A
     const reply1 = await engine.prompt({ ...sessionInput, text: "t1" });
-    expect(reply1.text).toBe("mode=approve-all;policy=autoApprove:read-files");
+    expect(reply1.text).toBe(`mode=approve-all;policy=${JSON.stringify({ autoApprove: ["read-files"] })}`);
     expect((await engine.isSessionWarm(sessionInput)).warm).toBe(true);
     const oldPid = engine["manager"]?.get("logical-perm-1")?.ref.pid;
     expect(oldPid).toBeDefined();
@@ -74,7 +74,7 @@ test("Scenario 1: idle warm worker is live-updated on permission update without 
     await engine.updatePermissionPolicy({
       permissionMode: "deny-all",
       nonInteractivePermissions: "deny",
-      permissionPolicy: "autoDeny:all-edits",
+      permissionPolicy: JSON.stringify({ autoDeny: ["all-edits"] }),
     });
 
     // Worker stays warm on same pid after live update
@@ -82,10 +82,11 @@ test("Scenario 1: idle warm worker is live-updated on permission update without 
 
     // 3. Next prompt reuses same worker with NEW deny-all and policy B via live snapshot
     const reply2 = await engine.prompt({ ...sessionInput, text: "t2" });
-    expect(reply2.text).toBe("mode=deny-all;policy=autoDeny:all-edits");
+    expect(reply2.text).toBe(`mode=deny-all;policy=${JSON.stringify({ autoDeny: ["all-edits"] })}`);
     const newPid = engine["manager"]?.get("logical-perm-1")?.ref.pid;
     expect(newPid).toBeDefined();
     expect(newPid).toBe(oldPid);
+    await engine.shutdown().catch(() => {});
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

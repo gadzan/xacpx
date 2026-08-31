@@ -286,6 +286,8 @@ export class BridgeServer {
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
+          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
+          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
         });
       case "tailSessionHistory":
         return await this.engines.tailSessionHistory({
@@ -295,6 +297,8 @@ export class BridgeServer {
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
+          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
+          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
           lines: requirePositiveInt(params, "lines"),
         });
       case "listAgentSessions":
@@ -423,6 +427,8 @@ export class BridgeServer {
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
+          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
+          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
           agentSessionId: requireString(params, "agentSessionId"),
         });
       case "setMode":
@@ -433,6 +439,8 @@ export class BridgeServer {
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
+          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
+          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
           modeId: requireString(params, "modeId"),
         });
       case "setModel":
@@ -443,6 +451,8 @@ export class BridgeServer {
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
+          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
+          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
           modelId: requireString(params, "modelId"),
         });
       case "getSessionModel":
@@ -453,6 +463,8 @@ export class BridgeServer {
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
+          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
+          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
         });
       case "setSessionEffort":
         return await this.engines.setSessionEffort({
@@ -462,6 +474,8 @@ export class BridgeServer {
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
+          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
+          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
           effort: requireString(params, "effort"),
         });
       case "getSessionEffort":
@@ -472,6 +486,8 @@ export class BridgeServer {
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
+          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
+          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
         });
       case "cancel":
         return await this.engines.cancel({
@@ -481,6 +497,8 @@ export class BridgeServer {
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
+          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
+          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
         });
       case "removeSession":
         return await this.engines.removeSession({
@@ -490,6 +508,8 @@ export class BridgeServer {
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
+          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
+          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
         });
       case "deleteSession":
         return await this.engines.deleteSession({
@@ -499,6 +519,8 @@ export class BridgeServer {
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
+          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
+          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
         });
       case "freeWarmProcess":
         return await this.engines.freeWarmProcess({
@@ -508,6 +530,8 @@ export class BridgeServer {
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
+          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
+          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
         });
       case "isSessionWarm":
         return await this.engines.isSessionWarm({
@@ -517,6 +541,8 @@ export class BridgeServer {
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
+          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
+          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
         });
       case "getAgentSessionId":
         return await this.engines.getAgentSessionId({
@@ -526,6 +552,8 @@ export class BridgeServer {
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
+          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
+          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
         });
       default:
         throw new Error(`unsupported bridge method: ${method}`);

@@ -54,7 +54,9 @@ export interface RuntimeWorkerPermissionUpdate {
   generation: number;
   permissionMode?: XacpxPermissionMode;
   nonInteractivePermissions?: "deny" | "fail";
-  permissionPolicy?: unknown;
+  permissionPolicy?: unknown | null;
+  /** When true, the permission policy is explicitly cleared (no policy). */
+  clearPermissionPolicy?: boolean;
 }
 
 export type RuntimeWorkerEvent = {
