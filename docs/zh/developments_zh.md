@@ -456,6 +456,8 @@ bun run publish:plugins     # 升一方插件包时
 
 因为版本号是唯一事实来源，发版就简化成：升 `packages/channel-discord/package.json` 的 `version` → 合并 → 推 tag。
 
+`verify:publish` 只校验 `scripts/verify-publish.mjs` 里 `DEFAULT_PACKAGES` 登记过的包。没登记的包会**完全零校验**地发布出去，而 workflow 那一步照样是绿的——所以**新增一方插件时必须同时在那里登记**。`tests/unit/scripts/verify-publish.test.ts` 会断言 `packages/` 下每个非 private 包都已登记，这条不变量就是防止它悄悄失效的。
+
 **Discord 首发 runbook**（以 `0.8.0` 为例——**写文档期间不要真的打 tag / 发 npm**，只有明确要求发版时才做）：
 
 ```bash

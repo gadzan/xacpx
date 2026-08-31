@@ -456,6 +456,8 @@ Push a matching tag (or run `workflow_dispatch` with an existing tag) and the wo
 
 Because the version is the single source of truth, a release is just: bump `packages/channel-discord/package.json` `version` → merge → push the tag.
 
+`verify:publish` only checks packages listed in `DEFAULT_PACKAGES` (`scripts/verify-publish.mjs`). A plugin missing from that list publishes completely unchecked, and the workflow step would still be green — so **register the package there when you add a first-party plugin**. `tests/unit/scripts/verify-publish.test.ts` asserts every non-private package under `packages/` is registered, which is what keeps this from silently rotting.
+
 **Discord first-release runbook** (illustrative for version `0.8.0` — do **not** tag or publish while implementing docs; only when a release is explicitly requested):
 
 ```bash
