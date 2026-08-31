@@ -26,11 +26,75 @@ jobs:
       run:
         shell: bash
     steps:
-      - name: Checkout
+      # Two checkouts on purpose. A tag push checks out the ref GitHub sent us;
+      # a manual dispatch checks out refs/tags/<input>, so a branch name typed
+      # into the input fails in the checkout itself instead of publishing that
+      # branch's HEAD under a tag-looking name.
+      - name: Checkout pushed tag
+        if: github.event_name == 'push'
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ github.ref }}
           fetch-depth: 0
+
+      - name: Checkout dispatched tag
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Resolve tag and version
+        id: meta
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+          PUSH_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            TAG_NAME="${DISPATCH_TAG}"
+          else
+            TAG_NAME="${PUSH_TAG}"
+          fi
+          if [[ -z "${TAG_NAME}" ]]; then
+            echo "::error::could not determine the tag to publish for event ${GITHUB_EVENT_NAME}" >&2
+            exit 1
+          fi
+          VERSION="$(node -p "require('./packages/channel-discord/package.json').version")"
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [[ "$VERSION" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=next" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Everything the release is made of is proven before a single package is
+      # built or published: the name must be a real tag, HEAD must be that
+      # tag's commit, and package.json must carry the version the tag claims.
+      - name: Verify tag provenance
+        env:
+          TAG_NAME: ${{ steps.meta.outputs.tag_name }}
+          PACKAGE_VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          if ! git show-ref --verify --quiet "refs/tags/$TAG_NAME"; then
+            echo "::error::'$TAG_NAME' is not a tag of this repository; branches are not publishable" >&2
+            exit 1
+          fi
+          TAG_COMMIT="$(git rev-parse "refs/tags/$TAG_NAME^{commit}")"
+          HEAD_COMMIT="$(git rev-parse HEAD)"
+          if [[ "$TAG_COMMIT" != "$HEAD_COMMIT" ]]; then
+            echo "::error::checked-out HEAD $HEAD_COMMIT is not tag $TAG_NAME ($TAG_COMMIT)" >&2
+            exit 1
+          fi
+          EXPECTED="channel-discord-v${PACKAGE_VERSION}"
+          if [[ "$TAG_NAME" != "$EXPECTED" ]]; then
+            echo "::error::tag $TAG_NAME does not match package.json version ($EXPECTED)" >&2
+            exit 1
+          fi
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -56,50 +120,29 @@ jobs:
       - name: Verify publishable artifacts
         run: bun run verify:publish
 
-      - name: Read version
-        id: meta
-        run: |
-          VERSION="$(node -p "require('./packages/channel-discord/package.json').version")"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          if [[ "$VERSION" == *-* ]]; then
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=next" >> "$GITHUB_OUTPUT"
-          else
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Verify tag matches package version
-        run: |
-          if [[ -n "${{ inputs.tag }}" ]]; then
-            TAG_NAME="${{ inputs.tag }}"
-          else
-            TAG_NAME="${GITHUB_REF#refs/tags/}"
-          fi
-          EXPECTED="channel-discord-v${{ steps.meta.outputs.version }}"
-          if [[ "$TAG_NAME" != "$EXPECTED" ]]; then
-            echo "::error::tag $TAG_NAME does not match package.json version ($EXPECTED)" >&2
-            exit 1
-          fi
-          echo "tag_name=$TAG_NAME" >> "$GITHUB_ENV"
-
       - name: Publish to npm
         working-directory: packages/channel-discord
-        run: npm publish --tag ${{ steps.meta.outputs.npm_tag }} --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TAG: ${{ steps.meta.outputs.npm_tag }}
+        run: npm publish --tag "$NPM_TAG" --access public
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.meta.outputs.tag_name }}
+          PRERELEASE: ${{ steps.meta.outputs.prerelease }}
+          RELEASE_TITLE: '@ganglion/xacpx-channel-discord v${{ steps.meta.outputs.version }}'
         run: |
-          if gh release view "$tag_name" >/dev/null 2>&1; then
-            echo "Release $tag_name already exists, skipping create"
+          set -euo pipefail
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Release $TAG_NAME already exists, skipping create"
             exit 0
           fi
-          TITLE="@ganglion/xacpx-channel-discord v${{ steps.meta.outputs.version }}"
-          if [[ "${{ steps.meta.outputs.prerelease }}" == "true" ]]; then
-            gh release create "$tag_name" --title "$TITLE" --prerelease --generate-notes
+          # --verify-tag makes the GitHub API reject a release whose tag does not
+          # exist, so the tag provenance checked above is enforced twice.
+          if [[ "$PRERELEASE" == "true" ]]; then
+            gh release create "$TAG_NAME" --verify-tag --title "$RELEASE_TITLE" --prerelease --generate-notes
           else
-            gh release create "$tag_name" --title "$TITLE" --latest=false --generate-notes
+            gh release create "$TAG_NAME" --verify-tag --title "$RELEASE_TITLE" --latest=false --generate-notes
           fi
