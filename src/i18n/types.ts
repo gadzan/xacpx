@@ -255,6 +255,10 @@ export interface RecoveryMessages {
   sessionInterruptedHint: string;
   sessionInterruptedError: (summary: string) => string;
 
+  // renderTransportError — queue overflow (soft warning, not executionError)
+  queueOverflowWarning: string;
+  queueOverflowHint: string;
+
   // renderSessionCreationError (AutoInstallFailedError)
   autoInstallHeadlineFixed: string;
   autoInstallHeadlineFailed: string;

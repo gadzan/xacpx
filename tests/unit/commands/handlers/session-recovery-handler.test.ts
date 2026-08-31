@@ -8,6 +8,7 @@ import {
 import type { SessionRecoveryOps } from "../../../../src/commands/router-types";
 import type { ResolvedSession } from "../../../../src/transport/types";
 import { setLocale, t } from "../../../../src/i18n";
+import { AcpxQueueOverflowError } from "../../../../src/transport/acpx-queue-overflow";
 
 beforeEach(() => {
   setLocale("zh");
@@ -137,4 +138,40 @@ test("a non-npm backend 404 is not misreported as an adapter registry failure", 
     }),
     error,
   )).toThrow(error);
+});
+test("renderTransportError downgrades AcpxQueueOverflowError to soft warning (zh)", () => {
+  setLocale("zh");
+  const error = new AcpxQueueOverflowError({
+    cancelAttempted: true,
+    cancelSucceeded: true,
+    ownerTerminationAttempted: true,
+    ownerTerminationSucceeded: true,
+    diagnostic: "test diagnostic",
+  });
+  const reply = renderTransportError(session(), error);
+  expect(reply.text).toBe([t().recovery.queueOverflowWarning, t().recovery.queueOverflowHint].join("\n"));
+  expect(reply.text).not.toContain("Execution error");
+  expect(reply.text).not.toContain("错误信息");
+});
+
+test("renderTransportError downgrades AcpxQueueOverflowError to soft warning (en)", () => {
+  setLocale("en");
+  const error = new AcpxQueueOverflowError("cleanup failed");
+  const reply = renderTransportError(session(), error);
+  expect(reply.text).toBe([t().recovery.queueOverflowWarning, t().recovery.queueOverflowHint].join("\n"));
+  expect(reply.text).not.toContain("Execution error");
+});
+
+test("renderTransportError downgrades generic overflow code error (bridge path)", () => {
+  setLocale("zh");
+  const error = Object.assign(new Error("ACPX_QUEUE_MESSAGE_OVERFLOW"), { code: "ACPX_QUEUE_MESSAGE_OVERFLOW" });
+  const reply = renderTransportError(session(), error);
+  expect(reply.text).toContain(t().recovery.queueOverflowWarning);
+});
+
+test("renderTransportError downgrades message buffer exceeded string", () => {
+  setLocale("en");
+  const error = new Error("Message buffer exceeded 10485760 bytes");
+  const reply = renderTransportError(session(), error);
+  expect(reply.text).toContain(t().recovery.queueOverflowWarning);
 });

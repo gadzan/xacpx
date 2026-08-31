@@ -9,8 +9,14 @@ import {
   isNpmAdapterRegistryNotFoundOutput,
 } from "../../adapters/adapter-registry";
 import { managedAdapterRegistryFromCommand } from "../../adapters/adapter-catalog";
+import { AcpxQueueOverflowError, isAcpxQueueMessageOverflow } from "../../transport/acpx-queue-overflow";
 
 export function renderTransportError(session: ResolvedSession, error: unknown): RouterResponse {
+  if (error instanceof AcpxQueueOverflowError || isAcpxQueueMessageOverflow(error)) {
+    return {
+      text: [t().recovery.queueOverflowWarning, t().recovery.queueOverflowHint].join("\n"),
+    };
+  }
   const message = error instanceof Error ? error.message : String(error);
   const registryError = renderAdapterRegistryError(session, message);
   if (registryError) return registryError;
