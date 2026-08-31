@@ -665,10 +665,9 @@ windowsTest("real descendants-of with a WRONG parent fingerprint never touches t
   }
 }, 30_000);
 
-windowsTest("real descendants-of with the CORRECT parent fingerprint converges the subtree and the orphan root", async () => {
-  // The fence-discharge path: the worker root is an ORPHAN (host gone), so
-  // the gate passing means the root itself is killed through its verified
-  // retained handle — no transient overlap with a respawned owner.
+windowsTest("real descendants-of with the CORRECT parent fingerprint converges the subtree but never kills the parent itself", async () => {
+  // I1: terminate-descendants-of is NOT terminate-tree — it kills
+  // descendants, never the parent, even when the fingerprint matches.
   const victim = spawn("node", ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true });
   try {
     await new Promise((resolve) => setTimeout(resolve, 300));
@@ -680,13 +679,8 @@ windowsTest("real descendants-of with the CORRECT parent fingerprint converges t
       workerDeadlineMs: null,
     });
     expect(result.verified).toBe(true);
-    for (let i = 0; i < 200; i += 1) {
-      let gone = false;
-      try { process.kill(victim.pid!, 0); } catch { gone = true; }
-      if (gone) break;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    expect(() => process.kill(victim.pid!, 0)).toThrow();
+    // Parent must remain alive — descendants path never kills the root.
+    expect(() => process.kill(victim.pid!, 0)).not.toThrow();
   } finally {
     try { victim.kill("SIGKILL"); } catch {}
   }
