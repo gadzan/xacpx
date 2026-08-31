@@ -492,7 +492,12 @@ if($request.action -eq 'token-snapshot'){
 # G10: discovery precedes kill; S2 seeds from verified handles only.
 if($request.action -eq 'terminate-descendants-of'){
 $pp=[int]$request.parentPid
+$selfPid=[int]$PID
 $out=@();$sn=@{};$fr=@($pp);$open=@{};$ov=@{};$cl=@();$pok=$true
+# The PowerShell controller is an implementation detail of this cleanup
+# transaction. It is a direct child of $pp, but must never be attributed as
+# part of the Runtime worker's owned adapter subtree.
+$sn[$selfPid]=$true
 # G10 round 30 Blocking 3: the parent identity gate runs INSIDE this kill
 # transaction. An expected creation date is verified against a RETAINED
 # handle before any child attribution; a dead, replaced, or unprobeable
@@ -511,12 +516,12 @@ if(!$a -or $a -ne [string]$e){[XacpxNativeProcess]::Close($h);$ps='skipped-repla
 }
 if($ps -ne 'alive'){Write-Output (@{verified=$false;parentStatus=$ps;outcomes=@();leftover=@()}|ConvertTo-Json -Depth 5 -Compress);exit 0}
 $s1=@(Snapshot)
-$seeds=@($s1|?{$_.parentPid -eq $pp -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)})
+$seeds=@($s1|?{$_.parentPid -eq $pp -and $_.pid -ne $pp -and $_.pid -ne $selfPid -and -not $sn.ContainsKey($_.pid)})
 foreach($p in $seeds){$sn[$p.pid]=$true;$cl+=@($p)}
 $fr=@($seeds|%{$_.pid})
 while($fr.Count){
 $nx=@()
-foreach($p in $s1|?{$_.parentPid -in $fr -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){$sn[$p.pid]=$true;$cl+=@($p);$nx+=$p.pid}
+foreach($p in $s1|?{$_.parentPid -in $fr -and $_.pid -ne $pp -and $_.pid -ne $selfPid -and -not $sn.ContainsKey($_.pid)}){$sn[$p.pid]=$true;$cl+=@($p);$nx+=$p.pid}
 $fr=$nx
 }
 try {
@@ -526,7 +531,7 @@ $s2=@(Snapshot)
 $fr=@($pp)+@($open.Keys)
 while($fr.Count){
 $nx=@()
-foreach($p in $s2|?{$_.parentPid -in $fr -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)}){
+foreach($p in $s2|?{$_.parentPid -in $fr -and $_.pid -ne $pp -and $_.pid -ne $selfPid -and -not $sn.ContainsKey($_.pid)}){
 $sn[$p.pid]=$true
 VF $p
 $lf+=@($p)
@@ -648,6 +653,7 @@ if($request.action -eq 'terminate-one-cim'){
   try {
     if(![XacpxNativeProcess]::Alive($check.handle)){$status='already-exited'}
     elseif(![XacpxNativeProcess]::Kill($check.handle)){
+      $code=[XacpxNativeProcess]::LastError()
       # Job-object cascade: dying child kill = confirmed exit.
       if([XacpxNativeProcess]::WaitDead($check.handle)){$status='already-exited'}
       else{$status=if($code -eq 5){'access-denied'}else{'query-failed'}}

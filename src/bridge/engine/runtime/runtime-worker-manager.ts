@@ -76,6 +76,10 @@ export class RuntimeWorkerManager {
   }
 
   ensureWorker(logicalSessionId: string): RuntimeWorkerClient {
+    return this.ensureWorkerWithStatus(logicalSessionId).worker;
+  }
+
+  private ensureWorkerWithStatus(logicalSessionId: string): { worker: RuntimeWorkerClient; created: boolean } {
     const existing = this.workersByKey.get(logicalSessionId);
     if (existing) {
       if (existing.alive) {
@@ -88,7 +92,7 @@ export class RuntimeWorkerManager {
             `runtime worker for session "${logicalSessionId}" is still shutting down (lifecycle: ${existing.lifecycle}); refusing duplicate worker spawn`,
           );
         }
-        return existing;
+        return { worker: existing, created: false };
       }
       // Not alive: if still in teardown or failed termination, refuse spawn
       if (existing.lifecycle === "cooling" || existing.lifecycle === "failed") {
@@ -158,7 +162,7 @@ export class RuntimeWorkerManager {
     );
     worker.spawn();
     this.workersByKey.set(logicalSessionId, worker);
-    return worker;
+    return { worker, created: true };
   }
 
 
@@ -169,8 +173,10 @@ export class RuntimeWorkerManager {
    */
   async acquire(logicalSessionId: string): Promise<RuntimeWorkerClient> {
     await this.dischargeStaleFence(logicalSessionId);
-    const worker = this.ensureWorker(logicalSessionId);
-    await this.writeOwnedFence(logicalSessionId, worker);
+    const { worker, created } = this.ensureWorkerWithStatus(logicalSessionId);
+    if (created) {
+      await this.writeOwnedFence(logicalSessionId, worker);
+    }
     return worker;
   }
 
