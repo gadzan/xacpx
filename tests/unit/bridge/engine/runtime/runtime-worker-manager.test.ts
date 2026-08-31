@@ -168,6 +168,55 @@ test("shutdownAll propagates termination failures and retains failing workers in
     await workerBad.terminate();
   });
 }, 15_000);
+test("re-acquiring an admitted live worker preserves admitted fence", async () => {
+  const fenceDir = await mkdtemp(join(tmpdir(), "fence-reacquire-"));
+  try {
+    await withFakeEntry(async (entry) => {
+      const manager = new RuntimeWorkerManager({
+        entryPath: entry,
+        fenceDir,
+        clientDeps: {
+          platform: "win32",
+          probeWindowsIdentity: async (pid) => ({
+            status: "found",
+            identity: {
+              pid,
+              creationDate: "133800000000000000",
+              executablePath: "C:\\node.exe",
+              commandLine: "node worker.mjs",
+            },
+          }),
+          terminateProcessTree: async () => ({ rootOutcome: "killed", outcomes: [] }),
+        },
+      });
+      const worker1 = await manager.acquire("sess-admitted");
+      // Wait for bootstrap barrier to complete (admitted fence)
+      for (let i = 0; i < 50; i++) {
+        const fence = new (await import("../../../../../src/bridge/engine/runtime/runtime-worker-fence")).RuntimeWorkerFence(fenceDir);
+        const read = await fence.read("sess-admitted");
+        if (read.kind === "present" && read.record.phase === "admitted") break;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      const { RuntimeWorkerFence } = await import("../../../../../src/bridge/engine/runtime/runtime-worker-fence");
+      const fence = new RuntimeWorkerFence(fenceDir);
+      const read1 = await fence.read("sess-admitted");
+      expect(read1.kind).toBe("present");
+      if (read1.kind !== "present") return;
+      expect(read1.record.phase).toBe("admitted");
+      const gen1 = read1.record.generation;
+      const worker2 = await manager.acquire("sess-admitted");
+      expect(worker2).toBe(worker1);
+      const read2 = await fence.read("sess-admitted");
+      expect(read2.kind).toBe("present");
+      if (read2.kind !== "present") return;
+      expect(read2.record.generation).toBe(gen1);
+      expect(read2.record.phase).toBe("admitted");
+      await manager.shutdownAll();
+    });
+  } finally {
+    await rm(fenceDir, { recursive: true, force: true });
+  }
+}, 15_000);
 test("deliberate root exit holds terminateProcessTree pending and concurrent ensureWorker rejects with WorkerTeardownPendingError", async () => {
   await withFakeEntry(async (entry) => {
     let termResolve: (() => void) | undefined;

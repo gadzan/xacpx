@@ -777,9 +777,11 @@ const winTest = process.platform === "win32" ? test : test.skip;
 winTest("host crash: real worker stdin EOF converges the adapter descendant tree", { timeout: 60_000 }, async () => {
   const dir = await mkdtemp(join(tmpdir(), "win-eof-converge-"));
   const pidFile = join(dir, "descendant.pid");
+  const workerPidFile = join(dir, "worker.pid");
   const eofModule = join(import.meta.dir, "../../../../../src/bridge/engine/runtime/worker-eof.ts");
   let host: ReturnType<typeof spawn> | undefined;
   let adapterPid = 0;
+  let workerPid = 0;
   try {
     // Harness worker mirrors runtime-worker-main.ts wiring: "ensure" spawns a
     // stubborn adapter child; stdin EOF runs the REAL production convergence
@@ -833,6 +835,31 @@ winTest("host crash: real worker stdin EOF converges the adapter descendant tree
 
     host = spawn(process.execPath, [hostScript], { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } });
     host.stderr!.on("data", () => {});
+    // 1. Prove host successfully created worker.
+    for (let i = 0; i < 100 && !workerPid; i++) {
+      try {
+        workerPid = parseInt(await readFile(workerPidFile, "utf8"), 10);
+      } catch {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+    expect(workerPid).toBeGreaterThan(0);
+    expect(() => process.kill(workerPid, 0)).not.toThrow();
+
+    // 2. Explicitly trigger adapter creation.
+    host.stdin!.write(JSON.stringify({ id: "h1", method: "ensure" }) + "\n");
+
+    // 3. Wait until adapter truly exists.
+    for (let i = 0; i < 100 && !adapterPid; i++) {
+      try {
+        adapterPid = parseInt(await readFile(pidFile, "utf8"), 10);
+      } catch {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+    expect(adapterPid).toBeGreaterThan(0);
+    expect(() => process.kill(adapterPid, 0)).not.toThrow();
+
     for (let i = 0; i < 100 && !adapterPid; i++) {
       try {
         adapterPid = parseInt(await readFile(pidFile, "utf8"), 10);
