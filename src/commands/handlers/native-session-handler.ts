@@ -263,50 +263,53 @@ async function attachNativeSession(
     transportSessionForProbe,
     { guardAcpOutput: true },
   );
-  let persisted: ResolvedSession;
+  // R1 + I4: reserve coordinator identity BEFORE any logical row appears,
+  // so a conflicting external coordinator fails without leaving a ghost.
+  // Alias reservation is held in outer finally so every early return
+  // releases it (strict-runtime attach failure must not leak alias).
   try {
-    persisted = await context.sessions.attachNativeSession({
-      alias: finalInternalAlias,
-      agent: nativeTarget.agent,
-      workspace: nativeTarget.workspace,
-      transportSession: launchProbe.transportSession,
-      ...(launchProbe.agentCommand ? { transportAgentCommand: launchProbe.agentCommand } : {}),
-      ...(launchProbe.acpxAgent ? { transportAcpxAgent: launchProbe.acpxAgent } : {}),
-      ...(launchProbe.agentArgv ? { transportAgentArgv: launchProbe.agentArgv } : {}),
-      agentSessionId: session.sessionId,
-      title: session.title,
-      updatedAt: session.updatedAt,
-    });
-  } catch (error) {
-    return { text: renderNativeResumeError(target, error) };
-  }
-  const releaseTransportReservation = await context.lifecycle.reserveTransportSession(persisted.transportSession);
-
-  try {
+    const releaseTransportReservation = await context.lifecycle.reserveTransportSession(launchProbe.transportSession);
+    let persisted: ResolvedSession;
     try {
-      await context.transport.resumeAgentSession(persisted, session.sessionId);
-    } catch (error) {
-      try { await context.sessions.removeSession(persisted.alias); } catch {}
-      return { text: renderNativeResumeError(target, error) };
-    }
-    const verified = await context.lifecycle.checkTransportSession(persisted);
-    if (!verified) {
-      try { await context.sessions.removeSession(persisted.alias); } catch {}
-      return { text: t().nativeSession.attachVerificationFailed(target.agentDisplayName) };
-    }
+      try {
+        persisted = await context.sessions.attachNativeSession({
+          alias: finalInternalAlias,
+          agent: nativeTarget.agent,
+          workspace: nativeTarget.workspace,
+          transportSession: launchProbe.transportSession,
+          ...(launchProbe.agentCommand ? { transportAgentCommand: launchProbe.agentCommand } : {}),
+          ...(launchProbe.acpxAgent ? { transportAcpxAgent: launchProbe.acpxAgent } : {}),
+          ...(launchProbe.agentArgv ? { transportAgentArgv: launchProbe.agentArgv } : {}),
+          agentSessionId: session.sessionId,
+          title: session.title,
+          updatedAt: session.updatedAt,
+        });
+      } catch (error) {
+        return { text: renderNativeResumeError(target, error) };
+      }
+      try {
+        await context.transport.resumeAgentSession(persisted, session.sessionId);
+      } catch (error) {
+        try { await context.sessions.removeSession(persisted.alias); } catch {}
+        return { text: renderNativeResumeError(target, error) };
+      }
+      const verified = await context.lifecycle.checkTransportSession(persisted);
+      if (!verified) {
+        try { await context.sessions.removeSession(persisted.alias); } catch {}
+        return { text: t().nativeSession.attachVerificationFailed(target.agentDisplayName) };
+      }
 
-    await context.sessions.useSession(chatKey, finalInternalAlias);
-    await refreshAgentCommandBestEffort(context, finalInternalAlias);
+      await context.sessions.useSession(chatKey, finalInternalAlias);
+      await refreshAgentCommandBestEffort(context, finalInternalAlias);
 
-    return {
-      text: t().nativeSession.attachedAndSwitched(target.agentDisplayName, toDisplaySessionAlias(finalInternalAlias)),
-    };
-  } finally {
-    try {
-      await releaseTransportReservation();
+      return {
+        text: t().nativeSession.attachedAndSwitched(target.agentDisplayName, toDisplaySessionAlias(finalInternalAlias)),
+      };
     } finally {
-      releaseAliasReservation();
+      try { await releaseTransportReservation(); } catch {}
     }
+  } finally {
+    releaseAliasReservation();
   }
 }
 

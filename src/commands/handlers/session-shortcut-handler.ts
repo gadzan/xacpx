@@ -78,35 +78,49 @@ export async function handleSessionShortcutCommand(
 
   try {
     const stableTransportSession = channelId === "weixin" ? finalAlias : context.sessions.buildDefaultTransportSessionForChat(chatKey, finalDisplay);
-    const session = ops.resolveSession(
+    const launchProbe = ops.resolveSession(
       finalAlias,
       agent,
       workspace.name,
       context.sessions.buildFreshTransportSession(stableTransportSession),
       { guardAcpOutput: true },
     );
-    const releaseTransportReservation = await ops.reserveTransportSession(stableTransportSession);
+    let releaseTransportReservation: any;
+    try {
+      releaseTransportReservation = await ops.reserveTransportSession(stableTransportSession);
+    } catch (err) {
+      return renderShortcutSessionCreationError(workspace, finalDisplay);
+    }
+    let persisted: any;
     try {
       try {
-        await ops.ensureTransportSession(session);
-        const exists = await ops.checkTransportSession(session);
-        if (!exists) {
-          return renderShortcutSessionCreationError(workspace, finalDisplay);
-        }
+        persisted = await context.sessions.attachSession(
+          finalAlias,
+          agent,
+          workspace.name,
+          launchProbe.transportSession,
+          launchProbe.agentCommand,
+          launchProbe.acpxAgent,
+          launchProbe.agentArgv,
+        );
       } catch (err) {
         if (err instanceof AutoInstallFailedError) throw err;
         return renderShortcutSessionCreationError(workspace, finalDisplay);
       }
+      try {
+        await ops.ensureTransportSession(persisted);
+        const exists = await ops.checkTransportSession(persisted);
+        if (!exists) {
+          try { await context.sessions.removeSession(persisted.alias); } catch {}
+          return renderShortcutSessionCreationError(workspace, finalDisplay);
+        }
+      } catch (err) {
+        try { if (persisted) await context.sessions.removeSession(persisted.alias); } catch {}
+        if (err instanceof AutoInstallFailedError) throw err;
+        return renderShortcutSessionCreationError(workspace, finalDisplay);
+      }
 
-      await context.sessions.attachSession(
-        finalAlias,
-        agent,
-        workspace.name,
-        session.transportSession,
-        session.agentCommand,
-        session.acpxAgent,
-        session.agentArgv,
-      );
+      // attach already done as persisted, no second attach needed
       await context.sessions.useSession(chatKey, finalAlias);
       try {
         await ops.refreshSessionTransportAgentCommand(finalAlias);

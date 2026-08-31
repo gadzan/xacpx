@@ -71,61 +71,60 @@ export class SessionControlService {
         { guardAcpOutput: true },
       );
       const normalizedModel = model?.trim();
-      // Authoritative identity before any transport owner starts.
-      let persisted: ResolvedSession;
-      try {
-        persisted = await this.sessions.attachSession(
-          finalInternalAlias,
-          agent,
-          workspace,
-          launchProbe.transportSession,
-          launchProbe.agentCommand,
-          launchProbe.acpxAgent,
-          launchProbe.agentArgv,
-        );
-        if (normalizedModel) {
-          await this.sessions.setSessionModel(finalInternalAlias, normalizedModel);
-          const refreshed = this.sessions.getResolvedSessionByInternalAlias(finalInternalAlias);
-          if (refreshed) persisted = refreshed;
-          else persisted.model = normalizedModel;
-        }
-      } catch (error) {
-        // Engine resolution (e.g. runtime without support) fails before any owner
-        throw error;
-      }
-      if (normalizedModel) {
-        persisted.model = normalizedModel;
-      }
-      // Reserve the stable coordinator identity rather than the incarnation-specific
-      // name. This preserves conflict detection with external coordinators while the
-      // transport name itself can rotate on every explicit create.
+      // R1 + coordinator TOCTOU: reserve BEFORE any logical row appears.
       const release = await this.reserveLogicalTransportSession(stableTransportSession);
+      let persisted: ResolvedSession;
       let transportSucceeded = false;
       try {
-        await this.invoker.ensureTransportSession(persisted);
-        const exists = await this.invoker.checkTransportSession(persisted);
-        if (!exists) {
-          try { await this.sessions.removeSession(finalInternalAlias); } catch {}
-          throw new Error(`transport session "${persisted.transportSession}" could not be verified`);
-        }
-        transportSucceeded = true;
-        // Best-effort: a transient refresh failure must not fail a create that has
-        // already succeeded, bound, and verified. Mirrors the chat paths' use of
-        // refreshSessionTransportAgentCommandBestEffort.
         try {
-          await this.invoker.refreshSessionTransportAgentCommand(finalInternalAlias);
+          persisted = await this.sessions.attachSession(
+            finalInternalAlias,
+            agent,
+            workspace,
+            launchProbe.transportSession,
+            launchProbe.agentCommand,
+            launchProbe.acpxAgent,
+            launchProbe.agentArgv,
+          );
+          if (normalizedModel) {
+            await this.sessions.setSessionModel(finalInternalAlias, normalizedModel);
+            const refreshed = this.sessions.getResolvedSessionByInternalAlias(finalInternalAlias);
+            if (refreshed) persisted = refreshed;
+            else persisted.model = normalizedModel;
+          }
         } catch (error) {
-          await this.logger.error("session.agent_command_refresh_failed", "failed to refresh session agent command", {
-            alias: finalInternalAlias,
-            error: error instanceof Error ? error.message : String(error),
-          });
+          // Engine resolution fails before any owner — no ghost to rollback
+          throw error;
         }
-        return persisted;
-      } catch (error) {
-        if (!transportSucceeded) {
-          try { await this.sessions.removeSession(finalInternalAlias); } catch {}
+        if (normalizedModel) {
+          persisted.model = normalizedModel;
         }
-        throw error;
+        try {
+          await this.invoker.ensureTransportSession(persisted);
+          const exists = await this.invoker.checkTransportSession(persisted);
+          if (!exists) {
+            try { await this.sessions.removeSession(finalInternalAlias); } catch {}
+            throw new Error(`transport session "${persisted.transportSession}" could not be verified`);
+          }
+          transportSucceeded = true;
+          // Best-effort: a transient refresh failure must not fail a create that has
+          // already succeeded, bound, and verified. Mirrors the chat paths' use of
+          // refreshSessionTransportAgentCommandBestEffort.
+          try {
+            await this.invoker.refreshSessionTransportAgentCommand(finalInternalAlias);
+          } catch (error) {
+            await this.logger.error("session.agent_command_refresh_failed", "failed to refresh session agent command", {
+              alias: finalInternalAlias,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return persisted;
+        } catch (error) {
+          if (!transportSucceeded) {
+            try { await this.sessions.removeSession(finalInternalAlias); } catch {}
+          }
+          throw error;
+        }
       } finally {
         await release();
       }
