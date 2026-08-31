@@ -442,6 +442,34 @@ bun run publish:plugins     # 升一方插件包时
 - 在 `docs/releases/` 加发版说明。
 - 给 git tag。
 
+### 一方频道插件发布（tag 驱动）
+
+`packages/channel-*` 下的一方频道插件通过 **tag 驱动的 GitHub Actions workflow** 发布，而不是手工 `npm publish`。每个插件各有一个 workflow，遵循同一套契约：
+
+| 插件 | 包名 | tag 规则 | workflow |
+| --- | --- | --- | --- |
+| 飞书 | `@ganglion/xacpx-channel-feishu` | `channel-feishu-v*` | `.github/workflows/publish-channel-feishu.yml` |
+| 元宝 | `@ganglion/xacpx-channel-yuanbao` | `channel-yuanbao-v*` | `.github/workflows/publish-channel-yuanbao.yml` |
+| Discord | `@ganglion/xacpx-channel-discord` | `channel-discord-v*` | `.github/workflows/publish-channel-discord.yml` |
+
+推送匹配的 tag（或用 `workflow_dispatch` 指定已存在的 tag）后，workflow 会检出该精确 tag，依次跑 `npm ci` → `npm test` → 包构建 → `verify:publish`，从 `packages/<name>/package.json` 读取版本号，并且 **当 tag 与 `channel-<name>-v<version>` 不一致时 fail closed 直接失败**。随后把包发布到 npm：预发布版本用 `next` dist-tag、稳定版本用 `latest`，并创建对应的 GitHub Release。workflow 依赖仓库的 `NPM_TOKEN` secret。
+
+因为版本号是唯一事实来源，发版就简化成：升 `packages/channel-discord/package.json` 的 `version` → 合并 → 推 tag。
+
+**Discord 首发 runbook**（以 `0.8.0` 为例——**写文档期间不要真的打 tag / 发 npm**，只有明确要求发版时才做）：
+
+```bash
+# 1. 确认 PR 合并后 main 上就是目标代码
+# 2. 确认 packages/channel-discord/package.json 版本（如 0.8.0）
+# 3. 确认 npm 包名 @ganglion/xacpx-channel-discord
+# 4. 创建并推送精确 tag
+git tag channel-discord-v0.8.0
+git push origin channel-discord-v0.8.0
+
+# 5. Actions 自动跑 测试 → 构建 → verify:publish → npm → GitHub Release
+# 6. 核对 npm dist-tag 与 GitHub Release
+```
+
 ---
 
 ## 拓展阅读
