@@ -29,6 +29,7 @@ function makeCapturingClient(): CapturingClient {
   const client: CapturingClient = {
     start: async (input) => {
       handler = input.handlers.onMessage;
+      return { botUserId: "bot1", botTag: "Bot#0001" };
     },
     probeBot: async () => ({ botUserId: "bot1", botTag: "Bot#0001" }),
     sendMessage: async (target, body) => {
@@ -217,6 +218,76 @@ test("guild abort fast path: reply to a human must not abort, reply to the bot m
     }),
   );
   await waitFor(() => seenSignal!.aborted);
+
+  abort.abort();
+  await startPromise;
+});
+
+// Review round 6 (Minor): quota.onInbound resets the OUTBOUND budget for this
+// chat, so it must fire the moment the message is accepted. It used to sit
+// after downloadInboundAttachments, where one slow attachment fetch delayed
+// the reset for every later reply in the same channel.
+test("accepted message resets the outbound budget before the attachment fetch", async () => {
+  const client = makeCapturingClient();
+  const events: string[] = [];
+  const agent = { chat: async () => ({ text: "ok" }) };
+  const quota = {
+    onInbound: (chatKey: string) => {
+      events.push(`budget-reset:${chatKey}`);
+    },
+  };
+
+  let releaseFetch: (() => void) | null = null;
+  const fetchImpl = (async () => {
+    events.push("attachment-fetch:started");
+    await new Promise<void>((resolve) => {
+      releaseFetch = resolve;
+    });
+    events.push("attachment-fetch:resolved");
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: { get: () => null },
+      arrayBuffer: async () => new ArrayBuffer(8),
+    } as unknown as Response;
+  }) as unknown as typeof fetch;
+  const mediaStore = {
+    saveMediaBuffer: async () => {
+      events.push("attachment:saved");
+      return { filePath: "/tmp/a.png", kind: "image", fileName: "a.png" };
+    },
+  } as never;
+
+  const abort = new AbortController();
+  const ch = new DiscordChannel(
+    { token: "x", dmPolicy: "open", guildPolicy: "open", requireMention: false },
+    { logger: makeLogger() as never, createClient: () => client, identifyStaggerMs: 0, fetchImpl, mediaStore },
+  );
+  const startPromise = ch.start(makeStartInput(agent, abort, quota));
+  await probeStarted(ch);
+
+  client.emit(
+    inbound({
+      id: "att1",
+      channelId: "dm1",
+      guildId: null,
+      author: { id: "u1", bot: false },
+      content: "look at this image",
+      attachments: [{ id: "a1", url: "https://cdn.discord.test/a.png", name: "a.png", size: 8 }],
+    }),
+  );
+  await waitFor(() => events.includes("attachment-fetch:started"));
+  // A rejected message must not reset the budget (asserted by the self-loop
+  // test above); an accepted one must reset it while the fetch is pending.
+  expect(events).toEqual(["budget-reset:discord:default:dm:dm1", "attachment-fetch:started"]);
+
+  releaseFetch!();
+  await waitFor(() => events.includes("attachment:saved"));
+  // Exactly once: moving the call must not leave the old one behind.
+  expect(events.filter((event) => event.startsWith("budget-reset:"))).toEqual([
+    "budget-reset:discord:default:dm:dm1",
+  ]);
 
   abort.abort();
   await startPromise;

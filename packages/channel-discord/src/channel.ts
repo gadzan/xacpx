@@ -19,7 +19,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { DiscordChannelConfig, DiscordResolvedAccountConfig } from "./config.js";
 import { parseDiscordChannelConfig } from "./config.js";
 import type { DeliveryTarget, DiscordInboundMessage, DiscordRoute, OutboundBody } from "./types.js";
-import type { DiscordClientLike } from "./discord-client.js";
+import type { DiscordBotIdentity, DiscordClientLike } from "./discord-client.js";
 import { createDiscordClient } from "./discord-client.js";
 import { MessageDedup, isMessageExpired } from "./message-dedup.js";
 import {
@@ -71,6 +71,10 @@ interface ActiveTask {
   queueKey: string;
   boundAlias?: string;
   abortController: AbortController;
+  /** Releases this turn's listener on the channel-level abort signal. Cleared in
+   *  runTurn's finally so a long-lived daemon does not accumulate one listener
+   *  per handled message. */
+  rootAbortCleanup: (() => void) | null;
   suppressed: boolean;
   previewStream: DiscordPreviewStream | null;
   stopTyping: (() => void) | null;
@@ -157,6 +161,7 @@ export class DiscordChannel implements MessageChannelRuntime {
   }
 
   async logout(): Promise<void> {
+    await this.abortAllActiveTasks();
     for (const runtime of this.accounts.values()) {
       try {
         await runtime.client.destroy();
@@ -166,10 +171,12 @@ export class DiscordChannel implements MessageChannelRuntime {
     }
     this.accounts.clear();
     this.dedup.dispose();
-    this.activeTasks.clear();
   }
 
   async stop(_reason?: string): Promise<void> {
+    // Abort in-flight turns while the clients are still alive, so a preview
+    // message can still be deleted; the turns themselves are not awaited.
+    await this.abortAllActiveTasks();
     for (const runtime of this.accounts.values()) {
       try {
         await runtime.client.destroy();
@@ -179,7 +186,6 @@ export class DiscordChannel implements MessageChannelRuntime {
     }
     this.accounts.clear();
     this.dedup.dispose();
-    // Do not clear activeTasks aggressively — in-flight turns will settle via abortSignal.
     this.agent = null;
     this.quota = null;
     this.logger = null;
@@ -282,27 +288,15 @@ export class DiscordChannel implements MessageChannelRuntime {
         intentsGuildMembers: account.intents.guildMembers,
       });
 
-    let botUserId = "";
+    // Identity comes from the Gateway session itself. A REST probe can return
+    // an empty botUserId while login still succeeds, and every guard keyed on
+    // it (own-message drop, mention gate, reply-to-bot) fails open when it is
+    // empty — so the runtime is registered only after start() resolves with a
+    // non-empty id. Messages that arrive during login find no runtime yet and
+    // are dropped by handleMessageEvent's fail-closed guard.
+    let identity: DiscordBotIdentity;
     try {
-      const probe = await client.probeBot();
-      botUserId = probe.botUserId ?? "";
-      if (!botUserId) {
-        await input.logger.warn("discord.probe_failed", "failed to probe discord bot identity (empty botUserId)", {
-          accountId: account.accountId,
-        });
-      }
-    } catch (error) {
-      await input.logger.error("discord.probe_failed", "failed to probe discord bot identity", {
-        accountId: account.accountId,
-        message: error instanceof Error ? error.message : String(error),
-      });
-    }
-
-    const runtime: AccountRuntime = { account, client, botUserId };
-    this.accounts.set(account.accountId, runtime);
-
-    try {
-      await client.start({
+      identity = await client.start({
         handlers: {
           onMessage: (msg) => {
             void this.handleMessageEvent(account.accountId, msg).catch(async (err) => {
@@ -317,10 +311,8 @@ export class DiscordChannel implements MessageChannelRuntime {
         abortSignal: input.abortSignal,
       });
     } catch (error) {
-      // Initial Gateway login failed — this account is not started.
-      // Remove the runtime entry so sendRouteText etc fail fast for this account,
-      // and propagate so start() can decide whether all accounts failed (review #3).
-      this.accounts.delete(account.accountId);
+      // Initial Gateway login failed — this account is not started. Propagate
+      // so start() can decide whether all accounts failed (review #3).
       try {
         await client.destroy();
       } catch {}
@@ -330,6 +322,23 @@ export class DiscordChannel implements MessageChannelRuntime {
       });
       throw error;
     }
+
+    if (!identity.botUserId) {
+      try {
+        await client.destroy();
+      } catch {}
+      await input.logger.error("discord.client.start_failed", "discord client started without bot identity", {
+        accountId: account.accountId,
+      });
+      throw new Error(`discord account "${account.accountId}" became ready without a bot identity`);
+    }
+
+    this.accounts.set(account.accountId, {
+      account,
+      client,
+      botUserId: identity.botUserId,
+      ...(identity.botTag ? { botTag: identity.botTag } : {}),
+    });
   }
 
   async notifyTaskCompletion(task: OrchestrationTaskRecord): Promise<void> {
@@ -544,15 +553,30 @@ export class DiscordChannel implements MessageChannelRuntime {
     const chatKey = buildDiscordChatKey({ accountId, route });
     const queueKey = buildDiscordQueueKey(accountId, channelId, route.kind);
 
-    // Abort fast path
-    if (await this.tryHandleAbortTrigger({ runtime, queueKey, accountId, channelId, messageId, msg, chatKey })) {
-      return;
-    }
-    // Mention cleaning and gate
+    // One mention decision per message. The abort fast path used to read
+    // account.requireMention while this gate read the channel override, so a
+    // channel that waived the mention still required "@bot stop" (and vice
+    // versa). Both paths now share the computed value.
     const isDM = route.kind === "dm";
     const effectiveChannelIdForMention = msg.parentChannelId ?? channelId;
     const channelRequireMention = resolveChannelRequireMention(runtime.account, route.guildId, effectiveChannelIdForMention);
     const effectiveRequireMention = channelRequireMention ?? runtime.account.requireMention;
+
+    // Abort fast path
+    if (await this.tryHandleAbortTrigger({
+      runtime,
+      queueKey,
+      accountId,
+      channelId,
+      messageId,
+      msg,
+      chatKey,
+      isDM,
+      requireMention: effectiveRequireMention,
+    })) {
+      return;
+    }
+    // Mention cleaning and gate
     const decision = shouldHandleDiscordMessage({
       message: msg,
       botUserId: runtime.botUserId,
@@ -571,6 +595,10 @@ export class DiscordChannel implements MessageChannelRuntime {
       return;
     }
 
+    // Outbound budget reset: fires once the message is accepted, before the
+    // attachment fetch, so a slow download cannot delay the reset.
+    this.quota.onInbound(chatKey);
+
     let requestText = decision.text;
 
     const { media, skipped } = await this.downloadInboundAttachments({
@@ -584,8 +612,6 @@ export class DiscordChannel implements MessageChannelRuntime {
 
     // Allow empty text if there are attachments (media-only message)
     if (!requestText.trim() && media.length === 0) return;
-
-    this.quota.onInbound(chatKey);
 
     const isSlash = requestText.trim().startsWith("/");
     const boundAlias = isSlash ? undefined : (this.sessions?.peekCurrentSessionAlias(chatKey) ?? undefined);
@@ -635,14 +661,15 @@ export class DiscordChannel implements MessageChannelRuntime {
     messageId: string;
     msg: DiscordInboundMessage;
     chatKey: string;
+    isDM: boolean;
+    requireMention: boolean;
   }): Promise<boolean> {
-    const { runtime, queueKey, accountId, channelId, messageId, msg, chatKey } = input;
+    const { runtime, queueKey, accountId, channelId, messageId, msg, chatKey, isDM } = input;
     const rawText = (msg.content ?? "").trim();
     // Only consider abort if message is directly addressed (for guild with requireMention, it must mention bot)
     // For DM, any abort word counts.
     // For guild, check mention similar to normal handling: if requireMention true, abort must mention bot.
-    const isDM = !msg.guildId;
-    if (!isDM && runtime.account.requireMention) {
+    if (!isDM && input.requireMention) {
       const mentionedViaUsers = msg.mentions?.users?.some((u) => u.id === runtime.botUserId) ?? false;
       const mentionsBot = mentionedViaUsers || msg.content.includes(`<@${runtime.botUserId}>`) || msg.content.includes(`<@!${runtime.botUserId}>`);
       const repliesToBot = isDiscordReplyToBot(msg, runtime.botUserId);
@@ -689,6 +716,7 @@ export class DiscordChannel implements MessageChannelRuntime {
       queueKey,
       boundAlias,
       abortController,
+      rootAbortCleanup: null,
       suppressed: false,
       previewStream: null,
       stopTyping: null,
@@ -696,7 +724,78 @@ export class DiscordChannel implements MessageChannelRuntime {
     const stack = this.activeTasks.get(queueKey) ?? [];
     stack.push(active);
     this.activeTasks.set(queueKey, stack);
+
+    // Bind the turn to the channel-level abort signal. Without this the claim
+    // that "in-flight turns settle via abortSignal" was false: nothing ever
+    // forwarded that signal, so xacpx stop/logout left the agent turn running
+    // and it could still post its answer. Suppression is set alongside the
+    // abort because an agent is free to ignore its signal.
+    const rootSignal = this.abortSignal;
+    if (rootSignal) {
+      if (rootSignal.aborted) {
+        active.suppressed = true;
+        try {
+          abortController.abort();
+        } catch {
+          // ignore
+        }
+      } else {
+        const onRootAbort = (): void => {
+          active.suppressed = true;
+          try {
+            abortController.abort();
+          } catch {
+            // ignore
+          }
+        };
+        rootSignal.addEventListener("abort", onRootAbort, { once: true });
+        active.rootAbortCleanup = () => rootSignal.removeEventListener("abort", onRootAbort);
+      }
+    }
     return { active, abortController };
+  }
+
+  /**
+   * Suppress and abort every in-flight turn. Used by stop()/logout() before the
+   * Gateway clients are destroyed, so a preview message can still be cleaned
+   * up. The agent turn itself is never awaited — shutdown must not block on it
+   * — and the suppressed flag keeps the abandoned turn from delivering output
+   * afterwards.
+   */
+  private async abortAllActiveTasks(): Promise<void> {
+    const tasks = [...this.activeTasks.values()].flat();
+    for (const task of tasks) {
+      task.suppressed = true;
+      try {
+        task.abortController.abort();
+      } catch {
+        // ignore
+      }
+    }
+    for (const task of tasks) {
+      try {
+        task.rootAbortCleanup?.();
+      } catch {
+        // ignore
+      }
+      task.rootAbortCleanup = null;
+      try {
+        task.stopTyping?.();
+      } catch {
+        // ignore
+      }
+      task.stopTyping = null;
+      const preview = task.previewStream;
+      task.previewStream = null;
+      if (preview) {
+        try {
+          await preview.cleanup();
+        } catch {
+          // Best effort: a dead Gateway must not block shutdown.
+        }
+      }
+    }
+    this.activeTasks.clear();
   }
 
   private async handleAbortFastPath(input: {
@@ -933,6 +1032,12 @@ export class DiscordChannel implements MessageChannelRuntime {
       }
     } finally {
       try {
+        active.rootAbortCleanup?.();
+      } catch {
+        // ignore
+      }
+      active.rootAbortCleanup = null;
+      try {
         active.stopTyping?.();
       } catch {
         // ignore
@@ -946,7 +1051,9 @@ export class DiscordChannel implements MessageChannelRuntime {
       }
       if (boundAlias) {
         this.activeTurns?.markInactive(chatKey, boundAlias);
-        if (turnStatus !== "skipped" && this.sessions && this.sessions.peekCurrentSessionAlias(chatKey) !== boundAlias) {
+        // A suppressed turn was aborted (abort fast path, channel stop or
+        // logout): its answer, and therefore its completion notice, is void.
+        if (!active.suppressed && turnStatus !== "skipped" && this.sessions && this.sessions.peekCurrentSessionAlias(chatKey) !== boundAlias) {
           await this.sessions.setBackgroundResult(chatKey, boundAlias, {
             text: "",
             status: turnStatus,

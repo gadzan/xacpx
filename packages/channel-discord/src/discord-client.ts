@@ -1,12 +1,22 @@
 import type { DeliveryTarget, DiscordInboundMessage, OutboundBody } from "./types.js";
 
+export interface DiscordBotIdentity {
+  botUserId: string;
+  botTag?: string;
+}
+
 export interface DiscordClientLike {
-  /** Connect and log in. Resolves once the initial Gateway session is ready;
-   *  rejects when login fails (bad token, disallowed intents, connect error).
-   *  The long-lived connection stays open afterwards and is torn down via the
-   *  abortSignal passed to start() or via destroy(). */
-  start(input: { handlers: { onMessage(m: DiscordInboundMessage): void }; abortSignal: AbortSignal }): Promise<void>;
-  probeBot(): Promise<{ botUserId: string; botTag?: string }>;
+  /** Connect and log in. Resolves with the authenticated bot identity once the
+   *  Gateway session is established; rejects when login fails (bad token,
+   *  disallowed intents, connect error) or when the session came up without a
+   *  bot user id. The long-lived connection stays open afterwards and is torn
+   *  down via the abortSignal passed to start() or via destroy().
+   *  Identity MUST come from this call: the self-message guard, the mention
+   *  gate and the reply-to-bot check all key off botUserId, so an empty id
+   *  would silently disable them. */
+  start(input: { handlers: { onMessage(m: DiscordInboundMessage): void }; abortSignal: AbortSignal }): Promise<DiscordBotIdentity>;
+  /** Diagnostic-only REST probe. Never used to derive startup identity. */
+  probeBot(): Promise<DiscordBotIdentity>;
   sendMessage(target: DeliveryTarget, body: OutboundBody): Promise<{ messageId: string }>;
   editMessage(target: DeliveryTarget, messageId: string, body: OutboundBody): Promise<void>;
   deleteMessage(target: DeliveryTarget, messageId: string): Promise<void>;
@@ -36,7 +46,7 @@ class DiscordJsClient implements DiscordClientLike {
     this.options = options;
   }
 
-  async start(input: { handlers: { onMessage(m: DiscordInboundMessage): void }; abortSignal: AbortSignal }): Promise<void> {
+  async start(input: { handlers: { onMessage(m: DiscordInboundMessage): void }; abortSignal: AbortSignal }): Promise<DiscordBotIdentity> {
     const discord = await import("discord.js") as unknown as Record<string, unknown>;
     const Client = discord.Client as new (opts: unknown) => {
       on: (event: string, cb: (...args: unknown[]) => void) => void;
@@ -74,7 +84,8 @@ class DiscordJsClient implements DiscordClientLike {
 
     if (input.abortSignal.aborted) {
       client.destroy();
-      return;
+      this.client = null;
+      throw new Error("Discord client start aborted");
     }
 
     // Tear down the long-running Gateway session on abort. The listener stays
@@ -100,6 +111,23 @@ class DiscordJsClient implements DiscordClientLike {
       }
       throw error;
     }
+
+    // The READY payload carries the authenticated application user. Fail
+    // closed when it is missing: an empty botUserId would silently disable
+    // the self-message guard and the mention / reply-to-bot gates, which is
+    // how a self-loop reaches the agent.
+    const user = client.user;
+    if (!user?.id) {
+      this.abortCleanup?.();
+      this.abortCleanup = null;
+      try {
+        client.destroy();
+      } catch {
+        // ignore
+      }
+      throw new Error("Discord Gateway became ready without bot identity");
+    }
+    return { botUserId: user.id, ...(user.tag ? { botTag: user.tag } : {}) };
   }
 
   async probeBot(): Promise<{ botUserId: string; botTag?: string }> {

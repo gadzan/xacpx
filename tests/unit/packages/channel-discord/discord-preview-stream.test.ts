@@ -15,7 +15,7 @@ function createFakeClient(hooks: {
   const edited: Array<{ target: DeliveryTarget; messageId: string; content: string }> = [];
   const deleted: Array<{ target: DeliveryTarget; messageId: string }> = [];
   const client: DiscordClientLike = {
-    start: async () => {},
+    start: async () => ({ botUserId: "bot" }),
     probeBot: async () => ({ botUserId: "bot" }),
     sendMessage: async (target, body) => {
       if (hooks.failCreate) throw new Error("create failed");
@@ -95,7 +95,7 @@ test("preview cleanup awaits in-flight create then deletes the created message",
   const gate = Promise.withResolvers<void>();
   resolveCreate = gate.resolve;
   const client: DiscordClientLike = {
-    start: async () => {},
+    start: async () => ({ botUserId: "bot" }),
     probeBot: async () => ({ botUserId: "bot" }),
     sendMessage: async (_t, _body) => {
       await gate.promise;
@@ -156,7 +156,7 @@ test("preview pending during create is flushed after create", async () => {
   const editedContents: string[] = [];
   const createGate = Promise.withResolvers<void>();
   const client: DiscordClientLike = {
-    start: async () => {},
+    start: async () => ({ botUserId: "bot" }),
     probeBot: async () => ({ botUserId: "bot" }),
     sendMessage: async (_target, body) => {
       await createGate;
