@@ -14,7 +14,7 @@ import type {
 } from "xacpx/plugin-api";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
-import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import type { DiscordChannelConfig, DiscordResolvedAccountConfig } from "./config.js";
 import { parseDiscordChannelConfig } from "./config.js";
@@ -198,12 +198,14 @@ export class DiscordChannel implements MessageChannelRuntime {
     // NOT part of the name, so re-homing a token under a different accountId
     // still contends, and two processes whose token sets intersect at all
     // cannot both start that shared token. A process holding N distinct tokens
-    // acquires N locks and rolls them back if any one conflicts. The core
-    // injects a canonical lockFilePath (cli.ts); only its directory is used as
-    // the anchor, the per-token file names live beside it.
-    const dir = options?.lockFilePath
-      ? dirname(options.lockFilePath)
-      : join(coreHomeDir(homedir()), "runtime");
+    // acquires N locks and rolls them back if any one conflicts.
+    //
+    // Core's injected lockFilePath is config-scoped (it lives under the
+    // XACPX_CONFIG runtime dir) and therefore cannot anchor a token-global
+    // Discord Gateway lock: two config roots on one machine would each get
+    // their own file and start the same token twice. The token namespace is
+    // always the user-global core home, so only `onDiagnostic` is forwarded.
+    const dir = join(discordCoreHomeDir(), "runtime");
     const lockPaths = [...new Set(
       this.config.accounts
         .filter((account) => account.enabled && account.configured)
@@ -212,7 +214,7 @@ export class DiscordChannel implements MessageChannelRuntime {
       .map((token) => join(dir, `discord-consumer-${discordTokenLockFingerprint(token)}.lock.json`))
       .sort();
     return composeConsumerLocks(
-      lockPaths.map((lockFilePath) => createDiscordConsumerLock({ ...options, lockFilePath })),
+      lockPaths.map((lockFilePath) => createDiscordConsumerLock({ onDiagnostic: options?.onDiagnostic, lockFilePath })),
     );
   }
 
@@ -1169,6 +1171,15 @@ function discordTokenLockFingerprint(token: string): string {
 }
 
 /**
+ * The user-global core home, deliberately independent of `XACPX_CONFIG`. Same
+ * resolution `src/config/config-path.ts` uses for its default config path, minus
+ * that env override — a token fence must not move with the config it guards.
+ */
+function discordCoreHomeDir(): string {
+  return coreHomeDir(process.env.HOME ?? homedir());
+}
+
+/**
  * Aggregate several single-file locks behind the ConsumerLock contract:
  * acquire runs them in order and releases every lock already held when one
  * conflicts (then rethrows), so a rejected start never leaves a partial token
@@ -1215,7 +1226,7 @@ function composeConsumerLocks(locks: ConsumerLock[]): ConsumerLock {
 }
 
 function createDiscordConsumerLock(options: ConsumerLockOptions = {}): ConsumerLock {
-  const lockFilePath = options.lockFilePath ?? join(coreHomeDir(homedir()), "runtime", "discord-consumer.lock.json");
+  const lockFilePath = options.lockFilePath ?? join(discordCoreHomeDir(), "runtime", "discord-consumer.lock.json");
   const onDiagnostic = options.onDiagnostic;
   let lockId: string | undefined;
 
@@ -1246,12 +1257,23 @@ function createDiscordConsumerLock(options: ConsumerLockOptions = {}): ConsumerL
           const code = (error as NodeJS.ErrnoException).code;
           if (code !== "EEXIST") throw error;
           await emit("lock_exists", { lockFilePath, pid: meta.pid, mode: meta.mode });
-          const existing = await loadLockMetadata(lockFilePath);
-          if (!existing) {
-            await rm(lockFilePath, { force: true });
-            await emit("lock_invalid_removed", { lockFilePath, reason: "invalid_or_unreadable_metadata" });
+          const existingLock = await readExistingLock(lockFilePath);
+          if (existingLock.state === "absent") {
+            // Its holder released between our EEXIST and our read. Retrying the
+            // exclusive create is safe precisely because nothing was deleted.
             continue;
           }
+          if (existingLock.state === "unreadable") {
+            await emit("lock_invalid_conflict", {
+              lockFilePath,
+              reason: "existing_lock_metadata_unreadable",
+            });
+            throw new Error(
+              `Discord consumer lock exists but its metadata is unreadable: ${lockFilePath}; `
+              + "refusing to delete it, because its holder may still be writing it",
+            );
+          }
+          const existing = existingLock.metadata;
           const same = await isSameProcess(existing);
           if (!same) {
             await rm(lockFilePath, { force: true });
@@ -1291,6 +1313,37 @@ function createDiscordConsumerLock(options: ConsumerLockOptions = {}): ConsumerL
       await emit("lock_released", { lockFilePath });
     },
   };
+}
+
+/** A holder creates the lock with "wx" and writes its JSON afterwards, so a
+ *  competing reader can catch an empty or half-written file. Re-read briefly to
+ *  absorb that publication window, then fail closed: a lock we cannot read is
+ *  never deleted, because deleting it can steal a live holder's ownership. */
+const UNREADABLE_LOCK_REREAD_ATTEMPTS = 5;
+const UNREADABLE_LOCK_REREAD_DELAY_MS = 20;
+
+type ExistingLock =
+  | { state: "absent" }
+  | { state: "unreadable" }
+  | { state: "owned"; metadata: ConsumerLockMetadata };
+
+async function readExistingLock(lockFilePath: string): Promise<ExistingLock> {
+  for (let attempt = 1; attempt <= UNREADABLE_LOCK_REREAD_ATTEMPTS; attempt++) {
+    if (!(await lockFileExists(lockFilePath))) return { state: "absent" };
+    const metadata = await loadLockMetadata(lockFilePath);
+    if (metadata) return { state: "owned", metadata };
+    if (attempt < UNREADABLE_LOCK_REREAD_ATTEMPTS) await sleep(UNREADABLE_LOCK_REREAD_DELAY_MS);
+  }
+  return { state: "unreadable" };
+}
+
+async function lockFileExists(filePath: string): Promise<boolean> {
+  try {
+    await stat(filePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function loadLockMetadata(path: string): Promise<ConsumerLockMetadata | null> {

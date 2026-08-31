@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { DiscordChannel } from "../../../../packages/channel-discord/src/channel";
@@ -147,24 +148,108 @@ test("one token shared by two accounts never reaches the lock layer", () => {
   expect(() => channelWith({ a: { token: "tok-S" }, b: { token: "tok-S" } })).toThrow(/duplicates the bot token/);
 });
 
-test("core-injected lockFilePath anchors the per-token files beside it", async () => {
-  const dir = mkdtempSync(path.join(fakeHome, "injected-"));
-  const injected = { lockFilePath: path.join(dir, "discord-consumer.lock.json") };
-  const chA = channelWith({ a: { token: "tok-INJ-A" } });
-  const chB = channelWith({ a: { token: "tok-INJ-B" } });
+// Round 7 (High): core injects a config-scoped lock path, so it must not anchor
+// the token namespace. `tokenLockPath()` repeats the naming rule instead of
+// asking the implementation where it wrote: if the fence ever moves out of the
+// user-global core home, this path stops matching and the tests below fail loudly
+// rather than silently protecting nothing.
+function tokenLockPath(token: string): string {
+  const fingerprint = createHash("sha256").update(token).digest("hex").slice(0, 16);
+  return path.join(fakeHome, ".xacpx", "runtime", `discord-consumer-${fingerprint}.lock.json`);
+}
 
-  const lockA = chA.createConsumerLock(injected);
-  const lockB = chB.createConsumerLock(injected);
+test("the same token contends across two config roots", async () => {
+  const dirA = mkdtempSync(path.join(fakeHome, "config-A-"));
+  const dirB = mkdtempSync(path.join(fakeHome, "config-B-"));
+  const lockA = channelWith({ a: { token: "tok-CROSS" } }).createConsumerLock({
+    lockFilePath: path.join(dirA, "discord-consumer.lock.json"),
+  });
+  const lockB = channelWith({ a: { token: "tok-CROSS" } }).createConsumerLock({
+    lockFilePath: path.join(dirB, "discord-consumer.lock.json"),
+  });
 
-  // Distinct tokens under the SAME injected path must NOT share one file.
+  await lockA.acquire(meta());
+  await acquireExpectConflict(lockB);
+  // The conflict is real contention, not a path artefact: B takes it once A lets go.
+  await lockA.release();
+  await lockB.acquire(meta());
+  await lockB.release();
+
+  // And the fence never lived in either injected config dir.
+  expect(readdirSync(dirA)).toEqual([]);
+  expect(readdirSync(dirB)).toEqual([]);
+  expect(existsSync(tokenLockPath("tok-CROSS"))).toBe(false);
+});
+
+test("different tokens in different config roots still coexist", async () => {
+  const dirA = mkdtempSync(path.join(fakeHome, "config-A-"));
+  const dirB = mkdtempSync(path.join(fakeHome, "config-B-"));
+  const lockA = channelWith({ a: { token: "tok-E1" } }).createConsumerLock({
+    lockFilePath: path.join(dirA, "discord-consumer.lock.json"),
+  });
+  const lockB = channelWith({ a: { token: "tok-E2" } }).createConsumerLock({
+    lockFilePath: path.join(dirB, "discord-consumer.lock.json"),
+  });
+
   await lockA.acquire(meta());
   await lockB.acquire(meta());
-
-  const files = readdirSync(dir).filter((f) => f.startsWith("discord-consumer-") && f.endsWith(".lock.json"));
-  expect(files.length).toBe(2);
-
-  await acquireExpectConflict(channelWith({ a: { token: "tok-INJ-A" } }).createConsumerLock(injected));
-
   await lockA.release();
   await lockB.release();
+});
+
+test("the per-token fence is created in the user-global core home", async () => {
+  const dir = mkdtempSync(path.join(fakeHome, "injected-"));
+  const lock = channelWith({ a: { token: "tok-GLOBAL" } }).createConsumerLock({
+    lockFilePath: path.join(dir, "discord-consumer.lock.json"),
+  });
+
+  await lock.acquire(meta());
+  expect(existsSync(tokenLockPath("tok-GLOBAL"))).toBe(true);
+  expect(readdirSync(dir)).toEqual([]);
+  await lock.release();
+});
+
+// Round 7 (High): the holder creates the file with "wx" and writes its JSON
+// afterwards, so a reader can catch it empty. Deleting what cannot be parsed was
+// how a live holder's lock got stolen out from under it.
+test("an existing lock with unreadable metadata fails closed and is never removed", async () => {
+  for (const [name, contents] of [["empty", ""], ["partial", '{"pid":123'], ["garbage", "not json"]] as const) {
+    const lockPath = tokenLockPath(`tok-UNREADABLE-${name}`);
+    mkdirSync(path.dirname(lockPath), { recursive: true });
+    writeFileSync(lockPath, contents, "utf8");
+    const token = `tok-UNREADABLE-${name}`;
+
+    let failure: unknown = null;
+    try {
+      await channelWith({ a: { token } }).createConsumerLock().acquire(meta());
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain("unreadable");
+    expect(existsSync(lockPath)).toBe(true);
+    expect(readFileSync(lockPath, "utf8")).toBe(contents);
+    rmSync(lockPath, { force: true });
+  }
+});
+
+test("a readable lock left by a dead pid is still reclaimed", async () => {
+  const token = "tok-STALE-RECLAIM";
+  const lockPath = tokenLockPath(token);
+  mkdirSync(path.dirname(lockPath), { recursive: true });
+  writeFileSync(lockPath, `${JSON.stringify({
+    pid: 999_999,
+    mode: "daemon",
+    startedAt: "2026-08-30T00:00:00.000Z",
+    configPath: path.join(fakeHome, "config.json"),
+    statePath: path.join(fakeHome, "state.json"),
+    lockId: "left-by-a-dead-process",
+  }, null, 2)}\n`, "utf8");
+
+  const lock = channelWith({ a: { token } }).createConsumerLock();
+  await lock.acquire(meta());
+  expect(existsSync(lockPath)).toBe(true);
+  await lock.release();
+  expect(existsSync(lockPath)).toBe(false);
 });
