@@ -19,7 +19,7 @@ import { quoteWorkspaceNameIfNeeded } from "../workspace-name";
 import type { SessionSwitchResult } from "../../sessions/session-service";
 import { decorateUnread } from "./session-list-marker";
 import { t } from "../../i18n";
-
+import { AcpxQueueOverflowError } from "../../transport/acpx-queue-overflow";
 export interface SessionHandlerContext extends CommandRouterContext {
   lifecycle: SessionLifecycleOps;
   interaction: SessionInteractionOps;
@@ -949,6 +949,25 @@ export async function handlePromptWithSession(
   try {
     return await promptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage, onCommands);
   } catch (error) {
+    if (error instanceof AcpxQueueOverflowError) {
+      const confirmed = error.cleanup?.ownerTerminationSucceeded === true;
+      await context.logger.warn(
+        confirmed ? "transport.queue_overflow_downgraded" : "transport.queue_overflow_unconfirmed",
+        confirmed
+          ? "acpx queue overflow downgraded to soft warning"
+          : "acpx queue overflow cleanup unconfirmed, downgraded without ready promise",
+        {
+          alias: session.alias,
+          transportSession: session.transportSession,
+          code: "ACPX_QUEUE_MESSAGE_OVERFLOW",
+          ownerTerminationSucceeded: error.cleanup?.ownerTerminationSucceeded,
+          cancelSucceeded: error.cleanup?.cancelSucceeded,
+          diagnostic: error.cleanupDiagnostic ?? (error instanceof Error ? error.message.slice(0, 512) : String(error).slice(0, 512)),
+          confirmed,
+        },
+      );
+      return context.recovery.renderTransportError(session, error);
+    }
     const recovered = await context.recovery.tryRecoverMissingSession(session, error);
     if (recovered) {
       return await promptWithSession(context, recovered, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage, onCommands);

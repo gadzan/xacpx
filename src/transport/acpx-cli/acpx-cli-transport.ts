@@ -64,6 +64,7 @@ import {
   DEFAULT_NON_INTERACTIVE,
 } from "../acpx-command-builder";
 import { MessageInjectionError } from "../message-injection";
+import { AcpxQueueOverflowError, isAcpxQueueMessageOverflow, type AcpxQueueCleanupResult } from "../acpx-queue-overflow";
 
 interface AcpxCliTransportOptions {
   command?: string;
@@ -459,6 +460,12 @@ export class AcpxCliTransport implements SessionTransport {
         ? await this.runCommand(this.command, args, spawnOptions)
         : await this.runCommand(this.command, args);
       return { text: getPromptText(result) };
+    } catch (error) {
+      if (!isAcpxQueueMessageOverflow(error)) {
+        throw error;
+      }
+      const cleanup = await this.cleanupOverflowedOwner(session);
+      throw new AcpxQueueOverflowError(cleanup);
     } finally {
       try {
         await structuredPrompt?.cleanup();
@@ -823,6 +830,39 @@ export class AcpxCliTransport implements SessionTransport {
     const record = parseAcpxSessionRecordId(result.stdout);
     if (record) return record;
     throw new Error("failed to resolve acpx session record id");
+  }
+
+  private async cleanupOverflowedOwner(session: ResolvedSession): Promise<AcpxQueueCleanupResult> {
+    const diagnostics: string[] = [];
+    let cancelSucceeded = false;
+    try {
+      await this.cancel(session);
+      cancelSucceeded = true;
+    } catch (error) {
+      diagnostics.push(`cancel failed: ${describeCleanupError(error)}`);
+    }
+    let record: { acpxRecordId: string } | undefined;
+    try {
+      record = await this.readSessionRecord(session);
+    } catch (error) {
+      diagnostics.push(`could not resolve the queue owner record: ${describeCleanupError(error)}`);
+    }
+    let ownerTerminationSucceeded = false;
+    if (record) {
+      try {
+        await terminateAcpxQueueOwnerVerified(record.acpxRecordId);
+        ownerTerminationSucceeded = true;
+      } catch (error) {
+        diagnostics.push(`owner termination failed: ${describeCleanupError(error)}`);
+      }
+    }
+    return {
+      cancelAttempted: true,
+      cancelSucceeded,
+      ownerTerminationAttempted: Boolean(record),
+      ownerTerminationSucceeded,
+      ...(diagnostics.length > 0 ? { diagnostic: diagnostics.join("; ") } : {}),
+    };
   }
 
   /**
@@ -1209,6 +1249,11 @@ export class AcpxCliTransport implements SessionTransport {
   private buildPermissionArgs(): string[] {
     return sharedBuildPermissionArgs(this.permissionInput());
   }
+}
+
+function describeCleanupError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.length > 512 ? `${message.slice(0, 512)}…` : message;
 }
 
 function renderCommandForError(args: string[]): string {

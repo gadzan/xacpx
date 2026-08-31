@@ -9,8 +9,20 @@ import {
   isNpmAdapterRegistryNotFoundOutput,
 } from "../../adapters/adapter-registry";
 import { managedAdapterRegistryFromCommand } from "../../adapters/adapter-catalog";
+import { AcpxQueueOverflowError } from "../../transport/acpx-queue-overflow";
 
 export function renderTransportError(session: ResolvedSession, error: unknown): RouterResponse {
+  if (error instanceof AcpxQueueOverflowError) {
+    const confirmed = error.cleanup?.ownerTerminationSucceeded === true;
+    if (confirmed) {
+      return {
+        text: [t().recovery.queueOverflowWarning, t().recovery.queueOverflowHint].join("\n"),
+      };
+    }
+    return {
+      text: [t().recovery.queueOverflowWarning, t().recovery.queueOverflowUnconfirmedHint].join("\n"),
+    };
+  }
   const message = error instanceof Error ? error.message : String(error);
   const registryError = renderAdapterRegistryError(session, message);
   if (registryError) return registryError;
@@ -128,6 +140,7 @@ export async function tryRecoverMissingSession(
   session: ResolvedSession,
   error: unknown,
 ): Promise<ResolvedSession | null> {
+  if (error instanceof AcpxQueueOverflowError) return null;
   const message = error instanceof Error ? error.message : String(error);
   if (!message.includes("No acpx session found")) {
     return null;

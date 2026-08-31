@@ -125,6 +125,9 @@ export class BridgeServer {
             },
           }
         : {};
+      const queueOverflowCleanup = error instanceof AcpxQueueOverflowError && error.cleanup
+        ? { queueOverflowCleanup: error.cleanup }
+        : {};
       const errorCode = error instanceof AcpxQueueOverflowError
         ? error.code
         : error instanceof MessageInjectionError
@@ -141,6 +144,7 @@ export class BridgeServer {
           ...ensureSessionFields,
           ...promptDetails,
           ...timeoutDetails,
+          ...queueOverflowCleanup,
         },
       } satisfies BridgeResponse)}\n`;
     }

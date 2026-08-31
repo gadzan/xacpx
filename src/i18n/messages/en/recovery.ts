@@ -19,6 +19,11 @@ export const recovery: RecoveryMessages = {
   sessionInterruptedHint: "Retry directly. If the session remains unresponsive, send /cancel first, then retry.",
   sessionInterruptedError: (summary) => `Error: ${summary}`,
 
+  // renderTransportError — queue overflow (soft warning)
+  queueOverflowWarning: "⚠️ Output too large",
+  queueOverflowHint: "Ask the agent to summarize or send in smaller chunks, then retry. The session is ready for your next message.",
+  queueOverflowUnconfirmedHint: "Automatic cleanup could not be confirmed. Please send /cancel first, then retry; if the issue persists, recreate the session (/session new ...).",
+
   // renderSessionCreationError (AutoInstallFailedError)
   autoInstallHeadlineFixed: "⚠️ Auto-install ran but could not fix the session startup problem",
   autoInstallHeadlineFailed: "❌ Auto-install failed",

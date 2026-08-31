@@ -23,6 +23,8 @@ import type { AgentCommand, UsageBreakdown, UsageCost } from "../types";
 import { getLocale } from "../../i18n";
 import { resolveDefaultXacpxCommand } from "../acpx-queue-owner-launcher";
 import type { AcpxAgentOverlayEntry } from "../acpx-agent-overlay";
+import { AcpxQueueOverflowError, ACPX_QUEUE_MESSAGE_OVERFLOW_CODE } from "../acpx-queue-overflow";
+import type { AcpxQueueCleanupResult } from "../acpx-queue-overflow";
 import {
   BRIDGE_REQUEST_TIMEOUT_GRACE_MS,
   CommandTimeoutError,
@@ -332,9 +334,22 @@ export class AcpxBridgeClient {
       );
       return;
     }
-
     if (isMessageInjectionErrorCode(response.error.code)) {
       pending.reject(new MessageInjectionError(response.error.code, response.error.message));
+      return;
+    }
+    if (response.error.code === ACPX_QUEUE_MESSAGE_OVERFLOW_CODE) {
+      const raw = response.error.queueOverflowCleanup;
+      const cleanup: AcpxQueueCleanupResult | undefined = raw
+        ? {
+            cancelAttempted: Boolean(raw.cancelAttempted),
+            cancelSucceeded: Boolean(raw.cancelSucceeded),
+            ownerTerminationAttempted: Boolean(raw.ownerTerminationAttempted),
+            ownerTerminationSucceeded: Boolean(raw.ownerTerminationSucceeded),
+            ...(raw.diagnostic !== undefined ? { diagnostic: raw.diagnostic } : {}),
+          }
+        : undefined;
+      pending.reject(new AcpxQueueOverflowError(cleanup ?? response.error.message));
       return;
     }
 
