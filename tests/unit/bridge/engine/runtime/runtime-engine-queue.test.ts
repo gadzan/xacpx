@@ -20,6 +20,7 @@ async function withEngine(
   const stateSessionsDir = opts.stateDir ?? join(dir, "state", "sessions");
   await mkdir(stateSessionsDir, { recursive: true });
   const queueDir = opts.queueDir ?? join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
   const entry = join(dir, "fake-worker.mjs");
   const fake = opts.fakeWorker ?? defaultFakeWorker;
   await fake(entry);
@@ -28,6 +29,7 @@ async function withEngine(
     permissionMode: "approve-all",
     stateDir: stateSessionsDir,
     queueDir,
+    fenceDir,
     idleTtlMs: opts.idleTtlMs ?? 200,
   });
   try {

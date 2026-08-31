@@ -405,8 +405,8 @@ export class BridgeServer {
           }
         });
       case "injectMessage":
-        return await this.engines.injectMessage({
-          agent: requireString(params, "agent"),
+        return await this.engines.injectMessage(withMcp({
+agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
@@ -415,148 +415,119 @@ export class BridgeServer {
           sessionKey: asOptionalString(params.sessionKey),
           model: asOptionalString(params.model),
           effort: asOptionalString(params.effort),
-          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
-          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
+
           text: requireString(params, "text"),
           mode: requireMessageMode(params, "mode"),
           messageId: requireString(params, "messageId"),
-        });
+        }, params));
       case "resumeAgentSession":
-        return await this.engines.resumeAgentSession({
+        return await this.engines.resumeAgentSession(withMcp({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
-          name: requireString(params, "name"),
-          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
-          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
-          agentSessionId: requireString(params, "agentSessionId"),
-        });
+          name: requireString(params, "name"),          agentSessionId: requireString(params, "agentSessionId"),
+        }, params));
       case "setMode":
-        return await this.engines.setMode({
+        return await this.engines.setMode(withMcp({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
-          name: requireString(params, "name"),
-          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
-          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
-          modeId: requireString(params, "modeId"),
-        });
+          name: requireString(params, "name"),          modeId: requireString(params, "modeId"),
+        }, params));
       case "setModel":
-        return await this.engines.setModel({
+        return await this.engines.setModel(withMcp({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
-          name: requireString(params, "name"),
-          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
-          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
-          modelId: requireString(params, "modelId"),
-        });
+          name: requireString(params, "name"),          modelId: requireString(params, "modelId"),
+        }, params));
       case "getSessionModel":
-        return await this.engines.getSessionModel({
-          agent: requireString(params, "agent"),
+        return await this.engines.getSessionModel(withMcp({
+agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
-          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
-          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
-        });
+        }, params));
       case "setSessionEffort":
-        return await this.engines.setSessionEffort({
+        return await this.engines.setSessionEffort(withMcp({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
-          name: requireString(params, "name"),
-          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
-          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
-          effort: requireString(params, "effort"),
-        });
+          name: requireString(params, "name"),          effort: requireString(params, "effort"),
+        }, params));
       case "getSessionEffort":
-        return await this.engines.getSessionEffort({
-          agent: requireString(params, "agent"),
+        return await this.engines.getSessionEffort(withMcp({
+agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
-          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
-          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
-        });
+        }, params));
       case "cancel":
-        return await this.engines.cancel({
-          agent: requireString(params, "agent"),
+        return await this.engines.cancel(withMcp({
+agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
-          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
-          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
-        });
+        }, params));
       case "removeSession":
-        return await this.engines.removeSession({
-          agent: requireString(params, "agent"),
+        return await this.engines.removeSession(withMcp({
+agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
-          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
-          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
-        });
+        }, params));
       case "deleteSession":
-        return await this.engines.deleteSession({
-          agent: requireString(params, "agent"),
+        return await this.engines.deleteSession(withMcp({
+agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
-          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
-          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
-        });
+        }, params));
       case "freeWarmProcess":
-        return await this.engines.freeWarmProcess({
-          agent: requireString(params, "agent"),
+        return await this.engines.freeWarmProcess(withMcp({
+agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
-          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
-          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
-        });
+        }, params));
       case "isSessionWarm":
-        return await this.engines.isSessionWarm({
-          agent: requireString(params, "agent"),
+        return await this.engines.isSessionWarm(withMcp({
+agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
-          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
-          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
-        });
+        }, params));
       case "getAgentSessionId":
-        return await this.engines.getAgentSessionId({
-          agent: requireString(params, "agent"),
+        return await this.engines.getAgentSessionId(withMcp({
+agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
-          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
-          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
-        });
+        }, params));
       default:
         throw new Error(`unsupported bridge method: ${method}`);
     }

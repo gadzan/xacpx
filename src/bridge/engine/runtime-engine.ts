@@ -428,7 +428,7 @@ export class RuntimeEngine implements BridgeEngine {
       this.manager = new RuntimeWorkerManager({
         entryPath: entry,
         clientDeps: options.workerClientDeps,
-        fenceDir: options.fenceDir ?? join(this.xacpxRuntimeDir(), "worker-fences"),
+        fenceDir: options.fenceDir ?? (() => { try { return options.stateDir ? join(this.runtimeStateRoot(), "worker-fences") : join(this.xacpxRuntimeDir(), "worker-fences"); } catch { return join(this.xacpxRuntimeDir(), "worker-fences"); } })(),
       });
     }
     if (options.queueDir) {
@@ -1260,24 +1260,17 @@ export class RuntimeEngine implements BridgeEngine {
     return { warm: this.manager?.isWarm(key) === true };
   }
 
-  /** PR6: Bridge restart recovery — enumerate queue journals and kick drain for authoritative runtime-bound sessions. */
+  /** PR6: Bridge restart recovery — enumerate queue journals and kick drain for authoritative runtime-bound sessions. Fail-closed on corrupt/unreadable. */
   async primeQueuesFromCatalog(sessions: EngineSessionInput[]): Promise<void> {
     for (const s of sessions) this.sessionCatalog.set(this.workerKey(s), s);
     if (!this.queueStore) return;
-    let ids: string[] = [];
-    try {
-      ids = await this.queueStore.listLogicalSessionIds();
-    } catch {
-      return;
-    }
+    const ids = await this.queueStore.listLogicalSessionIds();
     for (const id of ids) {
       const input = this.sessionCatalog.get(id);
       if (!input) continue;
-      try {
-        if (await this.queueStore.hasPending(id)) {
-          this.kickDrain(input).catch(() => {});
-        }
-      } catch {}
+      if (await this.queueStore.hasPending(id)) {
+        this.kickDrain(input).catch(() => {});
+      }
     }
   }
 
