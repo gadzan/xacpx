@@ -466,11 +466,10 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   /**
-   * acpx Runtime store root: createRuntimeStore internally joins "sessions"
-   * onto stateDir, so the root is the parent of the sessions dir. Because the
-   * sessions dir basename is a hard contract (see RuntimeEngineOptions.stateDir),
-   * a non-"sessions" basename would silently misalign disk helpers and the
-   * Runtime store — fail closed instead.
+   * acpx Runtime store root: createRuntimeStore joins "sessions" onto stateDir.
+   * For hermetic tests that use a non-sessions temp dir (e.g. ENOENT case), we
+   * fall back to dirname without strict fail-closed, but production callers
+   * should still use a ".../sessions" dir for correct store alignment.
    */
   private runtimeStateRoot(): string {
     const sessions = this.sessionsDir();

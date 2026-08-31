@@ -14,8 +14,8 @@ export function buildRuntimeMcpServers(input: {
     coordinatorSession: input.mcpCoordinatorSession,
     ...(input.mcpSourceHandle ? { sourceHandle: input.mcpSourceHandle } : {}),
   });
-  // AcpxMcpServerSpec is compatible with SDK McpServer (stdio) — include env for public contract
-  return [{ ...spec, env: {} } as unknown as McpServer];
+  // AcpxMcpServerSpec is compatible with SDK McpServer (stdio) — env as EnvVariable[] per public contract
+  return [{ ...spec, env: [] } as unknown as McpServer];
 }
 
 export function normalizeMcpIdentity(input: { mcpCoordinatorSession?: string; mcpSourceHandle?: string }): { mcpCoordinatorSession?: string; mcpSourceHandle?: string } {

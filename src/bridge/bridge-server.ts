@@ -287,16 +287,14 @@ export class BridgeServer {
           permissionPolicy: asOptionalString(params.permissionPolicy),
         });
       case "hasSession":
-        return await this.engines.hasSession({
+        return await this.engines.hasSession(withMcp({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
-          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
-          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
-        });
+        }, params));
       case "tailSessionHistory":
         return await this.engines.tailSessionHistory({
           agent: requireString(params, "agent"),

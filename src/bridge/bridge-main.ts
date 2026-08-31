@@ -110,23 +110,34 @@ export async function runBridgeMain(): Promise<void> {
     const statePath = join(coreHomeDir(homedir()), "state.json");
     const raw = await readFile(statePath, "utf8").catch(() => null);
     if (raw) {
-      const parsed = JSON.parse(raw) as { sessions?: Array<{ alias: string; agent: string; cwd: string; logicalSessionId?: string; transportEngine?: string; mcpCoordinatorSession?: string; mcpSourceHandle?: string }> };
-      const sessions = (parsed.sessions ?? [])
-        .filter((s) => s.transportEngine === "runtime")
-        .map((s) => ({
-          agent: s.agent,
-          cwd: s.cwd,
-          name: s.alias,
-          logicalSessionId: s.logicalSessionId,
-          mcpCoordinatorSession: s.mcpCoordinatorSession,
-          mcpSourceHandle: s.mcpSourceHandle,
-        }));
+      const parsed = JSON.parse(raw) as { sessions?: Record<string, { alias: string; agent: string; cwd: string; logicalSessionId?: string; transportEngine?: string; mcpCoordinatorSession?: string; mcpSourceHandle?: string }> | Array<{ alias: string; agent: string; cwd: string; logicalSessionId?: string; transportEngine?: string; mcpCoordinatorSession?: string; mcpSourceHandle?: string }> };
+      const sessionsRecord = parsed.sessions;
+      const sessionsList = Array.isArray(sessionsRecord) ? sessionsRecord : sessionsRecord ? Object.values(sessionsRecord) : [];
+      const sessions = sessionsList
+        .filter((s) => (s as unknown as { transportEngine?: string }).transportEngine === "runtime" || (s as unknown as { transport_engine?: string }).transport_engine === "runtime")
+        .map((s) => {
+          const rec = s as unknown as Record<string, unknown>;
+          return {
+            agent: String(rec.agent ?? rec["agent"] ?? "codex"),
+            cwd: String(rec.cwd ?? rec["workspace"] ?? "/"),
+            name: String(rec.alias ?? rec["name"] ?? rec["transportSession"] ?? ""),
+            logicalSessionId: (rec.logicalSessionId ?? rec["logical_session_id"] ?? rec["logicalSessionId"]) as string | undefined,
+            mcpCoordinatorSession: (rec.mcpCoordinatorSession ?? rec["mcpCoordinatorSession"]) as string | undefined,
+            mcpSourceHandle: (rec.mcpSourceHandle ?? rec["mcpSourceHandle"]) as string | undefined,
+          };
+        })
+        .filter((s) => s.name);
       if (sessions.length > 0) {
         const maybePrime = (server as unknown as { primeRuntimeQueues?: (s: unknown[]) => Promise<void> }).primeRuntimeQueues;
         if (typeof maybePrime === "function") await maybePrime.call(server, sessions);
       }
+    } else {
+      // No runtime sessions to prime — not an error
     }
-  } catch {}
+  } catch (e) {
+    // Prime is best-effort at startup; log but don't crash bridge on corrupt state
+    console.error("[bridge] primeRuntimeQueues failed", e);
+  }
   const input = createInterface({
     input: process.stdin,
     crlfDelay: Infinity,

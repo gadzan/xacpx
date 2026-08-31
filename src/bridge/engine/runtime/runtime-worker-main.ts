@@ -120,14 +120,13 @@ async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: 
     const resolver = new RuntimePermissionResolver();
     let mcpServers: import("./runtime-adapter").XacpxMcpServers | undefined;
     if (params.mcpCoordinatorSession) {
-      try {
-        const { buildRuntimeMcpServers } = await import("./runtime-mcp");
-        const servers = buildRuntimeMcpServers({
-          mcpCoordinatorSession: params.mcpCoordinatorSession,
-          mcpSourceHandle: params.mcpSourceHandle,
-        });
-        if (servers.length > 0) mcpServers = servers as unknown as import("./runtime-adapter").XacpxMcpServers;
-      } catch {}
+      const { buildRuntimeMcpServers } = await import("./runtime-mcp");
+      const servers = buildRuntimeMcpServers({
+        mcpCoordinatorSession: params.mcpCoordinatorSession,
+        mcpSourceHandle: params.mcpSourceHandle,
+      });
+      if (servers.length > 0) mcpServers = servers as unknown as import("./runtime-adapter").XacpxMcpServers;
+      else throw new RuntimeError("RUNTIME_INIT_FAILED", "MCP coordinator requires mcpServers but none were built");
     }
     state.adapter = createXacpxRuntimeAdapter({
       stateDir: params.stateDir,
