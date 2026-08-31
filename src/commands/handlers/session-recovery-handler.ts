@@ -9,12 +9,18 @@ import {
   isNpmAdapterRegistryNotFoundOutput,
 } from "../../adapters/adapter-registry";
 import { managedAdapterRegistryFromCommand } from "../../adapters/adapter-catalog";
-import { AcpxQueueOverflowError, isAcpxQueueMessageOverflow } from "../../transport/acpx-queue-overflow";
+import { AcpxQueueOverflowError } from "../../transport/acpx-queue-overflow";
 
 export function renderTransportError(session: ResolvedSession, error: unknown): RouterResponse {
-  if (error instanceof AcpxQueueOverflowError || isAcpxQueueMessageOverflow(error)) {
+  if (error instanceof AcpxQueueOverflowError) {
+    const confirmed = error.cleanup?.ownerTerminationSucceeded === true;
+    if (confirmed) {
+      return {
+        text: [t().recovery.queueOverflowWarning, t().recovery.queueOverflowHint].join("\n"),
+      };
+    }
     return {
-      text: [t().recovery.queueOverflowWarning, t().recovery.queueOverflowHint].join("\n"),
+      text: [t().recovery.queueOverflowWarning, t().recovery.queueOverflowUnconfirmedHint].join("\n"),
     };
   }
   const message = error instanceof Error ? error.message : String(error);

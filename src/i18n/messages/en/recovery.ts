@@ -22,6 +22,7 @@ export const recovery: RecoveryMessages = {
   // renderTransportError — queue overflow (soft warning)
   queueOverflowWarning: "⚠️ Output too large — handled gracefully",
   queueOverflowHint: "Ask the agent to summarize or send in smaller chunks, then retry. The session is ready for your next message.",
+  queueOverflowUnconfirmedHint: "Automatic cleanup could not be confirmed. Please send /cancel first, then retry; if the issue persists, recreate the session (/session new ...).",
 
   // renderSessionCreationError (AutoInstallFailedError)
   autoInstallHeadlineFixed: "⚠️ Auto-install ran but could not fix the session startup problem",

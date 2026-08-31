@@ -139,7 +139,7 @@ test("a non-npm backend 404 is not misreported as an adapter registry failure", 
     error,
   )).toThrow(error);
 });
-test("renderTransportError downgrades AcpxQueueOverflowError to soft warning (zh)", () => {
+test("renderTransportError downgrades AcpxQueueOverflowError to soft warning (zh) when cleanup is confirmed", () => {
   setLocale("zh");
   const error = new AcpxQueueOverflowError({
     cancelAttempted: true,
@@ -152,26 +152,51 @@ test("renderTransportError downgrades AcpxQueueOverflowError to soft warning (zh
   expect(reply.text).toBe([t().recovery.queueOverflowWarning, t().recovery.queueOverflowHint].join("\n"));
   expect(reply.text).not.toContain("Execution error");
   expect(reply.text).not.toContain("错误信息");
+  expect(reply.text).toContain("可直接继续");
 });
 
-test("renderTransportError downgrades AcpxQueueOverflowError to soft warning (en)", () => {
+test("renderTransportError downgrades AcpxQueueOverflowError to unconfirmed soft warning (en) when cleanup is not confirmed", () => {
   setLocale("en");
   const error = new AcpxQueueOverflowError("cleanup failed");
   const reply = renderTransportError(session(), error);
-  expect(reply.text).toBe([t().recovery.queueOverflowWarning, t().recovery.queueOverflowHint].join("\n"));
+  expect(reply.text).toBe([t().recovery.queueOverflowWarning, t().recovery.queueOverflowUnconfirmedHint].join("\n"));
   expect(reply.text).not.toContain("Execution error");
+  expect(reply.text).not.toContain("ready for your next message");
+  expect(reply.text).toContain("/cancel");
 });
 
-test("renderTransportError downgrades generic overflow code error (bridge path)", () => {
+test("renderTransportError downgrades AcpxQueueOverflowError without cleanup to unconfirmed warning (zh)", () => {
   setLocale("zh");
-  const error = Object.assign(new Error("ACPX_QUEUE_MESSAGE_OVERFLOW"), { code: "ACPX_QUEUE_MESSAGE_OVERFLOW" });
+  const error = new AcpxQueueOverflowError();
+  // no cleanup => ownerTerminationSucceeded undefined => unconfirmed
   const reply = renderTransportError(session(), error);
-  expect(reply.text).toContain(t().recovery.queueOverflowWarning);
+  expect(reply.text).toContain(t().recovery.queueOverflowUnconfirmedHint);
+  expect(reply.text).not.toContain(t().recovery.queueOverflowHint);
 });
 
-test("renderTransportError downgrades message buffer exceeded string", () => {
+test("renderTransportError does not soft-downgrade raw buffer overflow without cleanup (remains hard error)", () => {
   setLocale("en");
   const error = new Error("Message buffer exceeded 10485760 bytes");
+  expect(() => renderTransportError(session(), error)).toThrow(error);
+});
+
+test("renderTransportError does not soft-downgrade generic overflow code without typed error (remains hard)", () => {
+  setLocale("zh");
+  const error = Object.assign(new Error("ACPX_QUEUE_MESSAGE_OVERFLOW"), { code: "ACPX_QUEUE_MESSAGE_OVERFLOW" });
+  // This generic error is not an AcpxQueueOverflowError instance, so it stays hard.
+  // In production the bridge client reconstructs it as AcpxQueueOverflowError before it reaches here.
+  expect(() => renderTransportError(session(), error)).toThrow(error);
+});
+
+test("bridge-reconstructed AcpxQueueOverflowError with confirmed cleanup is still soft ready", () => {
+  setLocale("zh");
+  // Simulate bridge client reconstruction: new AcpxQueueOverflowError(cleanup)
+  const error = new AcpxQueueOverflowError({
+    cancelAttempted: true,
+    cancelSucceeded: true,
+    ownerTerminationAttempted: true,
+    ownerTerminationSucceeded: true,
+  });
   const reply = renderTransportError(session(), error);
-  expect(reply.text).toContain(t().recovery.queueOverflowWarning);
+  expect(reply.text).toContain(t().recovery.queueOverflowHint);
 });

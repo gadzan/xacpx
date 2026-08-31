@@ -76,3 +76,50 @@
 ## 风险与回退
 - 风险：用户误以为空成功。缓解：文案明确“未完整送达 + 如何重试”
 - 回退：注释掉 `renderTransportError` 新增分支即回到强提醒；或加 `config.transport.suppressQueueOverflow=false` 开关（本方案先不加开关，保持最小改动）
+
+---
+
+## Review Fixes（PR #317 REQUEST_CHANGES 2026-08-31）
+
+> 审阅结论：方向认可（降级放在 `renderTransportError` 用户面 + warning 日志正确），但把“识别到 overflow”和“已经安全收敛、可继续”混为一谈导致 2 Blocking + 1 High。
+
+### 1) Blocking — `acpx-cli` 路径被误软化（无 cleanup）
+
+- **问题**：`renderTransportError` 原直接认 `isAcpxQueueMessageOverflow(error)`，导致 `Message buffer exceeded …` 裸串在 `AcpxCliTransport`（无 `cleanupOverflowedOwner`）下也会被软化为“会话已就绪”。而 `BridgeRuntime` 之所以能 soft，是因为它先 `cancel + terminateAcpxQueueOwnerVerified` 再抛 `AcpxQueueOverflowError`。
+- **修复**：
+  - `src/transport/acpx-cli/acpx-cli-transport.ts` 新增 `cleanupOverflowedOwner()`（复用 bridge 同款：cancel → readSessionRecord → `terminateAcpxQueueOwnerVerified`，各步失败只记 diagnostic）并在 `prompt()` 外层 `catch` 中 `isAcpxQueueMessageOverflow → cleanup → throw AcpxQueueOverflowError`。
+  - `src/commands/handlers/session-recovery-handler.ts` 收窄软化条件：**仅** `error instanceof AcpxQueueOverflowError` 才 soft；裸 `isAcpxQueueMessageOverflow` 保持 hard（`throw` → `executionError`），直到对应 transport 完成 cleanup 并转成 typed error。
+
+### 2) Blocking — bridge cleanup 失败仍承诺 “session is ready”
+
+- **问题**：`cleanupOverflowedOwner()` 可能 `cancelSucceeded=false` 或 `ownerTerminationSucceeded=false`，原 soft 文案无条件返回“会话已就绪，可直接继续”，且 `bridge-server → bridge-client` 仅透传 `code + message`，丢失了 `cleanup` 结构，导致 daemon 侧无法判断是否真 ready，下一句可能与幽灵 turn 并发。
+- **修复**：
+  - **i18n**：`RecoveryMessages` 新增 `queueOverflowUnconfirmedHint`（zh: “自动清理未能确认完成，请先发送 /cancel 后重试…”；en: “Automatic cleanup could not be confirmed. Please send /cancel first…”），`queueOverflowHint` 保留仅用于 confirmed 场景。
+  - **协议**：`src/transport/acpx-bridge/acpx-bridge-protocol.ts` `BridgeErrorResponse.error` 新增可选 `queueOverflowCleanup?: AcpxQueueCleanupResult`；`src/bridge/bridge-server.ts` 在 `AcpxQueueOverflowError` 时附带 `...{ queueOverflowCleanup: error.cleanup }`；`src/transport/acpx-bridge/acpx-bridge-client.ts` 在 `code === ACPX_QUEUE_MESSAGE_OVERFLOW` 时重建 `AcpxQueueOverflowError(cleanup ?? message)`，保留 `ownerTerminationSucceeded` 语义跨进程。
+  - **用户面**：`renderTransportError` 对 `AcpxQueueOverflowError` 再分两档：
+    ```ts
+    const confirmed = error.cleanup?.ownerTerminationSucceeded === true;
+    return confirmed
+      ? { text: [warning, hint].join("\n") }                 // ready
+      : { text: [warning, unconfirmedHint].join("\n") };     // /cancel 提示，不承诺 ready
+    ```
+  - **可观测性**：`src/commands/handlers/session-handler.ts` `handlePromptWithSession` catch 中 `logger.warn` 分事件 `transport.queue_overflow_downgraded`（confirmed）vs `transport.queue_overflow_unconfirmed`，并透出 `confirmed` 字段。
+
+### 3) High — 为匹配 `ACPX_` 前缀把 `\b` 全删导致误命中
+
+- **问题**：将 `/\bQUEUE_MESSAGE_OVERFLOW\b/` 改为 `/QUEUE_MESSAGE_OVERFLOW/` 后，`NOT_QUEUE_MESSAGE_OVERFLOW_RETRY`、`QUEUE_MESSAGE_OVERFLOWED`、`SOME_QUEUE_EVENT_TOO_LARGE_BACKOFF` 等都会触发 `cleanupOverflowedOwner()`（cancel + terminate），属于破坏性误操作。
+- **修复**：
+  - 恢复原有带边界正则：`/\bQUEUE_EVENT_TOO_LARGE\b/`, `/\bQUEUE_MESSAGE_OVERFLOW\b/`。
+  - 新增精确 `ACPX_QUEUE_MESSAGE_OVERFLOW` 匹配：`/\bACPX_QUEUE_MESSAGE_OVERFLOW\b/` + `text === ACPX_QUEUE_MESSAGE_OVERFLOW_CODE`，并在 `isAcpxQueueMessageOverflow` 中按 `text === code || ACPX_PATTERN.test(text) || QUEUE_…` 顺序判断。
+  - `renderTransportError` 不再依赖 `isAcpxQueueMessageOverflow` 做软化判断，仅依赖 typed `AcpxQueueOverflowError`（其 `code` 已精确），避免文本误分类触发 UI 降级。
+  - 单测：`tests/unit/transport/acpx-queue-overflow.test.ts` 补 `recognizes exact ACPX_QUEUE_MESSAGE_OVERFLOW code` + `does not match overflow substrings with extra prefix/suffix`（三例 negative）+ `still matches buffer overflow with surrounding text`。
+
+### 回归测试补齐（PR 建议 5 项）
+
+1. `AcpxCliTransport` raw buffer overflow：已加 `cleanupOverflowedOwner`，`prompt` 溢出后才抛 typed error，`session-recovery-handler` 仅对 typed 且 confirmed 软化。
+2. `cleanup {cancelSucceeded:false, ownerTerminationSucceeded:false}`：`renderTransportError` 返回 `queueOverflowUnconfirmedHint`（含 `/cancel`），绝不返回 ready 文案。
+3. bridge cleanup 成功路径：`bridge-server → bridge-client` 重建后仍为 confirmed，`session-handler` 记 `transport.queue_overflow_downgraded` 并返回 ready。
+4. `ACPX_QUEUE_MESSAGE_OVERFLOW` 精确匹配通过，`...OVERFLOWED`/`...RETRY` 等带前后缀的相似串不触发（见上）。
+5. `handlePromptWithSession` 级链路：`tests/unit/commands/handlers/session-handler.test.ts` 新增 3 例——confirmed→ready+warn、unconfirmed→unconfirmed+warn、raw buffer→不 warn 且保持 hard throw。
+
+实现后 `npx tsc --noEmit`、新增单测（`acpx-queue-overflow` 3 新增、`session-recovery-handler` 6、`session-handler` 3、`bridge-server` 更新、`bridge-client` 更新）及 `bun run build` 均通过。

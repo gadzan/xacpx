@@ -1,10 +1,10 @@
 export const ACPX_QUEUE_MESSAGE_OVERFLOW_CODE = "ACPX_QUEUE_MESSAGE_OVERFLOW" as const;
 
 const QUEUE_BUFFER_OVERFLOW_PATTERN = /Message buffer exceeded \d+ bytes/i;
-const QUEUE_EVENT_TOO_LARGE_PATTERN = /QUEUE_EVENT_TOO_LARGE/i;
-const QUEUE_MESSAGE_OVERFLOW_PATTERN = /QUEUE_MESSAGE_OVERFLOW/i;
+const QUEUE_EVENT_TOO_LARGE_PATTERN = /\bQUEUE_EVENT_TOO_LARGE\b/i;
+const QUEUE_MESSAGE_OVERFLOW_PATTERN = /\bQUEUE_MESSAGE_OVERFLOW\b/i;
+const ACPX_QUEUE_OVERFLOW_CODE_PATTERN = /\bACPX_QUEUE_MESSAGE_OVERFLOW\b/i;
 const MAX_CLEANUP_DIAGNOSTIC_LENGTH = 512;
-
 export interface AcpxQueueCleanupResult {
   cancelAttempted: boolean;
   cancelSucceeded: boolean;
@@ -43,9 +43,12 @@ export function isAcpxQueueMessageOverflow(error: unknown): boolean {
 
   visit(error, 0);
   return diagnostics.some((text) =>
+    text === ACPX_QUEUE_MESSAGE_OVERFLOW_CODE ||
+    ACPX_QUEUE_OVERFLOW_CODE_PATTERN.test(text) ||
     QUEUE_BUFFER_OVERFLOW_PATTERN.test(text) ||
     QUEUE_EVENT_TOO_LARGE_PATTERN.test(text) ||
-    QUEUE_MESSAGE_OVERFLOW_PATTERN.test(text));
+    QUEUE_MESSAGE_OVERFLOW_PATTERN.test(text),
+  );
 }
 
 export class AcpxQueueOverflowError extends Error {

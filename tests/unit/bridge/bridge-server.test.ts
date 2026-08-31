@@ -1633,7 +1633,7 @@ test("serializes queue overflow with a stable error code and no giant diagnostic
       },
     })),
   ).resolves.toBe(
-    '{"id":"queue-overflow","ok":false,"error":{"code":"ACPX_QUEUE_MESSAGE_OVERFLOW","message":"Agent emitted an oversized ACP event. Cleanup of the running agent turn could not be confirmed. The prompt was not retried automatically. Cleanup diagnostic: owner termination failed: lock remained live"}}\n',
+    '{"id":"queue-overflow","ok":false,"error":{"code":"ACPX_QUEUE_MESSAGE_OVERFLOW","message":"Agent emitted an oversized ACP event. Cleanup of the running agent turn could not be confirmed. The prompt was not retried automatically. Cleanup diagnostic: owner termination failed: lock remained live","queueOverflowCleanup":{"cancelAttempted":false,"cancelSucceeded":false,"ownerTerminationAttempted":false,"ownerTerminationSucceeded":false,"diagnostic":"owner termination failed: lock remained live"}}}\n',
   );
 });
 

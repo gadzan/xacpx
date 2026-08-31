@@ -1,6 +1,12 @@
 import { expect, test, beforeEach } from "bun:test";
-import { handleCancel, handlePrompt, handleReplyModeShow, handleSessionUse, handleSessions } from "../../../../src/commands/handlers/session-handler";
+import { handleCancel, handlePrompt, handlePromptWithSession, handleReplyModeShow, handleSessionUse, handleSessions } from "../../../../src/commands/handlers/session-handler";
 import { setLocale, t } from "../../../../src/i18n";
+import { AcpxQueueOverflowError } from "../../../../src/transport/acpx-queue-overflow";
+import { renderTransportError, tryRecoverMissingSession } from "../../../../src/commands/handlers/session-recovery-handler";
+import type { ResolvedSession } from "../../../../src/transport/types";
+import type { SessionHandlerContext } from "../../../../src/commands/handlers/session-handler";
+import type { SessionRecoveryOps } from "../../../../src/commands/router-types";
+import type { AppConfig } from "../../../../src/config/types";
 
 beforeEach(() => {
   setLocale("zh");
@@ -394,4 +400,109 @@ test("handleReplyModeShow shows session override as effective over channel defau
   const result = await handleReplyModeShow(context, "weixin:u");
   const s = t().session;
   expect(result.text).toContain(s.replyModeEffective("stream"));
+});
+
+test("handlePromptWithSession downgrades confirmed overflow to soft ready warning and logs warn", async () => {
+  const warns: Array<{ event: string; ctx: unknown }> = [];
+  const session = {
+    alias: "review",
+    internalAlias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "sess-1",
+    archived: false,
+    replyMode: undefined,
+  } as unknown as ResolvedSession;
+  const error = new AcpxQueueOverflowError({
+    cancelAttempted: true,
+    cancelSucceeded: true,
+    ownerTerminationAttempted: true,
+    ownerTerminationSucceeded: true,
+    diagnostic: "ok",
+  });
+  const context = {
+    sessions: { setArchived: async () => {} },
+    lifecycle: { checkTransportSession: async () => true, ensureTransportSession: async () => {} },
+    interaction: {
+      promptTransportSession: async () => { throw error; },
+    },
+    recovery: { tryRecoverMissingSession: (s: unknown, e: unknown) => tryRecoverMissingSession({} as unknown as SessionRecoveryOps, s as unknown as ResolvedSession, e), renderTransportError },
+    config: undefined as unknown as AppConfig,
+    logger: {
+      info: async () => {},
+      warn: async (event: string, _msg: string, ctx: unknown) => { warns.push({ event, ctx }); },
+      error: async () => {},
+      debug: async () => {},
+    },
+    quota: undefined,
+    orchestration: undefined,
+  } as unknown as SessionHandlerContext;
+  const result = await handlePromptWithSession(context, session, "weixin:a:u", "hi");
+  expect(result.text).toBe([t().recovery.queueOverflowWarning, t().recovery.queueOverflowHint].join("\n"));
+  expect(warns.some((w) => w.event === "transport.queue_overflow_downgraded" && (w.ctx as unknown as { confirmed?: boolean })?.confirmed === true)).toBe(true);
+});
+
+test("handlePromptWithSession downgrades unconfirmed overflow to soft unconfirmed warning and logs unconfirmed", async () => {
+  const warns: Array<{ event: string; ctx: unknown }> = [];
+  const session = {
+    alias: "review",
+    internalAlias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "sess-1",
+    archived: false,
+    replyMode: undefined,
+  } as unknown as ResolvedSession;
+  const error = new AcpxQueueOverflowError("cleanup failed");
+  const context = {
+    sessions: { setArchived: async () => {} },
+    lifecycle: { checkTransportSession: async () => true, ensureTransportSession: async () => {} },
+    interaction: {
+      promptTransportSession: async () => { throw error; },
+    },
+    recovery: { tryRecoverMissingSession: (s: unknown, e: unknown) => tryRecoverMissingSession({} as unknown as SessionRecoveryOps, s as unknown as ResolvedSession, e), renderTransportError },
+    config: undefined as unknown as AppConfig,
+    logger: {
+      info: async () => {},
+      warn: async (event: string, _msg: string, ctx: unknown) => { warns.push({ event, ctx }); },
+      error: async () => {},
+      debug: async () => {},
+    },
+    quota: undefined,
+    orchestration: undefined,
+  } as unknown as SessionHandlerContext;
+  const result = await handlePromptWithSession(context, session, "weixin:a:u", "hi");
+  expect(result.text).toBe([t().recovery.queueOverflowWarning, t().recovery.queueOverflowUnconfirmedHint].join("\n"));
+  expect(warns.some((w) => w.event === "transport.queue_overflow_unconfirmed" && (w.ctx as unknown as { confirmed?: boolean })?.confirmed === false)).toBe(true);
+});
+
+test("handlePromptWithSession does not downgrade raw buffer overflow without typed error", async () => {
+  const session = {
+    alias: "review",
+    internalAlias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "sess-1",
+    archived: false,
+    replyMode: undefined,
+  } as unknown as ResolvedSession;
+  const error = new Error("Message buffer exceeded 10485760 bytes");
+  const context = {
+    sessions: { setArchived: async () => {} },
+    lifecycle: { checkTransportSession: async () => true, ensureTransportSession: async () => {} },
+    interaction: {
+      promptTransportSession: async () => { throw error; },
+    },
+    recovery: { tryRecoverMissingSession: (s: unknown, e: unknown) => tryRecoverMissingSession({} as unknown as SessionRecoveryOps, s as unknown as ResolvedSession, e), renderTransportError },
+    config: undefined as unknown as AppConfig,
+    logger: {
+      info: async () => {},
+      warn: async () => { throw new Error("should not warn for raw buffer"); },
+      error: async () => {},
+      debug: async () => {},
+    },
+    quota: undefined,
+    orchestration: undefined,
+  } as unknown as SessionHandlerContext;
+  await expect(handlePromptWithSession(context, session, "weixin:a:u", "hi")).rejects.toThrow(error);
 });

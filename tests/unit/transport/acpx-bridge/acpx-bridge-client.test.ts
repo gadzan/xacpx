@@ -16,6 +16,7 @@ import {
 import { encodeBridgeRequest } from "../../../../src/transport/acpx-bridge/acpx-bridge-protocol";
 import { PromptCommandError } from "../../../../src/transport/prompt-output";
 import { MissingOptionalDepError } from "../../../../src/recovery/errors";
+import { AcpxQueueOverflowError, ACPX_QUEUE_MESSAGE_OVERFLOW_CODE } from "../../../../src/transport/acpx-queue-overflow";
 import { CommandTimeoutError } from "../../../../src/transport/command-timeouts";
 import { MessageInjectionError } from "../../../../src/transport/message-injection";
 
@@ -67,10 +68,9 @@ test("preserves a stable bridge error code on generic errors", async () => {
     await pending;
     throw new Error("expected rejection");
   } catch (error) {
-    expect(error).toMatchObject({
-      code: "ACPX_QUEUE_MESSAGE_OVERFLOW",
-      message: "oversized ACP event",
-    });
+    expect(error).toBeInstanceOf(AcpxQueueOverflowError);
+    expect((error as unknown as { code: string }).code).toBe(ACPX_QUEUE_MESSAGE_OVERFLOW_CODE);
+    expect((error as unknown as Error).message).toContain("oversized ACP event");
   }
 });
 

@@ -258,7 +258,7 @@ export interface RecoveryMessages {
   // renderTransportError — queue overflow (soft warning, not executionError)
   queueOverflowWarning: string;
   queueOverflowHint: string;
-
+  queueOverflowUnconfirmedHint: string;
   // renderSessionCreationError (AutoInstallFailedError)
   autoInstallHeadlineFixed: string;
   autoInstallHeadlineFailed: string;
