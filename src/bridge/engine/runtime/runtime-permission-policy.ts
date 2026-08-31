@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 export interface XacpxPermissionPolicy {
   autoApprove?: string[];
   autoDeny?: string[];
@@ -9,7 +11,7 @@ const VALID_ACTIONS = new Set(["approve", "deny", "escalate"]);
 
 function isNonEmptyStringArray(value: unknown): value is string[] {
   if (!Array.isArray(value)) return false;
-  if (value.length === 0) return true; // empty is allowed? spec says must be non-empty string[] if present, but we allow empty as valid (no rules)
+  if (value.length === 0) return false;
   for (const v of value) {
     if (typeof v !== "string" || v.length === 0) return false;
   }
@@ -17,12 +19,11 @@ function isNonEmptyStringArray(value: unknown): value is string[] {
 }
 
 export function parseXacpxPermissionPolicy(input: unknown): XacpxPermissionPolicy {
-  if (input === undefined || input === null) return {};
+  if (input === undefined) return {};
+  if (input === null) throw new Error("permission policy must be a JSON object (got null)");
   if (typeof input === "string") {
-    // Inline JSON case — if string is not JSON, treat as opaque legacy placeholder (e.g. "autoApprove:read-files" in tests)
-    // Real production policies are JSON objects; placeholder strings are tolerated for backward test compat.
     const trimmed = input.trim();
-    if (trimmed.length === 0) return {};
+    if (trimmed.length === 0) throw new Error("permission policy string must not be empty");
     if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
       try {
         const parsed = JSON.parse(input);
@@ -31,8 +32,15 @@ export function parseXacpxPermissionPolicy(input: unknown): XacpxPermissionPolic
         throw new Error(`invalid permission policy JSON: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
-    // Opaque string placeholder — treat as empty policy (no rules) for resolver, but preserve original string in worker
-    return {};
+    // File path case: try to read file synchronously (fail closed if unreadable)
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const content = readFileSync(trimmed, "utf8");
+      const parsed = JSON.parse(content);
+      return parseXacpxPermissionPolicy(parsed);
+    } catch (err) {
+      throw new Error(`invalid permission policy file "${trimmed}": ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
   if (typeof input !== "object") throw new Error("permission policy must be a JSON object");
   const rec = input as Record<string, unknown>;

@@ -127,11 +127,17 @@ export class RuntimeQueueStore {
     }
   }
 
-  async enqueue(logicalSessionId: string, input: { messageId: string; text: string; mode: "queue" | "auto" }): Promise<QueueEnqueueResult> {
+  async enqueue(logicalSessionId: string, input: { messageId: string; text: string; mode: "queue" | "auto" }, opts?: { isDeleting?: (key: string) => boolean; isCoolPending?: (key: string) => boolean }): Promise<QueueEnqueueResult> {
     if (!input.messageId || typeof input.messageId !== "string") {
       throw new RuntimeError("RUNTIME_QUEUE_CONFLICT", "messageId must be a non-empty string");
     }
     return this.withLock(logicalSessionId, async () => {
+      if (opts?.isDeleting?.(logicalSessionId)) {
+        throw new RuntimeError("RUNTIME_QUEUE_CONFLICT", `session "${logicalSessionId}" is being deleted; new messages rejected`);
+      }
+      if (opts?.isCoolPending?.(logicalSessionId)) {
+        throw new RuntimeError("RUNTIME_QUEUE_CONFLICT", `session "${logicalSessionId}" is shutting down; new messages rejected`);
+      }
       const existing = await this.load(logicalSessionId);
       const items = existing?.items ?? [];
       const dup = items.find((it) => it.messageId === input.messageId);
@@ -213,5 +219,4 @@ export class RuntimeQueueStore {
       .map((f) => decodeURIComponent(f.slice(0, -".json".length)));
   }
 
-  async getQueueDir(): Promise<string> { return this.queueDir; }
 }

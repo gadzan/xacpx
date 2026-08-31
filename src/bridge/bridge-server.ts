@@ -91,6 +91,11 @@ export class BridgeServer {
 
   private readonly engines: BridgeEngine;
 
+  async primeRuntimeQueues(sessions: import("./engine/bridge-engine").EngineSessionInput[] = []): Promise<void> {
+    const rt = (this.engines as unknown as { primeRuntimeQueues?: (s: unknown[]) => Promise<void> });
+    if (typeof rt.primeRuntimeQueues === "function") await rt.primeRuntimeQueues(sessions as unknown[]);
+  }
+
   constructor(runtime: BridgeRuntime | EngineRouter, private readonly daemonRequestTimeoutMs = 10_000) {
     // EngineRouter is the single routing entrypoint. A raw BridgeRuntime
     // (legacy tests / bridge-main) is wrapped as CliEngine behind a fresh

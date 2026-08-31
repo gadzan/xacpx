@@ -110,11 +110,7 @@ async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: 
   if (!state.adapter || !state.handle) {
     let initialPolicy: import("./runtime-permission-policy").XacpxPermissionPolicy | undefined;
     if (params.permissionPolicy !== undefined) {
-      try {
-        initialPolicy = parseXacpxPermissionPolicy(params.permissionPolicy);
-      } catch {
-        initialPolicy = undefined;
-      }
+      initialPolicy = parseXacpxPermissionPolicy(params.permissionPolicy);
     }
     const initialGen = typeof params.permissionGeneration === "number" ? params.permissionGeneration : 0;
     const initialSnapshot: RuntimePermissionConfig = {

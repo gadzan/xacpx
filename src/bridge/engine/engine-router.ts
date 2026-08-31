@@ -172,6 +172,11 @@ export class EngineRouter implements BridgeEngine {
 
     return {};
   }
+  async primeRuntimeQueues(sessions: import("./bridge-engine").EngineSessionInput[]): Promise<void> {
+    const rt = this.runtime as unknown as { primeQueuesFromCatalog?: (s: unknown[]) => Promise<void> } | undefined;
+    if (rt?.primeQueuesFromCatalog) await rt.primeQueuesFromCatalog(sessions as unknown[]);
+  }
+
   async shutdown(): Promise<Record<string, never>> {
     // Plan §18: attempt cleanup on both CLI and Runtime so all resources are
     // addressed; fail closed by propagating any cleanup failure.

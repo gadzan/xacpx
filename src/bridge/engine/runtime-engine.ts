@@ -2,6 +2,8 @@ import { access, readdir, readFile, rename, unlink, writeFile } from "node:fs/pr
 import { statSync } from "node:fs";
 import { join, resolve as resolvePath, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
+import { coreHomeDir } from "../../runtime/core-home";
 
 import { deleteAcpxSessionFiles, resolveAcpxHomeDir } from "../../transport/acpx-session-files";
 import type {
@@ -424,20 +426,16 @@ export class RuntimeEngine implements BridgeEngine {
       this.manager = new RuntimeWorkerManager({
         entryPath: entry,
         clientDeps: options.workerClientDeps,
-        // Durable worker-ownership fences (plan §43 / G10). Fencing needs a
-        // durable state root: it is on by default when stateDir is provided
-        // (the production shape — acpx store + fences share the root) and
-        // off for engines without one (in-memory only, tests).
-        fenceDir: options.fenceDir ?? (options.stateDir ? (): string => join(this.runtimeStateRoot(), "worker-fences") : undefined),
+        fenceDir: options.fenceDir ?? join(this.xacpxRuntimeDir(), "worker-fences"),
       });
     }
     if (options.queueDir) {
       this.queueStore = new RuntimeQueueStore(options.queueDir);
-    } else if (options.stateDir) {
+    } else {
       try {
-        this.queueStore = new RuntimeQueueStore(join(this.runtimeStateRoot(), "runtime-queue"));
+        this.queueStore = new RuntimeQueueStore(join(this.xacpxRuntimeDir(), "runtime-queue"));
       } catch {
-        // runtimeStateRoot throws if stateDir malformed — keep queueStore undefined and fail closed on enqueue
+        // keep queueStore undefined and fail closed on enqueue if xacpx runtime dir unavailable
       }
     }
   }
@@ -446,13 +444,17 @@ export class RuntimeEngine implements BridgeEngine {
     return input.logicalSessionId ?? input.name;
   }
 
+  private xacpxRuntimeDir(): string {
+    return join(coreHomeDir(homedir()), "runtime");
+  }
+
   private sessionsDir(): string {
     return this.options.stateDir ?? join(resolveAcpxHomeDir(), ".acpx", "sessions");
   }
 
   private queueDir(): string {
     if (this.options.queueDir) return this.options.queueDir;
-    return join(this.runtimeStateRoot(), "runtime-queue");
+    return join(this.xacpxRuntimeDir(), "runtime-queue");
   }
 
   private getQueueStore(): RuntimeQueueStore {
@@ -613,16 +615,33 @@ export class RuntimeEngine implements BridgeEngine {
       // Mark active turn so concurrent prompt/inject queue correctly and TTL does not race
       this.activeTurns.add(key);
       let turnError: unknown;
+      let isTerminal = false;
       try {
         await this.executeRuntimeTurn(input, head.text, {});
+        isTerminal = true;
       } catch (err) {
         turnError = err;
-        // Terminal failure still dequeues (no retry) — matches CLI drained-turn semantics where failed still advances queue
-        // RUNTIME_TURN_CANCELLED also dequeues head — cancelled turn does not retry head
+        // Only terminal turn results should dequeue (no acked loss). Crash/ambiguous (no terminal result) must keep head for replay.
+        if (err instanceof RuntimeError) {
+          const code = err.code;
+          if (code === "RUNTIME_TURN_CANCELLED" || code === "RUNTIME_TURN_FAILED" || code === "RUNTIME_PERMISSION_DENIED" || code === "RUNTIME_SESSION_MISSING") {
+            isTerminal = true;
+          } else {
+            isTerminal = false;
+          }
+        } else {
+          // Unknown error type -> treat as non-terminal (conservative, keep for replay)
+          isTerminal = false;
+        }
       } finally {
         this.activeTurns.delete(key);
       }
-      // Atomically remove head from journal ONLY after turn terminal settlement (at-least-once, possible replay on crash before remove)
+      if (!isTerminal) {
+        // Worker crash before/during turn without terminal result — keep head for at-least-once replay, do not dequeue
+        // Return so next drain will be retried after worker recovery or next enqueue; head remains on disk
+        return;
+      }
+      // Atomically remove head from journal ONLY after terminal settlement (at-least-once, possible replay on crash before remove)
       try {
         const removed = await store.dequeueHead(key);
         // If dequeue returned undefined but we expected head, journal may have been concurrently cleared (e.g. delete) — stop
@@ -633,8 +652,6 @@ export class RuntimeEngine implements BridgeEngine {
         // Dequeue persist failure -> head remains on disk for retry on next drain, do not lose acked message
         throw toStableRuntimeError(err);
       }
-      // Continue to next head
-      // If turnError was a crash that left worker failed, next loop will re-ensure worker via executeRuntimeTurn
     }
   }
   private async ensureWorker(input: EngineSessionInput): Promise<RuntimeWorkerClient> {
@@ -974,23 +991,17 @@ if (this.activeTurns.has(key) || existingClient.lifecycle === "busy" || existing
       );
     }
     const mode: "queue" | "auto" = input.mode === "auto" ? "auto" : "queue";
-    // Auto resolves to queue in PR6 (steer disabled)
-    if (this.deleting.has(key)) {
-      throw new RuntimeError("RUNTIME_QUEUE_CONFLICT", `session "${key}" is being deleted; new messages rejected`);
-    }
-    if (this.coolPending.has(key)) {
-      throw new RuntimeError("RUNTIME_QUEUE_CONFLICT", `session "${key}" is shutting down; new messages rejected`);
-    }
-    // Ensure we have a catalog entry for this session so drain can rebuild worker with correct identity
-    // If no catalog, require at least name/cwd/agent from input — for tests we allow minimal input
+    // Ensure catalog for drain
     if (!this.sessionCatalog.has(key)) {
       this.sessionCatalog.set(key, { name: input.logicalSessionId ? key : (input as unknown as EngineSessionInput).name ?? key, logicalSessionId: input.logicalSessionId ?? key, cwd: (input as unknown as EngineSessionInput).cwd, agent: (input as unknown as EngineSessionInput).agent } as EngineSessionInput);
     }
     const catalogInput = this.sessionCatalog.get(key)!;
     const store = this.getQueueStore();
-    // Enqueue transaction: load -> duplicate check -> limit -> append -> atomic persist -> verify -> return queued
-    const receipt = await store.enqueue(key, { messageId: input.messageId, text: input.text, mode });
-    // Kick drain in background — if a direct prompt is active, drainLoop will wait
+    // Enqueue inside store lock with deleting/coolPending check atomically (no race with delete)
+    const receipt = await store.enqueue(key, { messageId: input.messageId, text: input.text, mode }, {
+      isDeleting: (k) => this.deleting.has(k),
+      isCoolPending: (k) => this.coolPending.has(k),
+    });
     this.kickDrain(catalogInput).catch(() => {});
     return receipt;
   }
@@ -1111,8 +1122,7 @@ if (this.activeTurns.has(key) || existingClient.lifecycle === "busy" || existing
     // 2. If no record exists on disk or memory, idempotent success (G4).
     if (!recordId) {
       this.recordIds.delete(key);
-      // Even without record, clean up queue journal if it exists (pending queue for not-yet-created session)
-      try { await this.getQueueStore().removeJournal(key); } catch {}
+      await this.getQueueStore().removeJournal(key);
       this.deleting.delete(key);
       this.sessionCatalog.delete(key);
       return {};
@@ -1162,18 +1172,13 @@ if (this.activeTurns.has(key) || existingClient.lifecycle === "busy" || existing
     this.coolPending.delete(key);
 
     try {
-      // 5. Strict deletion with post-verification and retry.
       await this.deleteRecordFilesStrict(recordId);
-      // Clean up tombstone & memory cache ONLY after all artifacts are verified gone (G4).
       await removeTombstoneStrict(sessionsDir, safeId);
       this.recordIds.delete(key);
-      // 6. PR6: only after record deletion verified successful, delete runtime queue journal
-      await this.getQueueStore().removeJournal(key).catch(() => {});
+      // 6. PR6: only after record deletion verified successful, delete runtime queue journal fail-closed
+      await this.getQueueStore().removeJournal(key);
       this.sessionCatalog.delete(key);
     } catch (error) {
-      // Deletion did not complete (e.g. stubborn stream file or tombstone unlink failure).
-      // Keep memory cache AND tombstone on disk so retries still know recordId!
-      // Queue journal is NOT removed if delete failed (tombstone retry still needs consistent ownership)
       throw error;
     } finally {
       this.deleting.delete(key);

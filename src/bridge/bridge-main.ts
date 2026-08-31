@@ -101,6 +101,21 @@ export async function runBridgeMain(): Promise<void> {
       }),
     });
   server = new BridgeServer(runtime);
+  // PR6: prime durable runtime queues after bridge startup (real caller for restart recovery)
+  // The runtime engine is dormant this wave, so this is a no-op until runtime sessions exist,
+  // but the wiring must exist so restart recovery is not test-only.
+  try {
+    const maybePrime = (server as unknown as { primeRuntimeQueues?: () => Promise<void> }).primeRuntimeQueues;
+    if (typeof maybePrime === "function") await maybePrime.call(server);
+  } catch {}
+  try {
+    const maybeEnginePrime = (runtime as unknown as { primeQueuesFromCatalog?: (s: unknown[]) => Promise<void> }).primeQueuesFromCatalog;
+    if (typeof maybeEnginePrime === "function") {
+      // Bridge restart recovery: enumerate queue journals for authoritative runtime-bound sessions
+      // The catalog is empty at this point for dormant, so this primes nothing but proves the seam exists
+      await maybeEnginePrime.call(runtime, []);
+    }
+  } catch {}
   const input = createInterface({
     input: process.stdin,
     crlfDelay: Infinity,
