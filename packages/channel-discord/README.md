@@ -82,7 +82,7 @@ Threads are **always independent sessions** (`t:<threadId>`). No `Map<chatKey, t
 
 ### Consumer lock
 
-Each bot token allows exactly one Gateway session. The channel provides `createConsumerLock()`, a file lock at `~/.xacpx/runtime/discord-consumer-<fingerprint>.lock.json` where `<fingerprint>` is a truncated SHA-256 of the enabled `accountId:token` set. A second `xacpx` process started with the same token(s) is rejected; processes running different bot tokens use distinct lock files and coexist.
+Each bot token allows exactly one Gateway session. The channel provides `createConsumerLock()`, a composite of **one file lock per enabled token** at `~/.xacpx/runtime/discord-consumer-<fingerprint>.lock.json`, where `<fingerprint>` is a truncated SHA-256 of the **token itself** (never the `accountId`, never the token plaintext). A process holding N distinct tokens acquires N locks; if any one conflicts, the locks already taken are rolled back and startup is rejected. Consequence: any overlap in token sets contends — the identical set, a superset like `{X,Y}` vs `{X}`, and the same token under a different `accountId` are all blocked; only fully disjoint token sets coexist.
 
 ### Security
 

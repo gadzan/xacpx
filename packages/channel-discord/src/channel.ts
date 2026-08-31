@@ -187,15 +187,27 @@ export class DiscordChannel implements MessageChannelRuntime {
   }
 
   createConsumerLock(options?: ConsumerLockOptions): ConsumerLock {
-    // Lock file is scoped by the enabled token set (F6): same tokens -> same
-    // file -> second process rejected; different tokens -> distinct files, so
-    // independent bots coexist. The fingerprint is a truncated sha256 over
-    // accountId:token pairs — stable, non-secret, safe to use as a file name.
-    const fingerprint = discordAccountsLockFingerprint(this.config.accounts);
-    return createDiscordConsumerLock({
-      ...options,
-      lockFilePath: options?.lockFilePath ?? join(coreHomeDir(homedir()), "runtime", `discord-consumer-${fingerprint}.lock.json`),
-    });
+    // One lock file per enabled token (F6: a Discord token allows exactly one
+    // Gateway session). Files are named by sha256(token) alone — accountId is
+    // NOT part of the name, so re-homing a token under a different accountId
+    // still contends, and two processes whose token sets intersect at all
+    // cannot both start that shared token. A process holding N distinct tokens
+    // acquires N locks and rolls them back if any one conflicts. The core
+    // injects a canonical lockFilePath (cli.ts); only its directory is used as
+    // the anchor, the per-token file names live beside it.
+    const dir = options?.lockFilePath
+      ? dirname(options.lockFilePath)
+      : join(coreHomeDir(homedir()), "runtime");
+    const lockPaths = [...new Set(
+      this.config.accounts
+        .filter((account) => account.enabled && account.configured)
+        .map((account) => account.token),
+    )]
+      .map((token) => join(dir, `discord-consumer-${discordTokenLockFingerprint(token)}.lock.json`))
+      .sort();
+    return composeConsumerLocks(
+      lockPaths.map((lockFilePath) => createDiscordConsumerLock({ ...options, lockFilePath })),
+    );
   }
 
   configureOrchestration(callbacks: OrchestrationDeliveryCallbacks): void {
@@ -1041,17 +1053,58 @@ export class DiscordChannel implements MessageChannelRuntime {
 }
 
 // Minimal consumer lock for Discord: one Gateway session per token (F6).
-// The lock file name embeds a fingerprint of the enabled accountId:token set,
-// so two processes running the SAME tokens contend (second is rejected), while
-// processes with different tokens use distinct files and coexist. The lock is
-// lockId-gated and PID-reuse hardened, so a live holder is never mistaken for
-// a stale one.
-function discordAccountsLockFingerprint(accounts: DiscordResolvedAccountConfig[]): string {
-  const entries = accounts
-    .filter((account) => account.enabled && account.configured)
-    .map((account) => `${account.accountId}:${account.token}`)
-    .sort();
-  return createHash("sha256").update(entries.join("\n")).digest("hex").slice(0, 16);
+// createConsumerLock() maps each distinct enabled token to its own lock file
+// (named by sha256(token), never the token or accountId) and composes them.
+// Each lock is lockId-gated and PID-reuse hardened, so a live holder is never
+// mistaken for a stale one.
+function discordTokenLockFingerprint(token: string): string {
+  return createHash("sha256").update(token).digest("hex").slice(0, 16);
+}
+
+/**
+ * Aggregate several single-file locks behind the ConsumerLock contract:
+ * acquire runs them in order and releases every lock already held when one
+ * conflicts (then rethrows), so a rejected start never leaves a partial token
+ * set locked; release drops all held locks. With zero locks this is a no-op —
+ * no enabled token means there is no Gateway session to guard.
+ */
+function composeConsumerLocks(locks: ConsumerLock[]): ConsumerLock {
+  let held: ConsumerLock[] = [];
+  return {
+    async acquire(meta: ConsumerLockMetadata): Promise<void> {
+      held = [];
+      for (const lock of locks) {
+        try {
+          await lock.acquire(meta);
+        } catch (error) {
+          const acquired = held;
+          held = [];
+          for (const done of acquired) {
+            try {
+              await done.release();
+            } catch {
+              // Rollback must not mask the original conflict.
+            }
+          }
+          throw error;
+        }
+        held.push(lock);
+      }
+    },
+    async release(): Promise<void> {
+      const acquired = held;
+      held = [];
+      let releaseError: unknown;
+      for (const done of acquired) {
+        try {
+          await done.release();
+        } catch (error) {
+          releaseError ??= error;
+        }
+      }
+      if (releaseError) throw releaseError;
+    },
+  };
 }
 
 function createDiscordConsumerLock(options: ConsumerLockOptions = {}): ConsumerLock {
