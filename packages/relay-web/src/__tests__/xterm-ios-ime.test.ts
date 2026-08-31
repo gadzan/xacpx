@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
+  applyXtermIosImeInsertText,
   patchXtermIosImeInsertText,
   shouldAcceptXtermInsertText,
   stockXtermDropsComposedInsertText,
+  XTERM_IOS_IME_PATCH_FAILED,
   type XtermIosImeCore,
 } from "../lib/xterm-ios-ime";
 
@@ -121,6 +123,20 @@ describe("xterm iOS IME insertText gate (#5614 backport)", () => {
     expect(patchXtermIosImeInsertText({})).toBe(false);
     expect(patchXtermIosImeInsertText({ _core: {} })).toBe(false);
   });
+
+  it("applyXtermIosImeInsertText throws and logs when the private surface is missing", () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(() => applyXtermIosImeInsertText({})).toThrow(XTERM_IOS_IME_PATCH_FAILED);
+      expect(err).toHaveBeenCalledWith(XTERM_IOS_IME_PATCH_FAILED);
+      expect(() => applyXtermIosImeInsertText({ _core: {} })).toThrow(XTERM_IOS_IME_PATCH_FAILED);
+      const core = makeCore();
+      applyXtermIosImeInsertText({ _core: core });
+      applyXtermIosImeInsertText({ _core: core }); // already patched → success, not a throw
+    } finally {
+      err.mockRestore();
+    }
+  });
 });
 
 describe("real @xterm/xterm@6.0.0", () => {
@@ -221,5 +237,33 @@ describe("real @xterm/xterm@6.0.0", () => {
     textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
     await new Promise((r) => setTimeout(r, 0));
     expect(received).toEqual(["你好"]);
+  });
+
+  it("adapter order (construct → patch → open) delivers iOS insertText and still commits composition once", async () => {
+    const { Terminal } = await import("@xterm/xterm");
+    const host = document.createElement("div");
+    host.style.width = "800px";
+    host.style.height = "400px";
+    document.body.appendChild(host);
+    const t = new Terminal({ cols: 80, rows: 24 });
+    term = t;
+    applyXtermIosImeInsertText(t);
+    const received: string[] = [];
+    t.onData((d) => { received.push(d); });
+    t.open(host);
+    const textarea = host.querySelector("textarea");
+    if (!textarea) throw new Error("xterm helper textarea missing");
+
+    fireIosComposedInsertText(textarea, "，");
+    expect(received).toEqual(["，"]);
+
+    textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    textarea.dispatchEvent(new CompositionEvent("compositionupdate", { bubbles: true, data: "ni" }));
+    fireIosComposedInsertText(textarea, "ni");
+    expect(received).toEqual(["，"]);
+    textarea.value = "你好";
+    textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(received).toEqual(["，", "你好"]);
   });
 });

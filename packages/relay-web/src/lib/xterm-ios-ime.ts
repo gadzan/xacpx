@@ -94,3 +94,13 @@ export function patchXtermIosImeInsertText(term: object): boolean {
   core.__xacpxIosImePatched = true;
   return true;
 }
+
+export const XTERM_IOS_IME_PATCH_FAILED =
+  "[relay-web] xterm iOS IME insertText patch failed: private _core/_inputEvent surface missing";
+
+/** Production entry: throw (and log) if the private xterm surface is gone so a silent no-op is impossible. */
+export function applyXtermIosImeInsertText(term: object): void {
+  if (patchXtermIosImeInsertText(term)) return;
+  console.error(XTERM_IOS_IME_PATCH_FAILED);
+  throw new Error(XTERM_IOS_IME_PATCH_FAILED);
+}
