@@ -128,7 +128,7 @@ test("DiscordChannel.start isolates a failing account and keeps the healthy one"
   const logger = makeLogger();
   const abort = new AbortController();
   const ch = new DiscordChannel(
-    { token: "x", accounts: { bad: {}, good: {} } },
+    { accounts: { bad: { token: "tok-bad" }, good: { token: "tok-good" } } },
     {
       logger: logger as never,
       identifyStaggerMs: 0,

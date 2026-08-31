@@ -80,9 +80,11 @@ Threads are **always independent sessions** (`t:<threadId>`). No `Map<chatKey, t
 
 `xacpx channel add discord --token ...` adds the default account. Per-account overrides via `options.accounts.<id>`; startup staggers `identify` by ≥5.5 s per account (Discord 5-s `identify` rate limit).
 
+Because Discord allows exactly one Gateway session per token, **each enabled account must resolve to a distinct token**. `parseDiscordChannelConfig` rejects two enabled accounts sharing a resolved token — including the case where several accounts inherit the same base `token` — since one Gateway client could not honor two different per-account policies. The rejection names the account ids only, never the token. A disabled account may share a token with an enabled one.
+
 ### Consumer lock
 
-Each bot token allows exactly one Gateway session. The channel provides `createConsumerLock()`, a composite of **one file lock per enabled token** at `~/.xacpx/runtime/discord-consumer-<fingerprint>.lock.json`, where `<fingerprint>` is a truncated SHA-256 of the **token itself** (never the `accountId`, never the token plaintext). A process holding N distinct tokens acquires N locks; if any one conflicts, the locks already taken are rolled back and startup is rejected. Consequence: any overlap in token sets contends — the identical set, a superset like `{X,Y}` vs `{X}`, and the same token under a different `accountId` are all blocked; only fully disjoint token sets coexist.
+Each bot token allows exactly one Gateway session. The channel provides `createConsumerLock()`, a composite of **one file lock per enabled token** at `~/.xacpx/runtime/discord-consumer-<fingerprint>.lock.json`, where `<fingerprint>` is a truncated SHA-256 of the **token itself** (never the `accountId`, never the token plaintext). A process holding N distinct tokens acquires N locks; if any one conflicts, the locks already taken are rolled back and startup is rejected. Consequence: any overlap in token sets contends — the identical set, a superset like `{X,Y}` vs `{X}`, and the same token under a different `accountId` are all blocked; only fully disjoint token sets coexist. Layering: config validation enforces intra-process token uniqueness (see Multiple accounts); these lock files enforce cross-process mutual exclusion.
 
 ### Security
 

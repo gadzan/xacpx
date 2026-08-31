@@ -318,6 +318,25 @@ export function parseDiscordChannelConfig(raw: unknown): DiscordChannelConfig {
     throw new Error("channel.options.token is required when channel.type is discord");
   }
 
+  // Intra-process uniqueness: each enabled account must own a distinct bot
+  // token. Discord allows one Gateway session per token, and two accounts
+  // sharing a token have no coherent semantics (the single Gateway client
+  // could not honor two different access policies / requireMention / reply
+  // modes). createConsumerLock()'s per-token lock files guard the
+  // cross-process half; this check guards the same-process half. Disabled
+  // accounts may share tokens freely. The message names accountIds only —
+  // never the token or a fingerprint of it.
+  const tokenOwners = new Map<string, string>();
+  for (const account of configuredAccounts) {
+    const owner = tokenOwners.get(account.token);
+    if (owner) {
+      throw new Error(
+        `channel.options.accounts.${account.accountId} duplicates the bot token of account "${owner}"; each enabled account must use a unique token`,
+      );
+    }
+    tokenOwners.set(account.token, account.accountId);
+  }
+
   const accountIds = new Set<string>();
   for (const account of accounts) {
     if (accountIds.has(account.accountId)) {

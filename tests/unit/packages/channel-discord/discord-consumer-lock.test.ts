@@ -139,11 +139,12 @@ test("failed multi-token acquire rolls back locks already held", async () => {
   await lockXY.release();
 });
 
-test("one token shared by two accounts in one process is a single lock", async () => {
-  const ch = channelWith({ a: { token: "tok-S" }, b: { token: "tok-S" } });
-  const lock = ch.createConsumerLock();
-  await lock.acquire(meta());
-  await lock.release();
+test("one token shared by two accounts never reaches the lock layer", () => {
+  // Round 4: config validation rejects duplicate resolved tokens across
+  // enabled accounts, so one process cannot start two Gateway clients for
+  // one token. createConsumerLock() still de-dups the token set as
+  // defense-in-depth, but here construction itself must fail.
+  expect(() => channelWith({ a: { token: "tok-S" }, b: { token: "tok-S" } })).toThrow(/duplicates the bot token/);
 });
 
 test("core-injected lockFilePath anchors the per-token files beside it", async () => {
