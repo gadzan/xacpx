@@ -65,6 +65,12 @@ interface ActiveTask {
   accountId: string;
   channelId: string;
   guildId?: string;
+  /**
+   * Parent channel of a thread turn, taken from the inbound message. The
+   * archived-thread fallback uses this instead of a REST lookup, so the parent
+   * of a dead thread is known without asking Discord about it.
+   */
+  parentChannelId: string | null;
   messageId: string;
   senderId?: string;
   chatKind?: string;
@@ -450,33 +456,30 @@ export class DiscordChannel implements MessageChannelRuntime {
     const target: DeliveryTarget = { channelId: parsed.channelId, ...(parsed.guildId ? { guildId: parsed.guildId } : {}) };
     const rendered = renderDiscordMarkdown(text, runtime.account.tableMode);
     const chunks = chunkDiscordText(rendered, { maxChars: 2000, maxLines: runtime.account.maxLinesPerMessage });
+    const resolveParentTarget =
+      parsed.kind === "thread" ? () => this.resolveThreadParentTarget(runtime, parsed.channelId) : undefined;
     for (const chunk of chunks) {
-      try {
-        await runtime.client.sendMessage(target, { content: chunk, allowedMentions: { parse: [] } });
-      } catch (error) {
-        const isThread = parsed.kind === "thread";
-        if (isThread) {
-          try {
-            const parentTarget = await this.resolveThreadParentTarget(runtime, parsed.channelId);
-            if (parentTarget) {
-              await sendWithThreadFallback({
-                client: runtime.client,
-                target,
-                parentTarget,
-                body: { content: chunk, allowedMentions: { parse: [] } },
-                loggerWarn: (msg, fields) => {
-                  void this.logger?.warn(msg, String(fields?.from ?? msg), fields);
-                },
-              });
-              continue;
-            }
-          } catch {
-            // fall through to throw original
-          }
-        }
-        throw error;
-      }
+      await sendWithThreadFallback({
+        client: runtime.client,
+        target,
+        resolveParentTarget,
+        body: { content: chunk, allowedMentions: { parse: [] } },
+        loggerWarn: (msg, fields) => {
+          void this.logger?.warn(msg, String(fields?.from ?? msg), fields);
+        },
+      });
     }
+  }
+
+  /** Parent target for a thread turn: the parent the inbound message already
+   *  named, and only if it did not, the REST lookup for the thread. */
+  private async resolveFinalThreadParentTarget(
+    runtime: AccountRuntime,
+    active: ActiveTask,
+    target: DeliveryTarget,
+  ): Promise<DeliveryTarget | null> {
+    if (active.parentChannelId) return { channelId: active.parentChannelId };
+    return this.resolveThreadParentTarget(runtime, target.channelId);
   }
 
   private async resolveThreadParentTarget(runtime: AccountRuntime, threadId: string): Promise<DeliveryTarget | null> {
@@ -706,12 +709,13 @@ export class DiscordChannel implements MessageChannelRuntime {
     queueKey: string;
     boundAlias?: string;
   }): { active: ActiveTask; abortController: AbortController } {
-    const { accountId, channelId, guildId, messageId, senderId, chatKind, queueKey, boundAlias } = input;
+    const { accountId, channelId, guildId, parentChannelId, messageId, senderId, chatKind, queueKey, boundAlias } = input;
     const abortController = new AbortController();
     const active: ActiveTask = {
       accountId,
       channelId,
       guildId,
+      parentChannelId: parentChannelId ?? null,
       messageId,
       senderId,
       chatKind,
@@ -1081,39 +1085,30 @@ export class DiscordChannel implements MessageChannelRuntime {
     messageId: string;
     active: ActiveTask;
   }): Promise<void> {
-    const { runtime, target, finalText, responseMedia } = input;
+    const { runtime, target, finalText, responseMedia, active } = input;
     const trimmed = finalText.trim();
+    const resolveParentTarget =
+      active.chatKind === "thread"
+        ? () => this.resolveFinalThreadParentTarget(runtime, active, target)
+        : undefined;
     if (trimmed.length > 0) {
       const rendered = renderDiscordMarkdown(trimmed, runtime.account.tableMode);
       const chunks = chunkDiscordText(rendered, { maxChars: 2000, maxLines: runtime.account.maxLinesPerMessage });
-      const isThreadTarget = input.active.chatKind === "thread" && target.channelId;
       for (const chunk of chunks) {
-        if (input.active.suppressed) return;
-        try {
-          await runtime.client.sendMessage(target, { content: chunk, allowedMentions: { parse: [] } });
-        } catch (error) {
-          if (isThreadTarget) {
-            const parentId = (input.active as unknown as { parentChannelId?: string }).parentChannelId ?? null;
-            const parentTarget: DeliveryTarget | null = parentId ? { channelId: parentId } : await this.resolveThreadParentTarget(runtime, target.channelId);
-            if (parentTarget) {
-              await sendWithThreadFallback({
-                client: runtime.client,
-                target,
-                parentTarget,
-                body: { content: chunk, allowedMentions: { parse: [] } },
-                loggerWarn: (msg, fields) => {
-                  void this.logger?.warn(msg, String(fields?.from ?? msg), fields);
-                },
-              });
-              continue;
-            }
-          }
-          throw error;
-        }
+        if (active.suppressed) return;
+        await sendWithThreadFallback({
+          client: runtime.client,
+          target,
+          resolveParentTarget,
+          body: { content: chunk, allowedMentions: { parse: [] } },
+          loggerWarn: (msg, fields) => {
+            void this.logger?.warn(msg, String(fields?.from ?? msg), fields);
+          },
+        });
       }
     }
     for (const item of responseMedia) {
-      if (input.active.suppressed) return;
+      if (active.suppressed) return;
       const filePath = (item as { filePath: string }).filePath;
       if (!filePath) continue;
       const allowedRoots = [this.deps.mediaStore?.rootDir, ...(this.deps.allowedMediaRoots ?? [])].filter((x): x is string => typeof x === "string");
@@ -1125,10 +1120,18 @@ export class DiscordChannel implements MessageChannelRuntime {
       try {
         const buffer = await readFile(safePath);
         const name = (item as { fileName?: string }).fileName ?? path.basename(safePath);
-        await runtime.client.sendMessage(target, {
-          content: (item as { caption?: string }).caption ?? undefined,
-          files: [{ attachment: buffer, name }],
-          allowedMentions: { parse: [] },
+        await sendWithThreadFallback({
+          client: runtime.client,
+          target,
+          resolveParentTarget,
+          body: {
+            content: (item as { caption?: string }).caption ?? undefined,
+            files: [{ attachment: buffer, name }],
+            allowedMentions: { parse: [] },
+          },
+          loggerWarn: (msg, fields) => {
+            void this.logger?.warn(msg, String(fields?.from ?? msg), fields);
+          },
         });
       } catch (error) {
         await this.logger!.error("discord.media.send_failed", "failed to send discord media", {
