@@ -2,7 +2,7 @@ import type { DeliveryTarget, OutboundBody } from "./types.js";
 import type { DiscordClientLike } from "./discord-client.js";
 import { isDiscordArchivedThreadError, isDiscordNotFoundError } from "./errors.js";
 
-export interface SendReplyWithGuardInput {
+export interface SendWithThreadFallbackInput {
   client: DiscordClientLike;
   target: DeliveryTarget;
   /**
@@ -17,7 +17,7 @@ export interface SendReplyWithGuardInput {
   loggerWarn?: (msg: string, fields?: Record<string, string | number | boolean | undefined>) => void;
 }
 
-export async function sendWithThreadFallback(input: SendReplyWithGuardInput): Promise<void> {
+export async function sendWithThreadFallback(input: SendWithThreadFallbackInput): Promise<void> {
   try {
     await input.client.sendMessage(input.target, input.body);
   } catch (error) {
