@@ -249,10 +249,16 @@ test("concurrent same-alias creates claim the logical alias before transport sid
   await started;
   const second = router.createSessionWithTransport("relay:demo", "codex", "home");
 
-  await expect(second).rejects.toThrow(/already exists|being created/);
+  // With authoritative identity persisted before transport (R1), the second
+  // concurrent create sees the first's alias already claimed and derives a
+  // free alias (relay:demo-2) instead of racing the transport. Both succeed
+  // but with distinct logical identities — no dual-owner for same alias.
+  await expect(second).resolves.toBeTruthy();
+  const secondSession = await second;
+  expect(secondSession.alias).toBe("relay:demo-2");
   releaseEnsure();
   await expect(first).resolves.toBeTruthy();
-  expect((transport.ensureSession as ReturnType<typeof mock>).mock.calls).toHaveLength(1);
+  expect((transport.ensureSession as ReturnType<typeof mock>).mock.calls).toHaveLength(2);
 });
 
 test("deleting then recreating the same alias does not resume residual transport history", async () => {
