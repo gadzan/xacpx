@@ -3,12 +3,12 @@
     "sessions.tryReserveFreeSessionAlias(\"relay:demo\")",
     "sessions.buildFreshTransportSession(\"backend:relay:demo-2\")",
     "sessions.resolveSession(\"relay:demo-2\", \"codex\", \"backend\", \"backend:relay:demo-2:reset-<n>\", {…})",
+    "sessions.attachSession(\"relay:demo-2\", \"codex\", \"backend\", \"backend:relay:demo-2:reset-<n>\", \"<runtime> <xacpx>/src/adapters/acp-outpu…\", \"xacpx-managed-<driver>-<hash>\", {…})",
     "orchestration.reserveLogicalTransportSession(\"backend:relay:demo-2\")",
     "transport.ensureSession(session(relay:demo-2/backend:relay:demo-2:reset-<n>), fn)",
     "logger.info(transport.ensure_session)",
     "transport.hasSession(session(relay:demo-2/backend:relay:demo-2:reset-<n>))",
     "logger.info(transport.has_session)",
-    "sessions.attachSession(\"relay:demo-2\", \"codex\", \"backend\", \"backend:relay:demo-2:reset-<n>\", \"<runtime> <xacpx>/src/adapters/acp-outpu…\", \"xacpx-managed-<driver>-<hash>\", {…})",
     "sessions.getSession(\"relay:demo-2\")"
   ],
   "outcome": {
@@ -31,6 +31,7 @@
       "workspace": "backend",
       "transportSession": "backend:relay:demo-2:reset-<n>",
       "logicalSessionId": "<logical-session-id>",
+      "transportEngine": "cli",
       "cwd": "/tmp/backend",
       "archived": false
     }
