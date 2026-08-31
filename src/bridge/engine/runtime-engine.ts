@@ -670,7 +670,7 @@ export class RuntimeEngine implements BridgeEngine {
     if (isMcpStale) {
       const existingClient = this.manager?.get(key);
       if (existingClient) {
-        if (this.activeTurns.has(key) || existingClient.lifecycle === "busy" || existingClient.hasInFlight) {
+if (this.activeTurns.has(key) || existingClient.lifecycle === "busy" || existingClient.hasInFlight) {
           this.staleAfterTurn.add(key);
           throw new RuntimeError("RUNTIME_MCP_STALE", `MCP identity changed for session "${key}" while turn active; will rotate after settle`);
         }
@@ -905,6 +905,27 @@ export class RuntimeEngine implements BridgeEngine {
     }
     const key = this.workerKey(input);
     this.sessionCatalog.set(key, input);
+    // PR8: MCP identity fencing before marking turn active — must check before adding activeTurns
+    {
+      const requestedMcp = { mcpCoordinatorSession: input.mcpCoordinatorSession, mcpSourceHandle: input.mcpSourceHandle };
+      const lastMcp = this.lastMcpIdentity.get(key);
+      const isMcpStale =
+        lastMcp !== undefined &&
+        ((lastMcp.mcpCoordinatorSession ?? null) !== (requestedMcp.mcpCoordinatorSession ?? null) ||
+          (lastMcp.mcpSourceHandle ?? null) !== (requestedMcp.mcpSourceHandle ?? null));
+      if (isMcpStale) {
+        const existingClient = this.manager?.get(key);
+        if (existingClient) {
+          if (this.activeTurns.has(key) || existingClient.lifecycle === "busy" || existingClient.hasInFlight) {
+            this.staleAfterTurn.add(key);
+            throw new RuntimeError("RUNTIME_MCP_STALE", `MCP identity changed for session "${key}" while turn active; will rotate after settle`);
+          }
+          await existingClient.shutdown().catch((e) => { throw toTeardownError(key, e); });
+          if (existingClient.lifecycle === "stopped") await this.manager?.release(key, existingClient).catch(() => {});
+          this.lastMcpIdentity.delete(key);
+        }
+      }
+    }
     // Mark the turn active IMMEDIATELY so preflight on concurrent policy
     // updates detects the in-flight turn and fails closed (plan §32).
     this.activeTurns.add(key);
