@@ -135,7 +135,13 @@ export const discordCliProvider: ChannelCliProvider = {
     if (config.id !== "discord") issues.push({ kind: "invalid-config", message: "discord channel id must be discord" });
     if (config.type !== "discord") issues.push({ kind: "invalid-config", message: "discord channel type must be discord" });
     const options = config.options;
-    if (options === undefined) return issues;
+    if (options === undefined) {
+      // `options` is optional in the core type, but a discord channel without an
+      // options block has no credential, and the runtime parser rejects it. Say
+      // which flag to pass rather than reporting a clean verdict.
+      issues.push({ kind: "missing-required-field", flag: "--token", message: t().providerMissingToken });
+      return issues;
+    }
     if (!isRecord(options)) {
       issues.push({ kind: "invalid-config", message: "channel.options must be an object when channel.type is discord" });
       return issues;

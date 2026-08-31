@@ -92,6 +92,20 @@ test("M1: a config with no credential anywhere still reports the --token flag hi
   expect(issues[0]!.flag).toBe("--token");
 });
 
+// Follow-up Minor: `options` is optional in ChannelRuntimeConfig, so a hand-
+// written discord channel entry can omit the block entirely. The runtime parser
+// rejects that shape, so the CLI must not wave it through.
+test("M1: a config with no options block at all still reports --token", () => {
+  const issues = discordCliProvider.validateConfig({
+    id: "discord",
+    type: "discord",
+    enabled: true,
+  } as ChannelRuntimeConfig);
+  expect(issues).toEqual([
+    expect.objectContaining({ kind: "missing-required-field", flag: "--token" }),
+  ]);
+});
+
 test("M1: accounts declared without any credential report the accounts hint", () => {
   const issues = discordCliProvider.validateConfig(
     runtimeConfig({ accounts: { east: { name: "East" }, west: {} } }),
@@ -104,8 +118,16 @@ test("M1: accounts declared without any credential report the accounts hint", ()
 // The anti-drift invariant: whatever the runtime accepts, the CLI must accept,
 // and whatever the runtime rejects, the CLI must reject. Without delegation the
 // two surfaces disagreed on every rule except the presence of a token.
+// The input is `unknown` on purpose: the shapes where the two surfaces are most
+// likely to part ways — a config with no options block at all — cannot be
+// expressed by a Record-typed matrix.
 test("M1: provider verdict equals the runtime parser verdict", () => {
-  const cases: Array<{ name: string; options: Record<string, unknown> }> = [
+  const cases: Array<{ name: string; options: unknown }> = [
+    { name: "options block absent", options: undefined },
+    { name: "options is null", options: null },
+    { name: "options is a string", options: "not-an-object" },
+    { name: "options is an array", options: [] },
+    { name: "options is empty", options: {} },
     { name: "single account", options: { token: "tok-X" } },
     { name: "multi account", options: { accounts: { a: { token: "tok-X" }, b: { token: "tok-Y" } } } },
     { name: "disabled account may share a token", options: { accounts: { a: { token: "tok-X" }, b: { token: "tok-X", enabled: false } } } },
