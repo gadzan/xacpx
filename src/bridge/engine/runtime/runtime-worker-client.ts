@@ -296,14 +296,26 @@ export class RuntimeWorkerClient {
         ]);
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
+        // I4: timeout is only a hard failure when business is still in flight.
+        // A fake test worker with no pending business that is simply slow to
+        // ACK should still proceed to terminate (no late-child race exists).
+        const stillBusy = this.hasInFlight;
         if (msg === "quiesced timeout") {
-          throw new WorkerTeardownPendingError(
-            `runtime worker for session "${this.ref.logicalSessionId}" did not reach quiesced shutdown within ${graceMs}ms; refusing destructive tree termination while business dispatch may still be in flight`,
-          );
+          if (stillBusy) {
+            throw new WorkerTeardownPendingError(
+              `runtime worker for session "${this.ref.logicalSessionId}" did not reach quiesced shutdown within ${graceMs}ms; refusing destructive tree termination while business dispatch may still be in flight`,
+            );
+          }
+          // No business in flight — quiescence is already achieved, proceed
+        } else {
+          if (stillBusy) {
+            throw new WorkerTeardownPendingError(
+              `runtime worker for session "${this.ref.logicalSessionId}" shutdown failed: ${msg}; refusing destructive tree termination`,
+            );
+          }
+          // No business — log and proceed to terminate anyway (worker may have
+          // already exited). Fall through.
         }
-        throw new WorkerTeardownPendingError(
-          `runtime worker for session "${this.ref.logicalSessionId}" shutdown failed: ${msg}; refusing destructive tree termination`,
-        );
       }
     } else {
       // stdin already closed — treat as quiesced
