@@ -36,6 +36,10 @@ async function createPolicyEchoWorker(entry: string): Promise<void> {
       "      } else if (msg.method === 'prompt') {",
       "        process.stdout.write(JSON.stringify({ id: msg.id, event: 'text_delta', payload: { type: 'text_delta', text: `mode=${policyMode};policy=${policySpec}` } }) + '\\n');",
       "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { result: { status: 'completed' }, finalText: `mode=${policyMode};policy=${policySpec}` } }) + '\\n');",
+      "      } else if (msg.method === 'permission.update') {",
+      "        policyMode = msg.params?.permissionMode ?? policyMode;",
+      "        policySpec = msg.params?.permissionPolicy ?? policySpec;",
+      "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { generation: msg.params.generation, accepted: true } }) + '\\n');",
       "      } else {",
       "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
       "      }",
@@ -47,7 +51,7 @@ async function createPolicyEchoWorker(entry: string): Promise<void> {
   );
 }
 
-test("Scenario 1: idle warm worker is rotated on permission update and new worker applies new policy", async () => {
+test("Scenario 1: idle warm worker is live-updated on permission update without rotation", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-perm-rot-"));
   try {
     const entry = join(dir, "echo-worker.mjs");
@@ -66,22 +70,22 @@ test("Scenario 1: idle warm worker is rotated on permission update and new worke
     const oldPid = engine["manager"]?.get("logical-perm-1")?.ref.pid;
     expect(oldPid).toBeDefined();
 
-    // 2. Permission update: rotate warm worker with new policy B
+    // 2. Permission update: live-update warm worker without rotation (PR7)
     await engine.updatePermissionPolicy({
       permissionMode: "deny-all",
       nonInteractivePermissions: "deny",
       permissionPolicy: "autoDeny:all-edits",
     });
 
-    // Old worker is stopped, session is not closed
-    expect((await engine.isSessionWarm(sessionInput)).warm).toBe(false);
+    // Worker stays warm on same pid after live update
+    expect((await engine.isSessionWarm(sessionInput)).warm).toBe(true);
 
-    // 3. Next prompt creates new worker running the NEW deny-all and policy B
+    // 3. Next prompt reuses same worker with NEW deny-all and policy B via live snapshot
     const reply2 = await engine.prompt({ ...sessionInput, text: "t2" });
     expect(reply2.text).toBe("mode=deny-all;policy=autoDeny:all-edits");
     const newPid = engine["manager"]?.get("logical-perm-1")?.ref.pid;
     expect(newPid).toBeDefined();
-    expect(newPid).not.toBe(oldPid);
+    expect(newPid).toBe(oldPid);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

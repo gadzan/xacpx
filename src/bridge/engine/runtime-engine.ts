@@ -414,6 +414,8 @@ export class RuntimeEngine implements BridgeEngine {
   private readonly deleting = new Set<string>();
   /** Authoritative session catalog for bridge restart recovery (logicalSessionId -> input). */
   private sessionCatalog = new Map<string, EngineSessionInput>();
+  private readonly lastMcpIdentity = new Map<string, { mcpCoordinatorSession?: string; mcpSourceHandle?: string }>();
+  private readonly staleAfterTurn = new Set<string>();
 
   constructor(private readonly options: RuntimeEngineOptions) {
     this.idleTtlMs = options.idleTtlMs ?? (options.queueOwnerTtlSeconds !== undefined ? options.queueOwnerTtlSeconds * 1000 : 60_000);
@@ -655,11 +657,28 @@ export class RuntimeEngine implements BridgeEngine {
     }
   }
   private async withWorker<T>(input: EngineSessionInput, run: (client: RuntimeWorkerClient) => Promise<T>): Promise<T> {
-    // Await in-flight policy transition so prompts don't cross transition boundary
     if (this.policyTransitionLock) {
       await this.policyTransitionLock;
     }
     const key = this.workerKey(input);
+    const requestedMcp = { mcpCoordinatorSession: input.mcpCoordinatorSession, mcpSourceHandle: input.mcpSourceHandle };
+    const lastMcp = this.lastMcpIdentity.get(key);
+    const isMcpStale =
+      lastMcp !== undefined &&
+      ((lastMcp.mcpCoordinatorSession ?? null) !== (requestedMcp.mcpCoordinatorSession ?? null) ||
+        (lastMcp.mcpSourceHandle ?? null) !== (requestedMcp.mcpSourceHandle ?? null));
+    if (isMcpStale) {
+      const existingClient = this.manager?.get(key);
+      if (existingClient) {
+        if (this.activeTurns.has(key) || existingClient.lifecycle === "busy" || existingClient.hasInFlight) {
+          this.staleAfterTurn.add(key);
+          throw new RuntimeError("RUNTIME_MCP_STALE", `MCP identity changed for session "${key}" while turn active; will rotate after settle`);
+        }
+        await existingClient.shutdown().catch((e) => { throw toTeardownError(key, e); });
+        if (existingClient.lifecycle === "stopped") await this.manager?.release(key, existingClient).catch(() => {});
+        this.lastMcpIdentity.delete(key);
+      }
+    }
     const existingTimer = this.idleTimers.get(key);
     if (existingTimer) {
       clearTimeout(existingTimer);
@@ -668,6 +687,7 @@ export class RuntimeEngine implements BridgeEngine {
     let client: RuntimeWorkerClient;
     try {
       client = await this.ensureWorker(input);
+      this.lastMcpIdentity.set(key, requestedMcp);
     } catch (error) {
       if (error instanceof WorkerTeardownPendingError) {
         throw new RuntimeError(error.code, error.message);
@@ -685,11 +705,17 @@ export class RuntimeEngine implements BridgeEngine {
         this.activeTurns.delete(key);
         client.lifecycle = "failed";
       }
-      // Stable error boundary (plan §42/§43): worker-typed failures leave the
-      // engine with a stable RuntimeBridgeErrorCode, never a raw typed error
-      // that BridgeServer would flatten to BRIDGE_INTERNAL_ERROR.
       throw toStableRuntimeError(error);
     } finally {
+      if (this.staleAfterTurn.has(key) && !this.activeTurns.has(key)) {
+        this.staleAfterTurn.delete(key);
+        const staleClient = this.manager?.get(key);
+        if (staleClient) {
+          await staleClient.shutdown().catch(() => {});
+          if (staleClient.lifecycle === "stopped") await this.manager?.release(key, staleClient).catch(() => {});
+          this.lastMcpIdentity.delete(key);
+        }
+      }
       if (client.alive && (client.lifecycle === "idle" || client.lifecycle === "ready") && !this.activeTurns.has(key)) {
         this.scheduleIdleTtl(key, client);
       }
@@ -717,6 +743,9 @@ export class RuntimeEngine implements BridgeEngine {
       ...(options?.resumeSessionId ? { resumeSessionId: options.resumeSessionId } : {}),
       ...(input.model ? { model: input.model } : {}),
       ...(input.effort ? { effort: input.effort } : {}),
+      ...(this.permissionGeneration > 0 ? { permissionGeneration: this.permissionGeneration } : {}),
+      ...(input.mcpCoordinatorSession ? { mcpCoordinatorSession: input.mcpCoordinatorSession } : {}),
+      ...(input.mcpSourceHandle ? { mcpSourceHandle: input.mcpSourceHandle } : {}),
     };
   }
 
@@ -1373,33 +1402,73 @@ export class RuntimeEngine implements BridgeEngine {
           );
         }
       }
-      // Deliberate termination: rotation does NOT consume crash budget (plan §43)
-      await Promise.all(live.map((w) => w.terminate()));
-      for (const w of live) {
-        if (!w.alive && w.lifecycle === "stopped") {
-          await this.manager?.release(w.ref.logicalSessionId, w);
-        }
-      }
+      // Do NOT terminate healthy idle workers — next commit will live-update them
     } catch (error) {
       this.releasePolicyLock();
       throw error;
     }
   }
 
-  /** Transactional commit: snapshot new policy into RuntimeEngine; next spawns use it. */
+  /** Transactional commit: live-update all workers without rotation (PR7). */
   async commitPolicyTransition(policy: {
     permissionMode: PermissionMode;
     nonInteractivePermissions: NonInteractivePermissions;
     permissionPolicy?: string;
   }): Promise<void> {
-    try {
-      this.options.permissionMode = policy.permissionMode;
-      this.options.nonInteractivePermissions = policy.nonInteractivePermissions;
-      this.options.permissionPolicy = policy.permissionPolicy;
-      this.permissionGeneration++;
-    } finally {
-      this.releasePolicyLock();
+    let parsed: import("./runtime/runtime-permission-policy").XacpxPermissionPolicy | undefined;
+    if (policy.permissionPolicy !== undefined) {
+      try {
+        const { parseXacpxPermissionPolicy } = await import("./runtime/runtime-permission-policy");
+        parsed = parseXacpxPermissionPolicy(policy.permissionPolicy);
+      } catch (err) {
+        this.releasePolicyLock();
+        throw new RuntimeError("RUNTIME_INIT_FAILED", `invalid permission policy: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
+    const nextGeneration = this.permissionGeneration + 1;
+    const live = this.manager?.workers() ?? [];
+    this.options.permissionMode = policy.permissionMode;
+    this.options.nonInteractivePermissions = policy.nonInteractivePermissions;
+    this.options.permissionPolicy = policy.permissionPolicy;
+    this.permissionGeneration = nextGeneration;
+    if (live.length === 0) {
+      this.releasePolicyLock();
+      return;
+    }
+    const results = await Promise.allSettled(
+      live.map((w) =>
+        w.request<{ generation: number; accepted: boolean }>("permission.update", {
+          generation: nextGeneration,
+          permissionMode: policy.permissionMode,
+          nonInteractivePermissions: policy.nonInteractivePermissions,
+          ...(policy.permissionPolicy !== undefined ? { permissionPolicy: policy.permissionPolicy } : {}),
+        }),
+      ),
+    );
+    const failedWorkers: typeof live = [];
+    for (let i = 0; i < live.length; i++) {
+      const r = results[i];
+      const w = live[i]!;
+      if (r && r.status === "fulfilled" && (r.value as { accepted?: boolean }).accepted === true) continue;
+      failedWorkers.push(w);
+    }
+    if (failedWorkers.length > 0) {
+      const termResults = await Promise.allSettled(failedWorkers.map((w) => w.terminate()));
+      for (let i = 0; i < failedWorkers.length; i++) {
+        const tr = termResults[i];
+        const w = failedWorkers[i]!;
+        if (tr && tr.status === "fulfilled") {
+          if (w.lifecycle === "stopped") await this.manager?.release(w.ref.logicalSessionId, w).catch(() => {});
+        } else {
+          this.releasePolicyLock();
+          throw new RuntimeError(
+            "RUNTIME_WORKER_TEARDOWN_PENDING",
+            `permission update failed for session "${w.ref.logicalSessionId}" and worker teardown also failed: ${tr && tr.status === "rejected" ? String((tr as PromiseRejectedResult).reason) : "unknown"}`,
+          );
+        }
+      }
+    }
+    this.releasePolicyLock();
   }
 
   /** Transactional rollback: release lock without committing when CLI update fails. */

@@ -29,6 +29,8 @@ import {
 } from "./runtime-worker-protocol";
 import { mapRuntimeError } from "./runtime-contract";
 import { parseSessionEffortRecord } from "../../../transport/session-effort";
+import { parseXacpxPermissionPolicy } from "./runtime-permission-policy";
+import { RuntimePermissionResolver, type RuntimePermissionConfig } from "./runtime-permission-resolver";
 
 class RuntimeError extends Error {
   constructor(readonly code: string, message: string) {
@@ -42,9 +44,11 @@ interface WorkerState {
   ensureParams?: RuntimeWorkerEnsureParams;
   activeTurn?: XacpxTurnHandle;
   shuttingDown: boolean;
+  permissionSnapshot?: RuntimePermissionConfig;
+  permissionGeneration: number;
 }
 const gate = createDispatchGate();
-const state: WorkerState = { shuttingDown: false };
+const state: WorkerState = { shuttingDown: false, permissionGeneration: 0 };
 
 function respond(response: RuntimeWorkerResponse): void {
   process.stdout.write(encodeWorkerMessage(response));
@@ -59,15 +63,15 @@ function sameEnsureParams(a: RuntimeWorkerEnsureParams | undefined, b: RuntimeWo
   //     resumeAgentSession(X) is always followed by prompt ensures without it.
   //     Including it here would rebuild the AcpRuntime inside one worker and
   //     create a second live ACP owner (violates single-owner, plan §3-R1).
+  //   - `permissionMode` / `nonInteractivePermissions` / `permissionPolicy`: mutable snapshot (PR7 live update)
   return (
     a.sessionKey === b.sessionKey &&
     a.agent === b.agent &&
     a.cwd === b.cwd &&
     a.stateDir === b.stateDir &&
-    a.permissionMode === b.permissionMode &&
-    a.nonInteractivePermissions === b.nonInteractivePermissions &&
-    JSON.stringify(a.permissionPolicy ?? null) === JSON.stringify(b.permissionPolicy ?? null) &&
-    JSON.stringify(a.agentOverrides ?? null) === JSON.stringify(b.agentOverrides ?? null)
+    JSON.stringify(a.agentOverrides ?? null) === JSON.stringify(b.agentOverrides ?? null) &&
+    (a.mcpCoordinatorSession ?? null) === (b.mcpCoordinatorSession ?? null) &&
+    (a.mcpSourceHandle ?? null) === (b.mcpSourceHandle ?? null)
   );
 }
 
@@ -104,12 +108,39 @@ async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: 
     );
   }
   if (!state.adapter || !state.handle) {
+    let initialPolicy: import("./runtime-permission-policy").XacpxPermissionPolicy | undefined;
+    if (params.permissionPolicy !== undefined) {
+      try {
+        initialPolicy = parseXacpxPermissionPolicy(params.permissionPolicy);
+      } catch {
+        initialPolicy = undefined;
+      }
+    }
+    const initialGen = typeof params.permissionGeneration === "number" ? params.permissionGeneration : 0;
+    const initialSnapshot: RuntimePermissionConfig = {
+      generation: initialGen,
+      permissionMode: (params.permissionMode as RuntimePermissionConfig["permissionMode"]) ?? "approve-all",
+      nonInteractivePermissions: (params.nonInteractivePermissions as RuntimePermissionConfig["nonInteractivePermissions"]) ?? "deny",
+      ...(initialPolicy ? { permissionPolicy: initialPolicy } : {}),
+    };
+    state.permissionSnapshot = initialSnapshot;
+    state.permissionGeneration = initialGen;
+    const resolver = new RuntimePermissionResolver();
     state.adapter = createXacpxRuntimeAdapter({
       stateDir: params.stateDir,
       permissionMode: params.permissionMode,
       ...(params.nonInteractivePermissions ? { nonInteractivePermissions: params.nonInteractivePermissions } : {}),
       ...(params.permissionPolicy !== undefined ? { permissionPolicy: params.permissionPolicy } : {}),
       ...(params.agentOverrides ? { agentOverrides: params.agentOverrides } : {}),
+      onPermissionRequest: async (req, ctx) => {
+        const snap = state.permissionSnapshot;
+        if (!snap) return { outcome: "reject_once" };
+        try {
+          return resolver.safeResolve(snap, req, ctx.signal);
+        } catch {
+          return { outcome: "reject_once" };
+        }
+      },
     });
     state.ensureParams = params;
     // Same persistent sessionKey reconnects to the existing record after a
@@ -241,9 +272,30 @@ async function dispatch(request: RuntimeWorkerRequest): Promise<void> {
         break;
       }
       case "permission.update": {
-        // Snapshot update; generation ordering enforced by the host (plan §33).
         const update = (request.params ?? {}) as RuntimeWorkerPermissionUpdate;
-        respond({ id, ok: true, result: { generation: update.generation, accepted: true } });
+        const gen = update.generation;
+        if (typeof gen !== "number" || !Number.isInteger(gen) || gen <= state.permissionGeneration) {
+          respond({ id, ok: false, error: { code: "RUNTIME_INIT_FAILED", message: `stale generation ${String(gen)} current ${state.permissionGeneration}` } });
+          break;
+        }
+        let parsedPolicy: import("./runtime-permission-policy").XacpxPermissionPolicy | undefined;
+        if (update.permissionPolicy !== undefined) {
+          try {
+            parsedPolicy = parseXacpxPermissionPolicy(update.permissionPolicy);
+          } catch (err) {
+            respond({ id, ok: false, error: { code: "RUNTIME_INIT_FAILED", message: err instanceof Error ? err.message : String(err) } });
+            break;
+          }
+        }
+        const next: RuntimePermissionConfig = {
+          generation: gen,
+          permissionMode: (update.permissionMode as RuntimePermissionConfig["permissionMode"]) ?? state.permissionSnapshot?.permissionMode ?? "approve-all",
+          nonInteractivePermissions: (update.nonInteractivePermissions as RuntimePermissionConfig["nonInteractivePermissions"]) ?? state.permissionSnapshot?.nonInteractivePermissions ?? "deny",
+          ...(parsedPolicy ? { permissionPolicy: parsedPolicy } : update.permissionPolicy === undefined && state.permissionSnapshot?.permissionPolicy ? { permissionPolicy: state.permissionSnapshot.permissionPolicy } : {}),
+        };
+        state.permissionSnapshot = next;
+        state.permissionGeneration = gen;
+        respond({ id, ok: true, result: { generation: gen, accepted: true } });
         break;
       }
       default:

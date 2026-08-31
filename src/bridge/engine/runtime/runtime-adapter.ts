@@ -40,6 +40,7 @@ export interface CreateXacpxRuntimeAdapterOptions {
    * this worker launches, instead of syncing the whole xacpx agent config.
    */
   agentOverrides?: Record<string, string | string[]>;
+  onPermissionRequest?: (req: import("acpx/runtime").AcpPermissionRequest, ctx: { signal: AbortSignal }) => Promise<import("acpx/runtime").AcpPermissionDecision | undefined>;
 }
 
 export interface XacpxEnsureInput {
@@ -83,6 +84,7 @@ export function createXacpxRuntimeAdapter(options: CreateXacpxRuntimeAdapterOpti
     permissionMode: options.permissionMode,
     ...(options.nonInteractivePermissions ? { nonInteractivePermissions: options.nonInteractivePermissions } : {}),
     ...(options.permissionPolicy !== undefined ? { permissionPolicy: options.permissionPolicy as never } : {}),
+    ...(options.onPermissionRequest ? { onPermissionRequest: options.onPermissionRequest } : {}),
   });
 
   function toHandle(handle: XacpxRuntimeSessionHandle): AcpRuntimeHandle {

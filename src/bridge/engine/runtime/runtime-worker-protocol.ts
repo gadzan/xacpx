@@ -38,6 +38,11 @@ export interface RuntimeWorkerEnsureParams {
   model?: string;
   /** Persisted reasoning-effort preference; reapplied on every worker respawn. */
   effort?: string;
+  /** PR7: initial permission generation for new workers (live snapshot). */
+  permissionGeneration?: number;
+  /** PR8: MCP coordinator identity (immutable launch identity). */
+  mcpCoordinatorSession?: string;
+  mcpSourceHandle?: string;
 }
 export interface RuntimeWorkerPromptParams {
   text: string;
