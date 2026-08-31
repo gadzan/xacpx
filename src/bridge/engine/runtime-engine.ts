@@ -428,7 +428,7 @@ export class RuntimeEngine implements BridgeEngine {
       this.manager = new RuntimeWorkerManager({
         entryPath: entry,
         clientDeps: options.workerClientDeps,
-        ...(options.fenceDir ? { fenceDir: options.fenceDir } : options.stateDir ? { fenceDir: join(this.runtimeStateRoot(), "worker-fences") } : { fenceDir: join(this.xacpxRuntimeDir(), "worker-fences") }),
+        ...(options.fenceDir ? { fenceDir: options.fenceDir } : options.stateDir ? (() => { try { return { fenceDir: join(this.runtimeStateRoot(), "worker-fences") }; } catch { return {}; } })() : {}),
       });
     }
     if (options.queueDir) {
@@ -436,10 +436,6 @@ export class RuntimeEngine implements BridgeEngine {
     } else if (options.stateDir) {
       try {
         this.queueStore = new RuntimeQueueStore(join(this.runtimeStateRoot(), "runtime-queue"));
-      } catch {}
-    } else {
-      try {
-        this.queueStore = new RuntimeQueueStore(join(this.xacpxRuntimeDir(), "runtime-queue"));
       } catch {}
     }
   }

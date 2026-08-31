@@ -42,6 +42,7 @@ export function parseXacpxPermissionPolicy(input: unknown): XacpxPermissionPolic
       throw new Error(`invalid permission policy file "${trimmed}": ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+  if (Array.isArray(input)) throw new Error("permission policy must be a JSON object (got array)");
   if (typeof input !== "object") throw new Error("permission policy must be a JSON object");
   const rec = input as Record<string, unknown>;
   const out: XacpxPermissionPolicy = {};
