@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { access, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -92,17 +92,26 @@ test("removeSession is unsupported until close-parity is proven", async () => {
   }
 }, 15_000);
 
-test("injectMessage is rejected for every mode until the durable queue lands", async () => {
+test("injectMessage queue/auto is queued, steer/interrupt remain unsupported", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-engine-"));
   try {
     const entry = join(dir, "fake-worker.mjs");
     await withFakeWorker(entry);
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all" });
-    for (const mode of ["queue", "steer", "auto", "interrupt"] as const) {
-      await expect(engine.injectMessage({ ...sessionInput, text: "x", mode, messageId: "m1" })).rejects.toMatchObject({
+    const stateDir = join(dir, "state", "sessions");
+    await mkdir(stateDir, { recursive: true });
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", stateDir });
+    const q = await engine.injectMessage({ ...sessionInput, text: "x", mode: "queue", messageId: "m1" });
+    expect(q.status).toBe("queued");
+    expect(q.modeUsed).toBe("queue");
+    const a = await engine.injectMessage({ ...sessionInput, text: "x", mode: "auto", messageId: "m2" });
+    expect(a.status).toBe("queued");
+    expect(a.modeUsed).toBe("queue");
+    for (const mode of ["steer", "interrupt"] as const) {
+      await expect(engine.injectMessage({ ...sessionInput, text: "x", mode, messageId: "m3" })).rejects.toMatchObject({
         code: "RUNTIME_ENGINE_UNSUPPORTED",
       });
     }
+    await engine.shutdown();
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

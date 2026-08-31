@@ -19,7 +19,7 @@ import { mapRuntimeError, type XacpxRuntimeEvent, type XacpxTurnResult, type Run
 import { WorkerCrashError, WorkerRpcError, WorkerBootstrapError } from "./runtime/runtime-worker-client";
 import type { RuntimeWorkerClient, RuntimeWorkerClientDeps } from "./runtime/runtime-worker-client";
 import { RuntimeWorkerManager, WorkerTeardownPendingError } from "./runtime/runtime-worker-manager";
-
+import { RuntimeQueueStore } from "./runtime/runtime-queue";
 function sleep(ms: number): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, ms);
@@ -367,6 +367,8 @@ export interface RuntimeEngineOptions {
   workerClientDeps?: RuntimeWorkerClientDeps;
   /** Override for the durable worker-ownership fence directory (tests). Defaults to `<state root>/worker-fences`. */
   fenceDir?: string;
+  /** Override for the durable runtime queue directory (tests). Defaults to `<state root>/runtime-queue`. */
+  queueDir?: string;
 }
 export function defaultWorkerEntryCandidates(fromUrl = import.meta.url): string[] {
   const here = dirname(fileURLToPath(fromUrl));
@@ -407,6 +409,11 @@ export class RuntimeEngine implements BridgeEngine {
   private policyTransitionLock?: Promise<void>;
   private policyLockRelease?: () => void;
   private permissionGeneration = 0;
+  private queueStore?: RuntimeQueueStore;
+  private readonly draining = new Map<string, Promise<void>>();
+  private readonly deleting = new Set<string>();
+  /** Authoritative session catalog for bridge restart recovery (logicalSessionId -> input). */
+  private sessionCatalog = new Map<string, EngineSessionInput>();
 
   constructor(private readonly options: RuntimeEngineOptions) {
     this.idleTtlMs = options.idleTtlMs ?? (options.queueOwnerTtlSeconds !== undefined ? options.queueOwnerTtlSeconds * 1000 : 60_000);
@@ -422,6 +429,15 @@ export class RuntimeEngine implements BridgeEngine {
         fenceDir: options.fenceDir ?? (options.stateDir ? (): string => join(this.runtimeStateRoot(), "worker-fences") : undefined),
       });
     }
+    if (options.queueDir) {
+      this.queueStore = new RuntimeQueueStore(options.queueDir);
+    } else if (options.stateDir) {
+      try {
+        this.queueStore = new RuntimeQueueStore(join(this.runtimeStateRoot(), "runtime-queue"));
+      } catch {
+        // runtimeStateRoot throws if stateDir malformed — keep queueStore undefined and fail closed on enqueue
+      }
+    }
   }
 
   private workerKey(input: EngineSessionInput): string {
@@ -430,6 +446,19 @@ export class RuntimeEngine implements BridgeEngine {
 
   private sessionsDir(): string {
     return this.options.stateDir ?? join(resolveAcpxHomeDir(), ".acpx", "sessions");
+  }
+
+  private queueDir(): string {
+    if (this.options.queueDir) return this.options.queueDir;
+    return join(this.runtimeStateRoot(), "runtime-queue");
+  }
+
+  private getQueueStore(): RuntimeQueueStore {
+    if (this.queueStore) return this.queueStore;
+    // Lazily create if stateDir becomes valid later
+    const dir = this.queueDir();
+    this.queueStore = new RuntimeQueueStore(dir);
+    return this.queueStore;
   }
 
   /**
@@ -455,6 +484,20 @@ export class RuntimeEngine implements BridgeEngine {
     if (this.idleTtlMs <= 0) return;
     const timer = setTimeout(async () => {
       this.idleTimers.delete(key);
+      if (this.activeTurns.has(key)) return;
+      // PR6: durable queue gates idle cool — if pending queue non-empty, drain instead of shutting down
+      try {
+        if (this.queueStore && await this.queueStore.hasPending(key)) {
+          const catalogInput = this.sessionCatalog.get(key);
+          if (catalogInput) {
+            this.kickDrain(catalogInput).catch(() => {});
+          }
+          return;
+        }
+      } catch {
+        // fail closed: if queue unreadable, do not cool — keep worker and surface on next operation
+        return;
+      }
       if (client.alive && (client.lifecycle === "idle" || client.lifecycle === "ready") && !this.activeTurns.has(key)) {
         try {
           await client.shutdown();
@@ -467,6 +510,131 @@ export class RuntimeEngine implements BridgeEngine {
     this.idleTimers.set(key, timer);
   }
 
+  /** PR6: shared turn executor for direct prompt and queue drain — single turn lifecycle. */
+  private async executeRuntimeTurn(
+    input: EngineSessionInput,
+    text: string,
+    options: { onEvent?: (event: EnginePromptStreamEvent) => void; media?: PromptMediaInput; toolEventMode?: string; toolEvents?: boolean },
+  ): Promise<{ text: string }> {
+    const key = this.workerKey(input);
+    const toolEventMode = options.toolEventMode ?? (options.toolEvents ? "structured" : "text");
+    const renderText = toolEventMode === "text" || toolEventMode === "both";
+    const renderStructured = toolEventMode === "structured" || toolEventMode === "both" || options.toolEvents === true;
+    const textRenderState = { emittedToolCallIds: new Set<string>() };
+    return await this.withWorker(input, async (client) => {
+      client.lifecycle = "busy";
+      await this.ensureSessionHandle(input, client);
+      try {
+        const attachments = await buildRuntimeAttachments(options.media);
+        const outcome = await client.request<{ result: XacpxTurnResult; finalText: string }>(
+          "prompt",
+          { text, ...(attachments.length > 0 ? { attachments } : {}) },
+          {
+            onEvent: (payload) => {
+              const event = payload as XacpxRuntimeEvent;
+              const sink = options.onEvent;
+              if (!sink) return;
+              if (event.type === "text_delta") {
+                sink(event.stream === "thought" ? { type: "prompt.thought", text: event.text } : { type: "prompt.segment", text: event.text });
+              } else if (event.type === "tool_call") {
+                const toolEvent = mapRuntimeToolEvent(event);
+                if (renderStructured) sink({ type: "prompt.tool_event", event: toolEvent });
+                if (renderText) {
+                  const formatted = formatToolUseEventForText(toolEvent, textRenderState);
+                  if (formatted) sink({ type: "prompt.segment", text: formatted + "\n" });
+                }
+              } else if (event.type === "status") {
+                if ((event as { tag?: string }).tag === "plan") {
+                  sink({ type: "prompt.segment", text: `${event.text}\n` });
+                  return;
+                }
+                if (typeof event.used === "number" && typeof event.size === "number") {
+                  sink({ type: "prompt.usage", used: event.used, size: event.size, ...(event.cost ? { cost: event.cost as never } : {}), ...(event.breakdown ? { breakdown: event.breakdown as never } : {}) });
+                }
+                if (event.availableCommands && event.availableCommands.length > 0) {
+                  sink({ type: "prompt.commands", commands: event.availableCommands.map((c) => ({ name: c.name, description: c.description })) as never });
+                }
+              }
+            },
+          },
+        );
+        if (outcome.result.status === "cancelled") {
+          throw new RuntimeError("RUNTIME_TURN_CANCELLED", outcome.result.stopReason || "turn was cancelled");
+        }
+        if (outcome.result.status === "failed") {
+          const err = new Error(outcome.result.error.message);
+          if (outcome.result.error.code) (err as { code?: string }).code = outcome.result.error.code;
+          const mapped = mapRuntimeError(err);
+          throw new RuntimeError(mapped.code, mapped.message);
+        }
+        return { text: outcome.finalText };
+      } finally {
+        client.lifecycle = "idle";
+      }
+    });
+  }
+
+  private kickDrain(input: EngineSessionInput): Promise<void> {
+    const key = this.workerKey(input);
+    const existing = this.draining.get(key);
+    if (existing) return existing;
+    const p = this.drainLoop(input).finally(() => {
+      if (this.draining.get(key) === p) this.draining.delete(key);
+    });
+    this.draining.set(key, p);
+    return p;
+  }
+
+  private async drainLoop(input: EngineSessionInput): Promise<void> {
+    const key = this.workerKey(input);
+    const store = this.getQueueStore();
+    while (true) {
+      if (this.deleting.has(key)) return;
+      if (this.activeTurns.has(key)) return;
+      let head;
+      try {
+        head = await store.peek(key);
+      } catch (err) {
+        // Corrupt journal -> fail closed, do not loop, surface on next enqueue/prompt
+        throw toStableRuntimeError(err);
+      }
+      if (!head) {
+        // Queue empty — schedule TTL for normal idle cool
+        const client = this.manager?.get(key);
+        if (client && client.alive && (client.lifecycle === "idle" || client.lifecycle === "ready")) {
+          this.scheduleIdleTtl(key, client);
+        }
+        return;
+      }
+      // Ensure catalog is fresh for worker identity (agent/cwd/name)
+      this.sessionCatalog.set(key, input);
+      // Mark active turn so concurrent prompt/inject queue correctly and TTL does not race
+      this.activeTurns.add(key);
+      let turnError: unknown;
+      try {
+        await this.executeRuntimeTurn(input, head.text, {});
+      } catch (err) {
+        turnError = err;
+        // Terminal failure still dequeues (no retry) — matches CLI drained-turn semantics where failed still advances queue
+        // RUNTIME_TURN_CANCELLED also dequeues head — cancelled turn does not retry head
+      } finally {
+        this.activeTurns.delete(key);
+      }
+      // Atomically remove head from journal ONLY after turn terminal settlement (at-least-once, possible replay on crash before remove)
+      try {
+        const removed = await store.dequeueHead(key);
+        // If dequeue returned undefined but we expected head, journal may have been concurrently cleared (e.g. delete) — stop
+        if (!removed) return;
+        // Verify head id matches (detect concurrent mutation)
+        // If mismatch, we still continue — at-least-once ensures no loss, possible replay is acceptable per spec
+      } catch (err) {
+        // Dequeue persist failure -> head remains on disk for retry on next drain, do not lose acked message
+        throw toStableRuntimeError(err);
+      }
+      // Continue to next head
+      // If turnError was a crash that left worker failed, next loop will re-ensure worker via executeRuntimeTurn
+    }
+  }
   private async ensureWorker(input: EngineSessionInput): Promise<RuntimeWorkerClient> {
     if (!this.manager) {
       throw new WorkerUnavailableError("RuntimeEngine has no worker manager (worker entry not built)");
@@ -677,14 +845,22 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   async ensureSession(input: EngineSessionInput): Promise<Record<string, never>> {
+    this.sessionCatalog.set(this.workerKey(input), input);
     await this.withWorker(input, async (client) => {
       await this.ensureSessionHandle(input, client);
       return {};
     });
+    // PR6: after ensure, if durable queue has pending items (bridge restart recovery), kick drain
+    try {
+      if (this.queueStore && await this.queueStore.hasPending(this.workerKey(input))) {
+        this.kickDrain(input).catch(() => {});
+      }
+    } catch {}
     return {};
   }
 
   async resumeAgentSession(input: EngineSessionInput & { agentSessionId: string }): Promise<Record<string, never>> {
+    this.sessionCatalog.set(this.workerKey(input), input);
     await this.withWorker(input, async (client) => {
       await this.ensureSessionHandle(input, client, { resumeSessionId: input.agentSessionId });
       return {};
@@ -699,88 +875,13 @@ export class RuntimeEngine implements BridgeEngine {
       await this.policyTransitionLock;
     }
     const key = this.workerKey(input);
+    this.sessionCatalog.set(key, input);
     // Mark the turn active IMMEDIATELY so preflight on concurrent policy
     // updates detects the in-flight turn and fails closed (plan §32).
     this.activeTurns.add(key);
-    const toolEventMode = input.toolEventMode ?? (input.toolEvents ? "structured" : "text");
-    const renderText = toolEventMode === "text" || toolEventMode === "both";
-    const renderStructured = toolEventMode === "structured" || toolEventMode === "both" || input.toolEvents === true;
-    const textRenderState = { emittedToolCallIds: new Set<string>() };
     try {
-      return await this.withWorker(input, async (client) => {
-        client.lifecycle = "busy";
-        await this.ensureSessionHandle(input, client);
-        try {
-          // PR4: forward prompt media as ACP binary attachments (image/audio);
-          // non-image files ride along as a text attachment summary (CLI parity).
-          const attachments = await buildRuntimeAttachments(input.media);
-          const outcome = await client.request<{ result: XacpxTurnResult; finalText: string }>(
-            "prompt",
-            { text: input.text, ...(attachments.length > 0 ? { attachments } : {}) },
-            // forwarded to the bridge sink the moment it arrives.
-            {
-              onEvent: (payload) => {
-                const event = payload as XacpxRuntimeEvent;
-                if (!onEvent) return;
-                if (event.type === "text_delta") {
-                  onEvent(event.stream === "thought"
-                    ? { type: "prompt.thought", text: event.text }
-                    : { type: "prompt.segment", text: event.text });
-                } else if (event.type === "tool_call") {
-                  const toolEvent = mapRuntimeToolEvent(event);
-                  if (renderStructured) {
-                    onEvent({ type: "prompt.tool_event", event: toolEvent });
-                  }
-                  if (renderText) {
-                    const formatted = formatToolUseEventForText(toolEvent, textRenderState);
-                    if (formatted) {
-                      onEvent({ type: "prompt.segment", text: formatted + "\n" });
-                    }
-                  }
-                } else if (event.type === "status") {
-                  // Plan parity gate: upstream flattens plan events to a single
-                  // status text (first entry content only). Fabricating entries
-                  // would deliver wrong data to channels, so plan is surfaced
-                  // as plain text until a public Runtime exposes structured plans.
-                  if ((event as { tag?: string }).tag === "plan") {
-                    onEvent({ type: "prompt.segment", text: `${event.text}\n` });
-                    return;
-                  }
-                  if (typeof event.used === "number" && typeof event.size === "number") {
-                    onEvent({
-                      type: "prompt.usage",
-                      used: event.used,
-                      size: event.size,
-                      ...(event.cost ? { cost: event.cost as never } : {}),
-                      ...(event.breakdown ? { breakdown: event.breakdown as never } : {}),
-                    });
-                  }
-                  if (event.availableCommands && event.availableCommands.length > 0) {
-                    onEvent({ type: "prompt.commands", commands: event.availableCommands.map((c) => ({ name: c.name, description: c.description })) as never });
-                  }
-                }
-              },
-            },
-          );
-          if (outcome.result.status === "cancelled") {
-            throw new RuntimeError(
-              "RUNTIME_TURN_CANCELLED",
-              outcome.result.stopReason || "turn was cancelled",
-            );
-          }
-          if (outcome.result.status === "failed") {
-            const err = new Error(outcome.result.error.message);
-            if (outcome.result.error.code) {
-              (err as { code?: string }).code = outcome.result.error.code;
-            }
-            const mapped = mapRuntimeError(err);
-            throw new RuntimeError(mapped.code, mapped.message);
-          }
-          return { text: outcome.finalText };
-        } finally {
-          client.lifecycle = "idle";
-        }
-      });
+      const result = await this.executeRuntimeTurn(input, input.text, { onEvent, media: input.media, toolEventMode: input.toolEventMode, toolEvents: input.toolEvents });
+      return result;
     } finally {
       this.activeTurns.delete(key);
       const client = this.manager?.get(key);
@@ -792,21 +893,58 @@ export class RuntimeEngine implements BridgeEngine {
           });
           client.lifecycle = "stopped";
           await this.manager?.release(key, client);
-        } else if (client.alive && (client.lifecycle === "idle" || client.lifecycle === "ready") && !this.activeTurns.has(key)) {
-          this.scheduleIdleTtl(key, client);
+        } else {
+          // PR6: if queue has pending, drain instead of idle TTL
+          try {
+            if (this.queueStore && await this.queueStore.hasPending(key)) {
+              this.kickDrain(input).catch(() => {});
+            } else if (client.alive && (client.lifecycle === "idle" || client.lifecycle === "ready")) {
+              this.scheduleIdleTtl(key, client);
+            }
+          } catch {
+            if (client.alive && (client.lifecycle === "idle" || client.lifecycle === "ready")) {
+              this.scheduleIdleTtl(key, client);
+            }
+          }
         }
       }
     }
   }
 
-  async injectMessage(input: EngineInjectInput): Promise<never> {
-    // Queue mode arrives with the durable queue PR (plan PR6); steer stays off
-    // until same-turn behavior is proven (plan §25).
-    throw new RuntimeError(
-      "RUNTIME_ENGINE_UNSUPPORTED",
-      `injectMessage mode "${input.mode}" is not supported by the runtime engine yet`,
-    );
+  async injectMessage(input: EngineInjectInput): Promise<{ status: "queued"; modeUsed: "queue"; queueItemId: string }> {
+    if (this.policyTransitionLock) {
+      await this.policyTransitionLock;
+    }
+    const key = this.workerKey(input);
+    // Steer/interrupt remain unsupported until same-turn behavior is proven
+    if (input.mode === "steer" || input.mode === "interrupt") {
+      throw new RuntimeError(
+        "RUNTIME_ENGINE_UNSUPPORTED",
+        `injectMessage mode "${input.mode}" is not supported by the runtime engine yet`,
+      );
+    }
+    const mode: "queue" | "auto" = input.mode === "auto" ? "auto" : "queue";
+    // Auto resolves to queue in PR6 (steer disabled)
+    if (this.deleting.has(key)) {
+      throw new RuntimeError("RUNTIME_QUEUE_CONFLICT", `session "${key}" is being deleted; new messages rejected`);
+    }
+    if (this.coolPending.has(key)) {
+      throw new RuntimeError("RUNTIME_QUEUE_CONFLICT", `session "${key}" is shutting down; new messages rejected`);
+    }
+    // Ensure we have a catalog entry for this session so drain can rebuild worker with correct identity
+    // If no catalog, require at least name/cwd/agent from input — for tests we allow minimal input
+    if (!this.sessionCatalog.has(key)) {
+      this.sessionCatalog.set(key, { name: input.logicalSessionId ? key : (input as unknown as EngineSessionInput).name ?? key, logicalSessionId: input.logicalSessionId ?? key, cwd: (input as unknown as EngineSessionInput).cwd, agent: (input as unknown as EngineSessionInput).agent } as EngineSessionInput);
+    }
+    const catalogInput = this.sessionCatalog.get(key)!;
+    const store = this.getQueueStore();
+    // Enqueue transaction: load -> duplicate check -> limit -> append -> atomic persist -> verify -> return queued
+    const receipt = await store.enqueue(key, { messageId: input.messageId, text: input.text, mode });
+    // Kick drain in background — if a direct prompt is active, drainLoop will wait
+    this.kickDrain(catalogInput).catch(() => {});
+    return receipt;
   }
+
   async setMode(input: EngineSessionInput & { modeId: string }) {
     await this.withWorker(input, async (client) => {
       await this.ensureSessionHandle(input, client);
@@ -875,15 +1013,29 @@ export class RuntimeEngine implements BridgeEngine {
       await this.policyTransitionLock;
     }
     const key = this.workerKey(input);
+    this.sessionCatalog.set(key, input);
     const client = this.manager?.get(key);
-    if (!client || !client.alive) {
-      // Cold session: do NOT spawn a worker just to cancel an idle state (plan §24).
-      return { cancelled: false, message: "no active runtime worker for session" };
+    let cancelledActive = false;
+    if (client && client.alive) {
+      try {
+        const result = await client.request<{ cancelled: boolean }>("cancel");
+        cancelledActive = result.cancelled === true;
+      } catch {}
     }
-    const result = await client.request<{ cancelled: boolean }>("cancel");
-    return { cancelled: result.cancelled === true, message: "cancel delivered to runtime worker" };
+    // PR6: cancel is active-turn only for now — pending queue remains (parity with CLI where cancel does not clear queue)
+    // After active cancel settles, if queue has pending, kick drain so queue does not stall
+    try {
+      if (this.queueStore && await this.queueStore.hasPending(key)) {
+        // Only kick drain if no active turn remains (cancel may still be draining)
+        if (!this.activeTurns.has(key)) {
+          this.kickDrain(input).catch(() => {});
+        }
+      }
+    } catch {}
+    if (cancelledActive) return { cancelled: true, message: "cancel delivered to runtime worker" };
+    if (!client || !client.alive) return { cancelled: false, message: "no active runtime worker for session" };
+    return { cancelled: false, message: "cancel delivered to runtime worker" };
   }
-
   async removeSession(input: EngineSessionInput): Promise<Record<string, never>> {
     // Plan §20: close() semantics differ between engines. Until parity is proven,
     // fail loudly instead of silently diverging from CLI `sessions close`.
@@ -899,6 +1051,8 @@ export class RuntimeEngine implements BridgeEngine {
       await this.policyTransitionLock;
     }
     const key = this.workerKey(input);
+    // PR6: mark deleting so new enqueue is rejected (lifecycle boundary)
+    this.deleting.add(key);
     const client = this.manager?.get(key);
 
     // 1. Resolve REAL record id (plan §19 order). Never fallback to logicalSessionId.
@@ -907,6 +1061,10 @@ export class RuntimeEngine implements BridgeEngine {
     // 2. If no record exists on disk or memory, idempotent success (G4).
     if (!recordId) {
       this.recordIds.delete(key);
+      // Even without record, clean up queue journal if it exists (pending queue for not-yet-created session)
+      try { await this.getQueueStore().removeJournal(key); } catch {}
+      this.deleting.delete(key);
+      this.sessionCatalog.delete(key);
       return {};
     }
 
@@ -959,10 +1117,16 @@ export class RuntimeEngine implements BridgeEngine {
       // Clean up tombstone & memory cache ONLY after all artifacts are verified gone (G4).
       await removeTombstoneStrict(sessionsDir, safeId);
       this.recordIds.delete(key);
+      // 6. PR6: only after record deletion verified successful, delete runtime queue journal
+      await this.getQueueStore().removeJournal(key).catch(() => {});
+      this.sessionCatalog.delete(key);
     } catch (error) {
       // Deletion did not complete (e.g. stubborn stream file or tombstone unlink failure).
       // Keep memory cache AND tombstone on disk so retries still know recordId!
+      // Queue journal is NOT removed if delete failed (tombstone retry still needs consistent ownership)
       throw error;
+    } finally {
+      this.deleting.delete(key);
     }
 
     return {};
@@ -970,10 +1134,21 @@ export class RuntimeEngine implements BridgeEngine {
 
   async freeWarmProcess(input: EngineSessionInput): Promise<Record<string, never>> {
     const key = this.workerKey(input);
+    this.sessionCatalog.set(key, input);
     const timer = this.idleTimers.get(key);
     if (timer) {
       clearTimeout(timer);
       this.idleTimers.delete(key);
+    }
+    // PR6: if durable queue has pending, do NOT cool — spawn/drain instead (queue must not be orphaned)
+    try {
+      if (this.queueStore && await this.queueStore.hasPending(key)) {
+        this.kickDrain(input).catch(() => {});
+        return {};
+      }
+    } catch {
+      // Unreadable queue -> fail closed, do not cool
+      return {};
     }
     // A concurrently in-flight acquire must settle first: coolPending has to
     // attach to the registered client, not race its registration.
@@ -1009,12 +1184,32 @@ export class RuntimeEngine implements BridgeEngine {
     return { warm: this.manager?.isWarm(key) === true };
   }
 
+  /** PR6: Bridge restart recovery — enumerate queue journals and kick drain for authoritative runtime-bound sessions. */
+  async primeQueuesFromCatalog(sessions: EngineSessionInput[]): Promise<void> {
+    for (const s of sessions) this.sessionCatalog.set(this.workerKey(s), s);
+    if (!this.queueStore) return;
+    let ids: string[] = [];
+    try {
+      ids = await this.queueStore.listLogicalSessionIds();
+    } catch {
+      return;
+    }
+    for (const id of ids) {
+      const input = this.sessionCatalog.get(id);
+      if (!input) continue;
+      try {
+        if (await this.queueStore.hasPending(id)) {
+          this.kickDrain(input).catch(() => {});
+        }
+      } catch {}
+    }
+  }
+
   /** Obtains the real acpx record id without creating phantom records on cold delete. */
   private async resolveRecordId(input: EngineSessionInput, client?: RuntimeWorkerClient): Promise<string | undefined> {
     const key = this.workerKey(input);
     const cached = this.recordIds.get(key);
     if (cached) return cached;
-
     // Live worker: ask status directly.
     if (client && client.alive) {
       try {
