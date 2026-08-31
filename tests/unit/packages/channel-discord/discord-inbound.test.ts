@@ -246,9 +246,23 @@ describe("shouldHandleDiscordMessage mention gate", () => {
 });
 
 describe("cleanDiscordMention and resolveChannelRequireMention", () => {
-  test("clean strips bot mention tags and collapses whitespace", () => {
-    expect(cleanDiscordMention("<@bot> hello  <@!bot>  world ", "bot")).toBe("hello world");
-    expect(cleanDiscordMention("  hello   world  ", "bot")).toBe("hello world");
+  test("clean strips bot mention tags and trims outer whitespace only", () => {
+    expect(cleanDiscordMention("<@bot> hello  <@!bot>  world ", "bot")).toBe("hello    world");
+    expect(cleanDiscordMention("  hello   world  ", "bot")).toBe("hello   world");
+  });
+
+  // M3: the agent is fed this string verbatim, so flattening it destroyed
+  // pasted code, tracebacks and any indentation the user meant to keep.
+  test("M3: clean keeps multi-line prompts, fenced code, indentation and tabs", () => {
+    const fenced = "<@bot> fix this:\n```python\ndef f():\n    return 1\n```";
+    expect(cleanDiscordMention(fenced, "bot")).toBe(
+      "fix this:\n```python\ndef f():\n    return 1\n```",
+    );
+    expect(cleanDiscordMention("<@!bot>\n\n  at line 3\n    x = 1\n", "bot")).toBe("at line 3\n    x = 1");
+    expect(cleanDiscordMention("trace:\n\tat Foo.bar(Foo.java:1)\n\t  at Baz", "bot")).toBe(
+      "trace:\n\tat Foo.bar(Foo.java:1)\n\t  at Baz",
+    );
+    expect(cleanDiscordMention("<@bot>\n<@bot>\tsecond line", "bot")).toBe("second line");
   });
 
   test("resolveChannelRequireMention respects per-channel override and parent fallback is handled by caller", () => {

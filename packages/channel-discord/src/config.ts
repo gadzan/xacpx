@@ -185,6 +185,23 @@ function parseMedia(raw: unknown, path: string): DiscordResolvedMediaConfig {
   return { maxBytes, maxAttachments };
 }
 
+/**
+ * Account ids are embedded in every chatKey ("discord:<accountId>:<kind>:<channelId>")
+ * and chatKeys are parsed back by splitting on ":". An id containing the
+ * delimiter therefore round-trips into a different (accountId, kind, channelId)
+ * triple, which would misroute replies to another account or chat type.
+ * Anything the chatKey grammar can express is accepted, so only the delimiter
+ * and the empty id are rejected.
+ */
+function assertValidAccountId(accountId: string, path: string): void {
+  if (!accountId) throw new Error(`${path}: account id must not be empty`);
+  if (accountId.includes(":")) {
+    throw new Error(
+      `${path}: account id must not contain ":" because it is the chatKey separator (discord:<accountId>:<kind>:<channelId>)`,
+    );
+  }
+}
+
 function parseGuilds(raw: unknown, path: string): Record<string, DiscordChannelGuildConfig> {
   if (raw === undefined) return {};
   if (!isRecord(raw)) throw new Error(`${path} must be an object`);
@@ -306,9 +323,13 @@ export function parseDiscordChannelConfig(raw: unknown): DiscordChannelConfig {
   if (accountsRaw) {
     for (const [accountId, value] of Object.entries(accountsRaw)) {
       if (!isRecord(value)) throw new Error(`channel.options.accounts.${accountId} must be an object`);
+      assertValidAccountId(accountId, `channel.options.accounts.${accountId}`);
       accounts.push(resolveAccount(accountId, baseAccount, value, `channel.options.accounts.${accountId}`));
     }
   } else {
+    if (explicitDefaultAccount !== undefined) {
+      assertValidAccountId(explicitDefaultAccount, "channel.options.defaultAccount");
+    }
     accounts.push(resolveAccount(explicitDefaultAccount ?? DEFAULT_ACCOUNT_ID, baseAccount, {}, "channel.options"));
   }
 

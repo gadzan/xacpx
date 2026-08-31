@@ -1,4 +1,5 @@
 import type { ChannelRuntimeConfig, ChannelDoctorFinding } from "xacpx/plugin-api";
+import { parseDiscordChannelConfig } from "./config.js";
 import { parseBooleanFlag, takeFlagValue } from "./provider.js";
 import type { ChannelCliInput, ChannelCliIo, ChannelCliParseResult, ChannelCliProvider, ChannelCliValidationIssue } from "./provider.js";
 import { t } from "./i18n/index.js";
@@ -8,6 +9,26 @@ const DISCORD_CHANNEL_LEVEL_OPTION_KEYS = ["dedupTtlMs", "dedupMaxEntries", "inb
 function stringField(input: ChannelCliInput, key: string): string | undefined {
   const value = input[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Cheap "is there any credential at all" test, used only to decide which
+ * message the user should see. Semantic validation is delegated to the runtime
+ * parser — see validateConfig.
+ */
+function hasAnyCredential(options: Record<string, unknown>): boolean {
+  if (typeof options.token === "string" && options.token.trim().length > 0) return true;
+  const accounts = options.accounts;
+  if (isRecord(accounts)) {
+    for (const account of Object.values(accounts)) {
+      if (isRecord(account) && typeof account.token === "string" && account.token.trim().length > 0) return true;
+    }
+  }
+  return false;
 }
 
 export const discordCliProvider: ChannelCliProvider = {
@@ -113,23 +134,33 @@ export const discordCliProvider: ChannelCliProvider = {
     const issues: ChannelCliValidationIssue[] = [];
     if (config.id !== "discord") issues.push({ kind: "invalid-config", message: "discord channel id must be discord" });
     if (config.type !== "discord") issues.push({ kind: "invalid-config", message: "discord channel type must be discord" });
-    const options = config.options as Record<string, unknown> | undefined;
-    const accounts = options && typeof options.accounts === "object" && options.accounts !== null
-      ? (options.accounts as Record<string, Record<string, unknown>>)
-      : undefined;
+    const options = config.options;
+    if (options === undefined) return issues;
+    if (!isRecord(options)) {
+      issues.push({ kind: "invalid-config", message: "channel.options must be an object when channel.type is discord" });
+      return issues;
+    }
 
-    const hasConfiguredAccount = accounts
-      ? Object.values(accounts).some((acc) => typeof acc.token === "string" && acc.token.trim().length > 0)
-        || (typeof options?.token === "string" && options.token.trim().length > 0)
-      : Boolean(typeof options?.token === "string" && options.token.trim().length > 0);
-
-    if (!hasConfiguredAccount) {
-      if (!accounts && !options?.token) {
+    // No credential anywhere: keep the actionable flag hint instead of the
+    // parser's generic "token is required".
+    if (!hasAnyCredential(options)) {
+      const hasAccountsBlock = typeof options.accounts === "object" && options.accounts !== null;
+      if (hasAccountsBlock) {
+        issues.push({ kind: "invalid-config", message: t().providerAccountsMissingCredentials });
+      } else {
         issues.push({ kind: "missing-required-field", flag: "--token", message: t().providerMissingToken });
       }
-      if (accounts) {
-        issues.push({ kind: "invalid-config", message: t().providerAccountsMissingCredentials });
-      }
+      return issues;
+    }
+
+    // Everything else is the runtime parser's job. Duplicating a rule here is
+    // how the CLI came to accept configs that only failed on the next start
+    // (e.g. two accounts sharing one bot token), so the parser is called as the
+    // single authority and its message is surfaced verbatim.
+    try {
+      parseDiscordChannelConfig(options);
+    } catch (error) {
+      issues.push({ kind: "invalid-config", message: error instanceof Error ? error.message : String(error) });
     }
     return issues;
   },

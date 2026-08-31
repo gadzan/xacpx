@@ -155,12 +155,12 @@ export function cleanDiscordMention(text: string, botUserId: string): string {
   if (!text) return "";
   let out = text;
   if (botUserId) {
+    // Strip only our own mention tag. Everything else the sender typed is
+    // content: collapsing all whitespace runs here flattened multi-line
+    // prompts, pasted code blocks, indentation and tabs into one line.
     out = out.replace(new RegExp(`<@!?${escapeRegExp(botUserId)}>`, "g"), "");
   }
-  // Remove any remaining user mentions' raw tags but keep plain text fallback via cleanContent if needed
-  // Keep content readable: collapse whitespace
-  out = out.replace(/\s+/g, " ").trim();
-  return out;
+  return out.trim();
 }
 
 function escapeRegExp(value: string): string {

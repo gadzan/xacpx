@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { parseDiscordChannelConfig } from "../../../../packages/channel-discord/src/config";
+import { buildDiscordChatKey, parseDiscordChatKey } from "../../../../packages/channel-discord/src/inbound";
 
 // Review round 4 (High): the same token must never back two enabled accounts
 // in ONE process. start() spawns one Gateway client per eligible account, so
@@ -47,4 +48,37 @@ test("rejection message names account ids only, never the token", () => {
   expect(message).toContain("accounts.b");
   expect(message).toContain('"a"');
   expect(message).not.toContain("super-secret-tok");
+});
+
+// Round 6 M2: an account id is embedded in every chatKey
+// ("discord:<accountId>:<kind>:<channelId>") and chatKeys are parsed back by
+// splitting on ":". An id carrying the delimiter therefore round-trips into a
+// different (accountId, kind, channelId) triple, so replies would be routed to
+// the wrong account or chat type. Reject exactly what the grammar cannot
+// express - the delimiter and the empty id - and nothing else.
+test("account id containing the chatKey separator is rejected", () => {
+  expect(() =>
+    parseDiscordChannelConfig({ accounts: { "ops:east": { token: "tok-X" } } }),
+  ).toThrow(/channel\.options\.accounts\.ops:east: account id must not contain ":"/);
+});
+
+test("empty account id is rejected", () => {
+  expect(() =>
+    parseDiscordChannelConfig({ accounts: { "": { token: "tok-X" } } }),
+  ).toThrow(/account id must not be empty/);
+});
+
+test("defaultAccount used as the single-account id is checked too", () => {
+  expect(() =>
+    parseDiscordChannelConfig({ token: "tok-X", defaultAccount: "ops:east" }),
+  ).toThrow(/channel\.options\.defaultAccount: account id must not contain ":"/);
+});
+
+test("separator-free ids survive and their chatKey round-trips", () => {
+  const cfg = parseDiscordChannelConfig({ accounts: { "ops-east.work": { token: "tok-X" } } });
+  expect(cfg.accounts[0]!.accountId).toBe("ops-east.work");
+  const accountId = "ops-east.work";
+  const chatKey = buildDiscordChatKey({ accountId, route: { accountId, kind: "guild", channelId: "c1" } });
+  expect(chatKey).toBe("discord:ops-east.work:g:c1");
+  expect(parseDiscordChatKey(chatKey)).toEqual({ accountId, kind: "guild", channelId: "c1", chatKey });
 });
