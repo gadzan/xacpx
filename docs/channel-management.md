@@ -257,7 +257,7 @@ In the [Discord Developer Portal](https://discord.com/developers/applications):
 
 1. Create an **Application**, then set up its **Bot**.
 2. Copy the **Bot Token** (Reset Token if needed). Treat it as a secret; never paste it into issues, logs, or chat. If it leaks, reset it, update `options.token`, and `xacpx restart`.
-3. Enable **Message Content Intent** under Privileged Gateway Intents — without it, guild messages arrive with empty content (DMs are unaffected).
+3. Enable **Message Content Intent** under Privileged Gateway Intents. The plugin requests it by default (`intents.messageContent` is `true`), and it is a *privileged* intent — if the Portal toggle is off, Discord closes the Gateway with code **4014 (disallowed intents)** and the bot never comes online. Set `intents.messageContent: false` only if you accept losing the content of ordinary server messages (see the package README).
 
 Discord renames Portal sections occasionally; use the current Portal as the source of truth.
 
@@ -359,9 +359,10 @@ xacpx channel rm discord                              # remove channel before un
 | Symptom | Likely cause | Action |
 |---|---|---|
 | Bot offline | daemon/token | `xacpx status`, `xacpx restart`, check app.log; rotate token if invalid |
+| Goes offline on connect, log shows Gateway close `4014` | Portal Message Content Intent off while the plugin still requests it (default) | enable the intent in the Portal, or set `intents.messageContent: false` |
 | Online but DM ignored | `allowFrom` empty / sender not listed | add User ID (step 6) |
 | Online but server message ignored | guild allowlist empty or `requireMention=true` | allowlist sender/role, or @-mention the bot |
-| Events arrive, content empty | Message Content Intent off in Portal | enable it; keep local intent on |
+| Online, `requireMention=false`, plain server messages ignored | no Message Content access, so content arrives empty and the message is dropped | enable the Portal intent and keep `intents.messageContent` on |
 | Can read thread, cannot reply | missing `Send Messages in Threads` | grant that permission |
 | Second process won't start Discord | per-token consumer lock | stop the duplicate, or use a distinct token |
 | "duplicates the bot token" on start | two enabled accounts share one token | give each enabled account its own token |

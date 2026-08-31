@@ -258,7 +258,7 @@ xacpx plugin add @ganglion/xacpx-channel-discord
 
 1. 新建一个 **Application**，再在其 **Bot** 设置里创建 / 确认机器人。
 2. 复制 **Bot Token**（没有就 Reset Token）。把它当密码对待，不要贴进 issue、日志或聊天；一旦泄漏，先在 Portal 重置，再更新 xacpx 的 `options.token` 并 `xacpx restart`。
-3. 在 Privileged Gateway Intents 里开启 **Message Content Intent**——否则服务器里的消息内容会是空（私聊不受此项影响）。
+3. 在 Privileged Gateway Intents 里开启 **Message Content Intent**。插件默认就会请求这个 intent（`intents.messageContent` 默认为 `true`），而它属于**特权 intent**：Portal 里没有开启时，Discord 会以 **4014（disallowed intents）** 关闭 Gateway，机器人根本上线不了。只有在你接受"读不到普通服务器消息内容"时，才把 `intents.messageContent` 设为 `false`（详见插件 README）。
 
 Discord 偶尔会改 Portal 的分区名称，以当前 Portal 界面为准。
 
@@ -362,9 +362,10 @@ xacpx channel rm discord                              # 卸载插件前先删频
 | 现象 | 常见原因 | 处理 |
 |---|---|---|
 | 机器人离线 | daemon / token | `xacpx status`、`xacpx restart`、看 app.log；token 失效就重置 |
+| 一连就离线，日志显示 Gateway 关闭码 `4014` | Portal 未开 Message Content Intent，但插件默认仍会请求它 | 去 Portal 开启；或把 `intents.messageContent` 设为 `false` |
 | 在线但私聊没反应 | `allowFrom` 为空 / 发送者不在名单 | 加入你的 User ID（见第 6 步） |
 | 在线但服务器消息没反应 | 服务器白名单为空，或 `requireMention=true` | 加 sender / role，或 @ 机器人 |
-| 收到事件但内容为空 | Portal 未开 Message Content Intent | 去 Portal 开启；本地 intent 保持开启 |
+| 在线、`requireMention=false`，但普通服务器消息没反应 | 没有 Message Content 权限，内容为空，消息被直接丢弃 | 去 Portal 开启 intent，并保持 `intents.messageContent` 开启 |
 | 线程能读不能回 | 缺 `Send Messages in Threads` | 授予该权限 |
 | 第二个 xacpx 进程起不来 Discord | per-token consumer lock | 关掉重复进程，或换一个独立 token |
 | 启动报 "duplicates the bot token" | 两个启用账号共用一个 token | 给每个启用账号各自的 token |

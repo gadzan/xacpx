@@ -29,12 +29,16 @@ The token is shown only under the application's **Bot** settings. Treat it as a 
 
 Still in the Bot settings, under **Privileged Gateway Intents**, enable **Message Content Intent**.
 
-Two distinct layers, both must be right:
+Message Content is a **privileged** intent, and by default the plugin asks for it on every connect (`options.intents.messageContent` defaults to `true`). If the Portal toggle is still off, Discord rejects the identify and closes the Gateway with **code 4014 (disallowed intents)** — the bot never comes online. So the symptom on this path is "bot offline", not "messages arrive with empty content".
 
-- **Developer Portal capability** — if Message Content Intent is off here, the Gateway delivers guild messages with empty content. This is a server-side permission you toggle in the Portal.
-- **xacpx `options.intents.messageContent`** — xacpx defaults this to `true` locally; it controls what the plugin requests on connect. A local `true` does **not** mean the Portal intent is enabled.
+Two layers have to agree:
 
-DMs are unaffected by the guild content intent, but @-mention traffic in servers depends on it.
+- **Portal toggle** — the server-side permission. Enable it, or turn the local request off.
+- **xacpx `options.intents.messageContent`** — what the plugin requests on connect. A local `true` does **not** enable anything in the Portal; setting it to `false` stops requesting the intent, and the bot then connects fine without Portal approval.
+
+Without the intent, Discord still delivers the content of DMs, of the bot's own messages, and of messages that @mention the bot. That covers the default `requireMention: true`, where every guild message must @mention the bot (or reply to it) anyway. It does **not** cover `requireMention: false`: there the plugin receives empty text and drops the message, so a plain sentence posted to the channel never reaches an agent.
+
+Recommended: enable the Portal intent and leave `intents.messageContent` at its default `true`. Set it to `false` only if you deliberately run a mention-only bot.
 
 ### 4. Install the bot into your server
 
@@ -279,9 +283,10 @@ xacpx plugin doctor
 | Symptom | Likely cause | Action |
 |---|---|---|
 | Bot offline | daemon/channel/token | `xacpx status`, `xacpx restart`, check `~/.xacpx/runtime/app.log`; rotate the token if it is invalid |
+| Bot goes offline on connect, log shows Gateway close `4014` | Portal **Message Content Intent** is off, but `intents.messageContent` defaults to `true` so the plugin still requests it | enable the intent in the Developer Portal, or set `intents.messageContent: false` |
 | Bot online but DM ignored | `dmPolicy=allowlist` + sender not in `allowFrom` | add your User ID, or use an explicit `open` for a controlled test |
 | Bot online but server message ignored | guild allowlist empty, or `requireMention=true` | add sender/role to `allowFrom` or `guilds.<gid>.users/roles`; @-mention the bot |
-| Events arrive but content empty | Message Content Intent off in the Portal | enable it in Developer Portal; keep local `intents.messageContent` enabled |
+| Bot online, `requireMention: false`, yet plain server messages never reach an agent | no Message Content access, so content arrives empty and the message is dropped | enable the Portal intent and keep `intents.messageContent` on; or run with `requireMention: true` |
 | Can read a thread but cannot reply | missing `Send Messages in Threads` | grant that channel/server permission |
 | Attachments fail | Discord permission or xacpx `media.maxBytes` | grant **Attach Files**; raise the local limit |
 | Second xacpx process fails to start Discord | per-token consumer lock | stop the duplicate process, or use a distinct bot token |
