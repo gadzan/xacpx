@@ -168,7 +168,7 @@ test("G4: deleteSession fails closed if main JSON is deleted but stream artifact
 
 test("G4 fail-closed 1: sessions directory ENOENT allows idempotent delete success", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-del-enoent-"));
-  const nonExistentDir = join(dir, "no-such-sessions-dir");
+  const nonExistentDir = join(dir, "no-such", "sessions");
   try {
     const entry = join(dir, "fake-worker.mjs");
     await withFakeWorker(entry);
@@ -189,7 +189,7 @@ test("G4 fail-closed 1: sessions directory ENOENT allows idempotent delete succe
 
 test("G4 fail-closed 2: cold lookup unreadable directory (non-ENOENT) fails closed and rejects delete", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-del-unreadable-dir-"));
-  const fakeSessionsDirAsFile = join(dir, "sessions-is-a-file");
+  const fakeSessionsDirAsFile = join(dir, "sessions");
   try {
     const entry = join(dir, "fake-worker.mjs");
     await withFakeWorker(entry);

@@ -428,7 +428,7 @@ export class RuntimeEngine implements BridgeEngine {
       this.manager = new RuntimeWorkerManager({
         entryPath: entry,
         clientDeps: options.workerClientDeps,
-        ...(options.fenceDir ? { fenceDir: options.fenceDir } : options.stateDir ? (() => { try { return { fenceDir: join(this.runtimeStateRoot(), "worker-fences") }; } catch { return {}; } })() : {}),
+        fenceDir: options.fenceDir ?? join(this.xacpxRuntimeDir(), "worker-fences"),
       });
     }
     if (options.queueDir) {
@@ -436,6 +436,10 @@ export class RuntimeEngine implements BridgeEngine {
     } else if (options.stateDir) {
       try {
         this.queueStore = new RuntimeQueueStore(join(this.runtimeStateRoot(), "runtime-queue"));
+      } catch {}
+    } else {
+      try {
+        this.queueStore = new RuntimeQueueStore(join(this.xacpxRuntimeDir(), "runtime-queue"));
       } catch {}
     }
   }
@@ -466,13 +470,20 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   /**
-   * acpx Runtime store root: createRuntimeStore joins "sessions" onto stateDir.
-   * For hermetic tests that use a non-sessions temp dir (e.g. ENOENT case), we
-   * fall back to dirname without strict fail-closed, but production callers
-   * should still use a ".../sessions" dir for correct store alignment.
+   * acpx Runtime store root: createRuntimeStore internally joins "sessions"
+   * onto stateDir, so the root is the parent of the sessions dir. Because the
+   * sessions dir basename is a hard contract (see RuntimeEngineOptions.stateDir),
+   * a non-"sessions" basename would silently misalign disk helpers and the
+   * Runtime store — fail closed instead.
    */
   private runtimeStateRoot(): string {
     const sessions = this.sessionsDir();
+    if (sessions.split(/[\\/]/).pop() !== "sessions") {
+      throw new RuntimeError(
+        "RUNTIME_INIT_FAILED",
+        `RuntimeEngineOptions.stateDir must end in "sessions" (got "${sessions}") — upstream acpx createRuntimeStore hard-codes stateRoot + "/sessions"`,
+      );
+    }
     return dirname(sessions);
   }
   private scheduleIdleTtl(key: string, client: RuntimeWorkerClient): void {
@@ -630,9 +641,11 @@ export class RuntimeEngine implements BridgeEngine {
         this.activeTurns.delete(key);
       }
       if (!isTerminal) {
-        // Worker crash before/during turn without terminal result — keep head for at-least-once replay
-        // Schedule a re-kick after a short backoff so the queue doesn't stall until next external operation
-        setTimeout(() => this.kickDrain(input).catch(() => {}), 200);
+        if (this.shuttingDown) return;
+        setTimeout(() => {
+          if (this.shuttingDown) return;
+          this.kickDrain(input).catch(() => {});
+        }, 200);
         return;
       }
       // Atomically remove head from journal ONLY after terminal settlement (at-least-once, possible replay on crash before remove)

@@ -296,17 +296,15 @@ export class BridgeServer {
           name: requireString(params, "name"),
         }, params));
       case "tailSessionHistory":
-        return await this.engines.tailSessionHistory({
+        return await this.engines.tailSessionHistory(withMcp({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
-          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
-          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
           lines: requirePositiveInt(params, "lines"),
-        });
+        }, params));
       case "listAgentSessions":
         return await this.engines.listAgentSessions({
           agent: requireString(params, "agent"),
@@ -319,7 +317,7 @@ export class BridgeServer {
           filterCwd: asOptionalString(params.filterCwd),
         });
       case "ensureSession":
-        return await this.engines.ensureSession({
+        return await this.engines.ensureSession(withMcp({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
@@ -328,9 +326,7 @@ export class BridgeServer {
           name: requireString(params, "name"),
           sessionKey: asOptionalString(params.sessionKey),
           model: asOptionalString(params.model),
-          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
-          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
-        }, (progress) => {
+        }, params), (progress) => {
           if (typeof progress === "string") {
             writeLine?.(encodeBridgeSessionProgressEvent({
               id: requestId,

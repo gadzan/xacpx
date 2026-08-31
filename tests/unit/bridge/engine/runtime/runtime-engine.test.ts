@@ -54,7 +54,9 @@ test("freeWarmProcess on a cold session is a no-op success", async () => {
   try {
     const entry = join(dir, "fake-worker.mjs");
     await withFakeWorker(entry);
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all" });
+    const stateDir = join(dir, "state", "sessions");
+    await import("node:fs/promises").then(m=>m.mkdir(stateDir,{recursive:true}));
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", stateDir, queueDir: join(dir, "queue"), fenceDir: join(dir, "fences") });
     await expect(engine.freeWarmProcess(sessionInput)).resolves.toEqual({});
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -66,7 +68,9 @@ test("prompt runs through the worker and returns final text; warm flips after us
   try {
     const entry = join(dir, "fake-worker.mjs");
     await withFakeWorker(entry);
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all" });
+    const stateDir = join(dir, "state", "sessions");
+    await import("node:fs/promises").then(m=>m.mkdir(stateDir,{recursive:true}));
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", stateDir, queueDir: join(dir, "queue"), fenceDir: join(dir, "fences") });
     // Cold before first prompt
     expect((await engine.isSessionWarm(sessionInput)).warm).toBe(false);
     const reply = await engine.prompt({ ...sessionInput, text: "hello" }, () => {});
@@ -85,7 +89,9 @@ test("removeSession is unsupported until close-parity is proven", async () => {
   try {
     const entry = join(dir, "fake-worker.mjs");
     await withFakeWorker(entry);
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all" });
+    const stateDir = join(dir, "state", "sessions");
+    await import("node:fs/promises").then(m=>m.mkdir(stateDir,{recursive:true}));
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", stateDir, queueDir: join(dir, "queue"), fenceDir: join(dir, "fences") });
     await expect(engine.removeSession(sessionInput)).rejects.toThrow(/close-parity/);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -149,7 +155,9 @@ test("streaming timing regression: onSegment fires while prompt promise is still
         "});",
       ].join("\n"),
     );
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all" });
+    const stateDir = join(dir, "state", "sessions");
+    await import("node:fs/promises").then(m=>m.mkdir(stateDir,{recursive:true}));
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", stateDir, queueDir: join(dir, "queue"), fenceDir: join(dir, "fences") });
     let promptPromiseSettled = false;
     let onSegmentRanWhilePending = false;
 
@@ -208,7 +216,9 @@ test("G9: usage events never fabricate 0 for unknown token fields (used-only, si
         "});",
       ].join("\n"),
     );
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all" });
+    const stateDir = join(dir, "state", "sessions");
+    await import("node:fs/promises").then(m=>m.mkdir(stateDir,{recursive:true}));
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", stateDir, queueDir: join(dir, "queue"), fenceDir: join(dir, "fences") });
 
     // 1. used-only: must NOT fabricate size: 0
     const usedOnlyEvents: Array<{ type: string; used?: number; size?: number }> = [];
@@ -299,7 +309,9 @@ test("resumeAgentSession passes resumeSessionId to worker ensure RPC", async () 
       ].join("\n"),
     );
 
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all" });
+    const stateDir = join(dir, "state", "sessions");
+    await import("node:fs/promises").then(m=>m.mkdir(stateDir,{recursive:true}));
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", stateDir, queueDir: join(dir, "queue"), fenceDir: join(dir, "fences") });
     await engine.resumeAgentSession({ ...sessionInput, agentSessionId: "native-conv-123" });
 
     const client = engine["manager"]?.get(sessionInput.logicalSessionId);
@@ -446,7 +458,9 @@ test("tool_call events map to typed ToolUseEvent and toolEventMode formats text"
       ].join("\n"),
     );
 
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all" });
+    const stateDir = join(dir, "state", "sessions");
+    await import("node:fs/promises").then(m=>m.mkdir(stateDir,{recursive:true}));
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", stateDir, queueDir: join(dir, "queue"), fenceDir: join(dir, "fences") });
     const events: unknown[] = [];
     await engine.prompt(
       { ...sessionInput, text: "run-tool", toolEventMode: "both" },
@@ -485,7 +499,9 @@ test("Runtime worker idle TTL timer automatically reaps inactive warm worker", a
     const entry = join(dir, "fake-worker.mjs");
     await withFakeWorker(entry);
     // 50ms TTL for fast test
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", idleTtlMs: 50 });
+    const stateDir = join(dir, "state", "sessions");
+    await import("node:fs/promises").then(m=>m.mkdir(stateDir,{recursive:true}));
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", idleTtlMs: 50, stateDir, queueDir: join(dir, "queue"), fenceDir: join(dir, "fences") });
 
     await engine.ensureSession(sessionInput);
     expect((await engine.isSessionWarm(sessionInput)).warm).toBe(true);
@@ -534,7 +550,9 @@ test("terminal turn cancelled throws RUNTIME_TURN_CANCELLED and failed maps erro
       ].join("\n"),
     );
 
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all" });
+    const stateDir = join(dir, "state", "sessions");
+    await import("node:fs/promises").then(m=>m.mkdir(stateDir,{recursive:true}));
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", stateDir, queueDir: join(dir, "queue"), fenceDir: join(dir, "fences") });
 
     // Cancelled turn throws RUNTIME_TURN_CANCELLED
     await expect(engine.prompt({ ...sessionInput, text: "cancel" })).rejects.toMatchObject({
@@ -573,7 +591,9 @@ test("prompt lifecycle: prompt starts idle TTL timer and automatically reaps wor
   try {
     const entry = join(dir, "fake-worker.mjs");
     await withFakeWorker(entry);
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", idleTtlMs: 60 });
+    const stateDir = join(dir, "state", "sessions");
+    await import("node:fs/promises").then(m=>m.mkdir(stateDir,{recursive:true}));
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", idleTtlMs: 60, stateDir, queueDir: join(dir, "queue"), fenceDir: join(dir, "fences") });
 
     const reply = await engine.prompt({ ...sessionInput, text: "hi" });
     expect(reply.text).toBe("hi");
@@ -595,7 +615,9 @@ test("prompt lifecycle: new prompt before idle TTL resets the timer and keeps wo
   try {
     const entry = join(dir, "fake-worker.mjs");
     await withFakeWorker(entry);
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", idleTtlMs: 80 });
+    const stateDir = join(dir, "state", "sessions");
+    await import("node:fs/promises").then(m=>m.mkdir(stateDir,{recursive:true}));
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", idleTtlMs: 80, stateDir, queueDir: join(dir, "queue"), fenceDir: join(dir, "fences") });
 
     await engine.prompt({ ...sessionInput, text: "hi 1" });
     expect((await engine.isSessionWarm(sessionInput)).warm).toBe(true);
@@ -651,7 +673,9 @@ test("toolEventMode structured emits structured event but skips text segment for
       ].join("\n"),
     );
 
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all" });
+    const stateDir = join(dir, "state", "sessions");
+    await import("node:fs/promises").then(m=>m.mkdir(stateDir,{recursive:true}));
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", stateDir, queueDir: join(dir, "queue"), fenceDir: join(dir, "fences") });
     const events: unknown[] = [];
     await engine.prompt(
       { ...sessionInput, text: "run-tool", toolEventMode: "structured" },
@@ -787,7 +811,9 @@ test("freeWarmProcess while prompt is active marks coolPending and terminates on
       ].join("\n"),
     );
 
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all" });
+    const stateDir = join(dir, "state", "sessions");
+    await import("node:fs/promises").then(m=>m.mkdir(stateDir,{recursive:true}));
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", stateDir, queueDir: join(dir, "queue"), fenceDir: join(dir, "fences") });
 
     // 1. Start long-running prompt
     let promptFinished = false;

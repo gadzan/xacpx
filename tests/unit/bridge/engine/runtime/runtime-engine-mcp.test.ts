@@ -22,7 +22,9 @@ test("same MCP identity reuses worker", async () => {
   try {
     const entry = join(dir, "w.mjs");
     await mcpWorker(entry);
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all" });
+    const stateDir = join(dir, "state", "sessions");
+  await import("node:fs/promises").then(m=>m.mkdir(stateDir,{recursive:true}));
+  const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", fenceDir: join(dir, "fences"), queueDir: join(dir, "queue"), stateDir });
     const r1 = await engine.prompt({ ...base, mcpCoordinatorSession: "coordA", mcpSourceHandle: "src1", text: "t1" });
     expect(r1.text).toBe("coord=coordA;src=src1");
     const pid1 = (engine as unknown as { manager: { get:(k:string)=>{ ref:{pid:number}} } }).manager.get("mcp-1")?.ref.pid;
@@ -39,7 +41,9 @@ test("changed coordinator rotates idle worker", async () => {
   try {
     const entry = join(dir, "w.mjs");
     await mcpWorker(entry);
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all" });
+    const stateDir = join(dir, "state", "sessions");
+  await import("node:fs/promises").then(m=>m.mkdir(stateDir,{recursive:true}));
+  const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", fenceDir: join(dir, "fences"), queueDir: join(dir, "queue"), stateDir });
     await engine.prompt({ ...base, mcpCoordinatorSession: "coordA", mcpSourceHandle: "src1", text: "t1" });
     const pid1 = (engine as unknown as { manager: { get:(k:string)=>{ ref:{pid:number}} } }).manager.get("mcp-1")?.ref.pid;
     // Change coordinator while idle
@@ -56,7 +60,9 @@ test("changed source rotates idle worker", async () => {
   try {
     const entry = join(dir, "w.mjs");
     await mcpWorker(entry);
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all" });
+    const stateDir = join(dir, "state", "sessions");
+  await import("node:fs/promises").then(m=>m.mkdir(stateDir,{recursive:true}));
+  const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", fenceDir: join(dir, "fences"), queueDir: join(dir, "queue"), stateDir });
     await engine.prompt({ ...base, mcpCoordinatorSession: "coordA", mcpSourceHandle: "src1", text: "t1" });
     const pid1 = (engine as unknown as { manager: { get:(k:string)=>{ ref:{pid:number}} } }).manager.get("mcp-1")?.ref.pid;
     const r2 = await engine.prompt({ ...base, mcpCoordinatorSession: "coordA", mcpSourceHandle: "src2", text: "t2" });
@@ -79,7 +85,9 @@ test("MCP identity change during active turn does not kill active worker, rotate
       " else {process.stdout.write(JSON.stringify({id:m.id,ok:true,result:{}})+'\\n'); if(m.method==='shutdown')process.exit(0);}",
       "}catch{}}});"
     ].join("\n"));
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all" });
+    const stateDir = join(dir, "state", "sessions");
+  await import("node:fs/promises").then(m=>m.mkdir(stateDir,{recursive:true}));
+  const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", fenceDir: join(dir, "fences"), queueDir: join(dir, "queue"), stateDir });
     const p1 = engine.prompt({ ...base, mcpCoordinatorSession: "coordA", text: "long" });
     await new Promise(r=>setTimeout(r,50));
     // Try to change MCP while active — should fail with stale error, not kill
@@ -97,7 +105,9 @@ test("no coordinator -> no MCP, removal also triggers rotation", async () => {
   try {
     const entry = join(dir, "w.mjs");
     await mcpWorker(entry);
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all" });
+    const stateDir = join(dir, "state", "sessions");
+  await import("node:fs/promises").then(m=>m.mkdir(stateDir,{recursive:true}));
+  const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", fenceDir: join(dir, "fences"), queueDir: join(dir, "queue"), stateDir });
     await engine.prompt({ ...base, mcpCoordinatorSession: "coordA", text: "t1" });
     const pid1 = (engine as unknown as { manager: { get:(k:string)=>{ ref:{pid:number}} } }).manager.get("mcp-1")?.ref.pid;
     await engine.prompt({ ...base, text: "t2" }); // no coordinator
@@ -112,7 +122,9 @@ test("no duplicate MCP registration: repeated ensure/prompt with same identity d
   try {
     const entry = join(dir, "w.mjs");
     await mcpWorker(entry);
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all" });
+    const stateDir = join(dir, "state", "sessions");
+  await import("node:fs/promises").then(m=>m.mkdir(stateDir,{recursive:true}));
+  const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", fenceDir: join(dir, "fences"), queueDir: join(dir, "queue"), stateDir });
     await engine.ensureSession({ ...base, mcpCoordinatorSession: "coordA" });
     await engine.prompt({ ...base, mcpCoordinatorSession: "coordA", text: "t1" });
     await engine.ensureSession({ ...base, mcpCoordinatorSession: "coordA" });
