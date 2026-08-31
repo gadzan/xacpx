@@ -255,39 +255,46 @@ async function attachNativeSession(
     finalDisplayAlias = toDisplaySessionAlias(finalInternalAlias);
   }
 
-  const transportSession = context.sessions.buildDefaultTransportSessionForChat(chatKey, finalDisplayAlias);
-  const resolvedSession = context.lifecycle.resolveSession(
+  const transportSessionForProbe = context.sessions.buildDefaultTransportSessionForChat(chatKey, finalDisplayAlias);
+  const launchProbe = context.lifecycle.resolveSession(
     finalInternalAlias,
     nativeTarget.agent,
     nativeTarget.workspace,
-    transportSession,
+    transportSessionForProbe,
     { guardAcpOutput: true },
   );
-  const releaseTransportReservation = await context.lifecycle.reserveTransportSession(resolvedSession.transportSession);
-
+  let persisted: ResolvedSession;
   try {
-    try {
-      await context.transport.resumeAgentSession(resolvedSession, session.sessionId);
-    } catch (error) {
-      return { text: renderNativeResumeError(target, error) };
-    }
-    const verified = await context.lifecycle.checkTransportSession(resolvedSession);
-    if (!verified) {
-      return { text: t().nativeSession.attachVerificationFailed(target.agentDisplayName) };
-    }
-
-    await context.sessions.attachNativeSession({
+    persisted = await context.sessions.attachNativeSession({
       alias: finalInternalAlias,
       agent: nativeTarget.agent,
       workspace: nativeTarget.workspace,
-      transportSession,
-      ...(resolvedSession.agentCommand ? { transportAgentCommand: resolvedSession.agentCommand } : {}),
-      ...(resolvedSession.acpxAgent ? { transportAcpxAgent: resolvedSession.acpxAgent } : {}),
-      ...(resolvedSession.agentArgv ? { transportAgentArgv: resolvedSession.agentArgv } : {}),
+      transportSession: launchProbe.transportSession,
+      ...(launchProbe.agentCommand ? { transportAgentCommand: launchProbe.agentCommand } : {}),
+      ...(launchProbe.acpxAgent ? { transportAcpxAgent: launchProbe.acpxAgent } : {}),
+      ...(launchProbe.agentArgv ? { transportAgentArgv: launchProbe.agentArgv } : {}),
       agentSessionId: session.sessionId,
       title: session.title,
       updatedAt: session.updatedAt,
     });
+  } catch (error) {
+    return { text: renderNativeResumeError(target, error) };
+  }
+  const releaseTransportReservation = await context.lifecycle.reserveTransportSession(persisted.transportSession);
+
+  try {
+    try {
+      await context.transport.resumeAgentSession(persisted, session.sessionId);
+    } catch (error) {
+      try { await context.sessions.removeSession(persisted.alias); } catch {}
+      return { text: renderNativeResumeError(target, error) };
+    }
+    const verified = await context.lifecycle.checkTransportSession(persisted);
+    if (!verified) {
+      try { await context.sessions.removeSession(persisted.alias); } catch {}
+      return { text: t().nativeSession.attachVerificationFailed(target.agentDisplayName) };
+    }
+
     await context.sessions.useSession(chatKey, finalInternalAlias);
     await refreshAgentCommandBestEffort(context, finalInternalAlias);
 

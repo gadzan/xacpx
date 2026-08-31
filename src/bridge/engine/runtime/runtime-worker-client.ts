@@ -89,13 +89,16 @@ export class RuntimeWorkerClient {
   get isDeliberateShutdown(): boolean {
     return this.deliberateShutdown;
   }
-
   get inFlightCount(): number {
     return Math.max(this.inFlightLeases, this.pending.size);
   }
 
   get hasInFlight(): boolean {
     return this.inFlightLeases > 0 || this.pending.size > 0 || this.lifecycle === "busy";
+  }
+
+  get hasBusinessInFlight(): boolean {
+    return this.inFlightLeases > 0 || this.lifecycle === "busy";
   }
 
   constructor(
@@ -299,7 +302,7 @@ export class RuntimeWorkerClient {
         // I4: timeout is only a hard failure when business is still in flight.
         // A fake test worker with no pending business that is simply slow to
         // ACK should still proceed to terminate (no late-child race exists).
-        const stillBusy = this.hasInFlight;
+        const stillBusy = this.hasBusinessInFlight;
         if (msg === "quiesced timeout") {
           if (stillBusy) {
             throw new WorkerTeardownPendingError(

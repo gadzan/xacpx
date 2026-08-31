@@ -322,32 +322,49 @@ export class SessionControlService {
     }
     const { alias: finalInternalAlias, release: releaseAliasReservation } = reserved;
     try {
-      const session = this.sessions.resolveSession(
+      const launchProbe = this.sessions.resolveSession(
         finalInternalAlias,
         agent,
         workspace,
         `${workspace}:${finalInternalAlias}`,
         { guardAcpOutput: true },
       );
-      const release = await this.reserveLogicalTransportSession(session.transportSession);
+      let persisted: ResolvedSession;
       try {
-        await this.transport.resumeAgentSession(session, agentSessionId);
-        const exists = await this.invoker.checkTransportSession(session);
-        if (!exists) {
-          throw new Error(`transport session "${session.transportSession}" could not be verified`);
-        }
-        await this.sessions.attachNativeSession({
+        persisted = await this.sessions.attachNativeSession({
           alias: finalInternalAlias,
           agent,
           workspace,
-          transportSession: session.transportSession,
-          ...(session.agentCommand ? { transportAgentCommand: session.agentCommand } : {}),
-          ...(session.acpxAgent ? { transportAcpxAgent: session.acpxAgent } : {}),
-          ...(session.agentArgv ? { transportAgentArgv: session.agentArgv } : {}),
+          transportSession: launchProbe.transportSession,
+          ...(launchProbe.agentCommand ? { transportAgentCommand: launchProbe.agentCommand } : {}),
+          ...(launchProbe.acpxAgent ? { transportAcpxAgent: launchProbe.acpxAgent } : {}),
+          ...(launchProbe.agentArgv ? { transportAgentArgv: launchProbe.agentArgv } : {}),
           agentSessionId,
           ...(nativeMeta?.title !== undefined ? { title: nativeMeta.title } : {}),
           ...(nativeMeta?.updatedAt !== undefined ? { updatedAt: nativeMeta.updatedAt } : {}),
         });
+      } catch (error) {
+        throw error;
+      }
+      const release = await this.reserveLogicalTransportSession(persisted.transportSession);
+      try {
+        try {
+          await this.transport.resumeAgentSession(persisted, agentSessionId);
+          const exists = await this.invoker.checkTransportSession(persisted);
+          if (!exists) {
+            throw new Error(`transport session "${persisted.transportSession}" could not be verified`);
+          }
+        } catch (error) {
+          try {
+            await this.sessions.removeSession(persisted.alias);
+          } catch (rollbackError) {
+            await this.logger.error("session.native.rollback_failed", "failed to rollback provisional native session", {
+              alias: persisted.alias,
+              error: rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+            });
+          }
+          throw error;
+        }
         // Best-effort: a transient refresh failure must not fail an attach that already
         // succeeded, resumed, and verified. Mirrors createSessionWithTransport.
         try {
@@ -358,7 +375,7 @@ export class SessionControlService {
             error: error instanceof Error ? error.message : String(error),
           });
         }
-        return session;
+        return persisted;
       } finally {
         await release();
       }

@@ -92,10 +92,9 @@ async function defaultWaitMs(ms: number): Promise<void> {
  * group kill) nor a Windows root whose in-flight ensure may still spawn the
  * adapter (descendant-set quiescence). The live worker's own EOF gate is the
  * quiescence authority; H2 waits for its terminal phase, and a worker that
- * never settles leaves the fence in place (refuse). The ONLY kill H2 ever
- * performs is the DEAD-root orphan recovery — the spawner is provably gone,
- * and attribution runs inside the gated in-transaction kill with a
- * birth-order reuse cutoff.
+ * never settles leaves the fence in place (refuse). Without terminal/generation-bound proof, discharge is refused and
+ * the fence is retained. Same-boot dead-root automated recovery requires
+ * root-independent ownership proof and is intentionally unsupported here.
  */
 export async function dischargeRuntimeWorkerFence(
   record: RuntimeWorkerFenceRecord,
