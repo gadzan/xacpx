@@ -45,6 +45,7 @@ import {
 } from "./commands/workspace-name";
 import { StateStore } from "./state/state-store";
 import { toDisplaySessionAlias } from "./channels/channel-scope";
+import type { ConsumerLock, MessageChannelRuntime } from "./channels/types";
 import { renderLaterList } from "./scheduled/scheduled-render";
 import { ScheduledTaskService, normalizeId } from "./scheduled/scheduled-service";
 import { maybeRunFirstUseOnboarding, type FirstRunOnboardingPlan } from "./onboarding.js";
@@ -1001,6 +1002,37 @@ async function defaultLoadConfiguredPluginsForChannelCli(): Promise<void> {
 
 const DAEMON_RUN_ENV_SUFFIX = "DAEMON_RUN";
 
+/**
+ * One compatibility fence per lock-capable channel, sorted by channel id so two
+ * processes take the combined set in the same order. Exported because
+ * `runDefaultRuntime` boots the whole console and is not unit-testable.
+ */
+export function createChannelConsumerLocks(
+  lockCreators: ReadonlyArray<{
+    channel: { id: string };
+    create: NonNullable<MessageChannelRuntime["createConsumerLock"]>;
+  }>,
+  input: {
+    runtimeDir: string;
+    onDiagnostic: (
+      channelId: string,
+      event: string,
+      context: Record<string, string | number | boolean | undefined>,
+    ) => void | Promise<void>;
+  },
+): ConsumerLock[] {
+  return [...lockCreators]
+    .sort((a, b) => a.channel.id.localeCompare(b.channel.id))
+    .map(({ channel, create }) => create({
+      lockFilePath: `${input.runtimeDir}${sep}${channel.id}-consumer.lock.json`,
+      // Keep each channel's own id in the prefix: a conflict must name the
+      // channel that actually holds the fence, not the first one registered.
+      onDiagnostic: async (event, context) => {
+        await input.onDiagnostic(channel.id, event, context);
+      },
+    }));
+}
+
 export async function runDefaultRuntime(options: { firstRunOnboarding?: FirstRunOnboardingPlan } = {}): Promise<void> {
   const [{ buildApp, resolveRuntimePaths, prepareChannelMedia }, { runConsole }] = await Promise.all([
     import("./main"),
@@ -1042,7 +1074,6 @@ export async function runDefaultRuntime(options: { firstRunOnboarding?: FirstRun
   const { channelDeps } = await prepareChannelMedia(runtimePaths.configPath, config);
   const channelRegistry = new MessageChannelRegistry(createMessageChannels(config.channels, channelDeps));
   const lockCreators = channelRegistry.createConsumerLocks();
-  const firstLockCreator = lockCreators[0];
 
   const firstRunOnboarding = options.firstRunOnboarding ?? decodeFirstRunOnboarding(coreEnv("FIRST_RUN_ONBOARDING"));
   await runConsole(runtimePaths, {
@@ -1067,14 +1098,12 @@ export async function runDefaultRuntime(options: { firstRunOnboarding?: FirstRun
     ...(isDaemonRun ? { daemonRuntime } : {}),
     consumerLockFactory: (runtime) => createRuntimeConsumerLock({
       lockFilePath: resolveRuntimeConsumerLockPath(daemonPaths.runtimeDir),
-      ...(firstLockCreator
-        ? { channelLock: firstLockCreator.create({
-            lockFilePath: `${daemonPaths.runtimeDir}${sep}${firstLockCreator.channel.id}-consumer.lock.json`,
-            onDiagnostic: async (event, context) => {
-              await runtime.logger.info(`${firstLockCreator.channel.id}.consumer_lock.${event}`, `${firstLockCreator.channel.id} consumer lock diagnostic`, context);
-            },
-          }) }
-        : {}),
+      channelLocks: createChannelConsumerLocks(lockCreators, {
+        runtimeDir: daemonPaths.runtimeDir,
+        onDiagnostic: async (channelId, event, context) => {
+          await runtime.logger.info(`${channelId}.consumer_lock.${event}`, `${channelId} consumer lock diagnostic`, context);
+        },
+      }),
       onDiagnostic: async (event, context) => {
         await runtime.logger.info(`runtime.consumer_lock.${event}`, "runtime ownership lock diagnostic", context);
       },

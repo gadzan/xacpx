@@ -22,13 +22,13 @@ const metadata: ConsumerLockMetadata = {
   statePath: "/cfg/state.json",
 };
 
-test("runtime ownership composes the core lock with a legacy channel lock", async () => {
+test("runtime ownership composes the core lock with a single channel lock", async () => {
   const events: string[] = [];
   const core = fakeLock("core", events);
   const channel = fakeLock("channel", events);
   const lock = createRuntimeConsumerLock({
     lockFilePath: "/runtime/runtime-consumer.lock.json",
-    channelLock: channel,
+    channelLocks: [channel],
     createCoreLock: () => core,
   });
 
@@ -43,18 +43,97 @@ test("runtime ownership composes the core lock with a legacy channel lock", asyn
   ]);
 });
 
+test("every channel fence is acquired, not just the first one", async () => {
+  const events: string[] = [];
+  const lock = createRuntimeConsumerLock({
+    lockFilePath: "/runtime/runtime-consumer.lock.json",
+    // The caller owns the order; the composition must honour it exactly.
+    channelLocks: [fakeLock("channel-a", events), fakeLock("channel-b", events)],
+    createCoreLock: () => fakeLock("core", events),
+  });
+
+  await lock.acquire(metadata);
+  await lock.release();
+
+  expect(events).toEqual([
+    "core:acquire:70002",
+    "channel-a:acquire:70002",
+    "channel-b:acquire:70002",
+    "channel-b:release",
+    "channel-a:release",
+    "core:release",
+  ]);
+});
+
+test("a later channel fence failure rolls back the earlier fence and the core claim", async () => {
+  const events: string[] = [];
+  const lock = createRuntimeConsumerLock({
+    lockFilePath: "/runtime/runtime-consumer.lock.json",
+    channelLocks: [
+      fakeLock("channel-a", events),
+      {
+        acquire: async () => {
+          events.push("channel-b:acquire");
+          throw new Error("channel-b already owned");
+        },
+        release: async () => { events.push("channel-b:release"); },
+      },
+    ],
+    createCoreLock: () => fakeLock("core", events),
+  });
+
+  await expect(lock.acquire(metadata)).rejects.toThrow("channel-b already owned");
+  // channel-b never completed its acquire, so it must not be released.
+  expect(events).toEqual([
+    "core:acquire:70002",
+    "channel-a:acquire:70002",
+    "channel-b:acquire",
+    "channel-a:release",
+    "core:release",
+  ]);
+});
+
+test("release keeps going after a throwing channel fence", async () => {
+  const events: string[] = [];
+  const lock = createRuntimeConsumerLock({
+    lockFilePath: "/runtime/runtime-consumer.lock.json",
+    channelLocks: [
+      fakeLock("channel-a", events),
+      fakeLock("channel-b", events),
+      {
+        acquire: async () => { events.push("channel-c:acquire"); },
+        release: async () => { events.push("channel-c:release"); throw new Error("channel-c release boom"); },
+      },
+    ],
+    createCoreLock: () => fakeLock("core", events),
+  });
+
+  await lock.acquire(metadata);
+  await expect(lock.release()).rejects.toThrow("channel-c release boom");
+  expect(events).toEqual([
+    "core:acquire:70002",
+    "channel-a:acquire:70002",
+    "channel-b:acquire:70002",
+    "channel-c:acquire",
+    "channel-c:release",
+    "channel-b:release",
+    "channel-a:release",
+    "core:release",
+  ]);
+});
+
 test("channel lock failure releases the core ownership claim", async () => {
   const events: string[] = [];
   const lock = createRuntimeConsumerLock({
     lockFilePath: "/runtime/runtime-consumer.lock.json",
     createCoreLock: () => fakeLock("core", events),
-    channelLock: {
+    channelLocks: [{
       acquire: async () => {
         events.push("channel:acquire");
         throw new Error("channel already owned");
       },
       release: async () => { events.push("channel:release"); },
-    },
+    }],
   });
 
   await expect(lock.acquire(metadata)).rejects.toThrow("channel already owned");

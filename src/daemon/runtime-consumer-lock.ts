@@ -24,7 +24,8 @@ interface FsExt {
 
 interface CreateRuntimeConsumerLockOptions {
   lockFilePath: string;
-  channelLock?: ConsumerLock;
+  /** Compatibility fences for every channel that owns an external consumer. */
+  channelLocks?: ConsumerLock[];
   onDiagnostic?: (
     event: string,
     context: Record<string, string | number | boolean | undefined>,
@@ -61,23 +62,32 @@ export class ActiveRuntimeConsumerLockError extends ActiveConsumerLockError {
  * never an existence/PID mutex and never removed as stale state.
  *
  * A channel lock is acquired second as a compatibility fence so a new runtime
- * also conflicts with daemons started before the core lock existed.
+ * also conflicts with daemons started before the core lock existed. Every
+ * lock-capable channel contributes one fence, acquired sequentially in the
+ * order the caller supplied: a deterministic order is what makes a partial
+ * failure rollbackable, and `Promise.all` would lose which fences were taken.
  */
 export function createRuntimeConsumerLock(options: CreateRuntimeConsumerLockOptions): ConsumerLock {
   const coreLock = (options.createCoreLock ?? (() => createCoreRuntimeLock(options)))();
+  const channelLocks = options.channelLocks ?? [];
   let coreAcquired = false;
-  let channelAcquired = false;
+  let acquiredChannelLocks: ConsumerLock[] = [];
 
   return {
     async acquire(metadata: ConsumerLockMetadata): Promise<void> {
       await coreLock.acquire(metadata);
       coreAcquired = true;
       try {
-        if (options.channelLock) {
-          await options.channelLock.acquire(metadata);
-          channelAcquired = true;
+        for (const lock of channelLocks) {
+          await lock.acquire(metadata);
+          acquiredChannelLocks.push(lock);
         }
       } catch (error) {
+        const held = acquiredChannelLocks;
+        acquiredChannelLocks = [];
+        for (const lock of held.reverse()) {
+          await lock.release().catch(() => {});
+        }
         await coreLock.release().catch(() => {});
         coreAcquired = false;
         throw error;
@@ -86,10 +96,11 @@ export function createRuntimeConsumerLock(options: CreateRuntimeConsumerLockOpti
 
     async release(): Promise<void> {
       let releaseError: unknown;
-      if (channelAcquired) {
-        try { await options.channelLock!.release(); }
-        catch (error) { releaseError = error; }
-        channelAcquired = false;
+      const held = acquiredChannelLocks;
+      acquiredChannelLocks = [];
+      for (const lock of held.reverse()) {
+        try { await lock.release(); }
+        catch (error) { releaseError ??= error; }
       }
       if (coreAcquired) {
         try { await coreLock.release(); }
