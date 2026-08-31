@@ -5,6 +5,7 @@
 // (onBinary), and lazy webfont loading.
 
 import { ensureTerminalFont, TERMINAL_FONT_FAMILY } from "./terminal-font";
+import { patchXtermIosImeInsertText } from "./xterm-ios-ime";
 
 /** Subset of xterm's ITheme we set - foreground/background keep the terminal in sync
  *  with the app's design tokens so the sub-cell fit remainder blends seamlessly.
@@ -140,6 +141,9 @@ async function defaultFactory(
   ]);
   await ensureTerminalFont();
   const term = new Terminal({ cols, rows, fontFamily, fontSize, ...(theme ? { theme } : {}) });
+  // Stock @xterm/xterm@6.0.0 drops iOS Chinese IME insertText (composed +
+  // prior keydown). Local #5614 backport; do not restyle the helper textarea.
+  patchXtermIosImeInsertText(term);
   return {
     open: (el) => term.open(el),
     // The callback fires after the chunk is parsed - this Promise resolving is
