@@ -95,7 +95,7 @@ export type WindowsWorkerRequest =
   | { action: "identity"; pid: number }
   | { action: "token-snapshot"; token: string }
   | { action: "terminate-one-cim"; target: BatchTarget }
-  | { action: "terminate-descendants-of"; parentPid: number; epcd?: string; orph?: boolean };
+  | { action: "terminate-descendants-of"; parentPid: number; epcd?: string };
 export type WindowsProbeStatus = { status: "found"; identity: WindowsProcessIdentity } | { status: "missing" | "unavailable" };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -309,14 +309,6 @@ export interface TerminateDescendantsOptions extends WindowsProcessWorkerOptions
    * killed) — a bare historical parent pid is never a kill authority.
    */
   expectedParentCreationDate?: string;
-  /**
-   * Round 32 Blocking 1: DEAD-root orphan recovery. When the parent is
-   * already gone, the pid-reuse ambiguity is resolved by BIRTH ORDER: the
-   * reuser's creation time is the cutoff, and only children born BEFORE it
-   * are attributed to the dead worker. Children of the reuser are excluded;
-   * deeper descendants of accepted nodes are ours regardless of birth order.
-   */
-  recoverDeadParent?: boolean;
 }
 
 export async function terminateWindowsDescendantsOf(
@@ -331,7 +323,6 @@ export async function terminateWindowsDescendantsOf(
         action: "terminate-descendants-of",
         parentPid,
         ...(options.expectedParentCreationDate !== undefined ? { epcd: options.expectedParentCreationDate } : {}),
-        ...(options.recoverDeadParent ? { orph: true } : {}),
       },
       options.workerDeadlineMs === undefined ? 15_000 : options.workerDeadlineMs,
     );
@@ -512,32 +503,15 @@ if($e){
 $h=[XacpxNativeProcess]::Open([uint32]$pp)
 if($h -eq [IntPtr]::Zero){
 $c=[XacpxNativeProcess]::LastError()
-if($request.orph -and ($c -eq 87 -or $c -eq 1168)){
-# Round 32 Blocking 1: root DEAD + orphan recovery. The parentPid edge is
-# only ambiguous when the pid was REUSED — the reuser's birth is the cutoff:
-# children born BEFORE it were parented by our dead worker, children born
-# after it belong to the unrelated reuser. Recover the subtree by cutoff.
-$ps='orphan-recovery'
-}else{
 $ps=if($c -eq 5){'access-denied'}elseif($c -eq 87 -or $c -eq 1168){'already-exited'}else{'query-failed'}
-}
 }else{
 $a=[XacpxNativeProcess]::Creation($h)
-if(!$a -or $a -ne [string]$e){[XacpxNativeProcess]::Close($h);$ps='skipped-replaced'}
-else{$sn[$pp]=$true;$open[$pp]=$h}
+if(!$a -or $a -ne [string]$e){[XacpxNativeProcess]::Close($h);$ps='skipped-replaced'}else{$sn[$pp]=$true;$open[$pp]=$h}
 }
 }
-if($ps -ne 'alive' -and $ps -ne 'orphan-recovery'){Write-Output (@{verified=$false;parentStatus=$ps;outcomes=@();leftover=@()}|ConvertTo-Json -Depth 5 -Compress);exit 0}
-$cutoff=$null
-if($ps -eq 'orphan-recovery'){
-$now=@(Snapshot)
-$reused=$now|?{$_.pid -eq $pp}|Select-Object -First 1
-if($reused){$cutoff=$reused.creationDate}
-$sn[$pp]=$true
-}
+if($ps -ne 'alive'){Write-Output (@{verified=$false;parentStatus=$ps;outcomes=@();leftover=@()}|ConvertTo-Json -Depth 5 -Compress);exit 0}
 $s1=@(Snapshot)
 $seeds=@($s1|?{$_.parentPid -eq $pp -and $_.pid -ne $pp -and -not $sn.ContainsKey($_.pid)})
-if($cutoff){$seeds=@($seeds|?{$_.creationDate -and [Numerics.BigInteger]::Parse($_.creationDate) -lt [Numerics.BigInteger]::Parse($cutoff)})}
 foreach($p in $seeds){$sn[$p.pid]=$true;$cl+=@($p)}
 $fr=@($seeds|%{$_.pid})
 while($fr.Count){
@@ -564,7 +538,6 @@ foreach($p in $cl){
 if($open.ContainsKey($p.pid)){$h=$open[$p.pid];$s=if(-not [XacpxNativeProcess]::Alive($h)){'already-exited'}elseif([XacpxNativeProcess]::Kill($h)){if([XacpxNativeProcess]::WaitDead($h)){'killed'}else{'kill-requested-unconfirmed'}}else{if([XacpxNativeProcess]::LastError()-eq 5){'access-denied'}else{'query-failed'}}}else{$s=$ov[$p.pid]}
 $out+=@{pid=$p.pid;outcome=$s;creationDate=$p.creationDate;commandLine=$p.commandLine;executablePath=$p.executablePath}
 }
-if($e){if($open.ContainsKey($pp)){$h=$open[$pp];if([XacpxNativeProcess]::Alive($h)){if([XacpxNativeProcess]::Kill($h)){if(-not [XacpxNativeProcess]::WaitDead($h)){$pok=$false}}else{$pok=$false}}}}
 } finally {$open.Values|%{CL $_}}
 $vf=!@($out|?{$_.outcome -notin 'killed','already-exited'}).Count -and !$lf.Count -and $pok
 Write-Output (@{verified=$vf;outcomes=$out;leftover=$lf}|ConvertTo-Json -Depth 8 -Compress);exit 0

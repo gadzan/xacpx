@@ -3,7 +3,7 @@ import { statSync } from "node:fs";
 import { join } from "node:path";
 
 import { RuntimeWorkerClient, type WorkerLifecycle, type RuntimeWorkerRef, type RuntimeWorkerClientDeps, WorkerTeardownPendingError } from "./runtime-worker-client";
-import { RuntimeWorkerFence, dischargeRuntimeWorkerFence, recoverDeadWorkerSubtree, type RuntimeWorkerFenceRecord } from "./runtime-worker-fence";
+import { RuntimeWorkerFence, dischargeRuntimeWorkerFence, type RuntimeWorkerFenceRecord } from "./runtime-worker-fence";
 import { defaultRuntimeDir } from "./worker-eof";
 import { OrphanRegistry } from "../../../transport/orphan-registry";
 
@@ -247,33 +247,16 @@ export class RuntimeWorkerManager {
       await this.enqueueFenceWrite(logicalSessionId, () => fence.retire(logicalSessionId));
       return;
     }
-    // Round 32 Blocking 1 — DEAD-root orphan recovery: the worker crashed
-    // without reaching a terminal phase and its adapter subtree may still
-    // live. The recovery kill is identity-safe (in-transaction parent gate
-    // + birth-order reuse cutoff — the spawner is provably gone, so no
-    // quiescence race exists) and its verified result retires the fence.
-    // Recovery is only meaningful for a fence that reached ownership — a
-    // 'spooled' phase means the residual records are the authoritative
-    // evidence and the reaper owns convergence; killing that tree here would
-    // race the reaper's own identity-bound work.
-    if (record.phase !== "spooled" && (deps?.platform ?? process.platform) === "win32" && record.creationDate) {
-      const recovered = await recoverDeadWorkerSubtree(record, {
-        platform: "win32",
-        terminateDescendants: deps?.terminateDescendantsOf
-          ? (parentPid, expectedCreationDate) => deps.terminateDescendantsOf!(parentPid, { expectedParentCreationDate: expectedCreationDate, recoverDeadParent: true })
-          : undefined,
-        markDischarged: async (current) => {
-          await this.enqueueFenceWrite(logicalSessionId, () => fence.write({ ...current, phase: "discharged" }));
-        },
-      });
-      if (recovered === "discharged") {
-        await this.enqueueFenceWrite(logicalSessionId, () => fence.retire(logicalSessionId));
-        return;
-      }
-    }
+    // Dead-root recovery is intentionally disabled: historical ParentProcessId
+    // + creationDate cannot prove ownership of a surviving child after the
+    // root died (PID reuse, I1/I2). Without a root-independent proof (Job
+    // Object or descendant-carried generation token), the fence stays
+    // fail-closed. H2 waits for the live worker's terminal phase instead of
+    // guessing the subtree.
     throw new WorkerTeardownPendingError(
       `durable ownership fence for session "${logicalSessionId}" is undischarged ` +
-        `(worker pid ${record.pid}, phase ${record.phase}, started ${record.startedAt}); refusing to spawn a second owner`,
+        `(worker pid ${record.pid}, phase ${record.phase}, started ${record.startedAt}); refusing to spawn a second owner` +
+        ` — automatic Windows dead-root recovery is disabled because historical parent PID does not prove descendant ownership`,
     );
   }
 

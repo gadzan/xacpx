@@ -82,6 +82,7 @@ export class RuntimeWorkerClient {
   private inFlightLeases = 0;
   private exitPromise?: Promise<number | null>;
   private resolveExit?: (code: number | null) => void;
+  private shutdownAckPromise?: Promise<unknown>;
   get isBootstrapVerified(): boolean {
     return this._bootstrapVerified;
   }
@@ -276,7 +277,6 @@ export class RuntimeWorkerClient {
       });
     });
   }
-
   /** Graceful shutdown request, then process tree cleanup after a bounded grace (plan §16, §18). */
   async shutdown(graceMs = 2_000): Promise<void> {
     // Idempotent: a verified-stopped worker already completed tree cleanup.
@@ -285,18 +285,31 @@ export class RuntimeWorkerClient {
     // Deliberate intent is recorded BEFORE any await so a crash race is
     // never misclassified as unexpected (plan §43).
     this.deliberateShutdown = true;
+    this.lifecycle = "cooling";
     const platform = this.deps?.platform ?? process.platform;
     if (!this.child?.stdin?.writableEnded) {
+      this.shutdownAckPromise ??= this.sendControlMessage("shutdown");
       try {
         await Promise.race([
-          this.sendControlMessage("shutdown"),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("grace elapsed")), graceMs).unref()),
+          this.shutdownAckPromise,
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("quiesced timeout")), graceMs).unref()),
         ]);
-      } catch {
-        // grace elapsed or send failed
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        if (msg === "quiesced timeout") {
+          throw new WorkerTeardownPendingError(
+            `runtime worker for session "${this.ref.logicalSessionId}" did not reach quiesced shutdown within ${graceMs}ms; refusing destructive tree termination while business dispatch may still be in flight`,
+          );
+        }
+        throw new WorkerTeardownPendingError(
+          `runtime worker for session "${this.ref.logicalSessionId}" shutdown failed: ${msg}; refusing destructive tree termination`,
+        );
       }
+    } else {
+      // stdin already closed — treat as quiesced
     }
     // If on Windows and creationDate was never verified, wait for child exit before terminate
+    // (no business RPC could have entered, but still need clean exit proof).
     if ((platform === "win32" || Boolean(this.deps?.probeWindowsIdentity)) && !this.ref.creationDate && this.exitPromise) {
       try {
         await Promise.race([

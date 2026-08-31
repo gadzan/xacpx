@@ -1,36 +1,15 @@
 /**
  * Durable Runtime Worker ownership fence — a GENERATION-BOUND STATE MACHINE
- * (plan §43 / G10, review rounds 29-31). A crashed Bridge Host's worker
+ * (plan §43 / G10, review rounds 29-32). A crashed Bridge Host's worker
  * adapter subtree is fenced by an atomic on-disk record; the record's phase
- * carries the ownership transaction across Host restarts:
+ * carries the ownership transaction across Host restarts.
  *
- *   spawn    → phase "owned"       (durable BEFORE the worker is returned)
- *   admitted → phase "admitted"    (verified Windows identity ON DISK — the
- *                                   durable admission barrier: no business
- *                                   RPC enters the worker before this lands)
- *   EOF      → phase "discharging" (worker closes admission + drains before
- *                                   converging; a new Host seeing this phase
- *                                   must WAIT for the worker's own verdict)
- *   terminal → phase "discharged"  (worker PROVED convergence before exit —
- *                                   verified cleanup; safe to retire+respawn)
- *            → phase "spooled"     (unverified identities are durable
- *                                   residuals — respawn stays blocked until
- *                                   the daemon reaper converges them)
- *
- * Deciding rules (new Host, stale fence):
- *   discharged              → retire the record, allow respawn.
- *   spooled                 → refuse (residual tree ownership pending).
- *   discharging             → wait for the worker's own terminal phase; only
- *                             a worker that will not settle falls through to
- *                             the gated kill, and a DEAD worker without a
- *                             terminal phase is refused (crash leftovers
- *                             need the reaper — never a blind respawn).
- *   owned/admitted          → POSIX discharges via the process group (atomic
- *                             across the whole tree, immune to the spawn
- *                             race). Windows waits for self-discharge and
- *                             only kills a STILL-ALIVE root through the
- *                             in-transaction parent-identity gate, bracketed
- *                             by the descendants protocol's own snapshots.
+ * This function NEVER reconstructs ownership from a dead Windows parent PID.
+ * If the owning generation did not publish a terminal phase or
+ * generation-bound residual evidence before the root disappeared, the fence
+ * remains fail-closed. Automatic dead-root recovery requires a
+ * root-independent proof (Job Object or descendant-carried token) and is
+ * intentionally disabled in this PR.
  *
  * The phase writes are performed ONLY by the fence's owning generation (the
  * worker receives its fence path + generation through spawn env) — a stale
@@ -38,11 +17,6 @@
  */
 import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
-
-import {
-  terminateWindowsDescendantsOf,
-  type TerminateDescendantsResult,
-} from "../../../process/windows-process-tree";
 
 export type FencePhase = "owned" | "admitted" | "discharging" | "discharged" | "spooled";
 
@@ -71,8 +45,6 @@ export type FenceReadResult =
 export type FenceDischargeOutcome = "discharged" | "refused";
 export interface FenceDischargeDeps {
   platform?: NodeJS.Platform;
-  /** Verified in-transaction subtree terminator; MUST gate on the parent fingerprint. */
-  terminateDescendants?: (parentPid: number, expectedCreationDate: string) => Promise<TerminateDescendantsResult>;
   /** Tri-state POSIX group probe (round 31 Blocking 4): only ESRCH proves gone. */
   probeProcessGroup?: (pgid: number) => "alive" | "gone" | "unknown";
   waitMs?: (ms: number) => Promise<void>;
@@ -182,30 +154,6 @@ export async function dischargeRuntimeWorkerFence(
     if (!reread || reread.kind !== "present") return "refused";
     current = reread.record;
   }
-}
-
-/**
- * Round 32 Blocking 1: DEAD-root recovery for a Windows fence whose worker
- * died without reaching a terminal phase (SIGKILL/crash — no EOF handler
- * ever ran). The spawner is provably gone, so this is the ONE place H2 may
- * kill: the in-transaction parent gate plus birth-order cutoff attributes
- * only the dead worker's own subtree (reuser's children excluded).
- */
-export async function recoverDeadWorkerSubtree(
-  record: RuntimeWorkerFenceRecord,
-  deps: FenceDischargeDeps = {},
-): Promise<FenceDischargeOutcome> {
-  if ((deps.platform ?? process.platform) !== "win32") return "refused";
-  if (!record.creationDate) return "refused";
-  const result = await (deps.terminateDescendants ?? ((parentPid: number, expectedCreationDate: string) =>
-    terminateWindowsDescendantsOf(parentPid, {
-      expectedParentCreationDate: expectedCreationDate,
-      recoverDeadParent: true,
-      workerDeadlineMs: null,
-    })))(record.pid, record.creationDate);
-  if (!result.verified) return "refused";
-  await deps.markDischarged?.({ ...record, phase: "discharged" });
-  return "discharged";
 }
 
 /** Atomic crash-safe fence store: `<root>/<safeKey>.json` (temp + fsync + rename). */

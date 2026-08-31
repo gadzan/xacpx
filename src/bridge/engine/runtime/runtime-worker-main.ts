@@ -178,13 +178,13 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
 async function dispatch(request: RuntimeWorkerRequest): Promise<void> {
   const { id, method } = request;
   if (method === "shutdown") {
+    // I3/I4: quiesced ACK. Shutdown is a CONTROL request — it must NOT be
+    // counted in the business gate's inFlight set. Close admission
+    // synchronously, drain every already-admitted business dispatch, then
+    // ACK. Host may only tree-terminate after this ACK.
     state.shuttingDown = true;
-    respond({ id, ok: true, result: {} });
-    // Exactly ONE response (round 30 Medium): the ACK IS the reply — falling
-    // through to the switch used to emit a second "unsupported" error frame.
-    // Admission closes here too: the host is tearing this worker down, so
-    // new business RPCs are refused instead of racing the teardown.
-    void gate.close();
+    await gate.close();
+    respond({ id, ok: true, result: { quiesced: true } });
     return;
   }
   try {
@@ -258,6 +258,13 @@ const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
 rl.on("line", (line) => {
   const parsed = parseWorkerLine(line);
   if (!parsed || parsed.kind !== "request") return;
+  // Shutdown is a CONTROL request — it owns quiescence. It must NOT be
+  // counted in the business gate's inFlight set, otherwise gate.close()
+  // would deadlock waiting for itself. Handle it outside admit/track.
+  if (parsed.message.method === "shutdown") {
+    void dispatch(parsed.message);
+    return;
+  }
   // Round 30 Blocking 4: once shutdown/EOF closed admission, a late RPC is
   // refused with the stable teardown code — it must never spawn or mutate
   // the owner tree behind a converging worker.
@@ -267,7 +274,6 @@ rl.on("line", (line) => {
   }
   void gate.track(dispatch(parsed.message));
 });
-// stdin EOF means the host is gone (crash or deliberate kill path). The worker
 // discharges its orphan tree (plan §16 orphan convergence) BEFORE exiting —
 // no live host or RuntimeWorkerClient is required at this point:
 //   POSIX: the worker was spawned detached, so it is its own process-group

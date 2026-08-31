@@ -8,7 +8,6 @@ import { probeWindowsProcessIdentity } from "../../../../../src/process/windows-
 import {
   RuntimeWorkerFence,
   dischargeRuntimeWorkerFence,
-  recoverDeadWorkerSubtree,
   type RuntimeWorkerFenceRecord,
 } from "../../../../../src/bridge/engine/runtime/runtime-worker-fence";
 import { RuntimeWorkerManager } from "../../../../../src/bridge/engine/runtime/runtime-worker-manager";
@@ -206,46 +205,36 @@ test("discharge phase table: admitted + live root past the wait window REFUSES �
   expect(killed).toBe(0);
 });
 
-test("dead-root orphan recovery: gate pass converges the subtree and lifts the fence (round 32 Blocking 1)", async () => {
-  // The worker SIGKILLed without EOF: the spawner is provably gone, so the
-  // recovery kill IS safe. Verified result → durable discharged phase.
-  let seenPid = 0;
-  let seenDate = "";
-  let marked: RuntimeWorkerFenceRecord | undefined;
-  const outcome = await recoverDeadWorkerSubtree(
+test("dead-root recovery disabled: admitted fence without terminal stays refused (I2) — no historical PID kill", async () => {
+  // Historical ParentProcessId + creationDate cannot prove ownership after
+  // root died. Without Job Object / descendant token, fence stays fail-closed.
+  const outcome = await dischargeRuntimeWorkerFence(
     record({ pid: 4242, phase: "admitted", creationDate: "133800000000000000", bootstrapVerified: true }),
     {
       platform: "win32",
-      terminateDescendants: async (parentPid, expectedCreationDate) => {
-        seenPid = parentPid;
-        seenDate = expectedCreationDate;
-        return { verified: true, outcomes: [], leftover: [] };
-      },
-      markDischarged: async (current) => {
-        marked = current;
-      },
-    },
-  );
-  expect(outcome).toBe("discharged");
-  expect(seenPid).toBe(4242);
-  expect(seenDate).toBe("133800000000000000");
-  expect(marked?.phase).toBe("discharged");
-});
-
-test("dead-root orphan recovery: gate failure refuses and never marks", async () => {
-  let marked: RuntimeWorkerFenceRecord | undefined;
-  const outcome = await recoverDeadWorkerSubtree(
-    record({ pid: 4242, phase: "admitted", creationDate: "133800000000000000", bootstrapVerified: true }),
-    {
-      platform: "win32",
-      terminateDescendants: async () => ({ verified: false, outcomes: [], leftover: [] }),
-      markDischarged: async (current) => {
-        marked = current;
-      },
+      selfDischargeWaitMs: 0,
+      readBack: async () => ({
+        kind: "present",
+        record: record({ pid: 4242, phase: "admitted", creationDate: "133800000000000000", bootstrapVerified: true }),
+      }),
     },
   );
   expect(outcome).toBe("refused");
-  expect(marked).toBeUndefined();
+});
+
+test("dead-root recovery disabled: discharging fence without terminal stays refused — H2 never guesses the subtree", async () => {
+  const outcome = await dischargeRuntimeWorkerFence(
+    record({ pid: 4242, phase: "discharging", creationDate: "133800000000000000", bootstrapVerified: true }),
+    {
+      platform: "win32",
+      selfDischargeWaitMs: 0,
+      readBack: async () => ({
+        kind: "present",
+        record: record({ pid: 4242, phase: "discharging", creationDate: "133800000000000000", bootstrapVerified: true }),
+      }),
+    },
+  );
+  expect(outcome).toBe("refused");
 });
 
 test("spool handshake: pending residuals refuse; an emptied namespace lifts the fence (round 32 Blocking 3)", async () => {
@@ -791,43 +780,25 @@ test("REAL Windows regression: killed worker's stubborn adapter is recovered, fe
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
 
-    // Host restart: a fresh manager discharges the stale fence. On a node
-    // host (production), A survives W and the dead-root recovery MUST kill
-    // it. Under bun on Windows, W's children die with W via the runtime's
-    // kill-on-close job — the kernel already discharged the tree. BOTH
-    // worlds satisfy the invariant under test: the fence is lifted ONLY
-    // through the recovery transaction, and W2 spawns strictly after.
+    // Host restart: H2 must NOT guess the subtree via historical
+    // ParentProcessId. Without a root-independent proof (Job Object / token),
+    // the fence stays fail-closed (I2) — even though W is dead.
     const manager2 = new RuntimeWorkerManager({
       entryPath: entry,
       fenceDir,
       clientDeps: {
         platform: "win32",
-        // Short self-discharge window: W is already dead, so no verdict can
-        // ever arrive — H2 must fall through to the dead-root recovery fast.
         selfDischargeWaitMs: 2_000,
       },
     });
-    const w2 = await manager2.acquire(KEY);
-    let adapterGone = false;
-    for (let i = 0; i < 40 && adapterWasAlive; i += 1) {
-      const probe = await probeWindowsProcessIdentity(adapterPid, { workerDeadlineMs: 30_000 });
-      adapterGone = probe.status !== "found";
-      if (adapterGone) break;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    if (adapterWasAlive) expect(adapterGone).toBe(true);
+    await expect(manager2.acquire(KEY)).rejects.toThrow(/RUNTIME_WORKER_TEARDOWN_PENDING|durable ownership fence.*undischarged/);
     const read = await fence.read(KEY);
     expect(read.kind).toBe("present");
     if (read.kind === "present") {
-      // W2 re-fences under its OWN phase: "owned" until its own admission
-      // barrier (a bun test host runs no Windows probe), "admitted" after.
-      expect(["owned", "admitted"]).toContain(read.record.phase);
-      expect(read.record.pid).toBe(w2.ref.pid);
-      expect(read.record.generation).toBe(w2.ref.generation);
+      expect(read.record.phase).toBe("admitted");
+      expect(read.record.pid).not.toBe(4242);
     }
-    w2.lifecycle = "stopped";
-    await manager2.release(KEY, w2);
-    expect((await fence.read(KEY)).kind).toBe("absent");
+    // No W2 — fence retained, session stays fenced.
   } finally {
     try { worker.kill("SIGKILL"); } catch {}
     try { if (adapterPid) process.kill(adapterPid, "SIGKILL"); } catch {}
