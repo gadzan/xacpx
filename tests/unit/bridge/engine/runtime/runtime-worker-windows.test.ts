@@ -809,13 +809,13 @@ winTest("host crash: real worker stdin EOF converges the adapter descendant tree
         "  }",
         "});",
         'process.stdin.on("end", async () => {',
-        "  try {",
         `    const { convergeOrphansBeforeExit } = await import(${JSON.stringify(eofModule)});`,
-        // Production default deadline (20s): the E2E must prove the REAL
-        // runtime-worker-main wiring converges, not a test-only override.
-        "    await convergeOrphansBeforeExit({});",
-        "  } catch {}",
-        "  process.exit(0);",
+        "    const outcome = await convergeOrphansBeforeExit({});",
+        "    if (outcome !== 'verified' && outcome !== 'spooled') {",
+        "      process.exitCode = 2;",
+        "      return;",
+        "    }",
+        "    process.exit(0);",
         "});",
       ].join("\n"),
     );
@@ -824,15 +824,15 @@ winTest("host crash: real worker stdin EOF converges the adapter descendant tree
       hostScript,
       [
         "import { spawn } from 'node:child_process';",
+        "import fs from 'node:fs';",
         `const worker = spawn(process.execPath, [${JSON.stringify(workerEntry)}], { stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' });`,
+        `fs.writeFileSync(${JSON.stringify(workerPidFile)}, String(worker.pid), 'utf8');`,
         "process.stdin.on('data', (d) => worker.stdin.write(d));",
       ].join("\n"),
     );
 
     host = spawn(process.execPath, [hostScript], { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } });
     host.stderr!.on("data", () => {});
-    host.stdin!.write(JSON.stringify({ id: "h1", method: "ensure" }) + "\n");
-
     for (let i = 0; i < 100 && !adapterPid; i++) {
       try {
         adapterPid = parseInt(await readFile(pidFile, "utf8"), 10);
@@ -842,6 +842,16 @@ winTest("host crash: real worker stdin EOF converges the adapter descendant tree
     }
     expect(adapterPid).toBeGreaterThan(0);
     expect(() => process.kill(adapterPid, 0)).not.toThrow();
+
+    for (let i = 0; i < 100 && !workerPid; i++) {
+      try {
+        workerPid = parseInt(await readFile(workerPidFile, "utf8"), 10);
+      } catch {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+    expect(workerPid).toBeGreaterThan(0);
+    expect(() => process.kill(workerPid, 0)).not.toThrow();
 
     // Simulate bridge crash: SIGKILL the host; the worker's stdin hits EOF and
     // the production convergence path must physically reap the adapter.
@@ -866,8 +876,20 @@ winTest("host crash: real worker stdin EOF converges the adapter descendant tree
       }
     }
     expect(adapterGone).toBe(true);
+
+    let workerGone = false;
+    for (let i = 0; i < 400 && !workerGone; i++) {
+      try {
+        process.kill(workerPid, 0);
+        await new Promise((r) => setTimeout(r, 50));
+      } catch {
+        workerGone = true;
+      }
+    }
+    expect(workerGone).toBe(true);
   } finally {
     try { if (adapterPid) process.kill(adapterPid, "SIGKILL"); } catch {}
+    try { if (workerPid) process.kill(workerPid, "SIGKILL"); } catch {}
     try { if (host?.pid) process.kill(host.pid, "SIGKILL"); } catch {}
     await rm(dir, { recursive: true, force: true });
   }
