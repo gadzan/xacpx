@@ -98,7 +98,7 @@ export class RuntimeWorkerClient {
   }
 
   get hasBusinessInFlight(): boolean {
-    return this.inFlightLeases > 0 || this.lifecycle === "busy";
+    return this.inFlightLeases > 0;
   }
 
   constructor(
