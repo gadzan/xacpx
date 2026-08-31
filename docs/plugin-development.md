@@ -574,8 +574,22 @@ Implementation notes:
 - Use a file lock (`proper-lockfile` / your own fcntl) for physical mutual exclusion.
 - On `acquire` failure, throw an error with metadata (refer to `ActiveWeixinConsumerLockError`), so the daemon can tell the user in the log that "another process holds the lock, pid=xxx".
 - `release` must be idempotent.
+- Core acquires the channel-independent runtime lock first, then **one fence per
+  lock-capable channel** (all of them, not just the first), strictly sequentially in
+  deterministic channel-id order, rolling back in reverse order on partial conflict.
+  Diagnostic events are prefixed with each channel's own id.
+- `options.lockFilePath` is **config-scoped**: a path inside the active config root's
+  runtime dir, named `<channelId>-consumer.lock.json`. Two runs with different config
+  roots get different paths, so never anchor a credential-global or token-global
+  namespace on it. If your mutual exclusion must hold machine-wide (Discord: one
+  Gateway session per bot token), derive your own path under the user-global core home
+  and ignore the injected path.
+- Unreadable or corrupt lock metadata must fail closed: re-read a bounded number of
+  times, then refuse to start. Never `rm()` a lock file you cannot read — that would
+  delete another live process's fence.
 
-Reference implementation: `src/weixin/monitor/consumer-lock.ts`.
+Reference implementations: `src/weixin/monitor/consumer-lock.ts` (config-scoped) and
+`createConsumerLock()` in `packages/channel-discord/src/channel.ts` (user-global, per bot token).
 
 ---
 
@@ -815,12 +829,12 @@ Every plugin command accepts `--restart` / `--no-restart`, and by default asks i
 5. runConsole(...):
    5.1 channel.configureOrchestration?.(callbacks)
    5.2 acquire the required, channel-independent core runtime ownership lock
-   5.3 acquire a channel-provided consumer lock when available (legacy-daemon compatibility fence)
+   5.3 acquire one consumer-lock fence for EVERY lock-capable channel, sequentially in deterministic channel-id order (legacy-daemon compatibility fences); roll back in reverse order on partial conflict
    5.4 publish daemon identity, then reconcile shared state and reap stale owners
    5.5 report daemon ready, then channel.start({ agent, abortSignal, quota, logger }) and scheduler.start()
 6. Receive messages: channel → agent.handle(chatKey, text) → router
 7. Send messages: orchestration → channel.notifyTaskCompletion / sendCoordinatorMessage
-8. SIGTERM / SIGINT: abortSignal aborted → dispose/reap while ownership remains held → registry.stopAll: channel.stop?() (fallback: logout()) → release compatibility/core locks → daemon exit
+8. SIGTERM / SIGINT: abortSignal aborted → dispose/reap while ownership remains held → registry.stopAll: channel.stop?() (fallback: logout()) → release every channel fence in reverse order, then the core lock → daemon exit
 ```
 
 Normal exit goes through `abortSignal` plus the non-destructive `stop()`; the destructive `logout()` is triggered only when `xacpx logout` is explicitly invoked — except as the shutdown fallback for legacy channels that do not implement `stop()`.

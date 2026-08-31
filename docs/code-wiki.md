@@ -292,7 +292,7 @@ Server side:
 - `getStatus()`: matching PID/status and a live process → running; conflicting or incomplete live metadata → read-only indeterminate; dead PID metadata is cleaned up: [daemon-controller.ts](../src/daemon/daemon-controller.ts)
 - `start()`: spawn detached → write pid → wait for status ready (pid matches): [daemon-controller.ts](../src/daemon/daemon-controller.ts)
 - `stop()`: reconcile daemon identity → revalidate recovered POSIX process identity → terminate → wait for exit → clean up pid/status; status-only POSIX recovery additionally requires consumer-lock and OS start-time proof: [daemon-controller.ts](../src/daemon/daemon-controller.ts)
-- Every runtime entry holds a channel-independent, OS-held core consumer lock (plus any legacy channel lock); the stable core JSON file is diagnostic metadata rather than the mutex. Internal Windows `cli.js run` publishes its generation/orphan context only after that ownership: [runtime-consumer-lock.ts](../src/daemon/runtime-consumer-lock.ts), [windows-daemon-runtime.ts](../src/daemon/windows-daemon-runtime.ts), [run-console.ts](../src/run-console.ts)
+- Every runtime entry holds a channel-independent, OS-held core consumer lock **plus one compatibility fence per lock-capable channel** (all of them, acquired sequentially in deterministic channel-id order and rolled back / released in reverse order); the stable core JSON file is diagnostic metadata rather than the mutex. Internal Windows `cli.js run` publishes its generation/orphan context only after that ownership: [runtime-consumer-lock.ts](../src/daemon/runtime-consumer-lock.ts), [windows-daemon-runtime.ts](../src/daemon/windows-daemon-runtime.ts), [run-console.ts](../src/run-console.ts)
 
 ### 5.10 Orchestration (src/orchestration/*)
 

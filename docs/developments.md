@@ -472,6 +472,36 @@ git push origin channel-discord-v0.8.0
 # 6. Verify the npm dist-tag and the GitHub Release
 ```
 
+**Recovering an interrupted release** (npm has the version, the GitHub Release is missing —
+the workflow died or failed between `npm publish` and `gh release create`):
+
+- **Do not re-run the publish workflow and do not move or re-push the tag.** The npm side is
+  already done: `npm publish` would fail on an existing version, and re-pointing a published
+  tag makes the tag no longer name the commit that produced that artifact.
+- Confirm the tag exists and names the commit that carries the version:
+
+  ```bash
+  git show-ref --verify refs/tags/channel-discord-v0.8.0
+  git rev-parse refs/tags/channel-discord-v0.8.0^{commit}   # must be the commit whose
+                                                           # package.json holds 0.8.0
+  ```
+
+- Create only the missing release object, and let `--verify-tag` be the guard that refuses to
+  publish a release for a tag that is not actually there. Match the title the workflow would have
+  used, and pass `--latest=false` so a plugin release never steals the "latest" marker from the
+  repository's own core release:
+
+  ```bash
+  gh release create channel-discord-v0.8.0 --verify-tag \
+    --title "@ganglion/xacpx-channel-discord v0.8.0" --latest=false --generate-notes
+  ```
+
+- When the version carries a prerelease suffix (`-rc.1`, `-beta.2`, …), replace `--latest=false`
+  with `--prerelease`; the workflow derives that flag from `package.json` the same way, and its
+  npm dist-tag would have been `next`, not `latest`.
+- The release step is idempotent in both directions: if a release for the tag already exists it
+  is skipped, so re-issuing the command after a partial success is safe.
+
 ---
 
 ## Further Reading

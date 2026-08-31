@@ -274,7 +274,7 @@ Bridge 的目标是把 acpx 驱动隔离到子进程，并提供更可控的并�
 - `getStatus()`：PID/status 一致且进程存活→running；存活但元数据冲突或不完整→只读的 indeterminate；PID 已失效时清理 runtime files：[daemon-controller.ts](../../src/daemon/daemon-controller.ts)
 - `start()`：spawn detached → 写 pid → 等待 status ready（pid 匹配）：[daemon-controller.ts](../../src/daemon/daemon-controller.ts)
 - `stop()`：协调 daemon 身份 → 重新核验恢复出的 POSIX 进程身份 → terminate → 等待退出 → 清理 pid/status；POSIX status-only 恢复还要求 consumer lock 与 OS 启动时间证据：[daemon-controller.ts](../../src/daemon/daemon-controller.ts)
-- 每个 runtime 入口都持有与渠道无关、由 OS 持有的核心 consumer lock（以及可用的 legacy 渠道锁）；稳定的核心 JSON 文件只是诊断元数据，不充当 mutex。内部 Windows `cli.js run` 只在取得该 ownership 后发布 generation/orphan 上下文：[runtime-consumer-lock.ts](../../src/daemon/runtime-consumer-lock.ts)、[windows-daemon-runtime.ts](../../src/daemon/windows-daemon-runtime.ts)、[run-console.ts](../../src/run-console.ts)
+- 每个 runtime 入口都持有与渠道无关、由 OS 持有的核心 consumer lock，**并为每一个提供 lock 的渠道各持一把兼容性 fence**（全部渠道，按渠道 id 确定顺序串行取得，冲突回滚与释放均按相反顺序）；稳定的核心 JSON 文件只是诊断元数据，不充当 mutex。内部 Windows `cli.js run` 只在取得该 ownership 后发布 generation/orphan 上下文：[runtime-consumer-lock.ts](../../src/daemon/runtime-consumer-lock.ts)、[windows-daemon-runtime.ts](../../src/daemon/windows-daemon-runtime.ts)、[run-console.ts](../../src/run-console.ts)
 
 ### 5.10 Orchestration（src/orchestration/*）
 

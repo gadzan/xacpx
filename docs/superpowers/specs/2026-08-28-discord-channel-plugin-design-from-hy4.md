@@ -7,17 +7,18 @@
 
 ## 评审修订记录（2026-08-28）
 
-经第三方评审 + 对当前 HEAD 的代码核验，本方案做如下修正。正文已同步更新，下文标注的 **F1–F7** 为修正点索引：
+经第三方评审 + 对当前 HEAD 的代码核验，本方案做如下修正。正文已同步更新，下文标注的 **F1–F8** 为修正点索引；实施过程中（review round 5–7）逐条落到代码里、且必须与本文一致的**运行时不变量**另见 §18：
 
 | # | 修正 | 依据 |
 |---|---|---|
 | **F1** | **废除 `Map<parentChatKey, threadId>` 投递绑定**。同一父频道下多个 thread 并发活跃时，后写覆盖先写；任务完成/进度/定时等异步投递只按 chatKey 寻址，会串到"最近活跃的另一个 thread"。v1 改为 **thread 恒用独立 chatKey（`t:<threadId>`）**；v2 若做父频道会话继承，须经 `task.replyContextToken`（`OrchestrationTaskRecord` 已携带，`src/orchestration/orchestration-types.ts:58`）反解投递目标，不得回退可变绑定 | 评审指出竞态；代码核验 `OrchestrationTaskRecord` 携带 `replyContextToken`，v2 路径可行 |
 | **F2** | **preview 只展示生成过程；最终答案恒以新消息（MESSAGE_CREATE）发送**，短回答亦然。Discord 编辑只产生 MESSAGE_UPDATE、不推未读，而 xacpx 的 turn 是分钟级，用户通常已切走。这是对 openclaw `draft-stream.ts` seal 语义的**有意偏离**（其默认流式关闭、面向近实时交互，照抄 seal 属语境错位） | 评审采纳 3.8max 调研中记录的 Discord UX 事实 |
-| **F3** | **token 正则不做硬门禁**。Discord token 格式有代际变化，正则硬校验会误杀合法 token。`validateConfig` 只查存在性与字符串类型；形状正则至多降为 `diagnose()` warn；真实有效性留给 `doctor --deep` 打 `GET /users/@me` | 评审意见 |
+| **F3** | **token 正则不做硬门禁**。Discord token 格式有代际变化，正则硬校验会误杀合法 token。`validateConfig` 只查存在性与字符串类型；形状正则至多降为 `diagnose()` warn；**真实有效性不由 doctor 判定**——doctor 恒为静态本地检查，不设 `--deep` 打 `GET /users/@me`，token 与 intent 是否可用只能由 Gateway 启动结果给出（见 §10、§18） | 评审意见；round 6 复核改掉 `doctor --deep` |
 | **F4** | **`nativeSessionListFormat` 由 `"table"` 改为 `"cards"`**。Discord 的 markdown 表格渲染成管道符，与 weixin 同病；跟随 weixin 先例（`weixin-channel.ts:35`）。消费点在核心 `native-session-handler.ts:145`。agent 输出中的表格另有 `tableMode` 兜底——原方案此处与 D5 自相矛盾，现已消除 | 评审指出矛盾；代码核验 weixin 先例与消费点 |
 | **F5** | **OutboundQuota 约定定案：只调 `onInbound`**。当前 HEAD 核验：feishu（`channel.ts:411`）、yuanbao（`channel.ts:478`）均只用 `onInbound`；`reserveFinal/enqueuePendingFinal` 仅 weixin 内置渠道实际使用（24h 窗口是微信平台语义）+ 文档示例。Discord v1 对齐既有插件行为 | 评审要求以 HEAD 代码裁决；已核验 |
-| **F6** | **`createConsumerLock()` 由"不需要"改为 P4 实现**。Discord 每 token 仅一个 Gateway 会话，同 token 双开进程互踢；weixin 有 `createWeixinConsumerLock` 先例，实现成本低。原"❌ 无互斥需求"论证不成立。**实现修订（review round 3，取代 round 2 的集合 hash）**：每个 enabled token **单独持有一个锁文件**（`discord-consumer-<sha256(token)前16位>.lock.json`，文件名不含 accountId、不落明文 token）；`createConsumerLock()` 返回复合锁，按序 acquire 全部、任一冲突回滚已持有并抛错。由此任何 token 集合交集都竞争（`{X}` 挡住 `{X,Y}`；同 token 换 accountId 亦竞争），仅完全不相交的 token 集并存。round 2 的整体集合 hash 被弃：交集/换 accountId 可绕过，且 core（`cli.ts`）恒注入 `lockFilePath` 会使 hash 文件名在生产中失效——现改为仅取注入路径的目录作锚。**实现修订（review round 4）**：per-token 锁只解决**跨进程**互斥——`createConsumerLock()` 对 token 去重后，同进程内 `{a: tok-X, b: tok-X}` 仅一把锁，但 `start()` 会逐个 eligible account 各建一个 `DiscordClient`，同进程仍起**两个 Gateway 会话**；且 base config 继承（`resolveAccount` 的 `{...base, ...override}`）使多账号漏配 token 时轻易共享同一 token。修法：在 `parseDiscordChannelConfig()` 拿到 `configuredAccounts` 后**拒绝 enabled account 间的重复 resolved token**（错误信息只列 accountId，不输出 token 或其 fingerprint），把"进程内唯一"封在配置层，锁层继续负责"跨进程互斥" | 3.8max 复核补正；round 2 评审指出全局单文件语义不符；round 3 评审指出集合 hash 在 `{X}` vs `{X,Y}` 与 accountId 重排下漏锁；round 4 评审指出 per-token 锁未覆盖同进程多账号同 token（`start()` 多建 Gateway client）|
+| **F6** | **`createConsumerLock()` 由"不需要"改为实现，并在 review round 7 定案为三层互斥**。Discord 每 token 仅一个 Gateway 会话，同 token 双开进程互踢；原"❌ 无互斥需求"论证不成立。三层各封一段语义，**缺一层都会漏**：**① 配置层（进程内唯一）**——`parseDiscordChannelConfig()` 在拿到 `configuredAccounts` 后拒绝 enabled 账号间重复 resolved token（错误信息只列 accountId，不输出 token 或其 fingerprint），因为 `start()` 会逐个 eligible account 各建一个 `DiscordClient`，而 base config 继承（`resolveAccount` 的 `{...base, ...override}`）使多账号漏配 token 时轻易共享同一 token。**② 核心层（每频道一把，全部持有）**——`createRuntimeConsumerLock({ coreLock, channelLocks })` 组合 core 归属锁与**所有**声明 `createConsumerLock` 的频道锁：`cli.ts` 按 `channel.id.localeCompare` 排序后逐个建锁并保留各频道自己的诊断前缀 `${channel.id}.consumer_lock.${event}`；acquire 严格串行 `core → A → B → C`，任一失败按逆序回滚已持有的锁再抛出原错误（**不用 `Promise.all`**：并发后无从知道拿到了哪几把，也无从精确回滚）；release 同样逆序，且某个锁抛错不得阻止后续锁释放，最后重抛第一个错误。**③ Discord 锁层（跨进程 per-token）**——每个 distinct enabled token 一个锁文件 `<coreHome>/runtime/discord-consumer-<sha256(token)前16位>.lock.json`（文件名不含 accountId、不落明文 token），`createConsumerLock()` 返回按序 acquire、任一冲突回滚已持有的复合锁。**锁目录恒为 `coreHomeDir(process.env.HOME ?? homedir())/runtime`，不随 `XACPX_CONFIG` 迁移**——token 归属是"每用户 + 每 token"，不是"每配置"，否则同一 token 换两个配置根就能起两个 Gateway 会话；注入的 `lockFilePath` 只用于定位与诊断，**不再充当命名空间锚点**。**metadata 不可读时 fail closed**：`open(..., "wx")` 与随后写 JSON 之间存在发布窗口，读到空/半截 metadata 时只做少量重读（5 次 × 20ms），仍不可读则报 `lock_invalid_conflict` / `reason: existing_lock_metadata_unreadable` 并抛错，**绝不 `rm()` 后重试**——那等于抢走活跃持有者的锁。若锁文件在 `EEXIST` 与读取之间被持有者正常释放（读到 ENOENT），那是"可重试"而不是"不可读"，照常重试即可。PID 复用硬化（`processStartedAtMs` 比对）与 `lockId` 门控 release 保留，因此"metadata 可读且 pid 已死"的 stale 锁仍能被正常回收 | 3.8max 复核补正；round 2 评审指出全局单文件语义不符；round 3 评审指出集合 hash 在 `{X}` vs `{X,Y}` 与 accountId 重排下漏锁（round 3 曾改"取注入路径的目录作锚"，round 7 判定该锚点本身错位，已废）；round 4 评审指出 per-token 锁未覆盖同进程多账号同 token；round 6 评审指出 core 只 acquire `lockCreators[0]`；round 7 评审指出 metadata 发布窗口下"读不到就删"会抢锁 |
 | **F7** | **附件上限数值不写死**。以 Discord 官方现行限制为准，实施前核实；默认保守、经 `media.maxBytes` 可配置 | 两案数值（8MB/25MB）均无依据 |
+| **F8** | **归档 thread 降级收敛到一个惰性 helper**。原实现有两份同构的"发送失败→改投父频道"错误分类器：文本先向 thread 发一次、失败后再调 helper 又向 thread 发第二次（thread 被发两遍），而**出站媒体根本没有降级**——归档 thread 里的图片/文件只记一条 `discord.media.send_failed` 就丢掉。现由 `sendWithThreadFallback()` 独占该判定：它自己发首投，`resolveParentTarget()` **只在首投被判为 archived/not-found 之后才调用**（健康 thread 零成本，也不会被重复投递），最终文本、出站媒体、`sendRouteText` 三条路全部走它；父频道优先取入站消息自带的 `parentChannelId`（挂在 `ActiveTask` 上），拿不到才回查 REST。父频道不可知时**重抛原始 Discord 错误**，绝不静默成功 | round 7 评审：媒体绕过 fallback；文本重复投递；父频道字段被 `as unknown as`  cast 掉而恒为 undefined |
 
 ---
 
@@ -73,9 +74,14 @@ openclaw 那份 4.6 万行实现里，voice / activities(embedded app sdk) / mod
 
 ```ts
 // src/discord-client.ts
+export interface DiscordBotIdentity {
+  botUserId: string;
+  botTag?: string;
+}
+
 export interface DiscordClientLike {
-  start(input: { handlers: { onMessage(m: DiscordInboundMessage): void }; abortSignal: AbortSignal }): Promise<void>;
-  probeBot(): Promise<{ botUserId: string }>;
+  start(input: { handlers: { onMessage(m: DiscordInboundMessage): void }; abortSignal: AbortSignal }): Promise<DiscordBotIdentity>;
+  probeBot(): Promise<DiscordBotIdentity>;
   sendMessage(target: DeliveryTarget, body: OutboundBody): Promise<{ messageId: string }>;
   editMessage(target: DeliveryTarget, messageId: string, body: OutboundBody): Promise<void>;
   deleteMessage(target: DeliveryTarget, messageId: string): Promise<void>;
@@ -84,6 +90,8 @@ export interface DiscordClientLike {
   destroy(): Promise<void>;
 }
 ```
+
+> **身份契约（review round 6 补正）**：`start()` 返回 `DiscordBotIdentity`，它是 bot 身份的**唯一权威来源**——登录失败（坏 token、intent 未批、连接错误）或会话建立却没有 bot user id 时 `start()` 必须 reject，账号按启动失败处理。自检消息门控、mention 门控与 reply-to-bot 判定全部以这个 `botUserId` 为准，空 id 会静默关掉它们。`probeBot()` 只是诊断用 REST 探针（`GET /users/@me`），**永不参与启动身份推导**——它能返回空而登录照样成功，把它当权威就是 fail-open。
 
 这正好复用 feishu 已有的注入点模式：`FeishuChannel` 构造函数接收 `deps.createClient?.()`（`channel.ts:166`），测试时可注入 fake client。**照抄这个模式。**
 
@@ -340,8 +348,12 @@ await this.executor.run(chatKey, lane, () => this.runTurn({...}), boundAlias);
 }
 ```
 
-mention 判定（借鉴 openclaw `message-handler.preflight.ts:462`）：
-`message.mentions.has(botUser)` **或** `message.reference?.messageId` 指向 bot 发的消息 **或** 文本以配置前缀开头。
+mention 判定（实现见 `src/inbound.ts` 的 `shouldHandleDiscordMessage`，round 5/6 补正）：
+
+- **显式 @-mention bot**：`message.mentions.users` 命中 `botUserId`；`mentions` 未填充时回退到内容检查 `<@${botUserId}>` / `<@!${botUserId}>`。
+- **精确 reply 到 bot**：`message.repliedUserId === botUserId` **或** `message.mentions.repliedUser?.id === botUserId`。只有 `referencedMessageId`（不知道被回复者是谁）**不算**——回复另一个人类不能触发 bot。
+- 文本前缀触发**未实现**（早期方案借鉴 openclaw 的措辞，现已删除）。
+- DM 恒不受 mention 门控约束；guild 下 `requireMention` / `accountRequireMention` / `channelRequireMention` 先合并成**同一个** `effectiveRequireMention`，普通门控与 abort 快路径共用 `isDiscordReplyToBot`，避免两处规则漂移。
 
 ---
 
@@ -359,7 +371,14 @@ intents =
   (config.intents.guildMembers ? GuildMembers : 0)
 ```
 
-> ⚠️ **`MessageContent` 是 privileged intent**，必须在 Discord Developer Portal 手动开启。没开的话 guild 消息的 `content` 是空字符串，bot 看起来"收不到消息"。这是 Discord 特有的坑，`diagnose()` 必须能报出来（见 §10）。
+> ⚠️ **`Message Content` 是 privileged intent**，默认 `intents.messageContent: true`（`config.ts:175`），仍须在 Discord Developer Portal 手动开启。三种情形要分开说（review round 5/6 补正）：
+>
+> 1. **Portal 未开 + 我们仍上报该 intent** → Gateway 以 close code **4014（Disallowed intents）** 拒绝，`start()` reject，**bot 直接离线**、账号按启动失败处理，不是"上线但收不到内容"。
+> 2. **显式 `intents.messageContent: false`** → 不请求该 intent，bot 正常在线，Discord 仍会投递**DM**、bot 自己的消息与**显式 @-mention bot** 的消息内容；其余普通服务器消息 `content` 为空，在 `requireMention: false` 的 guild 频道里会被丢掉。
+> 3. **仅 reply 指向 bot 而不带 @-mention** → **不等价于第 2 条**：没有 @-mention 就没有内容兜底，关闭 intent 时这条消息的 `content` 依然是空。reply-to-bot 只放宽 mention 门控，不放宽 Discord 侧的内容投递。
+>
+> `diagnose()` 只做静态检查（见 §10），第 1 种情形只能由 Gateway 启动结果暴露。
+
 
 ### 多账号
 
@@ -428,12 +447,15 @@ await Promise.all(longRunningPromises);   // 对齐 feishu：start() 是长跑 P
 
 ### `diagnose()` 的检查项（Discord 特有价值很高）
 
-1. `level: error` — token 缺失。**不用正则做硬门禁**（F3）：Discord token 格式有代际变化，正则硬校验会误杀合法 token；形状检查至多 `level: warn`，真实有效性留给深探活
-2. `level: error` — `disabled` 但 `channels[]` 里 enabled
-3. `level: warn` — `intents.messageContent` 未开启却配置了 guild 频道（会收不到内容）
-4. `level: ok` — 浅检查通过
+**doctor 只做静态本地检查，绝不联网**（review round 6 定案）：它读配置、判形状，**不打 `GET /users/@me`、不验证 intent 是否获批**，也不设 `xacpx doctor --deep` 之类的深探活档——因为"token 是否有效 / privileged intent 是否批准"这类事实只有 **Gateway 启动结果**能给出权威答案（见 §2 身份契约与 §8 intents）。doctor 报 OK 不代表 bot 能上线。
 
-> 深度探活（`GET /users/@me`、intent 生效验证）建议放 `xacpx doctor --deep`，避免默认 doctor 打网络。
+| `code` | level | 触发条件 |
+|---|---|---|
+| `discord-token-missing` | error | 账号（含合并 base 后）无 token |
+| `discord-message-content-disabled` | warn | 显式 `intents.messageContent: false`；措辞必须区分上面第 2/3 种情形：bot 仍在线，DM 与显式 @-mention 仍有内容，普通服务器消息 content 为空 |
+| `discord-token-shape` | warn | token 异常短（软提示，**不作硬门禁**，见 F3） |
+| `discord-config-ok` | ok | 以上全通过；文案必须明说这是静态本地检查、看不到 token 有效性与 intent 批准状态，请启动频道看 Gateway 日志（如 close code 4014） |
+
 
 ---
 
@@ -495,16 +517,23 @@ options.accounts.<id>     →  per-account 覆盖
 
 `BASE_RESERVED_KEYS = { accounts, defaultAccount, tuning }`（feishu 那一套）。
 
-校验器全部手写、抛带路径的可读 Error（复用 feishu 的 `stringOptional` / `booleanOptional` / `enumValue` / `stringArray` / `parsePositiveOptionalNumber` 风格）。交叉校验示例：
+校验器全部手写、抛带路径的可读 Error（复用 feishu 的 `stringOptional` / `booleanOptional` / `enumValue` / `stringArray` / `parsePositiveOptionalNumber` 风格）。
+
+**`parseDiscordChannelConfig()` 是语义校验的唯一权威**（review round 6 定案）：`DiscordChannel` 构造函数调用它，`discordCliProvider.validateConfig()` 也只做它的包装（把抛出的 Error 折算成 `invalid-config` issue；`config.options === undefined` 同样判 issue，与 parser 对 `undefined` 的拒绝保持一致——两处判定不一致就是 drift）。交叉校验按实现事实列：
 
 ```
-dmPolicy="open" 要求 allowFrom 包含 "*"
-guildPolicy="allowlist" 且 guilds 为空 → warn（bot 不会响应任何服务器消息）
-configured = Boolean(token)
-enabledAccounts.filter(configured).length === 0 → 整体抛错
+options 非对象（含 undefined）        → 抛错
+accounts 非对象                      → 抛错
+accountId 为空或含 ":"               → 抛错（chatKey 以 ":" 分段，含 ":" 会让路由歧义）
+无任何 enabled 且 configured 的账号   → 抛错（token 必填）
+enabled 账号之间 resolved token 重复  → 抛错（信息只列 accountId，见 F6）
+defaultAccount 指向不存在的账号       → 抛错
 ```
+
+> **不存在**"`dmPolicy="open"` 要求 `allowFrom` 包含 `"*"`"这类交叉约束：`dmPolicy` 与 `allowFrom` 是两个独立开关，`allowlist` + 非空 `allowFrom` 与 `open` 都能放行 DM，parser 也不为此抛错或 warn。早期方案里的这条断言是错的，已删除。
 
 **`parseDiscordChannelConfig` 必须在构造函数里调用**（feishu `channel.ts:115`），保证配置错误在工厂阶段就抛，让 `doctor` / `dry-run` 能安全导入。
+
 
 ---
 
@@ -588,7 +617,7 @@ Discord 附件上限：以 Discord 官方现行限制为准（普通 bot 历史�
 | **P1 MVP** | `package.json` / `tsconfig.json` / `index.ts` / `config.ts` / `i18n/` / `channel.ts`（仅 static 模式）/ `discord-provider.ts` | `xacpx plugin add` → `channel add discord --token` → `restart` → DM 收发纯文本通 |
 | **P2 流式** | `preview-stream.ts` + `chunk.ts` + `replyMode` 三档 | 长回答出现过程预览（打字机效果），**完成后预览被删除、最终答案以新消息送达**；超 2000 字符自动转分片且代码围栏不破（F2 语义） |
 | **P3 富文本** | `markdown.ts` + `media.ts` + `media-store.ts` + `outbound-media-safety.ts` | 表格可读；图片/文件双向通；路径逃逸被拒 |
-| **P4 加固** | `diagnose()`、**consumer lock**、ack reaction、typing、多账号 stagger、`README.md` | `xacpx plugin doctor` 能报出 MessageContent intent 缺失；同 token 双开被锁拒绝 |
+| **P4 加固** | `diagnose()`、**consumer lock**、ack reaction、typing、多账号 stagger、`README.md` | `diagnose()` 静态报出 `intents.messageContent` 被关闭与 token 缺失（不联网）；同 token 双开被用户全局 per-token 锁拒绝；同进程多账号同 token 被配置层拒绝 |
 
 ---
 
@@ -596,17 +625,17 @@ Discord 附件上限：以 Discord 官方现行限制为准（普通 bot 历史�
 
 | # | 风险 | 缓解 |
 |---|---|---|
-| R1 | **`MessageContent` privileged intent 未开** → guild 消息 content 为空，bot 看似"收不到消息" | `diagnose()` 报 warn；README 顶部加粗提示 |
+| R1 | **`Message Content` privileged intent**：Portal 未开而我们仍上报该 intent → Gateway 以 **4014 拒绝、bot 直接离线**；显式 `intents.messageContent: false` → bot 在线但普通服务器消息 `content` 为空（DM 与显式 @-mention 仍有内容） | `diagnose()` 静态 warn（不联网，看不到 Portal 状态）；README 顶部加粗提示；真实结果由 `start()` 的 Gateway 失败暴露（见 §8、§18） |
 | R2 | **多账号 identify 限流**（5s 窗口）→ 并发登录被 4004/限流 | 启动 stagger 5500ms（D8） |
 | R3 | **编辑频率软限**（~5 次/5 秒）→ preview 太激进会被限流 | `throttleMs` 默认 1200，下限 250 |
 | R4 | **REST 429**：大量分片时堆积 | 出站串行队列；429 时按 `retry_after` 退避（discord.js 已内置，但需保证我们不并发轰炸） |
-| R5 | **Thread 自动归档**（默认 60 分钟）→ 归档后首次发言会 unarchive，有延迟且需 `SEND_MESSAGES` | v1 不做 autoThread；向归档 thread 发送失败时降级到父频道发送并提示 |
+| R5 | **Thread 自动归档**（默认 60 分钟）→ 归档后发言失败（50083） | v1 不做 autoThread；向归档 thread 发送失败时统一降级到父频道，**文本、出站媒体与 `sendRouteText` 走同一个惰性 helper**，父频道不可知则重抛原错（见 F8） |
 | R6 | **token 泄露**：Discord 主动扫描公开仓库并吊销 token | README 明确警告：只用 `xacpx channel add` 写入 `~/.xacpx/config.json`，绝不进 git |
 | R7 | **`@everyone` 广播**：agent 输出里出现即真广播 | 全局 `allowed_mentions: { parse: [] }`（D6） |
 | R8 | **包体积**：discord.js ~5MB，装进 `~/.xacpx/plugins` | README 说明；若后续成为问题，改 oceanic.js 只需动 `discord-client.ts` |
 | R9 | **模块缓存**：`xacpx plugin update` 后必须 `restart` 才生效（`docs/plugin-development.md` §16.3） | README 写明；`plugin add` CLI 默认会提示重启 |
 | R10 | **附件大小上限**：数值随 Discord 政策变化 | 以官方现行限制为准，实施前核实；默认保守、`media.maxBytes` 可配置；超限降级为路径文本 + skippedNote（F7） |
-| R11 | **同 token 双开进程互踢 Gateway 会话**（Discord 每 token 单会话） | P4 实现 `createConsumerLock`（weixin 先例）（F6） |
+| R11 | **同 token 双开进程互踢 Gateway 会话**（Discord 每 token 单会话） | 三层互斥：配置层拒重复 token + 核心层持有**全部**频道锁 + 用户全局 per-token 锁文件（见 F6） |
 
 ---
 
@@ -638,3 +667,22 @@ Discord 附件上限：以 Discord 官方现行限制为准（普通 bot 历史�
 - `extensions/discord/src/monitor/message-handler.preflight.ts` —— 入站门控与 mention 判定
 - `extensions/discord/src/config-schema.ts` —— 完整配置 schema（取其子集）
 - `src/config/types.base.ts:128` —— `MarkdownTableMode = "off" | "bullets" | "code" | "block"`
+
+---
+
+## 18. 运行时不变量（round 5–7 已落地）
+
+本节是**契约**，不是实现说明：下面每条都已在 HEAD 生效并有回归测试守着，改代码时若与任一条冲突，即为 bug（即使测试没覆盖到）。测试位置：`tests/unit/packages/channel-discord/`、`tests/unit/daemon/runtime-consumer-lock.test.ts`、`tests/unit/cli-consumer-lock-wiring.test.ts`、`tests/unit/scripts/publish-channel-discord-workflow.test.ts`。
+
+1. **身份 fail-closed**：`start(): Promise<DiscordBotIdentity>` 是唯一权威身份来源；Gateway 会话建立但拿不到 bot user id 时按**启动失败**处理，不得回退到 `probeBot()` 或空串——空 `botUserId` 会静默关掉自检/mention/reply 三道门控。
+2. **自检消息判定先于 dedup 与 allowBots**：Discord 会把自己的 MESSAGE_CREATE 回投，`author.id === botUserId` 一律丢弃；`allowBots` 只管**其他** bot。顺序反过来就是自消息死循环。
+3. **根 abort 必须绑进每个 in-flight turn**：`registerActiveTask()` 订阅 `start()` 收到的 `abortSignal`，触发时置 `suppressed` 并 abort 该 turn 自己的 controller；turn 的 `finally` 必须解绑监听（否则长跑 daemon 每条消息泄漏一个 listener）。被抑制的 turn 既不发答案也不发完成通知。
+4. **accountId 不得含 `:`**：chatKey 以 `:` 分段（`discord:<accountId>:<kind>:<channelId>`），含 `:` 会让路由歧义。`parseDiscordChannelConfig()` 直接抛错。
+5. **mention 清理只剥自己的 mention tag，并保留缩进与换行**：折叠所有空白会把多行提示词、粘贴的代码块压成一行。出站文本恒定 `allowedMentions: { parse: [] }`（D6 / R7）。
+6. **reply-to-bot 要精确到"被回复者确实是 bot"**：只有 `repliedUserId` / `mentions.repliedUser.id` 命中 bot id 才算，光有 `referencedMessageId` 不够——那会把"回复另一个人类"当成回复 bot。正常 mention 门控与 abort 快路径共用同一个判定，且共用同一个 `effectiveRequireMention`（频道级 override 优先于账号级），二者不得各读一份。
+7. **配额重置的时序**：`quota.onInbound(chatKey)` 在消息**被接纳之后、入站附件下载之前**调用。放在下载之后，一个慢附件会把预算重置拖到下一轮，导致合法消息被限。
+8. **`parseDiscordChannelConfig()` 是语义校验的唯一权威**：构造函数调用它；`discordCliProvider.validateConfig()` 只做包装（含 `options === undefined` 也判 issue）。两处判定不一致就是 drift。
+9. **归档 thread 降级只有一个入口且惰性**（F8）：最终文本、出站媒体、`sendRouteText` 都交给 `sendWithThreadFallback()`，由它发首投；`resolveParentTarget()` 只在首投被判 archived(50083)/not-found 后调用。父频道优先 `ActiveTask.parentChannelId`（来自入站消息，`registerActiveTask` 必须真的存下来），否则回查 REST；不可知则重抛原始错误。非 thread 目标不得解析、不得使用父频道。
+10. **consumer lock 三层各封一段**（F6）：配置层拒 enabled 账号重复 token；核心层 `createRuntimeConsumerLock` 持有 **core + 所有频道** 的锁，串行 acquire、逆序回滚、release 不被单个抛错中断（**禁止 `Promise.all`**）；Discord 锁文件名按 token hash 落在**用户全局** `~/.xacpx/runtime/`，不随 `XACPX_CONFIG` 或注入路径迁移；metadata 不可读时少量重读后 **fail closed，绝不删既有锁文件**。
+11. **publish 只能来自精确 tag**（`.github/workflows/publish-channel-discord.yml`）：两个按事件门控的 checkout 步骤，dispatch 走 `ref: refs/tags/${{ inputs.tag }}`，让分支名在 checkout 阶段就失败而不是以"看着像 tag"的名字发出分支 HEAD；`git show-ref --verify` + `HEAD == tag^{commit}` + `tag == channel-discord-v<package.json version>` 三条证明**必须排在 `npm publish` 之前**；`gh release create` 带 `--verify-tag`；shell 里**不得出现 `${{ }}` 内插**，外部值只经 `env:` 进入。静态守门：`tests/unit/scripts/publish-channel-discord-workflow.test.ts`。
+12. **中断发版的恢复不改状态机**（文档契约，无代码断言）：npm 已有该版本而 GitHub Release 缺失时，**不重跑 publish、不移动/重推 tag**（重推会让 tag 不再指向产出该制品的 commit）；只做 `git show-ref --verify` + `git rev-parse refs/tags/<tag>^{commit}` 校验，然后单独 `gh release create <tag> --verify-tag --title "@ganglion/xacpx-channel-discord v<version>" --generate-notes`，稳定版带 `--latest=false`、预发布版改用 `--prerelease`（与 workflow 那两步逐字一致）。完整 runbook 见 [`docs/developments.md`](../../developments.md) 与 [`docs/zh/developments_zh.md`](../../zh/developments_zh.md)。

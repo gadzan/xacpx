@@ -472,6 +472,26 @@ git push origin channel-discord-v0.8.0
 # 6. 核对 npm dist-tag 与 GitHub Release
 ```
 
+**中断发版的恢复契约**（npm 上版本已存在，但 GitHub Release 缺失——workflow 在 `npm publish` 与 `gh release create` 之间挂掉或失败）：
+
+- **不要重跑 publish workflow，也不要移动或重推 tag。** npm 侧已经完成：对已存在的版本再 `npm publish` 只会失败；而给已发布的 tag 换指向，会让 tag 不再指向产出该制品的那个 commit。
+- 先确认 tag 存在，并且指向携带该版本的那个 commit：
+
+  ```bash
+  git show-ref --verify refs/tags/channel-discord-v0.8.0
+  git rev-parse refs/tags/channel-discord-v0.8.0^{commit}   # 必须是 package.json 里 version 为 0.8.0 的那个 commit
+  ```
+
+- 只补缺失的 Release 对象，并让 `--verify-tag` 充当「tag 其实不存在就拒绝创建」的闸门。标题要与 workflow 会用的那份一致，并且稳定版要带 `--latest=false`，免得插件 Release 抢走仓库核心版本的 latest 标记：
+
+  ```bash
+  gh release create channel-discord-v0.8.0 --verify-tag \
+    --title "@ganglion/xacpx-channel-discord v0.8.0" --latest=false --generate-notes
+  ```
+
+- 版本号带预发布后缀（`-rc.1`、`-beta.2` 等）时，把 `--latest=false` 换成 `--prerelease`；workflow 用同一套 `package.json` 规则推导该标记，且这种版本当时的 npm dist-tag 是 `next` 而不是 `latest`。
+- Release 这一步双向幂等：该 tag 已有 Release 就跳过，所以部分成功后重发同一条命令是安全的。
+
 ---
 
 ## 拓展阅读

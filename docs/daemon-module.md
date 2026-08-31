@@ -120,8 +120,10 @@ fingerprint preserves the evidence and refuses the PID-only kill.
 
 New Windows daemons create their generation identity on the real published `cli.js run`
 startup path and pass an inactive identity context to `buildApp`. Every default runtime
-first acquires a channel-independent core consumer lock; when a channel also provides a
-legacy lock, both are held so upgraded runtimes still conflict with older daemons. The
+first acquires a channel-independent core consumer lock, then acquires one compatibility
+fence for **every** lock-capable channel (not just the first), acquired strictly
+sequentially in deterministic channel-id order and rolled back in reverse order if one
+conflicts; the fences keep upgraded runtimes conflicting with older daemons. The
 core lock is OS-held (`flock` on POSIX and the runtime-owner IPC guard on Windows), so a
 crash releases ownership without deleting or reclaiming its stable diagnostic JSON file.
 When Bun uses a Node helper to hold the POSIX native flock, the helper ignores process-group
