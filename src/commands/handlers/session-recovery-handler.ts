@@ -140,6 +140,7 @@ export async function tryRecoverMissingSession(
   session: ResolvedSession,
   error: unknown,
 ): Promise<ResolvedSession | null> {
+  if (error instanceof AcpxQueueOverflowError) return null;
   const message = error instanceof Error ? error.message : String(error);
   if (!message.includes("No acpx session found")) {
     return null;

@@ -966,6 +966,7 @@ export async function handlePromptWithSession(
           confirmed,
         },
       );
+      return context.recovery.renderTransportError(session, error);
     }
     const recovered = await context.recovery.tryRecoverMissingSession(session, error);
     if (recovered) {

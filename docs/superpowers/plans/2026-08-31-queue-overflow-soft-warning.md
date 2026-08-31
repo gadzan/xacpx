@@ -121,5 +121,26 @@
 3. bridge cleanup 成功路径：`bridge-server → bridge-client` 重建后仍为 confirmed，`session-handler` 记 `transport.queue_overflow_downgraded` 并返回 ready。
 4. `ACPX_QUEUE_MESSAGE_OVERFLOW` 精确匹配通过，`...OVERFLOWED`/`...RETRY` 等带前后缀的相似串不触发（见上）。
 5. `handlePromptWithSession` 级链路：`tests/unit/commands/handlers/session-handler.test.ts` 新增 3 例——confirmed→ready+warn、unconfirmed→unconfirmed+warn、raw buffer→不 warn 且保持 hard throw。
-
 实现后 `npx tsc --noEmit`、新增单测（`acpx-queue-overflow` 3 新增、`session-recovery-handler` 6、`session-handler` 3、`bridge-server` 更新、`bridge-client` 更新）及 `bun run build` 均通过。
+
+---
+
+## Follow-up Review Fixes（2026-08-31 第二轮，1 Blocking + 1 Medium）
+
+### Blocking — `AcpxQueueOverflowError` 的 `diagnostic` 误触发 `tryRecoverMissingSession` 导致自动重试
+
+- **问题**：`handlePromptWithSession` 对 `AcpxQueueOverflowError` 仅做 `logger.warn`，随后仍调用 `tryRecoverMissingSession(session, error)`。而 `tryRecoverMissingSession` 以 `error.message.includes("No acpx session found")` 判定 missing-session，且 `AcpxQueueOverflowError` 的 `message` 会拼接 `Cleanup diagnostic: <diagnostic>`。`acpx-cli` 的 `cleanupOverflowedOwner()` 又会把 `cancel()` 失败的 transport 文案（可能就是 `No acpx session found`）写入 `diagnostic`，于是形成：
+  `prompt overflow → cleanup → cancel: No acpx session found → AcpxQueueOverflowError(diagnostic="cancel failed: No acpx session found") → tryRecover sees "No acpx session found" → 刷新 agentCommand → recovered != null → 再次 promptWithSession`。这违反“overflow 后不自动重试”核心约束，并可能重复执行已接受的 turn。
+- **修复**：
+  - `src/commands/handlers/session-handler.ts` `handlePromptWithSession` catch 中对 `AcpxQueueOverflowError` 分支**短路**：`logger.warn` 后直接 `return renderTransportError`，不再进入 `tryRecoverMissingSession` / 重试。
+  - `src/commands/handlers/session-recovery-handler.ts` `tryRecoverMissingSession` 首行防御：`if (error instanceof AcpxQueueOverflowError) return null;`（fail-closed，即使未来有调用方绕过 handler 也不会误恢复）。
+  - 回归：`session-recovery-handler.test.ts` 新增 `tryRecoverMissingSession does not recover from AcpxQueueOverflowError even if diagnostic contains No acpx session found`（`resolveSessionAgentCommand` 返回不同值，断言 `resolve`/`set` 不调用，`result===null`）；`session-handler.test.ts` 新增 `handlePromptWithSession does not retry overflow with diagnostic containing No acpx session found`（`promptTransportSession` 仅调用 1 次，`setAgentCommand` 0 次，返回 overflow warning）。
+
+### Medium — `acpx-cli` 新增的 destructive cleanup 缺少传输层回归
+
+- **问题**：本轮最重要的新生产逻辑在 `AcpxCliTransport.prompt`（`Message buffer exceeded` → `cancel` → `readSessionRecord` → `terminateAcpxQueueOwnerVerified` → `AcpxQueueOverflowError`），但此前 PR 的 `tests/unit/transport/acpx-cli` 无 overflow 用例，仅 handler 层构造 typed error，无法证明 raw failure 确实经过 cleanup 才 typed 化。
+- **修复**：新增 `tests/unit/transport/acpx-cli-overflow.test.ts` 3 例（均用 `spyOn(launcher, "terminateAcpxQueueOwnerVerified")` 控制）：
+  1. `acpx-cli prompt overflow is typed after successful cancel and verified termination (confirmed)` — `cancel`/`show` 成功、`terminate` 成功 → `cleanup.ownerTerminationSucceeded===true`
+  2. `acpx-cli prompt overflow with termination failure is still typed but unconfirmed` — `terminate` 抛错 → `ownerTerminationSucceeded===false` / `diagnostic` 含 `terminate failed`
+  3. `acpx-cli prompt overflow where cancel fails still produces typed error with cancel diagnostic` — `cancel` 返回 `No acpx session found` → `cancelSucceeded===false` 且 `diagnostic` 含该串，但仍为 confirmed（owner 已无锁），且后续 `handlePromptWithSession` 不会因此触发 recovery（见上）。
+- **额外**：`npx tsc --noEmit` 保持 0 error；`bun test` 对 7 个相关文件 186 pass，隔离 `mock.module` 污染（改用 `spyOn`）后 `bridge-runtime` 53 例在并发下亦稳定通过。

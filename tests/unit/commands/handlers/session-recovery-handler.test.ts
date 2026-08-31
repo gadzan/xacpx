@@ -200,3 +200,29 @@ test("bridge-reconstructed AcpxQueueOverflowError with confirmed cleanup is stil
   const reply = renderTransportError(session(), error);
   expect(reply.text).toContain(t().recovery.queueOverflowHint);
 });
+
+test("tryRecoverMissingSession does not recover from AcpxQueueOverflowError even if diagnostic contains No acpx session found", async () => {
+  const error = new AcpxQueueOverflowError({
+    cancelAttempted: true,
+    cancelSucceeded: false,
+    ownerTerminationAttempted: true,
+    ownerTerminationSucceeded: true,
+    diagnostic: "cancel failed: No acpx session found for backend:api-fix",
+  });
+  let resolveCalled = false;
+  let setCalled = false;
+  const ops: SessionRecoveryOps = {
+    resolveSessionAgentCommand: async () => {
+      resolveCalled = true;
+      return "different-agent-command";
+    },
+    setSessionTransportAgentCommand: async () => {
+      setCalled = true;
+    },
+    getSession: async () => session(),
+  };
+  const result = await tryRecoverMissingSession(ops, session({ agentCommand: "old-command" }), error);
+  expect(result).toBeNull();
+  expect(resolveCalled).toBe(false);
+  expect(setCalled).toBe(false);
+});

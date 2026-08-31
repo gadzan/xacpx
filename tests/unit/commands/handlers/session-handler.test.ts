@@ -506,3 +506,60 @@ test("handlePromptWithSession does not downgrade raw buffer overflow without typ
   } as unknown as SessionHandlerContext;
   await expect(handlePromptWithSession(context, session, "weixin:a:u", "hi")).rejects.toThrow(error);
 });
+
+test("handlePromptWithSession does not retry overflow with diagnostic containing No acpx session found", async () => {
+  const session = {
+    alias: "review",
+    internalAlias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "sess-1",
+    archived: false,
+    replyMode: undefined,
+    agentCommand: "old-command",
+  } as unknown as ResolvedSession;
+  const error = new AcpxQueueOverflowError({
+    cancelAttempted: true,
+    cancelSucceeded: false,
+    ownerTerminationAttempted: true,
+    ownerTerminationSucceeded: true,
+    diagnostic: "cancel failed: No acpx session found for backend:api-fix",
+  });
+  let promptCalls = 0;
+  let setAgentCommandCalls = 0;
+  const context = {
+    sessions: { setArchived: async () => {} },
+    lifecycle: { checkTransportSession: async () => true, ensureTransportSession: async () => {} },
+    interaction: {
+      promptTransportSession: async () => {
+        promptCalls += 1;
+        throw error;
+      },
+    },
+    recovery: {
+      tryRecoverMissingSession: async (s: unknown, e: unknown) => {
+        // This would normally recover if guard were missing: simulate different agent command
+        const ops: SessionRecoveryOps = {
+          resolveSessionAgentCommand: async () => "new-different-command",
+          setSessionTransportAgentCommand: async () => { setAgentCommandCalls += 1; },
+          getSession: async () => s as ResolvedSession,
+        };
+        return tryRecoverMissingSession(ops, s as ResolvedSession, e);
+      },
+      renderTransportError,
+    },
+    config: undefined as unknown as AppConfig,
+    logger: {
+      info: async () => {},
+      warn: async () => {},
+      error: async () => {},
+      debug: async () => {},
+    },
+    quota: undefined,
+    orchestration: undefined,
+  } as unknown as SessionHandlerContext;
+  const result = await handlePromptWithSession(context, session, "weixin:a:u", "hi");
+  expect(promptCalls).toBe(1);
+  expect(setAgentCommandCalls).toBe(0);
+  expect(result.text).toBe([t().recovery.queueOverflowWarning, t().recovery.queueOverflowHint].join("\n"));
+});
