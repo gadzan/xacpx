@@ -328,25 +328,25 @@ export class SessionControlService {
         `${workspace}:${finalInternalAlias}`,
         { guardAcpOutput: true },
       );
+      const release = await this.reserveLogicalTransportSession(launchProbe.transportSession);
       let persisted: ResolvedSession;
       try {
-        persisted = await this.sessions.attachNativeSession({
-          alias: finalInternalAlias,
-          agent,
-          workspace,
-          transportSession: launchProbe.transportSession,
-          ...(launchProbe.agentCommand ? { transportAgentCommand: launchProbe.agentCommand } : {}),
-          ...(launchProbe.acpxAgent ? { transportAcpxAgent: launchProbe.acpxAgent } : {}),
-          ...(launchProbe.agentArgv ? { transportAgentArgv: launchProbe.agentArgv } : {}),
-          agentSessionId,
-          ...(nativeMeta?.title !== undefined ? { title: nativeMeta.title } : {}),
-          ...(nativeMeta?.updatedAt !== undefined ? { updatedAt: nativeMeta.updatedAt } : {}),
-        });
-      } catch (error) {
-        throw error;
-      }
-      const release = await this.reserveLogicalTransportSession(persisted.transportSession);
-      try {
+        try {
+          persisted = await this.sessions.attachNativeSession({
+            alias: finalInternalAlias,
+            agent,
+            workspace,
+            transportSession: launchProbe.transportSession,
+            ...(launchProbe.agentCommand ? { transportAgentCommand: launchProbe.agentCommand } : {}),
+            ...(launchProbe.acpxAgent ? { transportAcpxAgent: launchProbe.acpxAgent } : {}),
+            ...(launchProbe.agentArgv ? { transportAgentArgv: launchProbe.agentArgv } : {}),
+            agentSessionId,
+            ...(nativeMeta?.title !== undefined ? { title: nativeMeta.title } : {}),
+            ...(nativeMeta?.updatedAt !== undefined ? { updatedAt: nativeMeta.updatedAt } : {}),
+          });
+        } catch (error) {
+          throw error;
+        }
         try {
           await this.transport.resumeAgentSession(persisted, agentSessionId);
           const exists = await this.invoker.checkTransportSession(persisted);
