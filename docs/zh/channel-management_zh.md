@@ -8,8 +8,9 @@ xacpx 可以同时启动多个消息频道。目前内置：
 
 - `feishu`：飞书频道，由 `@ganglion/xacpx-channel-feishu` 提供，使用飞书自建应用的 `App ID` / `App Secret`。
 - `yuanbao`：元宝频道，由 `@ganglion/xacpx-channel-yuanbao` 提供，使用 `appKey` / `appSecret`，内置元宝签名与 WebSocket gateway。
+- `discord`：Discord 频道，由 `@ganglion/xacpx-channel-discord` 提供，使用 Discord **Bot Token** 与 Gateway；机器人是「安装进服务器」，不是扫码配对。
 
-日常用户只需要看 README 的快速步骤；这份文档记录更完整的频道管理命令、飞书配置和排错。
+日常用户只需要看 README 的快速步骤；这份文档记录更完整的频道管理命令、飞书 / 元宝 / Discord 配置和排错。
 
 ---
 
@@ -33,7 +34,7 @@ xacpx ch list
 xacpx ch show feishu
 ```
 
-当前限制：同一种频道类型只能配置一个实例，所以频道 `id` 必须等于 `type`，例如 `weixin`、`feishu`、`yuanbao`。
+当前限制：同一种频道类型只能配置一个实例，所以频道 `id` 必须等于 `type`，例如 `weixin`、`feishu`、`yuanbao`、`discord`。
 
 `channel rm <type>` 在删除频道的同时会**清除该频道的存储凭证**（例如 relay 实例凭证 `~/.xacpx/relay/credential.json`，或微信登录态），这样以后重新添加会干净地重新配对/登录，而不是悄悄复用一份遗留的旧凭证。若只想删配置、保留已存凭证（例如临时禁用某频道又不想重新认证），加 `--keep-credentials`。
 
@@ -234,6 +235,139 @@ chatKey 形如 `yuanbao:<accountId>:<chatType>:<target>`，其中 `chatType` 为
 > 当前限制：`channel add yuanbao --account <id>` 只暴露 `--app-key / --app-secret / --token / --bot-id / --api-domain / --ws-url / --require-mention / --max-chars / --idle-ms` 这些 flag；`replyToMode / overflowPolicy / outboundQueueStrategy / minChars / mediaMaxMb / historyLimit / disableBlockStreaming / fallbackReply / markdownHintEnabled / debugBotIds` 还需要手编 `accounts.<id>` 下面的 JSON。
 
 > ⚠️ 改 `defaultAccount` 同样会让旧 chatKey 失去路由（state 里挂着 `yuanbao:default:...`）。若要切换 default，建议保留 `accounts.default` 别名。
+
+---
+
+## Discord 频道插件
+
+Discord 由一方插件包 `@ganglion/xacpx-channel-discord` 提供。与微信（扫码登录）、飞书 / 元宝（在各自开放平台配好应用再填凭据）不同，Discord **没有登录 / 配对流程**：你在 Discord Developer Portal 建一个机器人（Bot），把它的 **Bot Token（机器人密钥）** 填进 xacpx，再把机器人邀请安装到你的服务器（Guild）。插件随后对每个 token 维持一条 Gateway 长连接。
+
+> 术语：**Bot Token** 是 Discord 机器人的凭据，等同密码，属于 secret；**snowflake ID** 是 Discord 给 用户 / 服务器 / 频道 / 角色 分配的数字 ID，是授权比对用的身份；**allowlist（白名单）** 是只放行名单内发送者的准入策略。
+
+回复模式、表格、chatKey / 线程路由、附件、consumer lock 等完整行为见包内 README：[`packages/channel-discord/README.md`](../../packages/channel-discord/README.md)。本节从零带你把第一个机器人配到能收发。
+
+### 1. 安装插件
+
+```bash
+xacpx plugin add @ganglion/xacpx-channel-discord
+```
+
+### 2. 创建并配置 Discord 机器人
+
+在 [Discord Developer Portal](https://discord.com/developers/applications)：
+
+1. 新建一个 **Application**，再在其 **Bot** 设置里创建 / 确认机器人。
+2. 复制 **Bot Token**（没有就 Reset Token）。把它当密码对待，不要贴进 issue、日志或聊天；一旦泄漏，先在 Portal 重置，再更新 xacpx 的 `options.token` 并 `xacpx restart`。
+3. 在 Privileged Gateway Intents 里开启 **Message Content Intent**——否则服务器里的消息内容会是空（私聊不受此项影响）。
+
+Discord 偶尔会改 Portal 的分区名称，以当前 Portal 界面为准。
+
+### 3. 把机器人安装进服务器
+
+用 OAuth2 → URL Generator（或 Installation 页）生成带 `bot` scope 的邀请链接，把机器人加进服务器。**不要授予 Administrator。** 纯消息收发只需：
+
+```text
+View Channels · Send Messages · Read Message History · Add Reactions · Attach Files
+Send Messages in Threads   # 用到线程 / 论坛帖时才需要
+```
+
+### 4. 开启开发者模式并复制你的 User ID
+
+授权比对的是 Discord 的 **snowflake ID**，不是用户名或昵称。打开 **设置 → 高级 → 开发者模式**，然后右键 **复制 ID**，拿到你的 **用户 ID**（按需再取 服务器 / 频道 / 角色 ID）。
+
+### 5. 添加频道
+
+推荐用交互式输入，避免 token 落进 shell 历史：
+
+```bash
+xacpx channel add discord
+# Discord bot token:  （在这里粘贴 token）
+```
+
+自动化场景可显式传参：
+
+```bash
+xacpx channel add discord --token '<BOT_TOKEN>'
+```
+
+provider 只接受这些 flag（外加 core 通用的 `--account` / `--restart` / `--no-restart`）：
+
+```text
+--token --application-id --reply-mode --table-mode --require-mention --dm-policy --guild-policy
+```
+
+`applicationId` 对当前消息频道流程是**可选**的，必需的凭据只有 Bot Token。
+
+### 6. 配置安全准入（最容易被漏的一步）
+
+默认值是**故意收紧**的：`dmPolicy=allowlist`、`guildPolicy=allowlist`、`requireMention=true`，且 `allowFrom` 默认为**空**。白名单为空时，机器人能连上、显示在线，却会**忽略所有发送者**。而 `channel add discord` **没有 `--allow-from` flag**，所以要把你的 User ID 写进 `~/.xacpx/config.json`：
+
+```jsonc
+{
+  "id": "discord",
+  "type": "discord",
+  "enabled": true,
+  "options": {
+    "token": "...",
+    "dmPolicy": "allowlist",
+    "guildPolicy": "allowlist",
+    "allowFrom": ["<你的用户ID>"],
+    "requireMention": true
+  }
+}
+```
+
+按服务器粒度收紧用 `guilds.<guildId>.users` / `roles`；`allowFrom` 里放 `"*"` 表示放行任意发送者。被策略拒绝的消息会被静默丢弃（不回复「无权限」），仅在 `~/.xacpx/runtime/app.log` 以 `discord.message.policy_denied` 记录。
+
+> 「机器人在线但完全不回复」时，先查 `allowFrom` / 各服务器的 users、roles 和 `requireMention`，而不是先重装插件。
+
+### 7. 重启并验证
+
+```bash
+xacpx channel show discord     # token 以 *** 脱敏；可看到 policy 取值
+xacpx restart
+```
+
+> `xacpx plugin doctor` 对 Discord 只做**浅层配置诊断**（token 是否缺失 / 异常短、本地 `intents.messageContent` 是否为 false），**不是** live 的 token / Gateway 探测。真正是否连上，以 daemon 启动日志、机器人在 Discord 显示在线、以及一条测试消息能否往返为准。
+
+在 Discord 里用**已加入白名单的账号**发：`/help` → 有回复；`/ss codex -d /绝对路径/到/仓库` → 建 / 复用会话；再发普通文本 → 进入当前会话并收到 agent 回复。私聊不需要 @，服务器消息默认需要 @ 机器人（除非该频道 `requireMention=false`）。
+
+### Discord 多账号（同一频道多个机器人）
+
+用 `--account` 添加多个机器人。因为 Discord 对每个 token 只允许一条 Gateway 会话，**每个启用账号必须解析到互不相同的 Bot Token**：配置解析会拒绝两个启用账号共用同一 token（报错只点出 accountId，绝不打印 token），跨进程还有 per-token 文件锁挡住同 token 双开。
+
+```bash
+xacpx channel add discord --account main --token '<TOKEN_A>'
+xacpx channel add discord --account ops  --token '<TOKEN_B>'
+
+xacpx channel show discord --account main
+xacpx channel disable discord --account ops
+xacpx channel enable  discord --account ops
+xacpx channel rm      discord --account ops
+```
+
+启动时每个账号的 `identify` 会错峰 ≥5.5 秒（规避 Discord 5 秒 identify 限速）。
+
+### 更新 / 停用 / 删除
+
+```bash
+xacpx plugin update @ganglion/xacpx-channel-discord   # 之后需 xacpx restart 才加载新版
+xacpx channel disable discord
+xacpx channel enable discord
+xacpx channel rm discord                              # 卸载插件前先删频道
+```
+
+### Discord 排错
+
+| 现象 | 常见原因 | 处理 |
+|---|---|---|
+| 机器人离线 | daemon / token | `xacpx status`、`xacpx restart`、看 app.log；token 失效就重置 |
+| 在线但私聊没反应 | `allowFrom` 为空 / 发送者不在名单 | 加入你的 User ID（见第 6 步） |
+| 在线但服务器消息没反应 | 服务器白名单为空，或 `requireMention=true` | 加 sender / role，或 @ 机器人 |
+| 收到事件但内容为空 | Portal 未开 Message Content Intent | 去 Portal 开启；本地 intent 保持开启 |
+| 线程能读不能回 | 缺 `Send Messages in Threads` | 授予该权限 |
+| 第二个 xacpx 进程起不来 Discord | per-token consumer lock | 关掉重复进程，或换一个独立 token |
+| 启动报 "duplicates the bot token" | 两个启用账号共用一个 token | 给每个启用账号各自的 token |
 
 ---
 

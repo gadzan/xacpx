@@ -8,8 +8,9 @@ Provided by plugins:
 
 - `feishu`: Feishu channel, provided by `@ganglion/xacpx-channel-feishu`, uses the `App ID` / `App Secret` of a Feishu custom (self-built) app.
 - `yuanbao`: Yuanbao channel, provided by `@ganglion/xacpx-channel-yuanbao`, uses `appKey` / `appSecret`, with the Yuanbao signing and WebSocket gateway built in.
+- `discord`: Discord channel, provided by `@ganglion/xacpx-channel-discord`, uses a Discord **Bot Token** and the Gateway; the bot is installed into a server rather than QR-paired.
 
-Everyday users only need the quick steps in the README; this document records the more complete channel management commands, Feishu configuration, and troubleshooting.
+Everyday users only need the quick steps in the README; this document records the more complete channel management commands, Feishu/Yuanbao/Discord configuration, and troubleshooting.
 
 ---
 
@@ -33,7 +34,7 @@ xacpx ch list
 xacpx ch show feishu
 ```
 
-Current limitation: only one instance can be configured per channel type, so the channel `id` must equal its `type`, for example `weixin`, `feishu`, `yuanbao`.
+Current limitation: only one instance can be configured per channel type, so the channel `id` must equal its `type`, for example `weixin`, `feishu`, `yuanbao`, `discord`.
 
 `channel rm <type>` also clears that channel's **stored credentials** (e.g. the relay instance credential at `~/.xacpx/relay/credential.json`, or the WeChat login), so a later re-add re-pairs/re-logs-in cleanly instead of silently reusing an orphaned credential. Pass `--keep-credentials` to remove only the config entry and leave the stored credential in place (e.g. when temporarily disabling a channel without re-authenticating).
 
@@ -235,6 +236,135 @@ A chatKey looks like `yuanbao:<accountId>:<chatType>:<target>`, where `chatType`
 > Current limitation: `channel add yuanbao --account <id>` only exposes the flags `--app-key / --app-secret / --token / --bot-id / --api-domain / --ws-url / --require-mention / --max-chars / --idle-ms`; `replyToMode / overflowPolicy / outboundQueueStrategy / minChars / mediaMaxMb / historyLimit / disableBlockStreaming / fallbackReply / markdownHintEnabled / debugBotIds` still require hand-editing the JSON under `accounts.<id>`.
 
 > ⚠️ Changing `defaultAccount` likewise causes old chatKeys to lose routing (the state carries `yuanbao:default:...`). If you want to switch the default, we recommend keeping an `accounts.default` alias.
+
+---
+
+## Discord Channel Plugin
+
+Discord is provided by the first-party plugin package `@ganglion/xacpx-channel-discord`. Unlike WeChat (QR login) or Feishu/Yuanbao (platform credentials paired through their consoles), Discord has **no login/pairing flow**: you create a bot in the Discord Developer Portal, put its **Bot Token** into xacpx, and install the bot into a server. The plugin then keeps one Gateway connection per token.
+
+For the exhaustive behavior reference (reply modes, tables, chatKey/thread routing, media, consumer lock), see the package README: [`packages/channel-discord/README.md`](../packages/channel-discord/README.md). The steps below get a first bot chatting end to end.
+
+### 1. Install the plugin
+
+```bash
+xacpx plugin add @ganglion/xacpx-channel-discord
+```
+
+### 2. Create and configure the Discord bot
+
+In the [Discord Developer Portal](https://discord.com/developers/applications):
+
+1. Create an **Application**, then set up its **Bot**.
+2. Copy the **Bot Token** (Reset Token if needed). Treat it as a secret; never paste it into issues, logs, or chat. If it leaks, reset it, update `options.token`, and `xacpx restart`.
+3. Enable **Message Content Intent** under Privileged Gateway Intents — without it, guild messages arrive with empty content (DMs are unaffected).
+
+Discord renames Portal sections occasionally; use the current Portal as the source of truth.
+
+### 3. Install the bot into a server
+
+Generate an OAuth2 invite URL (or use the Installation page) with the `bot` scope and add the bot to your server. **Do not grant Administrator.** The message-only flow needs:
+
+```text
+View Channels · Send Messages · Read Message History · Add Reactions · Attach Files
+Send Messages in Threads   # only if you use threads / forum posts
+```
+
+### 4. Enable Developer Mode and copy your User ID
+
+Access control compares Discord **snowflake IDs**, not usernames. Turn on **Settings → Advanced → Developer Mode**, then right-click → **Copy ID** to grab your **User ID** (and, as needed, Guild / Channel / Role IDs).
+
+### 5. Add the channel
+
+Recommended — the token is entered through the secret prompt, keeping it out of shell history:
+
+```bash
+xacpx channel add discord
+# Discord bot token:  (paste here)
+```
+
+For automation:
+
+```bash
+xacpx channel add discord --token '<BOT_TOKEN>'
+```
+
+The provider exposes only these flags (plus core `--account` / `--restart` / `--no-restart`):
+
+```text
+--token --application-id --reply-mode --table-mode --require-mention --dm-policy --guild-policy
+```
+
+`applicationId` is optional for the message-channel flow; the Bot Token is the required credential.
+
+### 6. Configure safe access (the step people miss)
+
+Defaults are deliberately restrictive: `dmPolicy=allowlist`, `guildPolicy=allowlist`, `requireMention=true`, and `allowFrom` is **empty**. With an empty allowlist the bot connects and shows online but **ignores every sender**. `channel add discord` has **no `--allow-from` flag**, so add your User ID by editing `~/.xacpx/config.json`:
+
+```jsonc
+{
+  "id": "discord",
+  "type": "discord",
+  "enabled": true,
+  "options": {
+    "token": "...",
+    "dmPolicy": "allowlist",
+    "guildPolicy": "allowlist",
+    "allowFrom": ["<YOUR_USER_ID>"],
+    "requireMention": true
+  }
+}
+```
+
+Per-guild scoping uses `guilds.<guildId>.users` / `roles`; `"*"` in `allowFrom` accepts any sender. Rejected messages are dropped silently and logged to `~/.xacpx/runtime/app.log` under `discord.message.policy_denied`.
+
+### 7. Restart and verify
+
+```bash
+xacpx channel show discord     # token masked; policy values visible
+xacpx restart
+```
+
+> `xacpx plugin doctor` runs a shallow Discord config check (missing/short token, local `intents.messageContent`). It is **not** a live token/Gateway probe. Confirm the real connection via the daemon startup log, the bot showing online, and a test message.
+
+In Discord, from the allowlisted account: send `/help`, then `/ss codex -d /absolute/path/to/repo`, then plain text and expect an agent reply. DMs don't require a mention; server messages do (by default).
+
+### Discord Multi-Account (Multiple Bots in One Channel)
+
+Add more bots with `--account`. Because Discord allows exactly one Gateway session per token, **each enabled account must resolve to a distinct Bot Token** — config parsing rejects two enabled accounts that share a token (it names the account ids only, never the token), and a per-token file lock blocks two processes from the same token.
+
+```bash
+xacpx channel add discord --account main --token '<TOKEN_A>'
+xacpx channel add discord --account ops  --token '<TOKEN_B>'
+
+xacpx channel show discord --account main
+xacpx channel disable discord --account ops
+xacpx channel enable  discord --account ops
+xacpx channel rm      discord --account ops
+```
+
+Startup staggers `identify` by ≥5.5 s per account (Discord's 5-s identify rate limit).
+
+### Updating / disabling / removing
+
+```bash
+xacpx plugin update @ganglion/xacpx-channel-discord   # then xacpx restart to load it
+xacpx channel disable discord
+xacpx channel enable discord
+xacpx channel rm discord                              # remove channel before uninstalling the plugin
+```
+
+### Discord troubleshooting
+
+| Symptom | Likely cause | Action |
+|---|---|---|
+| Bot offline | daemon/token | `xacpx status`, `xacpx restart`, check app.log; rotate token if invalid |
+| Online but DM ignored | `allowFrom` empty / sender not listed | add User ID (step 6) |
+| Online but server message ignored | guild allowlist empty or `requireMention=true` | allowlist sender/role, or @-mention the bot |
+| Events arrive, content empty | Message Content Intent off in Portal | enable it; keep local intent on |
+| Can read thread, cannot reply | missing `Send Messages in Threads` | grant that permission |
+| Second process won't start Discord | per-token consumer lock | stop the duplicate, or use a distinct token |
+| "duplicates the bot token" on start | two enabled accounts share one token | give each enabled account its own token |
 
 ---
 
