@@ -91,15 +91,16 @@ export class BridgeServer {
 
   private readonly engines: BridgeEngine;
 
-  constructor(runtime: BridgeRuntime | BridgeEngine, private readonly daemonRequestTimeoutMs = 10_000) {
-    // Any engine-capable instance works: a raw BridgeRuntime (legacy tests,
-    // bridge-main) is wrapped as CliEngine behind an EngineRouter so session
-    // affinity routing exists from day one.
+  constructor(runtime: BridgeRuntime | EngineRouter, private readonly daemonRequestTimeoutMs = 10_000) {
+    // EngineRouter is the single routing entrypoint. A raw BridgeRuntime
+    // (legacy tests / bridge-main) is wrapped as CliEngine behind a fresh
+    // router so affinity exists from day one. Passing a bare RuntimeEngine
+    // is a compile-time error — it must be wired through an EngineRouter
+    // with proper SessionEngineBinding so kind-based routing is correct.
     this.engines = runtime instanceof EngineRouter
       ? runtime
       : new EngineRouter(new SessionEngineBinding(), new CliEngine(runtime as BridgeRuntime));
   }
-
   async handleLine(line: string, writeLine?: (line: string) => void): Promise<string | null> {
     if (writeLine) this.daemonWriter = writeLine;
     const daemonResponse = parseDaemonOriginatedResponse(line);

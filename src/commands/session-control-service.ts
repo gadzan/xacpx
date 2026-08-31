@@ -63,42 +63,52 @@ export class SessionControlService {
 
     try {
       const stableTransportSession = `${workspace}:${finalInternalAlias}`;
-      const session = this.sessions.resolveSession(
+      const launchProbe = this.sessions.resolveSession(
         finalInternalAlias,
         agent,
         workspace,
         this.sessions.buildFreshTransportSession(stableTransportSession),
         { guardAcpOutput: true },
       );
-      // An explicit model override must be on the ResolvedSession BEFORE
-      // ensureTransportSession so acpx creates the session under that model
-      // (it carries through as `--model`). Mirrors handleSessionNew.
       const normalizedModel = model?.trim();
+      // Authoritative identity before any transport owner starts.
+      let persisted: ResolvedSession;
+      try {
+        persisted = await this.sessions.attachSession(
+          finalInternalAlias,
+          agent,
+          workspace,
+          launchProbe.transportSession,
+          launchProbe.agentCommand,
+          launchProbe.acpxAgent,
+          launchProbe.agentArgv,
+        );
+        if (normalizedModel) {
+          await this.sessions.setSessionModel(finalInternalAlias, normalizedModel);
+          const refreshed = this.sessions.getResolvedSessionByInternalAlias(finalInternalAlias);
+          if (refreshed) persisted = refreshed;
+          else persisted.model = normalizedModel;
+        }
+      } catch (error) {
+        // Engine resolution (e.g. runtime without support) fails before any owner
+        throw error;
+      }
       if (normalizedModel) {
-        session.model = normalizedModel;
+        persisted.model = normalizedModel;
       }
       // Reserve the stable coordinator identity rather than the incarnation-specific
       // name. This preserves conflict detection with external coordinators while the
       // transport name itself can rotate on every explicit create.
       const release = await this.reserveLogicalTransportSession(stableTransportSession);
+      let transportSucceeded = false;
       try {
-        await this.invoker.ensureTransportSession(session);
-        const exists = await this.invoker.checkTransportSession(session);
+        await this.invoker.ensureTransportSession(persisted);
+        const exists = await this.invoker.checkTransportSession(persisted);
         if (!exists) {
-          throw new Error(`transport session "${session.transportSession}" could not be verified`);
+          try { await this.sessions.removeSession(finalInternalAlias); } catch {}
+          throw new Error(`transport session "${persisted.transportSession}" could not be verified`);
         }
-        await this.sessions.attachSession(
-          finalInternalAlias,
-          agent,
-          workspace,
-          session.transportSession,
-          session.agentCommand,
-          session.acpxAgent,
-          session.agentArgv,
-        );
-        if (normalizedModel) {
-          await this.sessions.setSessionModel(finalInternalAlias, normalizedModel);
-        }
+        transportSucceeded = true;
         // Best-effort: a transient refresh failure must not fail a create that has
         // already succeeded, bound, and verified. Mirrors the chat paths' use of
         // refreshSessionTransportAgentCommandBestEffort.
@@ -110,7 +120,12 @@ export class SessionControlService {
             error: error instanceof Error ? error.message : String(error),
           });
         }
-        return session;
+        return persisted;
+      } catch (error) {
+        if (!transportSucceeded) {
+          try { await this.sessions.removeSession(finalInternalAlias); } catch {}
+        }
+        throw error;
       } finally {
         await release();
       }

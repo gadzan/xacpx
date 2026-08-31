@@ -75,7 +75,18 @@ export async function markRuntimeWorkerFence(phase: "discharging" | "discharged"
   const path = process.env.XACPX_WORKER_FENCE;
   const generation = process.env.XACPX_WORKER_FENCE_GENERATION;
   if (!path || !generation) return "stale";
-  const parsed = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch (error) {
+    if (error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return "stale";
+    }
+    throw error;
+  }
+  const parsedRaw = JSON.parse(raw);
+  if (typeof parsedRaw !== "object" || parsedRaw === null) throw new Error("corrupt fence JSON");
+  const parsed = parsedRaw as Record<string, unknown>; // validated object, generation/kind checked next line
   if (parsed.generation !== generation || parsed.kind !== "runtime-worker-owner") return "stale";
   parsed.phase = phase;
   const tmp = `${path}.tmp-${randomUUID()}`;
@@ -89,7 +100,6 @@ export async function markRuntimeWorkerFence(phase: "discharging" | "discharged"
   await rename(tmp, path);
   return "updated";
 }
-
 /** Default runtime dir for the orphan registry (config-dir based). */
 export function defaultRuntimeDir(): string {
   return join(dirname(resolveConfigPathForCurrentEnv()), "runtime");

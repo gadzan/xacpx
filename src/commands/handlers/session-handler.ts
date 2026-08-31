@@ -239,44 +239,64 @@ export async function handleSessionNew(
 
   try {
     const stableTransportSession = `${workspace}:${finalInternalAlias}`;
-    const session = context.lifecycle.resolveSession(
+    // Resolve launch info (agentCommand etc.) for attach; logical identity
+    // itself will be authoritatively allocated by attachSession before any
+    // transport owner starts (single allocation, I1).
+    const launchProbe = context.lifecycle.resolveSession(
       finalInternalAlias,
       agent,
       workspace,
       context.sessions.buildFreshTransportSession(stableTransportSession),
       { guardAcpOutput: true },
     );
-  // An explicit --model overrides the agent default for this session, and must be
-  // on the ResolvedSession before ensureTransportSession so acpx creates the
-  // session under that model.
     const normalizedModel = model?.trim();
-    if (normalizedModel) {
-      session.model = normalizedModel;
-    }
-    const releaseTransportReservation = await context.lifecycle.reserveTransportSession(stableTransportSession);
+    // Authoritative identity (logicalSessionId + transportEngine) must be
+    // persisted BEFORE the first transport owner can start. Engine
+    // resolution (e.g. engine:"runtime" without runtime support) therefore
+    // fails before any CLI owner is launched, satisfying R1.
+    let persisted: ResolvedSession;
     try {
-      try {
-        await context.lifecycle.ensureTransportSession(session);
-        const exists = await context.lifecycle.checkTransportSession(session);
-        if (!exists) {
-          return context.recovery.renderSessionCreationVerificationError(session);
-        }
-      } catch (error) {
-        return context.recovery.renderSessionCreationError(session, error);
-      }
-
-      await context.sessions.attachSession(
+      persisted = await context.sessions.attachSession(
         finalInternalAlias,
         agent,
         workspace,
-        session.transportSession,
-        session.agentCommand,
-        session.acpxAgent,
-        session.agentArgv,
+        launchProbe.transportSession,
+        launchProbe.agentCommand,
+        launchProbe.acpxAgent,
+        launchProbe.agentArgv,
       );
       if (normalizedModel) {
         await context.sessions.setSessionModel(finalInternalAlias, normalizedModel);
+        const refreshed = context.sessions.getResolvedSessionByInternalAlias(finalInternalAlias);
+        if (refreshed) persisted = refreshed;
+        else persisted.model = normalizedModel;
       }
+    } catch (error) {
+      return context.recovery.renderSessionCreationError(launchProbe, error);
+    }
+    // Ensure uses the persisted authoritative identity — first bridge
+    // logicalSessionId/transportEngine equals final state (I1).
+    if (normalizedModel) {
+      persisted.model = normalizedModel;
+    }
+    const releaseTransportReservation = await context.lifecycle.reserveTransportSession(stableTransportSession);
+    let transportSucceeded = false;
+    try {
+      try {
+        await context.lifecycle.ensureTransportSession(persisted);
+        const exists = await context.lifecycle.checkTransportSession(persisted);
+        if (!exists) {
+          await context.sessions.removeSession(finalInternalAlias);
+          return context.recovery.renderSessionCreationVerificationError(persisted);
+        }
+        transportSucceeded = true;
+      } catch (error) {
+        // Rollback the provisional logical session — no orphan alias with
+        // no transport.
+        try { await context.sessions.removeSession(finalInternalAlias); } catch {}
+        return context.recovery.renderSessionCreationError(persisted, error);
+      }
+
       await context.sessions.useSession(chatKey, finalInternalAlias);
       await refreshSessionTransportAgentCommandBestEffort(context, finalInternalAlias, "session.agent_command_refresh_failed");
       await context.logger.info("session.created", "created and selected logical session", {
