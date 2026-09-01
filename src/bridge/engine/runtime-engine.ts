@@ -421,6 +421,7 @@ export class RuntimeEngine implements BridgeEngine {
   private queueStore?: RuntimeQueueStore;
   private readonly draining = new Map<string, Promise<void>>();
   private readonly deleting = new Set<string>();
+  private readonly deleteGenerations = new Map<string, number>();
   private shuttingDown = false;
   /** Authoritative session catalog for bridge restart recovery (logicalSessionId -> input). */
   private sessionCatalog = new Map<string, EngineSessionInput>();
@@ -691,12 +692,18 @@ export class RuntimeEngine implements BridgeEngine {
         }
       }
       this.incActiveTurn(key);
+      const _deleteGenAtStart = this.deleteGenerations.get(key) ?? 0;
       let releaseTurn: (() => void) | undefined;
       try {
         releaseTurn = await this.acquireTurnLease(key);
       } catch (e) {
         this.decActiveTurn(key);
         throw e;
+      }
+      if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _deleteGenAtStart) {
+        this.decActiveTurn(key);
+        releaseTurn?.();
+        return;
       }
       let turnError: unknown;
       let isTerminal = false;
@@ -726,6 +733,10 @@ export class RuntimeEngine implements BridgeEngine {
       }
       if (!isTerminal) {
         if (this.shuttingDown) return;
+        if (this.queueSuspended.has(key)) {
+          await this.consumeSuspendCool(key);
+          return;
+        }
         setTimeout(() => {
           if (this.shuttingDown) return;
           const latest = this.sessionCatalog.get(key) ?? input;
@@ -733,20 +744,22 @@ export class RuntimeEngine implements BridgeEngine {
         }, 200);
         return;
       }
-      if (this.queueSuspended.has(key)) {
-        await this.consumeSuspendCool(key);
-        return;
-      }
+      // Terminal head must be dequeued even when suspended — suspend only blocks next head admission (at-least-once replay only for crash/ambiguity, not for deterministic terminal)
       // Atomically remove head from journal ONLY after terminal settlement (at-least-once, possible replay on crash before remove)
+      let _dequeuedHead: import("./runtime/runtime-queue").RuntimePendingMessage | undefined;
       try {
-        const removed = await store.dequeueHead(key);
+        _dequeuedHead = await store.dequeueHead(key);
         // If dequeue returned undefined but we expected head, journal may have been concurrently cleared (e.g. delete) — stop
-        if (!removed) return;
+        if (!_dequeuedHead) return;
         // Verify head id matches (detect concurrent mutation)
         // If mismatch, we still continue — at-least-once ensures no loss, possible replay is acceptable per spec
       } catch (err) {
         // Dequeue persist failure -> head remains on disk for retry on next drain, do not lose acked message
         throw toStableRuntimeError(err);
+      }
+      if (this.queueSuspended.has(key)) {
+        await this.consumeSuspendCool(key);
+        return;
       }
     }
   }
@@ -769,13 +782,15 @@ export class RuntimeEngine implements BridgeEngine {
     return client.lifecycle === "busy" || !!client.hasInFlight;
   }
 
-  private isStaleActiveForInjectOrCheck(key: string, client: RuntimeWorkerClient | undefined): boolean {
-    if (this.hasActiveTurn(key) || this.draining.has(key)) return true;
+  private isStaleActiveForInjectOrCheck(key: string, client: RuntimeWorkerClient | undefined, excludeCurrentTurn = false): boolean {
+    const activeCount = this.activeTurns.get(key) ?? 0;
+    const hasActive = excludeCurrentTurn ? activeCount > 1 : activeCount > 0;
+    if (hasActive || this.draining.has(key)) return true;
     if (!client) return false;
     return client.lifecycle === "busy" || !!client.hasInFlight;
   }
 
-  private async checkMcpStaleAndRotate(input: EngineSessionInput, _forActiveCheck: boolean): Promise<boolean> {
+  private async checkMcpStaleAndRotate(input: EngineSessionInput, forPromptActiveCheck: boolean): Promise<boolean> {
     const key = this.workerKey(input);
     const requestedMcp = { mcpCoordinatorSession: input.mcpCoordinatorSession, mcpSourceHandle: input.mcpSourceHandle };
     const lastMcp = this.lastMcpIdentity.get(key);
@@ -786,7 +801,7 @@ export class RuntimeEngine implements BridgeEngine {
       this.lastMcpIdentity.delete(key);
       return true;
     }
-    const isActive = this.isStaleActiveForInjectOrCheck(key, existingClient);
+    const isActive = this.isStaleActiveForInjectOrCheck(key, existingClient, forPromptActiveCheck);
     if (isActive) {
       this.staleAfterTurn.add(key);
       throw new RuntimeError("RUNTIME_MCP_STALE", `MCP identity changed for session "${key}" while turn active; will rotate after settle`);
@@ -838,9 +853,21 @@ export class RuntimeEngine implements BridgeEngine {
       this.lastMcpIdentity.set(key, { mcpCoordinatorSession: input.mcpCoordinatorSession, mcpSourceHandle: input.mcpSourceHandle });
     } catch (error) {
       if (error instanceof WorkerTeardownPendingError) {
-        throw new RuntimeError(error.code, error.message);
+        // Worker is still in cooling/teardown from a recent archive/coolPending.
+        // Wait briefly for the previous generation to fully release, then retry once.
+        await new Promise((r) => setTimeout(r, 2600));
+        try {
+          client = await this.ensureWorker(input);
+          this.lastMcpIdentity.set(key, { mcpCoordinatorSession: input.mcpCoordinatorSession, mcpSourceHandle: input.mcpSourceHandle });
+        } catch (retryError) {
+          if (retryError instanceof WorkerTeardownPendingError) {
+            throw new RuntimeError(retryError.code, retryError.message);
+          }
+          throw new WorkerUnavailableError(retryError instanceof Error ? retryError.message : String(retryError));
+        }
+      } else {
+        throw new WorkerUnavailableError(error instanceof Error ? error.message : String(error));
       }
-      throw new WorkerUnavailableError(error instanceof Error ? error.message : String(error));
     }
     try {
       const result = await run(client);
@@ -1079,19 +1106,27 @@ export class RuntimeEngine implements BridgeEngine {
       await this.policyTransitionLock;
     }
     const key = this.workerKey(input);
+    // Mark the turn active IMMEDIATELY so preflight on concurrent policy
+    // updates detects the in-flight turn and fails closed (plan §32).
+    // Must be before any await so the busy flag is synchronously visible to concurrent updatePermissionPolicy.
+    this.incActiveTurn(key);
     this.sessionCatalog.set(key, input);
     // Archive suspend: a direct prompt resumes a suspended durable queue (first post-archive use).
     this.queueSuspended.delete(key);
+    await this.getQueueStore().setSuspended(key, false).catch(() => {});
     await this.checkMcpStaleAndRotate(input, true);
-    // Mark the turn active IMMEDIATELY so preflight on concurrent policy
-    // updates detects the in-flight turn and fails closed (plan §32).
-    this.incActiveTurn(key);
+    const _deleteGenAtStart = this.deleteGenerations.get(key) ?? 0;
     let releaseTurn: (() => void) | undefined;
     try {
       releaseTurn = await this.acquireTurnLease(key);
     } catch (e) {
       this.decActiveTurn(key);
       throw e;
+    }
+    if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _deleteGenAtStart) {
+      this.decActiveTurn(key);
+      releaseTurn?.();
+      throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
     }
     try {
       const result = await this.executeRuntimeTurn(input, input.text, { onEvent, media: input.media, toolEventMode: input.toolEventMode, toolEvents: input.toolEvents });
@@ -1301,14 +1336,43 @@ export class RuntimeEngine implements BridgeEngine {
     const key = this.workerKey(input);
     // PR6: mark deleting so new enqueue is rejected (lifecycle boundary)
     this.deleting.add(key);
+    this.deleteGenerations.set(key, (this.deleteGenerations.get(key) ?? 0) + 1);
     try {
       const client = this.manager?.get(key);
 
       // 1. Resolve REAL record id (plan §19 order). Never fallback to logicalSessionId.
       const recordId = await this.resolveRecordId(input, client);
 
-      // 2. If no record exists on disk or memory, idempotent success (G4).
+      // 2. If no record exists on disk or memory, idempotent success (G4) — but still terminate warm worker.
       if (!recordId) {
+        if (client) {
+          if (!client.alive && client.lifecycle !== "stopped") {
+            throw new RuntimeError(
+              "RUNTIME_WORKER_TEARDOWN_PENDING",
+              `runtime worker for session "${key}" crashed and ownership cleanup was never verified; refusing hard delete`,
+            );
+          }
+          if (client.alive) {
+            if (this.hasActiveTurn(key)) {
+              // Active turn in flight: mark for cool-after-settle, do not kill mid-turn
+              this.coolPending.add(key);
+            } else {
+              await client.request("close").catch(() => {});
+              await client.terminate().catch((error) => {
+                throw toTeardownError(key, error);
+              });
+              if (client.lifecycle === "stopped") {
+                await this.manager?.release(key, client);
+              }
+            }
+          } else {
+            this.manager?.deleteWorker(key, client);
+          }
+        }
+        if (!this.hasActiveTurn(key)) {
+          this.clearActiveTurn(key);
+          this.coolPending.delete(key);
+        }
         this.recordIds.delete(key);
         await this.getQueueStore().removeJournal(key);
         this.sessionCatalog.delete(key);
@@ -1328,12 +1392,9 @@ export class RuntimeEngine implements BridgeEngine {
       recordId,
     });
 
-    // 4. Terminate live worker (cancel active turn first, close with discard).
+    // 4. Terminate live worker (close with discard) — if active turn, defer to coolPending.
     if (client) {
       if (!client.alive && client.lifecycle !== "stopped") {
-        // Dead but unverified owner (crash cleanup failed / never proven): the worker's
-        // adapter descendants could not be proven gone — hard delete MUST fail closed
-        // instead of silently skipping ownership cleanup (plan §19 / single-owner).
         throw new RuntimeError(
           "RUNTIME_WORKER_TEARDOWN_PENDING",
           `runtime worker for session "${key}" crashed and ownership cleanup was never verified; refusing hard delete`,
@@ -1341,17 +1402,17 @@ export class RuntimeEngine implements BridgeEngine {
       }
       if (client.alive) {
         if (this.hasActiveTurn(key)) {
-          await client.request("cancel").catch(() => {});
-        }
-        await client.request("close").catch(() => {});
-        await client.terminate().catch((error) => {
-          throw toTeardownError(key, error);
-        });
-        if (client.lifecycle === "stopped") {
-          await this.manager?.release(key, client);
+          this.coolPending.add(key);
+        } else {
+          await client.request("close").catch(() => {});
+          await client.terminate().catch((error) => {
+            throw toTeardownError(key, error);
+          });
+          if (client.lifecycle === "stopped") {
+            await this.manager?.release(key, client);
+          }
         }
       } else {
-        // dead + stopped: verified tree cleanup already completed
         this.manager?.deleteWorker(key, client);
       }
     }
@@ -1391,6 +1452,7 @@ export class RuntimeEngine implements BridgeEngine {
     try {
       if (this.queueStore && await this.queueStore.hasPending(key)) {
         this.queueSuspended.add(key);
+        await this.getQueueStore().setSuspended(key, true).catch(() => {});
       }
     } catch {
       // Unreadable queue -> fail closed, do not cool
@@ -1438,7 +1500,13 @@ export class RuntimeEngine implements BridgeEngine {
     for (const id of ids) {
       const input = this.sessionCatalog.get(id);
       if (!input) continue;
+      try {
+        if (await this.queueStore.isSuspended(id)) {
+          this.queueSuspended.add(id);
+        }
+      } catch {}
       if (await this.queueStore.hasPending(id)) {
+        if (this.queueSuspended.has(id)) continue;
         this.kickDrain(input).catch(() => {});
       }
     }
@@ -1510,24 +1578,21 @@ export class RuntimeEngine implements BridgeEngine {
    * zero matching artifacts remain on disk.
    */
   private async acquireTurnLease(key: string): Promise<() => void> {
-    for (;;) {
-      const prior = this.turnLeases.get(key);
-      let release!: () => void;
-      const next = new Promise<void>((r) => (release = r));
-      const tail = prior ? prior.then(() => next, () => next) : next;
-      this.turnLeases.set(key, tail);
-      if (!prior) {
-        if (this.shuttingDown) { release(); if (this.turnLeases.get(key) === tail) this.turnLeases.delete(key); throw new RuntimeError("RUNTIME_INIT_FAILED", "runtime engine is shutting down"); }
-        return () => { release(); if (this.turnLeases.get(key) === tail) this.turnLeases.delete(key); };
-      }
-      await prior;
-      if (this.shuttingDown) { release(); if (this.turnLeases.get(key) === tail) this.turnLeases.delete(key); throw new RuntimeError("RUNTIME_INIT_FAILED", "runtime engine is shutting down"); }
-      if (this.turnLeases.get(key) === tail) {
-        if (this.shuttingDown) { release(); if (this.turnLeases.get(key) === tail) this.turnLeases.delete(key); throw new RuntimeError("RUNTIME_INIT_FAILED", "runtime engine is shutting down"); }
-        return () => { release(); if (this.turnLeases.get(key) === tail) this.turnLeases.delete(key); };
-      }
+    const prior = this.turnLeases.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const next = new Promise<void>((r) => (release = r));
+    const tail = prior.then(() => next, () => next);
+    this.turnLeases.set(key, tail);
+    await prior;
+    if (this.shuttingDown) {
       release();
+      if (this.turnLeases.get(key) === tail) this.turnLeases.delete(key);
+      throw new RuntimeError("RUNTIME_INIT_FAILED", "runtime engine is shutting down");
     }
+    return () => {
+      release();
+      if (this.turnLeases.get(key) === tail) this.turnLeases.delete(key);
+    };
   }
 
   private async deleteRecordFilesStrict(recordId: string): Promise<void> {

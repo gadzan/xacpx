@@ -20,6 +20,7 @@ export interface RuntimeQueueRecord {
   schema: "xacpx.runtime-queue.v1" | "xacpx.runtime-queue.v2";
   logicalSessionId: string;
   items: RuntimePendingMessage[];
+  suspended?: boolean;
 }
 
 export type QueueEnqueueResult = { status: "queued"; modeUsed: "queue"; queueItemId: string };
@@ -42,6 +43,7 @@ function validateRecord(parsed: unknown, expectedLogicalSessionId?: string): Run
     throw new Error(`logicalSessionId mismatch expected ${expectedLogicalSessionId} got ${rec.logicalSessionId}`);
   }
   if (!Array.isArray(rec.items)) throw new Error("items is not an array");
+  if (rec.suspended !== undefined && typeof rec.suspended !== "boolean") throw new Error("suspended is not a boolean");
   for (const item of rec.items as unknown[]) {
     if (!item || typeof item !== "object") throw new Error("queue item is not an object");
     const it = item as Record<string, unknown>;
@@ -172,6 +174,7 @@ export class RuntimeQueueStore {
         schema: "xacpx.runtime-queue.v2",
         logicalSessionId,
         items: [...items, next],
+        ...(existing?.suspended ? { suspended: true } : {}),
       };
       await this.save(record);
       return { status: "queued", modeUsed: "queue", queueItemId: next.messageId };
@@ -183,14 +186,19 @@ export class RuntimeQueueStore {
       const rec = await this.load(logicalSessionId);
       if (!rec || rec.items.length === 0) return undefined;
       const [head, ...rest] = rec.items;
+      const existingSuspended = rec.suspended;
       if (rest.length === 0) {
-        // Remove file when empty to avoid stale empty journals
-        const file = queueFilePath(this.queueDir, logicalSessionId);
-        try { await unlink(file); } catch (err) { if (!isEnoent(err)) throw new RuntimeError("RUNTIME_INIT_FAILED", `failed to remove empty queue journal for "${logicalSessionId}": ${err instanceof Error ? err.message : String(err)}`); }
-        // Verify gone
-        try { await access(file); throw new RuntimeError("RUNTIME_INIT_FAILED", `queue journal still exists after dequeue for "${logicalSessionId}"`); } catch (err) { if (!isEnoent(err)) throw err; }
+        if (existingSuspended) {
+          await this.save({ schema: "xacpx.runtime-queue.v2", logicalSessionId, items: [], suspended: true });
+        } else {
+          // Remove file when empty to avoid stale empty journals
+          const file = queueFilePath(this.queueDir, logicalSessionId);
+          try { await unlink(file); } catch (err) { if (!isEnoent(err)) throw new RuntimeError("RUNTIME_INIT_FAILED", `failed to remove empty queue journal for "${logicalSessionId}": ${err instanceof Error ? err.message : String(err)}`); }
+          // Verify gone
+          try { await access(file); throw new RuntimeError("RUNTIME_INIT_FAILED", `queue journal still exists after dequeue for "${logicalSessionId}"`); } catch (err) { if (!isEnoent(err)) throw err; }
+        }
       } else {
-        await this.save({ schema: "xacpx.runtime-queue.v2", logicalSessionId, items: rest });
+        await this.save({ schema: "xacpx.runtime-queue.v2", logicalSessionId, items: rest, ...(existingSuspended ? { suspended: true } : {}) });
       }
       return head;
     });
@@ -217,6 +225,33 @@ export class RuntimeQueueStore {
       try { await unlink(file); } catch (err) { if (!isEnoent(err)) throw new RuntimeError("RUNTIME_INIT_FAILED", `failed to remove runtime queue journal for "${logicalSessionId}": ${err instanceof Error ? err.message : String(err)}`); }
       try { await access(file); throw new RuntimeError("RUNTIME_INIT_FAILED", `queue journal still exists after remove for "${logicalSessionId}"`); } catch (err) { if (!isEnoent(err)) throw err; }
     });
+  }
+
+  async setSuspended(logicalSessionId: string, suspended: boolean): Promise<void> {
+    return this.withLock(logicalSessionId, async () => {
+      const rec = await this.load(logicalSessionId);
+      if (!rec) {
+        if (!suspended) return;
+        await this.save({ schema: "xacpx.runtime-queue.v2", logicalSessionId, items: [], suspended: true });
+        return;
+      }
+      const cur = !!rec.suspended;
+      if (cur === suspended) return;
+      if (suspended) rec.suspended = true;
+      else delete (rec as { suspended?: boolean }).suspended;
+      if (!suspended && rec.items.length === 0) {
+        const file = queueFilePath(this.queueDir, logicalSessionId);
+        try { await unlink(file); } catch (err) { if (!isEnoent(err)) throw new RuntimeError("RUNTIME_INIT_FAILED", `failed to remove empty suspended queue journal for "${logicalSessionId}": ${err instanceof Error ? err.message : String(err)}`); }
+        try { await access(file); throw new RuntimeError("RUNTIME_INIT_FAILED", `queue journal still exists after clear suspend for "${logicalSessionId}"`); } catch (err) { if (!isEnoent(err)) throw err; }
+        return;
+      }
+      await this.save(rec);
+    });
+  }
+
+  async isSuspended(logicalSessionId: string): Promise<boolean> {
+    const rec = await this.load(logicalSessionId);
+    return !!rec?.suspended;
   }
 
   async listLogicalSessionIds(): Promise<string[]> {
