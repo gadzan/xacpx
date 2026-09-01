@@ -676,12 +676,16 @@ test.serial("P1-11: delete waits for in-flight acquiring (fence discharge) befor
     await pDelete;
     expect((await engine.isSessionWarm(testInput as unknown as never)).warm).toBe(false);
     expect(manager.get(testInput.logicalSessionId)).toBeUndefined();
-    // Fence must be retired (no retained owner fence)
+    // Fence must be retired (no retained owner fence) — only ENOENT is allowed, expect failure must not be swallowed
+    let fenceFiles: string[] = [];
     try {
-      const fenceFiles = await readdir(fenceDir);
-      const hasFence = fenceFiles.some((f: string) => f.includes(testInput.logicalSessionId) || f.includes(encodeURIComponent(testInput.logicalSessionId)));
-      expect(hasFence).toBe(false);
-    } catch {}
+      fenceFiles = await readdir(fenceDir);
+    } catch (err: any) {
+      if (err?.code !== "ENOENT" && err?.code !== "ENOTDIR") throw err;
+      fenceFiles = [];
+    }
+    const hasFence = fenceFiles.some((f: string) => f.includes(testInput.logicalSessionId) || f.includes(encodeURIComponent(testInput.logicalSessionId)));
+    expect(hasFence).toBe(false);
     const recId = await (engine as any).resolveRecordId(testInput, undefined);
     expect(recId).toBeUndefined();
   } finally {

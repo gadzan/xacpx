@@ -439,11 +439,16 @@ export class RuntimeEngine implements BridgeEngine {
         );
       }
       const pending = this.acquiring.get(key)!;
-      const timeoutPromise = new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), remaining));
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+      const timeoutPromise = new Promise<"timeout">((resolve) => {
+        timeoutHandle = setTimeout(() => resolve("timeout"), remaining);
+        timeoutHandle.unref?.();
+      });
       const result = await Promise.race([
         (async () => { try { await pending; } catch {} return "done" as const; })(),
         timeoutPromise,
       ]);
+      if (timeoutHandle) clearTimeout(timeoutHandle);
       if (result === "timeout") {
         throw new RuntimeError(
           "RUNTIME_WORKER_TEARDOWN_PENDING",
