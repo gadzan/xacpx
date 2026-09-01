@@ -342,23 +342,48 @@ export class DiscordChannel implements MessageChannelRuntime {
       throw new Error(`discord account "${account.accountId}" became ready without a bot identity`);
     }
 
-    if (account.enableAutocomplete && account.applicationId) {
+    const shouldRegisterAutocomplete = account.enableAutocomplete !== false;
+    const effectiveAppId = account.applicationId || identity.botUserId;
+    if (shouldRegisterAutocomplete && effectiveAppId) {
+      const commands = buildXacpxSlashCommands();
       try {
         await registerDiscordCommands({
           token: account.token,
-          applicationId: account.applicationId,
-          commands: buildXacpxSlashCommands(),
+          applicationId: effectiveAppId,
+          commands,
         });
-        await input.logger.info("discord.commands.registered", "registered discord application commands", {
+        await input.logger.info("discord.commands.registered", "registered discord application commands (global)", {
           accountId: account.accountId,
-          count: buildXacpxSlashCommands().length,
+          count: commands.length,
+          applicationId: effectiveAppId,
         });
       } catch (error) {
-        await input.logger.warn("discord.commands.register_failed", "failed to register discord application commands", {
+        await input.logger.warn("discord.commands.register_failed", "failed to register discord application commands (global)", {
           accountId: account.accountId,
           message: error instanceof Error ? error.message : String(error),
         });
       }
+      const guildIds = new Set<string>();
+      for (const gid of Object.keys(account.guilds ?? {})) guildIds.add(gid);
+      const anyClient = client as unknown as { guilds?: { cache?: Map<string, unknown> | { keys(): Iterable<string> } } };
+      try {
+        const cache = anyClient.guilds?.cache as unknown as Map<string, unknown> | undefined;
+        if (cache && typeof (cache as Map<string, unknown>).keys === "function") {
+          for (const gid of (cache as Map<string, unknown>).keys()) guildIds.add(gid as string);
+        }
+      } catch {}
+      for (const guildId of guildIds) {
+        try {
+          await registerDiscordCommands({ token: account.token, applicationId: effectiveAppId, guildId, commands });
+          await input.logger.info("discord.commands.registered_guild", "registered discord guild commands", { accountId: account.accountId, guildId });
+        } catch (error) {
+          await input.logger.warn("discord.commands.register_failed_guild", "failed to register guild commands", { accountId: account.accountId, guildId, message: error instanceof Error ? error.message : String(error) });
+        }
+      }
+    } else if (shouldRegisterAutocomplete && !effectiveAppId) {
+      await input.logger.warn("discord.commands.register_skipped", "autocomplete enabled but no applicationId or botUserId available", {
+        accountId: account.accountId,
+      });
     }
 
     this.accounts.set(account.accountId, {
@@ -998,7 +1023,12 @@ export class DiscordChannel implements MessageChannelRuntime {
 
       let accumulated = "";
       const safeReply = async (delta: string): Promise<void> => {
-        if (active.suppressed) return;
+        if (active.suppressed || !delta) return;
+        const trimmed = delta.trimStart();
+        const isProgress = /^[🚀🔧⏳ℹ️📦🔩🔄⚠️🧰]/.test(trimmed);
+        if (accumulated.length > 0 && isProgress) {
+          if (!accumulated.endsWith("\n")) accumulated += "\n";
+        }
         accumulated += delta;
         active.previewStream?.update(accumulated);
       };

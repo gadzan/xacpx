@@ -256,7 +256,7 @@ function resolveAccount(
   const token = stringOptional(merged.token, `${path}.token`);
   const applicationId = stringOptional(merged.applicationId, `${path}.applicationId`) ?? "";
   const enableAutocompleteRaw = booleanOptional(merged.enableAutocomplete, `${path}.enableAutocomplete`);
-  const enableAutocomplete = enableAutocompleteRaw ?? Boolean(applicationId);
+  const enableAutocomplete = enableAutocompleteRaw ?? true;
   const configured = Boolean(token && token.length > 0);
   const replyMode = enumValue<DiscordReplyMode>(merged.replyMode, `${path}.replyMode`, ["static", "streaming", "auto"], DEFAULT_REPLY_MODE);
   const tableMode = enumValue<DiscordTableMode>(merged.tableMode, `${path}.tableMode`, ["code", "bullets", "off"], DEFAULT_TABLE_MODE);
