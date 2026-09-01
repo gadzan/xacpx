@@ -444,16 +444,108 @@ export class RuntimeEngine implements BridgeEngine {
         timeoutHandle = setTimeout(() => resolve("timeout"), remaining);
         timeoutHandle.unref?.();
       });
-      const result = await Promise.race([
-        (async () => { try { await pending; } catch {} return "done" as const; })(),
-        timeoutPromise,
-      ]);
-      if (timeoutHandle) clearTimeout(timeoutHandle);
-      if (result === "timeout") {
+      try {
+        const result = await Promise.race([
+          pending.then(
+            () => "done" as const,
+            (err) => {
+              throw err;
+            },
+          ),
+          timeoutPromise,
+        ]);
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        if (result === "timeout") {
+          throw new RuntimeError(
+            "RUNTIME_WORKER_TEARDOWN_PENDING",
+            `cannot hard delete session "${key}" while worker acquisition in flight`,
+          );
+        }
+      } catch (err) {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        if (err instanceof WorkerTeardownPendingError) {
+          throw new RuntimeError(
+            "RUNTIME_WORKER_TEARDOWN_PENDING",
+            `cannot hard delete session "${key}" while worker acquisition failed: ${err.message}`,
+          );
+        }
+        if (err instanceof RuntimeError && err.code === "RUNTIME_WORKER_TEARDOWN_PENDING") throw err;
         throw new RuntimeError(
           "RUNTIME_WORKER_TEARDOWN_PENDING",
-          `cannot hard delete session "${key}" while worker acquisition in flight`,
+          `cannot hard delete session "${key}" while worker acquisition in flight: ${err instanceof Error ? err.message : String(err)}`,
         );
+      }
+    }
+  }
+  private async waitForWorkerQuiescence(key: string, timeoutMs = 8_000): Promise<void> {
+    // G4: ensure no worker, no acquiring, no retained fence — all part of same ownership transaction
+    const start = Date.now();
+    while (true) {
+      const hasAcquiring = this.acquiring.has(key);
+      const worker = this.manager?.get(key);
+      const hasWorker = !!worker;
+      let hasFence = false;
+      let fenceUnreadable = false;
+      try {
+        const fence = (this.manager as any)?.fence?.();
+        if (fence) {
+          const read = await fence.read(key);
+          if (read.kind === "present") hasFence = true;
+          else if (read.kind === "unreadable") fenceUnreadable = true;
+        }
+      } catch {}
+      if (!hasAcquiring && !hasWorker && !hasFence && !fenceUnreadable) return;
+      if (fenceUnreadable) {
+        throw new RuntimeError(
+          "RUNTIME_WORKER_TEARDOWN_PENDING",
+          `cannot hard delete session "${key}" while fence unreadable`,
+        );
+      }
+      const remaining = timeoutMs - (Date.now() - start);
+      if (remaining <= 0) {
+        const reasons: string[] = [];
+        if (hasAcquiring) reasons.push("acquiring");
+        if (hasWorker) reasons.push(`worker:${worker?.lifecycle}`);
+        if (hasFence) reasons.push("fence");
+        throw new RuntimeError(
+          "RUNTIME_WORKER_TEARDOWN_PENDING",
+          `cannot hard delete session "${key}" while worker ownership not quiesced: ${reasons.join(", ")}`,
+        );
+      }
+      // If acquiring exists, race it; otherwise poll worker/fence
+      if (hasAcquiring) {
+        const pending = this.acquiring.get(key)!;
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        const timeoutPromise = new Promise<"timeout">((resolve) => {
+          timeoutHandle = setTimeout(() => resolve("timeout"), Math.min(remaining, 200));
+          timeoutHandle.unref?.();
+        });
+        try {
+          const result = await Promise.race([
+            pending.then(
+              () => "done" as const,
+              (err) => {
+                throw err;
+              },
+            ),
+            timeoutPromise,
+          ]);
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+          if (result === "timeout") continue;
+        } catch (err) {
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+          if (err instanceof WorkerTeardownPendingError || (err instanceof RuntimeError && err.code === "RUNTIME_WORKER_TEARDOWN_PENDING")) {
+            throw new RuntimeError(
+              "RUNTIME_WORKER_TEARDOWN_PENDING",
+              `cannot hard delete session "${key}" while worker acquisition failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
+          throw err;
+        }
+      } else {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        setTimeout(resolve, 20);
+        await promise;
       }
     }
   }
@@ -1623,6 +1715,34 @@ export class RuntimeEngine implements BridgeEngine {
       } else {
         this.manager?.deleteWorker(key, client);
       }
+    }
+    // Final G4 ownership quiescence: hard delete success must imply no worker, no acquiring, no fence
+    await this.waitForAcquiringQuiescence(key);
+    if (this.manager?.get(key)) {
+      throw new RuntimeError(
+        "RUNTIME_WORKER_TEARDOWN_PENDING",
+        `cannot hard delete session "${key}" while worker still registered`,
+      );
+    }
+    try {
+      const fence = (this.manager as any)?.fence?.();
+      if (fence) {
+        const read = await fence.read(key);
+        if (read.kind === "present") {
+          throw new RuntimeError(
+            "RUNTIME_WORKER_TEARDOWN_PENDING",
+            `cannot hard delete session "${key}" while owner fence still present`,
+          );
+        }
+        if (read.kind === "unreadable") {
+          throw new RuntimeError(
+            "RUNTIME_WORKER_TEARDOWN_PENDING",
+            `cannot hard delete session "${key}" while fence unreadable`,
+          );
+        }
+      }
+    } catch (err) {
+      if (err instanceof RuntimeError) throw err;
     }
     this.clearActiveTurn(key);
     this.coolPending.delete(key);
