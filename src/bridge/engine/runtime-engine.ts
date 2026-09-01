@@ -605,19 +605,21 @@ export class RuntimeEngine implements BridgeEngine {
     return p;
   }
 
+  private async consumeSuspendCool(key: string): Promise<void> {
+    if (!this.coolPending.has(key)) return;
+    if (this.hasActiveTurn(key)) return;
+    this.coolPending.delete(key);
+    const c = this.manager?.get(key);
+    if (!c) return;
+    await c.terminate().catch((error) => { throw toTeardownError(key, error); });
+    c.lifecycle = "stopped";
+    await this.manager?.release(key, c).catch((error) => { throw toTeardownError(key, error); });
+  }
+
   private async drainLoop(input: EngineSessionInput): Promise<void> {
     const key = this.workerKey(input);
     if (this.queueSuspended.has(key)) {
-      // Archive suspend at entry: keep head (at-least-once) but honor coolPending so archive does not leave worker warm
-      if (this.coolPending.has(key)) {
-        this.coolPending.delete(key);
-        const _c = this.manager?.get(key);
-        if (_c) {
-          await _c.terminate().catch((error) => { throw toTeardownError(key, error); });
-          _c.lifecycle = "stopped";
-          await this.manager?.release(key, _c).catch(() => {});
-        }
-      }
+      await this.consumeSuspendCool(key);
       return;
     }
     const store = this.getQueueStore();
@@ -625,15 +627,7 @@ export class RuntimeEngine implements BridgeEngine {
       if (this.shuttingDown) return;
       if (this.deleting.has(key)) return;
       if (this.queueSuspended.has(key)) {
-        if (this.coolPending.has(key)) {
-          this.coolPending.delete(key);
-          const _c2 = this.manager?.get(key);
-          if (_c2) {
-            await _c2.terminate().catch((error) => { throw toTeardownError(key, error); });
-            _c2.lifecycle = "stopped";
-            await this.manager?.release(key, _c2).catch(() => {});
-          }
-        }
+        await this.consumeSuspendCool(key);
         return;
       }
       let rec: RuntimeQueueRecord | undefined;
@@ -740,15 +734,7 @@ export class RuntimeEngine implements BridgeEngine {
         return;
       }
       if (this.queueSuspended.has(key)) {
-        if (this.coolPending.has(key)) {
-          this.coolPending.delete(key);
-          const _c3 = this.manager?.get(key);
-          if (_c3) {
-            await _c3.terminate().catch((error) => { throw toTeardownError(key, error); });
-            _c3.lifecycle = "stopped";
-            await this.manager?.release(key, _c3).catch(() => {});
-          }
-        }
+        await this.consumeSuspendCool(key);
         return;
       }
       // Atomically remove head from journal ONLY after terminal settlement (at-least-once, possible replay on crash before remove)
