@@ -3,7 +3,7 @@
 `src/bridge/engine/runtime/runtime-queue.ts` — xacpx-owned durable FIFO for Runtime-bound sessions.
 
 - **Location:** `~/.xacpx/runtime/runtime-queue/<logicalSessionId>.json` (via `coreHomeDir(homedir())/runtime`), not `~/.acpx`.
-- **Schema:** `xacpx.runtime-queue.v1` with `logicalSessionId` and `items: RuntimePendingMessage[]` (`messageId`, `text`, `acceptedAt`, `mode: queue|auto`).
+- **Schema:** `xacpx.runtime-queue.v2` with `logicalSessionId` and `items: RuntimePendingMessage[]` (`messageId`, `text`, `acceptedAt`, `mode: queue|auto`, optional `mcpCoordinatorSession`/`mcpSourceHandle` per head). `v1` is legacy (no per-head fields) — readable, auto-bumped to `v2` on next enqueue/dequeue; missing MCP in `v1` falls back to the catalog’s current MCP rather than executing with `undefined` (see `drainLoop`).
 - **Atomicity:** `write tmp → rename → readback validate`; corrupt/unreadable → `RUNTIME_INIT_FAILED` fail-closed, never empty.
 - **Idempotency:** same `messageId`+same `text` → idempotent queued receipt; same `messageId`+different `text` → `RUNTIME_QUEUE_CONFLICT` fail-closed.
 - **Limit:** `RUNTIME_QUEUE_MAX_DEPTH=20` → `RUNTIME_QUEUE_OVERFLOW`.

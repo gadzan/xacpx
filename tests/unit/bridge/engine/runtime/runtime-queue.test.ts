@@ -141,11 +141,40 @@ test("listLogicalSessionIds enumerates journals", async () => {
     expect(ids.sort()).toEqual(["sess1", "sess2"]);
   });
 });
-
 test("unreadable as empty never happens — missing file returns undefined, not empty record", async () => {
   await withQueue(async (store) => {
     const rec = await store.load("nonexistent");
     expect(rec).toBeUndefined();
     expect(await store.hasPending("nonexistent")).toBe(false);
+  });
+});
+test("v2 persists per-head MCP identity", async () => {
+  await withQueue(async (store, dir) => {
+    await store.enqueue("sess", { messageId: "m1", text: "hi", mode: "queue", mcpCoordinatorSession: "coord-X", mcpSourceHandle: "h1" });
+    const rec = await store.load("sess");
+    expect(rec?.schema).toBe("xacpx.runtime-queue.v2");
+    expect(rec?.items[0].mcpCoordinatorSession).toBe("coord-X");
+    expect(rec?.items[0].mcpSourceHandle).toBe("h1");
+    // also verify durable file contains v2
+    const raw = await readFile(join(dir, `${encodeURIComponent("sess")}.json`), "utf8");
+    const parsed = JSON.parse(raw) as { schema: string };
+    expect(parsed.schema).toBe("xacpx.runtime-queue.v2");
+  });
+});
+test("legacy v1 journal is readable and new enqueue bumps to v2", async () => {
+  await withQueue(async (store, dir) => {
+    // Manually write a legacy v1 journal without per-head MCP fields
+    const v1 = { schema: "xacpx.runtime-queue.v1", logicalSessionId: "sess", items: [{ messageId: "m1", text: "legacy", acceptedAt: new Date().toISOString(), mode: "queue" as const }] };
+    await writeFile(join(dir, `${encodeURIComponent("sess")}.json`), JSON.stringify(v1, null, 2), "utf8");
+    const loaded = await store.load("sess");
+    expect(loaded?.schema).toBe("xacpx.runtime-queue.v1");
+    expect(loaded?.items[0].mcpCoordinatorSession).toBeUndefined();
+    // New enqueue should preserve legacy item and bump file to v2
+    await store.enqueue("sess", { messageId: "m2", text: "new", mode: "queue", mcpCoordinatorSession: "coord-Y" });
+    const after = await store.load("sess");
+    expect(after?.schema).toBe("xacpx.runtime-queue.v2");
+    expect(after?.items.length).toBe(2);
+    expect(after?.items[0].text).toBe("legacy");
+    expect(after?.items[1].mcpCoordinatorSession).toBe("coord-Y");
   });
 });

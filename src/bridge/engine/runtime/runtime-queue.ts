@@ -15,7 +15,7 @@ export interface RuntimePendingMessage {
 }
 
 export interface RuntimeQueueRecord {
-  schema: "xacpx.runtime-queue.v1";
+  schema: "xacpx.runtime-queue.v1" | "xacpx.runtime-queue.v2";
   logicalSessionId: string;
   items: RuntimePendingMessage[];
 }
@@ -34,7 +34,7 @@ function isEnoent(err: unknown): boolean {
 function validateRecord(parsed: unknown, expectedLogicalSessionId?: string): RuntimeQueueRecord {
   if (!parsed || typeof parsed !== "object") throw new Error("queue record is not an object");
   const rec = parsed as Record<string, unknown>;
-  if (rec.schema !== "xacpx.runtime-queue.v1") throw new Error(`unexpected schema ${String(rec.schema)}`);
+  if (rec.schema !== "xacpx.runtime-queue.v1" && rec.schema !== "xacpx.runtime-queue.v2") throw new Error(`unexpected schema ${String(rec.schema)}`);
   if (typeof rec.logicalSessionId !== "string") throw new Error("missing logicalSessionId");
   if (expectedLogicalSessionId && rec.logicalSessionId !== expectedLogicalSessionId) {
     throw new Error(`logicalSessionId mismatch expected ${expectedLogicalSessionId} got ${rec.logicalSessionId}`);
@@ -164,7 +164,7 @@ export class RuntimeQueueStore {
         ...(input.mcpSourceHandle !== undefined ? { mcpSourceHandle: input.mcpSourceHandle } : {}),
       };
       const record: RuntimeQueueRecord = {
-        schema: "xacpx.runtime-queue.v1",
+        schema: "xacpx.runtime-queue.v2",
         logicalSessionId,
         items: [...items, next],
       };
@@ -185,7 +185,7 @@ export class RuntimeQueueStore {
         // Verify gone
         try { await access(file); throw new RuntimeError("RUNTIME_INIT_FAILED", `queue journal still exists after dequeue for "${logicalSessionId}"`); } catch (err) { if (!isEnoent(err)) throw err; }
       } else {
-        await this.save({ schema: "xacpx.runtime-queue.v1", logicalSessionId, items: rest });
+        await this.save({ schema: "xacpx.runtime-queue.v2", logicalSessionId, items: rest });
       }
       return head;
     });

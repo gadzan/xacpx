@@ -22,6 +22,7 @@ import { WorkerCrashError, WorkerRpcError, WorkerBootstrapError } from "./runtim
 import type { RuntimeWorkerClient, RuntimeWorkerClientDeps } from "./runtime/runtime-worker-client";
 import { RuntimeWorkerManager, WorkerTeardownPendingError } from "./runtime/runtime-worker-manager";
 import { RuntimeQueueStore } from "./runtime/runtime-queue";
+import type { RuntimeQueueRecord } from "./runtime/runtime-queue";
 import { isEligibleForRuntime, parseXacpxPermissionPolicy } from "./runtime/runtime-permission-policy";
 function sleep(ms: number): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
@@ -600,14 +601,14 @@ export class RuntimeEngine implements BridgeEngine {
     while (true) {
       if (this.shuttingDown) return;
       if (this.deleting.has(key)) return;
-      if (this.activeTurns.has(key)) return;
-      let head;
+      let rec: RuntimeQueueRecord | undefined;
       try {
-        head = await store.peek(key);
+        rec = await store.load(key);
       } catch (err) {
         // Corrupt journal -> fail closed, do not loop, surface on next enqueue/prompt
         throw toStableRuntimeError(err);
       }
+      const head = rec?.items[0];
       if (!head) {
         // Queue empty — schedule TTL for normal idle cool
         const client = this.manager?.get(key);
@@ -616,13 +617,19 @@ export class RuntimeEngine implements BridgeEngine {
         }
         return;
       }
-      // Per-head MCP identity: each queued message carries its own launch identity
+      // Per-head MCP identity: each queued message carries its own launch identity.
+      // v1 journals are legacy (no per-head fields) — missing MCP means "unknown", so we
+      // fallback to the catalog's current MCP rather than executing with undefined.
+      // v2 journals: missing MCP is intentional (no MCP), so we preserve undefined.
       const baseCatalog = this.sessionCatalog.get(key) ?? input;
-      const headMcp = { mcpCoordinatorSession: head.mcpCoordinatorSession, mcpSourceHandle: head.mcpSourceHandle };
+      const isLegacy = rec?.schema === "xacpx.runtime-queue.v1";
+      const effectiveMcpCoordinatorSession = isLegacy && head.mcpCoordinatorSession === undefined ? baseCatalog.mcpCoordinatorSession : head.mcpCoordinatorSession;
+      const effectiveMcpSourceHandle = isLegacy && head.mcpSourceHandle === undefined ? baseCatalog.mcpSourceHandle : head.mcpSourceHandle;
+      const headMcp = { mcpCoordinatorSession: effectiveMcpCoordinatorSession, mcpSourceHandle: effectiveMcpSourceHandle };
       const catalogInput: EngineSessionInput = {
         ...baseCatalog,
-        mcpCoordinatorSession: head.mcpCoordinatorSession,
-        mcpSourceHandle: head.mcpSourceHandle,
+        mcpCoordinatorSession: effectiveMcpCoordinatorSession,
+        mcpSourceHandle: effectiveMcpSourceHandle,
       };
       // If this head's identity differs from last, rotate before marking active
       const lastMcp = this.lastMcpIdentity.get(key);
@@ -637,6 +644,7 @@ export class RuntimeEngine implements BridgeEngine {
           await cl.shutdown().catch((e) => { throw toTeardownError(key, e); });
           if (cl.lifecycle === "stopped") await this.manager?.release(key, cl).catch(() => {});
           this.lastMcpIdentity.delete(key);
+          this.staleAfterTurn.delete(key);
         }
       }
       this.activeTurns.add(key);
