@@ -10,6 +10,26 @@ import {
 
 let activeSocket: WebSocket | null = null;
 
+type WebEventSubscriber = (event: WebServerEvent) => void;
+const webEventSubscribers = new Set<WebEventSubscriber>();
+
+/** Subscribe to every decoded server event without owning the websocket lifecycle. */
+export function subscribeWebEvents(listener: WebEventSubscriber): () => void {
+  webEventSubscribers.add(listener);
+  return () => { webEventSubscribers.delete(listener); };
+}
+
+function publishWebEvent(event: WebServerEvent): void {
+  for (const listener of [...webEventSubscribers]) {
+    try {
+      listener(event);
+    } catch (error) {
+      // Passive observers must never break the primary dashboard fan-out.
+      console.error("[relay-web] passive web event subscriber failed", error);
+    }
+  }
+}
+
 /** Send a browser→hub frame up the live /ws socket. No-op if disconnected. */
 export function sendWebClientMessage(msg: WebClientMessage): void {
   if (activeSocket && activeSocket.readyState === WebSocket.OPEN) {
@@ -224,6 +244,7 @@ export function connectEvents(onEvent: (event: WebServerEvent) => void, onStatus
       const event = parseWebServerEvent(decoded.envelope);
       if (!event) return;
       settleTerminalRequest(event);
+      publishWebEvent(event);
       onEvent(event);
     };
     socket.onopen = () => {
@@ -257,4 +278,5 @@ export function _resetTerminalRequestStateForTests(): void {
   rejectAllPending("instance-offline", "test reset");
   requestSeq = 0;
   reconnectHandler = null;
+  webEventSubscribers.clear();
 }
