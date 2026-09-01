@@ -618,6 +618,7 @@ export class RuntimeEngine implements BridgeEngine {
       }
       // Use authoritative catalog (latest inject) rather than stale drain input param
       const catalogInput = this.sessionCatalog.get(key) ?? input;
+      this.activeTurns.add(key);
       let turnError: unknown;
       let isTerminal = false;
       try {
@@ -644,7 +645,8 @@ export class RuntimeEngine implements BridgeEngine {
         if (this.shuttingDown) return;
         setTimeout(() => {
           if (this.shuttingDown) return;
-          this.kickDrain(input).catch(() => {});
+          const latest = this.sessionCatalog.get(key) ?? input;
+          this.kickDrain(latest).catch(() => {});
         }, 200);
         return;
       }
@@ -961,30 +963,29 @@ export class RuntimeEngine implements BridgeEngine {
           this.lastMcpIdentity.delete(key);
         }
       }
-      const client = this.manager?.get(key);
-      if (client) {
-        if (this.coolPending.has(key)) {
+      // Check queue before coolPending — even if no client, need to drain B
+      let hasPending = false;
+      try {
+        hasPending = !!(this.queueStore && await this.queueStore.hasPending(key));
+      } catch {}
+      if (hasPending) {
+        const latest = this.sessionCatalog.get(key) ?? input;
+        this.kickDrain(latest).catch(() => {});
+      } else {
+        const client = this.manager?.get(key);
+        if (client) {
+          if (this.coolPending.has(key)) {
           this.coolPending.delete(key);
           await client.terminate().catch((error) => {
             throw toTeardownError(key, error);
           });
           client.lifecycle = "stopped";
           await this.manager?.release(key, client);
-        } else {
-          // PR6: if queue has pending, drain instead of idle TTL
-          try {
-            if (this.queueStore && await this.queueStore.hasPending(key)) {
-              this.kickDrain(input).catch(() => {});
-            } else if (client.alive && (client.lifecycle === "idle" || client.lifecycle === "ready")) {
-              this.scheduleIdleTtl(key, client);
-            }
-          } catch {
-            if (client.alive && (client.lifecycle === "idle" || client.lifecycle === "ready")) {
-              this.scheduleIdleTtl(key, client);
-            }
-          }
+        } else if (client.alive && (client.lifecycle === "idle" || client.lifecycle === "ready")) {
+          this.scheduleIdleTtl(key, client);
         }
       }
+    }
     }
   }
 
