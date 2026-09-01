@@ -186,7 +186,7 @@ test("P1-3: archive suspends drain, direct prompt resumes", async () => {
     expect(hasPendingAfterArchive).toBe(true);
     // Verify draining is suspended (no active drain should be running for this key)
     // The queue should remain pending until next direct prompt
-    const { promise: _p300, resolve: _r300 } = Promise.withResolvers<void>(); setTimeout(_r300, 300); await _p300; // real timer: allow archive suspend to settle
+    const { promise: _p700, resolve: _r700 } = Promise.withResolvers<void>(); setTimeout(_r700, 700); await _p700; // real timer: wait >400ms wall-clock without prompt to prove suspend blocks drain (without suspend, 350ms would still be pending due to 400ms worker, so need >600ms)
     const stillPending = await (engine as any).getQueueStore().hasPending(baseInput.logicalSessionId);
     expect(stillPending).toBe(true);
     // Direct prompt should clear suspend and drain the pending

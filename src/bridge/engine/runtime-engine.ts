@@ -674,7 +674,13 @@ export class RuntimeEngine implements BridgeEngine {
         }
       }
       this.incActiveTurn(key);
-      const releaseTurn = await this.acquireTurnLease(key);
+      let releaseTurn: (() => void) | undefined;
+      try {
+        releaseTurn = await this.acquireTurnLease(key);
+      } catch (e) {
+        this.decActiveTurn(key);
+        throw e;
+      }
       let turnError: unknown;
       let isTerminal = false;
       try {
@@ -698,7 +704,7 @@ export class RuntimeEngine implements BridgeEngine {
         try {
           this.decActiveTurn(key);
         } finally {
-          releaseTurn();
+          releaseTurn?.();
         }
       }
       if (!isTerminal) {
@@ -710,6 +716,7 @@ export class RuntimeEngine implements BridgeEngine {
         }, 200);
         return;
       }
+      if (this.queueSuspended.has(key)) return;
       // Atomically remove head from journal ONLY after terminal settlement (at-least-once, possible replay on crash before remove)
       try {
         const removed = await store.dequeueHead(key);
@@ -823,7 +830,8 @@ export class RuntimeEngine implements BridgeEngine {
       return result;
     } catch (error) {
       if (error instanceof WorkerCrashError) {
-        this.clearActiveTurn(key);
+        // Do not clear activeTurns here: prompt/drain own their refcounts.
+        // Clearing would wipe concurrent waiter counts and allow plan §32 to be bypassed after crash.
         client.lifecycle = "failed";
       }
       throw toStableRuntimeError(error);
@@ -1058,7 +1066,13 @@ export class RuntimeEngine implements BridgeEngine {
     // Mark the turn active IMMEDIATELY so preflight on concurrent policy
     // updates detects the in-flight turn and fails closed (plan §32).
     this.incActiveTurn(key);
-    const releaseTurn = await this.acquireTurnLease(key);
+    let releaseTurn: (() => void) | undefined;
+    try {
+      releaseTurn = await this.acquireTurnLease(key);
+    } catch (e) {
+      this.decActiveTurn(key);
+      throw e;
+    }
     try {
       const result = await this.executeRuntimeTurn(input, input.text, { onEvent, media: input.media, toolEventMode: input.toolEventMode, toolEvents: input.toolEvents });
       return result;
@@ -1100,7 +1114,7 @@ export class RuntimeEngine implements BridgeEngine {
       }
     }
       } finally {
-        releaseTurn();
+        releaseTurn?.();
       }
     }
   }
