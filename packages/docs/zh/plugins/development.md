@@ -378,8 +378,11 @@ export interface ConsumerLockOptions {
 - 使用文件锁（`proper-lockfile` 或自定义 `fcntl`）实现物理互斥。
 - `acquire` 失败时，抛出带有元数据的错误（参见 `ActiveWeixinConsumerLockError`），以便守护进程在日志中报告"另一进程持有锁，pid=xxx"。
 - `release` 必须幂等。
+- 核心 runtime 锁先取得，随后为**每一个**提供 lock 的渠道各取得一把 fence（不再只取第一把），按渠道 id 确定顺序严格串行 acquire，部分冲突时按相反顺序回滚；诊断事件前缀使用该渠道自己的 id。
+- `options.lockFilePath` 是**按 config 根作用域**的路径（当前 config 根 runtime 目录下的 `<channelId>-consumer.lock.json`）。两份 config 根会拿到不同路径，因此不能用它承载凭据级或全局命名空间。若互斥必须机器全局成立（Discord：每个 Bot Token 只允许一条 Gateway 会话），请自行在用户全局 core home 下派生路径，并忽略注入的 lockFilePath。
+- 锁文件元数据不可读时必须 fail-closed：有限次数重读后拒绝启动；绝不要 `rm()` 自己读不懂的锁文件，那等于删除另一个活跃进程的 fence。
 
-参考实现：[`src/weixin/monitor/consumer-lock.ts`](https://github.com/gadzan/xacpx/blob/main/src/weixin/monitor/consumer-lock.ts)。
+参考实现：[`src/weixin/monitor/consumer-lock.ts`](https://github.com/gadzan/xacpx/blob/main/src/weixin/monitor/consumer-lock.ts)（config 作用域）与 [`packages/channel-discord/src/channel.ts` 的 `createConsumerLock()`](https://github.com/gadzan/xacpx/blob/main/packages/channel-discord/src/channel.ts)（用户全局、按 Bot Token）。
 
 ## 配置
 

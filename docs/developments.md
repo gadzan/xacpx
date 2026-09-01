@@ -442,6 +442,66 @@ Remember when releasing:
 - Add release notes under `docs/releases/`.
 - Create a git tag.
 
+### First-party channel plugin publishing (tag-driven)
+
+First-party channel plugins under `packages/channel-*` publish through a **tag-driven GitHub Actions workflow**, not a manual `npm publish`. Each plugin has its own workflow that follows one contract:
+
+| Plugin | Package | Tag pattern | Workflow |
+| --- | --- | --- | --- |
+| Feishu | `@ganglion/xacpx-channel-feishu` | `channel-feishu-v*` | `.github/workflows/publish-channel-feishu.yml` |
+| Yuanbao | `@ganglion/xacpx-channel-yuanbao` | `channel-yuanbao-v*` | `.github/workflows/publish-channel-yuanbao.yml` |
+| Discord | `@ganglion/xacpx-channel-discord` | `channel-discord-v*` | `.github/workflows/publish-channel-discord.yml` |
+
+Push a matching tag (or run `workflow_dispatch` with an existing tag) and the workflow checks out that exact tag, runs `npm ci` → `npm test` → the package build → `verify:publish`, reads the version from `packages/<name>/package.json`, and **fails closed if the tag does not match `channel-<name>-v<version>`**. It then publishes to npm with dist-tag `next` for a prerelease version and `latest` for a stable one, and opens a matching GitHub Release. The workflow needs the repo `NPM_TOKEN` secret.
+
+Because the version is the single source of truth, a release is just: bump `packages/channel-discord/package.json` `version` → merge → push the tag.
+
+`verify:publish` only checks packages listed in `DEFAULT_PACKAGES` (`scripts/verify-publish.mjs`). A plugin missing from that list publishes completely unchecked, and the workflow step would still be green — so **register the package there when you add a first-party plugin**. `tests/unit/scripts/verify-publish.test.ts` asserts every non-private package under `packages/` is registered, which is what keeps this from silently rotting.
+
+**Discord first-release runbook** (illustrative for version `0.8.0` — do **not** tag or publish while implementing docs; only when a release is explicitly requested):
+
+```bash
+# 1. Confirm main holds the target code after the PR merges
+# 2. Confirm packages/channel-discord/package.json version (e.g. 0.8.0)
+# 3. Confirm the npm package name @ganglion/xacpx-channel-discord
+# 4. Create and push the exact tag
+git tag channel-discord-v0.8.0
+git push origin channel-discord-v0.8.0
+
+# 5. Actions runs tests → build → verify:publish → npm → GitHub Release automatically
+# 6. Verify the npm dist-tag and the GitHub Release
+```
+
+**Recovering an interrupted release** (npm has the version, the GitHub Release is missing —
+the workflow died or failed between `npm publish` and `gh release create`):
+
+- **Do not re-run the publish workflow and do not move or re-push the tag.** The npm side is
+  already done: `npm publish` would fail on an existing version, and re-pointing a published
+  tag makes the tag no longer name the commit that produced that artifact.
+- Confirm the tag exists and names the commit that carries the version:
+
+  ```bash
+  git show-ref --verify refs/tags/channel-discord-v0.8.0
+  git rev-parse refs/tags/channel-discord-v0.8.0^{commit}   # must be the commit whose
+                                                           # package.json holds 0.8.0
+  ```
+
+- Create only the missing release object, and let `--verify-tag` be the guard that refuses to
+  publish a release for a tag that is not actually there. Match the title the workflow would have
+  used, and pass `--latest=false` so a plugin release never steals the "latest" marker from the
+  repository's own core release:
+
+  ```bash
+  gh release create channel-discord-v0.8.0 --verify-tag \
+    --title "@ganglion/xacpx-channel-discord v0.8.0" --latest=false --generate-notes
+  ```
+
+- When the version carries a prerelease suffix (`-rc.1`, `-beta.2`, …), replace `--latest=false`
+  with `--prerelease`; the workflow derives that flag from `package.json` the same way, and its
+  npm dist-tag would have been `next`, not `latest`.
+- The release step is idempotent in both directions: if a release for the tag already exists it
+  is skipped, so re-issuing the command after a partial success is safe.
+
 ---
 
 ## Further Reading

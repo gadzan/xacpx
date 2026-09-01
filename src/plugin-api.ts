@@ -1,3 +1,4 @@
+export { ActiveConsumerLockError } from "./channels/types.js";
 export type {
   ChannelPluginDefinition,
   ChannelRetireContext,

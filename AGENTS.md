@@ -105,6 +105,7 @@ There are two session concepts:
 - Relay Web dashboard: [`docs/relay-web-module.md`](docs/relay-web-module.md)
 - Relay Hub RMUX terminal (process-owned): [`docs/superpowers/specs/2026-08-12-relay-web-rmux-process-owned-design.md`](docs/superpowers/specs/2026-08-12-relay-web-rmux-process-owned-design.md)
 - Relay RMUX terminal design (original lease-adopt): [`docs/superpowers/specs/2026-08-10-relay-web-rmux-terminal-design.md`](docs/superpowers/specs/2026-08-10-relay-web-rmux-terminal-design.md)
+- Discord channel plugin design (multi-account gateway, preview stream, table rendering): [`docs/superpowers/specs/2026-08-28-discord-channel-plugin-design-from-hy4.md`](docs/superpowers/specs/2026-08-28-discord-channel-plugin-design-from-hy4.md)
 - Code Wiki (architecture map): [`docs/code-wiki.md`](docs/code-wiki.md)
 
 ## Gotchas

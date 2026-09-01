@@ -378,8 +378,11 @@ Implementation notes:
 - Use a file lock (`proper-lockfile` or a custom `fcntl`) for physical mutual exclusion.
 - On `acquire` failure, throw an error with metadata (see `ActiveWeixinConsumerLockError`) so the daemon can report "another process holds the lock, pid=xxx" in the log.
 - `release` must be idempotent.
+- Core acquires the channel-independent runtime lock first, then **one fence per lock-capable channel** (all of them, not just the first), strictly sequentially in deterministic channel-id order, rolling back in reverse order on partial conflict. Diagnostic events are prefixed with each channel's own id.
+- `options.lockFilePath` is **config-scoped**: a path inside the active config root's runtime dir, named `<channelId>-consumer.lock.json`. Two runs with different config roots get different paths, so never anchor a credential-global or token-global namespace on it. If your mutual exclusion must hold machine-wide (Discord: one Gateway session per bot token), derive your own path under the user-global core home and ignore the injected path.
+- Unreadable or corrupt lock metadata must fail closed: re-read a bounded number of times, then refuse to start. Never `rm()` a lock file you cannot read — that would delete another live process's fence.
 
-Reference implementation: [`src/weixin/monitor/consumer-lock.ts`](https://github.com/gadzan/xacpx/blob/main/src/weixin/monitor/consumer-lock.ts).
+Reference implementations: [`src/weixin/monitor/consumer-lock.ts`](https://github.com/gadzan/xacpx/blob/main/src/weixin/monitor/consumer-lock.ts) (config-scoped) and [`createConsumerLock()` in packages/channel-discord/src/channel.ts](https://github.com/gadzan/xacpx/blob/main/packages/channel-discord/src/channel.ts) (user-global, per bot token).
 
 ## Configuration
 

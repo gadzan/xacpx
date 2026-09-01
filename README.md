@@ -2,7 +2,7 @@
 
 ![xacpx.png](xacpx_banner.png)
 
-> Remotely drive Codex, Claude Code, and other acpx sessions from WeChat, Feishu, or Yuanbao.
+> Remotely drive Codex, Claude Code, and other acpx sessions from WeChat, Feishu, Yuanbao, or Discord.
 
 [![npm](https://img.shields.io/npm/v/@ganglion/xacpx?style=flat-square)](https://www.npmjs.com/package/@ganglion/xacpx)
 [![Node.js Version](https://img.shields.io/node/v/@ganglion/xacpx?style=flat-square)](https://nodejs.org)
@@ -13,7 +13,7 @@ English · **[中文](./docs/zh/README_zh.md)**
 
 ## What is this
 
-`xacpx` is a tool that lets you control ACP agents such as Codex / Claude Code / Gemini / OpenCode directly from WeChat, Feishu, or Yuanbao. It connects chat messages to your agent CLI sessions through `acpx`, so you can, right from your phone:
+`xacpx` is a tool that lets you control ACP agents such as Codex / Claude Code / Gemini / OpenCode directly from WeChat, Feishu, Yuanbao, or Discord. It connects chat messages to your agent CLI sessions through `acpx`, so you can, right from your phone:
 
 - Create and switch between sessions
 - Have the agent keep working in a specific project directory
@@ -33,9 +33,9 @@ Chat isn't the only entry point: xacpx also ships a self-hostable **[relay hub](
 
 - Node.js 22.13+ or Bun
 - A working agent CLI you intend to use, such as Codex / Claude Code / Gemini / OpenCode
-- A phone with WeChat, Feishu, or Yuanbao installed
+- A phone with WeChat, Feishu, Yuanbao, or Discord installed
 
-> The WeChat channel works on top of `weixin-agent-sdk`, the Feishu channel uses Feishu custom-app credentials, and the Yuanbao channel uses `appKey` / `appSecret`; the underlying agent sessions are driven by `acpx`. Normally you don't need to install `acpx` globally.
+> The WeChat channel works on top of `weixin-agent-sdk`, the Feishu channel uses Feishu custom-app credentials, the Yuanbao channel uses `appKey` / `appSecret`, and the Discord channel uses a Discord Bot Token over the Gateway (a bot installed into a server, not QR-paired); the underlying agent sessions are driven by `acpx`. Normally you don't need to install `acpx` globally.
 
 ### Install
 
@@ -73,7 +73,7 @@ If everything works, plain text goes into the current session and the agent's re
 
 ### Other channels
 
-WeChat is the built-in default channel. Feishu and Yuanbao are distributed as official plugin packages, and third-party channels follow the same plugin flow. If you can't remember the package names, run `xacpx plugin known` first.
+WeChat is the built-in default channel. Feishu, Yuanbao, and Discord are distributed as official plugin packages, and third-party channels follow the same plugin flow. If you can't remember the package names, run `xacpx plugin known` first.
 
 ```bash
 # Feishu
@@ -85,7 +85,14 @@ xacpx restart
 xacpx plugin add @ganglion/xacpx-channel-yuanbao
 xacpx channel add yuanbao    # enter appKey/appSecret when prompted
 xacpx restart
+
+# Discord
+xacpx plugin add @ganglion/xacpx-channel-discord
+xacpx channel add discord    # enter the Bot Token when prompted
+xacpx restart
 ```
+
+> Discord defaults to **allowlist** access with an empty `allowFrom`, so adding the token alone is not enough to chat — the bot connects but ignores every sender. Complete the Discord User ID allowlist step in [channel-management.md](./docs/channel-management.md) before expecting messages to be handled.
 
 Full credentials, parameters, and management commands (`enable/disable/rm`): [channel-management.md](./docs/channel-management.md). To write your own channel plugin: [plugin-development.md](./docs/plugin-development.md).
 
@@ -128,10 +135,10 @@ The essentials to get going. Full references: **CLI → [cli-reference.md](./doc
 | `xacpx update` | Update xacpx and installed plugins |
 | `xacpx adapter list` / `update <name>` / `registry` | Manage verified Codex/Claude ACP adapter pins and their npm registry |
 | `xacpx doctor` | Run environment diagnostics |
-| `xacpx channel add <name>` | Add a message channel (Feishu / Yuanbao / …) |
+| `xacpx channel add <name>` | Add a message channel (Feishu / Yuanbao / Discord / …) |
 | `xacpx ws add` / `xacpx agent add <name>` | Register a workspace / agent |
 
-**Chat (in WeChat / Feishu / Yuanbao):**
+**Chat (in WeChat / Feishu / Yuanbao / Discord):**
 
 | Command | Description |
 |------|------|
@@ -221,7 +228,7 @@ For development, debugging, and contribution details, see [developments.md](./do
 ## More docs
 
 **Install & configure**
-- [channel-management.md](./docs/channel-management.md) — configure WeChat / Feishu / Yuanbao / third-party channels
+- [channel-management.md](./docs/channel-management.md) — configure WeChat / Feishu / Yuanbao / Discord / third-party channels
 - [plugin-development.md](./docs/plugin-development.md) — write your own channel plugin
 - [config-reference.md](./docs/config-reference.md) — full config field reference
 - [config-command.md](./docs/config-command.md) — change config from chat

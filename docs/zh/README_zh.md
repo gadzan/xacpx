@@ -2,7 +2,7 @@
 
 ![xacpx_banner.png](/xacpx_banner.png)
 
-> 用微信、飞书或元宝远程驱动 Codex、Claude Code 等 acpx 会话。
+> 用微信、飞书、元宝或 Discord 远程驱动 Codex、Claude Code 等 acpx 会话。
 
 [![npm](https://img.shields.io/npm/v/@ganglion/xacpx?style=flat-square)](https://www.npmjs.com/package/@ganglion/xacpx)
 [![Node.js Version](https://img.shields.io/node/v/@ganglion/xacpx?style=flat-square)](https://nodejs.org)
@@ -13,7 +13,7 @@
 
 ## 这是什么
 
-`xacpx` 是一个可以通过微信、飞书或元宝直接控制 Codex / Claude Code / Gemini / OpenCode 等 ACP Agent 的工具。它把聊天消息通过 `acpx` 连接到 Agent CLI 会话上，让你直接在手机里：
+`xacpx` 是一个可以通过微信、飞书、元宝或 Discord 直接控制 Codex / Claude Code / Gemini / OpenCode 等 ACP Agent 的工具。它把聊天消息通过 `acpx` 连接到 Agent CLI 会话上，让你直接在手机里：
 
 - 新建和切换会话
 - 让 Agent 继续在指定项目目录里工作
@@ -33,9 +33,9 @@
 
 - Node.js 22.13+ 或 Bun
 - 已可用的 Codex / Claude Code / Gemini / OpenCode 等你要使用的 Agent CLI
-- 一台装了微信、飞书或元宝的手机
+- 一台装了微信、飞书、元宝或 Discord 的手机
 
-> 微信频道基于 `weixin-agent-sdk` 工作，飞书频道使用飞书自建应用凭据，元宝频道使用 `appKey` / `appSecret`；底层 Agent 会话由 `acpx` 驱动。正常情况下，你不需要额外全局安装 `acpx`。
+> 微信频道基于 `weixin-agent-sdk` 工作，飞书频道使用飞书自建应用凭据，元宝频道使用 `appKey` / `appSecret`，Discord 频道使用 Discord Bot Token 走 Gateway（把机器人安装进服务器，而不是扫码配对）；底层 Agent 会话由 `acpx` 驱动。正常情况下，你不需要额外全局安装 `acpx`。
 
 ### 安装
 
@@ -52,7 +52,7 @@ xacpx login    # 显示二维码，用微信扫码登录
 xacpx start    # 启动后台服务
 ```
 
-如果你想用飞书或元宝而不是微信，先看下面的「其它频道」。
+如果你想用飞书、元宝或 Discord 而不是微信，先看下面的「其它频道」。
 
 ### 在微信里创建第一个会话
 
@@ -73,7 +73,7 @@ hello
 
 ### 其它频道
 
-微信是内置默认频道。飞书和元宝以官方插件包形式分发，第三方频道走同样的插件流程。记不住包名时，先运行 `xacpx plugin known`。
+微信是内置默认频道。飞书、元宝和 Discord 以官方插件包形式分发，第三方频道走同样的插件流程。记不住包名时，先运行 `xacpx plugin known`。
 
 ```bash
 # 飞书
@@ -85,7 +85,14 @@ xacpx restart
 xacpx plugin add @ganglion/xacpx-channel-yuanbao
 xacpx channel add yuanbao    # 按提示输入 appKey/appSecret
 xacpx restart
+
+# Discord
+xacpx plugin add @ganglion/xacpx-channel-discord
+xacpx channel add discord    # 按提示输入 Bot Token
+xacpx restart
 ```
+
+> Discord 默认是 **allowlist（白名单）** 准入且 `allowFrom` 为空，只加 token 并不能马上发消息——机器人会连上、显示在线，却忽略所有发送者。请先按 [channel-management_zh.md](./channel-management_zh.md) 的 Discord 章节把自己的 User ID 加进白名单，再期待消息被处理。
 
 完整凭据、参数和管理命令（`enable/disable/rm`）见 [channel-management_zh.md](./channel-management_zh.md)。想自己写频道插件见 [plugin-development_zh.md](./plugin-development_zh.md)。
 
@@ -127,10 +134,10 @@ xacpx restart
 | `xacpx start` / `stop` / `restart` / `status` | 管理后台服务 |
 | `xacpx update` | 更新 xacpx 与已安装插件 |
 | `xacpx doctor` | 运行环境诊断 |
-| `xacpx channel add <name>` | 添加消息频道（飞书 / 元宝 / …） |
+| `xacpx channel add <name>` | 添加消息频道（飞书 / 元宝 / Discord / …） |
 | `xacpx ws add` / `xacpx agent add <name>` | 注册 workspace / agent |
 
-**聊天（在微信 / 飞书 / 元宝里）：**
+**聊天（在微信 / 飞书 / 元宝 / Discord 里）：**
 
 | 命令 | 说明 |
 |------|------|
@@ -219,7 +226,7 @@ bun run dev
 ## 更多文档
 
 **安装与配置**
-- [channel-management_zh.md](./channel-management_zh.md) — 配置微信 / 飞书 / 元宝 / 第三方频道
+- [channel-management_zh.md](./channel-management_zh.md) — 配置微信 / 飞书 / 元宝 / Discord / 第三方频道
 - [plugin-development_zh.md](./plugin-development_zh.md) — 自己写频道插件
 - [config-reference_zh.md](./config-reference_zh.md) — 完整配置字段参考
 - [config-command_zh.md](./config-command_zh.md) — 在聊天里改配置
