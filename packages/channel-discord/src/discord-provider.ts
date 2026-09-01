@@ -104,6 +104,15 @@ export const discordCliProvider: ChannelCliProvider = {
           index = value.nextIndex;
           break;
         }
+        case "--autocomplete": {
+          const value = takeFlagValue(args, index, arg);
+          if (!value.ok) return value;
+          const parsed = parseBooleanFlag(value.value, arg);
+          if (!parsed.ok) return parsed;
+          input.enableAutocomplete = parsed.value;
+          index = value.nextIndex;
+          break;
+        }
         default:
           return { ok: false, message: `unknown discord option: ${arg}` };
       }
@@ -120,6 +129,7 @@ export const discordCliProvider: ChannelCliProvider = {
       requireMention: typeof input.requireMention === "boolean" ? input.requireMention : true,
       dmPolicy: stringField(input, "dmPolicy") ?? "allowlist",
       guildPolicy: stringField(input, "guildPolicy") ?? "allowlist",
+      enableAutocomplete: typeof input.enableAutocomplete === "boolean" ? input.enableAutocomplete : undefined,
       dedupTtlMs: 24 * 60 * 60 * 1000,
       dedupMaxEntries: 10000,
       inboundExpiryMs: 5 * 60 * 1000,
@@ -306,6 +316,7 @@ export const discordCliProvider: ChannelCliProvider = {
     if (dmPolicy) override.dmPolicy = dmPolicy;
     const guildPolicy = stringField(input, "guildPolicy");
     if (guildPolicy) override.guildPolicy = guildPolicy;
+    if (typeof input.enableAutocomplete === "boolean") override.enableAutocomplete = input.enableAutocomplete;
     return override;
   },
 
@@ -335,6 +346,8 @@ export const discordCliProvider: ChannelCliProvider = {
     lines.push(`requireMention: ${String(requireMention)}`);
     lines.push(`dmPolicy: ${String(dmPolicy)}`);
     lines.push(`guildPolicy: ${String(guildPolicy)}`);
+    const enableAutocomplete = acc.enableAutocomplete ?? options.enableAutocomplete ?? (applicationId ? true : false);
+    lines.push(`enableAutocomplete: ${String(enableAutocomplete)}`);
     return lines;
   },
 };

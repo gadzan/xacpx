@@ -207,6 +207,18 @@ Top-level `options` are the defaults; `options.accounts.<id>` overrides per acco
 
 Preview editing stops once accumulated text exceeds 2000 chars (Discord hard limit); the final chunked send still delivers the full answer. Preview create/edit failures degrade silently to `static`.
 
+Session startup now shows progress within one throttle window: the first `🚀 Starting <agent>…` ping and subsequent `ℹ️` acpx notes are streamed into the preview (with typing indicator and ack reaction when enabled). The final answer merges streamed progress with the router result, so `/ss` creation confirmations are no longer swallowed. Tool calls and thought chunks are also streamed into the preview for long turns (parity with Feishu streaming cards, without the card UI).
+
+### Slash-command autocomplete (Discord Application Commands)
+
+When `options.applicationId` is set, the plugin registers Discord Application Commands on Gateway start for autocomplete when you type `/` in Discord. Commands registered:
+
+- `/help`, `/ss` (with `agent`, `workspace`, `new` options), `/use`, `/cancel`, `/status`, `/sessions`
+
+They map to the same text-command router (`@bot /ss …` still works), but native `/` shows hints. Registration is best-effort at `account.start()`; failures log `discord.commands.register_failed` and do not block the Gateway session. Toggle with `options.enableAutocomplete` (defaults to `true` when `applicationId` is present, `false` otherwise). Use `--autocomplete true|false` with `xacpx channel add`.
+
+Interaction handling: Discord sends chat-input interactions for native picks; the plugin replies ephemerally with `⏳ Processing …` and then handles the reconstructed `/<name> …` text through the normal message pipeline, delivering the final answer as a channel message (with thread fallback and chunking). No additional permissions beyond the message flow are required.
+
 ### Tables
 
 Discord does not render GFM tables. `tableMode` controls the fallback:
