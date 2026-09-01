@@ -1,4 +1,12 @@
 # Changelog
+## [channel-discord 0.8.0-beta.2] - 2026-09-01
+
+### Fixed
+
+- Discord: progress pings and tool rendering polish (PR #322) — `safeReply` now starts progress emojis (`🚀` `🔧` `⏳` `ℹ️` etc.) on a new line (fixes `🚀 Starting…🔧 Agent initializing…` stuck together); when transitioning from a tool block to normal answer, inserts a blank line (`\n\n`) so `…| head -30最近` separates correctly; tool lines are truncated to 60 chars with `…` (`🔧 Bash: git log … (running)`) and deduped per `toolCallId` plus consecutive identical check.
+- Discord: autocomplete instant for guilds and fallback `appId` — derive `effectiveAppId` from `botUserId` when `applicationId` not set, default `enableAutocomplete` `true` (was `Boolean(applicationId)`), and register both global and guild application commands (`/help` `/ss` `/use` `/cancel` `/status` `/sessions` via `discord-commands.ts`); guild registration makes slash picks instant, fixes no autocomplete when only token is configured.
+- Discord: review fix — `lastWasTool` now matches all tool emojis (`📖` `🔍` `✏️` `💭` `🔧` `🧰` `⚠️`) and `onToolEvent` dedup only when `toolCallId` is truthy (avoids dropping distinct tools with empty id); restore `summary` in `onToolEvent` (`toolName: summary` display, hotfix `c53ca966`).
+
 ## [relay 0.14.1-beta.2] - 2026-09-01
 
 ### Fixed
