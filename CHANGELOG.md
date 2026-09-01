@@ -1,4 +1,20 @@
 # Changelog
+## [relay 0.14.1-beta.2] - 2026-09-01
+
+### Fixed
+
+- relay-web: refresh model and effort during live turns (PR #319) — expose passive live event taps (`src/api/events.ts`), refresh session controls on live turn activity, refresh controls before turn finish, preserve live control refresh ordering across reconnects, and drain control mutations before live refresh (`src/stores/session-controls.ts` 113 lines). Fixes stale model/effort badge while a turn is running and races where mutations added during the refresh wait were lost; adds `session-controls-live-refresh` and `session-controls-live-refresh-quiescence` tests (451 lines).
+
+## [channel-discord 0.8.0-beta.1] - 2026-09-01
+
+### Added
+
+- Discord: streaming preview immediate and slash autocomplete (PR #321) — preview `minInitialChars` 200→20 (tuning/config) and channel hardcode `1` for instant “Running” feedback within one throttle window; stream `tool`/`thought` into preview; merge accumulated progress with router response (fixes `/ss` creation confirmation swallowed); register Discord Application Commands (`/help`, `/ss`, `/use`, `/cancel`, `/status`, `/sessions`) when `applicationId` present via `discord-commands.ts` and handle `interactionCreate` as synthetic text with ephemeral ack; add `enableAutocomplete` / `--autocomplete` toggle.
+
+### Fixed
+
+- Discord review fixes — synthetic `interaction` now includes bot mention (`<@botId>` + `mentions.users`) so guild `requireMention` does not drop slash picks; add `allowedMentions:{parse:[]}` to ephemeral replies to avoid `@everyone` pings; dedup `finalText` when `response.text` already in accumulated progress; remove dead `fetchImpl` param; unify preview default `minInitialChars` to `20`; docs `README` documents streaming/autocomplete behavior.
+
 ## [0.24.0-beta.0] - 2026-09-01
 
 ### Added

@@ -30,7 +30,7 @@
     },
     "packages/channel-discord": {
       "name": "@ganglion/xacpx-channel-discord",
-      "version": "0.8.0-beta.0",
+      "version": "0.8.0-beta.1",
       "dependencies": {
         "discord.js": "^14.26.0",
       },
@@ -100,7 +100,7 @@
     },
     "packages/relay": {
       "name": "@ganglion/xacpx-relay",
-      "version": "0.14.1-beta.1",
+      "version": "0.14.1-beta.2",
       "bin": {
         "xacpx-relay": "./dist/cli.js",
       },
