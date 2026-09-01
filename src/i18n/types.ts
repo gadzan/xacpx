@@ -255,7 +255,8 @@ export interface RecoveryMessages {
   sessionInterruptedHint: string;
   sessionInterruptedError: (summary: string) => string;
 
-  // renderTransportError — queue overflow (soft warning, not executionError)
+  // renderTransportError — queue overflow (one-line tip, not executionError)
+  // queueOverflowWarning is empty; confirmed/unconfirmed copy lives in the hint keys.
   queueOverflowWarning: string;
   queueOverflowHint: string;
   queueOverflowUnconfirmedHint: string;

@@ -19,10 +19,10 @@ export const recovery: RecoveryMessages = {
   sessionInterruptedHint: "请直接重试；如果长时间无响应，可先发送 /cancel 后再重试。",
   sessionInterruptedError: (summary) => `错误信息：${summary}`,
 
-  // renderTransportError — queue overflow (soft warning)
-  queueOverflowWarning: "⚠️ 单次输出过大",
-  queueOverflowHint: "请让 agent 分步/摘要输出，或拆成多次发送；会话已就绪，可直接继续。",
-  queueOverflowUnconfirmedHint: "自动清理未能确认完成，请先发送 /cancel 后重试；若仍异常，请重建会话（/session new ...）或稍后重试。",
+  // renderTransportError — queue overflow (one-line tip; warning key left empty on purpose)
+  queueOverflowWarning: "",
+  queueOverflowHint: "部分回复因过长已收束，可直接继续。",
+  queueOverflowUnconfirmedHint: "输出过长且清理未确认，请先发 /cancel 再继续。",
   // renderSessionCreationError (AutoInstallFailedError)
   autoInstallHeadlineFixed: "⚠️ 自动安装已执行但未能修复会话启动问题",
   autoInstallHeadlineFailed: "❌ 自动安装失败",

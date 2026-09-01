@@ -438,7 +438,10 @@ test("handlePromptWithSession downgrades confirmed overflow to soft ready warnin
     orchestration: undefined,
   } as unknown as SessionHandlerContext;
   const result = await handlePromptWithSession(context, session, "weixin:a:u", "hi");
-  expect(result.text).toBe([t().recovery.queueOverflowWarning, t().recovery.queueOverflowHint].join("\n"));
+  expect(result.text).toBe(
+    [t().recovery.queueOverflowWarning, t().recovery.queueOverflowHint].filter((line) => line.length > 0).join("\n"),
+  );
+  expect(result.text).toBe("部分回复因过长已收束，可直接继续。");
   expect(warns.some((w) => w.event === "transport.queue_overflow_downgraded" && (w.ctx as unknown as { confirmed?: boolean })?.confirmed === true)).toBe(true);
 });
 
@@ -472,7 +475,10 @@ test("handlePromptWithSession downgrades unconfirmed overflow to soft unconfirme
     orchestration: undefined,
   } as unknown as SessionHandlerContext;
   const result = await handlePromptWithSession(context, session, "weixin:a:u", "hi");
-  expect(result.text).toBe([t().recovery.queueOverflowWarning, t().recovery.queueOverflowUnconfirmedHint].join("\n"));
+  expect(result.text).toBe(
+    [t().recovery.queueOverflowWarning, t().recovery.queueOverflowUnconfirmedHint].filter((line) => line.length > 0).join("\n"),
+  );
+  expect(result.text).toBe("输出过长且清理未确认，请先发 /cancel 再继续。");
   expect(warns.some((w) => w.event === "transport.queue_overflow_unconfirmed" && (w.ctx as unknown as { confirmed?: boolean })?.confirmed === false)).toBe(true);
 });
 
@@ -561,5 +567,8 @@ test("handlePromptWithSession does not retry overflow with diagnostic containing
   const result = await handlePromptWithSession(context, session, "weixin:a:u", "hi");
   expect(promptCalls).toBe(1);
   expect(setAgentCommandCalls).toBe(0);
-  expect(result.text).toBe([t().recovery.queueOverflowWarning, t().recovery.queueOverflowHint].join("\n"));
+  expect(result.text).toBe(
+    [t().recovery.queueOverflowWarning, t().recovery.queueOverflowHint].filter((line) => line.length > 0).join("\n"),
+  );
+  expect(result.text).toBe("部分回复因过长已收束，可直接继续。");
 });

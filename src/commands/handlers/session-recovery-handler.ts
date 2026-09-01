@@ -16,11 +16,15 @@ export function renderTransportError(session: ResolvedSession, error: unknown): 
     const confirmed = error.cleanup?.ownerTerminationSucceeded === true;
     if (confirmed) {
       return {
-        text: [t().recovery.queueOverflowWarning, t().recovery.queueOverflowHint].join("\n"),
+        text: [t().recovery.queueOverflowWarning, t().recovery.queueOverflowHint]
+          .filter((line) => line.length > 0)
+          .join("\n"),
       };
     }
     return {
-      text: [t().recovery.queueOverflowWarning, t().recovery.queueOverflowUnconfirmedHint].join("\n"),
+      text: [t().recovery.queueOverflowWarning, t().recovery.queueOverflowUnconfirmedHint]
+        .filter((line) => line.length > 0)
+        .join("\n"),
     };
   }
   const message = error instanceof Error ? error.message : String(error);

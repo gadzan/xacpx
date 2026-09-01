@@ -1,4 +1,10 @@
 # Changelog
+## [Unreleased]
+
+### Changed
+
+- Soften queue-overflow recovery tip copy (en/zh): one-line note instead of a warning headline; confirmed vs unconfirmed `/cancel` semantics unchanged. Applies to every surface that renders recovery text (WeChat/Feishu/relay-web).
+
 ## [0.24.0] - 2026-09-01
 
 ### Added

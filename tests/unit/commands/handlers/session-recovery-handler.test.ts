@@ -139,6 +139,11 @@ test("a non-npm backend 404 is not misreported as an adapter registry failure", 
     error,
   )).toThrow(error);
 });
+
+function overflowTipText(headline: string, body: string): string {
+  return [headline, body].filter((line) => line.length > 0).join("\n");
+}
+
 test("renderTransportError downgrades AcpxQueueOverflowError to soft warning (zh) when cleanup is confirmed", () => {
   setLocale("zh");
   const error = new AcpxQueueOverflowError({
@@ -149,19 +154,41 @@ test("renderTransportError downgrades AcpxQueueOverflowError to soft warning (zh
     diagnostic: "test diagnostic",
   });
   const reply = renderTransportError(session(), error);
-  expect(reply.text).toBe([t().recovery.queueOverflowWarning, t().recovery.queueOverflowHint].join("\n"));
+  expect(reply.text).toBe(overflowTipText(t().recovery.queueOverflowWarning, t().recovery.queueOverflowHint));
+  expect(reply.text).toBe("部分回复因过长已收束，可直接继续。");
+  expect(reply.text).not.toContain("\n");
+  expect(reply.text).not.toMatch(/⚠️|❌/);
   expect(reply.text).not.toContain("Execution error");
   expect(reply.text).not.toContain("错误信息");
   expect(reply.text).toContain("可直接继续");
+});
+
+test("renderTransportError confirmed overflow tip is a single soft line (en)", () => {
+  setLocale("en");
+  const error = new AcpxQueueOverflowError({
+    cancelAttempted: true,
+    cancelSucceeded: true,
+    ownerTerminationAttempted: true,
+    ownerTerminationSucceeded: true,
+  });
+  const reply = renderTransportError(session(), error);
+  expect(reply.text).toBe(overflowTipText(t().recovery.queueOverflowWarning, t().recovery.queueOverflowHint));
+  expect(reply.text).toBe("Reply was truncated for size — you can continue.");
+  expect(reply.text).not.toContain("\n");
+  expect(reply.text).not.toMatch(/⚠️|❌/);
+  expect(reply.text).not.toContain("/cancel");
 });
 
 test("renderTransportError downgrades AcpxQueueOverflowError to unconfirmed soft warning (en) when cleanup is not confirmed", () => {
   setLocale("en");
   const error = new AcpxQueueOverflowError("cleanup failed");
   const reply = renderTransportError(session(), error);
-  expect(reply.text).toBe([t().recovery.queueOverflowWarning, t().recovery.queueOverflowUnconfirmedHint].join("\n"));
+  expect(reply.text).toBe(overflowTipText(t().recovery.queueOverflowWarning, t().recovery.queueOverflowUnconfirmedHint));
+  expect(reply.text).toBe("Output was large and cleanup wasn't confirmed — send /cancel, then continue.");
+  expect(reply.text).not.toContain("\n");
+  expect(reply.text).not.toMatch(/⚠️|❌/);
   expect(reply.text).not.toContain("Execution error");
-  expect(reply.text).not.toContain("ready for your next message");
+  expect(reply.text).not.toContain("you can continue");
   expect(reply.text).toContain("/cancel");
 });
 
@@ -170,6 +197,10 @@ test("renderTransportError downgrades AcpxQueueOverflowError without cleanup to 
   const error = new AcpxQueueOverflowError();
   // no cleanup => ownerTerminationSucceeded undefined => unconfirmed
   const reply = renderTransportError(session(), error);
+  expect(reply.text).toBe(overflowTipText(t().recovery.queueOverflowWarning, t().recovery.queueOverflowUnconfirmedHint));
+  expect(reply.text).toBe("输出过长且清理未确认，请先发 /cancel 再继续。");
+  expect(reply.text).not.toContain("\n");
+  expect(reply.text).not.toMatch(/⚠️|❌/);
   expect(reply.text).toContain(t().recovery.queueOverflowUnconfirmedHint);
   expect(reply.text).not.toContain(t().recovery.queueOverflowHint);
 });
