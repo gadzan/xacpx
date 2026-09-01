@@ -409,6 +409,20 @@ export class RuntimeEngine implements BridgeEngine {
   private incActiveTurn(key: string): void { this.activeTurns.set(key, (this.activeTurns.get(key) ?? 0) + 1); }
   private decActiveTurn(key: string): void { const n = (this.activeTurns.get(key) ?? 0) - 1; if (n <= 0) this.activeTurns.delete(key); else this.activeTurns.set(key, n); }
   private clearActiveTurn(key: string): void { this.activeTurns.delete(key); }
+  private async waitForNoActiveTurn(key: string, timeoutMs = 8_000): Promise<void> {
+    const start = Date.now();
+    while (this.hasActiveTurn(key) && Date.now() - start < timeoutMs) {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 20);
+      await promise;
+    }
+    if (this.hasActiveTurn(key)) {
+      throw new RuntimeError(
+        "RUNTIME_WORKER_TEARDOWN_PENDING",
+        `cannot hard delete session "${key}" while turn active`,
+      );
+    }
+  }
   private readonly coolPending = new Set<string>();
   /** In-flight worker acquisitions (fence discharge + spawn), keyed by session. */
   private readonly acquiring = new Map<string, Promise<RuntimeWorkerClient>>();
@@ -1362,21 +1376,16 @@ export class RuntimeEngine implements BridgeEngine {
       // G4: must not return success while turn still active and journal still there. Wait for active turn to settle.
       if (!recordId) {
         if (this.hasActiveTurn(key)) {
-          // Wait for active turn+lease to settle (B waiter will be rejected via deleteGenerations). Fail-closed on timeout.
-          const start = Date.now();
-          while (this.hasActiveTurn(key) && Date.now() - start < 8_000) {
-            await new Promise((r) => setTimeout(r, 20));
-          }
+          await this.waitForNoActiveTurn(key);
+          // Refresh client after wait (prompt finally may have terminated it)
+          const refreshed = this.manager?.get(key);
+          // Re-assert no new turn slipped in between wait and terminate (deleting still true, new prompt inc->lease->rejected, but inc window exists)
           if (this.hasActiveTurn(key)) {
             throw new RuntimeError(
               "RUNTIME_WORKER_TEARDOWN_PENDING",
               `cannot hard delete session "${key}" while turn active`,
             );
           }
-          // Refresh client after wait (prompt finally may have terminated it)
-          // Re-resolve client from manager
-          const refreshed = this.manager?.get(key);
-          // Continue to normal termination path with refreshed client
           if (refreshed) {
             // client is refreshed for below, but we are in no-record branch so we handle it here
             if (!refreshed.alive && refreshed.lifecycle !== "stopped") {
@@ -1440,20 +1449,18 @@ export class RuntimeEngine implements BridgeEngine {
 
     // 4. Terminate live worker (close with discard) — if active turn, wait for settle (fail-closed).
     // G4: do not delete record/journal while turn still active.
+    // Note: tombstone already persisted before this wait; on timeout we leave tombstone for retry (G4).
     if (this.hasActiveTurn(key)) {
-      const start = Date.now();
-      while (this.hasActiveTurn(key) && Date.now() - start < 8_000) {
-        await new Promise((r) => setTimeout(r, 20));
-      }
+      await this.waitForNoActiveTurn(key);
+      // Refresh client after wait (prompt finally may have terminated it)
+      const refreshed = this.manager?.get(key);
+      if (refreshed !== undefined) client = refreshed;
       if (this.hasActiveTurn(key)) {
         throw new RuntimeError(
           "RUNTIME_WORKER_TEARDOWN_PENDING",
           `cannot hard delete session "${key}" while turn active`,
         );
       }
-      // Refresh client after wait (prompt finally may have terminated it)
-      const refreshed = this.manager?.get(key);
-      if (refreshed !== undefined) client = refreshed;
     }
     if (client) {
       if (!client.alive && client.lifecycle !== "stopped") {
