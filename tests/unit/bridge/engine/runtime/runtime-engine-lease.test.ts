@@ -184,11 +184,13 @@ test("P1-3: archive suspends drain, direct prompt resumes", async () => {
     await engine.freeWarmProcess(baseInput as unknown as never); // test helper: freeWarmProcess expects EngineSessionInput, baseInput satisfies with unchecked cast
     const hasPendingAfterArchive = await (engine as any).getQueueStore().hasPending(baseInput.logicalSessionId);
     expect(hasPendingAfterArchive).toBe(true);
-    // Verify draining is suspended (no active drain should be running for this key)
-    // The queue should remain pending until next direct prompt
+    // Archive must cool the owner even while suspend keeps head (at-least-once replay); worker should not remain warm
+    // Give drainLoop time to hit suspend->coolPending path (50ms drain start + 400ms turn + suspend check) and terminate
     const { promise: _p700, resolve: _r700 } = Promise.withResolvers<void>(); setTimeout(_r700, 700); await _p700; // real timer: wait >400ms wall-clock without prompt to prove suspend blocks drain (without suspend, 350ms would still be pending due to 400ms worker, so need >600ms)
     const stillPending = await (engine as any).getQueueStore().hasPending(baseInput.logicalSessionId);
     expect(stillPending).toBe(true);
+    const warmAfterArchive = await engine.isSessionWarm(baseInput as unknown as never);
+    expect(warmAfterArchive.warm).toBe(false);
     // Direct prompt should clear suspend and drain the pending
     const r = await engine.prompt({ ...baseInput, text: "resume" });
     expect(r.text).toBe("ok:resume");

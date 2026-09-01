@@ -607,12 +607,35 @@ export class RuntimeEngine implements BridgeEngine {
 
   private async drainLoop(input: EngineSessionInput): Promise<void> {
     const key = this.workerKey(input);
-    if (this.queueSuspended.has(key)) return;
+    if (this.queueSuspended.has(key)) {
+      // Archive suspend at entry: keep head (at-least-once) but honor coolPending so archive does not leave worker warm
+      if (this.coolPending.has(key)) {
+        this.coolPending.delete(key);
+        const _c = this.manager?.get(key);
+        if (_c) {
+          await _c.terminate().catch((error) => { throw toTeardownError(key, error); });
+          _c.lifecycle = "stopped";
+          await this.manager?.release(key, _c).catch(() => {});
+        }
+      }
+      return;
+    }
     const store = this.getQueueStore();
     while (true) {
       if (this.shuttingDown) return;
       if (this.deleting.has(key)) return;
-      if (this.queueSuspended.has(key)) return;
+      if (this.queueSuspended.has(key)) {
+        if (this.coolPending.has(key)) {
+          this.coolPending.delete(key);
+          const _c2 = this.manager?.get(key);
+          if (_c2) {
+            await _c2.terminate().catch((error) => { throw toTeardownError(key, error); });
+            _c2.lifecycle = "stopped";
+            await this.manager?.release(key, _c2).catch(() => {});
+          }
+        }
+        return;
+      }
       let rec: RuntimeQueueRecord | undefined;
       try {
         rec = await store.load(key);
@@ -716,7 +739,18 @@ export class RuntimeEngine implements BridgeEngine {
         }, 200);
         return;
       }
-      if (this.queueSuspended.has(key)) return;
+      if (this.queueSuspended.has(key)) {
+        if (this.coolPending.has(key)) {
+          this.coolPending.delete(key);
+          const _c3 = this.manager?.get(key);
+          if (_c3) {
+            await _c3.terminate().catch((error) => { throw toTeardownError(key, error); });
+            _c3.lifecycle = "stopped";
+            await this.manager?.release(key, _c3).catch(() => {});
+          }
+        }
+        return;
+      }
       // Atomically remove head from journal ONLY after terminal settlement (at-least-once, possible replay on crash before remove)
       try {
         const removed = await store.dequeueHead(key);
