@@ -390,11 +390,17 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
   }
 
   async function waitForPendingControlMutations(context: string): Promise<void> {
-    const pending = [
-      pendingModelSets.get(context),
-      pendingEffortSets.get(context),
-    ].filter((promise): promise is Promise<void> => promise !== undefined);
-    if (pending.length > 0) await Promise.all(pending);
+    // Drain to quiescence rather than snapshotting the maps once. A second mutation can
+    // start while we are awaiting the first one; passive refresh must not allocate load
+    // revisions until the latest model/effort mutations for this context have all settled.
+    while (true) {
+      const pending = [
+        pendingModelSets.get(context),
+        pendingEffortSets.get(context),
+      ].filter((promise): promise is Promise<void> => promise !== undefined);
+      if (pending.length === 0) return;
+      await Promise.all(pending);
+    }
   }
 
   async function refreshLiveControls(instanceId: string, alias: string): Promise<void> {
