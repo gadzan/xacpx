@@ -423,6 +423,27 @@ export class RuntimeEngine implements BridgeEngine {
       );
     }
   }
+  private assertLifecycleEpoch(key: string, expectedEpoch: number): void {
+    if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== expectedEpoch) {
+      throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
+    }
+  }
+  private async waitForAcquiringQuiescence(key: string, timeoutMs = 8_000): Promise<void> {
+    const start = Date.now();
+    while (this.acquiring.has(key) && Date.now() - start < timeoutMs) {
+      const pending = this.acquiring.get(key);
+      if (pending) await pending.catch(() => {});
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 20);
+      await promise;
+    }
+    if (this.acquiring.has(key)) {
+      throw new RuntimeError(
+        "RUNTIME_WORKER_TEARDOWN_PENDING",
+        `cannot hard delete session "${key}" while worker acquisition in flight`,
+      );
+    }
+  }
   private readonly coolPending = new Set<string>();
   /** In-flight worker acquisitions (fence discharge + spawn), keyed by session. */
   private readonly acquiring = new Map<string, Promise<RuntimeWorkerClient>>();
@@ -874,10 +895,9 @@ export class RuntimeEngine implements BridgeEngine {
     if (this.policyTransitionLock) {
       await this.policyTransitionLock;
     }
-    if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _lifecycleEpochAtEntry) {
-      throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
-    }
-        await this.checkMcpStaleAndRotate(input, false);
+    this.assertLifecycleEpoch(key, _lifecycleEpochAtEntry);
+    await this.checkMcpStaleAndRotate(input, false);
+    this.assertLifecycleEpoch(key, _lifecycleEpochAtEntry);
     const existingTimer = this.idleTimers.get(key);
     if (existingTimer) {
       clearTimeout(existingTimer);
@@ -885,9 +905,9 @@ export class RuntimeEngine implements BridgeEngine {
     }
     let client: RuntimeWorkerClient;
     try {
+      this.assertLifecycleEpoch(key, _lifecycleEpochAtEntry);
       client = await this.ensureWorker(input);
       if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _lifecycleEpochAtEntry) {
-        // Ghost acquire: session deleted while we waited for worker — verifiably terminate
         try {
           await client.terminate().catch((e) => { throw toTeardownError(key, e); });
           if (client.lifecycle === "stopped") {
@@ -896,7 +916,6 @@ export class RuntimeEngine implements BridgeEngine {
             throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `ghost worker for "${key}" did not reach stopped after terminate`);
           }
         } catch (termErr) {
-          // Preserve original delete-ghost error if term also fails, but surface teardown
           if (termErr instanceof RuntimeError && termErr.code === "RUNTIME_WORKER_TEARDOWN_PENDING") throw termErr;
           throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `ghost worker teardown failed for "${key}": ${termErr instanceof Error ? termErr.message : String(termErr)}`);
         }
@@ -906,11 +925,7 @@ export class RuntimeEngine implements BridgeEngine {
     } catch (error) {
       if (error instanceof RuntimeError) throw error;
       if (error instanceof WorkerTeardownPendingError) {
-        if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _lifecycleEpochAtEntry) {
-          throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
-        }
-        // Worker is still in cooling/teardown. Wait briefly for manager to release the previous generation (archive coolPending's immediate terminate).
-        // For a normal archive, the previous generation is terminated and released within ~50ms. We poll briefly; if still cooling after 300ms we fail-closed.
+        this.assertLifecycleEpoch(key, _lifecycleEpochAtEntry);
         const start = Date.now();
         while (Date.now() - start < 300) {
           const existing = this.manager?.get(key);
@@ -923,9 +938,7 @@ export class RuntimeEngine implements BridgeEngine {
         if (still && (still.lifecycle === "cooling" || still.lifecycle === "failed")) {
           throw new RuntimeError(error.code, error.message);
         }
-        if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _lifecycleEpochAtEntry) {
-          throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
-        }
+        this.assertLifecycleEpoch(key, _lifecycleEpochAtEntry);
         try {
           client = await this.ensureWorker(input);
           if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _lifecycleEpochAtEntry) {
@@ -1438,6 +1451,9 @@ export class RuntimeEngine implements BridgeEngine {
     // PR6: mark deleting so new enqueue is rejected (lifecycle boundary)
     this.deleting.add(key);
     this.deleteGenerations.set(key, (this.deleteGenerations.get(key) ?? 0) + 1);
+    // G4: establishment barrier — prevent old-epoch waiters from starting new acquisitions after bump,
+    // and wait for any in-flight acquisitions (fence discharge + spawn) to settle before destructive ops.
+    await this.waitForAcquiringQuiescence(key);
     try {
       let client: ReturnType<NonNullable<typeof this.manager>["get"]> = this.manager?.get(key);
 
@@ -1459,12 +1475,20 @@ export class RuntimeEngine implements BridgeEngine {
             );
           }
           if (refreshed) {
-            // client is refreshed for below, but we are in no-record branch so we handle it here
-            if (!refreshed.alive && refreshed.lifecycle !== "stopped") {
-              throw new RuntimeError(
-                "RUNTIME_WORKER_TEARDOWN_PENDING",
-                `runtime worker for session "${key}" crashed and ownership cleanup was never verified; refusing hard delete`,
-              );
+            // Wait briefly for ghost worker to reach stopped if it's in transitional not-alive state
+            if (!refreshed.alive && (refreshed.lifecycle as string) !== "stopped") {
+              const start = Date.now();
+              while (!refreshed.alive && (refreshed.lifecycle as string) !== "stopped" && Date.now() - start < 500) {
+                const { promise, resolve } = Promise.withResolvers<void>();
+                setTimeout(resolve, 20);
+                await promise;
+              }
+              if (!refreshed.alive && (refreshed.lifecycle as string) !== "stopped") {
+                throw new RuntimeError(
+                  "RUNTIME_WORKER_TEARDOWN_PENDING",
+                  `runtime worker for session "${key}" crashed and ownership cleanup was never verified; refusing hard delete`,
+                );
+              }
             }
             if (refreshed.alive) {
               if (this.hasActiveTurn(key)) {
@@ -1485,11 +1509,19 @@ export class RuntimeEngine implements BridgeEngine {
             }
           }
         } else if (client) {
-          if (!client.alive && client.lifecycle !== "stopped") {
-            throw new RuntimeError(
-              "RUNTIME_WORKER_TEARDOWN_PENDING",
-              `runtime worker for session "${key}" crashed and ownership cleanup was never verified; refusing hard delete`,
-            );
+          if (!client.alive && (client.lifecycle as string) !== "stopped") {
+            const start2 = Date.now();
+            while (!client.alive && (client.lifecycle as string) !== "stopped" && Date.now() - start2 < 500) {
+              const { promise, resolve } = Promise.withResolvers<void>();
+              setTimeout(resolve, 20);
+              await promise;
+            }
+            if (!client.alive && (client.lifecycle as string) !== "stopped") {
+              throw new RuntimeError(
+                "RUNTIME_WORKER_TEARDOWN_PENDING",
+                `runtime worker for session "${key}" crashed and ownership cleanup was never verified; refusing hard delete`,
+              );
+            }
           }
           if (client.alive) {
             if (this.hasActiveTurn(key)) {

@@ -617,3 +617,59 @@ test.serial("P1-10: drain loaded head but not yet incActiveTurn — delete does 
     await rm(dir, { recursive: true, force: true });
   }
 }, 15_000);
+test.serial("P1-11: delete waits for in-flight acquiring (fence discharge) before returning success", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-acquiring-barrier-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    const manager: any = (engine as any).manager;
+    const origAcquire = manager.acquire.bind(manager);
+    let holdRelease: () => void;
+    const holdGate = new Promise<void>((r) => (holdRelease = r));
+    let acquireStarted = false;
+    manager.acquire = async (key: string) => {
+      if (key === testInput.logicalSessionId) {
+        acquireStarted = true;
+        await holdGate;
+      }
+      return origAcquire(key);
+    };
+    // Start withWorker that will enter acquiring and block on fence discharge (no prior worker)
+    const pSetMode = engine.setMode({ ...testInput, modeId: "plan" } as any);
+    pSetMode.catch(()=>{});
+    for (let i=0;i<100;i++) {
+      if ((engine as any).acquiring?.has?.(testInput.logicalSessionId) || acquireStarted) break;
+      const { promise, resolve } = Promise.withResolvers<void>(); setTimeout(resolve, 10); await promise;
+    }
+    expect((engine as any).acquiring.has(testInput.logicalSessionId) || acquireStarted).toBe(true);
+    const pDelete = engine.deleteSession(testInput as unknown as never);
+    let deleteDone = false;
+    pDelete.then(()=>{ deleteDone = true; }).catch(()=>{ deleteDone = true; });
+    const { promise: _p150, resolve: _r150 } = Promise.withResolvers<void>(); setTimeout(_r150, 150); await _p150;
+    expect(deleteDone).toBe(false);
+    holdRelease!();
+    await expect(pSetMode).rejects.toMatchObject({ code: "RUNTIME_INIT_FAILED" });
+    await pDelete;
+    expect((await engine.isSessionWarm(testInput as unknown as never)).warm).toBe(false);
+    expect(manager.get(testInput.logicalSessionId)).toBeUndefined();
+    const recId = await (engine as any).resolveRecordId(testInput, undefined);
+    expect(recId).toBeUndefined();
+  } finally {
+    await engine.shutdown().catch(()=>{});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
