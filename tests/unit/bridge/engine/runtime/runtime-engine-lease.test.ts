@@ -693,4 +693,54 @@ test.serial("P1-11: delete waits for in-flight acquiring (fence discharge) befor
     await rm(dir, { recursive: true, force: true });
   }
 }, 15_000);
+test.serial("P1-12: residual fence without record blocks delete (fail-closed)", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-residual-fence-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  await mkdir(fenceDir, { recursive: true });
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    // Seed a residual fence (present) without any worker/record
+    const fencePath = join(fenceDir, `${encodeURIComponent(testInput.logicalSessionId)}.json`);
+    const record = {
+      kind: "runtime-worker-owner",
+      logicalSessionId: testInput.logicalSessionId,
+      generation: "test-gen-residual",
+      pid: 99999,
+      creationDate: null,
+      bootstrapVerified: true,
+      phase: "admitted" as const,
+      startedAt: new Date().toISOString(),
+      agent: "runtime-worker",
+    };
+    await writeFile(fencePath, JSON.stringify(record, null, 2), "utf8");
+    // Ensure fence is present
+    const fenceFilesBefore = await readdir(fenceDir);
+    expect(fenceFilesBefore.some((f: string) => f.includes(encodeURIComponent(testInput.logicalSessionId)))).toBe(true);
+    // Delete with no record but residual fence must fail-closed
+    await expect(engine.deleteSession(testInput as unknown as never)).rejects.toMatchObject({ code: "RUNTIME_WORKER_TEARDOWN_PENDING" });
+    // Fence must still be present (not spuriously cleared)
+    const fenceFilesAfter = await readdir(fenceDir);
+    expect(fenceFilesAfter.some((f: string) => f.includes(encodeURIComponent(testInput.logicalSessionId)))).toBe(true);
+    expect((await engine.isSessionWarm(testInput as unknown as never)).warm).toBe(false);
+    const recId = await (engine as any).resolveRecordId(testInput, undefined);
+    expect(recId).toBeUndefined();
+  } finally {
+    await engine.shutdown().catch(()=>{});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
 
