@@ -520,24 +520,23 @@ export class RuntimeEngine implements BridgeEngine {
       if (hasAcquiring) {
         const pending = this.acquiring.get(key)!;
         let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-        const timeoutPromise = new Promise<"timeout">((resolve) => {
-          timeoutHandle = setTimeout(() => resolve("timeout"), Math.min(remaining, 200));
+        const timeoutPromise = new Promise<{ status: "timeout" }>((resolve) => {
+          timeoutHandle = setTimeout(() => resolve({ status: "timeout" }), Math.min(remaining, 200));
           timeoutHandle.unref?.();
         });
-        try {
-          const result = await Promise.race([
-            pending.then(
-              () => "done" as const,
-              (err) => {
-                throw err;
-              },
-            ),
-            timeoutPromise,
-          ]);
-          if (timeoutHandle) clearTimeout(timeoutHandle);
-          if (result === "timeout") continue;
-        } catch (err) {
-          if (timeoutHandle) clearTimeout(timeoutHandle);
+        const pendingHandled = pending.then(
+          () => ({ status: "done" as const }),
+          (error) => ({ status: "rejected" as const, error }),
+        );
+        pendingHandled.catch(() => {});
+        const result = await Promise.race([pendingHandled, timeoutPromise]);
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        if (result.status === "timeout") {
+          pendingHandled.catch(() => {});
+          continue;
+        }
+        if (result.status === "rejected") {
+          const err = (result as { status: "rejected"; error: unknown }).error;
           if (err instanceof WorkerTeardownPendingError || (err instanceof RuntimeError && err.code === "RUNTIME_WORKER_TEARDOWN_PENDING")) {
             throw new RuntimeError(
               "RUNTIME_WORKER_TEARDOWN_PENDING",
@@ -546,6 +545,8 @@ export class RuntimeEngine implements BridgeEngine {
           }
           throw err;
         }
+        // done -> loop again to re-evaluate worker/fence
+        continue;
       } else {
         const { promise, resolve } = Promise.withResolvers<void>();
         setTimeout(resolve, 20);
