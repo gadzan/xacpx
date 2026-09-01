@@ -616,8 +616,29 @@ export class RuntimeEngine implements BridgeEngine {
         }
         return;
       }
-      // Use authoritative catalog (latest inject) rather than stale drain input param
-      const catalogInput = this.sessionCatalog.get(key) ?? input;
+      // Per-head MCP identity: each queued message carries its own launch identity
+      const baseCatalog = this.sessionCatalog.get(key) ?? input;
+      const headMcp = { mcpCoordinatorSession: head.mcpCoordinatorSession, mcpSourceHandle: head.mcpSourceHandle };
+      const catalogInput: EngineSessionInput = {
+        ...baseCatalog,
+        mcpCoordinatorSession: head.mcpCoordinatorSession,
+        mcpSourceHandle: head.mcpSourceHandle,
+      };
+      // If this head's identity differs from last, rotate before marking active
+      const lastMcp = this.lastMcpIdentity.get(key);
+      const isHeadStale = !!lastMcp && ((lastMcp.mcpCoordinatorSession ?? null) !== (headMcp.mcpCoordinatorSession ?? null) || (lastMcp.mcpSourceHandle ?? null) !== (headMcp.mcpSourceHandle ?? null));
+      if (isHeadStale) {
+        const cl = this.manager?.get(key);
+        if (cl) {
+          if (cl.lifecycle === "busy" || !!cl.hasInFlight) {
+            this.staleAfterTurn.add(key);
+            return;
+          }
+          await cl.shutdown().catch((e) => { throw toTeardownError(key, e); });
+          if (cl.lifecycle === "stopped") await this.manager?.release(key, cl).catch(() => {});
+          this.lastMcpIdentity.delete(key);
+        }
+      }
       this.activeTurns.add(key);
       let turnError: unknown;
       let isTerminal = false;
@@ -1032,7 +1053,7 @@ export class RuntimeEngine implements BridgeEngine {
     }
     const catalogInput = this.sessionCatalog.get(key)!;
     const store = this.getQueueStore();
-    const receipt = await store.enqueue(key, { messageId: input.messageId, text: input.text, mode }, {
+    const receipt = await store.enqueue(key, { messageId: input.messageId, text: input.text, mode, mcpCoordinatorSession: (input as unknown as EngineSessionInput).mcpCoordinatorSession, mcpSourceHandle: (input as unknown as EngineSessionInput).mcpSourceHandle }, {
       isDeleting: (k) => this.deleting.has(k),
       isCoolPending: (k) => this.coolPending.has(k),
     });

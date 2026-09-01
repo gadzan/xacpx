@@ -10,6 +10,8 @@ export interface RuntimePendingMessage {
   text: string;
   acceptedAt: string;
   mode: "queue" | "auto";
+  mcpCoordinatorSession?: string;
+  mcpSourceHandle?: string;
 }
 
 export interface RuntimeQueueRecord {
@@ -45,6 +47,8 @@ function validateRecord(parsed: unknown, expectedLogicalSessionId?: string): Run
     if (typeof it.text !== "string") throw new Error("invalid text");
     if (typeof it.acceptedAt !== "string") throw new Error("invalid acceptedAt");
     if (it.mode !== "queue" && it.mode !== "auto") throw new Error(`invalid mode ${String(it.mode)}`);
+    if (it.mcpCoordinatorSession !== undefined && typeof it.mcpCoordinatorSession !== "string") throw new Error("invalid mcpCoordinatorSession");
+    if (it.mcpSourceHandle !== undefined && typeof it.mcpSourceHandle !== "string") throw new Error("invalid mcpSourceHandle");
   }
   return parsed as RuntimeQueueRecord;
 }
@@ -127,7 +131,7 @@ export class RuntimeQueueStore {
     }
   }
 
-  async enqueue(logicalSessionId: string, input: { messageId: string; text: string; mode: "queue" | "auto" }, opts?: { isDeleting?: (key: string) => boolean; isCoolPending?: (key: string) => boolean }): Promise<QueueEnqueueResult> {
+  async enqueue(logicalSessionId: string, input: { messageId: string; text: string; mode: "queue" | "auto"; mcpCoordinatorSession?: string; mcpSourceHandle?: string }, opts?: { isDeleting?: (key: string) => boolean; isCoolPending?: (key: string) => boolean }): Promise<QueueEnqueueResult> {
     if (!input.messageId || typeof input.messageId !== "string") {
       throw new RuntimeError("RUNTIME_QUEUE_CONFLICT", "messageId must be a non-empty string");
     }
@@ -156,6 +160,8 @@ export class RuntimeQueueStore {
         text: input.text,
         acceptedAt: new Date().toISOString(),
         mode: input.mode,
+        ...(input.mcpCoordinatorSession !== undefined ? { mcpCoordinatorSession: input.mcpCoordinatorSession } : {}),
+        ...(input.mcpSourceHandle !== undefined ? { mcpSourceHandle: input.mcpSourceHandle } : {}),
       };
       const record: RuntimeQueueRecord = {
         schema: "xacpx.runtime-queue.v1",
