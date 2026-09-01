@@ -181,3 +181,33 @@ test("preview pending during create is flushed after create", async () => {
   expect(editedContents.length).toBe(1);
   expect(editedContents[0]).toBe("hello world pending");
 });
+test("short progress like '🚀 Starting' with minInitialChars=1 creates promptly", async () => {
+  vi.useFakeTimers();
+  const { client, sent } = createFakeClient();
+  const preview = createDiscordPreviewStream({ client, target, throttleMs: 300, minInitialChars: 1 });
+  preview.update("🚀 Starting omp…");
+  vi.advanceTimersByTime(400);
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(sent.length).toBe(1);
+  expect(sent[0]!.content).toBe("🚀 Starting omp…");
+  vi.useRealTimers();
+});
+
+test("channel streaming default should be responsive with minInitialChars 20 but accumulated grows", async () => {
+  vi.useFakeTimers();
+  const { client, sent, edited } = createFakeClient();
+  const preview = createDiscordPreviewStream({ client, target, throttleMs: 300, minInitialChars: 20 });
+  preview.update("🚀 Starting omp…");
+  vi.advanceTimersByTime(400);
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(sent.length).toBe(0);
+  preview.update("🚀 Starting omp…\n\nℹ️ [acpx] agent advertised auth methods [agent] but no matching credentials found — skipping (waited 4s)");
+  vi.advanceTimersByTime(400);
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(sent.length).toBe(1);
+  expect(sent[0]!.content).toContain("ℹ️");
+  vi.useRealTimers();
+});

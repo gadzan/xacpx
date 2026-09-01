@@ -30,6 +30,7 @@ export interface DiscordAccountConfig {
   enabled?: boolean;
   token?: string;
   applicationId?: string;
+  enableAutocomplete?: boolean;
   replyMode?: DiscordReplyMode;
   tableMode?: DiscordTableMode;
   maxLinesPerMessage?: number;
@@ -59,7 +60,6 @@ export interface DiscordResolvedMediaConfig {
   maxBytes: number;
   maxAttachments: number;
 }
-
 export interface DiscordResolvedAccountConfig {
   accountId: string;
   name?: string;
@@ -67,6 +67,7 @@ export interface DiscordResolvedAccountConfig {
   configured: boolean;
   token: string;
   applicationId: string;
+  enableAutocomplete: boolean;
   replyMode: DiscordReplyMode;
   tableMode: DiscordTableMode;
   maxLinesPerMessage: number;
@@ -100,7 +101,7 @@ const DEFAULT_REPLY_MODE: DiscordReplyMode = "auto";
 const DEFAULT_TABLE_MODE: DiscordTableMode = "code";
 const DEFAULT_MAX_LINES_PER_MESSAGE = 17;
 const DEFAULT_PREVIEW_THROTTLE_MS = 1200;
-const DEFAULT_MIN_INITIAL_CHARS = 200;
+const DEFAULT_MIN_INITIAL_CHARS = 20;
 const DEFAULT_TYPING_INDICATOR = true;
 const DEFAULT_ACK_REACTION: string | null = null;
 const DEFAULT_REQUIRE_MENTION = true;
@@ -254,6 +255,8 @@ function resolveAccount(
   const enabled = booleanOptional(merged.enabled, `${path}.enabled`) ?? true;
   const token = stringOptional(merged.token, `${path}.token`);
   const applicationId = stringOptional(merged.applicationId, `${path}.applicationId`) ?? "";
+  const enableAutocompleteRaw = booleanOptional(merged.enableAutocomplete, `${path}.enableAutocomplete`);
+  const enableAutocomplete = enableAutocompleteRaw ?? Boolean(applicationId);
   const configured = Boolean(token && token.length > 0);
   const replyMode = enumValue<DiscordReplyMode>(merged.replyMode, `${path}.replyMode`, ["static", "streaming", "auto"], DEFAULT_REPLY_MODE);
   const tableMode = enumValue<DiscordTableMode>(merged.tableMode, `${path}.tableMode`, ["code", "bullets", "off"], DEFAULT_TABLE_MODE);
@@ -282,6 +285,7 @@ function resolveAccount(
     configured,
     token: token ?? "",
     applicationId,
+    enableAutocomplete,
     replyMode,
     tableMode,
     maxLinesPerMessage,

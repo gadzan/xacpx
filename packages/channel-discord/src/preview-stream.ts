@@ -19,7 +19,7 @@ export interface DiscordPreviewStream {
 export function createDiscordPreviewStream(options: DiscordPreviewStreamOptions): DiscordPreviewStream {
   const maxChars = options.maxChars ?? 2000;
   const throttleMs = Math.max(250, options.throttleMs ?? 1200);
-  const minInitialChars = options.minInitialChars ?? 200;
+  const minInitialChars = options.minInitialChars ?? 20;
   const client = options.client;
   const target = options.target;
 

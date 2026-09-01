@@ -11,6 +11,7 @@ import type {
   ConsumerLock,
   ConsumerLockOptions,
   ConsumerLockMetadata,
+  ToolUseEvent,
 } from "xacpx/plugin-api";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
@@ -43,6 +44,7 @@ import { chunkDiscordText } from "./chunk.js";
 import { renderDiscordMarkdown } from "./markdown.js";
 import { createDiscordPreviewStream, type DiscordPreviewStream } from "./preview-stream.js";
 import { sendWithThreadFallback } from "./outbound.js";
+import { buildXacpxSlashCommands, registerDiscordCommands } from "./discord-commands.js";
 type OrchestrationTaskRecord = Parameters<MessageChannelRuntime["notifyTaskCompletion"]>[0];
 
 const ACCOUNT_IDENTIFY_STAGGER_MS = 5500;
@@ -330,7 +332,6 @@ export class DiscordChannel implements MessageChannelRuntime {
       });
       throw error;
     }
-
     if (!identity.botUserId) {
       try {
         await client.destroy();
@@ -339,6 +340,25 @@ export class DiscordChannel implements MessageChannelRuntime {
         accountId: account.accountId,
       });
       throw new Error(`discord account "${account.accountId}" became ready without a bot identity`);
+    }
+
+    if (account.enableAutocomplete && account.applicationId) {
+      try {
+        await registerDiscordCommands({
+          token: account.token,
+          applicationId: account.applicationId,
+          commands: buildXacpxSlashCommands(),
+        });
+        await input.logger.info("discord.commands.registered", "registered discord application commands", {
+          accountId: account.accountId,
+          count: buildXacpxSlashCommands().length,
+        });
+      } catch (error) {
+        await input.logger.warn("discord.commands.register_failed", "failed to register discord application commands", {
+          accountId: account.accountId,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
 
     this.accounts.set(account.accountId, {
@@ -960,7 +980,7 @@ export class DiscordChannel implements MessageChannelRuntime {
           target,
           maxChars: 2000,
           throttleMs: runtime.account.previewThrottleMs,
-          minInitialChars: runtime.account.minInitialChars,
+          minInitialChars: 1,
           onWarn: (msg) => {
             void this.logger?.warn("discord.preview.warn", msg, { accountId, channelId });
           },
@@ -982,6 +1002,19 @@ export class DiscordChannel implements MessageChannelRuntime {
         accumulated += delta;
         active.previewStream?.update(accumulated);
       };
+      const onToolEvent = async (event: ToolUseEvent): Promise<void> => {
+        if (active.suppressed) return;
+        const title = (event.title ?? event.kind ?? "tool").trim() || "tool";
+        const emoji = "🔧";
+        const line = `${emoji} ${title}`;
+        accumulated += (accumulated ? "\n" : "") + line;
+        active.previewStream?.update(accumulated);
+      };
+      const onThought = async (chunk: string): Promise<void> => {
+        if (active.suppressed || !chunk) return;
+        accumulated += chunk;
+        active.previewStream?.update(accumulated);
+      };
 
       try {
         const response = await this.agent.chat({
@@ -998,6 +1031,8 @@ export class DiscordChannel implements MessageChannelRuntime {
             ...(boundAlias ? { boundSessionAlias: boundAlias } : {}),
           },
           reply: safeReply,
+          onToolEvent,
+          onThought,
           abortSignal: abortController.signal,
         });
         if (active.suppressed) return;
@@ -1016,7 +1051,14 @@ export class DiscordChannel implements MessageChannelRuntime {
           active.previewStream = null;
         }
 
-        const finalText = accumulated || response.text || "";
+        const trimmedAcc = accumulated.trim();
+        const trimmedResp = (response.text ?? "").trim();
+        let finalText: string;
+        if (!trimmedAcc) finalText = trimmedResp;
+        else if (!trimmedResp) finalText = trimmedAcc;
+        else if (trimmedAcc.includes(trimmedResp)) finalText = trimmedAcc;
+        else finalText = `${trimmedAcc}\n\n${trimmedResp}`;
+        if (!finalText) finalText = response.text ?? accumulated;
         await this.deliverFinalResponse({
           runtime,
           target,

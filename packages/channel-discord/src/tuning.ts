@@ -13,7 +13,7 @@ export interface DiscordTuning {
 
 export const DEFAULT_DISCORD_TUNING: DiscordTuning = {
   previewThrottleMs: 1200,
-  minInitialChars: 200,
+  minInitialChars: 20,
   previewMaxChars: 2000,
 };
 
