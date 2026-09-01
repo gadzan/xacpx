@@ -1441,6 +1441,7 @@ export async function buildApp(
       ? deps.channel.nativeSessionListFormat.bind(deps.channel)
       : undefined,
     activeTurns,
+    controlEvents,
   );
   const agent = new ConsoleAgent(router, logger);
   const terminalService = createTerminalService({

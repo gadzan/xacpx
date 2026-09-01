@@ -270,6 +270,40 @@ test("a finish with no buffer and empty-string text persists an empty reply row"
   runtime.close();
 });
 
+test("a silent finish with no buffer and no text persists no row", async () => {
+  const runtime = await seeded();
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true, silent: true });
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages).toEqual([]);
+  runtime.close();
+});
+
+test("a silent finish with streamed buffer text persists the streamed reply only", async () => {
+  const runtime = await seeded();
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend" });
+  fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "partial" });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true, silent: true, text: "partial" });
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.direction, m.text]))
+    .toEqual([["out", "partial"]]);
+  runtime.close();
+});
+
+test("a silent buffered finish with no streamed text persists no out row", async () => {
+  const runtime = await seeded();
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend" });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true, silent: true });
+  expect(runtime.messages.listBySession("a1", "i1", "backend").messages).toEqual([]);
+  runtime.close();
+});
+
 test("task-completion notice fans out to push; other kinds do not", async () => {
   const runtime = await createRelayRuntime(":memory:", {
     vapid: { subject: "mailto:test@example.com", publicKey: "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U", privateKey: "w7gAGvS_Do-fQS4qrv63qkIsaqw6ni5nyJoh3ud-BRU" },
@@ -298,6 +332,10 @@ test("task-completion notice fans out to push; other kinds do not", async () => 
   notice({ kind: "task-progress", text: "halfway" });
   await new Promise((r) => setTimeout(r, 10));
   expect(sent).toHaveLength(1); // progress never pushes
+
+  notice({ kind: "queue-overflow", text: "Reply was truncated for size — you can continue." });
+  await new Promise((r) => setTimeout(r, 10));
+  expect(sent).toHaveLength(1); // overflow tips never push
 
   runtime.close();
 });

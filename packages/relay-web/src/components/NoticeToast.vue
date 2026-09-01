@@ -8,6 +8,7 @@ const notices = useNoticesStore();
 // completions read run (success), everything else reads info.
 function toneClass(kind: string): string {
   const k = kind.toLowerCase();
+  if (k === "queue-overflow") return "text-fg-muted";
   if (k.includes("fail") || k.includes("error")) return "text-danger";
   if (k.includes("complet") || k.includes("done") || k.includes("success")) return "text-run";
   return "text-info";
@@ -22,11 +23,12 @@ function toneClass(kind: string): string {
     <div
       v-for="n in notices.items.slice(0, 4)"
       :key="n.id"
-      data-test="notice"
+      :data-test="n.kind === 'queue-overflow' ? 'queue-overflow-toast' : 'notice'"
       class="pointer-events-auto rounded border border-border bg-raised px-3 py-2 text-sm text-fg shadow-lg"
     >
       <div class="flex items-start justify-between gap-2">
-        <span><span class="text-xs uppercase" :class="toneClass(n.kind)">{{ n.kind }}</span><br />{{ n.text }}</span>
+        <span v-if="n.kind === 'queue-overflow'" class="text-fg-muted">{{ n.text }}</span>
+        <span v-else><span class="text-xs uppercase" :class="toneClass(n.kind)">{{ n.kind }}</span><br />{{ n.text }}</span>
         <button class="text-xs text-fg-muted hover:text-fg" :aria-label="$t('common.dismissNotice')" @click="notices.dismiss(n.id)">×</button>
       </div>
     </div>

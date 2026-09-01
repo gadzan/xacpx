@@ -1,5 +1,6 @@
 import { expect, test, beforeEach } from "bun:test";
 import {
+  queueOverflowTipText,
   renderSessionCreationError,
   renderSessionCreationVerificationError,
   renderTransportError,
@@ -139,7 +140,8 @@ test("a non-npm backend 404 is not misreported as an adapter registry failure", 
     error,
   )).toThrow(error);
 });
-test("renderTransportError downgrades AcpxQueueOverflowError to soft warning (zh) when cleanup is confirmed", () => {
+
+test("renderTransportError is silent for confirmed overflow (zh) — no chat text", () => {
   setLocale("zh");
   const error = new AcpxQueueOverflowError({
     cancelAttempted: true,
@@ -149,20 +151,37 @@ test("renderTransportError downgrades AcpxQueueOverflowError to soft warning (zh
     diagnostic: "test diagnostic",
   });
   const reply = renderTransportError(session(), error);
-  expect(reply.text).toBe([t().recovery.queueOverflowWarning, t().recovery.queueOverflowHint].join("\n"));
-  expect(reply.text).not.toContain("Execution error");
-  expect(reply.text).not.toContain("错误信息");
-  expect(reply.text).toContain("可直接继续");
+  expect(reply.silent).toBe(true);
+  expect(reply.text).toBeUndefined();
+  expect(queueOverflowTipText(true)).toBe("部分回复因过长已收束，可直接继续。");
+  expect(queueOverflowTipText(true)).not.toContain("\n");
+  expect(queueOverflowTipText(true)).not.toMatch(/⚠️|❌/);
 });
 
-test("renderTransportError downgrades AcpxQueueOverflowError to unconfirmed soft warning (en) when cleanup is not confirmed", () => {
+test("confirmed overflow tip copy is a single soft line (en)", () => {
+  setLocale("en");
+  expect(queueOverflowTipText(true)).toBe("Reply was truncated for size — you can continue.");
+  expect(queueOverflowTipText(true)).not.toContain("/cancel");
+  const reply = renderTransportError(session(), new AcpxQueueOverflowError({
+    cancelAttempted: true,
+    cancelSucceeded: true,
+    ownerTerminationAttempted: true,
+    ownerTerminationSucceeded: true,
+  }));
+  expect(reply).toEqual({ silent: true });
+});
+
+test("renderTransportError is silent for unconfirmed overflow (en) — copy still asks for /cancel", () => {
   setLocale("en");
   const error = new AcpxQueueOverflowError("cleanup failed");
   const reply = renderTransportError(session(), error);
-  expect(reply.text).toBe([t().recovery.queueOverflowWarning, t().recovery.queueOverflowUnconfirmedHint].join("\n"));
-  expect(reply.text).not.toContain("Execution error");
-  expect(reply.text).not.toContain("ready for your next message");
-  expect(reply.text).toContain("/cancel");
+  expect(reply.silent).toBe(true);
+  expect(reply.text).toBeUndefined();
+  expect(queueOverflowTipText(false)).toBe("Output was large and cleanup wasn't confirmed — send /cancel, then continue.");
+  expect(queueOverflowTipText(false)).not.toContain("\n");
+  expect(queueOverflowTipText(false)).not.toMatch(/⚠️|❌/);
+  expect(queueOverflowTipText(false)).toContain("/cancel");
+  expect(queueOverflowTipText(false)).not.toContain("you can continue");
 });
 
 test("renderTransportError downgrades AcpxQueueOverflowError without cleanup to unconfirmed warning (zh)", () => {
@@ -170,8 +189,13 @@ test("renderTransportError downgrades AcpxQueueOverflowError without cleanup to 
   const error = new AcpxQueueOverflowError();
   // no cleanup => ownerTerminationSucceeded undefined => unconfirmed
   const reply = renderTransportError(session(), error);
-  expect(reply.text).toContain(t().recovery.queueOverflowUnconfirmedHint);
-  expect(reply.text).not.toContain(t().recovery.queueOverflowHint);
+  expect(reply.silent).toBe(true);
+  expect(reply.text).toBeUndefined();
+  expect(queueOverflowTipText(false)).toBe("输出过长且清理未确认，请先发 /cancel 再继续。");
+  expect(queueOverflowTipText(false)).not.toContain("\n");
+  expect(queueOverflowTipText(false)).not.toMatch(/⚠️|❌/);
+  expect(queueOverflowTipText(false)).toContain("/cancel");
+  expect(queueOverflowTipText(false)).not.toBe(queueOverflowTipText(true));
 });
 
 test("renderTransportError does not soft-downgrade raw buffer overflow without cleanup (remains hard error)", () => {
@@ -198,7 +222,8 @@ test("bridge-reconstructed AcpxQueueOverflowError with confirmed cleanup is stil
     ownerTerminationSucceeded: true,
   });
   const reply = renderTransportError(session(), error);
-  expect(reply.text).toContain(t().recovery.queueOverflowHint);
+  expect(reply.silent).toBe(true);
+  expect(reply.text).toBeUndefined();
 });
 
 test("tryRecoverMissingSession does not recover from AcpxQueueOverflowError even if diagnostic contains No acpx session found", async () => {

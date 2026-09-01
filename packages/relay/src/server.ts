@@ -518,6 +518,10 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 // A failed turn without a reply text falls back to its errorMessage —
                 // an error row closes the hole for failures the same way text does
                 // for successes.
+                // Silent overflow tips are toast-only: do not persist an empty out row.
+                if (event.silent && (event.text === undefined || event.text === "")) {
+                  return;
+                }
                 if (event.text !== undefined) {
                   messages.append(instanceId, event.sessionAlias, "out", event.text);
                 } else if (!event.ok && event.errorMessage !== undefined) {
@@ -545,6 +549,11 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               // answer (and its receipt is already committed, so the entry can never be
               // re-delivered to backfill it). A failed turn with truly nothing to say
               // still leaves no row.
+              // Silent overflow tips skip that empty-success row so the toast is not
+              // duplicated as a blank chat bubble.
+              if (event.silent && !hasStructured && text === "") {
+                return;
+              }
               if (hasStructured || text !== "" || event.ok) {
                 const structured = hasStructured
                   ? { toolSteps: steps, ...(hasReasoning ? { reasoning: a.reasoning } : {}), ...(a.parts.length ? { parts: a.parts } : {}), ...(a.truncated ? { truncated: true } : {}) }

@@ -250,7 +250,7 @@ export interface InstanceStateSyncPayload {
   }>;
 }
 export interface InstanceNoticePayload {
-  kind: "task-completion" | "task-progress" | "coordinator-message";
+  kind: "task-completion" | "task-progress" | "coordinator-message" | "queue-overflow";
   text: string;
   taskId?: string;
   chatKey?: string;

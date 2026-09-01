@@ -66,6 +66,36 @@ test("a clean turn with no abort emits turn-finished ok:true carrying the reply 
   expect(fin.text).toBe("final");
 });
 
+test("a silent overflow response does not emit the tip as turn-output and marks turn-finished silent", async () => {
+  const { runner, captured } = makeRunner(async () => ({ silent: true } as { text?: string; silent?: boolean }));
+  const result = await runner.run(REQ as never, new AbortController().signal);
+  expect(result.ok).toBe(true);
+  expect(captured.filter((e) => e.type === "turn-output")).toHaveLength(0);
+  const fin = captured.find((e) => e.type === "turn-finished") as Extract<
+    ControlEvent,
+    { type: "turn-finished" }
+  >;
+  expect(fin.ok).toBe(true);
+  expect(fin.silent).toBe(true);
+  expect(fin.text).toBeUndefined();
+});
+
+test("a silent overflow response keeps already-streamed agent chunks on turn-finished", async () => {
+  const { runner, captured } = makeRunner(async (opts) => {
+    await opts.reply("partial agent output");
+    return { silent: true } as { text?: string; silent?: boolean };
+  });
+  await runner.run(REQ as never, new AbortController().signal);
+  const chunks = captured.filter((e) => e.type === "turn-output");
+  expect(chunks).toHaveLength(1);
+  const fin = captured.find((e) => e.type === "turn-finished") as Extract<
+    ControlEvent,
+    { type: "turn-finished" }
+  >;
+  expect(fin.silent).toBe(true);
+  expect(fin.text).toBe("partial agent output");
+});
+
 test("turn-finished.text accumulates ALL emitted chunks when response.text is missing", async () => {
   const { runner, captured } = makeRunner(async (opts) => {
     await opts.reply("part 1");

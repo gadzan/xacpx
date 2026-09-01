@@ -461,7 +461,7 @@ export function validControlEvent(e: unknown): boolean {
       // recovery receipt) are validated so a buggy connector cannot slip a non-string
       // into SQLite and trigger a disconnect loop.
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean"
-        && optStr(c.text) && optStr(c.recoveryId) && optStr(c.errorMessage) && optBool(c.cancelled)
+        && optStr(c.text) && optStr(c.recoveryId) && optStr(c.errorMessage) && optBool(c.cancelled) && optBool(c.silent)
         && validPeerTurnOrigin(c.peerOrigin);
     case "scheduled-changed":
       return typeof c.chatKey === "string";
@@ -517,7 +517,7 @@ export function validControlEvent(e: unknown): boolean {
   }
 }
 
-const NOTICE_KINDS = new Set(["task-completion", "task-progress", "coordinator-message"]);
+const NOTICE_KINDS = new Set(["task-completion", "task-progress", "coordinator-message", "queue-overflow"]);
 
 /** Deep-validate an `instance.state.sync` payload with the same posture as
  *  `validControlEvent`: discriminant-free, but every field the hub will read must

@@ -10,6 +10,8 @@ import type { PerfSpan } from "../perf/perf-tracer";
 
 export interface RouterResponse {
   text?: string;
+  /** When true, channels must not deliver `text` (including an empty bubble). */
+  silent?: boolean;
 }
 
 export interface PromptRouteMetadata {

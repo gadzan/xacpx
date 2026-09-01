@@ -1,4 +1,10 @@
 # Changelog
+## [Unreleased]
+
+### Changed
+
+- Queue-overflow tips are toast-only on relay-web (3s auto-dismiss) and silent on every other channel. Confirmed vs unconfirmed copy is unchanged; detection/cleanup/logging are unchanged. The tip is not persisted in hub message history.
+
 ## [0.24.0] - 2026-09-01
 
 ### Added

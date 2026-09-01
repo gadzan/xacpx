@@ -95,6 +95,12 @@ export interface ChatResponse {
    * the same turn. May contain markdown and will be normalized before send.
    */
   text?: string;
+  /**
+   * When true, the channel must not post `text` as a chat/agent message
+   * (including a blank bubble). Used for queue-overflow tips that only
+   * surface as a relay-web toast.
+   */
+  silent?: boolean;
   /** Reply media file(s). */
   media?: OutboundChannelMedia | OutboundChannelMedia[];
 }

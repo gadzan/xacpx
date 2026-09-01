@@ -261,6 +261,8 @@ export type ControlEventDto = {
     errorMessage?: string;
     cancelled?: boolean;
     text?: string;
+    /** Skip persisting an empty out row (queue-overflow tips are toast-only). */
+    silent?: boolean;
     recoveryId?: string;
     peerOrigin?: PeerTurnOriginDto;
 } | {

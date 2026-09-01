@@ -2,7 +2,7 @@ import { expect, test, beforeEach } from "bun:test";
 import { handleCancel, handlePrompt, handlePromptWithSession, handleReplyModeShow, handleSessionUse, handleSessions } from "../../../../src/commands/handlers/session-handler";
 import { setLocale, t } from "../../../../src/i18n";
 import { AcpxQueueOverflowError } from "../../../../src/transport/acpx-queue-overflow";
-import { renderTransportError, tryRecoverMissingSession } from "../../../../src/commands/handlers/session-recovery-handler";
+import { renderTransportError, tryRecoverMissingSession, queueOverflowTipText } from "../../../../src/commands/handlers/session-recovery-handler";
 import type { ResolvedSession } from "../../../../src/transport/types";
 import type { SessionHandlerContext } from "../../../../src/commands/handlers/session-handler";
 import type { SessionRecoveryOps } from "../../../../src/commands/router-types";
@@ -420,6 +420,7 @@ test("handlePromptWithSession downgrades confirmed overflow to soft ready warnin
     ownerTerminationSucceeded: true,
     diagnostic: "ok",
   });
+  const tips: Array<{ chatKey: string; sessionAlias: string; confirmed: boolean; text: string }> = [];
   const context = {
     sessions: { setArchived: async () => {} },
     lifecycle: { checkTransportSession: async () => true, ensureTransportSession: async () => {} },
@@ -427,6 +428,7 @@ test("handlePromptWithSession downgrades confirmed overflow to soft ready warnin
       promptTransportSession: async () => { throw error; },
     },
     recovery: { tryRecoverMissingSession: (s: unknown, e: unknown) => tryRecoverMissingSession({} as unknown as SessionRecoveryOps, s as unknown as ResolvedSession, e), renderTransportError },
+    onQueueOverflowTip: (info: { chatKey: string; sessionAlias: string; confirmed: boolean; text: string }) => { tips.push(info); },
     config: undefined as unknown as AppConfig,
     logger: {
       info: async () => {},
@@ -438,7 +440,15 @@ test("handlePromptWithSession downgrades confirmed overflow to soft ready warnin
     orchestration: undefined,
   } as unknown as SessionHandlerContext;
   const result = await handlePromptWithSession(context, session, "weixin:a:u", "hi");
-  expect(result.text).toBe([t().recovery.queueOverflowWarning, t().recovery.queueOverflowHint].join("\n"));
+  expect(result.silent).toBe(true);
+  expect(result.text).toBeUndefined();
+  expect(tips).toEqual([{
+    chatKey: "weixin:a:u",
+    sessionAlias: "review",
+    confirmed: true,
+    text: queueOverflowTipText(true),
+  }]);
+  expect(tips[0]?.text).toBe("部分回复因过长已收束，可直接继续。");
   expect(warns.some((w) => w.event === "transport.queue_overflow_downgraded" && (w.ctx as unknown as { confirmed?: boolean })?.confirmed === true)).toBe(true);
 });
 
@@ -454,6 +464,7 @@ test("handlePromptWithSession downgrades unconfirmed overflow to soft unconfirme
     replyMode: undefined,
   } as unknown as ResolvedSession;
   const error = new AcpxQueueOverflowError("cleanup failed");
+  const tips: Array<{ confirmed: boolean; text: string }> = [];
   const context = {
     sessions: { setArchived: async () => {} },
     lifecycle: { checkTransportSession: async () => true, ensureTransportSession: async () => {} },
@@ -461,6 +472,7 @@ test("handlePromptWithSession downgrades unconfirmed overflow to soft unconfirme
       promptTransportSession: async () => { throw error; },
     },
     recovery: { tryRecoverMissingSession: (s: unknown, e: unknown) => tryRecoverMissingSession({} as unknown as SessionRecoveryOps, s as unknown as ResolvedSession, e), renderTransportError },
+    onQueueOverflowTip: (info: { chatKey: string; sessionAlias: string; confirmed: boolean; text: string }) => { tips.push(info); },
     config: undefined as unknown as AppConfig,
     logger: {
       info: async () => {},
@@ -472,7 +484,15 @@ test("handlePromptWithSession downgrades unconfirmed overflow to soft unconfirme
     orchestration: undefined,
   } as unknown as SessionHandlerContext;
   const result = await handlePromptWithSession(context, session, "weixin:a:u", "hi");
-  expect(result.text).toBe([t().recovery.queueOverflowWarning, t().recovery.queueOverflowUnconfirmedHint].join("\n"));
+  expect(result.silent).toBe(true);
+  expect(result.text).toBeUndefined();
+  expect(tips).toEqual([{
+    chatKey: "weixin:a:u",
+    sessionAlias: "review",
+    confirmed: false,
+    text: queueOverflowTipText(false),
+  }]);
+  expect(tips[0]?.text).toBe("输出过长且清理未确认，请先发 /cancel 再继续。");
   expect(warns.some((w) => w.event === "transport.queue_overflow_unconfirmed" && (w.ctx as unknown as { confirmed?: boolean })?.confirmed === false)).toBe(true);
 });
 
@@ -561,5 +581,6 @@ test("handlePromptWithSession does not retry overflow with diagnostic containing
   const result = await handlePromptWithSession(context, session, "weixin:a:u", "hi");
   expect(promptCalls).toBe(1);
   expect(setAgentCommandCalls).toBe(0);
-  expect(result.text).toBe([t().recovery.queueOverflowWarning, t().recovery.queueOverflowHint].join("\n"));
+  expect(result.silent).toBe(true);
+  expect(result.text).toBeUndefined();
 });
