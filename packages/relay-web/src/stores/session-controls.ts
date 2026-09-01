@@ -389,8 +389,21 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     return activeContext === context || effortActiveContext === context;
   }
 
+  async function waitForPendingControlMutations(context: string): Promise<void> {
+    const pending = [
+      pendingModelSets.get(context),
+      pendingEffortSets.get(context),
+    ].filter((promise): promise is Promise<void> => promise !== undefined);
+    if (pending.length > 0) await Promise.all(pending);
+  }
+
   async function refreshLiveControls(instanceId: string, alias: string): Promise<void> {
     const context = contextKey(instanceId, alias);
+    if (!isSelectedContext(context)) return;
+    // A passive readback must not take revision ownership away from a user mutation.
+    // Let setModel/setEffort finish (including rollback + error toast) first, then
+    // re-check selection and only now let loadModel/loadEffort allocate fresh revisions.
+    await waitForPendingControlMutations(context);
     if (!isSelectedContext(context)) return;
     await Promise.all([
       loadModel(instanceId, alias),
@@ -401,10 +414,25 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
   /**
    * Turn lifecycle bridge for controls that ACP can mutate while a prompt is running.
    * We deliberately refresh once on the first live activity (not once per token/chunk),
-   * then once on finish. This makes model/effort/catalog changes visible promptly while
-   * keeping management RPC traffic bounded at two snapshots per turn.
+   * then once on finish. A reconnect state-snapshot with an active selected turn also
+   * refreshes immediately because turn-started may have been missed while offline.
    */
   async function applyLiveEvent(event: WebServerEvent): Promise<void> {
+    if (event.kind === "state-snapshot") {
+      const activeTurn = event.turns.find((turn) =>
+        isSelectedContext(contextKey(event.instanceId, turn.sessionAlias)),
+      );
+      if (!activeTurn) {
+        if (awaitingFirstActivityFor?.startsWith(`${event.instanceId}\u0000`)) {
+          awaitingFirstActivityFor = null;
+        }
+        return;
+      }
+      awaitingFirstActivityFor = null;
+      await refreshLiveControls(event.instanceId, activeTurn.sessionAlias);
+      return;
+    }
+
     if (event.kind !== "control-event") return;
     const e = event.event;
     if (!("sessionAlias" in e) || typeof e.sessionAlias !== "string") return;
