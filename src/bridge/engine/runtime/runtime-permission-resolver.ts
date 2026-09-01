@@ -41,12 +41,15 @@ function globToRegExp(pattern: string): RegExp {
 }
 function matchesRule(text: string, pattern: string): boolean {
   if (pattern === "*") return true;
-  // Try glob first, then exact, then substring fallback for backward compat
   try {
     const re = globToRegExp(pattern);
     if (re.test(text)) return true;
   } catch {}
-  return text === pattern || text.includes(pattern);
+  if (text === pattern) return true;
+  // For tool name matching: pattern "read" should match text "read {}" (tool name + args) but not "bread"
+  const toolName = text.split(" ")[0] ?? "";
+  if (toolName === pattern) return true;
+  return false;
 }
 
 function requestTextForMatching(req: RuntimePermissionRequest): string {
@@ -138,11 +141,7 @@ export class RuntimePermissionResolver {
 export function configFromRaw(generation: number, raw: { permissionMode: string; nonInteractivePermissions?: string; permissionPolicy?: unknown }): RuntimePermissionConfig {
   let policy: XacpxPermissionPolicy | undefined;
   if (raw.permissionPolicy !== undefined) {
-    try {
-      policy = parseXacpxPermissionPolicy(raw.permissionPolicy);
-    } catch {
-      policy = undefined;
-    }
+    policy = parseXacpxPermissionPolicy(raw.permissionPolicy);
   }
   const mode = (raw.permissionMode === "approve-all" || raw.permissionMode === "approve-reads" || raw.permissionMode === "deny-all") ? raw.permissionMode : "deny-all";
   const nonInt = raw.nonInteractivePermissions === "fail" ? "fail" : "deny";

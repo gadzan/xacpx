@@ -583,6 +583,7 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   private kickDrain(input: EngineSessionInput): Promise<void> {
+    if (this.shuttingDown) return Promise.resolve();
     const key = this.workerKey(input);
     const existing = this.draining.get(key);
     if (existing) return existing;
@@ -597,6 +598,7 @@ export class RuntimeEngine implements BridgeEngine {
     const key = this.workerKey(input);
     const store = this.getQueueStore();
     while (true) {
+      if (this.shuttingDown) return;
       if (this.deleting.has(key)) return;
       if (this.activeTurns.has(key)) return;
       let head;
@@ -614,14 +616,12 @@ export class RuntimeEngine implements BridgeEngine {
         }
         return;
       }
-      // Ensure catalog is fresh for worker identity (agent/cwd/name)
-      this.sessionCatalog.set(key, input);
-      // Mark active turn so concurrent prompt/inject queue correctly and TTL does not race
-      this.activeTurns.add(key);
+      // Use authoritative catalog (latest inject) rather than stale drain input param
+      const catalogInput = this.sessionCatalog.get(key) ?? input;
       let turnError: unknown;
       let isTerminal = false;
       try {
-        await this.executeRuntimeTurn(input, head.text, {});
+        await this.executeRuntimeTurn(catalogInput, head.text, {});
         isTerminal = true;
       } catch (err) {
         turnError = err;
@@ -1012,9 +1012,25 @@ export class RuntimeEngine implements BridgeEngine {
       mcpCoordinatorSession: (input as unknown as EngineSessionInput).mcpCoordinatorSession,
       mcpSourceHandle: (input as unknown as EngineSessionInput).mcpSourceHandle,
     } as EngineSessionInput);
+    // PR8: stale MCP check for inject — never execute B on A worker
+    {
+      const lastMcp = this.lastMcpIdentity.get(key);
+      const reqMcp = { mcpCoordinatorSession: (input as unknown as EngineSessionInput).mcpCoordinatorSession, mcpSourceHandle: (input as unknown as EngineSessionInput).mcpSourceHandle };
+      const isStale = !!lastMcp && ((lastMcp.mcpCoordinatorSession ?? null) !== (reqMcp.mcpCoordinatorSession ?? null) || (lastMcp.mcpSourceHandle ?? null) !== (reqMcp.mcpSourceHandle ?? null));
+      if (isStale) {
+        const cl = this.manager?.get(key);
+        const isActive = this.activeTurns.has(key) || this.draining.has(key) || cl?.lifecycle === "busy" || !!cl?.hasInFlight;
+        if (isActive) {
+          this.staleAfterTurn.add(key);
+        } else if (cl) {
+          await cl.shutdown().catch((e) => { throw toTeardownError(key, e); });
+          if (cl.lifecycle === "stopped") await this.manager?.release(key, cl).catch(() => {});
+          this.lastMcpIdentity.delete(key);
+        }
+      }
+    }
     const catalogInput = this.sessionCatalog.get(key)!;
     const store = this.getQueueStore();
-    // Enqueue inside store lock with deleting/coolPending check atomically (no race with delete)
     const receipt = await store.enqueue(key, { messageId: input.messageId, text: input.text, mode }, {
       isDeleting: (k) => this.deleting.has(k),
       isCoolPending: (k) => this.coolPending.has(k),
