@@ -783,15 +783,19 @@ test.serial("P1-12b: residual discharged fence does NOT block delete (proven gon
     const recId = await (engine as any).resolveRecordId(testInput, undefined);
     expect(recId).toBeUndefined();
     // Fence may be absent or still discharged — retired best-effort, but must not be admitted/owned
+    let after: string[] = [];
     try {
-      const after = await readdir(fenceDir);
-      const stillPresent = after.filter((f: string) => f.includes(encodeURIComponent(testInput.logicalSessionId)));
-      if (stillPresent.length > 0) {
-        const content = await (await import("node:fs/promises")).readFile(join(fenceDir, stillPresent[0]!), "utf8");
-        const parsed = JSON.parse(content);
-        expect(parsed.phase).toBe("discharged");
-      }
-    } catch {}
+      after = await readdir(fenceDir);
+    } catch (err: any) {
+      if (err?.code !== "ENOENT" && err?.code !== "ENOTDIR") throw err;
+      after = [];
+    }
+    const stillPresent = after.filter((f: string) => f.includes(encodeURIComponent(testInput.logicalSessionId)));
+    if (stillPresent.length > 0) {
+      const content = await (await import("node:fs/promises")).readFile(join(fenceDir, stillPresent[0]!), "utf8");
+      const parsed = JSON.parse(content);
+      expect(parsed.phase).toBe("discharged");
+    }
   } finally {
     await engine.shutdown().catch(()=>{});
     await rm(dir, { recursive: true, force: true });
