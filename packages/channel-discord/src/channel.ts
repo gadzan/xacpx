@@ -1046,6 +1046,7 @@ export class DiscordChannel implements MessageChannelRuntime {
         if (!toolName) return;
         if (event.toolCallId && toolRenderState.emittedToolCallIds.has(event.toolCallId)) return;
         if (event.toolCallId) toolRenderState.emittedToolCallIds.add(event.toolCallId);
+        const summary = event.summary && event.summary !== toolName ? event.summary : "";
         const display = summary ? `${toolName}: ${summary}` : toolName;
         const truncated = display.length > 60 ? `${display.slice(0, 57)}…` : display;
         const emojiMap: Record<string, string> = { read: "📖", search: "🔍", execute: "🔧", edit: "✏️", think: "💭", other: "🔧" };
