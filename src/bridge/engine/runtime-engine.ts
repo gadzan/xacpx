@@ -702,8 +702,11 @@ export class RuntimeEngine implements BridgeEngine {
           }
           await cl.shutdown().catch((e) => { throw toTeardownError(key, e); });
           if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _epochAtLoopTop) {
-            // Even on abort, ensure fence is retired if worker did reach stopped
-            if (cl.lifecycle === "stopped") await this.manager?.release(key, cl).catch((e) => { throw toTeardownError(key, e); });
+            if (cl.lifecycle === "stopped") {
+              await this.manager?.release(key, cl).catch((e) => { throw toTeardownError(key, e); });
+            } else {
+              throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `stale MCP worker for "${key}" did not reach stopped after shutdown`);
+            }
             return;
           }
           if (cl.lifecycle === "stopped") await this.manager?.release(key, cl).catch((e) => { throw toTeardownError(key, e); });
