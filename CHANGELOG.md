@@ -1,4 +1,28 @@
 # Changelog
+## [0.24.0-beta.0] - 2026-09-01
+
+### Added
+
+- Queue overflow soft warning (`ACPX_QUEUE_MESSAGE_OVERFLOW`): downgrade overflow to a typed `AcpxQueueOverflowError` carrying `queueOverflowCleanup` across the bridge; `session-recovery-handler` now soft-downgrades only typed overflows — confirmed (`ownerTerminationSucceeded`) returns `queueOverflowWarning`/`queueOverflowHint` (ready), unconfirmed returns `queueOverflowUnconfirmedHint` + `/cancel` hint; raw buffer strings stay hard error. `session-handler` logs `transport.queue_overflow_downgraded` vs `transport.queue_overflow_unconfirmed` (warn) and `acpx-cli` cleans up overflowed owners via `cleanupOverflowedOwner` (cancel + `readSessionRecord` + `terminateAcpxQueueOwnerVerified`).
+- Discord channel plugin plumbing (core side): register `knownPlugins` entry, `i18n` `pluginChannelDiscord`, expose `ActiveConsumerLockError`/`coreHomeDir` in `plugin-api`, bump `minXacpxVersion` to `0.23.0`, and add `build:channel-discord` / `clean:channel-discord` scripts plus `discord.js` dep (co-affects `bun.lock`).
+
+### Fixed
+
+- Transport `acpx-queue-overflow` now matches `ACPX_QUEUE_MESSAGE_OVERFLOW` code and broadened `ACPX_` patterns with `\b` boundaries and exact code match, avoiding `QUEUE_MESSAGE_OVERFLOWED`/`NOT_..._RETRY` false positives.
+- `src/daemon/runtime-consumer-lock.ts` hardens PID reuse probe for per-process consumer locks; `src/cli.ts` and `docs/*` updated for the new plugin and lock wiring.
+
+## [channel-discord 0.8.0-beta.0] - 2026-09-01
+
+### Added
+
+- Discord channel plugin (`@ganglion/xacpx-channel-discord`) per `docs/superpowers/specs/2026-08-28-discord-channel-plugin-design-from-hy4.md`: Discord Gateway via `discord.js` v14 with 5.5s stagger, `chatKey` `discord:<acct>:dm|g|t:<id>` (threads `t:` independent, no binding map), preview-stream shows progress only (final answer always `MESSAGE_CREATE`), token presence-only validation (diagnostics warn only), native `sessionListFormat` cards with `tableMode` `code/bullets/off`, `OutboundQuota` onInbound only, per-process `createConsumerLock` + hardened PID reuse probe, streaming `getReader` media with configurable `maxBytes` (default 8MiB), global `allowed_mentions {parse:[]}` and outbound whitelist, CJK only in `zh` catalog.
+
+## [relay 0.14.1-beta.1] - 2026-09-01
+
+### Fixed
+
+- relay-web: own iOS IME 229 input via keyup/timer (PR #318, #5836) — port xterm.js #5836 pending-229 owner, converge on `keyup`/`timer` with precise `DEL`+`insert` (including delete+insert and same-length replacement), preventing double-send with stock `@xterm/xterm@6.0.0` textarea fallback; backport xterm.js #5614 `_inputEvent` gate onto the adapter (idle `CompositionHelper` only) and throw if `_core`/`_inputEvent` surface is missing, with prod construct → patch → open order coverage.
+
 ## [relay 0.14.1-beta.0] - 2026-08-27
 
 ### Added
