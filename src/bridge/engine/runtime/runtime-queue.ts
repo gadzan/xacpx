@@ -12,6 +12,8 @@ export interface RuntimePendingMessage {
   mode: "queue" | "auto";
   mcpCoordinatorSession?: string;
   mcpSourceHandle?: string;
+  /** Discriminator for per-head MCP identity: true = identity known (explicit none when missing), undefined/false = legacy unknown must fail closed. */
+  mcpIdentityKnown?: boolean;
 }
 
 export interface RuntimeQueueRecord {
@@ -49,6 +51,7 @@ function validateRecord(parsed: unknown, expectedLogicalSessionId?: string): Run
     if (it.mode !== "queue" && it.mode !== "auto") throw new Error(`invalid mode ${String(it.mode)}`);
     if (it.mcpCoordinatorSession !== undefined && typeof it.mcpCoordinatorSession !== "string") throw new Error("invalid mcpCoordinatorSession");
     if (it.mcpSourceHandle !== undefined && typeof it.mcpSourceHandle !== "string") throw new Error("invalid mcpSourceHandle");
+    if (it.mcpIdentityKnown !== undefined && typeof it.mcpIdentityKnown !== "boolean") throw new Error("invalid mcpIdentityKnown");
   }
   return parsed as RuntimeQueueRecord;
 }
@@ -162,6 +165,7 @@ export class RuntimeQueueStore {
         mode: input.mode,
         ...(input.mcpCoordinatorSession !== undefined ? { mcpCoordinatorSession: input.mcpCoordinatorSession } : {}),
         ...(input.mcpSourceHandle !== undefined ? { mcpSourceHandle: input.mcpSourceHandle } : {}),
+        mcpIdentityKnown: true,
       };
       const record: RuntimeQueueRecord = {
         schema: "xacpx.runtime-queue.v2",

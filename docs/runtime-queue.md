@@ -3,7 +3,7 @@
 `src/bridge/engine/runtime/runtime-queue.ts` — xacpx-owned durable FIFO for Runtime-bound sessions.
 
 - **Location:** `~/.xacpx/runtime/runtime-queue/<logicalSessionId>.json` (via `coreHomeDir(homedir())/runtime`), not `~/.acpx`.
-- **Schema:** `xacpx.runtime-queue.v2` with `logicalSessionId` and `items: RuntimePendingMessage[]` (`messageId`, `text`, `acceptedAt`, `mode: queue|auto`, optional `mcpCoordinatorSession`/`mcpSourceHandle` per head). `v1` is legacy (no per-head discriminator) — readable, but identity-unknown heads fail closed on drain (`RUNTIME_INIT_FAILED`, keep head; migrate or clear queue); new writes are `v2` with explicit per-head fields (absence = intentional none).
+- **Schema:** `xacpx.runtime-queue.v2` with `logicalSessionId` and `items: RuntimePendingMessage[]` (`messageId`, `text`, `acceptedAt`, `mode: queue|auto`, optional `mcpCoordinatorSession`/`mcpSourceHandle` per head + `mcpIdentityKnown` discriminator). `v1` is legacy (no per-head discriminator) — readable, but any head with `mcpIdentityKnown !== true` (legacy `v1` or pre-discriminator `v2` mixed record after bump) fails closed on drain (`RUNTIME_INIT_FAILED`, keep head; migrate or clear queue); new `v2` writes set `mcpIdentityKnown:true` (absence = intentional none).
 - **Atomicity:** `write tmp → rename → readback validate`; corrupt/unreadable → `RUNTIME_INIT_FAILED` fail-closed, never empty.
 - **Idempotency:** same `messageId`+same `text` → idempotent queued receipt; same `messageId`+different `text` → `RUNTIME_QUEUE_CONFLICT` fail-closed.
 - **Limit:** `RUNTIME_QUEUE_MAX_DEPTH=20` → `RUNTIME_QUEUE_OVERFLOW`.

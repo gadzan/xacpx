@@ -136,6 +136,47 @@ test("legacy v1 queue head without per-head MCP fails closed (identity unknown, 
   await engine.shutdown().catch(() => {});
   await rm(dir, { recursive: true, force: true });
 }, 15_000);
+test("upgraded v1->v2 record still fail-closes legacy first head, B not executed as none", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "legacy-up-"));
+  const stateDir = join(dir, "state", "sessions");
+  await mkdir(stateDir, { recursive: true });
+  const queueDir = join(dir, "queue");
+  await mkdir(queueDir, { recursive: true });
+  const fenceDir = join(dir, "fences");
+  const logPath = join(dir, "prompt.log");
+  const workerEntry = join(dir, "w.mjs");
+  await writeFile(workerEntry, [
+    `let b=''; let coord='none'; const fs=require('node:fs'); const logPath=${JSON.stringify(join(dir, "prompt.log"))};`,
+    "process.stdin.on('data',d=>{b+=d.toString(); let i; while((i=b.indexOf('\\n'))>=0){const l=b.slice(0,i); b=b.slice(i+1); if(!l)continue; try{const m=JSON.parse(l);",
+    " if(m.method==='ensure'){ coord=m.params.mcpCoordinatorSession||'none'; try{fs.appendFileSync(logPath, `ensure:${coord}\\n`);}catch{}; process.stdout.write(JSON.stringify({id:m.id,ok:true,result:{ready:true,sessionKey:m.params.sessionKey,acpxRecordId:'rec'}})+'\\n');}",
+    " else if(m.method==='prompt'){ const out=`coord=${coord};text=${m.params.text}`; try{fs.appendFileSync(logPath, `prompt:${out}\\n`);}catch{}; process.stdout.write(JSON.stringify({id:m.id,ok:true,result:{result:{status:'completed'},finalText:out}})+'\\n'); }",
+    " else { process.stdout.write(JSON.stringify({id:m.id,ok:true,result:{}})+'\\n'); if(m.method==='shutdown')process.exit(0);}",
+    "}catch{}}});",
+  ].join("\n"));
+  const logicalId = "legacy-up-1";
+  const v1 = { schema: "xacpx.runtime-queue.v1", logicalSessionId: logicalId, items: [{ messageId: "mLegacy", text: "legacyA", acceptedAt: new Date().toISOString(), mode: "queue" }] };
+  await writeFile(join(queueDir, `${encodeURIComponent(logicalId)}.json`), JSON.stringify(v1, null, 2), "utf8");
+  const engine = new RuntimeEngine({ workerEntryPath: workerEntry, permissionMode: "approve-all", stateDir, queueDir, fenceDir, idleTtlMs: 200 });
+  // Enqueue B via engine (will bump record to v2 but keep legacy head without mcpIdentityKnown)
+  await engine.injectMessage({ agent: "codex", cwd: "/repo", name: "up-sess", logicalSessionId: logicalId, mcpCoordinatorSession: "coord-B", mcpSourceHandle: "src-B", text: "B", mode: "queue", messageId: "mB" });
+  const recAfterEnqueue = await engine.getQueueStore().load(logicalId);
+  expect(recAfterEnqueue?.schema).toBe("xacpx.runtime-queue.v2");
+  expect(recAfterEnqueue?.items.length).toBe(2);
+  expect(recAfterEnqueue?.items[0].mcpIdentityKnown).toBeUndefined();
+  expect(recAfterEnqueue?.items[1].mcpIdentityKnown).toBe(true);
+  // Try to drain — first head is legacy unknown, must fail closed, B must NOT be executed
+  const catalogInput = { agent: "codex", cwd: "/repo", name: "up-sess", logicalSessionId: logicalId, mcpCoordinatorSession: "coord-B", mcpSourceHandle: "src-B" };
+  await (engine as unknown as { kickDrain: (i: unknown) => Promise<void> }).kickDrain(catalogInput).catch(() => {});
+  await new Promise(r => setTimeout(r, 500));
+  expect(await engine.getQueueStore().hasPending(logicalId)).toBe(true);
+  const recStill = await engine.getQueueStore().load(logicalId);
+  expect(recStill?.items[0].messageId).toBe("mLegacy");
+  const log = await readFile(logPath, "utf8").catch(() => "");
+  expect(log).not.toContain("legacyA");
+  expect(log).not.toContain("prompt:coord=coord-B;text=B");
+  await engine.shutdown().catch(() => {});
+  await rm(dir, { recursive: true, force: true });
+}, 15_000);
 test("queue-only A->B->C leaves no staleAfterTurn; next direct prompt with C identity reuses worker", async () => {
   const dir = await mkdtemp(join(tmpdir(), "stale-leak-"));
   const stateDir = join(dir, "state", "sessions");

@@ -155,6 +155,7 @@ test("v2 persists per-head MCP identity", async () => {
     expect(rec?.schema).toBe("xacpx.runtime-queue.v2");
     expect(rec?.items[0].mcpCoordinatorSession).toBe("coord-X");
     expect(rec?.items[0].mcpSourceHandle).toBe("h1");
+    expect(rec?.items[0].mcpIdentityKnown).toBe(true);
     // also verify durable file contains v2
     const raw = await readFile(join(dir, `${encodeURIComponent("sess")}.json`), "utf8");
     const parsed = JSON.parse(raw) as { schema: string };
@@ -169,12 +170,15 @@ test("legacy v1 journal is readable and new enqueue bumps to v2", async () => {
     const loaded = await store.load("sess");
     expect(loaded?.schema).toBe("xacpx.runtime-queue.v1");
     expect(loaded?.items[0].mcpCoordinatorSession).toBeUndefined();
+    expect(loaded?.items[0].mcpIdentityKnown).toBeUndefined();
     // New enqueue should preserve legacy item and bump file to v2
     await store.enqueue("sess", { messageId: "m2", text: "new", mode: "queue", mcpCoordinatorSession: "coord-Y" });
     const after = await store.load("sess");
     expect(after?.schema).toBe("xacpx.runtime-queue.v2");
     expect(after?.items.length).toBe(2);
     expect(after?.items[0].text).toBe("legacy");
+    expect(after?.items[0].mcpIdentityKnown).toBeUndefined();
     expect(after?.items[1].mcpCoordinatorSession).toBe("coord-Y");
+    expect(after?.items[1].mcpIdentityKnown).toBe(true);
   });
 });

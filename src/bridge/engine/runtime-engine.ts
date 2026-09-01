@@ -620,15 +620,14 @@ export class RuntimeEngine implements BridgeEngine {
         return;
       }
       // Per-head MCP identity: each queued message carries its own launch identity.
-      // v1 journals are legacy (no per-head discriminator) — missing MCP means
+      // Legacy items lack per-head discriminator (mcpIdentityKnown) — missing means
       // "unknown" and MUST fail closed rather than silently executing as "none"
-      // or guessing the catalog's current MCP. v2 journals carry explicit
-      // per-head fields (absence = intentional none), so they are safe to drain.
+      // or guessing the catalog's current MCP. v2 items with mcpIdentityKnown=true
+      // carry explicit per-head fields (absence = intentional none), so they are safe.
       const baseCatalog = this.sessionCatalog.get(key) ?? input;
-      const isLegacy = rec?.schema === "xacpx.runtime-queue.v1";
-      if (isLegacy) {
+      if (head.mcpIdentityKnown !== true) {
         // Keep head for manual migration/clear; surface as non-terminal so drain does not dequeue.
-        throw new RuntimeError("RUNTIME_INIT_FAILED", `legacy queue journal v1 for "${key}" contains identity-unknown head "${head.messageId}"; migrate to v2 or clear queue`);
+        throw new RuntimeError("RUNTIME_INIT_FAILED", `queue journal for "${key}" contains identity-unknown head "${head.messageId}" (legacy v1 or pre-discriminator); migrate or clear queue`);
       }
       const headMcp = { mcpCoordinatorSession: head.mcpCoordinatorSession, mcpSourceHandle: head.mcpSourceHandle };
       const catalogInput: EngineSessionInput = {
