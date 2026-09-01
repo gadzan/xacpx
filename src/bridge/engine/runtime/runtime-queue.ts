@@ -127,8 +127,8 @@ export class RuntimeQueueStore {
       const verify = await readFile(target, "utf8");
       const parsed = JSON.parse(verify) as RuntimeQueueRecord;
       validateRecord(parsed, record.logicalSessionId);
-      if (parsed.items.length !== record.items.length) {
-        throw new Error("queue verify length mismatch");
+      if (parsed.items.length !== record.items.length || !!parsed.suspended !== !!record.suspended) {
+        throw new Error(`queue verify mismatch: items ${parsed.items.length} vs ${record.items.length} or suspended ${!!parsed.suspended} vs ${!!record.suspended}`);
       }
     } catch (err) {
       try { await unlink(tmp); } catch {}

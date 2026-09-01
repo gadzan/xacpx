@@ -247,11 +247,13 @@ test.serial("P1-4: delete pending lease waiter does not ghost-recreate session (
   try {
     // Long A owns lease
     const pA = engine.prompt({ ...testInput, text: "longA" });
+    pA.catch(() => {});
     // B waits for lease
     const pB = engine.prompt({ ...testInput, text: "waiterB" });
+    pB.catch(() => {});
     // Give A time to acquire and start, B to block on lease
     const { promise: _p50, resolve: _r50 } = Promise.withResolvers<void>(); setTimeout(_r50, 50); await _p50;
-    // Delete while B is waiting on lease
+    // Delete while B is waiting on lease — delete will wait for active turn to settle (A completes, B rejected via deleteGenerations)
     await engine.deleteSession(testInput as unknown as never);
     const hasPendingAfterDelete = await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId).catch(() => false);
     expect(hasPendingAfterDelete).toBe(false);
