@@ -1,4 +1,10 @@
 # Changelog
+## [channel-discord 0.8.0-beta.3] - 2026-09-01
+
+### Fixed
+
+- Discord: map `/ss` interaction options to flag syntax (PR #323) — `discord-client.ts` now reconstructs `/ss` from named options (`agent`, `workspace`, `new`) as `/ss [new] <agent> --ws <workspace>` instead of naive `join`, fixes `Invalid command format` when using autocomplete; handles `/use` and `/cancel` alias mapping; `options.data` now typed as `{name,value}` and preserves `ephemeral` ack with `allowedMentions`.
+
 ## [channel-discord 0.8.0-beta.2] - 2026-09-01
 
 ### Fixed
