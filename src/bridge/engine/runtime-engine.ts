@@ -420,6 +420,8 @@ export class RuntimeEngine implements BridgeEngine {
   /** Authoritative session catalog for bridge restart recovery (logicalSessionId -> input). */
   private sessionCatalog = new Map<string, EngineSessionInput>();
   private readonly lastMcpIdentity = new Map<string, { mcpCoordinatorSession?: string; mcpSourceHandle?: string }>();
+  private readonly turnLeases = new Map<string, Promise<void>>();
+  private readonly queueSuspended = new Set<string>();
   private readonly staleAfterTurn = new Set<string>();
 
   constructor(private readonly options: RuntimeEngineOptions) {
@@ -588,6 +590,7 @@ export class RuntimeEngine implements BridgeEngine {
   private kickDrain(input: EngineSessionInput): Promise<void> {
     if (this.shuttingDown) return Promise.resolve();
     const key = this.workerKey(input);
+    if (this.queueSuspended.has(key)) return Promise.resolve();
     const existing = this.draining.get(key);
     if (existing) return existing;
     const p = this.drainLoop(input).finally(() => {
@@ -599,6 +602,7 @@ export class RuntimeEngine implements BridgeEngine {
 
   private async drainLoop(input: EngineSessionInput): Promise<void> {
     const key = this.workerKey(input);
+    if (this.queueSuspended.has(key)) return;
     const store = this.getQueueStore();
     while (true) {
       if (this.shuttingDown) return;
@@ -664,6 +668,7 @@ export class RuntimeEngine implements BridgeEngine {
         }
       }
       this.activeTurns.add(key);
+      const releaseTurn = await this.acquireTurnLease(key);
       let turnError: unknown;
       let isTerminal = false;
       try {
@@ -684,7 +689,11 @@ export class RuntimeEngine implements BridgeEngine {
           isTerminal = false;
         }
       } finally {
-        this.activeTurns.delete(key);
+        try {
+          this.activeTurns.delete(key);
+        } finally {
+          releaseTurn();
+        }
       }
       if (!isTerminal) {
         if (this.shuttingDown) return;
@@ -1037,15 +1046,19 @@ export class RuntimeEngine implements BridgeEngine {
     }
     const key = this.workerKey(input);
     this.sessionCatalog.set(key, input);
+    // Archive suspend: a direct prompt resumes a suspended durable queue (first post-archive use).
+    this.queueSuspended.delete(key);
     await this.checkMcpStaleAndRotate(input, true);
     // Mark the turn active IMMEDIATELY so preflight on concurrent policy
     // updates detects the in-flight turn and fails closed (plan §32).
     this.activeTurns.add(key);
+    const releaseTurn = await this.acquireTurnLease(key);
     try {
       const result = await this.executeRuntimeTurn(input, input.text, { onEvent, media: input.media, toolEventMode: input.toolEventMode, toolEvents: input.toolEvents });
       return result;
     } finally {
-      this.activeTurns.delete(key);
+      try {
+        this.activeTurns.delete(key);
       // PR8: retire stale MCP worker after the active turn has truly settled (activeTurns cleared) — fail-closed on teardown uncertainty
       if (this.staleAfterTurn.has(key)) {
         this.staleAfterTurn.delete(key);
@@ -1080,6 +1093,9 @@ export class RuntimeEngine implements BridgeEngine {
         }
       }
     }
+      } finally {
+        releaseTurn();
+      }
     }
   }
 
@@ -1204,6 +1220,7 @@ export class RuntimeEngine implements BridgeEngine {
       await this.policyTransitionLock;
     }
     const key = this.workerKey(input);
+    try { if (this.queueStore && await this.queueStore.hasPending(key)) return { cancelled: false, message: "queue has pending turns; cancel is active-turn only" }; } catch {}
     this.sessionCatalog.set(key, input);
     const client = this.manager?.get(key);
     let cancelledActive = false;
@@ -1313,6 +1330,7 @@ export class RuntimeEngine implements BridgeEngine {
       throw error;
     } finally {
       this.deleting.delete(key);
+      this.queueSuspended.delete(key);
     }
 
     return {};
@@ -1452,6 +1470,20 @@ export class RuntimeEngine implements BridgeEngine {
    * Every retry iteration re-enumerates the directory; success is returned ONLY when
    * zero matching artifacts remain on disk.
    */
+  private async acquireTurnLease(key: string): Promise<() => void> {
+    for (;;) {
+      const prior = this.turnLeases.get(key);
+      let release!: () => void;
+      const next = new Promise<void>((r) => (release = r));
+      const tail = prior ? prior.then(() => next, () => next) : next;
+      this.turnLeases.set(key, tail);
+      if (!prior) return () => { release(); if (this.turnLeases.get(key) === tail) this.turnLeases.delete(key); };
+      await prior;
+      if (this.turnLeases.get(key) === tail) return () => { release(); if (this.turnLeases.get(key) === tail) this.turnLeases.delete(key); };
+      release();
+    }
+  }
+
   private async deleteRecordFilesStrict(recordId: string): Promise<void> {
     const dir = this.sessionsDir();
     const safeId = encodeURIComponent(recordId);
@@ -1643,9 +1675,11 @@ export class RuntimeEngine implements BridgeEngine {
       clearTimeout(timer);
     }
     this.idleTimers.clear();
-    // Await any in-flight drains
-    if (this.draining.size > 0) {
+    this.coolPending.clear();
+    const deadline = Date.now() + 8_000;
+    while (Date.now() < deadline && this.draining.size > 0) {
       await Promise.allSettled([...this.draining.values()]);
+      await new Promise<void>((r) => setTimeout(r, 50));
     }
     await this.manager?.shutdownAll();
     return {};

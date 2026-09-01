@@ -76,17 +76,18 @@ export class RuntimeQueueStore {
     const prior = this.locks.get(key) ?? Promise.resolve();
     let release!: () => void;
     const next = new Promise<void>((r) => (release = r));
-    this.locks.set(key, prior.then(() => next).catch(() => next));
+    const tail = prior.then(() => next, () => next);
+    this.locks.set(key, tail);
     await prior;
     try {
       return await fn();
     } finally {
       release();
-      if (this.locks.get(key) === next) {
+      if (this.locks.get(key) === tail) {
         // Keep the chain but allow GC when no waiters; we already released, next will resolve.
         // Remove if no further waiters chained behind.
         setTimeout(() => {
-          if (this.locks.get(key) === next) this.locks.delete(key);
+          if (this.locks.get(key) === tail) this.locks.delete(key);
         }, 0);
       }
     }
