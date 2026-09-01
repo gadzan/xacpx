@@ -4,7 +4,7 @@ layout: home
 hero:
   name: xacpx
   text: Your agents, in any chat
-  tagline: Drive Codex, Claude Code & Gemini sessions from WeChat, Feishu, Yuanbao — no terminal required.
+  tagline: Drive Codex, Claude Code & Gemini sessions from WeChat, Feishu, Yuanbao, Discord — no terminal required.
   actions:
     - theme: brand
       text: Get Started
@@ -34,7 +34,7 @@ features:
     linkText: How it works
   - icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>'
     title: Extensible channels
-    details: Add first-party or external channel plugins without touching the core console.
+    details: Add first-party channels such as Feishu, Yuanbao, and Discord — or build external plugins — without touching the core console.
     link: /plugins/development
     linkText: Build a channel
   - icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>'
@@ -85,11 +85,12 @@ The typical sequence is four steps:
 
 xacpx ships with WeChat as the built-in default channel. Additional channels are distributed as official plugin packages:
 
-| Channel | Package |
-|---------|---------|
-| WeChat (built-in) | — |
-| Feishu | `@ganglion/xacpx-channel-feishu` |
-| Yuanbao | `@ganglion/xacpx-channel-yuanbao` |
+| Channel | Package | Setup |
+|---------|---------|-------|
+| WeChat (built-in) | — | [Getting Started](/guide/getting-started) |
+| Feishu | `@ganglion/xacpx-channel-feishu` | [Feishu guide](/plugins/feishu) |
+| Yuanbao | `@ganglion/xacpx-channel-yuanbao` | [Yuanbao guide](/plugins/yuanbao) |
+| Discord | `@ganglion/xacpx-channel-discord` | [Discord guide](/plugins/discord) |
 
 Third-party channels follow the same plugin interface. Install a channel plugin with `xacpx plugin add <package>`, configure it with `xacpx channel add <name>`, then restart the daemon.
 
@@ -114,6 +115,7 @@ See [Self-Hosting the Relay Hub](/guide/relay-self-hosting) for the full walkthr
 ## Next steps
 
 - [Getting Started](/guide/getting-started) — install xacpx, log in, and run your first session
+- [Discord Channel](/plugins/discord) — create a Discord bot, configure the allowlist, and send your first agent prompt
 - [Command Reference](/reference/commands) — full listing of chat commands (`/ss`, `/use`, `/cancel`, and more)
 - [Self-Hosting the Relay Hub](/guide/relay-self-hosting) — run the multi-tenant web dashboard for several instances
 - [Configuration](/reference/configuration) — config file fields, transport options, and workspace/agent registration
