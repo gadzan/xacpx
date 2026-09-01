@@ -1395,6 +1395,12 @@ export class RuntimeEngine implements BridgeEngine {
               );
             }
             if (refreshed.alive) {
+              if (this.hasActiveTurn(key)) {
+                throw new RuntimeError(
+                  "RUNTIME_WORKER_TEARDOWN_PENDING",
+                  `cannot hard delete session "${key}" while turn active`,
+                );
+              }
               await refreshed.request("close").catch(() => {});
               await refreshed.terminate().catch((error) => {
                 throw toTeardownError(key, error);
@@ -1414,6 +1420,12 @@ export class RuntimeEngine implements BridgeEngine {
             );
           }
           if (client.alive) {
+            if (this.hasActiveTurn(key)) {
+              throw new RuntimeError(
+                "RUNTIME_WORKER_TEARDOWN_PENDING",
+                `cannot hard delete session "${key}" while turn active`,
+              );
+            }
             await client.request("close").catch(() => {});
             await client.terminate().catch((error) => {
               throw toTeardownError(key, error);
@@ -1470,6 +1482,12 @@ export class RuntimeEngine implements BridgeEngine {
         );
       }
       if (client.alive) {
+        if (this.hasActiveTurn(key)) {
+          throw new RuntimeError(
+            "RUNTIME_WORKER_TEARDOWN_PENDING",
+            `cannot hard delete session "${key}" while turn active`,
+          );
+        }
         await client.request("close").catch(() => {});
         await client.terminate().catch((error) => {
           throw toTeardownError(key, error);
