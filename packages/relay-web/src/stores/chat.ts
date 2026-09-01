@@ -3,6 +3,7 @@ import { computed, markRaw, ref } from "vue";
 import type { AgentCommandDto, AttachmentMetadata, LiveTurnSnapshotDto, MessageRecordDto, PlanEntryDto, PromptAttachmentRef, QueueItemDto, ScheduledOriginDto, SessionCommandsSnapshotDto, SessionUsageSnapshotDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 import { api, ApiError } from "../api/client";
 import { createDebouncedFlush } from "../lib/debounce-flush";
+import { placeReceivedCardsAfterTurns, slotAfterIndexFromStartedAt } from "../lib/history-turn-slots";
 import * as tailCache from "../lib/session-tail-cache";
 import { useAuthStore } from "./auth";
 import { useInstancesStore } from "./instances";
@@ -41,6 +42,13 @@ export interface LiveTurn {
   parts: TurnPart[];
   status: "working" | "streaming";
   startedAt: number;
+  /**
+   * Index of the last transcript message that existed at turn-started (inclusive).
+   * The live bubble renders after this row so later received cards can append below
+   * the still-running turn. `-1` = slot at the start of the list. Omitted → render
+   * after the last current message (legacy / tests).
+   */
+  slotAfterIndex?: number;
 }
 
 // Coalescing appenders — consecutive same-type chunks merge into one part. Text chunks
@@ -107,13 +115,15 @@ function keepRicherStructured(incoming: MessageRecordDto[], previous: ChatMessag
   }
   return incoming.map((row, i) => {
     const prev = typeof row.id === "number" ? byId.get(row.id) : undefined;
+    let next: MessageRecordDto = row;
     if (row.structured?.compact === true && isFullStructured(prev?.structured)) {
-      return { ...row, structured: prev!.structured };
+      next = { ...row, structured: prev!.structured };
+    } else if (i === lastOutIndex && flushed?.structured && row.structured?.compact === true && flushed.text === row.text) {
+      next = { ...row, structured: flushed.structured };
     }
-    if (i === lastOutIndex && flushed?.structured && row.structured?.compact === true && flushed.text === row.text) {
-      return { ...row, structured: flushed.structured };
-    }
-    return row;
+    const startedAt = next.startedAt ?? prev?.startedAt ?? (i === lastOutIndex ? flushed?.startedAt : undefined);
+    if (startedAt !== undefined && next.startedAt === undefined) next = { ...next, startedAt };
+    return next;
   });
 }
 
@@ -224,8 +234,24 @@ export const useChatStore = defineStore("chat", () => {
 
   function ensureTurn(k: string): LiveTurn {
     let t = liveTurns.value[k];
-    if (!t) { t = { parts: [], status: "working", startedAt: Date.now() }; liveTurns.value[k] = t; }
+    if (!t) {
+      const selected = selectedKey.value === k;
+      t = {
+        parts: [],
+        status: "working",
+        startedAt: Date.now(),
+        slotAfterIndex: selected ? messages.value.length - 1 : -1,
+      };
+      liveTurns.value[k] = t;
+    }
     return t;
+  }
+
+  /** Place the live bubble after messages that existed at `startedAt` (history/seed). */
+  function syncLiveSlot(k: string): void {
+    const t = liveTurns.value[k];
+    if (!t || selectedKey.value !== k) return;
+    t.slotAfterIndex = slotAfterIndexFromStartedAt(messages.value, t.startedAt);
   }
 
   // Known transport incarnations (SessionDto.transportSession) per session, fed
@@ -333,12 +359,14 @@ export const useChatStore = defineStore("chat", () => {
       const structured = hasStructured
         ? markRaw({ toolSteps, ...(reasoning ? { reasoning } : {}), parts: t.parts })
         : undefined;
-      messages.value.push({
+      const insertAt = Math.min(Math.max((t.slotAfterIndex ?? messages.value.length - 1) + 1, 0), messages.value.length);
+      messages.value.splice(insertAt, 0, {
         instanceId: instId,
         sessionAlias: alias,
         direction: "out",
         text,
         createdAt: new Date().toISOString(),
+        startedAt: t.startedAt,
         failed: status === "error",
         status,
         ...(structured ? { structured } : {}),
@@ -380,6 +408,7 @@ export const useChatStore = defineStore("chat", () => {
       next.delete(k);
       unread.value = next;
     }
+    syncLiveSlot(k);
   }
 
   /** Apply the cached tail for a freshly selected session, unless the selection
@@ -391,10 +420,11 @@ export const useChatStore = defineStore("chat", () => {
     if (!cached || cached.length === 0) return;
     if (id !== instanceId.value || alias !== sessionAlias.value) return;
     if (messages.value.length > 0 || revision !== transcriptRevision) return;
-    messages.value = cached.map(rawStructured);
+    messages.value = placeReceivedCardsAfterTurns(cached.map(rawStructured));
     touchTranscript();
     seededFromCache = true;
     seedRowsPresent = true;
+    if (instanceId.value && sessionAlias.value) syncLiveSlot(bufKey(instanceId.value, sessionAlias.value));
   }
 
   /** Drop the active selection back to the empty "no session" state — used when the
@@ -464,13 +494,14 @@ export const useChatStore = defineStore("chat", () => {
       // would leave the pane with only the live turn. Retry against the same
       // selection so persisted history and the current turn converge.
       if (revision !== transcriptRevision) return loadHistory();
-      messages.value = keepRicherStructured(rows, messages.value).map(rawStructured);
+      messages.value = placeReceivedCardsAfterTurns(keepRicherStructured(rows, messages.value).map(rawStructured));
       touchTranscript();
       seededFromCache = false;
       seedRowsPresent = false;
       hasMoreOlder.value = hasMore ?? false;
       // Authoritative rows landed — refresh this session's cached tail (debounced).
       cacheWrite.schedule();
+      syncLiveSlot(historyKey);
     } finally {
       // Only the newest request owns the flag — a stale response must not dismiss
       // the skeleton a newer selection just raised.
@@ -495,8 +526,10 @@ export const useChatStore = defineStore("chat", () => {
       // The session may have changed while awaiting; only apply if still selected.
       if (id !== instanceId.value || alias !== sessionAlias.value) return;
       if (older.length > 0) {
-        messages.value = [...older.map(rawStructured), ...messages.value];
+        messages.value = placeReceivedCardsAfterTurns([...older.map(rawStructured), ...messages.value]);
         touchTranscript();
+        const live = liveTurns.value[bufKey(id, alias)];
+        if (live) live.slotAfterIndex = (live.slotAfterIndex ?? 0) + older.length;
       }
       hasMoreOlder.value = hasMore ?? false;
     } catch {
@@ -516,7 +549,12 @@ export const useChatStore = defineStore("chat", () => {
       // Don't overwrite a live turn already tracked from the ws stream (it's fresher),
       // and don't resurrect one that finished in the snapshot→seed gap (see finishedTurns).
       if (liveTurns.value[k] || finishedTurns.has(k)) continue;
-      liveTurns.value[k] = { parts: t.parts as TurnPart[], status: t.status, startedAt: t.startedAt };
+      liveTurns.value[k] = {
+        parts: t.parts as TurnPart[],
+        status: t.status,
+        startedAt: t.startedAt,
+        slotAfterIndex: selectedKey.value === k ? slotAfterIndexFromStartedAt(messages.value, t.startedAt) : -1,
+      };
     }
   }
 
@@ -537,7 +575,12 @@ export const useChatStore = defineStore("chat", () => {
     for (const k of Object.keys(nextTurns)) if (k.startsWith(prefix)) delete nextTurns[k];
     for (const turn of turns) {
       const k = bufKey(instId, turn.sessionAlias);
-      nextTurns[k] = { parts: turn.parts as TurnPart[], status: turn.status, startedAt: turn.startedAt };
+      nextTurns[k] = {
+        parts: turn.parts as TurnPart[],
+        status: turn.status,
+        startedAt: turn.startedAt,
+        slotAfterIndex: selectedKey.value === k ? slotAfterIndexFromStartedAt(messages.value, turn.startedAt) : -1,
+      };
     }
     liveTurns.value = nextTurns;
 
@@ -648,6 +691,14 @@ export const useChatStore = defineStore("chat", () => {
         });
         touchTranscript();
         seededFromCache = false;
+      }
+      // Anchor the live slot after whatever is now last (triggering received card,
+      // the prompt just appended, or the drained queued bubble). Later mid-turn
+      // received cards append below this slot. Do not infer from startedAt here:
+      // the locally-stamped prompt ISO can be 1ms after Date.now() on the turn.
+      if (selected) {
+        const live = liveTurns.value[k];
+        if (live) live.slotAfterIndex = messages.value.length - 1;
       }
     } else if (e.type === "turn-output") {
       const t = ensureTurn(bufKey(event.instanceId, e.sessionAlias));

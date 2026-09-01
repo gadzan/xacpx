@@ -110,6 +110,8 @@ function structuredIsHeavy(structured: StructuredTurn): boolean {
  * `parts` already carries them, and strip bulky tool bodies (diffs, command output,
  * file previews). Collapsed cards keep titles/status plus a short subagent snippet.
  * The full row is available from `GET .../messages/:id`.
+ * Top-level fields such as `startedAt` are copied through unchanged — compact must
+ * not drop the live-slot timestamp used to restack mid-turn received cards.
  */
 export function compactHistoryMessage(row: MessageRecordDto): MessageRecordDto {
   const structured = row.structured;

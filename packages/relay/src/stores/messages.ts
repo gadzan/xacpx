@@ -14,6 +14,7 @@ interface MessageRow {
   structured: string | null;
   attachments: string | null;
   queue_item_id: string | null;
+  started_at: number | null;
 }
 
 export interface MessagePage {
@@ -37,6 +38,7 @@ function toDto(r: MessageRow): MessageRecordDto {
     text: r.text,
     createdAt: r.created_at,
     ...(r.queue_item_id ? { queueItemId: r.queue_item_id } : {}),
+    ...(typeof r.started_at === "number" ? { startedAt: r.started_at } : {}),
     ...(r.structured ? { structured: JSON.parse(r.structured) as StructuredTurn } : {}),
     ...(r.attachments ? { attachments: JSON.parse(r.attachments) as AttachmentMetadata[] } : {}),
   };
@@ -54,9 +56,10 @@ export class MessageStore {
     attachments?: AttachmentMetadata[],
     promptRequestId?: string,
     createdAt?: string,
+    startedAt?: number,
   ): number {
     this.db.run(
-      "INSERT INTO messages (instance_id, session_alias, direction, text, created_at, structured, attachments, prompt_request_id) VALUES (?,?,?,?,?,?,?,?)",
+      "INSERT INTO messages (instance_id, session_alias, direction, text, created_at, structured, attachments, prompt_request_id, started_at) VALUES (?,?,?,?,?,?,?,?,?)",
       [
         instanceId,
         sessionAlias,
@@ -66,6 +69,7 @@ export class MessageStore {
         structured ? JSON.stringify(structured) : null,
         attachments && attachments.length > 0 ? JSON.stringify(attachments) : null,
         promptRequestId ?? null,
+        startedAt ?? null,
       ],
     );
     return this.db.get<{ id: number }>("SELECT last_insert_rowid() AS id")!.id;
@@ -312,7 +316,7 @@ export class MessageStore {
     const before = opts.before ?? null;
     // Fetch one extra row to detect whether older history remains, then drop it.
     const rows = this.db.all<MessageRow>(
-      `SELECT m.id, m.instance_id, m.session_alias, m.direction, m.text, m.created_at, m.structured, m.attachments, m.queue_item_id
+      `SELECT m.id, m.instance_id, m.session_alias, m.direction, m.text, m.created_at, m.structured, m.attachments, m.queue_item_id, m.started_at
        FROM messages m JOIN instances i ON i.id = m.instance_id
        WHERE i.account_id = ? AND m.instance_id = ? AND m.session_alias = ?
          AND (? IS NULL OR m.id < ?)
@@ -335,7 +339,7 @@ export class MessageStore {
     id: number,
   ): MessageRecordDto | null {
     const row = this.db.get<MessageRow>(
-      `SELECT m.id, m.instance_id, m.session_alias, m.direction, m.text, m.created_at, m.structured, m.attachments, m.queue_item_id
+      `SELECT m.id, m.instance_id, m.session_alias, m.direction, m.text, m.created_at, m.structured, m.attachments, m.queue_item_id, m.started_at
        FROM messages m JOIN instances i ON i.id = m.instance_id
        WHERE i.account_id = ? AND m.instance_id = ? AND m.session_alias = ? AND m.id = ?`,
       [accountId, instanceId, sessionAlias, id],

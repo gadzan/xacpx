@@ -267,7 +267,7 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
 
 `messages` 表含 `structured TEXT` 列（存 JSON 序列化的 `{ toolSteps, reasoning? }`），直接由建表 DDL 定义。
 
-- `MessageStore.append(instanceId, alias, dir, text, structured?)` 序列化写入；`listBySession` 反序列化后在 `MessageRecordDto.structured` 中返回完整行。HTTP 列表在 `view=compact` 时由 `compactHistoryMessage` 投影后再发给看板；`getById` 仍返回未经投影的原文。
+- `MessageStore.append(instanceId, alias, dir, text, structured?, attachments?, promptRequestId?, createdAt?, startedAt?)` 序列化写入；`listBySession` 反序列化后在 `MessageRecordDto` 中返回完整行（含可选 `startedAt`）。HTTP 列表在 `view=compact` 时由 `compactHistoryMessage` 投影后再发给看板——**不得丢弃** `startedAt`（live-slot 重排依赖它，不能只按 `createdAt` 完结时间排序）；`getById` 仍返回未经投影的原文。
 
 ## 阶段七：Hub 重启状态恢复（instance.state.sync + turn-finished.text）
 

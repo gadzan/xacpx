@@ -682,6 +682,60 @@ describe("MessageList", () => {
   });
 });
 
+describe("live turn slot", () => {
+  it("renders the live turn between the triggering received card and a later received card", () => {
+    const card1 = receivedCard("card1");
+    const card2 = receivedCard("card2");
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [card1, card2],
+        liveTurn: { parts: [{ type: "text", text: "working on it" }], status: "streaming", startedAt: 0, slotAfterIndex: 0 },
+      },
+    });
+    const streaming = wrapper.find('[data-test="msg-streaming"]');
+    const cards = wrapper.findAll('[data-test="agent-message-card"]');
+    expect(cards).toHaveLength(2);
+    expect(streaming.exists()).toBe(true);
+    expect(cards[0]!.element.compareDocumentPosition(streaming.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(streaming.element.compareDocumentPosition(cards[1]!.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("occupies the live slot with a working spinner when parts are empty", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [receivedCard("card1"), receivedCard("card2")],
+        liveTurn: { parts: [], status: "working", startedAt: 0, slotAfterIndex: 0 },
+      },
+    });
+    expect(wrapper.find('[data-test="msg-streaming"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="live-working"]').exists()).toBe(true);
+    const streaming = wrapper.find('[data-test="msg-streaming"]');
+    const cards = wrapper.findAll('[data-test="agent-message-card"]');
+    expect(cards[0]!.element.compareDocumentPosition(streaming.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(streaming.element.compareDocumentPosition(cards[1]!.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("never suppresses a received card while the live turn occupies its slot (Gate B)", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [receivedCard("card1"), receivedCard("card2")],
+        liveTurn: { parts: [{ type: "text", text: "stream" }], status: "streaming", startedAt: 0, slotAfterIndex: 0 },
+      },
+    });
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(2);
+    expect(wrapper.find('[data-test="turn-agent-message"]').exists()).toBe(false);
+    expect(wrapper.findAll('[data-test="agent-message-card"][data-direction="received"]')).toHaveLength(2);
+  });
+
+  it("hides the history skeleton when a live turn exists even with empty parts", () => {
+    const wrapper = mount(MessageList, {
+      props: { messages: [], liveTurn: { parts: [], status: "working", startedAt: 0, slotAfterIndex: -1 }, loadingHistory: true },
+    });
+    expect(wrapper.find('[data-test="history-skeleton"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="live-working"]').exists()).toBe(true);
+  });
+});
+
 it("renders legacy persisted tool steps (no parts) in a collapsed panel", () => {
   const wrapper = mount(MessageList, {
     props: {

@@ -24,6 +24,24 @@ test("leaves a text-only row unchanged", () => {
   expect(compactHistoryMessage(base)).toEqual(base);
 });
 
+test("leaves startedAt in place (compact must not drop the live-slot timestamp)", () => {
+  const row: MessageRecordDto = { ...base, startedAt: 1_700_000_000_000 };
+  expect(compactHistoryMessage(row).startedAt).toBe(1_700_000_000_000);
+});
+
+test("keeps startedAt when stripping heavy tool details", () => {
+  const row: MessageRecordDto = {
+    ...base,
+    startedAt: 42,
+    structured: {
+      parts: [{ type: "tool", step: readStep }],
+    },
+  };
+  const compact = compactHistoryMessage(row);
+  expect(compact.startedAt).toBe(42);
+  expect(compact.structured?.compact).toBe(true);
+});
+
 test("drops duplicate toolSteps when parts already carry them and strips heavy detail", () => {
   const row: MessageRecordDto = {
     ...base,

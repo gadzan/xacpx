@@ -170,7 +170,8 @@ export function initSchema(db: SqlDriver): void {
       queue_item_id TEXT,
       queue_fallback INTEGER NOT NULL DEFAULT 0,
       origin_queue_item_id TEXT,
-      prompt_request_id TEXT
+      prompt_request_id TEXT,
+      started_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_messages_session ON messages (instance_id, session_alias, id);
     CREATE TABLE IF NOT EXISTS recovery_receipts (
@@ -226,6 +227,9 @@ export function initSchema(db: SqlDriver): void {
   }
   if (!messageCols.some((c) => c.name === "prompt_request_id")) {
     db.exec("ALTER TABLE messages ADD COLUMN prompt_request_id TEXT");
+  }
+  if (!messageCols.some((c) => c.name === "started_at")) {
+    db.exec("ALTER TABLE messages ADD COLUMN started_at INTEGER");
   }
   const instanceCols = db.all<{ name: string }>("PRAGMA table_info(instances)");
   if (!instanceCols.some((c) => c.name === "capabilities_json")) {

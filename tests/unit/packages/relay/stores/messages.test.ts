@@ -83,3 +83,12 @@ test("append stores structured agentMessage metadata and custom createdAt", asyn
   expect(rows[0]?.createdAt).toBe(customIso);
   expect(rows[0]?.structured?.agentMessage).toEqual(agentMsg);
 });
+
+test("append persists startedAt on an assistant out row and listBySession returns it", async () => {
+  const db = await freshDb();
+  const store = new MessageStore(db);
+  store.append("i1", "backend", "out", "reply", undefined, undefined, undefined, undefined, 1_700_000_000_000);
+  const rows = store.listBySession("a1", "i1", "backend").messages;
+  expect(rows[0]?.startedAt).toBe(1_700_000_000_000);
+  expect(store.getById("a1", "i1", "backend", rows[0]!.id!)?.startedAt).toBe(1_700_000_000_000);
+});

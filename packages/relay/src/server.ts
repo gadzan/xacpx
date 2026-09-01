@@ -558,7 +558,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 const structured = hasStructured
                   ? { toolSteps: steps, ...(hasReasoning ? { reasoning: a.reasoning } : {}), ...(a.parts.length ? { parts: a.parts } : {}), ...(a.truncated ? { truncated: true } : {}) }
                   : (a.truncated ? { truncated: true } : undefined);
-                messages.append(instanceId, event.sessionAlias, "out", text, structured);
+                messages.append(instanceId, event.sessionAlias, "out", text, structured, undefined, undefined, undefined, a.startedAt);
               }
             };
             const recoveryId = event.recoveryId;

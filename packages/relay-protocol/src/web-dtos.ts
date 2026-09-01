@@ -48,6 +48,14 @@ export interface MessageRecordDto {
   direction: MessageDirection;
   text: string;
   createdAt: string;
+  /**
+   * Epoch ms the assistant turn began (`LiveTurn.startedAt`). Present on completed
+   * `out` rows so history reload can place the turn in its live slot (after the
+   * triggering prompt/received card, before messages that arrived mid-turn) instead
+   * of ordering only by `createdAt` (finish time). Omitted on legacy rows — do not
+   * reorder those. Survives `view=compact`.
+   */
+  startedAt?: number;
   /** Present while an inbound Web prompt is queued, so a history reload can still
    *  associate it with the later drain event. Cleared when execution starts. */
   queueItemId?: string;

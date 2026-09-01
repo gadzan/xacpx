@@ -116,6 +116,7 @@ test("accumulates tool steps + reasoning and persists structured on finish", asy
     { type: "reasoning", text: "think more" },
     { type: "text", text: "done" },
   ]);
+  expect(typeof cached[0].startedAt).toBe("number");
   runtime.close();
 });
 
