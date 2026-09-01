@@ -86,7 +86,7 @@ class DiscordJsClient implements DiscordClientLike {
       const anyI = interaction as {
         isChatInputCommand?: () => boolean;
         commandName?: string;
-        options?: { data?: Array<{ value?: unknown }> };
+        options?: { data?: Array<{ name?: string; value?: unknown }> };
         channelId?: string;
         channel?: { id?: string };
         guildId?: string | null;
@@ -100,8 +100,29 @@ class DiscordJsClient implements DiscordClientLike {
       if (!anyI?.isChatInputCommand?.() || !anyI.commandName) return;
       const channelId = anyI.channelId ?? anyI.channel?.id;
       if (!channelId) return;
-      const rawValues = anyI.options?.data?.map((o) => String(o.value ?? "")).filter((s) => s.length > 0) ?? [];
-      const text = `/${anyI.commandName}${rawValues.length > 0 ? ` ${rawValues.join(" ")}` : ""}`.trim();
+      const getOpt = (name: string): unknown => anyI.options?.data?.find((o) => o.name === name)?.value;
+      let text: string;
+      const cmd = anyI.commandName;
+      if (cmd === "ss") {
+        const agent = String(getOpt("agent") ?? "").trim();
+        const workspace = String(getOpt("workspace") ?? "").trim();
+        const isNew = Boolean(getOpt("new"));
+        if (!agent) {
+          text = "/ss";
+        } else {
+          text = isNew ? `/ss new ${agent}` : `/ss ${agent}`;
+          if (workspace) text += ` --ws ${workspace}`;
+        }
+      } else if (cmd === "use") {
+        const alias = String(getOpt("alias") ?? "").trim();
+        text = alias ? `/use ${alias}` : "/use";
+      } else if (cmd === "cancel") {
+        const alias = String(getOpt("alias") ?? "").trim();
+        text = alias ? `/cancel ${alias}` : "/cancel";
+      } else {
+        const rawValues = anyI.options?.data?.map((o) => String(o.value ?? "")).filter((s) => s.length > 0) ?? [];
+        text = `/${cmd}${rawValues.length > 0 ? ` ${rawValues.join(" ")}` : ""}`.trim();
+      }
       const botUserId = (client as unknown as { user?: { id?: string } | null })?.user?.id ?? "";
       const synthetic: DiscordInboundMessage = {
         id: anyI.id ?? `interaction-${Date.now()}`,
