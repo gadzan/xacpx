@@ -3,7 +3,7 @@
 
 ### Changed
 
-- Soften queue-overflow recovery tip copy (en/zh): one-line note instead of a warning headline; confirmed vs unconfirmed `/cancel` semantics unchanged. Applies to every surface that renders recovery text (WeChat/Feishu/relay-web).
+- Queue-overflow tips are toast-only on relay-web (3s auto-dismiss) and silent on every other channel. Confirmed vs unconfirmed copy is unchanged; detection/cleanup/logging are unchanged. The tip is not persisted in hub message history.
 
 ## [0.24.0] - 2026-09-01
 

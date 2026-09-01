@@ -368,7 +368,7 @@ export class SessionTurnRunner {
           });
         },
       });
-      if (response.text) {
+      if (response.text && !response.silent) {
         emitChunk(response.text);
       }
       this.deps.events.emit({
@@ -380,7 +380,10 @@ export class SessionTurnRunner {
         // response.text) so a relay hub that missed the streamed chunks can still
         // persist the FULL answer — response.text alone is unreliable for streaming
         // adapters (often undefined or the last segment only).
-        text: finalText,
+        // Silent overflow tips omit text when nothing was streamed so the hub
+        // does not persist a blank out row.
+        ...(finalText !== "" || !response.silent ? { text: finalText } : {}),
+        ...(response.silent ? { silent: true } : {}),
         ...(req.peerOrigin ? { peerOrigin: req.peerOrigin } : {}),
       });
       return {

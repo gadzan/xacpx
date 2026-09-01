@@ -41,7 +41,11 @@ export type ControlEvent =
   // `text` carries the final reply text on success so a relay hub that lost the turn's
   // streamed chunks (e.g. hub restart mid-turn) can still persist the answer. Omitted on
   // failure paths (`errorMessage` already covers them).
-  | { type: "turn-finished"; chatKey: string; sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean; text?: string; peerOrigin?: PeerTurnOrigin }
+  | { type: "turn-finished"; chatKey: string; sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean; text?: string; silent?: boolean; peerOrigin?: PeerTurnOrigin }
+  // Toast-only overflow tip for relay-web. Channel-relay maps this to
+  // instance.notice kind "queue-overflow"; it is not forwarded as a control-event
+  // and must never become a chat/history row.
+  | { type: "queue-overflow-tip"; chatKey: string; sessionAlias: string; confirmed: boolean; text: string }
   | { type: "sessions-changed" }
   // The set of configured workspaces changed (e.g. a separate `xacpx workspace add`
   // CLI process edited config.json, or a `/config` mutation). Carries no payload;

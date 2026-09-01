@@ -20,11 +20,19 @@ import type { SessionSwitchResult } from "../../sessions/session-service";
 import { decorateUnread } from "./session-list-marker";
 import { t } from "../../i18n";
 import { AcpxQueueOverflowError } from "../../transport/acpx-queue-overflow";
+import { queueOverflowTipText } from "./session-recovery-handler";
+
 export interface SessionHandlerContext extends CommandRouterContext {
   lifecycle: SessionLifecycleOps;
   interaction: SessionInteractionOps;
   recovery: SessionRenderRecoveryOps;
   readonly activeTurns?: import("../../sessions/active-turn-registry.js").ActiveTurnRegistry;
+  onQueueOverflowTip?: (info: {
+    chatKey: string;
+    sessionAlias: string;
+    confirmed: boolean;
+    text: string;
+  }) => void;
 }
 
 const DEFAULT_SESSION_TAIL_LINES = 50;
@@ -966,7 +974,13 @@ export async function handlePromptWithSession(
           confirmed,
         },
       );
-      return context.recovery.renderTransportError(session, error);
+      context.onQueueOverflowTip?.({
+        chatKey,
+        sessionAlias: session.alias,
+        confirmed,
+        text: queueOverflowTipText(confirmed),
+      });
+      return { silent: true };
     }
     const recovered = await context.recovery.tryRecoverMissingSession(session, error);
     if (recovered) {

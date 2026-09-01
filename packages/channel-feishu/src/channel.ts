@@ -316,7 +316,7 @@ export class FeishuChannel implements MessageChannelRuntime {
         if (cardController.isDegraded() && responseText.length > 0) {
           await deliverText(response.text);
         }
-      } else {
+      } else if ((response.text?.trim() ?? "").length > 0) {
         await deliverText(response.text);
       }
     } catch (error) {

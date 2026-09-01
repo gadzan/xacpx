@@ -119,6 +119,32 @@ test("does not suppress final text when reply callback declines to deliver a seg
   });
 });
 
+test("a silent overflow response produces no final text for channel delivery", async () => {
+  const agent: Agent = {
+    async chat(): Promise<ChatResponse> {
+      return { silent: true, text: "Reply was truncated for size — you can continue." };
+    },
+  };
+
+  const segments: string[] = [];
+  const result = await executeChatTurn({
+    agent,
+    request: {
+      accountId: "acc-1",
+      conversationId: "user-1",
+      text: "hello",
+    },
+    onReplySegment: async (text) => {
+      segments.push(text);
+      return true;
+    },
+  });
+
+  expect(segments).toEqual([]);
+  expect(result.text).toBeUndefined();
+  expect(result.usedReply).toBe(false);
+});
+
 test("keeps media delivery even when reply streaming already happened", async () => {
   const agent: Agent = {
     async chat(request): Promise<ChatResponse> {

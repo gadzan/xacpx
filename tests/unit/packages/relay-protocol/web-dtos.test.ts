@@ -87,6 +87,7 @@ test("accepts well-formed control-events and notices", () => {
   expect(parseWebServerEvent(webEventEnvelope({ kind: "control-event", instanceId: "i", event: { type: "scheduled-changed", chatKey: "c" } }))).not.toBeNull();
   expect(parseWebServerEvent(webEventEnvelope({ kind: "control-event", instanceId: "i", event: { type: "orchestration-changed" } }))).not.toBeNull();
   expect(parseWebServerEvent(webEventEnvelope({ kind: "notice", instanceId: "i", notice: { kind: "task-completion", text: "done" } }))).not.toBeNull();
+  expect(parseWebServerEvent(webEventEnvelope({ kind: "notice", instanceId: "i", notice: { kind: "queue-overflow", text: "Reply was truncated for size — you can continue." } }))).not.toBeNull();
 });
 
 function roundtrip(event: any) {
@@ -114,6 +115,8 @@ test("rejects turn-finished fields the hub persists when they are not strings/bo
   expect(roundtrip(fin({ errorMessage: 42 }))).toBeNull();
   expect(roundtrip(fin({ errorMessage: { boom: true } }))).toBeNull();
   expect(roundtrip(fin({ cancelled: "yes" }))).toBeNull();
+  expect(roundtrip(fin({ silent: "yes" }))).toBeNull();
+  expect(roundtrip(fin({ silent: true }))).not.toBeNull();
   expect(roundtrip(fin({ text: 1 }))).toBeNull();
   expect(roundtrip(fin({ recoveryId: 7 }))).toBeNull();
 });

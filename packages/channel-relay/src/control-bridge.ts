@@ -1026,6 +1026,14 @@ export function subscribeControlEvents(
   sendEvent: (type: string, payload: unknown) => void,
 ): () => void {
   return control.events.subscribe((event) => {
+    if (event.type === "queue-overflow-tip") {
+      sendEvent(MSG.instanceNotice, {
+        kind: "queue-overflow",
+        text: event.text,
+        chatKey: event.chatKey,
+      });
+      return;
+    }
     if (event.type === "tool-event") {
       sendEvent(MSG.instanceEvent, {
         event: {
