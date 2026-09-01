@@ -1004,7 +1004,7 @@ export class DiscordChannel implements MessageChannelRuntime {
       };
       const onToolEvent = async (event: ToolUseEvent): Promise<void> => {
         if (active.suppressed) return;
-        const title = (event.title ?? event.kind ?? "tool").trim() || "tool";
+        const title = (event.toolName ?? event.kind ?? "tool").trim() || "tool";
         const emoji = "🔧";
         const line = `${emoji} ${title}`;
         accumulated += (accumulated ? "\n" : "") + line;
