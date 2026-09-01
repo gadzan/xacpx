@@ -444,25 +444,24 @@ export class RuntimeEngine implements BridgeEngine {
         timeoutHandle = setTimeout(() => resolve("timeout"), remaining);
         timeoutHandle.unref?.();
       });
-      try {
-        const result = await Promise.race([
-          pending.then(
-            () => "done" as const,
-            (err) => {
-              throw err;
-            },
-          ),
-          timeoutPromise,
-        ]);
-        if (timeoutHandle) clearTimeout(timeoutHandle);
-        if (result === "timeout") {
-          throw new RuntimeError(
-            "RUNTIME_WORKER_TEARDOWN_PENDING",
-            `cannot hard delete session "${key}" while worker acquisition in flight`,
-          );
-        }
-      } catch (err) {
-        if (timeoutHandle) clearTimeout(timeoutHandle);
+      // Wrap pending to never leave unhandled rejection when timeout wins
+      const pendingHandled = pending.then(
+        () => ({ status: "done" as const }),
+        (error) => ({ status: "rejected" as const, error }),
+      );
+      const timeoutHandled = timeoutPromise.then(() => ({ status: "timeout" as const }));
+      const result = await Promise.race([pendingHandled, timeoutHandled]);
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (result.status === "timeout") {
+        // Attach handler to pending to avoid unhandled rejection if it later rejects
+        pending.catch(() => {});
+        throw new RuntimeError(
+          "RUNTIME_WORKER_TEARDOWN_PENDING",
+          `cannot hard delete session "${key}" while worker acquisition in flight`,
+        );
+      }
+      if (result.status === "rejected") {
+        const err = (result as { status: "rejected"; error: unknown }).error;
         if (err instanceof WorkerTeardownPendingError) {
           throw new RuntimeError(
             "RUNTIME_WORKER_TEARDOWN_PENDING",
@@ -475,6 +474,7 @@ export class RuntimeEngine implements BridgeEngine {
           `cannot hard delete session "${key}" while worker acquisition in flight: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
+      // done — loop again to check for new acquiring
     }
   }
   private async waitForWorkerQuiescence(key: string, timeoutMs = 8_000): Promise<void> {
@@ -485,22 +485,26 @@ export class RuntimeEngine implements BridgeEngine {
       const worker = this.manager?.get(key);
       const hasWorker = !!worker;
       let hasFence = false;
-      let fenceUnreadable = false;
       try {
         const fence = (this.manager as any)?.fence?.();
         if (fence) {
           const read = await fence.read(key);
           if (read.kind === "present") hasFence = true;
-          else if (read.kind === "unreadable") fenceUnreadable = true;
+          else if (read.kind === "unreadable") {
+            throw new RuntimeError(
+              "RUNTIME_WORKER_TEARDOWN_PENDING",
+              `cannot hard delete session "${key}" while fence unreadable`,
+            );
+          }
         }
-      } catch {}
-      if (!hasAcquiring && !hasWorker && !hasFence && !fenceUnreadable) return;
-      if (fenceUnreadable) {
+      } catch (err) {
+        if (err instanceof RuntimeError) throw err;
         throw new RuntimeError(
           "RUNTIME_WORKER_TEARDOWN_PENDING",
-          `cannot hard delete session "${key}" while fence unreadable`,
+          `cannot hard delete session "${key}" while fence check failed: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
+      if (!hasAcquiring && !hasWorker && !hasFence) return;
       const remaining = timeoutMs - (Date.now() - start);
       if (remaining <= 0) {
         const reasons: string[] = [];
@@ -1553,10 +1557,10 @@ export class RuntimeEngine implements BridgeEngine {
       await this.policyTransitionLock;
     }
     const key = this.workerKey(input);
-    // PR6: mark deleting so new enqueue is rejected (lifecycle boundary)
-    this.deleting.add(key);
-    this.deleteGenerations.set(key, (this.deleteGenerations.get(key) ?? 0) + 1);
     try {
+      // PR6: mark deleting so new enqueue is rejected (lifecycle boundary) — inside try so finally always clears
+      this.deleting.add(key);
+      this.deleteGenerations.set(key, (this.deleteGenerations.get(key) ?? 0) + 1);
       // G4: establishment barrier — prevent old-epoch waiters from starting new acquisitions after bump,
       // and wait for any in-flight acquisitions (fence discharge + spawn) to settle before destructive ops.
       await this.waitForAcquiringQuiescence(key);
@@ -1717,33 +1721,7 @@ export class RuntimeEngine implements BridgeEngine {
       }
     }
     // Final G4 ownership quiescence: hard delete success must imply no worker, no acquiring, no fence
-    await this.waitForAcquiringQuiescence(key);
-    if (this.manager?.get(key)) {
-      throw new RuntimeError(
-        "RUNTIME_WORKER_TEARDOWN_PENDING",
-        `cannot hard delete session "${key}" while worker still registered`,
-      );
-    }
-    try {
-      const fence = (this.manager as any)?.fence?.();
-      if (fence) {
-        const read = await fence.read(key);
-        if (read.kind === "present") {
-          throw new RuntimeError(
-            "RUNTIME_WORKER_TEARDOWN_PENDING",
-            `cannot hard delete session "${key}" while owner fence still present`,
-          );
-        }
-        if (read.kind === "unreadable") {
-          throw new RuntimeError(
-            "RUNTIME_WORKER_TEARDOWN_PENDING",
-            `cannot hard delete session "${key}" while fence unreadable`,
-          );
-        }
-      }
-    } catch (err) {
-      if (err instanceof RuntimeError) throw err;
-    }
+    await this.waitForWorkerQuiescence(key);
     this.clearActiveTurn(key);
     this.coolPending.delete(key);
 
