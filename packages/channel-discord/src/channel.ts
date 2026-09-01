@@ -1031,7 +1031,7 @@ export class DiscordChannel implements MessageChannelRuntime {
           if (!accumulated.endsWith("\n")) accumulated += "\n";
         } else if (accumulated.length > 0 && trimmed.length > 0) {
           const lastLine = accumulated.split("\n").pop() ?? "";
-          const lastWasTool = lastLine.trimStart().startsWith("🔧") || lastLine.trimStart().startsWith("🧰") || lastLine.trimStart().startsWith("⚠️");
+          const lastWasTool = /^[📖🔍🔧✏️💭🧰⚠️]/.test(lastLine.trimStart());
           if (lastWasTool && !isProgress) {
             if (!accumulated.endsWith("\n\n") && !accumulated.endsWith("\n")) accumulated += "\n\n";
             else if (accumulated.endsWith("\n") && !accumulated.endsWith("\n\n")) accumulated += "\n";
@@ -1044,9 +1044,8 @@ export class DiscordChannel implements MessageChannelRuntime {
         if (active.suppressed) return;
         const toolName = event.toolName?.trim();
         if (!toolName) return;
-        if (toolRenderState.emittedToolCallIds.has(event.toolCallId)) return;
-        toolRenderState.emittedToolCallIds.add(event.toolCallId);
-        const summary = event.summary && event.summary !== toolName ? event.summary : "";
+        if (event.toolCallId && toolRenderState.emittedToolCallIds.has(event.toolCallId)) return;
+        if (event.toolCallId) toolRenderState.emittedToolCallIds.add(event.toolCallId);
         const display = summary ? `${toolName}: ${summary}` : toolName;
         const truncated = display.length > 60 ? `${display.slice(0, 57)}…` : display;
         const emojiMap: Record<string, string> = { read: "📖", search: "🔍", execute: "🔧", edit: "✏️", think: "💭", other: "🔧" };
