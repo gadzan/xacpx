@@ -58,3 +58,13 @@ test("exception -> reject via safeResolve", () => {
   const cfg = null as unknown as import("../../../../../src/bridge/engine/runtime/runtime-permission-resolver").RuntimePermissionConfig;
   expect(r.safeResolve(cfg, req("x"))).toEqual({ outcome: "reject_once" });
 });
+test("malformed raw with approve-all still rejects", () => {
+  const r = new RuntimePermissionResolver();
+  const cfg = { generation: 0, permissionMode: "approve-all" as const, nonInteractivePermissions: "deny" as const };
+  const circular: Record<string, unknown> = {};
+  (circular as Record<string, unknown>).self = circular;
+  const reqCircular = { sessionId: "s", raw: { toolCall: { name: "x", input: circular } } } as unknown as import("../../../../../src/bridge/engine/runtime/runtime-permission-resolver").RuntimePermissionRequest;
+  expect(r.safeResolve(cfg, reqCircular)).toEqual({ outcome: "reject_once" });
+  const reqBigInt = { sessionId: "s", raw: { toolCall: { name: "x", input: { v: BigInt(1) } } } } as unknown as import("../../../../../src/bridge/engine/runtime/runtime-permission-resolver").RuntimePermissionRequest;
+  expect(r.safeResolve(cfg, reqBigInt)).toEqual({ outcome: "reject_once" });
+});

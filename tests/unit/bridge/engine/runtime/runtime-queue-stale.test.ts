@@ -24,24 +24,26 @@ test("A active -> B queue -> A settle -> B drains on new worker, not old route",
   await mkdir(stateDir, { recursive: true });
   const queueDir = join(dir, "queue");
   const fenceDir = join(dir, "fences");
+  const logPath = join(dir, "prompt.log");
   const entry = join(dir, "w.mjs");
   await mcpWorker(entry);
   const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", stateDir, queueDir, fenceDir, idleTtlMs: 200 });
 
-  // Start A as a long prompt (active)
-  let resolveA: (v: unknown) => void;
+  // Start A as a long prompt (active) — use slow worker that logs each prompt
   const slowWorkerEntry = join(dir, "slow.mjs");
   await writeFile(slowWorkerEntry, [
-    "let b=''; let coord='none'; let pending=null;",
+    `let b=''; let coord='none'; let pending=null; const fs=require('node:fs'); const logPath=${JSON.stringify(logPath)};`,
     "process.stdin.on('data',d=>{b+=d.toString(); let i; while((i=b.indexOf('\\n'))>=0){const l=b.slice(0,i); b=b.slice(i+1); if(!l)continue; try{const m=JSON.parse(l);",
-    " if(m.method==='ensure'){ coord=m.params.mcpCoordinatorSession||'none'; process.stdout.write(JSON.stringify({id:m.id,ok:true,result:{ready:true,sessionKey:m.params.sessionKey,acpxRecordId:'rec'}})+'\\n');}",
-    " else if(m.method==='prompt'){ pending=m; setTimeout(()=>{ const out=`coord=${coord};text=${pending.params.text}`; process.stdout.write(JSON.stringify({id:pending.id,ok:true,result:{result:{status:'completed'},finalText:out}})+'\\n'); pending=null; },400);}",
+    " if(m.method==='ensure'){ coord=m.params.mcpCoordinatorSession||'none'; try{fs.appendFileSync(logPath, `ensure:${coord}\\n`);}catch{}; process.stdout.write(JSON.stringify({id:m.id,ok:true,result:{ready:true,sessionKey:m.params.sessionKey,acpxRecordId:'rec'}})+'\\n');}",
+    " else if(m.method==='prompt'){ pending=m; setTimeout(()=>{ const out=`coord=${coord};text=${pending.params.text}`; try{fs.appendFileSync(logPath, `prompt:${out}\\n`);}catch{}; process.stdout.write(JSON.stringify({id:pending.id,ok:true,result:{result:{status:'completed'},finalText:out}})+'\\n'); pending=null; },400);}",
     " else { process.stdout.write(JSON.stringify({id:m.id,ok:true,result:{}})+'\\n'); if(m.method==='shutdown')process.exit(0);}",
     "}catch{}}});"
   ].join("\n"));
   const slowEngine = new RuntimeEngine({ workerEntryPath: slowWorkerEntry, permissionMode: "approve-all", stateDir, queueDir, fenceDir, idleTtlMs: 200 });
   const pA = slowEngine.prompt({ ...baseA, text: "A" });
   await new Promise(r => setTimeout(r, 50));
+  const pidA = (slowEngine as unknown as { manager: { get: (k: string) => { ref: { pid: number } } | undefined } }).manager.get("stale-1")?.ref.pid;
+  expect(pidA).toBeDefined();
   // Inject B while A active
   const receipt = await slowEngine.injectMessage({ ...baseB, text: "B", mode: "queue", messageId: "mB" });
   expect(receipt.status).toBe("queued");
@@ -53,8 +55,11 @@ test("A active -> B queue -> A settle -> B drains on new worker, not old route",
     await new Promise(r => setTimeout(r, 100));
   }
   expect(await slowEngine.getQueueStore().hasPending(baseA.logicalSessionId)).toBe(false);
-  // Verify B's drain created a new worker with B's coord by checking next prompt's coord
-  // Do a follow-up prompt with B's identity to see it still uses B's worker (but we can just ensure queue empty)
+  const pidB = (slowEngine as unknown as { manager: { get: (k: string) => { ref: { pid: number } } | undefined } }).manager.get("stale-1")?.ref.pid;
+  expect(pidB).toBeDefined();
+  expect(pidB).not.toBe(pidA);
+  const log = await import("node:fs/promises").then(m => m.readFile(logPath, "utf8").catch(() => ""));
+  expect(log).toContain("prompt:coord=coord-B;text=B");
   await slowEngine.shutdown().catch(() => {});
   await rm(dir, { recursive: true, force: true });
 }, 15_000);

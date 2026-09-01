@@ -41,7 +41,7 @@ async function withEngine(
 }
 
 async function defaultFakeWorker(entry: string): Promise<void> {
-  await writeFile(
+    await writeFile(
     entry,
     [
       "let buffer='';",
@@ -139,7 +139,7 @@ test("queue while direct prompt active waits for turn settle then drains", async
   const queueDir = join(dir, "state", "runtime-queue");
   const entry = join(dir, "fake-worker.mjs");
   // Worker that holds prompt for 300ms
-  await writeFile(
+    await writeFile(
     entry,
     [
       "let buffer='';",
@@ -250,4 +250,33 @@ test("bridge restart recovery: primeQueuesFromCatalog reloads and drains", async
   expect(await (engine2 as unknown as { getQueueStore: ()=>import("../../../../../src/bridge/engine/runtime/runtime-queue").RuntimeQueueStore }).getQueueStore().hasPending(baseInput.logicalSessionId!)).toBe(false);
   await engine2.shutdown().catch(() => {});
   await rm(dir, { recursive: true, force: true });
+}, 15_000);
+test("ensure RUNTIME_SESSION_MISSING keeps head for replay", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-q-missing-"));
+  try {
+    const stateSessionsDir = join(dir, "state", "sessions");
+    await mkdir(stateSessionsDir, { recursive: true });
+    const queueDir = join(dir, "state", "runtime-queue");
+    const fenceDir = join(dir, "state", "worker-fences");
+    const entry = join(dir, "fake-worker.mjs");
+    let ensureAttempts = 0;
+    await writeFile(entry, [
+    "let b='';",
+    "process.stdin.on('data',d=>{b+=d.toString(); let i; while((i=b.indexOf('\\n'))>=0){const l=b.slice(0,i); b=b.slice(i+1); if(!l)continue; try{const m=JSON.parse(l);",
+    " if(m.method==='ensure'){ if(m.params.sessionKey==='missing-test'){ process.stdout.write(JSON.stringify({id:m.id,ok:false,error:{code:'RUNTIME_SESSION_MISSING',message:'missing'}})+'\\n'); } else { process.stdout.write(JSON.stringify({id:m.id,ok:true,result:{ready:true,sessionKey:m.params.sessionKey,acpxRecordId:'rec-'+m.params.sessionKey}})+'\\n'); } }",
+    " else if(m.method==='prompt'){ process.stdout.write(JSON.stringify({id:m.id,ok:true,result:{result:{status:'completed'},finalText:'ok'}})+'\\n'); }",
+    " else { process.stdout.write(JSON.stringify({id:m.id,ok:true,result:{}})+'\\n'); }",
+    " if(m.method==='shutdown')process.exit(0);",
+    "}catch{}}});"
+  ].join("\n"));
+  const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", stateDir: stateSessionsDir, queueDir, fenceDir, idleTtlMs: 200 });
+  const sess = { agent: "codex", cwd: "/repo", name: "missing-test", logicalSessionId: "missing-test" };
+  await engine.injectMessage({ ...sess, text: "hello", mode: "queue", messageId: "m1" });
+  // Wait a bit — drain will try ensure and get RUNTIME_SESSION_MISSING, should keep head
+  await new Promise(r => setTimeout(r, 600));
+  expect(await engine.getQueueStore().hasPending("missing-test")).toBe(true);
+    await engine.shutdown().catch(() => {});
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }, 15_000);

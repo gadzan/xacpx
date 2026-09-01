@@ -54,20 +54,16 @@ function matchesRule(text: string, pattern: string): boolean {
 
 function requestTextForMatching(req: RuntimePermissionRequest): string {
   // req.raw is RequestPermissionRequest from ACP SDK: contains toolCall and options
-  try {
-    const raw = req.raw as unknown as Record<string, unknown>;
-    // Try common fields: toolCall, tool, method, name
-    const toolCall = raw.toolCall ?? raw.tool ?? raw;
-    if (toolCall && typeof toolCall === "object") {
-      const tc = toolCall as Record<string, unknown>;
-      const name = typeof tc.name === "string" ? tc.name : typeof tc.tool === "string" ? tc.tool : "";
-      const input = tc.input ? JSON.stringify(tc.input) : "";
-      return `${name} ${input}`.trim();
-    }
-    return JSON.stringify(raw);
-  } catch {
-    return "";
+  const raw = req.raw as unknown as Record<string, unknown>;
+  // Try common fields: toolCall, tool, method, name
+  const toolCall = raw.toolCall ?? raw.tool ?? raw;
+  if (toolCall && typeof toolCall === "object") {
+    const tc = toolCall as Record<string, unknown>;
+    const name = typeof tc.name === "string" ? tc.name : typeof tc.tool === "string" ? tc.tool : "";
+    const input = tc.input ? JSON.stringify(tc.input) : "";
+    return `${name} ${input}`.trim();
   }
+  return JSON.stringify(raw);
 }
 
 function inferIsReadOrSearch(req: RuntimePermissionRequest): boolean {

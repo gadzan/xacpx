@@ -629,7 +629,7 @@ export class RuntimeEngine implements BridgeEngine {
         // Only terminal turn results should dequeue (no acked loss). Crash/ambiguous (no terminal result) must keep head for replay.
         if (err instanceof RuntimeError) {
           const code = err.code;
-          if (code === "RUNTIME_TURN_CANCELLED" || code === "RUNTIME_TURN_FAILED" || code === "RUNTIME_PERMISSION_DENIED" || code === "RUNTIME_SESSION_MISSING") {
+          if (code === "RUNTIME_TURN_CANCELLED" || code === "RUNTIME_TURN_FAILED" || code === "RUNTIME_PERMISSION_DENIED") {
             isTerminal = true;
           } else {
             isTerminal = false;
