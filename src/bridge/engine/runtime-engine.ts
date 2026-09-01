@@ -641,7 +641,7 @@ export class RuntimeEngine implements BridgeEngine {
     while (true) {
       const _epochAtLoopTop = this.deleteGenerations.get(key) ?? 0;
       if (this.shuttingDown) return;
-      if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _epochAtLoopTop) return;
+      if (this.deleting.has(key)) return;
       if (this.queueSuspended.has(key)) {
         await this.consumeSuspendCool(key);
         return;
@@ -701,7 +701,11 @@ export class RuntimeEngine implements BridgeEngine {
             return;
           }
           await cl.shutdown().catch((e) => { throw toTeardownError(key, e); });
-          if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _epochAtLoopTop) return;
+          if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _epochAtLoopTop) {
+            // Even on abort, ensure fence is retired if worker did reach stopped
+            if (cl.lifecycle === "stopped") await this.manager?.release(key, cl).catch((e) => { throw toTeardownError(key, e); });
+            return;
+          }
           if (cl.lifecycle === "stopped") await this.manager?.release(key, cl).catch((e) => { throw toTeardownError(key, e); });
           else throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `stale MCP worker for "${key}" did not reach stopped after shutdown`);
           this.lastMcpIdentity.delete(key);
@@ -929,7 +933,10 @@ export class RuntimeEngine implements BridgeEngine {
               } else {
                 throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `ghost worker for "${key}" did not reach stopped after terminate`);
               }
-            } catch {}
+            } catch (termErr) {
+              if (termErr instanceof RuntimeError && termErr.code === "RUNTIME_WORKER_TEARDOWN_PENDING") throw termErr;
+              throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `ghost worker teardown failed for "${key}": ${termErr instanceof Error ? termErr.message : String(termErr)}`);
+            }
             throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
           }
           this.lastMcpIdentity.set(key, { mcpCoordinatorSession: input.mcpCoordinatorSession, mcpSourceHandle: input.mcpSourceHandle });
