@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, writeFile, rm, mkdir } from "node:fs/promises";
+import { mkdtemp, writeFile, rm, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -133,7 +133,12 @@ test.serial("P1-6: archive via cancel->freeWarmProcess does not kick drain", asy
     const isSuspended = await (engine as any).getQueueStore().isSuspended(testInput.logicalSessionId);
     expect(isSuspended).toBe(true);
     // First head may have been admitted before suspend (then dequeues leaving 1) or not yet (leaving 2); both satisfy suspend blocks next head
-    const { promise: _p700, resolve: _r700 } = Promise.withResolvers<void>(); setTimeout(_r700, 700); await _p700;
+    for (let i=0;i<40;i++) {
+      const hasActive = (engine as any).activeTurns?.get?.(testInput.logicalSessionId) > 0;
+      const warm = (await engine.isSessionWarm(testInput as unknown as never)).warm;
+      if (!hasActive && !warm) break;
+      const { promise, resolve } = Promise.withResolvers<void>(); setTimeout(resolve, 50); await promise;
+    }
     const stillPending = await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId);
     expect(stillPending).toBe(true);
     const qlen = await (engine as any).getQueueStore().queueLength(testInput.logicalSessionId);
@@ -362,7 +367,13 @@ test.serial("P1-3: archive suspends drain, direct prompt resumes", async () => {
     expect(hasPendingAfterArchive).toBe(true);
     // Archive must cool the owner even while suspend keeps next head; worker should not remain warm.
     // If first head was already admitted before suspend, it will dequeue and leave 1; if not yet admitted, both remain (2). Both satisfy suspend blocks next head.
-    const { promise: _p700, resolve: _r700 } = Promise.withResolvers<void>(); setTimeout(_r700, 700); await _p700; // real timer: wait >400ms wall-clock without prompt to prove suspend blocks next head
+    // Wait for first head to settle and worker to cool (hasActiveTurn==0) before asserting !warm, not just 700ms gamble
+    for (let i=0;i<40;i++) {
+      const hasActive = (engine as any).activeTurns?.get?.(testInput.logicalSessionId) > 0;
+      const warm = (await engine.isSessionWarm(testInput as unknown as never)).warm;
+      if (!hasActive && !warm) break;
+      const { promise, resolve } = Promise.withResolvers<void>(); setTimeout(resolve, 50); await promise;
+    }
     const stillPending = await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId);
     expect(stillPending).toBe(true);
     const queueLen = await (engine as any).getQueueStore().queueLength(testInput.logicalSessionId);
@@ -665,6 +676,12 @@ test.serial("P1-11: delete waits for in-flight acquiring (fence discharge) befor
     await pDelete;
     expect((await engine.isSessionWarm(testInput as unknown as never)).warm).toBe(false);
     expect(manager.get(testInput.logicalSessionId)).toBeUndefined();
+    // Fence must be retired (no retained owner fence)
+    try {
+      const fenceFiles = await readdir(fenceDir);
+      const hasFence = fenceFiles.some((f: string) => f.includes(testInput.logicalSessionId) || f.includes(encodeURIComponent(testInput.logicalSessionId)));
+      expect(hasFence).toBe(false);
+    } catch {}
     const recId = await (engine as any).resolveRecordId(testInput, undefined);
     expect(recId).toBeUndefined();
   } finally {

@@ -430,18 +430,26 @@ export class RuntimeEngine implements BridgeEngine {
   }
   private async waitForAcquiringQuiescence(key: string, timeoutMs = 8_000): Promise<void> {
     const start = Date.now();
-    while (this.acquiring.has(key) && Date.now() - start < timeoutMs) {
-      const pending = this.acquiring.get(key);
-      if (pending) await pending.catch(() => {});
-      const { promise, resolve } = Promise.withResolvers<void>();
-      setTimeout(resolve, 20);
-      await promise;
-    }
-    if (this.acquiring.has(key)) {
-      throw new RuntimeError(
-        "RUNTIME_WORKER_TEARDOWN_PENDING",
-        `cannot hard delete session "${key}" while worker acquisition in flight`,
-      );
+    while (this.acquiring.has(key)) {
+      const remaining = timeoutMs - (Date.now() - start);
+      if (remaining <= 0) {
+        throw new RuntimeError(
+          "RUNTIME_WORKER_TEARDOWN_PENDING",
+          `cannot hard delete session "${key}" while worker acquisition in flight`,
+        );
+      }
+      const pending = this.acquiring.get(key)!;
+      const timeoutPromise = new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), remaining));
+      const result = await Promise.race([
+        (async () => { try { await pending; } catch {} return "done" as const; })(),
+        timeoutPromise,
+      ]);
+      if (result === "timeout") {
+        throw new RuntimeError(
+          "RUNTIME_WORKER_TEARDOWN_PENDING",
+          `cannot hard delete session "${key}" while worker acquisition in flight`,
+        );
+      }
     }
   }
   private readonly coolPending = new Set<string>();
@@ -1451,10 +1459,10 @@ export class RuntimeEngine implements BridgeEngine {
     // PR6: mark deleting so new enqueue is rejected (lifecycle boundary)
     this.deleting.add(key);
     this.deleteGenerations.set(key, (this.deleteGenerations.get(key) ?? 0) + 1);
-    // G4: establishment barrier — prevent old-epoch waiters from starting new acquisitions after bump,
-    // and wait for any in-flight acquisitions (fence discharge + spawn) to settle before destructive ops.
-    await this.waitForAcquiringQuiescence(key);
     try {
+      // G4: establishment barrier — prevent old-epoch waiters from starting new acquisitions after bump,
+      // and wait for any in-flight acquisitions (fence discharge + spawn) to settle before destructive ops.
+      await this.waitForAcquiringQuiescence(key);
       let client: ReturnType<NonNullable<typeof this.manager>["get"]> = this.manager?.get(key);
 
       // 1. Resolve REAL record id (plan §19 order). Never fallback to logicalSessionId.
@@ -1579,11 +1587,19 @@ export class RuntimeEngine implements BridgeEngine {
       }
     }
     if (client) {
-      if (!client.alive && client.lifecycle !== "stopped") {
-        throw new RuntimeError(
-          "RUNTIME_WORKER_TEARDOWN_PENDING",
-          `runtime worker for session "${key}" crashed and ownership cleanup was never verified; refusing hard delete`,
-        );
+      if (!client.alive && (client.lifecycle as string) !== "stopped") {
+        const start = Date.now();
+        while (!client.alive && (client.lifecycle as string) !== "stopped" && Date.now() - start < 500) {
+          const { promise, resolve } = Promise.withResolvers<void>();
+          setTimeout(resolve, 20);
+          await promise;
+        }
+        if (!client.alive && (client.lifecycle as string) !== "stopped") {
+          throw new RuntimeError(
+            "RUNTIME_WORKER_TEARDOWN_PENDING",
+            `runtime worker for session "${key}" crashed and ownership cleanup was never verified; refusing hard delete`,
+          );
+        }
       }
       if (client.alive) {
         if (this.hasActiveTurn(key)) {
