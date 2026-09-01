@@ -1676,10 +1676,11 @@ export class RuntimeEngine implements BridgeEngine {
     }
     this.idleTimers.clear();
     this.coolPending.clear();
-    const deadline = Date.now() + 8_000;
-    while (Date.now() < deadline && this.draining.size > 0) {
-      await Promise.allSettled([...this.draining.values()]);
-      await new Promise<void>((r) => setTimeout(r, 50));
+    if (this.draining.size > 0) {
+      await Promise.race([
+        Promise.allSettled([...this.draining.values()]),
+        new Promise<void>((resolve) => setTimeout(resolve, 8_000)),
+      ]);
     }
     await this.manager?.shutdownAll();
     return {};
