@@ -427,7 +427,7 @@ export class RuntimeEngine implements BridgeEngine {
     const entry = options.workerEntryPath ?? defaultWorkerEntryCandidates().find(fileExists);
     if (entry && fileExists(entry)) {
       const stateDirValid = this.options.stateDir ? this.options.stateDir.split(/[\\/]/).pop() === "sessions" : false;
-      const fenceDir = this.options.fenceDir ?? (stateDirValid ? (() => join(this.runtimeStateRoot(), "worker-fences")) as unknown as string : undefined);
+      const fenceDir: string | (() => string) | undefined = this.options.fenceDir ?? (stateDirValid ? () => join(this.runtimeStateRoot(), "worker-fences") : undefined);
       this.manager = new RuntimeWorkerManager({
         entryPath: entry,
         clientDeps: options.workerClientDeps,
@@ -626,8 +626,8 @@ export class RuntimeEngine implements BridgeEngine {
       // carry explicit per-head fields (absence = intentional none), so they are safe.
       const baseCatalog = this.sessionCatalog.get(key) ?? input;
       if (head.mcpIdentityKnown !== true) {
-        // Keep head for manual migration/clear; surface as non-terminal so drain does not dequeue.
-        throw new RuntimeError("RUNTIME_INIT_FAILED", `queue journal for "${key}" contains identity-unknown head "${head.messageId}" (legacy v1 or pre-discriminator); migrate or clear queue`);
+        // Keep head for operator clear; no automatic migration — clearing will also drop subsequent known heads (FIFO cannot skip).
+        throw new RuntimeError("RUNTIME_INIT_FAILED", `queue journal for "${key}" contains identity-unknown head "${head.messageId}" (legacy v1 or pre-discriminator); operator clear required — no automatic migration`);
       }
       const headMcp = { mcpCoordinatorSession: head.mcpCoordinatorSession, mcpSourceHandle: head.mcpSourceHandle };
       const catalogInput: EngineSessionInput = {
@@ -637,21 +637,22 @@ export class RuntimeEngine implements BridgeEngine {
       };
       // If this head's identity differs from last, rotate before marking active
       const lastMcp = this.lastMcpIdentity.get(key);
-      const isHeadStale = !!lastMcp && ((lastMcp.mcpCoordinatorSession ?? null) !== (headMcp.mcpCoordinatorSession ?? null) || (lastMcp.mcpSourceHandle ?? null) !== (headMcp.mcpSourceHandle ?? null));
+      const isHeadStale = this.isMcpStale(lastMcp, headMcp);
       if (isHeadStale) {
         const cl = this.manager?.get(key);
         if (cl) {
-          if (cl.lifecycle === "busy" || !!cl.hasInFlight) {
+          if (this.isStaleActiveForDrain(cl)) {
             this.staleAfterTurn.add(key);
             // Active turn will handle teardown; schedule a bounded retry in case the active
             // is a non-prompt business op (e.g. setMode) whose finally must re-kick.
             if (!this.shuttingDown) {
-              setTimeout(() => {
+              const timer = setTimeout(() => {
                 if (this.shuttingDown) return;
                 if (this.deleting.has(key)) return;
                 const latest = this.sessionCatalog.get(key) ?? input;
                 this.kickDrain(latest).catch(() => {});
               }, 200);
+              timer.unref?.();
             }
             return;
           }
@@ -716,21 +717,34 @@ export class RuntimeEngine implements BridgeEngine {
     }
   }
 
+  private isMcpStale(last: { mcpCoordinatorSession?: string; mcpSourceHandle?: string } | undefined, requested: { mcpCoordinatorSession?: string; mcpSourceHandle?: string }): boolean {
+    if (!last) return false;
+    return (last.mcpCoordinatorSession ?? null) !== (requested.mcpCoordinatorSession ?? null) || (last.mcpSourceHandle ?? null) !== (requested.mcpSourceHandle ?? null);
+  }
+
+  private isStaleActiveForDrain(client: RuntimeWorkerClient | undefined): boolean {
+    if (!client) return false;
+    return client.lifecycle === "busy" || !!client.hasInFlight;
+  }
+
+  private isStaleActiveForInjectOrCheck(key: string, client: RuntimeWorkerClient | undefined): boolean {
+    if (this.activeTurns.has(key) || this.draining.has(key)) return true;
+    if (!client) return false;
+    return client.lifecycle === "busy" || !!client.hasInFlight;
+  }
+
   private async checkMcpStaleAndRotate(input: EngineSessionInput, _forActiveCheck: boolean): Promise<boolean> {
     const key = this.workerKey(input);
     const requestedMcp = { mcpCoordinatorSession: input.mcpCoordinatorSession, mcpSourceHandle: input.mcpSourceHandle };
     const lastMcp = this.lastMcpIdentity.get(key);
-    const isMcpStale =
-      lastMcp !== undefined &&
-      ((lastMcp.mcpCoordinatorSession ?? null) !== (requestedMcp.mcpCoordinatorSession ?? null) ||
-        (lastMcp.mcpSourceHandle ?? null) !== (requestedMcp.mcpSourceHandle ?? null));
+    const isMcpStale = this.isMcpStale(lastMcp, requestedMcp);
     if (!isMcpStale) return false;
     const existingClient = this.manager?.get(key);
     if (!existingClient) {
       this.lastMcpIdentity.delete(key);
       return true;
     }
-    const isActive = this.activeTurns.has(key) || this.draining.has(key) || existingClient.lifecycle === "busy" || existingClient.hasInFlight;
+    const isActive = this.isStaleActiveForInjectOrCheck(key, existingClient);
     if (isActive) {
       this.staleAfterTurn.add(key);
       throw new RuntimeError("RUNTIME_MCP_STALE", `MCP identity changed for session "${key}" while turn active; will rotate after settle`);
@@ -801,6 +815,8 @@ export class RuntimeEngine implements BridgeEngine {
     } finally {
       // Converged stale teardown for business ops (setMode etc.) that are not prompt's activeTurn.
       // Prompt handles stale in its own finally; this covers direct withWorker callers.
+      // Ensure queue re-kick still runs even if teardown throws.
+      let staleError: unknown;
       if (!this.activeTurns.has(key) && this.staleAfterTurn.has(key)) {
         this.staleAfterTurn.delete(key);
         const staleClient = this.manager?.get(key);
@@ -808,18 +824,20 @@ export class RuntimeEngine implements BridgeEngine {
           try {
             await staleClient.shutdown();
           } catch (e) {
-            throw toTeardownError(key, e);
+            staleError = toTeardownError(key, e);
           }
-          if (staleClient.lifecycle === "stopped") {
-            try {
-              await this.manager?.release(key, staleClient);
-            } catch (e) {
-              throw toTeardownError(key, e);
+          if (!staleError) {
+            if (staleClient.lifecycle === "stopped") {
+              try {
+                await this.manager?.release(key, staleClient);
+              } catch (e) {
+                staleError = toTeardownError(key, e);
+              }
+            } else {
+              staleError = new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `stale MCP worker for "${key}" did not reach stopped after shutdown`);
             }
-          } else {
-            throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `stale MCP worker for "${key}" did not reach stopped after shutdown`);
           }
-          this.lastMcpIdentity.delete(key);
+          if (!staleError) this.lastMcpIdentity.delete(key);
         }
       }
       // Queue re-kick for any business op that unblocked a stale drain (TTL=0 would otherwise stall).
@@ -831,6 +849,7 @@ export class RuntimeEngine implements BridgeEngine {
           this.scheduleIdleTtl(key, client);
         }
       } catch {}
+      if (staleError) throw staleError;
     }
   }
   private buildEnsureParams(input: EngineSessionInput, options?: { resumeSessionId?: string }) {
@@ -1088,14 +1107,14 @@ export class RuntimeEngine implements BridgeEngine {
       mcpCoordinatorSession: (input as unknown as EngineSessionInput).mcpCoordinatorSession,
       mcpSourceHandle: (input as unknown as EngineSessionInput).mcpSourceHandle,
     } as EngineSessionInput);
-    // PR8: stale MCP check for inject — never execute B on A worker (single seam via handleMcpStale)
+    // PR8: stale MCP check for inject — never execute B on A worker (converged via isMcpStale)
     {
       const lastMcp = this.lastMcpIdentity.get(key);
       const reqMcp = { mcpCoordinatorSession: (input as unknown as EngineSessionInput).mcpCoordinatorSession, mcpSourceHandle: (input as unknown as EngineSessionInput).mcpSourceHandle };
-      const isStale = !!lastMcp && ((lastMcp.mcpCoordinatorSession ?? null) !== (reqMcp.mcpCoordinatorSession ?? null) || (lastMcp.mcpSourceHandle ?? null) !== (reqMcp.mcpSourceHandle ?? null));
+      const isStale = this.isMcpStale(lastMcp, reqMcp);
       if (isStale) {
         const cl = this.manager?.get(key);
-        const isActive = this.activeTurns.has(key) || this.draining.has(key) || cl?.lifecycle === "busy" || !!cl?.hasInFlight;
+        const isActive = this.isStaleActiveForInjectOrCheck(key, cl);
         if (isActive) {
           this.staleAfterTurn.add(key);
         } else if (cl) {
