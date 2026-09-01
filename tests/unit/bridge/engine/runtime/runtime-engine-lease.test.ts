@@ -87,6 +87,148 @@ test("P1-1a: prompt vs prompt serialised per logicalSessionId (maxConcurrent=1)"
     await rm(dir, { recursive: true, force: true });
   }
 }, 15_000);
+test.serial("P1-6: archive via cancel->freeWarmProcess does not kick drain", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-archive-cancel-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    // Enqueue two heads: first may be admitted before archive, second must remain
+    await engine.injectMessage({
+      logicalSessionId: testInput.logicalSessionId,
+      messageId: "m-archive-cancel-1",
+      text: "archived-via-cancel-1",
+      mode: "queue",
+    } as unknown as never);
+    await engine.injectMessage({
+      logicalSessionId: testInput.logicalSessionId,
+      messageId: "m-archive-cancel-2",
+      text: "archived-via-cancel-2",
+      mode: "queue",
+    } as unknown as never);
+    const { promise: _p50, resolve: _r50 } = Promise.withResolvers<void>(); setTimeout(_r50, 50); await _p50;
+    // Real archive chain: cancel then freeWarmProcess (cancel no longer kicks)
+    await engine.cancel(testInput as unknown as never);
+    await engine.freeWarmProcess(testInput as unknown as never);
+    const hasPendingAfterArchive = await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId);
+    expect(hasPendingAfterArchive).toBe(true);
+    const isSuspended = await (engine as any).getQueueStore().isSuspended(testInput.logicalSessionId);
+    expect(isSuspended).toBe(true);
+    // First head (admitted before suspend) dequeues, second remains
+    const { promise: _p700, resolve: _r700 } = Promise.withResolvers<void>(); setTimeout(_r700, 700); await _p700;
+    const stillPending = await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId);
+    expect(stillPending).toBe(true);
+    const qlen = await (engine as any).getQueueStore().queueLength(testInput.logicalSessionId);
+    expect(qlen).toBe(1);
+    const warm = await engine.isSessionWarm(testInput as unknown as never);
+    expect(warm.warm).toBe(false);
+    // Direct prompt should clear suspend and drain
+    const r = await engine.prompt({ ...testInput, text: "resume-after-cancel-archive" });
+    expect(r.text).toBe("ok:resume-after-cancel-archive");
+    const { promise: _p600, resolve: _r600 } = Promise.withResolvers<void>(); setTimeout(_r600, 600); await _p600;
+    const after = await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId);
+    expect(after).toBe(false);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test.serial("P1-7: delete generation blocks waiter that was queued behind policy lock (prompt)", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-delete-policy-prompt-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    // Hold policy lock
+    await (engine as any).acquirePolicyLock();
+    // Start delete and prompt while lock held; both will await lock
+    const pDelete = engine.deleteSession(testInput as unknown as never);
+    const pPrompt = engine.prompt({ ...testInput, text: "should-not-recreate" });
+    pPrompt.catch(() => {});
+    // Give them time to queue on lock
+    const { promise: _p50, resolve: _r50 } = Promise.withResolvers<void>(); setTimeout(_r50, 50); await _p50;
+    // Release lock: D should acquire first (it was queued first), then P
+    (engine as any).releasePolicyLock();
+    await pDelete;
+    // P must be rejected with RUNTIME_INIT_FAILED (generation mismatch), not recreate
+    await expect(pPrompt).rejects.toMatchObject({ code: "RUNTIME_INIT_FAILED" });
+    expect(await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId).catch(()=>false)).toBe(false);
+    expect((await engine.isSessionWarm(testInput as unknown as never)).warm).toBe(false);
+    // Ensure no record was recreated
+    const recId = await (engine as any).resolveRecordId(testInput, undefined);
+    expect(recId).toBeUndefined();
+  } finally {
+    // Ensure lock released if still held
+    try { (engine as any).releasePolicyLock(); } catch {}
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test.serial("P1-8: delete generation blocks waiter that was queued behind policy lock (inject)", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-delete-policy-inject-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    await (engine as any).acquirePolicyLock();
+    const pDelete = engine.deleteSession(testInput as unknown as never);
+    const pInject = engine.injectMessage({
+      logicalSessionId: testInput.logicalSessionId,
+      messageId: "m-inject-after-delete",
+      text: "should-not-queue",
+      mode: "queue",
+    } as unknown as never);
+    (pInject as any).catch(() => {});
+    const { promise: _p50, resolve: _r50 } = Promise.withResolvers<void>(); setTimeout(_r50, 50); await _p50;
+    (engine as any).releasePolicyLock();
+    await pDelete;
+    await expect(pInject).rejects.toMatchObject({ code: "RUNTIME_INIT_FAILED" });
+    expect(await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId).catch(()=>false)).toBe(false);
+  } finally {
+    try { (engine as any).releasePolicyLock(); } catch {}
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
 
 test("P1-1b: prompt vs drain serialised (shared lease)", async () => {
   const testInput = uniqueInput();

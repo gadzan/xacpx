@@ -719,6 +719,13 @@ export class RuntimeEngine implements BridgeEngine {
         releaseTurn?.();
         return;
       }
+      // Archive suspend admission: check after lease (cancel may have kicked drain before suspend persisted)
+      if (this.queueSuspended.has(key)) {
+        this.decActiveTurn(key);
+        releaseTurn?.();
+        await this.consumeSuspendCool(key);
+        return;
+      }
       let turnError: unknown;
       let isTerminal = false;
       try {
@@ -851,10 +858,14 @@ export class RuntimeEngine implements BridgeEngine {
     }
   }
   private async withWorker<T>(input: EngineSessionInput, run: (client: RuntimeWorkerClient) => Promise<T>): Promise<T> {
+    const key = this.workerKey(input);
+    const _lifecycleEpochAtEntry = this.deleteGenerations.get(key) ?? 0;
     if (this.policyTransitionLock) {
       await this.policyTransitionLock;
     }
-    const key = this.workerKey(input);
+    if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _lifecycleEpochAtEntry) {
+      throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
+    }
         await this.checkMcpStaleAndRotate(input, false);
     const existingTimer = this.idleTimers.get(key);
     if (existingTimer) {
@@ -864,6 +875,11 @@ export class RuntimeEngine implements BridgeEngine {
     let client: RuntimeWorkerClient;
     try {
       client = await this.ensureWorker(input);
+      if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _lifecycleEpochAtEntry) {
+        // Worker was just acquired but session was deleted while we waited for it
+        try { await client.terminate().catch(()=>{}); } catch {}
+        throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
+      }
       this.lastMcpIdentity.set(key, { mcpCoordinatorSession: input.mcpCoordinatorSession, mcpSourceHandle: input.mcpSourceHandle });
     } catch (error) {
       if (error instanceof WorkerTeardownPendingError) {
@@ -1125,10 +1141,14 @@ export class RuntimeEngine implements BridgeEngine {
     onEvent?: (event: EnginePromptStreamEvent) => void,
   ): Promise<{ text: string }> {
     if (this.shuttingDown) throw new RuntimeError("RUNTIME_INIT_FAILED", "runtime engine is shutting down");
+    const key = this.workerKey(input);
+    const _lifecycleEpochAtEntry = this.deleteGenerations.get(key) ?? 0;
     if (this.policyTransitionLock) {
       await this.policyTransitionLock;
     }
-    const key = this.workerKey(input);
+    if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _lifecycleEpochAtEntry) {
+      throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
+    }
     // Mark the turn active IMMEDIATELY so preflight on concurrent policy
     // updates detects the in-flight turn and fails closed (plan §32).
     // Must be before any await so the busy flag is synchronously visible to concurrent updatePermissionPolicy.
@@ -1138,13 +1158,19 @@ export class RuntimeEngine implements BridgeEngine {
     // G6: persist first, then memory. Fail-closed on persist error.
     try {
       await this.getQueueStore().setSuspended(key, false);
+      if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _lifecycleEpochAtEntry) {
+        throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
+      }
       this.queueSuspended.delete(key);
       await this.checkMcpStaleAndRotate(input, true);
+      if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _lifecycleEpochAtEntry) {
+        throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
+      }
     } catch (err) {
       this.decActiveTurn(key);
       throw err;
     }
-    const _deleteGenAtStart = this.deleteGenerations.get(key) ?? 0;
+    const _deleteGenAtStart = _lifecycleEpochAtEntry;
     let releaseTurn: (() => void) | undefined;
     try {
       releaseTurn = await this.acquireTurnLease(key);
@@ -1205,10 +1231,14 @@ export class RuntimeEngine implements BridgeEngine {
 
   async injectMessage(input: EngineInjectInput): Promise<{ status: "queued"; modeUsed: "queue"; queueItemId: string }> {
     if (this.shuttingDown) throw new RuntimeError("RUNTIME_INIT_FAILED", "runtime engine is shutting down");
+    const key = this.workerKey(input);
+    const _lifecycleEpochAtEntry = this.deleteGenerations.get(key) ?? 0;
     if (this.policyTransitionLock) {
       await this.policyTransitionLock;
     }
-    const key = this.workerKey(input);
+    if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _lifecycleEpochAtEntry) {
+      throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
+    }
     // Steer/interrupt remain unsupported until same-turn behavior is proven
     if (input.mode === "steer" || input.mode === "interrupt") {
       throw new RuntimeError(
@@ -1247,6 +1277,9 @@ export class RuntimeEngine implements BridgeEngine {
       }
     }
     const catalogInput = this.sessionCatalog.get(key)!;
+    if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _lifecycleEpochAtEntry) {
+      throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
+    }
     const store = this.getQueueStore();
     const receipt = await store.enqueue(key, { messageId: input.messageId, text: input.text, mode, mcpCoordinatorSession: (input as unknown as EngineSessionInput).mcpCoordinatorSession, mcpSourceHandle: (input as unknown as EngineSessionInput).mcpSourceHandle }, {
       isDeleting: (k) => this.deleting.has(k),
@@ -1333,16 +1366,9 @@ export class RuntimeEngine implements BridgeEngine {
         cancelledActive = result.cancelled === true;
       } catch {}
     }
-    // PR6: cancel is active-turn only for now — pending queue remains (parity with CLI where cancel does not clear queue)
-    // After active cancel settles, if queue has pending, kick drain so queue does not stall
-    try {
-      if (this.queueStore && await this.queueStore.hasPending(key)) {
-        // Only kick drain if no active turn remains (cancel may still be draining)
-        if (!this.hasActiveTurn(key)) {
-          this.kickDrain(input).catch(() => {});
-        }
-      }
-    } catch {}
+    // PR6: cancel is active-turn only — pending queue remains. Do NOT kick drain here;
+    // drainLoop and direct prompt's finally will re-kick when appropriate. Kicking from cancel
+    // would wake a queue that archive just suspended (suspend must win).
     if (cancelledActive) return { cancelled: true, message: "cancel delivered to runtime worker" };
     if (!client || !client.alive) return { cancelled: false, message: "no active runtime worker for session" };
     return { cancelled: false, message: "cancel delivered to runtime worker" };
@@ -1442,7 +1468,7 @@ export class RuntimeEngine implements BridgeEngine {
         this.recordIds.delete(key);
         await this.getQueueStore().removeJournal(key);
         this.sessionCatalog.delete(key);
-        this.deleteGenerations.delete(key);
+        // Keep deleteGenerations monotonic — do not delete epoch, old waiters must still see generation change
         return {};
       }
 
@@ -1509,7 +1535,7 @@ export class RuntimeEngine implements BridgeEngine {
       // 6. PR6: only after record deletion verified successful, delete runtime queue journal fail-closed
       await this.getQueueStore().removeJournal(key);
       this.sessionCatalog.delete(key);
-      this.deleteGenerations.delete(key);
+      // Keep deleteGenerations monotonic for lifecycle epoch
     } catch (error) {
       throw error;
     } finally {
