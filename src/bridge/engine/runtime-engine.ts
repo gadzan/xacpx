@@ -1651,6 +1651,7 @@ export class RuntimeEngine implements BridgeEngine {
             this.manager?.deleteWorker(key, client);
           }
         }
+        await this.waitForWorkerQuiescence(key);
         this.clearActiveTurn(key);
         this.coolPending.delete(key);
         this.recordIds.delete(key);
