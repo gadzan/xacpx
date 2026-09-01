@@ -41,7 +41,6 @@ export interface RegisterDiscordCommandsOptions {
   applicationId: string;
   guildId?: string;
   commands: DiscordSlashCommand[];
-  fetchImpl?: typeof fetch;
   restImpl?: unknown;
 }
 

@@ -1051,7 +1051,14 @@ export class DiscordChannel implements MessageChannelRuntime {
           active.previewStream = null;
         }
 
-        const finalText = [accumulated.trim(), (response.text ?? "").trim()].filter(Boolean).join("\n\n") || response.text || accumulated;
+        const trimmedAcc = accumulated.trim();
+        const trimmedResp = (response.text ?? "").trim();
+        let finalText: string;
+        if (!trimmedAcc) finalText = trimmedResp;
+        else if (!trimmedResp) finalText = trimmedAcc;
+        else if (trimmedAcc.includes(trimmedResp)) finalText = trimmedAcc;
+        else finalText = `${trimmedAcc}\n\n${trimmedResp}`;
+        if (!finalText) finalText = response.text ?? accumulated;
         await this.deliverFinalResponse({
           runtime,
           target,

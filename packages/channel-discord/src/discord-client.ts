@@ -102,22 +102,23 @@ class DiscordJsClient implements DiscordClientLike {
       if (!channelId) return;
       const rawValues = anyI.options?.data?.map((o) => String(o.value ?? "")).filter((s) => s.length > 0) ?? [];
       const text = `/${anyI.commandName}${rawValues.length > 0 ? ` ${rawValues.join(" ")}` : ""}`.trim();
+      const botUserId = (client as unknown as { user?: { id?: string } | null })?.user?.id ?? "";
       const synthetic: DiscordInboundMessage = {
         id: anyI.id ?? `interaction-${Date.now()}`,
         channelId,
         guildId: anyI.guildId ?? null,
         author: { id: anyI.user?.id ?? anyI.member?.user?.id ?? "unknown", bot: false },
-        content: text,
+        content: botUserId ? `<@${botUserId}> ${text}` : text,
         cleanContent: text,
         createdTimestamp: Date.now(),
-        mentions: { users: [] },
+        mentions: botUserId ? { users: [{ id: botUserId }] } : { users: [] },
         attachments: [],
         senderRoleIds: anyI.member?.roles?.cache ? [...anyI.member.roles.cache.keys()] : undefined,
       };
       void (async () => {
         try {
           if (!anyI.replied && !anyI.deferred && anyI.reply) {
-            await anyI.reply({ content: `⏳ Processing \`${text}\` …`, ephemeral: true });
+            await anyI.reply({ content: `⏳ Processing \`${text}\` …`, ephemeral: true, allowedMentions: { parse: [] } });
           }
         } catch {
           // ignore interaction ack failures
