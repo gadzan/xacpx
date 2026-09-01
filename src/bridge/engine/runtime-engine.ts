@@ -403,7 +403,12 @@ export function defaultWorkerEntry(fromUrl?: string): string {
 export class RuntimeEngine implements BridgeEngine {
   readonly kind = "runtime" as const;
   private readonly manager?: RuntimeWorkerManager;
-  private readonly activeTurns = new Set<string>();
+  private readonly activeTurns = new Map<string, number>();
+  private hasActiveTurn(key: string): boolean { return (this.activeTurns.get(key) ?? 0) > 0; }
+  private hasAnyActiveTurn(): boolean { for (const v of this.activeTurns.values()) if (v > 0) return true; return false; }
+  private incActiveTurn(key: string): void { this.activeTurns.set(key, (this.activeTurns.get(key) ?? 0) + 1); }
+  private decActiveTurn(key: string): void { const n = (this.activeTurns.get(key) ?? 0) - 1; if (n <= 0) this.activeTurns.delete(key); else this.activeTurns.set(key, n); }
+  private clearActiveTurn(key: string): void { this.activeTurns.delete(key); }
   private readonly coolPending = new Set<string>();
   /** In-flight worker acquisitions (fence discharge + spawn), keyed by session. */
   private readonly acquiring = new Map<string, Promise<RuntimeWorkerClient>>();
@@ -497,7 +502,7 @@ export class RuntimeEngine implements BridgeEngine {
     if (this.idleTtlMs <= 0) return;
     const timer = setTimeout(async () => {
       this.idleTimers.delete(key);
-      if (this.activeTurns.has(key)) return;
+      if (this.hasActiveTurn(key)) return;
       // PR6: durable queue gates idle cool — if pending queue non-empty, drain instead of shutting down
       try {
         if (this.queueStore && await this.queueStore.hasPending(key)) {
@@ -511,7 +516,7 @@ export class RuntimeEngine implements BridgeEngine {
         // fail closed: if queue unreadable, do not cool — keep worker and surface on next operation
         return;
       }
-      if (client.alive && (client.lifecycle === "idle" || client.lifecycle === "ready") && !this.activeTurns.has(key)) {
+      if (client.alive && (client.lifecycle === "idle" || client.lifecycle === "ready") && !this.hasActiveTurn(key)) {
         try {
           await client.shutdown();
         } catch {
@@ -607,6 +612,7 @@ export class RuntimeEngine implements BridgeEngine {
     while (true) {
       if (this.shuttingDown) return;
       if (this.deleting.has(key)) return;
+      if (this.queueSuspended.has(key)) return;
       let rec: RuntimeQueueRecord | undefined;
       try {
         rec = await store.load(key);
@@ -667,7 +673,7 @@ export class RuntimeEngine implements BridgeEngine {
           this.staleAfterTurn.delete(key);
         }
       }
-      this.activeTurns.add(key);
+      this.incActiveTurn(key);
       const releaseTurn = await this.acquireTurnLease(key);
       let turnError: unknown;
       let isTerminal = false;
@@ -690,7 +696,7 @@ export class RuntimeEngine implements BridgeEngine {
         }
       } finally {
         try {
-          this.activeTurns.delete(key);
+          this.decActiveTurn(key);
         } finally {
           releaseTurn();
         }
@@ -737,7 +743,7 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   private isStaleActiveForInjectOrCheck(key: string, client: RuntimeWorkerClient | undefined): boolean {
-    if (this.activeTurns.has(key) || this.draining.has(key)) return true;
+    if (this.hasActiveTurn(key) || this.draining.has(key)) return true;
     if (!client) return false;
     return client.lifecycle === "busy" || !!client.hasInFlight;
   }
@@ -817,7 +823,7 @@ export class RuntimeEngine implements BridgeEngine {
       return result;
     } catch (error) {
       if (error instanceof WorkerCrashError) {
-        this.activeTurns.delete(key);
+        this.clearActiveTurn(key);
         client.lifecycle = "failed";
       }
       throw toStableRuntimeError(error);
@@ -826,7 +832,7 @@ export class RuntimeEngine implements BridgeEngine {
       // Prompt handles stale in its own finally; this covers direct withWorker callers.
       // Ensure queue re-kick still runs even if teardown throws.
       let staleError: unknown;
-      if (!this.activeTurns.has(key) && this.staleAfterTurn.has(key)) {
+      if (!this.hasActiveTurn(key) && this.staleAfterTurn.has(key)) {
         this.staleAfterTurn.delete(key);
         const staleClient = this.manager?.get(key);
         if (staleClient) {
@@ -854,7 +860,7 @@ export class RuntimeEngine implements BridgeEngine {
         if (this.queueStore && await this.queueStore.hasPending(key)) {
           const latest = this.sessionCatalog.get(key) ?? input;
           if (latest) this.kickDrain(latest).catch(() => {});
-        } else if (client.alive && (client.lifecycle === "idle" || client.lifecycle === "ready") && !this.activeTurns.has(key)) {
+        } else if (client.alive && (client.lifecycle === "idle" || client.lifecycle === "ready") && !this.hasActiveTurn(key)) {
           this.scheduleIdleTtl(key, client);
         }
       } catch {}
@@ -1051,14 +1057,14 @@ export class RuntimeEngine implements BridgeEngine {
     await this.checkMcpStaleAndRotate(input, true);
     // Mark the turn active IMMEDIATELY so preflight on concurrent policy
     // updates detects the in-flight turn and fails closed (plan §32).
-    this.activeTurns.add(key);
+    this.incActiveTurn(key);
     const releaseTurn = await this.acquireTurnLease(key);
     try {
       const result = await this.executeRuntimeTurn(input, input.text, { onEvent, media: input.media, toolEventMode: input.toolEventMode, toolEvents: input.toolEvents });
       return result;
     } finally {
       try {
-        this.activeTurns.delete(key);
+        this.decActiveTurn(key);
       // PR8: retire stale MCP worker after the active turn has truly settled (activeTurns cleared) — fail-closed on teardown uncertainty
       if (this.staleAfterTurn.has(key)) {
         this.staleAfterTurn.delete(key);
@@ -1220,7 +1226,6 @@ export class RuntimeEngine implements BridgeEngine {
       await this.policyTransitionLock;
     }
     const key = this.workerKey(input);
-    try { if (this.queueStore && await this.queueStore.hasPending(key)) return { cancelled: false, message: "queue has pending turns; cancel is active-turn only" }; } catch {}
     this.sessionCatalog.set(key, input);
     const client = this.manager?.get(key);
     let cancelledActive = false;
@@ -1235,7 +1240,7 @@ export class RuntimeEngine implements BridgeEngine {
     try {
       if (this.queueStore && await this.queueStore.hasPending(key)) {
         // Only kick drain if no active turn remains (cancel may still be draining)
-        if (!this.activeTurns.has(key)) {
+        if (!this.hasActiveTurn(key)) {
           this.kickDrain(input).catch(() => {});
         }
       }
@@ -1301,7 +1306,7 @@ export class RuntimeEngine implements BridgeEngine {
         );
       }
       if (client.alive) {
-        if (this.activeTurns.has(key)) {
+        if (this.hasActiveTurn(key)) {
           await client.request("cancel").catch(() => {});
         }
         await client.request("close").catch(() => {});
@@ -1316,7 +1321,7 @@ export class RuntimeEngine implements BridgeEngine {
         this.manager?.deleteWorker(key, client);
       }
     }
-    this.activeTurns.delete(key);
+    this.clearActiveTurn(key);
     this.coolPending.delete(key);
 
     try {
@@ -1336,6 +1341,7 @@ export class RuntimeEngine implements BridgeEngine {
     return {};
     } finally {
       this.deleting.delete(key);
+      this.queueSuspended.delete(key);
     }
   }
 
@@ -1347,11 +1353,10 @@ export class RuntimeEngine implements BridgeEngine {
       clearTimeout(timer);
       this.idleTimers.delete(key);
     }
-    // PR6: if durable queue has pending, do NOT cool — spawn/drain instead (queue must not be orphaned)
+    // PR6: archive suspend — if durable queue has pending, suspend draining and allow cool (queue remains durable until next direct prompt)
     try {
       if (this.queueStore && await this.queueStore.hasPending(key)) {
-        this.kickDrain(input).catch(() => {});
-        return {};
+        this.queueSuspended.add(key);
       }
     } catch {
       // Unreadable queue -> fail closed, do not cool
@@ -1372,7 +1377,7 @@ export class RuntimeEngine implements BridgeEngine {
         `runtime worker for session "${key}" crashed and ownership cleanup was never verified; refusing freeWarmProcess`,
       );
     }
-    if (this.activeTurns.has(key)) {
+    if (this.hasActiveTurn(key)) {
       // Active turn in flight: mark for cool-after-settle, never kill mid-turn (plan §14).
       this.coolPending.add(key);
       return {};
@@ -1477,9 +1482,16 @@ export class RuntimeEngine implements BridgeEngine {
       const next = new Promise<void>((r) => (release = r));
       const tail = prior ? prior.then(() => next, () => next) : next;
       this.turnLeases.set(key, tail);
-      if (!prior) return () => { release(); if (this.turnLeases.get(key) === tail) this.turnLeases.delete(key); };
+      if (!prior) {
+        if (this.shuttingDown) { release(); if (this.turnLeases.get(key) === tail) this.turnLeases.delete(key); throw new RuntimeError("RUNTIME_INIT_FAILED", "runtime engine is shutting down"); }
+        return () => { release(); if (this.turnLeases.get(key) === tail) this.turnLeases.delete(key); };
+      }
       await prior;
-      if (this.turnLeases.get(key) === tail) return () => { release(); if (this.turnLeases.get(key) === tail) this.turnLeases.delete(key); };
+      if (this.shuttingDown) { release(); if (this.turnLeases.get(key) === tail) this.turnLeases.delete(key); throw new RuntimeError("RUNTIME_INIT_FAILED", "runtime engine is shutting down"); }
+      if (this.turnLeases.get(key) === tail) {
+        if (this.shuttingDown) { release(); if (this.turnLeases.get(key) === tail) this.turnLeases.delete(key); throw new RuntimeError("RUNTIME_INIT_FAILED", "runtime engine is shutting down"); }
+        return () => { release(); if (this.turnLeases.get(key) === tail) this.turnLeases.delete(key); };
+      }
       release();
     }
   }
@@ -1566,10 +1578,10 @@ export class RuntimeEngine implements BridgeEngine {
       // Global fail-closed preflight (plan §32): an active turn or an
       // in-flight worker acquisition on ANY session races the policy
       // rotation — the transition must not cross that boundary.
-      if (this.activeTurns.size > 0) {
+      if (this.hasAnyActiveTurn()) {
         throw new RuntimeError(
           "RUNTIME_PERMISSION_BUSY",
-          `cannot update permission policy while session(s) "${[...this.activeTurns].join(", ")}" have in-flight turns (fail closed)`,
+          `cannot update permission policy while session(s) "${[...this.activeTurns.keys()].join(", ")}" have in-flight turns (fail closed)`,
         );
       }
       if (this.acquiring.size > 0) {
@@ -1677,10 +1689,16 @@ export class RuntimeEngine implements BridgeEngine {
     this.idleTimers.clear();
     this.coolPending.clear();
     if (this.draining.size > 0) {
-      await Promise.race([
-        Promise.allSettled([...this.draining.values()]),
-        new Promise<void>((resolve) => setTimeout(resolve, 8_000)),
-      ]);
+      let _shutdownTimer: ReturnType<typeof setTimeout> | undefined;
+      const _shutdownTimeout = new Promise<void>((resolve) => {
+        _shutdownTimer = setTimeout(resolve, 8_000);
+        _shutdownTimer.unref?.();
+      });
+      try {
+        await Promise.race([Promise.allSettled([...this.draining.values()]), _shutdownTimeout]);
+      } finally {
+        if (_shutdownTimer) clearTimeout(_shutdownTimer);
+      }
     }
     await this.manager?.shutdownAll();
     return {};
