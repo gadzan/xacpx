@@ -1022,21 +1022,40 @@ export class DiscordChannel implements MessageChannelRuntime {
       }
 
       let accumulated = "";
+      const toolRenderState = { emittedToolCallIds: new Set<string>() } as { emittedToolCallIds: Set<string> };
       const safeReply = async (delta: string): Promise<void> => {
         if (active.suppressed || !delta) return;
         const trimmed = delta.trimStart();
         const isProgress = /^[🚀🔧⏳ℹ️📦🔩🔄⚠️🧰]/.test(trimmed);
         if (accumulated.length > 0 && isProgress) {
           if (!accumulated.endsWith("\n")) accumulated += "\n";
+        } else if (accumulated.length > 0 && trimmed.length > 0) {
+          const lastLine = accumulated.split("\n").pop() ?? "";
+          const lastWasTool = lastLine.trimStart().startsWith("🔧") || lastLine.trimStart().startsWith("🧰") || lastLine.trimStart().startsWith("⚠️");
+          if (lastWasTool && !isProgress) {
+            if (!accumulated.endsWith("\n\n") && !accumulated.endsWith("\n")) accumulated += "\n\n";
+            else if (accumulated.endsWith("\n") && !accumulated.endsWith("\n\n")) accumulated += "\n";
+          }
         }
         accumulated += delta;
         active.previewStream?.update(accumulated);
       };
       const onToolEvent = async (event: ToolUseEvent): Promise<void> => {
         if (active.suppressed) return;
-        const title = (event.toolName ?? event.kind ?? "tool").trim() || "tool";
-        const emoji = "🔧";
-        const line = `${emoji} ${title}`;
+        const toolName = event.toolName?.trim();
+        if (!toolName) return;
+        if (toolRenderState.emittedToolCallIds.has(event.toolCallId)) return;
+        toolRenderState.emittedToolCallIds.add(event.toolCallId);
+        const summary = event.summary && event.summary !== toolName ? event.summary : "";
+        const display = summary ? `${toolName}: ${summary}` : toolName;
+        const truncated = display.length > 60 ? `${display.slice(0, 57)}…` : display;
+        const emojiMap: Record<string, string> = { read: "📖", search: "🔍", execute: "🔧", edit: "✏️", think: "💭", other: "🔧" };
+        const emoji = emojiMap[event.kind] ?? "🔧";
+        const line = `${emoji} ${truncated} (${event.status})`;
+        // dedup identical consecutive truncated lines (e.g. repeated git log)
+        const lines = accumulated.split("\n");
+        const lastLine = lines[lines.length - 1] ?? "";
+        if (lastLine === line) return;
         accumulated += (accumulated ? "\n" : "") + line;
         active.previewStream?.update(accumulated);
       };
