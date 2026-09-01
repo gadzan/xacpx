@@ -489,8 +489,18 @@ export class RuntimeEngine implements BridgeEngine {
         const fence = (this.manager as any)?.fence?.();
         if (fence) {
           const read = await fence.read(key);
-          if (read.kind === "present") hasFence = true;
-          else if (read.kind === "unreadable") {
+          if (read.kind === "present") {
+            if (read.record.phase === "discharged") {
+              // Terminal proof: ownership already proven gone — physical file may remain,
+              // durable discharged outranks file. Best-effort retire, but do not block.
+              try {
+                await fence.retire(key);
+              } catch {}
+              hasFence = false;
+            } else {
+              hasFence = true;
+            }
+          } else if (read.kind === "unreadable") {
             throw new RuntimeError(
               "RUNTIME_WORKER_TEARDOWN_PENDING",
               `cannot hard delete session "${key}" while fence unreadable`,

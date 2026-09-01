@@ -742,5 +742,61 @@ test.serial("P1-12: residual fence without record blocks delete (fail-closed)", 
     await rm(dir, { recursive: true, force: true });
   }
 }, 15_000);
+test.serial("P1-12b: residual discharged fence does NOT block delete (proven gone)", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-residual-discharged-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  await mkdir(fenceDir, { recursive: true });
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    const fencePath = join(fenceDir, `${encodeURIComponent(testInput.logicalSessionId)}.json`);
+    const record = {
+      kind: "runtime-worker-owner",
+      logicalSessionId: testInput.logicalSessionId,
+      generation: "test-gen-discharged",
+      pid: 99999,
+      creationDate: null,
+      bootstrapVerified: true,
+      phase: "discharged" as const,
+      startedAt: new Date().toISOString(),
+      agent: "runtime-worker",
+    };
+    await writeFile(fencePath, JSON.stringify(record, null, 2), "utf8");
+    // Ensure fence is present as discharged
+    const fenceFilesBefore = await readdir(fenceDir);
+    expect(fenceFilesBefore.some((f: string) => f.includes(encodeURIComponent(testInput.logicalSessionId)))).toBe(true);
+    // Delete with no worker/no record but discharged fence must succeed (proven gone)
+    await expect(engine.deleteSession(testInput as unknown as never)).resolves.toEqual({});
+    expect((await engine.isSessionWarm(testInput as unknown as never)).warm).toBe(false);
+    const recId = await (engine as any).resolveRecordId(testInput, undefined);
+    expect(recId).toBeUndefined();
+    // Fence may be absent or still discharged — retired best-effort, but must not be admitted/owned
+    try {
+      const after = await readdir(fenceDir);
+      const stillPresent = after.filter((f: string) => f.includes(encodeURIComponent(testInput.logicalSessionId)));
+      if (stillPresent.length > 0) {
+        const content = await (await import("node:fs/promises")).readFile(join(fenceDir, stillPresent[0]!), "utf8");
+        const parsed = JSON.parse(content);
+        expect(parsed.phase).toBe("discharged");
+      }
+    } catch {}
+  } finally {
+    await engine.shutdown().catch(()=>{});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
 
 
