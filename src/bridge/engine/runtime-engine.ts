@@ -426,10 +426,12 @@ export class RuntimeEngine implements BridgeEngine {
     this.idleTtlMs = options.idleTtlMs ?? (options.queueOwnerTtlSeconds !== undefined ? options.queueOwnerTtlSeconds * 1000 : 60_000);
     const entry = options.workerEntryPath ?? defaultWorkerEntryCandidates().find(fileExists);
     if (entry && fileExists(entry)) {
+      const stateDirValid = this.options.stateDir ? this.options.stateDir.split(/[\\/]/).pop() === "sessions" : false;
+      const fenceDir = this.options.fenceDir ?? (stateDirValid ? (() => join(this.runtimeStateRoot(), "worker-fences")) as unknown as string : undefined);
       this.manager = new RuntimeWorkerManager({
         entryPath: entry,
         clientDeps: options.workerClientDeps,
-        fenceDir: options.fenceDir ?? (() => { try { return options.stateDir ? join(this.runtimeStateRoot(), "worker-fences") : join(this.xacpxRuntimeDir(), "worker-fences"); } catch { return join(this.xacpxRuntimeDir(), "worker-fences"); } })(),
+        ...(fenceDir ? { fenceDir } : {}),
       });
     }
     if (options.queueDir) {
@@ -618,18 +620,21 @@ export class RuntimeEngine implements BridgeEngine {
         return;
       }
       // Per-head MCP identity: each queued message carries its own launch identity.
-      // v1 journals are legacy (no per-head fields) — missing MCP means "unknown", so we
-      // fallback to the catalog's current MCP rather than executing with undefined.
-      // v2 journals: missing MCP is intentional (no MCP), so we preserve undefined.
+      // v1 journals are legacy (no per-head discriminator) — missing MCP means
+      // "unknown" and MUST fail closed rather than silently executing as "none"
+      // or guessing the catalog's current MCP. v2 journals carry explicit
+      // per-head fields (absence = intentional none), so they are safe to drain.
       const baseCatalog = this.sessionCatalog.get(key) ?? input;
       const isLegacy = rec?.schema === "xacpx.runtime-queue.v1";
-      const effectiveMcpCoordinatorSession = isLegacy && head.mcpCoordinatorSession === undefined ? baseCatalog.mcpCoordinatorSession : head.mcpCoordinatorSession;
-      const effectiveMcpSourceHandle = isLegacy && head.mcpSourceHandle === undefined ? baseCatalog.mcpSourceHandle : head.mcpSourceHandle;
-      const headMcp = { mcpCoordinatorSession: effectiveMcpCoordinatorSession, mcpSourceHandle: effectiveMcpSourceHandle };
+      if (isLegacy) {
+        // Keep head for manual migration/clear; surface as non-terminal so drain does not dequeue.
+        throw new RuntimeError("RUNTIME_INIT_FAILED", `legacy queue journal v1 for "${key}" contains identity-unknown head "${head.messageId}"; migrate to v2 or clear queue`);
+      }
+      const headMcp = { mcpCoordinatorSession: head.mcpCoordinatorSession, mcpSourceHandle: head.mcpSourceHandle };
       const catalogInput: EngineSessionInput = {
         ...baseCatalog,
-        mcpCoordinatorSession: effectiveMcpCoordinatorSession,
-        mcpSourceHandle: effectiveMcpSourceHandle,
+        mcpCoordinatorSession: head.mcpCoordinatorSession,
+        mcpSourceHandle: head.mcpSourceHandle,
       };
       // If this head's identity differs from last, rotate before marking active
       const lastMcp = this.lastMcpIdentity.get(key);
@@ -639,10 +644,21 @@ export class RuntimeEngine implements BridgeEngine {
         if (cl) {
           if (cl.lifecycle === "busy" || !!cl.hasInFlight) {
             this.staleAfterTurn.add(key);
+            // Active turn will handle teardown; schedule a bounded retry in case the active
+            // is a non-prompt business op (e.g. setMode) whose finally must re-kick.
+            if (!this.shuttingDown) {
+              setTimeout(() => {
+                if (this.shuttingDown) return;
+                if (this.deleting.has(key)) return;
+                const latest = this.sessionCatalog.get(key) ?? input;
+                this.kickDrain(latest).catch(() => {});
+              }, 200);
+            }
             return;
           }
           await cl.shutdown().catch((e) => { throw toTeardownError(key, e); });
-          if (cl.lifecycle === "stopped") await this.manager?.release(key, cl).catch(() => {});
+          if (cl.lifecycle === "stopped") await this.manager?.release(key, cl).catch((e) => { throw toTeardownError(key, e); });
+          else throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `stale MCP worker for "${key}" did not reach stopped after shutdown`);
           this.lastMcpIdentity.delete(key);
           this.staleAfterTurn.delete(key);
         }
@@ -715,14 +731,16 @@ export class RuntimeEngine implements BridgeEngine {
       this.lastMcpIdentity.delete(key);
       return true;
     }
-    const isActive = this.activeTurns.has(key) || existingClient.lifecycle === "busy" || existingClient.hasInFlight;
+    const isActive = this.activeTurns.has(key) || this.draining.has(key) || existingClient.lifecycle === "busy" || existingClient.hasInFlight;
     if (isActive) {
       this.staleAfterTurn.add(key);
       throw new RuntimeError("RUNTIME_MCP_STALE", `MCP identity changed for session "${key}" while turn active; will rotate after settle`);
     }
     await existingClient.shutdown().catch((e) => { throw toTeardownError(key, e); });
-    if (existingClient.lifecycle === "stopped") await this.manager?.release(key, existingClient).catch(() => {});
+    if (existingClient.lifecycle === "stopped") await this.manager?.release(key, existingClient).catch((e) => { throw toTeardownError(key, e); });
+    else throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `stale MCP worker for "${key}" did not reach stopped after shutdown`);
     this.lastMcpIdentity.delete(key);
+    this.staleAfterTurn.delete(key);
     return true;
   }
 
@@ -782,9 +800,38 @@ export class RuntimeEngine implements BridgeEngine {
       }
       throw toStableRuntimeError(error);
     } finally {
-      if (client.alive && (client.lifecycle === "idle" || client.lifecycle === "ready") && !this.activeTurns.has(key)) {
-        this.scheduleIdleTtl(key, client);
+      // Converged stale teardown for business ops (setMode etc.) that are not prompt's activeTurn.
+      // Prompt handles stale in its own finally; this covers direct withWorker callers.
+      if (!this.activeTurns.has(key) && this.staleAfterTurn.has(key)) {
+        this.staleAfterTurn.delete(key);
+        const staleClient = this.manager?.get(key);
+        if (staleClient) {
+          try {
+            await staleClient.shutdown();
+          } catch (e) {
+            throw toTeardownError(key, e);
+          }
+          if (staleClient.lifecycle === "stopped") {
+            try {
+              await this.manager?.release(key, staleClient);
+            } catch (e) {
+              throw toTeardownError(key, e);
+            }
+          } else {
+            throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `stale MCP worker for "${key}" did not reach stopped after shutdown`);
+          }
+          this.lastMcpIdentity.delete(key);
+        }
       }
+      // Queue re-kick for any business op that unblocked a stale drain (TTL=0 would otherwise stall).
+      try {
+        if (this.queueStore && await this.queueStore.hasPending(key)) {
+          const latest = this.sessionCatalog.get(key) ?? input;
+          if (latest) this.kickDrain(latest).catch(() => {});
+        } else if (client.alive && (client.lifecycle === "idle" || client.lifecycle === "ready") && !this.activeTurns.has(key)) {
+          this.scheduleIdleTtl(key, client);
+        }
+      } catch {}
     }
   }
   private buildEnsureParams(input: EngineSessionInput, options?: { resumeSessionId?: string }) {
@@ -1042,7 +1089,7 @@ export class RuntimeEngine implements BridgeEngine {
       mcpCoordinatorSession: (input as unknown as EngineSessionInput).mcpCoordinatorSession,
       mcpSourceHandle: (input as unknown as EngineSessionInput).mcpSourceHandle,
     } as EngineSessionInput);
-    // PR8: stale MCP check for inject — never execute B on A worker
+    // PR8: stale MCP check for inject — never execute B on A worker (single seam via handleMcpStale)
     {
       const lastMcp = this.lastMcpIdentity.get(key);
       const reqMcp = { mcpCoordinatorSession: (input as unknown as EngineSessionInput).mcpCoordinatorSession, mcpSourceHandle: (input as unknown as EngineSessionInput).mcpSourceHandle };
@@ -1054,8 +1101,10 @@ export class RuntimeEngine implements BridgeEngine {
           this.staleAfterTurn.add(key);
         } else if (cl) {
           await cl.shutdown().catch((e) => { throw toTeardownError(key, e); });
-          if (cl.lifecycle === "stopped") await this.manager?.release(key, cl).catch(() => {});
+          if (cl.lifecycle === "stopped") await this.manager?.release(key, cl).catch((e) => { throw toTeardownError(key, e); });
+          else throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `stale MCP worker for "${key}" did not reach stopped after shutdown`);
           this.lastMcpIdentity.delete(key);
+          this.staleAfterTurn.delete(key);
         }
       }
     }

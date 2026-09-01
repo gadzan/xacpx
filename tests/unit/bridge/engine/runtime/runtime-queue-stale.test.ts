@@ -100,7 +100,7 @@ test("A active -> B queue -> C queue -> settle, B in coord-B, C in coord-C", asy
   await slowEngine.shutdown().catch(() => {});
   await rm(dir, { recursive: true, force: true });
 }, 15_000);
-test("legacy v1 queue head without per-head MCP falls back to catalog MCP (not undefined)", async () => {
+test("legacy v1 queue head without per-head MCP fails closed (identity unknown, not fallback)", async () => {
   const dir = await mkdtemp(join(tmpdir(), "legacy-q-"));
   const stateDir = join(dir, "state", "sessions");
   await mkdir(stateDir, { recursive: true });
@@ -110,32 +110,29 @@ test("legacy v1 queue head without per-head MCP falls back to catalog MCP (not u
   const logPath = join(dir, "prompt.log");
   const workerEntry = join(dir, "w.mjs");
   await writeFile(workerEntry, [
-    `let b=''; let coord='none'; const fs=require('node:fs'); const logPath=${JSON.stringify(logPath)};`,
+    `let b=''; let coord='none'; const fs=require('node:fs'); const logPath=${JSON.stringify(join(dir, "prompt.log"))};`,
     "process.stdin.on('data',d=>{b+=d.toString(); let i; while((i=b.indexOf('\\n'))>=0){const l=b.slice(0,i); b=b.slice(i+1); if(!l)continue; try{const m=JSON.parse(l);",
     " if(m.method==='ensure'){ coord=m.params.mcpCoordinatorSession||'none'; try{fs.appendFileSync(logPath, `ensure:${coord}\\n`);}catch{}; process.stdout.write(JSON.stringify({id:m.id,ok:true,result:{ready:true,sessionKey:m.params.sessionKey,acpxRecordId:'rec'}})+'\\n');}",
     " else if(m.method==='prompt'){ const out=`coord=${coord};text=${m.params.text}`; try{fs.appendFileSync(logPath, `prompt:${out}\\n`);}catch{}; process.stdout.write(JSON.stringify({id:m.id,ok:true,result:{result:{status:'completed'},finalText:out}})+'\\n'); }",
     " else { process.stdout.write(JSON.stringify({id:m.id,ok:true,result:{}})+'\\n'); if(m.method==='shutdown')process.exit(0);}",
     "}catch{}}});",
   ].join("\n"));
-  // Write legacy v1 journal with one head that has no MCP fields
+  // Write legacy v1 journal with one head that has no per-head fields (identity-unknown)
   const logicalId = "legacy-1";
   const v1 = { schema: "xacpx.runtime-queue.v1", logicalSessionId: logicalId, items: [{ messageId: "mLegacy", text: "legacyB", acceptedAt: new Date().toISOString(), mode: "queue" }] };
   await writeFile(join(queueDir, `${encodeURIComponent(logicalId)}.json`), JSON.stringify(v1, null, 2), "utf8");
   const engine = new RuntimeEngine({ workerEntryPath: workerEntry, permissionMode: "approve-all", stateDir, queueDir, fenceDir, idleTtlMs: 200 });
-  // Seed catalog with the desired MCP identity (as if session was created with coord-C)
+  // Seed catalog with coordinator C — legacy must NOT fallback to it, nor execute as none
   const catalogInput = { agent: "codex", cwd: "/repo", name: "legacy-sess", logicalSessionId: logicalId, mcpCoordinatorSession: "coord-C", mcpSourceHandle: "src-C" };
-  // Trigger drain — legacy head should fallback to catalog's coord-C, not 'none'
-  await (engine as unknown as { kickDrain: (i: unknown) => Promise<void> }).kickDrain(catalogInput);
-  // Wait for drain to complete
-  for (let i = 0; i < 30; i++) {
-    if (!(await engine.getQueueStore().hasPending(logicalId))) break;
-    await new Promise(r => setTimeout(r, 100));
-  }
-  expect(await engine.getQueueStore().hasPending(logicalId)).toBe(false);
+  // Trigger drain — must fail closed, keep head
+  await (engine as unknown as { kickDrain: (i: unknown) => Promise<void> }).kickDrain(catalogInput).catch(() => {});
+  await new Promise(r => setTimeout(r, 400));
+  expect(await engine.getQueueStore().hasPending(logicalId)).toBe(true);
   const log = await readFile(logPath, "utf8").catch(() => "");
-  // Legacy head without per-head identity should have executed with catalog's coord-C
-  expect(log).toContain("prompt:coord=coord-C;text=legacyB");
-  expect(log).not.toContain("prompt:coord=none;text=legacyB");
+  expect(log).not.toContain("legacyB");
+  expect(log).not.toContain("prompt:coord");
+  const rec = await engine.getQueueStore().load(logicalId);
+  expect(rec?.schema).toBe("xacpx.runtime-queue.v1");
   await engine.shutdown().catch(() => {});
   await rm(dir, { recursive: true, force: true });
 }, 15_000);
@@ -185,3 +182,40 @@ test("queue-only A->B->C leaves no staleAfterTurn; next direct prompt with C ide
   await engine.shutdown().catch(() => {});
   await rm(dir, { recursive: true, force: true });
 }, 20_000);
+test("long setMode A -> inject B with TTL=0 still drains B after setMode settles", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "stale-setmode-"));
+  const stateDir = join(dir, "state", "sessions");
+  await mkdir(stateDir, { recursive: true });
+  const queueDir = join(dir, "queue");
+  const fenceDir = join(dir, "fences");
+  const logPath = join(dir, "prompt.log");
+  const workerEntry = join(dir, "w.mjs");
+  await writeFile(workerEntry, [
+    `let b=''; let coord='none'; const fs=require('node:fs'); const logPath=${JSON.stringify(join(dir, "prompt.log"))};`,
+    "process.stdin.on('data',d=>{b+=d.toString(); let i; while((i=b.indexOf('\\n'))>=0){const l=b.slice(0,i); b=b.slice(i+1); if(!l)continue; try{const m=JSON.parse(l);",
+    " if(m.method==='ensure'){ coord=m.params.mcpCoordinatorSession||'none'; try{fs.appendFileSync(logPath, `ensure:${coord}\\n`);}catch{}; process.stdout.write(JSON.stringify({id:m.id,ok:true,result:{ready:true,sessionKey:m.params.sessionKey,acpxRecordId:'rec'}})+'\\n');}",
+    " else if(m.method==='setMode'){ try{fs.appendFileSync(logPath, `setMode:${coord}\\n`);}catch{}; setTimeout(()=>{ process.stdout.write(JSON.stringify({id:m.id,ok:true,result:{}})+'\\n'); }, 500); }",
+    " else if(m.method==='prompt'){ const out=`coord=${coord};text=${m.params.text}`; try{fs.appendFileSync(logPath, `prompt:${out}\\n`);}catch{}; process.stdout.write(JSON.stringify({id:m.id,ok:true,result:{result:{status:'completed'},finalText:out}})+'\\n'); }",
+    " else { process.stdout.write(JSON.stringify({id:m.id,ok:true,result:{}})+'\\n'); if(m.method==='shutdown')process.exit(0);}",
+    "}catch{}}});",
+  ].join("\n"));
+  const engine = new RuntimeEngine({ workerEntryPath: workerEntry, permissionMode: "approve-all", stateDir, queueDir, fenceDir, idleTtlMs: 0 });
+  const sessA = { agent: "codex", cwd: "/repo", name: "stale-setmode", logicalSessionId: "stale-setmode-1", mcpCoordinatorSession: "coord-A", mcpSourceHandle: "src-A" };
+  const sessB = { agent: "codex", cwd: "/repo", name: "stale-setmode", logicalSessionId: "stale-setmode-1", mcpCoordinatorSession: "coord-B", mcpSourceHandle: "src-B" };
+  const setModeP = engine.setMode({ ...sessA, modeId: "ask" });
+  await new Promise(r => setTimeout(r, 60));
+  const receipt = await engine.injectMessage({ ...sessB, text: "B", mode: "queue", messageId: "mB" });
+  expect(receipt.status).toBe("queued");
+  await setModeP;
+  for (let i = 0; i < 50; i++) {
+    if (!(await engine.getQueueStore().hasPending("stale-setmode-1"))) break;
+    await new Promise(r => setTimeout(r, 100));
+  }
+  expect(await engine.getQueueStore().hasPending("stale-setmode-1")).toBe(false);
+  const log = await readFile(logPath, "utf8").catch(() => "");
+  expect(log).toContain("prompt:coord=coord-B;text=B");
+  const ensures = (log.match(/ensure:/g) || []).length;
+  expect(ensures).toBeGreaterThanOrEqual(2);
+  await engine.shutdown().catch(() => {});
+  await rm(dir, { recursive: true, force: true });
+}, 15_000);
