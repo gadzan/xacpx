@@ -516,3 +516,92 @@ test.serial("P1-3b: durable suspend survives restart (prime does not re-kick)", 
     await rm(dir, { recursive: true, force: true });
   }
 }, 15_000);
+test.serial("P1-9: withWorker cooling ghost acquire blocked (setMode vs delete)", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-withworker-cooling-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    // Create worker via prompt
+    const r = await engine.prompt({ ...testInput, text: "prime" });
+    expect(r.text).toBe("ok:prime");
+    const worker = (engine as any).manager?.get(testInput.logicalSessionId);
+    expect(worker).toBeDefined();
+    // Put worker into cooling (simulate archive coolPending termination in progress)
+    worker.lifecycle = "cooling";
+    // Start setMode (withWorker) and delete concurrently; setMode should be blocked by epoch/lifecycle
+    const pSetMode = engine.setMode({ ...testInput, modeId: "plan" } as any);
+    pSetMode.catch(()=>{});
+    const pDelete = engine.deleteSession(testInput as unknown as never);
+    // Delete should wait for no activeTurn (setMode does not inc activeTurn, but withWorker has epoch check)
+    // setMode should be rejected with RUNTIME_INIT_FAILED (ghost), not recreate
+    await expect(pSetMode).rejects.toMatchObject({ code: "RUNTIME_INIT_FAILED" });
+    await pDelete;
+    expect((await engine.isSessionWarm(testInput as unknown as never)).warm).toBe(false);
+    const recId = await (engine as any).resolveRecordId(testInput, undefined);
+    expect(recId).toBeUndefined();
+  } finally {
+    await engine.shutdown().catch(()=>{});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test.serial("P1-10: drain loaded head but not yet incActiveTurn — delete does not resurrect", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-drain-load-race-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    // Inject Q but pause drain before it inc's by holding turnLease via a long prompt that owns lease
+    const pLong = engine.prompt({ ...testInput, text: "longLeaseHolder" });
+    pLong.catch(()=>{});
+    // Give long prompt time to acquire lease and start (hasActiveTurn true, turnLease held)
+    const { promise: _p50, resolve: _r50 } = Promise.withResolvers<void>(); setTimeout(_r50, 50); await _p50;
+    await engine.injectMessage({
+      logicalSessionId: testInput.logicalSessionId,
+      messageId: "m-drain-race",
+      text: "should-not-execute",
+      mode: "queue",
+    } as unknown as never);
+    // Delete while drain has loaded head but not yet inc (drain is waiting on lease held by long prompt)
+    // Delete will wait for hasActiveTurn (true due to long prompt) then succeed
+    const pDelete = engine.deleteSession(testInput as unknown as never);
+    // Let long prompt finish, then delete should complete
+    await pLong.catch(()=>{});
+    await pDelete;
+    // Drain should have aborted due to epoch mismatch after load, not executed
+    await new Promise((r)=>setTimeout(r, 700));
+    expect(await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId).catch(()=>false)).toBe(false);
+    expect((await engine.isSessionWarm(testInput as unknown as never)).warm).toBe(false);
+    // No record should have been resurrected
+    const recId2 = await (engine as any).resolveRecordId(testInput, undefined);
+    expect(recId2).toBeUndefined();
+  } finally {
+    await engine.shutdown().catch(()=>{});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);

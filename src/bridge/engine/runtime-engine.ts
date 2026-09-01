@@ -639,8 +639,9 @@ export class RuntimeEngine implements BridgeEngine {
     }
     const store = this.getQueueStore();
     while (true) {
+      const _epochAtLoopTop = this.deleteGenerations.get(key) ?? 0;
       if (this.shuttingDown) return;
-      if (this.deleting.has(key)) return;
+      if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _epochAtLoopTop) return;
       if (this.queueSuspended.has(key)) {
         await this.consumeSuspendCool(key);
         return;
@@ -652,6 +653,7 @@ export class RuntimeEngine implements BridgeEngine {
         // Corrupt journal -> fail closed, do not loop, surface on next enqueue/prompt
         throw toStableRuntimeError(err);
       }
+      if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _epochAtLoopTop) return;
       const head = rec?.items[0];
       if (!head) {
         // Queue empty — schedule TTL for normal idle cool
@@ -699,14 +701,16 @@ export class RuntimeEngine implements BridgeEngine {
             return;
           }
           await cl.shutdown().catch((e) => { throw toTeardownError(key, e); });
+          if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _epochAtLoopTop) return;
           if (cl.lifecycle === "stopped") await this.manager?.release(key, cl).catch((e) => { throw toTeardownError(key, e); });
           else throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `stale MCP worker for "${key}" did not reach stopped after shutdown`);
           this.lastMcpIdentity.delete(key);
           this.staleAfterTurn.delete(key);
         }
       }
+      if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _epochAtLoopTop) return;
       this.incActiveTurn(key);
-      const _deleteGenAtStart = this.deleteGenerations.get(key) ?? 0;
+      const _deleteGenAtStart = _epochAtLoopTop;
       let releaseTurn: (() => void) | undefined;
       try {
         releaseTurn = await this.acquireTurnLease(key);
@@ -876,29 +880,61 @@ export class RuntimeEngine implements BridgeEngine {
     try {
       client = await this.ensureWorker(input);
       if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _lifecycleEpochAtEntry) {
-        // Worker was just acquired but session was deleted while we waited for it
-        try { await client.terminate().catch(()=>{}); } catch {}
+        // Ghost acquire: session deleted while we waited for worker — verifiably terminate
+        try {
+          await client.terminate().catch((e) => { throw toTeardownError(key, e); });
+          if (client.lifecycle === "stopped") {
+            await this.manager?.release(key, client).catch((e) => { throw toTeardownError(key, e); });
+          } else {
+            throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `ghost worker for "${key}" did not reach stopped after terminate`);
+          }
+        } catch (termErr) {
+          // Preserve original delete-ghost error if term also fails, but surface teardown
+          if (termErr instanceof RuntimeError && termErr.code === "RUNTIME_WORKER_TEARDOWN_PENDING") throw termErr;
+          throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `ghost worker teardown failed for "${key}": ${termErr instanceof Error ? termErr.message : String(termErr)}`);
+        }
         throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
       }
       this.lastMcpIdentity.set(key, { mcpCoordinatorSession: input.mcpCoordinatorSession, mcpSourceHandle: input.mcpSourceHandle });
     } catch (error) {
+      if (error instanceof RuntimeError) throw error;
       if (error instanceof WorkerTeardownPendingError) {
+        if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _lifecycleEpochAtEntry) {
+          throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
+        }
         // Worker is still in cooling/teardown. Wait briefly for manager to release the previous generation (archive coolPending's immediate terminate).
         // For a normal archive, the previous generation is terminated and released within ~50ms. We poll briefly; if still cooling after 300ms we fail-closed.
         const start = Date.now();
         while (Date.now() - start < 300) {
           const existing = this.manager?.get(key);
           if (!existing || (existing.lifecycle !== "cooling" && existing.lifecycle !== "failed")) break;
-          await new Promise((r) => setTimeout(r, 20));
+          const { promise, resolve } = Promise.withResolvers<void>();
+          setTimeout(resolve, 20);
+          await promise;
         }
         const still = this.manager?.get(key);
         if (still && (still.lifecycle === "cooling" || still.lifecycle === "failed")) {
           throw new RuntimeError(error.code, error.message);
         }
+        if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _lifecycleEpochAtEntry) {
+          throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
+        }
         try {
           client = await this.ensureWorker(input);
+          if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _lifecycleEpochAtEntry) {
+            try {
+              await client.terminate().catch((e) => { throw toTeardownError(key, e); });
+              if (client.lifecycle === "stopped") {
+                await this.manager?.release(key, client).catch((e) => { throw toTeardownError(key, e); });
+              } else {
+                throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `ghost worker for "${key}" did not reach stopped after terminate`);
+              }
+            } catch {}
+            throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
+          }
           this.lastMcpIdentity.set(key, { mcpCoordinatorSession: input.mcpCoordinatorSession, mcpSourceHandle: input.mcpSourceHandle });
         } catch (retryError) {
+          if (retryError instanceof RuntimeError) throw retryError;
           if (retryError instanceof WorkerTeardownPendingError) {
             throw new RuntimeError(retryError.code, retryError.message);
           }
