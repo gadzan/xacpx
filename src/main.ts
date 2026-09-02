@@ -404,13 +404,18 @@ export async function buildApp(
       const endpointIdentity =
         record.section === "orchestration.workerBindings" ||
         record.section === "orchestration.externalCoordinators";
+      const transportEngineMigrated = record.reason.includes("transport_engine");
       await logger.info(
         endpointIdentity
           ? "state.agent_endpoint_id_migrated"
-          : "state.session_id_migrated",
+          : transportEngineMigrated
+            ? "state.session_transport_engine_migrated"
+            : "state.session_id_migrated",
         endpointIdentity
           ? "assigned a stable Agent Messaging endpoint id to a legacy orchestration record"
-          : "assigned a new logical_session_id to a legacy session record",
+          : transportEngineMigrated
+            ? "assigned transport_engine=cli to a legacy session record missing transport_engine"
+            : "assigned a new logical_session_id to a legacy session record",
         {
           statePath: paths.statePath,
           section: record.section,

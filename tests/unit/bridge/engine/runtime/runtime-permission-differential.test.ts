@@ -4,10 +4,10 @@ import { RuntimePermissionResolver } from "../../../../../src/bridge/engine/runt
 import type { RuntimePermissionConfig, RuntimePermissionRequest } from "../../../../../src/bridge/engine/runtime/runtime-permission-resolver";
 
 /**
- * Pinned CLI black-box differential — acpx@0.13.1
- * Source: node_modules/acpx/dist/live-checkpoint-BSIrfgVo.js (acpx 0.13.1, built 2025)
- * Extracted helpers: normalizeMatcher, permissionMatchTokens, findPolicyRule, matchPermissionPolicy, isAutoApprovedReadKind, etc.
- * This file is the oracle for CLI parity. Any drift in that dist file must be re-probed before updating this test.
+ * Pinned-reference differential — acpx@0.13.1 (frozen copy, not black-box CLI execution)
+ * Source: node_modules/acpx/dist/live-checkpoint-BSIrfgVo.js (acpx 0.13.1)
+ * Helpers pinned: normalizeMatcher, permissionMatchTokens, findPolicyRule, matchPermissionPolicy, isAutoApprovedReadKind.
+ * This file is a frozen oracle for resolver parity. A true black-box differential would drive the real CLI/MCP and is deferred to activation.
  */
 
 function req(text: string, kind?: string): RuntimePermissionRequest {
@@ -18,9 +18,8 @@ function req(text: string, kind?: string): RuntimePermissionRequest {
   } as unknown as RuntimePermissionRequest;
 }
 
-// Reference implementation — verbatim copy from acpx@0.13.1 live-checkpoint-BSIrfgVo.js
-// We copy to keep the test black-box vs packaged CLI, not vs hand-written expected.
-// If upstream dist changes, this test will fail and forces re-probe.
+// Reference implementation — pinned frozen copy from acpx@0.13.1 live-checkpoint-BSIrfgVo.js
+// Note: inferToolKindRef is minimal (only read/search/think) vs upstream full matcher (read/cat/search/find/grep/edit/write/patch/delete/remove/move/rename/run/execute/bash/fetch/http/url/think/other). Kept minimal for parity focus.
 
 function normalizeMatcherRef(value: string): string {
   return value.trim().toLowerCase();
