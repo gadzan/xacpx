@@ -136,3 +136,18 @@ test("no duplicate MCP registration: repeated ensure/prompt with same identity d
     await engine.shutdown();
   } finally { await rm(dir, { recursive: true, force: true }); }
 }, 15_000);
+test("real MCP server spec is built from coordinator identity", async () => {
+  const { buildRuntimeMcpServers } = await import("../../../../../src/bridge/engine/runtime/runtime-mcp");
+  const servers = buildRuntimeMcpServers({ mcpCoordinatorSession: "coord-real", mcpSourceHandle: "src-real", xacpxCommand: "xacpx --test" });
+  expect(servers.length).toBe(1);
+  expect(servers[0]!.name).toBeTruthy();
+  expect(servers[0]!.command).toBe("xacpx");
+  expect(servers[0]!.args.join(" ")).toContain("coord-real");
+  expect(servers[0]!.args.join(" ")).toContain("src-real");
+});
+
+test("no coordinator => no MCP server injected", async () => {
+  const { buildRuntimeMcpServers } = await import("../../../../../src/bridge/engine/runtime/runtime-mcp");
+  const servers = buildRuntimeMcpServers({});
+  expect(servers.length).toBe(0);
+});
