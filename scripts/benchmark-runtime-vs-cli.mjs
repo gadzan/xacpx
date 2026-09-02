@@ -73,6 +73,36 @@ if (hasRuntimeEntry()) {
     // Simulate RuntimeQueueStore enqueue atomic temp->rename->readback overhead (fs)
     await Promise.resolve();
   }, 20);
+
+  // Real Runtime micro-benchmark (requires acpx/runtime + mock agent) — provides actual G12 data when available
+  try {
+    const { createAcpRuntime, createRuntimeStore, createAgentRegistry } = await import("acpx/runtime");
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    console.log("Running real Runtime cold micro-benchmark with mock ACP agent (acpx/runtime)...");
+    const dir = await mkdtemp(join(tmpdir(), "bench-"));
+    const store = createRuntimeStore({ stateDir: join(dir, "state") });
+    const registry = createAgentRegistry({ overrides: { mock: ["node", "tests/fixtures/mock-acp-agent.mjs"] } });
+    const coldSamples = [];
+    for (let i = 0; i < 3; i++) {
+      const rt = createAcpRuntime({ cwd: dir, sessionStore: store, agentRegistry: registry });
+      const start = performance.now();
+      const h = await rt.ensureSession({ sessionKey: `k${i}`, agent: "mock", mode: "persistent", cwd: dir });
+      const turn = rt.startTurn({ handle: h, text: "hello", mode: "prompt", requestId: `r${i}` });
+      await turn.promptStarted.catch(()=>{});
+      const iter = turn.events[Symbol.asyncIterator]();
+      await Promise.race([iter.next(), new Promise(r=>setTimeout(r, 200))]);
+      await turn.cancel().catch(()=>{});
+      await turn.result.catch(()=>{});
+      coldSamples.push(performance.now() - start);
+    }
+    coldSamples.sort((a,b)=>a-b);
+    console.log(`Real Runtime cold ensure+first-turn: p50=${p50(coldSamples).toFixed(1)}ms p95=${p95(coldSamples).toFixed(1)}ms (n=${coldSamples.length})`);
+    await rm(dir, { recursive: true, force: true }).catch(()=>{});
+  } catch (e) {
+    console.log("Real Runtime bench skipped (acpx/runtime not available or mock failed):", e instanceof Error ? e.message : String(e));
+  }
 } else {
   console.log("Runtime not built — skipping Runtime dispatch benches (run bun run build first)");
 }

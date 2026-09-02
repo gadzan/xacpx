@@ -172,6 +172,27 @@ export class RuntimeWorkerFence {
   async write(record: RuntimeWorkerFenceRecord): Promise<void> {
     const path = this.pathFor(record.logicalSessionId);
     await mkdir(dirname(path), { recursive: true });
+    // G2 atomic claim: initial "owned" must be exclusive (O_EXCL) on the final key.
+    // Two Bridge Hosts racing on absent must not both succeed; the second must fail
+    // with EEXIST and refuse a second owner. Other phases use temp->rename.
+    if (record.phase === "owned") {
+      let handle;
+      try {
+        handle = await open(path, "wx", 0o600);
+      } catch (error) {
+        if ((error as { code?: unknown } | null)?.code === "EEXIST") {
+          throw new Error(`fence for "${record.logicalSessionId}" already exists (cross-host race); refusing second owner`);
+        }
+        throw error;
+      }
+      try {
+        await handle.writeFile(`${JSON.stringify(record, null, 2)}\n`, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      return;
+    }
     const tmp = `${path}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const handle = await open(tmp, "wx", 0o600);
     try {

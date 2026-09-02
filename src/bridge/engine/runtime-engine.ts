@@ -742,7 +742,7 @@ export class RuntimeEngine implements BridgeEngine {
                 if (typeof event.used === "number" && typeof event.size === "number") {
                   sink({ type: "prompt.usage", used: event.used, size: event.size, ...(event.cost ? { cost: event.cost as never } : {}), ...(event.breakdown ? { breakdown: event.breakdown as never } : {}) });
                 }
-                if (event.availableCommands && event.availableCommands.length > 0) {
+                if (event.availableCommands !== undefined) {
                   sink({ type: "prompt.commands", commands: event.availableCommands.map((c) => ({ name: c.name, description: c.description })) as never });
                 }
               }

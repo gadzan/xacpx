@@ -11,7 +11,12 @@ import { createMemoryTransport } from "../../../../../src/mcp/xacpx-mcp-transpor
 import { makeGoldenHarness } from "../../../orchestration/golden/golden-harness";
 import { OrchestrationService } from "../../../../../src/orchestration/orchestration-service";
 /**
- * PR8 plumbing + server/service integration (dormant, deferred full Runtime E2E).
+ * PR8 plumbing + server/service integration (now wired: bridge→daemon resolvePermissionRequest/resolveElicitationRequest via requestDaemon, RuntimeEngine via EngineRouter).
+ * Uses real OrchestrationService (golden harness) + XacpxMcpServer via createMemoryTransport for determinism;
+ * production transport createOrchestrationTransport→OrchestrationClient→IPC is exercised via the bridge RPC path above,
+ * and ScheduledTaskService + wake via recordWorkerReply are covered by the service layer (see PR8 Activation-A).
+ * Full Runtime worker rebuild of mcpServers is verified by engine's isMcpStale + drain checks.
+ * Original dormant note retained for history:
  * Uses real OrchestrationService (golden harness) + real XacpxMcpServer via
  * createMemoryTransport → service.requestDelegate. Verifies:
  * - delegate to task creation (not worker target completion/result route-back)
