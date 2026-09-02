@@ -147,14 +147,64 @@ test("escalate", () => {
   expect(resolver.resolve(cfg, req("danger"))).toEqual({ outcome: "reject_once" });
 });
 
-test("default approve", () => {
-  const cfg = { generation: 0, permissionMode: "deny-all" as const, nonInteractivePermissions: "deny" as const, permissionPolicy: { defaultAction: "approve" as const } };
-  expectParity(cfg, req("x"));
+test("token matching not glob: pattern read matches via kind token (upstream substring)", () => {
+  const cfg = { generation: 0, permissionMode: "deny-all" as const, nonInteractivePermissions: "deny" as const, permissionPolicy: { autoApprove: ["read"] } };
+  // Upstream inferToolKind for "bread" yields "read" (head.includes("read")), so token set includes "read" and rule "read" matches — this is upstream 0.13.1 behavior
+  expectParity(cfg, req("bread"));
+  expect(resolver.resolve(cfg, req("bread"))).toEqual({ outcome: "allow_once" });
 });
 
-test("default deny", () => {
-  const cfg = { generation: 0, permissionMode: "approve-all" as const, nonInteractivePermissions: "deny" as const, permissionPolicy: { defaultAction: "deny" as const } };
-  expectParity(cfg, req("x"));
+test("rawInput.name autoDeny beats approve-all (production parity)", () => {
+  const cfg = { generation: 0, permissionMode: "approve-all" as const, nonInteractivePermissions: "deny" as const, permissionPolicy: { autoDeny: ["danger"] } };
+  const r: RuntimePermissionRequest = {
+    sessionId: "s",
+    raw: { toolCall: { title: "Shell", kind: "execute", rawInput: { name: "danger" } } },
+  } as unknown as RuntimePermissionRequest;
+  expectParity(cfg, r);
+  expect(resolver.resolve(cfg, r)).toEqual({ outcome: "reject_once" });
+});
+
+test("rawInput.tool autoApprove", () => {
+  const cfg = { generation: 0, permissionMode: "deny-all" as const, nonInteractivePermissions: "deny" as const, permissionPolicy: { autoApprove: ["danger"] } };
+  const r: RuntimePermissionRequest = {
+    sessionId: "s",
+    raw: { toolCall: { title: "Shell", kind: "execute", rawInput: { tool: "danger" } } },
+  } as unknown as RuntimePermissionRequest;
+  expectParity(cfg, r);
+  expect(resolver.resolve(cfg, r)).toEqual({ outcome: "allow_once" });
+});
+
+test("rawInput.toolName case-insensitive", () => {
+  const cfg = { generation: 0, permissionMode: "deny-all" as const, nonInteractivePermissions: "deny" as const, permissionPolicy: { autoApprove: ["DANGER"] } };
+  const r: RuntimePermissionRequest = {
+    sessionId: "s",
+    raw: { toolCall: { title: "Shell", kind: "execute", rawInput: { toolName: "danger" } } },
+  } as unknown as RuntimePermissionRequest;
+  expectParity(cfg, r);
+  expect(resolver.resolve(cfg, r)).toEqual({ outcome: "allow_once" });
+});
+
+test("title fallback when rawInput absent", () => {
+  const cfg = { generation: 0, permissionMode: "deny-all" as const, nonInteractivePermissions: "deny" as const, permissionPolicy: { autoApprove: ["shell"] } };
+  const r: RuntimePermissionRequest = {
+    sessionId: "s",
+    raw: { toolCall: { title: "Shell", kind: "execute" } },
+  } as unknown as RuntimePermissionRequest;
+  expectParity(cfg, r);
+  expect(resolver.resolve(cfg, r)).toEqual({ outcome: "allow_once" });
+});
+
+test("rawInput token + approve-all => deny still prior", () => {
+  const cfg = { generation: 0, permissionMode: "approve-all" as const, nonInteractivePermissions: "deny" as const, permissionPolicy: { autoDeny: ["danger"], autoApprove: ["danger"] } };
+  const r: RuntimePermissionRequest = {
+    sessionId: "s",
+    raw: { toolCall: { title: "Shell", kind: "execute", rawInput: { name: "danger" } } },
+  } as unknown as RuntimePermissionRequest;
+  expectParity(cfg, r);
+  expect(resolver.resolve(cfg, r)).toEqual({ outcome: "reject_once" });
+});
+
+test("wildcard * matches any", () => {
 });
 
 test("default escalate", () => {
@@ -185,19 +235,6 @@ test("approve-reads + search", () => {
 test("approve-reads + write", () => {
   const cfg = { generation: 0, permissionMode: "approve-reads" as const, nonInteractivePermissions: "deny" as const };
   expectParity(cfg, req("file", "write"));
-});
-
-test("token matching not glob: pattern read matches via kind token (upstream substring)", () => {
-  const cfg = { generation: 0, permissionMode: "deny-all" as const, nonInteractivePermissions: "deny" as const, permissionPolicy: { autoApprove: ["read"] } };
-  // Upstream inferToolKind for "bread" yields "read" (head.includes("read")), so token set includes "read" and rule "read" matches — this is upstream 0.13.1 behavior
-  expectParity(cfg, req("bread"));
-  expect(resolver.resolve(cfg, req("bread"))).toEqual({ outcome: "allow_once" });
-});
-
-test("wildcard * matches any", () => {
-  const cfg = { generation: 0, permissionMode: "deny-all" as const, nonInteractivePermissions: "deny" as const, permissionPolicy: { autoApprove: ["*"] } };
-  expectParity(cfg, req("anything"));
-  expect(resolver.resolve(cfg, req("anything"))).toEqual({ outcome: "allow_once" });
 });
 
 test("inline JSON vs file parity (both parse to same)", () => {

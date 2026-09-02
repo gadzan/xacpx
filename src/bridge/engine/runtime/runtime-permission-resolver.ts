@@ -18,20 +18,23 @@ function normalizeMatcher(value: string): string {
   return value.trim().toLowerCase();
 }
 
+function readStringProperty(value: unknown, keys: string[]): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const rec = value as Record<string, unknown>;
+  for (const key of keys) {
+    const entry = rec[key];
+    if (typeof entry === "string" && entry.trim().length > 0) return entry.trim();
+  }
+  return undefined;
+}
 function readToolNameFromReq(req: RuntimePermissionRequest): string | undefined {
   const raw = req.raw as unknown as Record<string, unknown>;
   const toolCall = (raw.toolCall ?? raw.tool ?? raw) as Record<string, unknown> | undefined;
   if (!toolCall || typeof toolCall !== "object") return undefined;
-  const nameKeys = ["name", "tool", "toolName"] as const;
-  for (const k of nameKeys) {
-    const v = toolCall[k];
-    if (typeof v === "string" && v.trim().length > 0) return v.trim();
-  }
-  if (typeof toolCall.title === "string" && toolCall.title.trim().length > 0) {
-    const head = toolCall.title.split(/[:\s]/, 1)[0]?.trim();
-    if (head) return head;
-  }
-  return undefined;
+  const fromRawInput = readStringProperty(toolCall.rawInput, ["name", "tool", "toolName"]);
+  if (fromRawInput) return fromRawInput;
+  const head = typeof toolCall.title === "string" ? toolCall.title.trim().split(/[:\s]/, 1)[0]?.trim() : undefined;
+  return head && head.length > 0 ? head : undefined;
 }
 
 function readTitleFromReq(req: RuntimePermissionRequest): string | undefined {
