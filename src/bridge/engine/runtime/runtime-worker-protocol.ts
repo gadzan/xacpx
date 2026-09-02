@@ -13,6 +13,7 @@ export type RuntimeWorkerRequestMethod =
   | "cancel"
   | "close"
   | "permission.update"
+  | "permission.decision"
   | "shutdown";
 
 export interface RuntimeWorkerRequest {
@@ -49,7 +50,6 @@ export interface RuntimeWorkerPromptParams {
   /** Binary prompt attachments (image/audio) forwarded to ACP content blocks. */
   attachments?: Array<{ mediaType: string; data: string }>;
 }
-
 export interface RuntimeWorkerPermissionUpdate {
   generation: number;
   permissionMode?: XacpxPermissionMode;
@@ -59,10 +59,29 @@ export interface RuntimeWorkerPermissionUpdate {
   clearPermissionPolicy?: boolean;
 }
 
+export interface RuntimeWorkerPermissionRequestPayload {
+  logicalSessionId: string;
+  sessionKey: string;
+  requestId: string;
+  toolCallId: string;
+  title?: string;
+  kind?: string;
+  rawInput?: unknown;
+  policyGeneration: number;
+  workerGeneration: string;
+}
+
+export interface RuntimeWorkerPermissionDecisionParams {
+  requestId: string;
+  toolCallId: string;
+  policyGeneration: number;
+  decision: { outcome: "allow_once" | "allow_always" | "reject_once" | "reject_always" | "cancel" };
+}
+
 export type RuntimeWorkerEvent = {
   id: string;
   event: "text_delta" | "thought" | "tool" | "plan" | "usage" | "commands" | "permission.request";
-  payload: XacpxRuntimeEvent | unknown;
+  payload: XacpxRuntimeEvent | RuntimeWorkerPermissionRequestPayload | unknown;
 };
 
 export interface RuntimeWorkerSuccess<T = unknown> {

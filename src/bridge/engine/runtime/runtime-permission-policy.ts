@@ -72,9 +72,15 @@ export function parseXacpxPermissionPolicy(input: unknown): XacpxPermissionPolic
   return out;
 }
 
-export function isEligibleForRuntime(policy: XacpxPermissionPolicy | undefined, nonInteractivePermissions: string | undefined): boolean {
+export function isEligibleForRuntime(
+  policy: XacpxPermissionPolicy | undefined,
+  nonInteractivePermissions: string | undefined,
+  interactiveAvailable = false,
+): boolean {
   if (nonInteractivePermissions === "fail") return false;
-  if (policy?.escalate && policy.escalate.length > 0) return false;
-  if (policy?.defaultAction === "escalate") return false;
+  if (!interactiveAvailable) {
+    if (policy?.escalate && policy.escalate.length > 0) return false;
+    if (policy?.defaultAction === "escalate") return false;
+  }
   return true;
 }

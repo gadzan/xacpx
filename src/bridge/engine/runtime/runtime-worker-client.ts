@@ -7,6 +7,8 @@ import {
   type RuntimeWorkerRequest,
   type RuntimeWorkerRequestMethod,
   type RuntimeWorkerResponse,
+  type RuntimeWorkerPermissionRequestPayload,
+  type RuntimeWorkerPermissionDecisionParams,
 } from "./runtime-worker-protocol";
 import { mapRuntimeError } from "./runtime-contract";
 import { terminateProcessTree } from "../../../process/terminate-process-tree";
@@ -55,6 +57,12 @@ export interface RuntimeWorkerClientDeps {
   spooledResidualsRemaining?: (generationId: string) => Promise<boolean>;
   /** Extra env passed to the worker process (durable-fence phase marking). */
   spawnEnv?: Record<string, string>;
+  /**
+   * PR9-A: Host-side resolver for interactive permission requests.
+   * Called when the worker emits `permission.request`. Must return an explicit
+   * PermissionDecision union; any throw/timeout/malformed is mapped to `reject_once`/`cancel` fail-closed.
+   */
+  resolvePermissionRequest?: (payload: RuntimeWorkerPermissionRequestPayload) => Promise<RuntimeWorkerPermissionDecisionParams["decision"]>;
 }
 export type WorkerLifecycle = "starting" | "ready" | "busy" | "idle" | "cooling" | "stopped" | "failed";
 
@@ -203,11 +211,18 @@ export class RuntimeWorkerClient {
     const parsed = parseWorkerLine(line);
     if (!parsed) return;
     if (parsed.kind === "event") {
+      const raw = parsed.message;
+      if (raw && typeof raw === "object" && "event" in raw && (raw as { event: unknown }).event === "permission.request") {
+        const payload = (raw as { payload?: unknown }).payload as RuntimeWorkerPermissionRequestPayload | undefined;
+        void this.handlePermissionRequest(payload).catch(() => {});
+        return;
+      }
       // Real-time push: forward to the still-pending request's sink while the
       // RPC itself stays open — this is what keeps prompt streaming live.
-      const id = typeof parsed.message.id === "string" ? parsed.message.id : null;
+      const id = typeof (raw as { id?: unknown }).id === "string" ? (raw as { id: string }).id : null;
       const pending = id ? this.pending.get(id) : undefined;
-      pending?.onEvent?.(parsed.message.payload);
+      const pl = (raw as { payload?: unknown }).payload;
+      pending?.onEvent?.(pl);
       return;
     }
     if (parsed.kind !== "response") return;
@@ -217,6 +232,42 @@ export class RuntimeWorkerClient {
     this.pending.delete(response.id);
     if (response.ok) pending.resolve(response.result);
     else pending.reject(new WorkerRpcError(response.error.code, response.error.message));
+  }
+
+  private async handlePermissionRequest(payload: RuntimeWorkerPermissionRequestPayload | undefined): Promise<void> {
+    const requestId = typeof payload?.requestId === "string" ? payload.requestId : "";
+    const toolCallId = typeof payload?.toolCallId === "string" ? payload.toolCallId : requestId;
+    const policyGeneration = typeof payload?.policyGeneration === "number" ? payload.policyGeneration : 0;
+    if (!payload || !requestId) {
+      // Malformed → fail closed: send cancel to avoid hanging turn
+      try {
+        await this.request("permission.decision", { requestId, toolCallId, policyGeneration, decision: { outcome: "cancel" } });
+      } catch {}
+      return;
+    }
+    let decision: RuntimeWorkerPermissionDecisionParams["decision"];
+    try {
+      const handler = this.deps?.resolvePermissionRequest;
+      if (!handler) {
+        decision = { outcome: "reject_once" };
+      } else {
+        const withTimeout = await Promise.race([
+          handler(payload),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("permission UI timeout")), 8_000).unref?.()),
+        ]);
+        const outcome = (withTimeout as { outcome?: unknown })?.outcome;
+        if (outcome !== "allow_once" && outcome !== "allow_always" && outcome !== "reject_once" && outcome !== "reject_always" && outcome !== "cancel") {
+          decision = { outcome: "reject_once" };
+        } else {
+          decision = { outcome } as RuntimeWorkerPermissionDecisionParams["decision"];
+        }
+      }
+    } catch {
+      decision = { outcome: "reject_once" };
+    }
+    try {
+      await this.request("permission.decision", { requestId, toolCallId, policyGeneration, decision });
+    } catch {}
   }
 
   async request<T>(method: RuntimeWorkerRequestMethod, params?: unknown, options?: { onEvent?: (payload: unknown) => void }): Promise<T> {

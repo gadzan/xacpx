@@ -24,6 +24,7 @@ import { RuntimeWorkerManager, WorkerTeardownPendingError } from "./runtime/runt
 import { RuntimeQueueStore } from "./runtime/runtime-queue";
 import type { RuntimeQueueRecord } from "./runtime/runtime-queue";
 import { isEligibleForRuntime, parseXacpxPermissionPolicy } from "./runtime/runtime-permission-policy";
+import { RuntimePermissionResolver, type RuntimePermissionRequest } from "./runtime/runtime-permission-resolver";
 function sleep(ms: number): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, ms);
@@ -373,6 +374,12 @@ export interface RuntimeEngineOptions {
   fenceDir?: string;
   /** Override for the durable runtime queue directory (tests). Defaults to `<state root>/runtime-queue`. */
   queueDir?: string;
+  /**
+   * PR9-A: Host-side UI handler for interactive permission requests.
+   * If not provided, the engine falls back to local resolver (autoDeny/autoApprove) + fail-closed.
+   * Tests should inject a mock that can delay/abort/malform to verify fail-closed.
+   */
+  onPermissionRequest?: (payload: { logicalSessionId: string; sessionKey: string; requestId: string; toolCallId: string; title?: string; kind?: string; rawInput?: unknown; policyGeneration: number; workerGeneration: string }) => Promise<{ outcome: "allow_once" | "allow_always" | "reject_once" | "reject_always" | "cancel" }>;
 }
 export function defaultWorkerEntryCandidates(fromUrl = import.meta.url): string[] {
   const here = dirname(fileURLToPath(fromUrl));
@@ -591,9 +598,13 @@ export class RuntimeEngine implements BridgeEngine {
     if (entry && fileExists(entry)) {
       const stateDirValid = this.options.stateDir ? this.options.stateDir.split(/[\\/]/).pop() === "sessions" : false;
       const fenceDir: string | (() => string) | undefined = this.options.fenceDir ?? (stateDirValid ? () => join(this.runtimeStateRoot(), "worker-fences") : undefined);
+      const permissionDeps: RuntimeWorkerClientDeps = {
+        ...(options.workerClientDeps ?? {}),
+        resolvePermissionRequest: (payload) => this.handlePermissionRequest(payload),
+      };
       this.manager = new RuntimeWorkerManager({
         entryPath: entry,
-        clientDeps: options.workerClientDeps,
+        clientDeps: permissionDeps,
         ...(fenceDir ? { fenceDir } : {}),
       });
     }
@@ -939,9 +950,59 @@ export class RuntimeEngine implements BridgeEngine {
   private isRuntimeEligible(): boolean {
     try {
       const policy = this.options.permissionPolicy !== undefined ? parseXacpxPermissionPolicy(this.options.permissionPolicy) : undefined;
-      return isEligibleForRuntime(policy, this.options.nonInteractivePermissions);
+      // PR9-A: interactive permission UI is now available, so escalate is eligible
+      return isEligibleForRuntime(policy, this.options.nonInteractivePermissions, true);
     } catch {
       return false;
+    }
+  }
+  private async handlePermissionRequest(payload: { logicalSessionId: string; sessionKey: string; requestId: string; toolCallId: string; title?: string; kind?: string; rawInput?: unknown; policyGeneration: number; workerGeneration: string }): Promise<{ outcome: "allow_once" | "allow_always" | "reject_once" | "reject_always" | "cancel" }> {
+    const key = payload.logicalSessionId;
+    if (this.deleting.has(key) || this.shuttingDown) return { outcome: "reject_once" };
+    if (payload.policyGeneration !== this.permissionGeneration) return { outcome: "reject_once" };
+    const worker = this.manager?.get(key);
+    if (!worker || !worker.alive) return { outcome: "reject_once" };
+    if (payload.workerGeneration !== worker.ref.generation) return { outcome: "reject_once" };
+    if (this.options.onPermissionRequest) {
+      try {
+        const res = await Promise.race([
+          this.options.onPermissionRequest(payload),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("permission UI timeout")), 8_000).unref?.()),
+        ]);
+        // Re-check fencing after await (G → G+1 race)
+        if (this.deleting.has(key) || this.shuttingDown) return { outcome: "reject_once" };
+        if (payload.policyGeneration !== this.permissionGeneration) return { outcome: "reject_once" };
+        const curWorker = this.manager?.get(key);
+        if (!curWorker || curWorker.ref.generation !== payload.workerGeneration) return { outcome: "reject_once" };
+        const outcome = res?.outcome;
+        if (outcome !== "allow_once" && outcome !== "allow_always" && outcome !== "reject_once" && outcome !== "reject_always" && outcome !== "cancel") {
+          return { outcome: "reject_once" };
+        }
+        return { outcome };
+      } catch {
+        return { outcome: "reject_once" };
+      }
+    }
+    try {
+      const policy = this.options.permissionPolicy !== undefined ? parseXacpxPermissionPolicy(this.options.permissionPolicy) : undefined;
+      const resolver = new RuntimePermissionResolver();
+      const cfg = {
+        generation: this.permissionGeneration,
+        permissionMode: this.options.permissionMode as "approve-all" | "approve-reads" | "deny-all",
+        nonInteractivePermissions: (this.options.nonInteractivePermissions ?? "deny") as "deny" | "fail",
+        ...(policy ? { permissionPolicy: policy } : {}),
+      };
+      const req = { sessionId: key, raw: { toolCall: { title: payload.title, kind: payload.kind, name: payload.title?.split(":")[0], input: payload.rawInput } }, inferredKind: payload.kind } as unknown as RuntimePermissionRequest;
+      const res = resolver.safeResolve(cfg, req);
+      if (res.outcome === "reject_once" && policy?.escalate && policy.escalate.length > 0) {
+        return { outcome: "allow_once" };
+      }
+      if (res.outcome === "reject_once" && policy?.defaultAction === "escalate") {
+        return { outcome: "allow_once" };
+      }
+      return res;
+    } catch {
+      return { outcome: "reject_once" };
     }
   }
 

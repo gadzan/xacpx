@@ -25,12 +25,14 @@ import {
   type RuntimeWorkerEnsureParams,
   type RuntimeWorkerPromptParams,
   type RuntimeWorkerPermissionUpdate,
+  type RuntimeWorkerPermissionRequestPayload,
+  type RuntimeWorkerPermissionDecisionParams,
   type RuntimeWorkerPromptResult,
 } from "./runtime-worker-protocol";
 import { mapRuntimeError } from "./runtime-contract";
 import { parseSessionEffortRecord } from "../../../transport/session-effort";
 import { parseXacpxPermissionPolicy } from "./runtime-permission-policy";
-import { RuntimePermissionResolver, type RuntimePermissionConfig } from "./runtime-permission-resolver";
+import { RuntimePermissionResolver, type RuntimePermissionConfig, type RuntimePermissionRequest } from "./runtime-permission-resolver";
 
 class RuntimeError extends Error {
   constructor(readonly code: string, message: string) {
@@ -46,9 +48,16 @@ interface WorkerState {
   shuttingDown: boolean;
   permissionSnapshot?: RuntimePermissionConfig;
   permissionGeneration: number;
+  pendingPermissions: Map<string, { resolve: (d: { outcome: string }) => void; reject: (e: Error) => void; generation: number; workerGeneration: string }>;
+  workerGeneration: string;
 }
 const gate = createDispatchGate();
-const state: WorkerState = { shuttingDown: false, permissionGeneration: 0 };
+const state: WorkerState = {
+  shuttingDown: false,
+  permissionGeneration: 0,
+  pendingPermissions: new Map(),
+  workerGeneration: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+};
 
 function respond(response: RuntimeWorkerResponse): void {
   process.stdout.write(encodeWorkerMessage(response));
@@ -138,10 +147,91 @@ async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: 
       onPermissionRequest: async (req, ctx) => {
         const snap = state.permissionSnapshot;
         if (!snap) return { outcome: "reject_once" };
+        const needsInteractive = (() => {
+          try {
+            const policy = snap.permissionPolicy;
+            const raw = (req as unknown as { raw?: unknown }).raw as { toolCall?: { title?: unknown; kind?: unknown; name?: unknown } } | undefined;
+            const title = typeof raw?.toolCall?.title === "string" ? raw.toolCall.title : undefined;
+            const kind = typeof raw?.toolCall?.kind === "string" ? raw.toolCall.kind : undefined;
+            const nameRaw = typeof raw?.toolCall?.name === "string" ? raw.toolCall.name : undefined;
+            const name = nameRaw ?? title?.split(":")[0]?.trim().toLowerCase();
+            const tokens = [name, title, kind].filter((v): v is string => typeof v === "string" && v.length > 0).map((v) => v.trim().toLowerCase());
+            const match = (rules?: string[]) => rules?.some((r) => tokens.some((t) => t.includes(r.trim().toLowerCase())));
+            if (match(policy?.escalate)) return true;
+            if (policy?.defaultAction === "escalate") return true;
+            if (snap.permissionMode === "approve-reads") {
+              const isRead = kind === "read" || kind === "search" || name === "read" || name === "search" || tokens.some((t) => t.includes("read") || t.includes("search"));
+              if (!isRead) return true;
+            }
+            return false;
+          } catch {
+            return false;
+          }
+        })();
+        if (!needsInteractive) {
+          try {
+            return resolver.safeResolve(snap, req as unknown as RuntimePermissionRequest, ctx.signal);
+          } catch {
+            return { outcome: "reject_once" };
+          }
+        }
+        if (ctx.signal.aborted) return { outcome: "reject_once" };
+        const requestId = `perm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+        const toolCallId = (() => {
+          const raw = (req as unknown as { raw?: unknown }).raw as { toolCall?: { id?: unknown } } | undefined;
+          const id = raw?.toolCall?.id;
+          return typeof id === "string" && id.length > 0 ? id : requestId;
+        })();
+        const title = (() => {
+          const raw = (req as unknown as { raw?: unknown }).raw as { toolCall?: { title?: unknown } } | undefined;
+          const t = raw?.toolCall?.title;
+          return typeof t === "string" ? t : undefined;
+        })();
+        const kind = (() => {
+          const raw = (req as unknown as { raw?: unknown }).raw as { toolCall?: { kind?: unknown } } | undefined;
+          const k = raw?.toolCall?.kind;
+          return typeof k === "string" ? k : undefined;
+        })();
+        const rawInput = (req as unknown as { raw?: unknown }).raw;
+        const payload: RuntimeWorkerPermissionRequestPayload = {
+          logicalSessionId: state.ensureParams?.sessionKey ?? params.sessionKey,
+          sessionKey: state.ensureParams?.sessionKey ?? params.sessionKey,
+          requestId,
+          toolCallId,
+          ...(title ? { title } : {}),
+          ...(kind ? { kind } : {}),
+          ...(rawInput !== undefined ? { rawInput } : {}),
+          policyGeneration: state.permissionGeneration,
+          workerGeneration: state.workerGeneration,
+        };
+        const pending = new Promise<{ outcome: string }>((resolve, reject) => {
+          state.pendingPermissions.set(requestId, { resolve: resolve as (d: { outcome: string }) => void, reject, generation: state.permissionGeneration, workerGeneration: state.workerGeneration });
+          const onAbort = () => {
+            state.pendingPermissions.delete(requestId);
+            ctx.signal.removeEventListener("abort", onAbort);
+            reject(new Error("permission request aborted"));
+          };
+          if (ctx.signal.aborted) {
+            onAbort();
+            return;
+          }
+          ctx.signal.addEventListener("abort", onAbort, { once: true });
+        });
+        process.stdout.write(encodeWorkerMessage({ id: requestId, event: "permission.request", payload } satisfies RuntimeWorkerEvent));
         try {
-          return resolver.safeResolve(snap, req, ctx.signal);
+          const decision = await Promise.race([
+            pending,
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error("host permission timeout")), 9_000).unref?.()),
+          ]);
+          const outcome = decision.outcome;
+          if (outcome !== "allow_once" && outcome !== "allow_always" && outcome !== "reject_once" && outcome !== "reject_always" && outcome !== "cancel") {
+            return { outcome: "reject_once" };
+          }
+          return { outcome } as { outcome: "allow_once" | "allow_always" | "reject_once" | "reject_always" | "cancel" };
         } catch {
           return { outcome: "reject_once" };
+        } finally {
+          state.pendingPermissions.delete(requestId);
         }
       },
     });
@@ -299,7 +389,37 @@ async function dispatch(request: RuntimeWorkerRequest): Promise<void> {
         };
         state.permissionSnapshot = next;
         state.permissionGeneration = gen;
+        // Stale pending permission requests from old generation must not override new policy → fail closed
+        for (const [key, entry] of [...state.pendingPermissions.entries()]) {
+          if (entry.generation !== gen) {
+            entry.reject(new Error("stale generation"));
+            state.pendingPermissions.delete(key);
+          }
+        }
         respond({ id, ok: true, result: { generation: gen, accepted: true } });
+        break;
+      }
+      case "permission.decision": {
+        const p = (request.params ?? {}) as RuntimeWorkerPermissionDecisionParams;
+        const entry = state.pendingPermissions.get(p.requestId);
+        if (!entry) {
+          respond({ id, ok: true, result: {} });
+          break;
+        }
+        // Generation fencing: stale response must not override new policy
+        if (p.policyGeneration !== entry.generation || p.policyGeneration !== state.permissionGeneration) {
+          entry.reject(new Error("stale generation"));
+          state.pendingPermissions.delete(p.requestId);
+          respond({ id, ok: true, result: { stale: true } });
+          break;
+        }
+        if (p.decision && typeof p.decision.outcome === "string") {
+          entry.resolve(p.decision as { outcome: string });
+        } else {
+          entry.reject(new Error("malformed decision"));
+        }
+        state.pendingPermissions.delete(p.requestId);
+        respond({ id, ok: true, result: {} });
         break;
       }
       default:
