@@ -205,6 +205,9 @@ test("rawInput token + approve-all => deny still prior", () => {
 });
 
 test("wildcard * matches any", () => {
+  const cfg = { generation: 0, permissionMode: "deny-all" as const, nonInteractivePermissions: "deny" as const, permissionPolicy: { autoApprove: ["*"] } };
+  expectParity(cfg, req("anything"));
+  expect(resolver.resolve(cfg, req("anything"))).toEqual({ outcome: "allow_once" });
 });
 
 test("default escalate", () => {
