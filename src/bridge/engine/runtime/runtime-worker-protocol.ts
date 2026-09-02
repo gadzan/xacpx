@@ -14,8 +14,9 @@ export type RuntimeWorkerRequestMethod =
   | "close"
   | "permission.update"
   | "permission.decision"
+  | "elicitation.decision"
+  | "elicitation.cancel"
   | "shutdown";
-
 export interface RuntimeWorkerRequest {
   id: string;
   method: RuntimeWorkerRequestMethod;
@@ -78,12 +79,29 @@ export interface RuntimeWorkerPermissionDecisionParams {
   decision: { outcome: "allow_once" | "allow_always" | "reject_once" | "reject_always" | "cancel" };
 }
 
+export interface RuntimeWorkerElicitationRequestPayload {
+  logicalSessionId: string;
+  sessionKey: string;
+  requestId: string;
+  elicitationId: string;
+  mode: "form" | "url";
+  message: unknown;
+  policyGeneration: number;
+  workerGeneration: string;
+}
+
+export interface RuntimeWorkerElicitationDecisionParams {
+  requestId: string;
+  elicitationId: string;
+  policyGeneration: number;
+  decision: { action: "submit" | "cancel"; data?: unknown };
+}
+
 export type RuntimeWorkerEvent = {
   id: string;
-  event: "text_delta" | "thought" | "tool" | "plan" | "usage" | "commands" | "permission.request";
-  payload: XacpxRuntimeEvent | RuntimeWorkerPermissionRequestPayload | unknown;
+  event: "text_delta" | "thought" | "tool" | "plan" | "usage" | "commands" | "permission.request" | "elicitation.request";
+  payload: XacpxRuntimeEvent | RuntimeWorkerPermissionRequestPayload | RuntimeWorkerElicitationRequestPayload | unknown;
 };
-
 export interface RuntimeWorkerSuccess<T = unknown> {
   id: string;
   ok: true;

@@ -49,6 +49,7 @@ interface WorkerState {
   permissionSnapshot?: RuntimePermissionConfig;
   permissionGeneration: number;
   pendingPermissions: Map<string, { resolve: (d: { outcome: string }) => void; reject: (e: Error) => void; generation: number; workerGeneration: string }>;
+  pendingElicitations: Map<string, { resolve: (d: { action: string; data?: unknown }) => void; reject: (e: Error) => void; generation: number; workerGeneration: string }>;
   workerGeneration: string;
 }
 const gate = createDispatchGate();
@@ -56,6 +57,7 @@ const state: WorkerState = {
   shuttingDown: false,
   permissionGeneration: 0,
   pendingPermissions: new Map(),
+  pendingElicitations: new Map(),
   workerGeneration: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
 };
 
