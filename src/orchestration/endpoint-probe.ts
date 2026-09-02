@@ -37,7 +37,7 @@ export async function canConnectToEndpoint(path: string, timeoutMs?: number): Pr
       timer = setTimeout(() => finish(true), timeoutMs);
       timer.unref?.();
     }
-
+    socket.once("connect", () => finish(true));
     socket.once("error", (error) => {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOENT" || code === "ECONNREFUSED" || code === "ENOTSOCK") {
