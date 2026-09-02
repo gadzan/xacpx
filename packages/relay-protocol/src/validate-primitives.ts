@@ -33,6 +33,9 @@ export const isIntInRange = (v: unknown, min: number, max: number): v is number 
 export const isNonNegInt = (v: unknown): v is number =>
   typeof v === "number" && Number.isInteger(v) && v >= 0;
 
+/** Optional finite non-negative integer: absent or `isNonNegInt`. */
+export const optNonNegInt = (v: unknown): boolean => v === undefined || isNonNegInt(v);
+
 type Base64BufferCtor = {
   from(value: string, encoding: "base64"): {
     length: number;

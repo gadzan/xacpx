@@ -24,20 +24,32 @@ test("leaves a text-only row unchanged", () => {
   expect(compactHistoryMessage(base)).toEqual(base);
 });
 
-test("leaves startedAt in place (compact must not drop the live-slot timestamp)", () => {
+test("leaves startedAt in place (compact must not drop HUD telemetry)", () => {
   const row: MessageRecordDto = { ...base, startedAt: 1_700_000_000_000 };
   expect(compactHistoryMessage(row).startedAt).toBe(1_700_000_000_000);
 });
 
-test("keeps startedAt when stripping heavy tool details", () => {
+test("leaves slotAfterId and startedAfterSeq in place (compact must not drop the slot anchor)", () => {
+  const row: MessageRecordDto = { ...base, slotAfterId: 7, startedAfterSeq: 3, startedAt: 1_700_000_000_000 };
+  const compact = compactHistoryMessage(row);
+  expect(compact.slotAfterId).toBe(7);
+  expect(compact.startedAfterSeq).toBe(3);
+  expect(compact.startedAt).toBe(1_700_000_000_000);
+});
+
+test("keeps slotAfterId when stripping heavy tool details", () => {
   const row: MessageRecordDto = {
     ...base,
     startedAt: 42,
+    slotAfterId: 9,
+    startedAfterSeq: 2,
     structured: {
       parts: [{ type: "tool", step: readStep }],
     },
   };
   const compact = compactHistoryMessage(row);
+  expect(compact.slotAfterId).toBe(9);
+  expect(compact.startedAfterSeq).toBe(2);
   expect(compact.startedAt).toBe(42);
   expect(compact.structured?.compact).toBe(true);
 });

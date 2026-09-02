@@ -24,13 +24,23 @@ export interface MessageRecordDto {
     text: string;
     createdAt: string;
     /**
-     * Epoch ms the assistant turn began (`LiveTurn.startedAt`). Present on completed
-     * `out` rows so history reload can place the turn in its live slot (after the
-     * triggering prompt/received card, before messages that arrived mid-turn) instead
-     * of ordering only by `createdAt` (finish time). Omitted on legacy rows — do not
-     * reorder those. Survives `view=compact`.
+     * Epoch ms the assistant turn began (`LiveTurn.startedAt`). HUD telemetry only —
+     * never a history-reorder key (peer/hub/browser clocks are not comparable).
+     * Survives `view=compact`.
      */
     startedAt?: number;
+    /**
+     * Hub `messages.id` of the last transcript row at turn-start (0 = empty transcript).
+     * History apply places this `out` immediately after that id; later-inserted rows
+     * (received cards AND queued prompts) move after it. Omitted on legacy rows —
+     * do not reorder those. Survives `view=compact`.
+     */
+    slotAfterId?: number;
+    /**
+     * Connector-local per-session seq at turn-start. Auxiliary to `slotAfterId` so a
+     * Hub restart can map receive-order back to insert order. Survives `view=compact`.
+     */
+    startedAfterSeq?: number;
     /** Present while an inbound Web prompt is queued, so a history reload can still
      *  associate it with the later drain event. Cleared when execution starts. */
     queueItemId?: string;
@@ -64,6 +74,11 @@ export interface LiveTurnSnapshotDto {
     status: "working" | "streaming";
     /** Epoch ms the turn began on the hub, so the elapsed-time HUD stays accurate. */
     startedAt: number;
+    /**
+     * Hub `messages.id` the live bubble is slotted after (0 = start of transcript).
+     * Web places the live turn by this id, never by comparing clocks.
+     */
+    slotAfterId?: number;
 }
 /** The latest context-usage meter retained per session, handed to a (re)connecting web
  *  client so the context-usage bar survives a page refresh. Mirrors the `turn-usage`

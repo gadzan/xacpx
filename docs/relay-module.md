@@ -261,13 +261,14 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
   其中 `structured = { toolSteps, reasoning? }`（仅当有步骤或 reasoning 时携带）；之后删除 accumulator。
 - 实例离线（`onStatusChange online=false`）→ 按前缀批量删除对应实例的所有 accumulator，防内存泄漏。
 
-所有事件先经 `webGateway.broadcast` 实时广播给 Web 客户端，再处理累积逻辑（广播与持久化并行，互不阻塞）。
+所有事件先经 `webGateway.broadcast` 实时广播给 Web 客户端，再处理累积逻辑（广播与持久化并行，互不阻塞）。`turn-started` 例外：先对账 inbound + 写入 `turn_slot_anchors`（`slotAfterId` = 当时最后一条 Hub `messages.id`），再广播带 `slotAfterId` 的事件，这样 live 与 history 共用插入序锚点。
 
 ### 数据库 `messages.structured` 列（packages/relay/src/db.ts）
 
 `messages` 表含 `structured TEXT` 列（存 JSON 序列化的 `{ toolSteps, reasoning? }`），直接由建表 DDL 定义。
 
-- `MessageStore.append(instanceId, alias, dir, text, structured?, attachments?, promptRequestId?, createdAt?, startedAt?)` 序列化写入；`listBySession` 反序列化后在 `MessageRecordDto` 中返回完整行（含可选 `startedAt`）。HTTP 列表在 `view=compact` 时由 `compactHistoryMessage` 投影后再发给看板——**不得丢弃** `startedAt`（live-slot 重排依赖它，不能只按 `createdAt` 完结时间排序）；`getById` 仍返回未经投影的原文。
+- `MessageStore.append(instanceId, alias, dir, text, structured?, attachments?, promptRequestId?, createdAt?, startedAt?, slotAfterId?, startedAfterSeq?)` 序列化写入；`listBySession` 反序列化后在 `MessageRecordDto` 中返回完整行（含可选 `startedAt` / `slotAfterId` / `startedAfterSeq`）。HTTP 列表在 `view=compact` 时由 `compactHistoryMessage` 投影后再发给看板——**不得丢弃** `slotAfterId`（live-slot 重排依赖 Hub 插入序，不能按 `createdAt` 完结时间或跨机器墙钟排序）；`startedAt` 仅作 HUD 遥测。`getById` 仍返回未经投影的原文。
+- Hub 在 `turn-started`（对账 inbound prompt 之后）把当时该 session 最后一条 `messages.id` 写入 `turn_slot_anchors`，并带到 accumulator / `out` 行。Hub 重启后 `finishedOffline` 与无 buffer 的 `turn-finished` 都从该锚点恢复，而不是用 `lastId`（会把中途到达的 card 当成触发卡）或 connector 墙钟。
 
 ## 阶段七：Hub 重启状态恢复（instance.state.sync + turn-finished.text）
 
@@ -280,7 +281,9 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
 - 新消息类型 `MSG.instanceStateSync = "instance.state.sync"`，载荷为 `InstanceStateSyncPayload`
   `{ turns, usage, commands, finishedOffline }`（见 src/messages.ts）：连接器在每次（重）连
   完成鉴权后立即推送一份内存镜像快照给 hub。纯增量协议：旧 hub 忽略未知消息类型，
-  旧 connector 不发送则回退到原行为。`finishedOffline` 每项携带 `recoveryId` 与 `truncated`。
+  旧 connector 不发送则回退到原行为。`finishedOffline` 每项携带 `recoveryId` 与 `truncated`，
+  以及 `startedAfterSeq` / `startedAt`（connector 在 `turn-started` 记下的接收序与 HUD 遥测；
+  Hub 用 seq/锚点表映射到 `slotAfterId`，不以墙钟重排）。
 - 新消息类型 `MSG.instanceRecoveryAck = "instance.recovery.ack"`（hub → connector，载荷 `{ recoveryIds }`）：
   hub 只在**数据库提交之后**（消息行 + receipt 同一事务）ack 对应的 recoveryId。
 - 三个回合内容上限（`STATE_SYNC_TEXT_CAP = 256KiB` / `MAX_TOOL_STEPS = 200` /

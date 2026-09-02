@@ -556,10 +556,12 @@ export interface LiveTurn {
   `messages[]`，因此出现在 live 气泡**下面**：`card1 → live turn → card2`。`parts.length === 0`
   时仍占据该槽（working spinner），避免第二张卡叠在尚未可见的 turn 上。Sent card 仍按
   `agentMessageId` 接入 `TurnParts`（Gate A）；received card 永不抑制、永不嵌进 turn（Gate B）。
-  `turn-finished` 把 `out` 行 **splice 进该槽**（带 `startedAt`，与 `LiveTurn.startedAt` 相同的 epoch ms），
-  而不是 `push` 到末尾。`loadHistory` 对带 `startedAt` 的 `out` 把 `createdAt` 更晚的 inbound
-  agent-message 挪到该 `out` 之后；无 `startedAt` 的旧行不重排。Stick-to-bottom / jump-latest
-  在 live turn 存在时跟随 live 气泡，而不是最新一行。
+  `turn-finished` 把 `out` 行 **splice 进该槽**（带 `startedAt` 作 HUD 遥测，以及 Hub
+  `slotAfterId` 作插入序锚点），而不是 `push` 到末尾。`loadHistory` 对带 `slotAfterId`
+  的 `out` 把 **Hub id 大于该锚点** 的 transcript 行（received card **以及** 忙时排队的
+  user prompt）挪到该 `out` 之后；无 `slotAfterId` 的旧行不重排。**不以** `createdAt` /
+  `startedAt` 墙钟比较决定顺序（发送端 daemon、Hub、浏览器时钟不可比）。Stick-to-bottom /
+  jump-latest 在 live turn 存在时跟随 live 气泡，而不是最新一行。
 
 ## 桌面系统通知（Web Push 与 本地 Notification Fallback）
 

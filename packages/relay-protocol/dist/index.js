@@ -210,6 +210,7 @@ var optBool = (v) => v === undefined || typeof v === "boolean";
 var isBoundedStr = (v, maxLen) => typeof v === "string" && v.length > 0 && v.length <= maxLen;
 var isIntInRange = (v, min, max) => typeof v === "number" && Number.isInteger(v) && v >= min && v <= max;
 var isNonNegInt = (v) => typeof v === "number" && Number.isInteger(v) && v >= 0;
+var optNonNegInt = (v) => v === undefined || isNonNegInt(v);
 function decodeCanonicalBase64(encoded) {
   if (typeof globalThis.atob === "function" && typeof globalThis.btoa === "function") {
     const binary = globalThis.atob(encoded);
@@ -394,7 +395,7 @@ function validStateSnapshot(candidate) {
     if (typeof turn !== "object" || turn === null)
       return false;
     const c = turn;
-    return c.instanceId === instanceId && typeof c.sessionAlias === "string" && Array.isArray(c.parts) && c.parts.every(validTurnPart) && (c.status === "working" || c.status === "streaming") && finiteNonNegative(c.startedAt);
+    return c.instanceId === instanceId && typeof c.sessionAlias === "string" && Array.isArray(c.parts) && c.parts.every(validTurnPart) && (c.status === "working" || c.status === "streaming") && finiteNonNegative(c.startedAt) && optNonNegInt(c.slotAfterId);
   }))
     return false;
   if (!Array.isArray(candidate.usage) || !candidate.usage.every((usage) => {
@@ -465,11 +466,11 @@ function validControlEvent(e) {
     case "turn-output":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
     case "turn-finished":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean" && optStr(c.text) && optStr(c.recoveryId) && optStr(c.errorMessage) && optBool(c.cancelled) && optBool(c.silent) && validPeerTurnOrigin(c.peerOrigin);
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean" && optStr(c.text) && optStr(c.recoveryId) && optStr(c.errorMessage) && optBool(c.cancelled) && optBool(c.silent) && validPeerTurnOrigin(c.peerOrigin) && optNonNegInt(c.startedAfterSeq) && (c.startedAt === undefined || finiteNonNegative(c.startedAt));
     case "scheduled-changed":
       return typeof c.chatKey === "string";
     case "turn-started":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && optStr(c.prompt) && optStr(c.queueItemId) && optStr(c.promptRequestId) && validScheduledOrigin(c.scheduled) && validPeerTurnOrigin(c.peerOrigin);
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && optStr(c.prompt) && optStr(c.queueItemId) && optStr(c.promptRequestId) && optStr(c.recoveryId) && validScheduledOrigin(c.scheduled) && validPeerTurnOrigin(c.peerOrigin) && optNonNegInt(c.startedAfterSeq) && optNonNegInt(c.slotAfterId);
     case "turn-thought":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
     case "plan":
@@ -511,7 +512,7 @@ function validInstanceStateSync(p) {
     if (typeof t !== "object" || t === null)
       return false;
     const turn = t;
-    return typeof turn.sessionAlias === "string" && optStr(turn.prompt) && optStr(turn.queueItemId) && optStr(turn.recoveryId) && optStr(turn.promptRequestId) && validScheduledOrigin(turn.scheduled) && finiteNonNegative(turn.startedAt) && typeof turn.text === "string" && typeof turn.reasoning === "string" && Array.isArray(turn.steps) && turn.steps.every(validToolStep) && (turn.parts === undefined || Array.isArray(turn.parts) && validStateSyncParts(turn.parts)) && (turn.truncated === undefined || typeof turn.truncated === "boolean");
+    return typeof turn.sessionAlias === "string" && optStr(turn.prompt) && optStr(turn.queueItemId) && optStr(turn.recoveryId) && optStr(turn.promptRequestId) && validScheduledOrigin(turn.scheduled) && finiteNonNegative(turn.startedAt) && optNonNegInt(turn.startedAfterSeq) && typeof turn.text === "string" && typeof turn.reasoning === "string" && Array.isArray(turn.steps) && turn.steps.every(validToolStep) && (turn.parts === undefined || Array.isArray(turn.parts) && validStateSyncParts(turn.parts)) && (turn.truncated === undefined || typeof turn.truncated === "boolean");
   }))
     return false;
   if (!Array.isArray(c.usage) || !c.usage.every((u) => {
@@ -532,7 +533,7 @@ function validInstanceStateSync(p) {
     if (typeof f !== "object" || f === null)
       return false;
     const finished = f;
-    return typeof finished.sessionAlias === "string" && typeof finished.ok === "boolean" && optStr(finished.errorMessage) && optStr(finished.text) && optStr(finished.prompt) && optStr(finished.queueItemId) && optStr(finished.recoveryId) && optStr(finished.promptRequestId) && validScheduledOrigin(finished.scheduled) && (finished.cancelled === undefined || typeof finished.cancelled === "boolean") && (finished.truncated === undefined || typeof finished.truncated === "boolean");
+    return typeof finished.sessionAlias === "string" && typeof finished.ok === "boolean" && optStr(finished.errorMessage) && optStr(finished.text) && optStr(finished.prompt) && optStr(finished.queueItemId) && optStr(finished.recoveryId) && optStr(finished.promptRequestId) && validScheduledOrigin(finished.scheduled) && (finished.cancelled === undefined || typeof finished.cancelled === "boolean") && (finished.truncated === undefined || typeof finished.truncated === "boolean") && (finished.startedAt === undefined || finiteNonNegative(finished.startedAt)) && optNonNegInt(finished.startedAfterSeq);
   });
 }
 function validNotice(n) {
@@ -1005,6 +1006,7 @@ export {
   parseCanonicalBase64,
   optStr,
   optNum,
+  optNonNegInt,
   optBool,
   normalizeCapabilities,
   maxBase64EncodedLength,

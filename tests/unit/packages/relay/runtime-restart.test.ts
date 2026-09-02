@@ -88,3 +88,100 @@ test("simulated hub restart: turn/rows recover via state sync, flush once, dedup
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+function receivedCard(messageId: string, createdAt: number) {
+  return {
+    type: "agent-message" as const,
+    chatKey: "relay:a1",
+    sessionAlias: "backend",
+    message: {
+      kind: "agent_message" as const,
+      direction: "received" as const,
+      messageId,
+      conversationId: `conv_${messageId}`,
+      peer: { handle: "agent:n:e", displayName: "Peer", agent: "codex" },
+      content: messageId,
+      createdAt,
+      status: "delivered" as const,
+    },
+  };
+}
+
+test("hub restart + finishedOffline persists slotAfterId from turn-start, not lastId or clocks", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-slot-"));
+  const dbPath = join(dir, "relay.db");
+  const turnStart = STARTED_AT;
+  const peerBehind = turnStart - 30_000;
+  try {
+    const a = await createRelayRuntime(dbPath);
+    seedIdentity(a);
+    fire(a, receivedCard("card1", turnStart - 1_000));
+    fire(a, { type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", recoveryId: "r-slot", startedAfterSeq: 1 });
+    const afterStart = a.messages.listBySession("a1", "i1", "backend").messages;
+    const triggerId = afterStart[0]!.id!;
+    fire(a, receivedCard("card2", peerBehind));
+    expect(a.messages.listBySession("a1", "i1", "backend").messages.map((m) => m.text)).toEqual(["card1", "card2"]);
+    a.close();
+
+    const b = await createRelayRuntime(dbPath);
+    sync(b, {
+      turns: [],
+      usage: [],
+      commands: [],
+      finishedOffline: [{
+        sessionAlias: "backend",
+        ok: true,
+        text: "reply",
+        recoveryId: "r-slot",
+        startedAfterSeq: 1,
+        startedAt: turnStart,
+      }],
+    });
+    const rows = b.messages.listBySession("a1", "i1", "backend").messages;
+    expect(rows.map((m) => m.text)).toEqual(["card1", "card2", "reply"]);
+    const out = rows.find((m) => m.direction === "out");
+    expect(out?.slotAfterId).toBe(triggerId);
+    expect(out?.startedAfterSeq).toBe(1);
+    expect(typeof out?.startedAt).toBe("number");
+    // Insert order is still trigger, mid-turn card, out — web reorders by slotAfterId.
+    expect(rows[0]!.id).toBe(triggerId);
+    expect(rows[1]!.text).toBe("card2");
+    b.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("no-buffer turn-finished after hub restart uses the durable slot anchor", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-nobuffer-"));
+  const dbPath = join(dir, "relay.db");
+  try {
+    const a = await createRelayRuntime(dbPath);
+    seedIdentity(a);
+    fire(a, receivedCard("card1", STARTED_AT - 1_000));
+    fire(a, { type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", recoveryId: "r-nb", startedAfterSeq: 2 });
+    const triggerId = a.messages.listBySession("a1", "i1", "backend").messages[0]!.id!;
+    fire(a, receivedCard("card2", STARTED_AT + 10));
+    a.close();
+
+    const b = await createRelayRuntime(dbPath);
+    fire(b, {
+      type: "turn-finished",
+      chatKey: "relay:a1",
+      sessionAlias: "backend",
+      ok: true,
+      text: "offline reply",
+      recoveryId: "r-nb",
+      startedAfterSeq: 2,
+      startedAt: STARTED_AT,
+    });
+    const rows = b.messages.listBySession("a1", "i1", "backend").messages;
+    const out = rows.find((m) => m.direction === "out");
+    expect(out?.text).toBe("offline reply");
+    expect(out?.slotAfterId).toBe(triggerId);
+    expect(out?.startedAfterSeq).toBe(2);
+    b.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

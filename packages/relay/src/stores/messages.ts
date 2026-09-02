@@ -15,6 +15,8 @@ interface MessageRow {
   attachments: string | null;
   queue_item_id: string | null;
   started_at: number | null;
+  slot_after_id: number | null;
+  started_after_seq: number | null;
 }
 
 export interface MessagePage {
@@ -39,6 +41,8 @@ function toDto(r: MessageRow): MessageRecordDto {
     createdAt: r.created_at,
     ...(r.queue_item_id ? { queueItemId: r.queue_item_id } : {}),
     ...(typeof r.started_at === "number" ? { startedAt: r.started_at } : {}),
+    ...(typeof r.slot_after_id === "number" ? { slotAfterId: r.slot_after_id } : {}),
+    ...(typeof r.started_after_seq === "number" ? { startedAfterSeq: r.started_after_seq } : {}),
     ...(r.structured ? { structured: JSON.parse(r.structured) as StructuredTurn } : {}),
     ...(r.attachments ? { attachments: JSON.parse(r.attachments) as AttachmentMetadata[] } : {}),
   };
@@ -57,9 +61,11 @@ export class MessageStore {
     promptRequestId?: string,
     createdAt?: string,
     startedAt?: number,
+    slotAfterId?: number,
+    startedAfterSeq?: number,
   ): number {
     this.db.run(
-      "INSERT INTO messages (instance_id, session_alias, direction, text, created_at, structured, attachments, prompt_request_id, started_at) VALUES (?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO messages (instance_id, session_alias, direction, text, created_at, structured, attachments, prompt_request_id, started_at, slot_after_id, started_after_seq) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
       [
         instanceId,
         sessionAlias,
@@ -70,6 +76,8 @@ export class MessageStore {
         attachments && attachments.length > 0 ? JSON.stringify(attachments) : null,
         promptRequestId ?? null,
         startedAt ?? null,
+        slotAfterId ?? null,
+        startedAfterSeq ?? null,
       ],
     );
     return this.db.get<{ id: number }>("SELECT last_insert_rowid() AS id")!.id;
@@ -316,7 +324,7 @@ export class MessageStore {
     const before = opts.before ?? null;
     // Fetch one extra row to detect whether older history remains, then drop it.
     const rows = this.db.all<MessageRow>(
-      `SELECT m.id, m.instance_id, m.session_alias, m.direction, m.text, m.created_at, m.structured, m.attachments, m.queue_item_id, m.started_at
+      `SELECT m.id, m.instance_id, m.session_alias, m.direction, m.text, m.created_at, m.structured, m.attachments, m.queue_item_id, m.started_at, m.slot_after_id, m.started_after_seq
        FROM messages m JOIN instances i ON i.id = m.instance_id
        WHERE i.account_id = ? AND m.instance_id = ? AND m.session_alias = ?
          AND (? IS NULL OR m.id < ?)
@@ -339,12 +347,20 @@ export class MessageStore {
     id: number,
   ): MessageRecordDto | null {
     const row = this.db.get<MessageRow>(
-      `SELECT m.id, m.instance_id, m.session_alias, m.direction, m.text, m.created_at, m.structured, m.attachments, m.queue_item_id, m.started_at
+      `SELECT m.id, m.instance_id, m.session_alias, m.direction, m.text, m.created_at, m.structured, m.attachments, m.queue_item_id, m.started_at, m.slot_after_id, m.started_after_seq
        FROM messages m JOIN instances i ON i.id = m.instance_id
        WHERE i.account_id = ? AND m.instance_id = ? AND m.session_alias = ? AND m.id = ?`,
       [accountId, instanceId, sessionAlias, id],
     );
     return row ? toDto(row) : null;
+  }
+
+  /** Latest Hub `messages.id` for this session, or `undefined` when the transcript is empty. */
+  lastId(instanceId: string, sessionAlias: string): number | undefined {
+    return this.db.get<{ id: number }>(
+      "SELECT id FROM messages WHERE instance_id = ? AND session_alias = ? ORDER BY id DESC LIMIT 1",
+      [instanceId, sessionAlias],
+    )?.id;
   }
 
   /** Permanently removes the Hub-cached history for one logical session. */

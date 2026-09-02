@@ -255,18 +255,22 @@ test("GET messages without view=compact still returns full structured rows", asy
   runtime.close();
 });
 
-test("GET messages?view=compact keeps startedAt on the assistant out row", async () => {
+test("GET messages?view=compact keeps startedAt and slotAfterId on the assistant out row", async () => {
   const { runtime, cookie } = await loggedIn();
-  runtime.messages.append("i1", "backend", "out", "looked", undefined, undefined, undefined, undefined, 1_700_000_000_000);
+  runtime.messages.append("i1", "backend", "out", "looked", undefined, undefined, undefined, undefined, 1_700_000_000_000, 4, 2);
   const listed = await runtime.app.request("/api/instances/i1/sessions/backend/messages?view=compact", { headers: { cookie } });
-  const page = (await listed.json()) as { messages: Array<{ startedAt?: number; text: string }> };
+  const page = (await listed.json()) as { messages: Array<{ startedAt?: number; slotAfterId?: number; startedAfterSeq?: number; text: string }> };
   expect(page.messages).toHaveLength(1);
   expect(page.messages[0]?.text).toBe("looked");
   expect(page.messages[0]?.startedAt).toBe(1_700_000_000_000);
+  expect(page.messages[0]?.slotAfterId).toBe(4);
+  expect(page.messages[0]?.startedAfterSeq).toBe(2);
 
   const full = await runtime.app.request("/api/instances/i1/sessions/backend/messages", { headers: { cookie } });
-  const body = (await full.json()) as { messages: Array<{ startedAt?: number }> };
+  const body = (await full.json()) as { messages: Array<{ startedAt?: number; slotAfterId?: number; startedAfterSeq?: number }> };
   expect(body.messages[0]?.startedAt).toBe(1_700_000_000_000);
+  expect(body.messages[0]?.slotAfterId).toBe(4);
+  expect(body.messages[0]?.startedAfterSeq).toBe(2);
   runtime.close();
 });
 
