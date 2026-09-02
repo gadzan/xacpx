@@ -17,6 +17,7 @@ import {
 import type { AccountRow, AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
 import type { MessageStore } from "../stores/messages.js";
+import type { TurnSlotAnchorStore } from "../stores/turn-slot-anchors.js";
 import type { PushSubscriptionStore } from "../stores/push-subscriptions.js";
 import { isAllowedPushEndpoint } from "../push.js";
 import type { RelayLogger } from "../logging.js";
@@ -36,6 +37,8 @@ export interface AppDeps {
   instances: InstanceStore;
   gateway: GatewayForApp;
   messages: MessageStore;
+  /** Live-slot anchors; cleared when a session or instance is deleted. */
+  turnSlotAnchors?: TurnSlotAnchorStore;
   /** Snapshot the in-flight turns for an instance (for the active-turns endpoint). */
   activeTurns?: (instanceId: string) => LiveTurnSnapshotDto[];
   /** Snapshot the latest per-session context-usage for an instance (for the active-turns endpoint). */
@@ -513,7 +516,9 @@ export function createApp(deps: AppDeps): Hono<Vars> {
 
   app.delete("/api/instances/:id", (c) => {
     const account = c.get("account");
-    const removed = deps.instances.remove(c.req.param("id"), account.id);
+    const instanceId = c.req.param("id");
+    const removed = deps.instances.remove(instanceId, account.id);
+    if (removed) deps.turnSlotAnchors?.deleteByInstance(instanceId);
     return removed ? c.json({ ok: true }) : c.json({ error: "not-found" }, 404);
   });
   app.get("/api/agent-directory", (c) => {
@@ -728,6 +733,7 @@ export function createApp(deps: AppDeps): Hono<Vars> {
       // success; archive intentionally keeps both histories.
       if (removeInput && !isErrorPayload(result)) {
         deps.messages.deleteBySession(instance.id, removeInput.alias);
+        deps.turnSlotAnchors?.deleteBySession(instance.id, removeInput.alias);
       }
       if (body.type === MSG.commandExecute) {
         const p = payload as { sessionAlias?: string; text?: string };

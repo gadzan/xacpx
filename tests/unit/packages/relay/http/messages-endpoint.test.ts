@@ -111,12 +111,14 @@ test("delete then same-alias create returns an empty Web history", async () => {
   (runtime.gateway as unknown as { sendRequest: () => Promise<unknown> }).sendRequest = async () => ({ ok: true });
   runtime.messages.append("i1", "backend", "in", "old question");
   runtime.messages.append("i1", "backend", "out", "old answer");
+  runtime.slotAnchors.put({ instanceId: "i1", sessionAlias: "backend", recoveryId: "r-old", slotAfterId: 1 });
 
   const remove = await runtime.app.request("/api/instances/i1/rpc", {
     method: "POST", headers: { cookie, "content-type": "application/json" },
     body: JSON.stringify({ type: MSG.sessionsRemove, payload: { alias: "backend" } }),
   });
   expect(remove.status).toBe(200);
+  expect(runtime.slotAnchors.get("i1", "r-old")).toBeUndefined();
   const create = await runtime.app.request("/api/instances/i1/rpc", {
     method: "POST", headers: { cookie, "content-type": "application/json" },
     body: JSON.stringify({ type: MSG.sessionsCreate, payload: { alias: "backend", agent: "claude", workspace: "home" } }),

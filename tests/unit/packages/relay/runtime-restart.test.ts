@@ -185,3 +185,125 @@ test("no-buffer turn-finished after hub restart uses the durable slot anchor", a
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("leftover anchor A is not inherited by outage-started turn B (uses post-reconcile lastId)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-stale-anchor-"));
+  const dbPath = join(dir, "relay.db");
+  try {
+    const a = await createRelayRuntime(dbPath);
+    seedIdentity(a);
+    fire(a, receivedCard("card1", STARTED_AT - 1_000));
+    fire(a, { type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", recoveryId: "r-A", startedAfterSeq: 1 });
+    const triggerA = a.messages.listBySession("a1", "i1", "backend").messages[0]!.id!;
+    for (let i = 2; i <= 12; i++) fire(a, receivedCard(`card${i}`, STARTED_AT + i));
+    const lastBeforeOutage = a.messages.listBySession("a1", "i1", "backend").messages.at(-1)!.id!;
+    expect(lastBeforeOutage).toBeGreaterThan(triggerA);
+    expect(a.slotAnchors.get("i1", "r-A")?.slotAfterId).toBe(triggerA);
+    a.close();
+
+    const b = await createRelayRuntime(dbPath);
+    sync(b, {
+      turns: [{
+        sessionAlias: "backend",
+        startedAt: STARTED_AT + 50_000,
+        text: "B running",
+        reasoning: "",
+        steps: [],
+        prompt: "turn B",
+        recoveryId: "r-B",
+        startedAfterSeq: 2,
+      }],
+      usage: [],
+      commands: [],
+      finishedOffline: [],
+    });
+    const promptB = b.messages.listBySession("a1", "i1", "backend").messages.find((m) => m.text === "turn B");
+    expect(promptB).toBeDefined();
+    const restored = b.stateSnapshot("i1").turns.find((t) => t.sessionAlias === "backend");
+    expect(restored?.slotAfterId).toBe(promptB!.id);
+    expect(restored?.slotAfterId).not.toBe(triggerA);
+    expect(b.slotAnchors.get("i1", "r-A")).toBeUndefined();
+    expect(b.slotAnchors.get("i1", "r-B")?.slotAfterId).toBe(promptB!.id);
+    b.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("leftover anchor A is not inherited by finishedOffline B (uses post-reconcile lastId)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-stale-finish-"));
+  const dbPath = join(dir, "relay.db");
+  try {
+    const a = await createRelayRuntime(dbPath);
+    seedIdentity(a);
+    fire(a, receivedCard("card1", STARTED_AT - 1_000));
+    fire(a, { type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", recoveryId: "r-A", startedAfterSeq: 1 });
+    const triggerA = a.messages.listBySession("a1", "i1", "backend").messages[0]!.id!;
+    for (let i = 2; i <= 12; i++) fire(a, receivedCard(`card${i}`, STARTED_AT + i));
+    a.close();
+
+    const b = await createRelayRuntime(dbPath);
+    sync(b, {
+      turns: [],
+      usage: [],
+      commands: [],
+      finishedOffline: [{
+        sessionAlias: "backend",
+        ok: true,
+        text: "B reply",
+        prompt: "turn B",
+        recoveryId: "r-B",
+        startedAfterSeq: 2,
+        startedAt: STARTED_AT + 50_000,
+      }],
+    });
+    const rows = b.messages.listBySession("a1", "i1", "backend").messages;
+    const promptB = rows.find((m) => m.text === "turn B");
+    const out = rows.find((m) => m.direction === "out");
+    expect(promptB).toBeDefined();
+    expect(out?.text).toBe("B reply");
+    expect(out?.slotAfterId).toBe(promptB!.id);
+    expect(out?.slotAfterId).not.toBe(triggerA);
+    expect(b.slotAnchors.get("i1", "r-A")).toBeUndefined();
+    b.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("legacy empty recoveryId backend+frontend each restore their own slot after hub restart", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-legacy-slot-"));
+  const dbPath = join(dir, "relay.db");
+  try {
+    const a = await createRelayRuntime(dbPath);
+    seedIdentity(a);
+    fire(a, { ...receivedCard("be1", STARTED_AT - 1_000), sessionAlias: "backend" });
+    fire(a, { type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", prompt: "be-prompt" });
+    const backendSlot = a.messages.listBySession("a1", "i1", "backend").messages.at(-1)!.id!;
+    fire(a, { ...receivedCard("be2", STARTED_AT + 10), sessionAlias: "backend" });
+
+    fire(a, { ...receivedCard("fe1", STARTED_AT - 1_000), sessionAlias: "frontend" });
+    fire(a, { type: "turn-started", chatKey: "relay:a1", sessionAlias: "frontend", prompt: "fe-prompt" });
+    const frontendSlot = a.messages.listBySession("a1", "i1", "frontend").messages.at(-1)!.id!;
+    fire(a, { ...receivedCard("fe2", STARTED_AT + 10), sessionAlias: "frontend" });
+    expect(backendSlot).not.toBe(frontendSlot);
+    a.close();
+
+    const b = await createRelayRuntime(dbPath);
+    sync(b, {
+      turns: [
+        { sessionAlias: "backend", startedAt: STARTED_AT, text: "be-out", reasoning: "", steps: [], prompt: "be-prompt" },
+        { sessionAlias: "frontend", startedAt: STARTED_AT, text: "fe-out", reasoning: "", steps: [], prompt: "fe-prompt" },
+      ],
+      usage: [],
+      commands: [],
+      finishedOffline: [],
+    });
+    const turns = Object.fromEntries(b.stateSnapshot("i1").turns.map((t) => [t.sessionAlias, t.slotAfterId]));
+    expect(turns.backend).toBe(backendSlot);
+    expect(turns.frontend).toBe(frontendSlot);
+    b.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

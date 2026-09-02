@@ -16,7 +16,7 @@ import { InstanceStore } from "./stores/instances.js";
 import { MessageStore } from "./stores/messages.js";
 import { PendingCompletionRouteStore } from "./stores/pending-completion-routes.js";
 import { RecoveryReceiptStore } from "./stores/recovery-receipts.js";
-import { TurnSlotAnchorStore } from "./stores/turn-slot-anchors.js";
+import { TurnSlotAnchorStore, canonicalRecoveryId } from "./stores/turn-slot-anchors.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS, InstanceGateway } from "./gateway/instance-gateway.js";
 import { WebGateway } from "./gateway/web-gateway.js";
 import { PushNotifier, vapidFromEnv, validateVapidConfig, type VapidConfig } from "./push.js";
@@ -103,6 +103,7 @@ export interface RelayRuntime {
   instances: InstanceStore;
   messages: MessageStore;
   recoveryReceipts: RecoveryReceiptStore;
+  slotAnchors: TurnSlotAnchorStore;
   pushSubscriptions: PushSubscriptionStore;
   pushNotifier: PushNotifier;
   gateway: InstanceGateway;
@@ -440,7 +441,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         slotAnchors.put({
           instanceId,
           sessionAlias,
-          recoveryId: recoveryId ?? "",
+          recoveryId: canonicalRecoveryId(sessionAlias, recoveryId),
           slotAfterId: slot.slotAfterId,
           ...(slot.startedAt !== undefined ? { startedAt: slot.startedAt } : {}),
           ...(slot.startedAfterSeq !== undefined ? { startedAfterSeq: slot.startedAfterSeq } : {}),
@@ -469,8 +470,10 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         sessionAlias: string,
         turn: { recoveryId?: string; startedAfterSeq?: number; startedAt: number },
       ): OutSlot => {
-        const stored = (turn.recoveryId ? slotAnchors.get(instanceId, turn.recoveryId) : undefined)
-          ?? slotAnchors.getBySession(instanceId, sessionAlias);
+        // Exact recovery identity only. A non-empty recoveryId miss means Hub
+        // never saw this start — snapshot lastId after prompt reconcile. Do
+        // not bind a leftover session anchor from an expired earlier turn.
+        const stored = slotAnchors.get(instanceId, canonicalRecoveryId(sessionAlias, turn.recoveryId));
         if (stored) {
           return {
             slotAfterId: stored.slotAfterId,
@@ -974,8 +977,9 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 // Restored original start so the elapsed-time HUD survives the restart.
                 startedAt: turn.startedAt,
                 // Durable insert-order slot: prefer the SQLite anchor from the original
-                // turn-started (survives Hub restart). Turns that started during outage
-                // snapshot lastId AFTER prompt reconcile — mid-turn cards were not persisted
+                // turn-started (exact recoveryId, or per-session legacy key). A miss
+                // snapshots lastId AFTER prompt reconcile — leftover anchors from
+                // expired turns are never inherited. Mid-turn cards were not persisted
                 // while the Hub was down.
                 ...(() => {
                   const slot = restoreRunningSlot(turn.sessionAlias, {
@@ -1001,6 +1005,12 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             for (const entry of sync.commands) {
               sessionCommands.set(key(instanceId, entry.sessionAlias), entry.commands);
             }
+            // Drop leftover anchors the connector no longer reports (expired /
+            // FIFO-evicted pendingFinished). A later turn must not inherit them.
+            const keepAnchors = new Set<string>();
+            for (const turn of sync.turns) keepAnchors.add(canonicalRecoveryId(turn.sessionAlias, turn.recoveryId));
+            for (const finished of sync.finishedOffline) keepAnchors.add(canonicalRecoveryId(finished.sessionAlias, finished.recoveryId));
+            slotAnchors.retain(instanceId, keepAnchors);
             webGateway.broadcast(accountId, { kind: "state-snapshot", instanceId, ...stateSnapshot(instanceId) });
           } catch (err) {
             // Same posture as the live flush: a persistence failure must never be
@@ -1052,6 +1062,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     onWebPromptSessionCleared: (instanceId, sessionAlias) => {
       clearPendingForSession(instanceId, sessionAlias);
     },
+    turnSlotAnchors: slotAnchors,
   });
   const completionRouteSweepTimer = setInterval(
     () => gateway.sweepExpiredCompletionRoutes(),
@@ -1064,6 +1075,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     instances,
     messages,
     recoveryReceipts,
+    slotAnchors,
     pushSubscriptions,
     pushNotifier,
     gateway,
