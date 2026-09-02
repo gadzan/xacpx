@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 import { RuntimeEngine } from "../../../../../src/bridge/engine/runtime-engine";
@@ -56,46 +56,60 @@ test("G3: real Runtime freeWarm → respawn same record/history (prompt #1 → f
   const stateDir = join(dir, "state", "sessions");
   const queueDir = join(dir, "queue");
   const fenceDir = join(dir, "fences");
-  await Bun.write(join(dir, "dummy"), "");
-
-  const engine = new RuntimeEngine({
-    stateDir,
-    queueDir,
-    fenceDir,
-    idleTtlMs: 200,
-    permissionMode: "approve-all",
-  } as unknown as ConstructorParameters<typeof RuntimeEngine>[0]);
-
+  const workerOutDir = join(dir, "dist", "bridge", "engine", "runtime");
+  const workerFile = join(workerOutDir, "runtime-worker-main.js");
   try {
-    // Prompt #1
-    const res1 = await engine.prompt({ ...base, text: "g3 first" }, async () => {});
-    expect(res1.text.length).toBeGreaterThan(0);
+    const buildResult = await Bun.build({
+      entrypoints: [resolve(process.cwd(), "./src/bridge/engine/runtime/runtime-worker-main.ts")],
+      outdir: workerOutDir,
+      target: "node",
+      external: ["acpx", "node-pty", "fs-ext", "write-file-atomic"],
+    });
+    if (!buildResult.success) {
+      throw new Error(`Bun.build failed: ${buildResult.logs.join("\n")}`);
+    }
 
-    // Capture recordId via adapter status or via file listing
-    const sessions = await engine.hasSession(base);
-    expect(sessions.exists).toBe(true);
-    const warm1 = await engine.isSessionWarm(base);
-    expect(warm1.warm).toBe(true);
+    const engine = new RuntimeEngine({
+      workerEntryPath: workerFile,
+      stateDir,
+      queueDir,
+      fenceDir,
+      idleTtlMs: 200,
+      permissionMode: "approve-all",
+    } as unknown as ConstructorParameters<typeof RuntimeEngine>[0]);
 
-    // freeWarm → worker gone, record still open
-    await engine.freeWarmProcess(base);
-    const warmAfter = await engine.isSessionWarm(base);
-    expect(warmAfter.warm).toBe(false);
-    const stillExists = await engine.hasSession(base);
-    expect(stillExists.exists).toBe(true);
+    try {
+      // Prompt #1
+      const res1 = await engine.prompt({ ...base, text: "g3 first" }, async () => {});
+      expect(res1.text.length).toBeGreaterThan(0);
 
-    // Prompt #2 → new worker, same record/history
-    const res2 = await engine.prompt({ ...base, text: "g3 second" }, async () => {});
-    expect(res2.text.length).toBeGreaterThan(0);
-    const warm2 = await engine.isSessionWarm(base);
-    expect(warm2.warm).toBe(true);
+      // Capture recordId via adapter status or via file listing
+      const sessions = await engine.hasSession(base);
+      expect(sessions.exists).toBe(true);
+      const warm1 = await engine.isSessionWarm(base);
+      expect(warm1.warm).toBe(true);
 
-    // Verify history contains both prompts via tail
-    const tail = await engine.tailSessionHistory({ ...base, lines: 100 });
-    expect(tail.text).toContain("g3 first");
-    expect(tail.text).toContain("g3 second");
+      // freeWarm → worker gone, record still open
+      await engine.freeWarmProcess(base);
+      const warmAfter = await engine.isSessionWarm(base);
+      expect(warmAfter.warm).toBe(false);
+      const stillExists = await engine.hasSession(base);
+      expect(stillExists.exists).toBe(true);
+
+      // Prompt #2 → new worker, same record/history
+      const res2 = await engine.prompt({ ...base, text: "g3 second" }, async () => {});
+      expect(res2.text.length).toBeGreaterThan(0);
+      const warm2 = await engine.isSessionWarm(base);
+      expect(warm2.warm).toBe(true);
+
+      // Verify history contains both prompts via tail
+      const tail = await engine.tailSessionHistory({ ...base, lines: 100 });
+      expect(tail.text).toContain("g3 first");
+      expect(tail.text).toContain("g3 second");
+    } finally {
+      await engine.shutdown().catch(() => {});
+    }
   } finally {
-    await engine.shutdown().catch(() => {});
     await rm(dir, { recursive: true, force: true });
   }
 }, 60_000);
