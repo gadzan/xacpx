@@ -14,62 +14,89 @@ export interface RuntimePermissionConfig {
   permissionPolicy?: XacpxPermissionPolicy;
 }
 
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-function globToRegExp(pattern: string): RegExp {
-  // Convert a simple glob ( *, ?, ** ) to RegExp; ** matches any depth, * matches not slash, ? matches single
-  let re = "";
-  for (let i = 0; i < pattern.length; i++) {
-    const c = pattern[i]!;
-    if (c === "*") {
-      if (pattern[i + 1] === "*") {
-        re += ".*";
-        i++;
-        // Consume following slash if any for **/
-        if (pattern[i + 1] === "/") i++;
-      } else {
-        re += "[^/]*";
-      }
-    } else if (c === "?") {
-      re += ".";
-    } else {
-      re += escapeRegExp(c);
-    }
-  }
-  return new RegExp(`^${re}$`);
-}
-function matchesRule(text: string, pattern: string): boolean {
-  if (pattern === "*") return true;
-  try {
-    const re = globToRegExp(pattern);
-    if (re.test(text)) return true;
-  } catch {}
-  if (text === pattern) return true;
-  // For tool name matching: pattern "read" should match text "read {}" (tool name + args) but not "bread"
-  const toolName = text.split(" ")[0] ?? "";
-  if (toolName === pattern) return true;
-  return false;
+function normalizeMatcher(value: string): string {
+  return value.trim().toLowerCase();
 }
 
-function requestTextForMatching(req: RuntimePermissionRequest): string {
-  // req.raw is RequestPermissionRequest from ACP SDK: contains toolCall and options
+function readToolNameFromReq(req: RuntimePermissionRequest): string | undefined {
   const raw = req.raw as unknown as Record<string, unknown>;
-  // Try common fields: toolCall, tool, method, name
-  const toolCall = raw.toolCall ?? raw.tool ?? raw;
-  if (toolCall && typeof toolCall === "object") {
-    const tc = toolCall as Record<string, unknown>;
-    const name = typeof tc.name === "string" ? tc.name : typeof tc.tool === "string" ? tc.tool : "";
-    const input = tc.input ? JSON.stringify(tc.input) : "";
-    return `${name} ${input}`.trim();
+  const toolCall = (raw.toolCall ?? raw.tool ?? raw) as Record<string, unknown> | undefined;
+  if (!toolCall || typeof toolCall !== "object") return undefined;
+  const nameKeys = ["name", "tool", "toolName"] as const;
+  for (const k of nameKeys) {
+    const v = toolCall[k];
+    if (typeof v === "string" && v.trim().length > 0) return v.trim();
   }
-  return JSON.stringify(raw);
+  if (typeof toolCall.title === "string" && toolCall.title.trim().length > 0) {
+    const head = toolCall.title.split(/[:\s]/, 1)[0]?.trim();
+    if (head) return head;
+  }
+  return undefined;
+}
+
+function readTitleFromReq(req: RuntimePermissionRequest): string | undefined {
+  const raw = req.raw as unknown as Record<string, unknown>;
+  const toolCall = (raw.toolCall ?? raw.tool ?? raw) as Record<string, unknown> | undefined;
+  if (toolCall && typeof toolCall === "object" && typeof toolCall.title === "string" && toolCall.title.trim().length > 0) {
+    return toolCall.title.trim();
+  }
+  return undefined;
+}
+
+function readRawKindFromReq(req: RuntimePermissionRequest): string | undefined {
+  const raw = req.raw as unknown as Record<string, unknown>;
+  const toolCall = (raw.toolCall ?? raw.tool ?? raw) as Record<string, unknown> | undefined;
+  if (toolCall && typeof toolCall === "object" && typeof toolCall.kind === "string" && toolCall.kind.trim().length > 0) {
+    return toolCall.kind.trim();
+  }
+  return undefined;
+}
+
+function inferToolKindForReq(req: RuntimePermissionRequest): string | undefined {
+  if (req.inferredKind && typeof req.inferredKind === "string" && req.inferredKind.trim().length > 0) {
+    return normalizeMatcher(req.inferredKind);
+  }
+  const title = readTitleFromReq(req);
+  if (title) {
+    const head = title.split(":", 1)[0]?.trim().toLowerCase();
+    if (head) {
+      if (head.includes("read") || head.includes("search")) return head.includes("search") ? "search" : "read";
+      if (head.includes("think")) return "think";
+      return head;
+    }
+  }
+  return undefined;
+}
+
+function permissionMatchTokens(req: RuntimePermissionRequest): string[] {
+  const tokens = new Set<string>();
+  const kind = inferToolKindForReq(req);
+  const rawKind = readRawKindFromReq(req);
+  const title = readTitleFromReq(req);
+  const toolName = readToolNameFromReq(req);
+  for (const value of [kind, rawKind, title, toolName] as (string | undefined)[]) {
+    if (typeof value === "string" && value.trim().length > 0) tokens.add(normalizeMatcher(value));
+  }
+  if (title) {
+    const head = title.split(/[:\s]/, 1)[0]?.trim();
+    if (head) tokens.add(normalizeMatcher(head));
+  }
+  return [...tokens];
+}
+
+function findPolicyRule(rules: string[] | undefined, req: RuntimePermissionRequest): string | undefined {
+  if (!rules || rules.length === 0) return undefined;
+  const tokens = permissionMatchTokens(req);
+  for (const rule of rules) {
+    const normalized = normalizeMatcher(rule);
+    if (normalized === "*" || tokens.includes(normalized)) return rule;
+  }
+  return undefined;
 }
 
 function inferIsReadOrSearch(req: RuntimePermissionRequest): boolean {
-  const k = req.inferredKind;
-  if (k === "read" || k === "search") return true;
-  return false;
+  const k = inferToolKindForReq(req);
+  return k === "read" || k === "search";
 }
 
 export class RuntimePermissionResolver {
@@ -80,45 +107,23 @@ export class RuntimePermissionResolver {
   ): RuntimePermissionDecision {
     if (signal?.aborted) return { outcome: "reject_once" };
     const policy = config.permissionPolicy;
-    const text = requestTextForMatching(req);
 
-    // 1. autoDeny beats autoApprove
-    if (policy?.autoDeny) {
-      for (const pat of policy.autoDeny) {
-        if (matchesRule(text, pat) || matchesRule(req.inferredKind ?? "", pat)) {
-          return { outcome: "reject_once" };
-        }
-      }
-    }
-    if (policy?.autoApprove) {
-      for (const pat of policy.autoApprove) {
-        if (matchesRule(text, pat) || matchesRule(req.inferredKind ?? "", pat)) {
-          return { outcome: "allow_once" };
-        }
-      }
-    }
-    if (policy?.escalate) {
-      for (const pat of policy.escalate) {
-        if (matchesRule(text, pat) || matchesRule(req.inferredKind ?? "", pat)) {
-          // Escalate requires interactive host — in Runtime we fail closed to reject
-          return { outcome: "reject_once" };
-        }
-      }
-    }
+    const denyRule = findPolicyRule(policy?.autoDeny, req);
+    if (denyRule) return { outcome: "reject_once" };
+    const approveRule = findPolicyRule(policy?.autoApprove, req);
+    if (approveRule) return { outcome: "allow_once" };
+    const escalateRule = findPolicyRule(policy?.escalate, req);
+    if (escalateRule) return { outcome: "reject_once" };
     if (policy?.defaultAction) {
       if (policy.defaultAction === "approve") return { outcome: "allow_once" };
       if (policy.defaultAction === "deny") return { outcome: "reject_once" };
       if (policy.defaultAction === "escalate") return { outcome: "reject_once" };
     }
 
-    // Fallback to permissionMode
     if (config.permissionMode === "approve-all") return { outcome: "allow_once" };
     if (config.permissionMode === "deny-all") return { outcome: "reject_once" };
     if (config.permissionMode === "approve-reads") {
       if (inferIsReadOrSearch(req)) return { outcome: "allow_once" };
-      // Non-read/search: interactive if supported, otherwise nonInteractivePermissions
-      // For now, nonInteractivePermissions is deny or fail (fail is ineligible, so Runtime wouldn't be used)
-      // So we map to reject
       if (config.nonInteractivePermissions === "deny") return { outcome: "reject_once" };
       return { outcome: "reject_once" };
     }
