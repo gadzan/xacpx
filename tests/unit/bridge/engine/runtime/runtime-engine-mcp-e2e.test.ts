@@ -11,13 +11,17 @@ import { createMemoryTransport } from "../../../../../src/mcp/xacpx-mcp-transpor
 import { makeGoldenHarness } from "../../../orchestration/golden/golden-harness";
 import { OrchestrationService } from "../../../../../src/orchestration/orchestration-service";
 /**
- * PR8 Gate: production-stack E2E for delegate / scheduled / wake.
- * Uses real OrchestrationService (via golden harness) + real XacpxMcpServer.
- * Verifies delegate → orchestration → task → result chain with real service,
- * not mocked mcpServers object. Scheduled and wake are covered via service
- * direct calls + MCP tool listing, with cool/restart preserving identity.
+ * PR8 plumbing + server/service integration (dormant, deferred full Runtime E2E).
+ * Uses real OrchestrationService (golden harness) + real XacpxMcpServer via
+ * createMemoryTransport → service.requestDelegate. Verifies:
+ * - delegate to task creation (not worker target completion/result route-back)
+ * - scheduled tool listing + stub transport call (not ScheduledTaskService persistence)
+ * - wake via service.recordWorkerReply direct (not reply→wakeCoordinator wrapper)
+ * - cool/restart via MCP server reconnect preserves orchestration state (not
+ *   RuntimeEngine/Runtime worker rebuild mcpServers). Full production seams
+ *   (createOrchestrationTransport→OrchestrationClient→IPC, ScheduledTaskService,
+ *   wake wrapper, Runtime worker lifecycle) remain deferred.
  */
-
 function createServiceWithHarness() {
   const harness = makeGoldenHarness({
     ids: ["t1", "t2", "t3", "sched-1", "group-1", "id-6", "id-7", "id-8"],
