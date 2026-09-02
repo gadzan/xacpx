@@ -3,14 +3,14 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync } from "node:fs";
 
 import { createXacpxRuntimeAdapter } from "../../../../../src/bridge/engine/runtime/runtime-adapter";
-import { createRuntimeStore } from "acpx/runtime";
 
 const MOCK_AGENT = resolve(import.meta.dir, "../../../../fixtures/mock-acp-agent.mjs");
+// Use the acpx package bin entry (resolves to dist/cli.js); keep explicit for now
+// as the bin is a JS file invoked via node. Future cleanup: resolve via package.json bin.
 const CLI_ENTRY = resolve(import.meta.dir, "../../../../../node_modules/acpx/dist/cli.js");
-
 /**
  * G1 / PR0 Gate: CLI ↔ Runtime bidirectional record compatibility.
  * Must use real acpx CLI (spawned node acpx) for one side of each direction,
@@ -68,13 +68,10 @@ test("G1: Runtime create → CLI store lists same record and can be resumed by R
     expect(list.out).toContain(recordId);
     expect(list.out).toContain("g1-rt-cli");
 
-    // Also verify via createRuntimeStore (same store CLI uses) lists it.
-    const store = createRuntimeStore({ stateDir });
-    // listSessions may be undefined on some builds; fallback to file check
+    // Verify via file system (same store CLI uses) — record file must exist.
     const safeId = encodeURIComponent(recordId);
     const recordFile = join(stateDir, "sessions", `${safeId}.json`);
     const st = await stat(recordFile);
-    expect(st.isFile()).toBe(true);
     const raw = JSON.parse(await readFile(recordFile, "utf8")) as Record<string, unknown>;
     expect(raw).toBeDefined();
     expect((raw as { name?: string }).name).toBe("g1-rt-cli");
