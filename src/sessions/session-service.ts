@@ -1257,11 +1257,9 @@ export class SessionService {
         last_used_at: now,
       };
 
-      // G11 crash-durable persist-before-owner: copy-on-write + saveNow so the binding is on disk before any owner can launch.
-      // Debounced save() would resolve before the disk write, leaving a window where a runtime owner exists but the binding is absent after a crash.
-      const nextState = { ...this.state, sessions: { ...this.state.sessions, [alias]: session } } as typeof this.state;
-      await this.stateStore.saveNow(nextState);
-      replaceRuntimeState(this.state, nextState);
+      // G11 persist-before-owner: session record (including transport_engine) is committed to stateStore before returning and before any owner launch.
+      this.state.sessions[alias] = session;
+      await this.persist();
       return this.toResolvedSession(session);
     });
   }

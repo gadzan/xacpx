@@ -6,6 +6,7 @@ export interface RuntimePermissionRequest {
   inferredKind?: string;
 }
 export type RuntimePermissionDecision = { outcome: "allow_once" | "allow_always" | "reject_once" | "reject_always" | "cancel" };
+export type EvaluatedPermissionDecision = { outcome: "allow_once" | "reject_once" | "needs_interaction" };
 
 export interface RuntimePermissionConfig {
   generation: number;
@@ -103,42 +104,64 @@ function inferIsReadOrSearch(req: RuntimePermissionRequest): boolean {
 }
 
 export class RuntimePermissionResolver {
-  resolve(
+  evaluate(
     config: RuntimePermissionConfig,
     req: RuntimePermissionRequest,
-    signal?: AbortSignal,
-  ): RuntimePermissionDecision {
-    if (signal?.aborted) return { outcome: "reject_once" };
-    // Fail-closed on malformed raw that cannot be serialized (circular/BigInt etc.) — even approve-all must reject
+    options: { signal?: AbortSignal; interactiveAvailable?: boolean } = {},
+  ): EvaluatedPermissionDecision {
+    if (options.signal?.aborted) return { outcome: "reject_once" };
     try {
-      const rawAny: any = req.raw;
-      const input = rawAny?.toolCall?.input ?? rawAny?.tool?.input ?? rawAny?.input;
+      const rawObj = req.raw && typeof req.raw === "object" ? (req.raw as Record<string, unknown>) : undefined;
+      const tc = rawObj?.toolCall && typeof rawObj.toolCall === "object" ? (rawObj.toolCall as Record<string, unknown>) : undefined;
+      const tool = rawObj?.tool && typeof rawObj.tool === "object" ? (rawObj.tool as Record<string, unknown>) : undefined;
+      const input = tc?.input ?? tool?.input ?? rawObj?.input;
       if (input !== undefined) JSON.stringify(input);
     } catch {
       throw new Error("malformed raw input");
     }
     const policy = config.permissionPolicy;
 
+    // 1. autoDeny (highest precedence)
     const denyRule = findPolicyRule(policy?.autoDeny, req);
     if (denyRule) return { outcome: "reject_once" };
+
+    // 2. autoApprove
     const approveRule = findPolicyRule(policy?.autoApprove, req);
     if (approveRule) return { outcome: "allow_once" };
+
+    // 3. escalate
     const escalateRule = findPolicyRule(policy?.escalate, req);
-    if (escalateRule) return { outcome: "reject_once" };
+    if (escalateRule) {
+      return options.interactiveAvailable ? { outcome: "needs_interaction" } : { outcome: "reject_once" };
+    }
+
+    // 4. defaultAction
     if (policy?.defaultAction) {
       if (policy.defaultAction === "approve") return { outcome: "allow_once" };
       if (policy.defaultAction === "deny") return { outcome: "reject_once" };
-      if (policy.defaultAction === "escalate") return { outcome: "reject_once" };
+      if (policy.defaultAction === "escalate") {
+        return options.interactiveAvailable ? { outcome: "needs_interaction" } : { outcome: "reject_once" };
+      }
     }
 
+    // 5. permissionMode
     if (config.permissionMode === "approve-all") return { outcome: "allow_once" };
     if (config.permissionMode === "deny-all") return { outcome: "reject_once" };
     if (config.permissionMode === "approve-reads") {
       if (inferIsReadOrSearch(req)) return { outcome: "allow_once" };
-      if (config.nonInteractivePermissions === "deny") return { outcome: "reject_once" };
-      return { outcome: "reject_once" };
+      return options.interactiveAvailable ? { outcome: "needs_interaction" } : { outcome: "reject_once" };
     }
+
     return { outcome: "reject_once" };
+  }
+
+  resolve(
+    config: RuntimePermissionConfig,
+    req: RuntimePermissionRequest,
+    signal?: AbortSignal,
+  ): RuntimePermissionDecision {
+    const evaluated = this.evaluate(config, req, { signal, interactiveAvailable: false });
+    return { outcome: evaluated.outcome === "allow_once" ? "allow_once" : "reject_once" };
   }
 
   safeResolve(config: RuntimePermissionConfig, req: RuntimePermissionRequest, signal?: AbortSignal): RuntimePermissionDecision {

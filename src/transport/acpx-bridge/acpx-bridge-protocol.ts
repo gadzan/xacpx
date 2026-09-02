@@ -112,25 +112,49 @@ export function decodeBridgeOriginatedRequest(value: unknown): BridgeOriginatedR
   if (item.direction !== "bridge-to-daemon" || typeof item.rpcId !== "string" || !item.rpcId
     || typeof item.method !== "string" || !item.params || typeof item.params !== "object" || Array.isArray(item.params)) return null;
   const params = item.params as Record<string, unknown>;
-  if (typeof params.id !== "string" || !params.id || typeof params.sessionKey !== "string" || !params.sessionKey) return null;
   switch (item.method as BridgeOriginatedMethod) {
     case "registerAdapterIntent":
+      if (typeof params.id !== "string" || !params.id || typeof params.sessionKey !== "string" || !params.sessionKey) return null;
       if (typeof params.agentCommand !== "string" || !params.agentCommand || !validTokenParams(params)
         || !Number.isSafeInteger(params.launcherPid) || Number(params.launcherPid) <= 0
         || parseCanonicalFileTime(params.launcherCreationDate) === null) return null;
       break;
     case "launcherSpawned":
     case "cancelAdapterIntent":
+      if (typeof params.id !== "string" || !params.id || typeof params.sessionKey !== "string" || !params.sessionKey) return null;
       if (!validTokenParams(params)) return null;
       break;
     case "launchSettled":
+      if (typeof params.id !== "string" || !params.id || typeof params.sessionKey !== "string" || !params.sessionKey) return null;
       if (!validTokenParams(params) || (params.outcome !== "owner-committed" && params.outcome !== "launch-failed")) return null;
       if (params.outcome === "owner-committed"
         && (!Number.isSafeInteger(params.ownerPid) || Number(params.ownerPid) <= 0
           || typeof params.ownerAcpxRecordId !== "string" || !params.ownerAcpxRecordId)) return null;
       break;
     case "resolveAdapterCommand":
+      if (typeof params.id !== "string" || !params.id || typeof params.sessionKey !== "string" || !params.sessionKey) return null;
       if (typeof params.agentCommand !== "string" || !params.agentCommand || "intentToken" in params) return null;
+      break;
+    case "resolvePermissionRequest":
+      if (
+        typeof params.logicalSessionId !== "string" || !params.logicalSessionId ||
+        typeof params.sessionKey !== "string" || !params.sessionKey ||
+        typeof params.requestId !== "string" || !params.requestId ||
+        typeof params.toolCallId !== "string" || !params.toolCallId ||
+        typeof params.policyGeneration !== "number" ||
+        typeof params.workerGeneration !== "string" || !params.workerGeneration
+      ) return null;
+      break;
+    case "resolveElicitationRequest":
+      if (
+        typeof params.logicalSessionId !== "string" || !params.logicalSessionId ||
+        typeof params.sessionKey !== "string" || !params.sessionKey ||
+        typeof params.requestId !== "string" || !params.requestId ||
+        typeof params.elicitationId !== "string" || !params.elicitationId ||
+        typeof params.mode !== "string" || !params.mode ||
+        typeof params.policyGeneration !== "number" ||
+        typeof params.workerGeneration !== "string" || !params.workerGeneration
+      ) return null;
       break;
     default:
       return null;

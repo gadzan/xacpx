@@ -169,30 +169,33 @@ export class RuntimeWorkerFence {
     return join(this.root, `${safe}.json`);
   }
 
+  /**
+   * G2 pre-spawn atomic physical claim: creates the fence file with O_EXCL.
+   * Fails with EEXIST if another process/host claimed the fence first.
+   */
+  async claim(record: RuntimeWorkerFenceRecord): Promise<void> {
+    const path = this.pathFor(record.logicalSessionId);
+    await mkdir(dirname(path), { recursive: true });
+    let handle;
+    try {
+      handle = await open(path, "wx", 0o600);
+    } catch (error) {
+      if ((error as { code?: unknown } | null)?.code === "EEXIST") {
+        throw new Error(`fence for "${record.logicalSessionId}" already exists (cross-host race); refusing second owner`);
+      }
+      throw error;
+    }
+    try {
+      await handle.writeFile(`${JSON.stringify(record, null, 2)}\n`, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  }
+
   async write(record: RuntimeWorkerFenceRecord): Promise<void> {
     const path = this.pathFor(record.logicalSessionId);
     await mkdir(dirname(path), { recursive: true });
-    // G2 atomic claim: initial "owned" must be exclusive (O_EXCL) on the final key.
-    // Two Bridge Hosts racing on absent must not both succeed; the second must fail
-    // with EEXIST and refuse a second owner. Other phases use temp->rename.
-    if (record.phase === "owned") {
-      let handle;
-      try {
-        handle = await open(path, "wx", 0o600);
-      } catch (error) {
-        if ((error as { code?: unknown } | null)?.code === "EEXIST") {
-          throw new Error(`fence for "${record.logicalSessionId}" already exists (cross-host race); refusing second owner`);
-        }
-        throw error;
-      }
-      try {
-        await handle.writeFile(`${JSON.stringify(record, null, 2)}\n`, "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      return;
-    }
     const tmp = `${path}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const handle = await open(tmp, "wx", 0o600);
     try {
@@ -203,7 +206,6 @@ export class RuntimeWorkerFence {
     }
     await rename(tmp, path);
   }
-
   /**
    * Round 31 Blocking 1: only a PROVEN absence reads as "absent". Corrupt
    * JSON, an invalid schema/phase, or any I/O failure is "unreadable" — the

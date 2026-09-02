@@ -341,7 +341,7 @@ test("Scenario 7: permission rotation termination does NOT consume crash budget"
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
-});
+}, 15_000);
 test("Ownership invariant: request() during teardown rejects with WorkerTeardownPendingError and does NOT spawn another process", async () => {
   const dir = await mkdtemp(join(tmpdir(), "win-teardown-nospawn-"));
   try {

@@ -956,8 +956,7 @@ export class RuntimeEngine implements BridgeEngine {
   private isRuntimeEligible(): boolean {
     try {
       const policy = this.options.permissionPolicy !== undefined ? parseXacpxPermissionPolicy(this.options.permissionPolicy) : undefined;
-      // PR9-A: interactive permission UI is now available, so escalate is eligible
-      const interactiveAvailable = !!this.options.onPermissionRequest;
+      const interactiveAvailable = Boolean(this.options.onPermissionRequest);
       return isEligibleForRuntime(policy, this.options.nonInteractivePermissions, interactiveAvailable);
     } catch {
       return false;
@@ -1083,19 +1082,29 @@ export class RuntimeEngine implements BridgeEngine {
     if (!this.manager) {
       throw new WorkerUnavailableError("RuntimeEngine has no worker manager (worker entry not built)");
     }
-    // Fence-aware acquire (plan §43 / G10): discharges any undischarged
-    // durable ownership fence BEFORE a fresh owner can spawn. The acquire
-    // window is tracked so a concurrent policy transition fails closed
-    // instead of racing an unregistered worker.
-    const key = this.workerKey(input);
-    const existing = this.acquiring.get(key);
-    if (existing) return existing;
-    const acquire = this.manager.acquire(key);
-    this.acquiring.set(key, acquire);
+    // G2 physical single-owner (plan §43 / review G2): resolve physical
+    // acpx record ID before acquire. If a physical record exists on disk,
+    // the fence claims that physical record ID. Two logical aliases pointing
+    // to the same physical acpx record contend for the same physical fence.
+    let recordLookup: RecordLookupResult;
     try {
-      return await acquire;
+      recordLookup = await findAcpxRecordIdFromDisk(input, this.sessionsDir());
+    } catch {
+      recordLookup = { kind: "absent" };
+    }
+    const physicalKey = (recordLookup.kind === "found" ? recordLookup.recordId : undefined) ?? this.workerKey(input);
+    const existing = this.acquiring.get(physicalKey);
+    if (existing) return existing;
+    const acquire = this.manager.acquire(physicalKey);
+    this.acquiring.set(physicalKey, acquire);
+    try {
+      const client = await acquire;
+      if (recordLookup.kind === "found") {
+        this.recordIds.set(this.workerKey(input), recordLookup.recordId);
+      }
+      return client;
     } finally {
-      this.acquiring.delete(key);
+      this.acquiring.delete(physicalKey);
     }
   }
   private async withWorker<T>(input: EngineSessionInput, run: (client: RuntimeWorkerClient) => Promise<T>): Promise<T> {
@@ -1105,94 +1114,93 @@ export class RuntimeEngine implements BridgeEngine {
       await this.policyTransitionLock;
     }
     this.assertLifecycleEpoch(key, _lifecycleEpochAtEntry);
-    await this.checkMcpStaleAndRotate(input, false);
-    this.assertLifecycleEpoch(key, _lifecycleEpochAtEntry);
-    const existingTimer = this.idleTimers.get(key);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-      this.idleTimers.delete(key);
-    }
-    let client: RuntimeWorkerClient;
+    this.incActiveTurn(key);
+    let client: RuntimeWorkerClient | undefined;
     try {
-      this.assertLifecycleEpoch(key, _lifecycleEpochAtEntry);
-      client = await this.ensureWorker(input);
-      if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _lifecycleEpochAtEntry) {
-        try {
-          await client.terminate().catch((e) => { throw toTeardownError(key, e); });
-          if (client.lifecycle === "stopped") {
-            await this.manager?.release(key, client).catch((e) => { throw toTeardownError(key, e); });
-          } else {
-            throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `ghost worker for "${key}" did not reach stopped after terminate`);
-          }
-        } catch (termErr) {
-          if (termErr instanceof RuntimeError && termErr.code === "RUNTIME_WORKER_TEARDOWN_PENDING") throw termErr;
-          throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `ghost worker teardown failed for "${key}": ${termErr instanceof Error ? termErr.message : String(termErr)}`);
-        }
-        throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
-      }
-      this.lastMcpIdentity.set(key, { mcpCoordinatorSession: input.mcpCoordinatorSession, mcpSourceHandle: input.mcpSourceHandle });
-    } catch (error) {
-      if (error instanceof RuntimeError) throw error;
-      if (error instanceof WorkerTeardownPendingError) {
+      try {
+        await this.checkMcpStaleAndRotate(input, false);
         this.assertLifecycleEpoch(key, _lifecycleEpochAtEntry);
-        const start = Date.now();
-        while (Date.now() - start < 300) {
-          const existing = this.manager?.get(key);
-          if (!existing || (existing.lifecycle !== "cooling" && existing.lifecycle !== "failed")) break;
-          const { promise, resolve } = Promise.withResolvers<void>();
-          setTimeout(resolve, 20);
-          await promise;
-        }
-        const still = this.manager?.get(key);
-        if (still && (still.lifecycle === "cooling" || still.lifecycle === "failed")) {
-          throw new RuntimeError(error.code, error.message);
+        const existingTimer = this.idleTimers.get(key);
+        if (existingTimer) {
+          clearTimeout(existingTimer);
+          this.idleTimers.delete(key);
         }
         this.assertLifecycleEpoch(key, _lifecycleEpochAtEntry);
-        try {
-          client = await this.ensureWorker(input);
-          if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _lifecycleEpochAtEntry) {
-            try {
-              await client.terminate().catch((e) => { throw toTeardownError(key, e); });
-              if (client.lifecycle === "stopped") {
-                await this.manager?.release(key, client).catch((e) => { throw toTeardownError(key, e); });
-              } else {
-                throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `ghost worker for "${key}" did not reach stopped after terminate`);
-              }
-            } catch (termErr) {
-              if (termErr instanceof RuntimeError && termErr.code === "RUNTIME_WORKER_TEARDOWN_PENDING") throw termErr;
-              throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `ghost worker teardown failed for "${key}": ${termErr instanceof Error ? termErr.message : String(termErr)}`);
+        client = await this.ensureWorker(input);
+        if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _lifecycleEpochAtEntry) {
+          try {
+            await client.terminate().catch((e) => { throw toTeardownError(key, e); });
+            if (client.lifecycle === "stopped") {
+              await this.manager?.release(key, client).catch((e) => { throw toTeardownError(key, e); });
+            } else {
+              throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `ghost worker for "${key}" did not reach stopped after terminate`);
             }
-            throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
+          } catch (termErr) {
+            if (termErr instanceof RuntimeError && termErr.code === "RUNTIME_WORKER_TEARDOWN_PENDING") throw termErr;
+            throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `ghost worker teardown failed for "${key}": ${termErr instanceof Error ? termErr.message : String(termErr)}`);
           }
-          this.lastMcpIdentity.set(key, { mcpCoordinatorSession: input.mcpCoordinatorSession, mcpSourceHandle: input.mcpSourceHandle });
-        } catch (retryError) {
-          if (retryError instanceof RuntimeError) throw retryError;
-          if (retryError instanceof WorkerTeardownPendingError) {
-            throw new RuntimeError(retryError.code, retryError.message);
-          }
-          throw new WorkerUnavailableError(retryError instanceof Error ? retryError.message : String(retryError));
+          throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
         }
-      } else {
-        throw new WorkerUnavailableError(error instanceof Error ? error.message : String(error));
+        this.lastMcpIdentity.set(key, { mcpCoordinatorSession: input.mcpCoordinatorSession, mcpSourceHandle: input.mcpSourceHandle });
+      } catch (error) {
+        if (error instanceof RuntimeError) throw error;
+        if (error instanceof WorkerTeardownPendingError) {
+          this.assertLifecycleEpoch(key, _lifecycleEpochAtEntry);
+          const start = Date.now();
+          while (Date.now() - start < 300) {
+            const existing = this.manager?.get(key);
+            if (!existing || (existing.lifecycle !== "cooling" && existing.lifecycle !== "failed")) break;
+            const { promise, resolve } = Promise.withResolvers<void>();
+            setTimeout(resolve, 20);
+            await promise;
+          }
+          const still = this.manager?.get(key);
+          if (still && (still.lifecycle === "cooling" || still.lifecycle === "failed")) {
+            throw new RuntimeError(error.code, error.message);
+          }
+          this.assertLifecycleEpoch(key, _lifecycleEpochAtEntry);
+          try {
+            client = await this.ensureWorker(input);
+            if (this.deleting.has(key) || (this.deleteGenerations.get(key) ?? 0) !== _lifecycleEpochAtEntry) {
+              try {
+                await client.terminate().catch((e) => { throw toTeardownError(key, e); });
+                if (client.lifecycle === "stopped") {
+                  await this.manager?.release(key, client).catch((e) => { throw toTeardownError(key, e); });
+                } else {
+                  throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `ghost worker for "${key}" did not reach stopped after terminate`);
+                }
+              } catch (termErr) {
+                if (termErr instanceof RuntimeError && termErr.code === "RUNTIME_WORKER_TEARDOWN_PENDING") throw termErr;
+                throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `ghost worker teardown failed for "${key}": ${termErr instanceof Error ? termErr.message : String(termErr)}`);
+              }
+              throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
+            }
+            this.lastMcpIdentity.set(key, { mcpCoordinatorSession: input.mcpCoordinatorSession, mcpSourceHandle: input.mcpSourceHandle });
+          } catch (retryError) {
+            if (retryError instanceof RuntimeError) throw retryError;
+            if (retryError instanceof WorkerTeardownPendingError) {
+              throw new RuntimeError(retryError.code, retryError.message);
+            }
+            throw new WorkerUnavailableError(retryError instanceof Error ? retryError.message : String(retryError));
+          }
+        } else {
+          throw new WorkerUnavailableError(error instanceof Error ? error.message : String(error));
+        }
       }
-    }
-    try {
-      const result = await run(client);
-      if (client.lifecycle === "starting" && client.isBootstrapVerified) {
-        client.lifecycle = "ready";
+      try {
+        const result = await run(client);
+        if (client.lifecycle === "starting" && client.isBootstrapVerified) {
+          client.lifecycle = "ready";
+        }
+        return result;
+      } catch (error) {
+        if (error instanceof WorkerCrashError) {
+          if (client) client.lifecycle = "failed";
+        }
+        throw toStableRuntimeError(error);
       }
-      return result;
-    } catch (error) {
-      if (error instanceof WorkerCrashError) {
-        // Do not clear activeTurns here: prompt/drain own their refcounts.
-        // Clearing would wipe concurrent waiter counts and allow plan §32 to be bypassed after crash.
-        client.lifecycle = "failed";
-      }
-      throw toStableRuntimeError(error);
     } finally {
-      // Converged stale teardown for business ops (setMode etc.) that are not prompt's activeTurn.
-      // Prompt handles stale in its own finally; this covers direct withWorker callers.
-      // Ensure queue re-kick still runs even if teardown throws.
+      this.decActiveTurn(key);
       let staleError: unknown;
       if (!this.hasActiveTurn(key) && this.staleAfterTurn.has(key)) {
         this.staleAfterTurn.delete(key);
@@ -1217,12 +1225,11 @@ export class RuntimeEngine implements BridgeEngine {
           if (!staleError) this.lastMcpIdentity.delete(key);
         }
       }
-      // Queue re-kick for any business op that unblocked a stale drain (TTL=0 would otherwise stall).
       try {
         if (this.queueStore && await this.queueStore.hasPending(key)) {
           const latest = this.sessionCatalog.get(key) ?? input;
           if (latest) this.kickDrain(latest).catch(() => {});
-        } else if (client.alive && (client.lifecycle === "idle" || client.lifecycle === "ready") && !this.hasActiveTurn(key)) {
+        } else if (client && client.alive && (client.lifecycle === "idle" || client.lifecycle === "ready") && !this.hasActiveTurn(key)) {
           this.scheduleIdleTtl(key, client);
         }
       } catch {}
@@ -2101,7 +2108,11 @@ export class RuntimeEngine implements BridgeEngine {
       }
       const live = this.manager?.workers() ?? [];
       for (const worker of live) {
-        if (worker.lifecycle === "busy" || worker.hasInFlight) {
+        if (
+          (worker.lifecycle !== "idle" && worker.lifecycle !== "ready") ||
+          worker.hasInFlight ||
+          !worker.isBootstrapVerified
+        ) {
           throw new RuntimeError(
             "RUNTIME_PERMISSION_BUSY",
             `cannot update permission policy while session "${worker.ref.logicalSessionId}" has in-flight operations (fail closed)`,

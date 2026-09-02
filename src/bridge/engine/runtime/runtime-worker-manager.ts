@@ -107,10 +107,6 @@ export class RuntimeWorkerManager {
     }
 
     this.assertRestartBudget(logicalSessionId);
-    // Generation-bound: the fence's phase writes are tied to THIS client
-    // generation, and the worker's own EOF marker uses it via spawn env.
-    // UUID: the same generation binds spooled residuals, whose registry
-    // decoder requires UUID identifiers.
     const workerGeneration = randomUUID();
     const worker = new RuntimeWorkerClient(
       this.options.entryPath,
@@ -119,9 +115,6 @@ export class RuntimeWorkerManager {
       (client, code) => this.handleExit(logicalSessionId, client, code),
       {
         ...this.options.clientDeps,
-        // Fence identity + durable state: the worker's own EOF phase writes
-        // are generation-bound via spawn env. Caller-provided spawnEnv is
-        // MERGED (fence keys win) — never wholesale replaced.
         spawnEnv: this.fenceDirValue() === undefined
           ? this.options.clientDeps?.spawnEnv
           : {
@@ -129,14 +122,8 @@ export class RuntimeWorkerManager {
               XACPX_WORKER_FENCE: join(this.fenceDirValue()!, `${encodeURIComponent(logicalSessionId)}.json`),
               XACPX_WORKER_FENCE_GENERATION: workerGeneration,
             },
-        // Round 30/31 Blocking 2 — durable admission barrier: the "admitted"
-        // fence (verified identity + phase) MUST be on disk AND read back
-        // verified before bootstrap admissibility, so no business RPC can
-        // enter a worker whose ownership record still reads pre-admission.
         onIdentityVerified: async (client) => {
           await this.options.clientDeps?.onIdentityVerified?.(client);
-          // Fencing disabled (tests): nothing durable to admit — bootstrap
-          // admissibility is immediate, matching the non-fenced contract.
           if (!this.fence()) return;
           await this.enqueueFenceWrite(logicalSessionId, async () => {
             await this.fence()!.write({
@@ -150,8 +137,6 @@ export class RuntimeWorkerManager {
               startedAt: client.ref.startedAt,
               agent: "runtime-worker",
             });
-            // Read-back: the barrier holds until the DISK copy is proven
-            // admitted — never trust the in-memory flag alone.
             const read = await this.fence()!.read(logicalSessionId);
             if (read.kind !== "present" || read.record.phase !== "admitted" || read.record.creationDate !== client.ref.creationDate) {
               throw new Error(`admitted fence read-back failed (${read.kind === "present" ? `phase=${read.record.phase}` : read.kind})`);
@@ -165,18 +150,86 @@ export class RuntimeWorkerManager {
     return { worker, created: true };
   }
 
-
   /**
-   * Fence-aware spawn entry (plan §43 / G10): discharge any undischarged
-   * durable fence for this session BEFORE a new owner can exist, then write
-   * the fence for the fresh worker. Acquire is the ONLY spawn path.
+   * Fence-aware spawn entry (plan §43 / G10 / review G2): discharge any
+   * undischarged durable fence for this session BEFORE a new owner can exist,
+   * then claim the owned fence with O_EXCL BEFORE spawn. Acquire is the ONLY
+   * spawn path.
    */
   async acquire(logicalSessionId: string): Promise<RuntimeWorkerClient> {
     await this.dischargeStaleFence(logicalSessionId);
-    const { worker, created } = this.ensureWorkerWithStatus(logicalSessionId);
-    if (created) {
-      await this.writeOwnedFence(logicalSessionId, worker);
+    if (this.fence()) {
+      const existing = this.workersByKey.get(logicalSessionId);
+      if (
+        existing &&
+        existing.alive &&
+        existing.lifecycle !== "failed" &&
+        existing.lifecycle !== "cooling" &&
+        existing.lifecycle !== "stopped"
+      ) {
+        return existing;
+      }
+      this.assertRestartBudget(logicalSessionId);
+      const workerGeneration = randomUUID();
+      const worker = new RuntimeWorkerClient(
+        this.options.entryPath,
+        logicalSessionId,
+        workerGeneration,
+        (client, code) => this.handleExit(logicalSessionId, client, code),
+        {
+          ...this.options.clientDeps,
+          spawnEnv: {
+            ...this.options.clientDeps?.spawnEnv,
+            XACPX_WORKER_FENCE: join(this.fenceDirValue()!, `${encodeURIComponent(logicalSessionId)}.json`),
+            XACPX_WORKER_FENCE_GENERATION: workerGeneration,
+          },
+          onIdentityVerified: async (client) => {
+            await this.options.clientDeps?.onIdentityVerified?.(client);
+            await this.enqueueFenceWrite(logicalSessionId, async () => {
+              await this.fence()!.write({
+                kind: "runtime-worker-owner",
+                logicalSessionId,
+                generation: workerGeneration,
+                pid: client.ref.pid,
+                creationDate: client.ref.creationDate ?? null,
+                bootstrapVerified: true,
+                phase: "admitted",
+                startedAt: client.ref.startedAt,
+                agent: "runtime-worker",
+              });
+              const read = await this.fence()!.read(logicalSessionId);
+              if (read.kind !== "present" || read.record.phase !== "admitted" || read.record.creationDate !== client.ref.creationDate) {
+                throw new Error(`admitted fence read-back failed (${read.kind === "present" ? `phase=${read.record.phase}` : read.kind})`);
+              }
+            });
+          },
+        },
+      );
+      // G2 pre-spawn atomic physical claim: write "owned" fence with O_EXCL BEFORE spawn.
+      // If another Host races and creates fence first, claimOwnedFence throws and spawn() is NEVER called.
+      await this.claimOwnedFence(logicalSessionId, worker);
+      try {
+        worker.spawn();
+        await this.enqueueFenceWrite(logicalSessionId, () => this.fence()!.write({
+          kind: "runtime-worker-owner",
+          logicalSessionId,
+          generation: workerGeneration,
+          pid: worker.ref.pid,
+          creationDate: worker.ref.creationDate ?? null,
+          bootstrapVerified: worker.isBootstrapVerified,
+          phase: "owned",
+          startedAt: worker.ref.startedAt,
+          agent: "runtime-worker",
+        }));
+      } catch (spawnError) {
+        this.workersByKey.delete(logicalSessionId);
+        await this.release(logicalSessionId, worker).catch(() => {});
+        throw spawnError;
+      }
+      this.workersByKey.set(logicalSessionId, worker);
+      return worker;
     }
+    const { worker } = this.ensureWorkerWithStatus(logicalSessionId);
     return worker;
   }
 
@@ -266,13 +319,9 @@ export class RuntimeWorkerManager {
     );
   }
 
-  private async writeOwnedFence(logicalSessionId: string, worker: RuntimeWorkerClient): Promise<void> {
+  private async claimOwnedFence(logicalSessionId: string, worker: RuntimeWorkerClient): Promise<void> {
     const fence = this.fence();
     if (!fence) return;
-    if (!worker.alive) return;
-    // Round 31 Blocking 1: the record is built from EXPLICIT fields (never
-    // sampled from mutable client state) — the initial durable phase is
-    // "owned"; the "admitted" upgrade happens only through the barrier.
     const record: RuntimeWorkerFenceRecord = {
       kind: "runtime-worker-owner",
       logicalSessionId,
@@ -285,15 +334,11 @@ export class RuntimeWorkerManager {
       agent: "runtime-worker",
     };
     try {
-      await this.enqueueFenceWrite(logicalSessionId, () => fence.write(record));
+      await this.enqueueFenceWrite(logicalSessionId, () => fence.claim(record));
     } catch (error) {
-      // Without a durable fence we cannot enforce cross-restart single
-      // ownership — fail closed: kill the freshly spawned worker instead of
-      // running it unfenced (plan §43).
       this.workersByKey.delete(logicalSessionId);
-      void worker.terminate().catch(() => {});
       throw new WorkerTeardownPendingError(
-        `cannot persist durable ownership fence for session "${logicalSessionId}": ` +
+        `cannot claim durable ownership fence for session "${logicalSessionId}": ` +
           `${error instanceof Error ? error.message : String(error)}; refusing unfenced worker`,
       );
     }

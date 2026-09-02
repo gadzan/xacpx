@@ -150,36 +150,17 @@ async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: 
       onPermissionRequest: async (req, ctx) => {
         const snap = state.permissionSnapshot;
         if (!snap) return { outcome: "reject_once" };
-        const needsInteractive = (() => {
-          try {
-            const policy = snap.permissionPolicy;
-            const raw = (req as unknown as { raw?: unknown }).raw as { toolCall?: { title?: unknown; kind?: unknown; name?: unknown } } | undefined;
-            const title = typeof raw?.toolCall?.title === "string" ? raw.toolCall.title : undefined;
-            const kind = typeof raw?.toolCall?.kind === "string" ? raw.toolCall.kind : undefined;
-            const nameRaw = typeof raw?.toolCall?.name === "string" ? raw.toolCall.name : undefined;
-            const name = nameRaw ?? title?.split(":")[0]?.trim().toLowerCase();
-            const tokens = [name, title, kind].filter((v): v is string => typeof v === "string" && v.length > 0).map((v) => v.trim().toLowerCase());
-            const match = (rules?: string[]) => rules?.some((r) => tokens.some((t) => t.includes(r.trim().toLowerCase())));
-            if (match(policy?.autoDeny)) return false;
-            if (match(policy?.autoApprove)) return false;
-            if (match(policy?.escalate)) return true;
-            if (policy?.defaultAction === "escalate") return true;
-            if (snap.permissionMode === "approve-reads") {
-              const isRead = kind === "read" || kind === "search" || name === "read" || name === "search" || tokens.some((t) => t.includes("read") || t.includes("search"));
-              if (!isRead) return true;
-            }
-            return false;
-          } catch {
-            return false;
-          }
-        })();
-        if (!needsInteractive) {
-          try {
-            return resolver.safeResolve(snap, req as unknown as RuntimePermissionRequest, ctx.signal);
-          } catch {
-            return { outcome: "reject_once" };
-          }
+        let evaluated: { outcome: "allow_once" | "reject_once" | "needs_interaction" };
+        try {
+          evaluated = resolver.evaluate(snap, req as unknown as RuntimePermissionRequest, {
+            signal: ctx.signal,
+            interactiveAvailable: true,
+          });
+        } catch {
+          return { outcome: "reject_once" };
         }
+        if (evaluated.outcome === "allow_once") return { outcome: "allow_once" };
+        if (evaluated.outcome === "reject_once") return { outcome: "reject_once" };
         if (ctx.signal.aborted) return { outcome: "reject_once" };
         const requestId = `perm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
         const toolCallId = (() => {
