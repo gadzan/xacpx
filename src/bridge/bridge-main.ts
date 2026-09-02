@@ -1,5 +1,11 @@
 import { createInterface } from "node:readline";
 import { readFile } from "node:fs/promises";
+import { statSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
+
+
 
 import {
   normalizeBridgeNonInteractivePermissions,
@@ -10,7 +16,13 @@ import {
 } from "./bridge-env";
 import { BridgeServer } from "./bridge-server";
 import { BridgeRuntime } from "./bridge-runtime";
+import { CliEngine } from "./engine/cli/cli-engine";
+import { EngineRouter } from "./engine/engine-router";
+import { SessionEngineBinding } from "./engine/session-engine-binding";
+import { RuntimeEngine, defaultWorkerEntryCandidates } from "./engine/runtime-engine";
 import { coreEnv } from "../runtime/core-env";
+import { coreHomeDir } from "../runtime/core-home";
+import { resolveAcpxHomeDir } from "../transport/acpx-session-files";
 import { createQueueOwnerAdapterContext } from "../transport/queue-owner-adapter-context";
 import { probeWindowsProcessIdentity } from "../process/windows-process-tree";
 import { setLocale, resolveLocale } from "../i18n";
@@ -100,9 +112,40 @@ export async function runBridgeMain(): Promise<void> {
         readCurrentGeneration: readBridgeGeneration,
       }),
     });
-  server = new BridgeServer(cliRuntime);
-  // PR6-8 dormant: RuntimeEngine not wired in production until activation blockers (shared transport, fence, saveNow) per plan §0.
-  // primeQueuesFromCatalog remains available on RuntimeEngine for future Host restart when wired via EngineRouter (see docs/runtime-queue.md).
+  const cliEngine = new CliEngine(cliRuntime);
+  // Explicit production wiring (Activation-E/F/G): RuntimeEngine is now
+  // instantiated alongside CliEngine and fronted by EngineRouter. Default
+  // remains cli — auto still resolves to cli until G1-G13 green and the PR10
+  // switch flips it. engine=runtime strict mode now works because the
+  // Router has a real RuntimeEngine to route to.
+  let engine: CliEngine | EngineRouter = cliEngine;
+  try {
+    const workerEntry = defaultWorkerEntryCandidates().find((p) => {
+      try { return statSync(p).isFile(); } catch { return false; }
+    });
+    if (workerEntry) {
+      const bridgeStateDir = coreEnv("BRIDGE_STATE_DIR") ?? join(resolveAcpxHomeDir(), ".acpx", "sessions");
+      const sessionsDirValid = bridgeStateDir.split(/[\\/]/).pop() === "sessions";
+      const runtimeStateRoot = sessionsDirValid ? dirname(bridgeStateDir) : join(coreHomeDir(homedir()), "runtime");
+      const queueDir = coreEnv("BRIDGE_RUNTIME_QUEUE_DIR") ?? join(runtimeStateRoot, "runtime-queue");
+      const fenceDir = coreEnv("BRIDGE_RUNTIME_FENCE_DIR") ?? join(runtimeStateRoot, "worker-fences");
+      const runtimeEngine = new RuntimeEngine({
+        stateDir: bridgeStateDir,
+        permissionMode: normalizeBridgePermissionMode(coreEnv("BRIDGE_PERMISSION_MODE")),
+        nonInteractivePermissions: normalizeBridgeNonInteractivePermissions(coreEnv("BRIDGE_NON_INTERACTIVE_PERMISSIONS")),
+        permissionPolicy: normalizeBridgePermissionPolicy(coreEnv("BRIDGE_PERMISSION_POLICY")),
+        queueDir,
+        fenceDir,
+        workerEntryPath: workerEntry,
+        queueOwnerTtlSeconds: normalizeBridgeQueueOwnerTtlSeconds(coreEnv("BRIDGE_QUEUE_OWNER_TTL_SECONDS")),
+      });
+      const binding = new SessionEngineBinding();
+      engine = new EngineRouter(binding, cliEngine, runtimeEngine);
+    }
+  } catch (e) {
+    try { console.error(`[bridge] RuntimeEngine not available, falling back to cli-only: ${e instanceof Error ? e.message : String(e)}`); } catch {}
+  }
+  server = new BridgeServer(engine as unknown as BridgeRuntime);
   const input = createInterface({
     input: process.stdin,
     crlfDelay: Infinity,

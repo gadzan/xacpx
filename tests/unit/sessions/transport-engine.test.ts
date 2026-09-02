@@ -31,12 +31,13 @@ test("strict runtime engine binds runtime once runtimeAvailable is true", () => 
   });
 });
 
-
 test("auto mode stays on cli until the Runtime gates pass", () => {
   const choice = resolveTransportEngine({ config: { ...baseConfig, engine: "auto" } });
   expect(choice.engine).toBe("cli");
+  expect(choice.reason).toBe("runtime-import-failed");
 });
 
-test("missing engine field defaults to cli (development-phase default)", () => {
-  expect(resolveTransportEngine({ config: baseConfig })).toEqual({ engine: "cli" });
+test("missing engine field defaults to auto (PR10 switch) -> cli when runtime not available, runtime when available", () => {
+  expect(resolveTransportEngine({ config: baseConfig })).toEqual({ engine: "cli", reason: "runtime-import-failed" });
+  expect(resolveTransportEngine({ config: baseConfig, runtimeAvailable: true } as never)).toEqual({ engine: "runtime" });
 });

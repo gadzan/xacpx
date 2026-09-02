@@ -1,5 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { dirname } from "node:path";
+import { statSync } from "node:fs";
+import { dirname, join, resolve as resolvePath } from "node:path";
+import { fileURLToPath } from "node:url";
 import { isLegacyCodexCommand, resolveAgentCommand, resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
 import { isAcpOutputGuardArgv, wrapAcpOutputGuardArgv } from "../adapters/acp-output-guard";
 import {
@@ -1242,8 +1244,15 @@ export class SessionService {
         // Persist the engine binding BEFORE any owner can launch for this
         // record (plan §45). A recreated same-agent alias keeps its binding;
         // otherwise the config decides (development default: cli).
+        // Runtime availability is probed via worker entry existence — the same
+        // criterion the bridge uses to decide whether to wire RuntimeEngine.
+        // This keeps daemon and bridge in sync without duplicating config.
         transport_engine:
-          sameAgentExisting?.transport_engine ?? resolveTransportEngine({ config: this.config.transport }).engine,
+          sameAgentExisting?.transport_engine ??
+          resolveTransportEngine({
+            config: this.config.transport,
+            ...(isRuntimeEngineAvailable() ? { runtimeAvailable: true } : {}),
+          }).engine,
         created_at: existingSession?.created_at ?? now,
         last_used_at: now,
       };
@@ -1275,4 +1284,18 @@ export class SessionService {
       throw new Error(t().misc.agentNotRegistered(agent));
     }
   }
+}
+
+function isRuntimeEngineAvailable(): boolean {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const candidates = [
+      join(here, "../bridge/engine/runtime/runtime-worker-main.js"),
+      resolvePath(here, "../../dist/bridge/engine/runtime/runtime-worker-main.js"),
+      resolvePath(process.cwd(), "dist/bridge/engine/runtime/runtime-worker-main.js"),
+    ];
+    return candidates.some((p) => {
+      try { return statSync(p).isFile(); } catch { return false; }
+    });
+  } catch { return false; }
 }

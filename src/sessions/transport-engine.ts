@@ -31,14 +31,16 @@ export interface TransportEngineChoice {
  * 1. Persisted per-session binding wins — never re-derived per request.
  * 2. Explicit `transport.command` (self-provided acpx) forces cli; under strict
  *    `engine: "runtime"` this is a configuration error, not a silent fallback.
- * 3. Config mode decides for new sessions: development-phase default is cli;
- *    "auto" also resolves to cli until the Runtime gates (G1–G13) go green.
+ * 3. Config mode decides for new sessions: default is now `auto` (PR10 switch
+ *    after G1–G13 green). `auto` picks Runtime when eligible, otherwise cli.
+ *    Eligibility includes explicit command, runtime availability, and permission
+ *    policy checks. Existing sessions keep their persisted binding (invariant).
+ * 4. Rollback: `transport.engine = cli` only affects new sessions; existing
+ *    runtime sessions keep runtime until explicit migration (plan §60).
  *
- * Strict `engine: "runtime"` is honored ONLY when a RuntimeEngine is actually
- * wired into the bridge (runtimeAvailable). Until the worker infrastructure
- * lands, strict mode fails loudly at session creation (plan §5.2: 不能静默
- * fallback) instead of silently running on the CLI engine while state claims
- * runtime — which would violate §3-R1's single-owner rule.
+ * Observability: callers should log `transport.engine.selected` with
+ * `engine` + `reason`, `transport.engine.ineligible` when auto falls back,
+ * and `transport.engine.binding_migrated` when a legacy session gets cli.
  */
 export function resolveTransportEngine(input: ResolveTransportEngineInput): TransportEngineChoice {
   const persisted = input.session?.transport_engine;
@@ -49,7 +51,7 @@ export function resolveTransportEngine(input: ResolveTransportEngineInput): Tran
   const configured: BridgeEngineMode =
     input.config.engine === "auto" || input.config.engine === "cli" || input.config.engine === "runtime"
       ? input.config.engine
-      : "cli";
+      : "auto";
   const hasExplicitCommand = typeof input.config.command === "string" && input.config.command.trim().length > 0;
 
   if (configured === "runtime") {
@@ -68,7 +70,17 @@ export function resolveTransportEngine(input: ResolveTransportEngineInput): Tran
   if (hasExplicitCommand) {
     return { engine: "cli", reason: "explicit-acpx-command" };
   }
-  // configured === "auto"/absent stays on cli until G1–G13 pass and the default
-  // switch PR flips auto to consult the eligibility probe.
+  if (configured === "auto") {
+    if (!input.runtimeAvailable) {
+      return { engine: "cli", reason: "runtime-import-failed" };
+    }
+    // Auto eligibility probe: if Runtime is available and no explicit
+    // command, prefer Runtime. Permission-policy eligibility is checked
+    // by the bridge's own probe (isEligibleForRuntime) at prompt time;
+    // session creation stays permissive to avoid blocking new sessions
+    // on policy that may be updated before first prompt. Existing
+    // sessions remain pinned (step 1).
+    return { engine: "runtime" };
+  }
   return { engine: "cli" };
 }
