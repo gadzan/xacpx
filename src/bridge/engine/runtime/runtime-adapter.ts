@@ -68,6 +68,7 @@ export interface XacpxStartTurnInput {
   handle: XacpxRuntimeSessionHandle;
   text: string;
   attachments?: XacpxTurnAttachment[];
+  onElicitation?: (req: unknown, signal: AbortSignal) => Promise<unknown>;
 }
 
 export interface XacpxRuntimeAdapter {
@@ -112,13 +113,14 @@ export function createXacpxRuntimeAdapter(options: CreateXacpxRuntimeAdapterOpti
       });
       return handle as unknown as XacpxRuntimeSessionHandle;
     },
-    startTurn({ handle, text, attachments }) {
+    startTurn({ handle, text, attachments, onElicitation }) {
       const turn = runtime.startTurn({
         handle: toHandle(handle),
         text,
         ...(attachments && attachments.length > 0 ? { attachments } : {}),
         mode: "prompt",
         requestId: `xacpx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        ...(onElicitation ? { onElicitation: onElicitation as unknown as import("acpx/runtime").AcpElicitationHandler } : {}),
       });
       return {
         requestId: turn.requestId,

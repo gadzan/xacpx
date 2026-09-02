@@ -26,6 +26,7 @@ import {
   type RuntimeWorkerPromptParams,
   type RuntimeWorkerPermissionUpdate,
   type RuntimeWorkerPermissionRequestPayload,
+  type RuntimeWorkerElicitationRequestPayload,
   type RuntimeWorkerPermissionDecisionParams,
   type RuntimeWorkerPromptResult,
 } from "./runtime-worker-protocol";
@@ -268,12 +269,50 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
   if (!state.adapter || !state.handle) {
     throw new Error("worker not ensured");
   }
+  const onElicitation = async (req: unknown, signal: AbortSignal): Promise<unknown> => {
+    if (signal.aborted) throw new Error("elicitation cancelled");
+    const elicitationId = `elicit-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const payload: RuntimeWorkerElicitationRequestPayload = {
+      logicalSessionId: state.ensureParams?.sessionKey ?? "unknown",
+      sessionKey: state.ensureParams?.sessionKey ?? "unknown",
+      requestId,
+      elicitationId,
+      mode: "form",
+      message: req,
+      policyGeneration: state.permissionGeneration,
+      workerGeneration: state.workerGeneration,
+    };
+    const pending = new Promise<{ action: string; data?: unknown }>((resolve, reject) => {
+      state.pendingElicitations.set(elicitationId, { resolve: resolve as (d: { action: string; data?: unknown }) => void, reject, generation: state.permissionGeneration, workerGeneration: state.workerGeneration });
+      const onAbort = () => {
+        state.pendingElicitations.delete(elicitationId);
+        signal.removeEventListener("abort", onAbort);
+        reject(new Error("elicitation cancelled"));
+      };
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+    process.stdout.write(encodeWorkerMessage({ id: elicitationId, event: "elicitation.request", payload } satisfies RuntimeWorkerEvent));
+    try {
+      const decision = await Promise.race([
+        pending,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("host elicitation timeout")), 30_000).unref?.()),
+      ]);
+      if (decision.action === "submit") return decision.data;
+      throw new Error("elicitation cancelled");
+    } finally {
+      state.pendingElicitations.delete(elicitationId);
+    }
+  };
   const turn = state.adapter.startTurn({
     handle: state.handle,
     text: params.text,
     ...(params.attachments && params.attachments.length > 0 ? { attachments: params.attachments } : {}),
+    onElicitation,
   });
-  state.activeTurn = turn;
   try {
     await turn.promptStarted;
     let finalText = "";
