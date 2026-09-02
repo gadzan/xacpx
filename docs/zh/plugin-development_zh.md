@@ -574,8 +574,16 @@ export interface ConsumerLockOptions {
 - 用文件锁（`proper-lockfile` / 自家 fcntl）做物理互斥。
 - `acquire` 失败时抛带元信息的错（参考 `ActiveWeixinConsumerLockError`），让 daemon 能在日志里告诉用户"另一个进程持有锁，pid=xxx"。
 - `release` 必须幂等。
-
-参考实现：`src/weixin/monitor/consumer-lock.ts`。
+- 核心 runtime 锁先取得，随后为**每一个**提供 lock 的渠道各取得一把 fence（不再只取第一把），
+  按渠道 id 确定顺序严格串行 acquire，部分冲突时按相反顺序回滚；诊断事件前缀使用该渠道自己的 id。
+- `options.lockFilePath` 是**按 config 根作用域**的路径（当前 config 根 runtime 目录下的
+  `<channelId>-consumer.lock.json`）。两份 config 根会拿到不同路径，所以**不能**用它承载
+  凭据级/全局命名空间。若互斥必须机器全局成立（Discord：每个 bot token 只允许一个 Gateway 会话），
+  自行在用户全局 core home 下派生路径，忽略注入的 lockFilePath。
+- 锁文件元信息不可读时必须 fail-closed：有限次数重读后拒绝启动；**绝不** `rm()` 自己读不懂的锁文件，
+  那等于删掉另一个活进程的 fence。
+- 参考实现：`src/weixin/monitor/consumer-lock.ts`（config 作用域）与
+  `packages/channel-discord/src/channel.ts` 的 `createConsumerLock()`（用户全局、按 bot token）。
 
 ---
 
@@ -815,12 +823,12 @@ CLI 不会自动 disable 出错的插件——需要用户手工 `xacpx plugin d
 5. runConsole(...)：
    5.1 channel.configureOrchestration?.(callbacks)
    5.2 取得必需且与渠道无关的核心 runtime ownership lock
-   5.3 若渠道提供 consumer lock，则同时取得（作为兼容旧 daemon 的 fence）
+   5.3 为**每一个**提供 consumer lock 的渠道各取得一把 fence，按渠道 id 确定顺序串行取得（兼容旧 daemon 的 fence）；部分冲突时按相反顺序回滚
    5.4 发布 daemon identity，再协调共享状态并清理陈旧 owner
    5.5 报告 daemon ready，再执行 channel.start({ agent, abortSignal, quota, logger }) 与 scheduler.start()
 6. 收消息：channel → agent.handle(chatKey, text) → router
 7. 出消息：orchestration → channel.notifyTaskCompletion / sendCoordinatorMessage
-8. SIGTERM / SIGINT：abortSignal aborted → 持有 ownership 完成 dispose/reap → registry.stopAll：channel.stop?()（回退：logout()）→ 释放兼容锁与核心锁 → daemon exit
+8. SIGTERM / SIGINT：abortSignal aborted → 持有 ownership 完成 dispose/reap → registry.stopAll：channel.stop?()（回退：logout()）→ 按相反顺序释放所有渠道 fence，再释放核心锁 → daemon exit
 ```
 
 正常退出走 `abortSignal` 加非破坏性的 `stop()`；破坏性的 `logout()` 只在 `xacpx logout` 显式调用时被触发——唯一例外是没有实现 `stop()` 的遗留频道，关停时会回退到 `logout()`。

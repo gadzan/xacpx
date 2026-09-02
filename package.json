@@ -1,6 +1,6 @@
 {
   "name": "@ganglion/xacpx",
-  "version": "0.23.0",
+  "version": "0.24.0",
   "description": "随时随地通过聊天频道（微信 / 飞书 / 元宝等）远程控制 `acpx` 上的 Claude Code、Codex 等 Agents。",
   "keywords": [
     "acpx",
@@ -42,11 +42,13 @@
     "clean:dist": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "clean:channel-yuanbao": "node -e \"require('node:fs').rmSync('packages/channel-yuanbao/dist',{recursive:true,force:true})\"",
     "clean:channel-feishu": "node -e \"require('node:fs').rmSync('packages/channel-feishu/dist',{recursive:true,force:true})\"",
+    "clean:channel-discord": "node -e \"require('node:fs').rmSync('packages/channel-discord/dist',{recursive:true,force:true})\"",
+    "clean:relay-protocol": "node -e \"require('node:fs').rmSync('packages/relay-protocol/dist',{recursive:true,force:true})\"",
     "build": "bun run clean:dist && bun build ./src/cli.ts ./src/bridge/bridge-main.ts ./src/bridge/engine/runtime/runtime-worker-main.ts ./src/adapters/hermes-acp-shim.ts ./src/adapters/acp-output-guard-main.ts ./src/plugin-api.ts --outdir ./dist --target node --external node-pty --external fs-ext --external write-file-atomic --external acpx && bun run build:plugin-api",
     "build:plugin-api": "tsc -p tsconfig.plugin-api.json",
     "build:channel-yuanbao": "bun run build:plugin-api && bun run clean:channel-yuanbao && bun build ./packages/channel-yuanbao/src/index.ts --outdir ./packages/channel-yuanbao/dist --target node --external xacpx && tsc -p packages/channel-yuanbao/tsconfig.json",
     "build:channel-feishu": "bun run build:plugin-api && bun run clean:channel-feishu && bun build ./packages/channel-feishu/src/index.ts --outdir ./packages/channel-feishu/dist --target node --external xacpx && tsc -p packages/channel-feishu/tsconfig.json",
-    "clean:relay-protocol": "node -e \"require('node:fs').rmSync('packages/relay-protocol/dist',{recursive:true,force:true})\"",
+    "build:channel-discord": "bun run build:plugin-api && bun run clean:channel-discord && bun build ./packages/channel-discord/src/index.ts --outdir ./packages/channel-discord/dist --target node --external xacpx --external discord.js && tsc -p packages/channel-discord/tsconfig.json",
     "assert:relay-protocol": "node -e \"const m=require('./packages/relay-protocol/dist/index.js');if(!m.MSG||!m.MSG.sessionsCreate||typeof m.encodeEnvelope!=='function'){console.error('FATAL: relay-protocol dist is missing runtime exports — the barrel (export *) was likely tree-shaken to empty. Do NOT ship this build.');process.exit(1)}console.log('relay-protocol dist exports OK')\"",
     "build:relay-protocol": "bun run clean:relay-protocol && bun build ./packages/relay-protocol/src/index.ts --outdir ./packages/relay-protocol/dist --target node && tsc -p packages/relay-protocol/tsconfig.json && bun run assert:relay-protocol",
     "clean:relay": "node -e \"require('node:fs').rmSync('packages/relay/dist',{recursive:true,force:true})\"",
@@ -58,13 +60,14 @@
     "clean:relay-web": "node -e \"require('node:fs').rmSync('packages/relay-web/dist',{recursive:true,force:true})\"",
     "build:relay-web": "bun run build:relay-protocol && bun run clean:relay-web && bun run --cwd packages/relay-web build",
     "test:web": "bun run --cwd packages/relay-web test",
-    "build:packages": "bun run build && bun run build:channel-yuanbao && bun run build:channel-feishu && bun run build:relay-protocol && bun run build:relay && bun run build:channel-relay",
+    "build:packages": "bun run build && bun run build:channel-yuanbao && bun run build:channel-feishu && bun run build:channel-discord && bun run build:relay-protocol && bun run build:relay && bun run build:channel-relay",
     "verify:publish": "bun run build:packages && node ./scripts/verify-publish.mjs",
     "publish:xacpx": "bun publish --cwd .",
     "publish:weacpx-compat": "bun publish --cwd weacpx-compat --access public",
     "publish:channel-feishu": "bun publish --cwd packages/channel-feishu --access public",
     "publish:channel-yuanbao": "bun publish --cwd packages/channel-yuanbao --access public",
-    "publish:plugins": "bun run publish:channel-yuanbao && bun run publish:channel-feishu",
+    "publish:channel-discord": "bun publish --cwd packages/channel-discord --access public",
+    "publish:plugins": "bun run publish:channel-yuanbao && bun run publish:channel-feishu && bun run publish:channel-discord",
     "publish:relay-protocol": "bun publish --cwd packages/relay-protocol --access public",
     "publish:relay": "bun publish --cwd packages/relay --access public",
     "publish:channel-relay": "bun publish --cwd packages/channel-relay --access public",
@@ -115,6 +118,7 @@
     "@types/write-file-atomic": "^4.0.3",
     "@types/ws": "^8.18.1",
     "bun-types": "^1.3.11",
+    "discord.js": "^14.26.0",
     "typescript": "^6.0.2"
   }
 }

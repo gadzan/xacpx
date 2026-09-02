@@ -31,8 +31,9 @@ export async function executeChatTurn(params: ExecuteChatTurnParams): Promise<Ex
   // caller routes it through the final-message path (reserveFinal + sendMessage),
   // not back through onReplySegment which is gated by mid quota.
   // Streaming handlers that would otherwise duplicate content must return text: undefined.
+  // Silent overflow tips must not become a channel bubble even if text is present.
   return {
-    text: response.text,
+    text: response.silent ? undefined : response.text,
     media: response.media,
     usedReply,
   };

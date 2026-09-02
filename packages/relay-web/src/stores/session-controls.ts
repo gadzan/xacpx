@@ -1,18 +1,29 @@
 import { defineStore } from "pinia";
-import { ref, watch } from "vue";
+import { onScopeDispose, ref, watch } from "vue";
 import {
   isErrorPayload,
   type SessionEffortResult,
   type SessionEffortSetResult,
   type SessionModelResult,
   type SessionModelSetResult,
+  type WebServerEvent,
 } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
+import { subscribeWebEvents } from "../api/events";
 import { pushToast } from "../lib/use-toasts";
 import * as viewCache from "../lib/view-snapshot-cache";
 import { useAuthStore } from "./auth";
 
 type ControlSnapshot = { current?: string; available: string[] };
+
+const LIVE_CONTROL_ACTIVITY_TYPES = new Set([
+  "turn-output",
+  "tool-event",
+  "turn-thought",
+  "plan",
+  "turn-usage",
+  "agent-commands",
+]);
 
 /** Per-session model and effort controls for the composer chips. The hub stamps chatKey for
  *  these chat-scoped RPCs, so the web only sends sessionAlias. */
@@ -32,6 +43,11 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
   const pendingEffortSets = new Map<string, Promise<void>>();
   const authoritativeEfforts = new Map<string, { revision: number; current: string | undefined }>();
   let accountGeneration = 0;
+  // The web store intentionally holds controls for only the selected session. When that
+  // session starts a turn, refresh model+effort on its FIRST real-time activity event so
+  // adapter-side config changes become visible during the turn instead of waiting for the
+  // final history/session round-trip. A final refresh still converges authoritative state.
+  let awaitingFirstActivityFor: string | null = null;
 
   const cacheUser = (): string | null => useAuthStore().account?.username ?? null;
   const contextKey = (instanceId: string, alias: string): string => `${instanceId}\u0000${alias}`;
@@ -108,6 +124,7 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     effortRevision += 1;
     effortLoading.value = false;
     clearEffortState();
+    awaitingFirstActivityFor = null;
   }
 
   function resetForAccountChange(): void {
@@ -122,7 +139,10 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
   async function loadModel(instanceId: string | null, alias: string | null): Promise<void> {
     if (!instanceId || !alias) { reset(); return; }
     const context = contextKey(instanceId, alias);
-    if (activeContext !== context) clearModelState();
+    if (activeContext !== context) {
+      clearModelState();
+      awaitingFirstActivityFor = null;
+    }
     activeContext = context;
     const revision = ++requestRevision;
     const cacheOwner = cacheUser();
@@ -253,10 +273,14 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
       effortRevision += 1;
       effortLoading.value = false;
       clearEffortState();
+      awaitingFirstActivityFor = null;
       return;
     }
     const context = contextKey(instanceId, alias);
-    if (effortActiveContext !== context) clearEffortState();
+    if (effortActiveContext !== context) {
+      clearEffortState();
+      awaitingFirstActivityFor = null;
+    }
     effortActiveContext = context;
     const revision = ++effortRevision;
     const cacheOwner = cacheUser();
@@ -361,12 +385,93 @@ export const useSessionControlsStore = defineStore("session-controls", () => {
     return pendingEffortSets.get(contextKey(instanceId, alias));
   }
 
+  function isSelectedContext(context: string): boolean {
+    return activeContext === context || effortActiveContext === context;
+  }
+
+  async function waitForPendingControlMutations(context: string): Promise<void> {
+    // Drain to quiescence rather than snapshotting the maps once. A second mutation can
+    // start while we are awaiting the first one; passive refresh must not allocate load
+    // revisions until the latest model/effort mutations for this context have all settled.
+    while (true) {
+      const pending = [
+        pendingModelSets.get(context),
+        pendingEffortSets.get(context),
+      ].filter((promise): promise is Promise<void> => promise !== undefined);
+      if (pending.length === 0) return;
+      await Promise.all(pending);
+    }
+  }
+
+  async function refreshLiveControls(instanceId: string, alias: string): Promise<void> {
+    const context = contextKey(instanceId, alias);
+    if (!isSelectedContext(context)) return;
+    // A passive readback must not take revision ownership away from a user mutation.
+    // Let setModel/setEffort finish (including rollback + error toast) first, then
+    // re-check selection and only now let loadModel/loadEffort allocate fresh revisions.
+    await waitForPendingControlMutations(context);
+    if (!isSelectedContext(context)) return;
+    await Promise.all([
+      loadModel(instanceId, alias),
+      loadEffort(instanceId, alias),
+    ]);
+  }
+
+  /**
+   * Turn lifecycle bridge for controls that ACP can mutate while a prompt is running.
+   * We deliberately refresh once on the first live activity (not once per token/chunk),
+   * then once on finish. A reconnect state-snapshot with an active selected turn also
+   * refreshes immediately because turn-started may have been missed while offline.
+   */
+  async function applyLiveEvent(event: WebServerEvent): Promise<void> {
+    if (event.kind === "state-snapshot") {
+      const activeTurn = event.turns.find((turn) =>
+        isSelectedContext(contextKey(event.instanceId, turn.sessionAlias)),
+      );
+      if (!activeTurn) {
+        if (awaitingFirstActivityFor?.startsWith(`${event.instanceId}\u0000`)) {
+          awaitingFirstActivityFor = null;
+        }
+        return;
+      }
+      awaitingFirstActivityFor = null;
+      await refreshLiveControls(event.instanceId, activeTurn.sessionAlias);
+      return;
+    }
+
+    if (event.kind !== "control-event") return;
+    const e = event.event;
+    if (!("sessionAlias" in e) || typeof e.sessionAlias !== "string") return;
+    const context = contextKey(event.instanceId, e.sessionAlias);
+    if (!isSelectedContext(context)) return;
+
+    if (e.type === "turn-started") {
+      awaitingFirstActivityFor = context;
+      return;
+    }
+
+    if (e.type === "turn-finished") {
+      if (awaitingFirstActivityFor === context) awaitingFirstActivityFor = null;
+      await refreshLiveControls(event.instanceId, e.sessionAlias);
+      return;
+    }
+
+    if (LIVE_CONTROL_ACTIVITY_TYPES.has(e.type) && awaitingFirstActivityFor === context) {
+      awaitingFirstActivityFor = null;
+      await refreshLiveControls(event.instanceId, e.sessionAlias);
+    }
+  }
+
+  const unsubscribeWebEvents = subscribeWebEvents((event) => { void applyLiveEvent(event); });
+  onScopeDispose(unsubscribeWebEvents);
+
   const auth = useAuthStore();
   watch(() => auth.account?.username ?? null, () => resetForAccountChange(), { flush: "sync" });
 
   return {
     modelCurrent, modelAvailable, modelLoading, reset, loadModel, setModel,
     effortCurrent, effortAvailable, effortLoading, loadEffort, setEffort, waitForEffortSet,
+    applyLiveEvent,
   };
 });
 

@@ -19,12 +19,20 @@ import { quoteWorkspaceNameIfNeeded } from "../workspace-name";
 import type { SessionSwitchResult } from "../../sessions/session-service";
 import { decorateUnread } from "./session-list-marker";
 import { t } from "../../i18n";
+import { AcpxQueueOverflowError } from "../../transport/acpx-queue-overflow";
+import { queueOverflowTipText } from "./session-recovery-handler";
 
 export interface SessionHandlerContext extends CommandRouterContext {
   lifecycle: SessionLifecycleOps;
   interaction: SessionInteractionOps;
   recovery: SessionRenderRecoveryOps;
   readonly activeTurns?: import("../../sessions/active-turn-registry.js").ActiveTurnRegistry;
+  onQueueOverflowTip?: (info: {
+    chatKey: string;
+    sessionAlias: string;
+    confirmed: boolean;
+    text: string;
+  }) => void;
 }
 
 const DEFAULT_SESSION_TAIL_LINES = 50;
@@ -981,6 +989,31 @@ export async function handlePromptWithSession(
   try {
     return await promptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage, onCommands);
   } catch (error) {
+    if (error instanceof AcpxQueueOverflowError) {
+      const confirmed = error.cleanup?.ownerTerminationSucceeded === true;
+      await context.logger.warn(
+        confirmed ? "transport.queue_overflow_downgraded" : "transport.queue_overflow_unconfirmed",
+        confirmed
+          ? "acpx queue overflow downgraded to soft warning"
+          : "acpx queue overflow cleanup unconfirmed, downgraded without ready promise",
+        {
+          alias: session.alias,
+          transportSession: session.transportSession,
+          code: "ACPX_QUEUE_MESSAGE_OVERFLOW",
+          ownerTerminationSucceeded: error.cleanup?.ownerTerminationSucceeded,
+          cancelSucceeded: error.cleanup?.cancelSucceeded,
+          diagnostic: error.cleanupDiagnostic ?? (error instanceof Error ? error.message.slice(0, 512) : String(error).slice(0, 512)),
+          confirmed,
+        },
+      );
+      context.onQueueOverflowTip?.({
+        chatKey,
+        sessionAlias: session.alias,
+        confirmed,
+        text: queueOverflowTipText(confirmed),
+      });
+      return { silent: true };
+    }
     const recovered = await context.recovery.tryRecoverMissingSession(session, error);
     if (recovered) {
       return await promptWithSession(context, recovered, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage, onCommands);

@@ -45,7 +45,7 @@ export default defineConfig({
       label: 'English',
       lang: 'en-US',
       description:
-        'Control acpx agent sessions remotely from WeChat, Feishu, Yuanbao, and other chat channels.',
+        'Control acpx agent sessions remotely from WeChat, Feishu, Yuanbao, Discord, and other chat channels.',
       themeConfig: {
         nav: [
           { text: 'Guide', link: '/guide/getting-started' },
@@ -86,7 +86,8 @@ export default defineConfig({
               items: [
                 { text: 'Channel Plugin Development', link: '/plugins/development' },
                 { text: 'Feishu Channel', link: '/plugins/feishu' },
-                { text: 'Yuanbao Channel', link: '/plugins/yuanbao' }
+                { text: 'Yuanbao Channel', link: '/plugins/yuanbao' },
+                { text: 'Discord Channel', link: '/plugins/discord' }
               ]
             }
           ],
@@ -113,7 +114,7 @@ export default defineConfig({
       lang: 'zh-CN',
       link: '/zh/',
       description:
-        '通过微信、飞书、元宝等聊天频道，远程控制 acpx 上的 agent 会话。',
+        '通过微信、飞书、元宝、Discord 等聊天频道，远程控制 acpx 上的 agent 会话。',
       themeConfig: {
         nav: [
           { text: '指南', link: '/zh/guide/getting-started' },
@@ -154,7 +155,8 @@ export default defineConfig({
               items: [
                 { text: '频道插件开发', link: '/zh/plugins/development' },
                 { text: '飞书频道', link: '/zh/plugins/feishu' },
-                { text: '元宝频道', link: '/zh/plugins/yuanbao' }
+                { text: '元宝频道', link: '/zh/plugins/yuanbao' },
+                { text: 'Discord 频道', link: '/zh/plugins/discord' }
               ]
             }
           ],

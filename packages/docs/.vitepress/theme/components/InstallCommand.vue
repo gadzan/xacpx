@@ -44,6 +44,16 @@ const tabs = computed<Tab[]>(() => [
       'xacpx channel add yuanbao',
     ],
   },
+  {
+    key: 'discord',
+    label: 'Discord',
+    note: zh.value ? '插件' : 'plugin',
+    lines: [
+      'npm i -g @ganglion/xacpx',
+      'xacpx plugin add @ganglion/xacpx-channel-discord',
+      'xacpx channel add discord',
+    ],
+  },
 ]);
 
 const active = ref('wechat');

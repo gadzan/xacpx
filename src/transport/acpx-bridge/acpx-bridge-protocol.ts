@@ -160,6 +160,13 @@ export interface BridgeErrorResponse {
       stdoutTail?: string;
       stderrTail?: string;
     };
+    queueOverflowCleanup?: {
+      cancelAttempted?: boolean;
+      cancelSucceeded?: boolean;
+      ownerTerminationAttempted?: boolean;
+      ownerTerminationSucceeded?: boolean;
+      diagnostic?: string;
+    };
   };
 }
 

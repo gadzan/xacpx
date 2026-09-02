@@ -117,7 +117,8 @@ daemon 进程内的运行时登记器。
 
 新的 Windows daemon 会在真实发布版 `cli.js run` 启动路径上创建 generation identity，并把尚未
 激活的 identity 上下文传给 `buildApp`。每个默认 runtime 都必须先取得与渠道无关的核心 consumer
-lock；若渠道还提供 legacy lock，则同时持有两把锁，以继续阻挡升级前启动的旧 daemon。核心锁由
+lock，随后为**每一个**提供 lock 的渠道各取得一把兼容性 fence（不再只取第一把），按渠道 id
+确定顺序严格串行 acquire，一旦冲突则按相反顺序回滚已取得的 fence，以继续阻挡升级前启动的旧 daemon。核心锁由
 OS 持有（POSIX 使用 `flock`，Windows 使用 runtime-owner IPC guard），进程崩溃时会自动
 释放 ownership，无需删除或回收稳定的诊断 JSON 文件。Bun 通过 Node helper 持有 POSIX 原生 flock
 时，helper 会忽略进程组的优雅停机信号，只在父进程关闭控制管道后释放；若 helper 意外丢失，owner

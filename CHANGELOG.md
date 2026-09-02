@@ -1,4 +1,95 @@
 # Changelog
+## [Unreleased]
+
+### Changed
+
+- Queue-overflow tips are toast-only on relay-web (3s auto-dismiss) and silent on every other channel. Confirmed vs unconfirmed copy is unchanged; detection/cleanup/logging are unchanged. The tip is not persisted in hub message history.
+
+## [0.24.0] - 2026-09-01
+
+### Added
+
+- Queue overflow soft warning (`ACPX_QUEUE_MESSAGE_OVERFLOW`): downgrade overflow to typed `AcpxQueueOverflowError` with `queueOverflowCleanup` across bridge; confirmed vs unconfirmed handling (`queueOverflowWarning`/`queueOverflowHint` vs `queueOverflowUnconfirmedHint` + `/cancel`), `acpx-cli` `cleanupOverflowedOwner`, and transport pattern hardening.
+- Discord channel plugin plumbing (core side): `knownPlugins` entry, `i18n` `pluginChannelDiscord`, `ActiveConsumerLockError`/`coreHomeDir` in `plugin-api`, `minXacpxVersion` bump to `0.23.0`, `build:channel-discord` scripts and `discord.js` dep.
+
+### Fixed
+
+- Transport `acpx-queue-overflow` now matches `ACPX_QUEUE_MESSAGE_OVERFLOW` code with `\b` boundaries, avoiding false positives; `runtime-consumer-lock` PID reuse probe hardened.
+
+## [relay 0.14.1] - 2026-09-01
+
+### Fixed
+
+- relay-web: own iOS IME 229 input via `keyup`/`timer` (PR #318, #5836) — port xterm.js #5836 pending-229 owner for precise `DEL`+`insert`, backport #5614 gate, throw if patch surface missing.
+- relay-web: refresh model and effort during live turns (PR #319) — expose passive live event taps, refresh session controls on live activity/before turn finish, preserve ordering across reconnects, drain mutations before live refresh, with `live-refresh` tests.
+
+## [channel-discord 0.8.0] - 2026-09-01
+
+### Added
+
+- Discord channel plugin (`@ganglion/xacpx-channel-discord`) per `2026-08-28-discord-channel-plugin-design-from-hy4.md`: `discord.js` v14 Gateway with 5.5s stagger, `chatKey discord:<acct>:dm|g|t:<id>`, preview-stream (progress only, final via `MESSAGE_CREATE`), presence-only token validation, `sessionListFormat` cards `tableMode code/bullets/off`, `OutboundQuota` onInbound only, per-process `createConsumerLock`, streaming `getReader` media `maxBytes 8MiB`, `allowed_mentions {parse:[]}` and CJK `zh` only.
+- Discord: streaming preview immediate and slash autocomplete (PR #321) — `minInitialChars 200→20` (channel `1`), merge `accumulated` with router response, register global+guild `Application Commands` (`/help` `/ss` `/use` `/cancel` `/status` `/sessions`) with `enableAutocomplete` toggle.
+
+### Fixed
+
+- Discord: progress/tool polish (PR #322) — `safeReply` newline for progress emojis and tool→answer blank line, tool lines truncated 60 chars with dedup (`toolCallId`+consecutive), `lastWasTool` covers all emojis, `summary` restore (`toolName: summary`).
+- Discord: autocomplete fallback `effectiveAppId=applicationId||botUserId`, `enableAutocomplete` default `true`, guild commands instant, `finalText` dedup, `ToolUseEvent` `toolName` fix.
+- Discord: map `/ss` interaction options to flag syntax (PR #323) — reconstruct `/ss [new] <agent> --ws <workspace>` from named `agent`/`workspace`/`new`, handle `/use`/`/cancel`, typed `{name,value}`.
+
+## [channel-discord 0.8.0-beta.3] - 2026-09-01
+
+### Fixed
+
+- Discord: map `/ss` interaction options to flag syntax (PR #323) — `discord-client.ts` now reconstructs `/ss` from named options (`agent`, `workspace`, `new`) as `/ss [new] <agent> --ws <workspace>` instead of naive `join`, fixes `Invalid command format` when using autocomplete; handles `/use` and `/cancel` alias mapping; `options.data` now typed as `{name,value}` and preserves `ephemeral` ack with `allowedMentions`.
+
+## [channel-discord 0.8.0-beta.2] - 2026-09-01
+
+### Fixed
+
+- Discord: progress pings and tool rendering polish (PR #322) — `safeReply` now starts progress emojis (`🚀` `🔧` `⏳` `ℹ️` etc.) on a new line (fixes `🚀 Starting…🔧 Agent initializing…` stuck together); when transitioning from a tool block to normal answer, inserts a blank line (`\n\n`) so `…| head -30最近` separates correctly; tool lines are truncated to 60 chars with `…` (`🔧 Bash: git log … (running)`) and deduped per `toolCallId` plus consecutive identical check.
+- Discord: autocomplete instant for guilds and fallback `appId` — derive `effectiveAppId` from `botUserId` when `applicationId` not set, default `enableAutocomplete` `true` (was `Boolean(applicationId)`), and register both global and guild application commands (`/help` `/ss` `/use` `/cancel` `/status` `/sessions` via `discord-commands.ts`); guild registration makes slash picks instant, fixes no autocomplete when only token is configured.
+- Discord: review fix — `lastWasTool` now matches all tool emojis (`📖` `🔍` `✏️` `💭` `🔧` `🧰` `⚠️`) and `onToolEvent` dedup only when `toolCallId` is truthy (avoids dropping distinct tools with empty id); restore `summary` in `onToolEvent` (`toolName: summary` display, hotfix `c53ca966`).
+
+## [relay 0.14.1-beta.2] - 2026-09-01
+
+### Fixed
+
+- relay-web: refresh model and effort during live turns (PR #319) — expose passive live event taps (`src/api/events.ts`), refresh session controls on live turn activity, refresh controls before turn finish, preserve live control refresh ordering across reconnects, and drain control mutations before live refresh (`src/stores/session-controls.ts` 113 lines). Fixes stale model/effort badge while a turn is running and races where mutations added during the refresh wait were lost; adds `session-controls-live-refresh` and `session-controls-live-refresh-quiescence` tests (451 lines).
+
+## [channel-discord 0.8.0-beta.1] - 2026-09-01
+
+### Added
+
+- Discord: streaming preview immediate and slash autocomplete (PR #321) — preview `minInitialChars` 200→20 (tuning/config) and channel hardcode `1` for instant “Running” feedback within one throttle window; stream `tool`/`thought` into preview; merge accumulated progress with router response (fixes `/ss` creation confirmation swallowed); register Discord Application Commands (`/help`, `/ss`, `/use`, `/cancel`, `/status`, `/sessions`) when `applicationId` present via `discord-commands.ts` and handle `interactionCreate` as synthetic text with ephemeral ack; add `enableAutocomplete` / `--autocomplete` toggle.
+
+### Fixed
+
+- Discord review fixes — synthetic `interaction` now includes bot mention (`<@botId>` + `mentions.users`) so guild `requireMention` does not drop slash picks; add `allowedMentions:{parse:[]}` to ephemeral replies to avoid `@everyone` pings; dedup `finalText` when `response.text` already in accumulated progress; remove dead `fetchImpl` param; unify preview default `minInitialChars` to `20`; docs `README` documents streaming/autocomplete behavior.
+
+## [0.24.0-beta.0] - 2026-09-01
+
+### Added
+
+- Queue overflow soft warning (`ACPX_QUEUE_MESSAGE_OVERFLOW`): downgrade overflow to a typed `AcpxQueueOverflowError` carrying `queueOverflowCleanup` across the bridge; `session-recovery-handler` now soft-downgrades only typed overflows — confirmed (`ownerTerminationSucceeded`) returns `queueOverflowWarning`/`queueOverflowHint` (ready), unconfirmed returns `queueOverflowUnconfirmedHint` + `/cancel` hint; raw buffer strings stay hard error. `session-handler` logs `transport.queue_overflow_downgraded` vs `transport.queue_overflow_unconfirmed` (warn) and `acpx-cli` cleans up overflowed owners via `cleanupOverflowedOwner` (cancel + `readSessionRecord` + `terminateAcpxQueueOwnerVerified`).
+- Discord channel plugin plumbing (core side): register `knownPlugins` entry, `i18n` `pluginChannelDiscord`, expose `ActiveConsumerLockError`/`coreHomeDir` in `plugin-api`, bump `minXacpxVersion` to `0.23.0`, and add `build:channel-discord` / `clean:channel-discord` scripts plus `discord.js` dep (co-affects `bun.lock`).
+
+### Fixed
+
+- Transport `acpx-queue-overflow` now matches `ACPX_QUEUE_MESSAGE_OVERFLOW` code and broadened `ACPX_` patterns with `\b` boundaries and exact code match, avoiding `QUEUE_MESSAGE_OVERFLOWED`/`NOT_..._RETRY` false positives.
+- `src/daemon/runtime-consumer-lock.ts` hardens PID reuse probe for per-process consumer locks; `src/cli.ts` and `docs/*` updated for the new plugin and lock wiring.
+
+## [channel-discord 0.8.0-beta.0] - 2026-09-01
+
+### Added
+
+- Discord channel plugin (`@ganglion/xacpx-channel-discord`) per `docs/superpowers/specs/2026-08-28-discord-channel-plugin-design-from-hy4.md`: Discord Gateway via `discord.js` v14 with 5.5s stagger, `chatKey` `discord:<acct>:dm|g|t:<id>` (threads `t:` independent, no binding map), preview-stream shows progress only (final answer always `MESSAGE_CREATE`), token presence-only validation (diagnostics warn only), native `sessionListFormat` cards with `tableMode` `code/bullets/off`, `OutboundQuota` onInbound only, per-process `createConsumerLock` + hardened PID reuse probe, streaming `getReader` media with configurable `maxBytes` (default 8MiB), global `allowed_mentions {parse:[]}` and outbound whitelist, CJK only in `zh` catalog.
+
+## [relay 0.14.1-beta.1] - 2026-09-01
+
+### Fixed
+
+- relay-web: own iOS IME 229 input via keyup/timer (PR #318, #5836) — port xterm.js #5836 pending-229 owner, converge on `keyup`/`timer` with precise `DEL`+`insert` (including delete+insert and same-length replacement), preventing double-send with stock `@xterm/xterm@6.0.0` textarea fallback; backport xterm.js #5614 `_inputEvent` gate onto the adapter (idle `CompositionHelper` only) and throw if `_core`/`_inputEvent` surface is missing, with prod construct → patch → open order coverage.
+
 ## [relay 0.14.1-beta.0] - 2026-08-27
 
 ### Added

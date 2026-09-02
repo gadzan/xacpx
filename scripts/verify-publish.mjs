@@ -18,7 +18,7 @@ import { RMUX_VERSION } from "./rmux-release.mjs";
  * @property {string=} expectedExportedName
  */
 
-const DEFAULT_PACKAGES = [
+export const DEFAULT_PACKAGES = [
   {
     id: "root",
     dir: ".",
@@ -48,6 +48,15 @@ const DEFAULT_PACKAGES = [
     requiredPeer: "xacpx",
     forbiddenPeer: "weacpx",
     expectedExportedName: "@ganglion/xacpx-channel-yuanbao",
+  },
+  {
+    id: "channel-discord",
+    dir: "packages/channel-discord",
+    expectedName: "@ganglion/xacpx-channel-discord",
+    requiredFiles: ["dist/index.js", "dist/index.d.ts", "README.md", "package.json"],
+    requiredPeer: "xacpx",
+    forbiddenPeer: "weacpx",
+    expectedExportedName: "@ganglion/xacpx-channel-discord",
   },
   {
     id: "relay-protocol",

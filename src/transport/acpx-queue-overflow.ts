@@ -3,8 +3,8 @@ export const ACPX_QUEUE_MESSAGE_OVERFLOW_CODE = "ACPX_QUEUE_MESSAGE_OVERFLOW" as
 const QUEUE_BUFFER_OVERFLOW_PATTERN = /Message buffer exceeded \d+ bytes/i;
 const QUEUE_EVENT_TOO_LARGE_PATTERN = /\bQUEUE_EVENT_TOO_LARGE\b/i;
 const QUEUE_MESSAGE_OVERFLOW_PATTERN = /\bQUEUE_MESSAGE_OVERFLOW\b/i;
+const ACPX_QUEUE_OVERFLOW_CODE_PATTERN = /\bACPX_QUEUE_MESSAGE_OVERFLOW\b/i;
 const MAX_CLEANUP_DIAGNOSTIC_LENGTH = 512;
-
 export interface AcpxQueueCleanupResult {
   cancelAttempted: boolean;
   cancelSucceeded: boolean;
@@ -34,7 +34,12 @@ export function isAcpxQueueMessageOverflow(error: unknown): boolean {
     seen.add(value);
 
     const record = value as Record<string, unknown>;
-    for (const key of ["message", "code", "stdout", "stderr"]) {
+    // Field-sensitive: only trust transport diagnostics (message/code/stderr).
+    // Do NOT scan raw stdout — it contains agent ACP session/update content
+    // (agent_message_chunk) and can be polluted by the model discussing the
+    // error code. A provider failure with agent stdout containing
+    // QUEUE_MESSAGE_OVERFLOW must not trigger destructive cancel+terminate.
+    for (const key of ["message", "code", "stderr"]) {
       const field = record[key];
       if (typeof field === "string") diagnostics.push(field);
     }
@@ -43,9 +48,12 @@ export function isAcpxQueueMessageOverflow(error: unknown): boolean {
 
   visit(error, 0);
   return diagnostics.some((text) =>
+    text === ACPX_QUEUE_MESSAGE_OVERFLOW_CODE ||
+    ACPX_QUEUE_OVERFLOW_CODE_PATTERN.test(text) ||
     QUEUE_BUFFER_OVERFLOW_PATTERN.test(text) ||
     QUEUE_EVENT_TOO_LARGE_PATTERN.test(text) ||
-    QUEUE_MESSAGE_OVERFLOW_PATTERN.test(text));
+    QUEUE_MESSAGE_OVERFLOW_PATTERN.test(text),
+  );
 }
 
 export class AcpxQueueOverflowError extends Error {

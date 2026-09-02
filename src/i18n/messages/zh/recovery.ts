@@ -19,6 +19,10 @@ export const recovery: RecoveryMessages = {
   sessionInterruptedHint: "请直接重试；如果长时间无响应，可先发送 /cancel 后再重试。",
   sessionInterruptedError: (summary) => `错误信息：${summary}`,
 
+  // renderTransportError — queue overflow (toast-only on relay-web; silent elsewhere)
+  queueOverflowWarning: "",
+  queueOverflowHint: "部分回复因过长已收束，可直接继续。",
+  queueOverflowUnconfirmedHint: "输出过长且清理未确认，请先发 /cancel 再继续。",
   // renderSessionCreationError (AutoInstallFailedError)
   autoInstallHeadlineFixed: "⚠️ 自动安装已执行但未能修复会话启动问题",
   autoInstallHeadlineFailed: "❌ 自动安装失败",

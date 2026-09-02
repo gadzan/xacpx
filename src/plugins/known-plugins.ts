@@ -23,6 +23,12 @@ const KNOWN_PLUGIN_TEMPLATES: ReadonlyArray<KnownPluginTemplate> = [
     official: true,
   },
   {
+    packageName: "@ganglion/xacpx-channel-discord",
+    channels: ["discord"],
+    descriptionKey: "pluginChannelDiscord",
+    official: true,
+  },
+  {
     packageName: "@ganglion/xacpx-channel-relay",
     channels: ["relay"],
     descriptionKey: "pluginChannelRelay",

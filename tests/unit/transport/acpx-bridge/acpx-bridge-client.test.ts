@@ -16,6 +16,7 @@ import {
 import { encodeBridgeRequest } from "../../../../src/transport/acpx-bridge/acpx-bridge-protocol";
 import { PromptCommandError } from "../../../../src/transport/prompt-output";
 import { MissingOptionalDepError } from "../../../../src/recovery/errors";
+import { AcpxQueueOverflowError, ACPX_QUEUE_MESSAGE_OVERFLOW_CODE } from "../../../../src/transport/acpx-queue-overflow";
 import { CommandTimeoutError } from "../../../../src/transport/command-timeouts";
 import { MessageInjectionError } from "../../../../src/transport/message-injection";
 
@@ -67,10 +68,71 @@ test("preserves a stable bridge error code on generic errors", async () => {
     await pending;
     throw new Error("expected rejection");
   } catch (error) {
-    expect(error).toMatchObject({
+    expect(error).toBeInstanceOf(AcpxQueueOverflowError);
+    expect((error as unknown as { code: string }).code).toBe(ACPX_QUEUE_MESSAGE_OVERFLOW_CODE);
+    expect((error as unknown as Error).message).toContain("oversized ACP event");
+  }
+});
+
+test("reconstructs confirmed overflow cleanup from bridge response with queueOverflowCleanup", async () => {
+  const client = new AcpxBridgeClient(() => {});
+  const pending = client.request("prompt", {});
+  client.handleLine(JSON.stringify({
+    id: "1",
+    ok: false,
+    error: {
       code: "ACPX_QUEUE_MESSAGE_OVERFLOW",
-      message: "oversized ACP event",
-    });
+      message: "Agent emitted an oversized ACP event. The local agent queue was stopped to prevent the turn from continuing in the background. The prompt was not retried automatically.",
+      queueOverflowCleanup: {
+        cancelAttempted: true,
+        cancelSucceeded: true,
+        ownerTerminationAttempted: true,
+        ownerTerminationSucceeded: true,
+        diagnostic: "all good",
+      },
+    },
+  }));
+
+  try {
+    await pending;
+    throw new Error("expected rejection");
+  } catch (error) {
+    expect(error).toBeInstanceOf(AcpxQueueOverflowError);
+    const overflow = error as AcpxQueueOverflowError;
+    expect(overflow.cleanup?.ownerTerminationSucceeded).toBe(true);
+    expect(overflow.cleanup?.cancelSucceeded).toBe(true);
+    expect(overflow.cleanup?.diagnostic).toBe("all good");
+  }
+});
+
+test("reconstructs unconfirmed overflow cleanup from bridge response", async () => {
+  const client = new AcpxBridgeClient(() => {});
+  const pending = client.request("prompt", {});
+  client.handleLine(JSON.stringify({
+    id: "1",
+    ok: false,
+    error: {
+      code: "ACPX_QUEUE_MESSAGE_OVERFLOW",
+      message: "Agent emitted an oversized ACP event. Cleanup of the running agent turn could not be confirmed.",
+      queueOverflowCleanup: {
+        cancelAttempted: true,
+        cancelSucceeded: false,
+        ownerTerminationAttempted: true,
+        ownerTerminationSucceeded: false,
+        diagnostic: "cancel failed: No acpx session found",
+      },
+    },
+  }));
+
+  try {
+    await pending;
+    throw new Error("expected rejection");
+  } catch (error) {
+    expect(error).toBeInstanceOf(AcpxQueueOverflowError);
+    const overflow = error as AcpxQueueOverflowError;
+    expect(overflow.cleanup?.ownerTerminationSucceeded).toBe(false);
+    expect(overflow.cleanup?.cancelSucceeded).toBe(false);
+    expect(overflow.cleanupDiagnostic).toContain("No acpx session found");
   }
 });
 

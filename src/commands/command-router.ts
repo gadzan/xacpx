@@ -82,6 +82,7 @@ import type {
 import { renderLaterUnsupportedChannel } from "../scheduled/scheduled-render";
 import { TransportInvoker } from "./transport-invoker";
 import { SessionControlService } from "./session-control-service";
+import type { ControlEventBus } from "../control/control-event-bus";
 
 type AutoInstallFn = typeof defaultAutoInstall;
 type DiscoverPathsFn = typeof defaultDiscoverPaths;
@@ -116,6 +117,7 @@ export class CommandRouter {
     private readonly scheduledDelivery?: ScheduledDeliveryCapabilityOps,
     private readonly resolveNativeSessionListFormat?: (chatKey: string) => "cards" | "table",
     activeTurns?: ActiveTurnRegistry,
+    private readonly controlEvents?: ControlEventBus,
   ) {
     this.logger = logger ?? createNoopAppLogger();
     this.activeTurns = activeTurns;
@@ -508,6 +510,17 @@ export class CommandRouter {
       interaction: this.createSessionInteractionOps(perfSpan),
       recovery: this.createSessionRenderRecoveryOps(),
       ...(this.activeTurns ? { activeTurns: this.activeTurns } : {}),
+      ...(this.controlEvents ? {
+        onQueueOverflowTip: (info) => {
+          this.controlEvents!.emit({
+            type: "queue-overflow-tip",
+            chatKey: info.chatKey,
+            sessionAlias: info.sessionAlias,
+            confirmed: info.confirmed,
+            text: info.text,
+          });
+        },
+      } : {}),
     };
   }
 

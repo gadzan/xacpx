@@ -1,9 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-import { collectPublishVerificationFailures } from "../../../scripts/verify-publish.mjs";
+import {
+  DEFAULT_PACKAGES,
+  collectPublishVerificationFailures,
+} from "../../../scripts/verify-publish.mjs";
 
 type PublishPackageConfig = {
   id: string;
@@ -183,4 +188,39 @@ test("collectPublishVerificationFailures passes a valid publish layout without d
   });
 
   expect(failures).toEqual([]);
+});
+
+// The tests above inject their own package fixture, so DEFAULT_PACKAGES is only
+// ever exercised here: an unregistered package would ship completely unchecked.
+test("DEFAULT_PACKAGES registers every publishable package under packages/", async () => {
+  const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
+  const packagesRoot = join(repoRoot, "packages");
+  const packageDirs = (await readdir(packagesRoot, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+
+  const violations: string[] = [];
+  let checked = 0;
+  for (const dir of packageDirs) {
+    const manifestPath = join(packagesRoot, dir, "package.json");
+    if (!existsSync(manifestPath)) continue;
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+      name?: string;
+      private?: boolean;
+    };
+    if (manifest.private === true) continue;
+    checked += 1;
+    const entry = DEFAULT_PACKAGES.find((pkg) => pkg.dir === `packages/${dir}`);
+    if (!entry) {
+      violations.push(`packages/${dir} (${manifest.name ?? "unnamed"}) is not registered in DEFAULT_PACKAGES`);
+      continue;
+    }
+    if (entry.expectedName !== manifest.name) {
+      violations.push(`packages/${dir} expectedName=${entry.expectedName} != package.json name=${manifest.name}`);
+    }
+  }
+
+  expect(checked).toBeGreaterThan(0);
+  expect(violations).toEqual([]);
 });

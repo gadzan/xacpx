@@ -255,6 +255,11 @@ export interface RecoveryMessages {
   sessionInterruptedHint: string;
   sessionInterruptedError: (summary: string) => string;
 
+  // renderTransportError — queue overflow (toast-only on relay-web; silent elsewhere)
+  // queueOverflowWarning is empty; confirmed/unconfirmed copy lives in the hint keys.
+  queueOverflowWarning: string;
+  queueOverflowHint: string;
+  queueOverflowUnconfirmedHint: string;
   // renderSessionCreationError (AutoInstallFailedError)
   autoInstallHeadlineFixed: string;
   autoInstallHeadlineFailed: string;
@@ -1282,6 +1287,7 @@ export interface MiscMessages {
   // plugins/known-plugins: channel descriptions
   pluginChannelFeishu: string;
   pluginChannelYuanbao: string;
+  pluginChannelDiscord: string;
   pluginChannelRelay: string;
   pluginChannelInstallHint: (channelType: string, packageName: string) => string;
 

@@ -1097,6 +1097,31 @@ test("unknown type and thrown errors become error payloads", async () => {
   ).toEqual({ error: { code: "internal", message: "boom" } });
 });
 
+test("subscribeControlEvents maps queue-overflow-tip to instance.notice and does not forward a control-event", () => {
+  const { control, emit } = makeFakeControl();
+  const sent: Array<{ type: string; payload: unknown }> = [];
+  subscribeControlEvents(control as never, (type, payload) =>
+    sent.push({ type, payload }),
+  );
+  emit({
+    type: "queue-overflow-tip",
+    chatKey: "relay:acct",
+    sessionAlias: "relay:demo",
+    confirmed: true,
+    text: "Reply was truncated for size — you can continue.",
+  });
+  expect(sent).toEqual([
+    {
+      type: MSG.instanceNotice,
+      payload: {
+        kind: "queue-overflow",
+        text: "Reply was truncated for size — you can continue.",
+        chatKey: "relay:acct",
+      },
+    },
+  ]);
+});
+
 test("subscribeControlEvents forwards events and unsubscribes", () => {
   const { control, emit } = makeFakeControl();
   const sent: Array<{ type: string; payload: unknown }> = [];

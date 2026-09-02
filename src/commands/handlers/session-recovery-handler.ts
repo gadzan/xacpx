@@ -9,8 +9,21 @@ import {
   isNpmAdapterRegistryNotFoundOutput,
 } from "../../adapters/adapter-registry";
 import { managedAdapterRegistryFromCommand } from "../../adapters/adapter-catalog";
+import { AcpxQueueOverflowError } from "../../transport/acpx-queue-overflow";
+
+export function queueOverflowTipText(confirmed: boolean): string {
+  const r = t().recovery;
+  return [r.queueOverflowWarning, confirmed ? r.queueOverflowHint : r.queueOverflowUnconfirmedHint]
+    .filter((line) => line.length > 0)
+    .join("\n");
+}
 
 export function renderTransportError(session: ResolvedSession, error: unknown): RouterResponse {
+  if (error instanceof AcpxQueueOverflowError) {
+    // Overflow tips are toast-only on relay-web. Returning silent (no text)
+    // keeps WeChat/Feishu/Yuanbao/Discord/history from posting a chat bubble.
+    return { silent: true };
+  }
   const message = error instanceof Error ? error.message : String(error);
   const registryError = renderAdapterRegistryError(session, message);
   if (registryError) return registryError;
@@ -128,6 +141,7 @@ export async function tryRecoverMissingSession(
   session: ResolvedSession,
   error: unknown,
 ): Promise<ResolvedSession | null> {
+  if (error instanceof AcpxQueueOverflowError) return null;
   const message = error instanceof Error ? error.message : String(error);
   if (!message.includes("No acpx session found")) {
     return null;

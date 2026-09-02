@@ -4,7 +4,7 @@ layout: home
 hero:
   name: xacpx
   text: 你的 Agent，就在聊天里
-  tagline: 在微信、飞书、元宝中驱动 Codex、Claude Code、Gemini 会话——无需打开终端。
+  tagline: 在微信、飞书、元宝、Discord 中驱动 Codex、Claude Code、Gemini 会话——无需打开终端。
   actions:
     - theme: brand
       text: 快速开始
@@ -34,7 +34,7 @@ features:
     linkText: 工作原理
   - icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 1 1.73l7 4a2 2 0 0 2 0l7-4A2 2 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>'
     title: 可扩展频道
-    details: 无需修改核心控制台，即可添加官方或第三方频道插件。
+    details: 无需修改核心控制台，即可添加飞书、元宝、Discord 等官方频道，或安装第三方频道插件。
     link: /zh/plugins/development
     linkText: 开发频道插件
   - icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>'
@@ -85,11 +85,12 @@ xacpx 是一个聊天频道控制台，用于远程控制 `acpx` Agent 会话。
 
 xacpx 内置微信作为默认频道。其他频道以官方插件包形式分发：
 
-| 频道 | 插件包 |
-|---------|---------|
-| 微信（内置） | — |
-| 飞书 | `@ganglion/xacpx-channel-feishu` |
-| 元宝 | `@ganglion/xacpx-channel-yuanbao` |
+| 频道 | 插件包 | 安装说明 |
+|---------|---------|---------|
+| 微信（内置） | — | [快速开始](/zh/guide/getting-started) |
+| 飞书 | `@ganglion/xacpx-channel-feishu` | [飞书教程](/zh/plugins/feishu) |
+| 元宝 | `@ganglion/xacpx-channel-yuanbao` | [元宝教程](/zh/plugins/yuanbao) |
+| Discord | `@ganglion/xacpx-channel-discord` | [Discord 教程](/zh/plugins/discord) |
 
 第三方频道遵循相同的插件接口。使用 `xacpx plugin add <package>` 安装频道插件，使用 `xacpx channel add <name>` 配置，然后重启守护进程。
 
@@ -114,6 +115,7 @@ xacpx-relay start       # 看板 + API 在 :8787
 ## 下一步
 
 - [快速开始](/zh/guide/getting-started) — 安装 xacpx、登录并运行第一个会话
+- [Discord 频道](/zh/plugins/discord) — 创建 Discord Bot、配置 allowlist，并发送第一条 Agent 提示词
 - [命令参考](/zh/reference/commands) — 聊天命令完整列表（`/ss`、`/use`、`/cancel` 等）
 - [自托管 Relay Hub](/zh/guide/relay-self-hosting) — 为多个实例运行多租户网页看板
 - [配置说明](/zh/reference/configuration) — 配置文件字段、传输选项以及工作区和 Agent 注册
