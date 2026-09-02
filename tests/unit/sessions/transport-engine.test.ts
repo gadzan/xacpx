@@ -37,7 +37,6 @@ test("auto mode stays on cli until the Runtime gates pass", () => {
   expect(choice.reason).toBe("runtime-import-failed");
 });
 
-test("missing engine field defaults to auto (PR10 switch) -> cli when runtime not available, runtime when available", () => {
-  expect(resolveTransportEngine({ config: baseConfig })).toEqual({ engine: "cli", reason: "runtime-import-failed" });
-  expect(resolveTransportEngine({ config: baseConfig, runtimeAvailable: true } as never)).toEqual({ engine: "runtime" });
+test("missing engine field defaults to cli (development-phase default)", () => {
+  expect(resolveTransportEngine({ config: baseConfig })).toEqual({ engine: "cli" });
 });

@@ -9,6 +9,8 @@ import {
   type RuntimeWorkerResponse,
   type RuntimeWorkerPermissionRequestPayload,
   type RuntimeWorkerPermissionDecisionParams,
+  type RuntimeWorkerElicitationRequestPayload,
+  type RuntimeWorkerElicitationDecisionParams,
 } from "./runtime-worker-protocol";
 import { mapRuntimeError } from "./runtime-contract";
 import { terminateProcessTree } from "../../../process/terminate-process-tree";
@@ -63,6 +65,10 @@ export interface RuntimeWorkerClientDeps {
    * PermissionDecision union; any throw/timeout/malformed is mapped to `reject_once`/`cancel` fail-closed.
    */
   resolvePermissionRequest?: (payload: RuntimeWorkerPermissionRequestPayload) => Promise<RuntimeWorkerPermissionDecisionParams["decision"]>;
+  /**
+   * PR9-C: Host-side handler for elicitation requests.
+   */
+  resolveElicitationRequest?: (payload: RuntimeWorkerElicitationRequestPayload) => Promise<{ action: "submit" | "cancel"; data?: unknown }>;
 }
 export type WorkerLifecycle = "starting" | "ready" | "busy" | "idle" | "cooling" | "stopped" | "failed";
 
@@ -217,6 +223,11 @@ export class RuntimeWorkerClient {
         void this.handlePermissionRequest(payload).catch(() => {});
         return;
       }
+      if (raw && typeof raw === "object" && "event" in raw && (raw as { event: unknown }).event === "elicitation.request") {
+        const payload = (raw as { payload?: unknown }).payload as RuntimeWorkerElicitationRequestPayload | undefined;
+        void this.handleElicitationRequest(payload).catch(() => {});
+        return;
+      }
       // Real-time push: forward to the still-pending request's sink while the
       // RPC itself stays open — this is what keeps prompt streaming live.
       const id = typeof (raw as { id?: unknown }).id === "string" ? (raw as { id: string }).id : null;
@@ -267,6 +278,43 @@ export class RuntimeWorkerClient {
     }
     try {
       await this.request("permission.decision", { requestId, toolCallId, policyGeneration, decision });
+    } catch {}
+  }
+
+  private async handleElicitationRequest(payload: RuntimeWorkerElicitationRequestPayload | undefined): Promise<void> {
+    const requestId = typeof payload?.requestId === "string" ? payload.requestId : "";
+    const elicitationId = typeof payload?.elicitationId === "string" ? payload.elicitationId : requestId;
+    const policyGeneration = typeof payload?.policyGeneration === "number" ? payload.policyGeneration : 0;
+    if (!payload || !elicitationId) {
+      try {
+        await this.request("elicitation.decision", { requestId, elicitationId, policyGeneration, decision: { action: "cancel" } });
+      } catch {}
+      return;
+    }
+    let decision: RuntimeWorkerElicitationDecisionParams["decision"];
+    try {
+      const handler = this.deps?.resolveElicitationRequest;
+      if (!handler) {
+        decision = { action: "cancel" };
+      } else {
+        const withTimeout = await Promise.race([
+          handler(payload),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("elicitation UI timeout")), 30_000).unref?.()),
+        ]);
+        const action = (withTimeout as { action?: unknown })?.action;
+        if (action !== "submit" && action !== "cancel") {
+          decision = { action: "cancel" };
+        } else if (action === "submit") {
+          decision = { action: "submit", data: (withTimeout as { data?: unknown }).data };
+        } else {
+          decision = { action: "cancel" };
+        }
+      }
+    } catch {
+      decision = { action: "cancel" };
+    }
+    try {
+      await this.request("elicitation.decision", { requestId, elicitationId, policyGeneration, decision });
     } catch {}
   }
 

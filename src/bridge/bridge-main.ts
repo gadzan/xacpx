@@ -138,6 +138,28 @@ export async function runBridgeMain(): Promise<void> {
         fenceDir,
         workerEntryPath: workerEntry,
         queueOwnerTtlSeconds: normalizeBridgeQueueOwnerTtlSeconds(coreEnv("BRIDGE_QUEUE_OWNER_TTL_SECONDS")),
+        onPermissionRequest: async (payload) => {
+          try {
+            const result = await server.requestDaemon("resolvePermissionRequest", payload as unknown as import("../transport/acpx-bridge/acpx-bridge-protocol").ResolvePermissionRequestParams, { timeoutMs: 8000 });
+            const outcome = (result as { outcome?: unknown })?.outcome;
+            if (outcome === "allow_once" || outcome === "allow_always" || outcome === "reject_once" || outcome === "reject_always" || outcome === "cancel") {
+              return { outcome };
+            }
+            return { outcome: "reject_once" };
+          } catch {
+            return { outcome: "reject_once" };
+          }
+        },
+        onElicitationRequest: async (payload) => {
+          try {
+            const result = await server.requestDaemon("resolveElicitationRequest", payload as unknown as import("../transport/acpx-bridge/acpx-bridge-protocol").ResolveElicitationRequestParams, { timeoutMs: 30000 });
+            const action = (result as { action?: unknown })?.action;
+            if (action === "submit") return { action: "submit", data: (result as { data?: unknown }).data };
+            return { action: "cancel" };
+          } catch {
+            return { action: "cancel" };
+          }
+        },
       });
       const binding = new SessionEngineBinding();
       engine = new EngineRouter(binding, cliEngine, runtimeEngine);

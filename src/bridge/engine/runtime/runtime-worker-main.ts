@@ -160,6 +160,8 @@ async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: 
             const name = nameRaw ?? title?.split(":")[0]?.trim().toLowerCase();
             const tokens = [name, title, kind].filter((v): v is string => typeof v === "string" && v.length > 0).map((v) => v.trim().toLowerCase());
             const match = (rules?: string[]) => rules?.some((r) => tokens.some((t) => t.includes(r.trim().toLowerCase())));
+            if (match(policy?.autoDeny)) return false;
+            if (match(policy?.autoApprove)) return false;
             if (match(policy?.escalate)) return true;
             if (policy?.defaultAction === "escalate") return true;
             if (snap.permissionMode === "approve-reads") {

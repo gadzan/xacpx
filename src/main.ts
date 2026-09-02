@@ -565,8 +565,19 @@ export async function buildApp(
                     },
                   );
                 },
-                onBridgeRequest: (method, params, context) =>
-                  launchIntentCoordinator.handle(method, params, context),
+                onBridgeRequest: async (method, params, context) => {
+                  if (method === "resolvePermissionRequest") {
+                    const p = params as { logicalSessionId?: string; sessionKey?: string; requestId?: string; toolCallId?: string };
+                    // For now, no channel UI is wired to the bridge permission flow.
+                    // Fail closed: deny unless a future channel handler provides explicit approval.
+                    // This satisfies security: escalate never becomes allow without UI.
+                    return { outcome: "reject_once" };
+                  }
+                  if (method === "resolveElicitationRequest") {
+                    return { action: "cancel" };
+                  }
+                  return await launchIntentCoordinator.handle(method as never, params as never, context);
+                },
                 onBridgeDisconnect: () => launchIntentCoordinator.disconnect(),
               }),
             ),

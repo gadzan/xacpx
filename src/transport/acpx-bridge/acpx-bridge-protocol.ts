@@ -37,7 +37,9 @@ export type BridgeOriginatedMethod =
   | "launcherSpawned"
   | "cancelAdapterIntent"
   | "launchSettled"
-  | "resolveAdapterCommand";
+  | "resolveAdapterCommand"
+  | "resolvePermissionRequest"
+  | "resolveElicitationRequest";
 
 export interface BridgeOriginatedRequest {
   direction: "bridge-to-daemon";
@@ -70,6 +72,27 @@ export interface LaunchSettledParams extends AdapterTokenParams {
   ownerAcpxRecordId?: string;
 }
 export interface ResolveAdapterCommandParams { id: string; sessionKey: string; agentCommand: string }
+export interface ResolvePermissionRequestParams {
+  logicalSessionId: string;
+  sessionKey: string;
+  requestId: string;
+  toolCallId: string;
+  title?: string;
+  kind?: string;
+  rawInput?: unknown;
+  policyGeneration: number;
+  workerGeneration: string;
+}
+export interface ResolveElicitationRequestParams {
+  logicalSessionId: string;
+  sessionKey: string;
+  requestId: string;
+  elicitationId: string;
+  mode: string;
+  message: unknown;
+  policyGeneration: number;
+  workerGeneration: string;
+}
 
 export interface BridgeOriginatedParams {
   registerAdapterIntent: RegisterAdapterIntentParams;
@@ -77,6 +100,8 @@ export interface BridgeOriginatedParams {
   cancelAdapterIntent: AdapterTokenParams;
   launchSettled: LaunchSettledParams;
   resolveAdapterCommand: ResolveAdapterCommandParams;
+  resolvePermissionRequest: ResolvePermissionRequestParams;
+  resolveElicitationRequest: ResolveElicitationRequestParams;
 }
 
 const LAUNCH_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

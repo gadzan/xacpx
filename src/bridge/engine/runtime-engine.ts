@@ -380,6 +380,11 @@ export interface RuntimeEngineOptions {
    * Tests should inject a mock that can delay/abort/malform to verify fail-closed.
    */
   onPermissionRequest?: (payload: { logicalSessionId: string; sessionKey: string; requestId: string; toolCallId: string; title?: string; kind?: string; rawInput?: unknown; policyGeneration: number; workerGeneration: string }) => Promise<{ outcome: "allow_once" | "allow_always" | "reject_once" | "reject_always" | "cancel" }>;
+  /**
+   * PR9-C: Host-side handler for elicitation requests (acpx/runtime onElicitation).
+   * If not provided, elicitation fails closed (cancel).
+   */
+  onElicitationRequest?: (payload: { logicalSessionId: string; sessionKey: string; requestId: string; elicitationId: string; mode: string; message: unknown; policyGeneration: number; workerGeneration: string }) => Promise<{ action: "submit" | "cancel"; data?: unknown }>;
 }
 export function defaultWorkerEntryCandidates(fromUrl = import.meta.url): string[] {
   const here = dirname(fileURLToPath(fromUrl));
@@ -601,6 +606,7 @@ export class RuntimeEngine implements BridgeEngine {
       const permissionDeps: RuntimeWorkerClientDeps = {
         ...(options.workerClientDeps ?? {}),
         resolvePermissionRequest: (payload) => this.handlePermissionRequest(payload),
+        resolveElicitationRequest: (payload) => this.handleElicitationRequest(payload),
       };
       this.manager = new RuntimeWorkerManager({
         entryPath: entry,
@@ -951,7 +957,8 @@ export class RuntimeEngine implements BridgeEngine {
     try {
       const policy = this.options.permissionPolicy !== undefined ? parseXacpxPermissionPolicy(this.options.permissionPolicy) : undefined;
       // PR9-A: interactive permission UI is now available, so escalate is eligible
-      return isEligibleForRuntime(policy, this.options.nonInteractivePermissions, true);
+      const interactiveAvailable = !!this.options.onPermissionRequest;
+      return isEligibleForRuntime(policy, this.options.nonInteractivePermissions, interactiveAvailable);
     } catch {
       return false;
     }
@@ -993,17 +1000,38 @@ export class RuntimeEngine implements BridgeEngine {
         ...(policy ? { permissionPolicy: policy } : {}),
       };
       const req = { sessionId: key, raw: { toolCall: { title: payload.title, kind: payload.kind, name: payload.title?.split(":")[0], input: payload.rawInput } }, inferredKind: payload.kind } as unknown as RuntimePermissionRequest;
-      const res = resolver.safeResolve(cfg, req);
-      if (res.outcome === "reject_once" && policy?.escalate && policy.escalate.length > 0) {
-        return { outcome: "allow_once" };
-      }
-      if (res.outcome === "reject_once" && policy?.defaultAction === "escalate") {
-        return { outcome: "allow_once" };
-      }
-      return res;
+      return resolver.safeResolve(cfg, req);
     } catch {
       return { outcome: "reject_once" };
     }
+  }
+
+  private async handleElicitationRequest(payload: { logicalSessionId: string; sessionKey: string; requestId: string; elicitationId: string; mode: string; message: unknown; policyGeneration: number; workerGeneration: string }): Promise<{ action: "submit" | "cancel"; data?: unknown }> {
+    const key = payload.logicalSessionId;
+    if (this.deleting.has(key) || this.shuttingDown) return { action: "cancel" };
+    if (payload.policyGeneration !== this.permissionGeneration) return { action: "cancel" };
+    const worker = this.manager?.get(key);
+    if (!worker || !worker.alive) return { action: "cancel" };
+    if (payload.workerGeneration !== worker.ref.generation) return { action: "cancel" };
+    if (this.options.onElicitationRequest) {
+      try {
+        const res = await Promise.race([
+          this.options.onElicitationRequest(payload),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("elicitation UI timeout")), 30_000).unref?.()),
+        ]);
+        if (this.deleting.has(key) || this.shuttingDown) return { action: "cancel" };
+        if (payload.policyGeneration !== this.permissionGeneration) return { action: "cancel" };
+        const curWorker = this.manager?.get(key);
+        if (!curWorker || curWorker.ref.generation !== payload.workerGeneration) return { action: "cancel" };
+        const action = (res as { action?: unknown })?.action;
+        if (action !== "submit" && action !== "cancel") return { action: "cancel" };
+        if (action === "submit") return { action: "submit", data: (res as { data?: unknown }).data };
+        return { action: "cancel" };
+      } catch {
+        return { action: "cancel" };
+      }
+    }
+    return { action: "cancel" };
   }
 
   private isMcpStale(last: { mcpCoordinatorSession?: string; mcpSourceHandle?: string } | undefined, requested: { mcpCoordinatorSession?: string; mcpSourceHandle?: string }): boolean {
