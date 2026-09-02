@@ -71,13 +71,33 @@ function messageKey(m: ChatMessage, index: number): string {
   return `${m.instanceId}:${m.sessionAlias}:${recordKey}`;
 }
 
+// Index in the FULL messages array after which the live turn renders. Falls back to
+// the end of the list when the store has not yet recorded a slot (legacy tests / seed).
+const liveSlotAfterIndex = computed(() => {
+  if (!props.liveTurn) return null;
+  return typeof props.liveTurn.slotAfterIndex === "number"
+    ? props.liveTurn.slotAfterIndex
+    : props.messages.length - 1;
+});
+// Live slot sits above the visible window (including "no messages yet at turn start").
+const liveAtStartOfVisible = computed(() => {
+  const slot = liveSlotAfterIndex.value;
+  return props.liveTurn !== null && visibleMessages.value.length > 0 && slot !== null && slot < hiddenCount.value;
+});
+// Visible-array index after which to insert the live row; null if it is not in this window.
+const liveAfterVisibleIndex = computed(() => {
+  const slot = liveSlotAfterIndex.value;
+  if (!props.liveTurn || slot === null || slot < hiddenCount.value) return null;
+  return slot - hiddenCount.value;
+});
+
 // Initial-history skeleton: fills the pane while the first page of a freshly selected
 // session loads. Only when the transcript is truly empty — a background reload (e.g.
 // turn-finished convergence) or an already-streaming turn never triggers it.
 const showSkeleton = computed(() =>
   (props.loadingHistory ?? false)
   && props.messages.length === 0
-  && !(props.liveTurn && props.liveTurn.parts.length > 0));
+  && !props.liveTurn);
 
 // Alternates agent cards / user bubbles with varied widths so the placeholder reads as
 // a conversation, not a form. Rows pulse with a staggered delay (see --sk-delay).
@@ -120,7 +140,7 @@ function revealStep(): void {
     const e = scroller.value;
     if (e) {
       if (anchor !== null) e.scrollTop = e.scrollHeight - anchor;
-      else if (atBottom.value) e.scrollTop = e.scrollHeight;
+      else if (atBottom.value) pinToFollowTarget(e, false);
     }
     if (hiddenCount.value > 0) revealRaf = requestAnimationFrame(revealStep);
   });
@@ -171,10 +191,43 @@ watch(
 // distance-from-bottom is content-invariant). Null when no prepend is pending.
 let pendingDistFromBottom: number | null = null;
 
+function liveBubble(el: HTMLElement): HTMLElement | null {
+  const node = el.querySelector("[data-test=msg-streaming]");
+  return node instanceof HTMLElement ? node : null;
+}
+
+/** Stick-to-bottom while a live turn exists follows the live bubble, not the newest
+ *  list row — a mid-turn received card below the stream must not steal the caret. */
+function isPinnedToFollowTarget(el: HTMLElement): boolean {
+  const live = props.liveTurn ? liveBubble(el) : null;
+  if (live) {
+    const liveBottom = live.offsetTop + live.offsetHeight;
+    return liveBottom - el.scrollTop - el.clientHeight <= THRESHOLD
+      && el.scrollTop + el.clientHeight >= live.offsetTop - THRESHOLD;
+  }
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= THRESHOLD;
+}
+
+function pinToFollowTarget(el: HTMLElement, smooth: boolean): void {
+  const live = props.liveTurn ? liveBubble(el) : null;
+  if (live) {
+    if (typeof live.scrollIntoView === "function") {
+      live.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "end" });
+    } else {
+      const top = live.offsetTop + live.offsetHeight - el.clientHeight;
+      if (typeof el.scrollTo === "function") el.scrollTo({ top: Math.max(0, top), behavior: smooth ? "smooth" : "auto" });
+      else el.scrollTop = Math.max(0, top);
+    }
+    return;
+  }
+  if (typeof el.scrollTo === "function") el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+  else el.scrollTop = el.scrollHeight;
+}
+
 function onScroll(): void {
   const el = scroller.value;
   if (!el) return;
-  atBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight <= THRESHOLD;
+  atBottom.value = isPinnedToFollowTarget(el);
   // Near the top while older rows are still mounting locally → nothing to fetch yet;
   // the reveal loop is already draining hiddenCount.
   if (hiddenCount.value > 0) return;
@@ -257,9 +310,9 @@ if (props.sessionKey && props.messages.length === 0) beginEnter();
 // fixed frame count; releasing earlier would let late settle frames move scrollTop
 // mid-PLAY.
 watch(
-  () => [props.messages.length, props.liveTurn?.parts.length ?? 0] as const,
-  ([msgs, liveParts]) => {
-    if (enterPhase.value !== "hold" || (msgs === 0 && liveParts === 0)) return;
+  () => [props.messages.length, props.liveTurn ? 1 : 0] as const,
+  ([msgs, live]) => {
+    if (enterPhase.value !== "hold" || (msgs === 0 && live === 0)) return;
     void nextTick(() => {
       if (enterPhase.value !== "hold") return;
       if (typeof requestAnimationFrame !== "function") { finishEnter(); return; }
@@ -293,7 +346,7 @@ watch(
       return;
     }
     if (!prev) return;
-    if (props.messages.length === 0 && !(props.liveTurn && props.liveTurn.parts.length)) finishEnter();
+    if (props.messages.length === 0 && !props.liveTurn) finishEnter();
     else armEnterCap();
   },
 );
@@ -306,7 +359,7 @@ const ENTER_STAGGER = 6;
 const ENTER_STEP_MS = 55;
 const enterRowClass = computed(() => (enterPhase.value === "play" ? "enter-row" : ""));
 const newestRowIndex = computed(() =>
-  visibleMessages.value.length - (props.liveTurn && props.liveTurn.parts.length ? 0 : 1));
+  visibleMessages.value.length - (props.liveTurn ? 0 : 1));
 function enterStyle(rowIndex: number): Record<string, string> | undefined {
   if (enterPhase.value !== "play") return undefined;
   const fromBottom = newestRowIndex.value - rowIndex;
@@ -318,8 +371,7 @@ let settleRaf = 0;
 function scrollToBottom(smooth = false): void {
   const el = scroller.value;
   if (!el) return;
-  if (typeof el.scrollTo === "function") el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
-  else el.scrollTop = el.scrollHeight; // jsdom / older engines
+  pinToFollowTarget(el, smooth);
   atBottom.value = true;
   // `content-visibility:auto` rows render lazily at the contain-intrinsic-size ESTIMATE,
   // so on a long history the first jump can stop short of the true bottom (the real row
@@ -333,7 +385,7 @@ function scrollToBottom(smooth = false): void {
     settleRaf = 0;
     const e = scroller.value;
     if (!e) return;
-    if (e.scrollHeight - e.scrollTop - e.clientHeight > 1) e.scrollTop = e.scrollHeight;
+    if (!isPinnedToFollowTarget(e)) pinToFollowTarget(e, false);
     if (++tries < 4) settleRaf = requestAnimationFrame(settle);
   };
   settleRaf = requestAnimationFrame(settle);
@@ -380,7 +432,7 @@ watch(
     const lt = props.liveTurn;
     const last = lt?.parts[lt.parts.length - 1];
     const tail = last ? (last.type === "tool" ? last.step.status : last.text.length) : 0;
-    return [props.messages.length, lt?.parts.length ?? 0, tail] as const;
+    return [props.messages.length, lt ? 1 : 0, lt?.parts.length ?? 0, tail, lt?.slotAfterIndex ?? -1] as const;
   },
   () => {
     if (atBottom.value) void nextTick(() => scrollToBottom(false));
@@ -426,6 +478,24 @@ watch(
              the key index is translated back to the FULL-array index so optimistic-row
              keys stay stable while older rows are still being revealed above. -->
         <template v-for="(m, i) in visibleMessages" :key="messageKey(m, hiddenCount + i)">
+          <!-- Live slot at the start of the visible window (empty prefix at turn-start,
+               or the anchor is still in unrevealed older rows). -->
+          <div
+            v-if="i === 0 && liveAtStartOfVisible && liveTurn"
+            class="flex gap-2.5"
+            :class="enterRowClass"
+            :style="enterStyle(0)"
+          >
+            <div class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center overflow-hidden">
+              <AgentIcon :driver="driver" :size="15" fill />
+            </div>
+            <div data-test="msg-streaming" class="min-w-0 flex-1">
+              <TurnParts v-if="liveTurn.parts.length" :parts="liveTurn.parts" :streaming="true" :sent-agent-messages="sentAgentMessageById" />
+              <div v-else data-test="live-working" class="flex items-center gap-2 py-1 text-fg-muted">
+                <Loader2 :size="14" class="animate-spin motion-reduce:animate-none" />
+              </div>
+            </div>
+          </div>
           <!-- AGENT MESSAGE card (sender / receiver collaboration event). A sent card
                already anchored inside an assistant turn's agent_send step renders
                there; its standalone row is suppressed so the card never shows twice. -->
@@ -496,16 +566,37 @@ watch(
               </div>
             </div>
           </div>
+          <!-- Live slot after this row when it is the turn-started anchor. Later
+               received cards in the list therefore render below the still-running turn. -->
+          <div
+            v-if="liveTurn && liveAfterVisibleIndex === i"
+            class="flex gap-2.5"
+            :class="enterRowClass"
+            :style="enterStyle(i + 1)"
+          >
+            <div class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center overflow-hidden">
+              <AgentIcon :driver="driver" :size="15" fill />
+            </div>
+            <div data-test="msg-streaming" class="min-w-0 flex-1">
+              <TurnParts v-if="liveTurn.parts.length" :parts="liveTurn.parts" :streaming="true" :sent-agent-messages="sentAgentMessageById" />
+              <div v-else data-test="live-working" class="flex items-center gap-2 py-1 text-fg-muted">
+                <Loader2 :size="14" class="animate-spin motion-reduce:animate-none" />
+              </div>
+            </div>
+          </div>
         </template>
 
-        <!-- live streaming assistant row -->
-        <div v-if="liveTurn && liveTurn.parts.length" class="flex gap-2.5" :class="enterRowClass"
-             :style="enterStyle(visibleMessages.length)">
+        <!-- live streaming assistant row when the transcript is empty (working spinner occupies the slot even with no parts yet) -->
+        <div v-if="liveTurn && visibleMessages.length === 0" class="flex gap-2.5" :class="enterRowClass"
+             :style="enterStyle(0)">
           <div class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center overflow-hidden">
             <AgentIcon :driver="driver" :size="15" fill />
           </div>
           <div data-test="msg-streaming" class="min-w-0 flex-1">
-            <TurnParts :parts="liveTurn.parts" :streaming="true" :sent-agent-messages="sentAgentMessageById" />
+            <TurnParts v-if="liveTurn.parts.length" :parts="liveTurn.parts" :streaming="true" :sent-agent-messages="sentAgentMessageById" />
+            <div v-else data-test="live-working" class="flex items-center gap-2 py-1 text-fg-muted">
+              <Loader2 :size="14" class="animate-spin motion-reduce:animate-none" />
+            </div>
           </div>
         </div>
       </div>

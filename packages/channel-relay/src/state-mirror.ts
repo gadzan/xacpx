@@ -44,9 +44,11 @@ interface MirrorTurn {
   /** Hub-issued pre-write correlation (PromptPayload.promptRequestId); carried into
    *  the sync so the hub can tie the turn back to its pre-written inbound row. */
   promptRequestId?: string;
-  /** Stamped locally when the connector first saw `turn-started`, so a sync
-   *  restores the ORIGINAL start time on the hub after a restart. */
+  /** Stamped locally when the connector first saw `turn-started` — HUD telemetry
+   *  only. Hub insert-order (`slotAfterId`) is the timeline identity. */
   startedAt: number;
+  /** Per-session receive-order seq at this turn-start. Hub maps it to `slotAfterId`. */
+  startedAfterSeq: number;
   text: string;
   reasoning: string;
   steps: Map<string, ToolStepDto>;
@@ -75,15 +77,26 @@ interface PendingFinishedTurn {
    *  persist the flag so the recovered reply is not mistaken for a complete one. */
   truncated?: boolean;
   recoveryId: string;
+  /** Connector-local epoch ms at the original turn-start (HUD telemetry only). */
+  startedAt?: number;
+  /** Connector-local receive-order seq at the original turn-start. */
+  startedAfterSeq?: number;
   /** Local timestamp when the turn finished. Drives expiry (expirePendingFinished):
    *  past RECOVERY_RETENTION_MS the entry is dropped — the hub prunes its receipt on
    *  the same horizon, so an expired entry can never be re-delivered into a duplicate. */
   createdAt: number;
 }
 
+export interface MirrorEventPatch {
+  recoveryId?: string;
+  startedAfterSeq?: number;
+  startedAt?: number;
+}
+
 export interface StateMirror {
-  /** Consume one envelope the forwarder is about to send; non-instanceEvent types are ignored. */
-  handleEnvelope(type: string, payload: unknown): string | undefined;
+  /** Consume one envelope the forwarder is about to send; non-instanceEvent types are ignored.
+   *  Returns fields to merge into the forwarded control event (recovery id + slot seq). */
+  handleEnvelope(type: string, payload: unknown): MirrorEventPatch | undefined;
   /** Distinct chatKeys seen on mirrored events (used to resolve the live session list). */
   chatKeys(): string[];
   /** All session aliases mirrored for one chatKey (fallback keep-set when the live
@@ -135,6 +148,15 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
   const usage = new Map<string, { chatKey: string; used: number; size: number; cost?: UsageCostDto; breakdown?: UsageBreakdownDto }>();
   const commands = new Map<string, { chatKey: string; commands: AgentCommandDto[] }>();
   const pendingFinished: PendingFinishedTurn[] = [];
+  // Per-session receive-order counter. Incremented on turn-started (and each
+  // inbound agent-message) so Hub restart can map `startedAfterSeq` to insert
+  // order instead of comparing wall clocks.
+  const sessionSeq = new Map<string, number>();
+  const bumpSeq = (alias: string): number => {
+    const n = (sessionSeq.get(alias) ?? 0) + 1;
+    sessionSeq.set(alias, n);
+    return n;
+  };
   // Per-alias mutation generation. `buildStateSync` records each alias's generation
   // with the snapshot; `pruneStateMirror` only deletes an alias when its generation is
   // UNCHANGED since the build — a same-alias turn re-created or finished after the
@@ -183,25 +205,29 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
     }
   };
 
-  const handle = (event: ControlEventDto): string | undefined => {
+  const handle = (event: ControlEventDto): MirrorEventPatch | undefined => {
     switch (event.type) {
-      case "turn-started":
+      case "turn-started": {
+        const startedAfterSeq = bumpSeq(event.sessionAlias);
+        const id = recoveryId();
         turns.set(event.sessionAlias, {
           chatKey: event.chatKey,
           startedAt: now(),
+          startedAfterSeq,
           text: "",
           reasoning: "",
           steps: new Map(),
           parts: [],
           truncated: false,
-          recoveryId: recoveryId(),
+          recoveryId: id,
           ...(event.prompt !== undefined ? { prompt: event.prompt } : {}),
           ...(event.scheduled ? { scheduled: event.scheduled } : {}),
           ...(event.queueItemId ? { queueItemId: event.queueItemId } : {}),
           ...(event.promptRequestId !== undefined ? { promptRequestId: event.promptRequestId } : {}),
         });
         bump(event.sessionAlias);
-        return;
+        return { recoveryId: id, startedAfterSeq };
+      }
       case "turn-output": {
         const a = turns.get(event.sessionAlias);
         if (!a || a.truncated) return;
@@ -276,6 +302,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(a?.truncated ? { truncated: true } : {}),
           recoveryId: id,
           createdAt: now(),
+          ...(a ? { startedAt: a.startedAt, startedAfterSeq: a.startedAfterSeq } : {}),
         });
         expirePendingFinished();
         bump(event.sessionAlias);
@@ -287,8 +314,14 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
             { limit: PENDING_FINISHED_MAX },
           );
         }
-        return id;
+        return {
+          recoveryId: id,
+          ...(a ? { startedAt: a.startedAt, startedAfterSeq: a.startedAfterSeq } : {}),
+        };
       }
+      case "agent-message":
+        bumpSeq(event.sessionAlias);
+        return;
       default:
         return;
     }
@@ -332,6 +365,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
         payload.turns.push({
           sessionAlias: alias,
           startedAt: a.startedAt,
+          startedAfterSeq: a.startedAfterSeq,
           text: a.text,
           reasoning: a.reasoning,
           steps: [...a.steps.values()],
@@ -373,6 +407,8 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(f.promptRequestId !== undefined ? { promptRequestId: f.promptRequestId } : {}),
           ...(f.truncated ? { truncated: true } : {}),
           recoveryId: f.recoveryId,
+          ...(f.startedAt !== undefined ? { startedAt: f.startedAt } : {}),
+          ...(f.startedAfterSeq !== undefined ? { startedAfterSeq: f.startedAfterSeq } : {}),
         });
       }
       return { snapshot: payload, aliases };

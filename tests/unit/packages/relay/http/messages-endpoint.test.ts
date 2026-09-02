@@ -111,12 +111,14 @@ test("delete then same-alias create returns an empty Web history", async () => {
   (runtime.gateway as unknown as { sendRequest: () => Promise<unknown> }).sendRequest = async () => ({ ok: true });
   runtime.messages.append("i1", "backend", "in", "old question");
   runtime.messages.append("i1", "backend", "out", "old answer");
+  runtime.slotAnchors.put({ instanceId: "i1", sessionAlias: "backend", recoveryId: "r-old", slotAfterId: 1 });
 
   const remove = await runtime.app.request("/api/instances/i1/rpc", {
     method: "POST", headers: { cookie, "content-type": "application/json" },
     body: JSON.stringify({ type: MSG.sessionsRemove, payload: { alias: "backend" } }),
   });
   expect(remove.status).toBe(200);
+  expect(runtime.slotAnchors.get("i1", "r-old")).toBeUndefined();
   const create = await runtime.app.request("/api/instances/i1/rpc", {
     method: "POST", headers: { cookie, "content-type": "application/json" },
     body: JSON.stringify({ type: MSG.sessionsCreate, payload: { alias: "backend", agent: "claude", workspace: "home" } }),
@@ -252,6 +254,25 @@ test("GET messages without view=compact still returns full structured rows", asy
   const page = (await res.json()) as { messages: Array<{ structured?: { compact?: boolean; toolSteps?: Array<{ detail?: { preview?: string } }> } }> };
   expect(page.messages[0]?.structured?.compact).toBeUndefined();
   expect(page.messages[0]?.structured?.toolSteps?.[0]?.detail?.preview).toBe("full preview");
+  runtime.close();
+});
+
+test("GET messages?view=compact keeps startedAt and slotAfterId on the assistant out row", async () => {
+  const { runtime, cookie } = await loggedIn();
+  runtime.messages.append("i1", "backend", "out", "looked", undefined, undefined, undefined, undefined, 1_700_000_000_000, 4, 2);
+  const listed = await runtime.app.request("/api/instances/i1/sessions/backend/messages?view=compact", { headers: { cookie } });
+  const page = (await listed.json()) as { messages: Array<{ startedAt?: number; slotAfterId?: number; startedAfterSeq?: number; text: string }> };
+  expect(page.messages).toHaveLength(1);
+  expect(page.messages[0]?.text).toBe("looked");
+  expect(page.messages[0]?.startedAt).toBe(1_700_000_000_000);
+  expect(page.messages[0]?.slotAfterId).toBe(4);
+  expect(page.messages[0]?.startedAfterSeq).toBe(2);
+
+  const full = await runtime.app.request("/api/instances/i1/sessions/backend/messages", { headers: { cookie } });
+  const body = (await full.json()) as { messages: Array<{ startedAt?: number; slotAfterId?: number; startedAfterSeq?: number }> };
+  expect(body.messages[0]?.startedAt).toBe(1_700_000_000_000);
+  expect(body.messages[0]?.slotAfterId).toBe(4);
+  expect(body.messages[0]?.startedAfterSeq).toBe(2);
   runtime.close();
 });
 

@@ -338,6 +338,10 @@ test("deleteAccountCascade removes all related rows", async () => {
     "INSERT INTO messages (instance_id, session_alias, direction, text, created_at) VALUES (?, ?, ?, ?, ?)",
     ["inst-1", "alias1", "in", "hello", "2026-06-13T10:00:00.000Z"]
   );
+  db.run(
+    "INSERT INTO turn_slot_anchors (instance_id, session_alias, recovery_id, slot_after_id) VALUES (?, ?, ?, ?)",
+    ["inst-1", "alias1", "r-1", 1]
+  );
 
   store.deleteAccountCascade(account.id);
 
@@ -347,6 +351,7 @@ test("deleteAccountCascade removes all related rows", async () => {
   expect(store.getSessionAccount(sessionToken)).toBeNull();
   expect(db.get("SELECT 1 FROM instances WHERE account_id = ?", [account.id])).toBeUndefined();
   expect(db.get("SELECT 1 FROM messages WHERE instance_id = ?", ["inst-1"])).toBeUndefined();
+  expect(db.get("SELECT 1 FROM turn_slot_anchors WHERE instance_id = ?", ["inst-1"])).toBeUndefined();
   expect(db.get("SELECT 1 FROM pairing_tokens WHERE account_id = ?", [account.id])).toBeUndefined();
   expect(db.get("SELECT 1 FROM login_tokens WHERE account_id = ?", [account.id])).toBeUndefined();
   expect(db.get("SELECT 1 FROM web_sessions WHERE account_id = ?", [account.id])).toBeUndefined();

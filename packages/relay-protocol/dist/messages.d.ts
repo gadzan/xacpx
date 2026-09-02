@@ -144,8 +144,10 @@ export interface InstanceStateSyncPayload {
          *  stamps on the eventual `turn-finished`), so the hub can tell a running turn
          *  apart from a finished-offline entry of the same session. */
         recoveryId?: string;
-        /** ms epoch captured by the connector at the ORIGINAL turn start. */
+        /** ms epoch captured by the connector at the ORIGINAL turn start (HUD telemetry). */
         startedAt: number;
+        /** Connector-local per-session seq at the original turn-start (receive order). */
+        startedAfterSeq?: number;
         text: string;
         reasoning: string;
         steps: ToolStepDto[];
@@ -190,6 +192,10 @@ export interface InstanceStateSyncPayload {
         promptRequestId?: string;
         recoveryId?: string;
         truncated?: boolean;
+        /** Connector-local epoch ms at the original turn-start (HUD telemetry only). */
+        startedAt?: number;
+        /** Connector-local per-session seq at the original turn-start (receive order). */
+        startedAfterSeq?: number;
     }>;
 }
 export interface InstanceNoticePayload {

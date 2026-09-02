@@ -47,6 +47,18 @@ describe("session-tail-cache", () => {
     expect((await read("alice", "i1", "s1"))![0]!.structured?.toolSteps?.[0]).toMatchObject({ toolCallId: "t" });
   });
 
+  it("round-trips startedAt so a cache seed can keep HUD elapsed after reload", async () => {
+    await write("alice", "i1", "s1", [{ ...row(1), startedAt: 1_700_000_000_000 }]);
+    expect((await read("alice", "i1", "s1"))![0]!.startedAt).toBe(1_700_000_000_000);
+  });
+
+  it("round-trips slotAfterId so a cache seed can keep the live-slot anchor", async () => {
+    await write("alice", "i1", "s1", [{ ...row(1), slotAfterId: 7, startedAfterSeq: 3 }]);
+    const cached = (await read("alice", "i1", "s1"))![0]!;
+    expect(cached.slotAfterId).toBe(7);
+    expect(cached.startedAfterSeq).toBe(3);
+  });
+
   it("misses across accounts, instances and aliases (key isolation)", async () => {
     await write("alice", "i1", "s1", [row(1)]);
     expect(await read("bob", "i1", "s1")).toBeNull();

@@ -27,6 +27,24 @@ function makeMirror(ready: () => boolean, now?: () => number) {
   return { mirror, warns };
 }
 
+test("finishedOffline and running turns carry startedAfterSeq + startedAt (not clocks as order identity)", () => {
+  const { mirror } = makeMirror(() => true, () => 1_700_000_000_000);
+  fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend", prompt: "hi" });
+  const running = mirror.buildStateSync(LIVE).snapshot.turns[0]!;
+  expect(running).toMatchObject({ startedAt: 1_700_000_000_000, startedAfterSeq: 1, recoveryId: "r1" });
+  fire(mirror, { type: "turn-output", chatKey: "relay:acc", sessionAlias: "backend", chunk: "done" });
+  fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: true });
+  expect(mirror.buildStateSync(LIVE).snapshot.finishedOffline[0]).toMatchObject({
+    sessionAlias: "backend",
+    ok: true,
+    text: "done",
+    recoveryId: "r1",
+    startedAt: 1_700_000_000_000,
+    startedAfterSeq: 1,
+    prompt: "hi",
+  });
+});
+
 test("accumulates a turn across event kinds and builds a valid sync payload", () => {
   const { mirror } = makeMirror(() => true, () => 1_700_000_000_000);
   fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend", prompt: "hi" });
@@ -44,7 +62,7 @@ test("accumulates a turn across event kinds and builds a valid sync payload", ()
       { type: "text", text: "hello" },
       { type: "reasoning", text: "thinking" },
       { type: "tool", step: step("t1") },
-    ], prompt: "hi", recoveryId: "r1",
+    ], prompt: "hi", recoveryId: "r1", startedAfterSeq: 1,
   }]);
   expect(payload.usage).toEqual([{ sessionAlias: "backend", used: 10, size: 100 }]);
   expect(payload.commands).toEqual([{ sessionAlias: "backend", commands: [{ name: "compact" }] }]);
@@ -101,7 +119,7 @@ test("turn-finished stays recoverable until its send is confirmed", () => {
   fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: true });
   const { snapshot: payload } = mirror.buildStateSync(LIVE);
   expect(payload.turns).toEqual([]);
-  expect(payload.finishedOffline).toEqual([{ sessionAlias: "backend", ok: true, text: "done", recoveryId: "r1" }]);
+  expect(payload.finishedOffline).toMatchObject([{ sessionAlias: "backend", ok: true, text: "done", recoveryId: "r1", startedAfterSeq: 1, startedAt: expect.any(Number) }]);
   mirror.confirmFinished(["r1"]);
   expect(mirror.buildStateSync(LIVE).snapshot.finishedOffline).toEqual([]);
 });
@@ -112,7 +130,7 @@ test("turn-finished while offline queues the turn with its accumulated text", ()
   fire(mirror, { type: "turn-output", chatKey: "relay:acc", sessionAlias: "backend", chunk: "reply text" });
   fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: true });
   const { snapshot: payload } = mirror.buildStateSync(LIVE);
-  expect(payload.finishedOffline).toEqual([{ sessionAlias: "backend", ok: true, text: "reply text", recoveryId: "r1" }]);
+  expect(payload.finishedOffline).toMatchObject([{ sessionAlias: "backend", ok: true, text: "reply text", recoveryId: "r1", startedAfterSeq: 1, startedAt: expect.any(Number) }]);
   mirror.confirmFinished(["r1"]);
   expect(mirror.buildStateSync(LIVE).snapshot.finishedOffline).toEqual([]);
 });
@@ -162,15 +180,15 @@ test("failed turn with an empty accumulator ships its errorMessage, not an empty
   // and leave an empty reply where the failure story belongs.
   fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend", prompt: "deploy" });
   fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: "backend", ok: false, errorMessage: "boom" });
-  expect(mirror.buildStateSync(LIVE).snapshot.finishedOffline).toEqual([
-    { sessionAlias: "backend", ok: false, errorMessage: "boom", prompt: "deploy", recoveryId: "r1" },
+  expect(mirror.buildStateSync(LIVE).snapshot.finishedOffline).toMatchObject([
+    { sessionAlias: "backend", ok: false, errorMessage: "boom", prompt: "deploy", recoveryId: "r1", startedAfterSeq: 1, startedAt: expect.any(Number) },
   ]);
   // A successful turn with no output still ships its (empty) reply — presence semantics.
   fire(mirror, { type: "turn-started", chatKey: "relay:acc", sessionAlias: "frontend" });
   fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: "frontend", ok: true });
-  expect(mirror.buildStateSync(LIVE).snapshot.finishedOffline).toEqual([
-    { sessionAlias: "backend", ok: false, errorMessage: "boom", prompt: "deploy", recoveryId: "r1" },
-    { sessionAlias: "frontend", ok: true, text: "", recoveryId: "r2" },
+  expect(mirror.buildStateSync(LIVE).snapshot.finishedOffline).toMatchObject([
+    { sessionAlias: "backend", ok: false, errorMessage: "boom", prompt: "deploy", recoveryId: "r1", startedAfterSeq: 1 },
+    { sessionAlias: "frontend", ok: true, text: "", recoveryId: "r2", startedAfterSeq: 1 },
   ]);
 });
 

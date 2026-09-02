@@ -140,6 +140,7 @@ export class InstanceStore {
 
   remove(instanceId: string, accountId: string): boolean {
     if (!this.getOwned(instanceId, accountId)) return false;
+    this.db.run("DELETE FROM turn_slot_anchors WHERE instance_id = ?", [instanceId]);
     this.db.run("DELETE FROM instances WHERE id = ?", [instanceId]);
     return true;
   }
