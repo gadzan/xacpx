@@ -1,9 +1,34 @@
 # Changelog
-## [Unreleased]
+## [0.24.1-beta.0] - 2026-09-02
 
-### Changed
+### Fixed
 
-- Queue-overflow tips are toast-only on relay-web (3s auto-dismiss) and silent on every other channel. Confirmed vs unconfirmed copy is unchanged; detection/cleanup/logging are unchanged. The tip is not persisted in hub message history.
+- Queue overflow is now a relay-web toast (3s auto-dismiss) and silent on every other channel — core still detects, cleans up and logs (`confirmed` vs `unconfirmed`), then emits internal `queue-overflow-tip` control event instead of chat/agent text; `channel-relay` maps it to `instance.notice` kind `queue-overflow`, WeChat/Feishu/Yuanbao/Discord/hub history stay silent; i18n softens tip copy to single-line (`recovery.ts`).
+
+## [relay-protocol 0.5.1-beta.0] - 2026-09-02
+
+### Added
+
+- `dtos`/`messages`/`web-dtos`: add `queue-overflow-tip` notice DTO and `slotAfterId`/`startedAt` fields for durable Hub `messages.id` anchored turn slotting (replaces `createdAt`/`startedAt` wall-clock reorder); `validate-primitives` updated; `dist` rebuilt.
+
+## [relay 0.14.2-beta.0] - 2026-09-02
+
+### Fixed
+
+- relay-web: slot live turns by Hub insert order, not wall clocks — anchor live turn after triggering transcript row on `turn-started` and splice finished row into that slot; persist `startedAt` on assistant out rows through `view=compact` so history reload restacks received cards; received cards stay standalone (Gate B). Durable `slotAfterId` snapshotted at `turn-started`; connector recovery updated (`chat.ts`/`MessageList.vue`/`history-turn-slots.ts`/`session-tail-cache.ts`/`turn-slot-anchors.ts`/`db.ts`/`http/*`).
+- relay-web: queue-overflow toast — `NoticeToast.vue`/`stores/notices.ts` show muted 3s tip; `queue-overflow-toast.spec.ts` added.
+
+## [channel-relay 0.7.1-beta.0] - 2026-09-02
+
+### Fixed
+
+- `channel-relay`: map `queue-overflow-tip` control event to `instance.notice` (`control-bridge.ts`); slot live turns by `slotAfterId` (`channel.ts`/`state-mirror.ts`/`validate-primitives`), preserve `startedAt` through compact history.
+
+## [channel-feishu 0.8.1-beta.0] - 2026-09-02
+
+### Fixed
+
+- `channel-feishu`: guard empty `response.text` — only `deliverText` when `(response.text?.trim() ?? "").length > 0`, avoids spurious empty message after degraded-card path.
 
 ## [0.24.0] - 2026-09-01
 
