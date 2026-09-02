@@ -233,6 +233,10 @@ export class AccountStore {
         "DELETE FROM messages WHERE instance_id IN (SELECT id FROM instances WHERE account_id = ?)",
         [accountId],
       );
+      this.db.run(
+        "DELETE FROM turn_slot_anchors WHERE instance_id IN (SELECT id FROM instances WHERE account_id = ?)",
+        [accountId],
+      );
       this.db.run("DELETE FROM instances WHERE account_id = ?", [accountId]);
       this.db.run("DELETE FROM pairing_tokens WHERE account_id = ?", [accountId]);
       this.db.run("DELETE FROM web_sessions WHERE account_id = ?", [accountId]);

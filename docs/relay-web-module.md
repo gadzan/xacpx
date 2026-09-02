@@ -551,6 +551,17 @@ export interface LiveTurn {
   列表、表格或代码围栏，而是在该块结束后显示；若事件本来位于两个块之间，则保持文字—活动—文字的穿插结构。
   实时 streaming 与历史回放使用同一派生规则。
 - 旧历史没有 `parts` 时回退到聚合 `ToolCallPanel` + markdown/reasoning，其中工具面板与 reasoning 同样默认折叠。
+- **Live-turn 槽位（跨会话 received card）**：`turn-started` 把 live turn 锚在当时最后一条 transcript
+  之后（触发用 received card / prompt），而不是列表底部。回合中途再来的 received card 追加到
+  `messages[]`，因此出现在 live 气泡**下面**：`card1 → live turn → card2`。`parts.length === 0`
+  时仍占据该槽（working spinner），避免第二张卡叠在尚未可见的 turn 上。Sent card 仍按
+  `agentMessageId` 接入 `TurnParts`（Gate A）；received card 永不抑制、永不嵌进 turn（Gate B）。
+  `turn-finished` 把 `out` 行 **splice 进该槽**（带 `startedAt` 作 HUD 遥测，以及 Hub
+  `slotAfterId` 作插入序锚点），而不是 `push` 到末尾。`loadHistory` 对带 `slotAfterId`
+  的 `out` 把 **Hub id 大于该锚点** 的 transcript 行（received card **以及** 忙时排队的
+  user prompt）挪到该 `out` 之后；无 `slotAfterId` 的旧行不重排。**不以** `createdAt` /
+  `startedAt` 墙钟比较决定顺序（发送端 daemon、Hub、浏览器时钟不可比）。Stick-to-bottom /
+  jump-latest 在 live turn 存在时跟随 live 气泡，而不是最新一行。
 
 ## 桌面系统通知（Web Push 与 本地 Notification Fallback）
 

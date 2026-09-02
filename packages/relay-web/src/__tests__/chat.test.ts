@@ -1192,3 +1192,199 @@ test("rollback after the row was replaced by a re-fetch is a no-op on the new ro
   expect(freshRow.warm).toBe(true);
   expect(freshRow.archived).toBe(false);
 });
+
+function receivedPeer(messageId: string, createdAt: number) {
+  return {
+    kind: "agent_message" as const,
+    direction: "received" as const,
+    messageId,
+    conversationId: `conv_${messageId}`,
+    peer: { handle: "agent:n:e", displayName: "Peer", agent: "claude" },
+    content: messageId,
+    createdAt,
+    status: "delivered" as const,
+  };
+}
+
+test("a mid-turn second received card stays after the live slot (does not stack above the turn)", () => {
+  const store = useChatStore();
+  store.select("i1", "backend");
+  store.applyEvent({
+    kind: "control-event",
+    instanceId: "i1",
+    event: { type: "agent-message", chatKey: "c", sessionAlias: "backend", message: receivedPeer("card1", 1_000) },
+  } as never);
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "backend" } } as never);
+  expect(store.liveTurn?.slotAfterIndex).toBe(0);
+
+  store.applyEvent({
+    kind: "control-event",
+    instanceId: "i1",
+    event: { type: "agent-message", chatKey: "c", sessionAlias: "backend", message: receivedPeer("card2", 3_000) },
+  } as never);
+  expect(store.messages.map((m) => m.text)).toEqual(["card1", "card2"]);
+  expect(store.liveTurn?.slotAfterIndex).toBe(0);
+  expect(store.busy).toBe(true);
+});
+
+test("flushTurn inserts the out row into the live slot, not at the end", () => {
+  vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+  const store = useChatStore();
+  store.select("i1", "backend");
+  store.applyEvent({
+    kind: "control-event",
+    instanceId: "i1",
+    event: { type: "agent-message", chatKey: "c", sessionAlias: "backend", message: receivedPeer("card1", 1_000) },
+  } as never);
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "backend" } } as never);
+  const startedAt = store.liveTurn!.startedAt;
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-output", chatKey: "c", sessionAlias: "backend", chunk: "reply" } } as never);
+  store.applyEvent({
+    kind: "control-event",
+    instanceId: "i1",
+    event: { type: "agent-message", chatKey: "c", sessionAlias: "backend", message: receivedPeer("card2", startedAt + 10) },
+  } as never);
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "backend", ok: true } } as never);
+
+  expect(store.messages.map((m) => [m.direction, m.text])).toEqual([
+    ["in", "card1"],
+    ["out", "reply"],
+    ["in", "card2"],
+  ]);
+  expect(store.messages[1]).toMatchObject({ direction: "out", text: "reply", startedAt });
+});
+
+test("busy send then turn-finished then history (before queued drain) keeps queued prompt after out", async () => {
+  let resolveHistory!: (value: Response) => void;
+  const history = new Promise<Response>((resolve) => { resolveHistory = resolve; });
+  vi.stubGlobal("fetch", vi.fn(() => history));
+
+  const store = useChatStore();
+  store.select("i1", "backend");
+  store.applyEvent({
+    kind: "control-event",
+    instanceId: "i1",
+    event: { type: "turn-started", chatKey: "c", sessionAlias: "backend", prompt: "prompt1", slotAfterId: 1 },
+  } as never);
+  // Optimistic busy-send: queued prompt appends after the live slot.
+  store.messages.push({
+    instanceId: "i1",
+    sessionAlias: "backend",
+    direction: "in",
+    text: "queued prompt2",
+    createdAt: new Date().toISOString(),
+  });
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-output", chatKey: "c", sessionAlias: "backend", chunk: "reply" } } as never);
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "backend", ok: true } } as never);
+  expect(store.messages.map((m) => m.text)).toEqual(["prompt1", "reply", "queued prompt2"]);
+
+  resolveHistory(new Response(JSON.stringify({
+    messages: [
+      { id: 1, instanceId: "i1", sessionAlias: "backend", direction: "in", text: "prompt1", createdAt: new Date(1_000).toISOString() },
+      { id: 2, instanceId: "i1", sessionAlias: "backend", direction: "in", text: "queued prompt2", createdAt: new Date(3_000).toISOString() },
+      { id: 3, instanceId: "i1", sessionAlias: "backend", direction: "out", text: "reply", createdAt: new Date(5_000).toISOString(), startedAt: 2_000, slotAfterId: 1 },
+    ],
+    hasMore: false,
+  }), { status: 200 }));
+  await vi.waitFor(() => {
+    expect(store.messages.map((m) => m.text)).toEqual(["prompt1", "reply", "queued prompt2"]);
+  });
+});
+
+test("loadHistory reorders mid-turn rows after outs that carry slotAfterId (not startedAt)", async () => {
+  const card1 = {
+    id: 1, instanceId: "i1", sessionAlias: "backend", direction: "in", text: "card1",
+    createdAt: new Date(1_000).toISOString(),
+    structured: { agentMessage: receivedPeer("card1", 1_000) },
+  };
+  const card2 = {
+    id: 2, instanceId: "i1", sessionAlias: "backend", direction: "in", text: "card2",
+    createdAt: new Date(3_000).toISOString(),
+    structured: { agentMessage: receivedPeer("card2", 3_000) },
+  };
+  const out = {
+    id: 3, instanceId: "i1", sessionAlias: "backend", direction: "out", text: "reply",
+    createdAt: new Date(5_000).toISOString(), startedAt: 2_000, slotAfterId: 1,
+  };
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+    messages: [card1, card2, out], hasMore: false,
+  }), { status: 200 })));
+
+  const store = useChatStore();
+  store.select("i1", "backend");
+  await store.loadHistory();
+  expect(store.messages.map((m) => m.text)).toEqual(["card1", "reply", "card2"]);
+});
+
+test("loadHistory still places a mid-turn card after the out when peer createdAt is 30s before startedAt", async () => {
+  const card1 = {
+    id: 1, instanceId: "i1", sessionAlias: "backend", direction: "in", text: "card1",
+    createdAt: new Date(1_000).toISOString(),
+    structured: { agentMessage: receivedPeer("card1", 1_000) },
+  };
+  const card2 = {
+    id: 2, instanceId: "i1", sessionAlias: "backend", direction: "in", text: "card2",
+    createdAt: new Date(2_000 - 30_000).toISOString(),
+    structured: { agentMessage: receivedPeer("card2", 2_000 - 30_000) },
+  };
+  const out = {
+    id: 3, instanceId: "i1", sessionAlias: "backend", direction: "out", text: "reply",
+    createdAt: new Date(5_000).toISOString(), startedAt: 2_000, slotAfterId: 1,
+  };
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+    messages: [card1, card2, out], hasMore: false,
+  }), { status: 200 })));
+
+  const store = useChatStore();
+  store.select("i1", "backend");
+  await store.loadHistory();
+  expect(store.messages.map((m) => m.text)).toEqual(["card1", "reply", "card2"]);
+});
+
+test("loadHistory does not reorder legacy outs without slotAfterId (startedAt alone is not enough)", async () => {
+  const card1 = {
+    id: 1, instanceId: "i1", sessionAlias: "backend", direction: "in", text: "card1",
+    createdAt: new Date(1_000).toISOString(),
+    structured: { agentMessage: receivedPeer("card1", 1_000) },
+  };
+  const card2 = {
+    id: 2, instanceId: "i1", sessionAlias: "backend", direction: "in", text: "card2",
+    createdAt: new Date(3_000).toISOString(),
+    structured: { agentMessage: receivedPeer("card2", 3_000) },
+  };
+  const out = {
+    id: 3, instanceId: "i1", sessionAlias: "backend", direction: "out", text: "old",
+    createdAt: new Date(5_000).toISOString(), startedAt: 2_000,
+  };
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+    messages: [card1, card2, out], hasMore: false,
+  }), { status: 200 })));
+
+  const store = useChatStore();
+  store.select("i1", "backend");
+  await store.loadHistory();
+  expect(store.messages.map((m) => m.text)).toEqual(["card1", "card2", "old"]);
+});
+
+test("loadHistory after busy send restores queued prompt after the out (history before drain)", async () => {
+  const prompt1 = {
+    id: 1, instanceId: "i1", sessionAlias: "backend", direction: "in", text: "prompt1",
+    createdAt: new Date(1_000).toISOString(),
+  };
+  const queued = {
+    id: 2, instanceId: "i1", sessionAlias: "backend", direction: "in", text: "queued prompt2",
+    createdAt: new Date(3_000).toISOString(),
+  };
+  const out = {
+    id: 3, instanceId: "i1", sessionAlias: "backend", direction: "out", text: "reply",
+    createdAt: new Date(5_000).toISOString(), startedAt: 2_000, slotAfterId: 1,
+  };
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+    messages: [prompt1, queued, out], hasMore: false,
+  }), { status: 200 })));
+
+  const store = useChatStore();
+  store.select("i1", "backend");
+  await store.loadHistory();
+  expect(store.messages.map((m) => m.text)).toEqual(["prompt1", "reply", "queued prompt2"]);
+});

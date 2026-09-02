@@ -16,6 +16,7 @@ import { InstanceStore } from "./stores/instances.js";
 import { MessageStore } from "./stores/messages.js";
 import { PendingCompletionRouteStore } from "./stores/pending-completion-routes.js";
 import { RecoveryReceiptStore } from "./stores/recovery-receipts.js";
+import { TurnSlotAnchorStore, canonicalRecoveryId } from "./stores/turn-slot-anchors.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS, InstanceGateway } from "./gateway/instance-gateway.js";
 import { WebGateway } from "./gateway/web-gateway.js";
 import { PushNotifier, vapidFromEnv, validateVapidConfig, type VapidConfig } from "./push.js";
@@ -102,6 +103,7 @@ export interface RelayRuntime {
   instances: InstanceStore;
   messages: MessageStore;
   recoveryReceipts: RecoveryReceiptStore;
+  slotAnchors: TurnSlotAnchorStore;
   pushSubscriptions: PushSubscriptionStore;
   pushNotifier: PushNotifier;
   gateway: InstanceGateway;
@@ -171,8 +173,17 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     reasoning: string;
     parts: TurnPartDto[];
     startedAt: number;
+    /** Hub `messages.id` at turn-start (0 = empty transcript). History reorder key. */
+    slotAfterId: number;
+    /** Connector-local receive-order seq at turn-start; maps to `slotAfterId` after restart. */
+    startedAfterSeq?: number;
     truncated?: boolean;
     notification?: TurnNotificationContext;
+  }
+  interface OutSlot {
+    slotAfterId: number;
+    startedAt?: number;
+    startedAfterSeq?: number;
   }
   const turnBuffers = new Map<string, TurnAccumulator>();
   interface WebPromptGrant {
@@ -278,6 +289,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   // store's doc comment). Written in the SAME transaction as the message rows it
   // vouches for, so a receipt can never outlive its rows or vice versa.
   const recoveryReceipts = new RecoveryReceiptStore(db);
+  const slotAnchors = new TurnSlotAnchorStore(db);
   // Latest context-usage meter per (instance, session). Unlike turnBuffers this is
   // session-scoped — it survives turn-finished (replace-latest) so a (re)connecting web
   // client can restore the usage bar after a refresh (see GET /api/active-turns). Cleared
@@ -322,6 +334,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         parts: a.parts,
         status: a.text ? "streaming" : "working",
         startedAt: a.startedAt,
+        ...(typeof a.slotAfterId === "number" ? { slotAfterId: a.slotAfterId } : {}),
       });
     }
     return out;
@@ -424,6 +437,74 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
           messages.append(instanceId, sessionAlias, "in", opts.prompt, opts.scheduled ? { scheduled: opts.scheduled } : undefined);
         }
       };
+      const rememberAnchor = (sessionAlias: string, slot: OutSlot, recoveryId?: string): void => {
+        slotAnchors.put({
+          instanceId,
+          sessionAlias,
+          recoveryId: canonicalRecoveryId(sessionAlias, recoveryId),
+          slotAfterId: slot.slotAfterId,
+          ...(slot.startedAt !== undefined ? { startedAt: slot.startedAt } : {}),
+          ...(slot.startedAfterSeq !== undefined ? { startedAfterSeq: slot.startedAfterSeq } : {}),
+        });
+      };
+      const snapshotSlotAfterReconcile = (sessionAlias: string, extras: { startedAt?: number; startedAfterSeq?: number } = {}): OutSlot => ({
+        slotAfterId: messages.lastId(instanceId, sessionAlias) ?? 0,
+        ...(extras.startedAt !== undefined ? { startedAt: extras.startedAt } : {}),
+        ...(extras.startedAfterSeq !== undefined ? { startedAfterSeq: extras.startedAfterSeq } : {}),
+      });
+      const resolveFinishSlot = (
+        sessionAlias: string,
+        opts: { recoveryId?: string; startedAfterSeq?: number; startedAt?: number },
+      ): OutSlot => {
+        const stored = slotAnchors.take(instanceId, sessionAlias, opts.recoveryId);
+        if (stored) {
+          return {
+            slotAfterId: stored.slotAfterId,
+            startedAt: stored.startedAt ?? opts.startedAt,
+            startedAfterSeq: stored.startedAfterSeq ?? opts.startedAfterSeq,
+          };
+        }
+        return snapshotSlotAfterReconcile(sessionAlias, { startedAt: opts.startedAt, startedAfterSeq: opts.startedAfterSeq });
+      };
+      const restoreRunningSlot = (
+        sessionAlias: string,
+        turn: { recoveryId?: string; startedAfterSeq?: number; startedAt: number },
+      ): OutSlot => {
+        // Exact recovery identity only. A non-empty recoveryId miss means Hub
+        // never saw this start — snapshot lastId after prompt reconcile. Do
+        // not bind a leftover session anchor from an expired earlier turn.
+        const stored = slotAnchors.get(instanceId, canonicalRecoveryId(sessionAlias, turn.recoveryId));
+        if (stored) {
+          return {
+            slotAfterId: stored.slotAfterId,
+            startedAt: stored.startedAt ?? turn.startedAt,
+            startedAfterSeq: stored.startedAfterSeq ?? turn.startedAfterSeq,
+          };
+        }
+        const slot = snapshotSlotAfterReconcile(sessionAlias, { startedAt: turn.startedAt, startedAfterSeq: turn.startedAfterSeq });
+        rememberAnchor(sessionAlias, slot, turn.recoveryId);
+        return slot;
+      };
+      const appendAssistantOut = (
+        sessionAlias: string,
+        text: string,
+        structured: Parameters<MessageStore["append"]>[4],
+        slot: OutSlot,
+      ): void => {
+        messages.append(
+          instanceId,
+          sessionAlias,
+          "out",
+          text,
+          structured,
+          undefined,
+          undefined,
+          undefined,
+          slot.startedAt,
+          slot.slotAfterId,
+          slot.startedAfterSeq,
+        );
+      };
       // Wraps the whole handler (not just messages.append): a throwing DB write must be
       // attributed to this instance's event persistence, not surface as the gateway's
       // generic relay.instance.message_failed (see instance-gateway's outer message guard).
@@ -446,7 +527,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             const e = raw as ControlEventDto;
             return e.type === "tool-event" ? { ...e, step: capToolStep(e.step) } : e;
           })();
-          webGateway.broadcast(accountId, { kind: "control-event", instanceId, event });
+          let outbound: ControlEventDto = event;
           if (event.type === "turn-started") {
             const k = key(instanceId, event.sessionAlias);
             let notification: TurnNotificationContext | undefined;
@@ -464,30 +545,42 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             }
             // Reconcile the inbound prompt FIRST (queued promotion / pre-write
             // correlation / scheduled append) and only install the streaming buffer
-            // once it succeeded. A persistence failure here is NOT silent: it forces a
-            // reconnect so the connector re-sends its state sync and the prompt row can
-            // land — otherwise the turn would stream + persist its reply while the
-            // prompt row is permanently missing (an orphan answer).
+            // once it succeeded. Snapshot the last Hub message id AFTER that write —
+            // that id is the durable live-slot anchor (receive/insert order, not a clock).
             try {
-              reconcileInboundPrompt(
-                event.sessionAlias,
-                { prompt: event.prompt, queueItemId: event.queueItemId, scheduled: event.scheduled, promptRequestId: event.promptRequestId },
-                true,
-              );
+              let slot: OutSlot | undefined;
+              db.transaction(() => {
+                reconcileInboundPrompt(
+                  event.sessionAlias,
+                  { prompt: event.prompt, queueItemId: event.queueItemId, scheduled: event.scheduled, promptRequestId: event.promptRequestId },
+                  true,
+                );
+                slot = snapshotSlotAfterReconcile(event.sessionAlias, {
+                  startedAt: nowMs(),
+                  startedAfterSeq: event.startedAfterSeq,
+                });
+                rememberAnchor(event.sessionAlias, slot, event.recoveryId);
+              });
+              const startedAt = slot!.startedAt ?? nowMs();
               turnBuffers.set(k, {
                 text: "",
                 steps: new Map(),
                 reasoning: "",
                 parts: [],
-                startedAt: nowMs(),
+                startedAt,
+                slotAfterId: slot!.slotAfterId,
+                ...(slot!.startedAfterSeq !== undefined ? { startedAfterSeq: slot!.startedAfterSeq } : {}),
                 ...(notification ? { notification } : {}),
               });
+              outbound = { ...event, slotAfterId: slot!.slotAfterId };
             } catch (err) {
               turnBuffers.delete(k);
               gateway.disconnect(instanceId);
               throw err;
             }
-          } else if (event.type === "turn-output") {
+          }
+          webGateway.broadcast(accountId, { kind: "control-event", instanceId, event: outbound });
+          if (event.type === "turn-output") {
             // Only append to an existing buffer; never lazily resurrect one. A buffer
             // is created solely by turn-started, so a stray streaming event arriving
             // after an offline sweep (or with no turn-started) is dropped instead of
@@ -520,12 +613,18 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 // for successes.
                 // Silent overflow tips are toast-only: do not persist an empty out row.
                 if (event.silent && (event.text === undefined || event.text === "")) {
+                  slotAnchors.take(instanceId, event.sessionAlias, event.recoveryId);
                   return;
                 }
+                const slot = resolveFinishSlot(event.sessionAlias, {
+                  recoveryId: event.recoveryId,
+                  startedAfterSeq: event.startedAfterSeq,
+                  startedAt: event.startedAt,
+                });
                 if (event.text !== undefined) {
-                  messages.append(instanceId, event.sessionAlias, "out", event.text);
+                  appendAssistantOut(event.sessionAlias, event.text, undefined, slot);
                 } else if (!event.ok && event.errorMessage !== undefined) {
-                  messages.append(instanceId, event.sessionAlias, "out", event.errorMessage);
+                  appendAssistantOut(event.sessionAlias, event.errorMessage, undefined, slot);
                 } else {
                   logger.warn("relay.event.turn_finished_without_content", "turn finished with no buffered content", {
                     instanceId, sessionAlias: event.sessionAlias,
@@ -552,13 +651,21 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               // Silent overflow tips skip that empty-success row so the toast is not
               // duplicated as a blank chat bubble.
               if (event.silent && !hasStructured && text === "") {
+                slotAnchors.take(instanceId, event.sessionAlias, event.recoveryId);
                 return;
               }
               if (hasStructured || text !== "" || event.ok) {
                 const structured = hasStructured
                   ? { toolSteps: steps, ...(hasReasoning ? { reasoning: a.reasoning } : {}), ...(a.parts.length ? { parts: a.parts } : {}), ...(a.truncated ? { truncated: true } : {}) }
                   : (a.truncated ? { truncated: true } : undefined);
-                messages.append(instanceId, event.sessionAlias, "out", text, structured);
+                slotAnchors.take(instanceId, event.sessionAlias, event.recoveryId);
+                appendAssistantOut(event.sessionAlias, text, structured, {
+                  slotAfterId: a.slotAfterId,
+                  startedAt: a.startedAt,
+                  startedAfterSeq: a.startedAfterSeq,
+                });
+              } else {
+                slotAnchors.take(instanceId, event.sessionAlias, event.recoveryId);
               }
             };
             const recoveryId = event.recoveryId;
@@ -766,7 +873,19 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 }
                 // Presence (not truthiness): an empty-string reply still gets its row.
                 if (text !== undefined && !alreadyPersisted) {
-                  messages.append(instanceId, finished.sessionAlias, "out", text, finished.truncated ? { truncated: true } : undefined);
+                  const slot = resolveFinishSlot(finished.sessionAlias, {
+                    recoveryId: finished.recoveryId,
+                    startedAfterSeq: finished.startedAfterSeq,
+                    startedAt: finished.startedAt,
+                  });
+                  appendAssistantOut(
+                    finished.sessionAlias,
+                    text,
+                    finished.truncated ? { truncated: true } : undefined,
+                    slot,
+                  );
+                } else {
+                  slotAnchors.take(instanceId, finished.sessionAlias, finished.recoveryId);
                 }
               };
               if (recoveryId) {
@@ -857,6 +976,22 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 parts,
                 // Restored original start so the elapsed-time HUD survives the restart.
                 startedAt: turn.startedAt,
+                // Durable insert-order slot: prefer the SQLite anchor from the original
+                // turn-started (exact recoveryId, or per-session legacy key). A miss
+                // snapshots lastId AFTER prompt reconcile — leftover anchors from
+                // expired turns are never inherited. Mid-turn cards were not persisted
+                // while the Hub was down.
+                ...(() => {
+                  const slot = restoreRunningSlot(turn.sessionAlias, {
+                    recoveryId: turn.recoveryId,
+                    startedAfterSeq: turn.startedAfterSeq,
+                    startedAt: turn.startedAt,
+                  });
+                  return {
+                    slotAfterId: slot.slotAfterId,
+                    ...(slot.startedAfterSeq !== undefined ? { startedAfterSeq: slot.startedAfterSeq } : {}),
+                  };
+                })(),
                 // A mirror that capped this turn at STATE_SYNC_TEXT_CAP marks it so the
                 // final flush persists structured.truncated instead of a gappy reply
                 // that reads as complete.
@@ -870,6 +1005,12 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
             for (const entry of sync.commands) {
               sessionCommands.set(key(instanceId, entry.sessionAlias), entry.commands);
             }
+            // Drop leftover anchors the connector no longer reports (expired /
+            // FIFO-evicted pendingFinished). A later turn must not inherit them.
+            const keepAnchors = new Set<string>();
+            for (const turn of sync.turns) keepAnchors.add(canonicalRecoveryId(turn.sessionAlias, turn.recoveryId));
+            for (const finished of sync.finishedOffline) keepAnchors.add(canonicalRecoveryId(finished.sessionAlias, finished.recoveryId));
+            slotAnchors.retain(instanceId, keepAnchors);
             webGateway.broadcast(accountId, { kind: "state-snapshot", instanceId, ...stateSnapshot(instanceId) });
           } catch (err) {
             // Same posture as the live flush: a persistence failure must never be
@@ -921,6 +1062,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     onWebPromptSessionCleared: (instanceId, sessionAlias) => {
       clearPendingForSession(instanceId, sessionAlias);
     },
+    turnSlotAnchors: slotAnchors,
   });
   const completionRouteSweepTimer = setInterval(
     () => gateway.sweepExpiredCompletionRoutes(),
@@ -933,6 +1075,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     instances,
     messages,
     recoveryReceipts,
+    slotAnchors,
     pushSubscriptions,
     pushNotifier,
     gateway,

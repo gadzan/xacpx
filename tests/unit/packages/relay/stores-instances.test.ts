@@ -11,7 +11,7 @@ async function makeStores(nowIso = "2026-06-13T10:00:00.000Z") {
   const accounts = new AccountStore(db, { now: () => now });
   const instances = new InstanceStore(db, { now: () => now });
   const account = accounts.createAccount("alice");
-  return { instances, account, setNow: (iso: string) => { now = new Date(iso); } };
+  return { db, instances, account, setNow: (iso: string) => { now = new Date(iso); } };
 }
 
 test("pairing token redeems once into an instance with a fresh credential", async () => {
@@ -87,12 +87,16 @@ test("rename of a non-existent instance returns false", async () => {
 });
 
 test("touch updates last_seen; listByAccount scopes; remove enforces ownership", async () => {
-  const { instances, account, setNow } = await makeStores();
+  const { db, instances, account, setNow } = await makeStores();
   const redeemed = instances.redeemPairingToken(
     instances.issuePairingToken(account.id, "pc", 600_000).token,
   )!;
   setNow("2026-06-13T10:05:00.000Z");
   instances.touch(redeemed.instanceId);
+  db.run(
+    "INSERT INTO turn_slot_anchors (instance_id, session_alias, recovery_id, slot_after_id) VALUES (?,?,?,?)",
+    [redeemed.instanceId, "backend", "r-1", 1],
+  );
   const listed = instances.listByAccount(account.id);
   expect(listed).toHaveLength(1);
   expect(listed[0]?.lastSeenAt).toBe("2026-06-13T10:05:00.000Z");
@@ -101,6 +105,7 @@ test("touch updates last_seen; listByAccount scopes; remove enforces ownership",
   expect(instances.remove(redeemed.instanceId, "other-account")).toBe(false);
   expect(instances.remove(redeemed.instanceId, account.id)).toBe(true);
   expect(instances.listByAccount(account.id)).toEqual([]);
+  expect(db.get("SELECT 1 FROM turn_slot_anchors WHERE instance_id = ?", [redeemed.instanceId])).toBeUndefined();
 });
 
 test("setCapabilities replaces the full set; missing column/null reads as empty", async () => {

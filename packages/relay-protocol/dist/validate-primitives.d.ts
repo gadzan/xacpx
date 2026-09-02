@@ -14,6 +14,8 @@ export declare const isBoundedStr: (v: unknown, maxLen: number) => v is string;
 export declare const isIntInRange: (v: unknown, min: number, max: number) => v is number;
 /** Finite non-negative integer. */
 export declare const isNonNegInt: (v: unknown) => v is number;
+/** Optional finite non-negative integer: absent or `isNonNegInt`. */
+export declare const optNonNegInt: (v: unknown) => boolean;
 /**
  * Decode a canonical base64 payload with an encoded-length pre-check.
  * Runtime-neutral: browsers use `atob`/`btoa`; Node/Bun can fall back to

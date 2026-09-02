@@ -294,14 +294,14 @@ export class RelayChannel implements MessageChannelRuntime {
     }
 
     this.unsubscribe = subscribeControlEvents(control, (type, payload) => {
-      const finishedRecoveryId = mirror.handleEnvelope(type, payload);
+      const patch = mirror.handleEnvelope(type, payload);
       const forwardedPayload =
-        finishedRecoveryId && typeof payload === "object" && payload !== null
+        patch && typeof payload === "object" && payload !== null
           ? {
               ...(payload as Record<string, unknown>),
               event: {
                 ...(payload as { event: Record<string, unknown> }).event,
-                recoveryId: finishedRecoveryId,
+                ...patch,
               },
             }
           : payload;

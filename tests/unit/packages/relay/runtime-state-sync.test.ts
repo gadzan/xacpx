@@ -52,6 +52,7 @@ test("state sync restores turns/usage/commands into stateSnapshot with the origi
   const snapshot = runtime.stateSnapshot("i1");
   expect(snapshot.turns).toEqual([{
     instanceId: "i1", sessionAlias: "backend", status: "streaming", startedAt: STARTED_AT,
+    slotAfterId: 0,
     parts: [
       { type: "text", text: "before" },
       { type: "tool", step: { toolCallId: "t1", toolName: "Bash", kind: "execute", status: "success", title: "ls" } },

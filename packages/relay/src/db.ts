@@ -170,7 +170,10 @@ export function initSchema(db: SqlDriver): void {
       queue_item_id TEXT,
       queue_fallback INTEGER NOT NULL DEFAULT 0,
       origin_queue_item_id TEXT,
-      prompt_request_id TEXT
+      prompt_request_id TEXT,
+      started_at INTEGER,
+      slot_after_id INTEGER,
+      started_after_seq INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_messages_session ON messages (instance_id, session_alias, id);
     CREATE TABLE IF NOT EXISTS recovery_receipts (
@@ -179,6 +182,16 @@ export function initSchema(db: SqlDriver): void {
       created_at TEXT NOT NULL,
       PRIMARY KEY (instance_id, recovery_id)
     );
+    CREATE TABLE IF NOT EXISTS turn_slot_anchors (
+      instance_id TEXT NOT NULL,
+      session_alias TEXT NOT NULL,
+      recovery_id TEXT NOT NULL DEFAULT '',
+      slot_after_id INTEGER NOT NULL,
+      started_at INTEGER,
+      started_after_seq INTEGER,
+      PRIMARY KEY (instance_id, recovery_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_turn_slot_anchors_session ON turn_slot_anchors (instance_id, session_alias);
     CREATE TABLE IF NOT EXISTS pending_completion_routes (
       request_message_id TEXT PRIMARY KEY,
       account_id TEXT NOT NULL,
@@ -226,6 +239,15 @@ export function initSchema(db: SqlDriver): void {
   }
   if (!messageCols.some((c) => c.name === "prompt_request_id")) {
     db.exec("ALTER TABLE messages ADD COLUMN prompt_request_id TEXT");
+  }
+  if (!messageCols.some((c) => c.name === "started_at")) {
+    db.exec("ALTER TABLE messages ADD COLUMN started_at INTEGER");
+  }
+  if (!messageCols.some((c) => c.name === "slot_after_id")) {
+    db.exec("ALTER TABLE messages ADD COLUMN slot_after_id INTEGER");
+  }
+  if (!messageCols.some((c) => c.name === "started_after_seq")) {
+    db.exec("ALTER TABLE messages ADD COLUMN started_after_seq INTEGER");
   }
   const instanceCols = db.all<{ name: string }>("PRAGMA table_info(instances)");
   if (!instanceCols.some((c) => c.name === "capabilities_json")) {

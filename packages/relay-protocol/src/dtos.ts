@@ -246,6 +246,12 @@ export type ControlEventDto =
       queueItemId?: string;
       promptRequestId?: string;
       peerOrigin?: PeerTurnOriginDto;
+      /** Connector-local per-session seq at this turn-start (receive order, not a clock). */
+      startedAfterSeq?: number;
+      /** Connector recovery id for this turn; Hub keys the durable slot anchor with it. */
+      recoveryId?: string;
+      /** Hub-stamped last message id at turn-start (0 = empty transcript). Web live slot. */
+      slotAfterId?: number;
     }
   | {
       type: "tool-event";
@@ -297,6 +303,10 @@ export type ControlEventDto =
       silent?: boolean;
       recoveryId?: string;
       peerOrigin?: PeerTurnOriginDto;
+      /** Connector-local seq captured at the original turn-start (Hub maps to insert order). */
+      startedAfterSeq?: number;
+      /** Connector-local epoch ms at turn-start — HUD telemetry only; never a reorder key. */
+      startedAt?: number;
     }
   | { type: "sessions-changed" }
   // The configured workspace set changed (out-of-band CLI edit or `/config`); the web

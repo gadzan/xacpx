@@ -185,6 +185,9 @@ function toCachedRow(row: MessageRecordDto): MessageRecordDto {
   // proxies (DataCloneError), silently killing every write for a session whose
   // tail holds an attachment row. toRaw yields the underlying plain tree.
   if (row.attachments !== undefined) out.attachments = toRaw(row.attachments);
+  if (row.startedAt !== undefined) out.startedAt = row.startedAt;
+  if (row.slotAfterId !== undefined) out.slotAfterId = row.slotAfterId;
+  if (row.startedAfterSeq !== undefined) out.startedAfterSeq = row.startedAfterSeq;
   return out;
 }
 

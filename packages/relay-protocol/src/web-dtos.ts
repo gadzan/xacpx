@@ -20,7 +20,7 @@ import {
   TERMINAL_REBASE_CHUNK_BYTES,
 } from "./limits.js";
 import type { InstanceNoticePayload, TerminalRole } from "./messages.js";
-import { isBoundedStr, isIntInRange, isNonNegInt, isStr, optStr, optNum, optBool, parseCanonicalBase64 } from "./validate-primitives.js";
+import { isBoundedStr, isIntInRange, isNonNegInt, isStr, optStr, optNum, optBool, optNonNegInt, parseCanonicalBase64 } from "./validate-primitives.js";
 
 
 /** Envelope `type` for every relay→web push. */
@@ -48,6 +48,24 @@ export interface MessageRecordDto {
   direction: MessageDirection;
   text: string;
   createdAt: string;
+  /**
+   * Epoch ms the assistant turn began (`LiveTurn.startedAt`). HUD telemetry only —
+   * never a history-reorder key (peer/hub/browser clocks are not comparable).
+   * Survives `view=compact`.
+   */
+  startedAt?: number;
+  /**
+   * Hub `messages.id` of the last transcript row at turn-start (0 = empty transcript).
+   * History apply places this `out` immediately after that id; later-inserted rows
+   * (received cards AND queued prompts) move after it. Omitted on legacy rows —
+   * do not reorder those. Survives `view=compact`.
+   */
+  slotAfterId?: number;
+  /**
+   * Connector-local per-session seq at turn-start. Auxiliary to `slotAfterId` so a
+   * Hub restart can map receive-order back to insert order. Survives `view=compact`.
+   */
+  startedAfterSeq?: number;
   /** Present while an inbound Web prompt is queued, so a history reload can still
    *  associate it with the later drain event. Cleared when execution starts. */
   queueItemId?: string;
@@ -74,6 +92,11 @@ export interface LiveTurnSnapshotDto {
   status: "working" | "streaming";
   /** Epoch ms the turn began on the hub, so the elapsed-time HUD stays accurate. */
   startedAt: number;
+  /**
+   * Hub `messages.id` the live bubble is slotted after (0 = start of transcript).
+   * Web places the live turn by this id, never by comparing clocks.
+   */
+  slotAfterId?: number;
 }
 
 /** The latest context-usage meter retained per session, handed to a (re)connecting web
@@ -386,7 +409,8 @@ function validStateSnapshot(candidate: Record<string, unknown>): boolean {
       && Array.isArray(c.parts)
       && c.parts.every(validTurnPart)
       && (c.status === "working" || c.status === "streaming")
-      && finiteNonNegative(c.startedAt);
+      && finiteNonNegative(c.startedAt)
+      && optNonNegInt(c.slotAfterId);
   })) return false;
   if (!Array.isArray(candidate.usage) || !candidate.usage.every((usage) => {
     if (typeof usage !== "object" || usage === null) return false;
@@ -462,13 +486,17 @@ export function validControlEvent(e: unknown): boolean {
       // into SQLite and trigger a disconnect loop.
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean"
         && optStr(c.text) && optStr(c.recoveryId) && optStr(c.errorMessage) && optBool(c.cancelled) && optBool(c.silent)
-        && validPeerTurnOrigin(c.peerOrigin);
+        && validPeerTurnOrigin(c.peerOrigin)
+        && optNonNegInt(c.startedAfterSeq)
+        && (c.startedAt === undefined || finiteNonNegative(c.startedAt));
     case "scheduled-changed":
       return typeof c.chatKey === "string";
     case "turn-started":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string"
-        && optStr(c.prompt) && optStr(c.queueItemId) && optStr(c.promptRequestId) && validScheduledOrigin(c.scheduled)
-        && validPeerTurnOrigin(c.peerOrigin);
+        && optStr(c.prompt) && optStr(c.queueItemId) && optStr(c.promptRequestId) && optStr(c.recoveryId)
+        && validScheduledOrigin(c.scheduled)
+        && validPeerTurnOrigin(c.peerOrigin)
+        && optNonNegInt(c.startedAfterSeq) && optNonNegInt(c.slotAfterId);
     case "turn-thought":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
     case "plan":
@@ -533,6 +561,7 @@ export function validInstanceStateSync(p: unknown): boolean {
       && optStr(turn.prompt) && optStr(turn.queueItemId) && optStr(turn.recoveryId) && optStr(turn.promptRequestId)
       && validScheduledOrigin(turn.scheduled)
       && finiteNonNegative(turn.startedAt)
+      && optNonNegInt(turn.startedAfterSeq)
       && typeof turn.text === "string"
       && typeof turn.reasoning === "string"
       && Array.isArray(turn.steps) && turn.steps.every(validToolStep)
@@ -561,7 +590,9 @@ export function validInstanceStateSync(p: unknown): boolean {
       && optStr(finished.queueItemId) && optStr(finished.recoveryId) && optStr(finished.promptRequestId)
       && validScheduledOrigin(finished.scheduled)
       && (finished.cancelled === undefined || typeof finished.cancelled === "boolean")
-      && (finished.truncated === undefined || typeof finished.truncated === "boolean");
+      && (finished.truncated === undefined || typeof finished.truncated === "boolean")
+      && (finished.startedAt === undefined || finiteNonNegative(finished.startedAt))
+      && optNonNegInt(finished.startedAfterSeq);
   });
 }
 
