@@ -106,6 +106,14 @@ export class RuntimePermissionResolver {
     signal?: AbortSignal,
   ): RuntimePermissionDecision {
     if (signal?.aborted) return { outcome: "reject_once" };
+    // Fail-closed on malformed raw that cannot be serialized (circular/BigInt etc.) — even approve-all must reject
+    try {
+      const rawAny: any = req.raw;
+      const input = rawAny?.toolCall?.input ?? rawAny?.tool?.input ?? rawAny?.input;
+      if (input !== undefined) JSON.stringify(input);
+    } catch {
+      throw new Error("malformed raw input");
+    }
     const policy = config.permissionPolicy;
 
     const denyRule = findPolicyRule(policy?.autoDeny, req);
