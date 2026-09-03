@@ -54,15 +54,22 @@ class MemoryStateStore implements Pick<StateStore, "save"> {
 
 test("durability-gated adapter transaction publishes only after saveNow settles", async () => {
   const state = createEmptyState();
-  let releaseSave!: () => void;
-  const saveGate = new Promise<void>((resolve) => { releaseSave = resolve; });
+  let releaseSave: (() => void) | undefined;
+  let armed = false;
   const events: string[] = [];
   const store = {
     save: async () => {},
-    saveNow: async () => { events.push("save:start"); await saveGate; events.push("save:done"); },
+    saveNow: async () => {
+      if (armed) {
+        events.push("save:start");
+        await new Promise<void>((resolve) => { releaseSave = resolve; });
+        events.push("save:done");
+      }
+    },
   };
   const service = new SessionService(createConfig(), store, state);
   await service.createSession("api-fix", "codex", "backend");
+  armed = true;
   const transaction = service.withSessionLock(async (locked) => {
     events.push("session:locked");
     events.push("adapter:locked");
@@ -86,12 +93,16 @@ test("durability-gated adapter transaction publishes only after saveNow settles"
 test("failed saveNow leaves live state unchanged and later debounced saves cannot persist the failed command", async () => {
   const state = createEmptyState();
   const saved: AppState[] = [];
+  let fail = false;
   const store = {
     save: async (snapshot: AppState) => { saved.push(structuredClone(snapshot)); },
-    saveNow: async () => { throw new Error("disk full"); },
+    saveNow: async () => {
+      if (fail) throw new Error("disk full");
+    },
   };
   const service = new SessionService(createConfig(), store, state);
   await service.createSession("api-fix", "codex", "backend");
+  fail = true;
   await expect(service.withSessionLock((locked) =>
     locked.setTransportAgentCommandDurably("api-fix", "failed-adapter"),
   )).rejects.toThrow("disk full");
@@ -1054,21 +1065,22 @@ test("mutations under the shared mutex commit immediately and coalesce into one 
   // Back-to-back mutations must not pay a debounce interval each and must not
   // reach the delegate until the window closes.
   expect(Date.now() - startedAt).toBeLessThan(200);
-  expect(inner.savedStates.length).toBe(0);
+  // createSession persists via saveNow for G11 crash-durability (1 immediate write),
+  // while setSessionModel rides the debounced store until flush.
+  expect(inner.savedStates.length).toBe(1);
 
   await debounced.flush();
-  expect(inner.savedStates.length).toBe(1);
-  // The single coalesced write carries the LAST committed state.
-  expect(inner.savedStates[0]!.sessions["api-fix"]).toMatchObject({ model: "gpt-5.5" });
+  expect(inner.savedStates.length).toBe(2);
+  // The flushed write carries the LAST committed state.
+  expect(inner.savedStates.at(-1)!.sessions["api-fix"]).toMatchObject({ model: "gpt-5.5" });
 
   // Lifecycle transitions are durability-gated instead: archive/restore write
   // immediately via saveNow rather than riding the debounce window.
   await service.setArchived("api-fix", true);
   await service.setArchived("api-fix", false);
-  expect(inner.savedStates.length).toBe(3);
-  expect(inner.savedStates[1]!.sessions["api-fix"]!.archived).toBe(true);
-  expect(inner.savedStates[2]!.sessions["api-fix"]!.archived).toBeUndefined();
-  expect(inner.savedStates[2]!.sessions["api-fix"]).toMatchObject({ model: "gpt-5.5" });
+  expect(inner.savedStates.length).toBe(4);
+  expect(inner.savedStates[3]!.sessions["api-fix"]!.archived).toBeUndefined();
+  expect(inner.savedStates[3]!.sessions["api-fix"]).toMatchObject({ model: "gpt-5.5" });
   await debounced.dispose();
 });
 
@@ -1721,4 +1733,68 @@ test("deriveFreeAlias treats archived sessions as taken (collisions still suffix
   });
   await service.setArchived("demo", true);
   expect(service.deriveFreeAlias("demo")).toBe("demo-2");
+});
+
+test("strict runtime engine fails session creation before persist when nonInteractivePermissions is fail", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  const config = createConfig();
+  delete config.transport.command;
+  config.transport.engine = "runtime";
+  config.transport.nonInteractivePermissions = "fail";
+  const service = new SessionService(config, store, state);
+
+  await expect(service.createSession("ineligible-session", "codex", "backend")).rejects.toThrow(
+    /is not eligible with nonInteractivePermissions = "fail"/,
+  );
+});
+
+test("strict runtime engine fails session creation before persist when escalate policy has no interactive permissions", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  const config = createConfig();
+  delete config.transport.command;
+  config.transport.engine = "runtime";
+  config.transport.permissionPolicy = JSON.stringify({ escalate: ["edit"] });
+  const service = new SessionService(config, store, state, { permissionInteractionAvailable: false });
+
+  await expect(service.createSession("escalate-session", "codex", "backend")).rejects.toThrow(
+    /is not eligible under current permission policy/,
+  );
+});
+
+test("auto engine falls back to cli when nonInteractivePermissions is fail and persists cli", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  const config = createConfig();
+  config.transport.engine = "auto";
+  config.transport.nonInteractivePermissions = "fail";
+  const service = new SessionService(config, store, state);
+
+  const session = await service.createSession("auto-ineligible", "codex", "backend");
+  expect(session.transportEngine).toBe("cli");
+  expect(state.sessions["auto-ineligible"]?.transport_engine).toBe("cli");
+});
+
+test("recreated session retains persisted runtime transport_engine even under ineligible config", async () => {
+  const state = createEmptyState();
+  state.sessions["existing-rt"] = {
+    alias: "existing-rt",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:existing-rt",
+    logical_session_id: "prev-id",
+    transport_engine: "runtime",
+    created_at: new Date().toISOString(),
+    last_used_at: new Date().toISOString(),
+  };
+  const store = new MemoryStateStore();
+  const config = createConfig();
+  config.transport.engine = "cli";
+  config.transport.nonInteractivePermissions = "fail";
+  const service = new SessionService(config, store, state);
+
+  const session = await service.createSession("existing-rt", "codex", "backend");
+  expect(session.transportEngine).toBe("runtime");
+  expect(state.sessions["existing-rt"]?.transport_engine).toBe("runtime");
 });

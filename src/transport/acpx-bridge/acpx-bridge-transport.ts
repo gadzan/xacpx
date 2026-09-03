@@ -297,6 +297,11 @@ export class AcpxBridgeTransport implements SessionTransport {
   async updatePermissionPolicy(policy: PermissionPolicy): Promise<void> {
     await this.client.request("updatePermissionPolicy", { ...policy });
   }
+  async primeRuntimeQueues(sessions: ResolvedSession[]): Promise<void> {
+    await this.client.request("primeRuntimeQueues", {
+      sessions: sessions.map((s) => this.toParams(s)),
+    });
+  }
   async dispose(): Promise<void> {
     await this.client.dispose?.();
   }

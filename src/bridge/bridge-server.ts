@@ -22,7 +22,7 @@ import type { PromptMedia, PromptMediaInput } from "../transport/types";
 import { BridgeRequestScheduler, type BridgeRequestLane } from "./bridge-request-scheduler";
 import { BridgeRuntime, CommandTimeoutError, EnsureSessionFailedError } from "./bridge-runtime";
 import { CliEngine } from "./engine/cli/cli-engine";
-import { EngineRouter, SessionEngineBinding, type BridgeEngine } from "./engine";
+import { EngineRouter, SessionEngineBinding, type BridgeEngine, type EngineSessionInput } from "./engine";
 import { EngineMismatchError, EngineUnsupportedError } from "./engine/engine-router";
 import { RuntimeError } from "./engine/runtime-engine";
 
@@ -46,6 +46,7 @@ const BRIDGE_METHODS = new Set<BridgeMethod>([
   "ping",
   "shutdown",
   "updatePermissionPolicy",
+  "primeRuntimeQueues",
   "hasSession",
   "ensureSession",
   "tailSessionHistory",
@@ -99,7 +100,7 @@ export class BridgeServer {
 
   private readonly engines: BridgeEngine;
 
-  async primeRuntimeQueues(sessions: import("./engine/bridge-engine").EngineSessionInput[] = []): Promise<void> {
+  async primeRuntimeQueues(sessions: EngineSessionInput[] = []): Promise<void> {
     const rt = (this.engines as unknown as { primeRuntimeQueues?: (s: unknown[]) => Promise<void> });
     if (typeof rt.primeRuntimeQueues === "function") await rt.primeRuntimeQueues(sessions as unknown[]);
   }
@@ -290,6 +291,31 @@ export class BridgeServer {
           nonInteractivePermissions: requireNonInteractivePermissions(params, "nonInteractivePermissions"),
           permissionPolicy: asOptionalString(params.permissionPolicy),
         });
+      case "primeRuntimeQueues":
+        const rawSessions = params.sessions;
+        if (!Array.isArray(rawSessions)) {
+          throw new BridgeInvalidRequestError("primeRuntimeQueues requires a sessions array");
+        }
+        const validatedSessions: EngineSessionInput[] = [];
+        for (const s of rawSessions) {
+          if (!s || typeof s !== "object" || Array.isArray(s)) {
+            throw new BridgeInvalidRequestError("invalid session entry in primeRuntimeQueues");
+          }
+          const item = s as Record<string, unknown>;
+          validatedSessions.push(withMcp({
+            agent: requireString(item, "agent"),
+            ...agentExecutionSettings(item),
+            agentCommand: asOptionalString(item.agentCommand),
+            ...agentLaunchSelection(item),
+            cwd: requireString(item, "cwd"),
+            name: requireString(item, "name"),
+            sessionKey: asOptionalString(item.sessionKey),
+            model: asOptionalString(item.model),
+            effort: asOptionalString(item.effort),
+          }, item));
+        }
+        await this.primeRuntimeQueues(validatedSessions);
+        return {};
       case "hasSession":
         return await this.engines.hasSession(withMcp({
           agent: requireString(params, "agent"),

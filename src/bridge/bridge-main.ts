@@ -163,6 +163,9 @@ export async function runBridgeMain(): Promise<void> {
       });
       const binding = new SessionEngineBinding();
       engine = new EngineRouter(binding, cliEngine, runtimeEngine);
+      try {
+        console.error("[bridge] RuntimeEngine wired; queue priming available on daemon request");
+      } catch {}
     }
   } catch (e) {
     try { console.error(`[bridge] RuntimeEngine not available, falling back to cli-only: ${e instanceof Error ? e.message : String(e)}`); } catch {}

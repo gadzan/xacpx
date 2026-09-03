@@ -3,6 +3,7 @@ import { statSync } from "node:fs";
 import { join, resolve as resolvePath, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
+import { createHash } from "node:crypto";
 import { coreHomeDir } from "../../runtime/core-home";
 
 import { deleteAcpxSessionFiles, resolveAcpxHomeDir } from "../../transport/acpx-session-files";
@@ -1094,16 +1095,23 @@ export class RuntimeEngine implements BridgeEngine {
     if (!this.manager) {
       throw new WorkerUnavailableError("RuntimeEngine has no worker manager (worker entry not built)");
     }
-    // G2 physical single-owner (plan §43 / review G2): resolve physical
-    // acpx record ID before acquire. Tri-state handling:
-    // - found(recordId): physical fence claims that physical record ID.
-    //   Two logical aliases pointing to the same physical record contend for the same physical fence.
-    // - absent: controlled bootstrap using logicalKey as physical fence key.
-    // - failed: corrupt/unreadable/ambiguous disk record MUST fail closed with RUNTIME_INIT_FAILED!
+    // G2 physical single-owner (plan §43 / review G2): STABLE physical fence key.
+    // The durable ownership fence MUST be stable across:
+    //   - before vs after acpx record creation (R does not exist yet → R exists)
+    //   - two logical aliases sharing the same physical acpx session
+    // Using `recordId` when found and `logicalKey` when absent caused a
+    // namespace drift: Host A claims L.json, creates R, crashes; Host B
+    // looks up R → claims R.json and spawns a second owner while A's
+    // adapter tree is still unverified. Fix: hash the normalized physical
+    // identity (sessionKey + cwd + agentCommand) — computable before the
+    // record exists and identical after.
     const logicalKey = this.workerKey(input);
     const existing = this.acquiring.get(logicalKey);
     if (existing) return existing;
 
+    // Fail-closed validation: any unreadable/corrupt/ambiguous record on disk
+    // blocks spawn (G4). This runs before claim so we never spawn over
+    // unverifiable ownership evidence.
     const recordLookup = await findAcpxRecordIdFromDisk(input, this.sessionsDir());
     if (recordLookup.kind === "failed") {
       throw new RuntimeError(
@@ -1111,9 +1119,7 @@ export class RuntimeEngine implements BridgeEngine {
         `cannot verify physical session identity on disk: ${recordLookup.error.message}`,
       );
     }
-    const physicalFenceKey = recordLookup.kind === "found"
-      ? recordLookup.recordId
-      : logicalKey;
+    const physicalFenceKey = this.physicalFenceKeyForInput(input);
 
     const acquire = this.manager.acquire(logicalKey, physicalFenceKey);
     this.acquiring.set(logicalKey, acquire);
@@ -1126,6 +1132,32 @@ export class RuntimeEngine implements BridgeEngine {
     } finally {
       this.acquiring.delete(logicalKey);
     }
+  }
+  /**
+   * Deterministic physical session fence key (G2). Hash of the normalized
+   * physical acpx identity — sessionKey (transport name), cwd, and the
+   * launch agent identity. Same before/after record creation and same for
+   * two logical aliases that share the same physical session, so the durable
+   * fence file is stable across crash+restart and shared-physical aliases
+   * correctly contend for the single physical fence.
+   */
+  private physicalFenceKeyForInput(input: EngineSessionInput): string {
+    const normalizedCwd = normalizePathForComparison(input.cwd) ?? input.cwd ?? "";
+    // Agent identity: prefer the exact launch identity the Runtime will use.
+    // EngineSessionInput carries the resolved launch fields (agentCommand /
+    // acpxAgent / rawCommand / agentArgv) from SessionService.toResolvedSession,
+    // so the hash is stable for a given physical session.
+    const agentId =
+      (typeof input.agentCommand === "string" && input.agentCommand.length > 0 ? input.agentCommand : undefined) ??
+      (typeof input.rawCommand === "string" && input.rawCommand.length > 0 ? input.rawCommand : undefined) ??
+      (typeof input.acpxAgent === "string" && input.acpxAgent.length > 0 ? input.acpxAgent : undefined) ??
+      (Array.isArray(input.agentArgv) && input.agentArgv.length > 0 ? input.agentArgv.join("\x00") : undefined) ??
+      input.agent ??
+      "";
+    const sessionKey = input.name ?? "";
+    const raw = `${sessionKey}\x00${normalizedCwd}\x00${agentId}`;
+    // 32 hex chars (128-bit) is enough to avoid collisions for fence namespace.
+    return createHash("sha256").update(raw).digest("hex").slice(0, 32);
   }
   private async withWorker<T>(input: EngineSessionInput, run: (client: RuntimeWorkerClient) => Promise<T>): Promise<T> {
     const key = this.workerKey(input);

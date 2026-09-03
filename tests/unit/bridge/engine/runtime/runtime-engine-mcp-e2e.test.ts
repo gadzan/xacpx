@@ -2,12 +2,18 @@ import type { OrchestrationTaskRecord } from "../../../../../src/orchestration/o
 import type { OrchestrationTaskFilter } from "../../../../../src/orchestration/orchestration-service";
 import type { ScheduledTaskRecord } from "../../../../../src/scheduled/scheduled-service";
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
+import { RuntimeEngine } from "../../../../../src/bridge/engine/runtime-engine";
+import { RuntimeWorkerClient } from "../../../../../src/bridge/engine/runtime/runtime-worker-client";
+import { buildXacpxMcpServerSpec } from "../../../../../src/transport/acpx-queue-owner-launcher";
+import { OrchestrationServer } from "../../../../../src/orchestration/orchestration-server";
+import { resolveOrchestrationEndpoint } from "../../../../../src/orchestration/orchestration-ipc";
 
 import { StateStore } from "../../../../../src/state/state-store";
 import { createEmptyState } from "../../../../../src/state/types";
@@ -390,3 +396,490 @@ test("PR8 Server/Service Integration: real ScheduledTaskService durable file per
     await rm(dir, { recursive: true, force: true });
   }
 }, 15_000);
+
+test("PR8 Production Topology E2E: RuntimeEngine -> Runtime Worker (child process) -> mcpServers child -> IPC -> OrchestrationService -> ScheduledTaskService -> Worker Reply -> Wake Coordinator -> Cool/Restart Lifecycle", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-mcp-prod-e2e-"));
+  try {
+    const stateDir = join(dir, "state", "sessions");
+    await mkdir(stateDir, { recursive: true });
+
+    const diskStore = new StateStore(join(dir, "state.json"));
+    const diskState = createEmptyState();
+    await diskStore.save(diskState);
+    const scheduledService = new ScheduledTaskService(diskState, diskStore);
+
+    const harness = makeGoldenHarness({
+      ids: ["t1", "t2", "t3", "sched-1", "group-1"],
+      now: "2026-05-16T00:00:00.000Z",
+    });
+    const service = new OrchestrationService(harness.deps);
+    await service.registerExternalCoordinator({
+      coordinatorSession: "coord:prod-e2e",
+      workspace: "backend",
+    });
+
+    const endpoint = resolveOrchestrationEndpoint(dir);
+    const orchServer = new OrchestrationServer(
+      endpoint,
+      {
+        registerExternalCoordinator: async (input) => service.registerExternalCoordinator(input),
+        requestDelegate: async (input) => service.requestDelegate(input),
+        getTask: async (id) => service.getTask(id),
+        listTasks: async (f) => service.listTasks(f),
+        recordWorkerReply: async (input) => service.recordWorkerReply(input),
+      },
+      {
+        createScheduledTaskFromRoute: async (input) => {
+          const created = await scheduledService.createTask({
+            chatKey: "wx:user1",
+            sessionAlias: "main",
+            executeAt: new Date(Date.now() + 86400000),
+            message: input.message,
+          });
+          return created;
+        },
+        listScheduledTasksFromRoute: async () => scheduledService.listPending("wx:user1"),
+        cancelScheduledTaskFromRoute: async (input) => {
+          const cancelled = await scheduledService.cancelPending(input.id, "wx:user1");
+          return { id: input.id, cancelled };
+        },
+      },
+    );
+    await orchServer.start();
+
+    // 1. Standalone mock MCP server script (child process speaking MCP stdio + IPC to daemon)
+    const mcpServerScript = join(dir, "mcp-server.mjs");
+    await writeFile(
+      mcpServerScript,
+      `
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { createXacpxMcpServer } from "${join(process.cwd(), "src/mcp/xacpx-mcp-server.ts")}";
+import { createOrchestrationTransport } from "${join(process.cwd(), "src/mcp/xacpx-mcp-transport.ts")}";
+import { OrchestrationClient } from "${join(process.cwd(), "src/orchestration/orchestration-client.ts")}";
+import { resolveDefaultOrchestrationEndpoint } from "${join(process.cwd(), "src/mcp/resolve-endpoint.ts")}";
+
+function parseArg(flag) {
+  const idx = process.argv.indexOf(flag);
+  return idx >= 0 && idx + 1 < process.argv.length ? process.argv[idx + 1] : undefined;
+}
+
+const coordinatorSession = parseArg("--coordinator-session") || process.env.XACPX_COORDINATOR_SESSION;
+const sourceHandle = parseArg("--source-handle") || process.env.XACPX_SOURCE_HANDLE;
+const internalSessionTools = process.argv.includes("--internal-session-tools");
+
+const endpoint = resolveDefaultOrchestrationEndpoint(process.env, process.platform);
+const client = new OrchestrationClient(endpoint);
+const transport = createOrchestrationTransport(endpoint, { client });
+const server = createXacpxMcpServer({
+  transport,
+  coordinatorSession,
+  ...(sourceHandle ? { sourceHandle } : {}),
+  internalSessionTools,
+});
+const stdio = new StdioServerTransport(process.stdin, process.stdout);
+await server.connect(stdio);
+`,
+    );
+
+    // 2. Runtime Worker script (spawned as real child process by RuntimeWorkerClient / RuntimeEngine)
+    const workerEntry = join(dir, "runtime-worker.mjs");
+    await writeFile(
+      workerEntry,
+      `
+import { createInterface } from "node:readline";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
+import { buildXacpxMcpServerSpec } from "${join(process.cwd(), "src/transport/acpx-queue-owner-launcher.ts")}";
+
+let state = {
+  ensureParams: null,
+  mcpServers: null,
+};
+
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+rl.on("line", async (line) => {
+  if (!line.trim()) return;
+  const msg = JSON.parse(line);
+  if (msg.method === "ensure") {
+    state.ensureParams = msg.params;
+    if (msg.params.mcpCoordinatorSession) {
+      state.mcpServers = [
+        buildXacpxMcpServerSpec({
+          xacpxCommand: "${process.execPath} ${mcpServerScript}",
+          coordinatorSession: msg.params.mcpCoordinatorSession,
+          ...(msg.params.mcpSourceHandle ? { sourceHandle: msg.params.mcpSourceHandle } : {}),
+        }),
+      ];
+    }
+    process.stdout.write(JSON.stringify({
+      id: msg.id,
+      ok: true,
+      result: { ready: true, sessionKey: msg.params.sessionKey, mcpServers: state.mcpServers },
+    }) + "\\n");
+  } else if (msg.method === "prompt") {
+    try {
+      const serverSpec = state.mcpServers?.[0];
+      if (!serverSpec) throw new Error("No mcpServers configured");
+      
+      const transport = new StdioClientTransport({
+        command: serverSpec.command,
+        args: serverSpec.args,
+        env: { ...process.env, XACPX_ORCHESTRATION_SOCKET: "${endpoint.path}" },
+      });
+      const mcpClient = new Client({ name: "worker-mcp-client", version: "1.0.0" });
+      await mcpClient.connect(transport);
+
+      let payloadResult = {};
+      const action = msg.params.text;
+
+      if (action.startsWith("delegate:")) {
+        const taskText = action.slice(9);
+        const res = await mcpClient.request(
+          {
+            method: "tools/call",
+            params: {
+              name: "delegate_request",
+              arguments: { targetAgent: "codex", task: taskText, workingDirectory: "/tmp/backend" },
+            },
+          },
+          CallToolResultSchema,
+        );
+        payloadResult = { type: "delegate", toolResult: res };
+      } else if (action.startsWith("scheduled_create:")) {
+        const msgText = action.slice(17);
+        const res = await mcpClient.request(
+          {
+            method: "tools/call",
+            params: {
+              name: "scheduled_create",
+              arguments: { timeText: "tomorrow 9am", message: msgText },
+            },
+          },
+          CallToolResultSchema,
+        );
+        payloadResult = { type: "scheduled_create", toolResult: res };
+      } else if (action === "scheduled_list") {
+        const res = await mcpClient.request(
+          {
+            method: "tools/call",
+            params: { name: "scheduled_list", arguments: {} },
+          },
+          CallToolResultSchema,
+        );
+        payloadResult = { type: "scheduled_list", toolResult: res };
+      } else if (action.startsWith("scheduled_cancel:")) {
+        const id = action.slice(17);
+        const res = await mcpClient.request(
+          {
+            method: "tools/call",
+            params: { name: "scheduled_cancel", arguments: { id } },
+          },
+          CallToolResultSchema,
+        );
+        payloadResult = { type: "scheduled_cancel", toolResult: res };
+      }
+
+      await mcpClient.close();
+
+      process.stdout.write(JSON.stringify({
+        id: msg.id,
+        ok: true,
+        result: {
+          result: { status: "completed" },
+          finalText: JSON.stringify(payloadResult),
+        },
+      }) + "\\n");
+    } catch (err) {
+      process.stdout.write(JSON.stringify({
+        id: msg.id,
+        ok: false,
+        error: { code: "RUNTIME_ENGINE_ERROR", message: err.message },
+      }) + "\\n");
+    }
+  } else if (msg.method === "shutdown") {
+    process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { quiesced: true } }) + "\\n");
+    process.exit(0);
+  } else {
+    process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + "\\n");
+  }
+});
+`,
+    );
+
+    const engine = new RuntimeEngine({
+      workerEntryPath: workerEntry,
+      permissionMode: "approve-all",
+      fenceDir: join(dir, "fences"),
+      queueDir: join(dir, "queue"),
+      stateDir,
+    });
+
+    const sessionInput = {
+      agent: "codex",
+      cwd: "/tmp/backend",
+      name: "sess-prod",
+      logicalSessionId: "mcp-prod-1",
+      mcpCoordinatorSession: "coord:prod-e2e",
+    };
+
+    // 3. Delegate task via RuntimeEngine -> Worker process -> mcpServers child -> IPC -> OrchestrationService
+    const res1 = await engine.prompt({
+      ...sessionInput,
+      text: "delegate:review PR8 production topology",
+    });
+    const parsed1 = JSON.parse(res1.text);
+    expect(parsed1.toolResult.isError).not.toBe(true);
+    const taskId = parsed1.toolResult.structuredContent.taskId;
+    const workerSession = parsed1.toolResult.structuredContent.workerSession;
+    expect(taskId).toBe("t1");
+    expect(workerSession).toBeDefined();
+
+    // Verify task is recorded in OrchestrationService
+    const taskInService = await service.getTask(taskId);
+    expect(taskInService?.status).toBe("running");
+    expect(taskInService?.coordinatorSession).toBe("coord:prod-e2e");
+    expect(taskInService?.task).toBe("review PR8 production topology");
+
+    // 4. Create scheduled task via worker -> mcpServers child -> IPC -> ScheduledTaskService
+    const resSched = await engine.prompt({
+      ...sessionInput,
+      text: "scheduled_create:daily verification",
+    });
+    const parsedSched = JSON.parse(resSched.text);
+    expect(parsedSched.toolResult.isError).not.toBe(true);
+    const schedId = parsedSched.toolResult.structuredContent.id;
+    expect(schedId).toBeDefined();
+
+    // Verify scheduled task persisted in StateStore on disk
+    const diskLoaded = await diskStore.load();
+    expect(diskLoaded.scheduled_tasks[schedId]?.message).toBe("daily verification");
+
+    // 5. Worker result -> Coordinator wake via OrchestrationService
+    const replyRes = await service.recordWorkerReply({
+      taskId,
+      sourceHandle: workerSession,
+      status: "completed",
+      resultText: "PR8 verified successfully",
+      summary: "verified topology",
+    });
+    expect(replyRes.status).toBe("completed");
+    const taskAfterReply = await service.getTask(taskId);
+    expect(taskAfterReply?.status).toBe("completed");
+
+    // 6. Cool session (terminate worker process) & restart preserves orchestration state
+    const pidBeforeCool = (engine as unknown as { manager: { get: (k: string) => { ref: { pid: number } } } }).manager.get("mcp-prod-1")?.ref.pid;
+    await engine.freeWarmProcess(sessionInput);
+
+    // Re-prompt on restarted worker: list scheduled tasks & cancel
+    const resList = await engine.prompt({
+      ...sessionInput,
+      text: "scheduled_list",
+    });
+    const parsedList = JSON.parse(resList.text);
+    expect(parsedList.toolResult.isError).not.toBe(true);
+    const pendingList = parsedList.toolResult.structuredContent.tasks;
+    expect(pendingList.map((t: { id: string }) => t.id)).toContain(schedId);
+
+    const resCancel = await engine.prompt({
+      ...sessionInput,
+      text: `scheduled_cancel:${schedId}`,
+    });
+    const parsedCancel = JSON.parse(resCancel.text);
+    expect(parsedCancel.toolResult.isError).not.toBe(true);
+    expect(parsedCancel.toolResult.structuredContent.cancelled).toBe(true);
+
+    const pidAfterRestart = (engine as unknown as { manager: { get: (k: string) => { ref: { pid: number } } } }).manager.get("mcp-prod-1")?.ref.pid;
+    expect(pidAfterRestart).toBeDefined();
+    expect(pidAfterRestart).not.toBe(pidBeforeCool);
+
+    await engine.shutdown();
+    await orchServer.stop();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("PR8 Production Topology E2E: RuntimeWorkerClient direct child process -> mock MCP server -> IPC -> OrchestrationService & wake", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-worker-client-e2e-"));
+  try {
+    const harness = makeGoldenHarness({
+      ids: ["t1", "t2", "t3"],
+      now: "2026-05-16T00:00:00.000Z",
+    });
+    const service = new OrchestrationService(harness.deps);
+    await service.registerExternalCoordinator({
+      coordinatorSession: "coord:worker-client-e2e",
+      workspace: "backend",
+    });
+
+    const endpoint = resolveOrchestrationEndpoint(dir);
+    const orchServer = new OrchestrationServer(endpoint, {
+      registerExternalCoordinator: async (input) => service.registerExternalCoordinator(input),
+      requestDelegate: async (input) => service.requestDelegate(input),
+      getTask: async (id) => service.getTask(id),
+      listTasks: async (f) => service.listTasks(f),
+      recordWorkerReply: async (input) => service.recordWorkerReply(input),
+    });
+    await orchServer.start();
+
+    // Mock MCP server script
+    const mcpServerScript = join(dir, "mcp-server.mjs");
+    await writeFile(
+      mcpServerScript,
+      `
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { createXacpxMcpServer } from "${join(process.cwd(), "src/mcp/xacpx-mcp-server.ts")}";
+import { createOrchestrationTransport } from "${join(process.cwd(), "src/mcp/xacpx-mcp-transport.ts")}";
+import { OrchestrationClient } from "${join(process.cwd(), "src/orchestration/orchestration-client.ts")}";
+import { resolveDefaultOrchestrationEndpoint } from "${join(process.cwd(), "src/mcp/resolve-endpoint.ts")}";
+
+function parseArg(flag) {
+  const idx = process.argv.indexOf(flag);
+  return idx >= 0 && idx + 1 < process.argv.length ? process.argv[idx + 1] : undefined;
+}
+
+const coordinatorSession = parseArg("--coordinator-session") || process.env.XACPX_COORDINATOR_SESSION;
+const endpoint = resolveDefaultOrchestrationEndpoint(process.env, process.platform);
+const client = new OrchestrationClient(endpoint);
+const transport = createOrchestrationTransport(endpoint, { client });
+const server = createXacpxMcpServer({
+  transport,
+  coordinatorSession,
+  internalSessionTools: true,
+});
+const stdio = new StdioServerTransport(process.stdin, process.stdout);
+await server.connect(stdio);
+`,
+    );
+
+    // Worker script
+    const workerScript = join(dir, "worker.mjs");
+    await writeFile(
+      workerScript,
+      `
+import { createInterface } from "node:readline";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
+import { buildXacpxMcpServerSpec } from "${join(process.cwd(), "src/transport/acpx-queue-owner-launcher.ts")}";
+
+let state = {
+  ensureParams: null,
+  mcpServers: null,
+};
+
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+rl.on("line", async (line) => {
+  if (!line.trim()) return;
+  const msg = JSON.parse(line);
+  if (msg.method === "ensure") {
+    state.ensureParams = msg.params;
+    state.mcpServers = [
+      buildXacpxMcpServerSpec({
+        xacpxCommand: "${process.execPath} ${mcpServerScript}",
+        coordinatorSession: msg.params.mcpCoordinatorSession,
+      }),
+    ];
+    process.stdout.write(JSON.stringify({
+      id: msg.id,
+      ok: true,
+      result: { ready: true, sessionKey: msg.params.sessionKey, mcpServers: state.mcpServers },
+    }) + "\\n");
+  } else if (msg.method === "prompt") {
+    try {
+      const serverSpec = state.mcpServers?.[0];
+      const transport = new StdioClientTransport({
+        command: serverSpec.command,
+        args: serverSpec.args,
+        env: { ...process.env, XACPX_ORCHESTRATION_SOCKET: "${endpoint.path}" },
+      });
+      const mcpClient = new Client({ name: "client-e2e", version: "1.0.0" });
+      await mcpClient.connect(transport);
+
+      const res = await mcpClient.request(
+        {
+          method: "tools/call",
+          params: {
+            name: "delegate_request",
+            arguments: { targetAgent: "codex", task: msg.params.text, workingDirectory: "/tmp/backend" },
+          },
+        },
+        CallToolResultSchema,
+      );
+      await mcpClient.close();
+
+      process.stdout.write(JSON.stringify({
+        id: msg.id,
+        ok: true,
+        result: {
+          result: { status: "completed" },
+          finalText: JSON.stringify(res),
+        },
+      }) + "\\n");
+    } catch (err) {
+      process.stdout.write(JSON.stringify({
+        id: msg.id,
+        ok: false,
+        error: { code: "RUNTIME_ENGINE_ERROR", message: err.message },
+      }) + "\\n");
+    }
+  } else if (msg.method === "shutdown") {
+    process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { quiesced: true } }) + "\\n");
+    process.exit(0);
+  } else {
+    process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + "\\n");
+  }
+});
+`,
+    );
+
+    const client = new RuntimeWorkerClient(workerScript, "direct-session-1");
+    client.spawn();
+    expect(client.alive).toBe(true);
+
+    const ensureResult = (await client.request("ensure", {
+      sessionKey: "direct-session-1",
+      agent: "codex",
+      cwd: "/tmp/backend",
+      mcpCoordinatorSession: "coord:worker-client-e2e",
+    })) as { ready: boolean; mcpServers: Array<{ name: string; command: string; args: string[] }> };
+
+    expect(ensureResult.ready).toBe(true);
+    expect(ensureResult.mcpServers.length).toBe(1);
+    expect(ensureResult.mcpServers[0].name).toBe("xacpx");
+    expect(ensureResult.mcpServers[0].args).toContain("--coordinator-session");
+    expect(ensureResult.mcpServers[0].args).toContain("coord:worker-client-e2e");
+
+    const promptResult = (await client.request("prompt", {
+      text: "delegate task direct",
+    })) as { result: { status: string }; finalText: string };
+
+    expect(promptResult.result.status).toBe("completed");
+    const parsed = JSON.parse(promptResult.finalText);
+    expect(parsed.isError).not.toBe(true);
+    const taskId = parsed.structuredContent.taskId;
+    const workerSession = parsed.structuredContent.workerSession;
+    expect(taskId).toBe("t1");
+
+    const task = await service.getTask("t1");
+    expect(task?.status).toBe("running");
+    expect(task?.task).toBe("delegate task direct");
+
+    await service.recordWorkerReply({
+      taskId: "t1",
+      sourceHandle: workerSession,
+      status: "completed",
+      resultText: "done direct",
+      summary: "done",
+    });
+    const completedTask = await service.getTask("t1");
+    expect(completedTask?.status).toBe("completed");
+
+    await client.shutdown();
+    await client.terminate();
+    await orchServer.stop();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 30_000);

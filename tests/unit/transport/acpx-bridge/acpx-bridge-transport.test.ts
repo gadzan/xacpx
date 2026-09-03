@@ -903,3 +903,51 @@ test("bridge transport proxies native session methods", async () => {
     },
   ]);
 });
+
+test("bridge transport proxies primeRuntimeQueues mapping sessions to EngineSessionInput shape", async () => {
+  const requests: Array<{ method: string; params: unknown }> = [];
+  const transport = new AcpxBridgeTransport({
+    request: async (method, params) => {
+      requests.push({ method, params });
+      return {};
+    },
+  });
+
+  const runtimeSession: ResolvedSession = {
+    alias: "runtime-demo",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "backend:runtime-demo",
+    cwd: "/tmp/backend",
+    logicalSessionId: "log-sess-1",
+    transportEngine: "runtime",
+  };
+
+  await transport.primeRuntimeQueues([runtimeSession]);
+
+  expect(requests).toEqual([
+    {
+      method: "primeRuntimeQueues",
+      params: {
+        sessions: [
+          {
+            agent: "codex",
+            driver: undefined,
+            settingsPolicy: undefined,
+            agentCommand: undefined,
+            acpxAgent: undefined,
+            rawCommand: undefined,
+            agentArgv: undefined,
+            cwd: "/tmp/backend",
+            name: "backend:runtime-demo",
+            mcpCoordinatorSession: undefined,
+            mcpSourceHandle: undefined,
+            replyMode: "verbose",
+            logicalSessionId: "log-sess-1",
+            transportEngine: "runtime",
+          },
+        ],
+      },
+    },
+  ]);
+});

@@ -7,6 +7,7 @@ export type BridgeMethod =
   | "ping"
   | "shutdown"
   | "updatePermissionPolicy"
+  | "primeRuntimeQueues"
   | "ensureSession"
   | "hasSession"
   | "tailSessionHistory"

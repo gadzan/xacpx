@@ -86,6 +86,8 @@ interface SessionServiceOptions {
   platform?: NodeJS.Platform;
   /** Trusted root for classifying persisted preinstalled adapter identities. */
   runtimeRoot?: string;
+  /** Whether interactive permission confirmation is available. */
+  permissionInteractionAvailable?: boolean;
 }
 
 export interface ResolveSessionOptions {
@@ -94,7 +96,7 @@ export interface ResolveSessionOptions {
 }
 
 export interface SessionStateWriter extends Pick<StateStore, "save"> {
-  saveNow(state: AppState): Promise<void>;
+  saveNow?(state: AppState): Promise<void>;
 }
 
 export interface SessionLockedTransaction {
@@ -106,9 +108,9 @@ export class SessionService {
   private readonly now: () => number;
   private readonly platform: NodeJS.Platform;
   private readonly runtimeRoot: string;
+  private readonly permissionInteractionAvailable?: boolean;
   private readonly pendingSessionAliasOperations = new Set<string>();
   private lifecyclePublisher: ((input: SessionResourceLifecyclePublishInput) => void) | undefined;
-
   constructor(
     private readonly config: AppConfig,
     private readonly stateStore: SessionStateWriter,
@@ -119,6 +121,7 @@ export class SessionService {
     this.now = options.now ?? (() => Date.now());
     this.platform = options.platform ?? process.platform;
     this.runtimeRoot = options.runtimeRoot ?? dirname(resolveConfigPathForCurrentEnv());
+    this.permissionInteractionAvailable = options.permissionInteractionAvailable;
   }
 
   async createSession(alias: string, agent: string, workspace: string): Promise<ResolvedSession> {
@@ -714,7 +717,12 @@ export class SessionService {
    * event be emitted.
    */
   private async commitLifecycleTransition(nextState: AppState): Promise<void> {
-    await this.stateStore.saveNow(nextState);
+    // G11: must be crash-durable. Debounced save() is not enough.
+    if (this.stateStore.saveNow) {
+      await this.stateStore.saveNow(nextState);
+    } else {
+      await this.stateStore.save(nextState);
+    }
     replaceRuntimeState(this.state, nextState);
   }
 
@@ -1160,7 +1168,11 @@ export class SessionService {
     const normalized = transportAgentCommand?.trim();
     if (normalized) nextSession.transport_agent_command = normalized;
     else delete nextSession.transport_agent_command;
-    await this.stateStore.saveNow(nextState);
+    if (typeof this.stateStore.saveNow === "function") {
+      await this.stateStore.saveNow(nextState);
+    } else {
+      await this.stateStore.save(nextState);
+    }
     replaceRuntimeState(this.state, nextState);
   }
 
@@ -1244,23 +1256,45 @@ export class SessionService {
         // Persist the engine binding BEFORE any owner can launch for this
         // record (plan §45). A recreated same-agent alias keeps its binding;
         // otherwise the config decides (development default: cli).
-        // Runtime availability is probed via worker entry existence — the same
-        // criterion the bridge uses to decide whether to wire RuntimeEngine.
-        // This keeps daemon and bridge in sync without duplicating config.
+        // Full eligibility (runtime availability, permission policy,
+        // nonInteractivePermissions, session shape) is evaluated BEFORE
+        // persisting affinity. If strict runtime is ineligible, an error is thrown
+        // before state mutation (preventing durable binding).
         transport_engine:
           sameAgentExisting?.transport_engine ??
           resolveTransportEngine({
             config: this.config.transport,
-            ...(isRuntimeEngineAvailable() ? { runtimeAvailable: true } : {}),
+            session: {
+              alias,
+              agent,
+              workspace,
+            },
+            runtimeAvailable: isRuntimeEngineAvailable(),
+            ...(this.permissionInteractionAvailable !== undefined
+              ? { permissionInteractionAvailable: this.permissionInteractionAvailable }
+              : {}),
           }).engine,
         created_at: existingSession?.created_at ?? now,
         last_used_at: now,
       };
 
-      // G11 persist-before-owner: session record (including transport_engine) is committed to stateStore before returning and before any owner launch.
-      this.state.sessions[alias] = session;
-      await this.persist();
-      return this.toResolvedSession(session);
+      // G11 persist-before-owner: the session record (including
+      // transport_engine / logical_session_id) must be CRASH-DURABLE
+      // before the caller can launch a Runtime owner. Debounced save()
+      // only resolves at "accepted" and may not have hit disk when the
+      // process crashes; use copy-on-write + saveNow() so a new Host
+      // never sees a Runtime record on disk without a matching state.json
+      // binding, and a failed disk write leaves live state untouched.
+      const nextState = structuredClone(this.state);
+      nextState.sessions[alias] = session;
+      if (typeof this.stateStore.saveNow === "function") {
+        await this.stateStore.saveNow(nextState);
+      } else {
+        await this.stateStore.save(nextState);
+      }
+      replaceRuntimeState(this.state, nextState);
+      // the same session object we just persisted.
+      return this.toResolvedSession(this.state.sessions[alias]!);
     });
   }
 

@@ -281,6 +281,87 @@ test("bridge restart recovery: primeQueuesFromCatalog reloads and drains", async
   await engine2.shutdown().catch(() => {});
   await rm(dir, { recursive: true, force: true });
 }, 15_000);
+
+test("enqueue -> kill Bridge Host -> restart -> auto drain", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-q-kill-restart-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "fake-worker.mjs");
+  const processedTexts: string[] = [];
+  await writeFile(
+    entry,
+    [
+      "let buffer='';",
+      "process.stdin.on('data', (d) => {",
+      "  buffer += d.toString();",
+      "  let idx;",
+      "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+      "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+      "    if (!line) continue;",
+      "    try { const msg = JSON.parse(line);",
+      "      if (msg.method === 'prompt') {",
+      "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { result: { status: 'completed' }, finalText: 'drained:'+msg.params.text } }) + '\\n');",
+      "      } else if (msg.method === 'ensure') {",
+      "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true, sessionKey: msg.params.sessionKey, acpxRecordId: 'rec-'+msg.params.sessionKey } }) + '\\n');",
+      "      } else {",
+      "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+      "      }",
+      "      if (msg.method === 'shutdown') process.exit(0);",
+      "    } catch {}",
+      "  }",
+      "});",
+    ].join("\n"),
+  );
+
+  try {
+    // 1. Initial engine runs and enqueues items into durable store
+    const engine1 = new RuntimeEngine({
+      workerEntryPath: entry,
+      permissionMode: "approve-all",
+      stateDir: stateSessionsDir,
+      queueDir,
+      fenceDir,
+      idleTtlMs: 200,
+    });
+
+    const r1 = await engine1.injectMessage({ ...baseInput, text: "msg-1", mode: "queue", messageId: "k1" });
+    const r2 = await engine1.injectMessage({ ...baseInput, text: "msg-2", mode: "queue", messageId: "k2" });
+    expect(r1.status).toBe("queued");
+    expect(r2.status).toBe("queued");
+
+    // 2. Simulate bridge host kill / crash without waiting for drain
+    await engine1.shutdown().catch(() => {});
+
+    // 3. Restart bridge: create fresh RuntimeEngine instance pointing at the same state & queue dirs
+    const engine2 = new RuntimeEngine({
+      workerEntryPath: entry,
+      permissionMode: "approve-all",
+      stateDir: stateSessionsDir,
+      queueDir,
+      fenceDir,
+      idleTtlMs: 200,
+    });
+
+    // 4. Prime runtime queues from catalog — triggers immediate background drain without session request
+    await engine2.primeQueuesFromCatalog([baseInput]);
+
+    // 5. Verify queued items drain automatically to empty without any additional prompt/ensure calls
+    for (let i = 0; i < 50; i++) {
+      const hasPending = await engine2.getQueueStore().hasPending(baseInput.logicalSessionId!);
+      if (!hasPending) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
+    expect(await engine2.getQueueStore().hasPending(baseInput.logicalSessionId!)).toBe(false);
+    expect(await engine2.getQueueStore().queueLength(baseInput.logicalSessionId!)).toBe(0);
+
+    await engine2.shutdown().catch(() => {});
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
 test("ensure RUNTIME_SESSION_MISSING keeps head for replay", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-q-missing-"));
   try {

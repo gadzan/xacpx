@@ -172,7 +172,7 @@ export class EngineRouter implements BridgeEngine {
 
     return {};
   }
-  async primeRuntimeQueues(sessions: import("./bridge-engine").EngineSessionInput[]): Promise<void> {
+  async primeRuntimeQueues(sessions: EngineSessionInput[]): Promise<void> {
     const rt = this.runtime as unknown as { primeQueuesFromCatalog?: (s: unknown[]) => Promise<void> } | undefined;
     if (rt?.primeQueuesFromCatalog) await rt.primeQueuesFromCatalog(sessions as unknown[]);
   }

@@ -157,6 +157,22 @@ export class RuntimeWorkerManager {
    * spawn path.
    */
   async acquire(logicalWorkerKey: string, physicalFenceKey = logicalWorkerKey): Promise<RuntimeWorkerClient> {
+    // Warm reuse must not be blocked by discharging its own fence.
+    // Check existing alive worker first (logical key) before touching the
+    // physical fence. This keeps the stable-hash G2 path (logical != physical)
+    // from trying to discharge its own admitted fence on every reuse.
+    if (this.fence()) {
+      const existing = this.workersByKey.get(logicalWorkerKey);
+      if (
+        existing &&
+        existing.alive &&
+        existing.lifecycle !== "failed" &&
+        existing.lifecycle !== "cooling" &&
+        existing.lifecycle !== "stopped"
+      ) {
+        return existing;
+      }
+    }
     await this.dischargeStaleFence(physicalFenceKey);
     if (this.fence()) {
       const existing = this.workersByKey.get(logicalWorkerKey);
