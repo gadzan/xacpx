@@ -272,7 +272,9 @@ function isWorkerBindingRecord(value: unknown): value is WorkerBindingRecord {
     isString(value.targetAgent) &&
     isOptionalString(value.role) &&
     isOptionalBoolean(value.ephemeral) &&
-    isOptionalBoolean(value.guardAcpOutput)
+    isOptionalBoolean(value.guardAcpOutput) &&
+    isOptionalString(value.logicalSessionId) &&
+    (value.transportEngine === undefined || value.transportEngine === "cli" || value.transportEngine === "runtime")
   );
 }
 

@@ -73,6 +73,10 @@ import {
   createActiveTurnRegistry,
   type ActiveTurnRegistry,
 } from "./sessions/active-turn-registry";
+import {
+  probeRuntimeWorkerAvailable,
+  resolveTransportEngine,
+} from "./sessions/transport-engine";
 import { DebouncedStateStore } from "./state/debounced-state-store";
 import { StateStore } from "./state/state-store";
 import type { AppState } from "./state/types";
@@ -125,6 +129,100 @@ import {
   ensureAgentOverlays,
   type EnsureAgentOverlaysResult,
 } from "./transport/acpx-agent-overlay";
+import {
+  isEligibleForRuntime,
+  parseXacpxPermissionPolicy,
+  type XacpxPermissionPolicy,
+} from "./bridge/engine/runtime/runtime-permission-policy";
+
+export interface ApplyRuntimePermissionConfigOptions {
+  config: AppConfig;
+  nextConfig: AppConfig;
+  sessions: SessionService;
+  transport: SessionTransport;
+  provisionOverlays: (target: AppConfig) => Promise<void>;
+  logger: AppLogger;
+}
+
+export async function applyRuntimePermissionConfig(
+  options: ApplyRuntimePermissionConfigOptions,
+): Promise<AppConfig> {
+  const { config, nextConfig, sessions, transport, provisionOverlays, logger } =
+    options;
+  try {
+    // 1. Parse / validate permission policy if present
+    let parsedPolicy: XacpxPermissionPolicy | undefined;
+    if (nextConfig.transport.permissionPolicy !== undefined) {
+      if (
+        typeof nextConfig.transport.permissionPolicy === "object" &&
+        nextConfig.transport.permissionPolicy !== null
+      ) {
+        parsedPolicy = nextConfig.transport.permissionPolicy as XacpxPermissionPolicy;
+      } else {
+        parsedPolicy = parseXacpxPermissionPolicy(
+          nextConfig.transport.permissionPolicy,
+        );
+      }
+    }
+
+    // 2. Reject if persisted runtime bindings exist and next config is runtime-ineligible
+    const hasRuntimeSessions = sessions
+      .listAllResolvedSessions()
+      .some((s) => s.transportEngine === "runtime");
+    if (hasRuntimeSessions) {
+      const eligible = isEligibleForRuntime(
+        parsedPolicy,
+        nextConfig.transport.nonInteractivePermissions,
+        false,
+      );
+      if (!eligible) {
+        throw new Error(
+          'cannot apply permission policy: runtime-ineligible policy (nonInteractive="fail" or escalate without interactive) with active runtime sessions',
+        );
+      }
+    }
+
+    // 3. Diff permission tuple (mode / nonInteractive / policy)
+    const currentMode = config.transport.permissionMode;
+    const currentNonInteractive = config.transport.nonInteractivePermissions;
+    const currentPolicy = config.transport.permissionPolicy;
+
+    const nextMode = nextConfig.transport.permissionMode;
+    const nextNonInteractive = nextConfig.transport.nonInteractivePermissions;
+    const nextPolicy = nextConfig.transport.permissionPolicy;
+
+    const permissionChanged =
+      currentMode !== nextMode ||
+      currentNonInteractive !== nextNonInteractive ||
+      currentPolicy !== nextPolicy;
+
+    // 4. If changed => prepare/commit via transport.updatePermissionPolicy + verify
+    if (permissionChanged && transport.updatePermissionPolicy) {
+      await transport.updatePermissionPolicy({
+        permissionMode: nextMode,
+        nonInteractivePermissions: nextNonInteractive,
+        ...(typeof nextPolicy === "string"
+          ? { permissionPolicy: nextPolicy }
+          : {}),
+      });
+    }
+
+    // 5. Only then provision overlays and replace runtime config
+    await provisionOverlays(nextConfig);
+    setLocale(resolveLocale({ configLanguage: nextConfig.language }));
+    replaceRuntimeConfig(config, nextConfig);
+    return config;
+  } catch (error) {
+    void logger.error(
+      "config.reload_failed",
+      "failed to reload config after file change",
+      {
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+    throw error;
+  }
+}
 
 async function defaultProvisionAgentOverlays(
   config: AppConfig,
@@ -185,6 +283,8 @@ export interface AppRuntime {
   reapStaleQueueOwners: () => Promise<void>;
   reconcileOrphans?: () => Promise<void>;
   dispose: () => Promise<void>;
+  reloadRuntimeConfig?: () => Promise<AppConfig>;
+  applyRuntimePermissionConfig?: (nextConfig: AppConfig) => Promise<AppConfig>;
 }
 
 interface RuntimeDeps {
@@ -306,19 +406,6 @@ export async function buildApp(
   // Hot-reload path: any new/changed agent (argv, adapter pin, registry) may need
   // a fresh overlay alias. Provision BEFORE swapping the in-memory config so a
   // conflicting/failed overlay never leaves memory and disk disagreeing.
-  const provisionOverlays = async (target: AppConfig): Promise<void> => {
-    await (deps.provisionAgentOverlays ?? defaultProvisionAgentOverlays)(
-      target,
-      logger,
-    );
-  };
-  const reloadRuntimeConfig = async (): Promise<AppConfig> => {
-    const updated = await configStore.load();
-    await provisionOverlays(updated);
-    setLocale(resolveLocale({ configLanguage: updated.language }));
-    replaceRuntimeConfig(config, updated);
-    return config;
-  };
   const logger = createAppLogger({
     filePath: resolveAppLogPath(paths.configPath),
     level: config.logging.level,
@@ -331,6 +418,15 @@ export async function buildApp(
   // world-readable /tmp/openclaw). Must run before any weixin activity starts.
   setWeixinLog(logger);
   await logger.cleanup();
+  // Hot-reload path: any new/changed agent (argv, adapter pin, registry) may need
+  // a fresh overlay alias. Provision BEFORE swapping the in-memory config so a
+  // conflicting/failed overlay never leaves memory and disk disagreeing.
+  const provisionOverlays = async (target: AppConfig): Promise<void> => {
+    await (deps.provisionAgentOverlays ?? defaultProvisionAgentOverlays)(
+      target,
+      logger,
+    );
+  };
   const perfLogPath = paths.perfLogPath ?? resolvePerfLogPath(paths.configPath);
   const perfTracer: PerfTracer = config.logging.perf.enabled
     ? createPerfTracer({
@@ -447,6 +543,38 @@ export async function buildApp(
     stateMutex,
     runtimeRoot,
   });
+  const initialRuntimeSessions = sessions
+    .listAllResolvedSessions()
+    .some((s) => s.transportEngine === "runtime");
+  if (initialRuntimeSessions) {
+    let startupPolicy: XacpxPermissionPolicy | undefined;
+    if (config.transport.permissionPolicy !== undefined) {
+      try {
+        startupPolicy =
+          typeof config.transport.permissionPolicy === "object" &&
+          config.transport.permissionPolicy !== null
+            ? (config.transport.permissionPolicy as XacpxPermissionPolicy)
+            : parseXacpxPermissionPolicy(config.transport.permissionPolicy);
+      } catch {
+        // malformed policy
+      }
+    }
+    const startupEligible = isEligibleForRuntime(
+      startupPolicy,
+      config.transport.nonInteractivePermissions,
+      false,
+    );
+    if (!startupEligible) {
+      await logger.error(
+        "health.runtime_ineligible_with_bindings",
+        "state has persisted runtime bindings but current config is runtime-ineligible",
+        {
+          nonInteractivePermissions: config.transport.nonInteractivePermissions,
+          permissionPolicy: config.transport.permissionPolicy,
+        },
+      );
+    }
+  }
   // Generic catalog over logical session resources (immutable id, aliases,
   // authoritative workspace cwd, archived flag). Structured channels consume
   // it via ChannelStartInput.sessionResources. Archive/restore/remove
@@ -618,6 +746,48 @@ export async function buildApp(
     logger,
     resolveDriver: (agent) => config.agents[agent]?.driver,
   });
+  // PR10 capability gate: ask the Bridge host for its real Runtime capability
+  // (public acpx/runtime import + contract probe on the host that will own
+  // workers). Cached into SessionService so auto/strict resolution gates on
+  // the probe BEFORE persisting affinity — a worker file existing locally
+  // must never bind runtime when the Bridge host cannot pass the probe.
+  // Best-effort: on probe failure the local file check remains the fallback.
+  try {
+    const maybeCapable = baseTransport as unknown as { getEngineCapabilities?: () => Promise<{ runtimeAvailable?: boolean; runtimeImportOk?: boolean; contractProbeOk?: boolean }> };
+    if (typeof maybeCapable.getEngineCapabilities === "function") {
+      const capabilities = await maybeCapable.getEngineCapabilities();
+      sessions.setRuntimeCapability({
+        ...(capabilities.runtimeAvailable !== undefined ? { runtimeAvailable: capabilities.runtimeAvailable } : {}),
+        ...(capabilities.runtimeImportOk !== undefined ? { runtimeImportOk: capabilities.runtimeImportOk } : {}),
+        ...(capabilities.contractProbeOk !== undefined ? { contractProbeOk: capabilities.contractProbeOk } : {}),
+      });
+      await logger.info("transport.engine.capabilities", "cached Bridge engine capabilities", {
+        runtimeAvailable: capabilities.runtimeAvailable,
+        runtimeImportOk: capabilities.runtimeImportOk,
+        contractProbeOk: capabilities.contractProbeOk,
+      }).catch(() => {});
+    }
+  } catch (error) {
+    await logger.warn("transport.engine.capabilities_failed", "Bridge capability probe failed; using local availability check", {
+      error: error instanceof Error ? error.message : String(error),
+    }).catch(() => {});
+  }
+  const applyPermissionConfig = async (
+    nextConfig: AppConfig,
+  ): Promise<AppConfig> => {
+    return await applyRuntimePermissionConfig({
+      config,
+      nextConfig,
+      sessions,
+      transport,
+      provisionOverlays,
+      logger,
+    });
+  };
+  const reloadRuntimeConfig = async (): Promise<AppConfig> => {
+    const updated = await configStore.load();
+    return await applyPermissionConfig(updated);
+  };
   // Per-chatKey outbound quota (WeChat 24h budget). Shared across SDK boundary
   // (inbound reset / final reservation) and orchestration deliveries (mid gate).
   // Observer pipes every quota decision into the AppLogger so the path is
@@ -843,6 +1013,38 @@ export async function buildApp(
       return undefined;
     }
   };
+  const ensureWorkerBindingIdentity = async (input: {
+    workerSession: string;
+    targetAgent: string;
+    workspace: string;
+  }): Promise<void> => {
+    const binding = state.orchestration.workerBindings[input.workerSession];
+    if (!binding) {
+      return;
+    }
+    let needsSave = false;
+    if (!binding.logicalSessionId) {
+      binding.logicalSessionId = randomUUID();
+      needsSave = true;
+    }
+    if (!binding.transportEngine) {
+      const choice = resolveTransportEngine({
+        config: config.transport,
+        session: {
+          alias: input.workerSession,
+          agent: input.targetAgent,
+          workspace: input.workspace,
+          transport_engine: binding.transportEngine,
+        },
+        runtimeAvailable: probeRuntimeWorkerAvailable(),
+      });
+      binding.transportEngine = choice.engine;
+      needsSave = true;
+    }
+    if (needsSave) {
+      await debouncedStateStore.saveNow(state);
+    }
+  };
 
   const resolveWorkerRuntimeSession = (
     input: {
@@ -851,20 +1053,43 @@ export async function buildApp(
       workspace: string;
       cwd?: string;
     },
-    bindingSnapshot?: Pick<WorkerBindingRecord, "guardAcpOutput">,
+    bindingSnapshot?: Pick<
+      WorkerBindingRecord,
+      "guardAcpOutput" | "logicalSessionId" | "transportEngine"
+    >,
   ): ResolvedSession => {
     const binding =
       bindingSnapshot ??
       state.orchestration.workerBindings[input.workerSession];
     const guardAcpOutput = shouldGuardWorkerAcpOutput(binding);
+    const logicalSessionId = binding?.logicalSessionId;
+    const transportEngine =
+      binding?.transportEngine ??
+      resolveTransportEngine({
+        config: config.transport,
+        session: {
+          alias: input.workerSession,
+          agent: input.targetAgent,
+          workspace: input.workspace,
+          transport_engine: binding?.transportEngine,
+        },
+        runtimeAvailable: probeRuntimeWorkerAvailable(),
+      }).engine;
+
     if (!input.cwd) {
-      return sessions.resolveSession(
+      const resolved = sessions.resolveSession(
         input.workerSession,
         input.targetAgent,
         input.workspace,
         input.workerSession,
         { guardAcpOutput },
       );
+      return {
+        ...resolved,
+        ...(logicalSessionId ? { logicalSessionId } : {}),
+        transportEngine:
+          binding?.transportEngine ?? resolved.transportEngine ?? transportEngine,
+      };
     }
 
     const agentConfig = config.agents[input.targetAgent];
@@ -890,6 +1115,8 @@ export async function buildApp(
       workspace: input.workspace,
       transportSession: input.workerSession,
       cwd: input.cwd,
+      ...(logicalSessionId ? { logicalSessionId } : {}),
+      transportEngine,
     };
   };
 
@@ -906,6 +1133,11 @@ export async function buildApp(
       let taskRecord: OrchestrationTaskRecord | undefined;
       try {
         await reloadRuntimeConfig();
+        await ensureWorkerBindingIdentity({
+          workerSession: input.workerSession,
+          targetAgent: input.targetAgent,
+          workspace: input.workspace,
+        });
         const session = resolveWorkerRuntimeSession(input);
         session.mcpCoordinatorSession = input.coordinatorSession;
         session.mcpSourceHandle = input.workerSession;
@@ -1076,6 +1308,11 @@ export async function buildApp(
       coordinatorSession,
     }) => {
       await reloadRuntimeConfig();
+      await ensureWorkerBindingIdentity({
+        workerSession,
+        targetAgent,
+        workspace,
+      });
       const session = resolveWorkerRuntimeSession({
         workerSession,
         targetAgent,
@@ -1846,6 +2083,8 @@ export async function buildApp(
       scheduler: scheduledScheduler,
     },
     control,
+    reloadRuntimeConfig,
+    applyRuntimePermissionConfig: applyPermissionConfig,
     reapStaleQueueOwners: () => reapWarmQueueOwners("startup"),
     ...(deps.orphanRegistry && deps.daemonIdentity
       ? { reconcileOrphans: () => reapWarmQueueOwners("periodic") }

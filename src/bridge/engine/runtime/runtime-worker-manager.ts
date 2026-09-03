@@ -59,6 +59,49 @@ export class RuntimeWorkerManager {
   get(key: string): RuntimeWorkerClient | undefined {
     return this.workersByKey.get(key);
   }
+  /** Returns the physical fence key registered for this logical worker, if an acquire mapping exists. */
+  physicalFenceKeyFor(logicalWorkerKey: string): string | undefined {
+    return this.physicalFenceKeys.get(logicalWorkerKey);
+  }
+
+  /**
+   * Asserts that ownership for logical session `logicalWorkerKey` (physical fence `physicalFenceKey`)
+   * is quiescent: worker process is absent or stopped, and durable fence is absent or discharged.
+   * Discharged fences are retired best-effort.
+   * Throws WorkerTeardownPendingError if worker active, fence present non-discharged, or fence unreadable.
+   */
+  async assertOwnershipQuiescent(logicalWorkerKey: string, physicalFenceKey: string): Promise<void> {
+    const worker = this.workersByKey.get(logicalWorkerKey);
+    if (worker && (worker.alive || worker.lifecycle !== "stopped")) {
+      throw new WorkerTeardownPendingError(
+        `runtime worker for session "${logicalWorkerKey}" is still active (lifecycle: ${worker.lifecycle})`,
+      );
+    }
+    const fence = this.fence();
+    if (!fence) return;
+    const read = await fence.read(physicalFenceKey);
+    if (read.kind === "absent") {
+      return;
+    }
+    if (read.kind === "unreadable") {
+      throw new WorkerTeardownPendingError(
+        `durable ownership fence for session "${logicalWorkerKey}" (physical key "${physicalFenceKey}") is unreadable: ${read.reason}`,
+      );
+    }
+    if (read.kind === "present") {
+      if (read.record.phase === "discharged") {
+        try {
+          await this.enqueueFenceWrite(physicalFenceKey, () => fence.retire(physicalFenceKey));
+        } catch {
+          // Best-effort retirement of discharged fence
+        }
+        return;
+      }
+      throw new WorkerTeardownPendingError(
+        `durable ownership fence for session "${logicalWorkerKey}" (physical key "${physicalFenceKey}") is present and not discharged (phase: ${read.record.phase}, pid: ${read.record.pid})`,
+      );
+    }
+  }
 
   lifecycleFor(key: string): WorkerLifecycle {
     return this.workersByKey.get(key)?.lifecycle ?? "stopped";

@@ -1798,3 +1798,139 @@ test("recreated session retains persisted runtime transport_engine even under in
   expect(session.transportEngine).toBe("runtime");
   expect(state.sessions["existing-rt"]?.transport_engine).toBe("runtime");
 });
+test("resolveSession carries persisted runtime transport_engine on transient resolution", () => {
+  const state = createEmptyState();
+  state.sessions["existing-rt"] = {
+    alias: "existing-rt",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:existing-rt",
+    logical_session_id: "prev-id",
+    transport_engine: "runtime",
+    created_at: new Date().toISOString(),
+    last_used_at: new Date().toISOString(),
+  };
+  const store = new MemoryStateStore();
+  const config = createConfig();
+  config.transport.engine = "cli";
+  const service = new SessionService(config, store, state);
+
+  const resolved = service.resolveSession("existing-rt", "codex", "backend", "backend:existing-rt:reset-1");
+  expect(resolved.transportEngine).toBe("runtime");
+  expect(resolved.logicalSessionId).toBe("prev-id");
+});
+
+test("rollbackSessionRecord durably restores a snapshot", async () => {
+  const state = createEmptyState();
+  const snapshot = {
+    alias: "test-sess",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:test-sess",
+    logical_session_id: "prev-id",
+    transport_engine: "runtime" as const,
+    created_at: new Date().toISOString(),
+    last_used_at: new Date().toISOString(),
+  };
+  state.sessions["test-sess"] = {
+    ...snapshot,
+    logical_session_id: "new-id",
+    transport_session: "backend:test-sess:reset-999",
+  };
+  const store = new MemoryStateStore();
+  const service = new SessionService(createConfig(), store, state);
+
+  await service.rollbackSessionRecord("test-sess", snapshot);
+  expect(state.sessions["test-sess"]?.logical_session_id).toBe("prev-id");
+  expect(state.sessions["test-sess"]?.transport_session).toBe("backend:test-sess");
+  expect(store.savedStates.at(-1)?.sessions["test-sess"]?.logical_session_id).toBe("prev-id");
+});
+
+test("rollbackSessionRecord deletes alias if snapshot was null", async () => {
+  const state = createEmptyState();
+  state.sessions["test-sess"] = {
+    alias: "test-sess",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:test-sess",
+    logical_session_id: "fresh-id",
+    transport_engine: "cli" as const,
+    created_at: new Date().toISOString(),
+    last_used_at: new Date().toISOString(),
+  };
+  const store = new MemoryStateStore();
+  const service = new SessionService(createConfig(), store, state);
+
+  await service.rollbackSessionRecord("test-sess", null);
+  expect(state.sessions["test-sess"]).toBeUndefined();
+  expect(store.savedStates.at(-1)?.sessions["test-sess"]).toBeUndefined();
+});
+
+test("updateNativeAgentSessionId updates native session fields without changing logical_session_id", async () => {
+  const state = createEmptyState();
+  state.sessions["native-sess"] = {
+    alias: "native-sess",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:native-sess:reset-1",
+    logical_session_id: "stable-lid",
+    transport_engine: "runtime",
+    source: "agent-side",
+    created_at: new Date().toISOString(),
+    last_used_at: new Date().toISOString(),
+  };
+  const store = new MemoryStateStore();
+  const service = new SessionService(createConfig(), store, state);
+
+  await service.updateNativeAgentSessionId("native-sess", "fresh-agent-id", "2026-09-03T12:00:00.000Z");
+  expect(state.sessions["native-sess"]?.logical_session_id).toBe("stable-lid");
+  expect(state.sessions["native-sess"]?.source).toBe("agent-side");
+  expect(state.sessions["native-sess"]?.agent_session_id).toBe("fresh-agent-id");
+  expect(state.sessions["native-sess"]?.agent_session_updated_at).toBe("2026-09-03T12:00:00.000Z");
+
+  // Clear native session fields on fallback
+  await service.updateNativeAgentSessionId("native-sess", undefined);
+  expect(state.sessions["native-sess"]?.logical_session_id).toBe("stable-lid");
+  expect(state.sessions["native-sess"]?.source).toBeUndefined();
+  expect(state.sessions["native-sess"]?.agent_session_id).toBeUndefined();
+});
+test("cached Bridge capability probe failure forces auto to cli before persist", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  const config = createConfig();
+  delete config.transport.command;
+  config.transport.engine = "auto";
+  const service = new SessionService(config, store, state);
+  // Worker file may exist locally, but the Bridge host failed the probe.
+  service.setRuntimeCapability({ runtimeAvailable: true, runtimeImportOk: false, contractProbeOk: false });
+  const session = await service.createSession("probe-fail", "codex", "backend");
+  expect(session.transportEngine).toBe("cli");
+  expect(state.sessions["probe-fail"]?.transport_engine).toBe("cli");
+});
+
+test("cached Bridge capability probe failure rejects strict runtime before state mutation", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  const config = createConfig();
+  delete config.transport.command;
+  config.transport.engine = "runtime";
+  const service = new SessionService(config, store, state);
+  service.setRuntimeCapability({ runtimeAvailable: true, runtimeImportOk: true, contractProbeOk: false });
+  await expect(service.createSession("probe-fail-strict", "codex", "backend")).rejects.toThrow(
+    /capability probe/,
+  );
+  expect(state.sessions["probe-fail-strict"]).toBeUndefined();
+});
+
+test("cached Bridge capability success allows auto to bind runtime", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  const config = createConfig();
+  delete config.transport.command;
+  config.transport.engine = "auto";
+  const service = new SessionService(config, store, state);
+  service.setRuntimeCapability({ runtimeAvailable: true, runtimeImportOk: true, contractProbeOk: true });
+  const session = await service.createSession("probe-ok", "codex", "backend");
+  expect(session.transportEngine).toBe("runtime");
+  expect(state.sessions["probe-ok"]?.transport_engine).toBe("runtime");
+});

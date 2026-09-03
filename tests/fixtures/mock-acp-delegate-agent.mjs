@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
-
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
 const sessions = new Map();
 
 function writeFrame(frame) {
@@ -42,19 +43,21 @@ rl.on("line", async (line) => {
       break;
     case "session/new": {
       const sessionId = `mock-${randomUUID()}`;
-      sessions.set(sessionId, { messages: [] });
+      sessions.set(sessionId, { messages: [], mcpServers: params?.mcpServers ?? [] });
       respond(id, { sessionId });
       break;
     }
     case "session/load": {
       const sessionId = typeof params?.sessionId === "string" ? params.sessionId : "mock-load";
-      if (!sessions.has(sessionId)) sessions.set(sessionId, { messages: [] });
+      if (!sessions.has(sessionId)) sessions.set(sessionId, { messages: [], mcpServers: params?.mcpServers ?? [] });
+      else if (params?.mcpServers) sessions.get(sessionId).mcpServers = params.mcpServers;
       respond(id, { sessionId, messages: sessions.get(sessionId).messages });
       break;
     }
     case "session/resume": {
       const sessionId = typeof params?.sessionId === "string" ? params.sessionId : "mock-resume";
-      if (!sessions.has(sessionId)) sessions.set(sessionId, { messages: [] });
+      if (!sessions.has(sessionId)) sessions.set(sessionId, { messages: [], mcpServers: params?.mcpServers ?? [] });
+      else if (params?.mcpServers) sessions.get(sessionId).mcpServers = params.mcpServers;
       respond(id, { sessionId });
       break;
     }
@@ -72,33 +75,62 @@ rl.on("line", async (line) => {
           status: "pending",
           rawInput: { targetAgent: "codex", task: taskText, workingDirectory: "/tmp/backend" },
         });
+        let errMsg = null;
+        let res = null;
         try {
-          const { OrchestrationClient } = await import(join(process.cwd(), "src/orchestration/orchestration-client.ts"));
-          const { resolveDefaultOrchestrationEndpoint } = await import(join(process.cwd(), "src/mcp/resolve-endpoint.ts"));
-          const endpoint = resolveDefaultOrchestrationEndpoint(process.env, process.platform);
-          process.stderr.write(`AGENT endpoint: ${endpoint.path} env: ${process.env.XACPX_ORCHESTRATION_SOCKET}\n`);
-          const client = new OrchestrationClient(endpoint);
-          const res = await client.requestDelegate({
-            coordinatorSession: process.env.XACPX_COORDINATOR_SESSION ?? "coord:real-worker",
-            sourceHandle: process.env.XACPX_SOURCE_HANDLE ?? "src-real",
-            sourceKind: "coordinator",
-            workspace: "backend",
-            targetAgent: "codex",
-            task: taskText,
-            cwd: "/tmp/backend",
-            workingDirectory: "/tmp/backend",
+          const sessData = sessions.get(sessionId);
+          const mcpServers = sessData?.mcpServers ?? [];
+          const mcpServerSpec = mcpServers.find((s) => s.name === "xacpx") ?? mcpServers[0];
+          if (!mcpServerSpec) {
+            throw new Error(`No MCP servers provided in session. sessData: ${JSON.stringify(sessData)}`);
+          }
+          const envObj = { ...process.env };
+          if (Array.isArray(mcpServerSpec.env)) {
+            for (const e of mcpServerSpec.env) {
+              if (e && typeof e.name === "string") {
+                envObj[e.name] = e.value;
+              }
+            }
+          } else if (mcpServerSpec.env && typeof mcpServerSpec.env === "object") {
+            Object.assign(envObj, mcpServerSpec.env);
+          }
+          let stdioErr = "";
+          const transport = new StdioClientTransport({
+            command: mcpServerSpec.command,
+            args: mcpServerSpec.args,
+            env: envObj,
           });
-          process.stderr.write(`AGENT delegate res: ${JSON.stringify(res)}\n`);
+          transport.stderr?.on("data", (chunk) => {
+            stdioErr += chunk.toString();
+          });
+          const client = new Client({ name: "mock-delegate-agent-mcp-client", version: "1.0.0" });
+          await client.connect(transport);
+          res = await client.request(
+            {
+              method: "tools/call",
+              params: {
+                name: "delegate_request",
+                arguments: {
+                  targetAgent: "codex",
+                  task: taskText,
+                  workingDirectory: "/tmp/backend",
+                },
+              },
+            },
+            CallToolResultSchema,
+          );
+          await client.close();
           sessionUpdate(sessionId, {
             sessionUpdate: "tool_call",
             toolCallId,
             title: "delegate_request",
             kind: "execute",
             status: "completed",
-            rawOutput: { ok: true },
+            rawOutput: res,
           });
         } catch (e) {
-          process.stderr.write(`AGENT delegate err: ${e instanceof Error ? e.stack : String(e)}\n`);
+          errMsg = `${e instanceof Error ? (e.stack || e.message) : String(e)} | STDERR: ${stdioErr}`;
+          process.stderr.write(`AGENT delegate err: ${errMsg}\n`);
           sessionUpdate(sessionId, {
             sessionUpdate: "tool_call",
             toolCallId,
@@ -110,7 +142,7 @@ rl.on("line", async (line) => {
         }
         sessionUpdate(sessionId, {
           sessionUpdate: "agent_message_chunk",
-          content: { type: "text", text: `delegated:${taskText}` },
+          content: { type: "text", text: errMsg ? `ERR:${errMsg}` : `delegated:${taskText}:res:${JSON.stringify(res)}` },
         });
         respond(id, { stopReason: "end_turn" });
       } else {

@@ -1,3 +1,5 @@
+import type { SessionTransportEngine } from "../state/types";
+
 import { resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
 import type { AgentConfig, TransportConfig } from "../config/types";
 import type { WorkerBindingRecord } from "./orchestration-types";
@@ -32,6 +34,16 @@ export function workerBindingEndpointIdentityFields(
     return { agentEndpointId: previousBinding.agentEndpointId };
   }
   return createId ? { agentEndpointId: "endpoint_" + createId() } : {};
+}
+
+/** Preserve a reusable worker's logical session id and engine affinity. */
+export function workerBindingEngineFields(
+  previousBinding: Pick<WorkerBindingRecord, "logicalSessionId" | "transportEngine"> | undefined,
+): { logicalSessionId?: string; transportEngine?: SessionTransportEngine } {
+  return {
+    ...(previousBinding?.logicalSessionId ? { logicalSessionId: previousBinding.logicalSessionId } : {}),
+    ...(previousBinding?.transportEngine ? { transportEngine: previousBinding.transportEngine } : {}),
+  };
 }
 
 export function resolveWorkerAgentLaunch(

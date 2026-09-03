@@ -14,7 +14,10 @@ import { fileURLToPath } from "node:url";
 const ROOT = fileURLToPath(new URL("../src", import.meta.url));
 const ALLOWED_FILE = join(ROOT, "bridge/engine/runtime/runtime-adapter.ts");
 // Legacy lazy require for install-hint flows; Wave B folds it into the adapter.
-const ALLOWED_LAZY_FILES = new Set([join(ROOT, "transport/agent-registry.ts")]);
+const ALLOWED_LAZY_FILES = new Set([
+  join(ROOT, "transport/agent-registry.ts"),
+  join(ROOT, "bridge/engine/runtime-capability.ts"),
+]);
 const ALLOWED_SPEC = "acpx/runtime";
 
 const violations = [];

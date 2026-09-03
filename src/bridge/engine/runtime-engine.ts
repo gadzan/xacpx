@@ -375,6 +375,8 @@ export interface RuntimeEngineOptions {
   fenceDir?: string;
   /** Override for the durable runtime queue directory (tests). Defaults to `<state root>/runtime-queue`. */
   queueDir?: string;
+  /** Quiescence timeout in ms for deleteSession / worker shutdown (tests). Defaults to 8,000. */
+  workerQuiescenceTimeoutMs?: number;
   /**
    * PR9-A: Host-side UI handler for interactive permission requests.
    * If not provided, the engine falls back to local resolver (autoDeny/autoApprove) + fail-closed.
@@ -502,89 +504,83 @@ export class RuntimeEngine implements BridgeEngine {
       // done — loop again to check for new acquiring
     }
   }
-  private async waitForWorkerQuiescence(key: string, timeoutMs = 8_000): Promise<void> {
+  private async waitForWorkerQuiescence(
+    logicalKey: string,
+    physicalKey: string,
+    timeoutMs = this.options.workerQuiescenceTimeoutMs ?? 8_000,
+  ): Promise<void> {
     // G4: ensure no worker, no acquiring, no retained fence — all part of same ownership transaction
     const start = Date.now();
     while (true) {
-      const hasAcquiring = this.acquiring.has(key);
-      const worker = this.manager?.get(key);
-      const hasWorker = !!worker;
-      let hasFence = false;
-      try {
-        const fence = (this.manager as any)?.fence?.();
-        if (fence) {
-          const read = await fence.read(key);
-          if (read.kind === "present") {
-            if (read.record.phase === "discharged") {
-              // Terminal proof: ownership already proven gone — physical file may remain,
-              // durable discharged outranks file. Best-effort retire, but do not block.
-              try {
-                await fence.retire(key);
-              } catch {}
-              hasFence = false;
-            } else {
-              hasFence = true;
-            }
-          } else if (read.kind === "unreadable") {
-            throw new RuntimeError(
-              "RUNTIME_WORKER_TEARDOWN_PENDING",
-              `cannot hard delete session "${key}" while fence unreadable`,
-            );
-          }
+      const hasAcquiring = this.acquiring.has(logicalKey);
+      let ownershipError: unknown | undefined;
+      if (this.manager) {
+        try {
+          await this.manager.assertOwnershipQuiescent(logicalKey, physicalKey);
+        } catch (err) {
+          ownershipError = err;
         }
-      } catch (err) {
-        if (err instanceof RuntimeError) throw err;
-        throw new RuntimeError(
-          "RUNTIME_WORKER_TEARDOWN_PENDING",
-          `cannot hard delete session "${key}" while fence check failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
       }
-      if (!hasAcquiring && !hasWorker && !hasFence) return;
+
+      if (!hasAcquiring && !ownershipError) return;
+
       const remaining = timeoutMs - (Date.now() - start);
       if (remaining <= 0) {
-        const reasons: string[] = [];
-        if (hasAcquiring) reasons.push("acquiring");
-        if (hasWorker) reasons.push(`worker:${worker?.lifecycle}`);
-        if (hasFence) reasons.push("fence");
-        throw new RuntimeError(
-          "RUNTIME_WORKER_TEARDOWN_PENDING",
-          `cannot hard delete session "${key}" while worker ownership not quiesced: ${reasons.join(", ")}`,
-        );
+        if (ownershipError instanceof WorkerTeardownPendingError) {
+          throw new RuntimeError(
+            "RUNTIME_WORKER_TEARDOWN_PENDING",
+            `cannot hard delete session "${logicalKey}" while worker ownership not quiesced: ${ownershipError.message}`,
+          );
+        }
+        if (ownershipError instanceof RuntimeError) throw ownershipError;
+        if (ownershipError) {
+          throw new RuntimeError(
+            "RUNTIME_WORKER_TEARDOWN_PENDING",
+            `cannot hard delete session "${logicalKey}" while worker ownership not quiesced: ${ownershipError instanceof Error ? ownershipError.message : String(ownershipError)}`,
+          );
+        }
+        if (hasAcquiring) {
+          throw new RuntimeError(
+            "RUNTIME_WORKER_TEARDOWN_PENDING",
+            `cannot hard delete session "${logicalKey}" while worker acquisition in flight`,
+          );
+        }
       }
-      // If acquiring exists, race it; otherwise poll worker/fence
+
+      // If acquiring exists, race it; otherwise poll
       if (hasAcquiring) {
-        const pending = this.acquiring.get(key)!;
+        const pending = this.acquiring.get(logicalKey)!;
         let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
         const timeoutPromise = new Promise<{ status: "timeout" }>((resolve) => {
           timeoutHandle = setTimeout(() => resolve({ status: "timeout" }), Math.min(remaining, 200));
           timeoutHandle.unref?.();
         });
-        const pendingHandled = pending.then(
+        const pendingHandled: Promise<{ status: "done" } | { status: "rejected"; error: unknown }> = pending.then(
           () => ({ status: "done" as const }),
-          (error) => ({ status: "rejected" as const, error }),
+          (error: unknown) => ({ status: "rejected" as const, error }),
         );
         pendingHandled.catch(() => {});
         const result = await Promise.race([pendingHandled, timeoutPromise]);
-        if (timeoutHandle) clearTimeout(timeoutHandle);
+        clearTimeout(timeoutHandle);
         if (result.status === "timeout") {
           pendingHandled.catch(() => {});
           continue;
         }
         if (result.status === "rejected") {
-          const err = (result as { status: "rejected"; error: unknown }).error;
+          const err = result.error;
           if (err instanceof WorkerTeardownPendingError || (err instanceof RuntimeError && err.code === "RUNTIME_WORKER_TEARDOWN_PENDING")) {
             throw new RuntimeError(
               "RUNTIME_WORKER_TEARDOWN_PENDING",
-              `cannot hard delete session "${key}" while worker acquisition failed: ${err instanceof Error ? err.message : String(err)}`,
+              `cannot hard delete session "${logicalKey}" while worker acquisition failed: ${err instanceof Error ? err.message : String(err)}`,
             );
           }
           throw err;
         }
-        // done -> loop again to re-evaluate worker/fence
+        // done -> loop again to re-evaluate
         continue;
       } else {
         const { promise, resolve } = Promise.withResolvers<void>();
-        setTimeout(resolve, 20);
+        setTimeout(resolve, Math.min(20, Math.max(1, remaining)));
         await promise;
       }
     }
@@ -1707,12 +1703,75 @@ export class RuntimeEngine implements BridgeEngine {
     return { cancelled: false, message: "cancel delivered to runtime worker" };
   }
   async removeSession(input: EngineSessionInput): Promise<Record<string, never>> {
-    // Plan §20: close() semantics differ between engines. Until parity is proven,
-    // fail loudly instead of silently diverging from CLI `sessions close`.
-    throw new RuntimeError(
-      "RUNTIME_ENGINE_UNSUPPORTED",
-      "removeSession on a runtime-bound session requires close-parity validation; use deleteSession for a hard delete",
-    );
+    // Soft close (CLI `sessions close` parity, proven in runtime-close-parity.test.ts):
+    // terminate the warm worker, mark the persistent record closed (history
+    // preserved, journal preserved), and verify physical ownership quiesced.
+    // Unlike deleteSession this never unlinks record files or the tombstone
+    // namespace, and never bumps the delete generation.
+    if (this.shuttingDown) throw new RuntimeError("RUNTIME_INIT_FAILED", "runtime engine is shutting down");
+    if (this.policyTransitionLock) {
+      await this.policyTransitionLock;
+    }
+    const key = this.workerKey(input);
+    const physicalFenceKey = this.physicalFenceKeyForInput(input);
+    try {
+      await this.waitForAcquiringQuiescence(key);
+      const client = this.manager?.get(key);
+      const recordId = await this.resolveRecordId(input, client);
+      if (client) {
+        if (!client.alive && client.lifecycle !== "stopped") {
+          throw new RuntimeError(
+            "RUNTIME_WORKER_TEARDOWN_PENDING",
+            `runtime worker for session "${key}" crashed and ownership cleanup was never verified; refusing soft close`,
+          );
+        }
+        if (client.alive) {
+          if (this.hasActiveTurn(key)) {
+            await this.waitForNoActiveTurn(key);
+          }
+          if (this.hasActiveTurn(key)) {
+            throw new RuntimeError(
+              "RUNTIME_WORKER_TEARDOWN_PENDING",
+              `cannot soft close session "${key}" while turn active`,
+            );
+          }
+          await client.request("close").catch(() => {});
+          await client.terminate().catch((error) => {
+            throw toTeardownError(key, error);
+          });
+          if (client.lifecycle === "stopped") {
+            await this.manager?.release(key, client);
+          }
+        } else {
+          this.manager?.deleteWorker(key, client);
+        }
+      }
+      if (recordId) {
+        const sessionFile = join(this.sessionsDir(), `${encodeURIComponent(recordId)}.json`);
+        try {
+          const content = await readFile(sessionFile, "utf8");
+          const record = JSON.parse(content) as Record<string, unknown>;
+          record.closed = true;
+          record.closed_at = new Date().toISOString();
+          delete record.pid;
+          const tmp = join(this.sessionsDir(), `.${encodeURIComponent(recordId)}.tmp-${Date.now()}`);
+          await writeFile(tmp, JSON.stringify(record, null, 2), "utf8");
+          await rename(tmp, sessionFile);
+        } catch (err) {
+          if (!isEnoent(err)) {
+            throw new RuntimeError("RUNTIME_INIT_FAILED", `failed to soft-close record "${recordId}": ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+      }
+      await this.waitForWorkerQuiescence(key, physicalFenceKey);
+      this.clearActiveTurn(key);
+      this.coolPending.delete(key);
+      this.recordIds.delete(key);
+      this.sessionCatalog.delete(key);
+      return {};
+    } catch (error) {
+      throw toStableRuntimeError(error);
+    }
   }
 
   async deleteSession(input: EngineSessionInput): Promise<Record<string, never>> {
@@ -1722,6 +1781,7 @@ export class RuntimeEngine implements BridgeEngine {
       await this.policyTransitionLock;
     }
     const key = this.workerKey(input);
+    const physicalFenceKey = this.physicalFenceKeyForInput(input);
     try {
       // PR6: mark deleting so new enqueue is rejected (lifecycle boundary) — inside try so finally always clears
       this.deleting.add(key);
@@ -1815,7 +1875,7 @@ export class RuntimeEngine implements BridgeEngine {
             this.manager?.deleteWorker(key, client);
           }
         }
-        await this.waitForWorkerQuiescence(key);
+        await this.waitForWorkerQuiescence(key, physicalFenceKey);
         this.clearActiveTurn(key);
         this.coolPending.delete(key);
         this.recordIds.delete(key);
@@ -1887,7 +1947,7 @@ export class RuntimeEngine implements BridgeEngine {
       }
     }
     // Final G4 ownership quiescence: hard delete success must imply no worker, no acquiring, no fence
-    await this.waitForWorkerQuiescence(key);
+    await this.waitForWorkerQuiescence(key, physicalFenceKey);
     this.clearActiveTurn(key);
     this.coolPending.delete(key);
 

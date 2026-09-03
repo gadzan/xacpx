@@ -711,6 +711,11 @@ test("wires orchestration into the runtime router so /delegate creates and persi
     transportSession: "backend:claude:backend:main",
   });
   expect(ensureSession.mock.calls.at(1)?.[0].agentArgv?.[1]).toContain("acp-output-guard-main.");
+  // Worker dispatch persists binding identity (saveNow) before the first
+  // prompt, so allow real wall-clock time for the async dispatch to arrive.
+  for (let i = 0; i < 250 && prompt.mock.calls.length < 1; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
   expect(prompt.mock.calls).toHaveLength(1);
   expect(prompt.mock.calls.at(0)?.[0]).toMatchObject({
     alias: "backend:claude:backend:main",

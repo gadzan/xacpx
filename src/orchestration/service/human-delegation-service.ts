@@ -26,6 +26,7 @@ import type {
 import type { OrchestrationStateKernel } from "./orchestration-state-kernel";
 import {
   workerBindingEndpointIdentityFields,
+  workerBindingEngineFields,
   workerBindingGuardFields,
 } from "../worker-launch";
 import type { RpcDelegationService } from "./rpc-delegation-service";
@@ -205,6 +206,7 @@ export class HumanDelegationService {
             role,
             ...workerBindingGuardFields(previousBinding),
             ...workerBindingEndpointIdentityFields(previousBinding, this.deps.createAgentEndpointId),
+            ...workerBindingEngineFields(previousBinding),
             ...(input.parallel ? { ephemeral: true } : {}),
           };
 

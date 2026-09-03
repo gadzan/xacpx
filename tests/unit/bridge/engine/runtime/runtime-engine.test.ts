@@ -84,7 +84,7 @@ test("prompt runs through the worker and returns final text; warm flips after us
   }
 }, 15_000);
 
-test("removeSession is unsupported until close-parity is proven", async () => {
+test("removeSession soft-closes the warm worker and preserves history (close parity)", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-engine-"));
   try {
     const entry = join(dir, "fake-worker.mjs");
@@ -92,7 +92,13 @@ test("removeSession is unsupported until close-parity is proven", async () => {
     const stateDir = join(dir, "state", "sessions");
     await import("node:fs/promises").then(m=>m.mkdir(stateDir,{recursive:true}));
     const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", stateDir, queueDir: join(dir, "queue"), fenceDir: join(dir, "fences") });
-    await expect(engine.removeSession(sessionInput)).rejects.toThrow(/close-parity/);
+    await engine.prompt(sessionInput);
+    expect((await engine.isSessionWarm(sessionInput)).warm).toBe(true);
+    await expect(engine.removeSession(sessionInput)).resolves.toEqual({});
+    expect((await engine.isSessionWarm(sessionInput)).warm).toBe(false);
+    // Second soft close is idempotent.
+    await expect(engine.removeSession(sessionInput)).resolves.toEqual({});
+    await engine.shutdown();
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

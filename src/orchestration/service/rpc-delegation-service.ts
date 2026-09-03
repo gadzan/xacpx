@@ -26,6 +26,7 @@ import { sameCoordinatorSession, stableCoordinatorSession } from "../coordinator
 import type { OrchestrationStateKernel } from "./orchestration-state-kernel";
 import {
   workerBindingEndpointIdentityFields,
+  workerBindingEngineFields,
   workerBindingGuardFields,
 } from "../worker-launch";
 import type { WorkerSessionManager } from "./worker-session-manager";
@@ -220,6 +221,7 @@ export class RpcDelegationService {
               role: preflight.role,
               ...workerBindingGuardFields(previousBinding),
               ...workerBindingEndpointIdentityFields(previousBinding, this.deps.createAgentEndpointId),
+              ...workerBindingEngineFields(previousBinding),
               ...(input.parallel ? { ephemeral: true } : {}),
             };
           } else {

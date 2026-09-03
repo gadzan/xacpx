@@ -19,7 +19,7 @@ import {
 } from "../quota-gated-reply-sink";
 import { createSerializedCallbackQueue } from "../serialized-callback-queue";
 import { resolveToolEventMode } from "../tool-event-mode.js";
-import type { BridgeMethod } from "./acpx-bridge-protocol";
+import type { BridgeEngineCapabilities, BridgeMethod } from "./acpx-bridge-protocol";
 import type { BridgeEvent } from "./acpx-bridge-client";
 
 interface BridgeRequestClient {
@@ -301,6 +301,9 @@ export class AcpxBridgeTransport implements SessionTransport {
     await this.client.request("primeRuntimeQueues", {
       sessions: sessions.map((s) => this.toParams(s)),
     });
+  }
+  async getEngineCapabilities(): Promise<BridgeEngineCapabilities> {
+    return await this.client.request<BridgeEngineCapabilities>("getEngineCapabilities", {});
   }
   async dispose(): Promise<void> {
     await this.client.dispose?.();

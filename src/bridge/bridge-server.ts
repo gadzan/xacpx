@@ -26,6 +26,8 @@ import { EngineRouter, SessionEngineBinding, type BridgeEngine, type EngineSessi
 import { EngineMismatchError, EngineUnsupportedError } from "./engine/engine-router";
 import { RuntimeError } from "./engine/runtime-engine";
 
+import { probeEngineCapabilities } from "./engine/runtime-capability";
+import type { BridgeEngineCapabilities } from "../transport/acpx-bridge/acpx-bridge-protocol";
 function withMcp<T extends Record<string, unknown>>(base: T, params: Record<string, unknown>): T & { mcpCoordinatorSession?: string; mcpSourceHandle?: string } {
   return {
     ...base,
@@ -65,6 +67,7 @@ const BRIDGE_METHODS = new Set<BridgeMethod>([
   "freeWarmProcess",
   "isSessionWarm",
   "getAgentSessionId",
+  "getEngineCapabilities",
 ]);
 
 const SESSION_SCOPED_METHODS = new Set<BridgeMethod>([
@@ -105,7 +108,11 @@ export class BridgeServer {
     if (typeof rt.primeRuntimeQueues === "function") await rt.primeRuntimeQueues(sessions as unknown[]);
   }
 
-  constructor(runtime: BridgeRuntime | EngineRouter, private readonly daemonRequestTimeoutMs = 10_000) {
+  constructor(
+    runtime: BridgeRuntime | EngineRouter,
+    private readonly daemonRequestTimeoutMs = 10_000,
+    private readonly capabilityProbe?: () => Promise<BridgeEngineCapabilities>,
+  ) {
     // EngineRouter is the single routing entrypoint. A raw BridgeRuntime
     // (legacy tests / bridge-main) is wrapped as CliEngine behind a fresh
     // router so affinity exists from day one. Passing a bare RuntimeEngine
@@ -283,6 +290,8 @@ export class BridgeServer {
     switch (method) {
       case "ping":
         return {};
+      case "getEngineCapabilities":
+        return this.capabilityProbe ? await this.capabilityProbe() : await probeEngineCapabilities();
       case "shutdown":
         return await this.engines.shutdown();
       case "updatePermissionPolicy":

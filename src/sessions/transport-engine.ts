@@ -20,6 +20,14 @@ export type RuntimeIneligibleReason =
   | "unsupported-session-shape"
   | "record-compatibility-failed";
 
+export interface EngineCapabilityInput {
+  runtimeAvailable?: boolean;
+  runtimeImportOk?: boolean;
+  contractProbeOk?: boolean;
+  acpxVersion?: string;
+  reason?: string;
+}
+
 export interface ResolveTransportEngineInput {
   config: {
     type: TransportConfig["type"];
@@ -42,6 +50,8 @@ export interface ResolveTransportEngineInput {
   runtimeAvailable?: boolean;
   /** Optional probe function for runtime availability. */
   runtimeProbe?: () => boolean;
+  /** Engine capability probe results (from bridge getEngineCapabilities). Preferred over local file probe. */
+  capability?: EngineCapabilityInput;
   /** Direct eligibility parameters (optional overrides or convenience inputs) */
   permissionMode?: PermissionMode;
   nonInteractivePermissions?: NonInteractivePermissions;
@@ -52,7 +62,6 @@ export interface ResolveTransportEngineInput {
   /** Probe or flag for session shape validity */
   sessionShapeSupported?: boolean;
 }
-
 export interface TransportEngineChoice {
   engine: SessionTransportEngine;
   reason?: RuntimeIneligibleReason;
@@ -205,19 +214,37 @@ export function resolveTransportEngine(input: ResolveTransportEngineInput): Tran
     return { engine: "cli", reason: "unsupported-permission-policy" };
   }
 
-  const runtimeAvailable =
-    input.runtimeAvailable ??
-    (typeof input.runtimeProbe === "function" ? input.runtimeProbe() : probeRuntimeWorkerAvailable());
+  if (input.capability !== undefined) {
+    const cap = input.capability;
+    const isAvailable =
+      cap.runtimeAvailable !== false &&
+      cap.runtimeImportOk !== false &&
+      cap.contractProbeOk !== false &&
+      input.runtimeAvailable !== false;
 
-  if (!runtimeAvailable) {
-    if (configured === "runtime") {
-      throw new Error(
-        'transport.engine = "runtime" requires acpx Runtime worker support, which this build does not enable yet',
-      );
+    if (!isAvailable) {
+      if (configured === "runtime") {
+        const detail = cap.reason ? `: ${cap.reason}` : "";
+        throw new Error(
+          `transport.engine = "runtime" failed runtime capability probe${detail}`,
+        );
+      }
+      return { engine: "cli", reason: "runtime-probe-failed" };
     }
-    return { engine: "cli", reason: "runtime-import-failed" };
-  }
+  } else {
+    const runtimeAvailable =
+      input.runtimeAvailable ??
+      (typeof input.runtimeProbe === "function" ? input.runtimeProbe() : probeRuntimeWorkerAvailable());
 
+    if (!runtimeAvailable) {
+      if (configured === "runtime") {
+        throw new Error(
+          'transport.engine = "runtime" requires acpx Runtime worker support, which this build does not enable yet',
+        );
+      }
+      return { engine: "cli", reason: "runtime-import-failed" };
+    }
+  }
 
   if (configured === "runtime" || configured === "auto") {
     return { engine: "runtime" };

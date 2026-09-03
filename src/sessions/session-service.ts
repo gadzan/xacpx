@@ -58,7 +58,7 @@ interface NativeSessionAttachmentInput {
   /** Positional acpx agent for structured launches (overlay alias or driver). */
   transportAcpxAgent?: string;
   transportAgentArgv?: string[];
-  agentSessionId: string;
+  agentSessionId?: string;
   title?: string | null;
   updatedAt?: string;
 }
@@ -88,6 +88,17 @@ interface SessionServiceOptions {
   runtimeRoot?: string;
   /** Whether interactive permission confirmation is available. */
   permissionInteractionAvailable?: boolean;
+  /**
+   * Cached Bridge capability probe (daemon startup via getEngineCapabilities).
+   * When present it outranks the local worker-file check: a file can exist
+   * while the Bridge host cannot import acpx/runtime or pass the contract
+   * probe, and new sessions must not bind runtime in that case.
+   */
+  runtimeCapability?: {
+    runtimeAvailable?: boolean;
+    runtimeImportOk?: boolean;
+    contractProbeOk?: boolean;
+  };
 }
 
 export interface ResolveSessionOptions {
@@ -109,6 +120,7 @@ export class SessionService {
   private readonly platform: NodeJS.Platform;
   private readonly runtimeRoot: string;
   private readonly permissionInteractionAvailable?: boolean;
+  private runtimeCapability?: SessionServiceOptions["runtimeCapability"];
   private readonly pendingSessionAliasOperations = new Set<string>();
   private lifecyclePublisher: ((input: SessionResourceLifecyclePublishInput) => void) | undefined;
   constructor(
@@ -122,6 +134,22 @@ export class SessionService {
     this.platform = options.platform ?? process.platform;
     this.runtimeRoot = options.runtimeRoot ?? dirname(resolveConfigPathForCurrentEnv());
     this.permissionInteractionAvailable = options.permissionInteractionAvailable;
+    this.runtimeCapability = options.runtimeCapability;
+  }
+
+  /**
+   * Cache the Bridge capability probe (daemon startup via
+   * getEngineCapabilities). Presence outranks the local worker-file check.
+   */
+  setRuntimeCapability(capability: NonNullable<SessionServiceOptions["runtimeCapability"]>): void {
+    this.runtimeCapability = { ...capability };
+  }
+
+  private resolveRuntimeAvailabilityInput(): { runtimeAvailable?: boolean; capability?: { runtimeAvailable?: boolean; runtimeImportOk?: boolean; contractProbeOk?: boolean } } {
+    if (this.runtimeCapability) {
+      return { capability: { ...this.runtimeCapability } };
+    }
+    return { runtimeAvailable: isRuntimeEngineAvailable() };
   }
 
   async createSession(alias: string, agent: string, workspace: string): Promise<ResolvedSession> {
@@ -175,8 +203,6 @@ export class SessionService {
   ): ResolvedSession {
     this.validateSession(alias, agent, workspace);
     const existing = this.state.sessions[alias];
-    // A cached transport agent command is only valid for the same agent; never
-    // reuse it across agents (e.g. alias recreated with --agent claude after codex).
     const sameAgentExisting = existing && existing.agent === agent ? existing : undefined;
     return this.toResolvedSession({
       alias,
@@ -186,10 +212,23 @@ export class SessionService {
       // Transient (never persisted by this method): carry the live session's id
       // when one exists; the placeholder is discarded on the next real create.
       logical_session_id: existing?.logical_session_id ?? randomUUID(),
+      transport_engine:
+        sameAgentExisting?.transport_engine ??
+        resolveTransportEngine({
+          config: this.config.transport,
+          session: {
+            alias,
+            agent,
+            workspace,
+          },
+          ...this.resolveRuntimeAvailabilityInput(),
+          ...(this.permissionInteractionAvailable !== undefined
+            ? { permissionInteractionAvailable: this.permissionInteractionAvailable }
+            : {}),
+        }).engine,
       transport_agent_command: sameAgentExisting?.transport_agent_command,
       transport_acpx_agent: sameAgentExisting?.transport_acpx_agent,
       transport_agent_argv: sameAgentExisting?.transport_agent_argv,
-      // Carry the same-agent model so a recreated session is ensured under the
       // same model that gets persisted (keeps acpx and state in agreement).
       model: sameAgentExisting?.model,
       effort: sameAgentExisting?.effort,
@@ -1175,6 +1214,65 @@ export class SessionService {
     }
     replaceRuntimeState(this.state, nextState);
   }
+  /**
+   * Durably roll back a session record to a previous logical session snapshot
+   * (e.g. when ensure/check fails during session reset/replacement).
+   */
+  async rollbackSessionRecord(alias: string, snapshot: LogicalSession | null): Promise<void> {
+    await this.mutate(async () => {
+      const nextState = structuredClone(this.state);
+      if (snapshot) {
+        nextState.sessions[alias] = structuredClone(snapshot);
+      } else {
+        delete nextState.sessions[alias];
+      }
+      if (typeof this.stateStore.saveNow === "function") {
+        await this.stateStore.saveNow(nextState);
+      } else {
+        await this.stateStore.save(nextState);
+      }
+      replaceRuntimeState(this.state, nextState);
+    });
+  }
+
+  /**
+   * Durably update or clear a native agent session binding on an already-persisted
+   * logical session (e.g. after a fresh agentSessionId is obtained post-reset).
+   */
+  async updateNativeAgentSessionId(
+    alias: string,
+    agentSessionId: string | undefined,
+    updatedAt?: string,
+  ): Promise<void> {
+    await this.mutate(async () => {
+      const session = this.state.sessions[alias];
+      if (!session) {
+        throw new Error(`session "${alias}" does not exist`);
+      }
+      const nextState = structuredClone(this.state);
+      const nextSession = nextState.sessions[alias]!;
+      if (agentSessionId) {
+        nextSession.source = "agent-side";
+        nextSession.agent_session_id = agentSessionId;
+        if (updatedAt) {
+          nextSession.agent_session_updated_at = updatedAt;
+        }
+      } else {
+        delete nextSession.source;
+        delete nextSession.agent_session_id;
+        delete nextSession.agent_session_title;
+        delete nextSession.agent_session_updated_at;
+        delete nextSession.attached_at;
+      }
+      nextSession.last_used_at = new Date(this.now()).toISOString();
+      if (typeof this.stateStore.saveNow === "function") {
+        await this.stateStore.saveNow(nextState);
+      } else {
+        await this.stateStore.save(nextState);
+      }
+      replaceRuntimeState(this.state, nextState);
+    });
+  }
 
   private async mutate<T>(critical: () => Promise<T>): Promise<T> {
     return await this.stateMutex.run(critical);
@@ -1269,7 +1367,7 @@ export class SessionService {
               agent,
               workspace,
             },
-            runtimeAvailable: isRuntimeEngineAvailable(),
+            ...this.resolveRuntimeAvailabilityInput(),
             ...(this.permissionInteractionAvailable !== undefined
               ? { permissionInteractionAvailable: this.permissionInteractionAvailable }
               : {}),

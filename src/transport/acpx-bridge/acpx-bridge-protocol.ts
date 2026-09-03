@@ -25,12 +25,21 @@ export type BridgeMethod =
   | "deleteSession"
   | "freeWarmProcess"
   | "isSessionWarm"
-  | "getAgentSessionId";
+  | "getAgentSessionId"
+  | "getEngineCapabilities";
 
 export interface BridgeRequest {
   id: string;
   method: BridgeMethod;
   params: Record<string, unknown>;
+}
+
+export interface BridgeEngineCapabilities {
+  runtimeAvailable: boolean;
+  runtimeImportOk: boolean;
+  contractProbeOk: boolean;
+  acpxVersion?: string;
+  reason?: string;
 }
 
 export type BridgeOriginatedMethod =

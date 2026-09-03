@@ -11,6 +11,11 @@ import type { HelpTopicMetadata } from "../help/help-types";
 import type { CommandRouterContext, RouterResponse } from "../router-types";
 import { cloneAppConfig } from "../config-clone";
 import { t } from "../../i18n";
+import {
+  isEligibleForRuntime,
+  parseXacpxPermissionPolicy,
+  type XacpxPermissionPolicy,
+} from "../../bridge/engine/runtime/runtime-permission-policy";
 
 const SUPPORTED_CONFIG_PATHS = [
   "language",
@@ -87,6 +92,19 @@ export async function handleConfigSet(
 
   if (path === "transport.permissionMode" || path === "transport.nonInteractivePermissions" || path === "transport.permissionPolicy") {
     try {
+      const hasRuntimeSessions = context.sessions?.listAllResolvedSessions?.().some((s) => s.transportEngine === "runtime");
+      if (hasRuntimeSessions) {
+        let parsedPolicy: XacpxPermissionPolicy | undefined;
+        if (updated.transport.permissionPolicy !== undefined) {
+          parsedPolicy = typeof updated.transport.permissionPolicy === "object" && updated.transport.permissionPolicy !== null
+            ? (updated.transport.permissionPolicy as XacpxPermissionPolicy)
+            : parseXacpxPermissionPolicy(updated.transport.permissionPolicy);
+        }
+        const eligible = isEligibleForRuntime(parsedPolicy, updated.transport.nonInteractivePermissions, false);
+        if (!eligible) {
+          throw new Error('cannot apply permission policy: runtime-ineligible policy (nonInteractive="fail" or escalate without interactive) with active runtime sessions');
+        }
+      }
       await context.transport.updatePermissionPolicy?.(updated.transport);
     } catch (error) {
       if (previousRaw.present) {

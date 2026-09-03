@@ -21,6 +21,7 @@ import type {
 import type { OrchestrationStateKernel } from "./orchestration-state-kernel";
 import {
   workerBindingEndpointIdentityFields,
+  workerBindingEngineFields,
   workerBindingGuardFields,
 } from "../worker-launch";
 import type { QuestionFlowCore } from "./question-flow-core";
@@ -190,6 +191,7 @@ export class TaskApprovalService {
           role: task.role,
           ...workerBindingGuardFields(previousBinding),
           ...workerBindingEndpointIdentityFields(previousBinding, this.deps.createAgentEndpointId),
+          ...workerBindingEngineFields(previousBinding),
           ...(task.ephemeralWorkerSession ? { ephemeral: true } : {}),
         };
 

@@ -300,3 +300,127 @@ test("custom runtimeProbe callback is called when runtimeAvailable is omitted", 
   expect(probed).toBe(true);
   expect(choice.engine).toBe("runtime");
 });
+
+test("capability probe: worker file exists but import fails => auto mode selects cli with runtime-probe-failed", () => {
+  const choice = resolveTransportEngine({
+    config: { ...baseConfig, engine: "auto" },
+    runtimeProbe: () => true,
+    capability: {
+      runtimeAvailable: false,
+      runtimeImportOk: false,
+      contractProbeOk: false,
+      acpxVersion: "0.13.1",
+      reason: "acpx/runtime import failed: Cannot find module",
+    },
+  });
+  expect(choice.engine).toBe("cli");
+  expect(choice.reason).toBe("runtime-probe-failed");
+});
+
+test("capability probe: worker file exists but import fails => strict runtime throws before persistence", () => {
+  expect(() =>
+    resolveTransportEngine({
+      config: { ...baseConfig, engine: "runtime" },
+      runtimeProbe: () => true,
+      capability: {
+        runtimeAvailable: false,
+        runtimeImportOk: false,
+        contractProbeOk: false,
+        acpxVersion: "0.13.1",
+        reason: "acpx/runtime import failed: Cannot find module",
+      },
+    }),
+  ).toThrow(/failed runtime capability probe/);
+});
+
+test("capability probe: worker file exists but contract check fails => auto mode selects cli with runtime-probe-failed", () => {
+  const choice = resolveTransportEngine({
+    config: { ...baseConfig, engine: "auto" },
+    runtimeProbe: () => true,
+    capability: {
+      runtimeAvailable: false,
+      runtimeImportOk: true,
+      contractProbeOk: false,
+      acpxVersion: "0.13.1",
+      reason: "missing required exports [createAgentRegistry]",
+    },
+  });
+  expect(choice.engine).toBe("cli");
+  expect(choice.reason).toBe("runtime-probe-failed");
+});
+
+test("capability probe: worker file exists but contract check fails => strict runtime throws before persistence", () => {
+  expect(() =>
+    resolveTransportEngine({
+      config: { ...baseConfig, engine: "runtime" },
+      runtimeProbe: () => true,
+      capability: {
+        runtimeAvailable: false,
+        runtimeImportOk: true,
+        contractProbeOk: false,
+        acpxVersion: "0.13.1",
+        reason: "missing required exports [createAgentRegistry]",
+      },
+    }),
+  ).toThrow(/failed runtime capability probe: missing required exports/);
+});
+
+test("capability probe: capability ok => auto mode selects runtime", () => {
+  const choice = resolveTransportEngine({
+    config: { ...baseConfig, engine: "auto" },
+    capability: {
+      runtimeAvailable: true,
+      runtimeImportOk: true,
+      contractProbeOk: true,
+      acpxVersion: "0.13.1",
+    },
+  });
+  expect(choice.engine).toBe("runtime");
+  expect(choice.reason).toBeUndefined();
+});
+
+test("capability probe: capability ok => strict runtime selects runtime", () => {
+  const choice = resolveTransportEngine({
+    config: { ...baseConfig, engine: "runtime" },
+    capability: {
+      runtimeAvailable: true,
+      runtimeImportOk: true,
+      contractProbeOk: true,
+      acpxVersion: "0.13.1",
+    },
+  });
+  expect(choice.engine).toBe("runtime");
+});
+
+test("capability probe: capability is preferred over runtimeProbe callback", () => {
+  let probeCalled = false;
+  const choice = resolveTransportEngine({
+    config: { ...baseConfig, engine: "auto" },
+    runtimeProbe: () => {
+      probeCalled = true;
+      return true;
+    },
+    capability: {
+      runtimeAvailable: false,
+      runtimeImportOk: false,
+      contractProbeOk: false,
+      reason: "probe failed",
+    },
+  });
+  expect(choice.engine).toBe("cli");
+  expect(choice.reason).toBe("runtime-probe-failed");
+  expect(probeCalled).toBe(false);
+});
+
+test("capability probe: persisted runtime session remains runtime even if capability fails", () => {
+  const choice = resolveTransportEngine({
+    config: { ...baseConfig, engine: "auto" },
+    session: { transport_engine: "runtime" },
+    capability: {
+      runtimeAvailable: false,
+      runtimeImportOk: false,
+      contractProbeOk: false,
+    },
+  });
+  expect(choice.engine).toBe("runtime");
+});
