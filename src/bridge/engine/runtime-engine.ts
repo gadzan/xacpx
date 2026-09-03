@@ -424,10 +424,14 @@ export class RuntimeEngine implements BridgeEngine {
   readonly kind = "runtime" as const;
   private readonly manager?: RuntimeWorkerManager;
   private readonly activeTurns = new Map<string, number>();
+  private readonly inFlightBusinessOps = new Map<string, number>();
   private hasActiveTurn(key: string): boolean { return (this.activeTurns.get(key) ?? 0) > 0; }
   private hasAnyActiveTurn(): boolean { for (const v of this.activeTurns.values()) if (v > 0) return true; return false; }
+  private hasAnyBusinessOp(): boolean { for (const v of this.inFlightBusinessOps.values()) if (v > 0) return true; return false; }
   private incActiveTurn(key: string): void { this.activeTurns.set(key, (this.activeTurns.get(key) ?? 0) + 1); }
   private decActiveTurn(key: string): void { const n = (this.activeTurns.get(key) ?? 0) - 1; if (n <= 0) this.activeTurns.delete(key); else this.activeTurns.set(key, n); }
+  private incBusinessOp(key: string): void { this.inFlightBusinessOps.set(key, (this.inFlightBusinessOps.get(key) ?? 0) + 1); }
+  private decBusinessOp(key: string): void { const n = (this.inFlightBusinessOps.get(key) ?? 0) - 1; if (n <= 0) this.inFlightBusinessOps.delete(key); else this.inFlightBusinessOps.set(key, n); }
   private clearActiveTurn(key: string): void { this.activeTurns.delete(key); }
   private async waitForNoActiveTurn(key: string, timeoutMs = 8_000): Promise<void> {
     const start = Date.now();
@@ -1130,7 +1134,7 @@ export class RuntimeEngine implements BridgeEngine {
       await this.policyTransitionLock;
     }
     this.assertLifecycleEpoch(key, _lifecycleEpochAtEntry);
-    this.incActiveTurn(key);
+    this.incBusinessOp(key);
     let client: RuntimeWorkerClient | undefined;
     try {
       try {
@@ -1204,19 +1208,21 @@ export class RuntimeEngine implements BridgeEngine {
         }
       }
       try {
+        client.lifecycle = "busy";
         const result = await run(client);
-        if (client.lifecycle === "starting" && client.isBootstrapVerified) {
-          client.lifecycle = "ready";
-        }
         return result;
       } catch (error) {
         if (error instanceof WorkerCrashError) {
           if (client) client.lifecycle = "failed";
         }
         throw toStableRuntimeError(error);
+      } finally {
+        if (client && client.lifecycle === "busy") {
+          client.lifecycle = client.isBootstrapVerified ? "ready" : "starting";
+        }
       }
     } finally {
-      this.decActiveTurn(key);
+      this.decBusinessOp(key);
       let staleError: unknown;
       if (!this.hasActiveTurn(key) && this.staleAfterTurn.has(key)) {
         this.staleAfterTurn.delete(key);
@@ -2114,10 +2120,10 @@ export class RuntimeEngine implements BridgeEngine {
       // Global fail-closed preflight (plan §32): an active turn or an
       // in-flight worker acquisition on ANY session races the policy
       // rotation — the transition must not cross that boundary.
-      if (this.hasAnyActiveTurn()) {
+      if (this.hasAnyActiveTurn() || this.hasAnyBusinessOp()) {
         throw new RuntimeError(
           "RUNTIME_PERMISSION_BUSY",
-          `cannot update permission policy while session(s) "${[...this.activeTurns.keys()].join(", ")}" have in-flight turns (fail closed)`,
+          `cannot update permission policy while operations are in flight (fail closed)`,
         );
       }
       if (this.acquiring.size > 0) {
