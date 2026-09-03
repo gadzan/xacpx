@@ -28,18 +28,28 @@ function readStringProperty(value: unknown, keys: string[]): string | undefined 
   }
   return undefined;
 }
+
+function getRawObject(req: RuntimePermissionRequest): Record<string, unknown> | undefined {
+  if (!req || typeof req !== "object") return undefined;
+  const raw = (req as { raw?: unknown }).raw;
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
+  return req as unknown as Record<string, unknown>;
+}
+
 function readToolNameFromReq(req: RuntimePermissionRequest): string | undefined {
-  const raw = req.raw as unknown as Record<string, unknown>;
+  const raw = getRawObject(req);
+  if (!raw) return undefined;
   const toolCall = (raw.toolCall ?? raw.tool ?? raw) as Record<string, unknown> | undefined;
   if (!toolCall || typeof toolCall !== "object") return undefined;
-  const fromRawInput = readStringProperty(toolCall.rawInput, ["name", "tool", "toolName"]);
+  const fromRawInput = readStringProperty(toolCall.rawInput ?? toolCall.input ?? raw.rawInput ?? raw.input, ["name", "tool", "toolName"]);
   if (fromRawInput) return fromRawInput;
   const head = typeof toolCall.title === "string" ? toolCall.title.trim().split(/[:\s]/, 1)[0]?.trim() : undefined;
   return head && head.length > 0 ? head : undefined;
 }
 
 function readTitleFromReq(req: RuntimePermissionRequest): string | undefined {
-  const raw = req.raw as unknown as Record<string, unknown>;
+  const raw = getRawObject(req);
+  if (!raw) return undefined;
   const toolCall = (raw.toolCall ?? raw.tool ?? raw) as Record<string, unknown> | undefined;
   if (toolCall && typeof toolCall === "object" && typeof toolCall.title === "string" && toolCall.title.trim().length > 0) {
     return toolCall.title.trim();
@@ -48,14 +58,14 @@ function readTitleFromReq(req: RuntimePermissionRequest): string | undefined {
 }
 
 function readRawKindFromReq(req: RuntimePermissionRequest): string | undefined {
-  const raw = req.raw as unknown as Record<string, unknown>;
+  const raw = getRawObject(req);
+  if (!raw) return undefined;
   const toolCall = (raw.toolCall ?? raw.tool ?? raw) as Record<string, unknown> | undefined;
   if (toolCall && typeof toolCall === "object" && typeof toolCall.kind === "string" && toolCall.kind.trim().length > 0) {
     return toolCall.kind.trim();
   }
   return undefined;
 }
-
 function inferToolKindForReq(req: RuntimePermissionRequest): string | undefined {
   if (req.inferredKind && typeof req.inferredKind === "string" && req.inferredKind.trim().length > 0) {
     return normalizeMatcher(req.inferredKind);

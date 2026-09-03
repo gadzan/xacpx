@@ -24,13 +24,13 @@ export interface RuntimeWorkerRequest {
 }
 
 export interface RuntimeWorkerEnsureParams {
+  logicalSessionId?: string;
   sessionKey: string;
   agent: string;
   cwd?: string;
   stateDir: string;
   permissionMode: XacpxPermissionMode;
   nonInteractivePermissions?: "deny" | "fail";
-  /** Declarative permission policy (plan §27/§32). */
   permissionPolicy?: unknown;
   /** Narrow argv overrides for this worker only (plan §35). */
   agentOverrides?: Record<string, string | string[]>;
@@ -45,6 +45,8 @@ export interface RuntimeWorkerEnsureParams {
   /** PR8: MCP coordinator identity (immutable launch identity). */
   mcpCoordinatorSession?: string;
   mcpSourceHandle?: string;
+  /** Host-assigned worker generation identity. */
+  workerGeneration?: string;
 }
 export interface RuntimeWorkerPromptParams {
   text: string;

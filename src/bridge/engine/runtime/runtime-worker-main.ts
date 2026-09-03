@@ -54,14 +54,17 @@ interface WorkerState {
   workerGeneration: string;
 }
 const gate = createDispatchGate();
+const initialWorkerGeneration =
+  process.env.XACPX_WORKER_GENERATION ||
+  process.env.XACPX_WORKER_FENCE_GENERATION ||
+  `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 const state: WorkerState = {
   shuttingDown: false,
   permissionGeneration: 0,
   pendingPermissions: new Map(),
   pendingElicitations: new Map(),
-  workerGeneration: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+  workerGeneration: initialWorkerGeneration,
 };
-
 function respond(response: RuntimeWorkerResponse): void {
   process.stdout.write(encodeWorkerMessage(response));
 }
@@ -119,6 +122,7 @@ async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: 
         `refusing in-worker AcpRuntime replacement — tear down this worker instead`,
     );
   }
+  if (params.workerGeneration) state.workerGeneration = params.workerGeneration;
   if (!state.adapter || !state.handle) {
     const initialGen = typeof params.permissionGeneration === "number" ? params.permissionGeneration : 0;
     const { configFromRaw } = await import("./runtime-permission-resolver");
@@ -164,9 +168,13 @@ async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: 
         if (ctx.signal.aborted) return { outcome: "reject_once" };
         const requestId = `perm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
         const toolCallId = (() => {
-          const raw = (req as unknown as { raw?: unknown }).raw as { toolCall?: { id?: unknown } } | undefined;
-          const id = raw?.toolCall?.id;
-          return typeof id === "string" && id.length > 0 ? id : requestId;
+          const raw = (req as unknown as { raw?: unknown }).raw as { toolCall?: { id?: unknown; toolCallId?: unknown } } | undefined;
+          const id = typeof raw?.toolCall?.toolCallId === "string" && raw.toolCall.toolCallId.length > 0
+            ? raw.toolCall.toolCallId
+            : typeof raw?.toolCall?.id === "string" && raw.toolCall.id.length > 0
+              ? raw.toolCall.id
+              : requestId;
+          return id;
         })();
         const title = (() => {
           const raw = (req as unknown as { raw?: unknown }).raw as { toolCall?: { title?: unknown } } | undefined;
@@ -180,7 +188,7 @@ async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: 
         })();
         const rawInput = (req as unknown as { raw?: unknown }).raw;
         const payload: RuntimeWorkerPermissionRequestPayload = {
-          logicalSessionId: state.ensureParams?.sessionKey ?? params.sessionKey,
+          logicalSessionId: state.ensureParams?.logicalSessionId ?? params.logicalSessionId ?? state.ensureParams?.sessionKey ?? params.sessionKey,
           sessionKey: state.ensureParams?.sessionKey ?? params.sessionKey,
           requestId,
           toolCallId,
@@ -256,7 +264,7 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
     if (signal.aborted) throw new Error("elicitation cancelled");
     const elicitationId = `elicit-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     const payload: RuntimeWorkerElicitationRequestPayload = {
-      logicalSessionId: state.ensureParams?.sessionKey ?? "unknown",
+      logicalSessionId: state.ensureParams?.logicalSessionId ?? state.ensureParams?.sessionKey ?? "unknown",
       sessionKey: state.ensureParams?.sessionKey ?? "unknown",
       requestId,
       elicitationId,

@@ -10,6 +10,7 @@ import { createXacpxMcpServer } from "../../../../../src/mcp/xacpx-mcp-server";
 import { createMemoryTransport } from "../../../../../src/mcp/xacpx-mcp-transport";
 import { makeGoldenHarness } from "../../../orchestration/golden/golden-harness";
 import { OrchestrationService } from "../../../../../src/orchestration/orchestration-service";
+import { ScheduledTaskService } from "../../../../../src/scheduled/scheduled-service";
 /**
  * PR8 plumbing + server/service integration (now wired: bridge→daemon resolvePermissionRequest/resolveElicitationRequest via requestDaemon, RuntimeEngine via EngineRouter).
  * Uses real OrchestrationService (golden harness) + XacpxMcpServer via createMemoryTransport for determinism;
@@ -293,5 +294,99 @@ test("PR8 E2E: cool/restart preserves orchestration state and still delegates", 
   } finally {
     await client.close().catch(() => {});
     await server.close().catch(() => {});
+  }
+}, 15_000);
+
+test("PR8 E2E: real ScheduledTaskService persistence + listing + cancellation through MCP", async () => {
+  const { harness, service: _orchestration } = createServiceWithHarness();
+  const state = harness.getState();
+  const scheduledService = new ScheduledTaskService(state as never, {
+    save: async () => {},
+  });
+  const transport = createMemoryTransport(
+    async () => ({ taskId: "t-mock", status: "running" }),
+    {
+      scheduledCreate: async (input) => {
+        const created = await scheduledService.createTask({
+          chatKey: "wx:user1",
+          sessionAlias: "main",
+          executeAt: new Date(Date.now() + 86400000),
+          message: input.message,
+        });
+        return created as unknown as ScheduledTaskRecord;
+      },
+      scheduledList: async (input) => {
+        return scheduledService.listPending(input?.coordinatorSession ? "wx:user1" : "wx:user1") as unknown as ScheduledTaskRecord[];
+      },
+      scheduledCancel: async (input) => {
+        const cancelled = await scheduledService.cancelPending(input.id, "wx:user1");
+        return { id: input.id, cancelled } as unknown as { id: string; cancelled: boolean };
+      },
+    },
+  );
+
+  const server = createXacpxMcpServer({ transport, coordinatorSession: "coord:sched", internalSessionTools: true });
+  const client = new Client({ name: "e2e-sched", version: "1.0.0" });
+  const [cT, sT] = InMemoryTransport.createLinkedPair();
+  await server.connect(sT);
+  await client.connect(cT);
+
+  try {
+    // Create via MCP
+    const createRes = await client.request(
+      {
+        method: "tools/call",
+        params: {
+          name: "scheduled_create",
+          arguments: {
+            timeText: "tomorrow 09:00",
+            message: "morning reminder",
+          },
+        },
+      } as unknown as { method: string; params: unknown },
+      CallToolResultSchema,
+    );
+    expect((createRes as unknown as Record<string, unknown>)["isError"]).not.toBe(true);
+
+    // Verify in real state
+    const scheduled = Object.values(state.scheduled_tasks || {});
+    expect(scheduled.length).toBeGreaterThan(0);
+    const task = scheduled.find((t) => t.message === "morning reminder");
+    expect(task).toBeDefined();
+    expect(task?.status).toBe("pending");
+
+    // List via MCP
+    const listRes = await client.request(
+      {
+        method: "tools/call",
+        params: {
+          name: "scheduled_list",
+          arguments: {},
+        },
+      } as unknown as { method: string; params: unknown },
+      CallToolResultSchema,
+    );
+    expect((listRes as unknown as Record<string, unknown>)["isError"]).not.toBe(true);
+
+    // Cancel via MCP
+    if (!task) throw new Error("task not created in state");
+    const cancelRes = await client.request(
+      {
+        method: "tools/call",
+        params: {
+          name: "scheduled_cancel",
+          arguments: { id: task.id },
+        },
+      } as unknown as { method: string; params: unknown },
+      CallToolResultSchema,
+    );
+    if ((cancelRes as unknown as Record<string, unknown>)["isError"]) {
+      console.log("cancelRes error:", JSON.stringify(cancelRes));
+    }
+    expect((cancelRes as unknown as Record<string, unknown>)["isError"]).not.toBe(true);
+    expect(state.scheduled_tasks[task.id]?.status).toBe("cancelled");
+  } finally {
+    await client.close();
+    await server.close();
   }
 }, 15_000);

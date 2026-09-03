@@ -92,8 +92,9 @@ export function createXacpxRuntimeAdapter(options: CreateXacpxRuntimeAdapterOpti
     ),
     permissionMode: options.permissionMode,
     ...(options.nonInteractivePermissions ? { nonInteractivePermissions: options.nonInteractivePermissions } : {}),
-    ...(options.permissionPolicy !== undefined ? { permissionPolicy: options.permissionPolicy as never } : {}),
-    ...(options.onPermissionRequest ? { onPermissionRequest: options.onPermissionRequest } : {}),
+    ...(options.onPermissionRequest
+      ? { onPermissionRequest: options.onPermissionRequest }
+      : (options.permissionPolicy !== undefined ? { permissionPolicy: options.permissionPolicy as never } : {})),
     ...(options.mcpServers ? { mcpServers: options.mcpServers } : {}),
   });
 

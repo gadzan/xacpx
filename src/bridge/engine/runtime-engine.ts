@@ -1247,6 +1247,7 @@ export class RuntimeEngine implements BridgeEngine {
           ? input.rawCommand
           : undefined;
     return {
+      logicalSessionId: this.workerKey(input),
       sessionKey: input.name,
       agent: runtimeAgentName,
       cwd: input.cwd,
@@ -1276,7 +1277,10 @@ export class RuntimeEngine implements BridgeEngine {
   ): Promise<{ acpxRecordId?: string }> {
     const handle = await client.request<{ sessionKey: string; acpxRecordId?: string; agentSessionId?: string }>(
       "ensure",
-      this.buildEnsureParams(input, options),
+      {
+        ...this.buildEnsureParams(input, options),
+        workerGeneration: client.ref.generation,
+      },
     );
     if (handle.acpxRecordId) {
       this.recordIds.set(this.workerKey(input), handle.acpxRecordId);

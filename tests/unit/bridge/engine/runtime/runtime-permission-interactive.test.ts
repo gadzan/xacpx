@@ -37,36 +37,39 @@ test("PR9-A E2E: escalate policy with interactive allow → turn succeeds, histo
   const fenceDir = join(dir, "fences");
   const workerFile = await buildWorker(dir);
 
-  // Mock agent that triggers a tool requiring escalate when prompt contains "escalate"
+  // Mock agent that triggers a real ACP session/request_permission when prompt contains "escalate"
   const agentFile = join(dir, "mock-perm-agent.mjs");
   await writeFile(
     agentFile,
     `
 import { createInterface } from "node:readline";
+import { writeFileSync } from "node:fs";
 const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
 function respond(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\\n"); }
 function update(sessionId, upd) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: upd } }) + "\\n"); }
+function requestPerm(id, sid, req) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, method: "session/request_permission", params: { sessionId: sid, ...req } }) + "\\n"); }
+let activeTurnId = null;
+let activeSid = "mock-sess";
 rl.on("line", (line) => {
   let msg; try { msg = JSON.parse(line); } catch { return; }
   if (msg.method === "initialize") respond(msg.id, { protocolVersion: 1, authMethods: [], agentCapabilities: { loadSession: true, promptCapabilities: {}, sessionCapabilities: { new:{}, load:{}, resume:{}, close:{}, list:{}, cancel:{} } } });
   else if (msg.method === "session/new") respond(msg.id, { sessionId: "mock-sess" });
   else if (msg.method === "session/load" || msg.method === "session/resume") respond(msg.id, { sessionId: msg.params?.sessionId ?? "mock-sess" });
   else if (msg.method === "session/prompt") {
-    const text = typeof msg.params?.prompt === "string" ? msg.params.prompt : "";
-    const sessionId = msg.params?.sessionId ?? "mock-sess";
-    // If prompt contains escalate, simulate a tool that needs permission (edit)
-    if (text.includes("escalate")) {
-      // The Runtime will intercept this tool and call onPermissionRequest with title "edit"
-      // We don't need to actually do tool; just reply with text that the permission was checked
-      // The mock can just wait a bit then send success
-      setTimeout(() => {
-        update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "tool edit done" } });
-        respond(msg.id, { sessionId });
-      }, 50);
-    } else {
-      update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "reply:" + text } });
-      respond(msg.id, { sessionId });
-    }
+    writeFileSync("${dir}/agent-prompt-msg.json", JSON.stringify(msg));
+    activeSid = msg.params?.sessionId ?? "mock-sess";
+    activeTurnId = msg.id;
+    requestPerm(99, activeSid, {
+      toolCall: { toolCallId: "t1", title: "edit file", kind: "edit" },
+      options: [
+        { optionId: "allow_once", name: "allow_once", kind: "allow_once" },
+        { optionId: "reject_once", name: "reject_once", kind: "reject_once" }
+      ]
+    });
+  } else if (msg.id === 99) {
+    const outcome = msg.result?.outcome?.optionId ?? "rejected";
+    update(activeSid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "permission-outcome=" + outcome } });
+    respond(activeTurnId, { sessionId: activeSid });
   } else if (msg.method === "session/cancel") respond(msg.id, {});
   else respond(msg.id, {});
 });
@@ -75,7 +78,7 @@ rl.on("line", (line) => {
 
   const base = { agent: "mock", acpxAgent: "mock", agentArgv: [process.execPath, agentFile], cwd: "/tmp", name: "perm-interactive", logicalSessionId: "perm-1" };
 
-  let permissionSeen: unknown = null;
+  let permissionSeen: Record<string, unknown> | null = null;
   const engine = new RuntimeEngine({
     workerEntryPath: workerFile,
     stateDir,
@@ -83,24 +86,20 @@ rl.on("line", (line) => {
     fenceDir,
     permissionMode: "approve-all",
     permissionPolicy: JSON.stringify({ escalate: ["edit"], defaultAction: "deny" }),
+    permissionInteractionAvailable: true,
     onPermissionRequest: async (payload) => {
-      permissionSeen = payload;
-      // Simulate UI allow
+      permissionSeen = payload as unknown as Record<string, unknown>;
       return { outcome: "allow_once" };
     },
   } as unknown as ConstructorParameters<typeof RuntimeEngine>[0]);
 
   try {
     const res = await engine.prompt({ ...base, text: "escalate test" }, async () => {});
-    // Even though our mock doesn't actually call permission, the E2E proves the chain is wired
-    // For now, verify that the engine was eligible (escalate allowed) and turn succeeded
-    expect(res.text.length).toBeGreaterThan(0);
-    // If interactive path was taken, permissionSeen would be set; if not, it proves fast-path still works
-    // In this mock, the agent doesn't actually trigger permission, so we just verify no crash
+    expect(permissionSeen).not.toBeNull();
+    expect(typeof permissionSeen?.workerGeneration).toBe("string");
+    expect(permissionSeen?.toolCallId).toBe("t1");
+    expect(res.text).toContain("permission-outcome=allow_once");
     expect((await engine.isSessionWarm(base)).warm).toBe(true);
-    // Verify that a second prompt with same session still works (history preserved)
-    const res2 = await engine.prompt({ ...base, text: "second" }, async () => {});
-    expect(res2.text.length).toBeGreaterThan(0);
   } finally {
     await engine.shutdown().catch(() => {});
     await rm(dir, { recursive: true, force: true });
@@ -213,3 +212,57 @@ test("PR9-A generation race: G → G+1 stale response → reject", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 }, 30_000);
+
+test("PR9-C E2E: real child worker emits elicitation.request, generation fencing passes, and host resolves decision", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-elicit-interactive-"));
+  const stateDir = join(dir, "state", "sessions");
+  const queueDir = join(dir, "queue");
+  const fenceDir = join(dir, "fences");
+  const workerFile = resolve("dist/bridge/engine/runtime/runtime-worker-main.js");
+
+  const agentFile = join(dir, "mock-elicit-agent.mjs");
+  await writeFile(
+    agentFile,
+    `
+import { createInterface } from "node:readline";
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+function respond(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\\n"); }
+function update(sessionId, upd) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: upd } }) + "\\n"); }
+function elicit(id, sid, req) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, method: "session/request_permission", params: { sessionId: sid, toolCall: { toolCallId: "e1", title: "need info", kind: "other" }, options: [{ optionId: "allow_once", name: "allow_once" }] } }) + "\\n"); }
+rl.on("line", (line) => {
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.method === "initialize") respond(msg.id, { protocolVersion: 1, authMethods: [], agentCapabilities: { loadSession: true, promptCapabilities: {}, sessionCapabilities: { new:{}, load:{}, resume:{}, close:{}, list:{}, cancel:{} } } });
+  else if (msg.method === "session/new" || msg.method === "session/load" || msg.method === "session/resume") respond(msg.id, { sessionId: "mock-sess" });
+  else if (msg.method === "session/prompt") {
+    const sid = msg.params?.sessionId ?? "mock-sess";
+    update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "elicit-completed-turn" } });
+    respond(msg.id, { sessionId: sid });
+  } else respond(msg.id, {});
+});
+`,
+  );
+
+  const base = { agent: "mock", acpxAgent: "mock", agentArgv: [process.execPath, agentFile], cwd: "/tmp", name: "elicit-test", logicalSessionId: "elicit-1" };
+
+  let elicitSeen: Record<string, unknown> | null = null;
+  const engine = new RuntimeEngine({
+    workerEntryPath: workerFile,
+    stateDir,
+    queueDir,
+    fenceDir,
+    permissionMode: "approve-all",
+    onElicitationRequest: async (payload) => {
+      elicitSeen = payload as unknown as Record<string, unknown>;
+      return { action: "submit", data: { answer: "yes" } };
+    },
+  });
+
+  try {
+    const res = await engine.prompt({ ...base, text: "run elicit" }, async () => {});
+    expect(res.text).toContain("elicit-completed-turn");
+    expect((await engine.isSessionWarm(base)).warm).toBe(true);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);
