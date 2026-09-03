@@ -208,23 +208,6 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
       });
       daemonRuntimeStarted = true;
       await runtime.orchestration.server.start();
-      // P1 G6: prime Runtime durable queues ONLY after consumer lock AND
-      // orchestration IPC are ready. An early prime in buildApp() could
-      // spawn workers and drain messages before this process owns the
-      // single-consumer lock or before MCP/orchestration is listening,
-      // violating ownership and causing premature dequeue on restart.
-      try {
-        const maybePrime = runtime.transport as unknown as { primeRuntimeQueues?: (sessions: unknown[]) => Promise<void> };
-        if (typeof maybePrime.primeRuntimeQueues === "function") {
-          const runtimeSessions = runtime.sessions.listAllResolvedSessions().filter((s) => s.transportEngine === "runtime");
-          if (runtimeSessions.length > 0) {
-            await maybePrime.primeRuntimeQueues(runtimeSessions);
-            await runtime.logger.info("bridge.runtime_queue.primed", "primed runtime queues from catalog after lock+IPC ready", { count: runtimeSessions.length }).catch(() => {});
-          }
-        }
-      } catch (err) {
-        await runtime.logger.warn("bridge.runtime_queue.prime_failed", "failed to prime runtime queues after lock+IPC", { error: err instanceof Error ? err.message : String(err) }).catch(() => {});
-      }
       heartbeatTimer = setIntervalFn(
         () => {
           void deps.daemonRuntime?.heartbeat().catch(() => {});
@@ -236,8 +219,24 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
     // Join the orphan sweep before channels begin serving so it cannot race a current-run
     // owner that reuses a stale session identity. By now the ready signal is already out.
     await reapPromise;
+    // P1 G6: prime Runtime durable queues ONLY after consumer lock AND
+    // orchestration IPC are ready AND stale-orphan sweep is done. An early prime
+    // in buildApp() or before reap could spawn workers and drain messages before
+    // this process owns the single-consumer lock, before MCP/orchestration is
+    // listening, or while the sweep may still terminate the physical owner.
+    try {
+      const maybePrime = runtime.transport as unknown as { primeRuntimeQueues?: (sessions: unknown[]) => Promise<void> };
+      if (typeof maybePrime.primeRuntimeQueues === "function") {
+        const runtimeSessions = runtime.sessions.listAllResolvedSessions().filter((s) => s.transportEngine === "runtime");
+        if (runtimeSessions.length > 0) {
+          await maybePrime.primeRuntimeQueues(runtimeSessions);
+          await runtime.logger.info("bridge.runtime_queue.primed", "primed runtime queues from catalog after lock+IPC+reap ready", { count: runtimeSessions.length }).catch(() => {});
+        }
+      }
+    } catch (err) {
+      await runtime.logger.warn("bridge.runtime_queue.prime_failed", "failed to prime runtime queues after lock+IPC+reap", { error: err instanceof Error ? err.message : String(err) }).catch(() => {});
+    }
     if (runtime.reconcileOrphans && deps.daemonRuntime) {
-      orphanTimer = setIntervalFn(() => runOrphanSweep(runtime!.reconcileOrphans!), 60_000);
       if (orphanTimer && typeof orphanTimer === "object" && "unref" in orphanTimer
         && typeof (orphanTimer as { unref?: unknown }).unref === "function") {
         (orphanTimer as { unref(): void }).unref();

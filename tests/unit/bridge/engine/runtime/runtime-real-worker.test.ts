@@ -4,7 +4,6 @@ import { statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { createMemoryTransport } from "../../../../../src/mcp/xacpx-mcp-transport";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import { RuntimeEngine } from "../../../../../src/bridge/engine/runtime-engine";
@@ -13,6 +12,7 @@ import { resolveOrchestrationEndpoint } from "../../../../../src/orchestration/o
 import { StateStore } from "../../../../../src/state/state-store";
 import { createEmptyState } from "../../../../../src/state/types";
 import { createXacpxMcpServer } from "../../../../../src/mcp/xacpx-mcp-server";
+import { createMemoryTransport } from "../../../../../src/mcp/xacpx-mcp-transport";
 import { makeGoldenHarness } from "../../../orchestration/golden/golden-harness";
 import { OrchestrationService } from "../../../../../src/orchestration/orchestration-service";
 import { ScheduledTaskService } from "../../../../../src/scheduled/scheduled-service";
@@ -33,16 +33,6 @@ test("PR8 Real Worker Topology: RuntimeEngine with compiled runtime-worker-main 
   });
   expect(buildResult.success).toBe(true);
   expect(statSync(workerFile).isFile()).toBe(true);
-  const MOCK_AGENT = join(process.cwd(), "tests/fixtures/mock-acp-agent.mjs");
-  const engine = new RuntimeEngine({
-    workerEntryPath: workerFile,
-    permissionMode: "approve-all",
-    stateDir,
-    queueDir: join(dir, "queue"),
-    fenceDir: join(dir, "fences"),
-    idleTtlMs: 60_000,
-  });
-  const base = { agent: "mock", acpxAgent: "mock", agentArgv: [process.execPath, MOCK_AGENT], cwd: dir, name: "real-worker-sess", logicalSessionId: "real-worker-1" };
   const diskStore = new StateStore(join(dir, "state.json"));
   const diskState = createEmptyState();
   await diskStore.save(diskState);
@@ -74,8 +64,22 @@ test("PR8 Real Worker Topology: RuntimeEngine with compiled runtime-worker-main 
   );
   await orchServer.start();
   try {
+    const MOCK_AGENT = join(process.cwd(), "tests/fixtures/mock-acp-agent.mjs");
+    const engine = new RuntimeEngine({
+      workerEntryPath: workerFile,
+      permissionMode: "approve-all",
+      stateDir,
+      queueDir: join(dir, "queue"),
+      fenceDir: join(dir, "fences"),
+      idleTtlMs: 60_000,
+    });
+    // Real worker prompt with coordinator identity (exercises buildRuntimeMcpServers path)
+    const base = { agent: "mock", acpxAgent: "mock", agentArgv: [process.execPath, MOCK_AGENT], cwd: dir, name: "real-worker-sess", logicalSessionId: "real-worker-1", mcpCoordinatorSession: "coord:real-worker", mcpSourceHandle: "src-real" };
     const reply = await engine.prompt({ ...base, text: "hello-real-worker" });
     expect(reply.text).toBeDefined();
+    expect(reply.text.length).toBeGreaterThan(0);
+    // Directly verify real xacpx mcp-stdio via InMemoryTransport can still delegate to same orchestration
+    // (proves the MCP server + IPC + service wiring that the worker would use)
     const xport = createMemoryTransport(
       async (input) => {
         const res = await service.requestDelegate({
@@ -95,8 +99,8 @@ test("PR8 Real Worker Topology: RuntimeEngine with compiled runtime-worker-main 
       },
     );
     const mcpServer = createXacpxMcpServer({ transport: xport, coordinatorSession: "coord:real-worker", sourceHandle: "src-real" });
-    const mcpClient = new Client({ name: "real-worker-test-client", version: "1.0.0" });
     const [cT, sT] = InMemoryTransport.createLinkedPair();
+    const mcpClient = new Client({ name: "real-worker-test-client", version: "1.0.0" });
     await Promise.all([mcpServer.connect(sT), mcpClient.connect(cT)]);
     const res = await mcpClient.request({ method: "tools/call", params: { name: "delegate_request", arguments: { targetAgent: "codex", task: "real-worker-task", workingDirectory: "/tmp/backend" } } }, CallToolResultSchema);
     expect(res).toBeDefined();

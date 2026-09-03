@@ -1,13 +1,9 @@
 #!/usr/bin/env node
-// ACP mock agent that on prompt "delegate:<text>" emits a tool_call for delegate_request
-// via the Runtime's MCP routing, then completes. Otherwise echoes like the base mock.
-
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 const sessions = new Map();
-let nextSessionSeq = 1;
 
 function writeFrame(frame) {
   process.stdout.write(`${JSON.stringify(frame)}\n`);
@@ -26,7 +22,7 @@ function refreshIdle() {
   idleTimer = setTimeout(() => process.exit(0), 10_000);
 }
 
-rl.on("line", (line) => {
+rl.on("line", async (line) => {
   refreshIdle();
   let msg;
   try { msg = JSON.parse(line); } catch { return; }
@@ -65,13 +61,9 @@ rl.on("line", (line) => {
     case "session/prompt": {
       const sessionId = params?.sessionId;
       const prompt = params?.prompt?.[0]?.text ?? params?.text ?? "";
-      // If prompt is delegate:xxx, emit a tool_call for delegate_request
-      // The Runtime (acpx/runtime) will route this to the xacpx mcp-server.
-      // We simulate the agent's tool use by sending a session/update with tool_call.
       if (typeof prompt === "string" && prompt.startsWith("delegate:")) {
         const taskText = prompt.slice(9);
         const toolCallId = `call-${randomUUID()}`;
-        // Emit tool_call update
         sessionUpdate(sessionId, {
           sessionUpdate: "tool_call",
           toolCallId,
@@ -80,8 +72,23 @@ rl.on("line", (line) => {
           status: "pending",
           rawInput: { targetAgent: "codex", task: taskText, workingDirectory: "/tmp/backend" },
         });
-        // Simulate tool result after a short delay, then final message
-        setTimeout(() => {
+        try {
+          const { OrchestrationClient } = await import(join(process.cwd(), "src/orchestration/orchestration-client.ts"));
+          const { resolveDefaultOrchestrationEndpoint } = await import(join(process.cwd(), "src/mcp/resolve-endpoint.ts"));
+          const endpoint = resolveDefaultOrchestrationEndpoint(process.env, process.platform);
+          process.stderr.write(`AGENT endpoint: ${endpoint.path} env: ${process.env.XACPX_ORCHESTRATION_SOCKET}\n`);
+          const client = new OrchestrationClient(endpoint);
+          const res = await client.requestDelegate({
+            coordinatorSession: process.env.XACPX_COORDINATOR_SESSION ?? "coord:real-worker",
+            sourceHandle: process.env.XACPX_SOURCE_HANDLE ?? "src-real",
+            sourceKind: "coordinator",
+            workspace: "backend",
+            targetAgent: "codex",
+            task: taskText,
+            cwd: "/tmp/backend",
+            workingDirectory: "/tmp/backend",
+          });
+          process.stderr.write(`AGENT delegate res: ${JSON.stringify(res)}\n`);
           sessionUpdate(sessionId, {
             sessionUpdate: "tool_call",
             toolCallId,
@@ -90,14 +97,23 @@ rl.on("line", (line) => {
             status: "completed",
             rawOutput: { ok: true },
           });
+        } catch (e) {
+          process.stderr.write(`AGENT delegate err: ${e instanceof Error ? e.stack : String(e)}\n`);
           sessionUpdate(sessionId, {
-            sessionUpdate: "agent_message_chunk",
-            content: { type: "text", text: `delegated:${taskText}` },
+            sessionUpdate: "tool_call",
+            toolCallId,
+            title: "delegate_request",
+            kind: "execute",
+            status: "failed",
+            rawOutput: { error: e instanceof Error ? e.message : String(e) },
           });
-          respond(id, { stopReason: "end_turn" });
-        }, 100);
+        }
+        sessionUpdate(sessionId, {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: `delegated:${taskText}` },
+        });
+        respond(id, { stopReason: "end_turn" });
       } else {
-        // Echo for other prompts
         const echo = `reply=${prompt}`;
         sessionUpdate(sessionId, {
           sessionUpdate: "agent_message_chunk",

@@ -907,18 +907,21 @@ test("primes runtime queues only after consumer lock and orchestration IPC are r
       removeProcessListener: (signal, handler) => { if (signalHandlers.get(signal) === handler) signalHandlers.delete(signal); },
     },
   );
-  // Integration test exercising real wall-clock ordering of daemon startup (lock + IPC before queue prime)
+  // Integration test exercising real wall-clock ordering of daemon startup (lock + IPC + reap before queue prime)
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, 50);
   await promise;
   const lockIdx = events.indexOf("lock:acquire");
   const orchIdx = events.indexOf("orchestration:start");
+  const reapIdx = events.indexOf("reap");
   const primeIdx = events.indexOf("prime");
   const channelIdx = events.indexOf("channel:start");
   expect(lockIdx).toBeGreaterThanOrEqual(0);
   expect(orchIdx).toBeGreaterThanOrEqual(0);
+  expect(reapIdx).toBeGreaterThanOrEqual(0);
   expect(primeIdx).toBeGreaterThan(lockIdx);
   expect(primeIdx).toBeGreaterThan(orchIdx);
+  expect(primeIdx).toBeGreaterThan(reapIdx);
   expect(primeIdx).toBeLessThan(channelIdx);
   expect(primeCallOrder).toEqual(["prime"]);
   signalHandlers.get("SIGTERM")?.();
