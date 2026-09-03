@@ -50,6 +50,16 @@ test("incomplete binding stages onto a clone and leaves live state untouched", (
   expect(staged.logicalSessionId).not.toBe("");
   expect(staged.transportEngine).toBe("runtime");
   expect(staged.sourceHandle).toBe("src-1");
+  // Simulate a saveNow failure: live is untouched, so a retry must re-stage
+  // (changed:true) with a fresh identity — never reuse a half-persisted one.
+  // ensure/transport calls happen only after a successful saveNow+publish.
+  const retry = stageWorkerBindingIdentity(state, input, () => "runtime");
+  expect(retry.changed).toBe(true);
+  if (!retry.changed) return;
+  expect(retry.nextState.orchestration.workerBindings["worker-1"]!.logicalSessionId).not.toBe(
+    staged.logicalSessionId,
+  );
+  expect(state.orchestration.workerBindings["worker-1"]).toEqual({ sourceHandle: "src-1" });
 });
 
 test("strict-ineligible engine throws before any mutation", () => {
