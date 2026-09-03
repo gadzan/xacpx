@@ -18,17 +18,17 @@
 import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-export type FencePhase = "owned" | "admitted" | "discharging" | "discharged" | "spooled";
+export type FencePhase = "claiming" | "owned" | "admitted" | "discharging" | "discharged" | "spooled";
 
-export const FENCE_PHASES: readonly FencePhase[] = ["owned", "admitted", "discharging", "discharged", "spooled"];
+export const FENCE_PHASES: readonly FencePhase[] = ["claiming", "owned", "admitted", "discharging", "discharged", "spooled"];
 
 export interface RuntimeWorkerFenceRecord {
   kind: "runtime-worker-owner";
   logicalSessionId: string;
   /** The owning worker client generation — phase writers must match it. */
   generation: string;
-  pid: number;
-  creationDate: string | null;
+  pid?: number;
+  creationDate?: string | null;
   /** True once a business RPC could have entered (adapter tree possible). */
   bootstrapVerified: boolean;
   phase: FencePhase;
@@ -105,6 +105,26 @@ export async function dischargeRuntimeWorkerFence(
   const now = deps.now ?? Date.now;
   const waitSelfMs = deps.selfDischargeWaitMs ?? 90_000;
 
+  // Pre-spawn claim (round 33 G2 crash-safe claim-before-spawn): a fence in
+  // "claiming" phase has no worker PID yet. Wait briefly (up to selfDischargeWaitMs
+  // or 2s) to allow a concurrent in-flight spawn to publish its "owned" PID.
+  // If it transitions to another phase, evaluate that phase.
+  // If it remains "claiming" past the wait window, the host crashed before spawn;
+  // it is safe to discharge the orphan claim without orphan-tree convergence.
+  if (record.phase === "claiming") {
+    const claimWaitMs = Math.min(waitSelfMs, 2000);
+    const deadline = now() + claimWaitMs;
+    while (now() < deadline) {
+      await waitMs(50);
+      const reread = await deps.readBack?.();
+      if (reread && reread.kind === "present" && reread.record.phase !== "claiming") {
+        return await dischargeRuntimeWorkerFence(reread.record, deps);
+      }
+    }
+    await deps.markDischarged?.({ ...record, phase: "discharged" });
+    return "discharged";
+  }
+
   // POSIX: the process group is only ever OBSERVED from out here. ESRCH is
   // the one proof of gone (round 31 Blocking 4); a live or unverifiable
   // group gets the self-discharge window, then refuses — never a kill(-pgid)
@@ -113,14 +133,13 @@ export async function dischargeRuntimeWorkerFence(
     const probe = deps.probeProcessGroup ?? probeProcessGroupDefault;
     const deadline = now() + waitSelfMs;
     for (;;) {
-      const state = probe(record.pid);
+      const state = probe(record.pid!);
       if (state === "gone") return "discharged";
       if (state === "unknown") return "refused";
       if (now() >= deadline) return "refused";
       await waitMs(500);
     }
   }
-
   // Windows: the phase decision table. The self-discharge window is the
   // cross-Host quiescence handoff — the old worker's EOF gate drains its
   // in-flight dispatches BEFORE converging, so its terminal phase is the
@@ -230,10 +249,16 @@ export class RuntimeWorkerFence {
       return { kind: "unreadable", reason: "logicalSessionId mismatch" };
     }
     if (typeof parsed.generation !== "string" || parsed.generation.length === 0) return { kind: "unreadable", reason: "invalid generation" };
-    if (!Number.isSafeInteger(parsed.pid) || (parsed.pid as number) <= 0) return { kind: "unreadable", reason: "invalid pid" };
-    if (parsed.creationDate !== null && typeof parsed.creationDate !== "string") return { kind: "unreadable", reason: "invalid creationDate" };
-    if (typeof parsed.bootstrapVerified !== "boolean") return { kind: "unreadable", reason: "invalid bootstrapVerified" };
     if (typeof parsed.phase !== "string" || !FENCE_PHASES.includes(parsed.phase as FencePhase)) return { kind: "unreadable", reason: "invalid phase" };
+    if (parsed.phase === "claiming") {
+      if (parsed.pid !== undefined && (!Number.isSafeInteger(parsed.pid) || (parsed.pid as number) <= 0)) {
+        return { kind: "unreadable", reason: "invalid claiming pid" };
+      }
+    } else {
+      if (!Number.isSafeInteger(parsed.pid) || (parsed.pid as number) <= 0) return { kind: "unreadable", reason: "invalid pid" };
+    }
+    if (parsed.creationDate !== null && parsed.creationDate !== undefined && typeof parsed.creationDate !== "string") return { kind: "unreadable", reason: "invalid creationDate" };
+    if (typeof parsed.bootstrapVerified !== "boolean") return { kind: "unreadable", reason: "invalid bootstrapVerified" };
     if (typeof parsed.startedAt !== "string" || typeof parsed.agent !== "string") return { kind: "unreadable", reason: "invalid metadata" };
     return { kind: "present", record: parsed as unknown as RuntimeWorkerFenceRecord };
   }

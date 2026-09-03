@@ -120,8 +120,8 @@ test("PR9-A fail-closed: timeout/disconnect/malformed → reject_once", async ()
     stateDir,
     queueDir,
     fenceDir,
-    permissionMode: "approve-all",
     permissionPolicy: JSON.stringify({ escalate: ["edit"] }),
+    permissionInteractionAvailable: true,
     onPermissionRequest: async () => {
       await new Promise((r) => setTimeout(r, 9_000));
       return { outcome: "allow_once" };
@@ -149,6 +149,7 @@ test("PR9-A fail-closed: timeout/disconnect/malformed → reject_once", async ()
     fenceDir: join(dir, "fences2"),
     permissionMode: "approve-all",
     permissionPolicy: JSON.stringify({ escalate: ["edit"] }),
+    permissionInteractionAvailable: true,
     onPermissionRequest: async () => ({ outcome: "bogus" as unknown as "allow_once" }),
   } as unknown as ConstructorParameters<typeof RuntimeEngine>[0]);
   try {
@@ -179,6 +180,7 @@ test("PR9-A generation race: G → G+1 stale response → reject", async () => {
     fenceDir,
     permissionMode: "approve-all",
     permissionPolicy: JSON.stringify({ escalate: ["edit"] }),
+    permissionInteractionAvailable: true,
     onPermissionRequest: (payload) => {
       if ((payload as { requestId?: string }).requestId === "r1") {
         return new Promise<{ outcome: "allow_once" }>((r) => {
@@ -218,7 +220,7 @@ test("PR9-C E2E: real child worker emits elicitation.request, generation fencing
   const stateDir = join(dir, "state", "sessions");
   const queueDir = join(dir, "queue");
   const fenceDir = join(dir, "fences");
-  const workerFile = resolve("dist/bridge/engine/runtime/runtime-worker-main.js");
+  const workerFile = await buildWorker(dir);
 
   const agentFile = join(dir, "mock-elicit-agent.mjs");
   await writeFile(

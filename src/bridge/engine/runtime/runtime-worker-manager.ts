@@ -31,11 +31,11 @@ export interface RuntimeWorkerManagerOptions {
 }
 export class RuntimeWorkerManager {
   private readonly workersByKey = new Map<string, RuntimeWorkerClient>();
+  private readonly physicalFenceKeys = new Map<string, string>();
   private readonly restarts = new Map<string, number[]>();
   private fenceInstance?: RuntimeWorkerFence;
   /** Per-session fence write chains — initial/upgrade/retire never interleave. */
   private readonly fenceWriteChains = new Map<string, Promise<void>>();
-
   constructor(private readonly options: RuntimeWorkerManagerOptions) {
     if (!options.entryPath || !fileExists(options.entryPath)) {
       throw new Error(`runtime worker entry not found: ${options.entryPath} (build the project first)`);
@@ -156,10 +156,10 @@ export class RuntimeWorkerManager {
    * then claim the owned fence with O_EXCL BEFORE spawn. Acquire is the ONLY
    * spawn path.
    */
-  async acquire(logicalSessionId: string): Promise<RuntimeWorkerClient> {
-    await this.dischargeStaleFence(logicalSessionId);
+  async acquire(logicalWorkerKey: string, physicalFenceKey = logicalWorkerKey): Promise<RuntimeWorkerClient> {
+    await this.dischargeStaleFence(physicalFenceKey);
     if (this.fence()) {
-      const existing = this.workersByKey.get(logicalSessionId);
+      const existing = this.workersByKey.get(logicalWorkerKey);
       if (
         existing &&
         existing.alive &&
@@ -169,26 +169,27 @@ export class RuntimeWorkerManager {
       ) {
         return existing;
       }
-      this.assertRestartBudget(logicalSessionId);
+      this.assertRestartBudget(logicalWorkerKey);
       const workerGeneration = randomUUID();
       const worker = new RuntimeWorkerClient(
         this.options.entryPath,
-        logicalSessionId,
+        logicalWorkerKey,
         workerGeneration,
-        (client, code) => this.handleExit(logicalSessionId, client, code),
+        (client, code) => this.handleExit(logicalWorkerKey, client, code),
         {
           ...this.options.clientDeps,
           spawnEnv: {
             ...this.options.clientDeps?.spawnEnv,
-            XACPX_WORKER_FENCE: join(this.fenceDirValue()!, `${encodeURIComponent(logicalSessionId)}.json`),
+            XACPX_WORKER_FENCE: join(this.fenceDirValue()!, `${encodeURIComponent(physicalFenceKey)}.json`),
             XACPX_WORKER_FENCE_GENERATION: workerGeneration,
+            XACPX_WORKER_GENERATION: workerGeneration,
           },
           onIdentityVerified: async (client) => {
             await this.options.clientDeps?.onIdentityVerified?.(client);
-            await this.enqueueFenceWrite(logicalSessionId, async () => {
+            await this.enqueueFenceWrite(physicalFenceKey, async () => {
               await this.fence()!.write({
                 kind: "runtime-worker-owner",
-                logicalSessionId,
+                logicalSessionId: physicalFenceKey,
                 generation: workerGeneration,
                 pid: client.ref.pid,
                 creationDate: client.ref.creationDate ?? null,
@@ -197,7 +198,7 @@ export class RuntimeWorkerManager {
                 startedAt: client.ref.startedAt,
                 agent: "runtime-worker",
               });
-              const read = await this.fence()!.read(logicalSessionId);
+              const read = await this.fence()!.read(physicalFenceKey);
               if (read.kind !== "present" || read.record.phase !== "admitted" || read.record.creationDate !== client.ref.creationDate) {
                 throw new Error(`admitted fence read-back failed (${read.kind === "present" ? `phase=${read.record.phase}` : read.kind})`);
               }
@@ -205,14 +206,14 @@ export class RuntimeWorkerManager {
           },
         },
       );
-      // G2 pre-spawn atomic physical claim: write "owned" fence with O_EXCL BEFORE spawn.
+      // G2 pre-spawn atomic physical claim: write "claiming" fence with O_EXCL BEFORE spawn.
       // If another Host races and creates fence first, claimOwnedFence throws and spawn() is NEVER called.
-      await this.claimOwnedFence(logicalSessionId, worker);
+      await this.claimOwnedFence(physicalFenceKey, workerGeneration);
       try {
         worker.spawn();
-        await this.enqueueFenceWrite(logicalSessionId, () => this.fence()!.write({
+        await this.enqueueFenceWrite(physicalFenceKey, () => this.fence()!.write({
           kind: "runtime-worker-owner",
-          logicalSessionId,
+          logicalSessionId: physicalFenceKey,
           generation: workerGeneration,
           pid: worker.ref.pid,
           creationDate: worker.ref.creationDate ?? null,
@@ -222,14 +223,18 @@ export class RuntimeWorkerManager {
           agent: "runtime-worker",
         }));
       } catch (spawnError) {
-        this.workersByKey.delete(logicalSessionId);
-        await this.release(logicalSessionId, worker).catch(() => {});
+        this.workersByKey.delete(logicalWorkerKey);
+        this.physicalFenceKeys.delete(logicalWorkerKey);
+        if (this.fence()) {
+          await this.enqueueFenceWrite(physicalFenceKey, () => this.fence()!.retire(physicalFenceKey)).catch(() => {});
+        }
         throw spawnError;
       }
-      this.workersByKey.set(logicalSessionId, worker);
+      this.workersByKey.set(logicalWorkerKey, worker);
+      this.physicalFenceKeys.set(logicalWorkerKey, physicalFenceKey);
       return worker;
     }
-    const { worker } = this.ensureWorkerWithStatus(logicalSessionId);
+    const { worker } = this.ensureWorkerWithStatus(logicalWorkerKey);
     return worker;
   }
 
@@ -240,14 +245,16 @@ export class RuntimeWorkerManager {
    * terminal "discharged" phase first, so the next acquire retires instead
    * of bricking against a dead root.
    */
-  async release(logicalSessionId: string, client?: RuntimeWorkerClient): Promise<void> {
-    const fenced = client !== undefined && this.workersByKey.get(logicalSessionId) === client;
+  async release(logicalWorkerKey: string, client?: RuntimeWorkerClient): Promise<void> {
+    const fenced = client !== undefined && this.workersByKey.get(logicalWorkerKey) === client;
+    const physicalFenceKey = this.physicalFenceKeys.get(logicalWorkerKey) ?? logicalWorkerKey;
     if (!client || fenced) {
-      this.workersByKey.delete(logicalSessionId);
+      this.workersByKey.delete(logicalWorkerKey);
+      this.physicalFenceKeys.delete(logicalWorkerKey);
     }
     if (client && client.lifecycle === "stopped") {
       const fence = this.fence();
-      if (fence) await this.enqueueFenceWrite(logicalSessionId, () => fence.retire(logicalSessionId));
+      if (fence) await this.enqueueFenceWrite(physicalFenceKey, () => fence.retire(physicalFenceKey));
     }
   }
 
@@ -319,26 +326,23 @@ export class RuntimeWorkerManager {
     );
   }
 
-  private async claimOwnedFence(logicalSessionId: string, worker: RuntimeWorkerClient): Promise<void> {
+  private async claimOwnedFence(physicalFenceKey: string, workerGeneration: string): Promise<void> {
     const fence = this.fence();
     if (!fence) return;
     const record: RuntimeWorkerFenceRecord = {
       kind: "runtime-worker-owner",
-      logicalSessionId,
-      generation: worker.ref.generation,
-      pid: worker.ref.pid,
-      creationDate: worker.ref.creationDate ?? null,
-      bootstrapVerified: worker.isBootstrapVerified,
-      phase: "owned",
-      startedAt: worker.ref.startedAt,
+      logicalSessionId: physicalFenceKey,
+      generation: workerGeneration,
+      bootstrapVerified: false,
+      phase: "claiming",
+      startedAt: new Date().toISOString(),
       agent: "runtime-worker",
     };
     try {
-      await this.enqueueFenceWrite(logicalSessionId, () => fence.claim(record));
+      await this.enqueueFenceWrite(physicalFenceKey, () => fence.claim(record));
     } catch (error) {
-      this.workersByKey.delete(logicalSessionId);
       throw new WorkerTeardownPendingError(
-        `cannot claim durable ownership fence for session "${logicalSessionId}": ` +
+        `cannot claim durable ownership fence for session "${physicalFenceKey}": ` +
           `${error instanceof Error ? error.message : String(error)}; refusing unfenced worker`,
       );
     }
@@ -364,9 +368,10 @@ export class RuntimeWorkerManager {
     }
   }
 
-  deleteWorker(logicalSessionId: string, client?: RuntimeWorkerClient): void {
-    if (!client || this.workersByKey.get(logicalSessionId) === client) {
-      this.workersByKey.delete(logicalSessionId);
+  deleteWorker(logicalWorkerKey: string, client?: RuntimeWorkerClient): void {
+    if (!client || this.workersByKey.get(logicalWorkerKey) === client) {
+      this.workersByKey.delete(logicalWorkerKey);
+      this.physicalFenceKeys.delete(logicalWorkerKey);
     }
   }
 

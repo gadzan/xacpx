@@ -77,6 +77,8 @@ test("full delete lifecycle: ensure → prompt → freeWarm → cooled worker �
         schema: "acpx.session.v1",
         acpx_record_id: "real-acpx-rec-1234",
         name: sessionInput.name,
+        cwd: sessionInput.cwd,
+        agent_command: sessionInput.agent,
       }),
     );
     await writeFile(streamFile, '{"seq":1}\n');

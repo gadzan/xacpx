@@ -381,6 +381,14 @@ export interface RuntimeEngineOptions {
    */
   onPermissionRequest?: (payload: { logicalSessionId: string; sessionKey: string; requestId: string; toolCallId: string; title?: string; kind?: string; rawInput?: unknown; policyGeneration: number; workerGeneration: string }) => Promise<{ outcome: "allow_once" | "allow_always" | "reject_once" | "reject_always" | "cancel" }>;
   /**
+   * True only if a real channel/human UI interaction channel exists to prompt
+   * the user. Having an RPC callback (onPermissionRequest) merely means the
+   * transport bridge exists; without a real human UI, interactiveAvailable
+   * is false and policies requiring escalation must be judged Runtime-ineligible
+   * and routed to CLI. Defaults to false.
+   */
+  permissionInteractionAvailable?: boolean;
+  /**
    * PR9-C: Host-side handler for elicitation requests (acpx/runtime onElicitation).
    * If not provided, elicitation fails closed (cancel).
    */
@@ -956,7 +964,7 @@ export class RuntimeEngine implements BridgeEngine {
   private isRuntimeEligible(): boolean {
     try {
       const policy = this.options.permissionPolicy !== undefined ? parseXacpxPermissionPolicy(this.options.permissionPolicy) : undefined;
-      const interactiveAvailable = Boolean(this.options.onPermissionRequest);
+      const interactiveAvailable = this.options.permissionInteractionAvailable === true;
       return isEligibleForRuntime(policy, this.options.nonInteractivePermissions, interactiveAvailable);
     } catch {
       return false;
@@ -1083,28 +1091,36 @@ export class RuntimeEngine implements BridgeEngine {
       throw new WorkerUnavailableError("RuntimeEngine has no worker manager (worker entry not built)");
     }
     // G2 physical single-owner (plan §43 / review G2): resolve physical
-    // acpx record ID before acquire. If a physical record exists on disk,
-    // the fence claims that physical record ID. Two logical aliases pointing
-    // to the same physical acpx record contend for the same physical fence.
-    let recordLookup: RecordLookupResult;
-    try {
-      recordLookup = await findAcpxRecordIdFromDisk(input, this.sessionsDir());
-    } catch {
-      recordLookup = { kind: "absent" };
-    }
-    const physicalKey = (recordLookup.kind === "found" ? recordLookup.recordId : undefined) ?? this.workerKey(input);
-    const existing = this.acquiring.get(physicalKey);
+    // acpx record ID before acquire. Tri-state handling:
+    // - found(recordId): physical fence claims that physical record ID.
+    //   Two logical aliases pointing to the same physical record contend for the same physical fence.
+    // - absent: controlled bootstrap using logicalKey as physical fence key.
+    // - failed: corrupt/unreadable/ambiguous disk record MUST fail closed with RUNTIME_INIT_FAILED!
+    const logicalKey = this.workerKey(input);
+    const existing = this.acquiring.get(logicalKey);
     if (existing) return existing;
-    const acquire = this.manager.acquire(physicalKey);
-    this.acquiring.set(physicalKey, acquire);
+
+    const recordLookup = await findAcpxRecordIdFromDisk(input, this.sessionsDir());
+    if (recordLookup.kind === "failed") {
+      throw new RuntimeError(
+        "RUNTIME_INIT_FAILED",
+        `cannot verify physical session identity on disk: ${recordLookup.error.message}`,
+      );
+    }
+    const physicalFenceKey = recordLookup.kind === "found"
+      ? recordLookup.recordId
+      : logicalKey;
+
+    const acquire = this.manager.acquire(logicalKey, physicalFenceKey);
+    this.acquiring.set(logicalKey, acquire);
     try {
       const client = await acquire;
       if (recordLookup.kind === "found") {
-        this.recordIds.set(this.workerKey(input), recordLookup.recordId);
+        this.recordIds.set(logicalKey, recordLookup.recordId);
       }
       return client;
     } finally {
-      this.acquiring.delete(physicalKey);
+      this.acquiring.delete(logicalKey);
     }
   }
   private async withWorker<T>(input: EngineSessionInput, run: (client: RuntimeWorkerClient) => Promise<T>): Promise<T> {

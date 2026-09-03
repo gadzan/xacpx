@@ -2936,8 +2936,8 @@ test(
       // The config watcher debounces 100ms and then reloads asynchronously;
       // under the load of the 40+ buildApp tests above, fs.watch delivery can
       // push the provision past a 1s window (observed ~30-50% flake on both
-      // main and feature branches). 5s keeps the poll bounded and robust.
-      for (let attempt = 0; attempt < 250 && provisioned.length < 2; attempt += 1) {
+      // main and feature branches). 10s keeps the poll bounded and robust on CI runners.
+      for (let attempt = 0; attempt < 500 && provisioned.length < 2; attempt += 1) {
         await Bun.sleep(20);
       }
     });

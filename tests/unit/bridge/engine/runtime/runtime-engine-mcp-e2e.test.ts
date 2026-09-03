@@ -2,10 +2,15 @@ import type { OrchestrationTaskRecord } from "../../../../../src/orchestration/o
 import type { OrchestrationTaskFilter } from "../../../../../src/orchestration/orchestration-service";
 import type { ScheduledTaskRecord } from "../../../../../src/scheduled/scheduled-service";
 import { expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
 
+import { StateStore } from "../../../../../src/state/state-store";
+import { createEmptyState } from "../../../../../src/state/types";
 import { createXacpxMcpServer } from "../../../../../src/mcp/xacpx-mcp-server";
 import { createMemoryTransport } from "../../../../../src/mcp/xacpx-mcp-transport";
 import { makeGoldenHarness } from "../../../orchestration/golden/golden-harness";
@@ -297,12 +302,14 @@ test("PR8 E2E: cool/restart preserves orchestration state and still delegates", 
   }
 }, 15_000);
 
-test("PR8 E2E: real ScheduledTaskService persistence + listing + cancellation through MCP", async () => {
-  const { harness, service: _orchestration } = createServiceWithHarness();
-  const state = harness.getState();
-  const scheduledService = new ScheduledTaskService(state as never, {
-    save: async () => {},
-  });
+test("PR8 Server/Service Integration: real ScheduledTaskService durable file persistence + restart reload + cancellation through MCP", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-mcp-sched-durable-"));
+  const stateFile = join(dir, "state.json");
+  const stateStore = new StateStore(stateFile);
+  const state = createEmptyState();
+  await stateStore.save(state);
+
+  const scheduledService = new ScheduledTaskService(state, stateStore);
   const transport = createMemoryTransport(
     async () => ({ taskId: "t-mock", status: "running" }),
     {
@@ -315,8 +322,8 @@ test("PR8 E2E: real ScheduledTaskService persistence + listing + cancellation th
         });
         return created as unknown as ScheduledTaskRecord;
       },
-      scheduledList: async (input) => {
-        return scheduledService.listPending(input?.coordinatorSession ? "wx:user1" : "wx:user1") as unknown as ScheduledTaskRecord[];
+      scheduledList: async () => {
+        return scheduledService.listPending("wx:user1") as unknown as ScheduledTaskRecord[];
       },
       scheduledCancel: async (input) => {
         const cancelled = await scheduledService.cancelPending(input.id, "wx:user1");
@@ -332,7 +339,7 @@ test("PR8 E2E: real ScheduledTaskService persistence + listing + cancellation th
   await client.connect(cT);
 
   try {
-    // Create via MCP
+    // 1. Create via MCP tool call
     const createRes = await client.request(
       {
         method: "tools/call",
@@ -348,45 +355,38 @@ test("PR8 E2E: real ScheduledTaskService persistence + listing + cancellation th
     );
     expect((createRes as unknown as Record<string, unknown>)["isError"]).not.toBe(true);
 
-    // Verify in real state
-    const scheduled = Object.values(state.scheduled_tasks || {});
-    expect(scheduled.length).toBeGreaterThan(0);
-    const task = scheduled.find((t) => t.message === "morning reminder");
-    expect(task).toBeDefined();
-    expect(task?.status).toBe("pending");
+    // 2. Verify disk persistence: load state from file on disk
+    const loadedState = await stateStore.load();
+    const tasksOnDisk = Object.values(loadedState.scheduled_tasks || {});
+    expect(tasksOnDisk.length).toBeGreaterThan(0);
+    const taskOnDisk = tasksOnDisk.find((t) => t.message === "morning reminder");
+    expect(taskOnDisk).toBeDefined();
+    expect(taskOnDisk?.status).toBe("pending");
 
-    // List via MCP
-    const listRes = await client.request(
-      {
-        method: "tools/call",
-        params: {
-          name: "scheduled_list",
-          arguments: {},
-        },
-      } as unknown as { method: string; params: unknown },
-      CallToolResultSchema,
-    );
-    expect((listRes as unknown as Record<string, unknown>)["isError"]).not.toBe(true);
+    // 3. Restart simulation: create a new service instance from reloaded disk file
+    const restartedService = new ScheduledTaskService(loadedState, stateStore);
+    const listFromDisk = restartedService.listPending("wx:user1");
+    expect(listFromDisk.map((t) => t.message)).toContain("morning reminder");
 
-    // Cancel via MCP
-    if (!task) throw new Error("task not created in state");
+    // 4. Cancel via MCP tool call
     const cancelRes = await client.request(
       {
         method: "tools/call",
         params: {
           name: "scheduled_cancel",
-          arguments: { id: task.id },
+          arguments: { id: taskOnDisk!.id },
         },
       } as unknown as { method: string; params: unknown },
       CallToolResultSchema,
     );
-    if ((cancelRes as unknown as Record<string, unknown>)["isError"]) {
-      console.log("cancelRes error:", JSON.stringify(cancelRes));
-    }
     expect((cancelRes as unknown as Record<string, unknown>)["isError"]).not.toBe(true);
-    expect(state.scheduled_tasks[task.id]?.status).toBe("cancelled");
+
+    // 5. Verify cancellation persisted to disk
+    const finalLoadedState = await stateStore.load();
+    expect(finalLoadedState.scheduled_tasks[taskOnDisk!.id]?.status).toBe("cancelled");
   } finally {
     await client.close();
     await server.close();
+    await rm(dir, { recursive: true, force: true });
   }
 }, 15_000);
