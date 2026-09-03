@@ -124,13 +124,43 @@ test("duplicate messageId conflicting payload fails closed", async () => {
 });
 
 test("queue overflow rejects with RUNTIME_QUEUE_OVERFLOW", async () => {
-  await withEngine({}, async (engine) => {
+  // Use a worker that never completes the first prompt so the durable queue
+  // cannot drain during the burst — overflow must be deterministic and not
+  // depend on a race between enqueue file I/O and drainLoop execution.
+  const blockingWorker = async (entry: string) => {
+    await writeFile(
+      entry,
+      [
+        "let buffer='';",
+        "process.stdin.on('data', (d) => {",
+        "  buffer += d.toString();",
+        "  let idx;",
+        "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+        "    if (!line) continue;",
+        "    try { const msg = JSON.parse(line);",
+        "      if (msg.method === 'prompt') {",
+        "        // Keep head non-terminal so queue does not drain during the burst",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: false, error: { code: 'RUNTIME_WORKER_CRASHED', message: 'blocked' } }) + '\\n');",
+        "      } else if (msg.method === 'ensure') {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true, sessionKey: msg.params.sessionKey, acpxRecordId: 'rec-'+msg.params.sessionKey } }) + '\\n');",
+        "      } else {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "      }",
+        "      if (msg.method === 'shutdown') process.exit(0);",
+        "    } catch {}",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+  };
+  await withEngine({ fakeWorker: blockingWorker }, async (engine) => {
     for (let i = 0; i < 20; i++) {
       await engine.injectMessage({ ...baseInput, text: `t${i}`, mode: "queue", messageId: `m${i}` });
     }
     await expect(engine.injectMessage({ ...baseInput, text: "overflow", mode: "queue", messageId: "m_overflow" })).rejects.toMatchObject({ code: "RUNTIME_QUEUE_OVERFLOW" });
   });
-});
+}, 15_000);
 
 test("queue while direct prompt active waits for turn settle then drains", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-q-direct-"));

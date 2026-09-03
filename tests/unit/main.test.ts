@@ -2931,16 +2931,19 @@ test(
       workspaces: { backend: { cwd: "/tmp/backend" } },
     });
     await writeFile(configPath, updatedConfig);
-    await readJsonWithRetry<{ agents?: unknown }>(configPath).then(async () => {
-      for (let attempt = 0; attempt < 500 && provisioned.length < 2; attempt += 1) {
-        await Bun.sleep(20);
-        if (attempt === 50 && provisioned.length < 2) {
-          // Safety poke: if FSEvents missed the initial burst, touch the file once after 1s
-          await writeFile(configPath, updatedConfig);
-        }
+    await readJsonWithRetry<{ agents?: unknown }>(configPath);
+    for (let attempt = 0; attempt < 500; attempt++) {
+      const hasCustom = provisioned.some((p) => (p as Record<string, unknown>).custom !== undefined);
+      if (hasCustom) break;
+      await Bun.sleep(20);
+      if (attempt === 50) {
+        // Safety poke: if FSEvents missed the burst or the first reload raced the write and read stale content,
+        // touch the file again so the watcher re-fires with the correct updated content.
+        await writeFile(configPath, updatedConfig);
       }
-    });
-    expect(provisioned.at(-1)).toMatchObject({
+    }
+    expect(provisioned.some((p) => (p as Record<string, unknown>).custom !== undefined)).toBe(true);
+    expect(provisioned.find((p) => (p as Record<string, unknown>).custom !== undefined)).toMatchObject({
       custom: { driver: "custom", argv: ["C:\\Program Files\\agent.exe", "--acp"] },
     });
     await runtime.dispose();
