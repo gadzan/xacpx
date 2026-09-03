@@ -1,8 +1,12 @@
 import { expect, test } from "bun:test";
 
+import type { ResolvedSession, SessionTransport } from "../../src/transport/types";
+import type { OrchestrationServer } from "../../src/orchestration/orchestration-server";
+import type { SessionService } from "../../src/sessions/session-service";
+import type { ConsumerLock } from "../../src/runtime/consumer-lock";
+import type { DaemonLifecycle } from "../../src/run-console";
 import { createNoopAppLogger } from "../../src/logging/app-logger";
 import { runConsole as runConsoleWithOwnership } from "../../src/run-console";
-
 const noOpConsumerLock = {
   acquire: async () => {},
   release: async () => {},
@@ -843,6 +847,80 @@ test("passes the session resource catalog through to channel startup", async () 
   await new Promise((resolve) => setTimeout(resolve, 10));
   expect(startInput?.sessionResources).toBe(sessionResources);
 
+  signalHandlers.get("SIGTERM")?.();
+  await runPromise;
+});
+test("primes runtime queues only after consumer lock and orchestration IPC are ready", async () => {
+  const events: string[] = [];
+  const signalHandlers = new Map<string, () => void>();
+  let primeCallOrder: string[] = [];
+  const mockTransport = {
+    primeRuntimeQueues: async (sessions: unknown[]) => {
+      primeCallOrder.push("prime");
+      events.push("prime");
+    },
+    dispose: async () => { events.push("transport:dispose"); },
+    isSessionWarm: async () => ({ warm: false }),
+  } as unknown as SessionTransport;
+  const mockOrchestrationServer = {
+    start: async () => { events.push("orchestration:start"); },
+    stop: async () => { events.push("orchestration:stop"); },
+  } as unknown as OrchestrationServer;
+  const mockSessions = {
+    listAllResolvedSessions: () => [{ alias: "a", agent: "codex", workspace: "backend", transport_session: "backend:a", transportEngine: "runtime", logical_session_id: "id-1" } as unknown as ResolvedSession],
+  } as unknown as SessionService;
+  const runPromise = runConsole(
+    { configPath: "/cfg", statePath: "/state" },
+    {
+      buildApp: async () => ({
+        agent: { handle: async () => {} } as never,
+        router: {} as never,
+        sessions: mockSessions as never,
+        sessionResources: {} as never,
+        activeTurns: {} as never,
+        stateStore: { save: async () => {}, saveNow: async () => {} } as never,
+        configStore: {} as never,
+        logger: { info: async () => {}, error: async () => {}, warn: async () => {}, debug: async () => {} } as never,
+        perfTracer: { flush: async () => {} } as never,
+        quota: {} as never,
+        transport: mockTransport as never,
+        orchestration: { service: { reconcileParallelSlots: async () => {} } as never, server: mockOrchestrationServer as never, endpoint: {} as never },
+        agentMessaging: {} as never,
+        scheduled: { service: {} as never, scheduler: { start: async () => {}, stop: () => {} } as never },
+        control: {} as never,
+        reapStaleQueueOwners: async () => { events.push("reap"); },
+        dispose: async () => { events.push("dispose"); },
+      }),
+      channels: {
+        startAll: async () => { events.push("channel:start"); },
+      },
+      consumerLock: {
+        acquire: async () => { events.push("lock:acquire"); },
+        release: async () => { events.push("lock:release"); },
+      } as unknown as ConsumerLock,
+      daemonRuntime: {
+        start: async () => { events.push("daemon:start"); },
+        heartbeat: async () => {},
+        stop: async () => { events.push("daemon:stop"); },
+      } as unknown as DaemonLifecycle,
+      addProcessListener: (signal, handler) => { signalHandlers.set(signal, handler); },
+      removeProcessListener: (signal, handler) => { if (signalHandlers.get(signal) === handler) signalHandlers.delete(signal); },
+    },
+  );
+  // Integration test exercising real wall-clock ordering of daemon startup (lock + IPC before queue prime)
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, 50);
+  await promise;
+  const lockIdx = events.indexOf("lock:acquire");
+  const orchIdx = events.indexOf("orchestration:start");
+  const primeIdx = events.indexOf("prime");
+  const channelIdx = events.indexOf("channel:start");
+  expect(lockIdx).toBeGreaterThanOrEqual(0);
+  expect(orchIdx).toBeGreaterThanOrEqual(0);
+  expect(primeIdx).toBeGreaterThan(lockIdx);
+  expect(primeIdx).toBeGreaterThan(orchIdx);
+  expect(primeIdx).toBeLessThan(channelIdx);
+  expect(primeCallOrder).toEqual(["prime"]);
   signalHandlers.get("SIGTERM")?.();
   await runPromise;
 });

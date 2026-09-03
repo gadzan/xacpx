@@ -208,6 +208,23 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
       });
       daemonRuntimeStarted = true;
       await runtime.orchestration.server.start();
+      // P1 G6: prime Runtime durable queues ONLY after consumer lock AND
+      // orchestration IPC are ready. An early prime in buildApp() could
+      // spawn workers and drain messages before this process owns the
+      // single-consumer lock or before MCP/orchestration is listening,
+      // violating ownership and causing premature dequeue on restart.
+      try {
+        const maybePrime = runtime.transport as unknown as { primeRuntimeQueues?: (sessions: unknown[]) => Promise<void> };
+        if (typeof maybePrime.primeRuntimeQueues === "function") {
+          const runtimeSessions = runtime.sessions.listAllResolvedSessions().filter((s) => s.transportEngine === "runtime");
+          if (runtimeSessions.length > 0) {
+            await maybePrime.primeRuntimeQueues(runtimeSessions);
+            await runtime.logger.info("bridge.runtime_queue.primed", "primed runtime queues from catalog after lock+IPC ready", { count: runtimeSessions.length }).catch(() => {});
+          }
+        }
+      } catch (err) {
+        await runtime.logger.warn("bridge.runtime_queue.prime_failed", "failed to prime runtime queues after lock+IPC", { error: err instanceof Error ? err.message : String(err) }).catch(() => {});
+      }
       heartbeatTimer = setIntervalFn(
         () => {
           void deps.daemonRuntime?.heartbeat().catch(() => {});

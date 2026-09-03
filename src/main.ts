@@ -618,36 +618,6 @@ export async function buildApp(
     logger,
     resolveDriver: (agent) => config.agents[agent]?.driver,
   });
-  // Prime runtime queues from catalog upon bridge startup (P1 G6 Bridge restart recovery).
-  if (config.transport.type === "acpx-bridge" && hasPrimeRuntimeQueues(transport)) {
-    try {
-      const runtimeSessions = sessions
-        .listAllResolvedSessions()
-        .filter((s) => s.transportEngine === "runtime");
-      if (runtimeSessions.length > 0) {
-        await transport.primeRuntimeQueues(runtimeSessions);
-        void logger
-          .info(
-            "bridge.runtime_queue.primed",
-            "primed runtime queues from catalog on startup",
-            {
-              count: runtimeSessions.length,
-            },
-          )
-          .catch(() => {});
-      }
-    } catch (err) {
-      void logger
-        .warn(
-          "bridge.runtime_queue.prime_failed",
-          "failed to prime runtime queues from catalog on startup",
-          {
-            error: err instanceof Error ? err.message : String(err),
-          },
-        )
-        .catch(() => {});
-    }
-  }
   // Per-chatKey outbound quota (WeChat 24h budget). Shared across SDK boundary
   // (inbound reset / final reservation) and orchestration deliveries (mid gate).
   // Observer pipes every quota decision into the AppLogger so the path is

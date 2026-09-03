@@ -3,6 +3,7 @@ import type { OrchestrationTaskFilter } from "../../../../../src/orchestration/o
 import type { ScheduledTaskRecord } from "../../../../../src/scheduled/scheduled-service";
 import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
