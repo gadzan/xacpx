@@ -1963,3 +1963,56 @@ test("acpx-cli transport with strict runtime throws before state mutation", asyn
   );
   expect(state.sessions["cli-strict"]).toBeUndefined();
 });
+test("listRuntimeQueueRecoverySessions covers shared-physical aliases and worker bindings", () => {
+  const state = createEmptyState();
+  const now = new Date().toISOString();
+  const logical = (alias: string, logicalSessionId: string) => ({
+    alias,
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:shared",
+    transport_engine: "runtime" as const,
+    logical_session_id: logicalSessionId,
+    created_at: now,
+    last_used_at: now,
+  });
+  state.sessions["a"] = logical("a", "11111111-1111-4111-8111-111111111111");
+  state.sessions["b"] = logical("b", "22222222-2222-4222-8222-222222222222");
+  state.orchestration.workerBindings["worker-1"] = {
+    sourceHandle: "src-1",
+    coordinatorSession: "coord-1",
+    workspace: "backend",
+    targetAgent: "codex",
+    agentEndpointId: "endpoint_worker_1",
+    logicalSessionId: "33333333-3333-4333-8333-333333333333",
+    transportEngine: "runtime",
+  };
+  const service = new SessionService(createConfig(), new MemoryStateStore(), state);
+  const catalog = service.listRuntimeQueueRecoverySessions();
+  const byLid = new Map(catalog.map((s) => [s.logicalSessionId, s]));
+  // Both shared-physical aliases (physical catalog would dedupe to one)…
+  expect(byLid.has("11111111-1111-4111-8111-111111111111")).toBe(true);
+  expect(byLid.has("22222222-2222-4222-8222-222222222222")).toBe(true);
+  // …and the worker binding journal.
+  const worker = byLid.get("33333333-3333-4333-8333-333333333333");
+  expect(worker?.transportEngine).toBe("runtime");
+  expect(worker?.alias).toBe("worker-1");
+  expect(worker?.cwd).toBe("/tmp/backend");
+});
+
+test("resolveWorkerBindingSession fails closed on unknown identity", () => {
+  const state = createEmptyState();
+  state.orchestration.workerBindings["ghost"] = {
+    sourceHandle: "src-g",
+    coordinatorSession: "coord-g",
+    workspace: "nope",
+    targetAgent: "codex",
+    agentEndpointId: "endpoint_ghost",
+    logicalSessionId: "44444444-4444-4444-8444-444444444444",
+    transportEngine: "runtime",
+  };
+  const service = new SessionService(createConfig(), new MemoryStateStore(), state);
+  expect(service.resolveWorkerBindingSession("ghost")).toBeNull();
+  expect(service.resolveWorkerBindingSession("missing")).toBeNull();
+  expect(service.listRuntimeQueueRecoverySessions()).toEqual([]);
+});

@@ -13,6 +13,7 @@ import { ensureConfigExists } from "./config/ensure-config";
 import { loadConfig } from "./config/load-config";
 import { resolveAcpxCommand } from "./config/resolve-acpx-command";
 import { ConsoleAgent } from "./console-agent";
+import { isRestartRequiredTransportChange } from "./config/transport-topology";
 import type { AppConfig, LoggingLevel } from "./config/types";
 import {
   terminalEnabled,
@@ -151,10 +152,7 @@ export async function applyRuntimePermissionConfig(
     // constructed once in buildApp(). Hot-applying a different type/command
     // would leave the persisted affinity selector (which sees the new config)
     // disagreeing with the transport that actually executes sessions.
-    if (
-      nextConfig.transport.type !== config.transport.type ||
-      (nextConfig.transport.command ?? "") !== (config.transport.command ?? "")
-    ) {
+    if (isRestartRequiredTransportChange(config.transport, nextConfig.transport)) {
       throw new Error(
         "transport topology change (transport.type/command) requires a daemon restart; keeping live config",
       );

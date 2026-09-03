@@ -182,6 +182,43 @@ test("load migrates legacy worker bindings to cli engine and mints LID durably",
   }
 });
 
+test("load quarantines worker bindings with present-but-invalid logicalSessionId", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-state-"));
+  const path = join(dir, "state.json");
+  const state = createEmptyState();
+  state.orchestration.workerBindings.bad = {
+    sourceHandle: "bad",
+    coordinatorSession: "coord",
+    workspace: "project",
+    targetAgent: "codex",
+    agentEndpointId: "endpoint_bad",
+    logicalSessionId: "garbage",
+    transportEngine: "cli",
+  };
+  state.orchestration.workerBindings.empty = {
+    sourceHandle: "empty",
+    coordinatorSession: "coord",
+    workspace: "project",
+    targetAgent: "codex",
+    agentEndpointId: "endpoint_empty",
+    logicalSessionId: "",
+    transportEngine: "cli",
+  };
+  await Bun.write(path, JSON.stringify(state));
+
+  try {
+    const store = new StateStore(path);
+    const loaded = await store.load();
+    // Corrupt identities are dropped, never silently re-minted (which would
+    // switch the identity out from under queues/fences/affinity).
+    expect(loaded.orchestration.workerBindings.bad).toBeUndefined();
+    expect(loaded.orchestration.workerBindings.empty).toBeUndefined();
+    expect(store.lastLoadReport?.dropped.map((d) => d.key).sort()).toEqual(["bad", "empty"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("load quarantines every current worker or external coordinator with a duplicate endpoint identity", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-state-"));
   const path = join(dir, "state.json");

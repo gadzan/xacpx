@@ -116,6 +116,13 @@ export async function handleConfigSet(
       throw error;
     }
   }
+  if (path === "transport.type" || path === "transport.command") {
+    // Scheme A: persist the file edit but do NOT hot-apply it to the live
+    // config — the live transport object cannot be rebuilt in place, and a
+    // split-brain affinity selector would persist Runtime bindings the
+    // running daemon cannot execute. The operator restarts to pick it up.
+    return { text: c.restartRequired(path, plan.renderedValue) };
+  }
   context.replaceConfig(updated);
   return { text: c.updated(path, plan.renderedValue) };
 }

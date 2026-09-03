@@ -226,17 +226,20 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
     // listening, or while the sweep may still terminate the physical owner.
     try {
       const maybePrime = (runtime as unknown as { transport?: { primeRuntimeQueues?: (sessions: unknown[]) => Promise<void> } }).transport;
-      const maybeSessions = (runtime as unknown as { sessions?: { listAllResolvedSessions?: () => { transportEngine?: string }[]; listAllResolvedLogicalSessions?: () => { transportEngine?: string }[] } }).sessions;
+      const maybeSessions = (runtime as unknown as { sessions?: { listAllResolvedSessions?: () => { transportEngine?: string }[]; listAllResolvedLogicalSessions?: () => { transportEngine?: string }[]; listRuntimeQueueRecoverySessions?: () => { transportEngine?: string }[] } }).sessions;
       // G6: the recovery catalog is keyed by LOGICAL session id (one journal
-      // per logical session), so it must not use the physical-deduped
-      // listAllResolvedSessions — shared-physical aliases would lose journals.
-      const listLogical = maybeSessions && typeof maybeSessions.listAllResolvedLogicalSessions === "function"
-        ? () => maybeSessions.listAllResolvedLogicalSessions!()
-        : maybeSessions && typeof maybeSessions.listAllResolvedSessions === "function"
-          ? () => maybeSessions.listAllResolvedSessions!()
-          : null;
-      if (maybePrime && typeof maybePrime.primeRuntimeQueues === "function" && listLogical) {
-        const runtimeSessions = listLogical().filter((s) => s.transportEngine === "runtime");
+      // per logical session AND per worker binding), so it must not use the
+      // physical-deduped listAllResolvedSessions — shared-physical aliases
+      // and worker journals would otherwise never auto-drain.
+      const listRecovery = maybeSessions && typeof maybeSessions.listRuntimeQueueRecoverySessions === "function"
+        ? () => maybeSessions.listRuntimeQueueRecoverySessions!()
+        : maybeSessions && typeof maybeSessions.listAllResolvedLogicalSessions === "function"
+          ? () => maybeSessions.listAllResolvedLogicalSessions!()
+          : maybeSessions && typeof maybeSessions.listAllResolvedSessions === "function"
+            ? () => maybeSessions.listAllResolvedSessions!()
+            : null;
+      if (maybePrime && typeof maybePrime.primeRuntimeQueues === "function" && listRecovery) {
+        const runtimeSessions = listRecovery().filter((s) => s.transportEngine === "runtime");
         if (runtimeSessions.length > 0) {
           await maybePrime.primeRuntimeQueues(runtimeSessions);
           await runtime.logger.info("bridge.runtime_queue.primed", "primed runtime queues from catalog after lock+IPC+reap ready", { count: runtimeSessions.length }).catch(() => {});

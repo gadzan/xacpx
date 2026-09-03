@@ -24,6 +24,9 @@ export const config: ConfigMessages = {
   // handleConfigSet — success
   updated: (path, value) => `配置已更新：${path} = ${value}`,
 
+  // handleConfigSet — restart-required topology change
+  restartRequired: (path, value) => `配置已保存：${path} = ${value}。传输拓扑变更需要重启 daemon 才能生效；当前运行的 daemon 继续使用之前的传输配置。`,
+
   // applySupportedConfigUpdate — language
   languageInvalid: "language 只支持：en、zh",
 

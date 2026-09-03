@@ -871,9 +871,12 @@ test("primes runtime queues only after consumer lock and orchestration IPC are r
   // Two logical aliases sharing one physical acpx session: the physical
   // catalog would dedupe them, but queue recovery needs both journals.
   const mockSessions = {
-    listAllResolvedLogicalSessions: () => [
+    listRuntimeQueueRecoverySessions: () => [
       { alias: "a", agent: "codex", workspace: "backend", transport_session: "backend:shared", transportEngine: "runtime", logical_session_id: "id-a" } as unknown as ResolvedSession,
       { alias: "b", agent: "codex", workspace: "backend", transport_session: "backend:shared", transportEngine: "runtime", logical_session_id: "id-b" } as unknown as ResolvedSession,
+    ],
+    listAllResolvedLogicalSessions: () => [
+      { alias: "a", agent: "codex", workspace: "backend", transport_session: "backend:shared", transportEngine: "runtime", logical_session_id: "id-a" } as unknown as ResolvedSession,
     ],
     listAllResolvedSessions: () => [{ alias: "a", agent: "codex", workspace: "backend", transport_session: "backend:shared", transportEngine: "runtime", logical_session_id: "id-a" } as unknown as ResolvedSession],
   } as unknown as SessionService;

@@ -721,6 +721,9 @@ export interface ConfigMessages {
   // handleConfigSet — success
   updated: (path: string, value: string) => string;
 
+  // handleConfigSet — restart-required topology change (file saved, live config untouched)
+  restartRequired: (path: string, value: string) => string;
+
   // applySupportedConfigUpdate — language
   languageInvalid: string;
 

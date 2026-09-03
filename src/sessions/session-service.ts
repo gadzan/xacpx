@@ -15,6 +15,8 @@ import type { AgentConfig, AppConfig, WechatReplyMode } from "../config/types";
 import { t } from "../i18n/index.js";
 import { AsyncMutex } from "../orchestration/async-mutex";
 import { sameCoordinatorSession, stableCoordinatorSession } from "../orchestration/coordinator-identity";
+import { resolveWorkerAgentLaunch } from "../orchestration/worker-launch";
+import type { WorkerBindingRecord } from "../orchestration/orchestration-types";
 import type { StateStore } from "../state/state-store";
 import { replaceRuntimeState } from "../state/replace-runtime-state";
 import type { AppState, BackgroundResult, ChatContextState, LogicalSession, SessionTransportEngine } from "../state/types";
@@ -257,6 +259,67 @@ export class SessionService {
   /** True when any persisted binding (logical session or orchestration worker binding) selects the Runtime engine. */
   hasPersistedRuntimeBindings(): boolean {
     return hasPersistedRuntimeBindings(this.state);
+  }
+
+  /**
+   * Resolve an orchestration worker binding to the same ResolvedSession shape
+   * production dispatch uses (main.ts resolveWorkerRuntimeSession): workspace
+   * cwd from config, launch fields from the worker agent resolution, and the
+   * binding's own persisted logicalSessionId/transportEngine. Returns null
+   * when the binding cannot be resolved (unknown agent/workspace) or carries
+   * no persisted identity — fail closed, never guess.
+   */
+  resolveWorkerBindingSession(workerSession: string): ResolvedSession | null {
+    const binding: WorkerBindingRecord | undefined =
+      this.state.orchestration.workerBindings[workerSession];
+    if (!binding) {
+      return null;
+    }
+    if (!binding.logicalSessionId || !binding.transportEngine) {
+      return null;
+    }
+    const agentConfig: AgentConfig | undefined = this.config.agents[binding.targetAgent];
+    if (!agentConfig) {
+      return null;
+    }
+    const workspaceConfig = this.config.workspaces[binding.workspace];
+    if (!workspaceConfig) {
+      return null;
+    }
+    const launch = resolveWorkerAgentLaunch(agentConfig, this.config.transport, binding);
+    return {
+      alias: workerSession,
+      agent: binding.targetAgent,
+      driver: agentConfig.driver,
+      settingsPolicy: agentConfig.settingsPolicy,
+      ...(launch.agentCommand ? { agentCommand: launch.agentCommand } : {}),
+      ...(launch.acpxAgent ? { acpxAgent: launch.acpxAgent } : {}),
+      ...(launch.rawCommand ? { rawCommand: launch.rawCommand } : {}),
+      ...(launch.agentArgv ? { agentArgv: launch.agentArgv } : {}),
+      model: agentConfig.model,
+      workspace: binding.workspace,
+      transportSession: workerSession,
+      cwd: workspaceConfig.cwd,
+      logicalSessionId: binding.logicalSessionId,
+      transportEngine: binding.transportEngine,
+    };
+  }
+
+  /**
+   * Full Runtime queue recovery catalog: every persisted logical session plus
+   * every resolvable orchestration worker binding. Journals are keyed by
+   * logical id on both paths, so restart prime must see both — a worker
+   * journal stranded outside this catalog would never auto-drain.
+   */
+  listRuntimeQueueRecoverySessions(): ResolvedSession[] {
+    const recovered = this.listAllResolvedLogicalSessions();
+    for (const workerSession of Object.keys(this.state.orchestration.workerBindings)) {
+      const resolved = this.resolveWorkerBindingSession(workerSession);
+      if (resolved) {
+        recovered.push(resolved);
+      }
+    }
+    return recovered;
   }
 
   resolveSession(

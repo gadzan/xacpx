@@ -273,7 +273,10 @@ function isWorkerBindingRecord(value: unknown): value is WorkerBindingRecord {
     isOptionalString(value.role) &&
     isOptionalBoolean(value.ephemeral) &&
     isOptionalBoolean(value.guardAcpOutput) &&
-    isOptionalString(value.logicalSessionId) &&
+    // Identity follows the ordinary-session rule: absent enters migration,
+    // but present-but-invalid is corruption (quarantine/drop) — never
+    // silently re-minted, which would switch an existing identity.
+    (value.logicalSessionId === undefined || isLogicalSessionId(value.logicalSessionId)) &&
     (value.transportEngine === undefined || value.transportEngine === "cli" || value.transportEngine === "runtime")
   );
 }
