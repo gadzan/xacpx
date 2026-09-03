@@ -1,8 +1,8 @@
-import { openSync, closeSync, fsyncSync, writeSync, constants as fsConstants } from "node:fs";
+import { openSync, closeSync, fsyncSync, writeSync, mkdirSync, constants as fsConstants } from "node:fs";
 import { mkdir, readFile, rename, writeFile, chmod, open, unlink } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import type {
   TerminalOwnerFileV1,
@@ -169,6 +169,7 @@ type LoadedState = {
 function defaultWriteFileExclusive(path: string, data: string, mode: number): boolean {
   let fd: number | undefined;
   try {
+    mkdirSync(dirname(path), { recursive: true });
     fd = openSync(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, mode);
     writeSync(fd, data, undefined, "utf8");
     fsyncSync(fd);
