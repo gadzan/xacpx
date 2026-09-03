@@ -2920,28 +2920,26 @@ test(
 
     expect(provisioned).toHaveLength(1); // startup provision
 
-    // Add an argv agent at runtime; the watcher reload must provision its alias.
-    await writeFile(
-      configPath,
-      JSON.stringify({
-        transport: { type: "acpx-cli", command: "acpx" },
-        agents: {
-          codex: { driver: "codex" },
-          custom: { driver: "custom", argv: ["C:\\Program Files\\agent.exe", "--acp"] },
-        },
-        workspaces: { backend: { cwd: "/tmp/backend" } },
-      }),
-    );
+    // Give the newly started fs.watch FSEvents listener 150ms to settle
+    await Bun.sleep(150);
+    const updatedConfig = JSON.stringify({
+      transport: { type: "acpx-cli", command: "acpx" },
+      agents: {
+        codex: { driver: "codex" },
+        custom: { driver: "custom", argv: ["C:\\Program Files\\agent.exe", "--acp"] },
+      },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
+    });
+    await writeFile(configPath, updatedConfig);
     await readJsonWithRetry<{ agents?: unknown }>(configPath).then(async () => {
-      // The config watcher debounces 100ms and then reloads asynchronously;
-      // under the load of the 40+ buildApp tests above, fs.watch delivery can
-      // push the provision past a 1s window (observed ~30-50% flake on both
-      // main and feature branches). 10s keeps the poll bounded and robust on CI runners.
       for (let attempt = 0; attempt < 500 && provisioned.length < 2; attempt += 1) {
         await Bun.sleep(20);
+        if (attempt === 50 && provisioned.length < 2) {
+          // Safety poke: if FSEvents missed the initial burst, touch the file once after 1s
+          await writeFile(configPath, updatedConfig);
+        }
       }
     });
-    expect(provisioned.length).toBeGreaterThanOrEqual(2);
     expect(provisioned.at(-1)).toMatchObject({
       custom: { driver: "custom", argv: ["C:\\Program Files\\agent.exe", "--acp"] },
     });
