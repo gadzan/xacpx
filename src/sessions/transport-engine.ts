@@ -121,19 +121,6 @@ export function resolveTransportEngine(input: ResolveTransportEngineInput): Tran
     return { engine: "cli" };
   }
 
-  const runtimeAvailable =
-    input.runtimeAvailable ??
-    (typeof input.runtimeProbe === "function" ? input.runtimeProbe() : probeRuntimeWorkerAvailable());
-
-  if (!runtimeAvailable) {
-    if (configured === "runtime") {
-      throw new Error(
-        'transport.engine = "runtime" requires acpx Runtime worker support, which this build does not enable yet',
-      );
-    }
-    return { engine: "cli", reason: "runtime-import-failed" };
-  }
-
   let sessionShapeValid = true;
   if (input.sessionShapeSupported === false) {
     sessionShapeValid = false;
@@ -217,6 +204,20 @@ export function resolveTransportEngine(input: ResolveTransportEngineInput): Tran
     }
     return { engine: "cli", reason: "unsupported-permission-policy" };
   }
+
+  const runtimeAvailable =
+    input.runtimeAvailable ??
+    (typeof input.runtimeProbe === "function" ? input.runtimeProbe() : probeRuntimeWorkerAvailable());
+
+  if (!runtimeAvailable) {
+    if (configured === "runtime") {
+      throw new Error(
+        'transport.engine = "runtime" requires acpx Runtime worker support, which this build does not enable yet',
+      );
+    }
+    return { engine: "cli", reason: "runtime-import-failed" };
+  }
+
 
   if (configured === "runtime" || configured === "auto") {
     return { engine: "runtime" };
