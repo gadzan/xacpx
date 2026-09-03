@@ -225,9 +225,10 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
     // this process owns the single-consumer lock, before MCP/orchestration is
     // listening, or while the sweep may still terminate the physical owner.
     try {
-      const maybePrime = runtime.transport as unknown as { primeRuntimeQueues?: (sessions: unknown[]) => Promise<void> };
-      if (typeof maybePrime.primeRuntimeQueues === "function") {
-        const runtimeSessions = runtime.sessions.listAllResolvedSessions().filter((s) => s.transportEngine === "runtime");
+      const maybePrime = (runtime as unknown as { transport?: { primeRuntimeQueues?: (sessions: unknown[]) => Promise<void> } }).transport;
+      const maybeSessions = (runtime as unknown as { sessions?: { listAllResolvedSessions?: () => { transportEngine?: string }[] } }).sessions;
+      if (maybePrime && typeof maybePrime.primeRuntimeQueues === "function" && maybeSessions && typeof maybeSessions.listAllResolvedSessions === "function") {
+        const runtimeSessions = maybeSessions.listAllResolvedSessions().filter((s) => s.transportEngine === "runtime");
         if (runtimeSessions.length > 0) {
           await maybePrime.primeRuntimeQueues(runtimeSessions);
           await runtime.logger.info("bridge.runtime_queue.primed", "primed runtime queues from catalog after lock+IPC+reap ready", { count: runtimeSessions.length }).catch(() => {});
@@ -237,6 +238,7 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
       await runtime.logger.warn("bridge.runtime_queue.prime_failed", "failed to prime runtime queues after lock+IPC+reap", { error: err instanceof Error ? err.message : String(err) }).catch(() => {});
     }
     if (runtime.reconcileOrphans && deps.daemonRuntime) {
+      orphanTimer = setIntervalFn(() => runOrphanSweep(runtime!.reconcileOrphans!), 60_000);
       if (orphanTimer && typeof orphanTimer === "object" && "unref" in orphanTimer
         && typeof (orphanTimer as { unref?: unknown }).unref === "function") {
         (orphanTimer as { unref(): void }).unref();
