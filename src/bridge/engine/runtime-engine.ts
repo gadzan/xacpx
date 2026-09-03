@@ -422,6 +422,34 @@ export function defaultWorkerEntry(fromUrl?: string): string {
   }
   return candidates[0]!;
 }
+/**
+ * Deterministic physical session fence key (G2). Hash of the normalized
+ * physical acpx identity — sessionKey (transport name), cwd, and the
+ * launch agent identity. Same before/after record creation and same for
+ * two logical aliases that share the same physical session, so the durable
+ * fence file is stable across crash+restart and shared-physical aliases
+ * correctly contend for the single physical fence. Exported so tests seed
+ * residual fences in the real physical namespace.
+ */
+export function physicalFenceKeyForSession(input: EngineSessionInput): string {
+  const normalizedCwd = normalizePathForComparison(input.cwd) ?? input.cwd ?? "";
+  // Agent identity: prefer the exact launch identity the Runtime will use.
+  // EngineSessionInput carries the resolved launch fields (agentCommand /
+  // acpxAgent / rawCommand / agentArgv) from SessionService.toResolvedSession,
+  // so the hash is stable for a given physical session.
+  const agentId =
+    (typeof input.agentCommand === "string" && input.agentCommand.length > 0 ? input.agentCommand : undefined) ??
+    (typeof input.rawCommand === "string" && input.rawCommand.length > 0 ? input.rawCommand : undefined) ??
+    (typeof input.acpxAgent === "string" && input.acpxAgent.length > 0 ? input.acpxAgent : undefined) ??
+    (Array.isArray(input.agentArgv) && input.agentArgv.length > 0 ? input.agentArgv.join(String.fromCharCode(0)) : undefined) ??
+    input.agent ??
+    "";
+  const sessionKey = input.name ?? "";
+  const sep = String.fromCharCode(0);
+  const raw = `${sessionKey}${sep}${normalizedCwd}${sep}${agentId}`;
+  // 32 hex chars (128-bit) is enough to avoid collisions for fence namespace.
+  return createHash("sha256").update(raw).digest("hex").slice(0, 32);
+}
 
 export class RuntimeEngine implements BridgeEngine {
   readonly kind = "runtime" as const;
@@ -1130,30 +1158,11 @@ export class RuntimeEngine implements BridgeEngine {
     }
   }
   /**
-   * Deterministic physical session fence key (G2). Hash of the normalized
-   * physical acpx identity — sessionKey (transport name), cwd, and the
-   * launch agent identity. Same before/after record creation and same for
-   * two logical aliases that share the same physical session, so the durable
-   * fence file is stable across crash+restart and shared-physical aliases
-   * correctly contend for the single physical fence.
+   * Deterministic physical session fence key (G2); delegates to the exported
+   * physicalFenceKeyForSession so tests use the identical namespace.
    */
   private physicalFenceKeyForInput(input: EngineSessionInput): string {
-    const normalizedCwd = normalizePathForComparison(input.cwd) ?? input.cwd ?? "";
-    // Agent identity: prefer the exact launch identity the Runtime will use.
-    // EngineSessionInput carries the resolved launch fields (agentCommand /
-    // acpxAgent / rawCommand / agentArgv) from SessionService.toResolvedSession,
-    // so the hash is stable for a given physical session.
-    const agentId =
-      (typeof input.agentCommand === "string" && input.agentCommand.length > 0 ? input.agentCommand : undefined) ??
-      (typeof input.rawCommand === "string" && input.rawCommand.length > 0 ? input.rawCommand : undefined) ??
-      (typeof input.acpxAgent === "string" && input.acpxAgent.length > 0 ? input.acpxAgent : undefined) ??
-      (Array.isArray(input.agentArgv) && input.agentArgv.length > 0 ? input.agentArgv.join("\x00") : undefined) ??
-      input.agent ??
-      "";
-    const sessionKey = input.name ?? "";
-    const raw = `${sessionKey}\x00${normalizedCwd}\x00${agentId}`;
-    // 32 hex chars (128-bit) is enough to avoid collisions for fence namespace.
-    return createHash("sha256").update(raw).digest("hex").slice(0, 32);
+    return physicalFenceKeyForSession(input);
   }
   private async withWorker<T>(input: EngineSessionInput, run: (client: RuntimeWorkerClient) => Promise<T>): Promise<T> {
     const key = this.workerKey(input);

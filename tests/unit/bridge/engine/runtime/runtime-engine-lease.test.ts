@@ -3,7 +3,7 @@ import { mkdtemp, writeFile, rm, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { RuntimeEngine } from "../../../../../src/bridge/engine/runtime-engine";
+import { RuntimeEngine, physicalFenceKeyForSession } from "../../../../../src/bridge/engine/runtime-engine";
 
 const baseInput = {
   agent: "codex",
@@ -712,11 +712,13 @@ test.serial("P1-12: residual fence without record blocks delete (fail-closed)", 
     idleTtlMs: 200,
   });
   try {
-    // Seed a residual fence (present) without any worker/record
-    const fencePath = join(fenceDir, `${encodeURIComponent(testInput.logicalSessionId)}.json`);
+    // Seed a residual fence (present) without any worker/record — in the real
+    // physical fence namespace the engine checks (G2 stable hash, not logical id).
+    const physicalKey = physicalFenceKeyForSession(testInput);
+    const fencePath = join(fenceDir, `${encodeURIComponent(physicalKey)}.json`);
     const record = {
       kind: "runtime-worker-owner",
-      logicalSessionId: testInput.logicalSessionId,
+      logicalSessionId: physicalKey,
       generation: "test-gen-residual",
       pid: 99999,
       creationDate: null,
@@ -728,12 +730,12 @@ test.serial("P1-12: residual fence without record blocks delete (fail-closed)", 
     await writeFile(fencePath, JSON.stringify(record, null, 2), "utf8");
     // Ensure fence is present
     const fenceFilesBefore = await readdir(fenceDir);
-    expect(fenceFilesBefore.some((f: string) => f.includes(encodeURIComponent(testInput.logicalSessionId)))).toBe(true);
+    expect(fenceFilesBefore.some((f: string) => f.includes(encodeURIComponent(physicalKey)))).toBe(true);
     // Delete with no record but residual fence must fail-closed
     await expect(engine.deleteSession(testInput as unknown as never)).rejects.toMatchObject({ code: "RUNTIME_WORKER_TEARDOWN_PENDING" });
     // Fence must still be present (not spuriously cleared)
     const fenceFilesAfter = await readdir(fenceDir);
-    expect(fenceFilesAfter.some((f: string) => f.includes(encodeURIComponent(testInput.logicalSessionId)))).toBe(true);
+    expect(fenceFilesAfter.some((f: string) => f.includes(encodeURIComponent(physicalKey)))).toBe(true);
     expect((await engine.isSessionWarm(testInput as unknown as never)).warm).toBe(false);
     const recId = await (engine as any).resolveRecordId(testInput, undefined);
     expect(recId).toBeUndefined();
@@ -761,10 +763,11 @@ test.serial("P1-12b: residual discharged fence does NOT block delete (proven gon
     idleTtlMs: 200,
   });
   try {
-    const fencePath = join(fenceDir, `${encodeURIComponent(testInput.logicalSessionId)}.json`);
+    const physicalKey = physicalFenceKeyForSession(testInput);
+    const fencePath = join(fenceDir, `${encodeURIComponent(physicalKey)}.json`);
     const record = {
       kind: "runtime-worker-owner",
-      logicalSessionId: testInput.logicalSessionId,
+      logicalSessionId: physicalKey,
       generation: "test-gen-discharged",
       pid: 99999,
       creationDate: null,
@@ -776,7 +779,7 @@ test.serial("P1-12b: residual discharged fence does NOT block delete (proven gon
     await writeFile(fencePath, JSON.stringify(record, null, 2), "utf8");
     // Ensure fence is present as discharged
     const fenceFilesBefore = await readdir(fenceDir);
-    expect(fenceFilesBefore.some((f: string) => f.includes(encodeURIComponent(testInput.logicalSessionId)))).toBe(true);
+    expect(fenceFilesBefore.some((f: string) => f.includes(encodeURIComponent(physicalKey)))).toBe(true);
     // Delete with no worker/no record but discharged fence must succeed (proven gone)
     await expect(engine.deleteSession(testInput as unknown as never)).resolves.toEqual({});
     expect((await engine.isSessionWarm(testInput as unknown as never)).warm).toBe(false);
@@ -790,7 +793,7 @@ test.serial("P1-12b: residual discharged fence does NOT block delete (proven gon
       if (err?.code !== "ENOENT" && err?.code !== "ENOTDIR") throw err;
       after = [];
     }
-    const stillPresent = after.filter((f: string) => f.includes(encodeURIComponent(testInput.logicalSessionId)));
+    const stillPresent = after.filter((f: string) => f.includes(encodeURIComponent(physicalKey)));
     if (stillPresent.length > 0) {
       const content = await (await import("node:fs/promises")).readFile(join(fenceDir, stillPresent[0]!), "utf8");
       const parsed = JSON.parse(content);
