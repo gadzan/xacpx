@@ -451,12 +451,31 @@ function parseOrchestrationState(
         reason: "legacy worker binding missing agentEndpointId; assigned a new endpoint id",
       });
     }
+    if (binding.transportEngine === undefined) {
+      // Fail-safe engine binding: a legacy worker binding must never silently
+      // upgrade to Runtime on first use — default it to cli once, durably.
+      migrated.push({
+        section: "orchestration.workerBindings",
+        key: workerSession,
+        reason: "legacy worker binding missing transportEngine; defaulted to cli",
+      });
+    }
+    if (binding.logicalSessionId === undefined) {
+      // Assign the immutable identity at load so every later dispatch sees a
+      // stable id and restart is idempotent (no per-dispatch minting).
+      migrated.push({
+        section: "orchestration.workerBindings",
+        key: workerSession,
+        reason: "legacy worker binding missing logicalSessionId; assigned a new UUIDv4",
+      });
+    }
     parsedWorkerBindings[workerSession] = {
       ...binding,
       agentEndpointId: binding.agentEndpointId ?? createAgentEndpointId(),
+      logicalSessionId: binding.logicalSessionId ?? randomUUID(),
+      transportEngine: binding.transportEngine ?? "cli",
     };
   }
-
   const parsedGroups: OrchestrationState["groups"] = {};
   for (const [groupId, group] of Object.entries(groups)) {
     if (!isGroupRecord(group)) {
@@ -610,11 +629,12 @@ function repairAgentEndpointIdCollisions(
       } else {
         delete externalCoordinators[ref.key];
       }
-      const migratedIndex = migrated.findIndex(
-        (record) => record.section === ref.section && record.key === ref.key,
-      );
-      if (migratedIndex >= 0) {
-        migrated.splice(migratedIndex, 1);
+      // A quarantined record must not claim any migration: remove every
+      // migrated entry for the dropped key (a binding can carry several).
+      for (let i = migrated.length - 1; i >= 0; i--) {
+        if (migrated[i]!.section === ref.section && migrated[i]!.key === ref.key) {
+          migrated.splice(i, 1);
+        }
       }
       dropped.push({
         section: ref.section,

@@ -3123,3 +3123,63 @@ test("bridge capability RPC failure rejects strict runtime before persistence", 
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("startup refuses acpx-cli transport when persisted runtime bindings exist", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-cli-gate-"));
+  try {
+    const configPath = join(dir, "config.json");
+    const statePath = join(dir, "state.json");
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        transport: { type: "acpx-cli", command: "acpx" },
+        agents: { codex: { driver: "codex" } },
+        workspaces: { backend: { cwd: "/tmp/backend" } },
+      }),
+    );
+    const now = new Date().toISOString();
+    const rawState = JSON.stringify({
+      sessions: {
+        demo: {
+          alias: "demo",
+          agent: "codex",
+          workspace: "backend",
+          transport_session: "backend:demo",
+          transport_engine: "runtime",
+          logical_session_id: "11111111-1111-4111-8111-111111111111",
+          created_at: now,
+          last_used_at: now,
+        },
+      },
+      chat_contexts: {},
+      orchestration: {
+        tasks: {},
+        workerBindings: {},
+        groups: {},
+        humanQuestionPackages: {},
+        coordinatorQuestionState: {},
+        coordinatorRoutes: {},
+        externalCoordinators: {},
+      },
+      scheduled_tasks: {},
+    });
+    await writeFile(statePath, rawState);
+    await expect(
+      buildApp(
+        { configPath, statePath },
+        {
+          createCliTransport: () => ({
+            ensureSession: async () => {},
+            prompt: async () => ({ text: "ok" }),
+            setMode: async () => {},
+            cancel: async () => ({ cancelled: true, message: "cancelled" }),
+            hasSession: () => false,
+            dispose: async () => {},
+          }),
+        },
+      ),
+    ).rejects.toThrow(/not "acpx-bridge"/);
+    expect(await readFile(statePath, "utf8")).toBe(rawState);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

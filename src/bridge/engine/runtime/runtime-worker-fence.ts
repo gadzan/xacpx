@@ -204,9 +204,19 @@ export class RuntimeWorkerFence {
       }
       throw error;
     }
+    // Only this O_EXCL creator may unlink: a write/sync failure below must
+    // not leave a truncated file that reads "unreadable" (and bricks the
+    // session) forever, and must never remove another host's fence.
+    let created = true;
     try {
       await handle.writeFile(`${JSON.stringify(record, null, 2)}\n`, "utf8");
       await handle.sync();
+      created = false;
+    } catch (error) {
+      if (created) {
+        await unlink(path).catch(() => {});
+      }
+      throw error;
     } finally {
       await handle.close();
     }

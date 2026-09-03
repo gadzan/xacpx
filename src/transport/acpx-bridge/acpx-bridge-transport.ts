@@ -20,6 +20,7 @@ import {
 import { createSerializedCallbackQueue } from "../serialized-callback-queue";
 import { resolveToolEventMode } from "../tool-event-mode.js";
 import type { BridgeEngineCapabilities, BridgeMethod } from "./acpx-bridge-protocol";
+import { decodeBridgeEngineCapabilities } from "./acpx-bridge-protocol";
 import type { BridgeEvent } from "./acpx-bridge-client";
 
 interface BridgeRequestClient {
@@ -303,7 +304,8 @@ export class AcpxBridgeTransport implements SessionTransport {
     });
   }
   async getEngineCapabilities(): Promise<BridgeEngineCapabilities> {
-    return await this.client.request<BridgeEngineCapabilities>("getEngineCapabilities", {});
+    const raw = await this.client.request<unknown>("getEngineCapabilities", {});
+    return decodeBridgeEngineCapabilities(raw);
   }
   async dispose(): Promise<void> {
     await this.client.dispose?.();

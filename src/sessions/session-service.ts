@@ -114,6 +114,25 @@ export interface SessionLockedTransaction {
   setTransportAgentCommandDurably(alias: string, transportAgentCommand: string | undefined): Promise<void>;
 }
 
+/**
+ * State-level invariant: any persisted Runtime affinity, whether on a logical
+ * session or an orchestration worker binding. Permission transitions, startup
+ * gates, and health checks must consult this — never sessions alone.
+ */
+export function hasPersistedRuntimeBindings(state: AppState): boolean {
+  for (const session of Object.values(state.sessions)) {
+    if (session.transport_engine === "runtime") {
+      return true;
+    }
+  }
+  for (const binding of Object.values(state.orchestration.workerBindings)) {
+    if (binding.transportEngine === "runtime") {
+      return true;
+    }
+  }
+  return false;
+}
+
 export class SessionService {
   private readonly stateMutex: AsyncMutex;
   private readonly now: () => number;
@@ -213,6 +232,31 @@ export class SessionService {
       resolved.push(candidate);
     }
     return resolved;
+  }
+
+  /**
+   * One entry per persisted logical session — NO physical dedupe. This is the
+   * recovery catalog for the Runtime durable queue (`runtime-queue/<LID>.json`
+   * is keyed by logical id): two logical aliases sharing one physical acpx
+   * session have independent journals and both must be primed on restart.
+   * Physical owner cleanup keeps using listAllResolvedSessions().
+   */
+  listAllResolvedLogicalSessions(): ResolvedSession[] {
+    const resolved: ResolvedSession[] = [];
+    for (const session of Object.values(this.state.sessions)) {
+      try {
+        resolved.push(this.toResolvedSession(session));
+      } catch {
+        // Agent/workspace de-registered since this session was created — skip it.
+        continue;
+      }
+    }
+    return resolved;
+  }
+
+  /** True when any persisted binding (logical session or orchestration worker binding) selects the Runtime engine. */
+  hasPersistedRuntimeBindings(): boolean {
+    return hasPersistedRuntimeBindings(this.state);
   }
 
   resolveSession(

@@ -92,7 +92,7 @@ export async function handleConfigSet(
 
   if (path === "transport.permissionMode" || path === "transport.nonInteractivePermissions" || path === "transport.permissionPolicy") {
     try {
-      const hasRuntimeSessions = context.sessions?.listAllResolvedSessions?.().some((s) => s.transportEngine === "runtime");
+      const hasRuntimeSessions = context.sessions?.hasPersistedRuntimeBindings?.() ?? false;
       if (hasRuntimeSessions) {
         let parsedPolicy: XacpxPermissionPolicy | undefined;
         if (updated.transport.permissionPolicy !== undefined) {

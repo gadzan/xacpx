@@ -44,7 +44,7 @@ export async function handlePermissionModeSet(
     permissionMode: mode,
   });
   try {
-    const hasRuntimeSessions = context.sessions?.listAllResolvedSessions?.().some((s) => s.transportEngine === "runtime");
+    const hasRuntimeSessions = context.sessions?.hasPersistedRuntimeBindings?.() ?? false;
     if (hasRuntimeSessions) {
       let parsedPolicy: XacpxPermissionPolicy | undefined;
       if (updated.transport.permissionPolicy !== undefined) {
@@ -91,7 +91,7 @@ export async function handlePermissionAutoSet(
     nonInteractivePermissions: policy,
   });
   try {
-    const hasRuntimeSessions = context.sessions?.listAllResolvedSessions?.().some((s) => s.transportEngine === "runtime");
+    const hasRuntimeSessions = context.sessions?.hasPersistedRuntimeBindings?.() ?? false;
     if (hasRuntimeSessions) {
       let parsedPolicy: XacpxPermissionPolicy | undefined;
       if (updated.transport.permissionPolicy !== undefined) {

@@ -131,8 +131,7 @@ test("ineligible policy update is rejected when active runtime sessions exist, p
     configPath,
     JSON.stringify({
       transport: {
-        type: "acpx-cli",
-        command: "acpx",
+        type: "acpx-bridge",
         permissionMode: "approve-all",
         nonInteractivePermissions: "deny",
       },
@@ -155,7 +154,7 @@ test("ineligible policy update is rejected when active runtime sessions exist, p
   const loggedErrors: Array<{ event: string; message: string }> = [];
   const app = await buildApp(
     { configPath, statePath },
-    { createCliTransport: () => mockTransport },
+    { createBridgeTransport: async () => mockTransport },
   );
 
   // Spy on logger
@@ -171,8 +170,7 @@ test("ineligible policy update is rejected when active runtime sessions exist, p
       configPath,
       JSON.stringify({
         transport: {
-          type: "acpx-cli",
-          command: "acpx",
+          type: "acpx-bridge",
           permissionMode: "approve-all",
           nonInteractivePermissions: "fail",
         },
@@ -180,7 +178,6 @@ test("ineligible policy update is rejected when active runtime sessions exist, p
         workspaces: { backend: { cwd: "/tmp/backend" } },
       }),
     );
-
     let threw = false;
     try {
       await app.reloadRuntimeConfig?.();
@@ -203,8 +200,7 @@ test("ineligible policy update is rejected when active runtime sessions exist, p
       configPath,
       JSON.stringify({
         transport: {
-          type: "acpx-cli",
-          command: "acpx",
+          type: "acpx-bridge",
           permissionMode: "approve-all",
           nonInteractivePermissions: "deny",
           permissionPolicy: JSON.stringify({ escalate: ["run_command"] }),
@@ -213,7 +209,6 @@ test("ineligible policy update is rejected when active runtime sessions exist, p
         workspaces: { backend: { cwd: "/tmp/backend" } },
       }),
     );
-
     let threwEscalate = false;
     try {
       await app.reloadRuntimeConfig?.();
@@ -229,47 +224,40 @@ test("ineligible policy update is rejected when active runtime sessions exist, p
   }
 });
 
-test("startup check logs loud health error when state has runtime sessions but config is runtime-ineligible", async () => {
+test("startup fails closed when state has runtime sessions but config is runtime-ineligible", async () => {
   const dir = await mkdtemp(join(tmpdir(), "xacpx-perm-startup-"));
   const configPath = join(dir, "config.json");
   const statePath = join(dir, "state.json");
 
   // Ineligible config at startup: nonInteractivePermissions = "fail"
-  await writeFile(
-    configPath,
-    JSON.stringify({
-      transport: {
-        type: "acpx-cli",
-        command: "acpx",
-        permissionMode: "approve-all",
-        nonInteractivePermissions: "fail",
-      },
-      agents: { codex: { driver: "codex" } },
-      workspaces: { backend: { cwd: "/tmp/backend" } },
-    }),
-  );
+  const rawConfig = JSON.stringify({
+    transport: {
+      type: "acpx-bridge",
+      permissionMode: "approve-all",
+      nonInteractivePermissions: "fail",
+    },
+    agents: { codex: { driver: "codex" } },
+    workspaces: { backend: { cwd: "/tmp/backend" } },
+  });
+  await writeFile(configPath, rawConfig);
 
   // Persisted state with runtime engine binding
-  await writeFile(statePath, JSON.stringify(makeRuntimeSessionState()));
+  const rawState = JSON.stringify(makeRuntimeSessionState());
+  await writeFile(statePath, rawState);
 
   const mockTransport: SessionTransport = {
     prompt: mock(async () => ({ text: "ok", stopReason: "end_turn" })),
   };
 
-  const app = await buildApp(
-    { configPath, statePath },
-    { createCliTransport: () => mockTransport },
-  );
-
-  try {
-    // Read app.log to verify loud health error was logged during startup
-    const appLogPath = join(dir, "runtime", "app.log");
-    const appLogContent = await readFile(appLogPath, "utf8");
-    expect(appLogContent).toContain("health.runtime_ineligible_with_bindings");
-  } finally {
-    await app.dispose();
-    await rm(dir, { recursive: true, force: true });
-  }
+  await expect(
+    buildApp(
+      { configPath, statePath },
+      { createBridgeTransport: async () => mockTransport },
+    ),
+  ).rejects.toThrow(/persisted runtime bindings/);
+  // Failed startup must not mutate the state file.
+  expect(await readFile(statePath, "utf8")).toBe(rawState);
+  await rm(dir, { recursive: true, force: true });
 });
 
 test("eligible permission update succeeds when runtime sessions exist", async () => {
@@ -281,8 +269,7 @@ test("eligible permission update succeeds when runtime sessions exist", async ()
     configPath,
     JSON.stringify({
       transport: {
-        type: "acpx-cli",
-        command: "acpx",
+        type: "acpx-bridge",
         permissionMode: "approve-all",
         nonInteractivePermissions: "deny",
       },
@@ -303,7 +290,7 @@ test("eligible permission update succeeds when runtime sessions exist", async ()
 
   const app = await buildApp(
     { configPath, statePath },
-    { createCliTransport: () => mockTransport },
+    { createBridgeTransport: async () => mockTransport },
   );
 
   try {
@@ -312,8 +299,7 @@ test("eligible permission update succeeds when runtime sessions exist", async ()
       configPath,
       JSON.stringify({
         transport: {
-          type: "acpx-cli",
-          command: "acpx",
+          type: "acpx-bridge",
           permissionMode: "approve-reads",
           nonInteractivePermissions: "deny",
           permissionPolicy: JSON.stringify({ autoDeny: ["danger_tool"] }),
@@ -402,8 +388,7 @@ test("/config set rejects ineligible nonInteractivePermissions when runtime sess
     configPath,
     JSON.stringify({
       transport: {
-        type: "acpx-cli",
-        command: "acpx",
+        type: "acpx-bridge",
         permissionMode: "approve-all",
         nonInteractivePermissions: "deny",
       },
@@ -421,7 +406,7 @@ test("/config set rejects ineligible nonInteractivePermissions when runtime sess
 
   const app = await buildApp(
     { configPath, statePath },
-    { createCliTransport: () => mockTransport },
+    { createBridgeTransport: async () => mockTransport },
   );
 
   try {
@@ -455,6 +440,173 @@ test("/config set rejects ineligible nonInteractivePermissions when runtime sess
       expect(String(err)).toContain("runtime-ineligible policy");
     }
     expect(threwPmAuto).toBe(true);
+  } finally {
+    await app.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+function makeWorkerBindingRuntimeState(now: string = new Date().toISOString()) {
+  return {
+    chat_contexts: {},
+    sessions: {},
+    tasks: {},
+    orchestration: {
+      groups: {},
+      workerBindings: {
+        "worker-1": {
+          sourceHandle: "src-1",
+          coordinatorSession: "coord-1",
+          workspace: "backend",
+          targetAgent: "codex",
+          agentEndpointId: "endpoint_test_worker_1",
+          logicalSessionId: "22222222-2222-4222-8222-222222222222",
+          transportEngine: "runtime",
+        },
+      },
+      externalCoordinators: {},
+    },
+  };
+}
+
+test("ineligible policy update is rejected when only a worker binding is runtime", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-perm-binding-"));
+  const configPath = join(dir, "config.json");
+  const statePath = join(dir, "state.json");
+
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      transport: {
+        type: "acpx-bridge",
+        permissionMode: "approve-all",
+        nonInteractivePermissions: "deny",
+      },
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
+    }),
+  );
+  await writeFile(statePath, JSON.stringify(makeWorkerBindingRuntimeState()));
+
+  const mockTransport: SessionTransport = {
+    prompt: mock(async () => ({ text: "ok", stopReason: "end_turn" })),
+    updatePermissionPolicy: mock(async () => {}),
+  };
+  const app = await buildApp(
+    { configPath, statePath },
+    { createBridgeTransport: async () => mockTransport },
+  );
+  try {
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        transport: {
+          type: "acpx-bridge",
+          permissionMode: "approve-all",
+          nonInteractivePermissions: "fail",
+        },
+        agents: { codex: { driver: "codex" } },
+        workspaces: { backend: { cwd: "/tmp/backend" } },
+      }),
+    );
+    let threw = false;
+    try {
+      await app.reloadRuntimeConfig?.();
+    } catch (err) {
+      threw = true;
+      expect(String(err)).toContain("runtime-ineligible policy");
+    }
+    expect(threw).toBe(true);
+  } finally {
+    await app.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("startup fails closed when only a worker binding is runtime and config is ineligible", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-perm-binding-startup-"));
+  const configPath = join(dir, "config.json");
+  const statePath = join(dir, "state.json");
+
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      transport: {
+        type: "acpx-bridge",
+        permissionMode: "approve-all",
+        nonInteractivePermissions: "fail",
+      },
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
+    }),
+  );
+  const rawState = JSON.stringify(makeWorkerBindingRuntimeState());
+  await writeFile(statePath, rawState);
+
+  await expect(
+    buildApp(
+      { configPath, statePath },
+      {
+        createBridgeTransport: async () => ({
+          prompt: mock(async () => ({ text: "ok", stopReason: "end_turn" })),
+        }),
+      },
+    ),
+  ).rejects.toThrow(/persisted runtime bindings/);
+  expect(await readFile(statePath, "utf8")).toBe(rawState);
+  await rm(dir, { recursive: true, force: true });
+});
+test("hot reload rejects transport topology changes and keeps live config", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-perm-topology-"));
+  const configPath = join(dir, "config.json");
+  const statePath = join(dir, "state.json");
+
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      transport: {
+        type: "acpx-bridge",
+        permissionMode: "approve-all",
+        nonInteractivePermissions: "deny",
+      },
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
+    }),
+  );
+  const app = await buildApp(
+    { configPath, statePath },
+    {
+      createBridgeTransport: async () => ({
+        prompt: mock(async () => ({ text: "ok", stopReason: "end_turn" })),
+        updatePermissionPolicy: mock(async () => {}),
+      }),
+    },
+  );
+  try {
+    // Same permission tuple, but a different transport topology: must not
+    // hot-apply (the live transport object cannot be rebuilt in place).
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        transport: {
+          type: "acpx-cli",
+          command: "acpx",
+          permissionMode: "approve-all",
+          nonInteractivePermissions: "deny",
+        },
+        agents: { codex: { driver: "codex" } },
+        workspaces: { backend: { cwd: "/tmp/backend" } },
+      }),
+    );
+    let threw = false;
+    try {
+      await app.reloadRuntimeConfig?.();
+    } catch (err) {
+      threw = true;
+      expect(String(err)).toContain("requires a daemon restart");
+    }
+    expect(threw).toBe(true);
+    const routerContext = (app.router as unknown as { config: AppConfig }).config;
+    expect(routerContext.transport.type).toBe("acpx-bridge");
   } finally {
     await app.dispose();
     await rm(dir, { recursive: true, force: true });

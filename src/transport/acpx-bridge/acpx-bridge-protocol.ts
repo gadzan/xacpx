@@ -42,6 +42,37 @@ export interface BridgeEngineCapabilities {
   reason?: string;
 }
 
+/**
+ * Strict decoder for getEngineCapabilities responses. The capability probe is
+ * a fail-safe gate: anything that is not a well-formed object (missing or
+ * non-boolean signals) throws, so the daemon pins a known-bad capability
+ * instead of treating an unknown response as Runtime available.
+ */
+export function decodeBridgeEngineCapabilities(value: unknown): BridgeEngineCapabilities {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("invalid engine capabilities response: expected an object");
+  }
+  const record = value as Record<string, unknown>;
+  for (const field of ["runtimeAvailable", "runtimeImportOk", "contractProbeOk"] as const) {
+    if (typeof record[field] !== "boolean") {
+      throw new Error(`invalid engine capabilities response: "${field}" must be a boolean`);
+    }
+  }
+  if (record.acpxVersion !== undefined && typeof record.acpxVersion !== "string") {
+    throw new Error('invalid engine capabilities response: "acpxVersion" must be a string');
+  }
+  if (record.reason !== undefined && typeof record.reason !== "string") {
+    throw new Error('invalid engine capabilities response: "reason" must be a string');
+  }
+  return {
+    runtimeAvailable: record.runtimeAvailable as boolean,
+    runtimeImportOk: record.runtimeImportOk as boolean,
+    contractProbeOk: record.contractProbeOk as boolean,
+    ...(typeof record.acpxVersion === "string" ? { acpxVersion: record.acpxVersion } : {}),
+    ...(typeof record.reason === "string" ? { reason: record.reason } : {}),
+  };
+}
+
 export type BridgeOriginatedMethod =
   | "registerAdapterIntent"
   | "launcherSpawned"

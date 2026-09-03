@@ -147,6 +147,18 @@ export async function applyRuntimePermissionConfig(
   const { config, nextConfig, sessions, transport, provisionOverlays, logger } =
     options;
   try {
+    // Transport topology is restart-required: the live transport object is
+    // constructed once in buildApp(). Hot-applying a different type/command
+    // would leave the persisted affinity selector (which sees the new config)
+    // disagreeing with the transport that actually executes sessions.
+    if (
+      nextConfig.transport.type !== config.transport.type ||
+      (nextConfig.transport.command ?? "") !== (config.transport.command ?? "")
+    ) {
+      throw new Error(
+        "transport topology change (transport.type/command) requires a daemon restart; keeping live config",
+      );
+    }
     // 1. Parse / validate permission policy if present
     let parsedPolicy: XacpxPermissionPolicy | undefined;
     if (nextConfig.transport.permissionPolicy !== undefined) {
@@ -162,11 +174,9 @@ export async function applyRuntimePermissionConfig(
       }
     }
 
-    // 2. Reject if persisted runtime bindings exist and next config is runtime-ineligible
-    const hasRuntimeSessions = sessions
-      .listAllResolvedSessions()
-      .some((s) => s.transportEngine === "runtime");
-    if (hasRuntimeSessions) {
+    // 2. Reject if persisted runtime bindings (sessions or worker bindings)
+    // exist and next config is runtime-ineligible
+    if (sessions.hasPersistedRuntimeBindings()) {
       const eligible = isEligibleForRuntime(
         parsedPolicy,
         nextConfig.transport.nonInteractivePermissions,
@@ -174,7 +184,7 @@ export async function applyRuntimePermissionConfig(
       );
       if (!eligible) {
         throw new Error(
-          'cannot apply permission policy: runtime-ineligible policy (nonInteractive="fail" or escalate without interactive) with active runtime sessions',
+          'cannot apply permission policy: runtime-ineligible policy (nonInteractive="fail" or escalate without interactive) with persisted runtime bindings',
         );
       }
     }
@@ -540,10 +550,7 @@ export async function buildApp(
     stateMutex,
     runtimeRoot,
   });
-  const initialRuntimeSessions = sessions
-    .listAllResolvedSessions()
-    .some((s) => s.transportEngine === "runtime");
-  if (initialRuntimeSessions) {
+  if (sessions.hasPersistedRuntimeBindings()) {
     let startupPolicy: XacpxPermissionPolicy | undefined;
     if (config.transport.permissionPolicy !== undefined) {
       try {
@@ -562,13 +569,11 @@ export async function buildApp(
       false,
     );
     if (!startupEligible) {
-      await logger.error(
-        "health.runtime_ineligible_with_bindings",
-        "state has persisted runtime bindings but current config is runtime-ineligible",
-        {
-          nonInteractivePermissions: config.transport.nonInteractivePermissions,
-          permissionPolicy: config.transport.permissionPolicy,
-        },
+      // Fail startup LOUD: persisted Runtime bindings can no longer legally
+      // run under this config, and silently starting degraded would brick
+      // every bound session with RUNTIME_ENGINE_UNSUPPORTED.
+      throw new Error(
+        "state has persisted runtime bindings but the current transport permission config is runtime-ineligible; refusing startup (migrate bindings to cli or restore an eligible policy)",
       );
     }
   }
@@ -743,12 +748,22 @@ export async function buildApp(
     logger,
     resolveDriver: (agent) => config.agents[agent]?.driver,
   });
+  // Affinity/transport boundary: a non-bridge transport cannot execute
+  // Runtime-bound sessions. Refuse startup LOUD rather than letting the CLI
+  // silently run persisted Runtime affinity (the Runtime fence cannot
+  // protect against a CLI queue owner).
+  if (config.transport.type !== "acpx-bridge" && sessions.hasPersistedRuntimeBindings()) {
+    throw new Error(
+      'state has persisted runtime bindings but transport.type is not "acpx-bridge"; refusing startup (migrate bindings to cli or switch transport.type to acpx-bridge)',
+    );
+  }
   // PR10 capability gate: ask the Bridge host for its real Runtime capability
   // (public acpx/runtime import + contract probe on the host that will own
   // workers). Cached into SessionService so auto/strict resolution gates on
   // the probe BEFORE persisting affinity — a worker file existing locally
   // must never bind runtime when the Bridge host cannot pass the probe.
-  // Best-effort: on probe failure the local file check remains the fallback.
+  // Probe failure pins a known-bad capability (fail-safe to cli), never the
+  // local file check.
   try {
     const maybeCapable = baseTransport as unknown as { getEngineCapabilities?: () => Promise<{ runtimeAvailable?: boolean; runtimeImportOk?: boolean; contractProbeOk?: boolean }> };
     if (typeof maybeCapable.getEngineCapabilities === "function") {

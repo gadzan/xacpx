@@ -449,3 +449,33 @@ test("persisted runtime binding survives transport type switch (existing affinit
   });
   expect(choice.engine).toBe("runtime");
 });
+test("capability positive proof: empty object is not Runtime available", () => {
+  const choice = resolveTransportEngine({
+    config: { ...baseConfig, engine: "auto" },
+    capability: {},
+  });
+  expect(choice.engine).toBe("cli");
+  expect(choice.reason).toBe("runtime-probe-failed");
+  expect(() =>
+    resolveTransportEngine({
+      config: { ...baseConfig, engine: "runtime" },
+      capability: {},
+    }),
+  ).toThrow(/failed runtime capability probe/);
+});
+
+test("capability positive proof: partial true signals are not enough", () => {
+  for (const capability of [
+    { runtimeAvailable: true },
+    { runtimeAvailable: true, runtimeImportOk: true },
+    { runtimeAvailable: true, contractProbeOk: true },
+    { runtimeAvailable: true, runtimeImportOk: true, contractProbeOk: undefined },
+  ]) {
+    const choice = resolveTransportEngine({
+      config: { ...baseConfig, engine: "auto" },
+      capability,
+    });
+    expect(choice.engine).toBe("cli");
+    expect(choice.reason).toBe("runtime-probe-failed");
+  }
+});

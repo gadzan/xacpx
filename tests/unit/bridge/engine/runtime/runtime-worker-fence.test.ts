@@ -1,9 +1,8 @@
 import { expect, test } from "bun:test";
 import { spawn, type ChildProcess } from "node:child_process";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import { probeWindowsProcessIdentity } from "../../../../../src/process/windows-process-tree";
 import {
   RuntimeWorkerFence,
@@ -871,3 +870,30 @@ test("spool handshake full chain: registry residuals keep the fence; reaper clea
     await rm(dir, { recursive: true, force: true });
   }
 }, 20_000);
+test("claim: failed claim leaves no residue and never removes another host's fence", async () => {
+  if (process.platform === "win32") return; // POSIX read-only dir semantics
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-claim-"));
+  try {
+    const fence = new RuntimeWorkerFence(dir);
+    // Another host's fence: EEXIST race must preserve it byte-for-byte.
+    await fence.write(record({ pid: 1111 }));
+    const before = await readFile(join(dir, `${encodeURIComponent(KEY)}.json`), "utf8");
+    await expect(fence.claim(record({ pid: 2222 }))).rejects.toThrow(/already exists/);
+    expect(await readFile(join(dir, `${encodeURIComponent(KEY)}.json`), "utf8")).toBe(before);
+
+    // Unwritable directory: claim throws and creates no file.
+    const roDir = join(dir, "ro-fences");
+    await mkdir(roDir, { recursive: true });
+    const roFence = new RuntimeWorkerFence(roDir);
+    await chmod(roDir, 0o555);
+    try {
+      await expect(roFence.claim(record({ pid: 3333 }))).rejects.toThrow();
+    } finally {
+      await chmod(roDir, 0o755).catch(() => {});
+    }
+    expect(await readdir(roDir)).toEqual([]);
+  } finally {
+    await chmod(join(dir, "ro-fences"), 0o755).catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+});

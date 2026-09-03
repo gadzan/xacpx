@@ -112,6 +112,16 @@ test("load migrates legacy worker and external coordinator endpoint ids durably"
         reason: expect.stringContaining("agentEndpointId"),
       },
       {
+        section: "orchestration.workerBindings",
+        key: "worker",
+        reason: expect.stringContaining("transportEngine"),
+      },
+      {
+        section: "orchestration.workerBindings",
+        key: "worker",
+        reason: expect.stringContaining("logicalSessionId"),
+      },
+      {
         section: "orchestration.externalCoordinators",
         key: "external",
         reason: expect.stringContaining("agentEndpointId"),
@@ -130,6 +140,43 @@ test("load migrates legacy worker and external coordinator endpoint ids durably"
     const reloaded = await new StateStore(path).load();
     expect(reloaded.orchestration.workerBindings.worker?.agentEndpointId).toBe(workerEndpointId);
     expect(reloaded.orchestration.externalCoordinators.external?.agentEndpointId).toBe(externalEndpointId);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("load migrates legacy worker bindings to cli engine and mints LID durably", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-state-"));
+  const path = join(dir, "state.json");
+  const state = createEmptyState();
+  state.orchestration.workerBindings.worker = {
+    sourceHandle: "worker",
+    coordinatorSession: "coordinator",
+    workspace: "project",
+    targetAgent: "codex",
+    agentEndpointId: "endpoint_legacy_worker",
+  };
+  await Bun.write(path, JSON.stringify(state));
+
+  try {
+    const store = new StateStore(path);
+    const loaded = await store.load();
+    const binding = loaded.orchestration.workerBindings.worker;
+    // Fail-safe: legacy bindings never auto-upgrade to Runtime.
+    expect(binding?.transportEngine).toBe("cli");
+    expect(binding?.logicalSessionId).toMatch(/^[0-9a-f-]{36}$/);
+    const reasons = (store.lastLoadReport?.migrated ?? []).map((m) => m.reason);
+    expect(reasons.some((r) => r.includes("transportEngine"))).toBe(true);
+    expect(reasons.some((r) => r.includes("logicalSessionId"))).toBe(true);
+
+    // Durable: restart sees the same identity, no re-migration.
+    const onDisk = JSON.parse(await readFile(path, "utf8")) as {
+      orchestration: { workerBindings: Record<string, { transportEngine?: string; logicalSessionId?: string }> };
+    };
+    expect(onDisk.orchestration.workerBindings.worker?.transportEngine).toBe("cli");
+    expect(onDisk.orchestration.workerBindings.worker?.logicalSessionId).toBe(binding?.logicalSessionId);
+    const reloaded = await new StateStore(path).load();
+    expect(reloaded.orchestration.workerBindings.worker?.transportEngine).toBe("cli");
+    expect(reloaded.orchestration.workerBindings.worker?.logicalSessionId).toBe(binding?.logicalSessionId);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -173,7 +220,20 @@ test("load quarantines every current worker or external coordinator with a dupli
 
     expect(Object.keys(loaded.orchestration.workerBindings)).toEqual(["worker-ok"]);
     expect(Object.keys(loaded.orchestration.externalCoordinators)).toEqual(["external-ok"]);
-    expect(store.lastLoadReport?.migrated ?? []).toEqual([]);
+    // worker-ok is a legacy binding without engine/LID: it is migrated
+    // (fail-safe cli + stable LID), not quarantined.
+    expect(store.lastLoadReport?.migrated ?? []).toEqual([
+      {
+        section: "orchestration.workerBindings",
+        key: "worker-ok",
+        reason: expect.stringContaining("transportEngine"),
+      },
+      {
+        section: "orchestration.workerBindings",
+        key: "worker-ok",
+        reason: expect.stringContaining("logicalSessionId"),
+      },
+    ]);
     expect(store.lastLoadReport?.dropped).toHaveLength(6);
     expect(store.lastLoadReport?.dropped).toEqual(
       expect.arrayContaining([
@@ -398,6 +458,17 @@ test("persists sessions and chat context", async () => {
     ...state,
     native_session_lists: {},
     scheduled_tasks: {},
+    orchestration: {
+      ...state.orchestration,
+      workerBindings: {
+        "backend:claude-reviewer:feature-x": {
+          ...state.orchestration.workerBindings["backend:claude-reviewer:feature-x"],
+          // Load-time legacy migration (fail-safe cli, stable LID).
+          transportEngine: "cli",
+          logicalSessionId: expect.any(String),
+        },
+      },
+    },
   });
 
   await rm(dir, { recursive: true, force: true });
@@ -542,6 +613,17 @@ test("round-trips blocker-loop state records through load", async () => {
   await expect(store.load()).resolves.toEqual({
     ...state,
     native_session_lists: {},
+    orchestration: {
+      ...state.orchestration,
+      workerBindings: {
+        "backend:claude:backend:main": {
+          ...state.orchestration.workerBindings["backend:claude:backend:main"],
+          // Load-time legacy migration (fail-safe cli, stable LID).
+          transportEngine: "cli",
+          logicalSessionId: expect.any(String),
+        },
+      },
+    },
   });
 
   await rm(dir, { recursive: true, force: true });

@@ -854,9 +854,11 @@ test("primes runtime queues only after consumer lock and orchestration IPC are r
   const events: string[] = [];
   const signalHandlers = new Map<string, () => void>();
   let primeCallOrder: string[] = [];
+  let primedSessions: unknown[] = [];
   const mockTransport = {
     primeRuntimeQueues: async (sessions: unknown[]) => {
       primeCallOrder.push("prime");
+      primedSessions = sessions;
       events.push("prime");
     },
     dispose: async () => { events.push("transport:dispose"); },
@@ -866,8 +868,14 @@ test("primes runtime queues only after consumer lock and orchestration IPC are r
     start: async () => { events.push("orchestration:start"); },
     stop: async () => { events.push("orchestration:stop"); },
   } as unknown as OrchestrationServer;
+  // Two logical aliases sharing one physical acpx session: the physical
+  // catalog would dedupe them, but queue recovery needs both journals.
   const mockSessions = {
-    listAllResolvedSessions: () => [{ alias: "a", agent: "codex", workspace: "backend", transport_session: "backend:a", transportEngine: "runtime", logical_session_id: "id-1" } as unknown as ResolvedSession],
+    listAllResolvedLogicalSessions: () => [
+      { alias: "a", agent: "codex", workspace: "backend", transport_session: "backend:shared", transportEngine: "runtime", logical_session_id: "id-a" } as unknown as ResolvedSession,
+      { alias: "b", agent: "codex", workspace: "backend", transport_session: "backend:shared", transportEngine: "runtime", logical_session_id: "id-b" } as unknown as ResolvedSession,
+    ],
+    listAllResolvedSessions: () => [{ alias: "a", agent: "codex", workspace: "backend", transport_session: "backend:shared", transportEngine: "runtime", logical_session_id: "id-a" } as unknown as ResolvedSession],
   } as unknown as SessionService;
   const runPromise = runConsole(
     { configPath: "/cfg", statePath: "/state" },
@@ -924,6 +932,8 @@ test("primes runtime queues only after consumer lock and orchestration IPC are r
   expect(primeIdx).toBeGreaterThan(reapIdx);
   expect(primeIdx).toBeLessThan(channelIdx);
   expect(primeCallOrder).toEqual(["prime"]);
+  // The recovery catalog must carry both logical aliases (no physical dedupe).
+  expect((primedSessions as { logical_session_id?: string }[]).map((s) => s.logical_session_id).sort()).toEqual(["id-a", "id-b"]);
   signalHandlers.get("SIGTERM")?.();
   await runPromise;
 });

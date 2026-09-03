@@ -229,10 +229,12 @@ export function resolveTransportEngine(input: ResolveTransportEngineInput): Tran
 
   if (input.capability !== undefined) {
     const cap = input.capability;
+    // Positive proof: anything less than explicit true on every signal —
+    // including a partial/unknown response — is NOT Runtime available.
     const isAvailable =
-      cap.runtimeAvailable !== false &&
-      cap.runtimeImportOk !== false &&
-      cap.contractProbeOk !== false &&
+      cap.runtimeAvailable === true &&
+      cap.runtimeImportOk === true &&
+      cap.contractProbeOk === true &&
       input.runtimeAvailable !== false;
 
     if (!isAvailable) {
