@@ -130,6 +130,19 @@ export function resolveTransportEngine(input: ResolveTransportEngineInput): Tran
     return { engine: "cli" };
   }
 
+  // New-session affinity must match the transport that will execute it: only
+  // the bridge hosts a RuntimeEngine. A non-bridge transport can never serve
+  // a runtime-bound session, so auto falls back to cli and strict runtime is
+  // a configuration error — never a persisted runtime binding.
+  if (input.config.type !== "acpx-bridge") {
+    if (configured === "runtime") {
+      throw new Error(
+        'transport.engine = "runtime" requires transport.type = "acpx-bridge" (only the bridge hosts a RuntimeEngine)',
+      );
+    }
+    return { engine: "cli", reason: "runtime-import-failed" };
+  }
+
   let sessionShapeValid = true;
   if (input.sessionShapeSupported === false) {
     sessionShapeValid = false;

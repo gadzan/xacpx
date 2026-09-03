@@ -424,3 +424,28 @@ test("capability probe: persisted runtime session remains runtime even if capabi
   });
   expect(choice.engine).toBe("runtime");
 });
+test("acpx-cli transport forces cli for new sessions even when runtime is eligible", () => {
+  const choice = resolveTransportEngine({
+    config: { type: "acpx-cli", engine: "auto", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
+    runtimeAvailable: true,
+  });
+  expect(choice.engine).toBe("cli");
+});
+
+test("acpx-cli transport with strict runtime throws configuration error", () => {
+  expect(() =>
+    resolveTransportEngine({
+      config: { type: "acpx-cli", engine: "runtime", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
+      runtimeAvailable: true,
+    }),
+  ).toThrow(/requires transport.type = "acpx-bridge"/);
+});
+
+test("persisted runtime binding survives transport type switch (existing affinity wins)", () => {
+  const choice = resolveTransportEngine({
+    config: { type: "acpx-cli", engine: "auto", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
+    session: { transport_engine: "runtime" },
+    runtimeAvailable: true,
+  });
+  expect(choice.engine).toBe("runtime");
+});

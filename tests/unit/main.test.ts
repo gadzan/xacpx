@@ -3055,3 +3055,71 @@ itUnix("buildApp fails and publishes no temporary ids when the migration save ca
     await rm(dir, { recursive: true, force: true });
   }
 }, 30_000);
+test("bridge capability RPC failure pins Runtime unavailable: auto falls back to cli", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-cap-fail-"));
+  try {
+    const configPath = join(dir, "config.json");
+    const statePath = join(dir, "state.json");
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        transport: { type: "acpx-bridge", engine: "auto" },
+        agents: { codex: { driver: "codex" } },
+        workspaces: { backend: { cwd: "/tmp/backend" } },
+      }),
+    );
+    const runtime = await buildApp(
+      { configPath, statePath },
+      {
+        createBridgeTransport: async () => ({
+          ensureSession: async () => {},
+          prompt: async () => ({ text: "ok" }),
+          cancel: async () => ({ cancelled: true, message: "cancelled" }),
+          hasSession: async () => true,
+          getEngineCapabilities: async () => {
+            throw new Error("bridge probe unavailable");
+          },
+        }),
+      },
+    );
+    const session = await runtime.sessions.createSession("cap-fail", "codex", "backend");
+    expect(session.transportEngine).toBe("cli");
+    await runtime.dispose();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("bridge capability RPC failure rejects strict runtime before persistence", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-cap-fail-strict-"));
+  try {
+    const configPath = join(dir, "config.json");
+    const statePath = join(dir, "state.json");
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        transport: { type: "acpx-bridge", engine: "runtime" },
+        agents: { codex: { driver: "codex" } },
+        workspaces: { backend: { cwd: "/tmp/backend" } },
+      }),
+    );
+    const runtime = await buildApp(
+      { configPath, statePath },
+      {
+        createBridgeTransport: async () => ({
+          ensureSession: async () => {},
+          prompt: async () => ({ text: "ok" }),
+          cancel: async () => ({ cancelled: true, message: "cancelled" }),
+          hasSession: async () => true,
+          getEngineCapabilities: async () => {
+            throw new Error("bridge probe unavailable");
+          },
+        }),
+      },
+    );
+    await expect(runtime.sessions.createSession("cap-fail-strict", "codex", "backend")).rejects.toThrow();
+    await runtime.dispose();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -17,7 +17,7 @@ import { AsyncMutex } from "../orchestration/async-mutex";
 import { sameCoordinatorSession, stableCoordinatorSession } from "../orchestration/coordinator-identity";
 import type { StateStore } from "../state/state-store";
 import { replaceRuntimeState } from "../state/replace-runtime-state";
-import type { AppState, BackgroundResult, ChatContextState, LogicalSession } from "../state/types";
+import type { AppState, BackgroundResult, ChatContextState, LogicalSession, SessionTransportEngine } from "../state/types";
 import { resolveTransportEngine } from "./transport-engine";
 import type { SessionResourceLifecyclePublishInput } from "./session-resource-catalog";
 import type { AgentSession, ResolvedSession } from "../transport/types";
@@ -152,6 +152,27 @@ export class SessionService {
     return { runtimeAvailable: isRuntimeEngineAvailable() };
   }
 
+  /**
+   * Single source of truth for NEW-session engine affinity (logical create,
+   * reset replacement, native attach, orchestration worker binding). Uses the
+   * cached Bridge capability when present, so every path gates on the probe
+   * BEFORE persisting affinity. Throws on strict-runtime ineligibility.
+   */
+  resolveEngineForNewSession(input: { alias: string; agent: string; workspace: string }): SessionTransportEngine {
+    return resolveTransportEngine({
+      config: this.config.transport,
+      session: {
+        alias: input.alias,
+        agent: input.agent,
+        workspace: input.workspace,
+      },
+      ...this.resolveRuntimeAvailabilityInput(),
+      ...(this.permissionInteractionAvailable !== undefined
+        ? { permissionInteractionAvailable: this.permissionInteractionAvailable }
+        : {}),
+    }).engine;
+  }
+
   async createSession(alias: string, agent: string, workspace: string): Promise<ResolvedSession> {
     return await this.createLogicalSession(alias, agent, workspace, `${workspace}:${alias}`);
   }
@@ -214,18 +235,7 @@ export class SessionService {
       logical_session_id: existing?.logical_session_id ?? randomUUID(),
       transport_engine:
         sameAgentExisting?.transport_engine ??
-        resolveTransportEngine({
-          config: this.config.transport,
-          session: {
-            alias,
-            agent,
-            workspace,
-          },
-          ...this.resolveRuntimeAvailabilityInput(),
-          ...(this.permissionInteractionAvailable !== undefined
-            ? { permissionInteractionAvailable: this.permissionInteractionAvailable }
-            : {}),
-        }).engine,
+        this.resolveEngineForNewSession({ alias, agent, workspace }),
       transport_agent_command: sameAgentExisting?.transport_agent_command,
       transport_acpx_agent: sameAgentExisting?.transport_acpx_agent,
       transport_agent_argv: sameAgentExisting?.transport_agent_argv,
@@ -1360,18 +1370,7 @@ export class SessionService {
         // before state mutation (preventing durable binding).
         transport_engine:
           sameAgentExisting?.transport_engine ??
-          resolveTransportEngine({
-            config: this.config.transport,
-            session: {
-              alias,
-              agent,
-              workspace,
-            },
-            ...this.resolveRuntimeAvailabilityInput(),
-            ...(this.permissionInteractionAvailable !== undefined
-              ? { permissionInteractionAvailable: this.permissionInteractionAvailable }
-              : {}),
-          }).engine,
+          this.resolveEngineForNewSession({ alias, agent, workspace }),
         created_at: existingSession?.created_at ?? now,
         last_used_at: now,
       };

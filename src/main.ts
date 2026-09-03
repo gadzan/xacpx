@@ -54,6 +54,7 @@ import {
 import {
   resolveWorkerAgentLaunch,
   shouldGuardWorkerAcpOutput,
+  stageWorkerBindingIdentity,
 } from "./orchestration/worker-launch";
 import { ScheduledTaskScheduler } from "./scheduled/scheduled-scheduler";
 import { ScheduledTaskService } from "./scheduled/scheduled-service";
@@ -73,10 +74,6 @@ import {
   createActiveTurnRegistry,
   type ActiveTurnRegistry,
 } from "./sessions/active-turn-registry";
-import {
-  probeRuntimeWorkerAvailable,
-  resolveTransportEngine,
-} from "./sessions/transport-engine";
 import { DebouncedStateStore } from "./state/debounced-state-store";
 import { StateStore } from "./state/state-store";
 import type { AppState } from "./state/types";
@@ -768,7 +765,15 @@ export async function buildApp(
       }).catch(() => {});
     }
   } catch (error) {
-    await logger.warn("transport.engine.capabilities_failed", "Bridge capability probe failed; using local availability check", {
+    // Fail-safe: an unavailable probe is NOT evidence of availability. Pin a
+    // known-bad capability so auto falls back to cli and strict runtime fails
+    // before persistence, instead of falling back to the local file check.
+    sessions.setRuntimeCapability({
+      runtimeAvailable: false,
+      runtimeImportOk: false,
+      contractProbeOk: false,
+    });
+    await logger.warn("transport.engine.capabilities_failed", "Bridge capability probe failed; treating Runtime as unavailable", {
       error: error instanceof Error ? error.message : String(error),
     }).catch(() => {});
   }
@@ -1018,32 +1023,18 @@ export async function buildApp(
     targetAgent: string;
     workspace: string;
   }): Promise<void> => {
-    const binding = state.orchestration.workerBindings[input.workerSession];
-    if (!binding) {
+    // G11 copy-on-write: stage LID + engine on a clone, persist with saveNow,
+    // and only then publish to live state. A saveNow rejection leaves live
+    // state byte-for-byte unchanged so a retry re-stages, and no owner ever
+    // launches on a never-durable affinity.
+    const staged = stageWorkerBindingIdentity(state, input, (shape) =>
+      sessions.resolveEngineForNewSession(shape),
+    );
+    if (!staged.changed) {
       return;
     }
-    let needsSave = false;
-    if (!binding.logicalSessionId) {
-      binding.logicalSessionId = randomUUID();
-      needsSave = true;
-    }
-    if (!binding.transportEngine) {
-      const choice = resolveTransportEngine({
-        config: config.transport,
-        session: {
-          alias: input.workerSession,
-          agent: input.targetAgent,
-          workspace: input.workspace,
-          transport_engine: binding.transportEngine,
-        },
-        runtimeAvailable: probeRuntimeWorkerAvailable(),
-      });
-      binding.transportEngine = choice.engine;
-      needsSave = true;
-    }
-    if (needsSave) {
-      await debouncedStateStore.saveNow(state);
-    }
+    await debouncedStateStore.saveNow(staged.nextState);
+    replaceRuntimeState(state, staged.nextState);
   };
 
   const resolveWorkerRuntimeSession = (
@@ -1065,16 +1056,11 @@ export async function buildApp(
     const logicalSessionId = binding?.logicalSessionId;
     const transportEngine =
       binding?.transportEngine ??
-      resolveTransportEngine({
-        config: config.transport,
-        session: {
-          alias: input.workerSession,
-          agent: input.targetAgent,
-          workspace: input.workspace,
-          transport_engine: binding?.transportEngine,
-        },
-        runtimeAvailable: probeRuntimeWorkerAvailable(),
-      }).engine;
+      sessions.resolveEngineForNewSession({
+        alias: input.workerSession,
+        agent: input.targetAgent,
+        workspace: input.workspace,
+      });
 
     if (!input.cwd) {
       const resolved = sessions.resolveSession(

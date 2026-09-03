@@ -1740,6 +1740,7 @@ test("strict runtime engine fails session creation before persist when nonIntera
   const store = new MemoryStateStore();
   const config = createConfig();
   delete config.transport.command;
+  config.transport.type = "acpx-bridge";
   config.transport.engine = "runtime";
   config.transport.nonInteractivePermissions = "fail";
   const service = new SessionService(config, store, state);
@@ -1754,6 +1755,7 @@ test("strict runtime engine fails session creation before persist when escalate 
   const store = new MemoryStateStore();
   const config = createConfig();
   delete config.transport.command;
+  config.transport.type = "acpx-bridge";
   config.transport.engine = "runtime";
   config.transport.permissionPolicy = JSON.stringify({ escalate: ["edit"] });
   const service = new SessionService(config, store, state, { permissionInteractionAvailable: false });
@@ -1899,6 +1901,7 @@ test("cached Bridge capability probe failure forces auto to cli before persist",
   const store = new MemoryStateStore();
   const config = createConfig();
   delete config.transport.command;
+  config.transport.type = "acpx-bridge";
   config.transport.engine = "auto";
   const service = new SessionService(config, store, state);
   // Worker file may exist locally, but the Bridge host failed the probe.
@@ -1913,6 +1916,7 @@ test("cached Bridge capability probe failure rejects strict runtime before state
   const store = new MemoryStateStore();
   const config = createConfig();
   delete config.transport.command;
+  config.transport.type = "acpx-bridge";
   config.transport.engine = "runtime";
   const service = new SessionService(config, store, state);
   service.setRuntimeCapability({ runtimeAvailable: true, runtimeImportOk: true, contractProbeOk: false });
@@ -1927,10 +1931,35 @@ test("cached Bridge capability success allows auto to bind runtime", async () =>
   const store = new MemoryStateStore();
   const config = createConfig();
   delete config.transport.command;
+  config.transport.type = "acpx-bridge";
   config.transport.engine = "auto";
   const service = new SessionService(config, store, state);
   service.setRuntimeCapability({ runtimeAvailable: true, runtimeImportOk: true, contractProbeOk: true });
   const session = await service.createSession("probe-ok", "codex", "backend");
   expect(session.transportEngine).toBe("runtime");
   expect(state.sessions["probe-ok"]?.transport_engine).toBe("runtime");
+});
+test("acpx-cli transport never binds runtime for new sessions even when eligible", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  const config = createConfig();
+  delete config.transport.command;
+  config.transport.engine = "auto";
+  const service = new SessionService(config, store, state);
+  const session = await service.createSession("cli-auto", "codex", "backend");
+  expect(session.transportEngine).toBe("cli");
+  expect(state.sessions["cli-auto"]?.transport_engine).toBe("cli");
+});
+
+test("acpx-cli transport with strict runtime throws before state mutation", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  const config = createConfig();
+  delete config.transport.command;
+  config.transport.engine = "runtime";
+  const service = new SessionService(config, store, state);
+  await expect(service.createSession("cli-strict", "codex", "backend")).rejects.toThrow(
+    /requires transport.type = "acpx-bridge"/,
+  );
+  expect(state.sessions["cli-strict"]).toBeUndefined();
 });

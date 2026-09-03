@@ -1,4 +1,6 @@
-import type { SessionTransportEngine } from "../state/types";
+import { randomUUID } from "node:crypto";
+
+import type { AppState, SessionTransportEngine } from "../state/types";
 
 import { resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
 import type { AgentConfig, TransportConfig } from "../config/types";
@@ -44,6 +46,44 @@ export function workerBindingEngineFields(
     ...(previousBinding?.logicalSessionId ? { logicalSessionId: previousBinding.logicalSessionId } : {}),
     ...(previousBinding?.transportEngine ? { transportEngine: previousBinding.transportEngine } : {}),
   };
+}
+
+/**
+ * Stage a worker binding's immutable identity (LID + engine) onto a
+ * copy-on-write clone. Returns `{ changed: false }` when the live binding is
+ * missing or already complete. Otherwise returns the staged clone — the
+ * caller must `saveNow(nextState)` and publish ONLY on success, so a saveNow
+ * rejection leaves live state byte-for-byte unchanged and a retry re-stages
+ * (G11: no owner ever launches on a never-durable affinity).
+ */
+export function stageWorkerBindingIdentity(
+  state: AppState,
+  input: { workerSession: string; targetAgent: string; workspace: string },
+  resolveEngine: (input: { alias: string; agent: string; workspace: string }) => SessionTransportEngine,
+): { changed: false } | { changed: true; nextState: AppState } {
+  const binding = state.orchestration.workerBindings[input.workerSession];
+  if (!binding) {
+    return { changed: false };
+  }
+  if (binding.logicalSessionId && binding.transportEngine) {
+    return { changed: false };
+  }
+  const nextState = structuredClone(state);
+  const nextBinding = nextState.orchestration.workerBindings[input.workerSession];
+  if (!nextBinding) {
+    return { changed: false };
+  }
+  if (!nextBinding.logicalSessionId) {
+    nextBinding.logicalSessionId = randomUUID();
+  }
+  if (!nextBinding.transportEngine) {
+    nextBinding.transportEngine = resolveEngine({
+      alias: input.workerSession,
+      agent: input.targetAgent,
+      workspace: input.workspace,
+    });
+  }
+  return { changed: true, nextState };
 }
 
 export function resolveWorkerAgentLaunch(
