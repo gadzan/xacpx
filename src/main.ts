@@ -53,9 +53,9 @@ import {
   buildWorkerTaskPrompt,
 } from "./orchestration/worker-prompts";
 import {
+  persistWorkerBindingIdentity,
   resolveWorkerAgentLaunch,
   shouldGuardWorkerAcpOutput,
-  stageWorkerBindingIdentity,
 } from "./orchestration/worker-launch";
 import { ScheduledTaskScheduler } from "./scheduled/scheduled-scheduler";
 import { ScheduledTaskService } from "./scheduled/scheduled-service";
@@ -1018,18 +1018,16 @@ export async function buildApp(
     targetAgent: string;
     workspace: string;
   }): Promise<void> => {
-    // G11 copy-on-write: stage LID + engine on a clone, persist with saveNow,
-    // and only then publish to live state. A saveNow rejection leaves live
-    // state byte-for-byte unchanged so a retry re-stages, and no owner ever
-    // launches on a never-durable affinity.
-    const staged = stageWorkerBindingIdentity(state, input, (shape) =>
-      sessions.resolveEngineForNewSession(shape),
-    );
-    if (!staged.changed) {
-      return;
-    }
-    await debouncedStateStore.saveNow(staged.nextState);
-    replaceRuntimeState(state, staged.nextState);
+    // G11 copy-on-write, serialized on the shared stateMutex via
+    // persistWorkerBindingIdentity (see worker-launch.ts for the race
+    // contract). Callers (worker dispatch, ensureWorkerSession) always run
+    // outside the non-reentrant mutex, so this cannot self-deadlock.
+    await persistWorkerBindingIdentity(state, input, {
+      resolveEngine: (shape) => sessions.resolveEngineForNewSession(shape),
+      saveNow: (nextState) => debouncedStateStore.saveNow(nextState),
+      publish: (nextState) => replaceRuntimeState(state, nextState),
+      runExclusive: (critical) => stateMutex.run(critical),
+    });
   };
 
   const resolveWorkerRuntimeSession = (

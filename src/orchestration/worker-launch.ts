@@ -86,6 +86,39 @@ export function stageWorkerBindingIdentity(
   return { changed: true, nextState };
 }
 
+export interface WorkerBindingIdentityPersistence {
+  resolveEngine: (input: { alias: string; agent: string; workspace: string }) => SessionTransportEngine;
+  saveNow: (nextState: AppState) => Promise<void>;
+  publish: (nextState: AppState) => void;
+  runExclusive: <T>(critical: () => Promise<T>) => Promise<T>;
+}
+
+/**
+ * Persist a worker binding's immutable identity (LID + engine) as one atomic
+ * transaction on the shared state mutex: stage on a clone, saveNow, then
+ * publish to live state ONLY on success. The whole stage + save + publish
+ * sequence must hold the mutex — two dispatches staging from the same live
+ * snapshot would otherwise lost-update each other's durable identity (or any
+ * other AppState mutation committed in between) with a stale whole-state
+ * write (G11 persist-before-owner). A saveNow rejection leaves live state
+ * untouched so a retry re-stages. Callers must run outside the non-reentrant
+ * mutex.
+ */
+export async function persistWorkerBindingIdentity(
+  state: AppState,
+  input: { workerSession: string; targetAgent: string; workspace: string },
+  deps: WorkerBindingIdentityPersistence,
+): Promise<void> {
+  await deps.runExclusive(async () => {
+    const staged = stageWorkerBindingIdentity(state, input, deps.resolveEngine);
+    if (!staged.changed) {
+      return;
+    }
+    await deps.saveNow(staged.nextState);
+    deps.publish(staged.nextState);
+  });
+}
+
 export function resolveWorkerAgentLaunch(
   agent: Pick<AgentConfig, "driver" | "command" | "argv">,
   transport: Pick<TransportConfig, "preferLocalAgents" | "adapterVersions" | "adapterRegistry"> | undefined,
