@@ -7,6 +7,7 @@ import type { StateStore } from "../../../src/state/state-store";
 import { DebouncedStateStore } from "../../../src/state/debounced-state-store";
 import { SessionService } from "../../../src/sessions/session-service";
 import type { SessionResourceLifecyclePublishInput } from "../../../src/sessions/session-resource-catalog";
+import { physicalFenceKeyForSession } from "../../../src/bridge/engine/runtime-engine";
 import { registerKnownChannelId } from "../../../src/channels/channel-scope";
 import { setLocale, t } from "../../../src/i18n";
 import { deriveAgentAlias, renderAgentArgvIdentity } from "../../../src/config/agent-launch";
@@ -1982,6 +1983,7 @@ test("listRuntimeQueueRecoverySessions covers shared-physical aliases and worker
     sourceHandle: "src-1",
     coordinatorSession: "coord-1",
     workspace: "backend",
+    cwd: "/repos/project-b",
     targetAgent: "codex",
     agentEndpointId: "endpoint_worker_1",
     logicalSessionId: "33333333-3333-4333-8333-333333333333",
@@ -1993,13 +1995,22 @@ test("listRuntimeQueueRecoverySessions covers shared-physical aliases and worker
   // Both shared-physical aliases (physical catalog would dedupe to one)…
   expect(byLid.has("11111111-1111-4111-8111-111111111111")).toBe(true);
   expect(byLid.has("22222222-2222-4222-8222-222222222222")).toBe(true);
-  // …and the worker binding journal.
+  // …and the worker binding journal, recovered with its OWN persisted cwd —
+  // not the workspace default — so restart acquires the same physical
+  // Runtime session that the queue was ACKed under.
   const worker = byLid.get("33333333-3333-4333-8333-333333333333");
   expect(worker?.transportEngine).toBe("runtime");
   expect(worker?.alias).toBe("worker-1");
-  expect(worker?.cwd).toBe("/tmp/backend");
+  expect(worker?.cwd).toBe("/repos/project-b");
+  // Physical fence identity matches what production dispatch resolves with
+  // the same binding cwd (not the workspace default).
+  expect(physicalFenceKeyForSession(worker!)).toBe(
+    physicalFenceKeyForSession({ ...worker!, cwd: "/repos/project-b" }),
+  );
+  expect(physicalFenceKeyForSession(worker!)).not.toBe(
+    physicalFenceKeyForSession({ ...worker!, cwd: "/tmp/backend" }),
+  );
 });
-
 test("resolveWorkerBindingSession fails closed on unknown identity", () => {
   const state = createEmptyState();
   state.orchestration.workerBindings["ghost"] = {

@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { RuntimeEngine } from "../../../../../src/bridge/engine/runtime-engine";
-
+import { SessionService } from "../../../../../src/sessions/session-service";
+import { createEmptyState } from "../../../../../src/state/types";
 const baseInput = {
   agent: "codex",
   cwd: "/repo",
@@ -391,3 +392,117 @@ test("ensure RUNTIME_SESSION_MISSING keeps head for replay", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 }, 15_000);
+test("worker binding custom cwd survives restart: prime drains with binding cwd, not workspace default", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-q-worker-cwd-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "fake-worker.mjs");
+  const ensureLog = join(dir, "ensure-cwds.log");
+  const workerLid = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const workerInput = {
+    agent: "codex",
+    cwd: "/repos/project-b",
+    name: "worker-1",
+    logicalSessionId: workerLid,
+  };
+  await writeFile(
+    entry,
+    [
+      `const fs = await import("node:fs");`,
+      `const logFile = ${JSON.stringify(ensureLog)};`,
+      "let buffer='';",
+      "process.stdin.on('data', (d) => {",
+      "  buffer += d.toString();",
+      "  let idx;",
+      "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+      "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+      "    if (!line) continue;",
+      "    try { const msg = JSON.parse(line);",
+      "      if (msg.method === 'prompt') {",
+      "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { result: { status: 'completed' }, finalText: 'drained:'+msg.params.text } }) + '\\n');",
+      "      } else if (msg.method === 'ensure') {",
+      "        fs.appendFileSync(logFile, (msg.params.cwd ?? '') + '\\n', 'utf8');",
+      "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true, sessionKey: msg.params.sessionKey, acpxRecordId: 'rec-'+msg.params.sessionKey } }) + '\\n');",
+      "      } else {",
+      "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+      "      }",
+      "      if (msg.method === 'shutdown') process.exit(0);",
+      "    } catch {}",
+      "  }",
+      "});",
+    ].join("\n"),
+  );
+  try {
+    // 1. Queue a worker message (durable ACK) then kill the host.
+    const engine1 = new RuntimeEngine({
+      workerEntryPath: entry,
+      permissionMode: "approve-all",
+      stateDir: stateSessionsDir,
+      queueDir,
+      fenceDir,
+      idleTtlMs: 200,
+    });
+    const receipt = await engine1.injectMessage({ ...workerInput, text: "worker-msg", mode: "queue", messageId: "w1" });
+    expect(receipt.status).toBe("queued");
+    await engine1.shutdown().catch(() => {});
+
+    // 2. Restart: build the production recovery catalog from a SessionService
+    // whose workspace default (A) differs from the binding cwd (B).
+    const state = createEmptyState();
+    state.orchestration.workerBindings["worker-1"] = {
+      sourceHandle: "src-1",
+      coordinatorSession: "coord-1",
+      workspace: "backend",
+      cwd: "/repos/project-b",
+      targetAgent: "codex",
+      agentEndpointId: "endpoint_worker_1",
+      logicalSessionId: workerLid,
+      transportEngine: "runtime",
+    };
+    const config = {
+      transport: { type: "acpx-bridge", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
+      logging: { level: "info", maxSizeBytes: 1024, maxFiles: 2, retentionDays: 1 },
+      channel: { type: "weixin", replyMode: "stream" },
+      channels: [{ id: "weixin", type: "weixin", enabled: true }],
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/repos/default" } },
+      orchestration: {
+        maxPendingAgentRequestsPerCoordinator: 3,
+        allowWorkerChainedRequests: false,
+        allowedAgentRequestTargets: [],
+        allowedAgentRequestRoles: [],
+      },
+    } as const;
+    const store = { save: async () => {}, saveNow: async () => {} };
+    const sessions = new SessionService(config, store, state);
+    const catalog = sessions.listRuntimeQueueRecoverySessions();
+    const workerEntry = catalog.find((s) => s.logicalSessionId === workerLid);
+    expect(workerEntry?.cwd).toBe("/repos/project-b");
+
+    // 3. Fresh engine primes from that catalog with no new inbound traffic.
+    const engine2 = new RuntimeEngine({
+      workerEntryPath: entry,
+      permissionMode: "approve-all",
+      stateDir: stateSessionsDir,
+      queueDir,
+      fenceDir,
+      idleTtlMs: 200,
+    });
+    await engine2.primeQueuesFromCatalog(catalog);
+    const store2 = engine2.getQueueStore();
+    for (let i = 0; i < 100 && (await store2.hasPending(workerLid)); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(await store2.hasPending(workerLid)).toBe(false);
+    // 4. The drain ensured the worker session with the binding cwd (B),
+    // never the workspace default (A).
+    const seenCwds = (await readFile(ensureLog, "utf8")).split("\n").filter(Boolean);
+    expect(seenCwds.length).toBeGreaterThan(0);
+    expect(new Set(seenCwds)).toEqual(new Set(["/repos/project-b"]));
+    await engine2.shutdown().catch(() => {});
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 30_000);

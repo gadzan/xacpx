@@ -299,7 +299,11 @@ export class SessionService {
       model: agentConfig.model,
       workspace: binding.workspace,
       transportSession: workerSession,
-      cwd: workspaceConfig.cwd,
+      // Physical identity must match production dispatch: a worker binding
+      // persists its own cwd (delegate request), which overrides the
+      // workspace default. Recovering with the default would acquire/ensure
+      // a DIFFERENT physical Runtime session for the same logical journal.
+      cwd: binding.cwd ?? workspaceConfig.cwd,
       logicalSessionId: binding.logicalSessionId,
       transportEngine: binding.transportEngine,
     };
