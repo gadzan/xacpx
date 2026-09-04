@@ -128,10 +128,7 @@ import {
   type EnsureAgentOverlaysResult,
 } from "./transport/acpx-agent-overlay";
 import {
-  isEligibleForRuntime,
-  parseXacpxPermissionPolicy,
   assertEligibleForRuntimePermissionChange,
-  type XacpxPermissionPolicy,
 } from "./bridge/engine/runtime/runtime-permission-policy";
 
 export interface ApplyRuntimePermissionConfigOptions {
@@ -543,29 +540,20 @@ export async function buildApp(
     runtimeRoot,
   });
   if (sessions.hasPersistedRuntimeBindings()) {
-    let startupPolicy: XacpxPermissionPolicy | undefined;
-    if (config.transport.permissionPolicy !== undefined) {
-      try {
-        startupPolicy =
-          typeof config.transport.permissionPolicy === "object" &&
-          config.transport.permissionPolicy !== null
-            ? (config.transport.permissionPolicy as XacpxPermissionPolicy)
-            : parseXacpxPermissionPolicy(config.transport.permissionPolicy);
-      } catch {
-        // malformed policy
-      }
-    }
-    const startupEligible = isEligibleForRuntime(
-      startupPolicy,
-      config.transport.nonInteractivePermissions,
-      false,
-    );
-    if (!startupEligible) {
+    // Fail startup LOUD, reusing the shared gate: both a runtime-ineligible
+    // tuple AND a malformed/unreadable policy (parse errors propagate, never
+    // read as "no policy") refuse startup while bindings exist.
+    try {
+      assertEligibleForRuntimePermissionChange(true, {
+        permissionPolicy: config.transport.permissionPolicy,
+        nonInteractivePermissions: config.transport.nonInteractivePermissions,
+      });
+    } catch (error) {
       // Fail startup LOUD: persisted Runtime bindings can no longer legally
       // run under this config, and silently starting degraded would brick
       // every bound session with RUNTIME_ENGINE_UNSUPPORTED.
       throw new Error(
-        "state has persisted runtime bindings but the current transport permission config is runtime-ineligible; refusing startup (migrate bindings to cli or restore an eligible policy)",
+        `state has persisted runtime bindings but the current transport permission config is invalid (${error instanceof Error ? error.message : String(error)}); refusing startup (migrate bindings to cli or restore an eligible policy)`,
       );
     }
   }

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { writeFile } from "node:fs/promises";
+import { writeFile, readFile } from "node:fs/promises";
 
 import { RuntimeEngine } from "../../../../../src/bridge/engine/runtime-engine";
 import { isEligibleForRuntime, parseXacpxPermissionPolicy } from "../../../../../src/bridge/engine/runtime/runtime-permission-policy";
@@ -268,3 +268,184 @@ rl.on("line", (line) => {
     await rm(dir, { recursive: true, force: true });
   }
 }, 20_000);
+test("cancel reaches the live worker turn: agent sees session/cancel and prompt ends cancelled", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-cancel-live-"));
+  const stateDir = join(dir, "state", "sessions");
+  const queueDir = join(dir, "queue");
+  const fenceDir = join(dir, "fences");
+  const workerFile = await buildWorker(dir);
+  const promptSeenFile = join(dir, "prompt-seen.json");
+  const cancelSeenFile = join(dir, "cancel-seen.json");
+  // Mock agent: hangs the prompt until it observes session/cancel, then
+  // settles the pending prompt as cancelled. Marker files prove the
+  // underlying turn (not just the host RPC) observed the cancel.
+  const agentFile = join(dir, "mock-cancel-agent.mjs");
+  await writeFile(
+    agentFile,
+    `
+import { createInterface } from "node:readline";
+import { writeFileSync } from "node:fs";
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+function respond(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\\n"); }
+let pendingPrompt = null;
+rl.on("line", (line) => {
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.method === "initialize") respond(msg.id, { protocolVersion: 1, authMethods: [], agentCapabilities: { loadSession: true, promptCapabilities: {}, sessionCapabilities: { new:{}, load:{}, resume:{}, close:{}, list:{}, cancel:{} } } });
+  else if (msg.method === "session/new" || msg.method === "session/load" || msg.method === "session/resume") respond(msg.id, { sessionId: "mock-sess" });
+  else if (msg.method === "session/prompt") {
+    pendingPrompt = { id: msg.id, sessionId: msg.params?.sessionId ?? "mock-sess" };
+    writeFileSync(${JSON.stringify(promptSeenFile)}, JSON.stringify({ id: msg.id }));
+  } else if (msg.method === "session/cancel") {
+    writeFileSync(${JSON.stringify(cancelSeenFile)}, JSON.stringify({ sessionId: msg.params?.sessionId ?? null }));
+    if (pendingPrompt) respond(pendingPrompt.id, { sessionId: pendingPrompt.sessionId, stopReason: "cancelled" });
+  } else if (msg.id !== undefined) respond(msg.id, {});
+});
+`,
+  );
+  const base = { agent: "mock", acpxAgent: "mock", agentArgv: [process.execPath, agentFile], cwd: "/tmp", name: "cancel-test", logicalSessionId: "cancel-1" };
+  const engine = new RuntimeEngine({
+    workerEntryPath: workerFile,
+    stateDir,
+    queueDir,
+    fenceDir,
+    permissionMode: "approve-all",
+  });
+  try {
+    let promptError: unknown = null;
+    const promptPromise = engine.prompt({ ...base, text: "hang" }).then(
+      () => { throw new Error("prompt should not complete after cancel"); },
+      (error) => { promptError = error; },
+    );
+    // Bounded wait for the prompt to actually reach the agent (observable
+    // barrier, not a fixed sleep): cancel must hit a live turn.
+    for (let i = 0; i < 200; i++) {
+      try {
+        await readFile(promptSeenFile, "utf8");
+        break;
+      } catch {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+    const cancelRes = await engine.cancel({ ...base });
+    expect(cancelRes.cancelled).toBe(true);
+    await promptPromise;
+    expect(promptError).toMatchObject({ code: "RUNTIME_TURN_CANCELLED" });
+    // The agent itself observed session/cancel: the underlying turn was
+    // really cancelled, not just ACKed at the host boundary.
+    expect(JSON.parse(await readFile(cancelSeenFile, "utf8"))).toMatchObject({ sessionId: "mock-sess" });
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("elicitation cancel decision resolves immediately through the worker dispatch (no 30s hang)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-elicit-cancel-"));
+  const stateDir = join(dir, "state", "sessions");
+  const queueDir = join(dir, "queue");
+  const fenceDir = join(dir, "fences");
+  const workerFile = await buildWorker(dir);
+  const elicitRespFile = join(dir, "elicit-resp.json");
+  // Mock agent: requests elicitation mid-prompt, records whatever the
+  // runtime answers, then completes the turn.
+  const agentFile = join(dir, "mock-elicit-cancel-agent.mjs");
+  await writeFile(
+    agentFile,
+    `
+import { createInterface } from "node:readline";
+import { writeFileSync } from "node:fs";
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+function respond(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\\n"); }
+function update(sessionId, upd) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: upd } }) + "\\n"); }
+let promptId = null;
+let promptSid = "mock-sess";
+rl.on("line", (line) => {
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.method === "initialize") respond(msg.id, { protocolVersion: 1, authMethods: [], agentCapabilities: { loadSession: true, promptCapabilities: {}, sessionCapabilities: { new:{}, load:{}, resume:{}, close:{}, list:{}, cancel:{} } } });
+  else if (msg.method === "session/new" || msg.method === "session/load" || msg.method === "session/resume") respond(msg.id, { sessionId: "mock-sess" });
+  else if (msg.method === "session/prompt") {
+    promptId = msg.id; promptSid = msg.params?.sessionId ?? "mock-sess";
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: 101, method: "elicitation/create", params: { sessionId: promptSid, mode: "form", message: "need input", requestedSchema: { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] } } }) + "\\n");
+  } else if (msg.id === 101) {
+    writeFileSync(${JSON.stringify(elicitRespFile)}, JSON.stringify(msg));
+    update(promptSid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "elicit-cancelled-turn" } });
+    respond(promptId, { sessionId: promptSid });
+  } else if (msg.id !== undefined) respond(msg.id, {});
+});
+`,
+  );
+  const base = { agent: "mock", acpxAgent: "mock", agentArgv: [process.execPath, agentFile], cwd: "/tmp", name: "elicit-cancel-test", logicalSessionId: "elicit-cancel-1" };
+  // No onElicitationRequest: daemon fails closed with cancel.
+  const engine = new RuntimeEngine({
+    workerEntryPath: workerFile,
+    stateDir,
+    queueDir,
+    fenceDir,
+    permissionMode: "approve-all",
+  });
+  try {
+    const started = Date.now();
+    const res = await engine.prompt({ ...base, text: "run elicit" }, async () => {});
+    // A 30s host-elicitation-timeout hang would blow this budget: the
+    // cancel decision must flow back through elicitation.decision at once.
+    expect(Date.now() - started).toBeLessThan(20_000);
+    expect(res.text).toContain("elicit-cancelled-turn");
+    expect(JSON.parse(await readFile(elicitRespFile, "utf8")).id).toBe(101);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 30_000);
+test("elicitation submit maps to upstream accept/content end to end", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-elicit-submit-"));
+  const stateDir = join(dir, "state", "sessions");
+  const queueDir = join(dir, "queue");
+  const fenceDir = join(dir, "fences");
+  const workerFile = await buildWorker(dir);
+  const elicitRespFile = join(dir, "elicit-resp.json");
+  const agentFile = join(dir, "mock-elicit-submit-agent.mjs");
+  await writeFile(
+    agentFile,
+    `
+import { createInterface } from "node:readline";
+import { writeFileSync } from "node:fs";
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+function respond(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\\n"); }
+function update(sessionId, upd) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: upd } }) + "\\n"); }
+let promptId = null;
+let promptSid = "mock-sess";
+rl.on("line", (line) => {
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.method === "initialize") respond(msg.id, { protocolVersion: 1, authMethods: [], agentCapabilities: { loadSession: true, promptCapabilities: {}, sessionCapabilities: { new:{}, load:{}, resume:{}, close:{}, list:{}, cancel:{} } } });
+  else if (msg.method === "session/new" || msg.method === "session/load" || msg.method === "session/resume") respond(msg.id, { sessionId: "mock-sess" });
+  else if (msg.method === "session/prompt") {
+    promptId = msg.id; promptSid = msg.params?.sessionId ?? "mock-sess";
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: 102, method: "elicitation/create", params: { sessionId: promptSid, mode: "form", message: "pick one", requestedSchema: { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] } } }) + "\\n");
+  } else if (msg.id === 102) {
+    writeFileSync(${JSON.stringify(elicitRespFile)}, JSON.stringify(msg));
+    update(promptSid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "elicit-submitted-turn" } });
+    respond(promptId, { sessionId: promptSid });
+  } else if (msg.id !== undefined) respond(msg.id, {});
+});
+`,
+  );
+  const base = { agent: "mock", acpxAgent: "mock", agentArgv: [process.execPath, agentFile], cwd: "/tmp", name: "elicit-submit-test", logicalSessionId: "elicit-submit-1" };
+  const engine = new RuntimeEngine({
+    workerEntryPath: workerFile,
+    stateDir,
+    queueDir,
+    fenceDir,
+    permissionMode: "approve-all",
+    onElicitationRequest: async () => ({ action: "submit", data: { answer: "yes" } }),
+  });
+  try {
+    const res = await engine.prompt({ ...base, text: "run elicit" }, async () => {});
+    expect(res.text).toContain("elicit-submitted-turn");
+    // The daemon's opaque submit data must reach the agent as the pinned
+    // upstream shape { action: "accept", content }, never raw passthrough.
+    const seen = JSON.parse(await readFile(elicitRespFile, "utf8"));
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 30_000);

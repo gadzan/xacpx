@@ -28,6 +28,7 @@ import {
   type RuntimeWorkerPermissionRequestPayload,
   type RuntimeWorkerElicitationRequestPayload,
   type RuntimeWorkerPermissionDecisionParams,
+  type RuntimeWorkerElicitationDecisionParams,
   type RuntimeWorkerPromptResult,
 } from "./runtime-worker-protocol";
 import { mapRuntimeError } from "./runtime-contract";
@@ -50,7 +51,7 @@ interface WorkerState {
   permissionSnapshot?: RuntimePermissionConfig;
   permissionGeneration: number;
   pendingPermissions: Map<string, { resolve: (d: { outcome: string }) => void; reject: (e: Error) => void; generation: number; workerGeneration: string }>;
-  pendingElicitations: Map<string, { resolve: (d: { action: string; data?: unknown }) => void; reject: (e: Error) => void; generation: number; workerGeneration: string }>;
+  pendingElicitations: Map<string, { resolve: (d: { action: string; data?: unknown }) => void; reject: (e: Error) => void; requestId: string; generation: number; workerGeneration: string }>;
   workerGeneration: string;
 }
 const gate = createDispatchGate();
@@ -274,7 +275,7 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
       workerGeneration: state.workerGeneration,
     };
     const pending = new Promise<{ action: string; data?: unknown }>((resolve, reject) => {
-      state.pendingElicitations.set(elicitationId, { resolve: resolve as (d: { action: string; data?: unknown }) => void, reject, generation: state.permissionGeneration, workerGeneration: state.workerGeneration });
+      state.pendingElicitations.set(elicitationId, { resolve: resolve as (d: { action: string; data?: unknown }) => void, reject, requestId, generation: state.permissionGeneration, workerGeneration: state.workerGeneration });
       const onAbort = () => {
         state.pendingElicitations.delete(elicitationId);
         signal.removeEventListener("abort", onAbort);
@@ -292,11 +293,36 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
         pending,
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error("host elicitation timeout")), 30_000).unref?.()),
       ]);
-      if (decision.action === "submit") return decision.data;
+      if (decision.action === "submit") return toUpstreamElicitationAccept(decision.data);
       throw new Error("elicitation cancelled");
     } finally {
       state.pendingElicitations.delete(elicitationId);
     }
+  };
+  /**
+   * Explicit mapping from the xacpx elicitation decision to the pinned
+   * acpx/upstream AcpElicitationResponse. submit carries opaque daemon form
+   * data and MUST become { action: "accept", content } — never a cast
+   * passthrough. Malformed content fails closed (cancel) rather than
+   * sending the agent data it did not ask for.
+   */
+  function toUpstreamElicitationAccept(data: unknown): { action: "accept"; content: Record<string, string | number | boolean | string[]> | null } {
+    if (data === undefined || data === null) return { action: "accept", content: null };
+    if (typeof data !== "object" || Array.isArray(data)) throw new Error("elicitation cancelled");
+    const content: Record<string, string | number | boolean | string[]> = {};
+    for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+      if (
+        typeof value === "string" ||
+        typeof value === "number" ||
+        typeof value === "boolean" ||
+        (Array.isArray(value) && value.every((item): item is string => typeof item === "string"))
+      ) {
+        content[key] = value;
+      } else {
+        throw new Error("elicitation cancelled");
+      }
+    }
+    return { action: "accept", content };
   };
   const turn = state.adapter.startTurn({
     handle: state.handle,
@@ -304,6 +330,9 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
     ...(params.attachments && params.attachments.length > 0 ? { attachments: params.attachments } : {}),
     onElicitation,
   });
+  // Register BEFORE any await: the host's cancel RPC must reach the live
+  // turn instead of reporting false-success on an empty activeTurn.
+  state.activeTurn = turn;
   try {
     await turn.promptStarted;
     let finalText = "";
@@ -327,7 +356,9 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
     const result = await turn.result;
     return { result, finalText };
   } finally {
-    state.activeTurn = undefined;
+    // Identity cleanup: an older turn settling late must never clear a
+    // newer turn registered after it.
+    if (state.activeTurn === turn) state.activeTurn = undefined;
   }
 }
 
@@ -451,6 +482,35 @@ async function dispatch(request: RuntimeWorkerRequest): Promise<void> {
           entry.reject(new Error("malformed decision"));
         }
         state.pendingPermissions.delete(p.requestId);
+        respond({ id, ok: true, result: {} });
+        break;
+      }
+      case "elicitation.decision": {
+        const p = (request.params ?? {}) as RuntimeWorkerElicitationDecisionParams;
+        const entry = state.pendingElicitations.get(p.elicitationId);
+        if (!entry) {
+          respond({ id, ok: true, result: {} });
+          break;
+        }
+        // Generation + identity fencing, mirroring permission.decision: a
+        // stale or cross-talk response must never resolve the live prompt's
+        // elicitation. Unknown elicitationId is benign (already settled).
+        if (
+          p.requestId !== entry.requestId ||
+          p.policyGeneration !== entry.generation ||
+          p.policyGeneration !== state.permissionGeneration
+        ) {
+          entry.reject(new Error("stale generation"));
+          state.pendingElicitations.delete(p.elicitationId);
+          respond({ id, ok: true, result: { stale: true } });
+          break;
+        }
+        if (p.decision && (p.decision.action === "submit" || p.decision.action === "cancel")) {
+          entry.resolve({ action: p.decision.action, ...(p.decision.data !== undefined ? { data: p.decision.data } : {}) });
+        } else {
+          entry.reject(new Error("malformed decision"));
+        }
+        state.pendingElicitations.delete(p.elicitationId);
         respond({ id, ok: true, result: {} });
         break;
       }

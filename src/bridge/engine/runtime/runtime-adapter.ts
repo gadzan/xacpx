@@ -91,6 +91,11 @@ export function createXacpxRuntimeAdapter(options: CreateXacpxRuntimeAdapterOpti
       options.agentOverrides ? { overrides: options.agentOverrides } : undefined,
     ),
     permissionMode: options.permissionMode,
+    // Without this, upstream answers every agent elicitation with
+    // "unsupported" and the worker/host elicitation pipeline (decision
+    // dispatch, accept mapping) is dead code. Only "form" is enabled: it
+    // is the single mode the daemon elicitation UI can render.
+    elicitationModes: ["form"] as const,
     ...(options.nonInteractivePermissions ? { nonInteractivePermissions: options.nonInteractivePermissions } : {}),
     ...(options.onPermissionRequest
       ? { onPermissionRequest: options.onPermissionRequest }

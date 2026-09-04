@@ -373,6 +373,66 @@ test("startup fails closed when state has runtime sessions but config is runtime
   expect(await readFile(statePath, "utf8")).toBe(rawState);
   await rm(dir, { recursive: true, force: true });
 });
+test("startup fails closed when persisted runtime bindings meet a malformed inline policy", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-perm-startup-malformed-"));
+  const configPath = join(dir, "config.json");
+  const statePath = join(dir, "state.json");
+  // Otherwise eligible tuple, but the inline policy JSON is malformed: it
+  // must never read as "no policy" at startup while bindings exist.
+  const rawConfig = JSON.stringify({
+    transport: {
+      type: "acpx-bridge",
+      permissionMode: "approve-all",
+      nonInteractivePermissions: "deny",
+      permissionPolicy: "{not-json",
+    },
+    agents: { codex: { driver: "codex" } },
+    workspaces: { backend: { cwd: "/tmp/backend" } },
+  });
+  await writeFile(configPath, rawConfig);
+  const rawState = JSON.stringify(makeRuntimeSessionState());
+  await writeFile(statePath, rawState);
+  const mockTransport: SessionTransport = {
+    prompt: mock(async () => ({ text: "ok", stopReason: "end_turn" })),
+  };
+  await expect(
+    buildApp(
+      { configPath, statePath },
+      { createBridgeTransport: async () => mockTransport },
+    ),
+  ).rejects.toThrow(/refusing startup/);
+  expect(await readFile(statePath, "utf8")).toBe(rawState);
+  await rm(dir, { recursive: true, force: true });
+});
+test("startup fails closed when persisted runtime bindings meet an unreadable policy file", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-perm-startup-badfile-"));
+  const configPath = join(dir, "config.json");
+  const statePath = join(dir, "state.json");
+  const rawConfig = JSON.stringify({
+    transport: {
+      type: "acpx-bridge",
+      permissionMode: "approve-all",
+      nonInteractivePermissions: "deny",
+      permissionPolicy: join(dir, "missing-policy.json"),
+    },
+    agents: { codex: { driver: "codex" } },
+    workspaces: { backend: { cwd: "/tmp/backend" } },
+  });
+  await writeFile(configPath, rawConfig);
+  const rawState = JSON.stringify(makeRuntimeSessionState());
+  await writeFile(statePath, rawState);
+  const mockTransport: SessionTransport = {
+    prompt: mock(async () => ({ text: "ok", stopReason: "end_turn" })),
+  };
+  await expect(
+    buildApp(
+      { configPath, statePath },
+      { createBridgeTransport: async () => mockTransport },
+    ),
+  ).rejects.toThrow(/refusing startup/);
+  expect(await readFile(statePath, "utf8")).toBe(rawState);
+  await rm(dir, { recursive: true, force: true });
+});
 
 test("eligible permission update succeeds when runtime sessions exist", async () => {
   const dir = await mkdtemp(join(tmpdir(), "xacpx-perm-eligible-"));
