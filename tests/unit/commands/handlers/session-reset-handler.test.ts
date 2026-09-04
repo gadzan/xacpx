@@ -258,7 +258,22 @@ test("rolls back to previous snapshot when ensureTransportSession fails", async 
     logical_session_id: "prev-id",
   }));
   expect(ctx.useSession).not.toHaveBeenCalled();
+  // Best-effort cleanup targets ONLY the fresh incarnation, never previous.
+  expect(ctx.removeSession).toHaveBeenCalledTimes(1);
+  expect(ctx.removeSession.mock.calls[0][0]).toMatchObject({
+    transportSession: "backend:review:reset-1700000000001",
+  });
 });
+test("fresh-incarnation cleanup failure never masks the reset rollback", async () => {
+  const previous = resolved({ source: "xacpx", transportSession: "backend:review" });
+  const ctx = build({ current: previous, removeSessionThrows: true });
+  ctx.ops.ensureTransportSession = mock(async () => {
+    throw new Error("ensure failed");
+  });
+  await expect(handleSessionResetCommand(ctx.context, ctx.ops, "wx:user")).rejects.toThrow("ensure failed");
+  expect(ctx.rollbackSessionRecord).toHaveBeenCalledTimes(1);
+  expect(ctx.removeSession).toHaveBeenCalledTimes(1);
+ });
 test("rolls back to previous snapshot when checkTransportSession returns false", async () => {
   const previous = resolved({ source: "xacpx", transportSession: "backend:review" });
   const ctx = build({ current: previous });
@@ -267,10 +282,10 @@ test("rolls back to previous snapshot when checkTransportSession returns false",
   const reply = await handleSessionResetCommand(ctx.context, ctx.ops, "wx:user");
 
   expect(ctx.attachSession).toHaveBeenCalledTimes(1);
-  expect(ctx.rollbackSessionRecord).toHaveBeenCalledTimes(1);
-  expect(ctx.rollbackSessionRecord).toHaveBeenCalledWith("review", expect.objectContaining({
-    alias: "review",
-  }));
   expect(ctx.useSession).not.toHaveBeenCalled();
   expect(reply.text).toBe(t().misc.sessionResetFailed("review"));
+  expect(ctx.removeSession).toHaveBeenCalledTimes(1);
+  expect(ctx.removeSession.mock.calls[0][0]).toMatchObject({
+    transportSession: "backend:review:reset-1700000000001",
+  });
 });

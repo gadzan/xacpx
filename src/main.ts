@@ -130,6 +130,7 @@ import {
 import {
   isEligibleForRuntime,
   parseXacpxPermissionPolicy,
+  assertEligibleForRuntimePermissionChange,
   type XacpxPermissionPolicy,
 } from "./bridge/engine/runtime/runtime-permission-policy";
 
@@ -154,35 +155,17 @@ export async function applyRuntimePermissionConfig(
     // the live type/command while every other field hot-applies, so the
     // persisted affinity selector (which sees the held live config) cannot
     // disagree with the transport that actually executes sessions.
-    // 1. Parse / validate permission policy if present
-    let parsedPolicy: XacpxPermissionPolicy | undefined;
-    if (nextConfig.transport.permissionPolicy !== undefined) {
-      if (
-        typeof nextConfig.transport.permissionPolicy === "object" &&
-        nextConfig.transport.permissionPolicy !== null
-      ) {
-        parsedPolicy = nextConfig.transport.permissionPolicy as XacpxPermissionPolicy;
-      } else {
-        parsedPolicy = parseXacpxPermissionPolicy(
-          nextConfig.transport.permissionPolicy,
-        );
-      }
-    }
-
-    // 2. Reject if persisted runtime bindings (sessions or worker bindings)
-    // exist and next config is runtime-ineligible
-    if (sessions.hasPersistedRuntimeBindings()) {
-      const eligible = isEligibleForRuntime(
-        parsedPolicy,
-        nextConfig.transport.nonInteractivePermissions,
-        false,
-      );
-      if (!eligible) {
-        throw new Error(
-          'cannot apply permission policy: runtime-ineligible policy (nonInteractive="fail" or escalate without interactive) with persisted runtime bindings',
-        );
-      }
-    }
+    // 1. Fail-closed Runtime eligibility gate. Shared with the `/config set`
+    // + `/pm` handlers (assertEligibleForRuntimePermissionChange) so the two
+    // paths cannot drift on interaction availability or the error contract.
+    // The helper also parses/validates the policy (malformed → throw).
+    assertEligibleForRuntimePermissionChange(
+      sessions.hasPersistedRuntimeBindings(),
+      {
+        permissionPolicy: nextConfig.transport.permissionPolicy,
+        nonInteractivePermissions: nextConfig.transport.nonInteractivePermissions,
+      },
+    );
 
     // 3. Diff permission tuple (mode / nonInteractive / policy)
     const currentMode = config.transport.permissionMode;
@@ -192,13 +175,23 @@ export async function applyRuntimePermissionConfig(
     const nextMode = nextConfig.transport.permissionMode;
     const nextNonInteractive = nextConfig.transport.nonInteractivePermissions;
     const nextPolicy = nextConfig.transport.permissionPolicy;
-
     const permissionChanged =
       currentMode !== nextMode ||
       currentNonInteractive !== nextNonInteractive ||
       currentPolicy !== nextPolicy;
 
-    // 4. If changed => prepare/commit via transport.updatePermissionPolicy + verify
+    // 4. Provision overlays BEFORE committing the new permission to the live
+    // transport. provisionOverlays() can throw (malformed acpx config, alias
+    // argv conflict, lock/verification failure): committing the policy first
+    // would leave the executor running approve-all while the live config
+    // still says deny-all and the reload reports FAILED (partial commit).
+    // Overlay provisioning is additive — a leftover correct alias is safe,
+    // a widened live policy with a stale config is not.
+    await provisionOverlays(nextConfig);
+
+    // 5. Only then commit the permission tuple to the live transport, then
+    // publish. replaceRuntimeConfig() holds a pending restart topology while
+    // every other field hot-applies; surface the hold so it stays visible.
     if (permissionChanged && transport.updatePermissionPolicy) {
       await transport.updatePermissionPolicy({
         permissionMode: nextMode,
@@ -208,12 +201,6 @@ export async function applyRuntimePermissionConfig(
           : {}),
       });
     }
-
-    // 5. Only then provision overlays and replace runtime config. When the
-    // disk carries a pending restart topology, the live type/command are held
-    // and every other field hot-applies; surface the pending restart so the
-    // held topology stays visible instead of silently diverging from disk.
-    await provisionOverlays(nextConfig);
     setLocale(resolveLocale({ configLanguage: nextConfig.language }));
     const topologyHeld = replaceRuntimeConfig(config, nextConfig);
     if (topologyHeld) {

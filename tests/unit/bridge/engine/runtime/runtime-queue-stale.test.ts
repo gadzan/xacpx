@@ -41,9 +41,14 @@ test("A active -> B queue -> A settle -> B drains on new worker, not old route",
   ].join("\n"));
   const slowEngine = new RuntimeEngine({ workerEntryPath: slowWorkerEntry, permissionMode: "approve-all", stateDir, queueDir, fenceDir, idleTtlMs: 200 });
   const pA = slowEngine.prompt({ ...baseA, text: "A" });
-  await new Promise(r => setTimeout(r, 50));
-  const pidA = (slowEngine as unknown as { manager: { get: (k: string) => { ref: { pid: number } } | undefined } }).manager.get("stale-1")?.ref.pid;
-  expect(pidA).toBeDefined();
+  // Observable barrier: A must own a live worker (pid visible) before B is
+  // injected — a fixed sleep flakes under CI load (exact-head 33850600397).
+  const workerOf = (lid: string): { ref: { pid: number } } | undefined =>
+    (slowEngine as unknown as { manager: { get: (k: string) => { ref: { pid: number } } | undefined } }).manager.get(lid);
+  for (let i = 0; i < 200 && workerOf("stale-1")?.ref.pid === undefined; i++) {
+    await new Promise(r => setTimeout(r, 50));
+  }
+  const pidA = workerOf("stale-1")?.ref.pid;
   // Inject B while A active
   const receipt = await slowEngine.injectMessage({ ...baseB, text: "B", mode: "queue", messageId: "mB" });
   expect(receipt.status).toBe("queued");
@@ -81,7 +86,12 @@ test("A active -> B queue -> C queue -> settle, B in coord-B, C in coord-C", asy
   ].join("\n"));
   const slowEngine = new RuntimeEngine({ workerEntryPath: slowWorkerEntry, permissionMode: "approve-all", stateDir, queueDir, fenceDir, idleTtlMs: 200 });
   const pA = slowEngine.prompt({ ...baseA, text: "A" });
-  await new Promise(r => setTimeout(r, 50));
+  // Same observable barrier as the first case: no fixed-sleep guess.
+  const workerOf = (lid: string): { ref: { pid: number } } | undefined =>
+    (slowEngine as unknown as { manager: { get: (k: string) => { ref: { pid: number } } | undefined } }).manager.get(lid);
+  for (let i = 0; i < 200 && workerOf("stale-1")?.ref.pid === undefined; i++) {
+    await new Promise(r => setTimeout(r, 50));
+  }
   await slowEngine.injectMessage({ ...baseB, text: "B", mode: "queue", messageId: "mB" });
   await slowEngine.injectMessage({ ...baseC, text: "C", mode: "queue", messageId: "mC" });
   const resA = await pA;

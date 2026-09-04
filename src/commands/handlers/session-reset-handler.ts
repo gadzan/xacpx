@@ -56,10 +56,12 @@ export async function handleSessionResetCommand(
         const exists = await ops.checkTransportSession(persistedSession);
         if (!exists) {
           await context.sessions.rollbackSessionRecord(previous.alias, previousSnapshot);
+          await cleanupFreshIncarnation(context, persistedSession);
           return { text: t().misc.sessionResetFailed(previous.alias) };
         }
       } catch (error) {
         await context.sessions.rollbackSessionRecord(previous.alias, previousSnapshot);
+        await cleanupFreshIncarnation(context, persistedSession);
         return renderTransportError(persistedSession, error);
       }
 
@@ -134,5 +136,39 @@ export async function handleSessionResetCommand(
     return { text: t().misc.sessionResetSuccess(persistedSession.alias) };
   } finally {
     releaseAliasOperation();
+  }
+}
+
+/**
+ * Best-effort cleanup of the fresh `/clear` incarnation after the logical
+ * record has been rolled back to the previous snapshot. Scoped strictly to
+ * the fresh transport identity (`fresh.transportSession`, fresh LID): the
+ * previous session keeps its own transport and is never touched. Soft close
+ * only (stop the provisional owner, keep rollout/history on disk) — a
+ * leftover provisional owner would otherwise linger until TTL/shutdown with
+ * no logical owner. Failures are logged, never thrown: the logical rollback
+ * above is the correctness boundary.
+ */
+async function cleanupFreshIncarnation(
+  context: CommandRouterContext,
+  fresh: ResolvedSession,
+): Promise<void> {
+  if (!context.transport.removeSession) return;
+  try {
+    await context.transport.removeSession(fresh);
+    await context.logger.info(
+      "session.reset.cleaned_fresh_incarnation",
+      "cleaned provisional fresh session after reset rollback",
+      { transportSession: fresh.transportSession },
+    );
+  } catch (error) {
+    await context.logger.info(
+      "session.reset.cleanup_fresh_failed",
+      "failed to clean provisional fresh session after reset rollback",
+      {
+        transportSession: fresh.transportSession,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
   }
 }

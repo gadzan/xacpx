@@ -220,10 +220,12 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
     // owner that reuses a stale session identity. By now the ready signal is already out.
     await reapPromise;
     // P1 G6: prime Runtime durable queues ONLY after consumer lock AND
-    // orchestration IPC are ready AND stale-orphan sweep is done. An early prime
-    // in buildApp() or before reap could spawn workers and drain messages before
-    // this process owns the single-consumer lock, before MCP/orchestration is
-    // listening, or while the sweep may still terminate the physical owner.
+    // stale-orphan sweep is done — and orchestration IPC when in daemon mode
+    // (foreground `xacpx run` starts no orchestration server, so supplied-MCP
+    // orchestration calls still need daemon IPC). An early prime in buildApp()
+    // or before reap could spawn workers and drain messages before this
+    // process owns the single-consumer lock or while the sweep may still
+    // terminate the physical owner.
     try {
       const maybePrime = (runtime as unknown as { transport?: { primeRuntimeQueues?: (sessions: unknown[]) => Promise<void> } }).transport;
       const maybeSessions = (runtime as unknown as { sessions?: { listAllResolvedSessions?: () => { transportEngine?: string }[]; listAllResolvedLogicalSessions?: () => { transportEngine?: string }[]; listRuntimeQueueRecoverySessions?: () => { transportEngine?: string }[] } }).sessions;
@@ -242,11 +244,11 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
         const runtimeSessions = listRecovery().filter((s) => s.transportEngine === "runtime");
         if (runtimeSessions.length > 0) {
           await maybePrime.primeRuntimeQueues(runtimeSessions);
-          await runtime.logger.info("bridge.runtime_queue.primed", "primed runtime queues from catalog after lock+IPC+reap ready", { count: runtimeSessions.length }).catch(() => {});
+          await runtime.logger.info("bridge.runtime_queue.primed", "primed runtime queues from catalog after lock+reap ready (IPC in daemon mode)", { count: runtimeSessions.length }).catch(() => {});
         }
       }
     } catch (err) {
-      await runtime.logger.warn("bridge.runtime_queue.prime_failed", "failed to prime runtime queues after lock+IPC+reap", { error: err instanceof Error ? err.message : String(err) }).catch(() => {});
+      await runtime.logger.warn("bridge.runtime_queue.prime_failed", "failed to prime runtime queues after lock+reap", { error: err instanceof Error ? err.message : String(err) }).catch(() => {});
     }
     if (runtime.reconcileOrphans && deps.daemonRuntime) {
       orphanTimer = setIntervalFn(() => runOrphanSweep(runtime!.reconcileOrphans!), 60_000);

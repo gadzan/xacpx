@@ -231,6 +231,112 @@ test("ineligible policy update is rejected when active runtime sessions exist, p
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("reload overlay failure never commits the new permission to the live transport", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-perm-overlay-fail-"));
+  const configPath = join(dir, "config.json");
+  const statePath = join(dir, "state.json");
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      transport: {
+        type: "acpx-bridge",
+        permissionMode: "deny-all",
+        nonInteractivePermissions: "deny",
+      },
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
+    }),
+  );
+  const policyUpdates: PermissionPolicy[] = [];
+  let failOverlays = false;
+  const app = await buildApp(
+    { configPath, statePath },
+    {
+      createBridgeTransport: async () => ({
+        prompt: mock(async () => ({ text: "ok", stopReason: "end_turn" })),
+        updatePermissionPolicy: mock(async (policy: PermissionPolicy) => {
+          policyUpdates.push(policy);
+        }),
+      }),
+      provisionAgentOverlays: async () => {
+        if (failOverlays) throw new Error("overlay boom: malformed acpx config");
+        return { outcomes: {}, raced: false };
+      },
+    },
+  );
+  try {
+    failOverlays = true;
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        transport: {
+          type: "acpx-bridge",
+          permissionMode: "approve-all",
+          nonInteractivePermissions: "deny",
+        },
+        agents: { codex: { driver: "codex" } },
+        workspaces: { backend: { cwd: "/tmp/backend" } },
+      }),
+    );
+    await expect(app.reloadRuntimeConfig?.()).rejects.toThrow(/overlay boom/);
+    // The executor must still run the old policy and the live config must
+    // still say so — no deny-all → approve-all partial commit.
+    expect(policyUpdates.length).toBe(0);
+    const live = viewRouterConfig(app.router).config;
+    expect(live.transport.permissionMode).toBe("deny-all");
+  } finally {
+    await app.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("reload policy-commit failure leaves the live config on the old permission", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-perm-commit-fail-"));
+  const configPath = join(dir, "config.json");
+  const statePath = join(dir, "state.json");
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      transport: {
+        type: "acpx-bridge",
+        permissionMode: "deny-all",
+        nonInteractivePermissions: "deny",
+      },
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
+    }),
+  );
+  const app = await buildApp(
+    { configPath, statePath },
+    {
+      createBridgeTransport: async () => ({
+        prompt: mock(async () => ({ text: "ok", stopReason: "end_turn" })),
+        updatePermissionPolicy: mock(async () => {
+          throw new Error("policy commit boom");
+        }),
+      }),
+    },
+  );
+  try {
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        transport: {
+          type: "acpx-bridge",
+          permissionMode: "approve-all",
+          nonInteractivePermissions: "deny",
+        },
+        agents: { codex: { driver: "codex" } },
+        workspaces: { backend: { cwd: "/tmp/backend" } },
+      }),
+    );
+    await expect(app.reloadRuntimeConfig?.()).rejects.toThrow(/policy commit boom/);
+    const live = viewRouterConfig(app.router).config;
+    expect(live.transport.permissionMode).toBe("deny-all");
+  } finally {
+    await app.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("startup fails closed when state has runtime sessions but config is runtime-ineligible", async () => {
   const dir = await mkdtemp(join(tmpdir(), "xacpx-perm-startup-"));

@@ -4,9 +4,7 @@ import type { HelpTopicMetadata } from "../help/help-types";
 import type { CommandRouterContext, RouterResponse } from "../router-types";
 import { t } from "../../i18n";
 import {
-  isEligibleForRuntime,
-  parseXacpxPermissionPolicy,
-  type XacpxPermissionPolicy,
+  assertEligibleForRuntimePermissionChange,
 } from "../../bridge/engine/runtime/runtime-permission-policy";
 
 export function permissionHelp(): HelpTopicMetadata {
@@ -44,19 +42,13 @@ export async function handlePermissionModeSet(
     permissionMode: mode,
   });
   try {
-    const hasRuntimeSessions = context.sessions?.hasPersistedRuntimeBindings?.() ?? false;
-    if (hasRuntimeSessions) {
-      let parsedPolicy: XacpxPermissionPolicy | undefined;
-      if (updated.transport.permissionPolicy !== undefined) {
-        parsedPolicy = typeof updated.transport.permissionPolicy === "object" && updated.transport.permissionPolicy !== null
-          ? (updated.transport.permissionPolicy as XacpxPermissionPolicy)
-          : parseXacpxPermissionPolicy(updated.transport.permissionPolicy);
-      }
-      const eligible = isEligibleForRuntime(parsedPolicy, updated.transport.nonInteractivePermissions, false);
-      if (!eligible) {
-        throw new Error('cannot apply permission policy: runtime-ineligible policy (nonInteractive="fail" or escalate without interactive) with active runtime sessions');
-      }
-    }
+    assertEligibleForRuntimePermissionChange(
+      context.sessions?.hasPersistedRuntimeBindings?.() ?? false,
+      {
+        permissionPolicy: updated.transport.permissionPolicy,
+        nonInteractivePermissions: updated.transport.nonInteractivePermissions,
+      },
+    );
     await context.transport.updatePermissionPolicy?.(updated.transport);
   } catch (error) {
     // Restore the operator's exact previous raw value (or its absence).
@@ -91,19 +83,13 @@ export async function handlePermissionAutoSet(
     nonInteractivePermissions: policy,
   });
   try {
-    const hasRuntimeSessions = context.sessions?.hasPersistedRuntimeBindings?.() ?? false;
-    if (hasRuntimeSessions) {
-      let parsedPolicy: XacpxPermissionPolicy | undefined;
-      if (updated.transport.permissionPolicy !== undefined) {
-        parsedPolicy = typeof updated.transport.permissionPolicy === "object" && updated.transport.permissionPolicy !== null
-          ? (updated.transport.permissionPolicy as XacpxPermissionPolicy)
-          : parseXacpxPermissionPolicy(updated.transport.permissionPolicy);
-      }
-      const eligible = isEligibleForRuntime(parsedPolicy, updated.transport.nonInteractivePermissions, false);
-      if (!eligible) {
-        throw new Error('cannot apply permission policy: runtime-ineligible policy (nonInteractive="fail" or escalate without interactive) with active runtime sessions');
-      }
-    }
+    assertEligibleForRuntimePermissionChange(
+      context.sessions?.hasPersistedRuntimeBindings?.() ?? false,
+      {
+        permissionPolicy: updated.transport.permissionPolicy,
+        nonInteractivePermissions: updated.transport.nonInteractivePermissions,
+      },
+    );
     await context.transport.updatePermissionPolicy?.(updated.transport);
   } catch (error) {
     // Restore the operator's exact previous raw value (or its absence).

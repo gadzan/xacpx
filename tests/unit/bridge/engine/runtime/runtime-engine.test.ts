@@ -261,6 +261,55 @@ test("G9: usage events never fabricate 0 for unknown token fields (used-only, si
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("G7 plan: Runtime plan-status degrades to a text segment, never a fabricated prompt.plan", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-plan-"));
+  try {
+    // The pinned public acpx/runtime surfaces plan as a tagged status event
+    // with text only ("plan: <first entry>") — no structured entries cross
+    // the boundary, so the engine must not fabricate PlanEntry[].
+    const entry = join(dir, "plan-worker.mjs");
+    await writeFile(
+      entry,
+      [
+        "let buffer='';",
+        "process.stdin.on('data', (d) => {",
+        "  buffer += d.toString();",
+        "  let idx;",
+        "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+        "    if (!line) continue;",
+        "    try { const msg = JSON.parse(line);",
+        "      if (msg.method === 'prompt') {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, event: 'plan', payload: { type: 'status', tag: 'plan', text: 'plan: write the file' } }) + '\\n');",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { result: { status: 'completed' }, finalText: 'done' } }) + '\\n');",
+        "      } else if (msg.method === 'ensure') {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true, sessionKey: msg.params.sessionKey, acpxRecordId: 'rec-plan-1' } }) + '\\n');",
+        "      } else {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "      }",
+        "      if (msg.method === 'shutdown') process.exit(0);",
+        "    } catch {}",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+    const stateDir = join(dir, "state", "sessions");
+    await import("node:fs/promises").then(m=>m.mkdir(stateDir,{recursive:true}));
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", stateDir, queueDir: join(dir, "queue"), fenceDir: join(dir, "fences") });
+    const events: Array<{ type: string; text?: string }> = [];
+    const reply = await engine.prompt({ ...sessionInput, text: "plan me" }, (e) => {
+      events.push(e as { type: string; text?: string });
+    });
+    expect(reply.text).toBe("done");
+    // Honest downgrade: plan text stays visible as an ordinary segment …
+    expect(events.some((e) => e.type === "prompt.segment" && (e.text ?? "").includes("plan: write the file"))).toBe(true);
+    // … but no structured prompt.plan is ever emitted (entries would be fabricated).
+    expect(events.some((e) => e.type === "prompt.plan")).toBe(false);
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
 
 test("WorkerUnavailableError carries the unsupported code", () => {
   expect(new WorkerUnavailableError("nope").code).toBe("RUNTIME_ENGINE_UNSUPPORTED");

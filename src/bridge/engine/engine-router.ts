@@ -12,8 +12,8 @@ import { SessionEngineBinding } from "./session-engine-binding";
  * Affinity is a session property, never a per-request decision: the first
  * session-scoped call resolves and caches the binding; a request whose params
  * declare a DIFFERENT engine than the cached binding is rejected (fail closed,
- * no method-level fallback). Runtime is absent this wave — any runtime-bound
- * session fails loudly with RUNTIME_ENGINE_UNSUPPORTED.
+ * no method-level fallback). When no Runtime engine is wired, any
+ * runtime-bound session fails loudly with RUNTIME_ENGINE_UNSUPPORTED.
  */
 export class EngineRouter implements BridgeEngine {
   readonly kind = "cli" as const;
