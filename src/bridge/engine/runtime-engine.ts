@@ -2321,16 +2321,14 @@ export class RuntimeEngine implements BridgeEngine {
     return unverified;
   }
   /**
-   * Transactional commit: live-update all workers without rotation (PR7).
-   * End states: all-ACKed (new policy live everywhere, outer publishes the
-   * new config — all-new, never mixed); partially rejected with every
-   * rejector verified-terminated (ACKed workers stay warm on the new policy
-   * the outer layer publishes — still all-new); or, when a rejector's
-   * teardown cannot be verified, all-old globals plus the explicit
-   * failed-closed latch (no new turns until restart). The lock is always
-   * released before returning or throwing.
+   * Stage a policy transition: validate, snapshot, mutate globals, fan out
+   * to workers (all-ACKed / benign-partial-compensated / poison forks as
+   * documented on commitPolicyTransition). HOLDS the transition lock on
+   * every path — the caller must settle the downstream commit (CLI engine)
+   * and then call finalizePolicyTransition, or rollbackPolicyTransition on
+   * any failure. Never releases the lock itself.
    */
-  async commitPolicyTransition(policy: {
+  async stagePolicyTransition(policy: {
     permissionMode: PermissionMode;
     nonInteractivePermissions: NonInteractivePermissions;
     permissionPolicy?: string;
@@ -2342,7 +2340,6 @@ export class RuntimeEngine implements BridgeEngine {
         parseXacpxPermissionPolicy(policy.permissionPolicy);
       }
     } catch (err) {
-      this.releasePolicyLock();
       throw new RuntimeError("RUNTIME_INIT_FAILED", `invalid permission policy: ${err instanceof Error ? err.message : String(err)}`);
     }
     const prev = {
@@ -2361,7 +2358,6 @@ export class RuntimeEngine implements BridgeEngine {
     // downstream) can restore exact all-old even after success here.
     this.lastStagedPrevSnapshot = prev;
     if (live.length === 0) {
-      this.releasePolicyLock();
       return;
     }
     const results = await Promise.allSettled(
@@ -2379,7 +2375,6 @@ export class RuntimeEngine implements BridgeEngine {
       return !(r && r.status === "fulfilled" && (r.value as { accepted?: boolean }).accepted === true);
     });
     if (failed.length === 0) {
-      this.releasePolicyLock();
       return;
     }
     // Partial fan-out. An ACKed worker runs the new policy, which stays
@@ -2400,12 +2395,10 @@ export class RuntimeEngine implements BridgeEngine {
       }
     }
     if (failedUnverified.length === 0) {
-      this.releasePolicyLock();
       return;
     }
     const stillUnverified = await this.fenceWorkersOnNewPolicy(prev);
     this.lastStagedPrevSnapshot = undefined;
-    this.releasePolicyLock();
     this.poisonPermissionPlane(
       `policy fan-out failed for ${failed.map((w) => `"${w.ref.logicalSessionId}"`).join(", ")} and teardown is unverified for ${stillUnverified.map((w) => `"${w.ref.logicalSessionId}"`).join(", ")}`,
     );
@@ -2415,12 +2408,38 @@ export class RuntimeEngine implements BridgeEngine {
     );
   }
   /**
-   * Post-commit abort: the Runtime commit succeeded but a downstream commit
+   * Finalize a staged transition: clear the staged snapshot and release the
+   * admission lock, admitting queued turns under the new policy. Called only
+   * after every downstream commit (CLI engine) has succeeded.
+   */
+  finalizePolicyTransition(): void {
+    this.lastStagedPrevSnapshot = undefined;
+    this.releasePolicyLock();
+  }
+  /**
+   * Transactional commit: stage + finalize (PR7 direct path). Equivalent to
+   * the Router's prepare → stage → CLI → finalize with an infallible CLI.
+   */
+  async commitPolicyTransition(policy: {
+    permissionMode: PermissionMode;
+    nonInteractivePermissions: NonInteractivePermissions;
+    permissionPolicy?: string;
+  }): Promise<void> {
+    try {
+      await this.stagePolicyTransition(policy);
+    } catch (error) {
+      this.releasePolicyLock();
+      throw error;
+    }
+    this.finalizePolicyTransition();
+  }
+  /**
+   * Post-stage abort: the Runtime stage succeeded but a downstream commit
    * (CLI engine) failed, so the new policy must never go live anywhere.
-   * Restores the snapshot staged by the last successful commit and fences
-   * every live worker (a worker spawned after the commit also inherited the
-   * unpublished policy). Unverified teardown poisons the plane. Lock-free:
-   * commit already released the lock; abort never re-acquires it.
+   * Runs WITH the transition lock held (no new turn could have executed
+   * under the staged policy): restores the staged snapshot and fences every
+   * live worker (a worker spawned after the stage also inherited the
+   * unpublished policy). Unverified teardown poisons the plane.
    */
   private async abortStagedPolicyTransition(): Promise<void> {
     const prev = this.lastStagedPrevSnapshot;
@@ -2438,11 +2457,11 @@ export class RuntimeEngine implements BridgeEngine {
     }
   }
   /**
-   * Transactional rollback: release the lock without committing when the
-   * CLI update fails BEFORE the Runtime commit (legacy no-commit path), or
-   * fully abort an already-committed Runtime snapshot (post-commit path).
-   * Either way the end state is exact all-old, or — only when a worker
-   * teardown cannot be verified — the explicit failed-closed latch.
+   * Transactional rollback: abort a staged (or committed-then-CLI-failed)
+   * snapshot back to exact all-old and release the admission lock. Runs
+   * with the lock held, so no turn could have executed under the staged
+   * policy. End state is exact all-old — or, only when a worker teardown
+   * cannot be verified, the explicit failed-closed latch.
    */
   async rollbackPolicyTransition(): Promise<void> {
     try {

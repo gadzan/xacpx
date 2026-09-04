@@ -1121,3 +1121,118 @@ test("guarded retire never unlinks a successor generation", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("interleaving: stale retire validated first cannot delete a G2 that takes over mid-flight", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-interleave-retire-"));
+  try {
+    const setup = new RuntimeWorkerFence(dir);
+    await setup.write(record({ generation: "G1", phase: "discharged", pid: 111, bootstrapVerified: true }));
+    // H1 enters guarded retire(G1), validates, then pauses WHILE HOLDING
+    // the namespace lock.
+    let releaseH1!: () => void;
+    const h1Paused = new Promise<void>((resolve) => {
+      releaseH1 = resolve;
+    });
+    let h1Entered = false;
+    const fenceH1 = new RuntimeWorkerFence(dir, {
+      afterValidate: async (op) => {
+        if (op === "retire" && !h1Entered) {
+          h1Entered = true;
+          await h1Paused;
+        }
+      },
+    });
+    const fenceH2 = new RuntimeWorkerFence(dir);
+    let h1Settled = false;
+    const h1 = fenceH1.retire(KEY, "G1").then(
+      () => { h1Settled = true; },
+      (error) => { h1Settled = true; throw error; },
+    );
+    // Wait until H1 is parked inside its critical section.
+    for (let i = 0; i < 200 && !h1Entered; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(h1Entered).toBe(true);
+    // H2 takeover attempt while H1 holds the lock: it must NOT complete —
+    // the same lock serializes the whole namespace, so H2 cannot slip a
+    // delete+create between H1's validation and H1's unlink.
+    let takeoverSettled = false;
+    const takeover = (async () => {
+      await fenceH2.retire(KEY, "G1");
+      await fenceH2.claim(record({ generation: "G2", phase: "claiming", pid: 990002, bootstrapVerified: false }));
+      takeoverSettled = true;
+    })();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(takeoverSettled).toBe(false);
+    expect(h1Settled).toBe(false);
+    // Resume H1: unlinks G1. H2 then proceeds strictly after: retire finds
+    // absent (no-op), claim creates G2. G2 survives; nothing is lost.
+    releaseH1();
+    await h1;
+    await takeover;
+    const read = await setup.read(KEY);
+    expect(read.kind).toBe("present");
+    if (read.kind === "present") {
+      expect(read.record.generation).toBe("G2");
+      expect(read.record.phase).toBe("claiming");
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+test("interleaving: CAS validated first excludes takeover until its rename lands", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-interleave-cas-"));
+  try {
+    const setup = new RuntimeWorkerFence(dir);
+    await setup.claim(record({ generation: "G1", phase: "claiming", pid: 990001, bootstrapVerified: false }));
+    // H1 enters CAS(G1 owned), validates claiming, pauses holding the lock.
+    let releaseH1!: () => void;
+    const h1Paused = new Promise<void>((resolve) => {
+      releaseH1 = resolve;
+    });
+    let h1Entered = false;
+    const fenceH1 = new RuntimeWorkerFence(dir, {
+      afterValidate: async (op) => {
+        if (op === "cas" && !h1Entered) {
+          h1Entered = true;
+          await h1Paused;
+        }
+      },
+    });
+    const fenceH2 = new RuntimeWorkerFence(dir);
+    let h1Settled = false;
+    const h1 = fenceH1
+      .compareAndSwap(KEY, { generation: "G1", from: ["claiming"] }, record({ generation: "G1", phase: "owned", pid: 555 }))
+      .then(
+        () => { h1Settled = true; },
+        (error) => { h1Settled = true; throw error; },
+      );
+    for (let i = 0; i < 200 && !h1Entered; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(h1Entered).toBe(true);
+    // H2 takeover cannot complete while H1 holds the lock: no delete can
+    // land between H1's validation and H1's rename.
+    let takeoverSettled = false;
+    const takeover = (async () => {
+      await fenceH2.retire(KEY, "G1");
+      await fenceH2.claim(record({ generation: "G2", phase: "claiming", pid: 990002, bootstrapVerified: false }));
+      takeoverSettled = true;
+    })();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(takeoverSettled).toBe(false);
+    expect(h1Settled).toBe(false);
+    // Resume H1: rename lands G1/owned. H2 then retires G1 (same generation,
+    // legal) and claims G2. Neither generation overwrote the other.
+    releaseH1();
+    await h1;
+    await takeover;
+    const read = await setup.read(KEY);
+    expect(read.kind).toBe("present");
+    if (read.kind === "present") {
+      expect(read.record.generation).toBe("G2");
+      expect(read.record.phase).toBe("claiming");
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);

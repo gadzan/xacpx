@@ -37,15 +37,27 @@ export interface BridgeEngine {
     nonInteractivePermissions: NonInteractivePermissions;
     permissionPolicy?: string;
   }): Promise<Record<string, never>>;
-  /** Transactional prepare: preflight idle workers + rotate (plan §32). */
+  /** Transactional prepare: preflight idle workers + hold the admission lock (plan §32). */
   preparePolicyTransition?(): Promise<void>;
+  /**
+   * Transactional stage: validate, snapshot, mutate globals, fan out — but
+   * HOLD the admission lock. The caller settles the downstream commit, then
+   * finalizes (success) or rolls back (failure). Never releases the lock.
+   */
+  stagePolicyTransition?(policy: {
+    permissionMode: PermissionMode;
+    nonInteractivePermissions: NonInteractivePermissions;
+    permissionPolicy?: string;
+  }): Promise<void>;
+  /** Transactional finalize: clear the staged snapshot and release the admission lock. */
+  finalizePolicyTransition?(): void;
   /** Transactional commit: snapshot new policy after all engines prepared (plan §32). */
   commitPolicyTransition?(policy: {
     permissionMode: PermissionMode;
     nonInteractivePermissions: NonInteractivePermissions;
     permissionPolicy?: string;
   }): Promise<void>;
-  /** Transactional rollback: abort an already-committed Runtime snapshot back to all-old (or fail-closed latch), else just release the prepare lock. */
+  /** Transactional rollback: abort the staged snapshot to all-old (or fail-closed latch) and release the lock. */
   rollbackPolicyTransition?(): Promise<void>;
   shutdown(): Promise<Record<string, never>>;
 }

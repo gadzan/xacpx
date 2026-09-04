@@ -365,3 +365,145 @@ test("Scenario 4: concurrent prompt waits for active policy transition to comple
     await rm(dir, { recursive: true, force: true });
   }
 }, 15_000);
+test("Scenario 5: prompt stays blocked while staged until the CLI outcome is final; CLI reject sees only OLD", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-perm-isolation-"));
+  try {
+    const entry = join(dir, "echo-worker.mjs");
+    await createPolicyEchoWorker(entry);
+    const engine = new RuntimeEngine({
+      workerEntryPath: entry,
+      permissionMode: "approve-all",
+      nonInteractivePermissions: "deny",
+    });
+    const warm = await engine.prompt({ ...sessionInput, text: "warm" });
+    expect(warm.text).toBe("mode=approve-all;policy=none");
+    // Controllable CLI: stays pending until the test decides the outcome.
+    const cliGate = Promise.withResolvers<Record<string, never>>();
+    const cliCalls: unknown[] = [];
+    const gatedCli = {
+      kind: "cli",
+      async hasSession() { return { exists: false }; },
+      async tailSessionHistory() { return { text: "" }; },
+      async listAgentSessions() { return undefined; },
+      async ensureSession() { return {}; },
+      async resumeAgentSession() { return {}; },
+      async prompt() { return { text: "" }; },
+      async injectMessage() { throw new Error(); },
+      async setMode() { return {}; },
+      async setModel() { return {}; },
+      async getSessionModel() { return { available: [] }; },
+      async setSessionEffort() { return {}; },
+      async getSessionEffort() { return { available: [] }; },
+      async cancel() { return { cancelled: true, message: "" }; },
+      async removeSession() { return {}; },
+      async deleteSession() { return {}; },
+      async freeWarmProcess() { return {}; },
+      async isSessionWarm() { return { warm: false }; },
+      async getAgentSessionId() { return { agentSessionId: undefined }; },
+      async updatePermissionPolicy(policy: unknown) {
+        cliCalls.push(policy);
+        return await cliGate.promise;
+      },
+      async shutdown() { return {}; },
+    } as unknown as BridgeEngine;
+    const router = new EngineRouter(new SessionEngineBinding(), gatedCli, engine);
+    let routerSettled = false;
+    const routerUpdate = router
+      .updatePermissionPolicy({ permissionMode: "deny-all", nonInteractivePermissions: "deny" })
+      .then(
+        () => { routerSettled = true; },
+        (error) => { routerSettled = true; throw error; },
+      );
+    // Wait until the Runtime stage is fully done (workers ACKed NEW) and the
+    // transaction is parked on the pending CLI outcome.
+    for (let i = 0; i < 200 && cliCalls.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(cliCalls.length).toBe(1);
+    // A prompt arriving now must stay blocked: the staged NEW policy has no
+    // downstream verdict yet, so nothing may execute under it.
+    let promptSettled = false;
+    const gatedPrompt = engine
+      .prompt({ ...sessionInput, text: "gated" })
+      .then((res) => { promptSettled = true; return res; });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(promptSettled).toBe(false);
+    expect(routerSettled).toBe(false);
+    // CLI rejects: rollback restores all-old, then the prompt proceeds —
+    // and can only ever observe the OLD policy.
+    cliGate.reject(new Error("CLI down (simulated)"));
+    await expect(routerUpdate).rejects.toThrow(/CLI down/);
+    const res = await gatedPrompt;
+    expect(promptSettled).toBe(true);
+    expect(res.text).toBe("mode=approve-all;policy=none");
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);
+test("Scenario 6: CLI resolve releases the staged prompt under the NEW policy", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-perm-release-"));
+  try {
+    const entry = join(dir, "echo-worker.mjs");
+    await createPolicyEchoWorker(entry);
+    const engine = new RuntimeEngine({
+      workerEntryPath: entry,
+      permissionMode: "approve-all",
+      nonInteractivePermissions: "deny",
+    });
+    const warm = await engine.prompt({ ...sessionInput, text: "warm" });
+    expect(warm.text).toBe("mode=approve-all;policy=none");
+    const cliGate = Promise.withResolvers<Record<string, never>>();
+    const cliCalls: unknown[] = [];
+    const gatedCli = {
+      kind: "cli",
+      async hasSession() { return { exists: false }; },
+      async tailSessionHistory() { return { text: "" }; },
+      async listAgentSessions() { return undefined; },
+      async ensureSession() { return {}; },
+      async resumeAgentSession() { return {}; },
+      async prompt() { return { text: "" }; },
+      async injectMessage() { throw new Error(); },
+      async setMode() { return {}; },
+      async setModel() { return {}; },
+      async getSessionModel() { return { available: [] }; },
+      async setSessionEffort() { return {}; },
+      async getSessionEffort() { return { available: [] }; },
+      async cancel() { return { cancelled: true, message: "" }; },
+      async removeSession() { return {}; },
+      async deleteSession() { return {}; },
+      async freeWarmProcess() { return {}; },
+      async isSessionWarm() { return { warm: false }; },
+      async getAgentSessionId() { return { agentSessionId: undefined }; },
+      async updatePermissionPolicy(policy: unknown) {
+        cliCalls.push(policy);
+        return await cliGate.promise;
+      },
+      async shutdown() { return {}; },
+    } as unknown as BridgeEngine;
+    const router = new EngineRouter(new SessionEngineBinding(), gatedCli, engine);
+    let routerError: unknown = null;
+    const routerUpdate = router
+      .updatePermissionPolicy({ permissionMode: "deny-all", nonInteractivePermissions: "deny" })
+      .catch((error) => { routerError = error; throw error; });
+    for (let i = 0; i < 200 && cliCalls.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(cliCalls.length).toBe(1);
+    let promptSettled = false;
+    const gatedPrompt = engine
+      .prompt({ ...sessionInput, text: "gated" })
+      .then((res) => { promptSettled = true; return res; });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(promptSettled).toBe(false);
+    // CLI resolves: finalize admits the queued prompt under NEW.
+    cliGate.resolve({});
+    await routerUpdate;
+    expect(routerError).toBeNull();
+    const res = await gatedPrompt;
+    expect(res.text).toBe("mode=deny-all;policy=none");
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);

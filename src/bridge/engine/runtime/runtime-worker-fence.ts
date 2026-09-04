@@ -19,22 +19,35 @@ import { mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promis
 import { dirname, join } from "node:path";
 import * as lockfile from "proper-lockfile";
 /**
- * Per-fence-file cross-process mutex for generation CAS. Short bounded
- * retries (fail closed fast): fence critical sections are sub-millisecond,
- * so a contested lock resolves quickly; a deterministically unwritable dir
- * must surface as an error, not burn the 5s test budget in backoff. Stale
- * locks (crashed holder) still expire via proper-lockfile staleness.
+ * Per-fence-file cross-process mutex for generation CAS. Two-phase
+ * acquisition: a single immediate attempt first, so deterministically
+ * unwritable dirs (EACCES) fail fast and the read-only fail-closed tests
+ * keep their timing; only a genuinely contested lock (ELOCKED) waits with
+ * a generous budget (a live holder's critical section is sub-millisecond,
+ * a crashed holder's lock goes stale after 10s). Never fail a legitimate
+ * waiter with ELOCKED.
  */
 async function withFenceLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
-  const release = await lockfile.lock(path, {
-    realpath: false,
-    stale: 10_000,
-    retries: { retries: 6, factor: 1.5, minTimeout: 10, maxTimeout: 80, randomize: true },
-  });
+  const acquire = (retries: number | { retries: number; factor: number; minTimeout: number; maxTimeout: number; randomize: boolean }): Promise<() => Promise<void>> =>
+    lockfile.lock(path, {
+      realpath: false,
+      stale: 10_000,
+      retries,
+    });
+  const run = async (release: () => Promise<void>): Promise<T> => {
+    try {
+      return await fn();
+    } finally {
+      await release();
+    }
+  };
   try {
-    return await fn();
-  } finally {
-    await release();
+    return await run(await acquire(0));
+  } catch (error) {
+    if ((error as { code?: unknown } | null)?.code !== "ELOCKED") throw error;
+    return await run(
+      await acquire({ retries: 200, factor: 1.2, minTimeout: 20, maxTimeout: 200, randomize: true }),
+    );
   }
 }
 export type FencePhase = "claiming" | "owned" | "admitted" | "discharging" | "discharged" | "spooled";
@@ -62,6 +75,15 @@ export type FenceReadResult =
 
 export type FenceDischargeOutcome = "discharged" | "refused";
 export type FenceLiveness = "alive" | "gone" | "unknown";
+/**
+ * Test-only interleaving hooks. Invoked while holding the per-fence
+ * namespace lock, after validation and before mutation, so tests can pin
+ * the exact H1-validated / H2-takeover / H1-resume schedule the production
+ * lock makes impossible to observe otherwise. Never set in production.
+ */
+export interface FenceOpHooks {
+  afterValidate?: (op: "retire" | "cas", key: string) => Promise<void>;
+}
 /**
  * Thrown when a fence mutation finds a different generation (or an illegal
  * predecessor phase) on disk. The caller MUST NOT retry blindly: a successor
@@ -239,9 +261,10 @@ export async function dischargeRuntimeWorkerFence(
 /** Atomic crash-safe fence store: `<root>/<safeKey>.json` (temp + fsync + rename). */
 export class RuntimeWorkerFence {
   readonly root: string;
-
-  constructor(rootDir: string) {
+  private readonly hooks?: FenceOpHooks;
+  constructor(rootDir: string, hooks?: FenceOpHooks) {
     this.root = rootDir;
+    if (hooks) this.hooks = hooks;
   }
 
   private pathFor(logicalSessionId: string): string {
@@ -253,10 +276,18 @@ export class RuntimeWorkerFence {
   /**
    * G2 pre-spawn atomic physical claim: creates the fence file with O_EXCL.
    * Fails with EEXIST if another process/host claimed the fence first.
+   * Holds the per-fence namespace lock across the check+create so a guarded
+   * retire or CAS on the same key cannot interleave a delete between the
+   * absence check and the create.
    */
   async claim(record: RuntimeWorkerFenceRecord): Promise<void> {
     const path = this.pathFor(record.logicalSessionId);
     await this.ensureDir(dirname(path));
+    await withFenceLock(path, async () => {
+      await this.claimLocked(path, record);
+    });
+  }
+  private async claimLocked(path: string, record: RuntimeWorkerFenceRecord): Promise<void> {
     let handle;
     try {
       handle = await open(path, "wx", 0o600);
@@ -373,6 +404,7 @@ export class RuntimeWorkerFence {
           `fence CAS for "${logicalSessionId}" found phase "${current.record.phase}", expected one of [${expected.from.join(", ")}]; refusing overwrite`,
         );
       }
+      await this.hooks?.afterValidate?.("cas", logicalSessionId);
       await this.writeAtomicLocked(path, `${JSON.stringify(record, null, 2)}\n`);
     });
   }
@@ -421,60 +453,52 @@ export class RuntimeWorkerFence {
     });
   }
   /**
-   * Retire a discharged fence. Round 31 High: unlink failures are never
-   * silently swallowed — ENOENT is success, anything else first persists the
-   * terminal "discharged" phase (durable proof outranks the physical file),
-   * then retries once. A still-unremovable file is left as a discharged
-   * record, which the next acquire retires instead of bricking the session.
-   * When `expectedGeneration` is given, a record owned by a different
-   * (successor) generation is never unlinked: StaleFenceGenerationError is
-   * thrown and the successor's fence is left intact.
+   * Retire a fence. The whole read → generation-check → unlink sequence
+   * holds the per-fence namespace lock, so a concurrent guarded retire or
+   * claim on the same key cannot interleave a delete/create between our
+   * validation and our unlink. Round 31 High: unlink failures are never
+   * silently swallowed — ENOENT is success, anything else first persists
+   * the terminal "discharged" phase (durable proof outranks the physical
+   * file), then retries once. A still-unremovable file is left as a
+   * discharged record, which the next acquire retires instead of bricking
+   * the session. When `expectedGeneration` is given, a record owned by a
+   * different (successor) generation is never unlinked:
+   * StaleFenceGenerationError is thrown and the successor's fence is left
+   * intact.
    */
   async retire(logicalSessionId: string, expectedGeneration?: string): Promise<void> {
-    if (expectedGeneration !== undefined) {
+    const path = this.pathFor(logicalSessionId);
+    await withFenceLock(path, async () => {
       const read = await this.read(logicalSessionId);
       if (read.kind === "absent") return;
       if (read.kind === "unreadable") {
-        throw new StaleFenceGenerationError(`guarded retire for "${logicalSessionId}" found an unreadable record; refusing to unlink evidence`);
-      }
-      if (read.record.generation !== expectedGeneration) {
+        if (expectedGeneration !== undefined) {
+          throw new StaleFenceGenerationError(`guarded retire for "${logicalSessionId}" found an unreadable record; refusing to unlink evidence`);
+        }
+      } else if (expectedGeneration !== undefined && read.record.generation !== expectedGeneration) {
         throw new StaleFenceGenerationError(
           `guarded retire for "${logicalSessionId}" found successor generation "${read.record.generation}", expected "${expectedGeneration}"; refusing unlink`,
         );
       }
-    }
-    try {
-      await unlink(this.pathFor(logicalSessionId));
-      return;
-    } catch (error) {
-      if ((error as { code?: unknown } | null)?.code === "ENOENT") return;
-      const read = await this.read(logicalSessionId);
-      if (read.kind === "present" && read.record.phase !== "discharged") {
-        if (expectedGeneration !== undefined && read.record.generation !== expectedGeneration) {
-          throw new StaleFenceGenerationError(
-            `guarded retire for "${logicalSessionId}" found successor generation "${read.record.generation}"; refusing overwrite+unlink`,
-          );
-        }
-        await this.compareAndSwap(
-          logicalSessionId,
-          { generation: read.record.generation, from: ["claiming", "owned", "admitted", "discharging", "spooled"] },
-          { ...read.record, phase: "discharged" },
-        );
-      }
-      if (expectedGeneration !== undefined) {
-        const reread = await this.read(logicalSessionId);
-        if (reread.kind === "present" && reread.record.generation !== expectedGeneration) {
-          throw new StaleFenceGenerationError(
-            `guarded retire for "${logicalSessionId}" found successor generation "${reread.record.generation}"; refusing unlink`,
-          );
-        }
-      }
+      await this.hooks?.afterValidate?.("retire", logicalSessionId);
       try {
-        await unlink(this.pathFor(logicalSessionId));
-      } catch {
-        // Left as a durable discharged record — the next acquire retires it.
+        await unlink(path);
+        return;
+      } catch (error) {
+        if ((error as { code?: unknown } | null)?.code === "ENOENT") return;
+        // Still holding the lock: nobody else could have mutated the file,
+        // so persisting the terminal phase here cannot clobber a successor.
+        const reread = await this.read(logicalSessionId);
+        if (reread.kind === "present" && reread.record.phase !== "discharged") {
+          await this.writeAtomicLocked(path, `${JSON.stringify({ ...reread.record, phase: "discharged" }, null, 2)}\n`);
+        }
+        try {
+          await unlink(path);
+        } catch {
+          // Left as a durable discharged record — the next acquire retires it.
+        }
       }
-    }
+    });
   }
 
   async remove(logicalSessionId: string): Promise<void> {

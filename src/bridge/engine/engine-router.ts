@@ -142,32 +142,43 @@ export class EngineRouter implements BridgeEngine {
     nonInteractivePermissions: NonInteractivePermissions;
     permissionPolicy?: string;
   }): Promise<Record<string, never>> {
-    // Transactional fanout (plan §32), Runtime-first: the CLI commit is
-    // infallible in-memory assignment, but a Runtime worker fan-out can
-    // partially fail — so the Runtime outcome is settled BEFORE anything
-    // uncompensatable happens. End states are only exact all-old or the
-    // explicit Runtime failed-closed latch; never a mixed plane.
+    // Transactional fanout (plan §32), Runtime-first with isolation: the
+    // admission lock is held from prepare until the CLI outcome is final,
+    // so no turn can execute under a policy that later rolls back. End
+    // states are only exact all-old, all-new, or the explicit Runtime
+    // failed-closed latch; never a mixed plane and never an unrollbackable
+    // side effect from a reported-failed transaction.
     // 1. Runtime preflight: verify all workers are idle and hold the
     //    transition lock so no new prompts sneak through. Rejects before
     //    anything commits when busy.
     const hasRuntimePrepare = typeof this.runtime?.preparePolicyTransition === "function";
+    const hasRuntimeStage = typeof this.runtime?.stagePolicyTransition === "function";
     const hasRuntimeCommit = typeof this.runtime?.commitPolicyTransition === "function";
     if (hasRuntimePrepare) {
       await this.runtime!.preparePolicyTransition!();
     }
-    // 2. Runtime commit: fan out to workers with all-old-or-fail-closed
-    // compensation inside. Throws without touching CLI on any abort.
-    if (hasRuntimeCommit) {
+    // 2. Runtime stage: fan out to workers WITHOUT releasing the lock.
+    // Throws without touching CLI on any abort (all-old or fail-closed).
+    if (hasRuntimeStage) {
+      try {
+        await this.runtime!.stagePolicyTransition!(policy);
+      } catch (error) {
+        await this.runtime?.rollbackPolicyTransition?.().catch(() => {});
+        throw error;
+      }
+    } else if (hasRuntimeCommit) {
       await this.runtime!.commitPolicyTransition!(policy);
     }
-    // 3. CLI commit. On failure the already-committed Runtime snapshot is
-    // aborted back to exact all-old (or the fail-closed latch when a
-    // teardown cannot be verified); the CLI error still propagates so the
-    // outer layer never publishes the new config.
+    // 3. CLI commit while the Runtime lock is still held: nothing could
+    // have executed under the staged policy yet. On failure the staged
+    // snapshot aborts back to exact all-old (or the fail-closed latch)
+    // before this method returns, so a reported failure never authorized
+    // a side effect. The CLI error still propagates so the outer layer
+    // never publishes the new config.
     try {
       await this.cli.updatePermissionPolicy(policy);
     } catch (error) {
-      if (hasRuntimeCommit) {
+      if (hasRuntimeStage) {
         try {
           await this.runtime?.rollbackPolicyTransition?.();
         } catch (abortError) {
@@ -175,19 +186,24 @@ export class EngineRouter implements BridgeEngine {
             `CLI permission update failed (${error instanceof Error ? error.message : String(error)}) and Runtime abort left the permission plane failed closed (${abortError instanceof Error ? abortError.message : String(abortError)})`,
           );
         }
-      } else if (hasRuntimePrepare) {
+      } else if (hasRuntimePrepare || hasRuntimeCommit) {
         await this.runtime?.rollbackPolicyTransition?.().catch(() => {});
       }
       throw error;
     }
-    // 4. Legacy engines without a prepare/commit API update in place. When
-    // only prepare exists, its lock is released via rollback afterwards.
-    if (!hasRuntimeCommit && this.runtime) {
-      try {
-        await this.runtime.updatePermissionPolicy(policy);
-      } catch (error) {
-        if (hasRuntimePrepare) await this.runtime?.rollbackPolicyTransition?.().catch(() => {});
-        throw error;
+    // 4. Finalize: clear the staged snapshot and admit queued turns under
+    // the new policy. Legacy engines without a stage API update in place
+    // (releasing a prepare-only lock afterwards).
+    if (hasRuntimeStage && typeof this.runtime?.finalizePolicyTransition === "function") {
+      this.runtime.finalizePolicyTransition();
+    } else if (!hasRuntimeStage && this.runtime) {
+      if (!hasRuntimeCommit) {
+        try {
+          await this.runtime.updatePermissionPolicy(policy);
+        } catch (error) {
+          if (hasRuntimePrepare) await this.runtime?.rollbackPolicyTransition?.().catch(() => {});
+          throw error;
+        }
       }
       if (hasRuntimePrepare) await this.runtime?.rollbackPolicyTransition?.().catch(() => {});
     }
