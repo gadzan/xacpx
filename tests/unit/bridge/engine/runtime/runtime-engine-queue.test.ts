@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, writeFile, readFile, rm, mkdir } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, readdir, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -503,6 +503,35 @@ test("worker binding custom cwd survives restart: prime drains with binding cwd,
     expect(new Set(seenCwds)).toEqual(new Set(["/repos/project-b"]));
     await engine2.shutdown().catch(() => {});
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 30_000);
+test("queue and fence defaults live under the xacpx durable root, never ~/.acpx", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-q-durable-"));
+  // Simulate an acpx home: stateDir ends in "sessions" so the engine accepts
+  // it, but queue/fence must NOT default next to it.
+  const acpxSessionsDir = join(dir, ".acpx", "sessions");
+  await mkdir(acpxSessionsDir, { recursive: true });
+  const durableRoot = join(dir, "xacpx-home", "runtime");
+  const engine = new RuntimeEngine({
+    permissionMode: "approve-all",
+    stateDir: acpxSessionsDir,
+    durableRootDir: durableRoot,
+    idleTtlMs: 50,
+  });
+  try {
+    await engine.injectMessage({
+      ...baseInput,
+      logicalSessionId: "durable-sess-1",
+      text: "hello",
+      mode: "queue",
+      messageId: "m-1",
+    });
+    expect(await readdir(join(durableRoot, "runtime-queue"))).toHaveLength(1);
+    // Nothing xacpx-owned may appear beside the acpx sessions dir.
+    expect(await readdir(join(dir, ".acpx"))).toEqual(["sessions"]);
+  } finally {
+    await engine.shutdown().catch(() => {});
     await rm(dir, { recursive: true, force: true });
   }
 }, 30_000);

@@ -149,14 +149,11 @@ export async function applyRuntimePermissionConfig(
     options;
   try {
     // Transport topology is restart-required: the live transport object is
-    // constructed once in buildApp(). Hot-applying a different type/command
-    // would leave the persisted affinity selector (which sees the new config)
-    // disagreeing with the transport that actually executes sessions.
-    if (isRestartRequiredTransportChange(config.transport, nextConfig.transport)) {
-      throw new Error(
-        "transport topology change (transport.type/command) requires a daemon restart; keeping live config",
-      );
-    }
+    // constructed once in buildApp(). A different type/command on disk is a
+    // pending restart, never a hot apply. replaceRuntimeConfig() below holds
+    // the live type/command while every other field hot-applies, so the
+    // persisted affinity selector (which sees the held live config) cannot
+    // disagree with the transport that actually executes sessions.
     // 1. Parse / validate permission policy if present
     let parsedPolicy: XacpxPermissionPolicy | undefined;
     if (nextConfig.transport.permissionPolicy !== undefined) {
@@ -212,10 +209,20 @@ export async function applyRuntimePermissionConfig(
       });
     }
 
-    // 5. Only then provision overlays and replace runtime config
+    // 5. Only then provision overlays and replace runtime config. When the
+    // disk carries a pending restart topology, the live type/command are held
+    // and every other field hot-applies; surface the pending restart so the
+    // held topology stays visible instead of silently diverging from disk.
     await provisionOverlays(nextConfig);
     setLocale(resolveLocale({ configLanguage: nextConfig.language }));
-    replaceRuntimeConfig(config, nextConfig);
+    const topologyHeld = replaceRuntimeConfig(config, nextConfig);
+    if (topologyHeld) {
+      void logger.warn(
+        "config.topology_pending_restart",
+        "transport topology change on disk is pending a daemon restart; live transport keeps running",
+        { liveType: config.transport.type, diskType: nextConfig.transport.type },
+      );
+    }
     return config;
   } catch (error) {
     void logger.error(
@@ -1722,6 +1729,19 @@ export async function buildApp(
       })
     : undefined;
   sessionWarmth?.start();
+  // Publish a freshly persisted config onto the live in-memory config. A pending
+  // restart topology on disk is held (live transport.type/command keep running)
+  // while every other field hot-applies; the hold is logged so it stays visible.
+  const publishLiveConfig = (updated: AppConfig): void => {
+    if (replaceRuntimeConfig(config, updated)) {
+      void logger.warn(
+        "config.topology_pending_restart",
+        "transport topology change on disk is pending a daemon restart; live transport keeps running",
+        { liveType: config.transport.type, diskType: updated.transport.type },
+      );
+    }
+  };
+
   const control = new ControlService({
     logger,
     agent,
@@ -1766,12 +1786,12 @@ export async function buildApp(
       create: async (name, driver) => {
         const updated = await configStore.upsertAgent(name, { driver });
         await provisionOverlays(updated);
-        replaceRuntimeConfig(config, updated);
+        publishLiveConfig(updated);
         return { name, driver };
       },
       remove: async (name) => {
         const updated = await configStore.removeAgent(name);
-        replaceRuntimeConfig(config, updated);
+        publishLiveConfig(updated);
       },
     },
     workspaces: {
@@ -1789,7 +1809,7 @@ export async function buildApp(
           cwd,
           description,
         );
-        replaceRuntimeConfig(config, updated);
+        publishLiveConfig(updated);
         // Push to every web client (the caller updates optimistically; peers need this).
         // The config watcher won't double-fire: it diffs against in-memory config, which
         // replaceRuntimeConfig already refreshed above, so its later event is a no-op.
@@ -1800,7 +1820,7 @@ export async function buildApp(
       },
       remove: async (name) => {
         const updated = await configStore.removeWorkspace(name);
-        replaceRuntimeConfig(config, updated);
+        publishLiveConfig(updated);
         controlEvents.emit({ type: "workspaces-changed" });
       },
     },
@@ -2124,11 +2144,31 @@ export async function buildApp(
   };
 }
 
-function replaceRuntimeConfig(target: AppConfig, source: AppConfig): void {
+function replaceRuntimeConfig(target: AppConfig, source: AppConfig): boolean {
   // Copy every AppConfig field onto the live config object in place, preserving
   // its identity for holders of the reference. Object.assign stays exhaustive
   // automatically, so a newly added AppConfig field cannot be silently missed.
+  // Returns true when a pending restart topology on disk was HELD: the live
+  // transport.type/command keep their current values while every other field
+  // hot-applies. Callers log the hold so the pending restart stays visible.
+  const liveType = target.transport.type;
+  const liveCommand = target.transport.command;
+  const held = isRestartRequiredTransportChange(
+    { type: liveType, ...(liveCommand !== undefined ? { command: liveCommand } : {}) },
+    source.transport,
+  );
   Object.assign(target, source);
+  if (held) {
+    target.transport = {
+      ...source.transport,
+      type: liveType,
+      ...(liveCommand !== undefined ? { command: liveCommand } : {}),
+    };
+    if (liveCommand === undefined) {
+      delete target.transport.command;
+    }
+  }
+  return held;
 }
 
 function hasPrimeRuntimeQueues(

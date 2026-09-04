@@ -51,6 +51,14 @@ function makeRuntimeSessionState(now: string = new Date().toISOString()) {
     },
   };
 }
+// CommandRouter keeps its live config private; tests reach it through this
+// named structural view (unchecked by necessity: the member is private).
+interface TestRouterConfigView {
+  config: AppConfig;
+  replaceConfig: (updated: AppConfig) => void;
+}
+const viewRouterConfig = (router: unknown): TestRouterConfigView =>
+  router as TestRouterConfigView;
 
 test("external edit to config.json propagates permission policy update to transport and updates live config", async () => {
   const dir = await mkdtemp(join(tmpdir(), "xacpx-perm-watcher-"));
@@ -555,7 +563,7 @@ test("startup fails closed when only a worker binding is runtime and config is i
   expect(await readFile(statePath, "utf8")).toBe(rawState);
   await rm(dir, { recursive: true, force: true });
 });
-test("hot reload rejects transport topology changes and keeps live config", async () => {
+test("hot reload holds pending topology while hot-applying other fields", async () => {
   const dir = await mkdtemp(join(tmpdir(), "xacpx-perm-topology-"));
   const configPath = join(dir, "config.json");
   const statePath = join(dir, "state.json");
@@ -564,7 +572,84 @@ test("hot reload rejects transport topology changes and keeps live config", asyn
     configPath,
     JSON.stringify({
       transport: {
-        type: "acpx-bridge",
+        type: "acpx-cli",
+        command: "acpx",
+        permissionMode: "approve-all",
+        nonInteractivePermissions: "deny",
+      },
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
+    }),
+  );
+  const updatePermissionPolicy = mock(async () => {});
+  const app = await buildApp(
+    { configPath, statePath },
+    {
+      createCliTransport: () => ({
+        prompt: mock(async () => ({ text: "ok", stopReason: "end_turn" })),
+        updatePermissionPolicy,
+      }),
+    },
+  );
+  try {
+    // Disk switches topology AND flips a hot-appliable field. Reload must
+    // succeed, hold the live type/command (pending restart), and still apply
+    // the permission change to the running transport.
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        transport: {
+          type: "acpx-bridge",
+          permissionMode: "deny-all",
+          nonInteractivePermissions: "deny",
+        },
+        agents: { codex: { driver: "codex" } },
+        workspaces: { backend: { cwd: "/tmp/backend" } },
+      }),
+    );
+    await app.reloadRuntimeConfig?.();
+    const routerContext = viewRouterConfig(app.router).config;
+    expect(routerContext.transport.type).toBe("acpx-cli");
+    expect(routerContext.transport.command).toBe("acpx");
+    expect(routerContext.transport.permissionMode).toBe("deny-all");
+    expect(updatePermissionPolicy).toHaveBeenCalled();
+
+    // SECOND WRITE while the restart is still pending: another hot-appliable
+    // field must apply without flipping the held live topology. This goes
+    // through the router's real replaceConfig (the same path /config set and
+    // /pm use), not a test-only Object.assign.
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        transport: {
+          type: "acpx-bridge",
+          permissionMode: "deny-all",
+          nonInteractivePermissions: "fail",
+        },
+        agents: { codex: { driver: "codex" } },
+        workspaces: { backend: { cwd: "/tmp/backend" } },
+      }),
+    );
+    await app.reloadRuntimeConfig?.();
+    expect(routerContext.transport.type).toBe("acpx-cli");
+    expect(routerContext.transport.command).toBe("acpx");
+    expect(routerContext.transport.nonInteractivePermissions).toBe("fail");
+  } finally {
+    await app.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("/config set while a restart is pending holds live topology", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-perm-second-write-"));
+  const configPath = join(dir, "config.json");
+  const statePath = join(dir, "state.json");
+
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      transport: {
+        type: "acpx-cli",
+        command: "acpx",
         permissionMode: "approve-all",
         nonInteractivePermissions: "deny",
       },
@@ -575,38 +660,40 @@ test("hot reload rejects transport topology changes and keeps live config", asyn
   const app = await buildApp(
     { configPath, statePath },
     {
-      createBridgeTransport: async () => ({
+      createCliTransport: () => ({
         prompt: mock(async () => ({ text: "ok", stopReason: "end_turn" })),
         updatePermissionPolicy: mock(async () => {}),
       }),
     },
   );
   try {
-    // Same permission tuple, but a different transport topology: must not
-    // hot-apply (the live transport object cannot be rebuilt in place).
-    await writeFile(
-      configPath,
-      JSON.stringify({
-        transport: {
-          type: "acpx-cli",
-          command: "acpx",
-          permissionMode: "approve-all",
-          nonInteractivePermissions: "deny",
-        },
-        agents: { codex: { driver: "codex" } },
-        workspaces: { backend: { cwd: "/tmp/backend" } },
-      }),
+    const routerView = viewRouterConfig(app.router);
+    const liveConfig = routerView.config;
+    const handlerContext = {
+      sessions: app.sessions,
+      transport: app.transport,
+      config: liveConfig,
+      configStore: app.configStore,
+      logger: app.logger,
+      replaceConfig: (updated: AppConfig) =>
+        routerView.replaceConfig(updated),
+    };
+
+    // First write stages a pending restart topology on disk; the live
+    // transport keeps running CLI.
+    await handleConfigSet(handlerContext, "transport.type", "acpx-bridge");
+    expect(liveConfig.transport.type).toBe("acpx-cli");
+
+    // Second write of a hot-appliable field must apply without rescuing the
+    // pending topology into the live transport.
+    await handleConfigSet(
+      handlerContext,
+      "transport.nonInteractivePermissions",
+      "fail",
     );
-    let threw = false;
-    try {
-      await app.reloadRuntimeConfig?.();
-    } catch (err) {
-      threw = true;
-      expect(String(err)).toContain("requires a daemon restart");
-    }
-    expect(threw).toBe(true);
-    const routerContext = (app.router as unknown as { config: AppConfig }).config;
-    expect(routerContext.transport.type).toBe("acpx-bridge");
+    expect(liveConfig.transport.nonInteractivePermissions).toBe("fail");
+    expect(liveConfig.transport.type).toBe("acpx-cli");
+    expect(liveConfig.transport.command).toBe("acpx");
   } finally {
     await app.dispose();
     await rm(dir, { recursive: true, force: true });

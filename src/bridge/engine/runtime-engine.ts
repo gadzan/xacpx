@@ -371,10 +371,18 @@ export interface RuntimeEngineOptions {
   idleTtlMs?: number;
   /** Optional dependency overrides for tests (e.g. Windows termination / identity mocks). */
   workerClientDeps?: RuntimeWorkerClientDeps;
-  /** Override for the durable worker-ownership fence directory (tests). Defaults to `<state root>/worker-fences`. */
+  /** Override for the durable worker-ownership fence directory (tests). Defaults to `<durable root>/worker-fences`. */
   fenceDir?: string;
-  /** Override for the durable runtime queue directory (tests). Defaults to `<state root>/runtime-queue`. */
+  /** Override for the durable runtime queue directory (tests). Defaults to `<durable root>/runtime-queue`. */
   queueDir?: string;
+  /**
+   * Override for the xacpx-owned durable root that hosts the queue and fence
+   * directories (tests / isolated daemons). Defaults to
+   * `<xacpx home>/runtime` (via coreHomeDir). This is deliberately NOT the
+   * acpx sessions root: queue journals and worker fences are xacpx-private
+   * coordination state and must never live inside upstream acpx internals.
+   */
+  durableRootDir?: string;
   /** Quiescence timeout in ms for deleteSession / worker shutdown (tests). Defaults to 8,000. */
   workerQuiescenceTimeoutMs?: number;
   /**
@@ -638,8 +646,7 @@ export class RuntimeEngine implements BridgeEngine {
     this.idleTtlMs = options.idleTtlMs ?? (options.queueOwnerTtlSeconds !== undefined ? options.queueOwnerTtlSeconds * 1000 : 60_000);
     const entry = options.workerEntryPath ?? defaultWorkerEntryCandidates().find(fileExists);
     if (entry && fileExists(entry)) {
-      const stateDirValid = this.options.stateDir ? this.options.stateDir.split(/[\\/]/).pop() === "sessions" : false;
-      const fenceDir: string | (() => string) | undefined = this.options.fenceDir ?? (stateDirValid ? () => join(this.runtimeStateRoot(), "worker-fences") : undefined);
+      const fenceDir: string | (() => string) | undefined = this.options.fenceDir ?? (() => join(this.durableRoot(), "worker-fences"));
       const permissionDeps: RuntimeWorkerClientDeps = {
         ...(options.workerClientDeps ?? {}),
         resolvePermissionRequest: (payload) => this.handlePermissionRequest(payload),
@@ -653,23 +660,19 @@ export class RuntimeEngine implements BridgeEngine {
     }
     if (options.queueDir) {
       this.queueStore = new RuntimeQueueStore(options.queueDir);
-    } else if (options.stateDir) {
-      try {
-        this.queueStore = new RuntimeQueueStore(join(this.runtimeStateRoot(), "runtime-queue"));
-      } catch {}
     } else {
       try {
-        this.queueStore = new RuntimeQueueStore(join(this.xacpxRuntimeDir(), "runtime-queue"));
+        this.queueStore = new RuntimeQueueStore(join(this.durableRoot(), "runtime-queue"));
       } catch {}
     }
   }
 
-  private workerKey(input: EngineSessionInput): string {
-    return input.logicalSessionId ?? input.name;
+  private durableRoot(): string {
+    return this.options.durableRootDir ?? join(coreHomeDir(homedir()), "runtime");
   }
 
-  private xacpxRuntimeDir(): string {
-    return join(coreHomeDir(homedir()), "runtime");
+  private workerKey(input: EngineSessionInput): string {
+    return input.logicalSessionId ?? input.name;
   }
 
   private sessionsDir(): string {
@@ -678,8 +681,7 @@ export class RuntimeEngine implements BridgeEngine {
 
   private queueDir(): string {
     if (this.options.queueDir) return this.options.queueDir;
-    if (this.options.stateDir) return join(this.runtimeStateRoot(), "runtime-queue");
-    return join(this.xacpxRuntimeDir(), "runtime-queue");
+    return join(this.durableRoot(), "runtime-queue");
   }
 
   private getQueueStore(): RuntimeQueueStore {

@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline";
 import { readFile } from "node:fs/promises";
 import { statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 
@@ -125,19 +125,20 @@ export async function runBridgeMain(): Promise<void> {
     });
     if (workerEntry) {
       const bridgeStateDir = coreEnv("BRIDGE_STATE_DIR") ?? join(resolveAcpxHomeDir(), ".acpx", "sessions");
-      const sessionsDirValid = bridgeStateDir.split(/[\\/]/).pop() === "sessions";
-      const runtimeStateRoot = sessionsDirValid ? dirname(bridgeStateDir) : join(coreHomeDir(homedir()), "runtime");
-      const queueDir = coreEnv("BRIDGE_RUNTIME_QUEUE_DIR") ?? join(runtimeStateRoot, "runtime-queue");
-      const fenceDir = coreEnv("BRIDGE_RUNTIME_FENCE_DIR") ?? join(runtimeStateRoot, "worker-fences");
+      // Queue journals and worker fences are xacpx-private coordination state:
+      // they live under the xacpx-owned durable root, never inside upstream
+      // acpx internals next to the sessions dir.
+      const durableRoot = coreEnv("BRIDGE_RUNTIME_DURABLE_DIR") ?? join(coreHomeDir(homedir()), "runtime");
+      const queueDir = coreEnv("BRIDGE_RUNTIME_QUEUE_DIR") ?? join(durableRoot, "runtime-queue");
+      const fenceDir = coreEnv("BRIDGE_RUNTIME_FENCE_DIR") ?? join(durableRoot, "worker-fences");
       const runtimeEngine = new RuntimeEngine({
         stateDir: bridgeStateDir,
         permissionMode: normalizeBridgePermissionMode(coreEnv("BRIDGE_PERMISSION_MODE")),
         nonInteractivePermissions: normalizeBridgeNonInteractivePermissions(coreEnv("BRIDGE_NON_INTERACTIVE_PERMISSIONS")),
         permissionPolicy: normalizeBridgePermissionPolicy(coreEnv("BRIDGE_PERMISSION_POLICY")),
+        durableRootDir: durableRoot,
         queueDir,
         fenceDir,
-        workerEntryPath: workerEntry,
-        queueOwnerTtlSeconds: normalizeBridgeQueueOwnerTtlSeconds(coreEnv("BRIDGE_QUEUE_OWNER_TTL_SECONDS")),
         onPermissionRequest: async (payload) => {
           try {
             const result = await server.requestDaemon("resolvePermissionRequest", payload as unknown as import("../transport/acpx-bridge/acpx-bridge-protocol").ResolvePermissionRequestParams, { timeoutMs: 8000 });

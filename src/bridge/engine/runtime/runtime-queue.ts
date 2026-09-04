@@ -1,4 +1,4 @@
-import { access, mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { access, mkdir, open, readdir, readFile, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 import { RuntimeError } from "../runtime-engine";
@@ -60,7 +60,7 @@ function validateRecord(parsed: unknown, expectedLogicalSessionId?: string): Run
 
 /**
  * Durable per-logicalSessionId FIFO queue backed by atomic journal files.
- * - Ack only after durable persist (temp -> rename -> readback validate)
+ * - Ack only after durable persist (write tmp -> fsync -> rename -> readback validate)
  * - Corrupt/unreadable -> fail closed (never treat as empty)
  * - Duplicate messageId semantics: same id+same text => idempotent queued receipt, same id+different text => conflict fail-closed
  * - QUEUE_MAX_DEPTH parity with CLI (20)
@@ -122,7 +122,16 @@ export class RuntimeQueueStore {
     const target = queueFilePath(this.queueDir, record.logicalSessionId);
     const tmp = join(this.queueDir, `.${encodeURIComponent(record.logicalSessionId)}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
     try {
-      await writeFile(tmp, JSON.stringify(record, null, 2), "utf8");
+      // fsync the temp file before rename so a crash between write and rename
+      // cannot leave a torn journal behind; the readback then only guards
+      // against non-crash corruption.
+      const handle = await open(tmp, "w");
+      try {
+        await handle.writeFile(JSON.stringify(record, null, 2), "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
       await rename(tmp, target);
       const verify = await readFile(target, "utf8");
       const parsed = JSON.parse(verify) as RuntimeQueueRecord;

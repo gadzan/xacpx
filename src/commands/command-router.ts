@@ -13,6 +13,7 @@ import { parseCommand } from "./parse-command";
 import { authorizeCommandForChat, renderCommandAccessDenied, withEffectiveOwner } from "./command-policy";
 import type { ChatRequestMetadata } from "../weixin/agent/interface";
 import type { PlanEntry, ToolUseEvent } from "../channels/types.js";
+import { isRestartRequiredTransportChange } from "../config/transport-topology.js";
 import { handlePermissionAutoSet, handlePermissionAutoStatus, handlePermissionModeSet, handlePermissionStatus } from "./handlers/permission-handler";
 import { handleConfigSet, handleConfigShow } from "./handlers/config-handler";
 import {
@@ -681,8 +682,32 @@ export class CommandRouter {
       return;
     }
 
-    // Replace reference to prevent mutation of caller's object
-    this.config.transport = { ...updated.transport };
+    // Replace reference to prevent mutation of caller's object. A pending
+    // restart topology on disk is held: the live transport.type/command keep
+    // their current values while every other field hot-applies.
+    const topologyHeld = isRestartRequiredTransportChange(
+      this.config.transport,
+      updated.transport,
+    );
+    const liveType = this.config.transport.type;
+    const liveCommand = this.config.transport.command;
+    this.config.transport = topologyHeld
+      ? {
+          ...updated.transport,
+          type: liveType,
+          ...(liveCommand !== undefined ? { command: liveCommand } : {}),
+        }
+      : { ...updated.transport };
+    if (topologyHeld) {
+      if (liveCommand === undefined) {
+        delete this.config.transport.command;
+      }
+      void this.logger.warn(
+        "config.topology_pending_restart",
+        "transport topology change on disk is pending a daemon restart; live transport keeps running",
+        { liveType, diskType: updated.transport.type },
+      );
+    }
     this.config.logging = { ...updated.logging };
     this.config.channel = {
       ...updated.channel,
