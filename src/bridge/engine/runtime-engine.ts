@@ -630,7 +630,39 @@ export class RuntimeEngine implements BridgeEngine {
   private policyTransitionLock?: Promise<void>;
   private policyLockRelease?: () => void;
   private permissionGeneration = 0;
+  /**
+   * Explicit fail-closed latch for the permission plane. Set when a policy
+   * fan-out observed a worker on the new generation but that worker's
+   * teardown could not be verified: some live process may still enforce the
+   * unpublished policy, so no new turn or transition is admitted until a
+   * daemon restart re-establishes a single known policy. This is the
+   * "explicit global fail-closed" terminal state — never a silent mixed
+   * plane where config says old and a worker enforces new.
+   */
+  private permissionPoisoned?: string;
+  /**
+   * Fail-closed gate for everything that would execute under, or change,
+   * the live permission policy. Delete/remove/freeWarm/shutdown stay
+   * available (recovery paths must never be fenced).
+   */
+  private assertPermissionPlaneHealthy(): void {
+    if (this.permissionPoisoned !== undefined) {
+      throw new RuntimeError(
+        "RUNTIME_WORKER_TEARDOWN_PENDING",
+        `runtime permission plane is failed closed (${this.permissionPoisoned}); restart the daemon to re-establish a single known policy`,
+      );
+    }
+  }
+  private poisonPermissionPlane(reason: string): void {
+    this.permissionPoisoned ??= reason;
+  }
   private queueStore?: RuntimeQueueStore;
+  private lastStagedPrevSnapshot?: {
+    permissionMode: PermissionMode;
+    nonInteractivePermissions: NonInteractivePermissions | undefined;
+    permissionPolicy?: string;
+    generation: number;
+  };
   private readonly draining = new Map<string, Promise<void>>();
   private readonly deleting = new Set<string>();
   private readonly deleteGenerations = new Map<string, number>();
@@ -746,6 +778,7 @@ export class RuntimeEngine implements BridgeEngine {
     text: string,
     options: { onEvent?: (event: EnginePromptStreamEvent) => void; media?: PromptMediaInput; toolEventMode?: string; toolEvents?: boolean },
   ): Promise<{ text: string }> {
+    this.assertPermissionPlaneHealthy();
     const key = this.workerKey(input);
     const toolEventMode = options.toolEventMode ?? (options.toolEvents ? "structured" : "text");
     const renderText = toolEventMode === "text" || toolEventMode === "both";
@@ -1568,8 +1601,8 @@ export class RuntimeEngine implements BridgeEngine {
       }
     }
   }
-
   async injectMessage(input: EngineInjectInput): Promise<{ status: "queued"; modeUsed: "queue"; queueItemId: string }> {
+    this.assertPermissionPlaneHealthy();
     if (this.shuttingDown) throw new RuntimeError("RUNTIME_INIT_FAILED", "runtime engine is shutting down");
     const key = this.workerKey(input);
     const _lifecycleEpochAtEntry = this.deleteGenerations.get(key) ?? 0;
@@ -2215,9 +2248,10 @@ export class RuntimeEngine implements BridgeEngine {
    * 1. Acquire transition lock to serialize updates and block new prompts.
    * 2. Preflight: if ANY session is active/busy, fail closed immediately.
    * 3. Rotation: terminate all idle warm workers so no worker running the old
-   *    policy survives. (Workers exit cleanly without closing the session record).
+  *    policy survives. (Workers exit cleanly without closing the session record).
    */
   async preparePolicyTransition(): Promise<void> {
+    this.assertPermissionPlaneHealthy();
     await this.acquirePolicyLock();
     try {
       // Global fail-closed preflight (plan §32): an active turn or an
@@ -2254,13 +2288,54 @@ export class RuntimeEngine implements BridgeEngine {
       throw error;
     }
   }
-
-  /** Transactional commit: live-update all workers without rotation (PR7). */
+  /**
+   * Fence every worker that may have observed the unpublished new policy:
+   * verified-terminate ALL currently live workers, then restore the previous
+   * global snapshot. Returns the workers whose teardown could NOT be
+   * verified — the caller must poison the permission plane for those.
+   * The transition lock is NOT released here (caller owns it).
+   */
+  private async fenceWorkersOnNewPolicy(
+    prev: { permissionMode: PermissionMode; nonInteractivePermissions: NonInteractivePermissions | undefined; permissionPolicy?: string; generation: number },
+  ): Promise<RuntimeWorkerClient[]> {
+    const targets = this.manager?.workers() ?? [];
+    const termResults = await Promise.allSettled(targets.map((w) => w.terminate()));
+    const unverified: RuntimeWorkerClient[] = [];
+    for (let i = 0; i < targets.length; i++) {
+      const w = targets[i]!;
+      const tr = termResults[i]!;
+      if (tr.status === "fulfilled" && !w.alive && w.lifecycle === "stopped") {
+        await this.manager?.release(w.ref.logicalSessionId, w).catch(() => {});
+      } else {
+        unverified.push(w);
+      }
+    }
+    // Restore the previous global snapshot so nothing subsequently spawned
+    // or resolved can observe the unpublished policy. Generation is restored
+    // too: every witness is dead (verified above) or fenced by the poison
+    // latch below, so no live generation-N+1 observer remains.
+    this.options.permissionMode = prev.permissionMode;
+    this.options.nonInteractivePermissions = prev.nonInteractivePermissions;
+    this.options.permissionPolicy = prev.permissionPolicy;
+    this.permissionGeneration = prev.generation;
+    return unverified;
+  }
+  /**
+   * Transactional commit: live-update all workers without rotation (PR7).
+   * End states: all-ACKed (new policy live everywhere, outer publishes the
+   * new config — all-new, never mixed); partially rejected with every
+   * rejector verified-terminated (ACKed workers stay warm on the new policy
+   * the outer layer publishes — still all-new); or, when a rejector's
+   * teardown cannot be verified, all-old globals plus the explicit
+   * failed-closed latch (no new turns until restart). The lock is always
+   * released before returning or throwing.
+   */
   async commitPolicyTransition(policy: {
     permissionMode: PermissionMode;
     nonInteractivePermissions: NonInteractivePermissions;
     permissionPolicy?: string;
   }): Promise<void> {
+    this.assertPermissionPlaneHealthy();
     try {
       if (policy.permissionPolicy !== undefined) {
         const { parseXacpxPermissionPolicy } = await import("./runtime/runtime-permission-policy");
@@ -2270,12 +2345,21 @@ export class RuntimeEngine implements BridgeEngine {
       this.releasePolicyLock();
       throw new RuntimeError("RUNTIME_INIT_FAILED", `invalid permission policy: ${err instanceof Error ? err.message : String(err)}`);
     }
+    const prev = {
+      permissionMode: this.options.permissionMode,
+      nonInteractivePermissions: this.options.nonInteractivePermissions,
+      ...(this.options.permissionPolicy !== undefined ? { permissionPolicy: this.options.permissionPolicy } : {}),
+      generation: this.permissionGeneration,
+    };
     const nextGeneration = this.permissionGeneration + 1;
     const live = this.manager?.workers() ?? [];
     this.options.permissionMode = policy.permissionMode;
     this.options.nonInteractivePermissions = policy.nonInteractivePermissions;
     this.options.permissionPolicy = policy.permissionPolicy;
     this.permissionGeneration = nextGeneration;
+    // Remember the staged snapshot so a later abort (CLI commit failed
+    // downstream) can restore exact all-old even after success here.
+    this.lastStagedPrevSnapshot = prev;
     if (live.length === 0) {
       this.releasePolicyLock();
       return;
@@ -2290,35 +2374,82 @@ export class RuntimeEngine implements BridgeEngine {
         }),
       ),
     );
-    const failedWorkers: typeof live = [];
-    for (let i = 0; i < live.length; i++) {
+    const failed = live.filter((w, i) => {
       const r = results[i];
-      const w = live[i]!;
-      if (r && r.status === "fulfilled" && (r.value as { accepted?: boolean }).accepted === true) continue;
-      failedWorkers.push(w);
+      return !(r && r.status === "fulfilled" && (r.value as { accepted?: boolean }).accepted === true);
+    });
+    if (failed.length === 0) {
+      this.releasePolicyLock();
+      return;
     }
-    if (failedWorkers.length > 0) {
-      const termResults = await Promise.allSettled(failedWorkers.map((w) => w.terminate()));
-      for (let i = 0; i < failedWorkers.length; i++) {
-        const tr = termResults[i];
-        const w = failedWorkers[i]!;
-        if (tr && tr.status === "fulfilled") {
-          if (w.lifecycle === "stopped") await this.manager?.release(w.ref.logicalSessionId, w).catch(() => {});
-        } else {
-          this.releasePolicyLock();
-          throw new RuntimeError(
-            "RUNTIME_WORKER_TEARDOWN_PENDING",
-            `permission update failed for session "${w.ref.logicalSessionId}" and worker teardown also failed: ${tr && tr.status === "rejected" ? String((tr as PromiseRejectedResult).reason) : "unknown"}`,
-          );
-        }
+    // Partial fan-out. An ACKed worker runs the new policy, which stays
+    // consistent: the outer layer publishes the new config on success, so
+    // the end state is all-new (never mixed). Only workers that REJECTED
+    // the update are fenced here. If any of those cannot be
+    // verified-terminated, an unverified process may enforce the new policy
+    // while everything else must stay old — that forks to the explicit
+    // failed-closed latch below (all-old globals + no new turns).
+    const termResults = await Promise.allSettled(failed.map((w) => w.terminate()));
+    const failedUnverified = failed.filter((w, i) => {
+      const tr = termResults[i];
+      return !(tr && tr.status === "fulfilled" && !w.alive && w.lifecycle === "stopped");
+    });
+    for (const w of failed) {
+      if (!failedUnverified.includes(w)) {
+        await this.manager?.release(w.ref.logicalSessionId, w).catch(() => {});
       }
     }
+    if (failedUnverified.length === 0) {
+      this.releasePolicyLock();
+      return;
+    }
+    const stillUnverified = await this.fenceWorkersOnNewPolicy(prev);
+    this.lastStagedPrevSnapshot = undefined;
     this.releasePolicyLock();
+    this.poisonPermissionPlane(
+      `policy fan-out failed for ${failed.map((w) => `"${w.ref.logicalSessionId}"`).join(", ")} and teardown is unverified for ${stillUnverified.map((w) => `"${w.ref.logicalSessionId}"`).join(", ")}`,
+    );
+    throw new RuntimeError(
+      "RUNTIME_WORKER_TEARDOWN_PENDING",
+      `permission update failed for session(s) ${failed.map((w) => `"${w.ref.logicalSessionId}"`).join(", ")} and worker teardown is unverified; runtime permission plane is failed closed`,
+    );
   }
-
-  /** Transactional rollback: release lock without committing when CLI update fails. */
+  /**
+   * Post-commit abort: the Runtime commit succeeded but a downstream commit
+   * (CLI engine) failed, so the new policy must never go live anywhere.
+   * Restores the snapshot staged by the last successful commit and fences
+   * every live worker (a worker spawned after the commit also inherited the
+   * unpublished policy). Unverified teardown poisons the plane. Lock-free:
+   * commit already released the lock; abort never re-acquires it.
+   */
+  private async abortStagedPolicyTransition(): Promise<void> {
+    const prev = this.lastStagedPrevSnapshot;
+    this.lastStagedPrevSnapshot = undefined;
+    if (!prev) return;
+    const unverified = await this.fenceWorkersOnNewPolicy(prev);
+    if (unverified.length > 0) {
+      this.poisonPermissionPlane(
+        `post-commit abort left unverified teardown for ${unverified.map((w) => `"${w.ref.logicalSessionId}"`).join(", ")}`,
+      );
+      throw new RuntimeError(
+        "RUNTIME_WORKER_TEARDOWN_PENDING",
+        `post-commit abort left unverified worker teardown; runtime permission plane is failed closed`,
+      );
+    }
+  }
+  /**
+   * Transactional rollback: release the lock without committing when the
+   * CLI update fails BEFORE the Runtime commit (legacy no-commit path), or
+   * fully abort an already-committed Runtime snapshot (post-commit path).
+   * Either way the end state is exact all-old, or — only when a worker
+   * teardown cannot be verified — the explicit failed-closed latch.
+   */
   async rollbackPolicyTransition(): Promise<void> {
-    this.releasePolicyLock();
+    try {
+      await this.abortStagedPolicyTransition();
+    } finally {
+      this.releasePolicyLock();
+    }
   }
 
   async updatePermissionPolicy(policy: {

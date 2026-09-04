@@ -7,6 +7,7 @@ import { probeWindowsProcessIdentity } from "../../../../../src/process/windows-
 import {
   RuntimeWorkerFence,
   dischargeRuntimeWorkerFence,
+  StaleFenceGenerationError,
   type RuntimeWorkerFenceRecord,
 } from "../../../../../src/bridge/engine/runtime/runtime-worker-fence";
 import { RuntimeWorkerManager } from "../../../../../src/bridge/engine/runtime/runtime-worker-manager";
@@ -964,3 +965,159 @@ test("crash between spawn and owned durable recovers without unreadable fence", 
     await rm(dir, { recursive: true, force: true });
   }
 }, 20_000);
+test("CAS: a stale generation can never overwrite its successor", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-cas-"));
+  try {
+    const fence = new RuntimeWorkerFence(dir);
+    await fence.claim(record({ generation: "gen-1", phase: "claiming", pid: process.pid, bootstrapVerified: false }));
+    // Happy path: claiming -> owned for the owning generation.
+    await fence.compareAndSwap(
+      KEY,
+      { generation: "gen-1", from: ["claiming"] },
+      record({ generation: "gen-1", phase: "owned", pid: 111 }),
+    );
+    // Successor takes over through the only legal path: retire + fresh claim.
+    await fence.retire(KEY, "gen-1");
+    await fence.claim(record({ generation: "gen-2", phase: "claiming", pid: 999001, bootstrapVerified: false }));
+    // The stalled first claimant wakes up: both its owned and admitted
+    // upgrades must fail closed, never clobbering gen-2.
+    await expect(
+      fence.compareAndSwap(KEY, { generation: "gen-1", from: ["claiming"] }, record({ generation: "gen-1", phase: "owned", pid: 111 })),
+    ).rejects.toBeInstanceOf(StaleFenceGenerationError);
+    await expect(
+      fence.compareAndSwap(KEY, { generation: "gen-1", from: ["owned"] }, record({ generation: "gen-1", phase: "admitted", pid: 111, bootstrapVerified: true })),
+    ).rejects.toBeInstanceOf(StaleFenceGenerationError);
+    const read = await fence.read(KEY);
+    expect(read.kind).toBe("present");
+    if (read.kind === "present") {
+      expect(read.record.generation).toBe("gen-2");
+      expect(read.record.phase).toBe("claiming");
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("CAS: illegal predecessor phase fails closed without touching disk", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-casphase-"));
+  try {
+    const fence = new RuntimeWorkerFence(dir);
+    await fence.claim(record({ generation: "gen-1", phase: "claiming", pid: process.pid, bootstrapVerified: false }));
+    // claiming -> admitted skips owned: rejected even for the right generation.
+    await expect(
+      fence.compareAndSwap(KEY, { generation: "gen-1", from: ["owned"] }, record({ generation: "gen-1", phase: "admitted", pid: 111, bootstrapVerified: true })),
+    ).rejects.toBeInstanceOf(StaleFenceGenerationError);
+    const read = await fence.read(KEY);
+    expect(read.kind).toBe("present");
+    if (read.kind === "present") expect(read.record.phase).toBe("claiming");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("cross-host: stalled H1 loses to H2 takeover and can never overwrite G2", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-xhost-"));
+  try {
+    const fence = new RuntimeWorkerFence(dir);
+    const h1Key = "xhost-sess";
+    const h1 = (overrides: Partial<RuntimeWorkerFenceRecord> = {}): RuntimeWorkerFenceRecord => ({
+      ...record({ logicalSessionId: h1Key, generation: "G1", phase: "claiming", pid: 990001, bootstrapVerified: false }),
+      ...overrides,
+    });
+    // H1 claims, then stalls past the claiming window (claimant is dead).
+    await fence.claim(h1());
+    const g1read = await fence.read(h1Key);
+    if (g1read.kind !== "present") throw new Error("setup failed");
+    const outcome = await dischargeRuntimeWorkerFence(g1read.record, {
+      platform: "linux",
+      probeClaimant: () => "gone",
+      selfDischargeWaitMs: 1,
+      waitMs: async () => {},
+      markDischarged: async (current, from) => {
+        await fence.compareAndSwap(h1Key, { generation: current.generation, from }, { ...current, phase: "discharged" });
+      },
+    });
+    expect(outcome).toBe("discharged");
+    // H2 takes over through retire + fresh claim.
+    await fence.retire(h1Key, "G1");
+    await fence.claim(record({ logicalSessionId: h1Key, generation: "G2", phase: "claiming", pid: 990002, bootstrapVerified: false }));
+    // H1 wakes up and replays its whole upgrade chain: every step fails.
+    await expect(
+      fence.compareAndSwap(h1Key, { generation: "G1", from: ["claiming"] }, h1({ phase: "owned", pid: 555 })),
+    ).rejects.toBeInstanceOf(StaleFenceGenerationError);
+    await expect(
+      fence.compareAndSwap(h1Key, { generation: "G1", from: ["owned"] }, h1({ phase: "admitted", pid: 555, bootstrapVerified: true })),
+    ).rejects.toBeInstanceOf(StaleFenceGenerationError);
+    await expect(fence.retire(h1Key, "G1")).rejects.toBeInstanceOf(StaleFenceGenerationError);
+    const read = await fence.read(h1Key);
+    expect(read.kind).toBe("present");
+    if (read.kind === "present") {
+      expect(read.record.generation).toBe("G2");
+      expect(read.record.phase).toBe("claiming");
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("claiming discharge refuses while the claimant host is still alive", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-claimlive-"));
+  try {
+    const fence = new RuntimeWorkerFence(dir);
+    await fence.claim(record({ generation: "gen-1", phase: "claiming", pid: process.pid, bootstrapVerified: false }));
+    const read = await fence.read(KEY);
+    if (read.kind !== "present") throw new Error("setup failed");
+    let discharged = false;
+    const outcome = await dischargeRuntimeWorkerFence(read.record, {
+      platform: "linux",
+      probeClaimant: () => "alive",
+      selfDischargeWaitMs: 1,
+      waitMs: async () => {},
+      markDischarged: async () => {
+        discharged = true;
+      },
+    });
+    expect(outcome).toBe("refused");
+    expect(discharged).toBe(false);
+    // A slow-but-live claimant's later CAS still succeeds: refusal stole nothing.
+    await fence.compareAndSwap(KEY, { generation: "gen-1", from: ["claiming"] }, record({ generation: "gen-1", phase: "owned", pid: 111 }));
+    const after = await fence.read(KEY);
+    expect(after.kind).toBe("present");
+    if (after.kind === "present") expect(after.record.phase).toBe("owned");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("Windows owned+unverified discharge requires worker-death proof", async () => {
+  const rec = record({ bootstrapVerified: false, creationDate: null });
+  const gone = await dischargeRuntimeWorkerFence(rec, {
+    platform: "win32",
+    probeWorker: () => "gone",
+    waitMs: async () => {},
+  });
+  expect(gone).toBe("discharged");
+  const alive = await dischargeRuntimeWorkerFence(rec, {
+    platform: "win32",
+    probeWorker: () => "alive",
+    selfDischargeWaitMs: 1,
+    waitMs: async () => {},
+    readBack: async () => ({ kind: "present", record: rec }),
+  });
+  expect(alive).toBe("refused");
+  const unknown = await dischargeRuntimeWorkerFence(rec, {
+    platform: "win32",
+    probeWorker: () => "unknown",
+    waitMs: async () => {},
+  });
+  expect(unknown).toBe("refused");
+});
+test("guarded retire never unlinks a successor generation", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-retireguard-"));
+  try {
+    const fence = new RuntimeWorkerFence(dir);
+    await fence.write(record({ generation: "gen-1", phase: "discharged", pid: 111, bootstrapVerified: true }));
+    await expect(fence.retire(KEY, "gen-2")).rejects.toBeInstanceOf(StaleFenceGenerationError);
+    expect((await fence.read(KEY)).kind).toBe("present");
+    await fence.retire(KEY, "gen-1");
+    expect(await fence.read(KEY)).toEqual({ kind: "absent" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

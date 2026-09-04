@@ -32,9 +32,9 @@
  *     remains unverified.
  */
 import { randomUUID } from "node:crypto";
-import { open, readFile, rename } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, basename } from "node:path";
 import { resolveConfigPathForCurrentEnv } from "../../../config/config-path";
+import { RuntimeWorkerFence } from "./runtime-worker-fence";
 import {
   terminateWindowsDescendantsOf,
   type KillOutcome,
@@ -75,39 +75,18 @@ export async function markRuntimeWorkerFence(phase: "discharging" | "discharged"
   const path = process.env.XACPX_WORKER_FENCE;
   const generation = process.env.XACPX_WORKER_FENCE_GENERATION;
   if (!path || !generation) return "stale";
-  let raw: string;
-  try {
-    raw = await readFile(path, "utf8");
-  } catch (error) {
-    if (error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT") {
-      return "stale";
-    }
-    throw error;
-  }
-  const parsedRaw = JSON.parse(raw);
-  if (typeof parsedRaw !== "object" || parsedRaw === null) throw new Error("corrupt fence JSON");
-  const parsed = parsedRaw as Record<string, unknown>; // validated object, generation/kind checked next line
-  if (parsed.generation !== generation || parsed.kind !== "runtime-worker-owner") return "stale";
-  // Crash-window hardening: the host may have died after spawn() but before
-  // the "owned" upgrade durably landed, leaving a pid-less "claiming"
-  // record. A non-claiming phase without a pid reads as "unreadable"
-  // forever (permanent wedge), so the owning worker upgrades the claim with
-  // its own real pid BEFORE transitioning — never manufacture a pid-less
-  // non-claiming fence.
-  if (parsed.phase === "claiming") {
-    parsed.pid = process.pid;
-  }
-  parsed.phase = phase;
-  const tmp = `${path}.tmp-${randomUUID()}`;
-  const handle = await open(tmp, "wx", 0o600);
-  try {
-    await handle.writeFile(`${JSON.stringify(parsed, null, 2)}\n`, "utf8");
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  await rename(tmp, path);
-  return "updated";
+  // Derive the fence key from the file name and mark under the per-file
+  // lock: a successor generation's claim between our read and our rename
+  // can no longer be overwritten — the mark reports "stale" instead and the
+  // worker converges its own tree and exits without touching the fence.
+  // Crash-window hardening is preserved: a pid-less "claiming" record means
+  // the host died after spawn() but before the "owned" upgrade durably
+  // landed, so the owning worker upgrades the claim with its own real pid
+  // BEFORE transitioning — never manufacture a pid-less non-claiming fence.
+  const file = basename(path);
+  const key = file.endsWith(".json") ? decodeURIComponent(file.slice(0, -".json".length)) : file;
+  const fence = new RuntimeWorkerFence(dirname(path));
+  return await fence.markPhase(key, generation, phase, { pid: process.pid });
 }
 /** Default runtime dir for the orphan registry (config-dir based). */
 export function defaultRuntimeDir(): string {

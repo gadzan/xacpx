@@ -142,34 +142,55 @@ export class EngineRouter implements BridgeEngine {
     nonInteractivePermissions: NonInteractivePermissions;
     permissionPolicy?: string;
   }): Promise<Record<string, never>> {
-    // Transactional fanout (plan §32):
-    // 1. Runtime preflight + rotation: verify all workers are idle, terminate
-    //    them, and hold the transition lock so no new prompts sneak through.
-    //    If ANY worker is busy, this rejects immediately (fail closed) before CLI changes.
+    // Transactional fanout (plan §32), Runtime-first: the CLI commit is
+    // infallible in-memory assignment, but a Runtime worker fan-out can
+    // partially fail — so the Runtime outcome is settled BEFORE anything
+    // uncompensatable happens. End states are only exact all-old or the
+    // explicit Runtime failed-closed latch; never a mixed plane.
+    // 1. Runtime preflight: verify all workers are idle and hold the
+    //    transition lock so no new prompts sneak through. Rejects before
+    //    anything commits when busy.
     const hasRuntimePrepare = typeof this.runtime?.preparePolicyTransition === "function";
+    const hasRuntimeCommit = typeof this.runtime?.commitPolicyTransition === "function";
     if (hasRuntimePrepare) {
       await this.runtime!.preparePolicyTransition!();
     }
-
-    // 2. CLI update (must succeed before committing the new Runtime snapshot)
+    // 2. Runtime commit: fan out to workers with all-old-or-fail-closed
+    // compensation inside. Throws without touching CLI on any abort.
+    if (hasRuntimeCommit) {
+      await this.runtime!.commitPolicyTransition!(policy);
+    }
+    // 3. CLI commit. On failure the already-committed Runtime snapshot is
+    // aborted back to exact all-old (or the fail-closed latch when a
+    // teardown cannot be verified); the CLI error still propagates so the
+    // outer layer never publishes the new config.
     try {
       await this.cli.updatePermissionPolicy(policy);
     } catch (error) {
-      // 3. Compensation: if CLI fails, release the Runtime lock WITHOUT
-      //    committing. Old policy remains active; next spawn uses old policy.
-      if (hasRuntimePrepare) {
+      if (hasRuntimeCommit) {
+        try {
+          await this.runtime?.rollbackPolicyTransition?.();
+        } catch (abortError) {
+          throw new Error(
+            `CLI permission update failed (${error instanceof Error ? error.message : String(error)}) and Runtime abort left the permission plane failed closed (${abortError instanceof Error ? abortError.message : String(abortError)})`,
+          );
+        }
+      } else if (hasRuntimePrepare) {
         await this.runtime?.rollbackPolicyTransition?.().catch(() => {});
       }
       throw error;
     }
-
-    // 4. Runtime commit: snapshot new policy into RuntimeEngine and release the lock.
-    if (typeof this.runtime?.commitPolicyTransition === "function") {
-      await this.runtime.commitPolicyTransition(policy);
-    } else if (this.runtime) {
-      await this.runtime.updatePermissionPolicy(policy);
+    // 4. Legacy engines without a prepare/commit API update in place. When
+    // only prepare exists, its lock is released via rollback afterwards.
+    if (!hasRuntimeCommit && this.runtime) {
+      try {
+        await this.runtime.updatePermissionPolicy(policy);
+      } catch (error) {
+        if (hasRuntimePrepare) await this.runtime?.rollbackPolicyTransition?.().catch(() => {});
+        throw error;
+      }
+      if (hasRuntimePrepare) await this.runtime?.rollbackPolicyTransition?.().catch(() => {});
     }
-
     return {};
   }
   async primeRuntimeQueues(sessions: EngineSessionInput[]): Promise<void> {

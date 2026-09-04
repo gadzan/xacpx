@@ -60,7 +60,7 @@ test("new worker after update bootstraps with current generation", async () => {
   } finally { await rm(dir, { recursive: true, force: true }); await new Promise(r => setTimeout(r, 2000)); }
 }, 20_000);
 
-test("partial update: worker A accepts, B fails -> B terminated, no live worker on old generation", async () => {
+test("partial update: worker A accepts, B fails verified -> success, A warm on new, B fenced", async () => {
   const dir = await mkdtemp(join(tmpdir(), "live-partial-"));
   try {
     const entry = join(dir, "w.mjs");
@@ -77,9 +77,45 @@ test("partial update: worker A accepts, B fails -> B terminated, no live worker 
       if (m === "permission.update") throw new Error("injected B fail");
       return origReq(m, p);
     };
+    // B rejects but its teardown verifies: the update succeeds with A warm
+    // on the new policy (which the outer layer publishes — all-new, never
+    // mixed) and B fenced. Only an UNVERIFIED teardown forks to fail-closed.
     await engine.updatePermissionPolicy({ permissionMode: "deny-all", nonInteractivePermissions: "deny" });
     expect((await engine.isSessionWarm(sessA)).warm).toBe(true);
     expect((await engine.isSessionWarm(sessB)).warm).toBe(false);
+    const reply = await engine.prompt({ ...sessA, text: "tA2" });
+    expect(reply.text).toBe("deny-all");
+    await engine.shutdown().catch(() => {});
+    await new Promise(r => setTimeout(r, 2000));
+  } finally { await rm(dir, { recursive: true, force: true }); await new Promise(r => setTimeout(r, 2000)); }
+}, 20_000);
+test("partial update with unverified teardown poisons the plane: all-old globals, explicit fail-closed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "live-poison-"));
+  try {
+    const entry = join(dir, "w.mjs");
+    await echoWorker(entry);
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", nonInteractivePermissions: "deny", fenceDir: join(dir, "fences"), queueDir: join(dir, "queue") });
+    const sessA = { ...base, logicalSessionId: "sessA", name: "sessA" };
+    const sessB = { ...base, logicalSessionId: "sessB", name: "sessB" };
+    await engine.prompt({ ...sessA, text: "tA" });
+    await engine.prompt({ ...sessB, text: "tB" });
+    const mgr = (engine as unknown as { manager: { get: (k:string)=>unknown } }).manager;
+    const workerB = mgr.get("sessB") as unknown as { request: (m:string,p:unknown)=>Promise<unknown>; terminate: ()=>Promise<void> };
+    const origReq = workerB.request.bind(workerB);
+    workerB.request = async (m: string, p: unknown) => {
+      if (m === "permission.update") throw new Error("injected B fail");
+      return origReq(m, p);
+    };
+    workerB.terminate = async () => {
+      throw new Error("injected teardown unverified");
+    };
+    await expect(engine.updatePermissionPolicy({ permissionMode: "deny-all", nonInteractivePermissions: "deny" })).rejects.toMatchObject({
+      code: "RUNTIME_WORKER_TEARDOWN_PENDING",
+    });
+    // Globals restored to all-old, but the plane is explicitly failed
+    // closed: no new turn or transition is admitted (never silent mixed).
+    await expect(engine.prompt({ ...sessA, text: "tA2" })).rejects.toThrow(/failed closed/);
+    await expect(engine.updatePermissionPolicy({ permissionMode: "deny-all", nonInteractivePermissions: "deny" })).rejects.toThrow(/failed closed/);
     await engine.shutdown().catch(() => {});
     await new Promise(r => setTimeout(r, 2000));
   } finally { await rm(dir, { recursive: true, force: true }); await new Promise(r => setTimeout(r, 2000)); }

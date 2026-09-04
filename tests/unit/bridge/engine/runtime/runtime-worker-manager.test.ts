@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { RuntimeWorkerClient } from "../../../../../src/bridge/engine/runtime/runtime-worker-client";
 import { RuntimeWorkerManager, WorkerTeardownPendingError } from "../../../../../src/bridge/engine/runtime/runtime-worker-manager";
-import { RuntimeWorkerFence, type RuntimeWorkerFenceRecord } from "../../../../../src/bridge/engine/runtime/runtime-worker-fence";
+import { RuntimeWorkerFence, StaleFenceGenerationError, type FencePhase, type RuntimeWorkerFenceRecord } from "../../../../../src/bridge/engine/runtime/runtime-worker-fence";
 async function withFakeEntry(run: (entryPath: string) => Promise<void>): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "worker-mgr-"));
   try {
@@ -327,12 +327,12 @@ test("spawn succeeds but owned fence write fails → verified terminate before r
     );
     const fenceDir = join(dir, "worker-fences");
     const passthrough = new RuntimeWorkerFence(fenceDir);
-    const writeSpy = spyOn(RuntimeWorkerFence.prototype, "write").mockImplementation(
-      (record: RuntimeWorkerFenceRecord) => {
+    const writeSpy = spyOn(RuntimeWorkerFence.prototype, "compareAndSwap").mockImplementation(
+      (key: string, expected: { generation: string; from: FencePhase[] }, record: RuntimeWorkerFenceRecord) => {
         if (record.phase === "owned") {
           return Promise.reject(new Error("ENOSPC: simulated owned-write failure"));
         }
-        return passthrough.write(record);
+        return passthrough.compareAndSwap(key, expected, record);
       },
     );
     const origTerminate = RuntimeWorkerClient.prototype.terminate;
@@ -400,12 +400,12 @@ test("owned fence write fails and termination is unverified → retain tracking+
     );
     const fenceDir = join(dir, "worker-fences");
     const passthrough = new RuntimeWorkerFence(fenceDir);
-    const writeSpy = spyOn(RuntimeWorkerFence.prototype, "write").mockImplementation(
-      (record: RuntimeWorkerFenceRecord) => {
+    const writeSpy = spyOn(RuntimeWorkerFence.prototype, "compareAndSwap").mockImplementation(
+      (key: string, expected: { generation: string; from: FencePhase[] }, record: RuntimeWorkerFenceRecord) => {
         if (record.phase === "owned") {
           return Promise.reject(new Error("ENOSPC: simulated owned-write failure"));
         }
-        return passthrough.write(record);
+        return passthrough.compareAndSwap(key, expected, record);
       },
     );
     // Termination cannot be verified: the manager must retain tracking AND
@@ -423,6 +423,56 @@ test("owned fence write fails and termination is unverified → retain tracking+
     } finally {
       writeSpy.mockRestore();
       termSpy.mockRestore();
+      await manager.shutdownAll().catch(() => {});
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);
+test("owned CAS loses to a successor generation → orphan terminated, successor fence never retired", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "worker-mgr-stale-"));
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await writeFile(
+      entry,
+      [
+        "process.stdin.on('data', () => {});",
+        "let buffer='';",
+        "process.stdin.on('data', (d) => {",
+        "  buffer += d.toString();",
+        "  let idx;",
+        "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+        "    if (!line) continue;",
+        "    try { const msg = JSON.parse(line);",
+        "      process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "      if (msg.method === 'shutdown') process.exit(0);",
+        "    } catch {}",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+    const fenceDir = join(dir, "worker-fences");
+    const passthrough = new RuntimeWorkerFence(fenceDir);
+    // A successor takes over between our claim and our owned upgrade.
+    const casSpy = spyOn(RuntimeWorkerFence.prototype, "compareAndSwap").mockImplementation(
+      (key: string, expected: { generation: string; from: FencePhase[] }, record: RuntimeWorkerFenceRecord) => {
+        if (record.phase === "owned") {
+          return Promise.reject(new StaleFenceGenerationError(`fence CAS for "${key}" found successor generation "G2"`));
+        }
+        return passthrough.compareAndSwap(key, expected, record);
+      },
+    );
+    const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+    try {
+      await expect(manager.acquire("stale-sess")).rejects.toThrow(/lost its fence to a successor generation/);
+      // Our claim is still on disk (never retired — it may belong to the
+      // successor flow now) and no untracked worker leaked.
+      const read = await passthrough.read("stale-sess");
+      expect(read.kind).toBe("present");
+      expect(manager.get("stale-sess")).toBeUndefined();
+    } finally {
+      casSpy.mockRestore();
       await manager.shutdownAll().catch(() => {});
     }
   } finally {

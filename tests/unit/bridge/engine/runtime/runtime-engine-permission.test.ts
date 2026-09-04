@@ -261,6 +261,64 @@ test("Scenario 3: CLI update failure causes router to rollback RuntimeEngine wit
     await rm(dir, { recursive: true, force: true });
   }
 }, 15_000);
+test("Scenario 3b: CLI failure after a successful Runtime commit aborts back to all-old", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-perm-abort-"));
+  try {
+    const entry = join(dir, "echo-worker.mjs");
+    await createPolicyEchoWorker(entry);
+    const runtime = new RuntimeEngine({
+      workerEntryPath: entry,
+      permissionMode: "approve-all",
+      nonInteractivePermissions: "deny",
+    });
+    // One live worker so the commit has a real fan-out witness to fence.
+    const before = await runtime.prompt({ ...sessionInput, text: "warm" });
+    expect(before.text).toBe("mode=approve-all;policy=none");
+    const cliCalls: unknown[] = [];
+    const failingCli = {
+      kind: "cli",
+      async hasSession() { return { exists: false }; },
+      async tailSessionHistory() { return { text: "" }; },
+      async listAgentSessions() { return undefined; },
+      async ensureSession() { return {}; },
+      async resumeAgentSession() { return {}; },
+      async prompt() { return { text: "" }; },
+      async injectMessage() { throw new Error(); },
+      async setMode() { return {}; },
+      async setModel() { return {}; },
+      async getSessionModel() { return { available: [] }; },
+      async setSessionEffort() { return {}; },
+      async getSessionEffort() { return { available: [] }; },
+      async cancel() { return { cancelled: true, message: "" }; },
+      async removeSession() { return {}; },
+      async deleteSession() { return {}; },
+      async freeWarmProcess() { return {}; },
+      async isSessionWarm() { return { warm: false }; },
+      async getAgentSessionId() { return { agentSessionId: undefined }; },
+      async updatePermissionPolicy(policy: unknown) {
+        cliCalls.push(policy);
+        throw new Error("CLI permission update disk error (simulated)");
+      },
+      async shutdown() { return {}; },
+    } as unknown as BridgeEngine;
+    const router = new EngineRouter(new SessionEngineBinding(), failingCli, runtime);
+    // Runtime commits first, then CLI throws: the abort must fence the
+    // updated worker and restore all-old, while the CLI error propagates
+    // so the outer layer never publishes the new config.
+    await expect(
+      router.updatePermissionPolicy({
+        permissionMode: "deny-all",
+        nonInteractivePermissions: "deny",
+      }),
+    ).rejects.toThrow(/CLI permission update disk error/);
+    expect(cliCalls.length).toBe(1);
+    const reply = await runtime.prompt({ ...sessionInput, text: "after-abort" });
+    expect(reply.text).toBe("mode=approve-all;policy=none");
+    await runtime.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
 
 test("Scenario 4: concurrent prompt waits for active policy transition to complete", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-perm-conc-"));

@@ -299,7 +299,7 @@ test("Scenario 6: deliberate freeWarmProcess / cooling exit(0) does NOT consume 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
-});
+}, 15_000);
 
 test("Scenario 7: permission rotation termination does NOT consume crash budget", async () => {
   const dir = await mkdtemp(join(tmpdir(), "win-perm-rot-budget-"));

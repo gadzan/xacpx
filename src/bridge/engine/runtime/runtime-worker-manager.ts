@@ -3,9 +3,10 @@ import { statSync } from "node:fs";
 import { join } from "node:path";
 
 import { RuntimeWorkerClient, type WorkerLifecycle, type RuntimeWorkerRef, type RuntimeWorkerClientDeps, WorkerTeardownPendingError } from "./runtime-worker-client";
-import { RuntimeWorkerFence, dischargeRuntimeWorkerFence, type RuntimeWorkerFenceRecord } from "./runtime-worker-fence";
+import { RuntimeWorkerFence, dischargeRuntimeWorkerFence, probeProcessGroupDefault, StaleFenceGenerationError, type FenceLiveness, type RuntimeWorkerFenceRecord } from "./runtime-worker-fence";
 import { defaultRuntimeDir } from "./worker-eof";
 import { OrphanRegistry } from "../../../transport/orphan-registry";
+import { probeWindowsProcessIdentity } from "../../../process/windows-process-tree";
 
 /**
  * Host-side registry of per-session Runtime Workers (plan PR3). One session →
@@ -55,6 +56,55 @@ export class RuntimeWorkerManager {
     if (!this.options.fenceDir) return undefined;
     return typeof this.options.fenceDir === "function" ? this.options.fenceDir() : this.options.fenceDir;
   }
+  /**
+   * Tri-state liveness of a claiming host pid. POSIX: signal 0 on the exact
+   * pid (ESRCH proves gone; EPERM proves the pid exists, so alive).
+   * Windows: handle-stable identity probe; missing proves gone,
+   * unavailable refuses.
+   */
+  private probeClaimantHost = async (pid: number): Promise<FenceLiveness> => {
+    const deps = this.options.clientDeps;
+    if ((deps?.platform ?? process.platform) === "win32" || deps?.probeWindowsIdentity) {
+      try {
+        const res = await (deps?.probeWindowsIdentity ?? probeWindowsProcessIdentity)(pid);
+        if (res.status === "found") return "alive";
+        if (res.status === "missing") return "gone";
+        return "unknown";
+      } catch {
+        return "unknown";
+      }
+    }
+    try {
+      process.kill(pid, 0);
+      return "alive";
+    } catch (error) {
+      const code = (error as { code?: unknown } | null)?.code;
+      if (code === "ESRCH") return "gone";
+      if (code === "EPERM") return "alive";
+      return "unknown";
+    }
+  };
+  /**
+   * Tri-state liveness of a pre-bootstrap worker behind an `owned` fence.
+   * POSIX reuses the process-group probe (detached worker is group leader).
+   * Windows requires the fence's creationDate to disambiguate pid reuse;
+   * without it the answer is unknown (fail closed — the worker's own EOF
+   * gate remains the authority that publishes the terminal phase).
+   */
+  private probeFencedWorker = async (record: RuntimeWorkerFenceRecord): Promise<FenceLiveness> => {
+    const deps = this.options.clientDeps;
+    if ((deps?.platform ?? process.platform) === "win32" || deps?.probeWindowsIdentity) {
+      if (!record.creationDate) return "unknown";
+      try {
+        const res = await (deps?.probeWindowsIdentity ?? probeWindowsProcessIdentity)(record.pid!);
+        if (res.status !== "found") return res.status === "missing" ? "gone" : "unknown";
+        return res.identity.creationDate === record.creationDate ? "alive" : "gone";
+      } catch {
+        return "unknown";
+      }
+    }
+    return (deps?.probeProcessGroup ?? probeProcessGroupDefault)(record.pid!);
+  };
 
   get(key: string): RuntimeWorkerClient | undefined {
     return this.workersByKey.get(key);
@@ -91,7 +141,7 @@ export class RuntimeWorkerManager {
     if (read.kind === "present") {
       if (read.record.phase === "discharged") {
         try {
-          await this.enqueueFenceWrite(physicalFenceKey, () => fence.retire(physicalFenceKey));
+          await this.enqueueFenceWrite(physicalFenceKey, () => fence.retire(physicalFenceKey, read.record.generation));
         } catch {
           // Best-effort retirement of discharged fence
         }
@@ -169,17 +219,21 @@ export class RuntimeWorkerManager {
           await this.options.clientDeps?.onIdentityVerified?.(client);
           if (!this.fence()) return;
           await this.enqueueFenceWrite(logicalSessionId, async () => {
-            await this.fence()!.write({
-              kind: "runtime-worker-owner",
+            await this.fence()!.compareAndSwap(
               logicalSessionId,
-              generation: workerGeneration,
-              pid: client.ref.pid,
-              creationDate: client.ref.creationDate ?? null,
-              bootstrapVerified: true,
-              phase: "admitted",
-              startedAt: client.ref.startedAt,
-              agent: "runtime-worker",
-            });
+              { generation: workerGeneration, from: ["owned"] },
+              {
+                kind: "runtime-worker-owner",
+                logicalSessionId,
+                generation: workerGeneration,
+                pid: client.ref.pid,
+                creationDate: client.ref.creationDate ?? null,
+                bootstrapVerified: true,
+                phase: "admitted",
+                startedAt: client.ref.startedAt,
+                agent: "runtime-worker",
+              },
+            );
             const read = await this.fence()!.read(logicalSessionId);
             if (read.kind !== "present" || read.record.phase !== "admitted" || read.record.creationDate !== client.ref.creationDate) {
               throw new Error(`admitted fence read-back failed (${read.kind === "present" ? `phase=${read.record.phase}` : read.kind})`);
@@ -255,17 +309,21 @@ export class RuntimeWorkerManager {
           onIdentityVerified: async (client) => {
             await this.options.clientDeps?.onIdentityVerified?.(client);
             await this.enqueueFenceWrite(physicalFenceKey, async () => {
-              await this.fence()!.write({
-                kind: "runtime-worker-owner",
-                logicalSessionId: physicalFenceKey,
-                generation: workerGeneration,
-                pid: client.ref.pid,
-                creationDate: client.ref.creationDate ?? null,
-                bootstrapVerified: true,
-                phase: "admitted",
-                startedAt: client.ref.startedAt,
-                agent: "runtime-worker",
-              });
+              await this.fence()!.compareAndSwap(
+                physicalFenceKey,
+                { generation: workerGeneration, from: ["owned"] },
+                {
+                  kind: "runtime-worker-owner",
+                  logicalSessionId: physicalFenceKey,
+                  generation: workerGeneration,
+                  pid: client.ref.pid,
+                  creationDate: client.ref.creationDate ?? null,
+                  bootstrapVerified: true,
+                  phase: "admitted",
+                  startedAt: client.ref.startedAt,
+                  agent: "runtime-worker",
+                },
+              );
               const read = await this.fence()!.read(physicalFenceKey);
               if (read.kind !== "present" || read.record.phase !== "admitted" || read.record.creationDate !== client.ref.creationDate) {
                 throw new Error(`admitted fence read-back failed (${read.kind === "present" ? `phase=${read.record.phase}` : read.kind})`);
@@ -279,18 +337,45 @@ export class RuntimeWorkerManager {
       await this.claimOwnedFence(physicalFenceKey, workerGeneration);
       try {
         worker.spawn();
-        await this.enqueueFenceWrite(physicalFenceKey, () => this.fence()!.write({
-          kind: "runtime-worker-owner",
-          logicalSessionId: physicalFenceKey,
-          generation: workerGeneration,
-          pid: worker.ref.pid,
-          creationDate: worker.ref.creationDate ?? null,
-          bootstrapVerified: worker.isBootstrapVerified,
-          phase: "owned",
-          startedAt: worker.ref.startedAt,
-          agent: "runtime-worker",
-        }));
+        await this.enqueueFenceWrite(physicalFenceKey, () =>
+          this.fence()!.compareAndSwap(
+            physicalFenceKey,
+            { generation: workerGeneration, from: ["claiming"] },
+            {
+              kind: "runtime-worker-owner",
+              logicalSessionId: physicalFenceKey,
+              generation: workerGeneration,
+              pid: worker.ref.pid,
+              creationDate: worker.ref.creationDate ?? null,
+              bootstrapVerified: worker.isBootstrapVerified,
+              phase: "owned",
+              startedAt: worker.ref.startedAt,
+              agent: "runtime-worker",
+            },
+          ),
+        );
       } catch (spawnError) {
+        if (spawnError instanceof StaleFenceGenerationError) {
+          // A successor generation owns the fence now: our claim was recycled
+          // while we were stalled. Our just-spawned worker is an orphan that
+          // must die verified — and the fence must NEVER be touched (no
+          // retire: it belongs to the successor).
+          if (worker.alive) {
+            try {
+              await worker.terminate();
+            } catch {
+              this.workersByKey.set(logicalWorkerKey, worker);
+              this.physicalFenceKeys.set(logicalWorkerKey, physicalFenceKey);
+            }
+            if (worker.alive || worker.lifecycle !== "stopped") {
+              this.workersByKey.set(logicalWorkerKey, worker);
+              this.physicalFenceKeys.set(logicalWorkerKey, physicalFenceKey);
+            }
+          }
+          throw new WorkerTeardownPendingError(
+            `runtime worker for session "${logicalWorkerKey}" lost its fence to a successor generation; orphan worker ${worker.alive ? "retained for teardown" : "terminated"}, refusing replacement spawn`,
+          );
+        }
         if (worker.alive) {
           // spawn() succeeded but the owned-fence upgrade failed afterwards.
           // The worker is alive yet untracked: terminate it with verification
@@ -319,7 +404,7 @@ export class RuntimeWorkerManager {
         this.workersByKey.delete(logicalWorkerKey);
         this.physicalFenceKeys.delete(logicalWorkerKey);
         if (this.fence()) {
-          await this.enqueueFenceWrite(physicalFenceKey, () => this.fence()!.retire(physicalFenceKey)).catch(() => {});
+          await this.enqueueFenceWrite(physicalFenceKey, () => this.fence()!.retire(physicalFenceKey, workerGeneration)).catch(() => {});
         }
         throw spawnError;
       }
@@ -347,7 +432,16 @@ export class RuntimeWorkerManager {
     }
     if (client && client.lifecycle === "stopped") {
       const fence = this.fence();
-      if (fence) await this.enqueueFenceWrite(physicalFenceKey, () => fence.retire(physicalFenceKey));
+      // Guarded by our own generation: never unlink a successor's fence if
+      // ownership moved on while we were stopping. A stale refusal just
+      // means there is nothing of ours left to retire; real I/O errors
+      // still propagate.
+      if (fence) {
+        await this.enqueueFenceWrite(physicalFenceKey, () => fence.retire(physicalFenceKey, client.ref.generation)).catch((error) => {
+          if (error instanceof StaleFenceGenerationError) return;
+          throw error;
+        });
+      }
     }
   }
 
@@ -381,15 +475,22 @@ export class RuntimeWorkerManager {
     const record = read.record;
     // A live, healthy client for this key means the fence is ours and current.
     const existing = this.workersByKey.get(logicalSessionId);
-    if (existing?.alive && existing.lifecycle !== "failed" && existing.lifecycle !== "cooling") return;
     const deps = this.options.clientDeps;
     const outcome = await dischargeRuntimeWorkerFence(record, {
       platform: deps?.platform,
       probeProcessGroup: deps?.probeProcessGroup,
+      probeClaimant: this.probeClaimantHost,
+      probeWorker: this.probeFencedWorker,
       selfDischargeWaitMs: deps?.selfDischargeWaitMs,
       readBack: async () => await fence.read(logicalSessionId),
-      markDischarged: async (current) => {
-        await this.enqueueFenceWrite(logicalSessionId, () => fence.write({ ...current, phase: "discharged" }));
+      markDischarged: async (current, from) => {
+        await this.enqueueFenceWrite(logicalSessionId, () =>
+          fence.compareAndSwap(
+            logicalSessionId,
+            { generation: current.generation, from },
+            { ...current, phase: "discharged" },
+          ),
+        );
       },
       spooledResidualsRemaining: deps?.spooledResidualsRemaining ?? (async (generationId) => {
         // Round 32 Blocking 3 default handshake: residuals whose
@@ -403,7 +504,7 @@ export class RuntimeWorkerManager {
       }),
     });
     if (outcome === "discharged") {
-      await this.enqueueFenceWrite(logicalSessionId, () => fence.retire(logicalSessionId));
+      await this.enqueueFenceWrite(logicalSessionId, () => fence.retire(logicalSessionId, record.generation));
       return;
     }
     // Dead-root recovery is intentionally disabled: historical ParentProcessId
@@ -422,10 +523,14 @@ export class RuntimeWorkerManager {
   private async claimOwnedFence(physicalFenceKey: string, workerGeneration: string): Promise<void> {
     const fence = this.fence();
     if (!fence) return;
+    // The claim names the claimant host pid: a successor host only recycles
+    // this claim after proving the claimant dead (never on timeout alone),
+    // and every later transition is a generation CAS.
     const record: RuntimeWorkerFenceRecord = {
       kind: "runtime-worker-owner",
       logicalSessionId: physicalFenceKey,
       generation: workerGeneration,
+      pid: process.pid,
       bootstrapVerified: false,
       phase: "claiming",
       startedAt: new Date().toISOString(),

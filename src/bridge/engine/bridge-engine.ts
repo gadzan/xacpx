@@ -45,7 +45,7 @@ export interface BridgeEngine {
     nonInteractivePermissions: NonInteractivePermissions;
     permissionPolicy?: string;
   }): Promise<void>;
-  /** Transactional rollback: release locks without committing when CLI update fails. */
+  /** Transactional rollback: abort an already-committed Runtime snapshot back to all-old (or fail-closed latch), else just release the prepare lock. */
   rollbackPolicyTransition?(): Promise<void>;
   shutdown(): Promise<Record<string, never>>;
 }
