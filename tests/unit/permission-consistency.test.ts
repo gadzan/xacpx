@@ -694,6 +694,21 @@ test("/config set while a restart is pending holds live topology", async () => {
     expect(liveConfig.transport.nonInteractivePermissions).toBe("fail");
     expect(liveConfig.transport.type).toBe("acpx-cli");
     expect(liveConfig.transport.command).toBe("acpx");
+    // Reviewer repro: an unrelated language write must hot-apply the language
+    // without rescuing the pending bridge topology into the live transport.
+    await handleConfigSet(handlerContext, "language", "zh");
+    expect(liveConfig.language).toBe("zh");
+    expect(liveConfig.transport.type).toBe("acpx-cli");
+    // Workspace/agent mutations go through a different publisher
+    // (publishLiveConfig in main.ts) but must hold the same pending topology.
+    await app.control.createWorkspace("extra-ws", "/tmp/extra-ws");
+    expect(liveConfig.workspaces["extra-ws"]?.cwd).toBe("/tmp/extra-ws");
+    expect(liveConfig.transport.type).toBe("acpx-cli");
+    expect(liveConfig.transport.command).toBe("acpx");
+    await app.control.createAgent("extra-agent", "codex");
+    expect(liveConfig.agents["extra-agent"]?.driver).toBe("codex");
+    expect(liveConfig.transport.type).toBe("acpx-cli");
+    expect(liveConfig.transport.command).toBe("acpx");
   } finally {
     await app.dispose();
     await rm(dir, { recursive: true, force: true });

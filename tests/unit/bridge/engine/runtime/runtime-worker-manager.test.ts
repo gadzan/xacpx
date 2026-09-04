@@ -375,6 +375,60 @@ test("spawn succeeds but owned fence write fails → verified terminate before r
     await rm(dir, { recursive: true, force: true });
   }
 }, 20_000);
+test("owned fence write fails and termination is unverified → retain tracking+fence as teardown-pending", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "worker-mgr-termfail-"));
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await writeFile(
+      entry,
+      [
+        "process.stdin.on('data', () => {});",
+        "let buffer='';",
+        "process.stdin.on('data', (d) => {",
+        "  buffer += d.toString();",
+        "  let idx;",
+        "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+        "    if (!line) continue;",
+        "    try { const msg = JSON.parse(line);",
+        "      process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "      if (msg.method === 'shutdown') process.exit(0);",
+        "    } catch {}",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+    const fenceDir = join(dir, "worker-fences");
+    const passthrough = new RuntimeWorkerFence(fenceDir);
+    const writeSpy = spyOn(RuntimeWorkerFence.prototype, "write").mockImplementation(
+      (record: RuntimeWorkerFenceRecord) => {
+        if (record.phase === "owned") {
+          return Promise.reject(new Error("ENOSPC: simulated owned-write failure"));
+        }
+        return passthrough.write(record);
+      },
+    );
+    // Termination cannot be verified: the manager must retain tracking AND
+    // the fence (never retire evidence under a live, untracked worker).
+    const termSpy = spyOn(RuntimeWorkerClient.prototype, "terminate").mockImplementation(
+      async function (this: RuntimeWorkerClient) {
+        throw new Error("simulated tree-verification failure");
+      },
+    );
+    const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+    try {
+      await expect(manager.acquire("termfail-sess")).rejects.toThrow(/refusing replacement spawn/);
+      expect(manager.get("termfail-sess")).toBeDefined();
+      expect((await passthrough.read("termfail-sess")).kind).toBe("present");
+    } finally {
+      writeSpy.mockRestore();
+      termSpy.mockRestore();
+      await manager.shutdownAll().catch(() => {});
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);
 test("acquire on a cooling-but-alive fenced worker fails fast, never burns the discharge window", async () => {
   await withFakeEntry(async (entry) => {
     const dir = await mkdtemp(join(tmpdir(), "worker-mgr-cooling-"));

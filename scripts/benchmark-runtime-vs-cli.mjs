@@ -311,7 +311,7 @@ if (hasFailure || process.exitCode !== undefined && process.exitCode !== 0) {
   console.log("- Warm Follow-up: Runtime eliminates per-prompt child process spawning entirely.");
   console.log("- Control Operations: Runtime is in-process and near-instant (<5ms) vs CLI subprocess (>300ms).");
   console.log("- Cold Resume: Runtime reconnects to persistent record without CLI spawn overhead.");
-  console.log("- Queue Persist: Atomic journal fsync ensures durable ack with sub-millisecond p50.");
+  console.log("- Queue Persist: Atomic journal (tmp 0600 + file fsync + rename) ensures process-crash durable ack with sub-millisecond p50.");
   console.log("================================================================================");
   console.log("✅ BENCHMARK GATE PASSED: All scenarios completed with zero workload errors.");
 }

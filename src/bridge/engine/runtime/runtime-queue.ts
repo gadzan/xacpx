@@ -60,7 +60,7 @@ function validateRecord(parsed: unknown, expectedLogicalSessionId?: string): Run
 
 /**
  * Durable per-logicalSessionId FIFO queue backed by atomic journal files.
- * - Ack only after durable persist (write tmp -> fsync -> rename -> readback validate)
+ * - Ack only after durable persist (write tmp 0600 -> file fsync -> rename -> readback validate; process-crash durable, not power-loss)
  * - Corrupt/unreadable -> fail closed (never treat as empty)
  * - Duplicate messageId semantics: same id+same text => idempotent queued receipt, same id+different text => conflict fail-closed
  * - QUEUE_MAX_DEPTH parity with CLI (20)
@@ -71,7 +71,11 @@ export class RuntimeQueueStore {
   constructor(private readonly queueDir: string) {}
 
   private async ensureDir(): Promise<void> {
-    await mkdir(this.queueDir, { recursive: true });
+    // New journals are user-private 0700; pre-existing dirs keep their mode
+    // (production repair happens once at bridge startup via
+    // ensurePrivateRuntimeDir, not on every write, so read-only fault
+    // injection in tests still fails closed).
+    await mkdir(this.queueDir, { recursive: true, mode: 0o700 });
   }
 
   private async withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
@@ -122,10 +126,12 @@ export class RuntimeQueueStore {
     const target = queueFilePath(this.queueDir, record.logicalSessionId);
     const tmp = join(this.queueDir, `.${encodeURIComponent(record.logicalSessionId)}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
     try {
-      // fsync the temp file before rename so a crash between write and rename
-      // cannot leave a torn journal behind; the readback then only guards
-      // against non-crash corruption.
-      const handle = await open(tmp, "w");
+      // fsync the temp file before rename so a process crash between write
+      // and rename cannot leave a torn journal behind; the readback then
+      // only guards against non-crash corruption. 0600 keeps message
+      // journals user-private; durability here is process-crash level
+      // (no directory fsync, so not power-loss durable).
+      const handle = await open(tmp, "wx", 0o600);
       try {
         await handle.writeFile(JSON.stringify(record, null, 2), "utf8");
         await handle.sync();

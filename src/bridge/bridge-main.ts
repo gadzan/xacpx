@@ -23,6 +23,7 @@ import { RuntimeEngine, defaultWorkerEntryCandidates } from "./engine/runtime-en
 import { coreEnv } from "../runtime/core-env";
 import { coreHomeDir } from "../runtime/core-home";
 import { resolveAcpxHomeDir } from "../transport/acpx-session-files";
+import { ensurePrivateRuntimeDir } from "../daemon/private-runtime-dir";
 import { createQueueOwnerAdapterContext } from "../transport/queue-owner-adapter-context";
 import { probeWindowsProcessIdentity } from "../process/windows-process-tree";
 import { setLocale, resolveLocale } from "../i18n";
@@ -114,10 +115,12 @@ export async function runBridgeMain(): Promise<void> {
     });
   const cliEngine = new CliEngine(cliRuntime);
   // Explicit production wiring (Activation-E/F/G): RuntimeEngine is now
-  // instantiated alongside CliEngine and fronted by EngineRouter. Default
-  // remains cli — auto still resolves to cli until G1-G13 green and the PR10
-  // switch flips it. engine=runtime strict mode now works because the
-  // Router has a real RuntimeEngine to route to.
+  // instantiated alongside CliEngine and fronted by EngineRouter.
+  // transport.engine selects the executor: "cli" pins CLI, "runtime" is
+  // strict Runtime, and "auto" picks Runtime for eligible new sessions
+  // (bridge transport + eligible permission/shape/record) else CLI.
+  // engine=runtime strict mode works because the Router has a real
+  // RuntimeEngine to route to.
   let engine: CliEngine | EngineRouter = cliEngine;
   try {
     const workerEntry = defaultWorkerEntryCandidates().find((p) => {
@@ -129,8 +132,21 @@ export async function runBridgeMain(): Promise<void> {
       // they live under the xacpx-owned durable root, never inside upstream
       // acpx internals next to the sessions dir.
       const durableRoot = coreEnv("BRIDGE_RUNTIME_DURABLE_DIR") ?? join(coreHomeDir(homedir()), "runtime");
+      // The durable root holds message journals + ownership fences whose only
+      // access control is filesystem permissions: keep it user-private 0700
+      // like the daemon runtime dir. Best-effort so a chmod failure never
+      // bricks bridge startup; new subdirs are mkdir 0700 on write.
+      try {
+        await ensurePrivateRuntimeDir(durableRoot);
+      } catch {}
       const queueDir = coreEnv("BRIDGE_RUNTIME_QUEUE_DIR") ?? join(durableRoot, "runtime-queue");
       const fenceDir = coreEnv("BRIDGE_RUNTIME_FENCE_DIR") ?? join(durableRoot, "worker-fences");
+      try {
+        await ensurePrivateRuntimeDir(queueDir);
+      } catch {}
+      try {
+        await ensurePrivateRuntimeDir(fenceDir);
+      } catch {}
       const runtimeEngine = new RuntimeEngine({
         stateDir: bridgeStateDir,
         permissionMode: normalizeBridgePermissionMode(coreEnv("BRIDGE_PERMISSION_MODE")),

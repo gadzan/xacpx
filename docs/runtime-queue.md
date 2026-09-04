@@ -4,7 +4,7 @@
 
 - **Location:** `~/.xacpx/runtime/runtime-queue/<logicalSessionId>.json` (via `coreHomeDir(homedir())/runtime`), not `~/.acpx`.
 - **Schema:** `xacpx.runtime-queue.v2` with `logicalSessionId` and `items: RuntimePendingMessage[]` (`messageId`, `text`, `acceptedAt`, `mode: queue|auto`, optional `mcpCoordinatorSession`/`mcpSourceHandle` per head + `mcpIdentityKnown` discriminator). `v1` is legacy (no per-head discriminator) — readable, but any head with `mcpIdentityKnown !== true` (legacy `v1` or pre-discriminator `v2` mixed record after bump) fails closed on drain (`RUNTIME_INIT_FAILED`, keep head; operator clear required — no automatic migration, clearing will also drop subsequent known heads as FIFO cannot skip); new `v2` writes set `mcpIdentityKnown:true` (absence = intentional none).
-- **Atomicity:** `write tmp → fsync → rename → readback validate` (`suspended` included in verify: `items.length` + `!!suspended`); corrupt/unreadable → `RUNTIME_INIT_FAILED` fail-closed, never empty.
+- **Atomicity:** `write tmp (0600) → fsync file → rename → readback validate` (`suspended` included in verify: `items.length` + `!!suspended`); corrupt/unreadable → `RUNTIME_INIT_FAILED` fail-closed, never empty. Durability is process-crash level (no directory fsync, so not power-loss durable).
 - **Idempotency:** same `messageId`+same `text` → idempotent queued receipt; same `messageId`+different `text` → `RUNTIME_QUEUE_CONFLICT` fail-closed.
 - **Limit:** `RUNTIME_QUEUE_MAX_DEPTH=20` → `RUNTIME_QUEUE_OVERFLOW`.
 - **Ack:** only after durable persist; `store.enqueue` holds per-key `withLock` that also gates `deleting`/`coolPending` so delete and enqueue share an atomic boundary.

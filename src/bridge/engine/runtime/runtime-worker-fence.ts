@@ -194,7 +194,7 @@ export class RuntimeWorkerFence {
    */
   async claim(record: RuntimeWorkerFenceRecord): Promise<void> {
     const path = this.pathFor(record.logicalSessionId);
-    await mkdir(dirname(path), { recursive: true });
+    await this.ensureDir(dirname(path));
     let handle;
     try {
       handle = await open(path, "wx", 0o600);
@@ -224,7 +224,7 @@ export class RuntimeWorkerFence {
 
   async write(record: RuntimeWorkerFenceRecord): Promise<void> {
     const path = this.pathFor(record.logicalSessionId);
-    await mkdir(dirname(path), { recursive: true });
+    await this.ensureDir(dirname(path));
     const tmp = `${path}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const handle = await open(tmp, "wx", 0o600);
     try {
@@ -304,5 +304,11 @@ export class RuntimeWorkerFence {
     } catch {
       // Removal failure is handled by retire(); kept for direct callers.
     }
+  }
+  private async ensureDir(dir: string): Promise<void> {
+    // New fence dirs are user-private 0700; pre-existing dirs keep their
+    // mode (production repair happens once at bridge startup, not on every
+    // write, so read-only fault injection still fails closed).
+    await mkdir(dir, { recursive: true, mode: 0o700 });
   }
 }
