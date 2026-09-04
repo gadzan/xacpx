@@ -375,3 +375,26 @@ test("spawn succeeds but owned fence write fails → verified terminate before r
     await rm(dir, { recursive: true, force: true });
   }
 }, 20_000);
+test("acquire on a cooling-but-alive fenced worker fails fast, never burns the discharge window", async () => {
+  await withFakeEntry(async (entry) => {
+    const dir = await mkdtemp(join(tmpdir(), "worker-mgr-cooling-"));
+    try {
+      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir: join(dir, "fences") });
+      try {
+        const worker = manager.ensureWorker("cooling-1");
+        expect(worker.alive).toBe(true);
+        worker.lifecycle = "cooling";
+        // Must reject with the teardown-pending contract immediately: the
+        // fence is ours, so discharging it would wait out the 90s
+        // self-discharge window only to refuse. (No timing assert: a
+        // regression hangs past this test's timeout and fails that way.)
+        await expect(manager.acquire("cooling-1")).rejects.toThrow(WorkerTeardownPendingError);
+        expect(manager.get("cooling-1")).toBe(worker);
+      } finally {
+        await manager.shutdownAll().catch(() => {});
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}, 15_000);

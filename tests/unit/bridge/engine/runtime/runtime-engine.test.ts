@@ -111,7 +111,7 @@ test("injectMessage queue/auto is queued, steer/interrupt remain unsupported", a
     await withFakeWorker(entry);
     const stateDir = join(dir, "state", "sessions");
     await mkdir(stateDir, { recursive: true });
-    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", stateDir });
+    const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", stateDir, durableRootDir: join(dir, "durable") });
     const q = await engine.injectMessage({ ...sessionInput, text: "x", mode: "queue", messageId: "m1" });
     expect(q.status).toBe("queued");
     expect(q.modeUsed).toBe("queue");
@@ -376,7 +376,7 @@ test("native resume followed by normal prompt keeps ONE AcpRuntime owner", async
       ].join("\n"),
     );
 
-    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all" });
+    const engine = new RuntimeEngine({ workerEntryPath: entry, stateDir: sessionsDir, permissionMode: "approve-all", durableRootDir: join(dir, "durable") });
 
     // 1. resume native session X
     await engine.resumeAgentSession({ ...sessionInput, agentSessionId: "native-session-X" });
@@ -915,6 +915,7 @@ test("G4: hard delete on dead+failed unverified owner fails closed and does not 
       workerEntryPath: entry,
       stateDir: sessionsDir,
       permissionMode: "approve-all",
+      durableRootDir: join(dir, "durable"),
       // Crash cleanup always fails: old owner is retained in the manager.
       workerClientDeps: {
         terminateProcessTree: async () => {
@@ -959,6 +960,7 @@ test("TTL success then engine.shutdown() is idempotent and succeeds (Windows reg
       workerEntryPath: entry,
       permissionMode: "approve-all",
       idleTtlMs: 50,
+      durableRootDir: join(dir, "durable"),
       workerClientDeps: {
         platform: "win32",
         probeWindowsIdentity: async (pid) => ({ status: "found", identity: { pid, creationDate: "133500000000000000" } }),

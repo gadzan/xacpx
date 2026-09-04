@@ -215,6 +215,15 @@ export class RuntimeWorkerManager {
       ) {
         return existing;
       }
+      // Our own worker is mid-teardown (cooling) but still alive: its fence is
+      // ours, so discharging it would burn the self-discharge window only to
+      // refuse. Fail fast like the unfenced path instead (same error contract
+      // as ensureWorkerWithStatus).
+      if (existing?.alive && existing.lifecycle === "cooling") {
+        throw new WorkerTeardownPendingError(
+          `runtime worker for session "${logicalWorkerKey}" is still shutting down (lifecycle: cooling); refusing duplicate worker spawn`,
+        );
+      }
     }
     await this.dischargeStaleFence(physicalFenceKey);
     if (this.fence()) {

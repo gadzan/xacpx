@@ -48,6 +48,7 @@ test("packaged build smoke: RuntimeEngine compiles and runs worker entry on-dema
       stateDir: sessionsDir,
       permissionMode: "approve-all",
       nonInteractivePermissions: "deny",
+      durableRootDir: join(dir, "durable"),
     });
 
     const sessionInput = {
@@ -84,10 +85,10 @@ test("WorkerTeardownPendingError surfaces exact error code through withWorker", 
         "process.stdin.on('data', () => {});",
       ].join("\n"),
     );
-
     const engine = new RuntimeEngine({
       workerEntryPath: entry,
       permissionMode: "approve-all",
+      durableRootDir: join(dir, "durable"),
     });
 
     const sessionInput = {
