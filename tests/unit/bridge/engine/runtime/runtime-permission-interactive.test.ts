@@ -338,6 +338,56 @@ rl.on("line", (line) => {
     await rm(dir, { recursive: true, force: true });
   }
 }, 30_000);
+test("cancel on a warm idle worker reports cancelled:false and sends no session/cancel", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-cancel-idle-"));
+  const stateDir = join(dir, "state", "sessions");
+  const queueDir = join(dir, "queue");
+  const fenceDir = join(dir, "fences");
+  const workerFile = await buildWorker(dir);
+  const cancelSeenFile = join(dir, "cancel-seen.json");
+  // Mock agent: completes prompts immediately and records any session/cancel.
+  const agentFile = join(dir, "mock-idle-agent.mjs");
+  await writeFile(
+    agentFile,
+    `
+import { createInterface } from "node:readline";
+import { writeFileSync } from "node:fs";
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+function respond(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\\n"); }
+rl.on("line", (line) => {
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.method === "initialize") respond(msg.id, { protocolVersion: 1, authMethods: [], agentCapabilities: { loadSession: true, promptCapabilities: {}, sessionCapabilities: { new:{}, load:{}, resume:{}, close:{}, list:{}, cancel:{} } } });
+  else if (msg.method === "session/new" || msg.method === "session/load" || msg.method === "session/resume") respond(msg.id, { sessionId: "mock-sess" });
+  else if (msg.method === "session/prompt") respond(msg.id, { sessionId: "mock-sess", stopReason: "end_turn" });
+  else if (msg.method === "session/cancel") writeFileSync(${JSON.stringify(cancelSeenFile)}, JSON.stringify({ sessionId: msg.params?.sessionId ?? null }));
+  else if (msg.id !== undefined) respond(msg.id, {});
+});
+`,
+  );
+  const base = { agent: "mock", acpxAgent: "mock", agentArgv: [process.execPath, agentFile], cwd: "/tmp", name: "cancel-test", logicalSessionId: "cancel-idle-1" };
+  const engine = new RuntimeEngine({
+    workerEntryPath: workerFile,
+    stateDir,
+    queueDir,
+    fenceDir,
+    permissionMode: "approve-all",
+  });
+  try {
+    await engine.prompt({ ...base, text: "hello" });
+    // Worker is warm but the turn is over: no active turn exists, so cancel
+    // must report false and never reach the agent.
+    const cancelRes = await engine.cancel({ ...base });
+    expect(cancelRes.cancelled).toBe(false);
+    let cancelSeen: string | null = null;
+    try {
+      cancelSeen = await readFile(cancelSeenFile, "utf8");
+    } catch {}
+    expect(cancelSeen).toBeNull();
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 30_000);
 
 test("elicitation cancel decision resolves immediately through the worker dispatch (no 30s hang)", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-elicit-cancel-"));

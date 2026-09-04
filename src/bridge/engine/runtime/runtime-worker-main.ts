@@ -411,9 +411,12 @@ async function dispatch(request: RuntimeWorkerRequest): Promise<void> {
         break;
       }
       case "cancel": {
-        if (state.activeTurn) {
-          await state.activeTurn.cancel();
+        const turn = state.activeTurn;
+        if (!turn) {
+          respond({ id, ok: true, result: { cancelled: false } });
+          break;
         }
+        await turn.cancel();
         respond({ id, ok: true, result: { cancelled: true } });
         break;
       }
