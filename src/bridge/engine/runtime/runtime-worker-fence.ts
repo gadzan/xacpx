@@ -453,29 +453,50 @@ export class RuntimeWorkerFence {
     });
   }
   /**
-   * Retire a fence. The whole read → generation-check → unlink sequence
-   * holds the per-fence namespace lock, so a concurrent guarded retire or
-   * claim on the same key cannot interleave a delete/create between our
-   * validation and our unlink. Round 31 High: unlink failures are never
-   * silently swallowed — ENOENT is success, anything else first persists
-   * the terminal "discharged" phase (durable proof outranks the physical
-   * file), then retries once. A still-unremovable file is left as a
-   * discharged record, which the next acquire retires instead of bricking
-   * the session. When `expectedGeneration` is given, a record owned by a
-   * different (successor) generation is never unlinked:
+   * Retire a fence. Pre-read first WITHOUT the namespace lock: an absent
+   * fence (including a never-materialized fence dir) is idempotent success
+   * and must not create the fence dir or lock files; an unreadable fence
+   * fails closed without touching evidence. Only a present record enters
+   * the per-fence namespace lock, where the whole re-read →
+   * generation-check → unlink sequence holds the lock, so a concurrent
+   * guarded retire or claim on the same key cannot interleave a
+   * delete/create between our validation and our unlink. Round 31 High:
+   * unlink failures are never silently swallowed — ENOENT is success,
+   * anything else first persists the terminal "discharged" phase (durable
+   * proof outranks the physical file), then retries once. A
+   * still-unremovable file is left as a discharged record, which the next
+   * acquire retires instead of bricking the session. When
+   * `expectedGeneration` is given, a record owned by a different
+   * (successor) generation is never unlinked:
    * StaleFenceGenerationError is thrown and the successor's fence is left
    * intact.
    */
   async retire(logicalSessionId: string, expectedGeneration?: string): Promise<void> {
     const path = this.pathFor(logicalSessionId);
+    // Pre-read gate (no lock, no dir creation): absent (even with the fence
+    // dir itself missing) is idempotent success. A G2 claimed between this
+    // pre-read and our return is safe — we return without touching anything.
+    // Unreadable fails closed: never unlink evidence we cannot attribute.
+    const pre = await this.read(logicalSessionId);
+    if (pre.kind === "absent") return;
+    if (pre.kind === "unreadable") {
+      if (expectedGeneration !== undefined) {
+        throw new StaleFenceGenerationError(`guarded retire for "${logicalSessionId}" found an unreadable record (${pre.reason}); refusing to unlink evidence`);
+      }
+      throw new Error(`retire for "${logicalSessionId}" found an unreadable record (${pre.reason}); refusing to unlink evidence`);
+    }
     await withFenceLock(path, async () => {
+      // Re-read under the lock: a successor takeover between pre-read and
+      // lock acquisition is caught by the generation check below.
       const read = await this.read(logicalSessionId);
       if (read.kind === "absent") return;
       if (read.kind === "unreadable") {
         if (expectedGeneration !== undefined) {
-          throw new StaleFenceGenerationError(`guarded retire for "${logicalSessionId}" found an unreadable record; refusing to unlink evidence`);
+          throw new StaleFenceGenerationError(`guarded retire for "${logicalSessionId}" found an unreadable record (${read.reason}); refusing to unlink evidence`);
         }
-      } else if (expectedGeneration !== undefined && read.record.generation !== expectedGeneration) {
+        throw new Error(`retire for "${logicalSessionId}" found an unreadable record (${read.reason}); refusing to unlink evidence`);
+      }
+      if (expectedGeneration !== undefined && read.record.generation !== expectedGeneration) {
         throw new StaleFenceGenerationError(
           `guarded retire for "${logicalSessionId}" found successor generation "${read.record.generation}", expected "${expectedGeneration}"; refusing unlink`,
         );

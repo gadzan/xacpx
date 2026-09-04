@@ -1121,6 +1121,25 @@ test("guarded retire never unlinks a successor generation", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("retire on a never-materialized namespace resolves without creating dirs or locks", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-retireabsent-"));
+  try {
+    const fenceDir = join(dir, "worker-fences");
+    const fence = new RuntimeWorkerFence(fenceDir);
+    // Mirrors release-after-terminate when ensureWorker never fenced: the
+    // fence dir itself does not exist. Both guarded and unguarded retire
+    // are idempotent success and must not materialize the namespace.
+    await fence.retire("teardown-code-1", "gen-teardown");
+    await fence.retire("teardown-code-1");
+    expect(await readdir(dir)).toEqual([]);
+    // Absent file inside an existing dir is idempotent too, lock-free.
+    await mkdir(fenceDir, { recursive: true });
+    await fence.retire("teardown-code-1", "gen-teardown");
+    expect(await readdir(fenceDir)).toEqual([]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 test("interleaving: stale retire validated first cannot delete a G2 that takes over mid-flight", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-fence-interleave-retire-"));
   try {
