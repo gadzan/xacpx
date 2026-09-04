@@ -164,6 +164,70 @@ test("PR9-A fail-closed: timeout/disconnect/malformed → reject_once", async ()
   }
 }, 30_000);
 
+test("concurrent cold ensures join one initialization: single AcpRuntime owner, both requests settle", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-ensure-singleflight-"));
+  const stateDir = join(dir, "state", "sessions");
+  const queueDir = join(dir, "queue");
+  const fenceDir = join(dir, "fences");
+  const workerFile = await buildWorker(dir);
+  const initSeenFile = join(dir, "init-count.json");
+  const releaseFile = join(dir, "release.json");
+  // Mock agent: counts ACP initialize handshakes (one per spawned
+  // AcpRuntime/agent owner). The FIRST initialize blocks until released, so
+  // a second concurrent ensure inside the worker would (without
+  // single-flight) create and await a second adapter/runtime.
+  const agentFile = join(dir, "mock-ensure-agent.mjs");
+  await writeFile(
+    agentFile,
+    `
+import { createInterface } from "node:readline";
+import { readFileSync, writeFileSync } from "node:fs";
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+function respond(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\\n"); }
+const state = { count: 0 };
+try { state.count = JSON.parse(readFileSync(${JSON.stringify(initSeenFile)}, "utf8")).count; } catch {}
+function bump() { state.count += 1; writeFileSync(${JSON.stringify(initSeenFile)}, JSON.stringify(state)); }
+rl.on("line", (line) => {
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.method === "initialize") {
+    bump();
+    const wait = () => { try { readFileSync(${JSON.stringify(releaseFile)}); return true; } catch { return false; } };
+    const started = Date.now();
+    const poll = () => {
+      if (wait() || Date.now() - started > 10000) respond(msg.id, { protocolVersion: 1, authMethods: [], agentCapabilities: { loadSession: true, promptCapabilities: {}, sessionCapabilities: { new:{}, load:{}, resume:{}, close:{}, list:{}, cancel:{} } } });
+      else setTimeout(poll, 10);
+    };
+    poll();
+  } else if (msg.method === "session/new") respond(msg.id, { sessionId: "mock-sess" });
+  else if (msg.method === "session/prompt") respond(msg.id, { sessionId: "mock-sess", stopReason: "end_turn" });
+  else if (msg.id !== undefined) respond(msg.id, {});
+});
+`,
+  );
+  const base = { agent: "mock", acpxAgent: "mock", agentArgv: [process.execPath, agentFile], cwd: "/tmp", name: "ensure-single", logicalSessionId: "ensure-sf-1" };
+  const engine = new RuntimeEngine({
+    workerEntryPath: workerFile,
+    stateDir,
+    queueDir,
+    fenceDir,
+    permissionMode: "approve-all",
+  });
+  try {
+    // Fire two overlapping cold ensures on the same physical session. The
+    // worker-side single-flight must make both join ONE initialization.
+    const first = engine.ensureSession({ ...base });
+    const second = engine.setMode({ ...base, modeId: "code" });
+    await first;
+    await second;
+    const initCount = JSON.parse(await readFile(initSeenFile, "utf8")).count;
+    expect(initCount).toBe(1);
+    expect((await engine.isSessionWarm(base)).warm).toBe(true);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 30_000);
+
 test("PR9-A generation race: G → G+1 stale response → reject", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-perm-gen-"));
   const stateDir = join(dir, "state", "sessions");

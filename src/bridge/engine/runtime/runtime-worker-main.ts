@@ -53,6 +53,15 @@ interface WorkerState {
   pendingPermissions: Map<string, { resolve: (d: { outcome: string }) => void; reject: (e: Error) => void; generation: number; workerGeneration: string }>;
   pendingElicitations: Map<string, { resolve: (d: { action: string; data?: unknown }) => void; reject: (e: Error) => void; requestId: string; generation: number; workerGeneration: string }>;
   workerGeneration: string;
+  /** Single-flight first initialization: identical-identity concurrent ensures join this; it is cleared on settle. */
+  ensureInFlight?: { identityKey: string; promise: Promise<void> };
+  /**
+   * A failed first initialization poisons the worker: the adapter/manager
+   * that was created may have already retained a native ACP owner we cannot
+   * prove dead, so a retry inside the same process risks a second live
+   * owner. The Host must tear down this worker and respawn a fresh one.
+   */
+  initFailed?: true;
 }
 const gate = createDispatchGate();
 const initialWorkerGeneration =
@@ -70,25 +79,32 @@ function respond(response: RuntimeWorkerResponse): void {
   process.stdout.write(encodeWorkerMessage(response));
 }
 
+/**
+ * Runtime-construction identity (plan §3-R1). Mutable per-invocation
+ * parameters are deliberately excluded:
+ *   - `model` / `effort`: applied in place via setConfigOption.
+ *   - `resumeSessionId`: a first-ensure INVOCATION parameter, not identity —
+ *     resumeAgentSession(X) is always followed by prompt ensures without it.
+ *     Including it here would rebuild the AcpRuntime inside one worker and
+ *     create a second live ACP owner (violates single-owner, plan §3-R1).
+ *   - `permissionMode` / `nonInteractivePermissions` / `permissionPolicy`: mutable snapshot (PR7 live update)
+ */
+function ensureIdentityKey(p: RuntimeWorkerEnsureParams): string {
+  return JSON.stringify([
+    p.sessionKey,
+    p.agent,
+    p.cwd ?? null,
+    p.stateDir,
+    p.agentOverrides ?? null,
+    p.mcpCoordinatorSession ?? null,
+    p.mcpSourceHandle ?? null,
+  ]);
+}
+
 function sameEnsureParams(a: RuntimeWorkerEnsureParams | undefined, b: RuntimeWorkerEnsureParams): boolean {
-  if (!a) return false;
-  // Runtime-construction identity ONLY. Mutable per-invocation parameters are
-  // deliberately excluded:
-  //   - `model` / `effort`: applied in place via setConfigOption.
-  //   - `resumeSessionId`: a first-ensure INVOCATION parameter, not identity —
-  //     resumeAgentSession(X) is always followed by prompt ensures without it.
-  //     Including it here would rebuild the AcpRuntime inside one worker and
-  //     create a second live ACP owner (violates single-owner, plan §3-R1).
-  //   - `permissionMode` / `nonInteractivePermissions` / `permissionPolicy`: mutable snapshot (PR7 live update)
-  return (
-    a.sessionKey === b.sessionKey &&
-    a.agent === b.agent &&
-    a.cwd === b.cwd &&
-    a.stateDir === b.stateDir &&
-    JSON.stringify(a.agentOverrides ?? null) === JSON.stringify(b.agentOverrides ?? null) &&
-    (a.mcpCoordinatorSession ?? null) === (b.mcpCoordinatorSession ?? null) &&
-    (a.mcpSourceHandle ?? null) === (b.mcpSourceHandle ?? null)
-  );
+  // Exported-name contract kept for the existing callsite's readability:
+  // identical runtime-construction identity.
+  return a !== undefined && ensureIdentityKey(a) === ensureIdentityKey(b);
 }
 
 /** Resolve the REAL advertised effort config id (CLI parity) and write the value. */
@@ -108,13 +124,36 @@ async function applySessionEffort(
 }
 
 async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: string; acpxRecordId?: string; agentSessionId?: string }> {
-  // Single-owner invariant (plan §3-R1): once an adapter exists in this worker,
-  // it is NEVER replaced. The Worker process IS the AcpRuntime lifecycle
-  // primitive (plan §9.2) — a genuine immutable-identity change must fail
-  // closed so the Host tears down the whole worker and spawns a fresh one,
-  // because the pinned acpx public Runtime has no dispose primitive and a
-  // replacement here would leak the retained native ACP owner (dual owner).
-  if (state.adapter && !sameEnsureParams(state.ensureParams, params)) {
+  // Single-owner invariant (plan §3-R1): once an adapter exists in this
+  // worker, it is NEVER replaced. The Worker process IS the AcpRuntime
+  // lifecycle primitive (plan §9.2) — a genuine immutable-identity change
+  // must fail closed so the Host tears down the whole worker and spawns a
+  // fresh one, because the pinned acpx public Runtime has no dispose
+  // primitive and a replacement here would leak the retained native ACP
+  // owner (dual owner).
+  if (state.initFailed) {
+    throw new RuntimeError(
+      "RUNTIME_INIT_FAILED",
+      `runtime worker for session "${params.sessionKey}" previously failed its first initialization; refusing an in-worker retry that could stack a second AcpRuntime/native owner — tear down this worker instead`,
+    );
+  }
+  if (params.workerGeneration) state.workerGeneration = params.workerGeneration;
+  const identityKey = ensureIdentityKey(params);
+  if (state.ensureInFlight) {
+    // First initialization is mid-flight: identical-identity callers JOIN it
+    // (single-flight), anything else fails closed exactly like a completed
+    // identity mismatch. Joining matters because handle/ensureParams are not
+    // yet published — without this join, a concurrent identical ensure would
+    // fall through and createXacpxRuntimeAdapter() a second time, leaking
+    // the first AcpRuntime's retained native ACP owner.
+    if (state.ensureInFlight.identityKey !== identityKey) {
+      throw new RuntimeError(
+        "RUNTIME_INIT_FAILED",
+        `runtime worker for session "${params.sessionKey}" received ensure params that differ from its in-flight initialization identity; refusing in-worker AcpRuntime replacement — tear down this worker instead`,
+      );
+    }
+    await state.ensureInFlight.promise;
+  } else if (state.adapter && !sameEnsureParams(state.ensureParams, params)) {
     throw new RuntimeError(
       "RUNTIME_INIT_FAILED",
       `runtime worker for session "${params.sessionKey}" received ensure params that differ from its immutable launch identity ` +
@@ -122,9 +161,41 @@ async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: 
         `got sessionKey=${params.sessionKey}, agent=${params.agent}, cwd=${params.cwd}); ` +
         `refusing in-worker AcpRuntime replacement — tear down this worker instead`,
     );
+  } else if (!state.adapter || !state.handle) {
+    // Cold first initialization. Registered BEFORE the first await so every
+    // concurrent identical ensure joins instead of re-entering. First-ensure
+    // resumeSessionId semantics are first-publisher-wins: the initializer
+    // carries its own invocation params; joiners wait, then take the warm
+    // path (their own mutable options below still apply).
+    const initializer = { identityKey, promise: Promise.resolve() as Promise<void> };
+    state.ensureInFlight = initializer;
+    initializer.promise = initializeRuntime(params).finally(() => {
+      if (state.ensureInFlight === initializer) state.ensureInFlight = undefined;
+    });
+    try {
+      await initializer.promise;
+    } catch (error) {
+      // Initialization failure poisons the worker (see WorkerState.initFailed).
+      state.initFailed = true;
+      throw error;
+    }
   }
-  if (params.workerGeneration) state.workerGeneration = params.workerGeneration;
-  if (!state.adapter || !state.handle) {
+  if (params.effort && state.handle) {
+    // Mutable config on a warm Runtime: apply in place, never rebuild the
+    // AcpRuntime (a second live owner inside one worker violates the
+    // single-owner invariant, plan §3-R1).
+    await applySessionEffort(state.adapter!, state.handle, params.effort);
+  }
+  const handle = state.handle!;
+  return {
+    sessionKey: handle.sessionKey,
+    ...(handle.acpxRecordId ? { acpxRecordId: handle.acpxRecordId } : {}),
+    ...(handle.agentSessionId ? { agentSessionId: handle.agentSessionId } : {}),
+  };
+}
+
+/** One-shot AcpRuntime + session initialization for the cold ensure path. */
+async function initializeRuntime(params: RuntimeWorkerEnsureParams): Promise<void> {
     const initialGen = typeof params.permissionGeneration === "number" ? params.permissionGeneration : 0;
     const { configFromRaw } = await import("./runtime-permission-resolver");
     const initialSnapshot = configFromRaw(initialGen, {
@@ -243,18 +314,6 @@ async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: 
     if (params.effort) {
       await applySessionEffort(state.adapter, state.handle!, params.effort);
     }
-  } else if (params.effort && state.handle) {
-    // Mutable config on a warm Runtime: apply in place, never rebuild the
-    // AcpRuntime (a second live owner inside one worker violates the
-    // single-owner invariant, plan §3-R1).
-    await applySessionEffort(state.adapter, state.handle, params.effort);
-  }
-  const handle = state.handle!;
-  return {
-    sessionKey: handle.sessionKey,
-    ...(handle.acpxRecordId ? { acpxRecordId: handle.acpxRecordId } : {}),
-    ...(handle.agentSessionId ? { agentSessionId: handle.agentSessionId } : {}),
-  };
 }
 
 async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): Promise<RuntimeWorkerPromptResult> {

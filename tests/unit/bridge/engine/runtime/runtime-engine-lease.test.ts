@@ -693,6 +693,62 @@ test.serial("P1-11: delete waits for in-flight acquiring (fence discharge) befor
     await rm(dir, { recursive: true, force: true });
   }
 }, 15_000);
+test.serial("P1-11b: two cold same-key ensureWorkers join one acquire promise (early single-flight)", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-acquire-singleflight-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    const manager: any = (engine as any).manager;
+    let acquireCalls = 0;
+    const origAcquire = manager.acquire.bind(manager);
+    manager.acquire = async (key: string, physical: string) => {
+      acquireCalls += 1;
+      return origAcquire(key, physical);
+    };
+    // Two cold same-key callers overlap BEFORE the disk lookup resolves:
+    // with the early single-flight they must share one acquisition promise
+    // (one manager.acquire; without it both reached acquire and the loser
+    // hit the fence claim the winner already held).
+    const first = engine.setMode({ ...testInput, modeId: "plan" } as any);
+    first.catch(() => {});
+    const second = engine.setMode({ ...testInput, modeId: "code" } as any);
+    second.catch(() => {});
+    // Drive both until the second is either registered as a joiner or has
+    // (wrongly) reached its own acquire.
+    for (let i = 0; i < 100; i++) {
+      if ((engine as any).acquiring.has(testInput.logicalSessionId) && acquireCalls >= 1) break;
+      const { promise: tick, resolve: tickResolve } = Promise.withResolvers<void>();
+      setTimeout(tickResolve, 10);
+      await tick;
+    }
+    // The published single-flight entry means a second ensureWorker must
+    // return the SAME promise, never issue a second manager.acquire.
+    const pending = (engine as any).acquiring.get(testInput.logicalSessionId);
+    const joined = await (engine as any).ensureWorker(testInput as any);
+    expect(joined).toBe(await pending);
+    await first;
+    await second;
+    expect(acquireCalls).toBe(1);
+    expect((engine as any).acquiring.has(testInput.logicalSessionId)).toBe(false);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
 test.serial("P1-12: residual fence without record blocks delete (fail-closed)", async () => {
   const testInput = uniqueInput();
   const dir = await mkdtemp(join(tmpdir(), "rt-residual-fence-"));

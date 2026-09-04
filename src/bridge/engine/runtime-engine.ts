@@ -1168,28 +1168,39 @@ export class RuntimeEngine implements BridgeEngine {
     const existing = this.acquiring.get(logicalKey);
     if (existing) return existing;
 
-    // Fail-closed validation: any unreadable/corrupt/ambiguous record on disk
-    // blocks spawn (G4). This runs before claim so we never spawn over
-    // unverifiable ownership evidence.
-    const recordLookup = await findAcpxRecordIdFromDisk(input, this.sessionsDir());
-    if (recordLookup.kind === "failed") {
-      throw new RuntimeError(
-        "RUNTIME_INIT_FAILED",
-        `cannot verify physical session identity on disk: ${recordLookup.error.message}`,
-      );
-    }
-    const physicalFenceKey = this.physicalFenceKeyForInput(input);
-
-    const acquire = this.manager.acquire(logicalKey, physicalFenceKey);
-    this.acquiring.set(logicalKey, acquire);
-    try {
-      const client = await acquire;
+    // Same-key single-flight MUST be published before the first await. The
+    // disk lookup below is async: if two cold same-key requests raced past
+    // the `existing` check before the map was filled, both would reach
+    // manager.acquire(); one would win the O_EXCL fence claim while the
+    // other — which should have joined the same initialization — fails.
+    // Also note the identity-guarded delete below: without it an earlier
+    // settle could erase a newer caller's entry and widen the race.
+    const manager = this.manager;
+    const acquire = (async (): Promise<RuntimeWorkerClient> => {
+      // Fail-closed validation: any unreadable/corrupt/ambiguous record on
+      // disk blocks spawn (G4). This runs before claim so we never spawn
+      // over unverifiable ownership evidence.
+      const recordLookup = await findAcpxRecordIdFromDisk(input, this.sessionsDir());
+      if (recordLookup.kind === "failed") {
+        throw new RuntimeError(
+          "RUNTIME_INIT_FAILED",
+          `cannot verify physical session identity on disk: ${recordLookup.error.message}`,
+        );
+      }
+      const physicalFenceKey = this.physicalFenceKeyForInput(input);
+      const client = await manager.acquire(logicalKey, physicalFenceKey);
       if (recordLookup.kind === "found") {
         this.recordIds.set(logicalKey, recordLookup.recordId);
       }
       return client;
+    })();
+    this.acquiring.set(logicalKey, acquire);
+    try {
+      return await acquire;
     } finally {
-      this.acquiring.delete(logicalKey);
+      if (this.acquiring.get(logicalKey) === acquire) {
+        this.acquiring.delete(logicalKey);
+      }
     }
   }
   /**
