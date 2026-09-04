@@ -1,9 +1,10 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { RuntimeWorkerClient } from "../../../../../src/bridge/engine/runtime/runtime-worker-client";
 import { RuntimeWorkerManager, WorkerTeardownPendingError } from "../../../../../src/bridge/engine/runtime/runtime-worker-manager";
-
+import { RuntimeWorkerFence, type RuntimeWorkerFenceRecord } from "../../../../../src/bridge/engine/runtime/runtime-worker-fence";
 async function withFakeEntry(run: (entryPath: string) => Promise<void>): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "worker-mgr-"));
   try {
@@ -301,3 +302,76 @@ test("unexpected worker crash cleans up process tree before allowing replacement
     await manager.shutdownAll();
   });
 });
+test("spawn succeeds but owned fence write fails → verified terminate before retire, no orphan", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "worker-mgr-ownfail-"));
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await writeFile(
+      entry,
+      [
+        "process.stdin.on('data', () => {});",
+        "let buffer='';",
+        "process.stdin.on('data', (d) => {",
+        "  buffer += d.toString();",
+        "  let idx;",
+        "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+        "    if (!line) continue;",
+        "    try { const msg = JSON.parse(line);",
+        "      process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "      if (msg.method === 'shutdown') process.exit(0);",
+        "    } catch {}",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+    const fenceDir = join(dir, "worker-fences");
+    const passthrough = new RuntimeWorkerFence(fenceDir);
+    const writeSpy = spyOn(RuntimeWorkerFence.prototype, "write").mockImplementation(
+      (record: RuntimeWorkerFenceRecord) => {
+        if (record.phase === "owned") {
+          return Promise.reject(new Error("ENOSPC: simulated owned-write failure"));
+        }
+        return passthrough.write(record);
+      },
+    );
+    const origTerminate = RuntimeWorkerClient.prototype.terminate;
+    let terminatedClient: RuntimeWorkerClient | null = null;
+    const termSpy = spyOn(RuntimeWorkerClient.prototype, "terminate").mockImplementation(
+      async function (this: RuntimeWorkerClient) {
+        terminatedClient = this;
+        return origTerminate.call(this);
+      },
+    );
+    const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+    try {
+      if (process.platform === "win32") {
+        // Windows terminate refuses an unverified live worker: the same
+        // fault must retain tracking+fence and surface teardown-pending.
+        await expect(manager.acquire("ownfail-win")).rejects.toThrow(/refusing replacement spawn/);
+        expect(terminatedClient).not.toBeNull();
+        expect(manager.get("ownfail-win")).toBeDefined();
+        expect((await passthrough.read("ownfail-win")).kind).toBe("present");
+      } else {
+        await expect(manager.acquire("ownfail-sess")).rejects.toThrow(/ENOSPC/);
+        // The spawned worker went through verified termination (not just
+        // untracked): the exact client reached stopped and is dead.
+        expect(terminatedClient).not.toBeNull();
+        expect(terminatedClient!.lifecycle).toBe("stopped");
+        expect(manager.get("ownfail-sess")).toBeUndefined();
+        expect((await passthrough.read("ownfail-sess")).kind).toBe("absent");
+        // Re-arm writes before the recovery acquire below.
+        writeSpy.mockRestore();
+        // Next acquire is not wedged: a fresh owner proceeds.
+        const second = await manager.acquire("ownfail-sess");
+        expect(second.alive).toBe(true);
+      }
+    } finally {
+      writeSpy.mockRestore();
+      termSpy.mockRestore();
+      await manager.shutdownAll().catch(() => {});
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);

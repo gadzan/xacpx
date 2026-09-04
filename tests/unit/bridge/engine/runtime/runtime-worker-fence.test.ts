@@ -10,7 +10,7 @@ import {
   type RuntimeWorkerFenceRecord,
 } from "../../../../../src/bridge/engine/runtime/runtime-worker-fence";
 import { RuntimeWorkerManager } from "../../../../../src/bridge/engine/runtime/runtime-worker-manager";
-
+import { markRuntimeWorkerFence } from "../../../../../src/bridge/engine/runtime/worker-eof";
 const KEY = "session-A";
 
 function record(overrides: Partial<RuntimeWorkerFenceRecord> = {}): RuntimeWorkerFenceRecord {
@@ -897,3 +897,70 @@ test("claim: failed claim leaves no residue and never removes another host's fen
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("crash between spawn and owned durable recovers without unreadable fence", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-crash-window-"));
+  const fenceDir = join(dir, "worker-fences");
+  const crashKey = "session-crash-window";
+  const fencePath = join(fenceDir, `${encodeURIComponent(crashKey)}.json`);
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    const fence = new RuntimeWorkerFence(fenceDir);
+    // Host claimed (pre-spawn, no pid) then crashed after spawn() but
+    // before the owned upgrade durably landed.
+    await fence.claim({
+      kind: "runtime-worker-owner",
+      logicalSessionId: crashKey,
+      generation: "gen-crash",
+      bootstrapVerified: false,
+      phase: "claiming",
+      startedAt: new Date().toISOString(),
+      agent: "runtime-worker",
+    });
+    // Simulate the crashed host's worker EOF with the same generation.
+    const prevFence = process.env.XACPX_WORKER_FENCE;
+    const prevGen = process.env.XACPX_WORKER_FENCE_GENERATION;
+    process.env.XACPX_WORKER_FENCE = fencePath;
+    process.env.XACPX_WORKER_FENCE_GENERATION = "gen-crash";
+    try {
+      expect(await markRuntimeWorkerFence("discharging")).toBe("updated");
+    } finally {
+      if (prevFence === undefined) delete process.env.XACPX_WORKER_FENCE;
+      else process.env.XACPX_WORKER_FENCE = prevFence;
+      if (prevGen === undefined) delete process.env.XACPX_WORKER_FENCE_GENERATION;
+      else process.env.XACPX_WORKER_FENCE_GENERATION = prevGen;
+    }
+    // The wedge symptom would be "unreadable" (pid-less non-claiming
+    // phase). The worker upgrades the claim with its own pid instead.
+    const read = await fence.read(crashKey);
+    expect(read.kind).toBe("present");
+    if (read.kind !== "present") return;
+    expect(read.record.phase).toBe("discharging");
+    expect(read.record.pid).toBe(process.pid);
+    // Worker finishes convergence; the next host acquires cleanly — never
+    // wedged on an unreadable fence.
+    process.env.XACPX_WORKER_FENCE = fencePath;
+    process.env.XACPX_WORKER_FENCE_GENERATION = "gen-crash";
+    try {
+      expect(await markRuntimeWorkerFence("discharged")).toBe("updated");
+    } finally {
+      if (prevFence === undefined) delete process.env.XACPX_WORKER_FENCE;
+      else process.env.XACPX_WORKER_FENCE = prevFence;
+      if (prevGen === undefined) delete process.env.XACPX_WORKER_FENCE_GENERATION;
+      else process.env.XACPX_WORKER_FENCE_GENERATION = prevGen;
+    }
+    const manager = new RuntimeWorkerManager({
+      entryPath: entry,
+      fenceDir,
+      clientDeps: { probeProcessGroup: () => "gone" },
+    });
+    try {
+      const client = await manager.acquire(crashKey);
+      expect(client.alive).toBe(true);
+    } finally {
+      await manager.shutdownAll().catch(() => {});
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);

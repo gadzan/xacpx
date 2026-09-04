@@ -88,6 +88,15 @@ export async function markRuntimeWorkerFence(phase: "discharging" | "discharged"
   if (typeof parsedRaw !== "object" || parsedRaw === null) throw new Error("corrupt fence JSON");
   const parsed = parsedRaw as Record<string, unknown>; // validated object, generation/kind checked next line
   if (parsed.generation !== generation || parsed.kind !== "runtime-worker-owner") return "stale";
+  // Crash-window hardening: the host may have died after spawn() but before
+  // the "owned" upgrade durably landed, leaving a pid-less "claiming"
+  // record. A non-claiming phase without a pid reads as "unreadable"
+  // forever (permanent wedge), so the owning worker upgrades the claim with
+  // its own real pid BEFORE transitioning — never manufacture a pid-less
+  // non-claiming fence.
+  if (parsed.phase === "claiming") {
+    parsed.pid = process.pid;
+  }
   parsed.phase = phase;
   const tmp = `${path}.tmp-${randomUUID()}`;
   const handle = await open(tmp, "wx", 0o600);

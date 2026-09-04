@@ -282,6 +282,31 @@ export class RuntimeWorkerManager {
           agent: "runtime-worker",
         }));
       } catch (spawnError) {
+        if (worker.alive) {
+          // spawn() succeeded but the owned-fence upgrade failed afterwards.
+          // The worker is alive yet untracked: terminate it with verification
+          // BEFORE retiring the claim. Retiring first would leave a live,
+          // untracked worker next to a released fence (silent second owner
+          // on the next acquire).
+          try {
+            await worker.terminate();
+          } catch (termError) {
+            // Termination unverified: retain tracking AND the fence so no
+            // replacement can spawn over an unproven tree; surface pending.
+            this.workersByKey.set(logicalWorkerKey, worker);
+            this.physicalFenceKeys.set(logicalWorkerKey, physicalFenceKey);
+            throw new WorkerTeardownPendingError(
+              `runtime worker for session "${logicalWorkerKey}" spawned but fence upgrade failed and termination is unverified; refusing replacement spawn`,
+            );
+          }
+          if (worker.alive || worker.lifecycle !== "stopped") {
+            this.workersByKey.set(logicalWorkerKey, worker);
+            this.physicalFenceKeys.set(logicalWorkerKey, physicalFenceKey);
+            throw new WorkerTeardownPendingError(
+              `runtime worker for session "${logicalWorkerKey}" spawned but fence upgrade failed and worker did not reach stopped; refusing replacement spawn`,
+            );
+          }
+        }
         this.workersByKey.delete(logicalWorkerKey);
         this.physicalFenceKeys.delete(logicalWorkerKey);
         if (this.fence()) {
