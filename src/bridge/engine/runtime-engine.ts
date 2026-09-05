@@ -1297,6 +1297,13 @@ export class RuntimeEngine implements BridgeEngine {
       } catch (error) {
         if (error instanceof WorkerCrashError) {
           if (client) client.lifecycle = "failed";
+        } else if (error instanceof WorkerRpcError && error.code === "RUNTIME_WORKER_POISONED_INIT") {
+          // Poisoned-init (worker refuses every future ensure after its first
+          // initialization failed): warm reuse would break the session until
+          // TTL/daemon restart. Recycle the worker — terminate + release under
+          // the existing fence lifecycle — so the next request spawns a fresh
+          // worker. The original poisoned error still propagates to the caller.
+          await this.recyclePoisonedWorker(key, client);
         }
         throw toStableRuntimeError(error);
       } finally {
@@ -1339,6 +1346,28 @@ export class RuntimeEngine implements BridgeEngine {
         }
       } catch {}
       if (staleError) throw staleError;
+    }
+  }
+
+  /**
+   * Recycle a worker whose runtime initialization poisoned it: the worker
+   * sets initFailed and refuses every subsequent ensure, so the only healthy
+   * path is terminate + release (under the existing fence lifecycle) and a
+   * fresh worker on the next request. Best-effort by design — a concurrent
+   * caller may already have terminated/released the same client, and a
+   * cooling worker self-heals through the WorkerTeardownPending retry path
+   * in withWorker. The caller's original error is unaffected either way.
+   */
+  private async recyclePoisonedWorker(key: string, client: RuntimeWorkerClient | undefined): Promise<void> {
+    if (!client || !client.alive) return;
+    try {
+      await client.terminate();
+      if (client.lifecycle === "stopped") {
+        await this.manager?.release(key, client);
+      }
+    } catch {
+      // Swallowed deliberately: recycle must not mask the poisoned-init error
+      // that is about to propagate to the caller.
     }
   }
   private buildEnsureParams(input: EngineSessionInput, options?: { resumeSessionId?: string }) {

@@ -133,8 +133,8 @@ async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: 
   // owner (dual owner).
   if (state.initFailed) {
     throw new RuntimeError(
-      "RUNTIME_INIT_FAILED",
-      `runtime worker for session "${params.sessionKey}" previously failed its first initialization; refusing an in-worker retry that could stack a second AcpRuntime/native owner — tear down this worker instead`,
+      "RUNTIME_WORKER_POISONED_INIT",
+      `runtime worker for session "${params.sessionKey}" previously failed its first initialization; refusing an in-worker retry that could stack a second AcpRuntime/native owner — the Host recycles this worker and respawns a fresh one`,
     );
   }
   if (params.workerGeneration) state.workerGeneration = params.workerGeneration;
@@ -175,9 +175,18 @@ async function ensure(params: RuntimeWorkerEnsureParams): Promise<{ sessionKey: 
     try {
       await initializer.promise;
     } catch (error) {
-      // Initialization failure poisons the worker (see WorkerState.initFailed).
+      // First initialization failure poisons the worker (WorkerState.initFailed):
+      // the created adapter/manager may already retain a native ACP owner we
+      // cannot prove dead, so no in-process retry is allowed. The distinct
+      // stable code makes the Host terminate + release (fence lifecycle
+      // protected) so the next request spawns a fresh worker instead of
+      // warm-reusing a poisoned one. Original message is carried through.
       state.initFailed = true;
-      throw error;
+      const causeMessage = error instanceof Error ? error.message : String(error);
+      throw new RuntimeError(
+        "RUNTIME_WORKER_POISONED_INIT",
+        `runtime initialization failed for session "${params.sessionKey}" and the worker is now poisoned (no in-process retry): ${causeMessage}`,
+      );
     }
   }
   if (params.effort && state.handle) {
@@ -304,6 +313,11 @@ async function initializeRuntime(params: RuntimeWorkerEnsureParams): Promise<voi
     state.ensureParams = params;
     // Same persistent sessionKey reconnects to the existing record after a
     // worker respawn (plan §13).
+    // NOTE: no effort here — invocation-specific mutable config (effort) is
+    // applied exactly once by the ensure() common path, so the initializer's
+    // own invocation does not apply it twice (upstream setters are not
+    // guaranteed idempotent, and a second failing mutation after a
+    // successful init would put the caller in an unexplainable state).
     state.handle = await state.adapter.ensure({
       sessionKey: params.sessionKey,
       agent: params.agent,
@@ -311,10 +325,7 @@ async function initializeRuntime(params: RuntimeWorkerEnsureParams): Promise<voi
       ...(params.resumeSessionId ? { resumeSessionId: params.resumeSessionId } : {}),
       ...(params.model ? { sessionOptions: { model: params.model } } : {}),
     });
-    if (params.effort) {
-      await applySessionEffort(state.adapter, state.handle!, params.effort);
-    }
-}
+  }
 
 async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): Promise<RuntimeWorkerPromptResult> {
   if (!state.adapter || !state.handle) {

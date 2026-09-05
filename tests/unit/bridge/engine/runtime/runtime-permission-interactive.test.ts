@@ -228,6 +228,141 @@ rl.on("line", (line) => {
   }
 }, 30_000);
 
+test("cold ensure with effort applies the ACP config option exactly once", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-effort-once-"));
+  const stateDir = join(dir, "state", "sessions");
+  const queueDir = join(dir, "queue");
+  const fenceDir = join(dir, "fences");
+  const workerFile = await buildWorker(dir);
+  const setCountFile = join(dir, "set-config-count.json");
+  // Mock agent: advertises a select config option "effort" via session/new,
+  // counts every session/set_config_option on disk.
+  const agentFile = join(dir, "mock-effort-agent.mjs");
+  await writeFile(
+    agentFile,
+    `
+import { createInterface } from "node:readline";
+import { readFileSync, writeFileSync } from "node:fs";
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+function respond(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\\n"); }
+const effortOption = { type: "select", id: "effort", name: "Reasoning effort", currentValue: "low", options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }] };
+const state = { count: 0 };
+try { state.count = JSON.parse(readFileSync(${JSON.stringify(setCountFile)}, "utf8")).count; } catch {}
+function bump() { state.count += 1; writeFileSync(${JSON.stringify(setCountFile)}, JSON.stringify(state)); }
+rl.on("line", (line) => {
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.method === "initialize") respond(msg.id, { protocolVersion: 1, authMethods: [], agentCapabilities: { loadSession: true, promptCapabilities: {}, sessionCapabilities: { new:{}, load:{}, resume:{}, close:{}, list:{}, cancel:{} }, configOptions: {} } });
+  else if (msg.method === "session/new") respond(msg.id, { sessionId: "mock-sess", configOptions: [effortOption] });
+  else if (msg.method === "session/set_config_option") {
+    bump();
+    respond(msg.id, { configOptions: [effortOption] });
+  } else if (msg.id !== undefined) respond(msg.id, {});
+});
+`,
+  );
+  const base = { agent: "mock", acpxAgent: "mock", agentArgv: [process.execPath, agentFile], cwd: "/tmp", name: "effort-once", logicalSessionId: "effort-once-1" };
+  const engine = new RuntimeEngine({
+    workerEntryPath: workerFile,
+    stateDir,
+    queueDir,
+    fenceDir,
+    permissionMode: "approve-all",
+  });
+  try {
+    // Cold ensure CARRYING effort: the single-flight initialization creates
+    // adapter + handle, and the invocation's effort must be applied by the
+    // common post-join path exactly once (was: applied once inside the init
+    // transaction AND again by the common path).
+    await engine.ensureSession({ ...base, effort: "high" });
+    expect(JSON.parse(await readFile(setCountFile, "utf8")).count).toBe(1);
+    // A warm ensure without effort must not touch the option again.
+    await engine.ensureSession(base);
+    expect(JSON.parse(await readFile(setCountFile, "utf8")).count).toBe(1);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("poisoned init worker is recycled: old PID dies, next request respawns and succeeds", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-poison-recycle-"));
+  const stateDir = join(dir, "state", "sessions");
+  const queueDir = join(dir, "queue");
+  const fenceDir = join(dir, "fences");
+  const workerFile = await buildWorker(dir);
+  const initCountFile = join(dir, "init-count.json");
+  // Mock agent: FIRST initialize fails (agent-side boot error); every later
+  // initialize succeeds. This poisons the first worker (worker refuses any
+  // in-process retry) and proves the Host recycles it.
+  const agentFile = join(dir, "mock-poison-agent.mjs");
+  await writeFile(
+    agentFile,
+    `
+import { createInterface } from "node:readline";
+import { readFileSync, writeFileSync } from "node:fs";
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+function respond(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\\n"); }
+function respondError(id, code, message) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }) + "\\n"); }
+const state = { count: 0 };
+try { state.count = JSON.parse(readFileSync(${JSON.stringify(initCountFile)}, "utf8")).count; } catch {}
+function bump() { state.count += 1; writeFileSync(${JSON.stringify(initCountFile)}, JSON.stringify(state)); }
+rl.on("line", (line) => {
+  let msg; try { msg = JSON.parse(line); } catch { return; }
+  if (msg.method === "initialize") {
+    bump();
+    if (state.count === 1) { respondError(msg.id, -32000, "boom-init"); return; }
+    respond(msg.id, { protocolVersion: 1, authMethods: [], agentCapabilities: { loadSession: true, promptCapabilities: {}, sessionCapabilities: { new:{}, load:{}, resume:{}, close:{}, list:{}, cancel:{} } } });
+  } else if (msg.method === "session/new") respond(msg.id, { sessionId: "mock-sess" });
+  else if (msg.id !== undefined) respond(msg.id, {});
+});
+`,
+  );
+  const base = { agent: "mock", acpxAgent: "mock", agentArgv: [process.execPath, agentFile], cwd: "/tmp", name: "poison-recycle", logicalSessionId: "poison-recycle-1" };
+  const engine = new RuntimeEngine({
+    workerEntryPath: workerFile,
+    stateDir,
+    queueDir,
+    fenceDir,
+    permissionMode: "approve-all",
+  });
+  try {
+    // Record every worker PID the manager acquires.
+    const manager: { acquire: (key: string, physical: string) => Promise<{ ref: { pid: number } }> } | undefined = (engine as unknown as { manager?: { acquire: (key: string, physical: string) => Promise<{ ref: { pid: number } }> } }).manager;
+    const pids: number[] = [];
+    const origAcquire = manager?.acquire.bind(manager);
+    if (manager && origAcquire) {
+      manager.acquire = async (key: string, physical: string) => {
+        const client = await origAcquire(key, physical);
+        pids.push(client.ref.pid);
+        return client;
+      };
+    }
+    // First cold ensure: agent init fails → worker poisons itself → Host
+    // recycles (terminate + release) → caller sees the stable poisoned code.
+    const firstError: { code?: string; message?: string } = await engine.ensureSession(base).then(
+      () => { throw new Error("ensure should have failed"); },
+      (error: { code?: string; message?: string }) => error,
+    );
+    expect(firstError.code).toBe("RUNTIME_WORKER_POISONED_INIT");
+    expect(firstError.message).toContain("boom-init");
+    // Recycled: manager no longer holds a worker, and the poisoned PID is
+    // dead — at most one live native owner at any time.
+    expect((engine as unknown as { manager?: { get: (key: string) => unknown } }).manager?.get(base.logicalSessionId)).toBeUndefined();
+    const oldAlive = (() => { try { process.kill(pids[0]!, 0); return true; } catch { return false; } })();
+    expect(oldAlive).toBe(false);
+    // Next request: fresh worker PID, init succeeds, session warm.
+    await engine.ensureSession(base);
+    expect(pids.length).toBe(2);
+    expect(pids[1]).not.toBe(pids[0]);
+    const newAlive = (() => { try { process.kill(pids[1]!, 0); return true; } catch { return false; } })();
+    expect(newAlive).toBe(true);
+    expect((await engine.isSessionWarm(base)).warm).toBe(true);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 30_000);
+
 test("PR9-A generation race: G → G+1 stale response → reject", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-perm-gen-"));
   const stateDir = join(dir, "state", "sessions");

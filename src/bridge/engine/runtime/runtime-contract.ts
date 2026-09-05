@@ -71,15 +71,21 @@ export type RuntimeBridgeErrorCode =
   | "RUNTIME_PERMISSION_DENIED"
   | "RUNTIME_PERMISSION_BUSY"
   | "RUNTIME_WORKER_CRASHED"
+  | "RUNTIME_WORKER_POISONED_INIT"
   | "RUNTIME_WORKER_TEARDOWN_PENDING"
   | "RUNTIME_QUEUE_OVERFLOW"
   | "RUNTIME_ENGINE_UNSUPPORTED";
 
 export function mapRuntimeError(err: unknown): { code: RuntimeBridgeErrorCode; message: string } {
   const message = err instanceof Error ? err.message : String(err);
-  const name = (err as { name?: string } | null)?.name ?? "";
   const rawCode = (err as { code?: unknown } | null)?.code;
+  const name = (err as { name?: string } | null)?.name ?? "";
   const codeText = typeof rawCode === "string" ? rawCode : "";
+  // Poisoned-init is an explicit worker signal — never let the message
+  // regexes below reclassify it.
+  if (codeText === "RUNTIME_WORKER_POISONED_INIT") {
+    return { code: "RUNTIME_WORKER_POISONED_INIT", message };
+  }
   if (codeText === "RUNTIME_TURN_CANCELLED" || /cancel/i.test(message) || /cancel/i.test(codeText)) {
     return { code: "RUNTIME_TURN_CANCELLED", message };
   }

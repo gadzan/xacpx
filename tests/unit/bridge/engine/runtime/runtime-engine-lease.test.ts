@@ -714,33 +714,43 @@ test.serial("P1-11b: two cold same-key ensureWorkers join one acquire promise (e
     const manager: any = (engine as any).manager;
     let acquireCalls = 0;
     const origAcquire = manager.acquire.bind(manager);
+    // Gate the FIRST acquire INSIDE the wrapper: the single-flight entry then
+    // stays published until we explicitly release, so the join observation is
+    // deterministic on any platform speed (without the gate, a fast first
+    // acquire settles and deletes the entry before the second caller
+    // arrives — platform-timing flake, the macOS/Linux CI failure).
+    const gate = Promise.withResolvers<void>();
     manager.acquire = async (key: string, physical: string) => {
       acquireCalls += 1;
+      if (acquireCalls === 1) await gate.promise;
       return origAcquire(key, physical);
     };
-    // Two cold same-key callers overlap BEFORE the disk lookup resolves:
-    // with the early single-flight they must share one acquisition promise
-    // (one manager.acquire; without it both reached acquire and the loser
-    // hit the fence claim the winner already held).
     const first = engine.setMode({ ...testInput, modeId: "plan" } as any);
     first.catch(() => {});
-    const second = engine.setMode({ ...testInput, modeId: "code" } as any);
-    second.catch(() => {});
-    // Drive both until the second is either registered as a joiner or has
-    // (wrongly) reached its own acquire.
-    for (let i = 0; i < 100; i++) {
-      if ((engine as any).acquiring.has(testInput.logicalSessionId) && acquireCalls >= 1) break;
+    // The acquisition promise is published BEFORE the (gated) acquire call:
+    // poll the observable map, never wall-clock time.
+    for (let i = 0; i < 400; i++) {
+      if ((engine as any).acquiring.has(testInput.logicalSessionId)) break;
       const { promise: tick, resolve: tickResolve } = Promise.withResolvers<void>();
-      setTimeout(tickResolve, 10);
+      setTimeout(tickResolve, 5);
       await tick;
     }
-    // The published single-flight entry means a second ensureWorker must
-    // return the SAME promise, never issue a second manager.acquire.
     const pending = (engine as any).acquiring.get(testInput.logicalSessionId);
-    const joined = await (engine as any).ensureWorker(testInput as any);
+    expect(pending).toBeDefined();
+    // A second cold same-key caller must JOIN the published promise — both
+    // via a direct ensureWorker call and via the engine path (asserted by
+    // acquireCalls staying 1 after both settle: a setMode cannot complete
+    // without either joining or issuing its own acquire).
+    const second = engine.setMode({ ...testInput, modeId: "code" } as any);
+    second.catch(() => {});
+    // Created while the gate is held (entry guaranteed published): ensureWorker
+    // reads `acquiring` synchronously before its first await, so this call
+    // must JOIN the published entry — never issue a second acquire.
+    const joinedPromise = (engine as any).ensureWorker(testInput as any);
+    gate.resolve();
+    const joined = await joinedPromise;
     expect(joined).toBe(await pending);
-    await first;
-    await second;
+    await Promise.all([first, second]);
     expect(acquireCalls).toBe(1);
     expect((engine as any).acquiring.has(testInput.logicalSessionId)).toBe(false);
   } finally {
