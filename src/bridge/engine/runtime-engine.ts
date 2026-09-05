@@ -2180,6 +2180,90 @@ export class RuntimeEngine implements BridgeEngine {
     return {};
   }
 
+  /**
+   * Release one logical alias's engine-side state WITHOUT touching the
+   * shared physical session: used when removing a non-last shared alias.
+   * Terminates/releases its worker (cooperative shutdown — the persistent
+   * record and history belong to the surviving sibling), retires its fence
+   * ownership, drops its queue journal, and clears its timers/catalog/
+   * recordIds/MCP/stale state. Fails closed while the alias has an active
+   * turn (the caller keeps the logical row so the remove can be retried).
+   * Never unlinks record files or tombstones.
+   */
+  async releaseLogicalSession(input: EngineSessionInput): Promise<Record<string, never>> {
+    if (this.shuttingDown) throw new RuntimeError("RUNTIME_INIT_FAILED", "runtime engine is shutting down");
+    if (this.policyTransitionLock) {
+      await this.policyTransitionLock;
+    }
+    const key = this.workerKey(input);
+    const registeredPhysicalKey = this.manager?.physicalFenceKeyFor(key);
+    const physicalFenceKey = registeredPhysicalKey ?? this.physicalFenceKeyForInput(input);
+    try {
+      // Lifecycle boundary like deleteSession: reject new alias enqueue and
+      // abort in-flight alias ops instead of resurrecting state mid-teardown.
+      this.deleting.add(key);
+      this.deleteGenerations.set(key, (this.deleteGenerations.get(key) ?? 0) + 1);
+      await this.waitForAcquiringQuiescence(key);
+      const client = this.manager?.get(key);
+      if (client) {
+        if (!client.alive && client.lifecycle !== "stopped") {
+          throw new RuntimeError(
+            "RUNTIME_WORKER_TEARDOWN_PENDING",
+            `runtime worker for session "${key}" crashed and ownership cleanup was never verified; refusing logical release`,
+          );
+        }
+        if (client.alive) {
+          if (this.hasActiveTurn(key)) {
+            throw new RuntimeError(
+              "RUNTIME_WORKER_TEARDOWN_PENDING",
+              `cannot release logical session "${key}" while turn active; stop it before removing`,
+            );
+          }
+          // Cooperative shutdown (NOT close/discard): the shared physical
+          // record and history belong to the surviving sibling alias.
+          await client.shutdown().catch((error) => {
+            throw toTeardownError(key, error);
+          });
+          if (client.lifecycle === "stopped") {
+            await this.manager?.release(key, client);
+          } else {
+            throw new RuntimeError(
+              "RUNTIME_WORKER_TEARDOWN_PENDING",
+              `logical worker for session "${key}" did not reach stopped after shutdown`,
+            );
+          }
+        } else {
+          this.manager?.deleteWorker(key, client);
+        }
+      }
+      // The queue journal belongs to the dead logical alias: drop it. The
+      // physical record/history are deliberately untouched (fail-closed on
+      // journal errors like deleteSession).
+      await this.getQueueStore().removeJournal(key);
+      this.clearActiveTurn(key);
+      this.coolPending.delete(key);
+      this.recordIds.delete(key);
+      this.sessionCatalog.delete(key);
+      this.lastMcpIdentity.delete(key);
+      this.staleAfterTurn.delete(key);
+      const timer = this.idleTimers.get(key);
+      if (timer) {
+        clearTimeout(timer);
+        this.idleTimers.delete(key);
+      }
+      // Ownership quiescence against the worker's registered fence mapping:
+      // release retired it above, so success implies no worker, no acquiring,
+      // no fence for this alias.
+      await this.waitForWorkerQuiescence(key, physicalFenceKey);
+      return {};
+    } catch (error) {
+      throw toStableRuntimeError(error);
+    } finally {
+      this.deleting.delete(key);
+      this.queueSuspended.delete(key);
+    }
+  }
+
   async isSessionWarm(input: EngineSessionInput): Promise<{ warm: boolean }> {
     const key = this.workerKey(input);
     return { warm: this.manager?.isWarm(key) === true };

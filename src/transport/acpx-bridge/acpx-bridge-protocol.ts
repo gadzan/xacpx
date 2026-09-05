@@ -23,6 +23,7 @@ export type BridgeMethod =
   | "cancel"
   | "removeSession"
   | "deleteSession"
+  | "releaseLogicalSession"
   | "freeWarmProcess"
   | "isSessionWarm"
   | "getAgentSessionId"

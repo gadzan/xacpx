@@ -64,6 +64,7 @@ const BRIDGE_METHODS = new Set<BridgeMethod>([
   "cancel",
   "removeSession",
   "deleteSession",
+  "releaseLogicalSession",
   "freeWarmProcess",
   "isSessionWarm",
   "getAgentSessionId",
@@ -85,6 +86,7 @@ const SESSION_SCOPED_METHODS = new Set<BridgeMethod>([
   "cancel",
   "removeSession",
   "deleteSession",
+  "releaseLogicalSession",
   "freeWarmProcess",
   "isSessionWarm",
   "getAgentSessionId",
@@ -540,6 +542,15 @@ agent: requireString(params, "agent"),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
         }, params));
+      case "releaseLogicalSession":
+        return (await this.engines.releaseLogicalSession?.(withMcp({
+agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
+          agentCommand: asOptionalString(params.agentCommand),
+          ...agentLaunchSelection(params),
+          cwd: requireString(params, "cwd"),
+          name: requireString(params, "name"),
+        }, params))) ?? {};
       case "freeWarmProcess":
         return await this.engines.freeWarmProcess(withMcp({
 agent: requireString(params, "agent"),

@@ -125,6 +125,10 @@ export class EngineRouter implements BridgeEngine {
     return this.engineFor(input).deleteSession(input);
   }
 
+  async releaseLogicalSession(input: EngineSessionInput): Promise<Record<string, never>> {
+    return (await this.engineFor(input).releaseLogicalSession?.(input)) ?? {};
+  }
+
   freeWarmProcess(input: EngineSessionInput) {
     return this.engineFor(input).freeWarmProcess(input);
   }

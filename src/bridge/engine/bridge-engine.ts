@@ -29,6 +29,13 @@ export interface BridgeEngine {
   cancel(input: EngineSessionInput): Promise<{ cancelled: boolean; message: string }>;
   removeSession(input: EngineSessionInput): Promise<Record<string, never>>;
   deleteSession(input: EngineSessionInput): Promise<Record<string, never>>;
+  /**
+   * Release one logical alias's engine-side state without touching the shared
+   * physical session (see SessionTransport.releaseLogicalSession). Optional:
+   * engines without per-logical runtime state omit it and the router treats
+   * a missing implementation as a no-op.
+   */
+  releaseLogicalSession?(input: EngineSessionInput): Promise<Record<string, never>>;
   freeWarmProcess(input: EngineSessionInput): Promise<Record<string, never>>;
   isSessionWarm(input: EngineSessionInput): Promise<{ warm: boolean }>;
   getAgentSessionId(input: EngineSessionInput): Promise<{ agentSessionId: string | undefined }>;

@@ -271,6 +271,15 @@ export interface SessionTransport {
    */
   deleteSession?(session: ResolvedSession): Promise<void>;
   /**
+   * Release one logical alias's engine-side state WITHOUT touching the
+   * shared physical session: terminate/release its worker, retire its fence
+   * ownership, drop its queue journal/catalog/timers — but keep the acpx
+   * record and history (a sibling alias still owns them). Fails closed
+   * while the alias has an active turn (caller keeps the logical row).
+   * Optional: transports without per-logical engine state omit it.
+   */
+  releaseLogicalSession?(session: ResolvedSession): Promise<void>;
+  /**
    * Terminate the warm queue-owner process for this session, freeing its
    * resources, WITHOUT closing the acpx session (no `closed` flag, no metadata
    * change) — the session stays open and resumes with full history on the next

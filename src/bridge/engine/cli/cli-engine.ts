@@ -87,6 +87,12 @@ export class CliEngine implements BridgeEngine {
     return this.runtime.deleteSession(input);
   }
 
+  releaseLogicalSession(_input: EngineSessionInput): Promise<Record<string, never>> {
+    // CLI runtime keeps no per-logical worker/queue/catalog state: a
+    // non-last shared-alias remove correctly calls nothing today.
+    return Promise.resolve({});
+  }
+
   freeWarmProcess(input: EngineSessionInput): Promise<Record<string, never>> {
     return this.runtime.freeWarmProcess(input);
   }

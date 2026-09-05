@@ -984,6 +984,55 @@ test.serial("P1-16: busy sibling alias fails fast without a second owner, hands 
   }
 }, 15_000);
 
+test.serial("P1-17: releaseLogicalSession refuses while the alias turn is active", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-release-busy-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 60_000,
+  });
+  try {
+    const manager: any = (engine as any).manager;
+    const input = { ...testInput, cwd: "/repo/release-busy" };
+    const key = testInput.logicalSessionId;
+    const pPrompt = engine.prompt({ ...input, text: "slow-release" });
+    pPrompt.catch(() => {});
+    for (let i = 0; i < 400; i++) {
+      if (manager.get(key)?.lifecycle === "busy") break;
+      const { promise: tick, resolve: tickResolve } = Promise.withResolvers<void>();
+      setTimeout(tickResolve, 5);
+      await tick;
+    }
+    const pid: number = manager.get(key).ref.pid;
+    expect(manager.get(key)?.lifecycle).toBe("busy");
+    // Release during the turn must fail closed WITHOUT touching the worker:
+    // the logical row stays, the turn keeps running.
+    await expect(engine.releaseLogicalSession(input as any)).rejects.toMatchObject({
+      code: "RUNTIME_WORKER_TEARDOWN_PENDING",
+    });
+    expect(manager.get(key)?.ref.pid).toBe(pid);
+    expect(pidAlive(pid)).toBe(true);
+    await pPrompt;
+    // After settle the same release succeeds and retires the worker.
+    await engine.releaseLogicalSession(input as any);
+    expect(manager.get(key)).toBeUndefined();
+    expect(pidAlive(pid)).toBe(false);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
 test.serial("P1-12: residual fence without record blocks delete (fail-closed)", async () => {
   const testInput = uniqueInput();
   const dir = await mkdtemp(join(tmpdir(), "rt-residual-fence-"));

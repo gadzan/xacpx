@@ -754,6 +754,20 @@ async function removeSessionUnderAliasClaim(
   }
 
   const sharedAliasCount = context.sessions.countAliasesSharingTransport(session.transportSession, internalAlias);
+  // Runtime-bound aliases carry per-LID engine state (worker, fence mapping,
+  // queue journal, catalog) that must be settled BEFORE the logical row
+  // disappears. Non-last alias: release the LID state, keep the shared
+  // physical session. Last alias: hard-delete the physical session FIRST so
+  // a failure keeps the logical row (and the retry handle) instead of
+  // degrading to an unretryable warning with orphaned state.
+  const runtimeRelease = session.transportEngine === "runtime" ? context.transport.releaseLogicalSession : undefined;
+  if (runtimeRelease) {
+    if (sharedAliasCount > 0) {
+      await runtimeRelease.call(context.transport, session);
+    } else {
+      await context.transport.deleteSession?.(session);
+    }
+  }
   const wasCurrentInThisChat = context.sessions.peekCurrentSessionAlias(chatKey) === internalAlias;
   const { wasActive } = await context.sessions.removeSession(internalAlias);
   // removeSession promotes previous_session to current_session; if that
@@ -778,9 +792,13 @@ async function removeSessionUnderAliasClaim(
     }
   }
 
+  // Runtime-managed aliases already settled their transport state above
+  // (release or hard delete, both throwing on failure so the logical row is
+  // kept). Only the legacy CLI path degrades transport failure to a warning.
+  const runtimeManaged = runtimeRelease !== undefined;
   let transportTeardownWarning: string | undefined;
   const shouldTeardownTransport = sharedAliasCount === 0;
-  if (shouldTeardownTransport && context.transport.deleteSession) {
+  if (!runtimeManaged && shouldTeardownTransport && context.transport.deleteSession) {
     try {
       await context.transport.deleteSession(session);
     } catch (error) {

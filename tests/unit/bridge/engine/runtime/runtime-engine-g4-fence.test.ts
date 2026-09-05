@@ -499,4 +499,103 @@ describe("RuntimeEngine G4 physical fence delete quiescence", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  test("releaseLogicalSession drops alias state but keeps the shared physical record", async () => {
+      const dir = await mkdtemp(join(tmpdir(), "rt-g4-release-alias-"));
+      const sessionsDir = join(dir, ".acpx", "sessions");
+      const fenceDir = join(dir, ".acpx", "worker-fences");
+      const queueDir = join(dir, ".acpx", "runtime-queue");
+      await mkdir(sessionsDir, { recursive: true });
+      await mkdir(fenceDir, { recursive: true });
+      await mkdir(queueDir, { recursive: true });
+
+      const sibling1: EngineSessionInput = {
+        agent: "codex",
+        cwd: "/repo",
+        name: "shared-physical-session",
+        logicalSessionId: "alias-worker-1",
+      };
+      const sibling2: EngineSessionInput = {
+        agent: "codex",
+        cwd: "/repo",
+        name: "shared-physical-session",
+        logicalSessionId: "alias-worker-2",
+      };
+
+      try {
+        const entry = join(dir, "fake-worker.mjs");
+        await withFakeWorker(entry);
+
+        const recordFile = join(sessionsDir, "real-acpx-rec-1234.json");
+        await writeFile(
+          recordFile,
+          JSON.stringify({
+            schema: "acpx.session.v1",
+            acpx_record_id: "real-acpx-rec-1234",
+            name: sibling1.name,
+            cwd: sibling1.cwd,
+            agent_command: sibling1.agent,
+          }),
+        );
+
+        const engine = new RuntimeEngine({
+          workerEntryPath: entry,
+          stateDir: sessionsDir,
+          fenceDir,
+          queueDir,
+          workerQuiescenceTimeoutMs: 100,
+          permissionMode: "approve-all",
+          // TTL fully disabled: the chain must succeed without any idle reap.
+          idleTtlMs: 0,
+        });
+        const manager: any = (engine as any).manager;
+        const store = (engine as any).getQueueStore();
+
+        // Warm A and seed A's own queue journal directly (store layer only —
+        // no drain kick, so the journal is deterministically present).
+        const promptResult = await engine.prompt({ ...sibling1, text: "hello" });
+        expect(promptResult.text).toBe("ok");
+        const oldPid: number = manager.get("alias-worker-1").ref.pid;
+        await store.enqueue("alias-worker-1", {
+          messageId: "m-a1",
+          text: "queued-a",
+          mode: "queue",
+        });
+        expect(await store.hasPending("alias-worker-1")).toBe(true);
+
+        // Release A's logical alias: worker/mapping/journal gone, shared
+        // physical record and history untouched, fence retired.
+        await engine.releaseLogicalSession(sibling1);
+        expect(manager.get("alias-worker-1")).toBeUndefined();
+        expect(manager.physicalFenceKeyFor("alias-worker-1")).toBeUndefined();
+        expect(await store.hasPending("alias-worker-1")).toBe(false);
+        try {
+          process.kill(oldPid, 0);
+          expect.unreachable("old worker process must be dead after release");
+        } catch {
+          // ESRCH: dead as required.
+        }
+        expect(
+          JSON.parse(await readFile(recordFile, "utf-8")).acpx_record_id,
+        ).toBe("real-acpx-rec-1234");
+        const physicalKey = computePhysicalFenceKey(sibling1);
+        const fence = new RuntimeWorkerFence(fenceDir);
+        expect((await fence.read(physicalKey)).kind).toBe("absent");
+
+        // B remains fully usable on the same physical record.
+        const promptB = await engine.prompt({ ...sibling2, text: "hello" });
+        expect(promptB.text).toBe("ok");
+        const newPid: number = manager.get("alias-worker-2").ref.pid;
+        expect(newPid).not.toBe(oldPid);
+
+        // Last-alias hard delete removes everything: record, fence, workers.
+        await engine.deleteSession(sibling2);
+        expect(manager.workers().length).toBe(0);
+        await expect(access(recordFile)).rejects.toThrow();
+        expect((await fence.read(physicalKey)).kind).toBe("absent");
+        await engine.shutdown();
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
 });

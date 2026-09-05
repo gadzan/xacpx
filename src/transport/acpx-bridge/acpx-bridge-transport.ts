@@ -273,6 +273,10 @@ export class AcpxBridgeTransport implements SessionTransport {
     await this.client.request("deleteSession", this.toParams(session));
   }
 
+  async releaseLogicalSession(session: ResolvedSession): Promise<void> {
+    await this.client.request("releaseLogicalSession", this.toParams(session));
+  }
+
   async freeWarmProcess(session: ResolvedSession): Promise<void> {
     await this.client.request("freeWarmProcess", this.toParams(session));
   }

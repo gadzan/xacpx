@@ -172,6 +172,18 @@ export class SessionControlService {
       }
     }
     const sharedAliasCount = this.sessions.countAliasesSharingTransport(session.transportSession, internalAlias);
+    // Same lifecycle contract as the chat remove path: Runtime-bound aliases
+    // settle engine state BEFORE the logical row disappears (release for a
+    // non-last sibling, verified hard delete for the last alias — a failure
+    // keeps the logical row and the retry handle).
+    const runtimeRelease = session.transportEngine === "runtime" ? this.transport.releaseLogicalSession : undefined;
+    if (runtimeRelease) {
+      if (sharedAliasCount > 0) {
+        await runtimeRelease.call(this.transport, session);
+      } else {
+        await this.transport.deleteSession?.(session);
+      }
+    }
     const { wasActive } = await this.sessions.removeSession(internalAlias);
 
     if (this.orchestration) {
@@ -186,9 +198,10 @@ export class SessionControlService {
       }
     }
 
-    let transportTornDown = false;
+    const runtimeManaged = runtimeRelease !== undefined;
+    let transportTornDown = runtimeManaged;
     let transportTeardownWarning: string | undefined;
-    if (sharedAliasCount === 0 && this.transport.deleteSession) {
+    if (!runtimeManaged && sharedAliasCount === 0 && this.transport.deleteSession) {
       try {
         await this.transport.deleteSession(session);
         transportTornDown = true;
