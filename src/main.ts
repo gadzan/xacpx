@@ -8,6 +8,7 @@ import { coreHomeDir } from "./runtime/core-home";
 import { coreEnv } from "./runtime/core-env";
 
 import { CommandRouter } from "./commands/command-router";
+import type { ConfigMutationMutex } from "./commands/router-types";
 import { ConfigStore } from "./config/config-store";
 import { ensureConfigExists } from "./config/ensure-config";
 import { loadConfig } from "./config/load-config";
@@ -281,6 +282,12 @@ export interface AppRuntime {
   dispose: () => Promise<void>;
   reloadRuntimeConfig?: () => Promise<AppConfig>;
   applyRuntimePermissionConfig?: (nextConfig: AppConfig) => Promise<AppConfig>;
+  /**
+   * Daemon-wide config disk + permission executor serialization domain.
+   * Exposed so tests can build handler contexts sharing the production
+   * instance (handler transaction vs watcher reload interleavings).
+   */
+  configMutationMutex: ConfigMutationMutex;
 }
 
 interface RuntimeDeps {
@@ -518,6 +525,15 @@ export async function buildApp(
     }
   }
   const stateMutex = new AsyncMutex();
+  /**
+   * Daemon-wide config disk + permission executor serialization domain (see
+   * ConfigMutationMutex in commands/router-types). Held across every
+   * write → permission-transaction → publish/rollback sequence (/config, /pm)
+   * and across every load → permission-transaction → publish sequence
+   * (watcher + orchestration reloads), so a stale reload snapshot can never
+   * commit a value the owning handler already rolled back.
+   */
+  const configMutationMutex = new AsyncMutex();
   const debouncedStateStore = new DebouncedStateStore({
     delegate: stateStore,
     intervalMs: deps.stateSaveDebounceMs ?? 50,
@@ -785,8 +801,13 @@ export async function buildApp(
     });
   };
   const reloadRuntimeConfig = async (): Promise<AppConfig> => {
-    const updated = await configStore.load();
-    return await applyPermissionConfig(updated);
+    // Load + permission transaction + live publish as one serialized unit:
+    // the snapshot must be taken inside the same domain that serializes the
+    // /config + /pm write → transact → publish/rollback sequences.
+    return await configMutationMutex.run(async () => {
+      const updated = await configStore.load();
+      return await applyPermissionConfig(updated);
+    });
   };
   // Per-chatKey outbound quota (WeChat 24h budget). Shared across SDK boundary
   // (inbound reset / final reservation) and orchestration deliveries (mid gate).
@@ -1674,6 +1695,7 @@ export async function buildApp(
       : undefined,
     activeTurns,
     controlEvents,
+    configMutationMutex,
   );
   const agent = new ConsoleAgent(router, logger);
   const terminalService = createTerminalService({
@@ -2077,6 +2099,7 @@ export async function buildApp(
     control,
     reloadRuntimeConfig,
     applyRuntimePermissionConfig: applyPermissionConfig,
+    configMutationMutex,
     reapStaleQueueOwners: () => reapWarmQueueOwners("startup"),
     ...(deps.orphanRegistry && deps.daemonIdentity
       ? { reconcileOrphans: () => reapWarmQueueOwners("periodic") }

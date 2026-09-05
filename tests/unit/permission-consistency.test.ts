@@ -593,6 +593,7 @@ test("/config set rejects ineligible nonInteractivePermissions when runtime sess
       replaceConfig: (updated: AppConfig) => {
         Object.assign((app.router as unknown as { config: AppConfig }).config, updated);
       },
+      configMutationMutex: app.configMutationMutex,
     };
 
     // /config set transport.nonInteractivePermissions fail -> rejected
@@ -843,6 +844,7 @@ test("/config set while a restart is pending holds live topology", async () => {
       logger: app.logger,
       replaceConfig: (updated: AppConfig) =>
         routerView.replaceConfig(updated),
+      configMutationMutex: app.configMutationMutex,
     };
 
     // First write stages a pending restart topology on disk; the live
@@ -875,6 +877,100 @@ test("/config set while a restart is pending holds live topology", async () => {
     expect(liveConfig.agents["extra-agent"]?.driver).toBe("codex");
     expect(liveConfig.transport.type).toBe("acpx-cli");
     expect(liveConfig.transport.command).toBe("acpx");
+  } finally {
+    await app.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("stale watcher reload cannot commit a rolled-back permission after handler failure", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-perm-stale-reload-"));
+  const configPath = join(dir, "config.json");
+  const statePath = join(dir, "state.json");
+  const OLD_MODE = "deny-all";
+  const NEW_MODE = "approve-all";
+
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      transport: {
+        type: "acpx-bridge",
+        permissionMode: OLD_MODE,
+        nonInteractivePermissions: "deny",
+      },
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
+    }),
+  );
+
+  // Executor mock: the FIRST permission transaction (the handler's) blocks
+  // on a gate, then fails like a transient CLI commit failure. Any later
+  // transaction succeeds — so a stale reload that slips through would
+  // observably widen the executor.
+  const attempts: PermissionPolicy[] = [];
+  let committed: PermissionPolicy | null = null;
+  const firstEntered = Promise.withResolvers<void>();
+  const firstGate = Promise.withResolvers<void>();
+  const mockTransport: SessionTransport = {
+    prompt: mock(async () => ({ text: "ok", stopReason: "end_turn" })),
+    updatePermissionPolicy: mock(async (policy: PermissionPolicy) => {
+      attempts.push({ ...policy });
+      if (attempts.length === 1) {
+        firstEntered.resolve();
+        await firstGate.promise;
+        throw new Error("CLI commit boom");
+      }
+      committed = { ...policy };
+    }),
+  };
+
+  const app = await buildApp(
+    { configPath, statePath },
+    { createBridgeTransport: async () => mockTransport },
+  );
+  try {
+    const routerView = viewRouterConfig(app.router);
+    const liveConfig = routerView.config;
+    const handlerContext = {
+      sessions: app.sessions,
+      transport: app.transport,
+      config: liveConfig,
+      configStore: app.configStore,
+      logger: app.logger,
+      replaceConfig: (updated: AppConfig) => routerView.replaceConfig(updated),
+      configMutationMutex: app.configMutationMutex,
+    };
+
+    // Handler writes NEW to disk first, then blocks inside its permission
+    // transaction — exactly the window a debounced self-write watcher fires in.
+    const handlerTx = handleConfigSet(handlerContext, "transport.permissionMode", NEW_MODE);
+    handlerTx.catch(() => {});
+    await firstEntered.promise;
+    expect(JSON.parse(await readFile(configPath, "utf8")).transport.permissionMode).toBe(NEW_MODE);
+
+    // Stale watcher reload: loads while NEW is still on disk. Under the
+    // shared mutex it must queue behind the handler transaction; without
+    // the mutex it would load NEW and commit it after the rollback below.
+    const watcherTx = app.reloadRuntimeConfig?.() ?? Promise.resolve(liveConfig);
+    watcherTx.catch(() => {});
+    // Bounded event-loop flush so a (broken) unserialized reload can run as
+    // far as the executor. A serialized reload stays queued on the mutex.
+    for (let i = 0; i < 50; i++) {
+      if (attempts.length >= 2) break;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+
+    // Fail the handler transaction → disk+live rollback, caller sees failure.
+    firstGate.resolve();
+    await expect(handlerTx).rejects.toThrow(/CLI commit boom/);
+    await watcherTx;
+
+    // Reported-failed transaction authorizes no side effect: disk, live and
+    // executor are all OLD, and the rolled-back value was never committed.
+    expect(JSON.parse(await readFile(configPath, "utf8")).transport.permissionMode).toBe(OLD_MODE);
+    expect(liveConfig.transport.permissionMode).toBe(OLD_MODE);
+    expect(committed).toBeNull();
+    expect(attempts).toHaveLength(1);
   } finally {
     await app.dispose();
     await rm(dir, { recursive: true, force: true });

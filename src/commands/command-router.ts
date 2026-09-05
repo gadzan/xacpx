@@ -68,6 +68,7 @@ import { AutoInstallFailedError } from "../recovery/errors";
 import { handleSessionResetCommand } from "./handlers/session-reset-handler";
 import type {
   CommandRouterContext,
+  ConfigMutationMutex,
   RouterResponse,
   ScheduledDeliveryCapabilityOps,
   ScheduledRouterOps,
@@ -80,6 +81,7 @@ import type {
   OrchestrationRouterOps,
   WritableConfigStore,
 } from "./router-types";
+import { AsyncMutex } from "../orchestration/async-mutex";
 import { renderLaterUnsupportedChannel } from "../scheduled/scheduled-render";
 import { TransportInvoker } from "./transport-invoker";
 import { SessionControlService } from "./session-control-service";
@@ -119,6 +121,13 @@ export class CommandRouter {
     private readonly resolveNativeSessionListFormat?: (chatKey: string) => "cards" | "table",
     activeTurns?: ActiveTurnRegistry,
     private readonly controlEvents?: ControlEventBus,
+    /**
+     * Shared config disk + permission executor serialization domain (see
+     * ConfigMutationMutex). Defaults to a router-private instance; production
+     * passes the daemon-wide mutex so handler transactions and the config
+     * watcher reload path serialize against each other.
+     */
+    private readonly configMutationMutex: ConfigMutationMutex = new AsyncMutex(),
   ) {
     this.logger = logger ?? createNoopAppLogger();
     this.activeTurns = activeTurns;
@@ -486,10 +495,6 @@ export class CommandRouter {
     });
   }
 
-  async clearSession(chatKey: string): Promise<void> {
-    await handleSessionResetCommand(this.createHandlerContext(), this.createSessionResetOps(), chatKey);
-  }
-
   private createHandlerContext(): CommandRouterContext {
     return {
       sessions: this.sessions,
@@ -499,6 +504,7 @@ export class CommandRouter {
       configStore: this.configStore,
       logger: this.logger,
       replaceConfig: (updated) => this.replaceConfig(updated),
+      configMutationMutex: this.configMutationMutex,
       ...(this.quota ? { quota: this.quota } : {}),
       ...(this.resolveNativeSessionListFormat ? { resolveNativeSessionListFormat: this.resolveNativeSessionListFormat } : {}),
     };

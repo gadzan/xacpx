@@ -1147,6 +1147,40 @@ export class RuntimeEngine implements BridgeEngine {
     return true;
   }
 
+  /**
+   * Warm-reuse gate for Runtime construction identity (sessionKey / cwd /
+   * agent launch identity — exactly the physical fence key). The worker
+   * treats these as immutable launch identity and fails closed on drift
+   * ("… differ from its immutable launch identity … tear down this worker
+   * instead"), so the Host must rotate the warm worker itself instead of
+   * sending the drifted ensure and failing every call until TTL. Mirrors the
+   * MCP stale rotation above: idle → verified shutdown + release under the
+   * OLD fence mapping (release retires the registered key); active → mark
+   * stale-after-turn and fail fast, the settle paths retire cooperatively via
+   * the worker-side dispatch gate. MCP identity is covered by
+   * checkMcpStaleAndRotate; stateDir is daemon-constant.
+   */
+  private async checkConstructionStaleAndRotate(input: EngineSessionInput): Promise<boolean> {
+    const key = this.workerKey(input);
+    const requested = this.physicalFenceKeyForInput(input);
+    const registered = this.manager?.physicalFenceKeyFor(key);
+    if (!registered || registered === requested) return false;
+    const existingClient = this.manager?.get(key);
+    // Registered mapping without a live worker heals on the next acquire
+    // (acquire overwrites the mapping when it spawns).
+    if (!existingClient) return false;
+    const isActive = this.isStaleActiveForInjectOrCheck(key, existingClient, false);
+    if (isActive) {
+      this.staleAfterTurn.add(key);
+      throw new RuntimeError("RUNTIME_IDENTITY_STALE", `construction identity changed for session "${key}" while turn active; will rotate after settle`);
+    }
+    await existingClient.shutdown().catch((e) => { throw toTeardownError(key, e); });
+    if (existingClient.lifecycle === "stopped") await this.manager?.release(key, existingClient).catch((e) => { throw toTeardownError(key, e); });
+    else throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `stale construction worker for "${key}" did not reach stopped after shutdown`);
+    this.staleAfterTurn.delete(key);
+    return true;
+  }
+
   private async ensureWorker(input: EngineSessionInput): Promise<RuntimeWorkerClient> {
     if (!this.isRuntimeEligible()) {
       throw new RuntimeError("RUNTIME_ENGINE_UNSUPPORTED", "runtime ineligible: nonInteractivePermissions=fail or escalate policy requires CLI");
@@ -1222,6 +1256,10 @@ export class RuntimeEngine implements BridgeEngine {
     try {
       try {
         await this.checkMcpStaleAndRotate(input, false);
+        // Construction-identity drift (hot-updated agent command / workspace
+        // cwd) rotates the warm worker BEFORE acquire: the worker would
+        // otherwise fail closed on every subsequent ensure until TTL.
+        await this.checkConstructionStaleAndRotate(input);
         this.assertLifecycleEpoch(key, _lifecycleEpochAtEntry);
         const existingTimer = this.idleTimers.get(key);
         if (existingTimer) {

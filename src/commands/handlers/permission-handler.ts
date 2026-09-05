@@ -37,31 +37,34 @@ export async function handlePermissionModeSet(
   }
 
   const previous = cloneAppConfig(context.config);
-  const previousRaw = await context.configStore.getRawValue(["transport", "permissionMode"]);
-  const updated = await context.configStore.updateTransport({
-    permissionMode: mode,
-  });
-  try {
-    assertEligibleForRuntimePermissionChange(
-      context.sessions?.hasPersistedRuntimeBindings?.() ?? false,
-      {
-        permissionPolicy: updated.transport.permissionPolicy,
-        nonInteractivePermissions: updated.transport.nonInteractivePermissions,
-      },
-    );
-    await context.transport.updatePermissionPolicy?.(updated.transport);
-  } catch (error) {
-    // Restore the operator's exact previous raw value (or its absence).
-    if (previousRaw.present) {
-      await context.configStore.setRawValue(["transport", "permissionMode"], previousRaw.value);
-    } else {
-      await context.configStore.unsetRawValue(["transport", "permissionMode"]);
+  const configStore = context.configStore;
+  return await context.configMutationMutex.run(async () => {
+    const previousRaw = await configStore.getRawValue(["transport", "permissionMode"]);
+    const updated = await configStore.updateTransport({
+      permissionMode: mode,
+    });
+    try {
+      assertEligibleForRuntimePermissionChange(
+        context.sessions?.hasPersistedRuntimeBindings?.() ?? false,
+        {
+          permissionPolicy: updated.transport.permissionPolicy,
+          nonInteractivePermissions: updated.transport.nonInteractivePermissions,
+        },
+      );
+      await context.transport.updatePermissionPolicy?.(updated.transport);
+    } catch (error) {
+      // Restore the operator's exact previous raw value (or its absence).
+      if (previousRaw.present) {
+        await configStore.setRawValue(["transport", "permissionMode"], previousRaw.value);
+      } else {
+        await configStore.unsetRawValue(["transport", "permissionMode"]);
+      }
+      context.replaceConfig(previous);
+      throw error;
     }
-    context.replaceConfig(previous);
-    throw error;
-  }
-  context.replaceConfig(updated);
-  return { text: renderPermissionStatus(context.config, p.statusTitleModeUpdated) };
+    context.replaceConfig(updated);
+    return { text: renderPermissionStatus(context.config, p.statusTitleModeUpdated) };
+  });
 }
 
 export function handlePermissionAutoStatus(context: CommandRouterContext): RouterResponse {
@@ -78,31 +81,34 @@ export async function handlePermissionAutoSet(
   }
 
   const previous = cloneAppConfig(context.config);
-  const previousRaw = await context.configStore.getRawValue(["transport", "nonInteractivePermissions"]);
-  const updated = await context.configStore.updateTransport({
-    nonInteractivePermissions: policy,
-  });
-  try {
-    assertEligibleForRuntimePermissionChange(
-      context.sessions?.hasPersistedRuntimeBindings?.() ?? false,
-      {
-        permissionPolicy: updated.transport.permissionPolicy,
-        nonInteractivePermissions: updated.transport.nonInteractivePermissions,
-      },
-    );
-    await context.transport.updatePermissionPolicy?.(updated.transport);
-  } catch (error) {
-    // Restore the operator's exact previous raw value (or its absence).
-    if (previousRaw.present) {
-      await context.configStore.setRawValue(["transport", "nonInteractivePermissions"], previousRaw.value);
-    } else {
-      await context.configStore.unsetRawValue(["transport", "nonInteractivePermissions"]);
+  const configStore = context.configStore;
+  return await context.configMutationMutex.run(async () => {
+    const previousRaw = await configStore.getRawValue(["transport", "nonInteractivePermissions"]);
+    const updated = await configStore.updateTransport({
+      nonInteractivePermissions: policy,
+    });
+    try {
+      assertEligibleForRuntimePermissionChange(
+        context.sessions?.hasPersistedRuntimeBindings?.() ?? false,
+        {
+          permissionPolicy: updated.transport.permissionPolicy,
+          nonInteractivePermissions: updated.transport.nonInteractivePermissions,
+        },
+      );
+      await context.transport.updatePermissionPolicy?.(updated.transport);
+    } catch (error) {
+      // Restore the operator's exact previous raw value (or its absence).
+      if (previousRaw.present) {
+        await configStore.setRawValue(["transport", "nonInteractivePermissions"], previousRaw.value);
+      } else {
+        await configStore.unsetRawValue(["transport", "nonInteractivePermissions"]);
+      }
+      context.replaceConfig(previous);
+      throw error;
     }
-    context.replaceConfig(previous);
-    throw error;
-  }
-  context.replaceConfig(updated);
-  return { text: renderPermissionStatus(context.config, p.statusTitleAutoUpdated) };
+    context.replaceConfig(updated);
+    return { text: renderPermissionStatus(context.config, p.statusTitleAutoUpdated) };
+  });
 }
 
 export function renderPermissionStatus(config: AppConfig | undefined, title: string): string {

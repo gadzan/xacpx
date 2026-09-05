@@ -62,6 +62,20 @@ export type WritableConfigStore = Pick<
   | "unsetRawValue"
 >;
 
+/**
+ * Serialization domain for config disk mutations + permission executor
+ * mutations. The /config + /pm handlers (write new disk config → permission
+ * transport transaction → live publish or disk+live rollback) and the config
+ * watcher / orchestration reload path (load disk snapshot → permission
+ * transaction → live publish) MUST share one instance: otherwise a stale
+ * watcher snapshot loaded while a handler transaction is in flight can
+ * commit the rolled-back value after the handler reports failure.
+ * Structurally satisfied by AsyncMutex; kept as an interface so contexts
+ * stay decoupled from the implementation.
+ */
+export interface ConfigMutationMutex {
+  run<T>(critical: () => Promise<T>): Promise<T>;
+}
 export interface CommandRouterContext {
   sessions: SessionService;
   transport: SessionTransport;
@@ -70,6 +84,13 @@ export interface CommandRouterContext {
   configStore?: WritableConfigStore;
   logger: AppLogger;
   replaceConfig: (updated: AppConfig) => void;
+  /**
+   * Shared serialization domain for config disk mutations + permission
+   * executor mutations (see ConfigMutationMutex). Handlers MUST run their
+   * write → permission-transaction → publish/rollback sequence inside it;
+   * the daemon reload path holds the same instance.
+   */
+  configMutationMutex: ConfigMutationMutex;
   quota?: QuotaManager;
   /**
    * Resolves the render format for a chat's `/ssn` native session list. Backed

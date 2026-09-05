@@ -83,40 +83,48 @@ export async function handleConfigSet(
   }
 
   const previousConfig = cloneAppConfig(context.config);
-  // Capture the raw (file) value before patching so a rollback restores the
-  // operator's exact previous state, not a parse-normalized copy of it.
-  const previousRaw = await context.configStore.getRawValue(plan.rawPath);
-  const updated = await context.configStore.setRawValue(plan.rawPath, plan.value);
+  // Narrowed for the closure below (narrowing does not cross the boundary).
+  const configStore = context.configStore;
+  // Whole sequence (disk write → permission transaction → live publish or
+  // disk+live rollback) runs inside the shared config mutation domain, so a
+  // watcher reload can never load this in-flight value and commit it after
+  // the rollback below reports failure.
+  return await context.configMutationMutex.run(async () => {
+    // Capture the raw (file) value before patching so a rollback restores the
+    // operator's exact previous state, not a parse-normalized copy of it.
+    const previousRaw = await configStore.getRawValue(plan.rawPath);
+    const updated = await configStore.setRawValue(plan.rawPath, plan.value);
 
-  if (path === "transport.permissionMode" || path === "transport.nonInteractivePermissions" || path === "transport.permissionPolicy") {
-    try {
-      assertEligibleForRuntimePermissionChange(
-        context.sessions?.hasPersistedRuntimeBindings?.() ?? false,
-        {
-          permissionPolicy: updated.transport.permissionPolicy,
-          nonInteractivePermissions: updated.transport.nonInteractivePermissions,
-        },
-      );
-      await context.transport.updatePermissionPolicy?.(updated.transport);
-    } catch (error) {
-      if (previousRaw.present) {
-        await context.configStore.setRawValue(plan.rawPath, previousRaw.value);
-      } else {
-        await context.configStore.unsetRawValue(plan.rawPath);
+    if (path === "transport.permissionMode" || path === "transport.nonInteractivePermissions" || path === "transport.permissionPolicy") {
+      try {
+        assertEligibleForRuntimePermissionChange(
+          context.sessions?.hasPersistedRuntimeBindings?.() ?? false,
+          {
+            permissionPolicy: updated.transport.permissionPolicy,
+            nonInteractivePermissions: updated.transport.nonInteractivePermissions,
+          },
+        );
+        await context.transport.updatePermissionPolicy?.(updated.transport);
+      } catch (error) {
+        if (previousRaw.present) {
+          await configStore.setRawValue(plan.rawPath, previousRaw.value);
+        } else {
+          await configStore.unsetRawValue(plan.rawPath);
+        }
+        context.replaceConfig(previousConfig);
+        throw error;
       }
-      context.replaceConfig(previousConfig);
-      throw error;
     }
-  }
-  if (path === "transport.type" || path === "transport.command") {
-    // Scheme A: persist the file edit but do NOT hot-apply it to the live
-    // config — the live transport object cannot be rebuilt in place, and a
-    // split-brain affinity selector would persist Runtime bindings the
-    // running daemon cannot execute. The operator restarts to pick it up.
-    return { text: c.restartRequired(path, plan.renderedValue) };
-  }
-  context.replaceConfig(updated);
-  return { text: c.updated(path, plan.renderedValue) };
+    if (path === "transport.type" || path === "transport.command") {
+      // Scheme A: persist the file edit but do NOT hot-apply it to the live
+      // config — the live transport object cannot be rebuilt in place, and a
+      // split-brain affinity selector would persist Runtime bindings the
+      // running daemon cannot execute. The operator restarts to pick it up.
+      return { text: c.restartRequired(path, plan.renderedValue) };
+    }
+    context.replaceConfig(updated);
+    return { text: c.updated(path, plan.renderedValue) };
+  });
 }
 
 interface PlannedConfigUpdate {

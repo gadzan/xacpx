@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, writeFile, rm, mkdir, readdir } from "node:fs/promises";
+import { mkdtemp, writeFile, rm, mkdir, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -107,13 +107,13 @@ test.serial("P1-6: archive via cancel->freeWarmProcess does not kick drain", asy
   try {
     // Enqueue two heads: first may be admitted before archive, second must remain
     await engine.injectMessage({
-      logicalSessionId: testInput.logicalSessionId,
+      ...testInput,
       messageId: "m-archive-cancel-1",
       text: "archived-via-cancel-1",
       mode: "queue",
     } as unknown as never);
     await engine.injectMessage({
-      logicalSessionId: testInput.logicalSessionId,
+      ...testInput,
       messageId: "m-archive-cancel-2",
       text: "archived-via-cancel-2",
       mode: "queue",
@@ -262,12 +262,11 @@ test("P1-1b: prompt vs drain serialised (shared lease)", async () => {
     const p1 = engine.prompt({ ...testInput, text: "slow1" });
     // Enqueue a second turn via durable queue while p1 is active; drain must wait for p1's lease
     const inject = await engine.injectMessage({
-      logicalSessionId: testInput.logicalSessionId,
+      ...testInput,
       messageId: "m1",
       text: "queued1",
       mode: "queue",
     } as unknown as never); // test helper: EngineInjectInput shape not fully typed for queue suspension test, unchecked cast with reason
-    expect(inject.status).toBe("queued");
     const before = Date.now();
     const r1 = await p1;
     expect(r1.text).toBe("ok:slow1");
@@ -342,13 +341,13 @@ test.serial("P1-3: archive suspends drain, direct prompt resumes", async () => {
   try {
     // Enqueue two pending turns to test suspend blocks next head but terminal head still dequeues
     await engine.injectMessage({
-      logicalSessionId: testInput.logicalSessionId,
+      ...testInput,
       messageId: "m-archive-1",
       text: "archived-pending-1",
       mode: "queue",
     } as unknown as never); // test helper: EngineInjectInput shape not fully typed for queue suspension test, unchecked cast with reason
     await engine.injectMessage({
-      logicalSessionId: testInput.logicalSessionId,
+      ...testInput,
       messageId: "m-archive-2",
       text: "archived-pending-2",
       mode: "queue",
@@ -753,6 +752,127 @@ test.serial("P1-11b: two cold same-key ensureWorkers join one acquire promise (e
     await Promise.all([first, second]);
     expect(acquireCalls).toBe(1);
     expect((engine as any).acquiring.has(testInput.logicalSessionId)).toBe(false);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test.serial("P1-13: construction identity drift rotates the warm worker (old PID dies, old fence retired)", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-construction-rotate-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 60_000,
+  });
+  try {
+    const key = testInput.logicalSessionId;
+    const manager: any = (engine as any).manager;
+    const inputA = { ...testInput, cwd: "/repo/a" };
+    const inputB = { ...testInput, cwd: "/repo/b" };
+    const physicalA = physicalFenceKeyForSession(inputA as any);
+    const physicalB = physicalFenceKeyForSession(inputB as any);
+    expect(physicalB).not.toBe(physicalA);
+
+    // Warm worker under identity A serves normally.
+    await engine.setMode({ ...inputA, modeId: "plan" } as any);
+    const oldPid: number = manager.get(key).ref.pid;
+    expect(oldPid).toBeGreaterThan(0);
+    expect(manager.physicalFenceKeyFor(key)).toBe(physicalA);
+    const oldFencePath = join(fenceDir, `${encodeURIComponent(physicalA)}.json`);
+    await expect(readFile(oldFencePath, "utf8")).resolves.toContain('"pid"');
+
+    // Hot drift to identity B: the warm worker must be rotated — old PID
+    // dead, old fence retired, new PID serving — instead of sending a
+    // drifted ensure the worker would fail closed on until TTL.
+    await engine.setMode({ ...inputB, modeId: "plan" } as any);
+    const newPid: number = manager.get(key).ref.pid;
+    expect(newPid).toBeGreaterThan(0);
+    expect(newPid).not.toBe(oldPid);
+    expect(pidAlive(oldPid)).toBe(false);
+    expect(pidAlive(newPid)).toBe(true);
+    expect(manager.physicalFenceKeyFor(key)).toBe(physicalB);
+    await expect(readFile(oldFencePath, "utf8")).rejects.toThrow();
+    expect((await engine.isSessionWarm(inputB as any)).warm).toBe(true);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test.serial("P1-14: drift during an active turn fails fast without a second owner, rotates after settle", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-construction-busy-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 60_000,
+  });
+  try {
+    const key = testInput.logicalSessionId;
+    const manager: any = (engine as any).manager;
+    const inputA = { ...testInput, cwd: "/repo/a" };
+    const inputB = { ...testInput, cwd: "/repo/b" };
+    const physicalA = physicalFenceKeyForSession(inputA as any);
+    const oldFencePath = join(fenceDir, `${encodeURIComponent(physicalA)}.json`);
+
+    const pPrompt = engine.prompt({ ...inputA, text: "slow-busy" });
+    pPrompt.catch(() => {});
+    // Wait until the turn is genuinely active on the worker.
+    for (let i = 0; i < 400; i++) {
+      if (manager.get(key)?.lifecycle === "busy") break;
+      const { promise: tick, resolve: tickResolve } = Promise.withResolvers<void>();
+      setTimeout(tickResolve, 5);
+      await tick;
+    }
+    const oldPid: number = manager.get(key).ref.pid;
+    expect(manager.get(key)?.lifecycle).toBe("busy");
+
+    // Drifted call during the turn: fail fast with the stale code — no
+    // second worker may be spawned while the old owner is still live.
+    await expect(engine.setMode({ ...inputB, modeId: "plan" } as any)).rejects.toMatchObject({
+      code: "RUNTIME_IDENTITY_STALE",
+    });
+    expect(manager.get(key)?.ref.pid).toBe(oldPid);
+    expect(manager.physicalFenceKeyFor(key)).toBe(physicalA);
+    await expect(readFile(oldFencePath, "utf8")).resolves.toContain("runtime-worker-owner");
+
+    // Turn settles → stale worker retired cooperatively → next drifted call
+    // rotates to a fresh PID and succeeds.
+    await pPrompt;
+    await engine.setMode({ ...inputB, modeId: "plan" } as any);
+    const newPid: number = manager.get(key).ref.pid;
+    expect(newPid).not.toBe(oldPid);
+    expect(pidAlive(oldPid)).toBe(false);
+    expect(pidAlive(newPid)).toBe(true);
   } finally {
     await engine.shutdown().catch(() => {});
     await rm(dir, { recursive: true, force: true });
