@@ -15,6 +15,7 @@ import { buildCoordinatorPrompt } from "../../orchestration/build-coordinator-pr
 import { stableCoordinatorSession } from "../../orchestration/coordinator-identity";
 import { toDisplaySessionAlias, getChannelIdFromChatKey, scopeDisplayAliasToInternal, resolveSessionAliasForInput } from "../../channels/channel-scope";
 import { resolveChannelDefaultReplyMode, resolveEffectiveReplyMode } from "./resolve-reply-mode";
+import { removeRuntimeAliasWithPhysicalLifecycle } from "../session-remove-lifecycle";
 import { quoteWorkspaceNameIfNeeded } from "../workspace-name";
 import type { SessionSwitchResult } from "../../sessions/session-service";
 import { decorateUnread } from "./session-list-marker";
@@ -756,20 +757,30 @@ async function removeSessionUnderAliasClaim(
   const sharedAliasCount = context.sessions.countAliasesSharingTransport(session.transportSession, internalAlias);
   // Runtime-bound aliases carry per-LID engine state (worker, fence mapping,
   // queue journal, catalog) that must be settled BEFORE the logical row
-  // disappears. Non-last alias: release the LID state, keep the shared
-  // physical session. Last alias: hard-delete the physical session FIRST so
-  // a failure keeps the logical row (and the retry handle) instead of
-  // degrading to an unretryable warning with orphaned state.
-  const runtimeRelease = session.transportEngine === "runtime" ? context.transport.releaseLogicalSession : undefined;
-  if (runtimeRelease) {
-    if (sharedAliasCount > 0) {
-      await runtimeRelease.call(context.transport, session);
-    } else {
-      await context.transport.deleteSession?.(session);
-    }
-  }
+  // disappears. They go through the physical-group remove transaction: the
+  // physical co-owner recount, the release-or-delete decision, and the
+  // durable logical remove all happen under one group lock, so concurrent
+  // sibling removes cannot both release and orphan the physical record —
+  // and a same-name/different-physical alias is hard-deleted, never
+  // released. Any transport failure propagates before the logical row
+  // disappears, keeping the retry handle.
+  const runtimeManaged =
+    session.transportEngine === "runtime" && typeof context.transport.releaseLogicalSession === "function";
+  let physicalSharedCount = sharedAliasCount;
   const wasCurrentInThisChat = context.sessions.peekCurrentSessionAlias(chatKey) === internalAlias;
-  const { wasActive } = await context.sessions.removeSession(internalAlias);
+  let wasActive = false;
+  if (runtimeManaged) {
+    const outcome = await removeRuntimeAliasWithPhysicalLifecycle({
+      sessions: context.sessions,
+      transport: context.transport,
+      session,
+      internalAlias,
+    });
+    wasActive = outcome.wasActive;
+    physicalSharedCount = outcome.sharedAliasCount;
+  } else {
+    ({ wasActive } = await context.sessions.removeSession(internalAlias));
+  }
   // removeSession promotes previous_session to current_session; if that
   // happened for this chat, the next plain message routes to the promoted
   // session, so the reply must name it instead of claiming a cleared context.
@@ -795,7 +806,8 @@ async function removeSessionUnderAliasClaim(
   // Runtime-managed aliases already settled their transport state above
   // (release or hard delete, both throwing on failure so the logical row is
   // kept). Only the legacy CLI path degrades transport failure to a warning.
-  const runtimeManaged = runtimeRelease !== undefined;
+  // The shared-transport message reports physical co-owners for Runtime
+  // (same count as name-based for CLI).
   let transportTeardownWarning: string | undefined;
   const shouldTeardownTransport = sharedAliasCount === 0;
   if (!runtimeManaged && shouldTeardownTransport && context.transport.deleteSession) {
@@ -813,7 +825,7 @@ async function removeSessionUnderAliasClaim(
   }
   await context.logger.info("session.removed", "removed logical session", {
     alias: internalAlias,
-    sharedAliasCount,
+    sharedAliasCount: physicalSharedCount,
     transportClosed: shouldTeardownTransport && transportTeardownWarning === undefined,
   });
 
@@ -827,7 +839,7 @@ async function removeSessionUnderAliasClaim(
     );
   }
   if (!shouldTeardownTransport) {
-    lines.push(s.sessionTransportShared(session.transportSession, sharedAliasCount));
+    lines.push(s.sessionTransportShared(session.transportSession, physicalSharedCount));
   }
   if (orchestrationPurgeWarning) {
     lines.push(s.sessionOrchestrationPurgeFailed(orchestrationPurgeWarning));

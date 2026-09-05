@@ -4,6 +4,7 @@ import type { AppLogger } from "../logging/app-logger";
 import type { SessionService } from "../sessions/session-service";
 import type { AgentSession, ResolvedSession, SessionTransport } from "../transport/types";
 import { resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
+import { removeRuntimeAliasWithPhysicalLifecycle } from "./session-remove-lifecycle";
 import type { OrchestrationRouterOps } from "./router-types";
 import type { TransportInvoker } from "./transport-invoker";
 
@@ -173,18 +174,25 @@ export class SessionControlService {
     }
     const sharedAliasCount = this.sessions.countAliasesSharingTransport(session.transportSession, internalAlias);
     // Same lifecycle contract as the chat remove path: Runtime-bound aliases
-    // settle engine state BEFORE the logical row disappears (release for a
-    // non-last sibling, verified hard delete for the last alias — a failure
-    // keeps the logical row and the retry handle).
-    const runtimeRelease = session.transportEngine === "runtime" ? this.transport.releaseLogicalSession : undefined;
-    if (runtimeRelease) {
-      if (sharedAliasCount > 0) {
-        await runtimeRelease.call(this.transport, session);
-      } else {
-        await this.transport.deleteSession?.(session);
-      }
+    // go through the physical-group remove transaction (recount, release or
+    // verified hard delete, durable logical remove — all under one group
+    // lock, all before the logical row disappears).
+    const runtimeManaged =
+      session.transportEngine === "runtime" && typeof this.transport.releaseLogicalSession === "function";
+    let physicalSharedCount = sharedAliasCount;
+    let wasActive = false;
+    if (runtimeManaged) {
+      const outcome = await removeRuntimeAliasWithPhysicalLifecycle({
+        sessions: this.sessions,
+        transport: this.transport,
+        session,
+        internalAlias,
+      });
+      wasActive = outcome.wasActive;
+      physicalSharedCount = outcome.sharedAliasCount;
+    } else {
+      ({ wasActive } = await this.sessions.removeSession(internalAlias));
     }
-    const { wasActive } = await this.sessions.removeSession(internalAlias);
 
     if (this.orchestration) {
       try {
@@ -198,7 +206,8 @@ export class SessionControlService {
       }
     }
 
-    const runtimeManaged = runtimeRelease !== undefined;
+    // Runtime-managed aliases already settled transport state inside the
+    // transaction (throwing on failure so the logical row is kept).
     let transportTornDown = runtimeManaged;
     let transportTeardownWarning: string | undefined;
     if (!runtimeManaged && sharedAliasCount === 0 && this.transport.deleteSession) {
@@ -216,7 +225,7 @@ export class SessionControlService {
     }
     return {
       wasActive,
-      sharedAliasCount,
+      sharedAliasCount: physicalSharedCount,
       transportTornDown,
       ...(transportTeardownWarning ? { transportTeardownWarning } : {}),
     };

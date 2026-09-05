@@ -39,7 +39,7 @@ function buildSharedRouter() {
     await innerDelete(session);
   });
   const router = new CommandRouter(sessions, transport, config, new MemoryConfigStore(config));
-  return { router, transport, sessions, state, calls };
+  return { router, transport, sessions, state, calls, config };
 }
 
 async function makeSharedPair(router: CommandRouter, sessions: SessionService, state: ReturnType<typeof createEmptyState>) {
@@ -110,4 +110,50 @@ test("rm non-last shared alias keeps the logical row when the Runtime release fa
   await expect(router.handle("wx:user", "/session rm shr-a")).rejects.toThrow(/turn active/);
   expect(await sessions.getSession("shr-a")).not.toBeNull();
   expect(await sessions.getSession("shr-b")).not.toBeNull();
+});
+
+test("same transport name but different cwd hard-deletes each physical separately", async () => {
+  const { router, sessions, state, calls, config } = buildSharedRouter();
+  config.workspaces["frontend"] = { cwd: "/tmp/frontend" };
+  // A and B share only the transport NAME; different workspaces mean
+  // different cwds and therefore different physical sessions.
+  await router.handle("wx:user", "/session new shr-a --agent codex --ws backend");
+  const transportSession = sessions.getResolvedSessionByInternalAlias("shr-a")!.transportSession;
+  await router.handle("wx:user", `/session attach shr-b --agent codex --ws frontend --name ${transportSession}`);
+  const resolvedB = sessions.getResolvedSessionByInternalAlias("shr-b")!;
+  expect(resolvedB.transportSession).toBe(transportSession);
+  expect(resolvedB.cwd).not.toBe(sessions.getResolvedSessionByInternalAlias("shr-a")!.cwd);
+  state.sessions["shr-a"]!.transport_engine = "runtime";
+  state.sessions["shr-b"]!.transport_engine = "runtime";
+
+  // Removing A must hard-delete PA (not release): B's PB is a different
+  // physical and must never be mistaken for shared ownership.
+  await router.handle("wx:user", "/session rm shr-a");
+  expect(calls.filter((c) => c.op === "delete")).toHaveLength(1);
+  expect(calls.filter((c) => c.op === "release")).toHaveLength(0);
+  expect(await sessions.getSession("shr-a")).toBeNull();
+  expect(await sessions.getSession("shr-b")).not.toBeNull();
+
+  // Removing B hard-deletes PB as well: nothing is orphaned.
+  await router.handle("wx:user", "/session rm shr-b");
+  expect(calls.filter((c) => c.op === "delete")).toHaveLength(2);
+  expect(calls.filter((c) => c.op === "release")).toHaveLength(0);
+  expect(await sessions.getSession("shr-b")).toBeNull();
+});
+
+test("concurrent true-shared removes yield exactly one release and one delete", async () => {
+  const { router, sessions, state, calls } = buildSharedRouter();
+  await makeSharedPair(router, sessions, state);
+
+  // Both aliases observe each other pre-lock; the physical-group lock must
+  // serialize them so exactly one releases and exactly one hard-deletes —
+  // never two releases with an orphaned physical record.
+  await Promise.all([
+    router.handle("wx:user", "/session rm shr-a"),
+    router.handle("wx:user", "/session rm shr-b"),
+  ]);
+  expect(calls.filter((c) => c.op === "release")).toHaveLength(1);
+  expect(calls.filter((c) => c.op === "delete")).toHaveLength(1);
+  expect(await sessions.getSession("shr-a")).toBeNull();
+  expect(await sessions.getSession("shr-b")).toBeNull();
 });

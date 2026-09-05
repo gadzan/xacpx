@@ -23,6 +23,7 @@ import type { AppState, BackgroundResult, ChatContextState, LogicalSession, Sess
 import { resolveTransportEngine } from "./transport-engine";
 import type { SessionResourceLifecyclePublishInput } from "./session-resource-catalog";
 import type { AgentSession, ResolvedSession } from "../transport/types";
+import { physicalLifecycleKeyForResolvedSession } from "../bridge/engine/runtime/physical-session-identity";
 import {
   buildDefaultTransportSession,
   getChannelIdFromChatKey,
@@ -855,6 +856,34 @@ export class SessionService {
     return count;
   }
 
+  /**
+   * Counts aliases that would contend for the SAME physical acpx session
+   * (sessionKey + cwd + launch agent identity), excluding `excludeAlias`.
+   * Unlike countAliasesSharingTransport (transport-name only), two aliases
+   * sharing a name but differing in cwd/agent resolve to different physical
+   * records and must each be hard-deleted. Rows whose agent/workspace is
+   * de-registered cannot resolve and are skipped. This is the grouping key
+   * for Runtime remove lifecycle decisions (release vs hard delete).
+   */
+  countAliasesSharingPhysicalIdentity(session: ResolvedSession, excludeAlias?: string): number {
+    const key = physicalLifecycleKeyForResolvedSession(session);
+    let count = 0;
+    for (const row of Object.values(this.state.sessions)) {
+      if (excludeAlias !== undefined && row.alias === excludeAlias) {
+        continue;
+      }
+      let candidate: ResolvedSession;
+      try {
+        candidate = this.toResolvedSession(row);
+      } catch {
+        continue;
+      }
+      if (physicalLifecycleKeyForResolvedSession(candidate) === key) {
+        count += 1;
+      }
+    }
+    return count;
+  }
   /**
    * Wire the sink for resource lifecycle events (production: the core
    * SessionResourceCatalog; the runtime calls this once after constructing

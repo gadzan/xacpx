@@ -1033,6 +1033,54 @@ test.serial("P1-17: releaseLogicalSession refuses while the alias turn is active
   }
 }, 15_000);
 
+test.serial("P1-18: driver hot-change with stable agentCommand rotates via construction identity", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-construction-driver-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 60_000,
+  });
+  try {
+    const manager: any = (engine as any).manager;
+    const key = testInput.logicalSessionId;
+    // Explicit launch command stays X across the driver change, so the
+    // PHYSICAL fence key is identical — only the worker's immutable
+    // construction identity (runtime agent name + overrides) drifts.
+    const inputCodex = { ...testInput, agentCommand: "/usr/bin/fake-agent", acpxAgent: "codex" };
+    const inputClaude = { ...testInput, agentCommand: "/usr/bin/fake-agent", acpxAgent: "claude" };
+    expect(physicalFenceKeyForSession(inputClaude as any)).toBe(physicalFenceKeyForSession(inputCodex as any));
+
+    await engine.setMode({ ...inputCodex, modeId: "plan" } as any);
+    const oldPid: number = manager.get(key).ref.pid;
+    expect(oldPid).toBeGreaterThan(0);
+
+    // Same physical, drifted construction: the warm worker must rotate
+    // (old PID dead, new PID serving, fence still present for the same
+    // physical). Without the construction key the Host would warm-reuse
+    // forever while a real worker fail-closed on every ensure.
+    await engine.setMode({ ...inputClaude, modeId: "plan" } as any);
+    const newPid: number = manager.get(key).ref.pid;
+    expect(newPid).toBeGreaterThan(0);
+    expect(newPid).not.toBe(oldPid);
+    expect(pidAlive(oldPid)).toBe(false);
+    expect(pidAlive(newPid)).toBe(true);
+    expect((await engine.isSessionWarm(inputClaude as any)).warm).toBe(true);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
 test.serial("P1-12: residual fence without record blocks delete (fail-closed)", async () => {
   const testInput = uniqueInput();
   const dir = await mkdtemp(join(tmpdir(), "rt-residual-fence-"));

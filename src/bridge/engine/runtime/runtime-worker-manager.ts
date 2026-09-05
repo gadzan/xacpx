@@ -138,6 +138,26 @@ export class RuntimeWorkerManager {
   }
 
   /**
+   * Asserts that ONE logical alias holds no ownership: no live worker and
+   * no registered fence mapping remain for it. Unlike
+   * assertOwnershipQuiescent (which requires the whole PHYSICAL namespace
+   * to be empty), this deliberately tolerates a surviving sibling alias
+   * legitimately owning the same physical fence.
+   */
+  assertLogicalOwnershipReleased(logicalWorkerKey: string): void {
+    const worker = this.workersByKey.get(logicalWorkerKey);
+    if (worker && worker.alive && worker.lifecycle !== "stopped" && worker.lifecycle !== "failed") {
+      throw new WorkerTeardownPendingError(
+        `runtime worker for session "${logicalWorkerKey}" is still live; refusing logical release`,
+      );
+    }
+    if (this.physicalFenceKeys.has(logicalWorkerKey)) {
+      throw new WorkerTeardownPendingError(
+        `fence mapping for session "${logicalWorkerKey}" is still registered; refusing logical release`,
+      );
+    }
+  }
+  /**
    * Asserts that ownership for logical session `logicalWorkerKey` (physical fence `physicalFenceKey`)
    * is quiescent: worker process is absent or stopped, and durable fence is absent or discharged.
    * Discharged fences are retired best-effort.

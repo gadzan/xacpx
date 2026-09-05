@@ -598,4 +598,86 @@ describe("RuntimeEngine G4 physical fence delete quiescence", () => {
         await rm(dir, { recursive: true, force: true });
       }
     });
+
+  test("releaseLogicalSession succeeds while a sibling still owns the shared fence", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rt-g4-release-sibling-"));
+    const sessionsDir = join(dir, ".acpx", "sessions");
+    const fenceDir = join(dir, ".acpx", "worker-fences");
+    const queueDir = join(dir, ".acpx", "runtime-queue");
+    await mkdir(sessionsDir, { recursive: true });
+    await mkdir(fenceDir, { recursive: true });
+    await mkdir(queueDir, { recursive: true });
+
+    const sibling1: EngineSessionInput = {
+      agent: "codex",
+      cwd: "/repo",
+      name: "shared-physical-session",
+      logicalSessionId: "alias-worker-1",
+    };
+    const sibling2: EngineSessionInput = {
+      agent: "codex",
+      cwd: "/repo",
+      name: "shared-physical-session",
+      logicalSessionId: "alias-worker-2",
+    };
+
+    try {
+      const entry = join(dir, "fake-worker.mjs");
+      await withFakeWorker(entry);
+
+      const recordFile = join(sessionsDir, "real-acpx-rec-1234.json");
+      await writeFile(
+        recordFile,
+        JSON.stringify({
+          schema: "acpx.session.v1",
+          acpx_record_id: "real-acpx-rec-1234",
+          name: sibling1.name,
+          cwd: sibling1.cwd,
+          agent_command: sibling1.agent,
+        }),
+      );
+
+      const engine = new RuntimeEngine({
+        workerEntryPath: entry,
+        stateDir: sessionsDir,
+        fenceDir,
+        queueDir,
+        workerQuiescenceTimeoutMs: 100,
+        permissionMode: "approve-all",
+        idleTtlMs: 0,
+      });
+      const manager: any = (engine as any).manager;
+      const store = (engine as any).getQueueStore();
+      const fence = new RuntimeWorkerFence(fenceDir);
+      const physicalKey = computePhysicalFenceKey(sibling1);
+
+      // Warm the SIBLING first: it legitimately owns the shared fence.
+      const promptB = await engine.prompt({ ...sibling2, text: "hello" });
+      expect(promptB.text).toBe("ok");
+      const siblingPid: number = manager.get("alias-worker-2").ref.pid;
+
+      // Cold A carries a durable journal. Releasing A must succeed WITHOUT
+      // requiring the sibling's fence to disappear — and must not delete
+      // queued work before the release is verified (journal assertions run
+      // after the verified release, not before).
+      await store.enqueue("alias-worker-1", { messageId: "m-a1", text: "queued-a", mode: "queue" });
+      expect(await store.hasPending("alias-worker-1")).toBe(true);
+      await engine.releaseLogicalSession(sibling1);
+      expect(manager.get("alias-worker-1")).toBeUndefined();
+      expect(manager.physicalFenceKeyFor("alias-worker-1")).toBeUndefined();
+      expect(await store.hasPending("alias-worker-1")).toBe(false);
+      // Sibling untouched: still alive, still owns the admitted fence, and
+      // the shared physical record is intact.
+      expect(manager.get("alias-worker-2")?.ref.pid).toBe(siblingPid);
+      const fenceRead = await fence.read(physicalKey);
+      expect(fenceRead.kind).toBe("present");
+      if (fenceRead.kind === "present") {
+        expect(fenceRead.record.phase).toMatch(/owned|admitted/);
+      }
+      expect(JSON.parse(await readFile(recordFile, "utf-8")).acpx_record_id).toBe("real-acpx-rec-1234");
+      await engine.shutdown();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

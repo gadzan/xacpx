@@ -3,8 +3,8 @@ import { statSync } from "node:fs";
 import { join, resolve as resolvePath, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
-import { createHash } from "node:crypto";
 import { coreHomeDir } from "../../runtime/core-home";
+import { normalizePathForComparison, physicalFenceKeyForSession } from "./runtime/physical-session-identity";
 
 import { deleteAcpxSessionFiles, resolveAcpxHomeDir } from "../../transport/acpx-session-files";
 import type {
@@ -69,11 +69,6 @@ export interface DeleteTombstoneRecord {
   recordId: string;
 }
 
-function normalizePathForComparison(p?: string): string | undefined {
-  if (!p) return undefined;
-  const resolved = resolvePath(p);
-  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
-}
 
 export function matchSessionRecord(
   parsed: Record<string, unknown>,
@@ -438,26 +433,12 @@ export function defaultWorkerEntry(fromUrl?: string): string {
  * fence file is stable across crash+restart and shared-physical aliases
  * correctly contend for the single physical fence. Exported so tests seed
  * residual fences in the real physical namespace.
+ *
+ * Canonical implementation lives in ./runtime/physical-session-identity so
+ * the command layer (remove lifecycle) and SessionService (physical alias
+ * counting) can share it without importing the whole engine.
  */
-export function physicalFenceKeyForSession(input: EngineSessionInput): string {
-  const normalizedCwd = normalizePathForComparison(input.cwd) ?? input.cwd ?? "";
-  // Agent identity: prefer the exact launch identity the Runtime will use.
-  // EngineSessionInput carries the resolved launch fields (agentCommand /
-  // acpxAgent / rawCommand / agentArgv) from SessionService.toResolvedSession,
-  // so the hash is stable for a given physical session.
-  const agentId =
-    (typeof input.agentCommand === "string" && input.agentCommand.length > 0 ? input.agentCommand : undefined) ??
-    (typeof input.rawCommand === "string" && input.rawCommand.length > 0 ? input.rawCommand : undefined) ??
-    (typeof input.acpxAgent === "string" && input.acpxAgent.length > 0 ? input.acpxAgent : undefined) ??
-    (Array.isArray(input.agentArgv) && input.agentArgv.length > 0 ? input.agentArgv.join(String.fromCharCode(0)) : undefined) ??
-    input.agent ??
-    "";
-  const sessionKey = input.name ?? "";
-  const sep = String.fromCharCode(0);
-  const raw = `${sessionKey}${sep}${normalizedCwd}${sep}${agentId}`;
-  // 32 hex chars (128-bit) is enough to avoid collisions for fence namespace.
-  return createHash("sha256").update(raw).digest("hex").slice(0, 32);
-}
+export { physicalFenceKeyForSession } from "./runtime/physical-session-identity";
 
 export class RuntimeEngine implements BridgeEngine {
   readonly kind = "runtime" as const;
@@ -670,6 +651,25 @@ export class RuntimeEngine implements BridgeEngine {
   /** Authoritative session catalog for bridge restart recovery (logicalSessionId -> input). */
   private sessionCatalog = new Map<string, EngineSessionInput>();
   private readonly lastMcpIdentity = new Map<string, { mcpCoordinatorSession?: string; mcpSourceHandle?: string }>();
+  /**
+   * Last worker-accepted Runtime construction identity per logical key —
+   * isomorphic to the worker's ensureIdentityKey (sessionKey, runtime agent
+   * name, cwd, stateDir, agentOverrides, MCP pair). Set only after a worker
+   * ensure succeeds; cleared whenever the worker mapping is dropped. The
+   * physical fence key is NOT this: it hashes a different agent projection
+   * (agentCommand-first) and cannot see driver/acpxAgent drift.
+   */
+  private readonly lastConstructionIdentity = new Map<string, string>();
+  /**
+   * Construction identity of the currently-executing first ensure RPC per
+   * logical key. Set synchronously when ensureSessionHandle issues the RPC
+   * (before the first await) and cleared when it settles: it bridges the
+   * window where the worker is already warm/busy but the accepted identity
+   * is not registered yet. Without it, a drifted concurrent op in that
+   * window would see "no identity" and warm-reuse into a guaranteed worker
+   * mismatch instead of failing fast like the settled path.
+   */
+  private readonly ensureInFlightIdentity = new Map<string, string>();
   private readonly turnLeases = new Map<string, Promise<void>>();
   private readonly queueSuspended = new Set<string>();
   private readonly staleAfterTurn = new Set<string>();
@@ -942,6 +942,7 @@ export class RuntimeEngine implements BridgeEngine {
           if (cl.lifecycle === "stopped") await this.manager?.release(key, cl).catch((e) => { throw toTeardownError(key, e); });
           else throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `stale MCP worker for "${key}" did not reach stopped after shutdown`);
           this.lastMcpIdentity.delete(key);
+          this.lastConstructionIdentity.delete(key);
           this.staleAfterTurn.delete(key);
         }
       }
@@ -1143,31 +1144,57 @@ export class RuntimeEngine implements BridgeEngine {
     if (existingClient.lifecycle === "stopped") await this.manager?.release(key, existingClient).catch((e) => { throw toTeardownError(key, e); });
     else throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `stale MCP worker for "${key}" did not reach stopped after shutdown`);
     this.lastMcpIdentity.delete(key);
+    // The replacement worker re-registers its (new-MCP) construction
+    // identity on its first accepted ensure; drop the stale entry so the
+    // construction check cannot double-rotate behind the MCP rotation.
+    this.lastConstructionIdentity.delete(key);
     this.staleAfterTurn.delete(key);
     return true;
   }
 
   /**
-   * Warm-reuse gate for Runtime construction identity (sessionKey / cwd /
-   * agent launch identity — exactly the physical fence key). The worker
-   * treats these as immutable launch identity and fails closed on drift
-   * ("… differ from its immutable launch identity … tear down this worker
-   * instead"), so the Host must rotate the warm worker itself instead of
-   * sending the drifted ensure and failing every call until TTL. Mirrors the
-   * MCP stale rotation above: idle → verified shutdown + release under the
-   * OLD fence mapping (release retires the registered key); active → mark
-   * stale-after-turn and fail fast, the settle paths retire cooperatively via
-   * the worker-side dispatch gate. MCP identity is covered by
-   * checkMcpStaleAndRotate; stateDir is daemon-constant.
+   * Host-side mirror of the worker's ensureIdentityKey (plan §3-R1): the
+   * exact Runtime-construction fields the worker treats as immutable launch
+   * identity. Derived with the same rules as buildEnsureParams (runtime
+   * agent name = acpxAgent ?? agent; overrides from agentArgv ?? rawCommand;
+   * stateDir = runtimeStateRoot), so a key the worker would accept always
+   * matches the stored key. Mutable per-invocation parameters (model,
+   * effort, resumeSessionId, permission snapshot) are excluded on both sides.
    */
+  private constructionIdentityForInput(input: EngineSessionInput): string {
+    const runtimeAgentName = input.acpxAgent ?? input.agent;
+    const overrideValue =
+      input.agentArgv && input.agentArgv.length > 0
+        ? [...input.agentArgv]
+        : input.rawCommand
+          ? input.rawCommand
+          : undefined;
+    return JSON.stringify([
+      input.name,
+      runtimeAgentName,
+      input.cwd ?? null,
+      this.runtimeStateRoot(),
+      overrideValue !== undefined ? { [runtimeAgentName]: overrideValue } : null,
+      input.mcpCoordinatorSession ?? null,
+      input.mcpSourceHandle ?? null,
+    ]);
+  }
+
   private async checkConstructionStaleAndRotate(input: EngineSessionInput): Promise<boolean> {
     const key = this.workerKey(input);
-    const requested = this.physicalFenceKeyForInput(input);
-    const registered = this.manager?.physicalFenceKeyFor(key);
+    const requested = this.constructionIdentityForInput(input);
+    // Accepted identity wins; while the first ensure RPC is still
+    // outstanding, fall back to its synchronously-published in-flight
+    // identity so a drifted concurrent op fails fast exactly like the
+    // settled path (the worker itself would reject it), while an
+    // identical op joins. Without the fallback the window between "worker
+    // alive/busy" and "ensure accepted" would look identity-free and let
+    // drifted reuse slip through to a guaranteed worker mismatch.
+    const registered = this.lastConstructionIdentity.get(key) ?? this.ensureInFlightIdentity.get(key);
     if (!registered || registered === requested) return false;
     const existingClient = this.manager?.get(key);
-    // Registered mapping without a live worker heals on the next acquire
-    // (acquire overwrites the mapping when it spawns).
+    // Registered identity without a live worker heals on the next ensure
+    // (ensureSessionHandle re-registers after the worker accepts).
     if (!existingClient) return false;
     const isActive = this.isStaleActiveForInjectOrCheck(key, existingClient, false);
     if (isActive) {
@@ -1177,6 +1204,7 @@ export class RuntimeEngine implements BridgeEngine {
     await existingClient.shutdown().catch((e) => { throw toTeardownError(key, e); });
     if (existingClient.lifecycle === "stopped") await this.manager?.release(key, existingClient).catch((e) => { throw toTeardownError(key, e); });
     else throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `stale construction worker for "${key}" did not reach stopped after shutdown`);
+    this.lastConstructionIdentity.delete(key);
     this.staleAfterTurn.delete(key);
     return true;
   }
@@ -1209,6 +1237,7 @@ export class RuntimeEngine implements BridgeEngine {
     await sibling.client.shutdown().catch((e) => { throw toTeardownError(key, e); });
     if (sibling.client.lifecycle === "stopped") await this.manager?.release(sibling.logicalKey, sibling.client).catch((e) => { throw toTeardownError(key, e); });
     else throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `sibling worker for "${key}" did not reach stopped after shutdown`);
+    this.lastConstructionIdentity.delete(sibling.logicalKey);
     return true;
   }
 
@@ -1389,6 +1418,7 @@ export class RuntimeEngine implements BridgeEngine {
       this.decBusinessOp(key);
       let staleError: unknown;
       if (!this.hasActiveTurn(key) && this.staleAfterTurn.has(key)) {
+        this.lastConstructionIdentity.delete(key);
         this.staleAfterTurn.delete(key);
         const staleClient = this.manager?.get(key);
         if (staleClient) {
@@ -1438,6 +1468,7 @@ export class RuntimeEngine implements BridgeEngine {
       await client.terminate();
       if (client.lifecycle === "stopped") {
         await this.manager?.release(key, client);
+        this.lastConstructionIdentity.delete(key);
       }
     } catch {
       // Swallowed deliberately: recycle must not mask the poisoned-init error
@@ -1473,27 +1504,38 @@ export class RuntimeEngine implements BridgeEngine {
     };
   }
 
-  /**
-   * Ensures the session and caches the REAL acpx record id resolved by the
-   * runtime (plan §9.1). This binding metadata is the ONLY acceptable identity
-   * for hard-delete — the logical session id is never a record id.
-   */
   private async ensureSessionHandle(
     input: EngineSessionInput,
     client: RuntimeWorkerClient,
     options?: { resumeSessionId?: string },
   ): Promise<{ acpxRecordId?: string }> {
-    const handle = await client.request<{ sessionKey: string; acpxRecordId?: string; agentSessionId?: string }>(
-      "ensure",
-      {
-        ...this.buildEnsureParams(input, options),
-        workerGeneration: client.ref.generation,
-      },
-    );
-    if (handle.acpxRecordId) {
-      this.recordIds.set(this.workerKey(input), handle.acpxRecordId);
+    const key = this.workerKey(input);
+    const identity = this.constructionIdentityForInput(input);
+    // Visible synchronously to concurrent rotation checks: the accepted
+    // entry below only lands after the ensure RPC round-trips, but the
+    // worker is already alive/busy by then.
+    this.ensureInFlightIdentity.set(key, identity);
+    try {
+      const handle = await client.request<{ sessionKey: string; acpxRecordId?: string; agentSessionId?: string }>(
+        "ensure",
+        {
+          ...this.buildEnsureParams(input, options),
+          workerGeneration: client.ref.generation,
+        },
+      );
+      if (handle.acpxRecordId) {
+        this.recordIds.set(key, handle.acpxRecordId);
+      }
+      // The worker accepted these params: record the construction identity it
+      // now owns, so later warm reuse can detect drift without asking the
+      // worker (which would fail closed on every call until TTL).
+      this.lastConstructionIdentity.set(key, identity);
+      return handle;
+    } finally {
+      // Guarded: a concurrent newer ensure may have published its own
+      // in-flight identity while this RPC was outstanding.
+      if (this.ensureInFlightIdentity.get(key) === identity) this.ensureInFlightIdentity.delete(key);
     }
-    return handle;
   }
 
   async hasSession(input: EngineSessionInput): Promise<{ exists: boolean }> {
@@ -1678,6 +1720,7 @@ export class RuntimeEngine implements BridgeEngine {
         this.decActiveTurn(key);
       // PR8: retire stale MCP worker after the active turn has truly settled (activeTurns cleared) — fail-closed on teardown uncertainty
       if (this.staleAfterTurn.has(key)) {
+        this.lastConstructionIdentity.delete(key);
         this.staleAfterTurn.delete(key);
         const staleClient = this.manager?.get(key);
         if (staleClient) {
@@ -1759,6 +1802,7 @@ export class RuntimeEngine implements BridgeEngine {
           if (cl.lifecycle === "stopped") await this.manager?.release(key, cl).catch((e) => { throw toTeardownError(key, e); });
           else throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `stale MCP worker for "${key}" did not reach stopped after shutdown`);
           this.lastMcpIdentity.delete(key);
+          this.lastConstructionIdentity.delete(key);
           this.staleAfterTurn.delete(key);
         }
       }
@@ -1925,6 +1969,7 @@ export class RuntimeEngine implements BridgeEngine {
       this.clearActiveTurn(key);
       this.coolPending.delete(key);
       this.recordIds.delete(key);
+      this.lastConstructionIdentity.delete(key);
       this.sessionCatalog.delete(key);
       return {};
     } catch (error) {
@@ -2037,6 +2082,7 @@ export class RuntimeEngine implements BridgeEngine {
         this.clearActiveTurn(key);
         this.coolPending.delete(key);
         this.recordIds.delete(key);
+        this.lastConstructionIdentity.delete(key);
         await this.getQueueStore().removeJournal(key);
         this.sessionCatalog.delete(key);
         // Keep deleteGenerations monotonic — do not delete epoch, old waiters must still see generation change
@@ -2113,6 +2159,7 @@ export class RuntimeEngine implements BridgeEngine {
       await this.deleteRecordFilesStrict(recordId);
       await removeTombstoneStrict(sessionsDir, safeId);
       this.recordIds.delete(key);
+      this.lastConstructionIdentity.delete(key);
       // 6. PR6: only after record deletion verified successful, delete runtime queue journal fail-closed
       await this.getQueueStore().removeJournal(key);
       this.sessionCatalog.delete(key);
@@ -2176,6 +2223,7 @@ export class RuntimeEngine implements BridgeEngine {
     });
     if (client.lifecycle === "stopped") {
       await this.manager?.release(key, client);
+      this.lastConstructionIdentity.delete(key);
     }
     return {};
   }
@@ -2196,8 +2244,6 @@ export class RuntimeEngine implements BridgeEngine {
       await this.policyTransitionLock;
     }
     const key = this.workerKey(input);
-    const registeredPhysicalKey = this.manager?.physicalFenceKeyFor(key);
-    const physicalFenceKey = registeredPhysicalKey ?? this.physicalFenceKeyForInput(input);
     try {
       // Lifecycle boundary like deleteSession: reject new alias enqueue and
       // abort in-flight alias ops instead of resurrecting state mid-teardown.
@@ -2236,25 +2282,42 @@ export class RuntimeEngine implements BridgeEngine {
           this.manager?.deleteWorker(key, client);
         }
       }
-      // The queue journal belongs to the dead logical alias: drop it. The
-      // physical record/history are deliberately untouched (fail-closed on
-      // journal errors like deleteSession).
+      // Validate BEFORE touching the durable journal: a reported-failed
+      // release must not have irreversibly deleted queued work. Logical
+      // quiescence requires only THIS alias to hold no worker, no
+      // in-flight acquisition, and no fence mapping — a surviving sibling
+      // may legitimately keep owning the shared physical fence, so the
+      // physical-namespace check used by destructive hard delete does NOT
+      // apply here.
+      if (this.acquiring.has(key)) {
+        throw new RuntimeError(
+          "RUNTIME_WORKER_TEARDOWN_PENDING",
+          `cannot release logical session "${key}" while worker acquisition in flight`,
+        );
+      }
+      try {
+        this.manager?.assertLogicalOwnershipReleased(key);
+      } catch (error) {
+        throw toStableRuntimeError(error);
+      }
+      // The queue journal belongs to the dead logical alias: drop it only
+      // after the release above is verified. The physical record/history
+      // are deliberately untouched (fail-closed on journal errors like
+      // deleteSession).
       await this.getQueueStore().removeJournal(key);
       this.clearActiveTurn(key);
       this.coolPending.delete(key);
       this.recordIds.delete(key);
+      this.lastConstructionIdentity.delete(key);
       this.sessionCatalog.delete(key);
       this.lastMcpIdentity.delete(key);
+      this.lastConstructionIdentity.delete(key);
       this.staleAfterTurn.delete(key);
       const timer = this.idleTimers.get(key);
       if (timer) {
         clearTimeout(timer);
         this.idleTimers.delete(key);
       }
-      // Ownership quiescence against the worker's registered fence mapping:
-      // release retired it above, so success implies no worker, no acquiring,
-      // no fence for this alias.
-      await this.waitForWorkerQuiescence(key, physicalFenceKey);
       return {};
     } catch (error) {
       throw toStableRuntimeError(error);
