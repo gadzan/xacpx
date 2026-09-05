@@ -1181,6 +1181,37 @@ export class RuntimeEngine implements BridgeEngine {
     return true;
   }
 
+  /**
+   * Local sibling-alias handoff for one shared physical acpx session. Two
+   * logical aliases with the same sessionKey/cwd/agent identity share one
+   * physical fence by design ("shared-physical aliases contend for one
+   * fence"), but the worker registry is logical-keyed and cannot tell "my
+   * own sibling's live admitted fence" from cross-host stale ownership —
+   * without this check the newcomer burns the cross-host self-discharge
+   * wait (up to 90s) and refuses, even though the owner is provably our
+   * own worker. The fence itself is never relaxed and no second owner is
+   * ever spawned: idle sibling → verified shutdown + release under the
+   * sibling's mapping (retires the shared fence generation-guarded) before
+   * this key acquires; busy sibling → fail fast so the caller retries after
+   * the sibling settles, at which point the idle path hands off.
+   */
+  private async checkSiblingPhysicalOwnerAndHandoff(input: EngineSessionInput): Promise<boolean> {
+    const key = this.workerKey(input);
+    const requested = this.physicalFenceKeyForInput(input);
+    const sibling = this.manager?.findSiblingPhysicalOwner(requested, key);
+    if (!sibling) return false;
+    const siblingActive =
+      this.isStaleActiveForInjectOrCheck(sibling.logicalKey, sibling.client, false) ||
+      sibling.client.lifecycle === "cooling";
+    if (siblingActive) {
+      throw new RuntimeError("RUNTIME_PHYSICAL_OWNER_BUSY", `physical session for "${key}" is owned by warm sibling worker "${sibling.logicalKey}" with an active turn; retry after it settles`);
+    }
+    await sibling.client.shutdown().catch((e) => { throw toTeardownError(key, e); });
+    if (sibling.client.lifecycle === "stopped") await this.manager?.release(sibling.logicalKey, sibling.client).catch((e) => { throw toTeardownError(key, e); });
+    else throw new RuntimeError("RUNTIME_WORKER_TEARDOWN_PENDING", `sibling worker for "${key}" did not reach stopped after shutdown`);
+    return true;
+  }
+
   private async ensureWorker(input: EngineSessionInput): Promise<RuntimeWorkerClient> {
     if (!this.isRuntimeEligible()) {
       throw new RuntimeError("RUNTIME_ENGINE_UNSUPPORTED", "runtime ineligible: nonInteractivePermissions=fail or escalate policy requires CLI");
@@ -1260,6 +1291,11 @@ export class RuntimeEngine implements BridgeEngine {
         // cwd) rotates the warm worker BEFORE acquire: the worker would
         // otherwise fail closed on every subsequent ensure until TTL.
         await this.checkConstructionStaleAndRotate(input);
+        // Sibling-alias handoff (shared physical session): a warm worker
+        // owned by another local logical key must be handed off BEFORE
+        // acquire, or the newcomer mistakes our own live fence for
+        // cross-host stale ownership and burns the discharge wait.
+        await this.checkSiblingPhysicalOwnerAndHandoff(input);
         this.assertLifecycleEpoch(key, _lifecycleEpochAtEntry);
         const existingTimer = this.idleTimers.get(key);
         if (existingTimer) {

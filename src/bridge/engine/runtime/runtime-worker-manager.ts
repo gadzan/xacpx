@@ -113,6 +113,29 @@ export class RuntimeWorkerManager {
   physicalFenceKeyFor(logicalWorkerKey: string): string | undefined {
     return this.physicalFenceKeys.get(logicalWorkerKey);
   }
+  /**
+   * Finds a live local worker holding the same physical fence under a
+   * DIFFERENT logical key (sibling alias sharing one physical acpx
+   * session). The durable fence cannot distinguish "my own sibling's live
+   * admitted fence" from cross-host stale ownership, so acquire() would
+   * otherwise burn the cross-host self-discharge wait (up to 90s) and
+   * refuse — for what is provably our own worker. Returns undefined when
+   * the physical key is locally unowned, owned by the requesting key
+   * itself, or only mapped without a live worker (heals on next acquire).
+   */
+  findSiblingPhysicalOwner(
+    physicalFenceKey: string,
+    exceptLogicalKey: string,
+  ): { logicalKey: string; client: RuntimeWorkerClient } | undefined {
+    for (const [logicalKey, registered] of this.physicalFenceKeys) {
+      if (logicalKey === exceptLogicalKey || registered !== physicalFenceKey) continue;
+      const client = this.workersByKey.get(logicalKey);
+      if (client && client.alive && client.lifecycle !== "failed" && client.lifecycle !== "stopped") {
+        return { logicalKey, client };
+      }
+    }
+    return undefined;
+  }
 
   /**
    * Asserts that ownership for logical session `logicalWorkerKey` (physical fence `physicalFenceKey`)

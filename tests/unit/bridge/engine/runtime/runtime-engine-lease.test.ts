@@ -879,6 +879,111 @@ test.serial("P1-14: drift during an active turn fails fast without a second owne
   }
 }, 15_000);
 
+test.serial("P1-15: idle sibling alias hands off the shared physical session without discharge wait", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-sibling-handoff-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 60_000,
+    // Fail fast (not 90s) if the handoff regresses and the newcomer falls
+    // back to the cross-host self-discharge path for our own worker.
+    workerClientDeps: { selfDischargeWaitMs: 1_000 },
+  });
+  try {
+    const manager: any = (engine as any).manager;
+    // Two logical aliases, one physical session (same name/cwd/agent).
+    const siblingA = { ...testInput, name: "shared-physical-session", logicalSessionId: "alias-worker-1", cwd: "/repo/shared" };
+    const siblingB = { ...testInput, name: "shared-physical-session", logicalSessionId: "alias-worker-2", cwd: "/repo/shared" };
+    expect(physicalFenceKeyForSession(siblingB as any)).toBe(physicalFenceKeyForSession(siblingA as any));
+
+    await engine.setMode({ ...siblingA, modeId: "plan" } as any);
+    const oldPid: number = manager.get(siblingA.logicalSessionId).ref.pid;
+    expect(oldPid).toBeGreaterThan(0);
+
+    // B takes over: verified handoff (old shutdown + released) then a fresh
+    // worker on the same physical fence — never a second concurrent owner.
+    await engine.setMode({ ...siblingB, modeId: "plan" } as any);
+    expect(manager.get(siblingA.logicalSessionId)).toBeUndefined();
+    const newPid: number = manager.get(siblingB.logicalSessionId).ref.pid;
+    expect(newPid).toBeGreaterThan(0);
+    expect(newPid).not.toBe(oldPid);
+    expect(pidAlive(oldPid)).toBe(false);
+    expect(pidAlive(newPid)).toBe(true);
+    // Physical fence still unique and owned: exactly one live worker overall.
+    expect(manager.workers().length).toBe(1);
+    expect((await engine.isSessionWarm(siblingB as any)).warm).toBe(true);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test.serial("P1-16: busy sibling alias fails fast without a second owner, hands off after settle", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-sibling-busy-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 60_000,
+    workerClientDeps: { selfDischargeWaitMs: 1_000 },
+  });
+  try {
+    const manager: any = (engine as any).manager;
+    const siblingA = { ...testInput, name: "shared-physical-session", logicalSessionId: "alias-worker-1", cwd: "/repo/shared" };
+    const siblingB = { ...testInput, name: "shared-physical-session", logicalSessionId: "alias-worker-2", cwd: "/repo/shared" };
+
+    const pPrompt = engine.prompt({ ...siblingA, text: "slow-sibling" });
+    pPrompt.catch(() => {});
+    for (let i = 0; i < 400; i++) {
+      if (manager.get(siblingA.logicalSessionId)?.lifecycle === "busy") break;
+      const { promise: tick, resolve: tickResolve } = Promise.withResolvers<void>();
+      setTimeout(tickResolve, 5);
+      await tick;
+    }
+    const oldPid: number = manager.get(siblingA.logicalSessionId).ref.pid;
+    expect(manager.get(siblingA.logicalSessionId)?.lifecycle).toBe("busy");
+
+    // Drifted sibling call during A's turn: fail fast, no second worker, A's
+    // ownership untouched.
+    await expect(engine.setMode({ ...siblingB, modeId: "plan" } as any)).rejects.toMatchObject({
+      code: "RUNTIME_PHYSICAL_OWNER_BUSY",
+    });
+    expect(manager.get(siblingB.logicalSessionId)).toBeUndefined();
+    expect(manager.get(siblingA.logicalSessionId)?.ref.pid).toBe(oldPid);
+    expect(manager.workers().length).toBe(1);
+
+    // A settles → B retries → idle handoff to a fresh PID.
+    await pPrompt;
+    await engine.setMode({ ...siblingB, modeId: "plan" } as any);
+    const newPid: number = manager.get(siblingB.logicalSessionId).ref.pid;
+    expect(newPid).not.toBe(oldPid);
+    expect(pidAlive(oldPid)).toBe(false);
+    expect(pidAlive(newPid)).toBe(true);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
 test.serial("P1-12: residual fence without record blocks delete (fail-closed)", async () => {
   const testInput = uniqueInput();
   const dir = await mkdtemp(join(tmpdir(), "rt-residual-fence-"));
