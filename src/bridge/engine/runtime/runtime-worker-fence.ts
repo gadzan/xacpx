@@ -98,6 +98,20 @@ export class StaleFenceGenerationError extends Error {
     this.name = "StaleFenceGenerationError";
   }
 }
+/**
+ * Guarded fence operations (retire/CAS with an expected generation) refuse
+ * to touch evidence they cannot attribute. A successor generation is a
+ * PROVEN handoff (StaleFenceGenerationError — safe to treat our ownership
+ * as ended); an unreadable record is NOT proof of anything and must stay
+ * a hard failure so the caller keeps its mappings and retry handle.
+ */
+export class FenceUnreadableError extends Error {
+  readonly code = "FENCE_UNREADABLE";
+  constructor(message: string) {
+    super(message);
+    this.name = "FenceUnreadableError";
+  }
+}
 export interface FenceDischargeDeps {
   platform?: NodeJS.Platform;
   /** Tri-state POSIX group probe (round 31 Blocking 4): only ESRCH proves gone. */
@@ -481,7 +495,7 @@ export class RuntimeWorkerFence {
     if (pre.kind === "absent") return;
     if (pre.kind === "unreadable") {
       if (expectedGeneration !== undefined) {
-        throw new StaleFenceGenerationError(`guarded retire for "${logicalSessionId}" found an unreadable record (${pre.reason}); refusing to unlink evidence`);
+        throw new FenceUnreadableError(`guarded retire for "${logicalSessionId}" found an unreadable record (${pre.reason}); refusing to unlink evidence`);
       }
       throw new Error(`retire for "${logicalSessionId}" found an unreadable record (${pre.reason}); refusing to unlink evidence`);
     }
@@ -492,7 +506,7 @@ export class RuntimeWorkerFence {
       if (read.kind === "absent") return;
       if (read.kind === "unreadable") {
         if (expectedGeneration !== undefined) {
-          throw new StaleFenceGenerationError(`guarded retire for "${logicalSessionId}" found an unreadable record (${read.reason}); refusing to unlink evidence`);
+          throw new FenceUnreadableError(`guarded retire for "${logicalSessionId}" found an unreadable record (${read.reason}); refusing to unlink evidence`);
         }
         throw new Error(`retire for "${logicalSessionId}" found an unreadable record (${read.reason}); refusing to unlink evidence`);
       }

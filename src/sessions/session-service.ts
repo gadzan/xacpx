@@ -857,32 +857,60 @@ export class SessionService {
   }
 
   /**
-   * Counts aliases that would contend for the SAME physical acpx session
-   * (sessionKey + cwd + launch agent identity), excluding `excludeAlias`.
-   * Unlike countAliasesSharingTransport (transport-name only), two aliases
-   * sharing a name but differing in cwd/agent resolve to different physical
-   * records and must each be hard-deleted. Rows whose agent/workspace is
-   * de-registered cannot resolve and are skipped. This is the grouping key
-   * for Runtime remove lifecycle decisions (release vs hard delete).
+   * Finds persisted aliases that would contend for the SAME physical acpx
+   * session as `session` (sessionKey + cwd + launch agent identity),
+   * excluding `excludeAlias`. Unlike countAliasesSharingTransport
+   * (transport-name only), two aliases sharing a name but differing in
+   * cwd/agent resolve to different physical records.
+   *
+   * Fail-closed membership: transport-name mismatch proves a different
+   * group without resolving (the name is part of the key), but same-name
+   * rows whose agent/workspace is de-registered cannot resolve, so they
+   * can be neither proven in nor proven out of the group. They are
+   * reported as `indeterminateAliases` and lifecycle decisions MUST refuse
+   * destructive last-owner operations while any remain — "cannot prove it
+   * is outside" is never "proven outside".
    */
-  countAliasesSharingPhysicalIdentity(session: ResolvedSession, excludeAlias?: string): number {
+  findPhysicalSiblings(
+    session: ResolvedSession,
+    excludeAlias?: string,
+  ): { siblings: ResolvedSession[]; indeterminateAliases: string[] } {
     const key = physicalLifecycleKeyForResolvedSession(session);
-    let count = 0;
+    const siblings: ResolvedSession[] = [];
+    const indeterminateAliases: string[] = [];
     for (const row of Object.values(this.state.sessions)) {
       if (excludeAlias !== undefined && row.alias === excludeAlias) {
+        continue;
+      }
+      if (row.transport_session !== session.transportSession) {
         continue;
       }
       let candidate: ResolvedSession;
       try {
         candidate = this.toResolvedSession(row);
       } catch {
+        indeterminateAliases.push(row.alias);
         continue;
       }
       if (physicalLifecycleKeyForResolvedSession(candidate) === key) {
-        count += 1;
+        siblings.push(candidate);
       }
     }
-    return count;
+    return { siblings, indeterminateAliases };
+  }
+
+  /** Internal aliases of persisted sessions using workspace `name`. */
+  aliasesUsingWorkspace(name: string): string[] {
+    return Object.values(this.state.sessions)
+      .filter((session) => session.workspace === name)
+      .map((session) => session.alias);
+  }
+
+  /** Internal aliases of persisted sessions using agent `name`. */
+  aliasesUsingAgent(name: string): string[] {
+    return Object.values(this.state.sessions)
+      .filter((session) => session.agent === name)
+      .map((session) => session.alias);
   }
   /**
    * Wire the sink for resource lifecycle events (production: the core
@@ -1431,8 +1459,75 @@ export class SessionService {
   // Commits the state snapshot to the store; with the production
   // DebouncedStateStore this resolves at commit time (the disk write happens
   // debounced, off the mutex), so persisting inside mutate() is cheap.
-  private async persist(): Promise<void> {
-    await this.stateStore.save(this.state);
+  /**
+   * Engine affinity for a new logical row with physical-group inheritance.
+   * When persisted siblings already contend for the same physical session,
+   * the group owns exactly one engine: the new alias inherits it instead of
+   * re-deriving from config (which could otherwise bind a CLI and a Runtime
+   * alias to one physical session, splitting ownership and lifecycle).
+   * Mixed-engine or indeterminate sibling groups fail closed so an explicit
+   * repair/migration resolves them first.
+   */
+  private resolveEngineWithPhysicalInheritance(input: {
+    alias: string;
+    agent: string;
+    workspace: string;
+    transportSession: string;
+    transportAgentCommand?: string;
+    transportAcpxAgent?: string;
+    transportAgentArgv?: string[];
+    sameAgentExisting?: LogicalSession;
+  }): SessionTransportEngine {
+    const now = new Date(this.now()).toISOString();
+    let candidate: ResolvedSession;
+    try {
+      candidate = this.toResolvedSession({
+        alias: input.alias,
+        agent: input.agent,
+        workspace: input.workspace,
+        transport_session: input.transportSession,
+        logical_session_id: randomUUID(),
+        transport_engine: "cli",
+        ...(input.transportAgentCommand ? { transport_agent_command: input.transportAgentCommand } : {}),
+        ...(input.transportAcpxAgent ? { transport_acpx_agent: input.transportAcpxAgent } : {}),
+        ...(input.transportAgentArgv ? { transport_agent_argv: [...input.transportAgentArgv] } : {}),
+        created_at: now,
+        last_used_at: now,
+      });
+    } catch (error) {
+      throw new Error(
+        `cannot determine physical siblings for new session "${input.alias}": ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const { siblings, indeterminateAliases } = this.findPhysicalSiblings(candidate, input.alias);
+    if (indeterminateAliases.length > 0) {
+      throw new Error(
+        `cannot create session "${input.alias}": ${indeterminateAliases.length} persisted alias(es) ` +
+          `(${indeterminateAliases.join(", ")}) cannot be resolved, so physical ownership cannot be proven uniform`,
+      );
+    }
+    // Legacy rows predate the binding field; they behaved as CLI.
+    const engines = new Set(siblings.map((sibling) => sibling.transportEngine ?? "cli"));
+    if (engines.size > 1) {
+      throw new Error(
+        `physical session "${input.transportSession}" has mixed engine ownership ` +
+          `(${[...engines].sort().join(", ")}); migrate or remove the conflicting aliases first`,
+      );
+    }
+    const siblingEngine = siblings.length > 0 ? (siblings[0]!.transportEngine ?? "cli") : undefined;
+    const existingEngine = input.sameAgentExisting?.transport_engine;
+    if (existingEngine && siblingEngine && existingEngine !== siblingEngine) {
+      throw new Error(
+        `session "${input.alias}" keeps engine "${existingEngine}" but its physical siblings use ` +
+          `"${siblingEngine}"; migrate or remove the conflicting aliases first`,
+      );
+    }
+    return (
+      existingEngine ??
+      siblingEngine ??
+      this.resolveEngineForNewSession({ alias: input.alias, agent: input.agent, workspace: input.workspace })
+    );
   }
 
   private async createLogicalSession(
@@ -1503,14 +1598,26 @@ export class SessionService {
         display_name: sameAgentExisting?.display_name,
         // Persist the engine binding BEFORE any owner can launch for this
         // record (plan §45). A recreated same-agent alias keeps its binding;
-        // otherwise the config decides (development default: cli).
+        // a physical sibling group owns exactly one engine, so a new alias
+        // inherits it instead of re-deriving from config (which could bind
+        // a CLI and a Runtime alias to one physical session). Otherwise the
+        // config decides (development default: cli).
         // Full eligibility (runtime availability, permission policy,
         // nonInteractivePermissions, session shape) is evaluated BEFORE
         // persisting affinity. If strict runtime is ineligible, an error is thrown
         // before state mutation (preventing durable binding).
-        transport_engine:
-          sameAgentExisting?.transport_engine ??
-          this.resolveEngineForNewSession({ alias, agent, workspace }),
+        transport_engine: this.resolveEngineWithPhysicalInheritance({
+          alias,
+          agent,
+          workspace,
+          transportSession,
+          ...(normalizedTransportAgentCommand
+            ? { transportAgentCommand: normalizedTransportAgentCommand }
+            : {}),
+          ...(transportAcpxAgent ? { transportAcpxAgent } : {}),
+          ...(transportAgentArgv && transportAgentArgv.length > 0 ? { transportAgentArgv } : {}),
+          ...(sameAgentExisting ? { sameAgentExisting } : {}),
+        }),
         created_at: existingSession?.created_at ?? now,
         last_used_at: now,
       };
@@ -1533,6 +1640,10 @@ export class SessionService {
       // the same session object we just persisted.
       return this.toResolvedSession(this.state.sessions[alias]!);
     });
+  }
+
+  private async persist(): Promise<void> {
+    await this.stateStore.save(this.state);
   }
 
   private validateSession(alias: string, agent: string, workspace: string): void {

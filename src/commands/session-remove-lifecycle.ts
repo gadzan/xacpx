@@ -5,11 +5,12 @@ import type { ResolvedSession, SessionTransport } from "../transport/types";
 
 /**
  * Process-wide lifecycle locks keyed by canonical physical session
- * identity. Two aliases sharing one physical acpx session MUST serialize
- * their remove transactions: each must recount the remaining physical
- * owners inside the lock, or two concurrent removes both observe each
- * other, both release, and nobody performs the final hard delete (orphaned
- * physical record with no logical retry handle left).
+ * identity. Every alias sharing one physical acpx session — CLI or
+ * Runtime — MUST serialize remove transactions through its group lock:
+ * each recounts the remaining physical owners inside the lock, so
+ * concurrent removes cannot both observe each other and both skip the
+ * final hard delete (orphaned physical record with no logical retry
+ * handle left).
  */
 const physicalRemoveLocks = new Map<string, AsyncMutex>();
 
@@ -24,22 +25,27 @@ function lockForPhysicalKey(physicalKey: string): AsyncMutex {
 
 export interface PhysicalRemoveOutcome {
   wasActive: boolean;
-  /** "released" for a surviving-sibling alias, "deleted" for the last alias. */
-  action: "released" | "deleted";
+  /**
+   * "released" (Runtime sibling survives, physical kept), "deleted"
+   * (last owner, physical hard-deleted), or "logical-only" (CLI alias with
+   * surviving siblings — no engine state to settle, matching legacy).
+   */
+  action: "released" | "deleted" | "logical-only";
   /** Physical owners remaining after this transaction (excluding self). */
   sharedAliasCount: number;
+  /** Legacy CLI best-effort warning; Runtime failures throw instead. */
+  transportTeardownWarning?: string;
 }
 
 /**
- * Remove one Runtime-bound logical alias under its physical-group lock.
- * Inside the lock: recount physical co-owners, release this alias's engine
- * state when siblings survive (physical record kept) or hard-delete the
- * physical session when this alias is last, then durably remove the logical
- * row. Any transport failure propagates BEFORE the logical row disappears,
- * so the caller keeps the retry handle. Callers MUST NOT have removed the
- * logical row beforehand.
+ * Remove one logical alias under its physical-group lock. Inside the lock:
+ * recount physical co-owners (fail closed on indeterminate membership),
+ * settle this alias's engine state, then durably remove the logical row.
+ * Any Runtime transport failure propagates BEFORE the logical row
+ * disappears, so the caller keeps the retry handle. Callers MUST NOT have
+ * removed the logical row beforehand.
  */
-export async function removeRuntimeAliasWithPhysicalLifecycle(options: {
+export async function removeAliasWithPhysicalLifecycle(options: {
   sessions: SessionService;
   transport: Pick<SessionTransport, "releaseLogicalSession" | "deleteSession">;
   session: ResolvedSession;
@@ -47,19 +53,49 @@ export async function removeRuntimeAliasWithPhysicalLifecycle(options: {
 }): Promise<PhysicalRemoveOutcome> {
   const { sessions, transport, session, internalAlias } = options;
   const groupKey = physicalLifecycleKeyForResolvedSession(session);
+  const isRuntime = session.transportEngine === "runtime";
   return lockForPhysicalKey(groupKey).run(async () => {
-    const remaining = sessions.countAliasesSharingPhysicalIdentity(session, internalAlias);
-    if (remaining > 0) {
-      if (!transport.releaseLogicalSession) {
-        throw new Error(
-          `cannot release Runtime alias "${internalAlias}": transport has no releaseLogicalSession operation`,
-        );
+    const { siblings, indeterminateAliases } = sessions.findPhysicalSiblings(session, internalAlias);
+    if (indeterminateAliases.length > 0) {
+      throw new Error(
+        `cannot remove alias "${internalAlias}": ${indeterminateAliases.length} persisted alias(es) ` +
+          `(${indeterminateAliases.join(", ")}) cannot be resolved, so this alias cannot be proven ` +
+          `to be (or not to be) the last physical owner; repair or remove those aliases first`,
+      );
+    }
+    const remaining = siblings.length;
+    let action: PhysicalRemoveOutcome["action"];
+    let transportTeardownWarning: string | undefined;
+    if (isRuntime) {
+      if (remaining > 0) {
+        if (!transport.releaseLogicalSession) {
+          throw new Error(
+            `cannot release Runtime alias "${internalAlias}": transport has no releaseLogicalSession operation`,
+          );
+        }
+        await transport.releaseLogicalSession(session);
+        action = "released";
+      } else {
+        if (!transport.deleteSession) {
+          throw new Error(
+            `cannot hard-delete last Runtime alias "${internalAlias}": transport has no deleteSession operation`,
+          );
+        }
+        await transport.deleteSession(session);
+        action = "deleted";
       }
-      await transport.releaseLogicalSession(session);
+    } else if (remaining === 0 && transport.deleteSession) {
+      try {
+        await transport.deleteSession(session);
+        action = "deleted";
+      } catch (error) {
+        transportTeardownWarning = error instanceof Error ? error.message : String(error);
+        action = "logical-only";
+      }
     } else {
-      await transport.deleteSession?.(session);
+      action = "logical-only";
     }
     const { wasActive } = await sessions.removeSession(internalAlias);
-    return { wasActive, action: remaining > 0 ? "released" : "deleted", sharedAliasCount: remaining };
+    return { wasActive, action, sharedAliasCount: remaining, ...(transportTeardownWarning ? { transportTeardownWarning } : {}) };
   });
 }

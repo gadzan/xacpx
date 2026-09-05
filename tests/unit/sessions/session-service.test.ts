@@ -2027,3 +2027,44 @@ test("resolveWorkerBindingSession fails closed on unknown identity", () => {
   expect(service.resolveWorkerBindingSession("missing")).toBeNull();
   expect(service.listRuntimeQueueRecoverySessions()).toEqual([]);
 });
+
+test("attach to a sibling physical session inherits the sibling engine, not the config", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  const sessions = new SessionService(config, new MemoryStateStore(), state);
+  const a = await sessions.createSession("aff-a", "codex", "backend");
+  expect(a.transportEngine).toBe("cli");
+  // Flip the config default to runtime AFTER A exists: a new alias on the
+  // same physical session must still inherit A's CLI binding.
+  config.transport.engine = "runtime";
+  const b = await sessions.attachSession(
+    "aff-b",
+    "codex",
+    "backend",
+    a.transportSession,
+  );
+  expect(b.transportSession).toBe(a.transportSession);
+  expect(b.transportEngine).toBe("cli");
+  expect(state.sessions["aff-b"]!.transport_engine).toBe("cli");
+});
+
+test("create fails closed on mixed-engine physical siblings", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  const sessions = new SessionService(config, new MemoryStateStore(), state);
+  const a = await sessions.createSession("mix-a", "codex", "backend");
+  // Legacy/manual mixed state: same transport session, conflicting engines.
+  const rowA = state.sessions["mix-a"]!;
+  state.sessions["mix-b"] = {
+    ...rowA,
+    alias: "mix-b",
+    transport_engine: "runtime",
+    logical_session_id: "22222222-2222-4222-8222-222222222222",
+  };
+  expect(a.transportSession).toBeDefined();
+  await expect(
+    sessions.attachSession("mix-c", "codex", "backend", a.transportSession),
+  ).rejects.toThrow(/mixed engine ownership/);
+  // Failed create leaves no row behind.
+  expect(state.sessions["mix-c"]).toBeUndefined();
+});

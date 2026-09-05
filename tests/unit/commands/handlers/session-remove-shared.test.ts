@@ -157,3 +157,51 @@ test("concurrent true-shared removes yield exactly one release and one delete", 
   expect(await sessions.getSession("shr-a")).toBeNull();
   expect(await sessions.getSession("shr-b")).toBeNull();
 });
+
+test("remove fails closed when a same-name sibling cannot be resolved", async () => {
+  const { router, transport, sessions, state, calls, config } = buildSharedRouter();
+  config.workspaces["backend2"] = { cwd: "/tmp/backend" };
+  // A (ws backend) and B (ws backend2) share the physical session (same
+  // name, same cwd, same agent).
+  await router.handle("wx:user", "/session new shr-a --agent codex --ws backend");
+  const transportSession = sessions.getResolvedSessionByInternalAlias("shr-a")!.transportSession;
+  await router.handle("wx:user", `/session attach shr-b --agent codex --ws backend2 --name ${transportSession}`);
+  state.sessions["shr-a"]!.transport_engine = "runtime";
+  state.sessions["shr-b"]!.transport_engine = "runtime";
+  // Manual config edit removes B's workspace: B's row survives but can no
+  // longer resolve, so A can be neither proven last nor proven shared.
+  delete config.workspaces["backend2"];
+  const deleteCalls = transport.deleteSession as ReturnType<typeof mock>;
+
+
+  await expect(router.handle("wx:user", "/session rm shr-a")).rejects.toThrow(/cannot be resolved/);
+  // Fail-closed: no transport call fired, both rows survive, nothing orphaned.
+  // (getSession itself throws for the unresolvable row, so assert on raw state.)
+  expect(calls).toHaveLength(0);
+  expect(deleteCalls.mock.calls.length).toBe(0);
+  expect(state.sessions["shr-a"]).toBeDefined();
+  expect(state.sessions["shr-b"]).toBeDefined();
+});
+
+test("concurrent mixed-engine removes hard-delete exactly once", async () => {
+  const { router, sessions, state, calls } = buildSharedRouter();
+  await makeSharedPair(router, sessions, state);
+  // Legacy/manual mixed state: same physical, conflicting engines. The
+  // affinity invariant prevents NEW mixed groups; this one is crafted.
+  state.sessions["shr-a"]!.transport_engine = "cli";
+  state.sessions["shr-b"]!.transport_engine = "runtime";
+
+  await Promise.all([
+    router.handle("wx:user", "/session rm shr-a"),
+    router.handle("wx:user", "/session rm shr-b"),
+  ]);
+  // Exactly one hard delete total across both engines — never two skips
+  // (orphan) and never two deletes. The Runtime side releases iff it runs
+  // while the CLI row still exists.
+  const deletes = calls.filter((c) => c.op === "delete");
+  const releases = calls.filter((c) => c.op === "release");
+  expect(deletes).toHaveLength(1);
+  expect(releases.length).toBeLessThanOrEqual(1);
+  expect(await sessions.getSession("shr-a")).toBeNull();
+  expect(await sessions.getSession("shr-b")).toBeNull();
+});

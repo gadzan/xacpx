@@ -21,6 +21,10 @@ export const workspace: WorkspaceMessages = {
   // handleWorkspaceRemove — removed confirmation
   removed: (name) => `工作区「${name}」已删除`,
 
+  // handleWorkspaceRemove — still referenced by persisted sessions
+  stillReferenced: (name, aliases) =>
+    `工作区「${name}」仍被以下会话使用：${aliases}。请先删除这些会话。`,
+
   // workspaceHelp metadata
   helpSummary: "管理已注册的工作区。",
   helpCmdList: "/workspaces",

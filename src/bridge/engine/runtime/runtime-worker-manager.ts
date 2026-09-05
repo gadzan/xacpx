@@ -3,7 +3,7 @@ import { statSync } from "node:fs";
 import { join } from "node:path";
 
 import { RuntimeWorkerClient, type WorkerLifecycle, type RuntimeWorkerRef, type RuntimeWorkerClientDeps, WorkerTeardownPendingError } from "./runtime-worker-client";
-import { RuntimeWorkerFence, dischargeRuntimeWorkerFence, probeProcessGroupDefault, StaleFenceGenerationError, type FenceLiveness, type RuntimeWorkerFenceRecord } from "./runtime-worker-fence";
+import { RuntimeWorkerFence, dischargeRuntimeWorkerFence, probeProcessGroupDefault, StaleFenceGenerationError, FenceUnreadableError, type FenceLiveness, type RuntimeWorkerFenceRecord } from "./runtime-worker-fence";
 import { defaultRuntimeDir } from "./worker-eof";
 import { OrphanRegistry } from "../../../transport/orphan-registry";
 import { probeWindowsProcessIdentity } from "../../../process/windows-process-tree";
@@ -469,22 +469,35 @@ export class RuntimeWorkerManager {
   async release(logicalWorkerKey: string, client?: RuntimeWorkerClient): Promise<void> {
     const fenced = client !== undefined && this.workersByKey.get(logicalWorkerKey) === client;
     const physicalFenceKey = this.physicalFenceKeys.get(logicalWorkerKey) ?? logicalWorkerKey;
-    if (!client || fenced) {
-      this.workersByKey.delete(logicalWorkerKey);
-      this.physicalFenceKeys.delete(logicalWorkerKey);
-    }
     if (client && client.lifecycle === "stopped") {
       const fence = this.fence();
       // Guarded by our own generation: never unlink a successor's fence if
-      // ownership moved on while we were stopping. A stale refusal just
-      // means there is nothing of ours left to retire; real I/O errors
-      // still propagate.
+      // ownership moved on while we were stopping. The durable retire MUST
+      // settle before the in-memory mappings are dropped: an unreadable
+      // fence is NOT a proven handoff, so it keeps the mappings (and throws)
+      // for a genuine retry instead of reporting success with evidence
+      // still on disk that will brick the next acquire.
       if (fence) {
-        await this.enqueueFenceWrite(physicalFenceKey, () => fence.retire(physicalFenceKey, client.ref.generation)).catch((error) => {
-          if (error instanceof StaleFenceGenerationError) return;
-          throw error;
-        });
+        try {
+          await this.enqueueFenceWrite(physicalFenceKey, () => fence.retire(physicalFenceKey, client.ref.generation));
+        } catch (error) {
+          if (error instanceof StaleFenceGenerationError) {
+            // Successor generation owns the fence: our ownership already
+            // ended; fall through to mapping cleanup.
+          } else if (error instanceof FenceUnreadableError) {
+            throw new WorkerTeardownPendingError(
+              `durable ownership fence for session "${physicalFenceKey}" is unreadable; ` +
+                `refusing to drop ownership evidence — repair or remove the fence file, then retry`,
+            );
+          } else {
+            throw error;
+          }
+        }
       }
+    }
+    if (!client || fenced) {
+      this.workersByKey.delete(logicalWorkerKey);
+      this.physicalFenceKeys.delete(logicalWorkerKey);
     }
   }
 

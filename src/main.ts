@@ -1789,6 +1789,12 @@ export async function buildApp(
         });
       },
       remove: async (name) => {
+        const users = sessions.aliasesUsingAgent(name);
+        if (users.length > 0) {
+          throw new Error(
+            `agent "${name}" is still used by sessions: ${users.join(", ")}; remove those sessions first`,
+          );
+        }
         await configMutationMutex.run(async () => {
           const updated = await configStore.removeAgent(name);
           publishLiveConfig(updated);
@@ -1822,6 +1828,12 @@ export async function buildApp(
         });
       },
       remove: async (name) => {
+        const users = sessions.aliasesUsingWorkspace(name);
+        if (users.length > 0) {
+          throw new Error(
+            `workspace "${name}" is still used by sessions: ${users.join(", ")}; remove those sessions first`,
+          );
+        }
         await configMutationMutex.run(async () => {
           const updated = await configStore.removeWorkspace(name);
           publishLiveConfig(updated);

@@ -1081,6 +1081,104 @@ test.serial("P1-18: driver hot-change with stable agentCommand rotates via const
   }
 }, 15_000);
 
+test.serial("P1-20: release fails closed on unreadable fence and retries after repair", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-unreadable-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 60_000,
+  });
+  try {
+    const manager: any = (engine as any).manager;
+    const store = (engine as any).getQueueStore();
+    const input = { ...testInput, cwd: "/repo/unreadable" };
+    const key = testInput.logicalSessionId;
+    const physicalKey = physicalFenceKeyForSession(input as any);
+    const fencePath = join(fenceDir, `${encodeURIComponent(physicalKey)}.json`);
+
+    await engine.setMode({ ...input, modeId: "plan" } as any);
+    const pid: number = manager.get(key).ref.pid;
+    await store.enqueue(key, { messageId: "m-u1", text: "queued-u", mode: "queue" });
+    expect(await store.hasPending(key)).toBe(true);
+    // Corrupt the durable fence while the worker is still alive (the fake
+    // worker never touches the fence file itself, so the corruption stands
+    // until the release below attempts its guarded retire).
+    await writeFile(fencePath, "not-json{{{");
+    // First release: worker shuts down fine, but the guarded retire must
+    // refuse the unreadable evidence — mappings AND journal stay for retry.
+    await expect(engine.releaseLogicalSession(input as any)).rejects.toMatchObject({
+      code: "RUNTIME_WORKER_TEARDOWN_PENDING",
+    });
+    expect(manager.get(key)).toBeDefined();
+    expect(manager.physicalFenceKeyFor(key)).toBe(physicalKey);
+    expect(await store.hasPending(key)).toBe(true);
+    // Repair (drop the corrupt file; absent is idempotent retire success),
+    // then retry: the stopped worker is forgotten and the journal dropped.
+    await rm(fencePath, { force: true });
+    await engine.releaseLogicalSession(input as any);
+    expect(manager.get(key)).toBeUndefined();
+    expect(manager.physicalFenceKeyFor(key)).toBeUndefined();
+    expect(await store.hasPending(key)).toBe(false);
+    expect(pidAlive(pid)).toBe(false);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test.serial("P1-19: queueOwnerTtlSeconds 0 disables idle reap", async () => {
+  for (const [tag, ttlSeconds, expectTimer] of [
+    ["ttl-zero", 0, false],
+    ["ttl-default", undefined, true],
+  ] as Array<[string, number | undefined, boolean]>) {
+    const testInput = uniqueInput();
+    const dir = await mkdtemp(join(tmpdir(), `rt-ttl-${tag}-`));
+    const stateSessionsDir = join(dir, "state", "sessions");
+    await mkdir(stateSessionsDir, { recursive: true });
+    const queueDir = join(dir, "state", "runtime-queue");
+    const fenceDir = join(dir, "state", "worker-fences");
+    const entry = join(dir, "slow-worker.mjs");
+    await slowWorker(entry);
+    const engine = new RuntimeEngine({
+      workerEntryPath: entry,
+      permissionMode: "approve-all",
+      stateDir: stateSessionsDir,
+      queueDir,
+      fenceDir,
+      ...(ttlSeconds !== undefined ? { queueOwnerTtlSeconds: ttlSeconds } : {}),
+    });
+    try {
+      // Constructor mapping: configured seconds reach idleTtlMs (0 stays 0
+      // instead of falling back to the 60s default).
+      expect((engine as any).idleTtlMs).toBe(ttlSeconds === undefined ? 60_000 : ttlSeconds * 1000);
+      const manager: any = (engine as any).manager;
+      const input = { ...testInput, cwd: `/repo/${tag}` };
+      const key = testInput.logicalSessionId;
+      await engine.setMode({ ...input, modeId: "plan" } as any);
+      const client = manager.get(key);
+      expect(client).toBeDefined();
+      // Reap can only happen via the scheduled timer: ttl=0 must not
+      // schedule one, so the worker never reaps no matter how much time
+      // passes; default must schedule.
+      (engine as any).scheduleIdleTtl(key, client);
+      expect((engine as any).idleTimers.has(key)).toBe(expectTimer);
+    } finally {
+      await engine.shutdown().catch(() => {});
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+}, 15_000);
+
 test.serial("P1-12: residual fence without record blocks delete (fail-closed)", async () => {
   const testInput = uniqueInput();
   const dir = await mkdtemp(join(tmpdir(), "rt-residual-fence-"));

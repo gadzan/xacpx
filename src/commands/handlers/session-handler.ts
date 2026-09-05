@@ -15,7 +15,7 @@ import { buildCoordinatorPrompt } from "../../orchestration/build-coordinator-pr
 import { stableCoordinatorSession } from "../../orchestration/coordinator-identity";
 import { toDisplaySessionAlias, getChannelIdFromChatKey, scopeDisplayAliasToInternal, resolveSessionAliasForInput } from "../../channels/channel-scope";
 import { resolveChannelDefaultReplyMode, resolveEffectiveReplyMode } from "./resolve-reply-mode";
-import { removeRuntimeAliasWithPhysicalLifecycle } from "../session-remove-lifecycle";
+import { removeAliasWithPhysicalLifecycle } from "../session-remove-lifecycle";
 import { quoteWorkspaceNameIfNeeded } from "../workspace-name";
 import type { SessionSwitchResult } from "../../sessions/session-service";
 import { decorateUnread } from "./session-list-marker";
@@ -212,6 +212,27 @@ export async function handleSessions(context: SessionHandlerContext, chatKey: st
   };
 }
 
+async function cleanupProvisionalCreate(
+  context: SessionHandlerContext,
+  persisted: ResolvedSession,
+  finalInternalAlias: string,
+  cause?: unknown,
+): Promise<void> {
+  try {
+    await context.transport.deleteSession?.(persisted);
+  } catch (cleanupError) {
+    throw new Error(
+      `session creation failed${cause instanceof Error ? `: ${cause.message}` : ""} and the provisional ` +
+        `physical session could not be verified cleaned up: ` +
+        `${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}; ` +
+        `logical session "${finalInternalAlias}" kept for retry/delete`,
+    );
+  }
+  try {
+    await context.sessions.removeSession(finalInternalAlias);
+  } catch {}
+}
+
 export async function handleSessionNew(
   context: SessionHandlerContext,
   chatKey: string,
@@ -301,14 +322,16 @@ export async function handleSessionNew(
           await context.lifecycle.ensureTransportSession(persisted);
           const exists = await context.lifecycle.checkTransportSession(persisted);
           if (!exists) {
-            await context.sessions.removeSession(finalInternalAlias);
+            await cleanupProvisionalCreate(context, persisted, finalInternalAlias);
             return context.recovery.renderSessionCreationVerificationError(persisted);
           }
           transportSucceeded = true;
         } catch (error) {
-          // Rollback the provisional logical session — no orphan alias with
-          // no transport.
-          try { await context.sessions.removeSession(finalInternalAlias); } catch {}
+          // Converge the provisional physical incarnation BEFORE dropping
+          // the only durable retry handle: a daemon-side timeout is not a
+          // bridge-side cancellation, so the ensure may still complete and
+          // leave a live worker/record behind.
+          await cleanupProvisionalCreate(context, persisted, finalInternalAlias, error);
           return context.recovery.renderSessionCreationError(persisted, error);
         }
 
@@ -753,34 +776,24 @@ async function removeSessionUnderAliasClaim(
       };
     }
   }
-
   const sharedAliasCount = context.sessions.countAliasesSharingTransport(session.transportSession, internalAlias);
-  // Runtime-bound aliases carry per-LID engine state (worker, fence mapping,
-  // queue journal, catalog) that must be settled BEFORE the logical row
-  // disappears. They go through the physical-group remove transaction: the
-  // physical co-owner recount, the release-or-delete decision, and the
-  // durable logical remove all happen under one group lock, so concurrent
-  // sibling removes cannot both release and orphan the physical record —
-  // and a same-name/different-physical alias is hard-deleted, never
-  // released. Any transport failure propagates before the logical row
-  // disappears, keeping the retry handle.
-  const runtimeManaged =
-    session.transportEngine === "runtime" && typeof context.transport.releaseLogicalSession === "function";
-  let physicalSharedCount = sharedAliasCount;
+  // All aliases — Runtime or CLI — remove through the physical-group
+  // transaction: the physical co-owner recount, the engine settle decision,
+  // and the durable logical remove all happen under one group lock, so
+  // concurrent sibling removes cannot both skip the final hard delete (and
+  // a same-name/different-physical alias is hard-deleted, never released).
+  // Runtime transport failures propagate before the logical row disappears,
+  // keeping the retry handle; CLI keeps its legacy best-effort warning.
   const wasCurrentInThisChat = context.sessions.peekCurrentSessionAlias(chatKey) === internalAlias;
-  let wasActive = false;
-  if (runtimeManaged) {
-    const outcome = await removeRuntimeAliasWithPhysicalLifecycle({
-      sessions: context.sessions,
-      transport: context.transport,
-      session,
-      internalAlias,
-    });
-    wasActive = outcome.wasActive;
-    physicalSharedCount = outcome.sharedAliasCount;
-  } else {
-    ({ wasActive } = await context.sessions.removeSession(internalAlias));
-  }
+  const outcome = await removeAliasWithPhysicalLifecycle({
+    sessions: context.sessions,
+    transport: context.transport,
+    session,
+    internalAlias,
+  });
+  const { wasActive } = outcome;
+  const physicalSharedCount = outcome.sharedAliasCount;
+  const transportTeardownWarning = outcome.transportTeardownWarning;
   // removeSession promotes previous_session to current_session; if that
   // happened for this chat, the next plain message routes to the promoted
   // session, so the reply must name it instead of claiming a cleared context.
@@ -803,25 +816,16 @@ async function removeSessionUnderAliasClaim(
     }
   }
 
-  // Runtime-managed aliases already settled their transport state above
-  // (release or hard delete, both throwing on failure so the logical row is
-  // kept). Only the legacy CLI path degrades transport failure to a warning.
-  // The shared-transport message reports physical co-owners for Runtime
-  // (same count as name-based for CLI).
-  let transportTeardownWarning: string | undefined;
+  // Transport state was settled inside the transaction above. CLI keeps its
+  // legacy best-effort warning (logged here); Runtime failures threw before
+  // the logical row disappeared, so no warning is possible for them.
   const shouldTeardownTransport = sharedAliasCount === 0;
-  if (!runtimeManaged && shouldTeardownTransport && context.transport.deleteSession) {
-    try {
-      await context.transport.deleteSession(session);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      transportTeardownWarning = message;
-      await context.logger.error("session.transport_teardown_failed", "failed to close acpx session after logical remove", {
-        alias: internalAlias,
-        transportSession: session.transportSession,
-        message,
-      });
-    }
+  if (transportTeardownWarning) {
+    await context.logger.error("session.transport_teardown_failed", "failed to close acpx session after logical remove", {
+      alias: internalAlias,
+      transportSession: session.transportSession,
+      message: transportTeardownWarning,
+    });
   }
   await context.logger.info("session.removed", "removed logical session", {
     alias: internalAlias,

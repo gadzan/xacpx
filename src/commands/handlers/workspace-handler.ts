@@ -73,7 +73,13 @@ export async function handleWorkspaceRemove(
   if (!context.config || !context.configStore) {
     return { text: w.noWritableConfig };
   }
-
+  // A workspace backing persisted sessions cannot be removed: its rows
+  // would become unresolvable, turning physical-membership decisions for
+  // every same-name alias fail-ambiguous. Remove those sessions first.
+  const users = context.sessions.aliasesUsingWorkspace(workspaceName);
+  if (users.length > 0) {
+    return { text: w.stillReferenced(workspaceName, users.join(", ")) };
+  }
   const configStore = context.configStore;
   return await context.configMutationMutex.run(async () => {
     const updated = await configStore.removeWorkspace(workspaceName);

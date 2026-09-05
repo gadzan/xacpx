@@ -4,7 +4,7 @@ import type { AppLogger } from "../logging/app-logger";
 import type { SessionService } from "../sessions/session-service";
 import type { AgentSession, ResolvedSession, SessionTransport } from "../transport/types";
 import { resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
-import { removeRuntimeAliasWithPhysicalLifecycle } from "./session-remove-lifecycle";
+import { removeAliasWithPhysicalLifecycle } from "./session-remove-lifecycle";
 import type { OrchestrationRouterOps } from "./router-types";
 import type { TransportInvoker } from "./transport-invoker";
 
@@ -104,7 +104,7 @@ export class SessionControlService {
           await this.invoker.ensureTransportSession(persisted);
           const exists = await this.invoker.checkTransportSession(persisted);
           if (!exists) {
-            try { await this.sessions.removeSession(finalInternalAlias); } catch {}
+            await this.cleanupProvisionalCreate(persisted, finalInternalAlias);
             throw new Error(`transport session "${persisted.transportSession}" could not be verified`);
           }
           transportSucceeded = true;
@@ -122,7 +122,7 @@ export class SessionControlService {
           return persisted;
         } catch (error) {
           if (!transportSucceeded) {
-            try { await this.sessions.removeSession(finalInternalAlias); } catch {}
+            await this.cleanupProvisionalCreate(persisted, finalInternalAlias, error);
           }
           throw error;
         }
@@ -134,6 +134,32 @@ export class SessionControlService {
     }
   }
 
+  /**
+   * Converge a failed create's provisional physical incarnation BEFORE the
+   * logical row disappears (see cleanupProvisionalCreate in
+   * handlers/session-handler: a daemon-side timeout is not a bridge-side
+   * cancellation). If the cleanup cannot be verified, the logical row is
+   * kept and the combined failure propagates for retry/delete.
+   */
+  private async cleanupProvisionalCreate(
+    persisted: ResolvedSession,
+    finalInternalAlias: string,
+    cause?: unknown,
+  ): Promise<void> {
+    try {
+      await this.transport.deleteSession?.(persisted);
+    } catch (cleanupError) {
+      throw new Error(
+        `session creation failed${cause instanceof Error ? `: ${cause.message}` : ""} and the provisional ` +
+          `physical session could not be verified cleaned up: ` +
+          `${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}; ` +
+          `logical session "${finalInternalAlias}" kept for retry/delete`,
+      );
+    }
+    try {
+      await this.sessions.removeSession(finalInternalAlias);
+    } catch {}
+  }
   /** Real delete: logical removal + acpx history delete, guarded so a transport
    *  session shared by another alias is left intact. */
   async removeSessionWithTransport(internalAlias: string): Promise<{
@@ -173,26 +199,17 @@ export class SessionControlService {
       }
     }
     const sharedAliasCount = this.sessions.countAliasesSharingTransport(session.transportSession, internalAlias);
-    // Same lifecycle contract as the chat remove path: Runtime-bound aliases
-    // go through the physical-group remove transaction (recount, release or
-    // verified hard delete, durable logical remove — all under one group
-    // lock, all before the logical row disappears).
-    const runtimeManaged =
-      session.transportEngine === "runtime" && typeof this.transport.releaseLogicalSession === "function";
-    let physicalSharedCount = sharedAliasCount;
-    let wasActive = false;
-    if (runtimeManaged) {
-      const outcome = await removeRuntimeAliasWithPhysicalLifecycle({
-        sessions: this.sessions,
-        transport: this.transport,
-        session,
-        internalAlias,
-      });
-      wasActive = outcome.wasActive;
-      physicalSharedCount = outcome.sharedAliasCount;
-    } else {
-      ({ wasActive } = await this.sessions.removeSession(internalAlias));
-    }
+    // Same lifecycle contract as the chat remove path: every alias goes
+    // through the physical-group remove transaction (recount, engine
+    // settle, durable logical remove — all under one group lock).
+    const outcome = await removeAliasWithPhysicalLifecycle({
+      sessions: this.sessions,
+      transport: this.transport,
+      session,
+      internalAlias,
+    });
+    const { wasActive } = outcome;
+    const physicalSharedCount = outcome.sharedAliasCount;
 
     if (this.orchestration) {
       try {
@@ -206,22 +223,17 @@ export class SessionControlService {
       }
     }
 
-    // Runtime-managed aliases already settled transport state inside the
-    // transaction (throwing on failure so the logical row is kept).
-    let transportTornDown = runtimeManaged;
-    let transportTeardownWarning: string | undefined;
-    if (!runtimeManaged && sharedAliasCount === 0 && this.transport.deleteSession) {
-      try {
-        await this.transport.deleteSession(session);
-        transportTornDown = true;
-      } catch (error) {
-        transportTeardownWarning = error instanceof Error ? error.message : String(error);
-        await this.logger.error("session.transport_delete_failed", "failed to delete acpx session after logical remove", {
-          alias: internalAlias,
-          transportSession: session.transportSession,
-          message: transportTeardownWarning,
-        });
-      }
+    // Transport state was settled inside the transaction above. Runtime
+    // failures threw before the logical row disappeared; CLI keeps its
+    // legacy best-effort warning, surfaced by the helper outcome.
+    const transportTeardownWarning = outcome.transportTeardownWarning;
+    const transportTornDown = outcome.action === "deleted" && transportTeardownWarning === undefined;
+    if (transportTeardownWarning) {
+      await this.logger.error("session.transport_delete_failed", "failed to delete acpx session after logical remove", {
+        alias: internalAlias,
+        transportSession: session.transportSession,
+        message: transportTeardownWarning,
+      });
     }
     return {
       wasActive,

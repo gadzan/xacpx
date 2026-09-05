@@ -37,6 +37,12 @@ function makeSessions(overrides: {
     countAliasesSharingTransport: mock(
       (_transportSession: string, _excludeAlias?: string) => overrides.sharedCount,
     ),
+    findPhysicalSiblings: mock(
+      (_session: ResolvedSession, _excludeAlias?: string) => ({
+        siblings: new Array(overrides.sharedCount).fill(session),
+        indeterminateAliases: [],
+      }),
+    ),
     removeSession: mock(async (_alias: string) => ({ wasActive: true })),
     setArchived: mock(async (_alias: string, _archived: boolean) => {}),
   } as unknown as SessionService;

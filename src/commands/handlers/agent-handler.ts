@@ -78,6 +78,12 @@ export async function handleAgentRemove(context: CommandRouterContext, agentName
     if (!liveConfig.agents[agentName]) {
       return { text: a.notFound };
     }
+    // An agent backing persisted sessions cannot be removed: its rows
+    // would become unresolvable (see handleWorkspaceRemove).
+    const users = context.sessions.aliasesUsingAgent(agentName);
+    if (users.length > 0) {
+      return { text: a.stillReferenced(agentName, users.join(", ")) };
+    }
 
     const updated = await configStore.removeAgent(agentName);
     context.replaceConfig(updated);

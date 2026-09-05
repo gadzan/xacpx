@@ -27,6 +27,7 @@ import { ensurePrivateRuntimeDir } from "../daemon/private-runtime-dir";
 import { createQueueOwnerAdapterContext } from "../transport/queue-owner-adapter-context";
 import { probeWindowsProcessIdentity } from "../process/windows-process-tree";
 import { setLocale, resolveLocale } from "../i18n";
+import type { NonInteractivePermissions, PermissionMode } from "../config/types";
 import { ensureAgentOverlays, parseAgentOverlayEntries } from "../transport/acpx-agent-overlay";
 
 type BridgeInput = AsyncIterable<string> & {
@@ -76,9 +77,40 @@ export async function processBridgeInput(options: {
   }
 }
 
+export interface BridgeSharedConfig {
+  permissionMode: PermissionMode;
+  nonInteractivePermissions: NonInteractivePermissions;
+  permissionPolicy: string | undefined;
+  queueOwnerTtlSeconds: number | undefined;
+}
+
+/**
+ * Resolve the bridge-wide config shared by the CLI and Runtime engines.
+ * Resolved ONCE at startup (runBridgeMain) so the two engines cannot drift
+ * (e.g. queueOwnerTtlSeconds honored by CLI but silently defaulted by
+ * Runtime). The env reader is injectable for wiring tests.
+ */
+export function resolveBridgeSharedConfig(
+  readEnv: (name: string) => string | undefined = coreEnv,
+): BridgeSharedConfig {
+  return {
+    permissionMode: normalizeBridgePermissionMode(readEnv("BRIDGE_PERMISSION_MODE")),
+    nonInteractivePermissions: normalizeBridgeNonInteractivePermissions(
+      readEnv("BRIDGE_NON_INTERACTIVE_PERMISSIONS"),
+    ),
+    permissionPolicy: normalizeBridgePermissionPolicy(readEnv("BRIDGE_PERMISSION_POLICY")),
+    queueOwnerTtlSeconds: normalizeBridgeQueueOwnerTtlSeconds(
+      readEnv("BRIDGE_QUEUE_OWNER_TTL_SECONDS"),
+    ),
+  };
+}
+
 export async function runBridgeMain(): Promise<void> {
   // The console hands the bridge the exact overlay entries it needs; re-provisioning
   // here is idempotent and keeps standalone bridge invocations consistent.
+  // Shared bridge config is resolved ONCE at startup (see
+  // resolveBridgeSharedConfig) so the CLI and Runtime engines cannot drift.
+  const bridgeConfig = resolveBridgeSharedConfig();
   const overlaysEnv = coreEnv("BRIDGE_AGENT_OVERLAYS");
   if (overlaysEnv) {
     await ensureAgentOverlays(parseAgentOverlayEntries(overlaysEnv));
@@ -88,14 +120,10 @@ export async function runBridgeMain(): Promise<void> {
   }
   let server: BridgeServer;
   const cliRuntime = new BridgeRuntime(coreEnv("BRIDGE_ACPX_COMMAND") ?? "acpx", undefined, undefined, {
-      permissionMode: normalizeBridgePermissionMode(coreEnv("BRIDGE_PERMISSION_MODE")),
-      nonInteractivePermissions: normalizeBridgeNonInteractivePermissions(
-        coreEnv("BRIDGE_NON_INTERACTIVE_PERMISSIONS"),
-      ),
-      permissionPolicy: normalizeBridgePermissionPolicy(coreEnv("BRIDGE_PERMISSION_POLICY")),
-      queueOwnerTtlSeconds: normalizeBridgeQueueOwnerTtlSeconds(
-        coreEnv("BRIDGE_QUEUE_OWNER_TTL_SECONDS"),
-      ),
+      permissionMode: bridgeConfig.permissionMode,
+      nonInteractivePermissions: bridgeConfig.nonInteractivePermissions,
+      permissionPolicy: bridgeConfig.permissionPolicy,
+      queueOwnerTtlSeconds: bridgeConfig.queueOwnerTtlSeconds,
       sessionInitTimeoutMs: normalizeBridgeSessionInitTimeoutMs(
         coreEnv("BRIDGE_SESSION_INIT_TIMEOUT_MS"),
       ),
@@ -149,9 +177,10 @@ export async function runBridgeMain(): Promise<void> {
       } catch {}
       const runtimeEngine = new RuntimeEngine({
         stateDir: bridgeStateDir,
-        permissionMode: normalizeBridgePermissionMode(coreEnv("BRIDGE_PERMISSION_MODE")),
-        nonInteractivePermissions: normalizeBridgeNonInteractivePermissions(coreEnv("BRIDGE_NON_INTERACTIVE_PERMISSIONS")),
-        permissionPolicy: normalizeBridgePermissionPolicy(coreEnv("BRIDGE_PERMISSION_POLICY")),
+        permissionMode: bridgeConfig.permissionMode,
+        nonInteractivePermissions: bridgeConfig.nonInteractivePermissions,
+        permissionPolicy: bridgeConfig.permissionPolicy,
+        queueOwnerTtlSeconds: bridgeConfig.queueOwnerTtlSeconds,
         durableRootDir: durableRoot,
         queueDir,
         fenceDir,

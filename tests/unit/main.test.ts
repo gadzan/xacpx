@@ -3183,3 +3183,43 @@ test("startup refuses acpx-cli transport when persisted runtime bindings exist",
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("control agent/workspace remove refuses while persisted sessions reference them", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-app-refguard-"));
+  const configPath = join(dir, "config.json");
+  const statePath = join(dir, "state.json");
+  await writeFile(configPath, JSON.stringify({
+    transport: { type: "acpx-cli", command: "acpx" },
+    agents: { codex: { driver: "codex" } },
+    workspaces: { backend: { cwd: "/tmp/backend" } },
+  }));
+  const now = new Date().toISOString();
+  await writeFile(statePath, JSON.stringify({
+    chat_contexts: {},
+    sessions: {
+      "guarded": {
+        alias: "guarded",
+        agent: "codex",
+        workspace: "backend",
+        transport_session: "backend:guarded",
+        source: "xacpx",
+        created_at: now,
+        last_used_at: now,
+      },
+    },
+    tasks: {},
+    orchestration: { groups: {}, tasks: {}, workers: {}, workerBindings: {}, externalCoordinators: {} },
+  }));
+  const app = await buildApp({ configPath, statePath });
+  try {
+    await expect(app.control.removeWorkspace("backend")).rejects.toThrow(/in use by an existing session/);
+    await expect(app.control.removeAgent("codex")).rejects.toThrow(/in use by an existing session/);
+    // Config on disk untouched by the refused removes.
+    const saved = JSON.parse(await readFile(configPath, "utf8"));
+    expect(saved.workspaces.backend).toBeDefined();
+    expect(saved.agents.codex).toBeDefined();
+  } finally {
+    await app.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

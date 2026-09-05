@@ -1826,3 +1826,83 @@ test("attachNativeSessionWithTransport auto-derives a free alias when the desire
   const result = await router.attachNativeSessionWithTransport("relay:dup", "codex", "backend", "ses_2");
   expect(result.alias).toBe("relay:dup-2");
 });
+
+test("failed create converges the provisional physical session before dropping the row", async () => {
+  const { router, transport, sessions } = buildRouter();
+  const order: string[] = [];
+  (transport.ensureSession as ReturnType<typeof mock>).mockImplementationOnce(async () => {
+    throw new Error("bridge ensure boom");
+  });
+  (transport.deleteSession as ReturnType<typeof mock>).mockImplementation(async () => {
+    order.push("delete");
+  });
+  const origRemove = sessions.removeSession.bind(sessions);
+  sessions.removeSession = (async (alias: string) => {
+    order.push("remove");
+    return origRemove(alias);
+  }) as typeof sessions.removeSession;
+  await expect(router.handle("wx:user", "/session new provisional --agent codex --ws backend")).rejects.toThrow(
+    /bridge ensure boom/,
+  );
+  // Physical cleanup verified first, logical row dropped after.
+  expect(order).toEqual(["delete", "remove"]);
+  expect(sessions.getResolvedSessionByInternalAlias("provisional")).toBeNull();
+});
+
+test("failed create keeps the row when provisional cleanup cannot be verified", async () => {
+  const { router, transport, sessions } = buildRouter();
+  (transport.ensureSession as ReturnType<typeof mock>).mockImplementationOnce(async () => {
+    throw new Error("bridge ensure boom");
+  });
+  (transport.deleteSession as ReturnType<typeof mock>).mockImplementationOnce(async () => {
+    throw new Error("cleanup delete boom");
+  });
+
+  await expect(router.handle("wx:user", "/session new provisional --agent codex --ws backend")).rejects.toThrow(
+    /kept for retry\/delete/,
+  );
+  expect(sessions.getResolvedSessionByInternalAlias("provisional")).not.toBeNull();
+});
+
+test("control create keeps the row when provisional cleanup cannot be verified", async () => {
+  const { router, transport, sessions, config } = buildRouter();
+  config.workspaces.home = { cwd: "/tmp/home" };
+  (transport.ensureSession as ReturnType<typeof mock>).mockImplementationOnce(async () => {
+    throw new Error("bridge ensure boom");
+  });
+  (transport.deleteSession as ReturnType<typeof mock>).mockImplementationOnce(async () => {
+    throw new Error("cleanup delete boom");
+  });
+
+  await expect(router.createSessionWithTransport("relay:demo", "codex", "home")).rejects.toThrow(
+    /kept for retry\/delete/,
+  );
+  expect(await sessions.getSession("relay:demo")).not.toBeNull();
+});
+
+test("workspace rm refuses while persisted sessions still use it", async () => {
+  const { router, sessions } = buildRouter();
+  await router.handle("wx:user", "/session new guarded --agent codex --ws backend");
+  expect(await sessions.getSession("guarded")).not.toBeNull();
+
+  const reply = await router.handle("wx:user", "/workspace rm backend");
+  expect(reply.text).toContain("仍被");
+  expect(reply.text).toContain("guarded");
+  // Guarded: config untouched.
+  await router.handle("wx:user", "/session rm guarded");
+  const freed = await router.handle("wx:user", "/workspace rm backend");
+  expect(freed.text).not.toContain("仍被");
+});
+
+test("agent rm refuses while persisted sessions still use it", async () => {
+  const { router, sessions } = buildRouter();
+  await router.handle("wx:user", "/session new guarded --agent codex --ws backend");
+  expect(await sessions.getSession("guarded")).not.toBeNull();
+
+  const reply = await router.handle("wx:user", "/agent rm codex");
+  expect(reply.text).toContain("仍被");
+  expect(reply.text).toContain("guarded");
+  await router.handle("wx:user", "/session rm guarded");
+  const freed = await router.handle("wx:user", "/agent rm codex");
+  expect(freed.text).not.toContain("仍被");
+});

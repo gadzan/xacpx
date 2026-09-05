@@ -334,6 +334,9 @@ export interface WorkspaceMessages {
   // handleWorkspaceRemove — removed confirmation
   removed: (name: string) => string;
 
+  // handleWorkspaceRemove — still referenced by persisted sessions
+  stillReferenced: (name: string, aliases: string) => string;
+
   // workspaceHelp metadata
   helpSummary: string;
   helpCmdList: string;
@@ -371,6 +374,9 @@ export interface AgentMessages {
 
   // handleAgentRemove — removed confirmation
   removed: (name: string) => string;
+
+  // handleAgentRemove — still referenced by persisted sessions
+  stillReferenced: (name: string, aliases: string) => string;
 
   // agentHelp metadata
   helpSummary: string;
