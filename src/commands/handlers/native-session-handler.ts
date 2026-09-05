@@ -418,8 +418,15 @@ async function resolveNativeWorkspace(
     }
 
     const workspaceName = allocateWorkspaceName(sanitizeWorkspaceName(basenameForWorkspacePath(cwd)), context.config.workspaces);
-    const updated = await context.configStore.upsertWorkspace(workspaceName, cwd);
-    context.replaceConfig(updated);
+    // Whole-snapshot publish joins the shared config mutation domain so it
+    // cannot publish an uncommitted permission value (or clobber a
+    // concurrent rollback) mid-transaction.
+    const configStore = context.configStore;
+    const updated = await context.configMutationMutex.run(async () => {
+      const next = await configStore.upsertWorkspace(workspaceName, cwd);
+      context.replaceConfig(next);
+      return next;
+    });
     return {
       workspace: workspaceName,
       workspaceLabel: workspaceName,

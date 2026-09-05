@@ -77,19 +77,21 @@ export async function handleConfigSet(
     return { text: c.noWritableConfig };
   }
 
-  const plan = planSupportedConfigUpdate(context.config, path, rawValue);
-  if ("error" in plan) {
-    return { text: plan.error };
-  }
-
-  const previousConfig = cloneAppConfig(context.config);
   // Narrowed for the closure below (narrowing does not cross the boundary).
   const configStore = context.configStore;
-  // Whole sequence (disk write → permission transaction → live publish or
-  // disk+live rollback) runs inside the shared config mutation domain, so a
-  // watcher reload can never load this in-flight value and commit it after
-  // the rollback below reports failure.
+  const liveConfig = context.config;
+  // Everything — plan validation (reads live config), pre-image clone, disk
+  // write, permission transaction, live publish or disk+live rollback — runs
+  // inside the shared config mutation domain. In particular the rollback
+  // pre-image must be cloned after acquiring the lock: a transaction queued
+  // behind a successful one must roll back to the predecessor's committed
+  // state, never to a stale snapshot taken before it.
   return await context.configMutationMutex.run(async () => {
+    const plan = planSupportedConfigUpdate(liveConfig, path, rawValue);
+    if ("error" in plan) {
+      return { text: plan.error };
+    }
+    const previousConfig = cloneAppConfig(liveConfig);
     // Capture the raw (file) value before patching so a rollback restores the
     // operator's exact previous state, not a parse-normalized copy of it.
     const previousRaw = await configStore.getRawValue(plan.rawPath);

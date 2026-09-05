@@ -1,7 +1,7 @@
 import { expect, test, beforeEach } from "bun:test";
 import { handleAgentAdd } from "../../../../src/commands/handlers/agent-handler";
+import { AsyncMutex } from "../../../../src/orchestration/async-mutex";
 import { setLocale } from "../../../../src/i18n";
-import type { AppConfig, AgentConfig } from "../../../../src/config/types";
 
 beforeEach(() => setLocale("zh"));
 
@@ -17,6 +17,7 @@ function makeContext(agents: Record<string, AgentConfig>) {
       },
     },
     replaceConfig: () => {},
+    configMutationMutex: new AsyncMutex(),
   } as any;
   return { context, upserts };
 }

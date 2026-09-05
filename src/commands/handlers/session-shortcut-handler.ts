@@ -196,8 +196,13 @@ async function resolveShortcutWorkspace(
     sanitizeWorkspaceName(basenameForWorkspacePath(cwd)),
     context.config?.workspaces ?? {},
   );
-  const updated = await context.configStore!.upsertWorkspace(workspaceName, cwd);
-  context.replaceConfig(updated);
+  // Whole-snapshot publish joins the shared config mutation domain (see
+  // ConfigMutationMutex).
+  const configStore = context.configStore;
+  await context.configMutationMutex.run(async () => {
+    const next = await configStore!.upsertWorkspace(workspaceName, cwd);
+    context.replaceConfig(next);
+  });
 
   return {
     name: workspaceName,

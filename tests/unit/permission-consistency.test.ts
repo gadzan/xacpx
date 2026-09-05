@@ -976,3 +976,99 @@ test("stale watcher reload cannot commit a rolled-back permission after handler 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("queued permission transaction rolls back to predecessor commit, not stale pre-image", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "xacpx-perm-queued-rollback-"));
+  const configPath = join(dir, "config.json");
+  const statePath = join(dir, "state.json");
+  const O = JSON.stringify({ level: 1 });
+  const P = JSON.stringify({ level: 2 });
+  const N = JSON.stringify({ level: 3 });
+
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      transport: {
+        type: "acpx-bridge",
+        permissionMode: "approve-all",
+        nonInteractivePermissions: "deny",
+        permissionPolicy: O,
+      },
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
+    }),
+  );
+
+  // Executor mock: the FIRST transaction (A: O→P) blocks on a gate, then
+  // succeeds. The SECOND (B: P→N) fails like a transient commit failure.
+  const attempts: PermissionPolicy[] = [];
+  let committed: PermissionPolicy | null = null;
+  const firstEntered = Promise.withResolvers<void>();
+  const firstGate = Promise.withResolvers<void>();
+  const mockTransport: SessionTransport = {
+    prompt: mock(async () => ({ text: "ok", stopReason: "end_turn" })),
+    updatePermissionPolicy: mock(async (policy: PermissionPolicy) => {
+      attempts.push({ ...policy });
+      if (attempts.length === 1) {
+        firstEntered.resolve();
+        await firstGate.promise;
+        committed = { ...policy };
+        return;
+      }
+      throw new Error("second commit boom");
+    }),
+  };
+
+  const app = await buildApp(
+    { configPath, statePath },
+    { createBridgeTransport: async () => mockTransport },
+  );
+  try {
+    const routerView = viewRouterConfig(app.router);
+    const liveConfig = routerView.config;
+    const handlerContext = {
+      sessions: app.sessions,
+      transport: app.transport,
+      config: liveConfig,
+      configStore: app.configStore,
+      logger: app.logger,
+      replaceConfig: (updated: AppConfig) => routerView.replaceConfig(updated),
+      configMutationMutex: app.configMutationMutex,
+    };
+
+    // A writes P to disk, then blocks inside its permission transaction
+    // holding the shared mutex.
+    const txA = handleConfigSet(handlerContext, "transport.permissionPolicy", P);
+    txA.catch(() => {});
+    await firstEntered.promise;
+    expect(JSON.parse(await readFile(configPath, "utf8")).transport.permissionPolicy).toBe(P);
+
+    // B enters while A holds the lock. Its rollback pre-image must be
+    // cloned after acquiring the lock (P), never the stale live O it could
+    // observe before queueing.
+    const txB = handleConfigSet(handlerContext, "transport.permissionPolicy", N);
+    txB.catch(() => {});
+    // Bounded event-loop flush so B reaches the mutex queue (its pre-lock
+    // synchronous prefix runs on invocation; the flush only settles turns).
+    for (let i = 0; i < 50; i++) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+
+    // A succeeds: disk/live/executor all P.
+    firstGate.resolve();
+    await txA;
+    expect(JSON.parse(await readFile(configPath, "utf8")).transport.permissionPolicy).toBe(P);
+    expect(liveConfig.transport.permissionPolicy).toBe(P);
+
+    // B fails and must roll back to P on all three surfaces — not to the
+    // stale O pre-image.
+    await expect(txB).rejects.toThrow(/second commit boom/);
+    expect(JSON.parse(await readFile(configPath, "utf8")).transport.permissionPolicy).toBe(P);
+    expect(liveConfig.transport.permissionPolicy).toBe(P);
+    expect(committed?.permissionPolicy).toBe(P);
+    expect(attempts).toHaveLength(2);
+  } finally {
+    await app.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

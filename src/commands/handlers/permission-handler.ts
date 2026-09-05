@@ -36,9 +36,13 @@ export async function handlePermissionModeSet(
     return { text: p.noWritableConfig };
   }
 
-  const previous = cloneAppConfig(context.config);
   const configStore = context.configStore;
+  const liveConfig = context.config;
   return await context.configMutationMutex.run(async () => {
+    // Pre-image cloned after acquiring the lock (see handleConfigSet): a
+    // transaction queued behind a successful one rolls back to the
+    // predecessor's committed state, never to a stale pre-queue snapshot.
+    const previous = cloneAppConfig(liveConfig);
     const previousRaw = await configStore.getRawValue(["transport", "permissionMode"]);
     const updated = await configStore.updateTransport({
       permissionMode: mode,
@@ -80,9 +84,11 @@ export async function handlePermissionAutoSet(
     return { text: p.noWritableConfig };
   }
 
-  const previous = cloneAppConfig(context.config);
   const configStore = context.configStore;
+  const liveConfig = context.config;
   return await context.configMutationMutex.run(async () => {
+    // Pre-image cloned after acquiring the lock (see handleConfigSet).
+    const previous = cloneAppConfig(liveConfig);
     const previousRaw = await configStore.getRawValue(["transport", "nonInteractivePermissions"]);
     const updated = await configStore.updateTransport({
       nonInteractivePermissions: policy,

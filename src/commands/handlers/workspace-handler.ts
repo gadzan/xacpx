@@ -41,20 +41,28 @@ export async function handleWorkspaceCreate(
     return { text: w.pathNotFound(cwd) };
   }
 
-  let name = workspaceName;
-  let notice: string | undefined;
-  if (!options.raw && !isWorkspaceNameValid(workspaceName)) {
-    const base = sanitizeWorkspaceName(workspaceName);
-    name = allocateWorkspaceName(base, context.config.workspaces);
-    notice = w.nameSanitized(workspaceName, name);
-  }
+  // Store mutation + whole-snapshot live publish join the shared config
+  // mutation domain (see ConfigMutationMutex): publishing a snapshot read
+  // from disk must never interleave with an in-flight permission
+  // transaction's uncommitted value or rollback.
+  const configStore = context.configStore;
+  const liveConfig = context.config;
+  return await context.configMutationMutex.run(async () => {
+    let name = workspaceName;
+    let notice: string | undefined;
+    if (!options.raw && !isWorkspaceNameValid(workspaceName)) {
+      const base = sanitizeWorkspaceName(workspaceName);
+      name = allocateWorkspaceName(base, liveConfig.workspaces);
+      notice = w.nameSanitized(workspaceName, name);
+    }
 
-  // Persist the user's raw input (a `~` stays literal in the file and is
-  // expanded at config-load time), but validate the expanded path above.
-  const updated = await context.configStore.upsertWorkspace(name, cwd);
-  context.replaceConfig(updated);
-  const savedLine = w.saved(name);
-  return { text: notice ? `${notice}\n${savedLine}` : savedLine };
+    // Persist the user's raw input (a `~` stays literal in the file and is
+    // expanded at config-load time), but validate the expanded path above.
+    const updated = await configStore.upsertWorkspace(name, cwd);
+    context.replaceConfig(updated);
+    const savedLine = w.saved(name);
+    return { text: notice ? `${notice}\n${savedLine}` : savedLine };
+  });
 }
 
 export async function handleWorkspaceRemove(
@@ -66,7 +74,10 @@ export async function handleWorkspaceRemove(
     return { text: w.noWritableConfig };
   }
 
-  const updated = await context.configStore.removeWorkspace(workspaceName);
-  context.replaceConfig(updated);
-  return { text: w.removed(workspaceName) };
+  const configStore = context.configStore;
+  return await context.configMutationMutex.run(async () => {
+    const updated = await configStore.removeWorkspace(workspaceName);
+    context.replaceConfig(updated);
+    return { text: w.removed(workspaceName) };
+  });
 }

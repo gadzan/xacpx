@@ -1779,14 +1779,20 @@ export async function buildApp(
       catalog: () =>
         listAgentCatalog(config, { registry: loadAgentRegistry() }),
       create: async (name, driver) => {
-        const updated = await configStore.upsertAgent(name, { driver });
-        await provisionOverlays(updated);
-        publishLiveConfig(updated);
-        return { name, driver };
+        // Store mutation + whole-snapshot publish join the shared config
+        // mutation domain (see ConfigMutationMutex).
+        return await configMutationMutex.run(async () => {
+          const updated = await configStore.upsertAgent(name, { driver });
+          await provisionOverlays(updated);
+          publishLiveConfig(updated);
+          return { name, driver };
+        });
       },
       remove: async (name) => {
-        const updated = await configStore.removeAgent(name);
-        publishLiveConfig(updated);
+        await configMutationMutex.run(async () => {
+          const updated = await configStore.removeAgent(name);
+          publishLiveConfig(updated);
+        });
       },
     },
     workspaces: {
@@ -1799,24 +1805,28 @@ export async function buildApp(
             : {}),
         })),
       create: async (name, cwd, description) => {
-        const updated = await configStore.upsertWorkspace(
-          name,
-          cwd,
-          description,
-        );
-        publishLiveConfig(updated);
-        // Push to every web client (the caller updates optimistically; peers need this).
-        // The config watcher won't double-fire: it diffs against in-memory config, which
-        // replaceRuntimeConfig already refreshed above, so its later event is a no-op.
-        controlEvents.emit({ type: "workspaces-changed" });
-        // The persisted values equal the inputs; build the DTO from them directly
-        // (avoids an unchecked index read of the freshly-written workspaces map).
-        return { name, cwd, ...(description ? { description } : {}) };
+        return await configMutationMutex.run(async () => {
+          const updated = await configStore.upsertWorkspace(
+            name,
+            cwd,
+            description,
+          );
+          publishLiveConfig(updated);
+          // Push to every web client (the caller updates optimistically; peers need this).
+          // The config watcher won't double-fire: it diffs against in-memory config, which
+          // replaceRuntimeConfig already refreshed above, so its later event is a no-op.
+          controlEvents.emit({ type: "workspaces-changed" });
+          // The persisted values equal the inputs; build the DTO from them directly
+          // (avoids an unchecked index read of the freshly-written workspaces map).
+          return { name, cwd, ...(description ? { description } : {}) };
+        });
       },
       remove: async (name) => {
-        const updated = await configStore.removeWorkspace(name);
-        publishLiveConfig(updated);
-        controlEvents.emit({ type: "workspaces-changed" });
+        await configMutationMutex.run(async () => {
+          const updated = await configStore.removeWorkspace(name);
+          publishLiveConfig(updated);
+          controlEvents.emit({ type: "workspaces-changed" });
+        });
       },
     },
     uploadStore,
