@@ -3,6 +3,8 @@ import { basenameForWorkspacePath, normalizeWorkspacePath, pathExists, sameWorks
 import type { CommandRouterContext, RouterResponse, SessionShortcutOps } from "../router-types";
 import { AutoInstallFailedError } from "../../recovery/errors";
 import { getChannelIdFromChatKey, scopeDisplayAliasToInternal, toDisplaySessionAlias } from "../../channels/channel-scope";
+import { convergeProvisionalCreate } from "../session-remove-lifecycle";
+import type { ResolvedSession } from "../../transport/types";
 import { t } from "../../i18n";
 
 interface ShortcutWorkspaceResolution {
@@ -111,11 +113,11 @@ export async function handleSessionShortcutCommand(
         await ops.ensureTransportSession(persisted);
         const exists = await ops.checkTransportSession(persisted);
         if (!exists) {
-          try { await context.sessions.removeSession(persisted.alias); } catch {}
+          await cleanupProvisionalCreate(context, persisted);
           return renderShortcutSessionCreationError(workspace, finalDisplay);
         }
       } catch (err) {
-        try { if (persisted) await context.sessions.removeSession(persisted.alias); } catch {}
+        await cleanupProvisionalCreate(context, persisted, err);
         if (err instanceof AutoInstallFailedError) throw err;
         return renderShortcutSessionCreationError(workspace, finalDisplay);
       }
@@ -152,6 +154,20 @@ export async function handleSessionShortcutCommand(
   } finally {
     releaseAliasReservation();
   }
+}
+
+async function cleanupProvisionalCreate(
+  context: CommandRouterContext,
+  persisted: ResolvedSession,
+  cause?: unknown,
+): Promise<void> {
+  await convergeProvisionalCreate({
+    sessions: context.sessions,
+    transport: context.transport,
+    session: persisted,
+    internalAlias: persisted.alias,
+    ...(cause !== undefined ? { cause } : {}),
+  });
 }
 
 async function resolveShortcutWorkspace(
