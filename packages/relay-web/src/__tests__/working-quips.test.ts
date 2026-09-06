@@ -26,16 +26,23 @@ describe("working quips", () => {
     expect(pickQuip([], undefined)).toBe("");
   });
 
-  it("both locales ship a non-empty pool of unique quips plus an Esc suffix", () => {
+  it("both locales ship a 20-entry unique quip pool plus an Esc suffix (catalog invariant)", () => {
     const pools = [
       { workingQuips: en.chat.workingQuips, escToStop: en.chat.escToStop },
       { workingQuips: zhCN.chat.workingQuips, escToStop: zhCN.chat.escToStop },
     ];
     for (const { workingQuips, escToStop } of pools) {
-      const quips = parseQuips(workingQuips);
-      expect(quips.length).toBeGreaterThanOrEqual(10);
-      expect(new Set(quips).size).toBe(quips.length);
-      expect(quips.every((q) => q.length > 0 && q.length <= 40)).toBe(true);
+      // Inspect raw catalog lines: parseQuips dedupes, so routing the catalog
+      // through it would mask accidental duplicate entries.
+      const rawQuips = workingQuips
+        .split("\n")
+        .map((q) => q.trim())
+        .filter(Boolean);
+      expect(rawQuips).toHaveLength(20);
+      expect(new Set(rawQuips).size).toBe(rawQuips.length);
+      // vue-i18n reserves @ | { } in message syntax — quips must never use them.
+      expect(rawQuips.every((q) => !/[@|{}]/.test(q))).toBe(true);
+      expect(rawQuips.every((q) => q.length > 0 && q.length <= 40)).toBe(true);
       expect(escToStop.length).toBeGreaterThan(0);
     }
   });
