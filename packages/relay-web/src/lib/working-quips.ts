@@ -2,16 +2,19 @@
 // values as plain strings, so the pool is stored as one newline-delimited string.
 export function parseQuips(raw: string | undefined | null): string[] {
   if (!raw) return [];
-  return raw
-    .split("\n")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
+  const seen = new Set<string>();
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length > 0) seen.add(trimmed);
+  }
+  return [...seen];
 }
 
-/** Random pick, avoiding an immediate repeat when the pool allows a choice. */
+/** Random pick, avoiding an immediate repeat when the pool allows a choice.
+ *  Falls back to the full pool when filtering would empty it. */
 export function pickQuip(quips: string[], avoid?: string): string {
   if (quips.length === 0) return "";
-  if (quips.length === 1) return quips[0];
-  const pool = avoid ? quips.filter((q) => q !== avoid) : quips;
-  return pool[Math.floor(Math.random() * pool.length)];
+  const filtered = avoid ? quips.filter((q) => q !== avoid) : quips;
+  const pool = filtered.length > 0 ? filtered : quips;
+  return pool[Math.floor(Math.random() * pool.length)] ?? "";
 }
