@@ -8,6 +8,7 @@ import { isAttentionRequiredTask, isTerminalTaskStatus } from "../orchestration-
 import type { OrchestrationTaskRecord } from "../orchestration-types";
 import { sanitizeProgressSummary, stripProgressLines } from "../progress-line-parser";
 import { clampWatchPollInterval, clampWatchTimeout } from "../task-watch-timeouts";
+import { retireWorkerBinding } from "../worker-binding-retirement";
 import type {
   CleanTasksResult,
   OrchestrationServiceDeps,
@@ -20,7 +21,7 @@ import type { OrchestrationStateKernel } from "./orchestration-state-kernel";
 
 export type TaskLifecycleDeps = Pick<
   OrchestrationServiceDeps,
-  "now" | "createId" | "loadState" | "saveState" | "config"
+  "now" | "createId" | "loadState" | "saveState" | "config" | "releaseWorkerSession"
 >;
 
 export class TaskLifecycleService {
@@ -216,9 +217,15 @@ export class TaskLifecycleService {
       })
       .map((task) => ({ ...task }));
   }
-
+  /**
+   * Delete terminal task history for a coordinator. Worker bindings are
+   * durable ownership handles, not task metadata: an unreferenced binding
+   * is deleted directly only while it carries no identity; a complete
+   * binding is retired through verified engine-side convergence first and
+   * retained when convergence is unverifiable (a later clean retries it).
+   */
   async cleanTasks(coordinatorSession: string): Promise<CleanTasksResult> {
-    return await this.kernel.mutate(async () => {
+    const collected = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const tasks = state.orchestration.tasks;
       const bindings = state.orchestration.workerBindings;
@@ -242,14 +249,19 @@ export class TaskLifecycleService {
         Object.values(tasks).map((task) => task.workerSession).filter(Boolean) as string[],
       );
 
+      const completeBindings: string[] = [];
       let removedBindings = 0;
       for (const [workerSession, binding] of Object.entries(bindings)) {
         if (!sameCoordinatorSession(binding.coordinatorSession, coordinatorSession)) {
           continue;
         }
         if (!remainingWorkerSessions.has(workerSession)) {
-          delete bindings[workerSession];
-          removedBindings += 1;
+          if (binding.logicalSessionId && binding.transportEngine) {
+            completeBindings.push(workerSession);
+          } else {
+            delete bindings[workerSession];
+            removedBindings += 1;
+          }
         }
       }
 
@@ -262,8 +274,36 @@ export class TaskLifecycleService {
       return {
         removedTasks: terminalTaskIds.length,
         removedBindings,
+        completeBindings,
       };
     });
+
+    let retiredBindings = 0;
+    for (const workerSession of collected.completeBindings) {
+      const outcome = await retireWorkerBinding(
+        {
+          loadState: () => this.deps.loadState(),
+          saveState: (nextState) => this.deps.saveState(nextState),
+          runExclusive: <T>(critical: () => Promise<T>) => this.kernel.mutate(critical),
+          releaseWorkerSession: this.deps.releaseWorkerSession,
+          isTerminalStatus: (status) => this.kernel.isTerminalStatus(status),
+        },
+        workerSession,
+      );
+      if (outcome === "retired") {
+        retiredBindings += 1;
+      } else {
+        this.kernel.logEvent("orchestration.clean.retire_failed", "worker binding retained; owner convergence unverified", {
+          workerSession,
+          coordinatorSession,
+        });
+      }
+    }
+
+    return {
+      removedTasks: collected.removedTasks,
+      removedBindings: collected.removedBindings + retiredBindings,
+    };
   }
 
   async listSessionBlockingTasks(transportSession: string): Promise<OrchestrationTaskRecord[]> {
@@ -279,8 +319,16 @@ export class TaskLifecycleService {
       .map((task) => ({ ...task }));
   }
 
+  /**
+   * Purge terminal task history referencing a removed transport session.
+   * Same ownership rule as cleanTasks: unreferenced bindings without an
+   * identity delete directly; complete bindings retire through verified
+   * engine-side convergence first (retained when unverifiable). Never
+   * throws: a retained binding must not fail the session remove that
+   * triggered the purge.
+   */
   async purgeSessionReferences(transportSession: string): Promise<CleanTasksResult> {
-    return await this.kernel.mutate(async () => {
+    const collected = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const sessionIdentity = stableCoordinatorSession(transportSession);
       const tasks = state.orchestration.tasks;
@@ -306,14 +354,19 @@ export class TaskLifecycleService {
         Object.values(tasks).map((task) => task.workerSession).filter(Boolean) as string[],
       );
 
+      const completeBindings: string[] = [];
       let removedBindings = 0;
       for (const [workerSession, binding] of Object.entries(bindings)) {
         const shouldPurgeBinding =
           sameCoordinatorSession(workerSession, transportSession) ||
           sameCoordinatorSession(binding.coordinatorSession, transportSession);
         if (shouldPurgeBinding && !remainingWorkerSessions.has(workerSession)) {
-          delete bindings[workerSession];
-          removedBindings += 1;
+          if (binding.logicalSessionId && binding.transportEngine) {
+            completeBindings.push(workerSession);
+          } else {
+            delete bindings[workerSession];
+            removedBindings += 1;
+          }
         }
       }
 
@@ -327,8 +380,36 @@ export class TaskLifecycleService {
       return {
         removedTasks: removedTaskIds.length,
         removedBindings,
+        completeBindings,
       };
     });
+
+    let retiredBindings = 0;
+    for (const workerSession of collected.completeBindings) {
+      const outcome = await retireWorkerBinding(
+        {
+          loadState: () => this.deps.loadState(),
+          saveState: (nextState) => this.deps.saveState(nextState),
+          runExclusive: <T>(critical: () => Promise<T>) => this.kernel.mutate(critical),
+          releaseWorkerSession: this.deps.releaseWorkerSession,
+          isTerminalStatus: (status) => this.kernel.isTerminalStatus(status),
+        },
+        workerSession,
+      );
+      if (outcome === "retired") {
+        retiredBindings += 1;
+      } else {
+        this.kernel.logEvent("orchestration.purge.retire_failed", "worker binding retained; owner convergence unverified", {
+          workerSession,
+          transportSession,
+        });
+      }
+    }
+
+    return {
+      removedTasks: collected.removedTasks,
+      removedBindings: collected.removedBindings + retiredBindings,
+    };
   }
 
   async recordTaskProgress(taskId: string, summary?: string): Promise<OrchestrationTaskRecord> {

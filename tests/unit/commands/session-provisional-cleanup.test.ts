@@ -101,3 +101,33 @@ test("create convergence hard-deletes the provisional physical session", async (
   expect(deleteSession).toHaveBeenCalledTimes(1);
   expect(dropRow).toHaveBeenCalledWith("u");
 });
+
+test("create convergence throws instead of dropping the row when delete is unimplemented", async () => {
+  const { sessions, dropRow } = fakeSessions();
+
+  await expect(
+    convergeProvisionalCreate({
+      sessions,
+      transport: {},
+      session: session(),
+      internalAlias: "u",
+      cause: new Error("ensure boom"),
+    }),
+  ).rejects.toThrow(/no deleteSession operation/);
+  expect(dropRow).not.toHaveBeenCalled();
+});
+
+test("native convergence throws instead of dropping the row when remove is unimplemented", async () => {
+  const { sessions, dropRow } = fakeSessions();
+
+  await expect(
+    convergeProvisionalNativeAttach({
+      sessions,
+      transport: {},
+      session: session({ transportEngine: "cli" }),
+      internalAlias: "u",
+      cause: new Error("resume boom"),
+    }),
+  ).rejects.toThrow(/no removeSession operation/);
+  expect(dropRow).not.toHaveBeenCalled();
+});

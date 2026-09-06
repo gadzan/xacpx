@@ -2599,7 +2599,7 @@ test("coordinatorAnswerQuestion resumes asynchronously and persists the resumed 
   await rm(dir, { recursive: true, force: true });
 });
 
-test("closeWorkerSession dep calls transport.removeSession with the resolved session", async () => {
+test("releaseWorkerSession dep calls transport.removeSession with the resolved session", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-app-"));
   const configPath = join(dir, "config.json");
   const statePath = join(dir, "state.json");
@@ -2773,16 +2773,18 @@ test("reconcileParallelSlots is called after a worker turn completes", async () 
     cwd: "/tmp/backend",
     parallel: true,
   });
-
-  // Wait for the post-worker-turn reconcile to run (launchWorkerTurn calls it).
+  // Wait for the post-worker-turn reconcile to retire the ephemeral binding:
+  // verified release first, then durable deletion, then the closed flag.
   for (let attempt = 0; attempt < 50; attempt += 1) {
-    if (removeSession.mock.calls.length > 0) {
+    const task = await runtime.orchestration.service.getTask(result.taskId);
+    if (task?.ephemeralWorkerSessionClosed === true) {
       break;
     }
     await Bun.sleep(10);
   }
 
-  // The post-turn reconcile should have triggered removeSession for the ephemeral session.
+  // The post-turn reconcile must have verified-released the owner (CLI
+  // closes its acpx session) before the binding disappeared.
   expect(removeSession.mock.calls.length).toBeGreaterThan(0);
   expect(await runtime.orchestration.service.getTask(result.taskId)).toMatchObject({
     status: "completed",

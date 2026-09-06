@@ -25,10 +25,12 @@ import type {
 import { sameCoordinatorSession, stableCoordinatorSession } from "../coordinator-identity";
 import type { OrchestrationStateKernel } from "./orchestration-state-kernel";
 import {
+  teardownStagedWorkerOwner,
   workerBindingEndpointIdentityFields,
-  workerBindingEngineFields,
   workerBindingGuardFields,
+  workerBindingIdentityFields,
 } from "../worker-launch";
+import type { StagedWorkerIdentity } from "../worker-launch";
 import type { WorkerSessionManager } from "./worker-session-manager";
 
 export type RpcDelegationDeps = Pick<
@@ -40,6 +42,8 @@ export type RpcDelegationDeps = Pick<
   | "saveState"
   | "config"
   | "dispatchWorkerTask"
+  | "resolveWorkerBindingEngine"
+  | "releaseWorkerSession"
 >;
 
 export class RpcDelegationService {
@@ -159,6 +163,7 @@ export class RpcDelegationService {
       task: OrchestrationTaskRecord;
       status: OrchestrationTaskStatus;
       previousBinding?: AppState["orchestration"]["workerBindings"][string];
+      stagedIdentity?: StagedWorkerIdentity;
       normalizedGroupId?: string;
     };
 
@@ -207,10 +212,25 @@ export class RpcDelegationService {
             group.lastInjectionError = undefined;
           }
           let previousBinding: AppState["orchestration"]["workerBindings"][string] | undefined;
+          let stagedIdentity: StagedWorkerIdentity | undefined;
           if (autoRun) {
             previousBinding = state.orchestration.workerBindings[workerSessionName];
             this.workerSessions.assertWorkerSessionDoesNotConflictExternalCoordinator(state, workerSessionName);
             this.workerSessions.assertWorkerSessionAvailable(state, workerSessionName, undefined, { allowCurrentReservation: true });
+            // First binding MUST already carry LID + physical-group engine
+            // BEFORE the detached startup chain can ensure an owner: a crash
+            // between this save and the async identity top-up would otherwise
+            // restart as a misbound legacy CLI record.
+            const identity = workerBindingIdentityFields(
+              previousBinding,
+              () => this.deps.resolveWorkerBindingEngine({
+                workerSession: workerSessionName,
+                targetAgent: input.targetAgent,
+                workspace: preflight.targetLocation.workspace,
+                ...(preflight.targetLocation.cwd ? { cwd: preflight.targetLocation.cwd } : {}),
+              }),
+              this.deps.createId,
+            );
             state.orchestration.tasks[taskId] = task;
             state.orchestration.workerBindings[workerSessionName] = {
               sourceHandle: workerSessionName,
@@ -221,9 +241,10 @@ export class RpcDelegationService {
               role: preflight.role,
               ...workerBindingGuardFields(previousBinding),
               ...workerBindingEndpointIdentityFields(previousBinding, this.deps.createAgentEndpointId),
-              ...workerBindingEngineFields(previousBinding),
+              ...identity,
               ...(input.parallel ? { ephemeral: true } : {}),
             };
+            stagedIdentity = identity;
           } else {
             this.workerSessions.assertWorkerSessionDoesNotConflictExternalCoordinator(state, workerSessionName);
             this.workerSessions.assertWorkerSessionAvailable(state, workerSessionName, undefined, { allowCurrentReservation: true });
@@ -231,7 +252,7 @@ export class RpcDelegationService {
           }
           await this.deps.saveState(state);
 
-          return { task: { ...task }, status, previousBinding, normalizedGroupId: preflight.normalizedGroupId };
+          return { task: { ...task }, status, previousBinding, stagedIdentity, normalizedGroupId: preflight.normalizedGroupId };
         });
       } catch (error) {
         await releaseWorkerReservation();
@@ -247,6 +268,7 @@ export class RpcDelegationService {
       void this.runAutoRunRpcWorkerTask({
         task: prepared.task,
         previousBinding: prepared.previousBinding,
+        stagedIdentity: prepared.stagedIdentity,
       });
     }
 
@@ -266,6 +288,7 @@ export class RpcDelegationService {
   private async runAutoRunRpcWorkerTask(input: {
     task: OrchestrationTaskRecord;
     previousBinding?: AppState["orchestration"]["workerBindings"][string];
+    stagedIdentity?: StagedWorkerIdentity;
   }): Promise<void> {
     const { task } = input;
     try {
@@ -299,6 +322,7 @@ export class RpcDelegationService {
         const completed = await this.completeAutoRunStartupCancellation({
           task,
           previousBinding: input.previousBinding,
+          stagedIdentity: input.stagedIdentity,
         });
         if (completed) {
           this.kernel.logEvent("orchestration.task.cancel_completed", "task cancellation completed", {
@@ -312,6 +336,7 @@ export class RpcDelegationService {
         await this.cleanupAutoRunStartupBinding({
           task,
           previousBinding: input.previousBinding,
+          stagedIdentity: input.stagedIdentity,
         });
         return;
       }
@@ -335,6 +360,7 @@ export class RpcDelegationService {
         const completed = await this.completeAutoRunStartupCancellation({
           task,
           previousBinding: input.previousBinding,
+          stagedIdentity: input.stagedIdentity,
         });
         if (completed) {
           this.kernel.logEvent("orchestration.task.cancel_completed", "task cancellation completed", {
@@ -348,6 +374,7 @@ export class RpcDelegationService {
         await this.cleanupAutoRunStartupBinding({
           task,
           previousBinding: input.previousBinding,
+          stagedIdentity: input.stagedIdentity,
         });
         return;
       }
@@ -366,6 +393,7 @@ export class RpcDelegationService {
       const completedCancellation = await this.completeAutoRunStartupCancellation({
         task,
         previousBinding: input.previousBinding,
+        stagedIdentity: input.stagedIdentity,
       });
       if (completedCancellation) {
         this.kernel.logEvent("orchestration.task.cancel_completed", "task cancellation completed", {
@@ -374,26 +402,36 @@ export class RpcDelegationService {
         });
         return;
       }
+      // Converge a first-binding owner OUTSIDE the lock before the mutate
+      // below may restore/delete the shell: ensure or dispatch threw, so an
+      // owner may exist with only this staged identity as its handle.
+      // Unverifiable teardown retains the shell (fail closed).
+      let retainBinding = false;
+      if (!input.previousBinding && input.stagedIdentity) {
+        retainBinding = !(await this.convergeStartupOwner({
+          task,
+          previousBinding: input.previousBinding,
+          stagedIdentity: input.stagedIdentity,
+        }));
+      }
       const taskMarkedFailed = await this.kernel.mutate(async () => {
         const state = await this.deps.loadState();
         const current = state.orchestration.tasks[task.taskId];
         const workerSession = task.workerSession!;
         const taskStillOwnsWorkerSession = current?.workerSession === workerSession;
         const currentBinding = state.orchestration.workerBindings[workerSession];
-        const bindingStillBelongsToThisStartup =
-          currentBinding?.sourceHandle === workerSession &&
-          sameCoordinatorSession(currentBinding.coordinatorSession, task.coordinatorSession) &&
-          currentBinding.workspace === task.workspace &&
-          currentBinding.cwd === task.cwd &&
-          currentBinding.targetAgent === task.targetAgent &&
-          currentBinding.role === task.role;
+        const bindingStillBelongsToThisStartup = this.startupBindingBelongsToStartup(
+          currentBinding,
+          task,
+          input.stagedIdentity,
+        );
         const otherActiveOwner = Object.values(state.orchestration.tasks).some((candidate) =>
           candidate.taskId !== task.taskId &&
           candidate.workerSession === workerSession &&
           (!this.kernel.isTerminalStatus(candidate.status) || candidate.reviewPending !== undefined)
         );
         const restoreOrDeleteBinding = () => {
-          if (!bindingStillBelongsToThisStartup || otherActiveOwner) {
+          if (retainBinding || !bindingStillBelongsToThisStartup || otherActiveOwner) {
             return;
           }
           if (input.previousBinding) {
@@ -438,12 +476,108 @@ export class RpcDelegationService {
       }
     }
   }
+  /**
+   * Verified-converge a detached startup's possibly-started owner BEFORE any
+   * binding restore/delete below. First binding only (no previous durable
+   * identity): any owner present was started or adopted by this startup's
+   * ensure — including when ensure itself rejects (acquire/spawn precedes
+   * the ensure RPC, so rejection never proves no owner). Returns true when
+   * the caller may proceed with restore/delete; false retains the shell
+   * (fail closed) after logging. Reuse returns true without teardown: the
+   * retained previous binding keeps a surviving owner discoverable.
+   */
+  private async convergeStartupOwner(input: {
+    task: OrchestrationTaskRecord;
+    previousBinding?: AppState["orchestration"]["workerBindings"][string];
+    stagedIdentity?: StagedWorkerIdentity;
+  }): Promise<boolean> {
+    const { task } = input;
+    if (input.previousBinding || !input.stagedIdentity) return true;
+    try {
+      await teardownStagedWorkerOwner(
+        this.deps.releaseWorkerSession,
+        {
+          workerSession: task.workerSession!,
+          targetAgent: task.targetAgent,
+          workspace: task.workspace,
+          ...(task.cwd ? { cwd: task.cwd } : {}),
+          ...(task.role ? { role: task.role } : {}),
+        },
+        input.stagedIdentity,
+      );
+      return true;
+    } catch (error) {
+      this.kernel.logEvent("orchestration.startup.teardown_failed", "startup owner teardown failed; staged binding retained", {
+        taskId: task.taskId,
+        workerSession: task.workerSession ?? "",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+  }
 
+  /**
+   * Same-generation check for a startup-owned binding: the routing fields
+   * must match AND, when the staged identity is known, the durable LID and
+   * engine must match too. A replaced generation (same name, fresh LID)
+   * must never be restored over or deleted by a stale startup path.
+   */
+  private startupBindingBelongsToStartup(
+    currentBinding: AppState["orchestration"]["workerBindings"][string] | undefined,
+    task: OrchestrationTaskRecord,
+    stagedIdentity?: StagedWorkerIdentity,
+  ): boolean {
+    const workerSession = task.workerSession!;
+    if (
+      currentBinding?.sourceHandle !== workerSession ||
+      !sameCoordinatorSession(currentBinding.coordinatorSession, task.coordinatorSession) ||
+      currentBinding.workspace !== task.workspace ||
+      currentBinding.cwd !== task.cwd ||
+      currentBinding.targetAgent !== task.targetAgent ||
+      currentBinding.role !== task.role
+    ) {
+      return false;
+    }
+    if (stagedIdentity) {
+      return (
+        currentBinding.logicalSessionId === stagedIdentity.logicalSessionId &&
+        currentBinding.transportEngine === stagedIdentity.transportEngine
+      );
+    }
+    return true;
+  }
   private async completeAutoRunStartupCancellation(input: {
     task: OrchestrationTaskRecord;
     previousBinding?: AppState["orchestration"]["workerBindings"][string];
+    stagedIdentity?: StagedWorkerIdentity;
   }): Promise<boolean> {
     const { task } = input;
+    // Phase 1: read-only guard check — no state change, no save.
+    const applies = await this.kernel.mutate(async () => {
+      const state = await this.deps.loadState();
+      const workerSession = task.workerSession!;
+      const current = state.orchestration.tasks[task.taskId];
+      return (
+        !!current &&
+        current.workerSession === workerSession &&
+        current.status === "running" &&
+        current.cancelRequestedAt !== undefined
+      );
+    });
+    if (!applies) return false;
+    // Phase 2: converge a first-binding owner OUTSIDE the state mutex
+    // (transport I/O must never run under the lock). Unverifiable teardown
+    // retains the shell below — the task still flips to cancelled.
+    let retainBinding = false;
+    if (!input.previousBinding && input.stagedIdentity) {
+      retainBinding = !(await this.convergeStartupOwner({
+        task,
+        previousBinding: input.previousBinding,
+        stagedIdentity: input.stagedIdentity,
+      }));
+    }
+    // Phase 3: flip + conditional delete with full re-verification (the
+    // world may have moved during teardown).
     return await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const workerSession = task.workerSession!;
@@ -456,7 +590,6 @@ export class RpcDelegationService {
       ) {
         return false;
       }
-
       const now = this.deps.now().toISOString();
       current.status = "cancelled";
       current.cancelCompletedAt = now;
@@ -465,19 +598,16 @@ export class RpcDelegationService {
       this.kernel.bumpGroupUpdated(state, current.groupId, now);
 
       const currentBinding = state.orchestration.workerBindings[workerSession];
-      const bindingStillBelongsToThisStartup =
-        currentBinding?.sourceHandle === workerSession &&
-        sameCoordinatorSession(currentBinding.coordinatorSession, task.coordinatorSession) &&
-        currentBinding.workspace === task.workspace &&
-        currentBinding.cwd === task.cwd &&
-        currentBinding.targetAgent === task.targetAgent &&
-        currentBinding.role === task.role;
       const otherActiveOwner = Object.values(state.orchestration.tasks).some((candidate) =>
         candidate.taskId !== task.taskId &&
         candidate.workerSession === workerSession &&
         (!this.kernel.isTerminalStatus(candidate.status) || candidate.reviewPending !== undefined)
       );
-      if (bindingStillBelongsToThisStartup && !otherActiveOwner) {
+      if (
+        !retainBinding &&
+        this.startupBindingBelongsToStartup(currentBinding, task, input.stagedIdentity) &&
+        !otherActiveOwner
+      ) {
         if (input.previousBinding) {
           state.orchestration.workerBindings[workerSession] = input.previousBinding;
         } else {
@@ -492,20 +622,41 @@ export class RpcDelegationService {
   private async cleanupAutoRunStartupBinding(input: {
     task: OrchestrationTaskRecord;
     previousBinding?: AppState["orchestration"]["workerBindings"][string];
+    stagedIdentity?: StagedWorkerIdentity;
   }): Promise<boolean> {
     const { task } = input;
+    // Phase 1: read-only applicability check — no state change, no save.
+    const applies = await this.kernel.mutate(async () => {
+      const state = await this.deps.loadState();
+      const workerSession = task.workerSession!;
+      const currentBinding = state.orchestration.workerBindings[workerSession];
+      if (!this.startupBindingBelongsToStartup(currentBinding, task, input.stagedIdentity)) {
+        return false;
+      }
+      const otherActiveOwner = Object.values(state.orchestration.tasks).some((candidate) =>
+        candidate.taskId !== task.taskId &&
+        candidate.workerSession === workerSession &&
+        (!this.kernel.isTerminalStatus(candidate.status) || candidate.reviewPending !== undefined)
+      );
+      return !otherActiveOwner;
+    });
+    if (!applies) return false;
+    // Phase 2: converge a first-binding owner OUTSIDE the state mutex.
+    // Unverifiable teardown retains the shell (returns false).
+    if (!input.previousBinding && input.stagedIdentity) {
+      const converged = await this.convergeStartupOwner({
+        task,
+        previousBinding: input.previousBinding,
+        stagedIdentity: input.stagedIdentity,
+      });
+      if (!converged) return false;
+    }
+    // Phase 3: delete only if still ours and ownerless (re-verified).
     return await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const workerSession = task.workerSession!;
       const currentBinding = state.orchestration.workerBindings[workerSession];
-      const bindingStillBelongsToThisStartup =
-        currentBinding?.sourceHandle === workerSession &&
-        sameCoordinatorSession(currentBinding.coordinatorSession, task.coordinatorSession) &&
-        currentBinding.workspace === task.workspace &&
-        currentBinding.cwd === task.cwd &&
-        currentBinding.targetAgent === task.targetAgent &&
-        currentBinding.role === task.role;
-      if (!bindingStillBelongsToThisStartup) {
+      if (!this.startupBindingBelongsToStartup(currentBinding, task, input.stagedIdentity)) {
         return false;
       }
       const otherActiveOwner = Object.values(state.orchestration.tasks).some((candidate) =>

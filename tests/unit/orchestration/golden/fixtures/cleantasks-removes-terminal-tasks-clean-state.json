@@ -254,6 +254,53 @@
         "groups": [],
         "humanQuestionPackages": [],
         "tasks": [],
+        "workerBindings": [
+          {
+            "key": "backend:claude:backend:main",
+            "value": {
+              "sourceHandle": "backend:claude:backend:main",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "guardAcpOutput": true,
+              "logicalSessionId": "lid-1",
+              "transportEngine": "cli"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "port": "loadState",
+      "request": null
+    },
+    {
+      "port": "loadState",
+      "request": null
+    },
+    {
+      "port": "releaseWorkerSession",
+      "request": {
+        "workerSession": "backend:claude:backend:main",
+        "targetAgent": "claude",
+        "workspace": "backend",
+        "logicalSessionId": "lid-1",
+        "transportEngine": "cli"
+      }
+    },
+    {
+      "port": "loadState",
+      "request": null
+    },
+    {
+      "port": "saveState",
+      "request": {
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": [],
+        "groups": [],
+        "humanQuestionPackages": [],
+        "tasks": [],
         "workerBindings": []
       }
     }

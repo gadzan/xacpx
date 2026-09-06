@@ -82,7 +82,9 @@
           "workspace": "backend",
           "targetAgent": "claude",
           "ephemeral": true,
-          "guardAcpOutput": true
+          "guardAcpOutput": true,
+          "logicalSessionId": "lid-b",
+          "transportEngine": "cli"
         }
       },
       "groups": {},
@@ -453,6 +455,112 @@
       "request": null
     },
     {
+      "port": "loadState",
+      "request": null
+    },
+    {
+      "port": "loadState",
+      "request": null
+    },
+    {
+      "port": "releaseWorkerSession",
+      "request": {
+        "workerSession": "backend:claude:backend:main:p-task-1-slot",
+        "targetAgent": "claude",
+        "workspace": "backend",
+        "logicalSessionId": "lid-a",
+        "transportEngine": "cli"
+      }
+    },
+    {
+      "port": "loadState",
+      "request": null
+    },
+    {
+      "port": "saveState",
+      "request": {
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": [],
+        "groups": [],
+        "humanQuestionPackages": [],
+        "tasks": [
+          {
+            "key": "task-1",
+            "value": {
+              "taskId": "task-1",
+              "sourceHandle": "wx:user-1",
+              "sourceKind": "human",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:claude:backend:main:p-task-1-slot",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "task": "first",
+              "status": "completed",
+              "summary": "done",
+              "resultText": "ok",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 2,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "running",
+                  "message": "Task created"
+                },
+                {
+                  "seq": 2,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "status_changed",
+                  "status": "completed",
+                  "summary": "done",
+                  "message": "Task completed"
+                }
+              ],
+              "ephemeralWorkerSession": true,
+              "injectionPending": true
+            }
+          },
+          {
+            "key": "task-2",
+            "value": {
+              "taskId": "task-2",
+              "sourceHandle": "wx:user-1",
+              "sourceKind": "human",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:claude:backend:main:p-task-2-slot",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "task": "second",
+              "status": "queued",
+              "ephemeralWorkerSession": true,
+              "summary": "",
+              "resultText": "",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 1,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "queued",
+                  "message": "Task queued at parallel capacity"
+                }
+              ]
+            }
+          }
+        ],
+        "workerBindings": []
+      }
+    },
+    {
+      "port": "loadState",
+      "request": null
+    },
+    {
       "port": "saveState",
       "request": {
         "coordinatorQuestionState": [],
@@ -534,18 +642,16 @@
       }
     },
     {
-      "port": "closeWorkerSession",
-      "request": {
-        "workerSession": "backend:claude:backend:main:p-task-1-slot",
-        "coordinatorSession": "backend:main",
-        "workspace": "backend",
-        "targetAgent": "claude",
-        "guardAcpOutput": true
-      }
-    },
-    {
       "port": "loadState",
       "request": null
+    },
+    {
+      "port": "resolveWorkerBindingEngine",
+      "request": {
+        "workerSession": "backend:claude:backend:main:p-task-2-slot",
+        "targetAgent": "claude",
+        "workspace": "backend"
+      }
     },
     {
       "port": "saveState",
@@ -634,7 +740,9 @@
               "workspace": "backend",
               "targetAgent": "claude",
               "ephemeral": true,
-              "guardAcpOutput": true
+              "guardAcpOutput": true,
+              "logicalSessionId": "lid-b",
+              "transportEngine": "cli"
             }
           }
         ]
@@ -760,7 +868,9 @@
               "workspace": "backend",
               "targetAgent": "claude",
               "ephemeral": true,
-              "guardAcpOutput": true
+              "guardAcpOutput": true,
+              "logicalSessionId": "lid-b",
+              "transportEngine": "cli"
             }
           }
         ]

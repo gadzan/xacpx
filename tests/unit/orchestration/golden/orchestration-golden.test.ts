@@ -244,7 +244,7 @@ test("golden: approveTask starts a needs_confirmation task", async () => {
 
 test("golden: reconcileParallelSlots drains a queued task when a slot frees", async () => {
   const harness = makeGoldenHarness({
-    ids: ["task-1", "task-1-slot", "lid-a", "task-2", "task-2-slot"],
+    ids: ["task-1", "task-1-slot", "lid-a", "task-2", "task-2-slot", "lid-b"],
     config: {
       ...createConfig(),
       orchestration: { ...createConfig().orchestration, maxParallelTasksPerAgent: 1 },

@@ -217,16 +217,6 @@ export interface OrchestrationServiceDeps {
   dispatchWorkerTask: (request: DispatchWorkerTaskRequest) => Promise<void>;
   cancelWorkerTask?: (request: CancelWorkerTaskRequest) => Promise<void>;
   resumeWorkerTask?: (request: ResumeWorkerTaskRequest) => Promise<void>;
-  closeWorkerSession?: (request: {
-    workerSession: string;
-    coordinatorSession: string;
-    workspace: string;
-    cwd?: string;
-    targetAgent: string;
-    role?: string;
-    /** Snapshot from before reconcile removes the binding; absent means legacy identity. */
-    guardAcpOutput?: boolean;
-  }) => Promise<void>;
   /**
    * Verified teardown of one worker's engine-side owner for a staged binding
    * identity (rollback-after-owner): Runtime releases the logical identity

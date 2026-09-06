@@ -6,15 +6,15 @@ import { WorkerSessionManager } from "../../../../src/orchestration/service/work
 import { createEmptyState } from "../../../../src/state/types";
 import { makeGoldenHarness, type GoldenHarness } from "../golden/golden-harness";
 
-// Construct the service from a bare object literal of exactly its SIX ports — never
+// Construct the service from a bare object literal of exactly its NINE ports — never
 // `harness.deps` wholesale — plus the kernel and the WorkerSessionManager. This is the
 // isolation-testability deliverable of the split: the service must build without
-// `ensureWorkerSession`, `cancelWorkerTask`, `closeWorkerSession`, `wakeCoordinatorSession`
+// `ensureWorkerSession`, `cancelWorkerTask`, `wakeCoordinatorSession`
 // or any of the other ports, and it must not silently reach for a dep outside its declared
 // RpcDelegationDeps.
 function makeService(initialState = createEmptyState()) {
   const harness = makeGoldenHarness({
-    ids: ["task-1"],
+    ids: ["task-1", "lid-1"],
     endpointIds: ["worker-endpoint-1"],
     initialState,
   });
@@ -29,6 +29,8 @@ function makeService(initialState = createEmptyState()) {
       saveState: harness.deps.saveState,
       config: harness.deps.config,
       dispatchWorkerTask: harness.deps.dispatchWorkerTask,
+      resolveWorkerBindingEngine: harness.deps.resolveWorkerBindingEngine,
+      releaseWorkerSession: harness.deps.releaseWorkerSession,
     },
     kernel,
     workerSessions,
@@ -64,7 +66,7 @@ function seedExternalCoordinatorState() {
   return state;
 }
 
-test("constructible with only its seven ports and delegates a registered external coordinator's RPC", async () => {
+test("constructible with only its nine ports and delegates a registered external coordinator's RPC", async () => {
   const { harness, rpcDelegation } = makeService(seedExternalCoordinatorState());
 
   const callsBefore = harness.calls.length;

@@ -1393,22 +1393,6 @@ export async function buildApp(
         );
       }
     },
-    closeWorkerSession: async ({
-      workerSession,
-      targetAgent,
-      workspace,
-      cwd,
-      guardAcpOutput,
-    }) => {
-      if (!transport.removeSession) {
-        return;
-      }
-      const session = resolveWorkerRuntimeSession(
-        { workerSession, targetAgent, workspace, ...(cwd ? { cwd } : {}) },
-        { guardAcpOutput },
-      );
-      await transport.removeSession(session);
-    },
     // Verified owner teardown for a STAGED worker identity
     // (rollback-after-owner): the caller passes the staged LID/engine, never
     // re-resolved, so convergence targets exactly the owner ensure started.

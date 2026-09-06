@@ -14,6 +14,12 @@ import type {
   RequestDelegateInput,
 } from "../orchestration-service";
 import type { OrchestrationStateKernel } from "./orchestration-state-kernel";
+import {
+  teardownStagedWorkerOwner,
+  workerBindingIdentityFields,
+} from "../worker-launch";
+import type { StagedWorkerIdentity } from "../worker-launch";
+import { retireWorkerBinding } from "../worker-binding-retirement";
 
 export type WorkerSessionDeps = Pick<
   OrchestrationServiceDeps,
@@ -25,7 +31,8 @@ export type WorkerSessionDeps = Pick<
   | "config"
   | "ensureWorkerSession"
   | "dispatchWorkerTask"
-  | "closeWorkerSession"
+  | "releaseWorkerSession"
+  | "resolveWorkerBindingEngine"
   | "findReusableWorkerSession"
 >;
 
@@ -274,24 +281,23 @@ export class WorkerSessionManager {
 
   /**
    * Idempotent reconciliation for parallel slots:
-   *  1. close acpx sessions of ephemeral parallel tasks that have terminated
-   *     (terminal status, no pending review), and drop their worker bindings;
+   *  1. retire worker bindings of ephemeral parallel tasks that have
+   *     terminated (terminal status, no pending review) via the unified
+   *     retirement primitive (verified engine-side convergence BEFORE the
+   *     durable handle disappears; failures retain for a later retry);
    *  2. drain `queued` parallel tasks into running, up to the per-agent cap.
-   * Safe to call repeatedly; close failures are logged and never block draining.
+   * Safe to call repeatedly; retire failures never block draining.
    */
   async reconcileParallelSlots(): Promise<void> {
-    // Phase 1: collect + mark sessions to close (mutex-guarded state change).
-    const toClose = await this.kernel.mutate(async () => {
+    // Phase 1: collect retirement candidates (mutex-guarded state read).
+    // Bindings stay put here — deletion happens only inside the retirement
+    // primitive after verified convergence. Sessions that never started
+    // (no binding entry) are still marked closed so Phase 1 does not
+    // re-check them on future reconcile calls.
+    const toRetire = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
-      const collected: Array<{
-        workerSession: string;
-        coordinatorSession: string;
-        workspace: string;
-        cwd?: string;
-        targetAgent: string;
-        role?: string;
-        guardAcpOutput?: boolean;
-      }> = [];
+      const collected: Array<{ taskId: string; workerSession: string }> = [];
+      let changed = false;
       for (const task of Object.values(state.orchestration.tasks)) {
         if (
           task.ephemeralWorkerSession === true &&
@@ -300,48 +306,73 @@ export class WorkerSessionManager {
           task.reviewPending === undefined &&
           this.kernel.isTerminalStatus(task.status)
         ) {
-          // I-3: Only close (and delete the binding for) sessions that were actually
-          // started — i.e., the worker binding exists in state. Queued tasks that were
-          // cancelled before being drained never had an acpx session opened, so their
-          // workerSession is an intended-but-never-reserved name with no binding entry.
-          // Calling closeWorkerSession on those is wasted I/O and produces a misleading
-          // log. Mark them closed anyway so Phase 1 does not re-check them on future
-          // reconcile calls.
-          task.ephemeralWorkerSessionClosed = true;
-          const binding = state.orchestration.workerBindings[task.workerSession];
-          if (binding !== undefined) {
-            delete state.orchestration.workerBindings[task.workerSession];
-            collected.push({
-              workerSession: task.workerSession,
-              coordinatorSession: task.coordinatorSession,
-              workspace: task.workspace,
-              ...(task.cwd ? { cwd: task.cwd } : {}),
-              targetAgent: task.targetAgent,
-              ...(task.role ? { role: task.role } : {}),
-              guardAcpOutput: binding.guardAcpOutput,
-            });
+          // I-3: Only retire sessions that were actually started — i.e.,
+          // the worker binding exists in state. Queued tasks that were
+          // cancelled before being drained never had an acpx session opened,
+          // so their workerSession is an intended-but-never-reserved name
+          // with no binding entry. Mark them closed anyway so Phase 1 does
+          // not re-check them on future reconcile calls.
+          if (state.orchestration.workerBindings[task.workerSession] === undefined) {
+            task.ephemeralWorkerSessionClosed = true;
+            changed = true;
+            continue;
           }
+          collected.push({ taskId: task.taskId, workerSession: task.workerSession });
         }
       }
-      if (collected.length > 0) {
+      if (changed) {
         await this.deps.saveState(state);
       }
       return collected;
     });
 
-    // Phase 2: best-effort close (outside the mutex — it is network/process I/O).
-    for (const req of toClose) {
-      try {
-        await this.deps.closeWorkerSession?.(req);
-      } catch (error) {
-        this.kernel.logEvent("orchestration.parallel.close_failed", "failed to close ephemeral worker session", {
+    // Phase 2: verified retire outside the mutex (engine I/O must never run
+    // under the state lock). Retained bindings stay for the next reconcile.
+    const retired: string[] = [];
+    for (const req of toRetire) {
+      const outcome = await retireWorkerBinding(
+        {
+          loadState: () => this.deps.loadState(),
+          saveState: (nextState) => this.deps.saveState(nextState),
+          runExclusive: <T>(critical: () => Promise<T>) => this.kernel.mutate(critical),
+          releaseWorkerSession: this.deps.releaseWorkerSession,
+          isTerminalStatus: (status) => this.kernel.isTerminalStatus(status),
+        },
+        req.workerSession,
+      );
+      if (outcome === "retired") {
+        retired.push(req.workerSession);
+      } else {
+        this.kernel.logEvent("orchestration.parallel.retire_failed", "failed to retire ephemeral worker binding; will retry", {
           workerSession: req.workerSession,
-          message: error instanceof Error ? error.message : String(error),
         });
       }
     }
 
-    // Phase 3: drain queued parallel tasks, oldest first, up to capacity.
+    // Phase 3: mark retired sessions closed (re-verified: only still-terminal
+    // tasks without a reopened review — a contested review must not lose its
+    // future close).
+    if (retired.length > 0) {
+      await this.kernel.mutate(async () => {
+        const state = await this.deps.loadState();
+        for (const workerSession of retired) {
+          const task = Object.values(state.orchestration.tasks).find(
+            (candidate) => candidate.workerSession === workerSession,
+          );
+          if (
+            task &&
+            task.ephemeralWorkerSession === true &&
+            this.kernel.isTerminalStatus(task.status) &&
+            task.reviewPending === undefined
+          ) {
+            task.ephemeralWorkerSessionClosed = true;
+          }
+        }
+        await this.deps.saveState(state);
+      });
+    }
+
+    // Phase 4: drain queued parallel tasks, oldest first, up to capacity.
     for (;;) {
       const next = await this.kernel.mutate(async () => {
         const state = await this.deps.loadState();
@@ -358,6 +389,20 @@ export class WorkerSessionManager {
           // paths): an ephemeral parallel session name is a globally-unique
           // `:p-<uuid>`, so there is no pre-existing claim or external-coordinator
           // collision to guard against.
+          // First binding MUST already carry LID + physical-group engine
+          // BEFORE ensure below can start an owner (same crash window as
+          // the delegate paths: save/ensure async gap).
+          const previousBinding = state.orchestration.workerBindings[task.workerSession!];
+          const identity = workerBindingIdentityFields(
+            previousBinding,
+            () => this.deps.resolveWorkerBindingEngine({
+              workerSession: task.workerSession!,
+              targetAgent: task.targetAgent,
+              workspace: task.workspace,
+              ...(task.cwd ? { cwd: task.cwd } : {}),
+            }),
+            this.deps.createId,
+          );
           state.orchestration.workerBindings[task.workerSession!] = {
             sourceHandle: task.workerSession!,
             ...(this.deps.createAgentEndpointId
@@ -370,9 +415,10 @@ export class WorkerSessionManager {
             ...(task.role ? { role: task.role } : {}),
             ephemeral: true,
             guardAcpOutput: true,
+            ...identity,
           };
           await this.deps.saveState(state);
-          return { ...task };
+          return { ...task, previousBinding, stagedIdentity: identity };
         }
         return null;
       });
@@ -402,17 +448,44 @@ export class WorkerSessionManager {
         });
       } catch (error) {
         // Rollback: ensure/dispatch failed after the task was flipped to
-        // `running` and persisted. Revert it to `queued` and drop its binding so
-        // it does not permanently consume a slot with no worker. Break (do NOT
-        // continue) — a re-queued task would be re-picked and loop forever within
-        // this single reconcile call; the next reconcile trigger retries it.
+        // `running` and persisted. Converge a first-binding owner BEFORE the
+        // shell may be deleted (ensure rejection never proves no owner);
+        // unverifiable teardown retains the shell for the next retry.
+        // Break (do NOT continue) — a re-queued task would be re-picked and
+        // loop forever within this single reconcile call; the next reconcile
+        // trigger retries it.
+        let retainBinding = false;
+        if (!next.previousBinding && next.stagedIdentity) {
+          try {
+            await teardownStagedWorkerOwner(
+              this.deps.releaseWorkerSession,
+              {
+                workerSession: next.workerSession!,
+                targetAgent: next.targetAgent,
+                workspace: next.workspace,
+                ...(next.cwd ? { cwd: next.cwd } : {}),
+                ...(next.role ? { role: next.role } : {}),
+              },
+              next.stagedIdentity,
+            );
+          } catch (teardownError) {
+            retainBinding = true;
+            this.kernel.logEvent("orchestration.parallel.teardown_failed", "drained owner teardown failed; staged binding retained", {
+              taskId: next.taskId,
+              workerSession: next.workerSession ?? "",
+              message: teardownError instanceof Error ? teardownError.message : String(teardownError),
+            });
+          }
+        }
         await this.kernel.mutate(async () => {
           const state = await this.deps.loadState();
           const task = state.orchestration.tasks[next.taskId];
           if (task && task.status === "running") {
             task.status = "queued";
             task.updatedAt = this.deps.now().toISOString();
-            delete state.orchestration.workerBindings[next.workerSession!];
+            if (!retainBinding) {
+              delete state.orchestration.workerBindings[next.workerSession!];
+            }
             // Audit-trail parity with the success path: record the running→queued
             // revert as a status_changed event, persisted in this same mutate.
             this.kernel.appendTaskEvent(task, task.updatedAt, "status_changed", {

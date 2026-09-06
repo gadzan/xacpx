@@ -121,8 +121,19 @@ function provisionalCauseSuffix(cause: unknown): string {
  * logical row is kept and the combined failure propagates for retry/delete.
  */
 export async function convergeProvisionalCreate(cleanup: ProvisionalSessionCleanup): Promise<void> {
+  // Fail-closed contract: a missing deleteSession operation is NOT success.
+  // Optional-chaining it would drop the only retry handle while the
+  // provisional owner may still be alive.
+  if (!cleanup.transport.deleteSession) {
+    throw new Error(
+      `session creation failed${provisionalCauseSuffix(cleanup.cause)} and the provisional ` +
+        `physical session could not be verified cleaned up: ` +
+        `transport has no deleteSession operation; ` +
+        `logical session "${cleanup.internalAlias}" kept for retry/delete`,
+    );
+  }
   try {
-    await cleanup.transport.deleteSession?.(cleanup.session);
+    await cleanup.transport.deleteSession(cleanup.session);
   } catch (cleanupError) {
     throw new Error(
       `session creation failed${provisionalCauseSuffix(cleanup.cause)} and the provisional ` +
@@ -154,7 +165,10 @@ export async function convergeProvisionalNativeAttach(cleanup: ProvisionalSessio
       }
       await cleanup.transport.releaseLogicalSession(cleanup.session);
     } else {
-      await cleanup.transport.removeSession?.(cleanup.session);
+      if (!cleanup.transport.removeSession) {
+        throw new Error("transport has no removeSession operation");
+      }
+      await cleanup.transport.removeSession(cleanup.session);
     }
   } catch (cleanupError) {
     throw new Error(
