@@ -4,6 +4,8 @@ import { createEmptyState, type AppState } from "../../../src/state/types";
 import type { OrchestrationTaskStatus } from "../../../src/orchestration/orchestration-types";
 import {
   retireWorkerBinding,
+  releaseWorkerRetirement,
+  tryClaimWorkerRetirement,
   type WorkerBindingRetirementEnv,
 } from "../../../src/orchestration/worker-binding-retirement";
 
@@ -26,6 +28,7 @@ function makeEnv(
   overrides: Partial<Pick<WorkerBindingRetirementEnv, "releaseWorkerSession">> & {
     onLoad?: (state: AppState) => void;
     noReleasePort?: boolean;
+    reserved?: boolean;
   } = {},
 ): {
   env: WorkerBindingRetirementEnv;
@@ -51,6 +54,7 @@ function makeEnv(
         })),
     isTerminalStatus: (status: OrchestrationTaskStatus) =>
       status === "completed" || status === "failed" || status === "cancelled",
+    hasStartReservation: () => overrides.reserved ?? false,
   };
   return {
     env,
@@ -174,5 +178,33 @@ test("missing release port retains a complete binding", async () => {
   const { env, bindings } = makeEnv(seed, { noReleasePort: true });
 
   expect(await retireWorkerBinding(env, WORKER)).toBe("retained");
+  expect((await bindings())[WORKER]).toBeDefined();
+});
+
+test("retained while a start reservation is held", async () => {
+  const seed = createEmptyState();
+  seed.orchestration.workerBindings[WORKER] = completeBinding();
+  const { env, releases, bindings } = makeEnv(seed, { reserved: true });
+
+  // A starting delegation holds the admission reservation: retire backs
+  // off before claiming anything, so its owner can never be released
+  // from under it.
+  expect(await retireWorkerBinding(env, WORKER)).toBe("retained");
+  expect(releases).toHaveLength(0);
+  expect((await bindings())[WORKER]).toBeDefined();
+});
+
+test("contended lease retains without disturbing the holder", async () => {
+  const seed = createEmptyState();
+  seed.orchestration.workerBindings[WORKER] = completeBinding();
+  const { env, releases, bindings } = makeEnv(seed);
+
+  expect(tryClaimWorkerRetirement(WORKER)).toBe(true);
+  try {
+    expect(await retireWorkerBinding(env, WORKER)).toBe("retained");
+  } finally {
+    releaseWorkerRetirement(WORKER);
+  }
+  expect(releases).toHaveLength(0);
   expect((await bindings())[WORKER]).toBeDefined();
 });

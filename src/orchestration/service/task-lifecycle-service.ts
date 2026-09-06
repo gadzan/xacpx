@@ -8,7 +8,7 @@ import { isAttentionRequiredTask, isTerminalTaskStatus } from "../orchestration-
 import type { OrchestrationTaskRecord } from "../orchestration-types";
 import { sanitizeProgressSummary, stripProgressLines } from "../progress-line-parser";
 import { clampWatchPollInterval, clampWatchTimeout } from "../task-watch-timeouts";
-import { retireWorkerBinding } from "../worker-binding-retirement";
+import { retireWorkerBinding, type WorkerBindingRetirementEnv } from "../worker-binding-retirement";
 import type {
   CleanTasksResult,
   OrchestrationServiceDeps,
@@ -18,6 +18,7 @@ import type {
   WatchTaskResult,
 } from "../orchestration-service";
 import type { OrchestrationStateKernel } from "./orchestration-state-kernel";
+import type { WorkerSessionManager } from "./worker-session-manager";
 
 export type TaskLifecycleDeps = Pick<
   OrchestrationServiceDeps,
@@ -28,8 +29,26 @@ export class TaskLifecycleService {
   constructor(
     private readonly deps: TaskLifecycleDeps,
     private readonly kernel: OrchestrationStateKernel,
+    private readonly workerSessions?: WorkerSessionManager,
   ) {}
 
+  /**
+   * Retirement env with start-reservation visibility. The manager is
+   * optional for direct unit construction; production always wires it via
+   * the facade. Without it, a delegation admitted concurrently with a
+   * retire falls back to generation/active-owner checks only.
+   */
+  private retirementEnv(): WorkerBindingRetirementEnv {
+    return {
+      loadState: () => this.deps.loadState(),
+      saveState: (nextState) => this.deps.saveState(nextState),
+      runExclusive: <T>(critical: () => Promise<T>) => this.kernel.mutate(critical),
+      releaseWorkerSession: this.deps.releaseWorkerSession,
+      isTerminalStatus: (status) => this.kernel.isTerminalStatus(status),
+      hasStartReservation: (workerSession) =>
+        this.workerSessions?.hasStartReservation(workerSession) ?? false,
+    };
+  }
   async recordWorkerReply(input: RecordWorkerReplyInput): Promise<OrchestrationTaskRecord> {
     const task = await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
@@ -280,16 +299,7 @@ export class TaskLifecycleService {
 
     let retiredBindings = 0;
     for (const workerSession of collected.completeBindings) {
-      const outcome = await retireWorkerBinding(
-        {
-          loadState: () => this.deps.loadState(),
-          saveState: (nextState) => this.deps.saveState(nextState),
-          runExclusive: <T>(critical: () => Promise<T>) => this.kernel.mutate(critical),
-          releaseWorkerSession: this.deps.releaseWorkerSession,
-          isTerminalStatus: (status) => this.kernel.isTerminalStatus(status),
-        },
-        workerSession,
-      );
+      const outcome = await retireWorkerBinding(this.retirementEnv(), workerSession);
       if (outcome === "retired") {
         retiredBindings += 1;
       } else {
@@ -386,16 +396,7 @@ export class TaskLifecycleService {
 
     let retiredBindings = 0;
     for (const workerSession of collected.completeBindings) {
-      const outcome = await retireWorkerBinding(
-        {
-          loadState: () => this.deps.loadState(),
-          saveState: (nextState) => this.deps.saveState(nextState),
-          runExclusive: <T>(critical: () => Promise<T>) => this.kernel.mutate(critical),
-          releaseWorkerSession: this.deps.releaseWorkerSession,
-          isTerminalStatus: (status) => this.kernel.isTerminalStatus(status),
-        },
-        workerSession,
-      );
+      const outcome = await retireWorkerBinding(this.retirementEnv(), workerSession);
       if (outcome === "retired") {
         retiredBindings += 1;
       } else {

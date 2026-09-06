@@ -1464,6 +1464,75 @@ test("cleanTasks retains complete bindings whose teardown is unverifiable", asyn
   });
 });
 
+test("a delegation admitted during retirement teardown is refused", async () => {
+  const initialState = createEmptyState();
+  initialState.orchestration.tasks["task-clean-terminal"] = {
+    taskId: "task-clean-terminal",
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workerSession: "backend:claude:backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "done work",
+    status: "completed",
+    summary: "done",
+    resultText: "ok",
+    createdAt: "2026-04-13T10:00:00.000Z",
+    updatedAt: "2026-04-13T10:00:00.000Z",
+    eventSeq: 1,
+    events: [],
+  } as never;
+  initialState.orchestration.workerBindings["backend:claude:backend:main"] = {
+    sourceHandle: "backend:claude:backend:main",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    guardAcpOutput: true,
+    logicalSessionId: "lid-race",
+    transportEngine: "cli",
+  };
+  let releaseEntered!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    releaseEntered = resolve;
+  });
+  let releaseGate!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releaseGate = resolve;
+  });
+  const harness = makeDeps({
+    initialState,
+    releaseWorkerSession: async (request) => {
+      harness.releaseCalls.push(request);
+      releaseEntered();
+      await gate;
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  const clean = service.cleanTasks("backend:main");
+  await entered;
+  // The retirement lease is held across the release I/O: a new delegation
+  // for the same reusable name must be refused, or the stale cleanup would
+  // kill its freshly admitted owner after the checks passed.
+  await expect(
+    service.requestDelegate({
+      sourceHandle: "wx:user-9",
+      sourceKind: "human",
+      coordinatorSession: "backend:main",
+      workspace: "backend",
+      targetAgent: "claude",
+      task: "new work",
+    }),
+  ).rejects.toThrow(/being retired/);
+  releaseGate();
+  const result = await clean;
+
+  expect(result).toMatchObject({ removedTasks: 1, removedBindings: 1 });
+  expect(harness.getState().orchestration.tasks).toEqual({});
+  expect(harness.getState().orchestration.workerBindings).toEqual({});
+});
+
 test("purgeSessionReferences retains complete bindings whose teardown is unverifiable", async () => {
   const initialState = createEmptyState();
   initialState.orchestration.tasks["task-purge-terminal"] = {

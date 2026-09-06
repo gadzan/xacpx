@@ -5,6 +5,7 @@ import type { AppState, SessionTransportEngine } from "../state/types";
 import { resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
 import type { AgentConfig, TransportConfig } from "../config/types";
 import type { WorkerBindingRecord } from "./orchestration-types";
+import { releaseWorkerRetirement, tryClaimWorkerRetirement } from "./worker-binding-retirement";
 
 /**
  * A missing binding means this is a first launch and should opt into the new
@@ -91,8 +92,14 @@ export interface StagedWorkerOwner {
  * time — never re-resolves from live state, whose shell may already be
  * gone or replaced. Throws when teardown cannot be verified (including a
  * missing release port); the caller must then RETAIN the shell (fail
- * closed) and surface both failures. Shared by human delegation and task
- * approval so both apply identical teardown-before-restore ordering.
+ * closed) and surface both failures.
+ *
+ * Claims the process-wide retirement lease for the whole call and releases
+ * it in a finally: while held, delegation admission refuses this name, so
+ * no new generation can be admitted between our checks and the release —
+ * the release cannot kill a freshly admitted owner. Contended claims throw
+ * (fail closed, retain). Shared by every teardown site (human, approval,
+ * RPC startup, drain) so all apply identical ordering.
  */
 export async function teardownStagedWorkerOwner(
   releaseWorkerSession:
@@ -106,7 +113,16 @@ export async function teardownStagedWorkerOwner(
       `cannot converge worker "${worker.workerSession}" after its owner started: no releaseWorkerSession port is wired`,
     );
   }
-  await releaseWorkerSession({ ...worker, ...staged });
+  if (!tryClaimWorkerRetirement(worker.workerSession)) {
+    throw new Error(
+      `cannot converge worker "${worker.workerSession}": retirement already in progress for this session`,
+    );
+  }
+  try {
+    await releaseWorkerSession({ ...worker, ...staged });
+  } finally {
+    releaseWorkerRetirement(worker.workerSession);
+  }
 }
 /**
  * Stage a worker binding's immutable identity (LID + engine) onto a

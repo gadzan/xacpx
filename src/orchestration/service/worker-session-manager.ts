@@ -18,8 +18,7 @@ import {
   teardownStagedWorkerOwner,
   workerBindingIdentityFields,
 } from "../worker-launch";
-import type { StagedWorkerIdentity } from "../worker-launch";
-import { retireWorkerBinding } from "../worker-binding-retirement";
+import { isWorkerRetirementClaimed, retireWorkerBinding } from "../worker-binding-retirement";
 
 export type WorkerSessionDeps = Pick<
   OrchestrationServiceDeps,
@@ -58,6 +57,10 @@ export class WorkerSessionManager {
     return (this.pendingWorkerSessions.get(session) ?? 0) > 0;
   }
 
+  /** True while a delegation start holds the admission reservation. Sync; safe anywhere. */
+  hasStartReservation(workerSession: string): boolean {
+    return this.hasPendingWorkerSession(workerSession);
+  }
   /** Reads pendingLogicalTransportSessions. Callers hold the state mutex. */
   hasPendingLogicalTransportSession(session: string): boolean {
     return (this.pendingLogicalTransportSessions.get(session) ?? 0) > 0;
@@ -229,6 +232,14 @@ export class WorkerSessionManager {
     excludingTaskId?: string,
     options: { allowCurrentReservation?: boolean } = {},
   ): void {
+    // A claimed retirement lease bars fresh admissions for the whole
+    // teardown window (check → release → verify → delete): a new
+    // generation admitted here would be killed by a stale cleanup's
+    // verified release. Callers holding no lease of their own always see
+    // the claim — teardown sites claim before any state they touch.
+    if (isWorkerRetirementClaimed(workerSession)) {
+      throw new Error(`worker session "${workerSession}" is being retired; retry after it settles`);
+    }
     const pendingCount = this.pendingWorkerSessions.get(workerSession) ?? 0;
     const allowedPendingCount = options.allowCurrentReservation ? 1 : 0;
     if (pendingCount > allowedPendingCount) {
@@ -337,6 +348,7 @@ export class WorkerSessionManager {
           runExclusive: <T>(critical: () => Promise<T>) => this.kernel.mutate(critical),
           releaseWorkerSession: this.deps.releaseWorkerSession,
           isTerminalStatus: (status) => this.kernel.isTerminalStatus(status),
+          hasStartReservation: (workerSession) => this.hasStartReservation(workerSession),
         },
         req.workerSession,
       );

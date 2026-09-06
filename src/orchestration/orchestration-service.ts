@@ -346,7 +346,7 @@ export class OrchestrationService {
     this.workerSessions = new WorkerSessionManager(deps, this.kernel);
     this.questionFlow = new QuestionFlowCore(deps, this.kernel);
     this.notices = new NoticeDeliveryService(deps, this.kernel);
-    this.lifecycle = new TaskLifecycleService(deps, this.kernel);
+    this.lifecycle = new TaskLifecycleService(deps, this.kernel, this.workerSessions);
     this.coordinators = new CoordinatorRegistryService(deps, this.kernel, this.workerSessions);
     this.cancellation = new TaskCancellationService(deps, this.kernel, this.workerSessions, this.questionFlow);
     this.humanQuestions = new HumanQuestionService(deps, this.kernel, this.workerSessions, this.questionFlow, this.cancellation);
