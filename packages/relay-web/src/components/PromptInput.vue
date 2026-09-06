@@ -23,6 +23,7 @@ import {
   type AgentAutocompleteContext,
 } from "../lib/agent-mention-ranking";
 import { loadDraft, saveDraft } from "../lib/composer-drafts";
+import { parseQuips, pickQuip } from "../lib/working-quips";
 import { createDebouncedFlush } from "../lib/debounce-flush";
 import { clampPanelWidth, createBottomPanelResize } from "../lib/resize-panel";
 import UsagePopover from "./UsagePopover.vue";
@@ -559,6 +560,35 @@ watch(
 function flushDraft(): void {
   draftPersist.flush();
 }
+
+// Playful rotating status line for the composer placeholder while a turn runs.
+const busyQuip = ref("");
+let quipTimer: ReturnType<typeof setInterval> | null = null;
+const QUIP_ROTATE_MS = 5000;
+function rotateBusyQuip(): void {
+  const quips = parseQuips(t("chat.workingQuips"));
+  if (quips.length > 0) busyQuip.value = pickQuip(quips, busyQuip.value || undefined);
+}
+watch(
+  () => props.busy,
+  (busy) => {
+    if (quipTimer) {
+      clearInterval(quipTimer);
+      quipTimer = null;
+    }
+    if (busy) {
+      rotateBusyQuip();
+      quipTimer = setInterval(rotateBusyQuip, QUIP_ROTATE_MS);
+    } else {
+      busyQuip.value = "";
+    }
+  },
+  { immediate: true },
+);
+const workingPlaceholder = computed(() =>
+  busyQuip.value ? `${busyQuip.value}${t("chat.escToStop")}` : t("chat.working"),
+);
+
 onMounted(() => {
   window.addEventListener("pagehide", flushDraft);
   if (typeof window.matchMedia === "function") {
@@ -568,6 +598,7 @@ onMounted(() => {
   }
 });
 onBeforeUnmount(() => {
+  if (quipTimer) clearInterval(quipTimer);
   window.removeEventListener("pagehide", flushDraft);
   desktopMql?.removeEventListener("change", onDesktopChange);
   flushDraft();
@@ -916,7 +947,7 @@ function onInput() {
         rows="2"
         class="w-full resize-none bg-transparent px-3.5 pt-2.5 pb-1 text-[16px] lg:text-[14px] leading-relaxed text-fg placeholder:text-fg-muted focus:outline-none"
         :style="isDesktop ? { height: composerHeight + 'px' } : undefined"
-        :placeholder="busy ? $t('chat.working') : $t('chat.message')"
+        :placeholder="busy ? workingPlaceholder : $t('chat.message')"
         @input="onInput"
         @click="updateMentionState"
         @keyup="updateMentionState"
