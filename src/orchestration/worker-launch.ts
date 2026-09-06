@@ -94,12 +94,25 @@ export interface StagedWorkerOwner {
  * missing release port); the caller must then RETAIN the shell (fail
  * closed) and surface both failures.
  *
- * Claims the process-wide retirement lease for the whole call and releases
- * it in a finally: while held, delegation admission refuses this name, so
- * no new generation can be admitted between our checks and the release —
- * the release cannot kill a freshly admitted owner. Contended claims throw
- * (fail closed, retain). Shared by every teardown site (human, approval,
- * RPC startup, drain) so all apply identical ordering.
+ * Lease modes:
+ * - Default (claim here): for synchronous startup rollback (human, approval,
+ *   parallel drain) of a FIRST binding the caller itself staged. The staged
+ *   LID is fresh, so no stale detached chain can name it; the caller's task
+ *   is either unpersisted-but-reserved (ensure failure: the held start
+ *   reservation bars every other admission and every reservation-checking
+ *   stale claim) or persisted-running (dispatch/drain failure: the active
+ *   task bars them). Drain additionally uses globally-unique ephemeral names
+ *   no other delegation can resolve. The claim here only arbitrates between
+ *   concurrent teardowns of the same name.
+ * - `leaseAlreadyHeld`: for detached stale cleanup (RPC startup paths)
+ *   that owns nothing and names a possibly-REUSED LID. Those callers MUST
+ *   claim atomically with their ownerless/reservation checks inside one
+ *   state-mutex mutate BEFORE the transport I/O gap (see
+ *   `claimWorkerTeardownLease`), hold the lease across release + verify,
+ *   and release in their own finally. A blind claim here would be TOCTOU: a
+ *   new delegation admitted after their check but before this claim would
+ *   still be killed. Contended claims throw (fail closed, retain) in both
+ *   modes.
  */
 export async function teardownStagedWorkerOwner(
   releaseWorkerSession:
@@ -107,13 +120,14 @@ export async function teardownStagedWorkerOwner(
     | undefined,
   worker: StagedWorkerOwner,
   staged: StagedWorkerIdentity,
+  options: { leaseAlreadyHeld?: boolean } = {},
 ): Promise<void> {
   if (!releaseWorkerSession) {
     throw new Error(
       `cannot converge worker "${worker.workerSession}" after its owner started: no releaseWorkerSession port is wired`,
     );
   }
-  if (!tryClaimWorkerRetirement(worker.workerSession)) {
+  if (!options.leaseAlreadyHeld && !tryClaimWorkerRetirement(worker.workerSession)) {
     throw new Error(
       `cannot converge worker "${worker.workerSession}": retirement already in progress for this session`,
     );
@@ -121,7 +135,7 @@ export async function teardownStagedWorkerOwner(
   try {
     await releaseWorkerSession({ ...worker, ...staged });
   } finally {
-    releaseWorkerRetirement(worker.workerSession);
+    if (!options.leaseAlreadyHeld) releaseWorkerRetirement(worker.workerSession);
   }
 }
 /**

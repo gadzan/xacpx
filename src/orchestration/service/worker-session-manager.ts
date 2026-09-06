@@ -18,7 +18,7 @@ import {
   teardownStagedWorkerOwner,
   workerBindingIdentityFields,
 } from "../worker-launch";
-import { isWorkerRetirementClaimed, retireWorkerBinding } from "../worker-binding-retirement";
+import { isWorkerRetirementClaimed, retireWorkerBinding, tryClaimWorkerRetirement } from "../worker-binding-retirement";
 
 export type WorkerSessionDeps = Pick<
   OrchestrationServiceDeps,
@@ -224,6 +224,36 @@ export class WorkerSessionManager {
     if (this.kernel.isExternalCoordinatorSession(state, workerSession)) {
       throw new Error(`worker session "${workerSession}" conflicts with an external coordinator`);
     }
+  }
+
+  /**
+   * Atomic claim-before-teardown for reservation-less stale cleanup (RPC
+   * detached startup paths): verify under ONE state-mutex mutate that the
+   * live binding still belongs to the stale startup (`isStale`), that no
+   * other task owns the session, and that no delegation start holds the
+   * admission reservation — then claim the retirement lease. Returns true
+   * only when the caller now owns the lease across its transport I/O (it
+   * must `releaseWorkerRetirement` in a finally); false means back off and
+   * retain without touching the engine. The atomicity is the whole point: a
+   * check-then-claim split would admit the exact interleaving where a new
+   * delegation reserves + persists between the check and the claim, and the
+   * stale release then kills the new owner's reused engine identity.
+   */
+  async claimWorkerTeardownLease(
+    workerSession: string,
+    isStale: (
+      binding: AppState["orchestration"]["workerBindings"][string] | undefined,
+    ) => boolean,
+    excludingTaskId?: string,
+  ): Promise<boolean> {
+    return await this.kernel.mutate(async () => {
+      const state = await this.deps.loadState();
+      if (!isStale(state.orchestration.workerBindings[workerSession])) return false;
+      if (this.hasActiveTaskWorkerSession(state, workerSession, excludingTaskId)) return false;
+      if (this.hasPendingWorkerSession(workerSession)) return false;
+      if (isWorkerRetirementClaimed(workerSession)) return false;
+      return tryClaimWorkerRetirement(workerSession);
+    });
   }
 
   assertWorkerSessionAvailable(

@@ -32,6 +32,7 @@ import {
 } from "../worker-launch";
 import type { StagedWorkerIdentity } from "../worker-launch";
 import type { WorkerSessionManager } from "./worker-session-manager";
+import { releaseWorkerRetirement } from "../worker-binding-retirement";
 
 export type RpcDelegationDeps = Pick<
   OrchestrationServiceDeps,
@@ -402,77 +403,88 @@ export class RpcDelegationService {
         });
         return;
       }
-      // Converge a first-binding owner OUTSIDE the lock before the mutate
-      // below may restore/delete the shell: ensure or dispatch threw, so an
-      // owner may exist with only this staged identity as its handle.
-      // Unverifiable teardown retains the shell (fail closed).
-      let retainBinding = false;
-      if (!input.previousBinding && input.stagedIdentity) {
+      // Claim the teardown lease BEFORE converging a first-binding owner:
+      // ensure or dispatch threw, so an owner may exist with only this
+      // staged identity as its handle — but our task may also be terminal
+      // by now with a new delegation already reserved on the reused
+      // binding. Converging without the lease would kill the new owner's
+      // engine identity. A refused claim retains the shell (fail closed).
+      const teardownLeaseHeld =
+        !input.previousBinding && input.stagedIdentity
+          ? await this.claimStartupTeardownLease(input)
+          : false;
+      let retainBinding = !teardownLeaseHeld && !input.previousBinding && !!input.stagedIdentity;
+      if (teardownLeaseHeld) {
         retainBinding = !(await this.convergeStartupOwner({
           task,
           previousBinding: input.previousBinding,
           stagedIdentity: input.stagedIdentity,
+          leaseAlreadyHeld: true,
         }));
       }
-      const taskMarkedFailed = await this.kernel.mutate(async () => {
-        const state = await this.deps.loadState();
-        const current = state.orchestration.tasks[task.taskId];
-        const workerSession = task.workerSession!;
-        const taskStillOwnsWorkerSession = current?.workerSession === workerSession;
-        const currentBinding = state.orchestration.workerBindings[workerSession];
-        const bindingStillBelongsToThisStartup = this.startupBindingBelongsToStartup(
-          currentBinding,
-          task,
-          input.stagedIdentity,
-        );
-        const otherActiveOwner = Object.values(state.orchestration.tasks).some((candidate) =>
-          candidate.taskId !== task.taskId &&
-          candidate.workerSession === workerSession &&
-          (!this.kernel.isTerminalStatus(candidate.status) || candidate.reviewPending !== undefined)
-        );
-        const restoreOrDeleteBinding = () => {
-          if (retainBinding || !bindingStillBelongsToThisStartup || otherActiveOwner) {
-            return;
+      try {
+        const taskMarkedFailed = await this.kernel.mutate(async () => {
+          const state = await this.deps.loadState();
+          const current = state.orchestration.tasks[task.taskId];
+          const workerSession = task.workerSession!;
+          const taskStillOwnsWorkerSession = current?.workerSession === workerSession;
+          const currentBinding = state.orchestration.workerBindings[workerSession];
+          const bindingStillBelongsToThisStartup = this.startupBindingBelongsToStartup(
+            currentBinding,
+            task,
+            input.stagedIdentity,
+          );
+          const otherActiveOwner = Object.values(state.orchestration.tasks).some((candidate) =>
+            candidate.taskId !== task.taskId &&
+            candidate.workerSession === workerSession &&
+            (!this.kernel.isTerminalStatus(candidate.status) || candidate.reviewPending !== undefined)
+          );
+          const restoreOrDeleteBinding = () => {
+            if (retainBinding || !bindingStillBelongsToThisStartup || otherActiveOwner) {
+              return;
+            }
+            if (input.previousBinding) {
+              state.orchestration.workerBindings[workerSession] = input.previousBinding;
+            } else {
+              delete state.orchestration.workerBindings[workerSession];
+            }
+          };
+          if (current && taskStillOwnsWorkerSession && current.status === "cancelled") {
+            restoreOrDeleteBinding();
+            await this.deps.saveState(state);
+            return false;
           }
-          if (input.previousBinding) {
-            state.orchestration.workerBindings[workerSession] = input.previousBinding;
-          } else {
-            delete state.orchestration.workerBindings[workerSession];
+          if (
+            current &&
+            taskStillOwnsWorkerSession &&
+            current.cancelRequestedAt === undefined &&
+            !this.kernel.isTerminalStatus(current.status)
+          ) {
+            const now = this.deps.now().toISOString();
+            current.status = "failed";
+            current.summary = message;
+            current.resultText = "";
+            current.updatedAt = now;
+            this.kernel.appendTaskEvent(current, now, "status_changed", {
+              status: "failed",
+              summary: message,
+              message: "Task failed during startup",
+            });
+            restoreOrDeleteBinding();
+            await this.deps.saveState(state);
+            return true;
           }
-        };
-        if (current && taskStillOwnsWorkerSession && current.status === "cancelled") {
-          restoreOrDeleteBinding();
           await this.deps.saveState(state);
           return false;
-        }
-        if (
-          current &&
-          taskStillOwnsWorkerSession &&
-          current.cancelRequestedAt === undefined &&
-          !this.kernel.isTerminalStatus(current.status)
-        ) {
-          const now = this.deps.now().toISOString();
-          current.status = "failed";
-          current.summary = message;
-          current.resultText = "";
-          current.updatedAt = now;
-          this.kernel.appendTaskEvent(current, now, "status_changed", {
-            status: "failed",
-            summary: message,
-            message: "Task failed during startup",
-          });
-          restoreOrDeleteBinding();
-          await this.deps.saveState(state);
-          return true;
-        }
-        await this.deps.saveState(state);
-        return false;
-      });
+        });
       if (taskMarkedFailed) {
         this.kernel.logEvent("orchestration.task.failed", "task failed", {
           ...this.kernel.taskContext(task),
           error: message,
         });
+      }
+      } finally {
+        if (teardownLeaseHeld) releaseWorkerRetirement(task.workerSession!);
       }
     }
   }
@@ -490,6 +502,7 @@ export class RpcDelegationService {
     task: OrchestrationTaskRecord;
     previousBinding?: AppState["orchestration"]["workerBindings"][string];
     stagedIdentity?: StagedWorkerIdentity;
+    leaseAlreadyHeld?: boolean;
   }): Promise<boolean> {
     const { task } = input;
     if (input.previousBinding || !input.stagedIdentity) return true;
@@ -504,6 +517,7 @@ export class RpcDelegationService {
           ...(task.role ? { role: task.role } : {}),
         },
         input.stagedIdentity,
+        { leaseAlreadyHeld: input.leaseAlreadyHeld ?? false },
       );
       return true;
     } catch (error) {
@@ -565,20 +579,32 @@ export class RpcDelegationService {
       );
     });
     if (!applies) return false;
-    // Phase 2: converge a first-binding owner OUTSIDE the state mutex
-    // (transport I/O must never run under the lock). Unverifiable teardown
-    // retains the shell below — the task still flips to cancelled.
+    // Phase 2: claim the teardown lease, then converge a first-binding
+    // owner OUTSIDE the state mutex (transport I/O must never run under the
+    // lock). A refused claim (new delegation starting, another teardown in
+    // flight) retains the shell below — the task still flips to cancelled.
+    const workerSession = task.workerSession!;
     let retainBinding = false;
-    if (!input.previousBinding && input.stagedIdentity) {
+    const teardownLeaseHeld =
+      !input.previousBinding && input.stagedIdentity
+        ? await this.claimStartupTeardownLease(input)
+        : false;
+    if (!input.previousBinding && input.stagedIdentity && !teardownLeaseHeld) {
+      retainBinding = true;
+    }
+    if (teardownLeaseHeld) {
       retainBinding = !(await this.convergeStartupOwner({
         task,
         previousBinding: input.previousBinding,
         stagedIdentity: input.stagedIdentity,
+        leaseAlreadyHeld: true,
       }));
     }
     // Phase 3: flip + conditional delete with full re-verification (the
-    // world may have moved during teardown).
-    return await this.kernel.mutate(async () => {
+    // world may have moved during teardown). The lease stays held across
+    // this mutate so no admission slips between converge and delete.
+    try {
+      return await this.kernel.mutate(async () => {
       const state = await this.deps.loadState();
       const workerSession = task.workerSession!;
       const current = state.orchestration.tasks[task.taskId];
@@ -616,8 +642,38 @@ export class RpcDelegationService {
       }
       await this.deps.saveState(state);
       return true;
-    });
+      });
+    } finally {
+      if (teardownLeaseHeld) releaseWorkerRetirement(workerSession);
+    }
   }
+
+  /**
+   * Claim-before-teardown for the detached startup paths: the stale cleanup
+   * owns nothing (its reservation was released before the detached chain
+   * started), so it must prove — atomically, inside one state-mutex mutate
+   * — that the live binding is still its stale generation, that no other
+   * task owns the session, and that no new delegation holds the start
+   * reservation, and take the retirement lease in the same step. True means
+   * the caller holds the lease across its release I/O + verify mutate and
+   * must release it in a finally; false means back off and retain without
+   * touching the engine. This is the reverse-direction half of the lease:
+   * start-first beats stale-teardown, just as lease-held beats fresh
+   * admission.
+   */
+  private claimStartupTeardownLease(input: {
+    task: OrchestrationTaskRecord;
+    previousBinding?: AppState["orchestration"]["workerBindings"][string];
+    stagedIdentity?: StagedWorkerIdentity;
+  }): Promise<boolean> {
+    const workerSession = input.task.workerSession!;
+    return this.workerSessions.claimWorkerTeardownLease(
+      workerSession,
+      (binding) => this.startupBindingBelongsToStartup(binding, input.task, input.stagedIdentity),
+      input.task.taskId,
+    );
+  }
+
 
   private async cleanupAutoRunStartupBinding(input: {
     task: OrchestrationTaskRecord;
@@ -625,56 +681,58 @@ export class RpcDelegationService {
     stagedIdentity?: StagedWorkerIdentity;
   }): Promise<boolean> {
     const { task } = input;
-    // Phase 1: read-only applicability check — no state change, no save.
-    const applies = await this.kernel.mutate(async () => {
-      const state = await this.deps.loadState();
-      const workerSession = task.workerSession!;
-      const currentBinding = state.orchestration.workerBindings[workerSession];
-      if (!this.startupBindingBelongsToStartup(currentBinding, task, input.stagedIdentity)) {
-        return false;
+    const workerSession = task.workerSession!;
+    // Phase 1: applicability + atomic lease claim under ONE mutex hold. The
+    // claim must land in the same mutate as the ownerless/reservation
+    // checks: this stale cleanup owns nothing (its reservation was released
+    // before the detached chain started), so a check-then-claim split would
+    // let a new delegation reserve + persist between the two — and the
+    // release below would then kill the new owner's reused engine identity.
+    // Backing off here retains the shell without touching the engine.
+    const leaseHeld = await this.claimStartupTeardownLease(input);
+    if (!leaseHeld) return false;
+    try {
+      // Phase 2: converge a first-binding owner OUTSIDE the state mutex
+      // (transport I/O must never run under the lock) with the lease held:
+      // fresh admissions are barred for the whole window, so the release
+      // cannot kill a newly admitted owner. Unverifiable teardown retains
+      // the shell (returns false).
+      if (!input.previousBinding && input.stagedIdentity) {
+        const converged = await this.convergeStartupOwner({
+          task,
+          previousBinding: input.previousBinding,
+          stagedIdentity: input.stagedIdentity,
+          leaseAlreadyHeld: true,
+        });
+        if (!converged) return false;
       }
-      const otherActiveOwner = Object.values(state.orchestration.tasks).some((candidate) =>
-        candidate.taskId !== task.taskId &&
-        candidate.workerSession === workerSession &&
-        (!this.kernel.isTerminalStatus(candidate.status) || candidate.reviewPending !== undefined)
-      );
-      return !otherActiveOwner;
-    });
-    if (!applies) return false;
-    // Phase 2: converge a first-binding owner OUTSIDE the state mutex.
-    // Unverifiable teardown retains the shell (returns false).
-    if (!input.previousBinding && input.stagedIdentity) {
-      const converged = await this.convergeStartupOwner({
-        task,
-        previousBinding: input.previousBinding,
-        stagedIdentity: input.stagedIdentity,
+      // Phase 3: delete only if still ours and ownerless (re-verified).
+      return await this.kernel.mutate(async () => {
+        const state = await this.deps.loadState();
+        const workerSession = task.workerSession!;
+        const currentBinding = state.orchestration.workerBindings[workerSession];
+        if (!this.startupBindingBelongsToStartup(currentBinding, task, input.stagedIdentity)) {
+          return false;
+        }
+        const otherActiveOwner = Object.values(state.orchestration.tasks).some((candidate) =>
+          candidate.taskId !== task.taskId &&
+          candidate.workerSession === workerSession &&
+          (!this.kernel.isTerminalStatus(candidate.status) || candidate.reviewPending !== undefined)
+        );
+        if (otherActiveOwner) {
+          return false;
+        }
+        if (input.previousBinding) {
+          state.orchestration.workerBindings[workerSession] = input.previousBinding;
+        } else {
+          delete state.orchestration.workerBindings[workerSession];
+        }
+        await this.deps.saveState(state);
+        return true;
       });
-      if (!converged) return false;
+    } finally {
+      releaseWorkerRetirement(workerSession);
     }
-    // Phase 3: delete only if still ours and ownerless (re-verified).
-    return await this.kernel.mutate(async () => {
-      const state = await this.deps.loadState();
-      const workerSession = task.workerSession!;
-      const currentBinding = state.orchestration.workerBindings[workerSession];
-      if (!this.startupBindingBelongsToStartup(currentBinding, task, input.stagedIdentity)) {
-        return false;
-      }
-      const otherActiveOwner = Object.values(state.orchestration.tasks).some((candidate) =>
-        candidate.taskId !== task.taskId &&
-        candidate.workerSession === workerSession &&
-        (!this.kernel.isTerminalStatus(candidate.status) || candidate.reviewPending !== undefined)
-      );
-      if (otherActiveOwner) {
-        return false;
-      }
-      if (input.previousBinding) {
-        state.orchestration.workerBindings[workerSession] = input.previousBinding;
-      } else {
-        delete state.orchestration.workerBindings[workerSession];
-      }
-      await this.deps.saveState(state);
-      return true;
-    });
   }
 
   private resolveRpcSourceContext(

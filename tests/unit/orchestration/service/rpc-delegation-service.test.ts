@@ -4,19 +4,21 @@ import { OrchestrationStateKernel } from "../../../../src/orchestration/service/
 import { RpcDelegationService } from "../../../../src/orchestration/service/rpc-delegation-service";
 import { WorkerSessionManager } from "../../../../src/orchestration/service/worker-session-manager";
 import { createEmptyState } from "../../../../src/state/types";
-import { makeGoldenHarness, type GoldenHarness } from "../golden/golden-harness";
-
+import type { OrchestrationTaskRecord } from "../../../../src/orchestration/orchestration-types";
+import type { StagedWorkerIdentity } from "../../../../src/orchestration/worker-launch";
+import { makeGoldenHarness, type GoldenHarness, type GoldenHarnessOverrides } from "../golden/golden-harness";
 // Construct the service from a bare object literal of exactly its NINE ports — never
 // `harness.deps` wholesale — plus the kernel and the WorkerSessionManager. This is the
 // isolation-testability deliverable of the split: the service must build without
 // `ensureWorkerSession`, `cancelWorkerTask`, `wakeCoordinatorSession`
 // or any of the other ports, and it must not silently reach for a dep outside its declared
 // RpcDelegationDeps.
-function makeService(initialState = createEmptyState()) {
+function makeService(initialState = createEmptyState(), harnessOverrides: GoldenHarnessOverrides = {}) {
   const harness = makeGoldenHarness({
     ids: ["task-1", "lid-1"],
     endpointIds: ["worker-endpoint-1"],
     initialState,
+    ...harnessOverrides,
   });
   const kernel = new OrchestrationStateKernel({ logger: harness.deps.logger });
   const workerSessions = new WorkerSessionManager(harness.deps, kernel);
@@ -35,7 +37,7 @@ function makeService(initialState = createEmptyState()) {
     kernel,
     workerSessions,
   );
-  return { harness, rpcDelegation };
+  return { harness, rpcDelegation, workerSessions };
 }
 
 // The detached `runAutoRunRpcWorkerTask` chain is still running when
@@ -100,4 +102,81 @@ test("validateRpcRequest rejects a request with a blank task", async () => {
       task: "   ",
     }),
   ).rejects.toThrow("task must be a non-empty string");
+});
+
+test("stale startup cleanup backs off while a new delegation holds the start reservation", async () => {
+  // Reverse-direction lease regression: the stale detached cleanup owns
+  // nothing (its reservation was released before the chain started) and
+  // names a possibly-REUSED LID. A new delegation admitted after the stale
+  // check but before a split claim would still be killed — so the claim
+  // must land atomically with the checks. No public flow can stage this
+  // window (a running task bars B; a removed task ends A's chain), hence
+  // the direct-but-real entry below with B's reservation held by the same
+  // manager instance the service admits through.
+  const WORKER = "backend:claude:stale-cleanup";
+  const initialState = createEmptyState();
+  initialState.orchestration.workerBindings[WORKER] = {
+    sourceHandle: WORKER,
+    coordinatorSession: "coord-1",
+    workspace: "backend",
+    targetAgent: "claude",
+    guardAcpOutput: true,
+    logicalSessionId: "lid-stale",
+    transportEngine: "cli",
+  } as never;
+  const { harness, rpcDelegation, workerSessions } = makeService(initialState);
+  const staleTask = {
+    taskId: "task-stale",
+    workerSession: WORKER,
+    coordinatorSession: "coord-1",
+    workspace: "backend",
+    targetAgent: "claude",
+  } as never;
+  const staleInput = {
+    task: staleTask,
+    previousBinding: undefined,
+    stagedIdentity: { logicalSessionId: "lid-stale", transportEngine: "cli" },
+  } as never;
+  // No public flow can stage "stale cleanup in flight while B holds the
+  // reservation" (a running task bars B; a removed task ends A's chain), so
+  // the deterministic regression enters through the real private method with
+  // B's reservation held by the same manager instance the service admits
+  // through. Named const (not inline access): the shape is the service's
+  // own private method, verified by the calls below.
+  interface StaleCleanupSeam {
+    cleanupAutoRunStartupBinding: (input: {
+      task: OrchestrationTaskRecord;
+      previousBinding: undefined;
+      stagedIdentity: StagedWorkerIdentity;
+    }) => Promise<boolean>;
+  }
+  const seam: StaleCleanupSeam = rpcDelegation as unknown as StaleCleanupSeam;
+  const releasesFor = (lid: string): number =>
+    harness.calls.filter((call) => {
+      if (call.port !== "releaseWorkerSession") return false;
+      const request = call.request;
+      return (
+        !!request &&
+        typeof request === "object" &&
+        "logicalSessionId" in request &&
+        request.logicalSessionId === lid
+      );
+    }).length;
+
+  // B reserves first: the stale cleanup must back off without touching the engine.
+  const releaseReservation = await workerSessions.reserveProposedWorkerSession(WORKER);
+  try {
+    expect(await seam.cleanupAutoRunStartupBinding(staleInput)).toBe(false);
+  } finally {
+    await releaseReservation();
+  }
+  expect(releasesFor("lid-stale")).toBe(0);
+  expect(harness.getState().orchestration.workerBindings[WORKER]).toMatchObject({
+    logicalSessionId: "lid-stale",
+  });
+
+  // Uncontended, the same stale cleanup converges and deletes.
+  expect(await seam.cleanupAutoRunStartupBinding(staleInput)).toBe(true);
+  expect(releasesFor("lid-stale")).toBe(1);
+  expect(harness.getState().orchestration.workerBindings[WORKER]).toBeUndefined();
 });
