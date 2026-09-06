@@ -539,28 +539,38 @@ test("acquire refuses over a deleting fence without spawning or touching it", as
   }
 }, 15_000);
 
-test("claimPhysicalDeletion claims fresh, adopts in-place, aborts on live owner", async () => {
+test("claimPhysicalDeletion is single-executor: fresh, re-entry, live refusal, dead takeover", async () => {
   const dir = await mkdtemp(join(tmpdir(), "fence-delclaim-"));
   try {
     await withFakeEntry(async (entry) => {
       const fenceDir = join(dir, "fences");
       const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+      // A second manager in THIS process shares the in-process executor mark.
+      const manager2 = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
       try {
         const fence = new RuntimeWorkerFence(fenceDir);
         // Fresh claim wins.
         const first = await manager.claimPhysicalDeletion("physical-del-1");
         expect(first).not.toBeNull();
         expect(first?.adopted).toBe(false);
-        // A concurrent deleter adopts the same in-place barrier (same target).
-        const second = await manager.claimPhysicalDeletion("physical-del-1");
-        expect(second).toEqual({ generation: first?.generation, adopted: true });
+        // A concurrent in-process deleter refuses — generations are never shared.
+        await expect(manager2.claimPhysicalDeletion("physical-del-1")).rejects.toThrow(
+          /already running in this process/,
+        );
+        // Ended attempt releases the mark: same-process re-entry takes over
+        // with a NEW generation (never shares the old one).
+        manager.releaseDeletionClaim("physical-del-1");
+        const reentry = await manager2.claimPhysicalDeletion("physical-del-1");
+        expect(reentry?.adopted).toBe(true);
+        expect(reentry?.generation).not.toBe(first?.generation);
+        const owner = reentry!.generation;
         // Revalidation passes for the owner generation...
-        await manager.revalidatePhysicalDeletion("physical-del-1", first!.generation);
+        await manager2.revalidatePhysicalDeletion("physical-del-1", owner);
         // ...and strict retire refuses a wrong generation without touching the file.
-        await expect(manager.retirePhysicalDeletion("physical-del-1", "gen-wrong")).rejects.toThrow();
+        await expect(manager2.retirePhysicalDeletion("physical-del-1", "gen-wrong")).rejects.toThrow();
         expect((await fence.read("physical-del-1")).kind).toBe("present");
         // ...then retires the real barrier.
-        await manager.retirePhysicalDeletion("physical-del-1", first!.generation);
+        await manager2.retirePhysicalDeletion("physical-del-1", owner);
         expect(await fence.read("physical-del-1")).toEqual({ kind: "absent" });
         // A live owner fence aborts the delete instead of unlinking over it.
         await fence.claim({
@@ -575,6 +585,68 @@ test("claimPhysicalDeletion claims fresh, adopts in-place, aborts on live owner"
         });
         await expect(manager.claimPhysicalDeletion("physical-del-2")).rejects.toThrow(WorkerTeardownPendingError);
         expect((await fence.read("physical-del-2")).kind).toBe("present");
+      } finally {
+        await manager.shutdownAll().catch(() => {});
+        await manager2.shutdownAll().catch(() => {});
+      }
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test("takeover after proven death mints a new generation; the stale executor goes impotent", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fence-takeover-"));
+  try {
+    await withFakeEntry(async (entry) => {
+      const fenceDir = join(dir, "fences");
+      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+      try {
+        const fence = new RuntimeWorkerFence(fenceDir);
+        const key = "physical-takeover-1";
+        // Foreign but live deleter (the test runner itself): must refuse,
+        // never share the generation.
+        await fence.claim({
+          kind: "runtime-worker-owner",
+          logicalSessionId: key,
+          generation: "gen-old",
+          pid: process.ppid,
+          bootstrapVerified: false,
+          phase: "deleting",
+          startedAt: new Date().toISOString(),
+          agent: "runtime-worker",
+        });
+        await expect(manager.claimPhysicalDeletion(key)).rejects.toThrow(/still alive/);
+        // ...while a proven-dead deleter is taken over with a NEW generation.
+        await fence.retireDeletion(key, "gen-old");
+        await fence.claim({
+          kind: "runtime-worker-owner",
+          logicalSessionId: key,
+          generation: "gen-dead",
+          pid: 424242,
+          bootstrapVerified: false,
+          phase: "deleting",
+          startedAt: new Date().toISOString(),
+          agent: "runtime-worker",
+        });
+        const take = await manager.claimPhysicalDeletion(key);
+        expect(take?.adopted).toBe(true);
+        expect(take?.generation).not.toBe("gen-dead");
+        // The stale generation can neither revalidate nor retire: no
+        // "H2 retired, successor claimed, H1 still unlinks" sequence exists.
+        await expect(manager.revalidatePhysicalDeletion(key, "gen-dead")).rejects.toThrow(
+          WorkerTeardownPendingError,
+        );
+        await expect(manager.retirePhysicalDeletion(key, "gen-dead")).rejects.toThrow();
+        const live = await fence.read(key);
+        expect(live.kind).toBe("present");
+        if (live.kind !== "present") return;
+        expect(live.record.generation).toBe(take?.generation);
+        expect(live.record.phase).toBe("deleting");
+        // The rightful owner completes.
+        await manager.revalidatePhysicalDeletion(key, take!.generation);
+        await manager.retirePhysicalDeletion(key, take!.generation);
+        expect(await fence.read(key)).toEqual({ kind: "absent" });
       } finally {
         await manager.shutdownAll().catch(() => {});
       }

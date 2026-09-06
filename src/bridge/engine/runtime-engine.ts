@@ -2090,10 +2090,12 @@ export class RuntimeEngine implements BridgeEngine {
         this.sessionCatalog.delete(key);
         // Crashed-deleter tail: record + tombstone already gone but the
         // deletion barrier stands (crash between tombstone removal and
-        // barrier retire). Lift it ONLY with no live delete intent on disk:
-        // a matching tombstone means a live deleter just started — back off
-        // and let it own the barrier. The strict retire still refuses a
-        // successor-owned fence (never unlink blindly).
+        // barrier retire). Take it over ONLY with no live delete intent on
+        // disk: the exclusive claim refuses while its owner lives and takes
+        // over with a new generation once proven dead; a matching tombstone
+        // means a live deleter just started — back off before claiming and
+        // let it own the barrier. A failed retire releases our in-process
+        // durable fence.
         if (this.manager) {
           const tailBarrier = await this.manager.readDeletionBarrier(physicalFenceKey);
           if (tailBarrier) {
@@ -2114,7 +2116,15 @@ export class RuntimeEngine implements BridgeEngine {
                 `cannot hard delete session "${key}" while another delete holds the physical-deletion barrier; retry after it completes`,
               );
             }
-            await this.manager.retirePhysicalDeletion(physicalFenceKey, tailBarrier);
+            const tailClaim = await this.manager.claimPhysicalDeletion(physicalFenceKey);
+            if (tailClaim) {
+              try {
+                await this.manager.retirePhysicalDeletion(physicalFenceKey, tailClaim.generation);
+              } catch (error) {
+                this.manager.releaseDeletionClaim(physicalFenceKey);
+                throw error;
+              }
+            }
           }
         }
         // Keep deleteGenerations monotonic — do not delete epoch, old waiters must still see generation change
@@ -2183,9 +2193,9 @@ export class RuntimeEngine implements BridgeEngine {
       }
     }
     // Final G4 ownership quiescence: hard delete success must imply no worker, no acquiring, no fence.
-    // allowDeletingFence: a pre-existing "deleting" fence is the SAME
-    // interrupted delete's barrier (fence key scopes the record target) —
-    // adopt it at claim time below instead of bricking the retry.
+    // allowDeletingFence: a pre-existing "deleting" fence is another
+    // deleter's barrier — quiescence must not brick on it; the claim below
+    // decides (refuse if its owner lives, take over if proven dead).
     await this.waitForWorkerQuiescence(key, physicalFenceKey, undefined, { allowDeletingFence: true });
     this.clearActiveTurn(key);
     this.coolPending.delete(key);
@@ -2196,24 +2206,31 @@ export class RuntimeEngine implements BridgeEngine {
     // successor racing here either lost (our claim won → its acquire
     // refuses over "deleting") or won (claim throws → abort, never unlink
     // a live successor's records). A crash leaves fence + tombstone; the
-    // retry adopts the in-place barrier and completes the same unlink.
+    // retry re-enters only after proving the previous deleter dead (new
+    // generation takeover) or as the same process's own ended attempt.
     // The outer finally below clears the in-memory epoch; the durable
     // fence is retired ONLY on the success path — failures keep successors
-    // refused until the retry adopts and completes.
+    // refused until a retry takes over and completes, while the catch
+    // releases our in-process mark so this process does not refuse itself.
     const deletion = this.manager ? await this.manager.claimPhysicalDeletion(physicalFenceKey) : null;
-    if (deletion && this.manager) {
-      await this.manager.revalidatePhysicalDeletion(physicalFenceKey, deletion.generation);
-    }
-    await this.deleteRecordFilesStrict(recordId);
-    await removeTombstoneStrict(sessionsDir, safeId);
-    this.recordIds.delete(key);
-    this.lastConstructionIdentity.delete(key);
-    // 6. PR6: only after record deletion verified successful, delete runtime queue journal fail-closed
-    await this.getQueueStore().removeJournal(key);
-    this.sessionCatalog.delete(key);
-    // Keep deleteGenerations monotonic for lifecycle epoch
-    if (deletion && this.manager) {
-      await this.manager.retirePhysicalDeletion(physicalFenceKey, deletion.generation);
+    try {
+      if (deletion && this.manager) {
+        await this.manager.revalidatePhysicalDeletion(physicalFenceKey, deletion.generation);
+      }
+      await this.deleteRecordFilesStrict(recordId);
+      await removeTombstoneStrict(sessionsDir, safeId);
+      this.recordIds.delete(key);
+      this.lastConstructionIdentity.delete(key);
+      // 6. PR6: only after record deletion verified successful, delete runtime queue journal fail-closed
+      await this.getQueueStore().removeJournal(key);
+      this.sessionCatalog.delete(key);
+      // Keep deleteGenerations monotonic for lifecycle epoch
+      if (deletion && this.manager) {
+        await this.manager.retirePhysicalDeletion(physicalFenceKey, deletion.generation);
+      }
+    } catch (error) {
+      if (deletion) this.manager?.releaseDeletionClaim(physicalFenceKey);
+      throw error;
     }
 
     return {};

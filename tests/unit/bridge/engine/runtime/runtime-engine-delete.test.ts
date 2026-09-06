@@ -1051,3 +1051,57 @@ test("G4 barrier: no-record delete lifts a crashed tail barrier when no tombston
     await rm(dir, { recursive: true, force: true });
   }
 }, 20_000);
+
+test("G4 barrier: concurrent deletes serialize to exactly one executor", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-dual-"));
+  const sessionsDir = join(dir, ".acpx", "sessions");
+  const fenceDir = join(dir, "fences");
+  const queueDir = join(dir, "queue");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    await mkdir(sessionsDir, { recursive: true });
+    const recordId = "rec-dual-1";
+    await writeFile(
+      join(sessionsDir, `${recordId}.json`),
+      JSON.stringify({
+        schema: "acpx.session.v1",
+        acpx_record_id: recordId,
+        name: "dual-session",
+        cwd: "/repo",
+      }),
+    );
+    const base = { agent: "codex", cwd: "/repo", name: "dual-session" };
+    const physical = physicalFenceKeyForSession({ ...base, logicalSessionId: "lid-dual-a" });
+    const fence = new RuntimeWorkerFence(fenceDir);
+    const opts = {
+      workerEntryPath: entry,
+      stateDir: sessionsDir,
+      fenceDir,
+      queueDir,
+      durableRootDir: dir,
+      permissionMode: "approve-all" as const,
+    };
+    const engineA = new RuntimeEngine(opts);
+    const engineB = new RuntimeEngine(opts);
+    // Two live deleters, same physical target, no crash involved: exactly
+    // one may own the destructive window — the loser refuses instead of
+    // sharing the generation and retiring the barrier early.
+    const [a, b] = await Promise.allSettled([
+      engineA.deleteSession({ ...base, logicalSessionId: "lid-dual-a" }),
+      engineB.deleteSession({ ...base, logicalSessionId: "lid-dual-b" }),
+    ]);
+    const succeeded = [a, b].filter((r) => r.status === "fulfilled");
+    const refused = [a, b].filter((r) => r.status === "rejected");
+    expect(succeeded).toHaveLength(1);
+    expect(refused).toHaveLength(1);
+    // The record is gone exactly once, the barrier is retired, and a
+    // successor admission is free to proceed (no wedged fence).
+    await expect(access(join(sessionsDir, `${recordId}.json`))).rejects.toThrow();
+    expect(await fence.read(physical)).toEqual({ kind: "absent" });
+    await engineA.shutdown();
+    await engineB.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);

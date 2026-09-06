@@ -206,6 +206,27 @@ test("successful hard delete evicts the cached affinity; preflight mismatch on a
   }
   expect(caught).toBeInstanceOf(EngineMismatchError);
 });
+
+test("releaseLogicalSession evicts affinity only on success", async () => {
+  const binding = new SessionEngineBinding();
+  const cli = stubEngine("cli", []);
+  const runtime = stubEngine("runtime", []);
+  const router = new EngineRouter(binding, cli, runtime);
+  // Retired LIDs never run again (/clear retire, non-last shared remove):
+  // success drops the entry so repeated resets stop growing the map.
+  binding.setBinding("old-lid", "cli");
+  await router.releaseLogicalSession({ ...sessionInput, sessionKey: "x", logicalSessionId: "old-lid" });
+  expect(binding.hasExplicit("old-lid")).toBe(false);
+  // Failure keeps the entry so the retry still routes to the same engine.
+  binding.setBinding("old-lid-2", "cli");
+  cli.releaseLogicalSession = async () => {
+    throw new Error("release boom");
+  };
+  await expect(
+    router.releaseLogicalSession({ ...sessionInput, sessionKey: "y", logicalSessionId: "old-lid-2" }),
+  ).rejects.toThrow("release boom");
+  expect(binding.hasExplicit("old-lid-2")).toBe(true);
+});
 function sessionKeyInput(key: string): EngineSessionInput {
   return { ...sessionInput, sessionKey: key };
 }

@@ -159,7 +159,12 @@ export class EngineRouter implements BridgeEngine {
   }
 
   async releaseLogicalSession(input: EngineSessionInput): Promise<Record<string, never>> {
-    return (await this.engineFor(input).releaseLogicalSession?.(input)) ?? {};
+    const result = (await this.engineFor(input).releaseLogicalSession?.(input)) ?? {};
+    // The released LID never runs again (non-last shared-alias remove,
+    // post-/clear mandatory retire): drop its affinity only AFTER success
+    // so a failed release keeps routing its retry to the same engine.
+    this.binding.deleteBinding(this.keyFor(input));
+    return result;
   }
 
   freeWarmProcess(input: EngineSessionInput) {

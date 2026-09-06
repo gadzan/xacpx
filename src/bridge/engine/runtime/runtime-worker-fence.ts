@@ -432,6 +432,68 @@ export class RuntimeWorkerFence {
       await this.writeAtomicLocked(path, `${JSON.stringify(record, null, 2)}\n`);
     });
   }
+
+  /**
+   * Deletion-executor handoff: replace a proven-dead deleter's "deleting"
+   * record with the taker's own (new generation, taker pid). Under the
+   * per-fence namespace lock the current record must still carry
+   * `expectedGeneration` in phase "deleting"; otherwise a
+   * StaleFenceGenerationError is thrown and the disk is left untouched —
+   * concurrent takeovers serialize here with exactly one winner, and a
+   * resurrected previous executor can never be overwritten into a shared
+   * generation. The replacement must stay in phase "deleting" (this
+   * primitive can never mint an owner fence) and carry a different
+   * generation (takeover, not same-generation adopt).
+   */
+  async takeoverDeletion(
+    logicalSessionId: string,
+    expectedGeneration: string,
+    record: RuntimeWorkerFenceRecord,
+  ): Promise<void> {
+    if (record.logicalSessionId !== logicalSessionId || record.phase !== "deleting") {
+      throw new StaleFenceGenerationError(
+        `deletion takeover for "${logicalSessionId}" must carry a deleting record for the same key`,
+      );
+    }
+    if (!record.generation || record.generation === expectedGeneration) {
+      throw new StaleFenceGenerationError(
+        `deletion takeover for "${logicalSessionId}" must mint a new generation (expected "${expectedGeneration}")`,
+      );
+    }
+    const path = this.pathFor(logicalSessionId);
+    await this.ensureDir(dirname(path));
+    await withFenceLock(path, async () => {
+      let raw: string;
+      try {
+        raw = await readFile(path, "utf8");
+      } catch (error) {
+        if ((error as { code?: unknown } | null)?.code === "ENOENT") {
+          throw new StaleFenceGenerationError(`deletion takeover for "${logicalSessionId}" found no record (expected generation "${expectedGeneration}")`);
+        }
+        throw error;
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        throw new StaleFenceGenerationError(`deletion takeover for "${logicalSessionId}" found an unreadable record; refusing to overwrite evidence`);
+      }
+      const current = parseFenceRecord(parsed, logicalSessionId);
+      if (current.kind === "absent") {
+        throw new StaleFenceGenerationError(`deletion takeover for "${logicalSessionId}" found no record (expected generation "${expectedGeneration}")`);
+      }
+      if (current.kind !== "present") {
+        throw new StaleFenceGenerationError(`deletion takeover for "${logicalSessionId}" found an unreadable record (${current.reason}); refusing to overwrite evidence`);
+      }
+      if (current.record.phase !== "deleting" || current.record.generation !== expectedGeneration) {
+        throw new StaleFenceGenerationError(
+          `deletion takeover for "${logicalSessionId}" found phase "${current.record.phase}" generation "${current.record.generation}", expected deleting/"${expectedGeneration}"; refusing overwrite`,
+        );
+      }
+      await this.hooks?.afterValidate?.("cas", logicalSessionId);
+      await this.writeAtomicLocked(path, `${JSON.stringify(record, null, 2)}\n`);
+    });
+  }
   /**
    * Worker-side phase mark (discharging/discharged/spooled) with the same
    * generation fencing as compareAndSwap. Returns "stale" (never throws)

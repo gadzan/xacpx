@@ -13,6 +13,45 @@ import { probeWindowsProcessIdentity } from "../../../process/windows-process-tr
  * one worker; same session reuses its worker; different sessions never share.
  * The manager owns spawn/shutdownAll and crash-loop guarding.
  */
+/**
+ * In-process single-executor marks for physical deletions, keyed by
+ * physical fence key. claimPhysicalDeletion sets the mark (fresh claim,
+ * same-process adopt, or proven-dead takeover); retirePhysicalDeletion and
+ * releaseDeletionClaim clear it. A second in-process deleter for the same
+ * key refuses instead of sharing the durable generation — the durable
+ * fence alone cannot tell our own live executor from a crashed one, but
+ * this process can.
+ */
+const activePhysicalDeletions = new Set<string>();
+
+/**
+ * Per-key serialization for claimPhysicalDeletion across ALL manager
+ * instances in this process (one daemon can host several engines sharing
+ * one fence dir). The in-process executor mark + durable claim + adopt
+ * reads must land as one atomic step: without the chain, two same-process
+ * claimants could both pass the mark check, split on O_EXCL, and co-own
+ * the window. Chained links run strictly sequentially per key; different
+ * keys stay parallel. Never held across the destructive window itself —
+ * only across the claim decision.
+ */
+const claimChains = new Map<string, Promise<void>>();
+
+async function withClaimChain<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = claimChains.get(key) ?? Promise.resolve();
+  let settle!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    settle = resolve;
+  });
+  claimChains.set(key, gate);
+  await prev.catch(() => {});
+  try {
+    return await fn();
+  } finally {
+    if (claimChains.get(key) === gate) claimChains.delete(key);
+    settle();
+  }
+}
+
 export interface RuntimeWorkerManagerOptions {
   /** Resolved path of dist/runtime-worker-main.js. */
   entryPath: string;
@@ -187,8 +226,8 @@ export class RuntimeWorkerManager {
     }
     if (read.kind === "present") {
       // A "deleting" fence is the hard-delete admission barrier, not a live
-      // owner. The delete path passes allowDeleting (it will adopt the
-      // in-place barrier at claim time); every other quiescence observer
+      // owner. The delete path passes allowDeleting (its claim takes over
+      // with single-executor ownership); every other quiescence observer
       // (logical release) keeps refusing while a hard delete is in flight.
       if (read.record.phase === "deleting") {
         if (options.allowDeleting) return;
@@ -211,45 +250,116 @@ export class RuntimeWorkerManager {
   }
 
   /**
-   * Claim the durable physical-deletion barrier, or adopt the in-place one.
-   * The fence key scopes the delete target (one physical session ⇒ one
-   * record name), so a pre-existing "deleting" fence is always the SAME
-   * interrupted delete: adopt it (same barrier, no gap) instead of
-   * failing. Any other present phase means a live owner or a successor
-   * claim won the race — throw without touching anything (never unlink).
+   * Claim the durable physical-deletion barrier with single-executor
+   * ownership. Fresh claim (absent fence) wins outright. A pre-existing
+   * "deleting" fence is NEVER shared and NEVER blind-adopted: inside the
+   * per-key claim chain (atomic against same-process racers) the caller
+   * either loses to the live in-process executor, or takes over with a NEW
+   * generation — same-process re-entry after our own attempt ended, or a
+   * foreign pid proven dead. A stalled previous executor can never co-own
+   * the window: generation-scoped revalidate/retire fails it closed. A
+   * live or unverifiable deleter (or a lost takeover race, or any other
+   * present phase) throws without touching anything (never unlink).
    * Returns null when fencing is disabled (no durable namespace exists,
-   * matching claimOwnedFence's no-op contract).
+   * matching claimOwnedFence's no-op contract). A successful claim holds
+   * the in-process mark until retirePhysicalDeletion or
+   * releaseDeletionClaim.
    */
   async claimPhysicalDeletion(physicalFenceKey: string): Promise<{ generation: string; adopted: boolean } | null> {
     const fence = this.fence();
     if (!fence) return null;
-    const generation = randomUUID();
-    const record: RuntimeWorkerFenceRecord = {
-      kind: "runtime-worker-owner",
-      logicalSessionId: physicalFenceKey,
-      generation,
-      pid: process.pid,
-      bootstrapVerified: false,
-      phase: "deleting",
-      startedAt: new Date().toISOString(),
-      agent: "runtime-worker",
-    };
+    return withClaimChain(physicalFenceKey, async () => {
+      if (activePhysicalDeletions.has(physicalFenceKey)) {
+        throw new WorkerTeardownPendingError(
+          `physical deletion for session "${physicalFenceKey}" is already running in this process; refusing concurrent delete executor`,
+        );
+      }
+      const generation = randomUUID();
+      const record: RuntimeWorkerFenceRecord = {
+        kind: "runtime-worker-owner",
+        logicalSessionId: physicalFenceKey,
+        generation,
+        pid: process.pid,
+        bootstrapVerified: false,
+        phase: "deleting",
+        startedAt: new Date().toISOString(),
+        agent: "runtime-worker",
+      };
+      try {
+        await this.enqueueFenceWrite(physicalFenceKey, () => fence.claim(record));
+        activePhysicalDeletions.add(physicalFenceKey);
+        return { generation, adopted: false };
+      } catch {
+        // EEXIST or I/O: re-read to decide take-over vs abort (never overwrite).
+      }
+      const read = await fence.read(physicalFenceKey);
+      if (read.kind !== "present" || read.record.phase !== "deleting") {
+        throw new WorkerTeardownPendingError(
+          `cannot claim physical-deletion barrier for session "${physicalFenceKey}": ` +
+            (read.kind === "present"
+              ? `fence is live (phase ${read.record.phase}); a successor owner won the race — refusing to unlink`
+              : `fence is ${read.kind}; refusing to unlink over unverifiable evidence`),
+        );
+      }
+      // Same-process re-entry (our pid, mark clear so no live in-process
+      // executor exists) skips the death probe — the probe would read our
+      // own live pid and refuse our own retry forever. Cross-process
+      // same-pid (pid reuse after death) is equally safe to take over.
+      // Either way the handoff mints a NEW generation via CAS: concurrent
+      // takeovers serialize with exactly one winner, and any stalled
+      // previous executor fails its generation-scoped checks closed.
+      const deleterPid = read.record.pid;
+      const selfReentry = deleterPid === process.pid;
+      if (!selfReentry) {
+        if (typeof deleterPid !== "number" || !Number.isSafeInteger(deleterPid) || deleterPid <= 0) {
+          throw new WorkerTeardownPendingError(
+            `cannot claim physical-deletion barrier for session "${physicalFenceKey}": previous deleter has no provable pid; refusing concurrent delete executor`,
+          );
+        }
+        // Prove the previous deleter dead: ESRCH-gone takes over, alive or
+        // unverifiable (including pid reuse, which reads alive) refuses.
+        if ((await this.probeClaimantHost(deleterPid)) !== "gone") {
+          throw new WorkerTeardownPendingError(
+            `cannot claim physical-deletion barrier for session "${physicalFenceKey}": previous deleter (pid ${deleterPid}) is still alive or unverifiable; refusing concurrent delete executor`,
+          );
+        }
+      }
+      const takeover: RuntimeWorkerFenceRecord = {
+        ...record,
+        startedAt: new Date().toISOString(),
+      };
+      try {
+        await this.enqueueFenceWrite(physicalFenceKey, () =>
+          fence.takeoverDeletion(physicalFenceKey, read.record.generation, takeover),
+        );
+      } catch (error) {
+        throw new WorkerTeardownPendingError(
+          `cannot take over physical-deletion barrier for session "${physicalFenceKey}": takeover race lost (${error instanceof Error ? error.message : String(error)}); refusing to unlink`,
+        );
+      }
+      activePhysicalDeletions.add(physicalFenceKey);
+      return { generation, adopted: true };
+    });
+  }
+  async retirePhysicalDeletion(physicalFenceKey: string, generation: string): Promise<void> {
+    const fence = this.fence();
+    if (!fence) return;
     try {
-      await this.enqueueFenceWrite(physicalFenceKey, () => fence.claim(record));
-      return { generation, adopted: false };
-    } catch {
-      // EEXIST or I/O: re-read to decide adopt vs abort (never overwrite).
+      await this.enqueueFenceWrite(physicalFenceKey, () => fence.retireDeletion(physicalFenceKey, generation));
+    } finally {
+      activePhysicalDeletions.delete(physicalFenceKey);
     }
-    const read = await fence.read(physicalFenceKey);
-    if (read.kind === "present" && read.record.phase === "deleting") {
-      return { generation: read.record.generation, adopted: true };
-    }
-    throw new WorkerTeardownPendingError(
-      `cannot claim physical-deletion barrier for session "${physicalFenceKey}": ` +
-        (read.kind === "present"
-          ? `fence is live (phase ${read.record.phase}); a successor owner won the race — refusing to unlink`
-          : `fence is ${read.kind}; refusing to unlink over unverifiable evidence`),
-    );
+  }
+
+  /**
+   * Release a held deletion claim WITHOUT touching the durable fence.
+   * Called when the destructive window aborts before retiring (unlink or
+   * tombstone failure, lost takeover race detected late, live-intent
+   * backoff): the durable barrier correctly stays up for the retry, but
+   * this process must not keep refusing itself.
+   */
+  releaseDeletionClaim(physicalFenceKey: string): void {
+    activePhysicalDeletions.delete(physicalFenceKey);
   }
 
   /**
@@ -269,16 +379,6 @@ export class RuntimeWorkerManager {
     }
   }
 
-  /**
-   * Retire the deletion barrier after record + streams + tombstone removal
-   * verified. Strict generation+phase retire: a successor-owned fence is
-   * never unlinked (throws, file intact).
-   */
-  async retirePhysicalDeletion(physicalFenceKey: string, generation: string): Promise<void> {
-    const fence = this.fence();
-    if (!fence) return;
-    await this.enqueueFenceWrite(physicalFenceKey, () => fence.retireDeletion(physicalFenceKey, generation));
-  }
 
   /**
    * Read the deletion barrier generation when one stands, else null. Used
