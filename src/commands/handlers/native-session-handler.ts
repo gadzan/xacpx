@@ -6,8 +6,8 @@ import type { ClaudeSettingsPolicy } from "../../adapters/claude-settings-policy
 import { allocateWorkspaceName, sanitizeWorkspaceName } from "../workspace-name";
 import { basenameForWorkspacePath, normalizeWorkspacePath, pathExists, sameWorkspacePath } from "../workspace-path";
 import type { CommandRouterContext, RouterResponse, SessionLifecycleOps } from "../router-types";
+import { convergeProvisionalNativeAttach } from "../session-remove-lifecycle";
 import { t } from "../../i18n";
-
 export interface NativeSessionListCommand {
   agent?: string;
   cwd?: string;
@@ -290,12 +290,49 @@ async function attachNativeSession(
       try {
         await context.transport.resumeAgentSession(persisted, session.sessionId);
       } catch (error) {
-        try { await context.sessions.removeSession(persisted.alias); } catch {}
+        // Upstream-owned physical session: converge the xacpx provisional
+        // incarnation only (release + soft close, never hard-delete), then
+        // drop the row. An unverifiable cleanup keeps the row; the resume
+        // error text still reports the failure.
+        try {
+          await convergeProvisionalNativeAttach({
+            sessions: context.sessions,
+            transport: context.transport,
+            session: persisted,
+            internalAlias: persisted.alias,
+            cause: error,
+          });
+        } catch (cleanupError) {
+          await context.logger.error(
+            "session.native.cleanup_failed",
+            "failed to converge provisional native incarnation; logical session kept",
+            {
+              alias: persisted.alias,
+              error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+            },
+          );
+        }
         return { text: renderNativeResumeError(target, error) };
       }
       const verified = await context.lifecycle.checkTransportSession(persisted);
       if (!verified) {
-        try { await context.sessions.removeSession(persisted.alias); } catch {}
+        try {
+          await convergeProvisionalNativeAttach({
+            sessions: context.sessions,
+            transport: context.transport,
+            session: persisted,
+            internalAlias: persisted.alias,
+          });
+        } catch (cleanupError) {
+          await context.logger.error(
+            "session.native.cleanup_failed",
+            "failed to converge provisional native incarnation; logical session kept",
+            {
+              alias: persisted.alias,
+              error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+            },
+          );
+        }
         return { text: t().nativeSession.attachVerificationFailed(target.agentDisplayName) };
       }
 

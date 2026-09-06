@@ -102,6 +102,7 @@ function makeDeps(
       savedStates.push(cloneState(nextState));
     },
     config,
+    resolveWorkerBindingEngine: () => "cli",
     ensureWorkerSession: async (request) => {
       ensureCalls.push(request);
       return request.workerSession;
@@ -249,7 +250,9 @@ test("creates a running task and reuses an injected worker session", async () =>
     },
   ]);
 
-  expect(harness.savedStates).toHaveLength(1);
+  // Two durable writes: the binding shell (LID + engine) lands before
+  // ensure can start the first owner; the task lands after.
+  expect(harness.savedStates).toHaveLength(2);
   expect(harness.getState().orchestration.tasks["task-1"]).toMatchObject({
     taskId: "task-1",
     sourceHandle: "wx:user-1",
@@ -275,9 +278,10 @@ test("creates a running task and reuses an injected worker session", async () =>
     targetAgent: "claude",
     role: "reviewer",
     guardAcpOutput: true,
+    logicalSessionId: "task-1",
+    transportEngine: "cli",
   });
 });
-
 test("reusing a legacy worker binding does not silently switch it to the guarded rollout", async () => {
   const legacyWorkerSession = "backend:claude:shared-worker";
   const initialState = createEmptyState();
@@ -7050,9 +7054,10 @@ test("approves a worker-chained needs_confirmation task by assigning a worker se
     targetAgent: "codex",
     role: "reviewer",
     guardAcpOutput: true,
+    logicalSessionId: "task-approve-1",
+    transportEngine: "cli",
   });
 });
-
 test("rejects a worker-chained needs_confirmation task without assigning a worker session", async () => {
   const times = [
     "2026-04-13T10:00:00.000Z",
@@ -8584,6 +8589,7 @@ test("serializes concurrent approvals so only one transition wins", async () => 
       state = cloneState(nextState);
     },
     config: createConfig(),
+    resolveWorkerBindingEngine: () => "cli",
     ensureWorkerSession: async (request) => request.workerSession,
     dispatchWorkerTask: async (request) => {
       dispatchCalls.push({ taskId: request.taskId, workerSession: request.workerSession });
@@ -8649,12 +8655,13 @@ test("startWorkerCancellation reads fresh workerSession from state, not stale sn
   const originalLoadState = harness.deps.loadState;
 
   // Intercept loadState: calls through the service path get counted and potentially blocked.
-  // requestDelegateForHuman -> worker-collision precheck + mutate -> loadState (counts 1-2, pass through)
-  // requestTaskCancellation -> mutate -> loadState (count 3, pass through)
-  // startWorkerCancellation -> loadState (count 4, block here)
+  // requestDelegateForHuman -> reserve precheck + shell stage + task persist -> loadState
+  // (counts 1-3, pass through)
+  // requestTaskCancellation -> mutate -> loadState (count 4, pass through)
+  // startWorkerCancellation -> loadState (count 5, block here)
   harness.deps.loadState = async () => {
     serviceLoadStateCount++;
-    if (serviceLoadStateCount >= 4) {
+    if (serviceLoadStateCount >= 5) {
       await loadStateBlocker;
     }
     return originalLoadState();

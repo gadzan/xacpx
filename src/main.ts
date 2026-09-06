@@ -1038,13 +1038,23 @@ export async function buildApp(
     workerSession: string;
     targetAgent: string;
     workspace: string;
+    cwd?: string;
   }): Promise<void> => {
     // G11 copy-on-write, serialized on the shared stateMutex via
     // persistWorkerBindingIdentity (see worker-launch.ts for the race
     // contract). Callers (worker dispatch, ensureWorkerSession) always run
     // outside the non-reentrant mutex, so this cannot self-deadlock.
+    // The engine inherits the worker's physical group (same rule as logical
+    // sessions): a config-only engine could bind a CLI shell over a
+    // Runtime-owned physical session.
     await persistWorkerBindingIdentity(state, input, {
-      resolveEngine: (shape) => sessions.resolveEngineForNewSession(shape),
+      resolveEngine: (shape) =>
+        sessions.resolveEngineForWorkerBinding({
+          workerSession: input.workerSession,
+          targetAgent: shape.agent,
+          workspace: shape.workspace,
+          ...(input.cwd ? { cwd: input.cwd } : {}),
+        }),
       saveNow: (nextState) => debouncedStateStore.saveNow(nextState),
       publish: (nextState) => replaceRuntimeState(state, nextState),
       runExclusive: (critical) => stateMutex.run(critical),
@@ -1066,16 +1076,27 @@ export async function buildApp(
     const binding =
       bindingSnapshot ??
       state.orchestration.workerBindings[input.workerSession];
+    // A complete persisted binding IS the worker's identity: resolve through
+    // the same constructor the physical-membership scan and queue recovery
+    // use, so the dispatch key, the fence key, and the scan key cannot
+    // diverge. The durable engine also wins over current config here, so a
+    // config flip between ensure and dispatch cannot rebind the prompt.
+    if (!bindingSnapshot) {
+      const persisted = sessions.resolveWorkerBindingSession(input.workerSession);
+      if (persisted && (input.cwd === undefined || persisted.cwd === input.cwd)) {
+        return persisted;
+      }
+    }
     const guardAcpOutput = shouldGuardWorkerAcpOutput(binding);
     const logicalSessionId = binding?.logicalSessionId;
     const transportEngine =
       binding?.transportEngine ??
-      sessions.resolveEngineForNewSession({
-        alias: input.workerSession,
-        agent: input.targetAgent,
+      sessions.resolveEngineForWorkerBinding({
+        workerSession: input.workerSession,
+        targetAgent: input.targetAgent,
         workspace: input.workspace,
+        ...(input.cwd ? { cwd: input.cwd } : {}),
       });
-
     if (!input.cwd) {
       const resolved = sessions.resolveSession(
         input.workerSession,
@@ -1137,6 +1158,7 @@ export async function buildApp(
           workerSession: input.workerSession,
           targetAgent: input.targetAgent,
           workspace: input.workspace,
+          ...(input.cwd ? { cwd: input.cwd } : {}),
         });
         const session = resolveWorkerRuntimeSession(input);
         session.mcpCoordinatorSession = input.coordinatorSession;
@@ -1300,6 +1322,8 @@ export async function buildApp(
       replaceRuntimeState(state, nextState);
     },
     stateMutex,
+    resolveWorkerBindingEngine: (request) =>
+      sessions.resolveEngineForWorkerBinding(request),
     ensureWorkerSession: async ({
       workerSession,
       targetAgent,
@@ -1312,6 +1336,7 @@ export async function buildApp(
         workerSession,
         targetAgent,
         workspace,
+        ...(cwd ? { cwd } : {}),
       });
       const session = resolveWorkerRuntimeSession({
         workerSession,
@@ -1789,7 +1814,10 @@ export async function buildApp(
         });
       },
       remove: async (name) => {
-        const users = sessions.aliasesUsingAgent(name);
+        const users = [
+          ...sessions.aliasesUsingAgent(name),
+          ...sessions.workerBindingsUsingAgent(name),
+        ];
         if (users.length > 0) {
           throw new Error(
             `agent "${name}" is still used by sessions: ${users.join(", ")}; remove those sessions first`,
@@ -1828,7 +1856,10 @@ export async function buildApp(
         });
       },
       remove: async (name) => {
-        const users = sessions.aliasesUsingWorkspace(name);
+        const users = [
+          ...sessions.aliasesUsingWorkspace(name),
+          ...sessions.workerBindingsUsingWorkspace(name),
+        ];
         if (users.length > 0) {
           throw new Error(
             `workspace "${name}" is still used by sessions: ${users.join(", ")}; remove those sessions first`,

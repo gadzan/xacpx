@@ -3223,3 +3223,41 @@ test("control agent/workspace remove refuses while persisted sessions reference 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("control agent/workspace remove refuses while worker bindings reference them", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-app-refguard-binding-"));
+  const configPath = join(dir, "config.json");
+  const statePath = join(dir, "state.json");
+  await writeFile(configPath, JSON.stringify({
+    transport: { type: "acpx-cli", command: "acpx" },
+    agents: { codex: { driver: "codex" } },
+    workspaces: { backend: { cwd: "/tmp/backend" } },
+  }));
+  await writeFile(statePath, JSON.stringify({
+    chat_contexts: {},
+    sessions: {},
+    tasks: {},
+    orchestration: {
+      groups: {},
+      tasks: {},
+      workers: {},
+      workerBindings: {
+        "backend:codex:backend:main": {
+          sourceHandle: "backend:codex:backend:main",
+          coordinatorSession: "backend:main",
+          workspace: "backend",
+          targetAgent: "codex",
+        },
+      },
+      externalCoordinators: {},
+    },
+  }));
+  const app = await buildApp({ configPath, statePath });
+  try {
+    await expect(app.control.removeWorkspace("backend")).rejects.toThrow(/backend:codex:backend:main/);
+    await expect(app.control.removeAgent("codex")).rejects.toThrow(/backend:codex:backend:main/);
+  } finally {
+    await app.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

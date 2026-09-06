@@ -49,6 +49,25 @@ export function workerBindingEngineFields(
 }
 
 /**
+ * Immutable identity fields for a worker binding shell: keep a reusable
+ * binding's LID/engine, mint both for a first binding. Unlike
+ * workerBindingEngineFields (which preserves only), this always returns a
+ * complete identity so a shell persisted BEFORE the first owner starts
+ * already carries the durable affinity G11 requires. The engine MUST come
+ * from the physical-group resolver — a config-derived engine staged here
+ * could bind a CLI shell over a Runtime-owned physical session.
+ */
+export function workerBindingIdentityFields(
+  previousBinding: Pick<WorkerBindingRecord, "logicalSessionId" | "transportEngine"> | undefined,
+  resolveEngine: () => SessionTransportEngine,
+  createLid: () => string = randomUUID,
+): { logicalSessionId: string; transportEngine: SessionTransportEngine } {
+  return {
+    logicalSessionId: previousBinding?.logicalSessionId ?? createLid(),
+    transportEngine: previousBinding?.transportEngine ?? resolveEngine(),
+  };
+}
+/**
  * Stage a worker binding's immutable identity (LID + engine) onto a
  * copy-on-write clone. Returns `{ changed: false }` when the live binding is
  * missing or already complete. Otherwise returns the staged clone — the

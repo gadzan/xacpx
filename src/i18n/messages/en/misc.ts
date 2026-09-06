@@ -104,6 +104,8 @@ export const misc: MiscMessages = {
   sessionResetNoCurrentSession: "No session is currently selected. Run /session new ... or /use <alias> first.",
   sessionResetFailed: (alias: string) =>
     `Session "${alias}" reset failed. The new backend session was not created, please try again later.`,
+  sessionResetTurnActive: (alias: string) =>
+    `Session "${alias}" has a running turn; stop it before resetting.`,
   sessionResetSuccess: (alias: string) => `Session "${alias}" has been reset`,
 
   // scheduled/scheduled-dispatch: notice texts

@@ -102,6 +102,8 @@ export const misc: MiscMessages = {
   sessionResetNoCurrentSession: "当前还没有选中的会话。请先执行 /session new ... 或 /use <alias>。",
   sessionResetFailed: (alias: string) =>
     `会话「${alias}」重置失败。\n新的后端会话未创建成功，请稍后重试。`,
+  sessionResetTurnActive: (alias: string) =>
+    `会话「${alias}」仍有正在执行的任务；请先停止后再重置。`,
   sessionResetSuccess: (alias: string) => `会话「${alias}」已重置`,
 
   // scheduled/scheduled-dispatch: notice texts

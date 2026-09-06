@@ -60,8 +60,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { expect } from "bun:test";
 import { createConfig } from "../../commands/command-router-test-support";
-import type { OrchestrationServiceDeps } from "../../../../src/orchestration/orchestration-service";
-import { createEmptyState, type AppState } from "../../../../src/state/types";
+import { createEmptyState, type AppState, type SessionTransportEngine } from "../../../../src/state/types";
 import type { AppConfig } from "../../../../src/config/types";
 import type { AppLogger } from "../../../../src/logging/app-logger";
 
@@ -172,6 +171,8 @@ export interface GoldenHarnessOverrides {
   ids?: string[];
   /** Independent deterministic sequence for Agent Messaging endpoint identities. */
   endpointIds?: string[];
+  /** Engine staged into worker binding shells; defaults to "cli". */
+  workerBindingEngine?: SessionTransportEngine;
 }
 
 export interface GoldenHarness {
@@ -186,7 +187,7 @@ export function makeGoldenHarness(overrides: GoldenHarnessOverrides = {}): Golde
   const config = overrides.config ?? createConfig();
   const calls: PortCall[] = [];
   const instant = overrides.now ?? "2026-04-13T10:00:00.000Z";
-  const ids = overrides.ids ?? ["id-1", "id-2", "id-3", "id-4", "id-5", "id-6", "id-7", "id-8"];
+  const ids = overrides.ids ?? ["id-1", "id-2", "id-3", "id-4", "id-5", "id-6", "id-7", "id-8", "id-9", "id-10", "id-11", "id-12", "id-13", "id-14", "id-15", "id-16"];
   let idCursor = 0;
   const endpointIds = overrides.endpointIds;
   let endpointIdCursor = 0;
@@ -270,6 +271,10 @@ export function makeGoldenHarness(overrides: GoldenHarnessOverrides = {}): Golde
       state = cloned;
     },
     config,
+    resolveWorkerBindingEngine: (request) => {
+      record("resolveWorkerBindingEngine", request);
+      return overrides.workerBindingEngine ?? "cli";
+    },
     ensureWorkerSession: async (request) => {
       record("ensureWorkerSession", request);
       return request.workerSession;

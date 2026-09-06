@@ -113,7 +113,7 @@ async function waitForLogEvent(harness: GoldenHarness, eventName: string, afterI
 }
 
 test("golden: requestDelegate (human path) creates a running task and dispatches", async () => {
-  const harness = makeGoldenHarness({ ids: ["task-1"] });
+  const harness = makeGoldenHarness({ ids: ["task-1", "lid-1"] });
   const service = new OrchestrationService(harness.deps);
 
   await service.requestDelegate({
@@ -132,7 +132,7 @@ test("golden: requestDelegate (human path) at parallel capacity queues instead o
   // Pin the cap to 1 so the second parallel request is meaningfully forced to queue —
   // createConfig()'s default maxParallelTasksPerAgent is 3.
   const harness = makeGoldenHarness({
-    ids: ["task-1", "task-1-slot", "task-2", "task-2-slot"],
+    ids: ["task-1", "task-1-slot", "lid-a", "task-2", "task-2-slot"],
     config: {
       ...createConfig(),
       orchestration: { ...createConfig().orchestration, maxParallelTasksPerAgent: 1 },
@@ -170,7 +170,7 @@ test("golden: requestDelegateFromRpc creates a task and returns its status", asy
   // sourceKind "coordinator" (autoRun path), matching the existing regression suite's
   // convention (orchestration-service.test.ts ~line 649).
   const harness = makeGoldenHarness({
-    ids: ["task-1"],
+    ids: ["task-1", "lid-1"],
     initialState: {
       ...createEmptyState(),
       sessions: {
@@ -209,7 +209,7 @@ test("golden: approveTask starts a needs_confirmation task", async () => {
   // regression test "approves a worker-chained needs_confirmation task by assigning a worker
   // session" (orchestration-service.test.ts ~line 6936).
   const harness = makeGoldenHarness({
-    ids: ["task-1"],
+    ids: ["task-1", "lid-1"],
     config: {
       ...createConfig(),
       orchestration: { ...createConfig().orchestration, allowWorkerChainedRequests: true },
@@ -244,7 +244,7 @@ test("golden: approveTask starts a needs_confirmation task", async () => {
 
 test("golden: reconcileParallelSlots drains a queued task when a slot frees", async () => {
   const harness = makeGoldenHarness({
-    ids: ["task-1", "task-1-slot", "task-2", "task-2-slot"],
+    ids: ["task-1", "task-1-slot", "lid-a", "task-2", "task-2-slot"],
     config: {
       ...createConfig(),
       orchestration: { ...createConfig().orchestration, maxParallelTasksPerAgent: 1 },
@@ -294,7 +294,7 @@ test("golden: requestTaskCancellation drains its detached chain to a settled sta
   // before snapshotting so this fixture pins the settled end state the chain produces,
   // not an accident of how many microtask hops happened to elapse by the time this test
   // got around to snapshotting.
-  const harness = makeGoldenHarness({ ids: ["task-1"] });
+  const harness = makeGoldenHarness({ ids: ["task-1", "lid-1"] });
   const service = new OrchestrationService(harness.deps);
 
   await service.requestDelegate({
@@ -381,7 +381,7 @@ test("golden: createGroup then cancelGroup cancels its tasks", async () => {
   // there is no caller-supplied groupId field. Seed the id pool so the generated group
   // id is the readable "g1", then thread the *returned* group.groupId into the
   // delegate/cancel calls instead of hardcoding a literal that createGroup would reject.
-  const harness = makeGoldenHarness({ ids: ["g1", "task-1"] });
+  const harness = makeGoldenHarness({ ids: ["g1", "task-1", "lid-1"] });
   const service = new OrchestrationService(harness.deps);
 
   const group = await service.createGroup({ coordinatorSession: "backend:main", title: "review" });
@@ -415,7 +415,7 @@ test("golden: createGroup then cancelGroup cancels its tasks", async () => {
 });
 
 test("golden: listGroupSummaries reflects task status rollup", async () => {
-  const harness = makeGoldenHarness({ ids: ["g1", "task-1"] });
+  const harness = makeGoldenHarness({ ids: ["g1", "task-1", "lid-1"] });
   const service = new OrchestrationService(harness.deps);
 
   const group = await service.createGroup({ coordinatorSession: "backend:main", title: "review" });
@@ -501,7 +501,7 @@ test("golden: listGroupSummaries sorts multiple groups for the same coordinator"
 // warning that the worker-session name is not guaranteed.
 
 test("golden: workerRaiseQuestion blocks the task and wakes the coordinator", async () => {
-  const harness = makeGoldenHarness({ ids: ["task-1", "q-1"] });
+  const harness = makeGoldenHarness({ ids: ["task-1", "lid-1", "q-1"] });
   const service = new OrchestrationService(harness.deps);
 
   await service.requestDelegate({
@@ -527,7 +527,7 @@ test("golden: workerRaiseQuestion blocks the task and wakes the coordinator", as
 });
 
 test("golden: coordinatorAnswerQuestion resumes the worker", async () => {
-  const harness = makeGoldenHarness({ ids: ["task-1", "q-1"] });
+  const harness = makeGoldenHarness({ ids: ["task-1", "lid-1", "q-1"] });
   const service = new OrchestrationService(harness.deps);
 
   await service.requestDelegate({
@@ -566,7 +566,7 @@ test("golden: coordinatorRequestHumanInput builds and delivers a question packag
   // (snapshotCoordinatorDeliveryRoute, :1841-1843). Without a prior route,
   // `deliverHumanQuestionPackageMessage` throws "does not have a delivery route" (:3957-3966)
   // — recordCoordinatorRouteContext must run first, as the brief has it.
-  const harness = makeGoldenHarness({ ids: ["task-1", "q-1", "pkg-1", "msg-1"] });
+  const harness = makeGoldenHarness({ ids: ["task-1", "lid-1", "q-1", "pkg-1", "msg-1"] });
   const service = new OrchestrationService(harness.deps);
 
   await service.recordCoordinatorRouteContext({
@@ -612,7 +612,7 @@ test("golden: coordinatorRetractAnswer on a running task reopens the blocker wit
   // Only 3 ids are actually consumed by this sequence (see below) — the brief's 4th id
   // ("result-1") is never reached, so it is omitted rather than padding the pool with an
   // id nothing will claim.
-  const harness = makeGoldenHarness({ ids: ["task-1", "q-1", "q-2"] });
+  const harness = makeGoldenHarness({ ids: ["task-1", "lid-1", "q-1", "q-2"] });
   const service = new OrchestrationService(harness.deps);
 
   await service.requestDelegate({
@@ -746,7 +746,7 @@ test("golden: coordinatorReviewContestedResult accepts a contested result", asyn
   // 4 ids: task-1 (requestDelegate) + q-1 (workerRaiseQuestion) + review-1 + result-1
   // (coordinatorRetractAnswer's contested branch mints both). The "accept" decision
   // itself mints no id (only "discard" does, via replacementQuestionId, :2161).
-  const harness = makeGoldenHarness({ ids: ["task-1", "q-1", "review-1", "result-1"] });
+  const harness = makeGoldenHarness({ ids: ["task-1", "lid-1", "q-1", "review-1", "result-1"] });
   const { service, taskId, reviewId } = await driveTaskToContestedReview(harness);
 
   // coordinatorReviewContestedResult awaits everything itself — wakeCoordinatorSession
@@ -765,7 +765,7 @@ test("golden: coordinatorReviewContestedResult accepts a contested result", asyn
 test("golden: coordinatorReviewContestedResult discards a contested result and reopens the question", async () => {
   // 5 ids: the same 4 as the accept scenario, plus q-2 — "discard" mints a replacement
   // open-question id (:2161) that "accept" never reaches.
-  const harness = makeGoldenHarness({ ids: ["task-1", "q-1", "review-1", "result-1", "q-2"] });
+  const harness = makeGoldenHarness({ ids: ["task-1", "lid-1", "q-1", "review-1", "result-1", "q-2"] });
   const { service, taskId, reviewId } = await driveTaskToContestedReview(harness);
 
   await service.coordinatorReviewContestedResult({
@@ -827,7 +827,7 @@ test("golden: coordinatorReviewContestedResult discards a contested result and r
 // and then discovering the mismatch after the fact.
 
 test("golden: recordWorkerReply completes the task and marks a notice pending", async () => {
-  const harness = makeGoldenHarness({ ids: ["task-1"] });
+  const harness = makeGoldenHarness({ ids: ["task-1", "lid-1"] });
   const service = new OrchestrationService(harness.deps);
 
   await service.requestDelegate({
@@ -862,7 +862,7 @@ test("golden: recordWorkerReply completes the task and marks a notice pending", 
 // preconditions beyond "the task exists" — no status check — so a bare requestDelegate is
 // enough to set it up.
 test("golden: markTaskNoticePending marks a task's notice pending", async () => {
-  const harness = makeGoldenHarness({ ids: ["task-1"] });
+  const harness = makeGoldenHarness({ ids: ["task-1", "lid-1"] });
   const service = new OrchestrationService(harness.deps);
 
   await service.requestDelegate({
@@ -880,7 +880,7 @@ test("golden: markTaskNoticePending marks a task's notice pending", async () => 
 });
 
 test("golden: notice lifecycle pending -> delivered", async () => {
-  const harness = makeGoldenHarness({ ids: ["task-1"] });
+  const harness = makeGoldenHarness({ ids: ["task-1", "lid-1"] });
   const service = new OrchestrationService(harness.deps);
 
   await service.requestDelegate({
@@ -909,7 +909,7 @@ test("golden: notice lifecycle pending -> delivered", async () => {
 });
 
 test("golden: markCoordinatorGroupsInjectionFailed records the failure", async () => {
-  const harness = makeGoldenHarness({ ids: ["g1", "task-1"] });
+  const harness = makeGoldenHarness({ ids: ["g1", "task-1", "lid-1"] });
   const service = new OrchestrationService(harness.deps);
 
   const group = await service.createGroup({ coordinatorSession: "backend:main", title: "review" });
@@ -937,7 +937,7 @@ test("golden: markCoordinatorGroupsInjectionFailed records the failure", async (
 });
 
 test("golden: cleanTasks removes terminal tasks", async () => {
-  const harness = makeGoldenHarness({ ids: ["task-1"] });
+  const harness = makeGoldenHarness({ ids: ["task-1", "lid-1"] });
   const service = new OrchestrationService(harness.deps);
 
   await service.requestDelegate({
@@ -964,7 +964,7 @@ test("golden: cleanTasks removes terminal tasks", async () => {
 });
 
 test("golden: purgeSessionReferences drops bindings and metadata", async () => {
-  const harness = makeGoldenHarness({ ids: ["task-1"] });
+  const harness = makeGoldenHarness({ ids: ["task-1", "lid-1"] });
   const service = new OrchestrationService(harness.deps);
 
   await service.requestDelegate({

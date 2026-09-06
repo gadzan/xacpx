@@ -1880,6 +1880,21 @@ test("control create keeps the row when provisional cleanup cannot be verified",
   expect(await sessions.getSession("relay:demo")).not.toBeNull();
 });
 
+test("failed native attach converges softly and never hard-deletes the upstream thread", async () => {
+  const { router, transport, sessions } = buildRouter();
+  (transport.resumeAgentSession as ReturnType<typeof mock>).mockImplementationOnce(async () => {
+    throw new Error("bridge resume boom");
+  });
+
+  await expect(
+    router.attachNativeSessionWithTransport("relay:doomed", "codex", "backend", "ses_99"),
+  ).rejects.toThrow("bridge resume boom");
+  // Logical row dropped after convergence, upstream thread untouched.
+  expect(await sessions.getSession("relay:doomed")).toBeNull();
+  expect((transport.deleteSession as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  expect((transport.removeSession as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+});
+
 test("workspace rm refuses while persisted sessions still use it", async () => {
   const { router, sessions } = buildRouter();
   await router.handle("wx:user", "/session new guarded --agent codex --ws backend");
@@ -1905,4 +1920,26 @@ test("agent rm refuses while persisted sessions still use it", async () => {
   await router.handle("wx:user", "/session rm guarded");
   const freed = await router.handle("wx:user", "/agent rm codex");
   expect(freed.text).not.toContain("仍被");
+});
+
+test("attach preflight inherits the physical group's CLI engine instead of config runtime", async () => {
+  const { router, transport, sessions, config } = buildRouter();
+  await router.handle("wx:user", "/session new seed --agent codex --ws backend");
+  const seed = await sessions.getSession("seed");
+  expect(seed?.transportEngine).toBe("cli");
+  // Flip the default AFTER the physical session exists: attaching a second
+  // alias must inherit the group's CLI engine — including for the
+  // preflight existence check, which routes by engine.
+  config.transport.engine = "runtime";
+  const reply = await router.handle(
+    "wx:user",
+    `/session attach clone --agent codex --ws backend --name ${seed!.transportSession}`,
+  );
+  expect(reply.text).toBe(t().session.sessionAttached("clone"));
+  const hasSessionMock = transport.hasSession as ReturnType<typeof mock>;
+  const attachCheck = hasSessionMock.mock.calls[hasSessionMock.mock.calls.length - 1]?.[0] as {
+    transportEngine?: string;
+  };
+  expect(attachCheck.transportEngine).toBe("cli");
+  expect((await sessions.getSession("clone"))?.transportEngine).toBe("cli");
 });

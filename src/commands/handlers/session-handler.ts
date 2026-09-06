@@ -15,7 +15,7 @@ import { buildCoordinatorPrompt } from "../../orchestration/build-coordinator-pr
 import { stableCoordinatorSession } from "../../orchestration/coordinator-identity";
 import { toDisplaySessionAlias, getChannelIdFromChatKey, scopeDisplayAliasToInternal, resolveSessionAliasForInput } from "../../channels/channel-scope";
 import { resolveChannelDefaultReplyMode, resolveEffectiveReplyMode } from "./resolve-reply-mode";
-import { removeAliasWithPhysicalLifecycle } from "../session-remove-lifecycle";
+import { convergeProvisionalCreate, removeAliasWithPhysicalLifecycle } from "../session-remove-lifecycle";
 import { quoteWorkspaceNameIfNeeded } from "../workspace-name";
 import type { SessionSwitchResult } from "../../sessions/session-service";
 import { decorateUnread } from "./session-list-marker";
@@ -218,19 +218,13 @@ async function cleanupProvisionalCreate(
   finalInternalAlias: string,
   cause?: unknown,
 ): Promise<void> {
-  try {
-    await context.transport.deleteSession?.(persisted);
-  } catch (cleanupError) {
-    throw new Error(
-      `session creation failed${cause instanceof Error ? `: ${cause.message}` : ""} and the provisional ` +
-        `physical session could not be verified cleaned up: ` +
-        `${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}; ` +
-        `logical session "${finalInternalAlias}" kept for retry/delete`,
-    );
-  }
-  try {
-    await context.sessions.removeSession(finalInternalAlias);
-  } catch {}
+  await convergeProvisionalCreate({
+    sessions: context.sessions,
+    transport: context.transport,
+    session: persisted,
+    internalAlias: finalInternalAlias,
+    ...(cause !== undefined ? { cause } : {}),
+  });
 }
 
 export async function handleSessionNew(
@@ -390,7 +384,11 @@ export async function handleSessionAttach(
     return { text: t().session.sessionLifecycleBusy(alias) };
   }
   try {
-    const attached = context.lifecycle.resolveSession(internalAlias, agent, workspace, transportSession);
+    // Preflight on the inheritance-aware candidate: the authoritative
+    // attachSession below would bind the physical group's engine, so the
+    // existence check must route to that same engine — never to a
+    // config-derived transient.
+    const attached = context.lifecycle.resolveAttachCandidate(internalAlias, agent, workspace, transportSession);
     const releaseTransportReservation = await context.lifecycle.reserveTransportSession(attached.transportSession);
     try {
       const exists = await context.lifecycle.checkTransportSession(attached);

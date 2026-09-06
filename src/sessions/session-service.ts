@@ -15,7 +15,7 @@ import type { AgentConfig, AppConfig, WechatReplyMode } from "../config/types";
 import { t } from "../i18n/index.js";
 import { AsyncMutex } from "../orchestration/async-mutex";
 import { sameCoordinatorSession, stableCoordinatorSession } from "../orchestration/coordinator-identity";
-import { resolveWorkerAgentLaunch } from "../orchestration/worker-launch";
+import { resolveWorkerAgentLaunch, shouldGuardWorkerAcpOutput } from "../orchestration/worker-launch";
 import type { WorkerBindingRecord } from "../orchestration/orchestration-types";
 import type { StateStore } from "../state/state-store";
 import { replaceRuntimeState } from "../state/replace-runtime-state";
@@ -857,23 +857,36 @@ export class SessionService {
   }
 
   /**
-   * Finds persisted aliases that would contend for the SAME physical acpx
+   * Finds every persisted owner that would contend for the SAME physical acpx
    * session as `session` (sessionKey + cwd + launch agent identity),
-   * excluding `excludeAlias`. Unlike countAliasesSharingTransport
+   * excluding the logical alias `excludeAlias`. Unlike countAliasesSharingTransport
    * (transport-name only), two aliases sharing a name but differing in
    * cwd/agent resolve to different physical records.
    *
+   * The owner domain is daemon-wide: ordinary logical sessions AND
+   * orchestration worker bindings. A worker binding persists its own
+   * transportSession/cwd/launch identity and the RuntimeEngine, fence, and
+   * queue-recovery paths all treat it as a real owner — membership that
+   * ignored bindings would let a logical alias inherit a foreign engine or
+   * hard-delete a physical record out from under a live worker.
+   *
    * Fail-closed membership: transport-name mismatch proves a different
    * group without resolving (the name is part of the key), but same-name
-   * rows whose agent/workspace is de-registered cannot resolve, so they
-   * can be neither proven in nor proven out of the group. They are
+   * rows whose agent/workspace is de-registered — or bindings without a
+   * resolvable identity — cannot be proven in or out of the group. They are
    * reported as `indeterminateAliases` and lifecycle decisions MUST refuse
    * destructive last-owner operations while any remain — "cannot prove it
    * is outside" is never "proven outside".
+   *
+   * `excludeAlias` applies ONLY to the logical-alias namespace. Worker
+   * bindings live in a separate namespace: a binding that shares its name
+   * with the excluded logical alias is still a distinct owner and is never
+   * excluded.
    */
   findPhysicalSiblings(
     session: ResolvedSession,
     excludeAlias?: string,
+    excludeWorkerBinding?: string,
   ): { siblings: ResolvedSession[]; indeterminateAliases: string[] } {
     const key = physicalLifecycleKeyForResolvedSession(session);
     const siblings: ResolvedSession[] = [];
@@ -896,6 +909,26 @@ export class SessionService {
         siblings.push(candidate);
       }
     }
+    for (const workerSession of Object.keys(this.state.orchestration.workerBindings)) {
+      if (workerSession !== session.transportSession) {
+        continue;
+      }
+      // A binding never inherits from itself: when resolving the engine FOR
+      // a binding, its own (possibly still identity-less) record is not a
+      // sibling. Every other owner still sees it — including as
+      // indeterminate while its identity is missing.
+      if (excludeWorkerBinding !== undefined && workerSession === excludeWorkerBinding) {
+        continue;
+      }
+      const candidate = this.resolveWorkerBindingSession(workerSession);
+      if (!candidate) {
+        indeterminateAliases.push(workerSession);
+        continue;
+      }
+      if (physicalLifecycleKeyForResolvedSession(candidate) === key) {
+        siblings.push(candidate);
+      }
+    }
     return { siblings, indeterminateAliases };
   }
 
@@ -906,6 +939,20 @@ export class SessionService {
       .map((session) => session.alias);
   }
 
+  /** Worker binding keys whose target agent is `name`. */
+  workerBindingsUsingAgent(name: string): string[] {
+    return Object.entries(this.state.orchestration.workerBindings)
+      .filter(([, binding]) => binding.targetAgent === name)
+      .map(([workerSession]) => workerSession);
+  }
+
+  /** Worker binding keys using workspace `name`. */
+  workerBindingsUsingWorkspace(name: string): string[] {
+    return Object.entries(this.state.orchestration.workerBindings)
+      .filter(([, binding]) => binding.workspace === name)
+      .map(([workerSession]) => workerSession);
+  }
+
   /** Internal aliases of persisted sessions using agent `name`. */
   aliasesUsingAgent(name: string): string[] {
     return Object.values(this.state.sessions)
@@ -913,7 +960,7 @@ export class SessionService {
       .map((session) => session.alias);
   }
   /**
-   * Wire the sink for resource lifecycle events (production: the core
+ * Wire the sink for resource lifecycle events (production: the core
    * SessionResourceCatalog; the runtime calls this once after constructing
    * the catalog). Archive/restore/remove transitions report through it only
    * AFTER their state has been durably persisted — never before.
@@ -1481,6 +1528,10 @@ export class SessionService {
     const now = new Date(this.now()).toISOString();
     let candidate: ResolvedSession;
     try {
+      // Pass-through candidate: the stored row will carry exactly these
+      // launch fields, so resolving with the same (recording, options) the
+      // future row will resolve with predicts its real dispatch identity —
+      // guarded recordings restore guarded, bare rows resolve current.
       candidate = this.toResolvedSession({
         alias: input.alias,
         agent: input.agent,
@@ -1500,10 +1551,150 @@ export class SessionService {
           `${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    const { siblings, indeterminateAliases } = this.findPhysicalSiblings(candidate, input.alias);
+    return this.resolveEngineByPhysicalGroup({
+      noun: "session",
+      name: input.alias,
+      transportSession: input.transportSession,
+      candidate,
+      excludeAlias: input.alias,
+      ...(input.sameAgentExisting?.transport_engine
+        ? { sameAgentExistingEngine: input.sameAgentExisting.transport_engine }
+        : {}),
+      fallback: () => this.resolveEngineForNewSession({ alias: input.alias, agent: input.agent, workspace: input.workspace }),
+    });
+  }
+
+  /**
+   * Engine affinity for a (possibly not yet persisted) orchestration worker
+   * binding. Same physical-group rule as logical sessions: a group owns
+   * exactly one engine, so a new binding inherits its physical siblings'
+   * engine instead of re-deriving from config. Worker bindings resolve no
+   * same-alias carry-over; an engine-less binding never counts as a sibling
+   * (it resolves to null), so no self-exclusion is needed.
+   */
+  resolveEngineForWorkerBinding(input: {
+    workerSession: string;
+    targetAgent: string;
+    workspace: string;
+    cwd?: string;
+    guardAcpOutput?: boolean;
+  }): SessionTransportEngine {
+    const fallback = (): SessionTransportEngine =>
+      this.resolveEngineForNewSession({ alias: input.workerSession, agent: input.targetAgent, workspace: input.workspace });
+    const binding = this.state.orchestration.workerBindings[input.workerSession];
+    const agentConfig = this.config.agents[input.targetAgent];
+    const workspaceConfig = this.config.workspaces[input.workspace];
+    if (!agentConfig || !workspaceConfig) {
+      // Pathless/ephemeral workers (standalone cwd workspaces, late-added
+      // agents) may resolve before their configs exist. The group cannot be
+      // scanned without a candidate, so fall back to config derivation —
+      // the legacy behavior. A same-name owner that IS resolvable still
+      // forces fail-closed when this worker is scanned from the other side.
+      return fallback();
+    }
+    // Candidate launch MUST equal what the worker will dispatch with:
+    // resolveWorkerRuntimeSession builds from the same binding-derived guard
+    // and binding cwd, otherwise the scan key and the fence key diverge.
+    const guard = input.guardAcpOutput ?? shouldGuardWorkerAcpOutput(binding);
+    const launch = resolveWorkerAgentLaunch(agentConfig, this.config.transport, guard ? { guardAcpOutput: true } : binding);
+    const candidate = {
+      alias: input.workerSession,
+      agent: input.targetAgent,
+      driver: agentConfig.driver,
+      settingsPolicy: agentConfig.settingsPolicy,
+      ...(launch.agentCommand ? { agentCommand: launch.agentCommand } : {}),
+      ...(launch.acpxAgent ? { acpxAgent: launch.acpxAgent } : {}),
+      ...(launch.rawCommand ? { rawCommand: launch.rawCommand } : {}),
+      ...(launch.agentArgv ? { agentArgv: launch.agentArgv } : {}),
+      model: agentConfig.model,
+      workspace: input.workspace,
+      transportSession: input.workerSession,
+      cwd: input.cwd ?? binding?.cwd ?? workspaceConfig.cwd,
+    } as ResolvedSession;
+    return this.resolveEngineByPhysicalGroup({
+      noun: "worker binding",
+      name: input.workerSession,
+      transportSession: input.workerSession,
+      candidate,
+      excludeWorkerBinding: input.workerSession,
+      fallback,
+    });
+  }
+
+  /**
+   * Transient (never persisted) attach candidate with the SAME engine the
+   * authoritative attachSession would durably bind: same guarded candidate
+   * construction, same physical-group inheritance. Preflight existence
+   * checks MUST use this — a config-derived transient can route the check
+   * to the wrong engine and refuse an attach the group would inherit.
+   */
+  resolveAttachCandidate(
+    alias: string,
+    agent: string,
+    workspace: string,
+    transportSession: string,
+    options: ResolveSessionOptions = {},
+  ): ResolvedSession {
+    this.validateSession(alias, agent, workspace);
+    const existing = this.state.sessions[alias];
+    const sameAgentExisting = existing && existing.agent === agent ? existing : undefined;
+    const now = new Date().toISOString();
+    let candidate: ResolvedSession;
+    try {
+      candidate = this.toResolvedSession({
+        alias,
+        agent,
+        workspace,
+        transport_session: transportSession,
+        logical_session_id: existing?.logical_session_id ?? randomUUID(),
+        transport_engine: "cli",
+        transport_agent_command: sameAgentExisting?.transport_agent_command,
+        transport_acpx_agent: sameAgentExisting?.transport_acpx_agent,
+        transport_agent_argv: sameAgentExisting?.transport_agent_argv,
+        model: sameAgentExisting?.model,
+        effort: sameAgentExisting?.effort,
+        created_at: existing?.created_at ?? now,
+        last_used_at: now,
+      }, { ...options, guardAcpOutput: options.guardAcpOutput ?? true });
+    } catch (error) {
+      throw new Error(
+        `cannot determine physical siblings for attach "${alias}": ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const engine = this.resolveEngineByPhysicalGroup({
+      noun: "session",
+      name: alias,
+      transportSession,
+      candidate,
+      excludeAlias: alias,
+      ...(sameAgentExisting?.transport_engine
+        ? { sameAgentExistingEngine: sameAgentExisting.transport_engine }
+        : {}),
+      fallback: () => this.resolveEngineForNewSession({ alias, agent, workspace }),
+    });
+    return { ...candidate, transportEngine: engine };
+  }
+
+  /** Shared physical-group engine rule for logical sessions and worker bindings. */
+  private resolveEngineByPhysicalGroup(input: {
+    noun: "session" | "worker binding";
+    name: string;
+    transportSession: string;
+    candidate: ResolvedSession;
+    excludeAlias?: string;
+    excludeWorkerBinding?: string;
+    sameAgentExistingEngine?: SessionTransportEngine;
+    fallback: () => SessionTransportEngine;
+  }): SessionTransportEngine {
+    const { siblings, indeterminateAliases } = this.findPhysicalSiblings(
+      input.candidate,
+      input.excludeAlias,
+      input.excludeWorkerBinding,
+    );
     if (indeterminateAliases.length > 0) {
       throw new Error(
-        `cannot create session "${input.alias}": ${indeterminateAliases.length} persisted alias(es) ` +
+        `cannot create ${input.noun} "${input.name}": ${indeterminateAliases.length} persisted owner(s) ` +
           `(${indeterminateAliases.join(", ")}) cannot be resolved, so physical ownership cannot be proven uniform`,
       );
     }
@@ -1512,22 +1703,17 @@ export class SessionService {
     if (engines.size > 1) {
       throw new Error(
         `physical session "${input.transportSession}" has mixed engine ownership ` +
-          `(${[...engines].sort().join(", ")}); migrate or remove the conflicting aliases first`,
+          `(${[...engines].sort().join(", ")}); migrate or remove the conflicting owners first`,
       );
     }
     const siblingEngine = siblings.length > 0 ? (siblings[0]!.transportEngine ?? "cli") : undefined;
-    const existingEngine = input.sameAgentExisting?.transport_engine;
-    if (existingEngine && siblingEngine && existingEngine !== siblingEngine) {
+    if (input.sameAgentExistingEngine && siblingEngine && input.sameAgentExistingEngine !== siblingEngine) {
       throw new Error(
-        `session "${input.alias}" keeps engine "${existingEngine}" but its physical siblings use ` +
-          `"${siblingEngine}"; migrate or remove the conflicting aliases first`,
+        `session "${input.name}" keeps engine "${input.sameAgentExistingEngine}" but its physical siblings use ` +
+          `"${siblingEngine}"; migrate or remove the conflicting owners first`,
       );
     }
-    return (
-      existingEngine ??
-      siblingEngine ??
-      this.resolveEngineForNewSession({ alias: input.alias, agent: input.agent, workspace: input.workspace })
-    );
+    return input.sameAgentExistingEngine ?? siblingEngine ?? input.fallback();
   }
 
   private async createLogicalSession(

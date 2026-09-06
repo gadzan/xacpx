@@ -4,7 +4,7 @@ import type { AppLogger } from "../logging/app-logger";
 import type { SessionService } from "../sessions/session-service";
 import type { AgentSession, ResolvedSession, SessionTransport } from "../transport/types";
 import { resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
-import { removeAliasWithPhysicalLifecycle } from "./session-remove-lifecycle";
+import { convergeProvisionalCreate, convergeProvisionalNativeAttach, removeAliasWithPhysicalLifecycle } from "./session-remove-lifecycle";
 import type { OrchestrationRouterOps } from "./router-types";
 import type { TransportInvoker } from "./transport-invoker";
 
@@ -136,29 +136,23 @@ export class SessionControlService {
 
   /**
    * Converge a failed create's provisional physical incarnation BEFORE the
-   * logical row disappears (see cleanupProvisionalCreate in
-   * handlers/session-handler: a daemon-side timeout is not a bridge-side
-   * cancellation). If the cleanup cannot be verified, the logical row is
-   * kept and the combined failure propagates for retry/delete.
+   * logical row disappears (shared primitive in session-remove-lifecycle: a
+   * daemon-side timeout is not a bridge-side cancellation). If the cleanup
+   * cannot be verified, the logical row is kept and the combined failure
+   * propagates for retry/delete.
    */
   private async cleanupProvisionalCreate(
     persisted: ResolvedSession,
     finalInternalAlias: string,
     cause?: unknown,
   ): Promise<void> {
-    try {
-      await this.transport.deleteSession?.(persisted);
-    } catch (cleanupError) {
-      throw new Error(
-        `session creation failed${cause instanceof Error ? `: ${cause.message}` : ""} and the provisional ` +
-          `physical session could not be verified cleaned up: ` +
-          `${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}; ` +
-          `logical session "${finalInternalAlias}" kept for retry/delete`,
-      );
-    }
-    try {
-      await this.sessions.removeSession(finalInternalAlias);
-    } catch {}
+    await convergeProvisionalCreate({
+      sessions: this.sessions,
+      transport: this.transport,
+      session: persisted,
+      internalAlias: finalInternalAlias,
+      ...(cause !== undefined ? { cause } : {}),
+    });
   }
   /** Real delete: logical removal + acpx history delete, guarded so a transport
    *  session shared by another alias is left intact. */
@@ -388,13 +382,24 @@ export class SessionControlService {
             throw new Error(`transport session "${persisted.transportSession}" could not be verified`);
           }
         } catch (error) {
+          // Upstream-owned physical session: converge the xacpx provisional
+          // incarnation only (release + soft close, never hard-delete the
+          // native thread). Unverifiable cleanup keeps the row and the
+          // combined failure propagates.
           try {
-            await this.sessions.removeSession(persisted.alias);
-          } catch (rollbackError) {
-            await this.logger.error("session.native.rollback_failed", "failed to rollback provisional native session", {
-              alias: persisted.alias,
-              error: rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+            await convergeProvisionalNativeAttach({
+              sessions: this.sessions,
+              transport: this.transport,
+              session: persisted,
+              internalAlias: persisted.alias,
+              cause: error,
             });
+          } catch (cleanupError) {
+            await this.logger.error("session.native.rollback_failed", "failed to converge provisional native incarnation", {
+              alias: persisted.alias,
+              error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+            });
+            throw cleanupError;
           }
           throw error;
         }

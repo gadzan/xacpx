@@ -8,7 +8,10 @@
 // `approveTask` opens `kernel.mutate` more than once and the kernel's mutate is
 // non-reentrant. The expensive work — reserveProposedWorkerSession,
 // ensureReservedWorkerSession, dispatchWorkerTask — deliberately sits OUTSIDE the
-// critical sections (a comment in the body says so). Do not merge or relocate a mutate.
+// critical sections (a comment in the body says so). The binding-shell stage
+// mutate runs BEFORE `ensureReservedWorkerSession` (G11 persist-before-owner);
+// the approve mutate runs AFTER. Do not merge or relocate a mutate.
+
 import type { AppState } from "../../state/types";
 import type {
   OrchestrationTaskRecord,
@@ -23,6 +26,7 @@ import {
   workerBindingEndpointIdentityFields,
   workerBindingEngineFields,
   workerBindingGuardFields,
+  workerBindingIdentityFields,
 } from "../worker-launch";
 import type { QuestionFlowCore } from "./question-flow-core";
 import type { TaskLifecycleService } from "./task-lifecycle-service";
@@ -30,9 +34,8 @@ import type { WorkerSessionManager } from "./worker-session-manager";
 
 export type TaskApprovalDeps = Pick<
   OrchestrationServiceDeps,
-  "now" | "createAgentEndpointId" | "loadState" | "saveState" | "dispatchWorkerTask"
+  "now" | "createId" | "createAgentEndpointId" | "loadState" | "saveState" | "dispatchWorkerTask" | "resolveWorkerBindingEngine"
 >;
-
 export class TaskApprovalService {
   constructor(
     private readonly deps: TaskApprovalDeps,
@@ -150,6 +153,48 @@ export class TaskApprovalService {
       previousWorkerSession?: string;
       previousBinding?: AppState["orchestration"]["workerBindings"][string];
     };
+    // G11 persist-before-owner: durably stage the binding shell (minted LID +
+    // physical-group engine) BEFORE ensureReservedWorkerSession can start the
+    // first owner. Reusable bindings keep their existing identity. A failed
+    // approve leaves no trace (shell rolled back below).
+    let shellPreviousBinding: AppState["orchestration"]["workerBindings"][string] | undefined;
+    let shellStaged = false;
+    try {
+      shellPreviousBinding = await this.kernel.mutate(async () => {
+        const state = await this.deps.loadState();
+        const previousBinding = state.orchestration.workerBindings[workerSession];
+        this.workerSessions.assertWorkerSessionDoesNotConflictExternalCoordinator(state, workerSession);
+        this.workerSessions.assertWorkerSessionAvailable(state, workerSession, input.taskId, { allowCurrentReservation: true });
+        state.orchestration.workerBindings[workerSession] = {
+          sourceHandle: workerSession,
+          coordinatorSession: currentTask.coordinatorSession,
+          workspace: currentTask.workspace,
+          ...(currentTask.cwd ? { cwd: currentTask.cwd } : {}),
+          targetAgent: currentTask.targetAgent,
+          ...(currentTask.role ? { role: currentTask.role } : {}),
+          ...workerBindingGuardFields(previousBinding),
+          ...workerBindingEndpointIdentityFields(previousBinding, this.deps.createAgentEndpointId),
+          ...workerBindingIdentityFields(
+            previousBinding,
+            () => this.deps.resolveWorkerBindingEngine({
+              workerSession,
+              targetAgent: currentTask.targetAgent,
+              workspace: currentTask.workspace,
+              ...(currentTask.cwd ? { cwd: currentTask.cwd } : {}),
+            }),
+            this.deps.createId,
+          ),
+          ...(currentTask.ephemeralWorkerSession ? { ephemeral: true } : {}),
+        };
+        await this.deps.saveState(state);
+        return previousBinding;
+      });
+      shellStaged = true;
+    } catch (error) {
+      await releaseWorkerReservation();
+      releaseParallelStartOnce();
+      throw error;
+    }
     try {
       ensuredWorkerSession = await this.workerSessions.ensureReservedWorkerSession({
         workerSession,
@@ -206,6 +251,19 @@ export class TaskApprovalService {
         };
       });
     } catch (error) {
+      if (shellStaged) {
+        // Best-effort: the original error is what the caller must see; a
+        // failed restore only leaves a reusable shell behind.
+        await this.kernel.mutate(async () => {
+          const state = await this.deps.loadState();
+          if (shellPreviousBinding) {
+            state.orchestration.workerBindings[workerSession] = shellPreviousBinding;
+          } else {
+            delete state.orchestration.workerBindings[workerSession];
+          }
+          await this.deps.saveState(state);
+        }).catch(() => {});
+      }
       await releaseWorkerReservation();
       releaseParallelStartOnce();
       throw error;
@@ -240,8 +298,10 @@ export class TaskApprovalService {
             task.workerSession = prepared.previousWorkerSession;
           }
         }
-        if (prepared.previousBinding) {
-          state.orchestration.workerBindings[ensuredWorkerSession] = prepared.previousBinding;
+        // Roll back to before the shell existed (not to the shell): a
+        // failed approve leaves no trace.
+        if (shellPreviousBinding) {
+          state.orchestration.workerBindings[ensuredWorkerSession] = shellPreviousBinding;
         } else {
           delete state.orchestration.workerBindings[ensuredWorkerSession];
         }

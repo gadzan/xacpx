@@ -99,3 +99,72 @@ export async function removeAliasWithPhysicalLifecycle(options: {
     return { wasActive, action, sharedAliasCount: remaining, ...(transportTeardownWarning ? { transportTeardownWarning } : {}) };
   });
 }
+
+export interface ProvisionalSessionCleanup {
+  sessions: SessionService;
+  transport: Pick<SessionTransport, "deleteSession" | "releaseLogicalSession" | "removeSession">;
+  session: ResolvedSession;
+  internalAlias: string;
+  cause?: unknown;
+}
+
+function provisionalCauseSuffix(cause: unknown): string {
+  return cause instanceof Error ? `: ${cause.message}` : "";
+}
+
+/**
+ * Converge a failed CREATE's provisional physical incarnation BEFORE the
+ * logical row disappears: a daemon-side timeout is not a bridge-side
+ * cancellation, so the ensure may still complete and leave a live
+ * worker/record behind. The physical session is xacpx-created here, so a
+ * verified hard delete is correct. If the cleanup cannot be verified, the
+ * logical row is kept and the combined failure propagates for retry/delete.
+ */
+export async function convergeProvisionalCreate(cleanup: ProvisionalSessionCleanup): Promise<void> {
+  try {
+    await cleanup.transport.deleteSession?.(cleanup.session);
+  } catch (cleanupError) {
+    throw new Error(
+      `session creation failed${provisionalCauseSuffix(cleanup.cause)} and the provisional ` +
+        `physical session could not be verified cleaned up: ` +
+        `${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}; ` +
+        `logical session "${cleanup.internalAlias}" kept for retry/delete`,
+    );
+  }
+  try {
+    await cleanup.sessions.removeSession(cleanup.internalAlias);
+  } catch {}
+}
+
+/**
+ * Converge a failed NATIVE ATTACH's provisional incarnation. The physical
+ * session is UPSTREAM-owned (an agent-native thread): it must never be
+ * hard-deleted. Release this incarnation's logical engine state instead —
+ * for Runtime that stops the provisional worker and drops a journal a
+ * timed-out resume may still be converging toward, without stamping the
+ * upstream record — then soft-close the provisional CLI owner. Like the
+ * create path, an unverifiable cleanup keeps the logical row and the
+ * combined failure propagates.
+ */
+export async function convergeProvisionalNativeAttach(cleanup: ProvisionalSessionCleanup): Promise<void> {
+  try {
+    if (cleanup.session.transportEngine === "runtime") {
+      if (!cleanup.transport.releaseLogicalSession) {
+        throw new Error("transport has no releaseLogicalSession operation");
+      }
+      await cleanup.transport.releaseLogicalSession(cleanup.session);
+    } else {
+      await cleanup.transport.removeSession?.(cleanup.session);
+    }
+  } catch (cleanupError) {
+    throw new Error(
+      `native attach failed${provisionalCauseSuffix(cleanup.cause)} and the provisional ` +
+        `incarnation could not be verified cleaned up: ` +
+        `${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}; ` +
+        `logical session "${cleanup.internalAlias}" kept for retry/delete`,
+    );
+  }
+  try {
+    await cleanup.sessions.removeSession(cleanup.internalAlias);
+  } catch {}
+}

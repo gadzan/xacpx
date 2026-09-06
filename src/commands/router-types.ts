@@ -84,6 +84,8 @@ export interface CommandRouterContext {
   configStore?: WritableConfigStore;
   logger: AppLogger;
   replaceConfig: (updated: AppConfig) => void;
+  /** Refuse destructive lifecycle (reset) while the alias has a running turn. */
+  readonly activeTurns?: import("../sessions/active-turn-registry.js").ActiveTurnRegistry;
   /**
    * Shared serialization domain for config disk mutations + permission
    * executor mutations (see ConfigMutationMutex). Handlers MUST run their
@@ -136,6 +138,14 @@ export interface OrchestrationRouterOps {
 
 export interface SessionLifecycleOps {
   resolveSession: (alias: string, agent: string, workspace: string, transportSession: string, options?: ResolveSessionOptions) => import("../transport/types").ResolvedSession;
+  /**
+   * Transient attach candidate with the SAME engine the authoritative
+   * attachSession would durably bind (physical-group inheritance, not
+   * config derivation). Existence checks for attach-to-existing MUST use
+   * this — a config-derived transient can route the check to the wrong
+   * engine and refuse an attach the group would inherit.
+   */
+  resolveAttachCandidate: (alias: string, agent: string, workspace: string, transportSession: string, options?: ResolveSessionOptions) => import("../transport/types").ResolvedSession;
   ensureTransportSession: (
     session: import("../transport/types").ResolvedSession,
     reply?: (text: string) => Promise<void>,

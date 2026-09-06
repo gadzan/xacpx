@@ -147,6 +147,15 @@ function createEngineRouterTransport(router: EngineRouter): SessionTransport {
         transportEngine: session.transportEngine,
       });
     },
+    async releaseLogicalSession(session: ResolvedSession) {
+      await router.releaseLogicalSession({
+        name: session.transportSession,
+        agent: session.agent,
+        cwd: session.cwd,
+        logicalSessionId: session.logicalSessionId,
+        transportEngine: session.transportEngine,
+      });
+    },
     async isSessionWarm(session: ResolvedSession) {
       const res = await router.isSessionWarm({
         name: session.transportSession,

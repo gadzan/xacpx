@@ -1,6 +1,6 @@
 import type { AppConfig } from "../config/types";
 import type { AppLogger } from "../logging/app-logger";
-import type { AppState } from "../state/types";
+import type { AppState, SessionTransportEngine } from "../state/types";
 import type {
   ExternalCoordinatorRecord,
   OrchestrationCoordinatorRouteContextRecord,
@@ -200,6 +200,19 @@ export interface OrchestrationServiceDeps {
   saveState: (state: AppState) => Promise<void>;
   stateMutex?: AsyncMutex;
   config: AppConfig;
+  /**
+   * Physical-group engine for a worker binding shell. MUST resolve with the
+   * same inheritance the daemon applies to logical sessions (a group owns
+   * exactly one engine) — a config-only engine here could durably bind a
+   * CLI shell over a Runtime-owned physical session. Called while staging
+   * the shell BEFORE the first owner starts (G11 persist-before-owner).
+   */
+  resolveWorkerBindingEngine: (input: {
+    workerSession: string;
+    targetAgent: string;
+    workspace: string;
+    cwd?: string;
+  }) => SessionTransportEngine;
   ensureWorkerSession: (request: EnsureWorkerSessionRequest) => Promise<string>;
   dispatchWorkerTask: (request: DispatchWorkerTaskRequest) => Promise<void>;
   cancelWorkerTask?: (request: CancelWorkerTaskRequest) => Promise<void>;

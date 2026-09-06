@@ -1,4 +1,4 @@
-import { beforeAll, expect, test } from "bun:test";
+import { beforeAll, expect, mock, test } from "bun:test";
 
 import type { AppConfig } from "../../../src/config/types";
 import { createEmptyState } from "../../../src/state/types";
@@ -8,10 +8,11 @@ import { DebouncedStateStore } from "../../../src/state/debounced-state-store";
 import { SessionService } from "../../../src/sessions/session-service";
 import type { SessionResourceLifecyclePublishInput } from "../../../src/sessions/session-resource-catalog";
 import { physicalFenceKeyForSession } from "../../../src/bridge/engine/runtime-engine";
+import { removeAliasWithPhysicalLifecycle } from "../../../src/commands/session-remove-lifecycle";
+import { deriveAgentAlias, renderAgentArgvIdentity } from "../../../src/config/agent-launch";
+import { resolveConfiguredAgentLaunch } from "../../../src/config/resolve-agent-command";
 import { registerKnownChannelId } from "../../../src/channels/channel-scope";
 import { setLocale, t } from "../../../src/i18n";
-import { deriveAgentAlias, renderAgentArgvIdentity } from "../../../src/config/agent-launch";
-
 beforeAll(() => {
   registerKnownChannelId("feishu");
   setLocale("zh");
@@ -2067,4 +2068,135 @@ test("create fails closed on mixed-engine physical siblings", async () => {
   ).rejects.toThrow(/mixed engine ownership/);
   // Failed create leaves no row behind.
   expect(state.sessions["mix-c"]).toBeUndefined();
+});
+test("attach inherits a worker binding's runtime engine instead of config cli", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  const sessions = new SessionService(config, new MemoryStateStore(), state);
+  // Production-shaped reusable worker binding: durable LID + runtime engine,
+  // no live worker (cold). Config still selects cli for new sessions.
+  state.orchestration.workerBindings["backend:codex:backend:main"] = {
+    sourceHandle: "backend:codex:backend:main",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "codex",
+    guardAcpOutput: true,
+    logicalSessionId: "worker-lid-1",
+    transportEngine: "runtime",
+  };
+  // Chat/control attach stores a guarded launch probe; pass the same shape so
+  // the candidate predicts the row's real dispatch identity.
+  const launch = resolveConfiguredAgentLaunch(config.agents.codex!, config.transport, { guardAcpOutput: true });
+  const attached = await sessions.attachSession(
+    "user-alias",
+    "codex",
+    "backend",
+    "backend:codex:backend:main",
+    launch.agentCommand,
+    launch.acpxAgent,
+    launch.agentArgv,
+  );
+  expect(attached.transportEngine).toBe("runtime");
+  expect(state.sessions["user-alias"]?.transport_engine).toBe("runtime");
+});
+
+test("attach fails closed on an engine-less worker binding sharing the name", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  const sessions = new SessionService(config, new MemoryStateStore(), state);
+  // Same transport name, but the binding carries no resolvable identity: it
+  // can be neither proven in nor proven out of the group.
+  state.orchestration.workerBindings["backend:codex:backend:main"] = {
+    sourceHandle: "backend:codex:backend:main",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "codex",
+  };
+  await expect(
+    sessions.attachSession("user-alias", "codex", "backend", "backend:codex:backend:main"),
+  ).rejects.toThrow(/cannot be resolved/);
+  expect(state.sessions["user-alias"]).toBeUndefined();
+});
+test("worker binding engine resolution inherits the logical group's engine", async () => {
+  const config = createConfig();
+  // Explicit command: the launch identity is guard-independent, so the
+  // logical row and the worker candidate hash the same physical key.
+  config.agents.custom = { driver: "codex", command: "my-agent-bin" };
+  config.transport.engine = "cli";
+  const state = createEmptyState();
+  const sessions = new SessionService(config, new MemoryStateStore(), state);
+  const logical = await sessions.attachSession("user-alias", "custom", "backend", "backend:custom:main");
+  // The worker binding targets the same physical session: it must inherit
+  // cli, not re-derive from a (possibly drifted) config.
+  config.transport.engine = "runtime";
+  expect(
+    sessions.resolveEngineForWorkerBinding({
+      workerSession: "backend:custom:main",
+      targetAgent: "custom",
+      workspace: "backend",
+    }),
+  ).toBe("cli");
+});
+
+test("remove of a logical alias keeps the physical record while a cold worker binding survives", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  const sessions = new SessionService(config, new MemoryStateStore(), state);
+  state.orchestration.workerBindings["backend:codex:backend:main"] = {
+    sourceHandle: "backend:codex:backend:main",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "codex",
+    guardAcpOutput: true,
+    logicalSessionId: "worker-lid-1",
+    transportEngine: "runtime",
+  };
+  const launch = resolveConfiguredAgentLaunch(config.agents.codex!, config.transport, { guardAcpOutput: true });
+  const attached = await sessions.attachSession(
+    "user-alias",
+    "codex",
+    "backend",
+    "backend:codex:backend:main",
+    launch.agentCommand,
+    launch.acpxAgent,
+    launch.agentArgv,
+  );
+  expect(attached.transportEngine).toBe("runtime");
+  const releaseLogicalSession = mock(async () => {});
+  const deleteSession = mock(async () => {});
+  const outcome = await removeAliasWithPhysicalLifecycle({
+    sessions,
+    transport: { releaseLogicalSession, deleteSession },
+    session: attached,
+    internalAlias: "user-alias",
+  });
+  expect(outcome.action).toBe("released");
+  expect(outcome.sharedAliasCount).toBe(1);
+  expect(deleteSession).not.toHaveBeenCalled();
+  expect(releaseLogicalSession).toHaveBeenCalledTimes(1);
+  expect(await sessions.getSession("user-alias")).toBeNull();
+  // The cold worker binding still resolves with its durable identity intact,
+  // so its conversation remains usable after the logical alias is gone.
+  expect(sessions.resolveWorkerBindingSession("backend:codex:backend:main")).toMatchObject({
+    logicalSessionId: "worker-lid-1",
+    transportEngine: "runtime",
+  });
+});
+
+test("usage guards see orchestration worker bindings", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  const sessions = new SessionService(config, new MemoryStateStore(), state);
+  expect(sessions.workerBindingsUsingAgent("codex")).toEqual([]);
+  expect(sessions.workerBindingsUsingWorkspace("backend")).toEqual([]);
+  state.orchestration.workerBindings["backend:codex:backend:main"] = {
+    sourceHandle: "backend:codex:backend:main",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "codex",
+  };
+  expect(sessions.workerBindingsUsingAgent("codex")).toEqual(["backend:codex:backend:main"]);
+  expect(sessions.workerBindingsUsingWorkspace("backend")).toEqual(["backend:codex:backend:main"]);
+  expect(sessions.workerBindingsUsingAgent("claude")).toEqual([]);
+  expect(sessions.workerBindingsUsingWorkspace("other")).toEqual([]);
 });

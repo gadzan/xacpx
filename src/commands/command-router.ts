@@ -505,6 +505,7 @@ export class CommandRouter {
       logger: this.logger,
       replaceConfig: (updated) => this.replaceConfig(updated),
       configMutationMutex: this.configMutationMutex,
+      ...(this.activeTurns ? { activeTurns: this.activeTurns } : {}),
       ...(this.quota ? { quota: this.quota } : {}),
       ...(this.resolveNativeSessionListFormat ? { resolveNativeSessionListFormat: this.resolveNativeSessionListFormat } : {}),
     };
@@ -536,6 +537,8 @@ export class CommandRouter {
     return {
       resolveSession: (alias, agent, workspace, transportSession, options) =>
         this.sessions.resolveSession(alias, agent, workspace, transportSession, options),
+      resolveAttachCandidate: (alias, agent, workspace, transportSession, options) =>
+        this.sessions.resolveAttachCandidate(alias, agent, workspace, transportSession, options),
       ensureTransportSession: (session, replyOverride, perfSpanOverride) => this.transportInvoker.ensureTransportSession(session, replyOverride ?? reply, perfSpanOverride ?? perfSpan),
       checkTransportSession: (session) => this.transportInvoker.checkTransportSession(session),
       markSessionReady: () => perfSpan?.mark("session.ready"),

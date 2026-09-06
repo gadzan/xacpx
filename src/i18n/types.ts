@@ -1370,6 +1370,7 @@ export interface MiscMessages {
   // commands/handlers/session-reset-handler
   sessionResetNoCurrentSession: string;
   sessionResetFailed: (alias: string) => string;
+  sessionResetTurnActive: (alias: string) => string;
   sessionResetSuccess: (alias: string) => string;
 
   // scheduled/scheduled-dispatch

@@ -16,7 +16,12 @@ export async function handleSessionResetCommand(
   if (!releaseAliasOperation) {
     return { text: t().misc.sessionResetFailed(previous.alias) };
   }
-
+  // A running turn must quiesce before its identity is replaced: swapping
+  // the alias to a fresh LID while the old incarnation still runs would
+  // report success while old tool calls and side effects continue.
+  if (context.activeTurns?.isActiveAnywhere(previous.alias)) {
+    return { text: t().misc.sessionResetTurnActive(previous.alias) };
+  }
   try {
     const previousRecord = context.sessions.getLogicalSessionRecord(previous.alias);
     const previousSnapshot = previousRecord ? structuredClone(previousRecord) : null;
@@ -106,16 +111,76 @@ export async function handleSessionResetCommand(
         native: wasNative && Boolean(freshAgentSessionId),
       });
 
-      // Best-effort: close the previous transport session (acpx sessions close)
-      // to stop its warm owner while keeping its rollout on disk (still
-      // reattachable via /ssn, prunable later). Applies to native and plain
-      // sessions alike — both orphan a warm owner otherwise. Guarded so we never
-      // close a transport another logical alias still uses. Failure must never
-      // fail /clear.
-      if (
-        context.transport.removeSession &&
-        context.sessions.countAliasesSharingTransport(previous.transportSession) === 0
-      ) {
+      // Retire the previous logical identity as a mandatory participant. For
+      // Runtime the old LID owns a worker/fence/journal: releaseLogicalSession
+      // stops the worker and drops the old journal, and MUST succeed — a
+      // reset that reports success while the old incarnation still runs
+      // would keep producing tool calls and side effects under a "reset"
+      // session. On failure the alias rolls back to the previous snapshot
+      // and the fresh incarnation is converged, exactly like a
+      // fresh-ensure failure.
+      if (previous.transportEngine === "runtime") {
+        if (!context.transport.releaseLogicalSession) {
+          await context.sessions.rollbackSessionRecord(previous.alias, previousSnapshot);
+          await cleanupFreshIncarnation(context, persistedSession);
+          await context.logger.info(
+            "session.reset.release_unsupported",
+            "active transport cannot release the previous runtime identity; reset refused",
+            { transportSession: previous.transportSession },
+          );
+          return { text: t().misc.sessionResetFailed(previous.alias) };
+        }
+        try {
+          await context.transport.releaseLogicalSession(previous);
+        } catch (error) {
+          await context.sessions.rollbackSessionRecord(previous.alias, previousSnapshot);
+          await cleanupFreshIncarnation(context, persistedSession);
+          await context.logger.info(
+            "session.reset.release_previous_failed",
+            "failed to retire the previous runtime identity; reset rolled back",
+            {
+              transportSession: previous.transportSession,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+          return { text: t().misc.sessionResetFailed(previous.alias) };
+        }
+      }
+
+      // Best-effort: close the previous physical record (warm owner stop,
+      // rollout/history kept on disk, still reattachable via /ssn). Guarded
+      // by canonical physical membership — same-name aliases with different
+      // cwd/launch are different physical sessions, and worker bindings
+      // count as surviving owners — so a record another owner still uses is
+      // never closed. Indeterminate membership skips the close (the
+      // mandatory LID release above already ran). Failure must never fail
+      // /clear.
+      let closePrevious = false;
+      try {
+        const { siblings, indeterminateAliases } = context.sessions.findPhysicalSiblings(previous, previous.alias);
+        if (indeterminateAliases.length > 0) {
+          await context.logger.info(
+            "session.reset.sibling_indeterminate",
+            "previous physical membership cannot be proven; keeping the previous record",
+            {
+              transportSession: previous.transportSession,
+              indeterminate: indeterminateAliases.join(","),
+            },
+          );
+        } else {
+          closePrevious = siblings.length === 0;
+        }
+      } catch (error) {
+        await context.logger.info(
+          "session.reset.sibling_check_failed",
+          "failed to check previous physical membership; keeping the previous record",
+          {
+            transportSession: previous.transportSession,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+      }
+      if (closePrevious && context.transport.removeSession) {
         try {
           await context.transport.removeSession(previous);
         } catch (error) {
