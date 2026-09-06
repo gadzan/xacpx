@@ -21,8 +21,30 @@ import {
 import { TERMINAL_REBASE_CHUNK_BYTES } from "@ganglion/xacpx-relay-protocol";
 
 const dirs: string[] = [];
+const runtimes: DefaultRelayTerminalRuntime[] = [];
 
-afterEach(() => {
+// Every runtime in this file must be stopped before its registry dir is
+// deleted (see afterEach). Hook start() once so all construction sites —
+// present and future — are covered without per-test bookkeeping.
+const originalStart = DefaultRelayTerminalRuntime.prototype.start;
+DefaultRelayTerminalRuntime.prototype.start = async function (
+  this: DefaultRelayTerminalRuntime,
+) {
+  if (!runtimes.includes(this)) {
+    runtimes.push(this);
+  }
+  return originalStart.call(this);
+};
+
+afterEach(async () => {
+  // Stop every runtime BEFORE deleting registry dirs: background work
+  // (recovery loops, kill timeouts, checkpoint writes) must settle while
+  // its registry dir still exists, otherwise an in-flight atomic write
+  // races rmSync and fails with ENOENT at rename — flaky under CI load.
+  while (runtimes.length > 0) {
+    const runtime = runtimes.pop()!;
+    await runtime.stop().catch(() => {});
+  }
   while (dirs.length > 0) {
     const dir = dirs.pop();
     if (dir) rmSync(dir, { recursive: true, force: true });
@@ -1026,8 +1048,9 @@ test("sidecar crash after live reaps the owned session", async () => {
   events.length = 0;
   const paneId = (await driver.list())[0]!.paneId;
   driver.failRecover(paneId, new RmuxDriverCrashedError("bridge exited"));
-  await Bun.sleep(80);
-
+  // Poll for crash convergence (kill timeout, registry writes, event fanout
+  // all vary under CI load) instead of a fixed sleep.
+  await until(() => registry.getSnapshot().terminals[opened.terminalId] === undefined);
   expect(events.some((e) => e.type === "recovery-failed")).toBe(false);
   expect(events.some((e) => e.type === "exit" && e.reason === "exited")).toBe(true);
   expect(registry.getSnapshot().terminals[opened.terminalId]).toBeUndefined();

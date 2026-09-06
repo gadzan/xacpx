@@ -26,11 +26,42 @@ function build(opts: {
   getAgentSessionIdThrows?: boolean;
   removeSessionThrows?: boolean;
   sharingCount?: number;
+  siblings?: Array<{ transportSession: string }>;
+  indeterminate?: string[];
+  releaseThrows?: boolean;
+  turnActive?: boolean;
 }) {
-  const attachNativeSession = mock(async (_input: unknown) => resolved());
-  const attachSession = mock(async () => resolved());
+  const attachNativeSession = mock(async (_input: unknown) => resolved({
+    alias: opts.current?.alias ?? "review",
+    agent: opts.current?.agent ?? "codex",
+    workspace: opts.current?.workspace ?? "backend",
+    transportSession: "backend:review:reset-1700000000001",
+    source: "agent-side",
+  }));
+  const attachSession = mock(async () => resolved({
+    alias: opts.current?.alias ?? "review",
+    agent: opts.current?.agent ?? "codex",
+    workspace: opts.current?.workspace ?? "backend",
+    transportSession: "backend:review:reset-1700000000001",
+  }));
   const useSession = mock(async () => {});
   const countAliasesSharingTransport = mock(() => opts.sharingCount ?? 0);
+  const rollbackSessionRecord = mock(async () => {});
+  const updateNativeAgentSessionId = mock(async () => {});
+  const getLogicalSessionRecord = mock((alias: string) => {
+    if (!opts.current) return null;
+    return {
+      alias,
+      agent: opts.current.agent,
+      workspace: opts.current.workspace,
+      transport_session: opts.current.transportSession,
+      logical_session_id: "prev-id",
+      transport_engine: "cli" as const,
+      created_at: new Date().toISOString(),
+      last_used_at: new Date().toISOString(),
+      ...(opts.current.source === "agent-side" ? { source: "agent-side" as const, agent_session_id: opts.current.agentSessionId } : {}),
+    };
+  });
   const getAgentSessionId = mock(async (_s: ResolvedSession) => {
     if (opts.getAgentSessionIdThrows) throw new Error("show failed");
     return opts.agentSessionId;
@@ -38,6 +69,14 @@ function build(opts: {
   const removeSession = mock(async (_s: ResolvedSession) => {
     if (opts.removeSessionThrows) throw new Error("close failed");
   });
+  const releaseLogicalSession = mock(async (_s: ResolvedSession) => {
+    if (opts.releaseThrows) throw new Error("release failed");
+  });
+  const findPhysicalSiblings = mock(() => ({
+    siblings: (opts.siblings ?? []).map((sibling) => ({ transportSession: sibling.transportSession })),
+    indeterminateAliases: opts.indeterminate ?? [],
+  }));
+  const isActiveAnywhere = mock(() => opts.turnActive ?? false);
   let aliasReserved = false;
   const tryReserveSessionAliasOperation = mock(() => {
     if (aliasReserved) return null;
@@ -50,14 +89,19 @@ function build(opts: {
   const context = {
     sessions: {
       getCurrentSession: mock(async () => opts.current),
+      getLogicalSessionRecord,
+      rollbackSessionRecord,
+      updateNativeAgentSessionId,
       buildFreshTransportSession: mock(() => "backend:review:reset-1700000000001"),
       tryReserveSessionAliasOperation,
       attachNativeSession,
       attachSession,
       useSession,
       countAliasesSharingTransport,
+      findPhysicalSiblings,
     },
-    transport: { getAgentSessionId, removeSession },
+    transport: { getAgentSessionId, removeSession, releaseLogicalSession },
+    activeTurns: { isActiveAnywhere },
     logger: { info: mock(async () => {}), error: mock(async () => {}) },
   } as unknown as CommandRouterContext;
 
@@ -71,7 +115,7 @@ function build(opts: {
     now: () => 1_700_000_000_000,
   };
 
-  return { context, ops, attachNativeSession, attachSession, removeSession, getAgentSessionId, countAliasesSharingTransport };
+  return { context, ops, attachNativeSession, attachSession, removeSession, releaseLogicalSession, findPhysicalSiblings, isActiveAnywhere, getAgentSessionId, countAliasesSharingTransport, rollbackSessionRecord, updateNativeAgentSessionId, useSession };
 }
 
 test("native session stays native and closes the previous native session", async () => {
@@ -81,7 +125,14 @@ test("native session stays native and closes the previous native session", async
   const reply = await handleSessionResetCommand(ctx.context, ctx.ops, "wx:user");
 
   expect(ctx.attachNativeSession).toHaveBeenCalledTimes(1);
-  expect(ctx.attachNativeSession.mock.calls[0][0]).toMatchObject({ agentSessionId: "fresh-native-id" });
+  expect(ctx.attachNativeSession.mock.calls[0][0]).toMatchObject({
+    alias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "backend:review:reset-1700000000001",
+  });
+  expect("agentSessionId" in ctx.attachNativeSession.mock.calls[0][0]).toBe(false);
+  expect(ctx.updateNativeAgentSessionId).toHaveBeenCalledWith("review", "fresh-native-id", expect.any(String));
   expect(ctx.attachSession).not.toHaveBeenCalled();
   expect(ctx.removeSession).toHaveBeenCalledTimes(1);
   expect(ctx.removeSession.mock.calls[0][0]).toMatchObject({ transportSession: "backend:review" });
@@ -94,8 +145,9 @@ test("falls back to a xacpx session when the fresh agent id is unavailable", asy
 
   const reply = await handleSessionResetCommand(ctx.context, ctx.ops, "wx:user");
 
-  expect(ctx.attachSession).toHaveBeenCalledTimes(1);
-  expect(ctx.attachNativeSession).not.toHaveBeenCalled();
+  expect(ctx.attachNativeSession).toHaveBeenCalledTimes(1);
+  expect(ctx.updateNativeAgentSessionId).toHaveBeenCalledWith("review", undefined);
+  expect(ctx.attachSession).not.toHaveBeenCalled();
   expect(ctx.removeSession).toHaveBeenCalledTimes(1);
   expect(ctx.removeSession.mock.calls[0][0]).toMatchObject({ transportSession: "backend:review" });
   expect(reply.text).toBe(t().misc.sessionResetSuccess("review"));
@@ -107,8 +159,9 @@ test("falls back when reading the fresh agent id throws", async () => {
 
   const reply = await handleSessionResetCommand(ctx.context, ctx.ops, "wx:user");
 
-  expect(ctx.attachSession).toHaveBeenCalledTimes(1);
-  expect(ctx.attachNativeSession).not.toHaveBeenCalled();
+  expect(ctx.attachNativeSession).toHaveBeenCalledTimes(1);
+  expect(ctx.updateNativeAgentSessionId).toHaveBeenCalledWith("review", undefined);
+  expect(ctx.attachSession).not.toHaveBeenCalled();
   // Even on the fallback path, the old native session is still closed.
   expect(ctx.removeSession).toHaveBeenCalledTimes(1);
   expect(reply.text).toBe(t().misc.sessionResetSuccess("review"));
@@ -168,7 +221,7 @@ test("concurrent resets claim the alias before creating a replacement transport"
 
 test("does not close the previous transport for a non-native session another alias shares", async () => {
   const previous = resolved({ source: "xacpx" });
-  const ctx = build({ current: previous, sharingCount: 1 });
+  const ctx = build({ current: previous, siblings: [{ transportSession: "backend:review" }] });
 
   await handleSessionResetCommand(ctx.context, ctx.ops, "wx:user");
 
@@ -178,7 +231,7 @@ test("does not close the previous transport for a non-native session another ali
 
 test("does not close the previous transport when another alias still shares it", async () => {
   const previous = resolved({ source: "agent-side", agentSessionId: "old-native" });
-  const ctx = build({ current: previous, agentSessionId: "fresh-native-id", sharingCount: 1 });
+  const ctx = build({ current: previous, agentSessionId: "fresh-native-id", siblings: [{ transportSession: "backend:review" }] });
 
   await handleSessionResetCommand(ctx.context, ctx.ops, "wx:user");
 
@@ -203,4 +256,105 @@ test("returns the no-current-session message when there is no current session", 
   expect(reply.text).toBe(t().misc.sessionResetNoCurrentSession);
   expect(ctx.attachSession).not.toHaveBeenCalled();
   expect(ctx.attachNativeSession).not.toHaveBeenCalled();
+});
+test("rolls back to previous snapshot when ensureTransportSession fails", async () => {
+  const previous = resolved({ source: "xacpx", transportSession: "backend:review" });
+  const ctx = build({ current: previous });
+  ctx.ops.ensureTransportSession = mock(async () => {
+    throw new Error("ensure failed");
+  });
+  await expect(handleSessionResetCommand(ctx.context, ctx.ops, "wx:user")).rejects.toThrow("ensure failed");
+
+  expect(ctx.attachSession).toHaveBeenCalledTimes(1);
+  expect(ctx.rollbackSessionRecord).toHaveBeenCalledTimes(1);
+  expect(ctx.rollbackSessionRecord).toHaveBeenCalledWith("review", expect.objectContaining({
+    alias: "review",
+    logical_session_id: "prev-id",
+  }));
+  expect(ctx.useSession).not.toHaveBeenCalled();
+  // Best-effort cleanup targets ONLY the fresh incarnation, never previous.
+  expect(ctx.removeSession).toHaveBeenCalledTimes(1);
+  expect(ctx.removeSession.mock.calls[0][0]).toMatchObject({
+    transportSession: "backend:review:reset-1700000000001",
+  });
+});
+test("fresh-incarnation cleanup failure never masks the reset rollback", async () => {
+  const previous = resolved({ source: "xacpx", transportSession: "backend:review" });
+  const ctx = build({ current: previous, removeSessionThrows: true });
+  ctx.ops.ensureTransportSession = mock(async () => {
+    throw new Error("ensure failed");
+  });
+  await expect(handleSessionResetCommand(ctx.context, ctx.ops, "wx:user")).rejects.toThrow("ensure failed");
+  expect(ctx.rollbackSessionRecord).toHaveBeenCalledTimes(1);
+  expect(ctx.removeSession).toHaveBeenCalledTimes(1);
+ });
+test("rolls back to previous snapshot when checkTransportSession returns false", async () => {
+  const previous = resolved({ source: "xacpx", transportSession: "backend:review" });
+  const ctx = build({ current: previous });
+  ctx.ops.checkTransportSession = mock(async () => false);
+
+  const reply = await handleSessionResetCommand(ctx.context, ctx.ops, "wx:user");
+
+  expect(ctx.attachSession).toHaveBeenCalledTimes(1);
+  expect(ctx.useSession).not.toHaveBeenCalled();
+  expect(reply.text).toBe(t().misc.sessionResetFailed("review"));
+  expect(ctx.removeSession).toHaveBeenCalledTimes(1);
+  expect(ctx.removeSession.mock.calls[0][0]).toMatchObject({
+    transportSession: "backend:review:reset-1700000000001",
+  });
+});
+
+test("retires the previous runtime identity before reporting success", async () => {
+  const previous = resolved({ source: "xacpx", transportSession: "backend:review", transportEngine: "runtime" });
+  const ctx = build({ current: previous });
+
+  const reply = await handleSessionResetCommand(ctx.context, ctx.ops, "wx:user");
+
+  expect(ctx.releaseLogicalSession).toHaveBeenCalledTimes(1);
+  expect(ctx.releaseLogicalSession.mock.calls[0][0]).toMatchObject({ transportSession: "backend:review" });
+  expect(ctx.removeSession).toHaveBeenCalledTimes(1);
+  expect(ctx.removeSession.mock.calls[0][0]).toMatchObject({ transportSession: "backend:review" });
+  expect(ctx.rollbackSessionRecord).not.toHaveBeenCalled();
+  expect(reply.text).toBe(t().misc.sessionResetSuccess("review"));
+});
+
+test("rolls back when the previous runtime identity cannot be released", async () => {
+  const previous = resolved({ source: "xacpx", transportSession: "backend:review", transportEngine: "runtime" });
+  const ctx = build({ current: previous, releaseThrows: true });
+
+  const reply = await handleSessionResetCommand(ctx.context, ctx.ops, "wx:user");
+
+  expect(ctx.releaseLogicalSession).toHaveBeenCalledTimes(1);
+  expect(ctx.rollbackSessionRecord).toHaveBeenCalledTimes(1);
+  // The fresh incarnation was already selected before the mandatory
+  // release ran; the rollback restores the previous snapshot.
+  expect(ctx.useSession).toHaveBeenCalledTimes(1);
+  // The fresh incarnation is converged like a fresh-ensure failure.
+  expect(ctx.removeSession).toHaveBeenCalledTimes(1);
+  expect(ctx.removeSession.mock.calls[0][0]).toMatchObject({
+    transportSession: "backend:review:reset-1700000000001",
+  });
+});
+
+test("refuses reset while the previous session has a running turn", async () => {
+  const previous = resolved({ source: "xacpx", transportSession: "backend:review", transportEngine: "runtime" });
+  const ctx = build({ current: previous, turnActive: true });
+
+  const reply = await handleSessionResetCommand(ctx.context, ctx.ops, "wx:user");
+
+  expect(ctx.isActiveAnywhere).toHaveBeenCalledWith("review");
+  expect(ctx.attachSession).not.toHaveBeenCalled();
+  expect(ctx.releaseLogicalSession).not.toHaveBeenCalled();
+  expect(reply.text).toBe(t().misc.sessionResetTurnActive("review"));
+});
+
+test("releases the runtime identity but keeps the record while a sibling survives", async () => {
+  const previous = resolved({ source: "xacpx", transportSession: "backend:review", transportEngine: "runtime" });
+  const ctx = build({ current: previous, siblings: [{ transportSession: "backend:review" }] });
+
+  const reply = await handleSessionResetCommand(ctx.context, ctx.ops, "wx:user");
+
+  expect(ctx.releaseLogicalSession).toHaveBeenCalledTimes(1);
+  expect(ctx.removeSession).not.toHaveBeenCalled();
+  expect(reply.text).toBe(t().misc.sessionResetSuccess("review"));
 });

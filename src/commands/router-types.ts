@@ -62,6 +62,20 @@ export type WritableConfigStore = Pick<
   | "unsetRawValue"
 >;
 
+/**
+ * Serialization domain for config disk mutations + permission executor
+ * mutations. The /config + /pm handlers (write new disk config → permission
+ * transport transaction → live publish or disk+live rollback) and the config
+ * watcher / orchestration reload path (load disk snapshot → permission
+ * transaction → live publish) MUST share one instance: otherwise a stale
+ * watcher snapshot loaded while a handler transaction is in flight can
+ * commit the rolled-back value after the handler reports failure.
+ * Structurally satisfied by AsyncMutex; kept as an interface so contexts
+ * stay decoupled from the implementation.
+ */
+export interface ConfigMutationMutex {
+  run<T>(critical: () => Promise<T>): Promise<T>;
+}
 export interface CommandRouterContext {
   sessions: SessionService;
   transport: SessionTransport;
@@ -70,6 +84,15 @@ export interface CommandRouterContext {
   configStore?: WritableConfigStore;
   logger: AppLogger;
   replaceConfig: (updated: AppConfig) => void;
+  /** Refuse destructive lifecycle (reset) while the alias has a running turn. */
+  readonly activeTurns?: import("../sessions/active-turn-registry.js").ActiveTurnRegistry;
+  /**
+   * Shared serialization domain for config disk mutations + permission
+   * executor mutations (see ConfigMutationMutex). Handlers MUST run their
+   * write → permission-transaction → publish/rollback sequence inside it;
+   * the daemon reload path holds the same instance.
+   */
+  configMutationMutex: ConfigMutationMutex;
   quota?: QuotaManager;
   /**
    * Resolves the render format for a chat's `/ssn` native session list. Backed
@@ -115,6 +138,14 @@ export interface OrchestrationRouterOps {
 
 export interface SessionLifecycleOps {
   resolveSession: (alias: string, agent: string, workspace: string, transportSession: string, options?: ResolveSessionOptions) => import("../transport/types").ResolvedSession;
+  /**
+   * Transient attach candidate with the SAME engine the authoritative
+   * attachSession would durably bind (physical-group inheritance, not
+   * config derivation). Existence checks for attach-to-existing MUST use
+   * this — a config-derived transient can route the check to the wrong
+   * engine and refuse an attach the group would inherit.
+   */
+  resolveAttachCandidate: (alias: string, agent: string, workspace: string, transportSession: string, options?: ResolveSessionOptions) => import("../transport/types").ResolvedSession;
   ensureTransportSession: (
     session: import("../transport/types").ResolvedSession,
     reply?: (text: string) => Promise<void>,

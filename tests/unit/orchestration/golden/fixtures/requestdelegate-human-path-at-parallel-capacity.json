@@ -65,6 +65,8 @@
           "workspace": "backend",
           "targetAgent": "claude",
           "guardAcpOutput": true,
+          "logicalSessionId": "lid-a",
+          "transportEngine": "cli",
           "ephemeral": true
         }
       },
@@ -84,6 +86,44 @@
     {
       "port": "loadState",
       "request": null
+    },
+    {
+      "port": "loadState",
+      "request": null
+    },
+    {
+      "port": "resolveWorkerBindingEngine",
+      "request": {
+        "workerSession": "backend:claude:backend:main:p-task-1-slot",
+        "targetAgent": "claude",
+        "workspace": "backend"
+      }
+    },
+    {
+      "port": "saveState",
+      "request": {
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": [],
+        "groups": [],
+        "humanQuestionPackages": [],
+        "tasks": [],
+        "workerBindings": [
+          {
+            "key": "backend:claude:backend:main:p-task-1-slot",
+            "value": {
+              "sourceHandle": "backend:claude:backend:main:p-task-1-slot",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "guardAcpOutput": true,
+              "logicalSessionId": "lid-a",
+              "transportEngine": "cli",
+              "ephemeral": true
+            }
+          }
+        ]
+      }
     },
     {
       "port": "ensureWorkerSession",
@@ -148,6 +188,8 @@
               "workspace": "backend",
               "targetAgent": "claude",
               "guardAcpOutput": true,
+              "logicalSessionId": "lid-a",
+              "transportEngine": "cli",
               "ephemeral": true
             }
           }
@@ -260,6 +302,8 @@
               "workspace": "backend",
               "targetAgent": "claude",
               "guardAcpOutput": true,
+              "logicalSessionId": "lid-a",
+              "transportEngine": "cli",
               "ephemeral": true
             }
           }

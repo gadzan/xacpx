@@ -249,10 +249,16 @@ test("concurrent same-alias creates claim the logical alias before transport sid
   await started;
   const second = router.createSessionWithTransport("relay:demo", "codex", "home");
 
-  await expect(second).rejects.toThrow(/already exists|being created/);
+  // With authoritative identity persisted before transport (R1), the second
+  // concurrent create sees the first's alias already claimed and derives a
+  // free alias (relay:demo-2) instead of racing the transport. Both succeed
+  // but with distinct logical identities — no dual-owner for same alias.
+  await expect(second).resolves.toBeTruthy();
+  const secondSession = await second;
+  expect(secondSession.alias).toBe("relay:demo-2");
   releaseEnsure();
   await expect(first).resolves.toBeTruthy();
-  expect((transport.ensureSession as ReturnType<typeof mock>).mock.calls).toHaveLength(1);
+  expect((transport.ensureSession as ReturnType<typeof mock>).mock.calls).toHaveLength(2);
 });
 
 test("deleting then recreating the same alias does not resume residual transport history", async () => {
@@ -395,21 +401,25 @@ test("/session new auto-derives a free alias when the desired alias already exis
   expect(await sessions.getSession("api-fix")).toMatchObject({ agent: "codex", workspace: "backend" });
 });
 
-test("/session attach still rebinds an existing alias", async () => {
+test("/session attach refuses an existing alias instead of orphaning its LID", async () => {
   const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
   const transport = createTransport();
   const router = new CommandRouter(sessions, transport);
 
   await router.handle("wx:user", "/session new review --agent codex --ws backend");
+  const before = await sessions.getSession("review");
   const reply = await router.handle(
     "wx:user",
     "/session attach review --agent codex --ws backend --name existing-review",
   );
 
-  expect(reply.text).toBe(t().session.sessionAttached("review"));
-  await expect(sessions.getCurrentSession("wx:user")).resolves.toMatchObject({
+  // Overwriting the row would orphan the old Runtime LID (worker/fence/queue)
+  // with no handle left to converge it: refuse, keep the old binding intact.
+  expect(reply.text).toBe(t().session.sessionAlreadyExists("review", "codex", "backend"));
+  await expect(sessions.getSession("review")).resolves.toMatchObject({
     alias: "review",
-    transportSession: "existing-review",
+    transportSession: before?.transportSession,
+    logicalSessionId: before?.logicalSessionId,
   });
 });
 
@@ -1819,4 +1829,121 @@ test("attachNativeSessionWithTransport auto-derives a free alias when the desire
   // A colliding alias should NOT fail — the backend derives `relay:dup-2`.
   const result = await router.attachNativeSessionWithTransport("relay:dup", "codex", "backend", "ses_2");
   expect(result.alias).toBe("relay:dup-2");
+});
+
+test("failed create converges the provisional physical session before dropping the row", async () => {
+  const { router, transport, sessions } = buildRouter();
+  const order: string[] = [];
+  (transport.ensureSession as ReturnType<typeof mock>).mockImplementationOnce(async () => {
+    throw new Error("bridge ensure boom");
+  });
+  (transport.deleteSession as ReturnType<typeof mock>).mockImplementation(async () => {
+    order.push("delete");
+  });
+  const origRemove = sessions.removeSession.bind(sessions);
+  sessions.removeSession = (async (alias: string) => {
+    order.push("remove");
+    return origRemove(alias);
+  }) as typeof sessions.removeSession;
+  await expect(router.handle("wx:user", "/session new provisional --agent codex --ws backend")).rejects.toThrow(
+    /bridge ensure boom/,
+  );
+  // Physical cleanup verified first, logical row dropped after.
+  expect(order).toEqual(["delete", "remove"]);
+  expect(sessions.getResolvedSessionByInternalAlias("provisional")).toBeNull();
+});
+
+test("failed create keeps the row when provisional cleanup cannot be verified", async () => {
+  const { router, transport, sessions } = buildRouter();
+  (transport.ensureSession as ReturnType<typeof mock>).mockImplementationOnce(async () => {
+    throw new Error("bridge ensure boom");
+  });
+  (transport.deleteSession as ReturnType<typeof mock>).mockImplementationOnce(async () => {
+    throw new Error("cleanup delete boom");
+  });
+
+  await expect(router.handle("wx:user", "/session new provisional --agent codex --ws backend")).rejects.toThrow(
+    /kept for retry\/delete/,
+  );
+  expect(sessions.getResolvedSessionByInternalAlias("provisional")).not.toBeNull();
+});
+
+test("control create keeps the row when provisional cleanup cannot be verified", async () => {
+  const { router, transport, sessions, config } = buildRouter();
+  config.workspaces.home = { cwd: "/tmp/home" };
+  (transport.ensureSession as ReturnType<typeof mock>).mockImplementationOnce(async () => {
+    throw new Error("bridge ensure boom");
+  });
+  (transport.deleteSession as ReturnType<typeof mock>).mockImplementationOnce(async () => {
+    throw new Error("cleanup delete boom");
+  });
+
+  await expect(router.createSessionWithTransport("relay:demo", "codex", "home")).rejects.toThrow(
+    /kept for retry\/delete/,
+  );
+  expect(await sessions.getSession("relay:demo")).not.toBeNull();
+});
+
+test("failed native attach converges softly and never hard-deletes the upstream thread", async () => {
+  const { router, transport, sessions } = buildRouter();
+  (transport.resumeAgentSession as ReturnType<typeof mock>).mockImplementationOnce(async () => {
+    throw new Error("bridge resume boom");
+  });
+
+  await expect(
+    router.attachNativeSessionWithTransport("relay:doomed", "codex", "backend", "ses_99"),
+  ).rejects.toThrow("bridge resume boom");
+  // Logical row dropped after convergence, upstream thread untouched.
+  expect(await sessions.getSession("relay:doomed")).toBeNull();
+  expect((transport.deleteSession as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  expect((transport.removeSession as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+});
+
+test("workspace rm refuses while persisted sessions still use it", async () => {
+  const { router, sessions } = buildRouter();
+  await router.handle("wx:user", "/session new guarded --agent codex --ws backend");
+  expect(await sessions.getSession("guarded")).not.toBeNull();
+
+  const reply = await router.handle("wx:user", "/workspace rm backend");
+  expect(reply.text).toContain("仍被");
+  expect(reply.text).toContain("guarded");
+  // Guarded: config untouched.
+  await router.handle("wx:user", "/session rm guarded");
+  const freed = await router.handle("wx:user", "/workspace rm backend");
+  expect(freed.text).not.toContain("仍被");
+});
+
+test("agent rm refuses while persisted sessions still use it", async () => {
+  const { router, sessions } = buildRouter();
+  await router.handle("wx:user", "/session new guarded --agent codex --ws backend");
+  expect(await sessions.getSession("guarded")).not.toBeNull();
+
+  const reply = await router.handle("wx:user", "/agent rm codex");
+  expect(reply.text).toContain("仍被");
+  expect(reply.text).toContain("guarded");
+  await router.handle("wx:user", "/session rm guarded");
+  const freed = await router.handle("wx:user", "/agent rm codex");
+  expect(freed.text).not.toContain("仍被");
+});
+
+test("attach preflight inherits the physical group's CLI engine instead of config runtime", async () => {
+  const { router, transport, sessions, config } = buildRouter();
+  await router.handle("wx:user", "/session new seed --agent codex --ws backend");
+  const seed = await sessions.getSession("seed");
+  expect(seed?.transportEngine).toBe("cli");
+  // Flip the default AFTER the physical session exists: attaching a second
+  // alias must inherit the group's CLI engine — including for the
+  // preflight existence check, which routes by engine.
+  config.transport.engine = "runtime";
+  const reply = await router.handle(
+    "wx:user",
+    `/session attach clone --agent codex --ws backend --name ${seed!.transportSession}`,
+  );
+  expect(reply.text).toBe(t().session.sessionAttached("clone"));
+  const hasSessionMock = transport.hasSession as ReturnType<typeof mock>;
+  const attachCheck = hasSessionMock.mock.calls[hasSessionMock.mock.calls.length - 1]?.[0] as {
+    transportEngine?: string;
+  };
+  expect(attachCheck.transportEngine).toBe("cli");
+  expect((await sessions.getSession("clone"))?.transportEngine).toBe("cli");
 });

@@ -34,31 +34,37 @@ export async function handleAgentAdd(context: CommandRouterContext, templateName
     return { text: a.unsupportedTemplate(listAgentTemplates().join("、")) };
   }
 
-  const existing = context.config.agents[templateName];
   const normalizedModel = model?.trim();
-  // With --model: set/update it. Without --model: preserve an existing model so a
-  // plain re-add never silently wipes a configured default.
-  const desired = normalizedModel
-    ? { ...template, model: normalizedModel }
-    : existing?.model
-      ? { ...template, model: existing.model }
-      : template;
-
-  if (existing) {
-    // Same driver/command and same model → genuine no-op. A differing model with
-    // the same base is treated as an update (the user explicitly passed --model).
-    if (sameAgentConfig(existing, desired)) {
-      if ((existing.model ?? undefined) === (desired.model ?? undefined)) {
-        return { text: a.alreadyExists(templateName) };
+  // Store mutation + whole-snapshot live publish join the shared config
+  // mutation domain (see ConfigMutationMutex). The model-preservation
+  // decision also runs inside: it must see the freshest live config.
+  const configStore = context.configStore;
+  const liveConfig = context.config;
+  return await context.configMutationMutex.run(async () => {
+    const existing = liveConfig.agents[templateName];
+    // With --model: set/update it. Without --model: preserve an existing model so a
+    // plain re-add never silently wipes a configured default.
+    const desired = normalizedModel
+      ? { ...template, model: normalizedModel }
+      : existing?.model
+        ? { ...template, model: existing.model }
+        : template;
+    if (existing) {
+      // Same driver/command and same model → genuine no-op. A differing model with
+      // the same base is treated as an update (the user explicitly passed --model).
+      if (sameAgentConfig(existing, desired)) {
+        if ((existing.model ?? undefined) === (desired.model ?? undefined)) {
+          return { text: a.alreadyExists(templateName) };
+        }
+      } else {
+        return { text: a.alreadyExistsDifferent(templateName) };
       }
-    } else {
-      return { text: a.alreadyExistsDifferent(templateName) };
     }
-  }
 
-  const updated = await context.configStore.upsertAgent(templateName, desired);
-  context.replaceConfig(updated);
-  return { text: a.saved(templateName) };
+    const updated = await configStore.upsertAgent(templateName, desired);
+    context.replaceConfig(updated);
+    return { text: a.saved(templateName) };
+  });
 }
 
 export async function handleAgentRemove(context: CommandRouterContext, agentName: string): Promise<RouterResponse> {
@@ -66,11 +72,25 @@ export async function handleAgentRemove(context: CommandRouterContext, agentName
   if (!context.config || !context.configStore) {
     return { text: a.noWritableConfig };
   }
-  if (!context.config.agents[agentName]) {
-    return { text: a.notFound };
-  }
+  const configStore = context.configStore;
+  const liveConfig = context.config;
+  return await context.configMutationMutex.run(async () => {
+    if (!liveConfig.agents[agentName]) {
+      return { text: a.notFound };
+    }
+    // An agent backing persisted sessions or worker bindings cannot be
+    // removed: their rows would become unresolvable (see
+    // handleWorkspaceRemove).
+    const users = [
+      ...context.sessions.aliasesUsingAgent(agentName),
+      ...context.sessions.workerBindingsUsingAgent(agentName),
+    ];
+    if (users.length > 0) {
+      return { text: a.stillReferenced(agentName, users.join(", ")) };
+    }
 
-  const updated = await context.configStore.removeAgent(agentName);
-  context.replaceConfig(updated);
-  return { text: a.removed(agentName) };
+    const updated = await configStore.removeAgent(agentName);
+    context.replaceConfig(updated);
+    return { text: a.removed(agentName) };
+  });
 }

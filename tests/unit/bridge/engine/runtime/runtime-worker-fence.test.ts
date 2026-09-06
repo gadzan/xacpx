@@ -1,0 +1,1257 @@
+import { expect, test } from "bun:test";
+import { spawn, type ChildProcess } from "node:child_process";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { probeWindowsProcessIdentity } from "../../../../../src/process/windows-process-tree";
+import {
+  RuntimeWorkerFence,
+  dischargeRuntimeWorkerFence,
+  StaleFenceGenerationError,
+  type RuntimeWorkerFenceRecord,
+} from "../../../../../src/bridge/engine/runtime/runtime-worker-fence";
+import { RuntimeWorkerManager } from "../../../../../src/bridge/engine/runtime/runtime-worker-manager";
+import { markRuntimeWorkerFence } from "../../../../../src/bridge/engine/runtime/worker-eof";
+const KEY = "session-A";
+
+function record(overrides: Partial<RuntimeWorkerFenceRecord> = {}): RuntimeWorkerFenceRecord {
+  return {
+    kind: "runtime-worker-owner",
+    logicalSessionId: KEY,
+    generation: "gen-1",
+    pid: 4242,
+    creationDate: null,
+    bootstrapVerified: false,
+    phase: "owned",
+    startedAt: new Date().toISOString(),
+    agent: "runtime-worker",
+    ...overrides,
+  };
+}
+
+/** Spawns a detached long-lived process that is its own group leader (POSIX).
+ *  The 150ms settle is a real OS-process start wait — no fake timer can stand in. */
+async function spawnStubborn(): Promise<ChildProcess> {
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    detached: process.platform !== "win32",
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  return child;
+}
+
+function exited(child: ChildProcess): Promise<void> {
+  return new Promise((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) resolve();
+    else child.once("exit", () => resolve());
+  });
+}
+
+test("fence store: atomic write/read roundtrip and remove", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-store-"));
+  try {
+    const fence = new RuntimeWorkerFence(dir);
+    expect(await fence.read(KEY)).toEqual({ kind: "absent" });
+    await fence.write(record({ pid: 777 }));
+    const read = await fence.read(KEY);
+    expect(read.kind).toBe("present");
+    if (read.kind === "present") {
+      expect(read.record.pid).toBe(777);
+      expect(read.record.kind).toBe("runtime-worker-owner");
+      expect(read.record.phase).toBe("owned");
+    }
+    await fence.remove(KEY);
+    expect(await fence.read(KEY)).toEqual({ kind: "absent" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("fence retire: unlink failure persists the discharged phase, never bricks (round 31 High)", async () => {
+  if (process.platform === "win32") return; // POSIX read-only dir semantics
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-retire-"));
+  try {
+    const fence = new RuntimeWorkerFence(dir);
+    await fence.write(record({ phase: "admitted", creationDate: "133800000000000000", bootstrapVerified: true }));
+    // Read-only directory: BOTH unlink and the durable rewrite fail —
+    // retire must THROW (fail closed), never silently swallow.
+    await chmod(dir, 0o555);
+    await expect(fence.retire(KEY)).rejects.toThrow();
+    await chmod(dir, 0o755);
+    // The record survived untouched (still admitted) — and retiring over it
+    // now succeeds cleanly.
+    expect((await fence.read(KEY)).kind).toBe("present");
+    await fence.retire(KEY);
+    expect(await fence.read(KEY)).toEqual({ kind: "absent" });
+  } finally {
+    await chmod(dir, 0o755).catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("discharge phase table: discharged terminal proof discharges (round 31 Blocking 3 case A)", async () => {
+  // The old worker finished EOF convergence and marked the fence BEFORE
+  // exiting — the new Host trusts the durable verdict; no kill, no brick.
+  let killed = 0;
+  const outcome = await dischargeRuntimeWorkerFence(
+    record({ pid: 4242, phase: "discharged", creationDate: "133800000000000000", bootstrapVerified: true }),
+    {
+      platform: "win32",
+      terminateDescendants: async () => {
+        killed += 1;
+        return { verified: true, outcomes: [], leftover: [] };
+      },
+    },
+  );
+  expect(outcome).toBe("discharged");
+  expect(killed).toBe(0);
+});
+
+test("discharge phase table: spooled refuses until the reaper converges residuals", async () => {
+  let killed = 0;
+  const outcome = await dischargeRuntimeWorkerFence(
+    record({ pid: 4242, phase: "spooled", creationDate: "133800000000000000", bootstrapVerified: true }),
+    {
+      platform: "win32",
+      terminateDescendants: async () => {
+        killed += 1;
+        return { verified: true, outcomes: [], leftover: [] };
+      },
+    },
+  );
+  expect(outcome).toBe("refused");
+  expect(killed).toBe(0);
+});
+
+test("discharge phase table: discharging waits for the worker's own terminal verdict (round 31 Blocking 2)", async () => {
+  // H1 crashed while an ensure was in flight; the worker marked "discharging"
+  // and H2 must WAIT — the gated kill must not fire while the fence can still
+  // reach a terminal phase.
+  const reads = ["discharging", "discharging", "discharged"];
+  let readCalls = 0;
+  let killed = 0;
+  const outcome = await dischargeRuntimeWorkerFence(
+    record({ pid: 4242, phase: "discharging", creationDate: "133800000000000000", bootstrapVerified: true }),
+    {
+      platform: "win32",
+      terminateDescendants: async () => {
+        killed += 1;
+        return { verified: true, outcomes: [], leftover: [] };
+      },
+      readBack: async () => {
+        const phase = reads[Math.min(readCalls, reads.length - 1)]!;
+        readCalls += 1;
+        return { kind: "present", record: record({ pid: 4242, phase, creationDate: "133800000000000000", bootstrapVerified: true }) };
+      },
+      waitMs: async () => {},
+      now: (() => {
+        let tick = 0;
+        return () => tick++ * 400;
+      })(),
+      selfDischargeWaitMs: 90_000,
+    },
+  );
+  expect(outcome).toBe("discharged");
+  expect(killed).toBe(0);
+});
+
+test("discharge phase table: discharging that never settles refuses — no kill against an undecided owner", async () => {
+  let killed = 0;
+  const outcome = await dischargeRuntimeWorkerFence(
+    record({ pid: 4242, phase: "discharging", creationDate: "133800000000000000", bootstrapVerified: true }),
+    {
+      platform: "win32",
+      terminateDescendants: async () => {
+        killed += 1;
+        return { verified: true, outcomes: [], leftover: [] };
+      },
+      readBack: async () => ({ kind: "present", record: record({ pid: 4242, phase: "discharging", creationDate: "133800000000000000", bootstrapVerified: true }) }),
+      waitMs: async () => {},
+      now: (() => {
+        let tick = 0;
+        return () => tick++ * 60_000;
+      })(),
+      selfDischargeWaitMs: 90_000,
+    },
+  );
+  expect(outcome).toBe("refused");
+  expect(killed).toBe(0);
+});
+
+test("discharge phase table: admitted + live root past the wait window REFUSES — H2 never kills an un-quiesced worker (round 32 Blocking 2)", async () => {
+  // Parent-identity stability is NOT descendant-set quiescence: an ensure
+  // blocked before its child spawn could still release after H2's snapshot.
+  // The ONLY safe answer for a live root without a terminal phase is refuse.
+  let killed = 0;
+  const outcome = await dischargeRuntimeWorkerFence(
+    record({ pid: 4242, phase: "admitted", creationDate: "133800000000000000", bootstrapVerified: true }),
+    {
+      platform: "win32",
+      terminateDescendants: async () => {
+        killed += 1;
+        return { verified: true, outcomes: [], leftover: [] };
+      },
+      readBack: async () => ({ kind: "present", record: record({ pid: 4242, phase: "admitted", creationDate: "133800000000000000", bootstrapVerified: true }) }),
+      waitMs: async () => {},
+      now: (() => {
+        let tick = 0;
+        return () => tick++ * 100_000;
+      })(),
+      selfDischargeWaitMs: 90_000,
+    },
+  );
+  expect(outcome).toBe("refused");
+  expect(killed).toBe(0);
+});
+
+test("dead-root recovery disabled: admitted fence without terminal stays refused (I2) — no historical PID kill", async () => {
+  // Historical ParentProcessId + creationDate cannot prove ownership after
+  // root died. Without Job Object / descendant token, fence stays fail-closed.
+  const outcome = await dischargeRuntimeWorkerFence(
+    record({ pid: 4242, phase: "admitted", creationDate: "133800000000000000", bootstrapVerified: true }),
+    {
+      platform: "win32",
+      selfDischargeWaitMs: 0,
+      readBack: async () => ({
+        kind: "present",
+        record: record({ pid: 4242, phase: "admitted", creationDate: "133800000000000000", bootstrapVerified: true }),
+      }),
+    },
+  );
+  expect(outcome).toBe("refused");
+});
+
+test("dead-root recovery disabled: discharging fence without terminal stays refused — H2 never guesses the subtree", async () => {
+  const outcome = await dischargeRuntimeWorkerFence(
+    record({ pid: 4242, phase: "discharging", creationDate: "133800000000000000", bootstrapVerified: true }),
+    {
+      platform: "win32",
+      selfDischargeWaitMs: 0,
+      readBack: async () => ({
+        kind: "present",
+        record: record({ pid: 4242, phase: "discharging", creationDate: "133800000000000000", bootstrapVerified: true }),
+      }),
+    },
+  );
+  expect(outcome).toBe("refused");
+});
+
+test("spool handshake: pending residuals refuse; an emptied namespace lifts the fence (round 32 Blocking 3)", async () => {
+  let pending = true;
+  let marked: RuntimeWorkerFenceRecord | undefined;
+  const refused = await dischargeRuntimeWorkerFence(
+    record({ pid: 4242, phase: "spooled", creationDate: "133800000000000000", bootstrapVerified: true, generation: "gen-spool" }),
+    { platform: "win32", spooledResidualsRemaining: async () => pending },
+  );
+  expect(refused).toBe("refused");
+  pending = false;
+  const lifted = await dischargeRuntimeWorkerFence(
+    record({ pid: 4242, phase: "spooled", creationDate: "133800000000000000", bootstrapVerified: true, generation: "gen-spool" }),
+    {
+      platform: "win32",
+      spooledResidualsRemaining: async () => pending,
+      markDischarged: async (current) => {
+        marked = current;
+      },
+    },
+  );
+  expect(lifted).toBe("discharged");
+  expect(marked?.generation).toBe("gen-spool");
+});
+
+test("fence store: corrupt JSON is UNREADABLE, never absent (round 30 Blocking 1)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-corrupt-"));
+  try {
+    const fence = new RuntimeWorkerFence(dir);
+    await fence.write(record());
+    const path = join(dir, `${encodeURIComponent(KEY)}.json`);
+    await writeFile(path, "{ this is not json");
+    const read = await fence.read(KEY);
+    expect(read.kind).toBe("unreadable");
+    if (read.kind === "unreadable") expect(read.reason).toContain("corrupt");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("fence store: foreign schema / key mismatch is UNREADABLE (round 30 Blocking 1)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-schema-"));
+  try {
+    const fence = new RuntimeWorkerFence(dir);
+    const path = join(dir, `${encodeURIComponent(KEY)}.json`);
+    await writeFile(path, JSON.stringify({ kind: "something-else", pid: 1 }));
+    expect((await fence.read(KEY)).kind).toBe("unreadable");
+    await writeFile(path, JSON.stringify({ ...record(), logicalSessionId: "OTHER" }));
+    expect((await fence.read(KEY)).kind).toBe("unreadable");
+    await writeFile(path, JSON.stringify({ ...record(), pid: -5 }));
+    expect((await fence.read(KEY)).kind).toBe("unreadable");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("fence store: unreadable I/O (EACCES) is UNREADABLE, never absent (round 30 Blocking 1)", async () => {
+  if (process.platform === "win32") return; // POSIX permission model only
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-eacces-"));
+  try {
+    const fence = new RuntimeWorkerFence(dir);
+    await fence.write(record());
+    await chmod(join(dir, `${encodeURIComponent(KEY)}.json`), 0o000);
+    const read = await fence.read(KEY);
+    // Running as root would bypass the mode bits — only assert when it bit.
+    if (read.kind === "unreadable") expect(read.reason).toBeTruthy();
+    else expect(process.getuid?.()).toBe(0);
+  } finally {
+    await chmod(join(dir, `${encodeURIComponent(KEY)}.json`), 0o644).catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("manager acquire: corrupt fence refuses the spawn with zero workers (round 30 Blocking 1)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-corrupt-mgr-"));
+  const fenceDir = join(dir, "worker-fences");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await writeFile(entry, "process.stdin.on('data', () => {});");
+    const fence = new RuntimeWorkerFence(fenceDir);
+    await fence.write(record({ pid: 999 }));
+    await writeFile(join(fenceDir, `${encodeURIComponent(KEY)}.json`), "CORRUPT-{");
+    const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+    await expect(manager.acquire(KEY)).rejects.toThrow(/UNREADABLE/);
+    expect(manager.get(KEY)).toBeUndefined();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test("fence discharge (POSIX): live group is NEVER killed externally — wait window then refuse (round 32 Blocking 4)", async () => {
+  if (process.platform === "win32") return;
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-posix-"));
+  const stubborn = await spawnStubborn();
+  try {
+    // A bare historical PGID is not a kill authority (pid/PGID reuse): H2
+    // only waits for the worker's own exit, then refuses. The unrelated-looking
+    // group MUST survive the discharge attempt untouched.
+    const outcome = await dischargeRuntimeWorkerFence(record({ pid: stubborn.pid! }), {
+      selfDischargeWaitMs: 400,
+      waitMs: async () => {},
+      now: (() => {
+        let tick = 0;
+        return () => tick++ * 500;
+      })(),
+    });
+    expect(outcome).toBe("refused");
+    expect(() => process.kill(stubborn.pid!, 0)).not.toThrow();
+  } finally {
+    stubborn.kill("SIGKILL");
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test("fence discharge (POSIX): a live group that EXITS during the wait discharges without a kill", async () => {
+  if (process.platform === "win32") return;
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-posix-self-"));
+  const stubborn = await spawnStubborn();
+  try {
+    // The old worker is the quiescence authority: it exits on its own (EOF
+    // convergence) and H2 observes gone — the self-discharge handoff.
+    setTimeout(() => stubborn.kill("SIGKILL"), 150);
+    const outcome = await dischargeRuntimeWorkerFence(record({ pid: stubborn.pid! }), {
+      selfDischargeWaitMs: 30_000,
+    });
+    expect(outcome).toBe("discharged");
+    await exited(stubborn);
+  } finally {
+    stubborn.kill("SIGKILL");
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test("fence discharge (POSIX): dead group discharges without a kill", async () => {
+  const outcome = await dischargeRuntimeWorkerFence(record(), {
+    platform: "darwin",
+    isProcessGroupAlive: () => false,
+  });
+  expect(outcome).toBe("discharged");
+});
+
+test("fence discharge (POSIX): unknown liveness refuses immediately — no kill on unverifiable evidence", async () => {
+  let kills = 0;
+  const outcome = await dischargeRuntimeWorkerFence(record(), {
+    platform: "darwin",
+    probeProcessGroup: () => "unknown",
+    killGroup: () => {
+      kills += 1;
+    },
+    selfDischargeWaitMs: 0,
+  });
+  expect(outcome).toBe("refused");
+  expect(kills).toBe(0);
+});
+
+test("fence discharge (POSIX): EPERM on the liveness probe is UNKNOWN — refused, never discharged (round 31 Blocking 4)", async () => {
+  // signal 0 failing with EPERM means "cannot verify", which is neither
+  // alive nor gone: discharging here would upgrade unreadable ownership
+  // evidence into a second-owner spawn.
+  let kills = 0;
+  const outcome = await dischargeRuntimeWorkerFence(record(), {
+    platform: "darwin",
+    probeProcessGroup: () => "unknown",
+    killGroup: () => {
+      kills += 1;
+    },
+  });
+  expect(outcome).toBe("refused");
+  expect(kills).toBe(0);
+});
+
+test("fence discharge (POSIX): ESRCH is the ONLY proof of a gone group", async () => {
+  const gone = await dischargeRuntimeWorkerFence(record(), {
+    platform: "darwin",
+    probeProcessGroup: () => "gone",
+  });
+  expect(gone).toBe("discharged");
+});
+
+test("fence discharge (Windows): never-verified worker could not have adapters — discharged", async () => {
+  // Round 30 Blocking 2 makes this a hard invariant: the durable admission
+  // barrier means a never-verified fence cannot have entered a business RPC.
+  let terminated = 0;
+  const outcome = await dischargeRuntimeWorkerFence(record({ bootstrapVerified: false, creationDate: null }), {
+    platform: "win32",
+    terminateDescendants: async () => {
+      terminated += 1;
+      return { verified: true, outcomes: [], leftover: [] };
+    },
+  });
+  expect(outcome).toBe("discharged");
+  expect(terminated).toBe(0);
+});
+
+async function withFakeWorker(entry: string): Promise<void> {
+  await writeFile(
+    entry,
+    [
+      "let buffer='';",
+      "process.stdin.on('data', (d) => {",
+      "  buffer += d.toString();",
+      "  let idx;",
+      "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+      "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+      "    if (!line) continue;",
+      "    try { const msg = JSON.parse(line);",
+      "      process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+      "      if (msg.method === 'shutdown') process.exit(0);",
+      "    } catch {}",
+      "  }",
+      "});",
+    ].join("\n"),
+  );
+}
+
+test("host restart: a LIVE orphan group is never killed by H2 — refuse first, recover after self-exit (round 32 Blocking 2/4)", async () => {
+  if (process.platform === "win32") return;
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-restart-"));
+  const fenceDir = join(dir, "worker-fences");
+  const orphan = await spawnStubborn();
+  const fence = new RuntimeWorkerFence(fenceDir);
+  await fence.write(record({ pid: orphan.pid!, bootstrapVerified: true }));
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir, clientDeps: { selfDischargeWaitMs: 600 } });
+    // While the old worker's group is ALIVE, H2 refuses — a bare PGID is not
+    // a kill authority, and the old worker owns quiescence.
+    await expect(manager.acquire(KEY)).rejects.toThrow(/durable ownership fence/);
+    expect(() => process.kill(orphan.pid!, 0)).not.toThrow();
+    expect(manager.get(KEY)).toBeUndefined();
+    // The worker's own exit (the real EOF self-discharge analogue) is what
+    // releases the session — then the very next acquire spawns a NEW owner
+    // under a FRESH fence.
+    orphan.kill("SIGKILL");
+    await exited(orphan);
+    const worker = await manager.acquire(KEY);
+    expect(worker.ref.pid).not.toBe(orphan.pid);
+    const refenced = await fence.read(KEY);
+    expect(refenced.kind).toBe("present");
+    if (refenced.kind === "present") expect(refenced.record.pid).toBe(worker.ref.pid);
+    worker.lifecycle = "stopped";
+    await manager.release(KEY, worker);
+    expect((await fence.read(KEY)).kind).toBe("absent");
+    await manager.shutdownAll().catch(() => {});
+  } finally {
+    orphan.kill("SIGKILL");
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("host restart: an undischargeable Windows fence refuses the second owner spawn (fail closed)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-refuse-"));
+  const fenceDir = join(dir, "worker-fences");
+  const fence = new RuntimeWorkerFence(fenceDir);
+  // In-transaction gate observes a replaced/dead parent → unverified → refused.
+  await fence.write(record({ pid: 4242, creationDate: "133800000000000000", bootstrapVerified: true }));
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    const manager = new RuntimeWorkerManager({
+      entryPath: entry,
+      fenceDir,
+      clientDeps: {
+        platform: "win32",
+        selfDischargeWaitMs: 300,
+        terminateDescendantsOf: async (_pid, options) => {
+          // The recovery path must pass the parent fingerprint AND the
+          // dead-parent recovery flag — the birth-order cutoff contract.
+          expect(options.expectedParentCreationDate).toBe("133800000000000000");
+          expect(options.recoverDeadParent).toBe(true);
+          return { verified: false, outcomes: [], leftover: [] };
+        },
+      },
+    });
+    await expect(manager.acquire(KEY)).rejects.toThrow(/durable ownership fence/);
+    expect(manager.get(KEY)).toBeUndefined();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test("unfenceable spawn fails closed: fence write failure kills the fresh worker", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-fail-"));
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    // A FILE where the fence directory must be: mkdir/write fails.
+    const fenceBlocker = join(dir, "not-a-dir");
+    await writeFile(fenceBlocker, "blocked");
+    const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir: join(fenceBlocker, "worker-fences") });
+    await expect(manager.acquire(KEY)).rejects.toThrow(/durable ownership fence/);
+    expect(manager.get(KEY)).toBeUndefined();
+    await manager.shutdownAll().catch(() => {});
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test("production integration: the WORKER sees the DISK fence admitted at its OWN ensure entry (round 31 Blocking 1)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-b1-"));
+  const fenceDir = join(dir, "worker-fences");
+  try {
+    // The fake worker READS THE FENCE FILE ITSELF at the ensure entry point
+    // and reports what was on disk at that exact moment — the ordering proof
+    // lives at the boundary, not in a post-hoc test-side read.
+    const entry = join(dir, "fake-worker.mjs");
+    await writeFile(
+      entry,
+      [
+        "const fs = require('node:fs');",
+        "let buffer='';",
+        "process.stdin.on('data', (d) => {",
+        "  buffer += d.toString();",
+        "  let idx;",
+        "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+        "    if (!line) continue;",
+        "    try { const msg = JSON.parse(line);",
+        "      if (msg.method === 'ensure') {",
+        "        let fencePhase = null;",
+        "        let fenceBootstrap = null;",
+        "        let fenceCreation = null;",
+        "        try {",
+        "          const rec = JSON.parse(fs.readFileSync(process.env.XACPX_WORKER_FENCE, 'utf8'));",
+        "          fencePhase = rec.phase;",
+        "          fenceBootstrap = rec.bootstrapVerified;",
+        "          fenceCreation = rec.creationDate;",
+        "        } catch {}",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true, fencePhase, fenceBootstrap, fenceCreation } }) + '\\n');",
+        "      } else {",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true } }) + '\\n');",
+        "      }",
+        "      if (msg.method === 'shutdown') process.exit(0);",
+        "    } catch {}",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+    const manager = new RuntimeWorkerManager({
+      entryPath: entry,
+      fenceDir,
+      clientDeps: {
+        platform: "win32",
+        probeWindowsIdentity: async (pid) => ({
+          status: "found",
+          identity: { pid, creationDate: "133800000000000099", executablePath: "C:\\w.exe" },
+        }),
+      },
+    });
+    const worker = await manager.acquire(KEY);
+    const result = await worker.request<{ ready: boolean; fencePhase: string | null; fenceBootstrap: boolean | null; fenceCreation: string | null }>(
+      "ensure",
+      {},
+    );
+    // What the WORKER observed on disk at the ensure boundary:
+    expect(result.fencePhase).toBe("admitted");
+    expect(result.fenceBootstrap).toBe(true);
+    expect(result.fenceCreation).toBe("133800000000000099");
+    // And the disk still agrees afterwards.
+    const read = await new RuntimeWorkerFence(fenceDir).read(KEY);
+    expect(read.kind).toBe("present");
+    if (read.kind === "present") {
+      expect(read.record.phase).toBe("admitted");
+      expect(read.record.creationDate).toBe("133800000000000099");
+      expect(read.record.pid).toBe(worker.ref.pid);
+      expect(read.record.generation).toBe(worker.ref.generation);
+    }
+    await manager.shutdownAll().catch(() => {});
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);
+
+test("worker phase marking: generation-bound — a stale worker can never touch a newer owner's fence", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-mark-"));
+  try {
+    const fence = new RuntimeWorkerFence(dir);
+    await fence.write(record({ pid: 500, phase: "admitted", creationDate: "133800000000000000", bootstrapVerified: true, generation: "gen-NEW" }));
+    const path = join(dir, `${encodeURIComponent(KEY)}.json`);
+    // Stale generation: no overwrite.
+    process.env.XACPX_WORKER_FENCE = path;
+    process.env.XACPX_WORKER_FENCE_GENERATION = "gen-OLD";
+    const { markRuntimeWorkerFence } = await import("../../../../../src/bridge/engine/runtime/worker-eof");
+    await markRuntimeWorkerFence("discharged");
+    expect(((await fence.read(KEY)) as { kind: "present"; record: RuntimeWorkerFenceRecord }).record.phase).toBe("admitted");
+    // Matching generation: phase updates.
+    process.env.XACPX_WORKER_FENCE_GENERATION = "gen-NEW";
+    await markRuntimeWorkerFence("discharged");
+    const read = await fence.read(KEY);
+    expect(read.kind).toBe("present");
+    if (read.kind === "present") expect(read.record.phase).toBe("discharged");
+    delete process.env.XACPX_WORKER_FENCE;
+    delete process.env.XACPX_WORKER_FENCE_GENERATION;
+  } finally {
+    delete process.env.XACPX_WORKER_FENCE;
+    delete process.env.XACPX_WORKER_FENCE_GENERATION;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("cross-host handoff E2E (POSIX): EOF marks discharging, worker exits, fence retires, respawn allowed", async () => {
+  if (process.platform === "win32") return;
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-handoff-"));
+  const fenceDir = join(dir, "worker-fences");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+    const worker = await manager.acquire(KEY);
+    await worker.request("ensure", {});
+    expect(worker.ref.pid).toBeGreaterThan(0);
+    // Host "dies": stdin EOF → the worker quiesces, marks the fence, converges.
+    worker["child"]?.stdin?.end();
+    const exitDeadline = Date.now() + 15_000;
+    while (worker.alive && Date.now() < exitDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(worker.alive).toBe(false);
+    // The crash-cleanup path converges ownership: the fence ends up retired
+    // (or at minimum durably discharged) — either way a NEW owner is provably
+    // safe, and the very next acquire spawns it.
+    const fence = new RuntimeWorkerFence(fenceDir);
+    let read = await fence.read(KEY);
+    if (read.kind === "present" && read.record.phase === "discharged") {
+      await fence.retire(KEY);
+      read = await fence.read(KEY);
+    }
+    expect(read.kind).toBe("absent");
+    const worker2 = await manager.acquire(KEY);
+    expect(worker2.ref.pid).not.toBe(worker.ref.pid);
+    await manager.shutdownAll().catch(() => {});
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("fence write chain: a slow initial write can never rename after the admitted upgrade (round 31 Blocking 1)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-chain-"));
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await writeFile(entry, "process.stdin.on('data', () => {});");
+    const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir: join(dir, "wf") });
+    // Drive the serializer directly: schedule an initial write whose rename
+    // lands LAST, then an admitted upgrade — the chain must order them.
+    const fence = new RuntimeWorkerFence(join(dir, "wf"));
+    let releaseInitial!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseInitial = resolve;
+    });
+    const order: string[] = [];
+    const initial = manager["enqueueFenceWrite"](KEY, async () => {
+      await gate;
+      await fence.write(record({ pid: 1, phase: "owned" }));
+      order.push("owned");
+    });
+    const upgrade = manager["enqueueFenceWrite"](KEY, async () => {
+      await fence.write(record({ pid: 2, phase: "admitted", bootstrapVerified: true }));
+      order.push("admitted");
+    });
+    releaseInitial();
+    await Promise.all([initial, upgrade]);
+    // The DISK record is the admitted one — the late owned write lost the race
+    // by construction, not by luck.
+    const read = await fence.read(KEY);
+    expect(read.kind).toBe("present");
+    if (read.kind === "present") expect(read.record.phase).toBe("admitted");
+    expect(order).toEqual(["owned", "admitted"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test("REAL Windows regression: killed worker's stubborn adapter is recovered, fence retired, then W2 spawns", async () => {
+  if (process.platform !== "win32") return;
+  // Review round 32 Blocking 1 acceptance, on real processes:
+  //   fenced W → W spawns stubborn A → kill W ITSELF (no EOF handler runs)
+  //   → simulate Host restart (fresh manager) → A physically converges
+  //   → ownership evidence retired → ONLY THEN W2 may spawn.
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-b1win-"));
+  const fenceDir = join(dir, "worker-fences");
+  const childPidFile = join(dir, "adapter.pid");
+  // Plain `node` fixtures: the CIM identity probe (production oracle) is
+  // proven against node.exe images on the runner.
+  const worker = spawn(
+    "node",
+    [
+      "-e",
+      "const {spawn}=require('node:child_process');const fs=require('node:fs');" +
+        "const a=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});" +
+        "fs.writeFileSync(process.argv[1],String(a.pid));setInterval(()=>{},1000)",
+      childPidFile,
+    ],
+    { detached: true, stdio: "ignore", windowsHide: true },
+  );
+  let adapterPid = 0;
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    adapterPid = Number.parseInt(await readFile(childPidFile, "utf8"), 10);
+    expect(adapterPid).toBeGreaterThan(0);
+
+    // The manager durable-fences W after bootstrap (admitted fingerprint).
+    const entry = join(dir, "fake-worker.mjs");
+    await writeFile(entry, "process.stdin.on('data', () => {});");
+    const manager = new RuntimeWorkerManager({
+      entryPath: entry,
+      fenceDir,
+      clientDeps: {
+        platform: "win32",
+        probeWindowsIdentity: async () => {
+          // The EXTERNAL process W stands in for the spawned worker: expose
+          // its verified identity to the fence machinery.
+          return { status: "found", identity: { pid: worker.pid!, creationDate: "133800000000000000", executablePath: "C:\\w.exe" } };
+        },
+        terminateProcessTree: async () => {
+          throw new Error("host crash cleanup never completes (simulated)");
+        },
+      },
+    });
+
+    const fence = new RuntimeWorkerFence(fenceDir);
+    await fence.write(
+      record({
+        pid: worker.pid!,
+        creationDate: "133800000000000000",
+        bootstrapVerified: true,
+        phase: "admitted",
+        generation: "gen-b1win",
+      }),
+    );
+
+    // Worker W itself is killed: no EOF handler can run.
+    // taskkill WITHOUT /T terminates W alone — the runtime kill() may take
+    // the whole tree on Windows, which would defeat the fixture.
+    spawn("taskkill", ["/PID", String(worker.pid!), "/F"], { stdio: "ignore", windowsHide: true });
+    let adapterWasAlive = false;
+    for (let i = 0; i < 40; i += 1) {
+      const probe = await probeWindowsProcessIdentity(adapterPid, { workerDeadlineMs: 30_000 });
+      if (probe.status === "found") {
+        adapterWasAlive = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    // Host restart: H2 must NOT guess the subtree via historical
+    // ParentProcessId. Without a root-independent proof (Job Object / token),
+    // the fence stays fail-closed (I2) — even though W is dead.
+    const manager2 = new RuntimeWorkerManager({
+      entryPath: entry,
+      fenceDir,
+      clientDeps: {
+        platform: "win32",
+        selfDischargeWaitMs: 2_000,
+      },
+    });
+    await expect(manager2.acquire(KEY)).rejects.toThrow(/RUNTIME_WORKER_TEARDOWN_PENDING|durable ownership fence.*undischarged/);
+    const read = await fence.read(KEY);
+    expect(read.kind).toBe("present");
+    if (read.kind === "present") {
+      expect(read.record.phase).toBe("admitted");
+      expect(read.record.pid).not.toBe(4242);
+    }
+    // No W2 — fence retained, session stays fenced.
+  } finally {
+    try { worker.kill("SIGKILL"); } catch {}
+    try { if (adapterPid) process.kill(adapterPid, "SIGKILL"); } catch {}
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 240_000);
+
+test("spool handshake full chain: registry residuals keep the fence; reaper cleanup lifts it (round 32 Blocking 3)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-spool-"));
+  const fenceDir = join(dir, "worker-fences");
+  const runtimeDir = join(dir, "runtime");
+  try {
+    const fence = new RuntimeWorkerFence(fenceDir);
+    await fence.write(record({ pid: 4242, phase: "spooled", creationDate: "133800000000000000", bootstrapVerified: true, generation: "44444444-4444-4444-8444-444444444444" }));
+    // The worker spooled residuals bound to THIS fence generation.
+    const { OrphanRegistry } = await import("../../../../../src/transport/orphan-registry");
+    const registry = new OrphanRegistry(runtimeDir);
+    await registry.initialize();
+    const residual = (pid: number) => ({
+      kind: "residual" as const,
+      ownerToken: "11111111-1111-4111-8111-111111111111",
+      pid,
+      creationDate: "133801632000000010",
+      commandLine: "adapter",
+      executablePath: "C:\\adapter.exe",
+      agentCommand: "runtime-worker-orphan",
+      generationId: "44444444-4444-4444-8444-444444444444",
+      killAttempts: 0,
+    });
+    await registry.writeResidual(residual(501));
+    await registry.writeResidual(residual(502));
+
+    const remaining = async (): Promise<boolean> => {
+      const records = await registry.readCategory("residuals");
+      return records === null || records.some(({ record }) => record.generationId === "44444444-4444-4444-8444-444444444444");
+    };
+    const entry = join(dir, "fake-worker.mjs");
+    await writeFile(entry, "process.stdin.on('data', () => {});");
+    const manager = new RuntimeWorkerManager({
+      entryPath: entry,
+      fenceDir,
+      clientDeps: { platform: "win32", spooledResidualsRemaining: remaining },
+    });
+
+    // Residuals pending: the session stays fenced.
+    await expect(manager.acquire(KEY)).rejects.toThrow(/durable ownership fence/);
+    expect(manager.get(KEY)).toBeUndefined();
+
+    // The daemon reaper converges BOTH residuals (terminal cleanup simulated
+    // by the registry reflecting post-sweep state).
+    await registry.deleteResidual(`${"11111111-1111-4111-8111-111111111111"}-501.json`);
+    await registry.deleteResidual(`${"11111111-1111-4111-8111-111111111111"}-502.json`);
+
+    // The handshake lifts the phase to discharged and retires: respawn works.
+    const w2 = await manager.acquire(KEY);
+    expect(w2.ref.pid).toBeGreaterThan(0);
+    // The lifted fence was retired and the NEW owner already re-fenced under
+    // its own generation.
+    const refenced = await fence.read(KEY);
+    expect(refenced.kind).toBe("present");
+    if (refenced.kind === "present") {
+      expect(refenced.record.phase).toBe("owned");
+      expect(refenced.record.pid).toBe(w2.ref.pid);
+    }
+    w2.lifecycle = "stopped";
+    await manager.release(KEY, w2);
+    expect((await fence.read(KEY)).kind).toBe("absent");
+    await manager.shutdownAll().catch(() => {});
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);
+test("claim: failed claim leaves no residue and never removes another host's fence", async () => {
+  if (process.platform === "win32") return; // POSIX read-only dir semantics
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-claim-"));
+  try {
+    const fence = new RuntimeWorkerFence(dir);
+    // Another host's fence: EEXIST race must preserve it byte-for-byte.
+    await fence.write(record({ pid: 1111 }));
+    const before = await readFile(join(dir, `${encodeURIComponent(KEY)}.json`), "utf8");
+    await expect(fence.claim(record({ pid: 2222 }))).rejects.toThrow(/already exists/);
+    expect(await readFile(join(dir, `${encodeURIComponent(KEY)}.json`), "utf8")).toBe(before);
+
+    // Unwritable directory: claim throws and creates no file.
+    const roDir = join(dir, "ro-fences");
+    await mkdir(roDir, { recursive: true });
+    const roFence = new RuntimeWorkerFence(roDir);
+    await chmod(roDir, 0o555);
+    try {
+      await expect(roFence.claim(record({ pid: 3333 }))).rejects.toThrow();
+    } finally {
+      await chmod(roDir, 0o755).catch(() => {});
+    }
+    expect(await readdir(roDir)).toEqual([]);
+  } finally {
+    await chmod(join(dir, "ro-fences"), 0o755).catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("crash between spawn and owned durable recovers without unreadable fence", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-crash-window-"));
+  const fenceDir = join(dir, "worker-fences");
+  const crashKey = "session-crash-window";
+  const fencePath = join(fenceDir, `${encodeURIComponent(crashKey)}.json`);
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    const fence = new RuntimeWorkerFence(fenceDir);
+    // Host claimed (pre-spawn, no pid) then crashed after spawn() but
+    // before the owned upgrade durably landed.
+    await fence.claim({
+      kind: "runtime-worker-owner",
+      logicalSessionId: crashKey,
+      generation: "gen-crash",
+      bootstrapVerified: false,
+      phase: "claiming",
+      startedAt: new Date().toISOString(),
+      agent: "runtime-worker",
+    });
+    // Simulate the crashed host's worker EOF with the same generation.
+    const prevFence = process.env.XACPX_WORKER_FENCE;
+    const prevGen = process.env.XACPX_WORKER_FENCE_GENERATION;
+    process.env.XACPX_WORKER_FENCE = fencePath;
+    process.env.XACPX_WORKER_FENCE_GENERATION = "gen-crash";
+    try {
+      expect(await markRuntimeWorkerFence("discharging")).toBe("updated");
+    } finally {
+      if (prevFence === undefined) delete process.env.XACPX_WORKER_FENCE;
+      else process.env.XACPX_WORKER_FENCE = prevFence;
+      if (prevGen === undefined) delete process.env.XACPX_WORKER_FENCE_GENERATION;
+      else process.env.XACPX_WORKER_FENCE_GENERATION = prevGen;
+    }
+    // The wedge symptom would be "unreadable" (pid-less non-claiming
+    // phase). The worker upgrades the claim with its own pid instead.
+    const read = await fence.read(crashKey);
+    expect(read.kind).toBe("present");
+    if (read.kind !== "present") return;
+    expect(read.record.phase).toBe("discharging");
+    expect(read.record.pid).toBe(process.pid);
+    // Worker finishes convergence; the next host acquires cleanly — never
+    // wedged on an unreadable fence.
+    process.env.XACPX_WORKER_FENCE = fencePath;
+    process.env.XACPX_WORKER_FENCE_GENERATION = "gen-crash";
+    try {
+      expect(await markRuntimeWorkerFence("discharged")).toBe("updated");
+    } finally {
+      if (prevFence === undefined) delete process.env.XACPX_WORKER_FENCE;
+      else process.env.XACPX_WORKER_FENCE = prevFence;
+      if (prevGen === undefined) delete process.env.XACPX_WORKER_FENCE_GENERATION;
+      else process.env.XACPX_WORKER_FENCE_GENERATION = prevGen;
+    }
+    const manager = new RuntimeWorkerManager({
+      entryPath: entry,
+      fenceDir,
+      clientDeps: { probeProcessGroup: () => "gone" },
+    });
+    try {
+      const client = await manager.acquire(crashKey);
+      expect(client.alive).toBe(true);
+    } finally {
+      await manager.shutdownAll().catch(() => {});
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);
+test("CAS: a stale generation can never overwrite its successor", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-cas-"));
+  try {
+    const fence = new RuntimeWorkerFence(dir);
+    await fence.claim(record({ generation: "gen-1", phase: "claiming", pid: process.pid, bootstrapVerified: false }));
+    // Happy path: claiming -> owned for the owning generation.
+    await fence.compareAndSwap(
+      KEY,
+      { generation: "gen-1", from: ["claiming"] },
+      record({ generation: "gen-1", phase: "owned", pid: 111 }),
+    );
+    // Successor takes over through the only legal path: retire + fresh claim.
+    await fence.retire(KEY, "gen-1");
+    await fence.claim(record({ generation: "gen-2", phase: "claiming", pid: 999001, bootstrapVerified: false }));
+    // The stalled first claimant wakes up: both its owned and admitted
+    // upgrades must fail closed, never clobbering gen-2.
+    await expect(
+      fence.compareAndSwap(KEY, { generation: "gen-1", from: ["claiming"] }, record({ generation: "gen-1", phase: "owned", pid: 111 })),
+    ).rejects.toBeInstanceOf(StaleFenceGenerationError);
+    await expect(
+      fence.compareAndSwap(KEY, { generation: "gen-1", from: ["owned"] }, record({ generation: "gen-1", phase: "admitted", pid: 111, bootstrapVerified: true })),
+    ).rejects.toBeInstanceOf(StaleFenceGenerationError);
+    const read = await fence.read(KEY);
+    expect(read.kind).toBe("present");
+    if (read.kind === "present") {
+      expect(read.record.generation).toBe("gen-2");
+      expect(read.record.phase).toBe("claiming");
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("CAS: illegal predecessor phase fails closed without touching disk", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-casphase-"));
+  try {
+    const fence = new RuntimeWorkerFence(dir);
+    await fence.claim(record({ generation: "gen-1", phase: "claiming", pid: process.pid, bootstrapVerified: false }));
+    // claiming -> admitted skips owned: rejected even for the right generation.
+    await expect(
+      fence.compareAndSwap(KEY, { generation: "gen-1", from: ["owned"] }, record({ generation: "gen-1", phase: "admitted", pid: 111, bootstrapVerified: true })),
+    ).rejects.toBeInstanceOf(StaleFenceGenerationError);
+    const read = await fence.read(KEY);
+    expect(read.kind).toBe("present");
+    if (read.kind === "present") expect(read.record.phase).toBe("claiming");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("cross-host: stalled H1 loses to H2 takeover and can never overwrite G2", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-xhost-"));
+  try {
+    const fence = new RuntimeWorkerFence(dir);
+    const h1Key = "xhost-sess";
+    const h1 = (overrides: Partial<RuntimeWorkerFenceRecord> = {}): RuntimeWorkerFenceRecord => ({
+      ...record({ logicalSessionId: h1Key, generation: "G1", phase: "claiming", pid: 990001, bootstrapVerified: false }),
+      ...overrides,
+    });
+    // H1 claims, then stalls past the claiming window (claimant is dead).
+    await fence.claim(h1());
+    const g1read = await fence.read(h1Key);
+    if (g1read.kind !== "present") throw new Error("setup failed");
+    const outcome = await dischargeRuntimeWorkerFence(g1read.record, {
+      platform: "linux",
+      probeClaimant: () => "gone",
+      selfDischargeWaitMs: 1,
+      waitMs: async () => {},
+      markDischarged: async (current, from) => {
+        await fence.compareAndSwap(h1Key, { generation: current.generation, from }, { ...current, phase: "discharged" });
+      },
+    });
+    expect(outcome).toBe("discharged");
+    // H2 takes over through retire + fresh claim.
+    await fence.retire(h1Key, "G1");
+    await fence.claim(record({ logicalSessionId: h1Key, generation: "G2", phase: "claiming", pid: 990002, bootstrapVerified: false }));
+    // H1 wakes up and replays its whole upgrade chain: every step fails.
+    await expect(
+      fence.compareAndSwap(h1Key, { generation: "G1", from: ["claiming"] }, h1({ phase: "owned", pid: 555 })),
+    ).rejects.toBeInstanceOf(StaleFenceGenerationError);
+    await expect(
+      fence.compareAndSwap(h1Key, { generation: "G1", from: ["owned"] }, h1({ phase: "admitted", pid: 555, bootstrapVerified: true })),
+    ).rejects.toBeInstanceOf(StaleFenceGenerationError);
+    await expect(fence.retire(h1Key, "G1")).rejects.toBeInstanceOf(StaleFenceGenerationError);
+    const read = await fence.read(h1Key);
+    expect(read.kind).toBe("present");
+    if (read.kind === "present") {
+      expect(read.record.generation).toBe("G2");
+      expect(read.record.phase).toBe("claiming");
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("claiming discharge refuses while the claimant host is still alive", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-claimlive-"));
+  try {
+    const fence = new RuntimeWorkerFence(dir);
+    await fence.claim(record({ generation: "gen-1", phase: "claiming", pid: process.pid, bootstrapVerified: false }));
+    const read = await fence.read(KEY);
+    if (read.kind !== "present") throw new Error("setup failed");
+    let discharged = false;
+    const outcome = await dischargeRuntimeWorkerFence(read.record, {
+      platform: "linux",
+      probeClaimant: () => "alive",
+      selfDischargeWaitMs: 1,
+      waitMs: async () => {},
+      markDischarged: async () => {
+        discharged = true;
+      },
+    });
+    expect(outcome).toBe("refused");
+    expect(discharged).toBe(false);
+    // A slow-but-live claimant's later CAS still succeeds: refusal stole nothing.
+    await fence.compareAndSwap(KEY, { generation: "gen-1", from: ["claiming"] }, record({ generation: "gen-1", phase: "owned", pid: 111 }));
+    const after = await fence.read(KEY);
+    expect(after.kind).toBe("present");
+    if (after.kind === "present") expect(after.record.phase).toBe("owned");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("Windows owned+unverified discharge requires worker-death proof", async () => {
+  const rec = record({ bootstrapVerified: false, creationDate: null });
+  const gone = await dischargeRuntimeWorkerFence(rec, {
+    platform: "win32",
+    probeWorker: () => "gone",
+    waitMs: async () => {},
+  });
+  expect(gone).toBe("discharged");
+  const alive = await dischargeRuntimeWorkerFence(rec, {
+    platform: "win32",
+    probeWorker: () => "alive",
+    selfDischargeWaitMs: 1,
+    waitMs: async () => {},
+    readBack: async () => ({ kind: "present", record: rec }),
+  });
+  expect(alive).toBe("refused");
+  const unknown = await dischargeRuntimeWorkerFence(rec, {
+    platform: "win32",
+    probeWorker: () => "unknown",
+    waitMs: async () => {},
+  });
+  expect(unknown).toBe("refused");
+});
+test("guarded retire never unlinks a successor generation", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-retireguard-"));
+  try {
+    const fence = new RuntimeWorkerFence(dir);
+    await fence.write(record({ generation: "gen-1", phase: "discharged", pid: 111, bootstrapVerified: true }));
+    await expect(fence.retire(KEY, "gen-2")).rejects.toBeInstanceOf(StaleFenceGenerationError);
+    expect((await fence.read(KEY)).kind).toBe("present");
+    await fence.retire(KEY, "gen-1");
+    expect(await fence.read(KEY)).toEqual({ kind: "absent" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("retire on a never-materialized namespace resolves without creating dirs or locks", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-retireabsent-"));
+  try {
+    const fenceDir = join(dir, "worker-fences");
+    const fence = new RuntimeWorkerFence(fenceDir);
+    // Mirrors release-after-terminate when ensureWorker never fenced: the
+    // fence dir itself does not exist. Both guarded and unguarded retire
+    // are idempotent success and must not materialize the namespace.
+    await fence.retire("teardown-code-1", "gen-teardown");
+    await fence.retire("teardown-code-1");
+    expect(await readdir(dir)).toEqual([]);
+    // Absent file inside an existing dir is idempotent too, lock-free.
+    await mkdir(fenceDir, { recursive: true });
+    await fence.retire("teardown-code-1", "gen-teardown");
+    expect(await readdir(fenceDir)).toEqual([]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("interleaving: stale retire validated first cannot delete a G2 that takes over mid-flight", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-interleave-retire-"));
+  try {
+    const setup = new RuntimeWorkerFence(dir);
+    await setup.write(record({ generation: "G1", phase: "discharged", pid: 111, bootstrapVerified: true }));
+    // H1 enters guarded retire(G1), validates, then pauses WHILE HOLDING
+    // the namespace lock.
+    let releaseH1!: () => void;
+    const h1Paused = new Promise<void>((resolve) => {
+      releaseH1 = resolve;
+    });
+    let h1Entered = false;
+    const fenceH1 = new RuntimeWorkerFence(dir, {
+      afterValidate: async (op) => {
+        if (op === "retire" && !h1Entered) {
+          h1Entered = true;
+          await h1Paused;
+        }
+      },
+    });
+    const fenceH2 = new RuntimeWorkerFence(dir);
+    let h1Settled = false;
+    const h1 = fenceH1.retire(KEY, "G1").then(
+      () => { h1Settled = true; },
+      (error) => { h1Settled = true; throw error; },
+    );
+    // Wait until H1 is parked inside its critical section.
+    for (let i = 0; i < 200 && !h1Entered; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(h1Entered).toBe(true);
+    // H2 takeover attempt while H1 holds the lock: it must NOT complete —
+    // the same lock serializes the whole namespace, so H2 cannot slip a
+    // delete+create between H1's validation and H1's unlink.
+    let takeoverSettled = false;
+    const takeover = (async () => {
+      await fenceH2.retire(KEY, "G1");
+      await fenceH2.claim(record({ generation: "G2", phase: "claiming", pid: 990002, bootstrapVerified: false }));
+      takeoverSettled = true;
+    })();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(takeoverSettled).toBe(false);
+    expect(h1Settled).toBe(false);
+    // Resume H1: unlinks G1. H2 then proceeds strictly after: retire finds
+    // absent (no-op), claim creates G2. G2 survives; nothing is lost.
+    releaseH1();
+    await h1;
+    await takeover;
+    const read = await setup.read(KEY);
+    expect(read.kind).toBe("present");
+    if (read.kind === "present") {
+      expect(read.record.generation).toBe("G2");
+      expect(read.record.phase).toBe("claiming");
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+test("interleaving: CAS validated first excludes takeover until its rename lands", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-interleave-cas-"));
+  try {
+    const setup = new RuntimeWorkerFence(dir);
+    await setup.claim(record({ generation: "G1", phase: "claiming", pid: 990001, bootstrapVerified: false }));
+    // H1 enters CAS(G1 owned), validates claiming, pauses holding the lock.
+    let releaseH1!: () => void;
+    const h1Paused = new Promise<void>((resolve) => {
+      releaseH1 = resolve;
+    });
+    let h1Entered = false;
+    const fenceH1 = new RuntimeWorkerFence(dir, {
+      afterValidate: async (op) => {
+        if (op === "cas" && !h1Entered) {
+          h1Entered = true;
+          await h1Paused;
+        }
+      },
+    });
+    const fenceH2 = new RuntimeWorkerFence(dir);
+    let h1Settled = false;
+    const h1 = fenceH1
+      .compareAndSwap(KEY, { generation: "G1", from: ["claiming"] }, record({ generation: "G1", phase: "owned", pid: 555 }))
+      .then(
+        () => { h1Settled = true; },
+        (error) => { h1Settled = true; throw error; },
+      );
+    for (let i = 0; i < 200 && !h1Entered; i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(h1Entered).toBe(true);
+    // H2 takeover cannot complete while H1 holds the lock: no delete can
+    // land between H1's validation and H1's rename.
+    let takeoverSettled = false;
+    const takeover = (async () => {
+      await fenceH2.retire(KEY, "G1");
+      await fenceH2.claim(record({ generation: "G2", phase: "claiming", pid: 990002, bootstrapVerified: false }));
+      takeoverSettled = true;
+    })();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(takeoverSettled).toBe(false);
+    expect(h1Settled).toBe(false);
+    // Resume H1: rename lands G1/owned. H2 then retires G1 (same generation,
+    // legal) and claims G2. Neither generation overwrote the other.
+    releaseH1();
+    await h1;
+    await takeover;
+    const read = await setup.read(KEY);
+    expect(read.kind).toBe("present");
+    if (read.kind === "present") {
+      expect(read.record.generation).toBe("G2");
+      expect(read.record.phase).toBe("claiming");
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);

@@ -21,6 +21,20 @@ import { MessageInjectionError } from "../transport/message-injection";
 import type { PromptMedia, PromptMediaInput } from "../transport/types";
 import { BridgeRequestScheduler, type BridgeRequestLane } from "./bridge-request-scheduler";
 import { BridgeRuntime, CommandTimeoutError, EnsureSessionFailedError } from "./bridge-runtime";
+import { CliEngine } from "./engine/cli/cli-engine";
+import { EngineRouter, SessionEngineBinding, type BridgeEngine, type EngineSessionInput } from "./engine";
+import { EngineMismatchError, EngineUnsupportedError } from "./engine/engine-router";
+import { RuntimeError } from "./engine/runtime-engine";
+
+import { probeEngineCapabilities } from "./engine/runtime-capability";
+import type { BridgeEngineCapabilities } from "../transport/acpx-bridge/acpx-bridge-protocol";
+function withMcp<T extends Record<string, unknown>>(base: T, params: Record<string, unknown>): T & { mcpCoordinatorSession?: string; mcpSourceHandle?: string } {
+  return {
+    ...base,
+    mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
+    mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
+  };
+}
 
 interface BridgeRequest {
   id: string;
@@ -34,6 +48,7 @@ const BRIDGE_METHODS = new Set<BridgeMethod>([
   "ping",
   "shutdown",
   "updatePermissionPolicy",
+  "primeRuntimeQueues",
   "hasSession",
   "ensureSession",
   "tailSessionHistory",
@@ -49,9 +64,11 @@ const BRIDGE_METHODS = new Set<BridgeMethod>([
   "cancel",
   "removeSession",
   "deleteSession",
+  "releaseLogicalSession",
   "freeWarmProcess",
   "isSessionWarm",
   "getAgentSessionId",
+  "getEngineCapabilities",
 ]);
 
 const SESSION_SCOPED_METHODS = new Set<BridgeMethod>([
@@ -69,6 +86,7 @@ const SESSION_SCOPED_METHODS = new Set<BridgeMethod>([
   "cancel",
   "removeSession",
   "deleteSession",
+  "releaseLogicalSession",
   "freeWarmProcess",
   "isSessionWarm",
   "getAgentSessionId",
@@ -85,8 +103,27 @@ export class BridgeServer {
     cleanup(): void;
   }>();
 
-  constructor(private readonly runtime: BridgeRuntime, private readonly daemonRequestTimeoutMs = 10_000) {}
+  private readonly engines: BridgeEngine;
 
+  async primeRuntimeQueues(sessions: EngineSessionInput[] = []): Promise<void> {
+    const rt = (this.engines as unknown as { primeRuntimeQueues?: (s: unknown[]) => Promise<void> });
+    if (typeof rt.primeRuntimeQueues === "function") await rt.primeRuntimeQueues(sessions as unknown[]);
+  }
+
+  constructor(
+    runtime: BridgeRuntime | EngineRouter,
+    private readonly daemonRequestTimeoutMs = 10_000,
+    private readonly capabilityProbe?: () => Promise<BridgeEngineCapabilities>,
+  ) {
+    // EngineRouter is the single routing entrypoint. A raw BridgeRuntime
+    // (legacy tests / bridge-main) is wrapped as CliEngine behind a fresh
+    // router so affinity exists from day one. Passing a bare RuntimeEngine
+    // is a compile-time error — it must be wired through an EngineRouter
+    // with proper SessionEngineBinding so kind-based routing is correct.
+    this.engines = runtime instanceof EngineRouter
+      ? runtime
+      : new EngineRouter(new SessionEngineBinding(), new CliEngine(runtime as BridgeRuntime));
+  }
   async handleLine(line: string, writeLine?: (line: string) => void): Promise<string | null> {
     if (writeLine) this.daemonWriter = writeLine;
     const daemonResponse = parseDaemonOriginatedResponse(line);
@@ -132,6 +169,8 @@ export class BridgeServer {
         ? error.code
         : error instanceof MessageInjectionError
           ? error.code
+        : error instanceof EngineUnsupportedError || error instanceof EngineMismatchError || error instanceof RuntimeError
+          ? "code" in error && typeof error.code === "string" ? error.code : "RUNTIME_ENGINE_UNSUPPORTED"
         : error instanceof BridgeInvalidRequestError
           ? "BRIDGE_INVALID_REQUEST"
           : "BRIDGE_INTERNAL_ERROR";
@@ -253,25 +292,52 @@ export class BridgeServer {
     switch (method) {
       case "ping":
         return {};
+      case "getEngineCapabilities":
+        return this.capabilityProbe ? await this.capabilityProbe() : await probeEngineCapabilities();
       case "shutdown":
-        return await this.runtime.shutdown();
+        return await this.engines.shutdown();
       case "updatePermissionPolicy":
-        return await this.runtime.updatePermissionPolicy({
+        return await this.engines.updatePermissionPolicy({
           permissionMode: requirePermissionMode(params, "permissionMode"),
           nonInteractivePermissions: requireNonInteractivePermissions(params, "nonInteractivePermissions"),
           permissionPolicy: asOptionalString(params.permissionPolicy),
         });
+      case "primeRuntimeQueues":
+        const rawSessions = params.sessions;
+        if (!Array.isArray(rawSessions)) {
+          throw new BridgeInvalidRequestError("primeRuntimeQueues requires a sessions array");
+        }
+        const validatedSessions: EngineSessionInput[] = [];
+        for (const s of rawSessions) {
+          if (!s || typeof s !== "object" || Array.isArray(s)) {
+            throw new BridgeInvalidRequestError("invalid session entry in primeRuntimeQueues");
+          }
+          const item = s as Record<string, unknown>;
+          validatedSessions.push(withMcp({
+            agent: requireString(item, "agent"),
+            ...agentExecutionSettings(item),
+            agentCommand: asOptionalString(item.agentCommand),
+            ...agentLaunchSelection(item),
+            cwd: requireString(item, "cwd"),
+            name: requireString(item, "name"),
+            sessionKey: asOptionalString(item.sessionKey),
+            model: asOptionalString(item.model),
+            effort: asOptionalString(item.effort),
+          }, item));
+        }
+        await this.primeRuntimeQueues(validatedSessions);
+        return {};
       case "hasSession":
-        return await this.runtime.hasSession({
+        return await this.engines.hasSession(withMcp({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
-        });
+        }, params));
       case "tailSessionHistory":
-        return await this.runtime.tailSessionHistory({
+        return await this.engines.tailSessionHistory(withMcp({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
@@ -279,9 +345,9 @@ export class BridgeServer {
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
           lines: requirePositiveInt(params, "lines"),
-        });
+        }, params));
       case "listAgentSessions":
-        return await this.runtime.listAgentSessions({
+        return await this.engines.listAgentSessions({
           agent: requireString(params, "agent"),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
@@ -292,7 +358,7 @@ export class BridgeServer {
           filterCwd: asOptionalString(params.filterCwd),
         });
       case "ensureSession":
-        return await this.runtime.ensureSession({
+        return await this.engines.ensureSession(withMcp({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
@@ -301,9 +367,7 @@ export class BridgeServer {
           name: requireString(params, "name"),
           sessionKey: asOptionalString(params.sessionKey),
           model: asOptionalString(params.model),
-          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
-          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
-        }, (progress) => {
+        }, params), (progress) => {
           if (typeof progress === "string") {
             writeLine?.(encodeBridgeSessionProgressEvent({
               id: requestId,
@@ -321,7 +385,7 @@ export class BridgeServer {
       case "prompt":
         const media = asOptionalPromptMediaInput(params.media);
         const resolvedToolEventMode = asOptionalToolEventMode(params.toolEventMode);
-        return await this.runtime.prompt({
+        return await this.engines.prompt({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
@@ -382,8 +446,8 @@ export class BridgeServer {
           }
         });
       case "injectMessage":
-        return await this.runtime.injectMessage({
-          agent: requireString(params, "agent"),
+        return await this.engines.injectMessage(withMcp({
+agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
@@ -392,124 +456,128 @@ export class BridgeServer {
           sessionKey: asOptionalString(params.sessionKey),
           model: asOptionalString(params.model),
           effort: asOptionalString(params.effort),
-          mcpCoordinatorSession: asOptionalString(params.mcpCoordinatorSession),
-          mcpSourceHandle: asOptionalString(params.mcpSourceHandle),
+
           text: requireString(params, "text"),
           mode: requireMessageMode(params, "mode"),
           messageId: requireString(params, "messageId"),
-        });
+        }, params));
       case "resumeAgentSession":
-        return await this.runtime.resumeAgentSession({
+        return await this.engines.resumeAgentSession(withMcp({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
-          name: requireString(params, "name"),
-          agentSessionId: requireString(params, "agentSessionId"),
-        });
+          name: requireString(params, "name"),          agentSessionId: requireString(params, "agentSessionId"),
+        }, params));
       case "setMode":
-        return await this.runtime.setMode({
+        return await this.engines.setMode(withMcp({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
-          name: requireString(params, "name"),
-          modeId: requireString(params, "modeId"),
-        });
+          name: requireString(params, "name"),          modeId: requireString(params, "modeId"),
+        }, params));
       case "setModel":
-        return await this.runtime.setModel({
+        return await this.engines.setModel(withMcp({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
-          name: requireString(params, "name"),
-          modelId: requireString(params, "modelId"),
-        });
+          name: requireString(params, "name"),          modelId: requireString(params, "modelId"),
+        }, params));
       case "getSessionModel":
-        return await this.runtime.getSessionModel({
-          agent: requireString(params, "agent"),
+        return await this.engines.getSessionModel(withMcp({
+agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
-        });
+        }, params));
       case "setSessionEffort":
-        return await this.runtime.setSessionEffort({
+        return await this.engines.setSessionEffort(withMcp({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
-          name: requireString(params, "name"),
-          effort: requireString(params, "effort"),
-        });
+          name: requireString(params, "name"),          effort: requireString(params, "effort"),
+        }, params));
       case "getSessionEffort":
-        return await this.runtime.getSessionEffort({
-          agent: requireString(params, "agent"),
+        return await this.engines.getSessionEffort(withMcp({
+agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
-        });
+        }, params));
       case "cancel":
-        return await this.runtime.cancel({
-          agent: requireString(params, "agent"),
+        return await this.engines.cancel(withMcp({
+agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
-        });
+        }, params));
       case "removeSession":
-        return await this.runtime.removeSession({
-          agent: requireString(params, "agent"),
+        return await this.engines.removeSession(withMcp({
+agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
-        });
+        }, params));
       case "deleteSession":
-        return await this.runtime.deleteSession({
-          agent: requireString(params, "agent"),
+        return await this.engines.deleteSession(withMcp({
+agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
-        });
+        }, params));
+      case "releaseLogicalSession":
+        return (await this.engines.releaseLogicalSession?.(withMcp({
+agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
+          agentCommand: asOptionalString(params.agentCommand),
+          ...agentLaunchSelection(params),
+          cwd: requireString(params, "cwd"),
+          name: requireString(params, "name"),
+        }, params))) ?? {};
       case "freeWarmProcess":
-        return await this.runtime.freeWarmProcess({
-          agent: requireString(params, "agent"),
+        return await this.engines.freeWarmProcess(withMcp({
+agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
-        });
+        }, params));
       case "isSessionWarm":
-        return await this.runtime.isSessionWarm({
-          agent: requireString(params, "agent"),
+        return await this.engines.isSessionWarm(withMcp({
+agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
-        });
+        }, params));
       case "getAgentSessionId":
-        return await this.runtime.getAgentSessionId({
-          agent: requireString(params, "agent"),
+        return await this.engines.getAgentSessionId(withMcp({
+agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
           agentCommand: asOptionalString(params.agentCommand),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
-        });
+        }, params));
       default:
         throw new Error(`unsupported bridge method: ${method}`);
     }
@@ -685,7 +753,17 @@ function agentLaunchSelection(params: Record<string, unknown>) {
     acpxAgent: asOptionalString(params.acpxAgent),
     rawCommand: asOptionalString(params.rawCommand),
     agentArgv: asOptionalStringArray(params.agentArgv),
+    // Worker-ownership identity + persisted engine affinity (plan §9.1/§48).
+    logicalSessionId: asOptionalString(params.logicalSessionId),
+    transportEngine: asDeclaredTransportEngine(params.transportEngine),
   };
+}
+
+/** Validates the optional declared-engine param; anything non-cli/runtime is a hard error. */
+function asDeclaredTransportEngine(value: unknown): "cli" | "runtime" | undefined {
+  if (value === undefined) return undefined;
+  if (value === "cli" || value === "runtime") return value;
+  throw new BridgeInvalidRequestError('transportEngine must be "cli" or "runtime" when provided');
 }
 
 function agentExecutionSettings(params: Record<string, unknown>) {

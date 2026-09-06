@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test";
 import { spawn } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
+  decodeWindowsDescendantsResponse,
   decodeWindowsTreeWorkerResponse,
   probeWindowsProcessIdentity,
   queryWindowsProcessIdentity,
@@ -9,7 +13,9 @@ import {
   terminateWindowsResidual,
   terminateWindowsProcessTree,
   WINDOWS_TREE_WORKER_SCRIPT,
+  WINDOWS_DESCENDANTS_WORKER_SCRIPT,
   type BatchTarget,
+  terminateWindowsDescendantsOf,
 } from "../../../src/process/windows-process-tree";
 import { parseCanonicalFileTime } from "../../../src/process/windows-process-identity";
 
@@ -174,4 +180,508 @@ windowsTest("real worker rejects a replaced identity and kills a verified tree t
   expect(result.outcomes.some((item) => item.target.pid === childPid && (item.outcome === "killed" || item.outcome === "already-exited"))).toBe(true);
   expect(() => process.kill(rootProcess.pid!, 0)).toThrow();
   expect(() => process.kill(childPid, 0)).toThrow();
+}, 30_000);
+
+const descendantsWorker = (
+  verified: boolean,
+  outcomes: Array<Record<string, unknown>>,
+  leftover: Array<Record<string, unknown>> = [],
+) => async (): Promise<unknown> => ({ verified, outcomes, leftover });
+
+const descendantOutcome = (pid: number, outcome: string): Record<string, unknown> => ({
+  pid,
+  outcome,
+  creationDate: "133830000000000000",
+  commandLine: "node adapter.js",
+  executablePath: "C:\\Program Files\\nodejs\\node.exe",
+});
+
+test("descendants protocol: a fully successful payload without any parent entry decodes verified", async () => {
+  // Regression: this payload has NO parent-pid entry. The tree decoder demands
+  // a root entry, so reusing it here misread every successful cleanup as
+  // query-failed (review round 20, Blocking).
+  let requestedParentPid = 0;
+  const result = await terminateWindowsDescendantsOf(4242, {
+    runWorker: async (request) => {
+      requestedParentPid = "parentPid" in request ? request.parentPid : 0;
+      return {
+        verified: true,
+        outcomes: [descendantOutcome(5001, "killed"), descendantOutcome(5002, "already-exited")],
+        leftover: [],
+      };
+    },
+  });
+  expect(requestedParentPid).toBe(4242);
+  expect(result.verified).toBe(true);
+  expect(result.outcomes.map((item) => item.pid)).toEqual([5001, 5002]);
+  expect(result.outcomes[0]!.commandLine).toBe("node adapter.js");
+  expect(result.leftover).toEqual([]);
+});
+
+test("descendants protocol: unsafe outcome fails closed even when the worker claims verified", async () => {
+  const result = await terminateWindowsDescendantsOf(4242, {
+    runWorker: descendantsWorker(true, [descendantOutcome(5001, "access-denied")]),
+  });
+  expect(result.verified).toBe(false);
+});
+
+test("descendants protocol: leftover processes fail closed", async () => {
+  const result = await terminateWindowsDescendantsOf(4242, {
+    runWorker: descendantsWorker(true, [], [{ pid: 5009, parentPid: 5001, creationDate: "133830000000000000", commandLine: "x", executablePath: "C:\\x.exe" }]),
+  });
+  expect(result.verified).toBe(false);
+});
+
+test("descendants protocol: parent pid among outcomes, duplicate pids, and flag mismatch fail closed", async () => {
+  expect(decodeWindowsDescendantsResponse({ verified: true, outcomes: [descendantOutcome(4242, "killed")], leftover: [] }, 4242)).toBeNull();
+  expect(decodeWindowsDescendantsResponse({ verified: true, outcomes: [descendantOutcome(5001, "killed"), descendantOutcome(5001, "killed")], leftover: [] }, 4242)).toBeNull();
+  // Worker claims false but the evidence is all-safe: inconsistent evidence
+  // must fail closed instead of trusting either signal.
+  expect(decodeWindowsDescendantsResponse({ verified: false, outcomes: [descendantOutcome(5001, "killed")], leftover: [] }, 4242)).toBeNull();
+  expect(decodeWindowsDescendantsResponse({ verified: true, outcomes: [], leftover: [] }, 4242)).toEqual({ verified: true, outcomes: [], leftover: [] });
+});
+
+test("descendants protocol: worker failure and malformed output are unverified", async () => {
+  const rejected = await terminateWindowsDescendantsOf(4242, {
+    runWorker: async () => {
+      throw new Error("powershell worker died");
+    },
+  });
+  expect(rejected.verified).toBe(false);
+  const malformed = await terminateWindowsDescendantsOf(4242, {
+    runWorker: async () => ({ rootOutcome: "killed", outcomes: [] }),
+  });
+  expect(malformed.verified).toBe(false);
+  const invalidPid = await terminateWindowsDescendantsOf(0);
+  expect(invalidPid.verified).toBe(false);
+});
+
+windowsTest("real worker converges a three-level descendant tree and keeps the parent alive", async () => {
+  // Real-time fixture: process birth/death is platform-clock behavior; there
+  // is no deterministic clock for OS process scheduling.
+  const dir = await mkdtemp(join(tmpdir(), "descendants-tree-"));
+  const fixture = join(dir, "fixture.cjs");
+  const childPidFile = join(dir, "child.pid");
+  const grandchildPidFile = join(dir, "grandchild.pid");
+  await writeFile(fixture, [
+    "const { spawn } = require('node:child_process');",
+    "const fs = require('node:fs');",
+    "const child = spawn(process.execPath, ['-e',",
+    "  \"const {spawn}=require('node:child_process');const fs=require('node:fs');\" +",
+    "  \"const g=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});\" +",
+    "  \"fs.writeFileSync(process.argv[1],String(g.pid));setInterval(()=>{},1000)\",",
+    `  ${JSON.stringify(grandchildPidFile)}], { stdio: 'ignore' });`,
+    `fs.writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid));`,
+    "setInterval(() => {}, 1000);",
+  ].join("\n"), "utf8");
+  const rootProcess = spawn("node", [fixture], { stdio: "ignore" });
+  let childPid = 0;
+  let grandchildPid = 0;
+  try {
+    for (let i = 0; i < 200 && (!childPid || !grandchildPid); i += 1) {
+      try {
+        childPid = Number.parseInt(await readFile(childPidFile, "utf8"), 10) || 0;
+        grandchildPid = Number.parseInt(await readFile(grandchildPidFile, "utf8"), 10) || 0;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+    expect(childPid).toBeGreaterThan(0);
+    expect(grandchildPid).toBeGreaterThan(0);
+    expect(() => process.kill(rootProcess.pid!, 0)).not.toThrow();
+    expect(() => process.kill(childPid, 0)).not.toThrow();
+    expect(() => process.kill(grandchildPid, 0)).not.toThrow();
+
+    const result = await terminateWindowsDescendantsOf(rootProcess.pid!);
+    expect(result.verified).toBe(true);
+    expect(() => process.kill(rootProcess.pid!, 0)).not.toThrow();
+    let childGone = false;
+    let grandchildGone = false;
+    for (let i = 0; i < 200 && (!childGone || !grandchildGone); i += 1) {
+      try { process.kill(childPid, 0); } catch { childGone = true; }
+      try { process.kill(grandchildPid, 0); } catch { grandchildGone = true; }
+      if (!childGone || !grandchildGone) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(childGone).toBe(true);
+    expect(grandchildGone).toBe(true);
+  } finally {
+    try { if (childPid) process.kill(childPid, "SIGKILL"); } catch {}
+    try { if (grandchildPid) process.kill(grandchildPid, "SIGKILL"); } catch {}
+    try { process.kill(rootProcess.pid!, "SIGKILL"); } catch {}
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 40_000);
+
+// Review round 22 Blocking 3: discovery must be a full transitive closure, not
+// a fixed 6-pass ceiling — an 8-level chain must all be discovered/killed.
+windowsTest("real worker converges an 8-level descendant chain", async () => {
+  // Real-time fixture: process birth/death is platform-clock behavior; there
+  // is no deterministic clock for OS process scheduling.
+  const dir = await mkdtemp(join(tmpdir(), "descendants-chain-"));
+  const chain = join(dir, "chain.cjs");
+  await writeFile(chain, [
+    "const { spawn } = require('node:child_process');",
+    "const fs = require('node:fs');",
+    "const depth = Number(process.argv[2]);",
+    "const dir = process.argv[3];",
+    "fs.writeFileSync(require('node:path').join(dir, `pid-${depth}`), String(process.pid), 'utf8');",
+    "if (depth > 1) {",
+    "  const child = spawn(process.execPath, [__filename, String(depth - 1), dir], { stdio: 'ignore' });",
+    "}",
+    "setInterval(() => {}, 1000);",
+  ].join("\n"), "utf8");
+  const rootProcess = spawn("node", [chain, "8", dir], { stdio: "ignore" });
+  const pids: number[] = [];
+  try {
+    for (let i = 0; i < 300 && pids.length < 8; i += 1) {
+      const found: number[] = [];
+      for (let d = 1; d <= 8; d += 1) {
+        try {
+          const value = Number.parseInt(await readFile(join(dir, `pid-${d}`), "utf8"), 10);
+          if (Number.isSafeInteger(value) && value > 0) found.push(value);
+        } catch {
+          // not yet written
+        }
+      }
+      if (found.length > pids.length) pids.length = 0, pids.push(...found);
+      if (pids.length < 8) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(pids).toHaveLength(8);
+    for (const pid of pids) expect(() => process.kill(pid, 0)).not.toThrow();
+
+    // Unbounded discovery: with the old 6-pass ceiling D7/D8 were never
+    // enumerated and only D7 was spooled, losing D8's ownership entirely.
+    // CIM visibility LAGS pid-file writes: on a loaded runner the first
+    // snapshot can see only a spawn prefix, leaving the rest as leftover
+    // (verified=false, by design). Retry — the same convergence semantics
+    // the EOF worker applies — until the whole chain is proven dead.
+    let verified = false;
+    for (let attempt = 0; attempt < 5 && !verified; attempt += 1) {
+      const result = await terminateWindowsDescendantsOf(rootProcess.pid!, { workerDeadlineMs: 45_000 });
+      verified = result.verified;
+      if (!verified) await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+    expect(verified).toBe(true);
+    expect(() => process.kill(rootProcess.pid!, 0)).not.toThrow();
+    for (let i = 0; i < 400; i += 1) {
+      if (pids.every((pid) => {
+        try { process.kill(pid, 0); return false; } catch { return true; }
+      })) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    for (const pid of pids) {
+      try { process.kill(pid, 0); expect.unreachable(`chain pid ${pid} still alive`); } catch { /* gone */ }
+    }
+  } finally {
+    for (const pid of pids) { try { process.kill(pid, "SIGKILL"); } catch {} }
+    try { process.kill(rootProcess.pid!, "SIGKILL"); } catch {}
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 90_000);
+
+// Review round 23 Blocking 2: discovery graph must be identity-safe. An
+// innocent process that is NOT a descendant of the worker must never be
+// touched — the deterministic proxy for the PID-reuse skip rule (a reused
+// parent pid is attributed to the reuser, not to our tree).
+windowsTest("real worker never touches an innocent non-descendant process", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "descendants-innocent-"));
+  const fixture = join(dir, "fixture.cjs");
+  const childPidFile = join(dir, "child.pid");
+  await writeFile(fixture, [
+    "const { spawn } = require('node:child_process');",
+    "const fs = require('node:fs');",
+    "const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });",
+    `fs.writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid), 'utf8');`,
+    "setInterval(() => {}, 1000);",
+  ].join("\n"), "utf8");
+  const rootProcess = spawn("node", [fixture], { stdio: "ignore" });
+  // Innocent sibling: parented by THIS test process, not by the worker.
+  const innocent = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore" });
+  let childPid = 0;
+  try {
+    for (let i = 0; i < 200 && !childPid; i += 1) {
+      try {
+        childPid = Number.parseInt(await readFile(childPidFile, "utf8"), 10);
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+    expect(childPid).toBeGreaterThan(0);
+    const result = await terminateWindowsDescendantsOf(rootProcess.pid!, { workerDeadlineMs: 45_000 });
+    expect(result.verified).toBe(true);
+    expect(() => process.kill(rootProcess.pid!, 0)).not.toThrow();
+    for (let i = 0; i < 200; i += 1) {
+      try { process.kill(childPid, 0); await new Promise((resolve) => setTimeout(resolve, 50)); } catch { break; }
+    }
+    try { process.kill(childPid, 0); expect.unreachable("descendant still alive"); } catch { /* gone */ }
+    // The innocent must survive: it is not part of the worker's tree.
+    expect(() => process.kill(innocent.pid!, 0)).not.toThrow();
+  } finally {
+    try { if (childPid) process.kill(childPid, "SIGKILL"); } catch {}
+    try { process.kill(rootProcess.pid!, "SIGKILL"); } catch {}
+    try { innocent.kill("SIGKILL"); } catch {}
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 90_000);
+
+test("descendants protocol: explicit null deadline is forwarded to the worker (no hard-kill)", async () => {
+  // Review round 24 Blocking 3: EOF convergence must not arm an outer
+  // hard-kill timer — a mid-traversal SIGKILL loses ancestry reachability
+  // and any partially-collected evidence.
+  let received: number | null | undefined;
+  const result = await terminateWindowsDescendantsOf(4242, {
+    workerDeadlineMs: null,
+    runWorker: async (_request, deadlineMs) => {
+      received = deadlineMs;
+      return { verified: true, outcomes: [], leftover: [] };
+    },
+  });
+  expect(received).toBeNull();
+  expect(result.verified).toBe(true);
+});
+
+test("descendants protocol: S2-verified child decodes once and appears only in outcomes", () => {
+  // Review round 26 Blocking 2: a post-S1 child that passed OpenVerified is
+  // recorded in outcomes (killed) — it must NOT also appear in leftover, or
+  // the decoder's single seen-set rejects the whole response.
+  const payload = {
+    verified: true,
+    outcomes: [
+      descendantOutcome(5001, "killed"), // S1 parent
+      descendantOutcome(5002, "killed"), // S2 child, verified + killed
+    ],
+    leftover: [],
+  };
+  expect(decodeWindowsDescendantsResponse(payload, 4242)).toEqual({
+    verified: true,
+    outcomes: payload.outcomes,
+    leftover: [],
+  });
+});
+
+test("descendants protocol: S2 verify-failed child is unsafe evidence, never silently dropped", () => {
+  // Review round 26 Blocking 1: the S2 child whose OpenVerified failed must
+  // surface as an outcome (access-denied etc.) so verified stays false and
+  // the worker does not exit with it alive and unrecorded.
+  const payload = {
+    verified: false,
+    outcomes: [
+      descendantOutcome(5001, "killed"),        // S1 parent killed
+      descendantOutcome(5002, "access-denied"), // S2 child unverifiable
+    ],
+    leftover: [],
+  };
+  expect(decodeWindowsDescendantsResponse(payload, 4242)).not.toBeNull();
+  expect(decodeWindowsDescendantsResponse(payload, 4242)!.verified).toBe(false);
+});
+
+test("descendants protocol: S2 static closure returns EVERY post-S1 descendant as independent leftover", () => {
+  // Review round 27 Blocking: a single-level S2 recorded only C, so if C
+  // exited before the reaper, G (parented by dead C) lost all durable
+  // evidence. The S2 static transitive closure must emit C AND G as
+  // separate leftovers, each with its own full fingerprint.
+  const payload = {
+    verified: false,
+    outcomes: [descendantOutcome(5001, "killed")], // S1 parent P
+    leftover: [
+      { pid: 5002, parentPid: 5001, creationDate: "133801632000000010", commandLine: "c", executablePath: "C:\\c.exe" },
+      { pid: 5003, parentPid: 5002, creationDate: "133801632000000020", commandLine: "g", executablePath: "C:\\g.exe" },
+    ],
+  };
+  const decoded = decodeWindowsDescendantsResponse(payload, 4242);
+  expect(decoded).not.toBeNull();
+  expect(decoded!.verified).toBe(false);
+  // Both levels are independently spoolable: same identity shape as outcomes.
+  expect(decoded!.leftover.map((item) => item.pid).sort((a, b) => a - b)).toEqual([5002, 5003]);
+  for (const item of decoded!.leftover) {
+    expect(item.creationDate).not.toBeNull();
+    expect(item.commandLine).not.toBeNull();
+    expect(item.executablePath).not.toBeNull();
+  }
+  // C and G do not collide with the S1 outcome (mutual exclusion holds).
+  expect(decoded!.outcomes.map((item) => item.pid)).toEqual([5001]);
+});
+
+test("descendants protocol: S2 frontier seeds from verified handles, never unverified S1 pids", () => {
+  // Review round 28 Blocking: S2 must NOT seed its BFS frontier from every
+  // S1 snapshot pid — a replaced/access-denied S1 parent (no verified
+  // handle) could otherwise absorb an innocent child of a pid-reused
+  // process into leftover, causing a wrong-process kill by the reaper.
+  // Static guard: the production script seeds from $open.Keys (verified,
+  // handle-retained) and the worker root only.
+  const seed = "$fr=@($pp)+@($open.Keys)";
+  const leakySeed = "$fr=@($pp)+@($cl.pid)";
+  expect(WINDOWS_DESCENDANTS_WORKER_SCRIPT.includes(seed)).toBe(true);
+  expect(WINDOWS_DESCENDANTS_WORKER_SCRIPT.includes(leakySeed)).toBe(false);
+});
+
+test("terminate-tree honors an explicit null deadline (outer SIGKILL disabled, round 29 Blocking 3)", async () => {
+  let seen: number | null | undefined;
+  let invoked = false;
+  const result = await terminateWindowsProcessTree(root, {
+    workerDeadlineMs: null,
+    runWorker: async (_request, deadlineMs) => {
+      invoked = true;
+      seen = deadlineMs;
+      return {
+        rootOutcome: "killed",
+        outcomes: [{ target: { pid: root.pid, creationDate: root.creationDate }, outcome: "killed" }],
+      };
+    },
+  });
+  expect(invoked).toBe(true);
+  expect(seen).toBeNull();
+  expect(result.rootOutcome).toBe("killed");
+});
+
+test("terminate-tree defaults to 15s ONLY when the deadline is undefined", async () => {
+  let seen: number | null | undefined = undefined;
+  await terminateWindowsProcessTree(root, {
+    runWorker: async (_request, deadlineMs) => {
+      seen = deadlineMs;
+      return { rootOutcome: "killed", outcomes: [] };
+    },
+  });
+  expect(seen).toBe(15_000);
+});
+
+windowsTest("real worker terminates a full 4-level tree through terminateWindowsProcessTree", async () => {
+  // Review round 29 Blocking 3: the ordinary terminate-tree action (used by
+  // RuntimeWorkerClient.terminate and the residual reaper) had no real
+  // deep-tree coverage — only the EOF descendants action did. It must also
+  // converge a multi-level chain with the outer hard-kill deadline disabled.
+  const dir = await mkdtemp(join(tmpdir(), "terminate-tree-chain-"));
+  const chain = join(dir, "chain.cjs");
+  await writeFile(chain, [
+    "const { spawn } = require('node:child_process');",
+    "const fs = require('node:fs');",
+    "const depth = Number(process.argv[2]);",
+    "const dir = process.argv[3];",
+    "fs.writeFileSync(require('node:path').join(dir, `pid-${depth}`), String(process.pid), 'utf8');",
+    "if (depth > 1) {",
+    "  const child = spawn(process.execPath, [__filename, String(depth - 1), dir], { stdio: 'ignore' });",
+    "}",
+    "setInterval(() => {}, 1000);",
+  ].join("\n"), "utf8");
+  const rootProcess = spawn("node", [chain, "4", dir], { stdio: "ignore" });
+  const pids: number[] = [];
+  try {
+    for (let i = 0; i < 300 && pids.length < 4; i += 1) {
+      const found: number[] = [];
+      for (let d = 1; d <= 4; d += 1) {
+        try {
+          const value = Number.parseInt(await readFile(join(dir, `pid-${d}`), "utf8"), 10);
+          if (Number.isSafeInteger(value) && value > 0) found.push(value);
+        } catch {
+          // not yet written
+        }
+      }
+      if (found.length > pids.length) pids.length = 0, pids.push(...found);
+      if (pids.length < 4) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    // The chain writes pid-1..pid-4 (the root process pid is separate).
+    expect(pids).toHaveLength(4);
+
+    // terminate-tree needs the ROOT's verified creationDate — probe it. CIM
+    // visibility also LAGS pid-file writes, and terminate-tree cannot retry
+    // after the root dies — so settle until EVERY pid is CIM-visible first.
+    for (let settle = 0; settle < 200; settle += 1) {
+      const identities = await Promise.all(
+        [rootProcess.pid!, ...pids].map((pid) => queryWindowsProcessIdentity(pid, { workerDeadlineMs: 30_000 })),
+      );
+      if (identities.every((identity) => identity !== null)) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const probe = await probeWindowsProcessIdentity(rootProcess.pid!, { workerDeadlineMs: 30_000 });
+    expect(probe.status).toBe("found");
+
+    const result = await terminateWindowsProcessTree({
+      pid: rootProcess.pid!,
+      creationDate: probe.status === "found" ? probe.identity.creationDate : null,
+      workerDeadlineMs: null,
+    } as BatchTarget, { workerDeadlineMs: null });
+    expect(result.rootOutcome).toBe("killed");
+    for (const outcome of result.outcomes) {
+      expect(["killed", "already-exited"]).toContain(outcome.outcome);
+    }
+    for (let i = 0; i < 400; i += 1) {
+      const allGone = [rootProcess.pid!, ...pids].every((pid) => {
+        try { process.kill(pid, 0); return false; } catch { return true; }
+      });
+      if (allGone) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    for (const pid of [rootProcess.pid!, ...pids]) {
+      expect(() => process.kill(pid, 0)).toThrow();
+    }
+  } finally {
+    try { process.kill(rootProcess.pid!, "SIGKILL"); } catch {}
+    for (const pid of pids) { try { process.kill(pid, "SIGKILL"); } catch {} }
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("descendants-of: a wrong expected parent fingerprint decodes as unverified — nothing attributed", async () => {
+  // Round 30 Blocking 3: the gate-fail payload (parentStatus, empty arrays)
+  // has verified=false while recomputed-from-empty is true — the decoder
+  // must REJECT that inconsistency so the caller reports unverified.
+  let invoked = false;
+  const result = await terminateWindowsDescendantsOf(100, {
+    expectedParentCreationDate: root.creationDate,
+    runWorker: async (request, deadlineMs) => {
+      invoked = true;
+      expect(deadlineMs).toBeNull();
+      expect((request as { epcd?: string }).epcd).toBe(root.creationDate);
+      return { verified: false, parentStatus: "skipped-replaced", outcomes: [], leftover: [] };
+    },
+  });
+  expect(invoked).toBe(true);
+  expect(result.verified).toBe(false);
+  expect(result.outcomes).toEqual([]);
+  expect(result.leftover).toEqual([]);
+});
+
+windowsTest("real descendants-of with a WRONG parent fingerprint never touches the live parent", async () => {
+  // The in-transaction gate is the pid-reuse defense: a held handle compared
+  // against the expected creation date — mismatch fails the whole action
+  // closed and the innocent live process is untouched.
+  const victim = spawn("node", ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const probe = await probeWindowsProcessIdentity(victim.pid!, { workerDeadlineMs: 30_000 });
+    expect(probe.status).toBe("found");
+
+    const result = await terminateWindowsDescendantsOf(victim.pid!, {
+      expectedParentCreationDate: "133800000000000000", // WRONG on purpose
+      workerDeadlineMs: null,
+    });
+    expect(result.verified).toBe(false);
+    expect(result.outcomes).toEqual([]);
+    expect(result.leftover).toEqual([]);
+    // The innocent process survives — no bare historical-pid attribution.
+    expect(() => process.kill(victim.pid!, 0)).not.toThrow();
+  } finally {
+    try { victim.kill("SIGKILL"); } catch {}
+  }
+}, 30_000);
+
+windowsTest("real descendants-of with the CORRECT parent fingerprint converges the subtree but never kills the parent itself", async () => {
+  // I1: terminate-descendants-of is NOT terminate-tree — it kills
+  // descendants, never the parent, even when the fingerprint matches.
+  const victim = spawn("node", ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const probe = await probeWindowsProcessIdentity(victim.pid!, { workerDeadlineMs: 30_000 });
+    expect(probe.status).toBe("found");
+
+    const result = await terminateWindowsDescendantsOf(victim.pid!, {
+      expectedParentCreationDate: probe.status === "found" ? probe.identity.creationDate : null,
+      workerDeadlineMs: null,
+    });
+    expect(result.verified).toBe(true);
+    // Parent must remain alive — descendants path never kills the root.
+    expect(() => process.kill(victim.pid!, 0)).not.toThrow();
+  } finally {
+    try { victim.kill("SIGKILL"); } catch {}
+  }
 }, 30_000);

@@ -43,7 +43,6 @@ function makeDeps(
     reusableWorkerSession?: string | null;
     initialState?: AppState;
     config?: AppConfig;
-    closeWorkerSession?: NonNullable<OrchestrationServiceDeps["closeWorkerSession"]>;
   },
 ) {
   let state = cloneState(overrides?.initialState ?? createEmptyState());
@@ -51,7 +50,7 @@ function makeDeps(
   const savedStates: AppState[] = [];
   const ensureCalls: Array<Parameters<OrchestrationServiceDeps["ensureWorkerSession"]>[0]> = [];
   const dispatchCalls: Array<Parameters<OrchestrationServiceDeps["dispatchWorkerTask"]>[0]> = [];
-  const closeCalls: Array<Parameters<NonNullable<OrchestrationServiceDeps["closeWorkerSession"]>>[0]> = [];
+  const releaseCalls: Array<Parameters<NonNullable<OrchestrationServiceDeps["releaseWorkerSession"]>>[0]> = [];
   const lookupCalls: Array<
     NonNullable<OrchestrationServiceDeps["findReusableWorkerSession"]> extends (
       request: infer Request,
@@ -88,10 +87,7 @@ function makeDeps(
       : never
   > = [];
 
-  // Pull `closeWorkerSession` out of overrides so the recording wrapper below is
-  // not clobbered by the `...overrides` spread; the wrapper still delegates to it.
-  const closeWorkerSessionOverride = overrides?.closeWorkerSession;
-  const { closeWorkerSession: _ignoredCloseOverride, ...spreadOverrides } = overrides ?? {};
+  const spreadOverrides = overrides ?? {};
 
   const deps: OrchestrationServiceDeps = {
     now: () => new Date("2026-04-13T10:00:00.000Z"),
@@ -102,6 +98,7 @@ function makeDeps(
       savedStates.push(cloneState(nextState));
     },
     config,
+    resolveWorkerBindingEngine: () => "cli",
     ensureWorkerSession: async (request) => {
       ensureCalls.push(request);
       return request.workerSession;
@@ -109,11 +106,8 @@ function makeDeps(
     dispatchWorkerTask: async (request) => {
       dispatchCalls.push(request);
     },
-    closeWorkerSession: async (request) => {
-      closeCalls.push(request);
-      if (closeWorkerSessionOverride) {
-        return closeWorkerSessionOverride(request);
-      }
+    releaseWorkerSession: async (request) => {
+      releaseCalls.push(request);
     },
     findReusableWorkerSession: async (request) => {
       lookupCalls.push(request);
@@ -140,7 +134,7 @@ function makeDeps(
     savedStates,
     ensureCalls,
     dispatchCalls,
-    closeCalls,
+    releaseCalls,
     lookupCalls,
     wakeCoordinatorCalls,
     resumeCalls,
@@ -249,7 +243,9 @@ test("creates a running task and reuses an injected worker session", async () =>
     },
   ]);
 
-  expect(harness.savedStates).toHaveLength(1);
+  // Two durable writes: the binding shell (LID + engine) lands before
+  // ensure can start the first owner; the task lands after.
+  expect(harness.savedStates).toHaveLength(2);
   expect(harness.getState().orchestration.tasks["task-1"]).toMatchObject({
     taskId: "task-1",
     sourceHandle: "wx:user-1",
@@ -275,9 +271,10 @@ test("creates a running task and reuses an injected worker session", async () =>
     targetAgent: "claude",
     role: "reviewer",
     guardAcpOutput: true,
+    logicalSessionId: "task-1",
+    transportEngine: "cli",
   });
 });
-
 test("reusing a legacy worker binding does not silently switch it to the guarded rollout", async () => {
   const legacyWorkerSession = "backend:claude:shared-worker";
   const initialState = createEmptyState();
@@ -1111,6 +1108,8 @@ test("auto-runs and dispatches coordinator-originated rpc delegations", async ()
     targetAgent: "claude",
     role: "reviewer",
     guardAcpOutput: true,
+    logicalSessionId: "task-rpc-1",
+    transportEngine: "cli",
   });
 });
 
@@ -1125,6 +1124,7 @@ test("coordinator-originated rpc delegation returns before slow worker ensure fi
     },
     initialState: {
       ...createEmptyState(),
+
       sessions: {
         main: {
           alias: "main",
@@ -1174,6 +1174,407 @@ test("coordinator-originated rpc delegation returns before slow worker ensure fi
     await Bun.sleep(0);
   }
   expect(harness.dispatchCalls).toHaveLength(1);
+});
+test("rpc auto-run stages complete identity before ensure starts", async () => {
+  const ids = ["task-rpc-mint", "lid-rpc-mint"];
+  let cursor = 0;
+  const harness = makeDeps({
+    createId: () => ids[cursor++] ?? "extra-id",
+    initialState: {
+      ...createEmptyState(),
+      sessions: {
+        main: {
+          alias: "main",
+          agent: "codex",
+          workspace: "backend",
+          transport_session: "backend:main",
+          created_at: "2026-04-13T10:00:00.000Z",
+          last_used_at: "2026-04-13T10:00:00.000Z",
+        },
+      },
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  const result = await service.requestDelegateFromRpc({
+    sourceHandle: "backend:main",
+    targetAgent: "claude",
+    task: "review the design",
+    role: "reviewer",
+  });
+  expect(result.status).toBe("running");
+  // The FIRST durable save (task + shell, before the detached ensure chain
+  // runs) already carries the complete identity — no crash window in which
+  // restart would misread this as a legacy CLI binding.
+  const first = harness.savedStates[0];
+  expect(first.orchestration.workerBindings[result.workerSession!]).toMatchObject({
+    logicalSessionId: "lid-rpc-mint",
+    transportEngine: "cli",
+  });
+  // Let the detached chain settle; the identity survives ensure + dispatch.
+  for (let attempt = 0; attempt < 20 && harness.dispatchCalls.length === 0; attempt += 1) {
+    await Bun.sleep(0);
+  }
+  expect(harness.getState().orchestration.workerBindings[result.workerSession!]).toMatchObject({
+    logicalSessionId: "lid-rpc-mint",
+    transportEngine: "cli",
+  });
+});
+
+test("rpc startup failure converges the staged owner before deleting the shell", async () => {
+  const ids = ["task-rpc-startup-fail", "lid-rpc-startup-fail"];
+  let cursor = 0;
+  const harness = makeDeps({
+    createId: () => ids[cursor++] ?? "extra-id",
+    ensureWorkerSession: async () => {
+      throw new Error("worker ensure RPC refused the session");
+    },
+    initialState: {
+      ...createEmptyState(),
+      sessions: {
+        main: {
+          alias: "main",
+          agent: "codex",
+          workspace: "backend",
+          transport_session: "backend:main",
+          created_at: "2026-04-13T10:00:00.000Z",
+          last_used_at: "2026-04-13T10:00:00.000Z",
+        },
+      },
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  const result = await service.requestDelegateFromRpc({
+    sourceHandle: "backend:main",
+    targetAgent: "claude",
+    task: "review the design",
+    role: "reviewer",
+  });
+  expect(result.status).toBe("running");
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const task = await service.getTask(result.taskId);
+    if (task?.status === "failed") break;
+    await Bun.sleep(0);
+  }
+  expect((await service.getTask(result.taskId))?.status).toBe("failed");
+  expect(harness.releaseCalls).toEqual([
+    {
+      workerSession: "backend:claude:reviewer:backend:main",
+      targetAgent: "claude",
+      workspace: "backend",
+      role: "reviewer",
+      logicalSessionId: "lid-rpc-startup-fail",
+      transportEngine: "cli",
+    },
+  ]);
+  expect(harness.getState().orchestration.workerBindings).toEqual({});
+});
+
+test("rpc startup failure with unverifiable teardown retains the staged shell", async () => {
+  const ids = ["task-rpc-retain", "lid-rpc-retain"];
+  let cursor = 0;
+  const harness = makeDeps({
+    createId: () => ids[cursor++] ?? "extra-id",
+    ensureWorkerSession: async () => {
+      throw new Error("worker ensure RPC refused the session");
+    },
+    releaseWorkerSession: async () => {
+      throw new Error("release refused: turn active");
+    },
+    initialState: {
+      ...createEmptyState(),
+      sessions: {
+        main: {
+          alias: "main",
+          agent: "codex",
+          workspace: "backend",
+          transport_session: "backend:main",
+          created_at: "2026-04-13T10:00:00.000Z",
+          last_used_at: "2026-04-13T10:00:00.000Z",
+        },
+      },
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  const result = await service.requestDelegateFromRpc({
+    sourceHandle: "backend:main",
+    targetAgent: "claude",
+    task: "review the design",
+    role: "reviewer",
+  });
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const task = await service.getTask(result.taskId);
+    if (task?.status === "failed") break;
+    await Bun.sleep(0);
+  }
+  expect((await service.getTask(result.taskId))?.status).toBe("failed");
+  expect(harness.getState().orchestration.workerBindings["backend:claude:reviewer:backend:main"]).toMatchObject({
+    logicalSessionId: "lid-rpc-retain",
+    transportEngine: "cli",
+  });
+});
+
+function seedQueuedEphemeralTask(taskId: string, workerSession: string) {
+  return {
+    taskId,
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workerSession,
+    workspace: "backend",
+    targetAgent: "codex",
+    task: "queued parallel work",
+    status: "queued",
+    ephemeralWorkerSession: true,
+    summary: "",
+    resultText: "",
+    createdAt: "2026-04-13T10:00:00.000Z",
+    updatedAt: "2026-04-13T10:00:00.000Z",
+    eventSeq: 1,
+    events: [],
+  } as never;
+}
+
+test("drain stages complete identity before ensure starts", async () => {
+  let idCounter = 0;
+  const initialState = createEmptyState();
+  initialState.orchestration.tasks["task-drain-mint"] = seedQueuedEphemeralTask(
+    "task-drain-mint",
+    "backend:codex:p-drain-1",
+  );
+  const harness = makeDeps({
+    createId: () => `drain-${++idCounter}`,
+    initialState,
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await service.reconcileParallelSlots();
+
+  expect(harness.getState().orchestration.tasks["task-drain-mint"]?.status).toBe("running");
+  // The drained binding already carries LID + engine before ensure ran —
+  // no crash window misread as a legacy CLI record.
+  expect(
+    harness.getState().orchestration.workerBindings["backend:codex:p-drain-1"],
+  ).toMatchObject({
+    logicalSessionId: expect.any(String),
+    transportEngine: "cli",
+  });
+});
+
+test("drain failure converges the staged owner before requeue", async () => {
+  const initialState = createEmptyState();
+  initialState.orchestration.tasks["task-drain-fail"] = seedQueuedEphemeralTask(
+    "task-drain-fail",
+    "backend:codex:p-drain-2",
+  );
+  const harness = makeDeps({
+    createId: () => "lid-drain-fail",
+    initialState,
+    ensureWorkerSession: async () => {
+      throw new Error("worker ensure RPC refused the session");
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await service.reconcileParallelSlots();
+
+  expect(harness.getState().orchestration.tasks["task-drain-fail"]?.status).toBe("queued");
+  expect(harness.releaseCalls).toHaveLength(1);
+  expect(harness.releaseCalls[0]).toMatchObject({
+    workerSession: "backend:codex:p-drain-2",
+    logicalSessionId: "lid-drain-fail",
+    transportEngine: "cli",
+  });
+  expect(harness.getState().orchestration.workerBindings["backend:codex:p-drain-2"]).toBeUndefined();
+});
+
+test("drain failure with unverifiable teardown retains the shell for retry", async () => {
+  const initialState = createEmptyState();
+  initialState.orchestration.tasks["task-drain-retain"] = seedQueuedEphemeralTask(
+    "task-drain-retain",
+    "backend:codex:p-drain-3",
+  );
+  const harness = makeDeps({
+    createId: () => "lid-drain-retain",
+    initialState,
+    ensureWorkerSession: async () => {
+      throw new Error("worker ensure RPC refused the session");
+    },
+    releaseWorkerSession: async () => {
+      throw new Error("release refused: turn active");
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await service.reconcileParallelSlots();
+
+  // Requeued for the next drain, but the shell stays so the live owner
+  // remains discoverable.
+  expect(harness.getState().orchestration.tasks["task-drain-retain"]?.status).toBe("queued");
+  expect(harness.getState().orchestration.workerBindings["backend:codex:p-drain-3"]).toMatchObject({
+    logicalSessionId: "lid-drain-retain",
+    transportEngine: "cli",
+  });
+});
+
+test("cleanTasks retains complete bindings whose teardown is unverifiable", async () => {
+  const initialState = createEmptyState();
+  initialState.orchestration.tasks["task-clean-terminal"] = {
+    taskId: "task-clean-terminal",
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workerSession: "backend:claude:backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "done work",
+    status: "completed",
+    summary: "done",
+    resultText: "ok",
+    createdAt: "2026-04-13T10:00:00.000Z",
+    updatedAt: "2026-04-13T10:00:00.000Z",
+    eventSeq: 1,
+    events: [],
+  } as never;
+  initialState.orchestration.workerBindings["backend:claude:backend:main"] = {
+    sourceHandle: "backend:claude:backend:main",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    guardAcpOutput: true,
+    logicalSessionId: "lid-clean-retain",
+    transportEngine: "cli",
+  };
+  const harness = makeDeps({
+    initialState,
+    releaseWorkerSession: async () => {
+      throw new Error("release refused");
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  const result = await service.cleanTasks("backend:main");
+
+  // Terminal task history still cleans; the ownership handle stays for retry.
+  expect(result).toMatchObject({ removedTasks: 1, removedBindings: 0 });
+  expect(harness.getState().orchestration.workerBindings["backend:claude:backend:main"]).toMatchObject({
+    logicalSessionId: "lid-clean-retain",
+  });
+});
+
+test("a delegation admitted during retirement teardown is refused", async () => {
+  const initialState = createEmptyState();
+  initialState.orchestration.tasks["task-clean-terminal"] = {
+    taskId: "task-clean-terminal",
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workerSession: "backend:claude:backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "done work",
+    status: "completed",
+    summary: "done",
+    resultText: "ok",
+    createdAt: "2026-04-13T10:00:00.000Z",
+    updatedAt: "2026-04-13T10:00:00.000Z",
+    eventSeq: 1,
+    events: [],
+  } as never;
+  initialState.orchestration.workerBindings["backend:claude:backend:main"] = {
+    sourceHandle: "backend:claude:backend:main",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    guardAcpOutput: true,
+    logicalSessionId: "lid-race",
+    transportEngine: "cli",
+  };
+  let releaseEntered!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    releaseEntered = resolve;
+  });
+  let releaseGate!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releaseGate = resolve;
+  });
+  const harness = makeDeps({
+    initialState,
+    releaseWorkerSession: async (request) => {
+      harness.releaseCalls.push(request);
+      releaseEntered();
+      await gate;
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  const clean = service.cleanTasks("backend:main");
+  await entered;
+  // The retirement lease is held across the release I/O: a new delegation
+  // for the same reusable name must be refused, or the stale cleanup would
+  // kill its freshly admitted owner after the checks passed.
+  await expect(
+    service.requestDelegate({
+      sourceHandle: "wx:user-9",
+      sourceKind: "human",
+      coordinatorSession: "backend:main",
+      workspace: "backend",
+      targetAgent: "claude",
+      task: "new work",
+    }),
+  ).rejects.toThrow(/being retired/);
+  releaseGate();
+  const result = await clean;
+
+  expect(result).toMatchObject({ removedTasks: 1, removedBindings: 1 });
+  expect(harness.getState().orchestration.tasks).toEqual({});
+  expect(harness.getState().orchestration.workerBindings).toEqual({});
+});
+
+test("purgeSessionReferences retains complete bindings whose teardown is unverifiable", async () => {
+  const initialState = createEmptyState();
+  initialState.orchestration.tasks["task-purge-terminal"] = {
+    taskId: "task-purge-terminal",
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workerSession: "backend:claude:backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "done work",
+    status: "completed",
+    summary: "done",
+    resultText: "ok",
+    createdAt: "2026-04-13T10:00:00.000Z",
+    updatedAt: "2026-04-13T10:00:00.000Z",
+    eventSeq: 1,
+    events: [],
+  } as never;
+  initialState.orchestration.workerBindings["backend:claude:backend:main"] = {
+    sourceHandle: "backend:claude:backend:main",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    guardAcpOutput: true,
+    logicalSessionId: "lid-purge-retain",
+    transportEngine: "cli",
+  };
+  const harness = makeDeps({
+    initialState,
+    releaseWorkerSession: async () => {
+      throw new Error("release refused");
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  const result = await service.purgeSessionReferences("backend:main");
+
+  expect(result.removedBindings).toBe(0);
+  expect(harness.getState().orchestration.workerBindings["backend:claude:backend:main"]).toMatchObject({
+    logicalSessionId: "lid-purge-retain",
+  });
 });
 
 
@@ -7050,9 +7451,10 @@ test("approves a worker-chained needs_confirmation task by assigning a worker se
     targetAgent: "codex",
     role: "reviewer",
     guardAcpOutput: true,
+    logicalSessionId: "task-approve-1",
+    transportEngine: "cli",
   });
 });
-
 test("rejects a worker-chained needs_confirmation task without assigning a worker session", async () => {
   const times = [
     "2026-04-13T10:00:00.000Z",
@@ -7164,6 +7566,343 @@ test("does not persist a human delegate task when worker dispatch fails", async 
   ).rejects.toThrow("prompt failed");
 
   expect(harness.getState().orchestration.tasks).toEqual({});
+  expect(harness.getState().orchestration.workerBindings).toEqual({});
+});
+
+test("task-save failure after ensure converges the owner before deleting the shell", async () => {
+  const ids = ["task-save-fail", "lid-save-fail"];
+  let cursor = 0;
+  const harness = makeDeps({ createId: () => ids[cursor++] ?? "extra-id" });
+  const service = new OrchestrationService(harness.deps);
+  const baseSave = harness.deps.saveState;
+  let saves = 0;
+  harness.deps.saveState = async (nextState) => {
+    saves += 1;
+    // Shell save (1) lands; task-persist save (2) fails after ensure started
+    // the owner; the shell-restore save (3) must succeed.
+    if (saves === 2) throw new Error("disk full on task persist");
+    return baseSave(nextState);
+  };
+
+  await expect(
+    service.requestDelegate({
+      sourceHandle: "wx:user-9",
+      sourceKind: "human",
+      coordinatorSession: "backend:main",
+      workspace: "backend",
+      targetAgent: "claude",
+      task: "review the design",
+    }),
+  ).rejects.toThrow("disk full on task persist");
+  // Verified teardown ran with the STAGED identity before the shell
+  // disappeared — never a live owner with no durable binding.
+  expect(harness.releaseCalls).toEqual([
+    {
+      workerSession: "backend:claude:backend:main",
+      targetAgent: "claude",
+      workspace: "backend",
+      logicalSessionId: "lid-save-fail",
+      transportEngine: "cli",
+    },
+  ]);
+  expect(harness.getState().orchestration.workerBindings).toEqual({});
+});
+
+test("dispatch failure after ensure converges the owner with the staged identity", async () => {
+  const ids = ["task-dispatch-fail", "lid-dispatch-fail"];
+  let cursor = 0;
+  const harness = makeDeps({
+    createId: () => ids[cursor++] ?? "extra-id",
+    dispatchWorkerTask: async () => {
+      throw new Error("prompt failed");
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await expect(
+    service.requestDelegate({
+      sourceHandle: "wx:user-9",
+      sourceKind: "human",
+      coordinatorSession: "backend:main",
+      workspace: "backend",
+      targetAgent: "claude",
+      task: "review the design",
+    }),
+  ).rejects.toThrow("prompt failed");
+  expect(harness.releaseCalls).toEqual([
+    {
+      workerSession: "backend:claude:backend:main",
+      targetAgent: "claude",
+      workspace: "backend",
+      logicalSessionId: "lid-dispatch-fail",
+      transportEngine: "cli",
+    },
+  ]);
+  expect(harness.getState().orchestration.tasks).toEqual({});
+  expect(harness.getState().orchestration.workerBindings).toEqual({});
+});
+
+test("teardown failure retains the staged shell instead of orphaning the owner", async () => {
+  const ids = ["task-teardown-fail", "lid-teardown-fail"];
+  let cursor = 0;
+  const harness = makeDeps({
+    createId: () => ids[cursor++] ?? "extra-id",
+    dispatchWorkerTask: async () => {
+      throw new Error("prompt failed");
+    },
+    releaseWorkerSession: async () => {
+      throw new Error("release refused: turn active");
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await expect(
+    service.requestDelegate({
+      sourceHandle: "wx:user-9",
+      sourceKind: "human",
+      coordinatorSession: "backend:main",
+      workspace: "backend",
+      targetAgent: "claude",
+      task: "review the design",
+    }),
+  ).rejects.toThrow(/staged worker binding retained/);
+  // The task never ran so it is still rolled back — but the shell stays so
+  // the live owner remains discoverable to scans, guards, and recovery.
+  expect(harness.getState().orchestration.tasks).toEqual({});
+  expect(harness.getState().orchestration.workerBindings["backend:claude:backend:main"]).toMatchObject({
+    logicalSessionId: "lid-teardown-fail",
+    transportEngine: "cli",
+  });
+});
+
+function seedApprovalTask(taskId: string) {
+  return {
+    taskId,
+    sourceHandle: "wx:user-9",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "review the design",
+    status: "needs_confirmation",
+    summary: "",
+    resultText: "",
+    createdAt: "2026-04-13T10:00:00.000Z",
+    updatedAt: "2026-04-13T10:00:00.000Z",
+  } as never;
+}
+
+test("approval task-save failure after ensure converges the owner before deleting the shell", async () => {
+  const initialState = createEmptyState();
+  initialState.orchestration.tasks["task-approve-save"] = seedApprovalTask("task-approve-save");
+  const harness = makeDeps({
+    createId: () => "lid-approve-save",
+    initialState,
+  });
+  const service = new OrchestrationService(harness.deps);
+  const baseSave = harness.deps.saveState;
+  let saves = 0;
+  harness.deps.saveState = async (nextState) => {
+    saves += 1;
+    if (saves === 2) throw new Error("disk full on approve persist");
+    return baseSave(nextState);
+  };
+
+  await expect(
+    service.approveTask({ coordinatorSession: "backend:main", taskId: "task-approve-save" }),
+  ).rejects.toThrow("disk full on approve persist");
+  expect(harness.releaseCalls).toEqual([
+    {
+      workerSession: "backend:claude:backend:main",
+      targetAgent: "claude",
+      workspace: "backend",
+      logicalSessionId: "lid-approve-save",
+      transportEngine: "cli",
+    },
+  ]);
+  expect(harness.getState().orchestration.workerBindings).toEqual({});
+});
+
+test("approval dispatch failure converges the owner before deleting the shell", async () => {
+  const initialState = createEmptyState();
+  initialState.orchestration.tasks["task-approve-dispatch"] = seedApprovalTask("task-approve-dispatch");
+  const harness = makeDeps({
+    createId: () => "lid-approve-dispatch",
+    initialState,
+    dispatchWorkerTask: async () => {
+      throw new Error("prompt failed");
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await expect(
+    service.approveTask({ coordinatorSession: "backend:main", taskId: "task-approve-dispatch" }),
+  ).rejects.toThrow("prompt failed");
+  expect(harness.releaseCalls).toHaveLength(1);
+  expect(harness.releaseCalls[0]).toMatchObject({
+    logicalSessionId: "lid-approve-dispatch",
+    transportEngine: "cli",
+  });
+  expect(harness.getState().orchestration.workerBindings).toEqual({});
+});
+
+test("approval teardown failure retains the staged shell", async () => {
+  const initialState = createEmptyState();
+  initialState.orchestration.tasks["task-approve-teardown"] = seedApprovalTask("task-approve-teardown");
+  const harness = makeDeps({
+    createId: () => "lid-approve-teardown",
+    initialState,
+    dispatchWorkerTask: async () => {
+      throw new Error("prompt failed");
+    },
+    releaseWorkerSession: async () => {
+      throw new Error("release refused: turn active");
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await expect(
+    service.approveTask({ coordinatorSession: "backend:main", taskId: "task-approve-teardown" }),
+  ).rejects.toThrow(/staged worker binding retained/);
+  expect(harness.getState().orchestration.workerBindings["backend:claude:backend:main"]).toMatchObject({
+    logicalSessionId: "lid-approve-teardown",
+    transportEngine: "cli",
+  });
+});
+
+test("ensure rejection after acquire converges the staged owner before deleting the shell", async () => {
+  const ids = ["task-ensure-fail", "lid-ensure-fail"];
+  let cursor = 0;
+  const harness = makeDeps({
+    createId: () => ids[cursor++] ?? "extra-id",
+    // Production-shaped post-acquire failure: the shell is staged, the
+    // worker/fence exists, then the worker ensure RPC rejects. The service
+    // cannot prove no owner from the rejection alone.
+    ensureWorkerSession: async () => {
+      throw new Error("worker ensure RPC refused the session");
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await expect(
+    service.requestDelegate({
+      sourceHandle: "wx:user-9",
+      sourceKind: "human",
+      coordinatorSession: "backend:main",
+      workspace: "backend",
+      targetAgent: "claude",
+      task: "review the design",
+    }),
+  ).rejects.toThrow("worker ensure RPC refused the session");
+  // Verified teardown ran with the staged identity first — only then did
+  // the shell disappear. Without the teardown this would be a live owner
+  // with no durable binding.
+  expect(harness.releaseCalls).toEqual([
+    {
+      workerSession: "backend:claude:backend:main",
+      targetAgent: "claude",
+      workspace: "backend",
+      logicalSessionId: "lid-ensure-fail",
+      transportEngine: "cli",
+    },
+  ]);
+  expect(harness.getState().orchestration.workerBindings).toEqual({});
+});
+
+test("ensure rejection with unverifiable teardown retains the staged shell", async () => {
+  const ids = ["task-ensure-teardown-fail", "lid-ensure-teardown-fail"];
+  let cursor = 0;
+  const harness = makeDeps({
+    createId: () => ids[cursor++] ?? "extra-id",
+    ensureWorkerSession: async () => {
+      throw new Error("worker ensure RPC refused the session");
+    },
+    releaseWorkerSession: async () => {
+      throw new Error("release refused: turn active");
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await expect(
+    service.requestDelegate({
+      sourceHandle: "wx:user-9",
+      sourceKind: "human",
+      coordinatorSession: "backend:main",
+      workspace: "backend",
+      targetAgent: "claude",
+      task: "review the design",
+    }),
+  ).rejects.toThrow(/staged worker binding retained/);
+  expect(harness.getState().orchestration.workerBindings["backend:claude:backend:main"]).toMatchObject({
+    logicalSessionId: "lid-ensure-teardown-fail",
+    transportEngine: "cli",
+  });
+});
+
+test("ensure rejection on a reused binding restores without tearing down the previous owner", async () => {
+  const initialState = createEmptyState();
+  initialState.orchestration.workerBindings["backend:claude:backend:main"] = {
+    sourceHandle: "backend:claude:backend:main",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    guardAcpOutput: true,
+    logicalSessionId: "previous-lid",
+    transportEngine: "cli",
+  };
+  const harness = makeDeps({
+    createId: () => "unused-lid",
+    initialState,
+    ensureWorkerSession: async () => {
+      throw new Error("worker ensure RPC refused the session");
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await expect(
+    service.requestDelegate({
+      sourceHandle: "wx:user-9",
+      sourceKind: "human",
+      coordinatorSession: "backend:main",
+      workspace: "backend",
+      targetAgent: "claude",
+      task: "review the design",
+    }),
+  ).rejects.toThrow("worker ensure RPC refused the session");
+  // Reuse path: no teardown of the possibly pre-existing warm worker, no
+  // minted identity consumed, previous durable identity intact — the
+  // retained binding keeps any surviving owner discoverable.
+  expect(harness.releaseCalls).toEqual([]);
+  expect(harness.getState().orchestration.workerBindings["backend:claude:backend:main"]).toMatchObject({
+    logicalSessionId: "previous-lid",
+    transportEngine: "cli",
+  });
+});
+
+test("approval ensure rejection converges the staged owner before deleting the shell", async () => {
+  const initialState = createEmptyState();
+  initialState.orchestration.tasks["task-approve-ensure"] = seedApprovalTask("task-approve-ensure");
+  const harness = makeDeps({
+    createId: () => "lid-approve-ensure",
+    initialState,
+    ensureWorkerSession: async () => {
+      throw new Error("worker ensure RPC refused the session");
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await expect(
+    service.approveTask({ coordinatorSession: "backend:main", taskId: "task-approve-ensure" }),
+  ).rejects.toThrow("worker ensure RPC refused the session");
+  expect(harness.releaseCalls).toEqual([
+    {
+      workerSession: "backend:claude:backend:main",
+      targetAgent: "claude",
+      workspace: "backend",
+      logicalSessionId: "lid-approve-ensure",
+      transportEngine: "cli",
+    },
+  ]);
   expect(harness.getState().orchestration.workerBindings).toEqual({});
 });
 
@@ -8584,6 +9323,7 @@ test("serializes concurrent approvals so only one transition wins", async () => 
       state = cloneState(nextState);
     },
     config: createConfig(),
+    resolveWorkerBindingEngine: () => "cli",
     ensureWorkerSession: async (request) => request.workerSession,
     dispatchWorkerTask: async (request) => {
       dispatchCalls.push({ taskId: request.taskId, workerSession: request.workerSession });
@@ -8649,12 +9389,13 @@ test("startWorkerCancellation reads fresh workerSession from state, not stale sn
   const originalLoadState = harness.deps.loadState;
 
   // Intercept loadState: calls through the service path get counted and potentially blocked.
-  // requestDelegateForHuman -> worker-collision precheck + mutate -> loadState (counts 1-2, pass through)
-  // requestTaskCancellation -> mutate -> loadState (count 3, pass through)
-  // startWorkerCancellation -> loadState (count 4, block here)
+  // requestDelegateForHuman -> reserve precheck + shell stage + task persist -> loadState
+  // (counts 1-3, pass through)
+  // requestTaskCancellation -> mutate -> loadState (count 4, pass through)
+  // startWorkerCancellation -> loadState (count 5, block here)
   harness.deps.loadState = async () => {
     serviceLoadStateCount++;
-    if (serviceLoadStateCount >= 4) {
+    if (serviceLoadStateCount >= 5) {
       await loadStateBlocker;
     }
     return originalLoadState();
@@ -9166,7 +9907,7 @@ test("approveTask on parallel needs_confirmation task starts it when agent has f
 // Task 8: reconcileParallelSlots — slot teardown and queue draining
 // ---------------------------------------------------------------------------
 
-test("reconcileParallelSlots closes finished slots and drains the queue", async () => {
+test("reconcileParallelSlots retires finished slots and drains the queue", async () => {
   let idCounter = 0;
   const config = createConfig();
   config.orchestration.maxParallelTasksPerAgent = 1;
@@ -9212,9 +9953,14 @@ test("reconcileParallelSlots closes finished slots and drains the queue", async 
   harness.ensureCalls.length = 0;
   await service.reconcileParallelSlots();
 
-  // r1's ephemeral session must have been closed
-  expect(harness.closeCalls.map((c) => c.workerSession)).toContain(r1.workerSession);
-
+  // r1's ephemeral owner must have been verified-released with its exact
+  // staged identity before the durable binding disappeared.
+  expect(harness.releaseCalls.map((c) => c.workerSession)).toContain(r1.workerSession);
+  const r1Release = harness.releaseCalls.find((c) => c.workerSession === r1.workerSession)!;
+  expect(typeof r1Release.logicalSessionId).toBe("string");
+  expect(r1Release.transportEngine).toBe("cli");
+  expect(harness.getState().orchestration.workerBindings[r1.workerSession]).toBeUndefined();
+  expect((await service.getTask(r1.taskId))?.ephemeralWorkerSessionClosed).toBe(true);
   // r2 must have been drained into running
   const r2Task = await service.getTask(r2.taskId);
   expect(r2Task?.status).toBe("running");
@@ -9229,15 +9975,17 @@ test("reconcileParallelSlots closes finished slots and drains the queue", async 
   expect(harness.dispatchCalls.some((c) => c.taskId === r2.taskId)).toBe(true);
 });
 
-test("reconcileParallelSlots is idempotent and survives closeWorkerSession errors", async () => {
+test("reconcileParallelSlots retains the binding when release fails and retries", async () => {
   let idCounter = 0;
+  let releases = 0;
   const config = createConfig();
   config.orchestration.maxParallelTasksPerAgent = 1;
   const harness = makeDeps({
     config,
     createId: () => `id-${++idCounter}`,
-    closeWorkerSession: async () => {
-      throw new Error("close failed");
+    releaseWorkerSession: async () => {
+      releases += 1;
+      throw new Error("release failed");
     },
   });
   const service = new OrchestrationService(harness.deps);
@@ -9251,8 +9999,6 @@ test("reconcileParallelSlots is idempotent and survives closeWorkerSession error
     task: "A",
     parallel: true,
   });
-  expect(r1.status).toBe("running");
-
   // Drive r1 to completed
   await service.recordWorkerReply({
     taskId: r1.taskId,
@@ -9262,16 +10008,21 @@ test("reconcileParallelSlots is idempotent and survives closeWorkerSession error
     resultText: "result",
   });
 
-  // First reconcile: close throws, but reconcileParallelSlots must NOT rethrow
+  // First reconcile: release throws, but reconcileParallelSlots must NOT rethrow.
+  // The binding is retained (never deleted unverified) and the closed flag
+  // stays unset so a later reconcile retries.
   await expect(service.reconcileParallelSlots()).resolves.toBeUndefined();
-  expect(harness.closeCalls.length).toBe(1);
+  expect(releases).toBe(1);
+  expect(harness.getState().orchestration.workerBindings[r1.workerSession]).toBeDefined();
+  expect((await service.getTask(r1.taskId))?.ephemeralWorkerSessionClosed).not.toBe(true);
 
-  // Second reconcile: ephemeralWorkerSessionClosed is already set, so must NOT close again
+  // Second reconcile retries the release (still failing here).
   await service.reconcileParallelSlots();
-  expect(harness.closeCalls.length).toBe(1);
+  expect(releases).toBe(2);
+  expect(harness.getState().orchestration.workerBindings[r1.workerSession]).toBeDefined();
 });
 
-test("reconcileParallelSlots snapshots a legacy ephemeral binding before deleting it", async () => {
+test("reconcileParallelSlots deletes identity-less legacy bindings without engine release", async () => {
   const workerSession = "backend:codex:p-legacy";
   const harness = makeDeps({
     initialState: {
@@ -9313,9 +10064,10 @@ test("reconcileParallelSlots snapshots a legacy ephemeral binding before deletin
 
   await service.reconcileParallelSlots();
 
-  expect(harness.closeCalls).toHaveLength(1);
-  expect(harness.closeCalls[0]).toMatchObject({ workerSession });
-  expect(harness.closeCalls[0]).toHaveProperty("guardAcpOutput", undefined);
+  // No identity means no ownership handle: direct deletion, no engine call.
+  expect(harness.releaseCalls).toHaveLength(0);
+  expect(harness.getState().orchestration.workerBindings[workerSession]).toBeUndefined();
+  expect((await service.getTask("task-legacy"))?.ephemeralWorkerSessionClosed).toBe(true);
 });
 
 test("reconcileParallelSlots drains multiple queued tasks for one agent in a single call", async () => {
@@ -9595,7 +10347,7 @@ test("I-1: TOCTOU — pending parallel start counter prevents a concurrent deleg
 });
 
 // I-2: cancelling a blocked ephemeral parallel task triggers reconcileParallelSlots
-test("I-2: cancelling a blocked parallel task triggers reconcileParallelSlots and closes the session", async () => {
+test("I-2: cancelling a blocked parallel task triggers reconcileParallelSlots and retires the session", async () => {
   const config = createConfig();
   config.orchestration.maxParallelTasksPerAgent = 1;
   let idCounter = 0;
@@ -9674,16 +10426,18 @@ test("I-2: cancelling a blocked parallel task triggers reconcileParallelSlots an
   });
 
   // Yield to let any async reconcile fire
-  for (let attempt = 0; attempt < 20 && harness.closeCalls.length < 1; attempt += 1) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
     await Bun.sleep(0);
   }
 
-  // The blocked task's ephemeral session must have been closed (I-2 trigger)
-  expect(harness.closeCalls.map((c) => c.workerSession)).toContain("backend:codex:p-slot");
+  // The blocked task's identity-less binding retires without engine release;
+  // the durable handle disappears and the task stays settled.
+  expect(harness.releaseCalls).toHaveLength(0);
+  expect(harness.getState().orchestration.workerBindings["backend:codex:p-slot"]).toBeUndefined();
 });
 
-// I-3: cancelling a queued parallel task must NOT call closeWorkerSession
-test("I-3: cancelling a queued parallel task does NOT invoke closeWorkerSession for the never-started session", async () => {
+// I-3: cancelling a queued parallel task must NOT release the never-started session
+test("I-3: cancelling a queued parallel task does NOT release the never-started session", async () => {
   const config = createConfig();
   config.orchestration.maxParallelTasksPerAgent = 1;
   let idCounter = 0;
@@ -9759,8 +10513,8 @@ test("I-3: cancelling a queued parallel task does NOT invoke closeWorkerSession 
     await Bun.sleep(0);
   }
 
-  // closeWorkerSession must NOT have been called for the queued task's session
-  expect(harness.closeCalls.map((c) => c.workerSession)).not.toContain("backend:codex:p-queued");
+  // releaseWorkerSession must NOT have been called for the queued task's session
+  expect(harness.releaseCalls.map((c) => c.workerSession)).not.toContain("backend:codex:p-queued");
 
   // The queued task must be cancelled
   const task = await service.getTask("queued-task");

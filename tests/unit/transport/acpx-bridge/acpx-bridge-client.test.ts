@@ -597,3 +597,102 @@ test("reports malformed bridge output lines through onMalformedLine", async () =
   await expect(pending).resolves.toEqual({});
   expect(malformed).toEqual(["garbled-not-json"]);
 });
+
+test("handles bridge-originated resolvePermissionRequest and returns response to bridge", async () => {
+  const writes: string[] = [];
+  let receivedMethod = "";
+  let receivedParams: unknown;
+
+  const client = new AcpxBridgeClient((line) => {
+    writes.push(line);
+  }, {
+    onBridgeRequest: async (method, params) => {
+      receivedMethod = method;
+      receivedParams = params;
+      return { outcome: "allow_once" };
+    },
+  });
+
+  client.handleLine(JSON.stringify({
+    direction: "bridge-to-daemon",
+    rpcId: "rpc-perm-1",
+    method: "resolvePermissionRequest",
+    params: {
+      logicalSessionId: "s1",
+      sessionKey: "s1",
+      requestId: "r1",
+      toolCallId: "t1",
+      title: "read file",
+      kind: "read",
+      policyGeneration: 1,
+      workerGeneration: "w1",
+    },
+  }));
+
+  // Wait microtask for async handler
+  await new Promise((r) => setTimeout(r, 10));
+
+  expect(receivedMethod).toBe("resolvePermissionRequest");
+  expect(receivedParams).toEqual({
+    logicalSessionId: "s1",
+    sessionKey: "s1",
+    requestId: "r1",
+    toolCallId: "t1",
+    title: "read file",
+    kind: "read",
+    policyGeneration: 1,
+    workerGeneration: "w1",
+  });
+  expect(writes).toEqual([
+    '{"direction":"daemon-to-bridge","rpcId":"rpc-perm-1","ok":true,"result":{"outcome":"allow_once"}}\n',
+  ]);
+});
+
+test("handles bridge-originated resolveElicitationRequest and returns response to bridge", async () => {
+  const writes: string[] = [];
+  let receivedMethod = "";
+  let receivedParams: unknown;
+
+  const client = new AcpxBridgeClient((line) => {
+    writes.push(line);
+  }, {
+    onBridgeRequest: async (method, params) => {
+      receivedMethod = method;
+      receivedParams = params;
+      return { action: "cancel" };
+    },
+  });
+
+  client.handleLine(JSON.stringify({
+    direction: "bridge-to-daemon",
+    rpcId: "rpc-elicit-1",
+    method: "resolveElicitationRequest",
+    params: {
+      logicalSessionId: "s1",
+      sessionKey: "s1",
+      requestId: "r1",
+      elicitationId: "e1",
+      mode: "form",
+      message: { question: "which file?" },
+      policyGeneration: 1,
+      workerGeneration: "w1",
+    },
+  }));
+
+  await new Promise((r) => setTimeout(r, 10));
+
+  expect(receivedMethod).toBe("resolveElicitationRequest");
+  expect(receivedParams).toEqual({
+    logicalSessionId: "s1",
+    sessionKey: "s1",
+    requestId: "r1",
+    elicitationId: "e1",
+    mode: "form",
+    message: { question: "which file?" },
+    policyGeneration: 1,
+    workerGeneration: "w1",
+  });
+  expect(writes).toEqual([
+    '{"direction":"daemon-to-bridge","rpcId":"rpc-elicit-1","ok":true,"result":{"action":"cancel"}}\n',
+  ]);
+});

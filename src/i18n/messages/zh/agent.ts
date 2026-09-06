@@ -26,6 +26,10 @@ export const agent: AgentMessages = {
   // handleAgentRemove — removed confirmation
   removed: (name) => `Agent「${name}」已删除`,
 
+  // handleAgentRemove — still referenced by persisted sessions
+  stillReferenced: (name, aliases) =>
+    `Agent「${name}」仍被以下会话使用：${aliases}。请先删除这些会话。`,
+
   // agentHelp metadata
   helpSummary: "管理已注册的 Agent。",
   helpCmdList: "/agents",

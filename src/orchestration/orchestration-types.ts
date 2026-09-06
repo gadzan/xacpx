@@ -1,3 +1,5 @@
+import type { SessionTransportEngine } from "../state/types";
+
 export type OrchestrationTaskStatus =
   | "needs_confirmation"
   | "queued"
@@ -145,6 +147,8 @@ export interface WorkerBindingRecord {
   ephemeral?: boolean;
   /** New bindings use the ACP stdout guard; absent means a legacy unguarded binding. */
   guardAcpOutput?: boolean;
+  logicalSessionId?: string;
+  transportEngine?: SessionTransportEngine;
 }
 
 export interface OrchestrationQueuedQuestionRecord {

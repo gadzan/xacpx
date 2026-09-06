@@ -44,7 +44,7 @@
     "clean:channel-feishu": "node -e \"require('node:fs').rmSync('packages/channel-feishu/dist',{recursive:true,force:true})\"",
     "clean:channel-discord": "node -e \"require('node:fs').rmSync('packages/channel-discord/dist',{recursive:true,force:true})\"",
     "clean:relay-protocol": "node -e \"require('node:fs').rmSync('packages/relay-protocol/dist',{recursive:true,force:true})\"",
-    "build": "bun run clean:dist && bun build ./src/cli.ts ./src/bridge/bridge-main.ts ./src/adapters/hermes-acp-shim.ts ./src/adapters/acp-output-guard-main.ts ./src/plugin-api.ts --outdir ./dist --target node --external node-pty --external fs-ext --external write-file-atomic && bun run build:plugin-api",
+    "build": "bun run clean:dist && bun build ./src/cli.ts ./src/bridge/bridge-main.ts ./src/bridge/engine/runtime/runtime-worker-main.ts ./src/adapters/hermes-acp-shim.ts ./src/adapters/acp-output-guard-main.ts ./src/plugin-api.ts --outdir ./dist --target node --external node-pty --external fs-ext --external write-file-atomic --external acpx && bun run build:plugin-api",
     "build:plugin-api": "tsc -p tsconfig.plugin-api.json",
     "build:channel-yuanbao": "bun run build:plugin-api && bun run clean:channel-yuanbao && bun build ./packages/channel-yuanbao/src/index.ts --outdir ./packages/channel-yuanbao/dist --target node --external xacpx && tsc -p packages/channel-yuanbao/tsconfig.json",
     "build:channel-feishu": "bun run build:plugin-api && bun run clean:channel-feishu && bun build ./packages/channel-feishu/src/index.ts --outdir ./packages/channel-feishu/dist --target node --external xacpx && tsc -p packages/channel-feishu/tsconfig.json",
@@ -86,6 +86,7 @@
     "test:unit": "node ./scripts/run-tests.mjs tests/unit",
     "test:smoke": "node ./scripts/run-tests.mjs tests/smoke",
     "test:compat:acpx": "node ./scripts/run-tests.mjs tests/compat",
+    "lint:acpx-imports": "node ./scripts/lint-acpx-imports.mjs",
     "smoke:local-install": "node ./scripts/smoke-local-install.mjs"
   },
   "dependencies": {

@@ -2974,3 +2974,26 @@ test("ensureSession treats a genuinely missing session as no-record and proceeds
   });
   expect(calls.some((args) => args.includes("ensure"))).toBe(true);
 });
+test("runtime-bound sessions are rejected before any CLI subprocess spawns", async () => {
+  const run = mock(async () => ({ code: 0, stdout: "", stderr: "" }));
+  const runPty = mock(async () => ({ code: 0, stdout: "", stderr: "" }));
+  const transport = new AcpxCliTransport({ command: "acpx" }, run, runPty);
+  const runtimeSession: ResolvedSession = { ...session, transportEngine: "runtime" };
+
+  await expect(transport.ensureSession(runtimeSession)).rejects.toThrow(/bound to engine "runtime"/);
+  await expect(transport.prompt(runtimeSession, "hi")).rejects.toThrow(/bound to engine "runtime"/);
+  await expect(transport.hasSession(runtimeSession)).rejects.toThrow(/bound to engine "runtime"/);
+  await expect(transport.cancel(runtimeSession)).rejects.toThrow(/bound to engine "runtime"/);
+  await expect(transport.deleteSession(runtimeSession)).rejects.toThrow(/bound to engine "runtime"/);
+  expect(run).not.toHaveBeenCalled();
+  expect(runPty).not.toHaveBeenCalled();
+});
+
+test("cli-bound and unbound sessions still execute on the CLI transport", async () => {
+  const run = mock(async () => ({ code: 0, stdout: JSON.stringify({ sessions: [] }), stderr: "" }));
+  const runPty = mock(async () => ({ code: 0, stdout: "", stderr: "" }));
+  const transport = new AcpxCliTransport({ command: "acpx" }, run, runPty);
+  await transport.hasSession({ ...session, transportEngine: "cli" }).catch(() => {});
+  await transport.hasSession({ ...session }).catch(() => {});
+  expect(run).toHaveBeenCalled();
+});

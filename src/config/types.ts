@@ -2,6 +2,7 @@ import type { Locale } from "../i18n/resolve-locale";
 import type { AdapterVersionOverrides } from "../adapters/adapter-catalog";
 import type { ClaudeSettingsPolicy } from "../adapters/claude-settings-policy";
 
+export type BridgeEngineMode = "auto" | "cli" | "runtime";
 export type PermissionMode = "approve-all" | "approve-reads" | "deny-all";
 export type NonInteractivePermissions = "deny" | "fail";
 export type ReplyMode = "stream" | "final" | "verbose";
@@ -27,8 +28,19 @@ export interface WechatConfig {
 
 export interface TransportConfig {
   type: "acpx-cli" | "acpx-bridge";
-  command?: string;
+  /**
+   * acpx-bridge engine selection: which bridge engine executes a session.
+   * - absent / "cli": every session runs on the CLI engine (default).
+   * - "auto": eligible new sessions bind Runtime, ineligible fall back to CLI.
+   * - "runtime": strict — sessions must be eligible or creation fails loudly.
+   * Non-bridge transports always resolve new sessions to cli. Explicit
+   * transport.command (self-provided acpx) always forces cli under "auto"
+   * and is a configuration error under "runtime".
+   */
+  engine?: BridgeEngineMode;
   sessionInitTimeoutMs?: number;
+  /** Legacy raw acpx command override; forces the CLI engine (self-provided acpx). */
+  command?: string;
   permissionMode: PermissionMode;
   nonInteractivePermissions: NonInteractivePermissions;
   permissionPolicy?: string;

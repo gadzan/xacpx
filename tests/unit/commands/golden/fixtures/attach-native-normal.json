@@ -3,10 +3,10 @@
     "sessions.tryReserveFreeSessionAlias(\"relay:demo\")",
     "sessions.resolveSession(\"relay:demo\", \"codex\", \"backend\", \"backend:relay:demo\", {…})",
     "orchestration.reserveLogicalTransportSession(\"backend:relay:demo\")",
+    "sessions.attachNativeSession(session(relay:demo/backend:relay:demo))",
     "transport.resumeAgentSession(session(relay:demo/backend:relay:demo), \"sess-1\")",
     "transport.hasSession(session(relay:demo/backend:relay:demo))",
     "logger.info(transport.has_session)",
-    "sessions.attachNativeSession(session(relay:demo/backend:relay:demo))",
     "sessions.getSession(\"relay:demo\")"
   ],
   "outcome": {
@@ -28,6 +28,11 @@
       ],
       "workspace": "backend",
       "transportSession": "backend:relay:demo",
+      "source": "agent-side",
+      "logicalSessionId": "<logical-session-id>",
+      "transportEngine": "cli",
+      "agentSessionId": "sess-1",
+      "attachedAt": "<ts>",
       "cwd": "/tmp/backend",
       "archived": false
     }

@@ -13,6 +13,7 @@ import { parseCommand } from "./parse-command";
 import { authorizeCommandForChat, renderCommandAccessDenied, withEffectiveOwner } from "./command-policy";
 import type { ChatRequestMetadata } from "../weixin/agent/interface";
 import type { PlanEntry, ToolUseEvent } from "../channels/types.js";
+import { isRestartRequiredTransportChange } from "../config/transport-topology.js";
 import { handlePermissionAutoSet, handlePermissionAutoStatus, handlePermissionModeSet, handlePermissionStatus } from "./handlers/permission-handler";
 import { handleConfigSet, handleConfigShow } from "./handlers/config-handler";
 import {
@@ -67,6 +68,7 @@ import { AutoInstallFailedError } from "../recovery/errors";
 import { handleSessionResetCommand } from "./handlers/session-reset-handler";
 import type {
   CommandRouterContext,
+  ConfigMutationMutex,
   RouterResponse,
   ScheduledDeliveryCapabilityOps,
   ScheduledRouterOps,
@@ -79,6 +81,7 @@ import type {
   OrchestrationRouterOps,
   WritableConfigStore,
 } from "./router-types";
+import { AsyncMutex } from "../orchestration/async-mutex";
 import { renderLaterUnsupportedChannel } from "../scheduled/scheduled-render";
 import { TransportInvoker } from "./transport-invoker";
 import { SessionControlService } from "./session-control-service";
@@ -118,6 +121,13 @@ export class CommandRouter {
     private readonly resolveNativeSessionListFormat?: (chatKey: string) => "cards" | "table",
     activeTurns?: ActiveTurnRegistry,
     private readonly controlEvents?: ControlEventBus,
+    /**
+     * Shared config disk + permission executor serialization domain (see
+     * ConfigMutationMutex). Defaults to a router-private instance; production
+     * passes the daemon-wide mutex so handler transactions and the config
+     * watcher reload path serialize against each other.
+     */
+    private readonly configMutationMutex: ConfigMutationMutex = new AsyncMutex(),
   ) {
     this.logger = logger ?? createNoopAppLogger();
     this.activeTurns = activeTurns;
@@ -485,10 +495,6 @@ export class CommandRouter {
     });
   }
 
-  async clearSession(chatKey: string): Promise<void> {
-    await handleSessionResetCommand(this.createHandlerContext(), this.createSessionResetOps(), chatKey);
-  }
-
   private createHandlerContext(): CommandRouterContext {
     return {
       sessions: this.sessions,
@@ -498,6 +504,8 @@ export class CommandRouter {
       configStore: this.configStore,
       logger: this.logger,
       replaceConfig: (updated) => this.replaceConfig(updated),
+      configMutationMutex: this.configMutationMutex,
+      ...(this.activeTurns ? { activeTurns: this.activeTurns } : {}),
       ...(this.quota ? { quota: this.quota } : {}),
       ...(this.resolveNativeSessionListFormat ? { resolveNativeSessionListFormat: this.resolveNativeSessionListFormat } : {}),
     };
@@ -529,6 +537,8 @@ export class CommandRouter {
     return {
       resolveSession: (alias, agent, workspace, transportSession, options) =>
         this.sessions.resolveSession(alias, agent, workspace, transportSession, options),
+      resolveAttachCandidate: (alias, agent, workspace, transportSession, options) =>
+        this.sessions.resolveAttachCandidate(alias, agent, workspace, transportSession, options),
       ensureTransportSession: (session, replyOverride, perfSpanOverride) => this.transportInvoker.ensureTransportSession(session, replyOverride ?? reply, perfSpanOverride ?? perfSpan),
       checkTransportSession: (session) => this.transportInvoker.checkTransportSession(session),
       markSessionReady: () => perfSpan?.mark("session.ready"),
@@ -681,8 +691,32 @@ export class CommandRouter {
       return;
     }
 
-    // Replace reference to prevent mutation of caller's object
-    this.config.transport = { ...updated.transport };
+    // Replace reference to prevent mutation of caller's object. A pending
+    // restart topology on disk is held: the live transport.type/command keep
+    // their current values while every other field hot-applies.
+    const topologyHeld = isRestartRequiredTransportChange(
+      this.config.transport,
+      updated.transport,
+    );
+    const liveType = this.config.transport.type;
+    const liveCommand = this.config.transport.command;
+    this.config.transport = topologyHeld
+      ? {
+          ...updated.transport,
+          type: liveType,
+          ...(liveCommand !== undefined ? { command: liveCommand } : {}),
+        }
+      : { ...updated.transport };
+    if (topologyHeld) {
+      if (liveCommand === undefined) {
+        delete this.config.transport.command;
+      }
+      void this.logger.warn(
+        "config.topology_pending_restart",
+        "transport topology change on disk is pending a daemon restart; live transport keeps running",
+        { liveType, diskType: updated.transport.type },
+      );
+    }
     this.config.logging = { ...updated.logging };
     this.config.channel = {
       ...updated.channel,

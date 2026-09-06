@@ -1,5 +1,11 @@
 import { createInterface } from "node:readline";
 import { readFile } from "node:fs/promises";
+import { statSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
+
+
 
 import {
   normalizeBridgeNonInteractivePermissions,
@@ -10,10 +16,18 @@ import {
 } from "./bridge-env";
 import { BridgeServer } from "./bridge-server";
 import { BridgeRuntime } from "./bridge-runtime";
+import { CliEngine } from "./engine/cli/cli-engine";
+import { EngineRouter } from "./engine/engine-router";
+import { SessionEngineBinding } from "./engine/session-engine-binding";
+import { RuntimeEngine, defaultWorkerEntryCandidates } from "./engine/runtime-engine";
 import { coreEnv } from "../runtime/core-env";
+import { coreHomeDir } from "../runtime/core-home";
+import { resolveAcpxHomeDir } from "../transport/acpx-session-files";
+import { ensurePrivateRuntimeDir } from "../daemon/private-runtime-dir";
 import { createQueueOwnerAdapterContext } from "../transport/queue-owner-adapter-context";
 import { probeWindowsProcessIdentity } from "../process/windows-process-tree";
 import { setLocale, resolveLocale } from "../i18n";
+import type { NonInteractivePermissions, PermissionMode } from "../config/types";
 import { ensureAgentOverlays, parseAgentOverlayEntries } from "../transport/acpx-agent-overlay";
 
 type BridgeInput = AsyncIterable<string> & {
@@ -63,9 +77,40 @@ export async function processBridgeInput(options: {
   }
 }
 
+export interface BridgeSharedConfig {
+  permissionMode: PermissionMode;
+  nonInteractivePermissions: NonInteractivePermissions;
+  permissionPolicy: string | undefined;
+  queueOwnerTtlSeconds: number | undefined;
+}
+
+/**
+ * Resolve the bridge-wide config shared by the CLI and Runtime engines.
+ * Resolved ONCE at startup (runBridgeMain) so the two engines cannot drift
+ * (e.g. queueOwnerTtlSeconds honored by CLI but silently defaulted by
+ * Runtime). The env reader is injectable for wiring tests.
+ */
+export function resolveBridgeSharedConfig(
+  readEnv: (name: string) => string | undefined = coreEnv,
+): BridgeSharedConfig {
+  return {
+    permissionMode: normalizeBridgePermissionMode(readEnv("BRIDGE_PERMISSION_MODE")),
+    nonInteractivePermissions: normalizeBridgeNonInteractivePermissions(
+      readEnv("BRIDGE_NON_INTERACTIVE_PERMISSIONS"),
+    ),
+    permissionPolicy: normalizeBridgePermissionPolicy(readEnv("BRIDGE_PERMISSION_POLICY")),
+    queueOwnerTtlSeconds: normalizeBridgeQueueOwnerTtlSeconds(
+      readEnv("BRIDGE_QUEUE_OWNER_TTL_SECONDS"),
+    ),
+  };
+}
+
 export async function runBridgeMain(): Promise<void> {
   // The console hands the bridge the exact overlay entries it needs; re-provisioning
   // here is idempotent and keeps standalone bridge invocations consistent.
+  // Shared bridge config is resolved ONCE at startup (see
+  // resolveBridgeSharedConfig) so the CLI and Runtime engines cannot drift.
+  const bridgeConfig = resolveBridgeSharedConfig();
   const overlaysEnv = coreEnv("BRIDGE_AGENT_OVERLAYS");
   if (overlaysEnv) {
     await ensureAgentOverlays(parseAgentOverlayEntries(overlaysEnv));
@@ -74,15 +119,11 @@ export async function runBridgeMain(): Promise<void> {
     delete process.env.XACPX_BRIDGE_AGENT_OVERLAYS;
   }
   let server: BridgeServer;
-  const runtime = new BridgeRuntime(coreEnv("BRIDGE_ACPX_COMMAND") ?? "acpx", undefined, undefined, {
-      permissionMode: normalizeBridgePermissionMode(coreEnv("BRIDGE_PERMISSION_MODE")),
-      nonInteractivePermissions: normalizeBridgeNonInteractivePermissions(
-        coreEnv("BRIDGE_NON_INTERACTIVE_PERMISSIONS"),
-      ),
-      permissionPolicy: normalizeBridgePermissionPolicy(coreEnv("BRIDGE_PERMISSION_POLICY")),
-      queueOwnerTtlSeconds: normalizeBridgeQueueOwnerTtlSeconds(
-        coreEnv("BRIDGE_QUEUE_OWNER_TTL_SECONDS"),
-      ),
+  const cliRuntime = new BridgeRuntime(coreEnv("BRIDGE_ACPX_COMMAND") ?? "acpx", undefined, undefined, {
+      permissionMode: bridgeConfig.permissionMode,
+      nonInteractivePermissions: bridgeConfig.nonInteractivePermissions,
+      permissionPolicy: bridgeConfig.permissionPolicy,
+      queueOwnerTtlSeconds: bridgeConfig.queueOwnerTtlSeconds,
       sessionInitTimeoutMs: normalizeBridgeSessionInitTimeoutMs(
         coreEnv("BRIDGE_SESSION_INIT_TIMEOUT_MS"),
       ),
@@ -100,7 +141,82 @@ export async function runBridgeMain(): Promise<void> {
         readCurrentGeneration: readBridgeGeneration,
       }),
     });
-  server = new BridgeServer(runtime);
+  const cliEngine = new CliEngine(cliRuntime);
+  // Explicit production wiring (Activation-E/F/G): RuntimeEngine is now
+  // instantiated alongside CliEngine and fronted by EngineRouter.
+  // transport.engine selects the executor: "cli" pins CLI, "runtime" is
+  // strict Runtime, and "auto" picks Runtime for eligible new sessions
+  // (bridge transport + eligible permission/shape/record) else CLI.
+  // engine=runtime strict mode works because the Router has a real
+  // RuntimeEngine to route to.
+  let engine: CliEngine | EngineRouter = cliEngine;
+  try {
+    const workerEntry = defaultWorkerEntryCandidates().find((p) => {
+      try { return statSync(p).isFile(); } catch { return false; }
+    });
+    if (workerEntry) {
+      const bridgeStateDir = coreEnv("BRIDGE_STATE_DIR") ?? join(resolveAcpxHomeDir(), ".acpx", "sessions");
+      // Queue journals and worker fences are xacpx-private coordination state:
+      // they live under the xacpx-owned durable root, never inside upstream
+      // acpx internals next to the sessions dir.
+      const durableRoot = coreEnv("BRIDGE_RUNTIME_DURABLE_DIR") ?? join(coreHomeDir(homedir()), "runtime");
+      // The durable root holds message journals + ownership fences whose only
+      // access control is filesystem permissions: keep it user-private 0700
+      // like the daemon runtime dir. Best-effort so a chmod failure never
+      // bricks bridge startup; new subdirs are mkdir 0700 on write.
+      try {
+        await ensurePrivateRuntimeDir(durableRoot);
+      } catch {}
+      const queueDir = coreEnv("BRIDGE_RUNTIME_QUEUE_DIR") ?? join(durableRoot, "runtime-queue");
+      const fenceDir = coreEnv("BRIDGE_RUNTIME_FENCE_DIR") ?? join(durableRoot, "worker-fences");
+      try {
+        await ensurePrivateRuntimeDir(queueDir);
+      } catch {}
+      try {
+        await ensurePrivateRuntimeDir(fenceDir);
+      } catch {}
+      const runtimeEngine = new RuntimeEngine({
+        stateDir: bridgeStateDir,
+        permissionMode: bridgeConfig.permissionMode,
+        nonInteractivePermissions: bridgeConfig.nonInteractivePermissions,
+        permissionPolicy: bridgeConfig.permissionPolicy,
+        queueOwnerTtlSeconds: bridgeConfig.queueOwnerTtlSeconds,
+        durableRootDir: durableRoot,
+        queueDir,
+        fenceDir,
+        onPermissionRequest: async (payload) => {
+          try {
+            const result = await server.requestDaemon("resolvePermissionRequest", payload as unknown as import("../transport/acpx-bridge/acpx-bridge-protocol").ResolvePermissionRequestParams, { timeoutMs: 8000 });
+            const outcome = (result as { outcome?: unknown })?.outcome;
+            if (outcome === "allow_once" || outcome === "allow_always" || outcome === "reject_once" || outcome === "reject_always" || outcome === "cancel") {
+              return { outcome };
+            }
+            return { outcome: "reject_once" };
+          } catch {
+            return { outcome: "reject_once" };
+          }
+        },
+        onElicitationRequest: async (payload) => {
+          try {
+            const result = await server.requestDaemon("resolveElicitationRequest", payload as unknown as import("../transport/acpx-bridge/acpx-bridge-protocol").ResolveElicitationRequestParams, { timeoutMs: 30000 });
+            const action = (result as { action?: unknown })?.action;
+            if (action === "submit") return { action: "submit", data: (result as { data?: unknown }).data };
+            return { action: "cancel" };
+          } catch {
+            return { action: "cancel" };
+          }
+        },
+      });
+      const binding = new SessionEngineBinding();
+      engine = new EngineRouter(binding, cliEngine, runtimeEngine);
+      try {
+        console.error("[bridge] RuntimeEngine wired; queue priming available on daemon request");
+      } catch {}
+    }
+  } catch (e) {
+    try { console.error(`[bridge] RuntimeEngine not available, falling back to cli-only: ${e instanceof Error ? e.message : String(e)}`); } catch {}
+  }
+  server = new BridgeServer(engine as unknown as BridgeRuntime);
   const input = createInterface({
     input: process.stdin,
     crlfDelay: Infinity,

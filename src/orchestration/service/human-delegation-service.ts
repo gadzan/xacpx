@@ -8,9 +8,12 @@
 // `requestDelegateForHuman` opens `kernel.mutate` more than once, sequentially and never
 // nested; the kernel's mutate is non-reentrant. `claimParallelStart` runs INSIDE a critical
 // section; `releaseParallelStart`, `reserveProposedWorkerSession`,
-// `ensureReservedWorkerSession` and `dispatchWorkerTask` run OUTSIDE. Do not add, remove,
-// merge, or relocate a mutate, and do not move any of those calls across a critical-section
-// boundary.
+// `ensureReservedWorkerSession` and `dispatchWorkerTask` run OUTSIDE. The
+// binding-shell stage mutate runs BEFORE `ensureReservedWorkerSession` (G11
+// persist-before-owner: the first owner must never start without a durable
+// LID/engine); the task-persist mutate runs AFTER. Do not add, remove,
+// merge, or relocate a mutate, and do not move any of those calls across a
+// critical-section boundary.
 import type { AppState } from "../../state/types";
 import type {
   OrchestrationGroupRecord,
@@ -25,17 +28,20 @@ import type {
 } from "../orchestration-service";
 import type { OrchestrationStateKernel } from "./orchestration-state-kernel";
 import {
+  teardownStagedWorkerOwner,
   workerBindingEndpointIdentityFields,
+  workerBindingEngineFields,
   workerBindingGuardFields,
+  workerBindingIdentityFields,
 } from "../worker-launch";
+import type { StagedWorkerIdentity } from "../worker-launch";
 import type { RpcDelegationService } from "./rpc-delegation-service";
 import type { WorkerSessionManager } from "./worker-session-manager";
 
 export type HumanDelegationDeps = Pick<
   OrchestrationServiceDeps,
-  "now" | "createId" | "createAgentEndpointId" | "loadState" | "saveState" | "dispatchWorkerTask"
+  "now" | "createId" | "createAgentEndpointId" | "loadState" | "saveState" | "dispatchWorkerTask" | "resolveWorkerBindingEngine" | "releaseWorkerSession"
 >;
-
 export class HumanDelegationService {
   constructor(
     private readonly deps: HumanDelegationDeps,
@@ -137,9 +143,65 @@ export class HumanDelegationService {
       previousGroup?: OrchestrationGroupRecord;
       normalizedGroupId?: string;
     };
-
     const releaseWorkerReservation = await this.workerSessions.reserveProposedWorkerSession(workerSession);
+    // Pre-shell identity for failure rollback. Rollback-after-owner rule:
+    // teardown runs exactly when this delegation staged the FIRST binding
+    // (no previous durable identity). Any owner present was then started
+    // or adopted by this delegation's ensure — including when ensure
+    // itself rejects (acquire/spawn precedes the ensure RPC, so rejection
+    // never proves no owner). Reuse keeps its previous binding instead:
+    // the binding is retained, so a surviving owner stays discoverable and
+    // no pre-existing warm worker or live journal is disturbed.
+    let shellPreviousBinding: AppState["orchestration"]["workerBindings"][string] | undefined;
+    let stagedIdentity: StagedWorkerIdentity | undefined;
+    let shellStaged = false;
     try {
+      // G11 persist-before-owner: durably stage the binding shell (minted LID
+      // + physical-group engine) BEFORE ensureReservedWorkerSession can start
+      // the first owner. A first delegation used to ensure with no binding at
+      // all, so the owner launched on a config-derived engine that a later
+      // config change could contradict before the binding was ever written.
+      // Reusable bindings keep their existing identity; only the missing
+      // pieces are minted. A saveState rejection fails the delegation with
+      // the reservation released and no owner started.
+      try {
+        const staged = await this.kernel.mutate(async () => {
+          const state = await this.deps.loadState();
+          const previousBinding = state.orchestration.workerBindings[workerSession];
+          this.workerSessions.assertWorkerSessionDoesNotConflictExternalCoordinator(state, workerSession);
+          this.workerSessions.assertWorkerSessionAvailable(state, workerSession, undefined, { allowCurrentReservation: true });
+          const identity = workerBindingIdentityFields(
+            previousBinding,
+            () => this.deps.resolveWorkerBindingEngine({
+              workerSession,
+              targetAgent: input.targetAgent,
+              workspace: input.workspace,
+              ...(input.cwd ? { cwd: input.cwd } : {}),
+            }),
+            this.deps.createId,
+          );
+          state.orchestration.workerBindings[workerSession] = {
+            sourceHandle: workerSession,
+            coordinatorSession: input.coordinatorSession,
+            workspace: input.workspace,
+            ...(input.cwd ? { cwd: input.cwd } : {}),
+            targetAgent: input.targetAgent,
+            ...(role ? { role } : {}),
+            ...workerBindingGuardFields(previousBinding),
+            ...workerBindingEndpointIdentityFields(previousBinding, this.deps.createAgentEndpointId),
+            ...identity,
+            ...(input.parallel ? { ephemeral: true } : {}),
+          };
+          await this.deps.saveState(state);
+          return { previousBinding, stagedIdentity: identity };
+        });
+        shellPreviousBinding = staged.previousBinding;
+        stagedIdentity = staged.stagedIdentity;
+        shellStaged = true;
+      } catch (error) {
+        await releaseWorkerReservation();
+        throw error;
+      }
       try {
         ensuredWorkerSession = await this.workerSessions.ensureReservedWorkerSession({
           workerSession,
@@ -205,6 +267,7 @@ export class HumanDelegationService {
             role,
             ...workerBindingGuardFields(previousBinding),
             ...workerBindingEndpointIdentityFields(previousBinding, this.deps.createAgentEndpointId),
+            ...workerBindingEngineFields(previousBinding),
             ...(input.parallel ? { ephemeral: true } : {}),
           };
 
@@ -218,6 +281,49 @@ export class HumanDelegationService {
           };
         });
       } catch (error) {
+        if (!shellPreviousBinding && stagedIdentity) {
+          // First binding for this workerSession: any owner present was
+          // started or adopted by this delegation's ensure — including when
+          // ensure itself rejects (acquire/spawn precedes the ensure RPC, so
+          // rejection never proves no owner). Verified-converge it BEFORE
+          // the shell may be deleted. Teardown failure retains the shell
+          // (fail closed). Reuse keeps its previous binding instead (no
+          // teardown): the retained binding keeps a surviving owner
+          // discoverable.
+          try {
+            await teardownStagedWorkerOwner(
+              this.deps.releaseWorkerSession,
+              {
+                workerSession,
+                targetAgent: input.targetAgent,
+                workspace: input.workspace,
+                ...(input.cwd ? { cwd: input.cwd } : {}),
+                ...(role ? { role } : {}),
+              },
+              stagedIdentity,
+            );
+          } catch (teardownError) {
+            await releaseWorkerReservation();
+            const cause = error instanceof Error ? error.message : String(error);
+            const teardownCause = teardownError instanceof Error ? teardownError.message : String(teardownError);
+            throw new Error(
+              `delegation failed: ${cause}; owner teardown failed (${teardownCause}), staged worker binding retained for ${workerSession}`,
+            );
+          }
+        }
+        if (shellStaged) {
+          // Best-effort: the original error is what the caller must see; a
+          // failed restore only leaves a reusable shell behind.
+          await this.kernel.mutate(async () => {
+            const state = await this.deps.loadState();
+            if (shellPreviousBinding) {
+              state.orchestration.workerBindings[workerSession] = shellPreviousBinding;
+            } else {
+              delete state.orchestration.workerBindings[workerSession];
+            }
+            await this.deps.saveState(state);
+          }).catch(() => {});
+        }
         await releaseWorkerReservation();
         throw error;
       }
@@ -241,11 +347,46 @@ export class HumanDelegationService {
         task: input.task,
       });
     } catch (error) {
+      if (!shellPreviousBinding && stagedIdentity) {
+        // First binding (dispatch runs only after ensure succeeded, and no
+        // previous identity exists): converge the possibly-started owner
+        // first. Teardown failure keeps the task rollback (it never ran)
+        // but retains the shell so the live owner stays discoverable.
+        try {
+          await teardownStagedWorkerOwner(
+            this.deps.releaseWorkerSession,
+            {
+              workerSession,
+              targetAgent: input.targetAgent,
+              workspace: input.workspace,
+              ...(input.cwd ? { cwd: input.cwd } : {}),
+              ...(role ? { role } : {}),
+            },
+            stagedIdentity,
+          );
+        } catch (teardownError) {
+          await this.kernel.mutate(async () => {
+            const state = await this.deps.loadState();
+            delete state.orchestration.tasks[taskId];
+            if (prepared.normalizedGroupId && prepared.previousGroup) {
+              this.kernel.ensureGroups(state)[prepared.normalizedGroupId] = prepared.previousGroup;
+            }
+            await this.deps.saveState(state);
+          }).catch(() => {});
+          const cause = error instanceof Error ? error.message : String(error);
+          const teardownCause = teardownError instanceof Error ? teardownError.message : String(teardownError);
+          throw new Error(
+            `delegation failed: ${cause}; owner teardown failed (${teardownCause}), staged worker binding retained for ${workerSession}`,
+          );
+        }
+      }
       await this.kernel.mutate(async () => {
         const state = await this.deps.loadState();
         delete state.orchestration.tasks[taskId];
-        if (prepared.previousBinding) {
-          state.orchestration.workerBindings[ensuredWorkerSession] = prepared.previousBinding;
+        // Roll back to before the shell existed (not to the shell): a
+        // failed delegation leaves no trace.
+        if (shellPreviousBinding) {
+          state.orchestration.workerBindings[ensuredWorkerSession] = shellPreviousBinding;
         } else {
           delete state.orchestration.workerBindings[ensuredWorkerSession];
         }

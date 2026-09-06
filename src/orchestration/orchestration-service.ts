@@ -1,6 +1,6 @@
 import type { AppConfig } from "../config/types";
 import type { AppLogger } from "../logging/app-logger";
-import type { AppState } from "../state/types";
+import type { AppState, SessionTransportEngine } from "../state/types";
 import type {
   ExternalCoordinatorRecord,
   OrchestrationCoordinatorRouteContextRecord,
@@ -200,19 +200,40 @@ export interface OrchestrationServiceDeps {
   saveState: (state: AppState) => Promise<void>;
   stateMutex?: AsyncMutex;
   config: AppConfig;
+  /**
+   * Physical-group engine for a worker binding shell. MUST resolve with the
+   * same inheritance the daemon applies to logical sessions (a group owns
+   * exactly one engine) — a config-only engine here could durably bind a
+   * CLI shell over a Runtime-owned physical session. Called while staging
+   * the shell BEFORE the first owner starts (G11 persist-before-owner).
+   */
+  resolveWorkerBindingEngine: (input: {
+    workerSession: string;
+    targetAgent: string;
+    workspace: string;
+    cwd?: string;
+  }) => SessionTransportEngine;
   ensureWorkerSession: (request: EnsureWorkerSessionRequest) => Promise<string>;
   dispatchWorkerTask: (request: DispatchWorkerTaskRequest) => Promise<void>;
   cancelWorkerTask?: (request: CancelWorkerTaskRequest) => Promise<void>;
   resumeWorkerTask?: (request: ResumeWorkerTaskRequest) => Promise<void>;
-  closeWorkerSession?: (request: {
+  /**
+   * Verified teardown of one worker's engine-side owner for a staged binding
+   * identity (rollback-after-owner): Runtime releases the logical identity
+   * (worker shutdown, fence retire, journal drop — all verified, fails
+   * closed on an active turn); other engines close their owner. The caller
+   * passes the STAGED identity, never re-resolved from live state whose
+   * shell may already be gone. A rejection (or a missing port) forbids the
+   * caller from deleting the shell.
+   */
+  releaseWorkerSession?: (request: {
     workerSession: string;
-    coordinatorSession: string;
+    targetAgent: string;
     workspace: string;
     cwd?: string;
-    targetAgent: string;
     role?: string;
-    /** Snapshot from before reconcile removes the binding; absent means legacy identity. */
-    guardAcpOutput?: boolean;
+    logicalSessionId: string;
+    transportEngine: SessionTransportEngine;
   }) => Promise<void>;
   wakeCoordinatorSession?: (request: WakeCoordinatorRequest) => Promise<void>;
   deliverCoordinatorMessage?: (
@@ -325,7 +346,7 @@ export class OrchestrationService {
     this.workerSessions = new WorkerSessionManager(deps, this.kernel);
     this.questionFlow = new QuestionFlowCore(deps, this.kernel);
     this.notices = new NoticeDeliveryService(deps, this.kernel);
-    this.lifecycle = new TaskLifecycleService(deps, this.kernel);
+    this.lifecycle = new TaskLifecycleService(deps, this.kernel, this.workerSessions);
     this.coordinators = new CoordinatorRegistryService(deps, this.kernel, this.workerSessions);
     this.cancellation = new TaskCancellationService(deps, this.kernel, this.workerSessions, this.questionFlow);
     this.humanQuestions = new HumanQuestionService(deps, this.kernel, this.workerSessions, this.questionFlow, this.cancellation);
