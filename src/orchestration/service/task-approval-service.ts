@@ -157,15 +157,14 @@ export class TaskApprovalService {
     };
     // G11 persist-before-owner: durably stage the binding shell (minted LID +
     // physical-group engine) BEFORE ensureReservedWorkerSession can start the
-    // first owner. Reusable bindings keep their existing identity. A failed
-    // approve leaves no trace (shell rolled back below).
+    // first owner. Reusable bindings keep their existing identity. Rollback
+    // rule: teardown runs exactly when this approve staged the FIRST binding
+    // (no previous durable identity) — any owner present was started or
+    // adopted by this approve's ensure, including when ensure itself rejects.
+    // Reuse keeps its previous binding instead (no teardown).
     let shellPreviousBinding: AppState["orchestration"]["workerBindings"][string] | undefined;
     let stagedIdentity: StagedWorkerIdentity | undefined;
     let shellStaged = false;
-    // Set once ensureReservedWorkerSession returns: later failures must
-    // verified-converge the possibly-started owner before the shell may be
-    // deleted (rollback-after-owner).
-    let ownerStarted = false;
     try {
       const staged = await this.kernel.mutate(async () => {
         const state = await this.deps.loadState();
@@ -216,7 +215,6 @@ export class TaskApprovalService {
         targetAgent: currentTask.targetAgent,
         role: currentTask.role,
       });
-      ownerStarted = true;
       prepared = await this.kernel.mutate(async () => {
         const state = await this.deps.loadState();
         const task = state.orchestration.tasks[input.taskId];
@@ -262,10 +260,10 @@ export class TaskApprovalService {
         };
       });
     } catch (error) {
-      if (ownerStarted && stagedIdentity) {
-        // The owner may exist (ensure returned): verified-converge it
-        // BEFORE the shell may be deleted. Teardown failure retains the
-        // shell (fail closed).
+      if (!shellPreviousBinding && stagedIdentity) {
+        // First binding for this workerSession (ensure rejection never
+        // proves no owner): verified-converge BEFORE the shell may be
+        // deleted. Teardown failure retains the shell (fail closed).
         try {
           await teardownStagedWorkerOwner(
             this.deps.releaseWorkerSession,
@@ -323,11 +321,10 @@ export class TaskApprovalService {
         task: prepared.task.task,
       });
     } catch (error) {
-      if (stagedIdentity) {
-        // Dispatch runs only after ensure succeeded, so the owner may
-        // exist: converge it first. Teardown failure keeps the status
-        // rollback (the task never ran) but retains the shell so the live
-        // owner stays discoverable.
+      if (!shellPreviousBinding && stagedIdentity) {
+        // First binding: converge the possibly-started owner first.
+        // Teardown failure keeps the status rollback (the task never ran)
+        // but retains the shell so the live owner stays discoverable.
         try {
           await teardownStagedWorkerOwner(
             this.deps.releaseWorkerSession,

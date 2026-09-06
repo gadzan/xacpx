@@ -7378,6 +7378,142 @@ test("approval teardown failure retains the staged shell", async () => {
   });
 });
 
+test("ensure rejection after acquire converges the staged owner before deleting the shell", async () => {
+  const ids = ["task-ensure-fail", "lid-ensure-fail"];
+  let cursor = 0;
+  const harness = makeDeps({
+    createId: () => ids[cursor++] ?? "extra-id",
+    // Production-shaped post-acquire failure: the shell is staged, the
+    // worker/fence exists, then the worker ensure RPC rejects. The service
+    // cannot prove no owner from the rejection alone.
+    ensureWorkerSession: async () => {
+      throw new Error("worker ensure RPC refused the session");
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await expect(
+    service.requestDelegate({
+      sourceHandle: "wx:user-9",
+      sourceKind: "human",
+      coordinatorSession: "backend:main",
+      workspace: "backend",
+      targetAgent: "claude",
+      task: "review the design",
+    }),
+  ).rejects.toThrow("worker ensure RPC refused the session");
+  // Verified teardown ran with the staged identity first — only then did
+  // the shell disappear. Without the teardown this would be a live owner
+  // with no durable binding.
+  expect(harness.releaseCalls).toEqual([
+    {
+      workerSession: "backend:claude:backend:main",
+      targetAgent: "claude",
+      workspace: "backend",
+      logicalSessionId: "lid-ensure-fail",
+      transportEngine: "cli",
+    },
+  ]);
+  expect(harness.getState().orchestration.workerBindings).toEqual({});
+});
+
+test("ensure rejection with unverifiable teardown retains the staged shell", async () => {
+  const ids = ["task-ensure-teardown-fail", "lid-ensure-teardown-fail"];
+  let cursor = 0;
+  const harness = makeDeps({
+    createId: () => ids[cursor++] ?? "extra-id",
+    ensureWorkerSession: async () => {
+      throw new Error("worker ensure RPC refused the session");
+    },
+    releaseWorkerSession: async () => {
+      throw new Error("release refused: turn active");
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await expect(
+    service.requestDelegate({
+      sourceHandle: "wx:user-9",
+      sourceKind: "human",
+      coordinatorSession: "backend:main",
+      workspace: "backend",
+      targetAgent: "claude",
+      task: "review the design",
+    }),
+  ).rejects.toThrow(/staged worker binding retained/);
+  expect(harness.getState().orchestration.workerBindings["backend:claude:backend:main"]).toMatchObject({
+    logicalSessionId: "lid-ensure-teardown-fail",
+    transportEngine: "cli",
+  });
+});
+
+test("ensure rejection on a reused binding restores without tearing down the previous owner", async () => {
+  const initialState = createEmptyState();
+  initialState.orchestration.workerBindings["backend:claude:backend:main"] = {
+    sourceHandle: "backend:claude:backend:main",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    guardAcpOutput: true,
+    logicalSessionId: "previous-lid",
+    transportEngine: "cli",
+  };
+  const harness = makeDeps({
+    createId: () => "unused-lid",
+    initialState,
+    ensureWorkerSession: async () => {
+      throw new Error("worker ensure RPC refused the session");
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await expect(
+    service.requestDelegate({
+      sourceHandle: "wx:user-9",
+      sourceKind: "human",
+      coordinatorSession: "backend:main",
+      workspace: "backend",
+      targetAgent: "claude",
+      task: "review the design",
+    }),
+  ).rejects.toThrow("worker ensure RPC refused the session");
+  // Reuse path: no teardown of the possibly pre-existing warm worker, no
+  // minted identity consumed, previous durable identity intact — the
+  // retained binding keeps any surviving owner discoverable.
+  expect(harness.releaseCalls).toEqual([]);
+  expect(harness.getState().orchestration.workerBindings["backend:claude:backend:main"]).toMatchObject({
+    logicalSessionId: "previous-lid",
+    transportEngine: "cli",
+  });
+});
+
+test("approval ensure rejection converges the staged owner before deleting the shell", async () => {
+  const initialState = createEmptyState();
+  initialState.orchestration.tasks["task-approve-ensure"] = seedApprovalTask("task-approve-ensure");
+  const harness = makeDeps({
+    createId: () => "lid-approve-ensure",
+    initialState,
+    ensureWorkerSession: async () => {
+      throw new Error("worker ensure RPC refused the session");
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await expect(
+    service.approveTask({ coordinatorSession: "backend:main", taskId: "task-approve-ensure" }),
+  ).rejects.toThrow("worker ensure RPC refused the session");
+  expect(harness.releaseCalls).toEqual([
+    {
+      workerSession: "backend:claude:backend:main",
+      targetAgent: "claude",
+      workspace: "backend",
+      logicalSessionId: "lid-approve-ensure",
+      transportEngine: "cli",
+    },
+  ]);
+  expect(harness.getState().orchestration.workerBindings).toEqual({});
+});
+
 test("human delegate dispatch failure restores group injection metadata", async () => {
   const initialGroup = {
     groupId: "group-a",

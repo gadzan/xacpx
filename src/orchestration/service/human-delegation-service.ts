@@ -144,20 +144,17 @@ export class HumanDelegationService {
       normalizedGroupId?: string;
     };
     const releaseWorkerReservation = await this.workerSessions.reserveProposedWorkerSession(workerSession);
-    // Pre-shell identity for failure rollback: a failed delegation must
-    // leave no trace (same atomicity as before the shell existed) — UNLESS
-    // its owner already started (see ownerStarted), in which case the owner
-    // is verified-converged first and the shell is retained when teardown
-    // cannot be verified.
+    // Pre-shell identity for failure rollback. Rollback-after-owner rule:
+    // teardown runs exactly when this delegation staged the FIRST binding
+    // (no previous durable identity). Any owner present was then started
+    // or adopted by this delegation's ensure — including when ensure
+    // itself rejects (acquire/spawn precedes the ensure RPC, so rejection
+    // never proves no owner). Reuse keeps its previous binding instead:
+    // the binding is retained, so a surviving owner stays discoverable and
+    // no pre-existing warm worker or live journal is disturbed.
     let shellPreviousBinding: AppState["orchestration"]["workerBindings"][string] | undefined;
     let stagedIdentity: StagedWorkerIdentity | undefined;
     let shellStaged = false;
-    // Set once ensureReservedWorkerSession returns: from here on an owner
-    // may exist, so later failures must verified-converge it before the
-    // shell may be deleted (rollback-after-owner). An ensure rejection
-    // leaves this false: no teardown is attempted for an owner that never
-    // verifiably started.
-    let ownerStarted = false;
     try {
       // G11 persist-before-owner: durably stage the binding shell (minted LID
       // + physical-group engine) BEFORE ensureReservedWorkerSession can start
@@ -216,7 +213,6 @@ export class HumanDelegationService {
           targetAgent: input.targetAgent,
           role,
         });
-        ownerStarted = true;
         prepared = await this.kernel.mutate(async () => {
           const state = await this.deps.loadState();
           const now = this.deps.now().toISOString();
@@ -285,11 +281,15 @@ export class HumanDelegationService {
           };
         });
       } catch (error) {
-        if (ownerStarted && stagedIdentity) {
-          // The owner may exist (ensure returned): verified-converge it
-          // BEFORE the shell may be deleted, or a surviving owner becomes
-          // invisible to membership scans, guards, recovery, and
-          // inheritance. Teardown failure retains the shell (fail closed).
+        if (!shellPreviousBinding && stagedIdentity) {
+          // First binding for this workerSession: any owner present was
+          // started or adopted by this delegation's ensure — including when
+          // ensure itself rejects (acquire/spawn precedes the ensure RPC, so
+          // rejection never proves no owner). Verified-converge it BEFORE
+          // the shell may be deleted. Teardown failure retains the shell
+          // (fail closed). Reuse keeps its previous binding instead (no
+          // teardown): the retained binding keeps a surviving owner
+          // discoverable.
           try {
             await teardownStagedWorkerOwner(
               this.deps.releaseWorkerSession,
@@ -347,11 +347,11 @@ export class HumanDelegationService {
         task: input.task,
       });
     } catch (error) {
-      if (stagedIdentity) {
-        // Dispatch runs only after ensure succeeded, so the owner may
-        // exist: converge it first. Teardown failure keeps the task
-        // rollback (it never ran) but retains the shell so the live owner
-        // stays discoverable.
+      if (!shellPreviousBinding && stagedIdentity) {
+        // First binding (dispatch runs only after ensure succeeded, and no
+        // previous identity exists): converge the possibly-started owner
+        // first. Teardown failure keeps the task rollback (it never ran)
+        // but retains the shell so the live owner stays discoverable.
         try {
           await teardownStagedWorkerOwner(
             this.deps.releaseWorkerSession,
