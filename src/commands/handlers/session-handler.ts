@@ -384,12 +384,29 @@ export async function handleSessionAttach(
     return { text: t().session.sessionLifecycleBusy(alias) };
   }
   try {
+    // Attach rebinds an EXISTING physical session to this alias: overwriting
+    // an existing logical row would orphan its Runtime LID (warm worker,
+    // fence mapping, durable queue journal) with no daemon-side handle left
+    // to converge it — the old journal would never drain. Refuse like the
+    // native-attach path; reset (/clear) is the replace transaction (it
+    // verified-releases the old LID first) and new/shortcut derive free
+    // aliases instead.
+    const claimed = context.sessions.getResolvedSessionByInternalAlias(internalAlias);
+    if (claimed) {
+      return { text: t().session.sessionAlreadyExists(alias, claimed.agent, claimed.workspace) };
+    }
     // Preflight on the inheritance-aware candidate: the authoritative
     // attachSession below would bind the physical group's engine, so the
     // existence check must route to that same engine — never to a
     // config-derived transient.
     const attached = context.lifecycle.resolveAttachCandidate(internalAlias, agent, workspace, transportSession);
     const releaseTransportReservation = await context.lifecycle.reserveTransportSession(attached.transportSession);
+    // Set once our fresh row durably lands: a later ensure/check failure
+    // (e.g. a hard delete racing this attach at the engine) must drop the
+    // just-created ghost row — unlike create, attach binds an existing
+    // physical session, so there is no provisional incarnation to keep as
+    // a retry handle, and keeping it would wedge re-attach behind "exists".
+    let persistedFreshRow = false;
     try {
       const exists = await context.lifecycle.checkTransportSession(attached);
       if (!exists) {
@@ -408,6 +425,7 @@ export async function handleSessionAttach(
         attached.acpxAgent,
         attached.agentArgv,
       );
+      persistedFreshRow = true;
       await context.sessions.useSession(chatKey, internalAlias);
       await refreshSessionTransportAgentCommandBestEffort(context, internalAlias, "session.attach.agent_command_refresh_failed");
       await context.logger.info("session.attached", "attached existing transport session", {
@@ -417,6 +435,13 @@ export async function handleSessionAttach(
         transportSession,
       });
       return { text: t().session.sessionAttached(alias) };
+    } catch (error) {
+      if (persistedFreshRow) {
+        try {
+          await context.sessions.removeSession(internalAlias);
+        } catch {}
+      }
+      throw error;
     } finally {
       await releaseTransportReservation();
     }

@@ -163,7 +163,11 @@ export class RuntimeWorkerManager {
    * Discharged fences are retired best-effort.
    * Throws WorkerTeardownPendingError if worker active, fence present non-discharged, or fence unreadable.
    */
-  async assertOwnershipQuiescent(logicalWorkerKey: string, physicalFenceKey: string): Promise<void> {
+  async assertOwnershipQuiescent(
+    logicalWorkerKey: string,
+    physicalFenceKey: string,
+    options: { allowDeleting?: boolean } = {},
+  ): Promise<void> {
     const worker = this.workersByKey.get(logicalWorkerKey);
     if (worker && (worker.alive || worker.lifecycle !== "stopped")) {
       throw new WorkerTeardownPendingError(
@@ -182,6 +186,16 @@ export class RuntimeWorkerManager {
       );
     }
     if (read.kind === "present") {
+      // A "deleting" fence is the hard-delete admission barrier, not a live
+      // owner. The delete path passes allowDeleting (it will adopt the
+      // in-place barrier at claim time); every other quiescence observer
+      // (logical release) keeps refusing while a hard delete is in flight.
+      if (read.record.phase === "deleting") {
+        if (options.allowDeleting) return;
+        throw new WorkerTeardownPendingError(
+          `durable ownership fence for session "${logicalWorkerKey}" (physical key "${physicalFenceKey}") is under hard deletion; refusing concurrent lifecycle change`,
+        );
+      }
       if (read.record.phase === "discharged") {
         try {
           await this.enqueueFenceWrite(physicalFenceKey, () => fence.retire(physicalFenceKey, read.record.generation));
@@ -194,6 +208,96 @@ export class RuntimeWorkerManager {
         `durable ownership fence for session "${logicalWorkerKey}" (physical key "${physicalFenceKey}") is present and not discharged (phase: ${read.record.phase}, pid: ${read.record.pid})`,
       );
     }
+  }
+
+  /**
+   * Claim the durable physical-deletion barrier, or adopt the in-place one.
+   * The fence key scopes the delete target (one physical session ⇒ one
+   * record name), so a pre-existing "deleting" fence is always the SAME
+   * interrupted delete: adopt it (same barrier, no gap) instead of
+   * failing. Any other present phase means a live owner or a successor
+   * claim won the race — throw without touching anything (never unlink).
+   * Returns null when fencing is disabled (no durable namespace exists,
+   * matching claimOwnedFence's no-op contract).
+   */
+  async claimPhysicalDeletion(physicalFenceKey: string): Promise<{ generation: string; adopted: boolean } | null> {
+    const fence = this.fence();
+    if (!fence) return null;
+    const generation = randomUUID();
+    const record: RuntimeWorkerFenceRecord = {
+      kind: "runtime-worker-owner",
+      logicalSessionId: physicalFenceKey,
+      generation,
+      pid: process.pid,
+      bootstrapVerified: false,
+      phase: "deleting",
+      startedAt: new Date().toISOString(),
+      agent: "runtime-worker",
+    };
+    try {
+      await this.enqueueFenceWrite(physicalFenceKey, () => fence.claim(record));
+      return { generation, adopted: false };
+    } catch {
+      // EEXIST or I/O: re-read to decide adopt vs abort (never overwrite).
+    }
+    const read = await fence.read(physicalFenceKey);
+    if (read.kind === "present" && read.record.phase === "deleting") {
+      return { generation: read.record.generation, adopted: true };
+    }
+    throw new WorkerTeardownPendingError(
+      `cannot claim physical-deletion barrier for session "${physicalFenceKey}": ` +
+        (read.kind === "present"
+          ? `fence is live (phase ${read.record.phase}); a successor owner won the race — refusing to unlink`
+          : `fence is ${read.kind}; refusing to unlink over unverifiable evidence`),
+    );
+  }
+
+  /**
+   * Revalidate the deletion barrier immediately before unlinking: the fence
+   * must still carry our (claimed or adopted) generation in phase
+   * "deleting". A slow adopter whose barrier was retired and replaced by a
+   * successor's owner fence aborts here instead of unlinking live records.
+   */
+  async revalidatePhysicalDeletion(physicalFenceKey: string, generation: string): Promise<void> {
+    const fence = this.fence();
+    if (!fence) return;
+    const read = await fence.read(physicalFenceKey);
+    if (read.kind !== "present" || read.record.phase !== "deleting" || read.record.generation !== generation) {
+      throw new WorkerTeardownPendingError(
+        `physical-deletion barrier for session "${physicalFenceKey}" changed before unlink (now ${read.kind === "present" ? `phase ${read.record.phase}` : read.kind}); refusing to unlink`,
+      );
+    }
+  }
+
+  /**
+   * Retire the deletion barrier after record + streams + tombstone removal
+   * verified. Strict generation+phase retire: a successor-owned fence is
+   * never unlinked (throws, file intact).
+   */
+  async retirePhysicalDeletion(physicalFenceKey: string, generation: string): Promise<void> {
+    const fence = this.fence();
+    if (!fence) return;
+    await this.enqueueFenceWrite(physicalFenceKey, () => fence.retireDeletion(physicalFenceKey, generation));
+  }
+
+  /**
+   * Read the deletion barrier generation when one stands, else null. Used
+   * by the no-record delete tail (crashed deleter completed the unlink but
+   * never retired): unreadable evidence fails closed — lifting a barrier
+   * we cannot attribute could strand a live deleter's successors-refused
+   * window open over half-deleted records.
+   */
+  async readDeletionBarrier(physicalFenceKey: string): Promise<string | null> {
+    const fence = this.fence();
+    if (!fence) return null;
+    const read = await fence.read(physicalFenceKey);
+    if (read.kind === "absent") return null;
+    if (read.kind === "unreadable") {
+      throw new WorkerTeardownPendingError(
+        `durable ownership fence for session "${physicalFenceKey}" is unreadable (${read.reason}); refusing to lift a possible deletion barrier`,
+      );
+    }
+    return read.record.phase === "deleting" ? read.record.generation : null;
   }
 
   lifecycleFor(key: string): WorkerLifecycle {
@@ -529,7 +633,16 @@ export class RuntimeWorkerManager {
       );
     }
     const record = read.record;
-    // A live, healthy client for this key means the fence is ours and current.
+    // Physical-deletion barrier: a "deleting" fence is a live hard-delete's
+    // admission lock — never discharge, retire, or probe it. A gone deleter
+    // must STILL refuse here: the delete retry (same physical target) adopts
+    // the in-place barrier and completes it; a successor owner must never be
+    // admitted over a half-deleted record. Fail fast without touching the file.
+    if (record.phase === "deleting") {
+      throw new WorkerTeardownPendingError(
+        `durable ownership fence for session "${logicalSessionId}" is under hard deletion; refusing admission until the delete completes`,
+      );
+    }
     const existing = this.workersByKey.get(logicalSessionId);
     const deps = this.options.clientDeps;
     const outcome = await dischargeRuntimeWorkerFence(record, {

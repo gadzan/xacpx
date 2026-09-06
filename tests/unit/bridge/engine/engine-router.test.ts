@@ -63,11 +63,9 @@ function stubEngine(kind: "cli" | "runtime", log: string[]): BridgeEngine {
     async deleteSession() {
       throw new Error("not implemented");
     },
-    async freeWarmProcess() {
-      throw new Error("not implemented");
-    },
-    async isSessionWarm() {
-      throw new Error("not implemented");
+    async isSessionWarm(input) {
+      log.push(`${kind}:isSessionWarm:${input.name}`);
+      return { warm: false };
     },
     async getAgentSessionId() {
       throw new Error("not implemented");
@@ -128,8 +126,12 @@ test("declared engine conflicting with cached binding is rejected, never silentl
   const cli = stubEngine("cli", []);
   const runtime = stubEngine("runtime", []);
   const router = new EngineRouter(binding, cli, runtime);
-  // First touch with no declared engine binds cli...
+  // Read-only preflight never binds: a transient attach LID must not pin affinity.
   await router.hasSession({ ...sessionInput, sessionKey: "s9" });
+  expect(binding.hasExplicit("s9")).toBe(false);
+  // First state-changing touch with no declared engine binds cli...
+  await router.isSessionWarm({ ...sessionInput, sessionKey: "s9" });
+  expect(binding.hasExplicit("s9")).toBe(true);
   // ...and a Wave-B declared mismatch is rejected once the binding exists.
   let caught: unknown;
   try {
@@ -178,6 +180,31 @@ test("shutdown attempts both engines and propagates errors when any engine fails
 
   expect(log).toContain("cli:shutdown");
   expect(log).toContain("runtime:shutdown-fail");
+});
+
+test("successful hard delete evicts the cached affinity; preflight mismatch on a bound key still rejects", async () => {
+  const log: string[] = [];
+  const binding = new SessionEngineBinding();
+  const cli = stubEngine("cli", log);
+  const runtime = stubEngine("runtime", log);
+  cli.deleteSession = async () => {
+    log.push("cli:deleteSession");
+    return {};
+  };
+  const router = new EngineRouter(binding, cli, runtime);
+  // Authoritative delete binds first (via routing), then evicts on success.
+  await router.deleteSession({ ...sessionInput, sessionKey: "gone" });
+  expect(binding.hasExplicit("gone")).toBe(false);
+  expect(log).toEqual(["cli:deleteSession"]);
+  // A bound key keeps mismatch protection on every path, including preflight.
+  binding.setBinding("kept", "cli");
+  let caught: unknown;
+  try {
+    await router.hasSession({ ...sessionInput, sessionKey: "kept", transportEngine: "runtime" } as never);
+  } catch (e) {
+    caught = e;
+  }
+  expect(caught).toBeInstanceOf(EngineMismatchError);
 });
 function sessionKeyInput(key: string): EngineSessionInput {
   return { ...sessionInput, sessionKey: key };

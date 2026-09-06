@@ -401,21 +401,25 @@ test("/session new auto-derives a free alias when the desired alias already exis
   expect(await sessions.getSession("api-fix")).toMatchObject({ agent: "codex", workspace: "backend" });
 });
 
-test("/session attach still rebinds an existing alias", async () => {
+test("/session attach refuses an existing alias instead of orphaning its LID", async () => {
   const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
   const transport = createTransport();
   const router = new CommandRouter(sessions, transport);
 
   await router.handle("wx:user", "/session new review --agent codex --ws backend");
+  const before = await sessions.getSession("review");
   const reply = await router.handle(
     "wx:user",
     "/session attach review --agent codex --ws backend --name existing-review",
   );
 
-  expect(reply.text).toBe(t().session.sessionAttached("review"));
-  await expect(sessions.getCurrentSession("wx:user")).resolves.toMatchObject({
+  // Overwriting the row would orphan the old Runtime LID (worker/fence/queue)
+  // with no handle left to converge it: refuse, keep the old binding intact.
+  expect(reply.text).toBe(t().session.sessionAlreadyExists("review", "codex", "backend"));
+  await expect(sessions.getSession("review")).resolves.toMatchObject({
     alias: "review",
-    transportSession: "existing-review",
+    transportSession: before?.transportSession,
+    logicalSessionId: before?.logicalSessionId,
   });
 });
 

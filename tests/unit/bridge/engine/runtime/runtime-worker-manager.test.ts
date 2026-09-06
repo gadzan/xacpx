@@ -502,3 +502,117 @@ test("acquire on a cooling-but-alive fenced worker fails fast, never burns the d
     }
   });
 }, 15_000);
+
+test("acquire refuses over a deleting fence without spawning or touching it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fence-deleting-"));
+  try {
+    await withFakeEntry(async (entry) => {
+      const fenceDir = join(dir, "fences");
+      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+      try {
+        const fence = new RuntimeWorkerFence(fenceDir);
+        const physical = "physical-deleting-1";
+        await fence.claim({
+          kind: "runtime-worker-owner",
+          logicalSessionId: physical,
+          generation: "gen-deleter",
+          pid: process.pid,
+          bootstrapVerified: false,
+          phase: "deleting",
+          startedAt: new Date().toISOString(),
+          agent: "runtime-worker",
+        });
+        // Successor admission fails fast (no 90s probe, no discharge, no spawn).
+        await expect(manager.acquire("lid-successor", physical)).rejects.toThrow(WorkerTeardownPendingError);
+        expect(manager.get("lid-successor")).toBeUndefined();
+        const read = await fence.read(physical);
+        expect(read.kind).toBe("present");
+        if (read.kind !== "present") return;
+        expect(read.record.phase).toBe("deleting");
+        expect(read.record.generation).toBe("gen-deleter");
+      } finally {
+        await manager.shutdownAll().catch(() => {});
+      }
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test("claimPhysicalDeletion claims fresh, adopts in-place, aborts on live owner", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fence-delclaim-"));
+  try {
+    await withFakeEntry(async (entry) => {
+      const fenceDir = join(dir, "fences");
+      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+      try {
+        const fence = new RuntimeWorkerFence(fenceDir);
+        // Fresh claim wins.
+        const first = await manager.claimPhysicalDeletion("physical-del-1");
+        expect(first).not.toBeNull();
+        expect(first?.adopted).toBe(false);
+        // A concurrent deleter adopts the same in-place barrier (same target).
+        const second = await manager.claimPhysicalDeletion("physical-del-1");
+        expect(second).toEqual({ generation: first?.generation, adopted: true });
+        // Revalidation passes for the owner generation...
+        await manager.revalidatePhysicalDeletion("physical-del-1", first!.generation);
+        // ...and strict retire refuses a wrong generation without touching the file.
+        await expect(manager.retirePhysicalDeletion("physical-del-1", "gen-wrong")).rejects.toThrow();
+        expect((await fence.read("physical-del-1")).kind).toBe("present");
+        // ...then retires the real barrier.
+        await manager.retirePhysicalDeletion("physical-del-1", first!.generation);
+        expect(await fence.read("physical-del-1")).toEqual({ kind: "absent" });
+        // A live owner fence aborts the delete instead of unlinking over it.
+        await fence.claim({
+          kind: "runtime-worker-owner",
+          logicalSessionId: "physical-del-2",
+          generation: "gen-live",
+          pid: process.pid,
+          bootstrapVerified: true,
+          phase: "owned",
+          startedAt: new Date().toISOString(),
+          agent: "runtime-worker",
+        });
+        await expect(manager.claimPhysicalDeletion("physical-del-2")).rejects.toThrow(WorkerTeardownPendingError);
+        expect((await fence.read("physical-del-2")).kind).toBe("present");
+      } finally {
+        await manager.shutdownAll().catch(() => {});
+      }
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test("assertOwnershipQuiescent lets a delete adopt deleting but blocks logical release", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fence-delquiesce-"));
+  try {
+    await withFakeEntry(async (entry) => {
+      const fenceDir = join(dir, "fences");
+      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+      try {
+        const fence = new RuntimeWorkerFence(fenceDir);
+        await fence.claim({
+          kind: "runtime-worker-owner",
+          logicalSessionId: "physical-del-3",
+          generation: "gen-del",
+          pid: process.pid,
+          bootstrapVerified: false,
+          phase: "deleting",
+          startedAt: new Date().toISOString(),
+          agent: "runtime-worker",
+        });
+        await expect(manager.assertOwnershipQuiescent("lid-x", "physical-del-3")).rejects.toThrow(
+          WorkerTeardownPendingError,
+        );
+        await expect(
+          manager.assertOwnershipQuiescent("lid-x", "physical-del-3", { allowDeleting: true }),
+        ).resolves.toBeUndefined();
+      } finally {
+        await manager.shutdownAll().catch(() => {});
+      }
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);

@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { RuntimeEngine, findAcpxRecordIdFromDisk } from "../../../../../src/bridge/engine/runtime-engine";
+import { RuntimeWorkerFence } from "../../../../../src/bridge/engine/runtime/runtime-worker-fence";
+import { physicalFenceKeyForSession } from "../../../../../src/bridge/engine/runtime/physical-session-identity";
 
 const sessionInput = {
   agent: "codex",
@@ -875,3 +877,177 @@ test("G4 indeterminate 6: matching logicalSessionId with empty/corrupt recordId 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("G4 barrier: deleteSession adopts a crashed deleter's deleting fence and completes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-adopt-"));
+  const sessionsDir = join(dir, ".acpx", "sessions");
+  const fenceDir = join(dir, "fences");
+  const queueDir = join(dir, "queue");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    await mkdir(sessionsDir, { recursive: true });
+    const input = {
+      agent: "codex",
+      cwd: "/repo",
+      name: "adopt-session",
+      logicalSessionId: "lid-adopt",
+    };
+    const recordId = "rec-adopt-1";
+    await writeFile(
+      join(sessionsDir, `${recordId}.json`),
+      JSON.stringify({
+        schema: "acpx.session.v1",
+        acpx_record_id: recordId,
+        name: input.name,
+        cwd: input.cwd,
+      }),
+    );
+    // Crashed-deleter state: tombstone intent + deleting barrier left behind, no live worker.
+    const safeId = encodeURIComponent(recordId);
+    await writeFile(
+      join(sessionsDir, `.xacpx-delete-tombstone-${safeId}.json`),
+      JSON.stringify({
+        logicalSessionId: input.logicalSessionId,
+        name: input.name,
+        cwd: input.cwd,
+        recordId,
+      }),
+    );
+    const physical = physicalFenceKeyForSession(input);
+    const fence = new RuntimeWorkerFence(fenceDir);
+    await fence.claim({
+      kind: "runtime-worker-owner",
+      logicalSessionId: physical,
+      generation: "gen-crashed",
+      pid: 424242,
+      bootstrapVerified: false,
+      phase: "deleting",
+      startedAt: new Date().toISOString(),
+      agent: "runtime-worker",
+    });
+    const engine = new RuntimeEngine({
+      workerEntryPath: entry,
+      stateDir: sessionsDir,
+      fenceDir,
+      queueDir,
+      durableRootDir: dir,
+      permissionMode: "approve-all",
+    });
+    // The retry adopts the in-place barrier (same physical target) instead of bricking.
+    await expect(engine.deleteSession(input)).resolves.toEqual({});
+    await expect(access(join(sessionsDir, `${recordId}.json`))).rejects.toThrow();
+    await expect(access(join(sessionsDir, `.xacpx-delete-tombstone-${safeId}.json`))).rejects.toThrow();
+    expect(await fence.read(physical)).toEqual({ kind: "absent" });
+    // Second delete is idempotent.
+    await expect(engine.deleteSession(input)).resolves.toEqual({});
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);
+
+test("G4 barrier: successor admission refuses while a deleting fence stands, succeeds after retire", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-admit-"));
+  const sessionsDir = join(dir, ".acpx", "sessions");
+  const fenceDir = join(dir, "fences");
+  const queueDir = join(dir, "queue");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    await mkdir(sessionsDir, { recursive: true });
+    const recordId = "rec-admit-1";
+    const recordFile = join(sessionsDir, `${recordId}.json`);
+    const base = { agent: "codex", cwd: "/repo", name: "admit-session" };
+    await writeFile(
+      recordFile,
+      JSON.stringify({
+        schema: "acpx.session.v1",
+        acpx_record_id: recordId,
+        name: base.name,
+        cwd: base.cwd,
+      }),
+    );
+    const physical = physicalFenceKeyForSession({ ...base, logicalSessionId: "lid-old" });
+    const fence = new RuntimeWorkerFence(fenceDir);
+    await fence.claim({
+      kind: "runtime-worker-owner",
+      logicalSessionId: physical,
+      generation: "gen-deleter",
+      // Dead deleter pid on purpose: the barrier refuses WITHOUT liveness
+      // probing (a gone deleter still refuses — its tombstone owns the retry).
+      pid: 424242,
+      bootstrapVerified: false,
+      phase: "deleting",
+      startedAt: new Date().toISOString(),
+      agent: "runtime-worker",
+    });
+    const engine = new RuntimeEngine({
+      workerEntryPath: entry,
+      stateDir: sessionsDir,
+      fenceDir,
+      queueDir,
+      durableRootDir: dir,
+      permissionMode: "approve-all",
+    });
+    // New-LID successor for the same physical session: refused, record untouched, barrier intact.
+    await expect(engine.prompt({ ...base, logicalSessionId: "lid-new", text: "hi" })).rejects.toThrow();
+    await access(recordFile);
+    const blocked = await fence.read(physical);
+    expect(blocked.kind).toBe("present");
+    if (blocked.kind !== "present") return;
+    expect(blocked.record.phase).toBe("deleting");
+    expect(blocked.record.generation).toBe("gen-deleter");
+    // Delete completed (barrier retired): the same admission succeeds.
+    await fence.retireDeletion(physical, "gen-deleter");
+    const reply = await engine.prompt({ ...base, logicalSessionId: "lid-new", text: "hi" });
+    expect(reply.text).toBe("ok");
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);
+
+test("G4 barrier: no-record delete lifts a crashed tail barrier when no tombstone stands", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-del-tail-"));
+  const sessionsDir = join(dir, ".acpx", "sessions");
+  const fenceDir = join(dir, "fences");
+  const queueDir = join(dir, "queue");
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await withFakeWorker(entry);
+    await mkdir(sessionsDir, { recursive: true });
+    const input = {
+      agent: "codex",
+      cwd: "/repo",
+      name: "tail-session",
+      logicalSessionId: "lid-tail",
+    };
+    // Crash landed past tombstone removal: no record, no tombstone, barrier stands.
+    const physical = physicalFenceKeyForSession(input);
+    const fence = new RuntimeWorkerFence(fenceDir);
+    await fence.claim({
+      kind: "runtime-worker-owner",
+      logicalSessionId: physical,
+      generation: "gen-tail",
+      pid: 424242,
+      bootstrapVerified: false,
+      phase: "deleting",
+      startedAt: new Date().toISOString(),
+      agent: "runtime-worker",
+    });
+    const engine = new RuntimeEngine({
+      workerEntryPath: entry,
+      stateDir: sessionsDir,
+      fenceDir,
+      queueDir,
+      durableRootDir: dir,
+      permissionMode: "approve-all",
+    });
+    await expect(engine.deleteSession(input)).resolves.toEqual({});
+    expect(await fence.read(physical)).toEqual({ kind: "absent" });
+    await engine.shutdown();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);

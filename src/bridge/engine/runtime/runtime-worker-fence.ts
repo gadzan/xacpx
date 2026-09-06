@@ -50,9 +50,9 @@ async function withFenceLock<T>(path: string, fn: () => Promise<T>): Promise<T> 
     );
   }
 }
-export type FencePhase = "claiming" | "owned" | "admitted" | "discharging" | "discharged" | "spooled";
+export type FencePhase = "claiming" | "owned" | "admitted" | "discharging" | "discharged" | "spooled" | "deleting";
 
-export const FENCE_PHASES: readonly FencePhase[] = ["claiming", "owned", "admitted", "discharging", "discharged", "spooled"];
+export const FENCE_PHASES: readonly FencePhase[] = ["claiming", "owned", "admitted", "discharging", "discharged", "spooled", "deleting"];
 
 export interface RuntimeWorkerFenceRecord {
   kind: "runtime-worker-owner";
@@ -216,7 +216,17 @@ export async function dischargeRuntimeWorkerFence(
     return "discharged";
   }
 
-
+  // Physical-deletion barrier: a "deleting" fence is a live hard-delete's
+  // admission lock, not a dead owner. It must NEVER be discharged or
+  // retired by anyone except the deleter's strict generation+phase retire:
+  // a crashed deleter's barrier is adopted by the delete retry (same
+  // physical target), and every other admission path refuses while it
+  // stands — including here, without probing the deleter pid (a gone
+  // deleter must still refuse: its tombstone owns the retry, not a
+  // successor owner).
+  if (record.phase === "deleting") {
+    return "refused";
+  }
   // POSIX: the process group is only ever OBSERVED from out here. ESRCH is
   // the one proof of gone (round 31 Blocking 4); a live or unverifiable
   // group gets the self-discharge window, then refuses — never a kill(-pgid)
@@ -532,6 +542,53 @@ export class RuntimeWorkerFence {
         } catch {
           // Left as a durable discharged record — the next acquire retires it.
         }
+      }
+    });
+  }
+  /**
+   * Retire a physical-deletion barrier. Strict where `retire` is lenient:
+   * under the per-fence namespace lock the record must still be present
+   * with phase "deleting" and the deleter's `expectedGeneration`; anything
+   * else (absent, successor-owned, wrong generation) throws and leaves the
+   * file untouched. In particular there is NO discharged-fallback write:
+   * converting a half-deleted barrier to "discharged" would unblock
+   * successor admission while record artifacts may still exist. Unlink
+   * ENOENT is success; any other unlink failure throws with the barrier
+   * left standing (successors stay refused until the delete retry adopts
+   * and completes it).
+   */
+  async retireDeletion(logicalSessionId: string, expectedGeneration: string): Promise<void> {
+    const path = this.pathFor(logicalSessionId);
+    const pre = await this.read(logicalSessionId);
+    if (pre.kind === "absent") {
+      throw new StaleFenceGenerationError(
+        `deletion retire for "${logicalSessionId}" found no record (expected deletion generation "${expectedGeneration}"); refusing blind success`,
+      );
+    }
+    if (pre.kind === "unreadable") {
+      throw new FenceUnreadableError(`deletion retire for "${logicalSessionId}" found an unreadable record (${pre.reason}); refusing to unlink evidence`);
+    }
+    await withFenceLock(path, async () => {
+      const read = await this.read(logicalSessionId);
+      if (read.kind === "absent") {
+        throw new StaleFenceGenerationError(
+          `deletion retire for "${logicalSessionId}" found no record (expected deletion generation "${expectedGeneration}"); refusing blind success`,
+        );
+      }
+      if (read.kind === "unreadable") {
+        throw new FenceUnreadableError(`deletion retire for "${logicalSessionId}" found an unreadable record (${read.reason}); refusing to unlink evidence`);
+      }
+      if (read.record.phase !== "deleting" || read.record.generation !== expectedGeneration) {
+        throw new StaleFenceGenerationError(
+          `deletion retire for "${logicalSessionId}" found phase "${read.record.phase}" generation "${read.record.generation}", expected deleting/"${expectedGeneration}"; refusing unlink`,
+        );
+      }
+      await this.hooks?.afterValidate?.("retire", logicalSessionId);
+      try {
+        await unlink(path);
+      } catch (error) {
+        if ((error as { code?: unknown } | null)?.code === "ENOENT") return;
+        throw error;
       }
     });
   }

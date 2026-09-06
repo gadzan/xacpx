@@ -146,7 +146,7 @@ Examples:
 
 ### Bind an Existing Underlying Session
 
-If the underlying `acpx` session already exists, you can mount it back onto a logical session in WeChat.
+If the underlying `acpx` session already exists, you can mount it back onto a logical session in WeChat. The alias must be free: attaching onto an existing alias is refused (remove it first, or reset it) so the old logical identity is never silently orphaned.
 
 | Command | Description |
 |------|------|

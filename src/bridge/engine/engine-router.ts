@@ -24,15 +24,19 @@ export class EngineRouter implements BridgeEngine {
     private readonly runtime?: BridgeEngine,
   ) {}
 
+  private keyFor(input: { name: string; sessionKey?: string; logicalSessionId?: string }): string {
+    // Stable ownership identity first (plan §9.1): the immutable
+    // logical-session id survives alias renames; fall back to sessionKey/name.
+    return input.logicalSessionId ?? input.sessionKey ?? input.name;
+  }
+
   private engineFor(input: {
     name: string;
     sessionKey?: string;
     logicalSessionId?: string;
     transportEngine?: unknown;
   }): BridgeEngine {
-    // Stable ownership identity first (plan §9.1): the immutable
-    // logical-session id survives alias renames; fall back to sessionKey/name.
-    const key = input.logicalSessionId ?? input.sessionKey ?? input.name;
+    const key = this.keyFor(input);
     // Wave B sends transportEngine in bridge params; until then it is absent.
     const declared =
       input.transportEngine === "cli" || input.transportEngine === "runtime" ? input.transportEngine : undefined;
@@ -63,8 +67,32 @@ export class EngineRouter implements BridgeEngine {
     return this.binding.hasExplicit(key);
   }
 
+  /**
+   * Read-only existence probe: routes WITHOUT caching affinity. Preflight
+   * attach candidates carry transient LIDs that are never persisted, so
+   * caching them here would leak one Bridge-process Map entry per
+   * attach/new preflight forever (the authoritative call re-resolves and
+   * caches the real LID itself).
+   */
+  private engineForProbe(input: {
+    name: string;
+    sessionKey?: string;
+    logicalSessionId?: string;
+    transportEngine?: unknown;
+  }): BridgeEngine {
+    const key = this.keyFor(input);
+    if (this.bindingHasExplicit(key)) return this.engineFor(input);
+    const declared =
+      input.transportEngine === "cli" || input.transportEngine === "runtime" ? input.transportEngine : undefined;
+    const resolved = declared ?? "cli";
+    if (resolved !== "cli" && !this.runtime) {
+      throw new EngineUnsupportedError(`no runtime engine available for session "${key}"`);
+    }
+    return resolved === "runtime" ? this.runtime! : this.cli;
+  }
+
   hasSession(input: EngineSessionInput) {
-    return this.engineFor(input).hasSession(input);
+    return this.engineForProbe(input).hasSession(input);
   }
 
   tailSessionHistory(input: EngineSessionInput & { lines: number }) {
@@ -121,8 +149,13 @@ export class EngineRouter implements BridgeEngine {
     return this.engineFor(input).removeSession(input);
   }
 
-  deleteSession(input: EngineSessionInput) {
-    return this.engineFor(input).deleteSession(input);
+  async deleteSession(input: EngineSessionInput): Promise<Record<string, never>> {
+    const result = await this.engineFor(input).deleteSession(input);
+    // The LID is never reused: drop the cached affinity only AFTER the
+    // hard delete verifies, so retries still route and successes stop
+    // leaking one Map entry per deleted session.
+    this.binding.deleteBinding(this.keyFor(input));
+    return result;
   }
 
   async releaseLogicalSession(input: EngineSessionInput): Promise<Record<string, never>> {

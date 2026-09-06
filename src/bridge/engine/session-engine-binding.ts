@@ -19,4 +19,13 @@ export class SessionEngineBinding {
   setBinding(sessionKey: string, engine: "cli" | "runtime"): void {
     this.bindings.set(sessionKey, engine);
   }
+
+  /**
+   * Drop a cached affinity. Called after a hard delete verifies: the LID
+   * is never reused, so the entry can neither route a future session nor
+   * be refreshed — keeping it would only leak Bridge-process memory.
+   */
+  deleteBinding(sessionKey: string): void {
+    this.bindings.delete(sessionKey);
+  }
 }

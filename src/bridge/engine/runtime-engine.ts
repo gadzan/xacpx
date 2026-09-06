@@ -525,6 +525,7 @@ export class RuntimeEngine implements BridgeEngine {
     logicalKey: string,
     physicalKey: string,
     timeoutMs = this.options.workerQuiescenceTimeoutMs ?? 8_000,
+    options: { allowDeletingFence?: boolean } = {},
   ): Promise<void> {
     // G4: ensure no worker, no acquiring, no retained fence — all part of same ownership transaction
     const start = Date.now();
@@ -533,7 +534,9 @@ export class RuntimeEngine implements BridgeEngine {
       let ownershipError: unknown | undefined;
       if (this.manager) {
         try {
-          await this.manager.assertOwnershipQuiescent(logicalKey, physicalKey);
+          await this.manager.assertOwnershipQuiescent(logicalKey, physicalKey, {
+            ...(options.allowDeletingFence ? { allowDeleting: true } : {}),
+          });
         } catch (err) {
           ownershipError = err;
         }
@@ -2078,13 +2081,42 @@ export class RuntimeEngine implements BridgeEngine {
             this.manager?.deleteWorker(key, client);
           }
         }
-        await this.waitForWorkerQuiescence(key, physicalFenceKey);
+        await this.waitForWorkerQuiescence(key, physicalFenceKey, undefined, { allowDeletingFence: true });
         this.clearActiveTurn(key);
         this.coolPending.delete(key);
         this.recordIds.delete(key);
         this.lastConstructionIdentity.delete(key);
         await this.getQueueStore().removeJournal(key);
         this.sessionCatalog.delete(key);
+        // Crashed-deleter tail: record + tombstone already gone but the
+        // deletion barrier stands (crash between tombstone removal and
+        // barrier retire). Lift it ONLY with no live delete intent on disk:
+        // a matching tombstone means a live deleter just started — back off
+        // and let it own the barrier. The strict retire still refuses a
+        // successor-owned fence (never unlink blindly).
+        if (this.manager) {
+          const tailBarrier = await this.manager.readDeletionBarrier(physicalFenceKey);
+          if (tailBarrier) {
+            const liveIntent = await findTombstoneRecordId(
+              {
+                logicalSessionId: input.logicalSessionId,
+                name: input.name,
+                cwd: input.cwd,
+                agentCommand: input.agentCommand,
+                rawCommand: input.rawCommand,
+                acpxAgent: input.acpxAgent,
+              },
+              this.sessionsDir(),
+            );
+            if (liveIntent) {
+              throw new RuntimeError(
+                "RUNTIME_WORKER_TEARDOWN_PENDING",
+                `cannot hard delete session "${key}" while another delete holds the physical-deletion barrier; retry after it completes`,
+              );
+            }
+            await this.manager.retirePhysicalDeletion(physicalFenceKey, tailBarrier);
+          }
+        }
         // Keep deleteGenerations monotonic — do not delete epoch, old waiters must still see generation change
         return {};
       }
@@ -2150,25 +2182,38 @@ export class RuntimeEngine implements BridgeEngine {
         this.manager?.deleteWorker(key, client);
       }
     }
-    // Final G4 ownership quiescence: hard delete success must imply no worker, no acquiring, no fence
-    await this.waitForWorkerQuiescence(key, physicalFenceKey);
+    // Final G4 ownership quiescence: hard delete success must imply no worker, no acquiring, no fence.
+    // allowDeletingFence: a pre-existing "deleting" fence is the SAME
+    // interrupted delete's barrier (fence key scopes the record target) —
+    // adopt it at claim time below instead of bricking the retry.
+    await this.waitForWorkerQuiescence(key, physicalFenceKey, undefined, { allowDeletingFence: true });
     this.clearActiveTurn(key);
     this.coolPending.delete(key);
 
-    try {
-      await this.deleteRecordFilesStrict(recordId);
-      await removeTombstoneStrict(sessionsDir, safeId);
-      this.recordIds.delete(key);
-      this.lastConstructionIdentity.delete(key);
-      // 6. PR6: only after record deletion verified successful, delete runtime queue journal fail-closed
-      await this.getQueueStore().removeJournal(key);
-      this.sessionCatalog.delete(key);
-      // Keep deleteGenerations monotonic for lifecycle epoch
-    } catch (error) {
-      throw error;
-    } finally {
-      this.deleting.delete(key);
-      this.queueSuspended.delete(key);
+    // Physical-deletion barrier (hard-delete/admission TOCTOU): claim the
+    // durable fence-namespace lock BEFORE unlinking and hold it until
+    // record + streams + tombstone + journal removal all verify. A
+    // successor racing here either lost (our claim won → its acquire
+    // refuses over "deleting") or won (claim throws → abort, never unlink
+    // a live successor's records). A crash leaves fence + tombstone; the
+    // retry adopts the in-place barrier and completes the same unlink.
+    // The outer finally below clears the in-memory epoch; the durable
+    // fence is retired ONLY on the success path — failures keep successors
+    // refused until the retry adopts and completes.
+    const deletion = this.manager ? await this.manager.claimPhysicalDeletion(physicalFenceKey) : null;
+    if (deletion && this.manager) {
+      await this.manager.revalidatePhysicalDeletion(physicalFenceKey, deletion.generation);
+    }
+    await this.deleteRecordFilesStrict(recordId);
+    await removeTombstoneStrict(sessionsDir, safeId);
+    this.recordIds.delete(key);
+    this.lastConstructionIdentity.delete(key);
+    // 6. PR6: only after record deletion verified successful, delete runtime queue journal fail-closed
+    await this.getQueueStore().removeJournal(key);
+    this.sessionCatalog.delete(key);
+    // Keep deleteGenerations monotonic for lifecycle epoch
+    if (deletion && this.manager) {
+      await this.manager.retirePhysicalDeletion(physicalFenceKey, deletion.generation);
     }
 
     return {};
