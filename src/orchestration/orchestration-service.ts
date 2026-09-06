@@ -227,6 +227,24 @@ export interface OrchestrationServiceDeps {
     /** Snapshot from before reconcile removes the binding; absent means legacy identity. */
     guardAcpOutput?: boolean;
   }) => Promise<void>;
+  /**
+   * Verified teardown of one worker's engine-side owner for a staged binding
+   * identity (rollback-after-owner): Runtime releases the logical identity
+   * (worker shutdown, fence retire, journal drop — all verified, fails
+   * closed on an active turn); other engines close their owner. The caller
+   * passes the STAGED identity, never re-resolved from live state whose
+   * shell may already be gone. A rejection (or a missing port) forbids the
+   * caller from deleting the shell.
+   */
+  releaseWorkerSession?: (request: {
+    workerSession: string;
+    targetAgent: string;
+    workspace: string;
+    cwd?: string;
+    role?: string;
+    logicalSessionId: string;
+    transportEngine: SessionTransportEngine;
+  }) => Promise<void>;
   wakeCoordinatorSession?: (request: WakeCoordinatorRequest) => Promise<void>;
   deliverCoordinatorMessage?: (
     request: DeliverCoordinatorMessageRequest,

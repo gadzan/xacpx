@@ -1409,6 +1409,44 @@ export async function buildApp(
       );
       await transport.removeSession(session);
     },
+    // Verified owner teardown for a STAGED worker identity
+    // (rollback-after-owner): the caller passes the staged LID/engine, never
+    // re-resolved, so convergence targets exactly the owner ensure started.
+    // Runtime releases the logical identity (worker shutdown, fence retire,
+    // journal drop — all verified, fails closed on an active turn); CLI
+    // closes its acpx session. Either failure retains the caller's shell.
+    releaseWorkerSession: async ({
+      workerSession,
+      targetAgent,
+      workspace,
+      cwd,
+      logicalSessionId,
+      transportEngine,
+    }) => {
+      const session = resolveWorkerRuntimeSession({
+        workerSession,
+        targetAgent,
+        workspace,
+        ...(cwd ? { cwd } : {}),
+      });
+      session.logicalSessionId = logicalSessionId;
+      session.transportEngine = transportEngine;
+      if (transportEngine === "runtime") {
+        if (!transport.releaseLogicalSession) {
+          throw new Error(
+            `transport cannot release runtime worker "${workerSession}": no releaseLogicalSession operation`,
+          );
+        }
+        await transport.releaseLogicalSession(session);
+        return;
+      }
+      if (!transport.removeSession) {
+        throw new Error(
+          `transport cannot converge worker "${workerSession}": no removeSession operation`,
+        );
+      }
+      await transport.removeSession(session);
+    },
     resumeWorkerTask: async ({
       taskId,
       workerSession,

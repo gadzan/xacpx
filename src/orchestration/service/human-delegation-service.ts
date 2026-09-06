@@ -28,17 +28,19 @@ import type {
 } from "../orchestration-service";
 import type { OrchestrationStateKernel } from "./orchestration-state-kernel";
 import {
+  teardownStagedWorkerOwner,
   workerBindingEndpointIdentityFields,
   workerBindingEngineFields,
   workerBindingGuardFields,
   workerBindingIdentityFields,
 } from "../worker-launch";
+import type { StagedWorkerIdentity } from "../worker-launch";
 import type { RpcDelegationService } from "./rpc-delegation-service";
 import type { WorkerSessionManager } from "./worker-session-manager";
 
 export type HumanDelegationDeps = Pick<
   OrchestrationServiceDeps,
-  "now" | "createId" | "createAgentEndpointId" | "loadState" | "saveState" | "dispatchWorkerTask" | "resolveWorkerBindingEngine"
+  "now" | "createId" | "createAgentEndpointId" | "loadState" | "saveState" | "dispatchWorkerTask" | "resolveWorkerBindingEngine" | "releaseWorkerSession"
 >;
 export class HumanDelegationService {
   constructor(
@@ -141,12 +143,21 @@ export class HumanDelegationService {
       previousGroup?: OrchestrationGroupRecord;
       normalizedGroupId?: string;
     };
-
     const releaseWorkerReservation = await this.workerSessions.reserveProposedWorkerSession(workerSession);
     // Pre-shell identity for failure rollback: a failed delegation must
-    // leave no trace (same atomicity as before the shell existed).
+    // leave no trace (same atomicity as before the shell existed) — UNLESS
+    // its owner already started (see ownerStarted), in which case the owner
+    // is verified-converged first and the shell is retained when teardown
+    // cannot be verified.
     let shellPreviousBinding: AppState["orchestration"]["workerBindings"][string] | undefined;
+    let stagedIdentity: StagedWorkerIdentity | undefined;
     let shellStaged = false;
+    // Set once ensureReservedWorkerSession returns: from here on an owner
+    // may exist, so later failures must verified-converge it before the
+    // shell may be deleted (rollback-after-owner). An ensure rejection
+    // leaves this false: no teardown is attempted for an owner that never
+    // verifiably started.
+    let ownerStarted = false;
     try {
       // G11 persist-before-owner: durably stage the binding shell (minted LID
       // + physical-group engine) BEFORE ensureReservedWorkerSession can start
@@ -157,11 +168,21 @@ export class HumanDelegationService {
       // pieces are minted. A saveState rejection fails the delegation with
       // the reservation released and no owner started.
       try {
-        shellPreviousBinding = await this.kernel.mutate(async () => {
+        const staged = await this.kernel.mutate(async () => {
           const state = await this.deps.loadState();
           const previousBinding = state.orchestration.workerBindings[workerSession];
           this.workerSessions.assertWorkerSessionDoesNotConflictExternalCoordinator(state, workerSession);
           this.workerSessions.assertWorkerSessionAvailable(state, workerSession, undefined, { allowCurrentReservation: true });
+          const identity = workerBindingIdentityFields(
+            previousBinding,
+            () => this.deps.resolveWorkerBindingEngine({
+              workerSession,
+              targetAgent: input.targetAgent,
+              workspace: input.workspace,
+              ...(input.cwd ? { cwd: input.cwd } : {}),
+            }),
+            this.deps.createId,
+          );
           state.orchestration.workerBindings[workerSession] = {
             sourceHandle: workerSession,
             coordinatorSession: input.coordinatorSession,
@@ -171,21 +192,14 @@ export class HumanDelegationService {
             ...(role ? { role } : {}),
             ...workerBindingGuardFields(previousBinding),
             ...workerBindingEndpointIdentityFields(previousBinding, this.deps.createAgentEndpointId),
-            ...workerBindingIdentityFields(
-              previousBinding,
-              () => this.deps.resolveWorkerBindingEngine({
-                workerSession,
-                targetAgent: input.targetAgent,
-                workspace: input.workspace,
-                ...(input.cwd ? { cwd: input.cwd } : {}),
-              }),
-              this.deps.createId,
-            ),
+            ...identity,
             ...(input.parallel ? { ephemeral: true } : {}),
           };
           await this.deps.saveState(state);
-          return previousBinding;
+          return { previousBinding, stagedIdentity: identity };
         });
+        shellPreviousBinding = staged.previousBinding;
+        stagedIdentity = staged.stagedIdentity;
         shellStaged = true;
       } catch (error) {
         await releaseWorkerReservation();
@@ -202,6 +216,7 @@ export class HumanDelegationService {
           targetAgent: input.targetAgent,
           role,
         });
+        ownerStarted = true;
         prepared = await this.kernel.mutate(async () => {
           const state = await this.deps.loadState();
           const now = this.deps.now().toISOString();
@@ -270,6 +285,32 @@ export class HumanDelegationService {
           };
         });
       } catch (error) {
+        if (ownerStarted && stagedIdentity) {
+          // The owner may exist (ensure returned): verified-converge it
+          // BEFORE the shell may be deleted, or a surviving owner becomes
+          // invisible to membership scans, guards, recovery, and
+          // inheritance. Teardown failure retains the shell (fail closed).
+          try {
+            await teardownStagedWorkerOwner(
+              this.deps.releaseWorkerSession,
+              {
+                workerSession,
+                targetAgent: input.targetAgent,
+                workspace: input.workspace,
+                ...(input.cwd ? { cwd: input.cwd } : {}),
+                ...(role ? { role } : {}),
+              },
+              stagedIdentity,
+            );
+          } catch (teardownError) {
+            await releaseWorkerReservation();
+            const cause = error instanceof Error ? error.message : String(error);
+            const teardownCause = teardownError instanceof Error ? teardownError.message : String(teardownError);
+            throw new Error(
+              `delegation failed: ${cause}; owner teardown failed (${teardownCause}), staged worker binding retained for ${workerSession}`,
+            );
+          }
+        }
         if (shellStaged) {
           // Best-effort: the original error is what the caller must see; a
           // failed restore only leaves a reusable shell behind.
@@ -306,6 +347,39 @@ export class HumanDelegationService {
         task: input.task,
       });
     } catch (error) {
+      if (stagedIdentity) {
+        // Dispatch runs only after ensure succeeded, so the owner may
+        // exist: converge it first. Teardown failure keeps the task
+        // rollback (it never ran) but retains the shell so the live owner
+        // stays discoverable.
+        try {
+          await teardownStagedWorkerOwner(
+            this.deps.releaseWorkerSession,
+            {
+              workerSession,
+              targetAgent: input.targetAgent,
+              workspace: input.workspace,
+              ...(input.cwd ? { cwd: input.cwd } : {}),
+              ...(role ? { role } : {}),
+            },
+            stagedIdentity,
+          );
+        } catch (teardownError) {
+          await this.kernel.mutate(async () => {
+            const state = await this.deps.loadState();
+            delete state.orchestration.tasks[taskId];
+            if (prepared.normalizedGroupId && prepared.previousGroup) {
+              this.kernel.ensureGroups(state)[prepared.normalizedGroupId] = prepared.previousGroup;
+            }
+            await this.deps.saveState(state);
+          }).catch(() => {});
+          const cause = error instanceof Error ? error.message : String(error);
+          const teardownCause = teardownError instanceof Error ? teardownError.message : String(teardownError);
+          throw new Error(
+            `delegation failed: ${cause}; owner teardown failed (${teardownCause}), staged worker binding retained for ${workerSession}`,
+          );
+        }
+      }
       await this.kernel.mutate(async () => {
         const state = await this.deps.loadState();
         delete state.orchestration.tasks[taskId];

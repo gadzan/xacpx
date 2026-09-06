@@ -23,18 +23,20 @@ import type {
 } from "../orchestration-service";
 import type { OrchestrationStateKernel } from "./orchestration-state-kernel";
 import {
+  teardownStagedWorkerOwner,
   workerBindingEndpointIdentityFields,
   workerBindingEngineFields,
   workerBindingGuardFields,
   workerBindingIdentityFields,
 } from "../worker-launch";
+import type { StagedWorkerIdentity } from "../worker-launch";
 import type { QuestionFlowCore } from "./question-flow-core";
 import type { TaskLifecycleService } from "./task-lifecycle-service";
 import type { WorkerSessionManager } from "./worker-session-manager";
 
 export type TaskApprovalDeps = Pick<
   OrchestrationServiceDeps,
-  "now" | "createId" | "createAgentEndpointId" | "loadState" | "saveState" | "dispatchWorkerTask" | "resolveWorkerBindingEngine"
+  "now" | "createId" | "createAgentEndpointId" | "loadState" | "saveState" | "dispatchWorkerTask" | "resolveWorkerBindingEngine" | "releaseWorkerSession"
 >;
 export class TaskApprovalService {
   constructor(
@@ -158,13 +160,28 @@ export class TaskApprovalService {
     // first owner. Reusable bindings keep their existing identity. A failed
     // approve leaves no trace (shell rolled back below).
     let shellPreviousBinding: AppState["orchestration"]["workerBindings"][string] | undefined;
+    let stagedIdentity: StagedWorkerIdentity | undefined;
     let shellStaged = false;
+    // Set once ensureReservedWorkerSession returns: later failures must
+    // verified-converge the possibly-started owner before the shell may be
+    // deleted (rollback-after-owner).
+    let ownerStarted = false;
     try {
-      shellPreviousBinding = await this.kernel.mutate(async () => {
+      const staged = await this.kernel.mutate(async () => {
         const state = await this.deps.loadState();
         const previousBinding = state.orchestration.workerBindings[workerSession];
         this.workerSessions.assertWorkerSessionDoesNotConflictExternalCoordinator(state, workerSession);
         this.workerSessions.assertWorkerSessionAvailable(state, workerSession, input.taskId, { allowCurrentReservation: true });
+        const identity = workerBindingIdentityFields(
+          previousBinding,
+          () => this.deps.resolveWorkerBindingEngine({
+            workerSession,
+            targetAgent: currentTask.targetAgent,
+            workspace: currentTask.workspace,
+            ...(currentTask.cwd ? { cwd: currentTask.cwd } : {}),
+          }),
+          this.deps.createId,
+        );
         state.orchestration.workerBindings[workerSession] = {
           sourceHandle: workerSession,
           coordinatorSession: currentTask.coordinatorSession,
@@ -174,21 +191,14 @@ export class TaskApprovalService {
           ...(currentTask.role ? { role: currentTask.role } : {}),
           ...workerBindingGuardFields(previousBinding),
           ...workerBindingEndpointIdentityFields(previousBinding, this.deps.createAgentEndpointId),
-          ...workerBindingIdentityFields(
-            previousBinding,
-            () => this.deps.resolveWorkerBindingEngine({
-              workerSession,
-              targetAgent: currentTask.targetAgent,
-              workspace: currentTask.workspace,
-              ...(currentTask.cwd ? { cwd: currentTask.cwd } : {}),
-            }),
-            this.deps.createId,
-          ),
+          ...identity,
           ...(currentTask.ephemeralWorkerSession ? { ephemeral: true } : {}),
         };
         await this.deps.saveState(state);
-        return previousBinding;
+        return { previousBinding, stagedIdentity: identity };
       });
+      shellPreviousBinding = staged.previousBinding;
+      stagedIdentity = staged.stagedIdentity;
       shellStaged = true;
     } catch (error) {
       await releaseWorkerReservation();
@@ -206,6 +216,7 @@ export class TaskApprovalService {
         targetAgent: currentTask.targetAgent,
         role: currentTask.role,
       });
+      ownerStarted = true;
       prepared = await this.kernel.mutate(async () => {
         const state = await this.deps.loadState();
         const task = state.orchestration.tasks[input.taskId];
@@ -251,6 +262,32 @@ export class TaskApprovalService {
         };
       });
     } catch (error) {
+      if (ownerStarted && stagedIdentity) {
+        // The owner may exist (ensure returned): verified-converge it
+        // BEFORE the shell may be deleted. Teardown failure retains the
+        // shell (fail closed).
+        try {
+          await teardownStagedWorkerOwner(
+            this.deps.releaseWorkerSession,
+            {
+              workerSession,
+              targetAgent: currentTask.targetAgent,
+              workspace: currentTask.workspace,
+              ...(currentTask.cwd ? { cwd: currentTask.cwd } : {}),
+              ...(currentTask.role ? { role: currentTask.role } : {}),
+            },
+            stagedIdentity,
+          );
+        } catch (teardownError) {
+          await releaseWorkerReservation();
+          releaseParallelStartOnce();
+          const cause = error instanceof Error ? error.message : String(error);
+          const teardownCause = teardownError instanceof Error ? teardownError.message : String(teardownError);
+          throw new Error(
+            `approve failed: ${cause}; owner teardown failed (${teardownCause}), staged worker binding retained for ${workerSession}`,
+          );
+        }
+      }
       if (shellStaged) {
         // Best-effort: the original error is what the caller must see; a
         // failed restore only leaves a reusable shell behind.
@@ -286,6 +323,45 @@ export class TaskApprovalService {
         task: prepared.task.task,
       });
     } catch (error) {
+      if (stagedIdentity) {
+        // Dispatch runs only after ensure succeeded, so the owner may
+        // exist: converge it first. Teardown failure keeps the status
+        // rollback (the task never ran) but retains the shell so the live
+        // owner stays discoverable.
+        try {
+          await teardownStagedWorkerOwner(
+            this.deps.releaseWorkerSession,
+            {
+              workerSession,
+              targetAgent: currentTask.targetAgent,
+              workspace: currentTask.workspace,
+              ...(currentTask.cwd ? { cwd: currentTask.cwd } : {}),
+              ...(currentTask.role ? { role: currentTask.role } : {}),
+            },
+            stagedIdentity,
+          );
+        } catch (teardownError) {
+          await this.kernel.mutate(async () => {
+            const state = await this.deps.loadState();
+            const task = state.orchestration.tasks[input.taskId];
+            if (task) {
+              task.status = prepared.previousStatus;
+              task.updatedAt = prepared.previousUpdatedAt;
+              if (prepared.previousWorkerSession === undefined) {
+                delete task.workerSession;
+              } else {
+                task.workerSession = prepared.previousWorkerSession;
+              }
+            }
+            await this.deps.saveState(state);
+          }).catch(() => {});
+          const cause = error instanceof Error ? error.message : String(error);
+          const teardownCause = teardownError instanceof Error ? teardownError.message : String(teardownError);
+          throw new Error(
+            `approve failed: ${cause}; owner teardown failed (${teardownCause}), staged worker binding retained for ${workerSession}`,
+          );
+        }
+      }
       await this.kernel.mutate(async () => {
         const state = await this.deps.loadState();
         const task = state.orchestration.tasks[input.taskId];
@@ -309,7 +385,6 @@ export class TaskApprovalService {
       });
       throw error;
     }
-
     this.kernel.logEvent("orchestration.task.approved", "task approved", this.kernel.taskContext(prepared.task));
 
     return prepared.task;

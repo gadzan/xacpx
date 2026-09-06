@@ -6,7 +6,7 @@ import { RpcDelegationService } from "../../../../src/orchestration/service/rpc-
 import { WorkerSessionManager } from "../../../../src/orchestration/service/worker-session-manager";
 import { createEmptyState, type SessionTransportEngine } from "../../../../src/state/types";
 import { makeGoldenHarness } from "../golden/golden-harness";
-// Construct the service from a bare object literal of exactly its SEVEN ports — never
+// Construct the service from a bare object literal of exactly its EIGHT ports — never
 // `harness.deps` wholesale — plus the kernel, the WorkerSessionManager, and an
 // RpcDelegationService. This is the isolation-testability deliverable of the split: the
 // service must build without `config`, `ensureWorkerSession`, `wakeCoordinatorSession`,
@@ -38,6 +38,7 @@ function makeService(ids: string[] = ["task-1", "lid-1"], initialState = createE
       saveState: harness.deps.saveState,
       dispatchWorkerTask: harness.deps.dispatchWorkerTask,
       resolveWorkerBindingEngine: resolveEngine ?? harness.deps.resolveWorkerBindingEngine,
+      releaseWorkerSession: harness.deps.releaseWorkerSession,
     },
     kernel,
     workerSessions,
@@ -45,7 +46,7 @@ function makeService(ids: string[] = ["task-1", "lid-1"], initialState = createE
   );
   return { harness, humanDelegation };
 }
-test("constructible with only its seven ports and delegates a human request", async () => {
+test("constructible with only its eight ports and delegates a human request", async () => {
   const { harness, humanDelegation } = makeService();
 
   const callsBefore = harness.calls.length;

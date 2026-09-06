@@ -291,6 +291,9 @@ export function makeGoldenHarness(overrides: GoldenHarnessOverrides = {}): Golde
     closeWorkerSession: async (request) => {
       record("closeWorkerSession", request);
     },
+    releaseWorkerSession: async (request) => {
+      record("releaseWorkerSession", request);
+    },
     wakeCoordinatorSession: async (request) => {
       record("wakeCoordinatorSession", request);
     },

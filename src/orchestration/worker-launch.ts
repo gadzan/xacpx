@@ -67,6 +67,47 @@ export function workerBindingIdentityFields(
     transportEngine: previousBinding?.transportEngine ?? resolveEngine(),
   };
 }
+
+/** A staged binding shell's durable identity, captured at stage time. */
+export interface StagedWorkerIdentity {
+  logicalSessionId: string;
+  transportEngine: SessionTransportEngine;
+}
+
+/** Worker coordinates for a verified owner teardown (no live-state lookup). */
+export interface StagedWorkerOwner {
+  workerSession: string;
+  targetAgent: string;
+  workspace: string;
+  cwd?: string;
+  role?: string;
+}
+
+/**
+ * Verified-converge a just-started worker owner BEFORE its staged shell may
+ * be deleted (rollback-after-owner): with the shell gone, a surviving owner
+ * becomes an undocumented live worker invisible to membership scans, guards,
+ * recovery, and inheritance. Uses the STAGED identity captured at stage
+ * time — never re-resolves from live state, whose shell may already be
+ * gone or replaced. Throws when teardown cannot be verified (including a
+ * missing release port); the caller must then RETAIN the shell (fail
+ * closed) and surface both failures. Shared by human delegation and task
+ * approval so both apply identical teardown-before-restore ordering.
+ */
+export async function teardownStagedWorkerOwner(
+  releaseWorkerSession:
+    | ((request: StagedWorkerOwner & StagedWorkerIdentity) => Promise<void>)
+    | undefined,
+  worker: StagedWorkerOwner,
+  staged: StagedWorkerIdentity,
+): Promise<void> {
+  if (!releaseWorkerSession) {
+    throw new Error(
+      `cannot converge worker "${worker.workerSession}" after its owner started: no releaseWorkerSession port is wired`,
+    );
+  }
+  await releaseWorkerSession({ ...worker, ...staged });
+}
 /**
  * Stage a worker binding's immutable identity (LID + engine) onto a
  * copy-on-write clone. Returns `{ changed: false }` when the live binding is

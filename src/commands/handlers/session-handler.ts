@@ -774,7 +774,10 @@ async function removeSessionUnderAliasClaim(
       };
     }
   }
-  const sharedAliasCount = context.sessions.countAliasesSharingTransport(session.transportSession, internalAlias);
+  // No name-only count here: the physical recount below is the single
+  // source of truth for both the lifecycle decision and the reply, so a
+  // same-name/different-physical alias correctly hard-deletes without
+  // claiming the transport is shared (or vice versa).
   // All aliases — Runtime or CLI — remove through the physical-group
   // transaction: the physical co-owner recount, the engine settle decision,
   // and the durable logical remove all happen under one group lock, so
@@ -816,8 +819,7 @@ async function removeSessionUnderAliasClaim(
 
   // Transport state was settled inside the transaction above. CLI keeps its
   // legacy best-effort warning (logged here); Runtime failures threw before
-  // the logical row disappeared, so no warning is possible for them.
-  const shouldTeardownTransport = sharedAliasCount === 0;
+  const shouldTeardownTransport = physicalSharedCount === 0;
   if (transportTeardownWarning) {
     await context.logger.error("session.transport_teardown_failed", "failed to close acpx session after logical remove", {
       alias: internalAlias,

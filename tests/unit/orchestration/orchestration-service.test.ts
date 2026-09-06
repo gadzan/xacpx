@@ -52,6 +52,7 @@ function makeDeps(
   const ensureCalls: Array<Parameters<OrchestrationServiceDeps["ensureWorkerSession"]>[0]> = [];
   const dispatchCalls: Array<Parameters<OrchestrationServiceDeps["dispatchWorkerTask"]>[0]> = [];
   const closeCalls: Array<Parameters<NonNullable<OrchestrationServiceDeps["closeWorkerSession"]>>[0]> = [];
+  const releaseCalls: Array<Parameters<NonNullable<OrchestrationServiceDeps["releaseWorkerSession"]>>[0]> = [];
   const lookupCalls: Array<
     NonNullable<OrchestrationServiceDeps["findReusableWorkerSession"]> extends (
       request: infer Request,
@@ -116,6 +117,9 @@ function makeDeps(
         return closeWorkerSessionOverride(request);
       }
     },
+    releaseWorkerSession: async (request) => {
+      releaseCalls.push(request);
+    },
     findReusableWorkerSession: async (request) => {
       lookupCalls.push(request);
       return overrides?.reusableWorkerSession ?? null;
@@ -142,6 +146,7 @@ function makeDeps(
     ensureCalls,
     dispatchCalls,
     closeCalls,
+    releaseCalls,
     lookupCalls,
     wakeCoordinatorCalls,
     resumeCalls,
@@ -7170,6 +7175,207 @@ test("does not persist a human delegate task when worker dispatch fails", async 
 
   expect(harness.getState().orchestration.tasks).toEqual({});
   expect(harness.getState().orchestration.workerBindings).toEqual({});
+});
+
+test("task-save failure after ensure converges the owner before deleting the shell", async () => {
+  const ids = ["task-save-fail", "lid-save-fail"];
+  let cursor = 0;
+  const harness = makeDeps({ createId: () => ids[cursor++] ?? "extra-id" });
+  const service = new OrchestrationService(harness.deps);
+  const baseSave = harness.deps.saveState;
+  let saves = 0;
+  harness.deps.saveState = async (nextState) => {
+    saves += 1;
+    // Shell save (1) lands; task-persist save (2) fails after ensure started
+    // the owner; the shell-restore save (3) must succeed.
+    if (saves === 2) throw new Error("disk full on task persist");
+    return baseSave(nextState);
+  };
+
+  await expect(
+    service.requestDelegate({
+      sourceHandle: "wx:user-9",
+      sourceKind: "human",
+      coordinatorSession: "backend:main",
+      workspace: "backend",
+      targetAgent: "claude",
+      task: "review the design",
+    }),
+  ).rejects.toThrow("disk full on task persist");
+  // Verified teardown ran with the STAGED identity before the shell
+  // disappeared — never a live owner with no durable binding.
+  expect(harness.releaseCalls).toEqual([
+    {
+      workerSession: "backend:claude:backend:main",
+      targetAgent: "claude",
+      workspace: "backend",
+      logicalSessionId: "lid-save-fail",
+      transportEngine: "cli",
+    },
+  ]);
+  expect(harness.getState().orchestration.workerBindings).toEqual({});
+});
+
+test("dispatch failure after ensure converges the owner with the staged identity", async () => {
+  const ids = ["task-dispatch-fail", "lid-dispatch-fail"];
+  let cursor = 0;
+  const harness = makeDeps({
+    createId: () => ids[cursor++] ?? "extra-id",
+    dispatchWorkerTask: async () => {
+      throw new Error("prompt failed");
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await expect(
+    service.requestDelegate({
+      sourceHandle: "wx:user-9",
+      sourceKind: "human",
+      coordinatorSession: "backend:main",
+      workspace: "backend",
+      targetAgent: "claude",
+      task: "review the design",
+    }),
+  ).rejects.toThrow("prompt failed");
+  expect(harness.releaseCalls).toEqual([
+    {
+      workerSession: "backend:claude:backend:main",
+      targetAgent: "claude",
+      workspace: "backend",
+      logicalSessionId: "lid-dispatch-fail",
+      transportEngine: "cli",
+    },
+  ]);
+  expect(harness.getState().orchestration.tasks).toEqual({});
+  expect(harness.getState().orchestration.workerBindings).toEqual({});
+});
+
+test("teardown failure retains the staged shell instead of orphaning the owner", async () => {
+  const ids = ["task-teardown-fail", "lid-teardown-fail"];
+  let cursor = 0;
+  const harness = makeDeps({
+    createId: () => ids[cursor++] ?? "extra-id",
+    dispatchWorkerTask: async () => {
+      throw new Error("prompt failed");
+    },
+    releaseWorkerSession: async () => {
+      throw new Error("release refused: turn active");
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await expect(
+    service.requestDelegate({
+      sourceHandle: "wx:user-9",
+      sourceKind: "human",
+      coordinatorSession: "backend:main",
+      workspace: "backend",
+      targetAgent: "claude",
+      task: "review the design",
+    }),
+  ).rejects.toThrow(/staged worker binding retained/);
+  // The task never ran so it is still rolled back — but the shell stays so
+  // the live owner remains discoverable to scans, guards, and recovery.
+  expect(harness.getState().orchestration.tasks).toEqual({});
+  expect(harness.getState().orchestration.workerBindings["backend:claude:backend:main"]).toMatchObject({
+    logicalSessionId: "lid-teardown-fail",
+    transportEngine: "cli",
+  });
+});
+
+function seedApprovalTask(taskId: string) {
+  return {
+    taskId,
+    sourceHandle: "wx:user-9",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "review the design",
+    status: "needs_confirmation",
+    summary: "",
+    resultText: "",
+    createdAt: "2026-04-13T10:00:00.000Z",
+    updatedAt: "2026-04-13T10:00:00.000Z",
+  } as never;
+}
+
+test("approval task-save failure after ensure converges the owner before deleting the shell", async () => {
+  const initialState = createEmptyState();
+  initialState.orchestration.tasks["task-approve-save"] = seedApprovalTask("task-approve-save");
+  const harness = makeDeps({
+    createId: () => "lid-approve-save",
+    initialState,
+  });
+  const service = new OrchestrationService(harness.deps);
+  const baseSave = harness.deps.saveState;
+  let saves = 0;
+  harness.deps.saveState = async (nextState) => {
+    saves += 1;
+    if (saves === 2) throw new Error("disk full on approve persist");
+    return baseSave(nextState);
+  };
+
+  await expect(
+    service.approveTask({ coordinatorSession: "backend:main", taskId: "task-approve-save" }),
+  ).rejects.toThrow("disk full on approve persist");
+  expect(harness.releaseCalls).toEqual([
+    {
+      workerSession: "backend:claude:backend:main",
+      targetAgent: "claude",
+      workspace: "backend",
+      logicalSessionId: "lid-approve-save",
+      transportEngine: "cli",
+    },
+  ]);
+  expect(harness.getState().orchestration.workerBindings).toEqual({});
+});
+
+test("approval dispatch failure converges the owner before deleting the shell", async () => {
+  const initialState = createEmptyState();
+  initialState.orchestration.tasks["task-approve-dispatch"] = seedApprovalTask("task-approve-dispatch");
+  const harness = makeDeps({
+    createId: () => "lid-approve-dispatch",
+    initialState,
+    dispatchWorkerTask: async () => {
+      throw new Error("prompt failed");
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await expect(
+    service.approveTask({ coordinatorSession: "backend:main", taskId: "task-approve-dispatch" }),
+  ).rejects.toThrow("prompt failed");
+  expect(harness.releaseCalls).toHaveLength(1);
+  expect(harness.releaseCalls[0]).toMatchObject({
+    logicalSessionId: "lid-approve-dispatch",
+    transportEngine: "cli",
+  });
+  expect(harness.getState().orchestration.workerBindings).toEqual({});
+});
+
+test("approval teardown failure retains the staged shell", async () => {
+  const initialState = createEmptyState();
+  initialState.orchestration.tasks["task-approve-teardown"] = seedApprovalTask("task-approve-teardown");
+  const harness = makeDeps({
+    createId: () => "lid-approve-teardown",
+    initialState,
+    dispatchWorkerTask: async () => {
+      throw new Error("prompt failed");
+    },
+    releaseWorkerSession: async () => {
+      throw new Error("release refused: turn active");
+    },
+  });
+  const service = new OrchestrationService(harness.deps);
+
+  await expect(
+    service.approveTask({ coordinatorSession: "backend:main", taskId: "task-approve-teardown" }),
+  ).rejects.toThrow(/staged worker binding retained/);
+  expect(harness.getState().orchestration.workerBindings["backend:claude:backend:main"]).toMatchObject({
+    logicalSessionId: "lid-approve-teardown",
+    transportEngine: "cli",
+  });
 });
 
 test("human delegate dispatch failure restores group injection metadata", async () => {
