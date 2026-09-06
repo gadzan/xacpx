@@ -95,6 +95,10 @@ export default {
     effort: "effort",
     effortSetFailed: "Failed to switch effort. Try again.",
     working: "Agent is working… (Esc to stop)",
+    // Newline-delimited pool (never use "|" — vue-i18n reserves it for pluralization).
+    workingQuips:
+      "Ideas loading…\nSparks flying off the keyboard\nKeyboard smoking — do not disturb\nCPU is sweating a little\nArguing with a bug\nTranslating requirements into code\nLaying it down line by line\nKnee-deep in the docs\nCoffee refilled, back at it\nFingers flying, code flowing\nBrain fans at full speed\nNeurons firing wildly\nPaddling through the knowledge sea\nUnboxing your requirements\nPuzzle in progress — no rushing\nDeleted, rewritten, repeat\nCooking up something big\nGears turning, clickety-clack\nInjecting soul into the code\nBytes flying, bugs fleeing",
+    escToStop: " (Esc to stop)",
     mentionSource: {
       worker: "Worker",
       weixin: "WeChat",
