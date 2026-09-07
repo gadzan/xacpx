@@ -74,9 +74,11 @@ it("shows a working HUD while a live turn is active", async () => {
   const w = mount(ChatPane);
   await w.vm.$nextTick();
   expect(w.find('[data-test="turn-hud"]').exists()).toBe(true);
-  // Quips render in the HUD status line, not the composer placeholder.
-  expect(w.find('[data-test="hud-quip"]').exists()).toBe(true);
-  expect(w.find('[data-test="hud-quip"]').text().length).toBeGreaterThan(0);
+  // Quips render verbatim in the HUD status line, not the composer placeholder.
+  const quip = w.find('[data-test="hud-quip"]');
+  expect(quip.exists()).toBe(true);
+  expect(quip.text().length).toBeGreaterThan(0);
+  expect(quip.text()).not.toMatch(/…{2,}|…\s*…$/);
 });
 
 it("stacks status, plan, and composer as document-flow layers (status → plan → input)", async () => {
@@ -410,5 +412,39 @@ it("rotates a HUD quip every 20s while the turn runs, clears the timer when idle
   expect(w.find('[data-test="turn-hud"]').exists()).toBe(false);
   w.unmount();
   expect(vi.getTimerCount()).toBe(0); // quip interval must not survive unmount
+  vi.useRealTimers();
+});
+
+it("re-picks the HUD quip and restarts the 20s cadence on busy→busy session switch", async () => {
+  vi.useFakeTimers();
+  const instances = useInstancesStore();
+  instances.instances.push({
+    id: "i1", name: "prod-box", online: true, lastSeenAt: null,
+    sessions: [
+      { alias: "backend", agent: "codex", workspace: "gaia" },
+      { alias: "frontend", agent: "codex", workspace: "gaia" },
+    ],
+    agents: [], workspaces: [], agentCatalog: [],
+  } as never);
+  const chat = useChatStore();
+  chat.select("i1", "backend");
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "backend" } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "frontend" } } as never);
+  const w = mount(ChatPane);
+  await w.vm.$nextTick();
+
+  // A runs 19s, then the user switches to the already-busy B: B must re-pick
+  // and restart its own 20s cadence instead of inheriting A's deadline.
+  vi.advanceTimersByTime(19000);
+  await w.vm.$nextTick();
+  chat.select("i1", "frontend");
+  await w.vm.$nextTick();
+  const onB = w.find('[data-test="hud-quip"]').text();
+  expect(onB.length).toBeGreaterThan(1);
+
+  vi.advanceTimersByTime(1000);
+  await w.vm.$nextTick();
+  expect(w.find('[data-test="hud-quip"]').text()).toBe(onB);
+  w.unmount();
   vi.useRealTimers();
 });

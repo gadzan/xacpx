@@ -124,14 +124,23 @@ function rotateHudQuip(): void {
   const quips = parseQuips(t("chat.workingQuips"));
   if (quips.length > 0) hudQuip.value = pickQuip(quips, hudQuip.value || undefined);
 }
+// Identity of the turn the HUD is showing. Keying on the boolean `busy` alone
+// misses busy→busy session switches (the new session would inherit the old
+// quip and its remaining rotation deadline), so re-pick and restart the 20s
+// cadence whenever the turn itself changes; clear when no turn is live.
+const turnKey = computed(() =>
+  chat.liveTurn && chat.instanceId && chat.sessionAlias
+    ? `${chat.instanceId}\0${chat.sessionAlias}\0${chat.liveTurn.startedAt}`
+    : null,
+);
 watch(
-  () => chat.busy,
-  (busy) => {
+  turnKey,
+  (key) => {
     if (quipTimer) {
       clearInterval(quipTimer);
       quipTimer = null;
     }
-    if (busy) {
+    if (key) {
       rotateHudQuip();
       quipTimer = setInterval(rotateHudQuip, QUIP_ROTATE_MS);
     } else {
@@ -159,7 +168,9 @@ const elapsed = computed(() => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 });
 const runningTools = computed(() => chat.liveToolSteps.filter((t) => t.status === "running").length);
-const hudStatus = computed(() => hudQuip.value || t("chat.mentionActivity.working"));
+// Quips are complete status sentences (some already end in "…" or "."), so
+// render them verbatim; only the short fallback label gets a trailing "…".
+const hudStatus = computed(() => hudQuip.value || `${t("chat.mentionActivity.working")}…`);
 </script>
 
 <template>
@@ -260,7 +271,7 @@ const hudStatus = computed(() => hudQuip.value || t("chat.mentionActivity.workin
           <div v-if="chat.busy" key="status-layer" data-test="turn-hud"
                class="stack-layer stack-layer--status relative z-10 mx-4 flex items-center gap-2 rounded-xl border border-run/20 bg-surface/95 px-3 pt-1.5 pb-[calc(0.375rem+var(--stack-overlap))] shadow-e2 backdrop-blur-md sm:mx-6">
             <span class="h-2 w-2 rounded-full bg-run pulse-dot" aria-hidden="true" />
-            <span data-test="hud-quip" class="text-[12px] font-semibold text-run">{{ hudStatus }}…</span>
+            <span data-test="hud-quip" class="text-[12px] font-semibold text-run">{{ hudStatus }}</span>
             <span class="font-mono text-[12px] font-semibold tabular-nums text-run">{{ elapsed }}</span>
             <span v-if="runningTools > 0" class="text-[11.5px] text-fg-muted">· {{ runningTools }} {{ runningTools === 1 ? $t("chat.tool") : $t("chat.tools") }}</span>
             <span class="flex-1" />
