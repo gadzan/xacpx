@@ -501,7 +501,8 @@ export function validControlEvent(e: unknown): boolean {
         && optStr(c.prompt) && optStr(c.queueItemId) && optStr(c.promptRequestId) && optStr(c.recoveryId)
         && validScheduledOrigin(c.scheduled)
         && validPeerTurnOrigin(c.peerOrigin)
-        && optNonNegInt(c.startedAfterSeq) && optNonNegInt(c.slotAfterId);
+        && optNonNegInt(c.startedAfterSeq) && optNonNegInt(c.slotAfterId)
+        && (c.startedAt === undefined || finiteNonNegative(c.startedAt));
     case "turn-thought":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
     case "plan":

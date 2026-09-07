@@ -571,7 +571,7 @@ export interface LiveTurn {
 
 - **触发与折叠时机**：`turn-finished` 把 live turn 定型为历史消息的瞬间（`streaming` prop
   消失）即折叠。它就是 ACP `session/prompt` response 落定（`stopReason:"end_turn"`）在
-  xacpx 管线里的等价事件，无需协议改动。live（streaming）行不折叠，仍由 HUD 计时。
+  xacpx 管线里的等价事件，无需引入新的控制事件种类。live（streaming）行不折叠，仍由 HUD 计时。
 - **policy 在 `MessageList`**（`collapseTrace = !isFailedTurn(m) && hasTraceParts(m)`，
   失败判定读**持久化终态** `structured.turnStatus === "error"`（乐观 `failed` 标志在 hub
   历史收敛替换行后即消失，不能作为依据）、**presentation 在 `TurnParts`**（`trace-items`
@@ -579,11 +579,12 @@ export interface LiveTurn {
   计数段以 `·` 连接、英文走 vue-i18n 复数）。
 - **终态持久化**：hub 在三个持久化点（live flush、无 buffer 兜底、offline recovery）把
   `turnStatus: "done" | "cancelled" | "error"`（由 `ok`/`cancelled` 派生）盖进
-  `structured`，compact history 以 spread 原样保留。失败 trace 因此在刷新与收敛后
-  依然不折叠。
-- **展开记忆按 `traceKey`**：一律优先 `«instance»:«session»:t:«startedAt»`——`startedAt`
-  为 connector 戳，乐观 flush 行与持久行同值且被 hub 持久化（compact 也保留），所以
-  乐观行 → 持久行收敛时 key 不变，手动展开必然存活；无 `startedAt` 的 legacy 行退回
+  `structured`，compact history 以 spread 原样保留。Web 的 `keepRicherStructured()`
+  在收到 compact 页面时合并 hub 权威元数据（`turnStatus` / `truncated`），不再整份覆盖
+  导致冲掉状态。失败 trace 因此在刷新与收敛后依然不折叠。
+- **展开记忆按 `traceKey`**：一律优先 `«instance»:«session»:t:«startedAt»`——hub 在
+  `turn-started` 广播中携带自身 buffer 的 `startedAt`，乐观 flush 行与持久行同源同值
+  且被 hub 持久化（compact 也保留），所以乐观行 → 持久行收敛时 key 不变，手动展开必然存活；无 `startedAt` 的 legacy 行退回
   `«instance»:«session»:id:«n»`。存模块级 reactive Set（`lib/trace-expansion.ts`）；
   无身份行回退组件局部状态（不记忆）。
 - **耗时口径**：`createdAt − startedAt`（浏览器/hub 时钟 − connector 时钟），仅展示用、

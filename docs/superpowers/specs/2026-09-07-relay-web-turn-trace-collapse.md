@@ -11,11 +11,11 @@ relay-web 现状：`turn-finished` 后 live turn 经 `flushTurn` 定型为历史
 
 目标：**回合结束后默认折叠 trace**，收进一条回合头部；用户可展开。正文（text）与已发出的 peer 消息卡（agent-message）永不折叠。
 
-**触发信号（已用真实流验证）**：ACP 回合边界 = `session/prompt` 的 JSON-RPC response（`{"result":{"stopReason":"end_turn",…}}`，实际值为 snake_case `end_turn`）。xacpx 管线里它的等价物就是 `turn-finished` 控制事件（`src/control/session-turn-runner.ts` 在 `agent.chat()` resolve 后发出，带 `ok/cancelled/errorMessage`）——web 端在该事件定型消息的瞬间折叠，零协议改动。
+**触发信号（已用真实流验证）**：ACP 回合边界 = `session/prompt` 的 JSON-RPC response（`{"result":{"stopReason":"end_turn",…}}`，实际值为 snake_case `end_turn`）。xacpx 管线里它的等价物就是 `turn-finished` 控制事件（`src/control/session-turn-runner.ts` 在 `agent.chat()` resolve 后发出，带 `ok/cancelled/errorMessage`）——web 端在该事件定型消息的瞬间折叠（无需新增事件种类；为闭环持久化和收敛键稳定性，我们在既有 DTO 上增补了 `structured.turnStatus` 与 `turn-started.startedAt` 字段）。
 
 ## 非目标
 
-- **不改协议**：relay-protocol / relay hub / connector 零改动。`stopReason` 端到端透传（区分 `max_tokens` 截断不折叠等）是后续增强，链路见文末。
+- 不引入新的控制事件类别。`stopReason` 端到端透传（区分 `max_tokens` 截断不折叠等）是后续增强，链路见文末。
 - 不改 live（streaming）行渲染：进行中回合照旧内联展开 + HUD 计时（zcode 进行中也是展开的）。
 - legacy 历史行（无 `parts`，走 `ToolCallPanel` + `ReasoningPanel` fallback）不涉及：两组件本来就默认折叠。
 - 不做相邻 read/search 工具聚合（「查阅 · 1 搜索, 1 列表」，P2）。
@@ -27,7 +27,7 @@ relay-web 现状：`turn-finished` 后 live turn 经 `flushTurn` 定型为历史
 - **折叠是纯视图状态，放演示层（TurnParts），不动 store/wire 数据**。`structured.parts` 是不可变传输数据，hub 历史收敛（`keepRicherStructured`）会整行替换消息对象，任何写进 store 的折叠状态都会被冲掉或引出同步负担。
 - **头部固定在回合顶部**（zcode 一致），不是第一个 trace 项的位置——回合常以正文开头，按 trace 位置插头部会把头部夹在两段正文中间。
 - **error 行永不折叠**：红色失败 ring 与错误卡片必须显眼；cancelled 行折叠（与 done 一致，内容一键可展开）。
-- **手动展开状态放模块级 reactive `Set`，key = `traceKey`**，不用组件局部 ref：`turn-finished` 后 hub 历史收敛替换消息行，组件会被重建，局部状态必丢。`traceKey` **一律优先 `«instance»:«session»:t:«startedAt»`**——`startedAt` 为 connector 戳，乐观 flush 行与持久行同值、且被 hub 持久化（`started_at` 列，compact 亦保留），收敛前后 key 不变，手动展开必然存活；无 `startedAt` 的 legacy 行退回 `…:id:«n»`（只出现在已持久行，不存在中途切换）。无任何身份的行回退组件局部状态（不记忆）。
+- **手动展开状态放模块级 reactive `Set`，key = `traceKey`**，不用组件局部 ref：`turn-finished` 后 hub 历史收敛替换消息行，组件会被重建，局部状态必丢。`traceKey` **一律优先 `«instance»:«session»:t:«startedAt»`**——hub 在 `turn-started` 广播中携带自身的 `startedAt`，乐观 flush 行与持久行同值、且被 hub 持久化（`started_at` 列，compact 亦保留），收敛前后 key 不变，手动展开必然存活；无 `startedAt` 的 legacy 行退回 `…:id:«n»`（只出现在已持久行，不存在中途切换）。无任何身份的行回退组件局部状态（不记忆）。
 - **纯 v-show/v-if 切换，无过渡动画**：省掉 `prefers-reduced-motion` 分支；行高变化由既有的 `content-visibility` 虚拟化和 tail-follow watcher 自然消化。
 
 ## 组件设计
@@ -109,8 +109,7 @@ compact history 以 `{ ...structured }` spread 透传未知 key，`turnStatus` �
 
 ### 数据流不变
 
-`turn-finished` → `flushTurn` 定型（行带 `startedAt`/`createdAt`/`structured.parts`）→ `streaming` prop 消失 → 折叠即时生效；随后 hub 历史收敛整行替换——`traceKey` 以 `startedAt` 为主键、收敛前后不变，手动展开跨收敛存活（有回归测试：乐观行点开 → setProps 持久行（同 `startedAt`、新 `id`）→ 仍展开）。
-
+`turn-finished` → `flushTurn` 定型（行带 `startedAt`/`createdAt`/`structured.parts`）→ `streaming` prop 消失 → 折叠即时生效；随后 hub 历史收敛整行替换——hub 广播的 `startedAt` 与持久行同值，`traceKey` 收敛前后不变，手动展开跨收敛存活（有回归测试：从 real `turn-started` 事件开始、或乐观行点开 → setProps 持久行（同 `startedAt`、新 `id`）→ 仍展开）。同时 `keepRicherStructured()` 在收到 compact 页面时合并 hub 权威元数据（`turnStatus` / `truncated`），不再整份覆盖，失败终态与展开状态均不丢失。
 ## i18n（`en.ts` + `zh-CN.ts` 镜像，parity 测试强制）
 
 ```ts

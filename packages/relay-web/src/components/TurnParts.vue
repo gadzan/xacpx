@@ -22,8 +22,10 @@ const props = defineProps<{
   /** Turn has finished and may collapse its trace — policy (done vs failed) and
    *  trace availability live with the caller (MessageList rows). */
   collapseTrace?: boolean;
-  /** Stable identity for the expand-toggle memory: `id:<n>` on persisted rows,
-   *  `t:<startedAt>` on optimistic flush rows. Absent = toggle not remembered. */
+  /** Stable identity for the expand-toggle memory — `«instance»:«session»:t:«startedAt»`
+   *  built by MessageList (hub-stamped startedAt is identical on optimistic and
+   *  persisted rows, so the key survives hub history convergence); legacy rows fall
+   *  back to `…:id:«n»`. Absent = toggle not remembered. */
   traceKey?: string;
   /** Display-only turn duration (finished rows). Absent/non-positive → counts only. */
   traceElapsedMs?: number | null;

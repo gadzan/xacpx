@@ -580,7 +580,12 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 ...(slot!.startedAfterSeq !== undefined ? { startedAfterSeq: slot!.startedAfterSeq } : {}),
                 ...(notification ? { notification } : {}),
               });
-              outbound = { ...event, slotAfterId: slot!.slotAfterId };
+              // Broadcast the buffer's startedAt so the web's optimistic row and the
+              // eventual persisted row (flushed from THIS buffer) carry the SAME value —
+              // the web's trace-key identity survives history convergence. Whatever
+              // clock stamped slot.startedAt (hub now, or a restored connector anchor),
+              // flush and broadcast always agree because both read it back from here.
+              outbound = { ...event, slotAfterId: slot!.slotAfterId, startedAt };
             } catch (err) {
               turnBuffers.delete(k);
               gateway.disconnect(instanceId);

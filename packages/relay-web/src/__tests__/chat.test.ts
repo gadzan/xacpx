@@ -677,7 +677,7 @@ test("loadHistory keeps a locally richer structured payload over a compact page"
       direction: "out",
       text: "done",
       createdAt: "t",
-      structured: { compact: true, parts: [{ type: "text", text: "done" }, { type: "tool", step: { toolCallId: "t1", toolName: "Bash", kind: "execute", status: "success", title: "ls", detail: { type: "command", command: "ls" } } }] },
+      structured: { compact: true, turnStatus: "error" as const, parts: [{ type: "text", text: "done" }, { type: "tool", step: { toolCallId: "t1", toolName: "Bash", kind: "execute", status: "success", title: "ls", detail: { type: "command", command: "ls" } } }] },
     }],
   }), { status: 200 })));
 
@@ -693,9 +693,27 @@ test("loadHistory keeps a locally richer structured payload over a compact page"
     structured: full,
   }];
   await chat.loadHistory();
+  // Convergence must MERGE the hub's authoritative metadata into the locally
+  // richer payload, not replace wholesale: the optimistic row has no turnStatus,
+  // and dropping it would fold a failed turn's trace right after the turn ended.
   const part = chat.messages[0]?.structured?.parts?.find((p) => p.type === "tool");
   expect(chat.messages[0]?.structured?.compact).toBeUndefined();
+  expect(chat.messages[0]?.structured?.turnStatus).toBe("error");
   expect(part?.type === "tool" ? part.step.detail : undefined).toEqual({ type: "command", command: "ls", output: "a.ts" });
+});
+
+test("a hub-stamped turn-started seeds the live turn and survives flush into the optimistic row", () => {
+  const chat = useChatStore();
+  chat.select("i1", "backend");
+  const STARTED = 1_757_000_000_000;
+  // Real event chain (not hand-filled rows): hub broadcasts startedAt on
+  // turn-started; the live turn and the flushed optimistic row must carry the
+  // SAME value the persisted row will get — that identity is the trace key.
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend", startedAt: STARTED } } as never);
+  expect(chat.liveTurn?.startedAt).toBe(STARTED);
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "hi" } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true } } as never);
+  expect(chat.messages.at(-1)?.startedAt).toBe(STARTED);
 });
 
 test("select persists the open session so a refresh can restore it", () => {

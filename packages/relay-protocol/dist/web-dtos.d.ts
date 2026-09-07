@@ -60,6 +60,11 @@ export interface MessageRecordDto {
         truncated?: boolean;
         compact?: boolean;
         agentMessage?: PeerMessageHistoryEntry;
+        /** Terminal status of the assistant turn, stamped by the hub at persist time so
+         *  failure/cancel survive history convergence and page reload (the web-local
+         *  `failed`/`status` flags live only on optimistic rows). Collapsing policies key
+         *  off `error` — a failed turn's trace must stay unmissable. */
+        turnStatus?: "done" | "cancelled" | "error";
     };
     attachments?: AttachmentMetadata[];
 }

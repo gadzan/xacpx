@@ -1383,6 +1383,31 @@ test("persisted out rows carry the terminal turnStatus so failed traces survive 
   fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "done-s", ok: true });
   expect(runtime.messages.listBySession("a1", "i1", "cancelled-s").messages[0]!.structured?.turnStatus).toBe("cancelled");
   expect(runtime.messages.listBySession("a1", "i1", "done-s").messages[0]!.structured?.turnStatus).toBe("done");
+  runtime.close();
+});
 
+test("turn-started broadcast carries the hub startedAt that the persisted row keeps", async () => {
+  const runtime = await seeded();
+  const web = new FakeSocket();
+  runtime.webGateway.register("a1", web as never);
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend" });
+  const startedEnv = decodeEnvelope(web.sent[0]!);
+  const started = startedEnv.ok ? parseWebServerEvent(startedEnv.envelope) : null;
+  if (!started || started.kind !== "control-event" || started.event.type !== "turn-started") {
+    throw new Error("expected a turn-started control-event broadcast");
+  }
+  const hubStartedAt = started.event.startedAt;
+  expect(typeof hubStartedAt).toBe("number");
+
+  fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "x" });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
+  // The optimistic row the web builds from the broadcast and the persisted row the
+  // hub flushes from the SAME buffer must share one startedAt (trace-key identity).
+  const row = runtime.messages.listBySession("a1", "i1", "backend").messages[0]!;
+  expect(row.startedAt).toBe(hubStartedAt);
   runtime.close();
 });

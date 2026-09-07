@@ -157,8 +157,9 @@ describe("MessageList convergence", () => {
     expect(w.find('[data-test="trace-toggle"]').attributes("aria-expanded")).toBe("true");
 
     // Convergence replaces the optimistic row with the persisted one (new object
-    // identity → TurnParts rebuilds). startedAt is the stable key (both rows carry
-    // the same connector-stamped value), so the expansion must survive.
+    // identity → TurnParts rebuilds). startedAt is the stable key (hub broadcasts it
+    // on turn-started, so optimistic and persisted rows carry the identical hub timestamp),
+    // and the manual expansion survives.
     await w.setProps({ messages: [{ ...optimistic, id: 7 } as never] });
     expect(w.find('[data-test="trace-toggle"]').attributes("aria-expanded")).toBe("true");
     expect(w.find('[data-test="tool-step-card"]').exists()).toBe(true);
