@@ -1,4 +1,5 @@
 import { test, expect, spyOn, mock } from "bun:test";
+import { AcpxQueueOwnerLauncher } from "../../../src/transport/acpx-queue-owner-launcher";
 
 const terminate = mock(async (_sessionId: string) => {});
 // Stub the launcher helper so we assert freeWarmProcess kills the warm owner by
@@ -7,7 +8,7 @@ const terminate = mock(async (_sessionId: string) => {});
 // matches by resolved source path. Re-export the other named imports the
 // transport pulls from that module so the real ones still resolve.
 mock.module("../../../src/transport/acpx-queue-owner-launcher", () => ({
-  AcpxQueueOwnerLauncher: class {},
+  AcpxQueueOwnerLauncher,
   terminateAcpxQueueOwner: terminate,
 }));
 

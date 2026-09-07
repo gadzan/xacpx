@@ -15,6 +15,7 @@ import type { NonInteractivePermissions, PermissionMode } from "../../config/typ
 import type { BridgeEngine, EngineInjectInput, EngineListInput, EnginePromptInput, EnginePromptStreamEvent, EngineSessionInput } from "./bridge-engine";
 import type { PlanEntry, ToolUseEvent, ToolUseKind, ToolUseStatus } from "../../channels/types.js";
 import { formatToolUseEventForText } from "../../transport/tool-use-text-format.js";
+import { summarizeToolInput, summarizeToolOutput } from "../../transport/tool-summary.js";
 import { readImageFileBounded } from "../../transport/prompt-media.js";
 import { parseSessionEffortRecord } from "../../transport/session-effort.js";
 import type { PromptMediaInput } from "../../transport/types.js";
@@ -2930,10 +2931,17 @@ export function mapRuntimeToolEvent(event: {
   rawInput?: unknown;
   rawOutput?: unknown;
   content?: unknown;
+  summary?: string;
 }): ToolUseEvent {
   const toolCallId = event.toolCallId || `tc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const title = (event.title ?? "").trim();
   const toolName = title || "Tool";
+  const summaryRaw = event.summary || summarizeToolInput(event.rawInput, title) || summarizeToolOutput(event.rawOutput);
+  const summary = summaryRaw && summaryRaw !== title ? summaryRaw : undefined;
+  // Note: pinned acpx 0.13.1 Runtime tool_call exposes no _meta, so a status-less
+  // terminal carrying only _meta.claudeCode.toolResponse is indistinguishable from
+  // a keep-alive and stays running; CLI closes it via hasClaudeToolResponse; fixing
+  // needs an upstream contract signal — do NOT change mapping logic.
   const statusRaw = (event.status ?? "").toLowerCase();
   const status: ToolUseStatus =
     statusRaw === "completed" || statusRaw === "success"
@@ -2941,7 +2949,7 @@ export function mapRuntimeToolEvent(event: {
       : statusRaw === "failed" || statusRaw === "error"
         ? "error"
         : "running";
-  const validKinds = new Set(["read", "search", "execute", "edit", "think", "other"]);
+  const validKinds = new Set(["read", "search", "execute", "edit", "delete", "move", "fetch", "think", "other"]);
   const kind: ToolUseKind =
     typeof event.kind === "string" && validKinds.has(event.kind.toLowerCase())
       ? (event.kind.toLowerCase() as ToolUseKind)
@@ -2952,6 +2960,7 @@ export function mapRuntimeToolEvent(event: {
     toolName,
     kind,
     status,
+    ...(summary ? { summary } : {}),
     ...(event.rawInput !== undefined ? { rawInput: event.rawInput } : {}),
     ...(event.rawOutput !== undefined ? { rawOutput: event.rawOutput } : {}),
     ...(event.content !== undefined ? { content: event.content } : {}),
@@ -3040,29 +3049,4 @@ export function extractTextFromAcpMessage(parsed: Record<string, unknown>): stri
     }
   }
   return results;
-}
-
-function emitPromptEvent(event: XacpxRuntimeEvent, onEvent?: (event: EnginePromptStreamEvent) => void): void {
-  if (!onEvent) return;
-  if (event.type === "text_delta") {
-    onEvent(event.stream === "thought"
-      ? { type: "prompt.thought", text: event.text }
-      : { type: "prompt.segment", text: event.text });
-  } else if (event.type === "tool_call") {
-    onEvent({ type: "prompt.tool_event", event: mapRuntimeToolEvent(event) });
-  } else if (event.type === "status") {
-    // G9: missing usage means unknown, NOT zero. Never fabricate 0 for undefined fields.
-    if (typeof event.used === "number" && typeof event.size === "number") {
-      onEvent({
-        type: "prompt.usage",
-        used: event.used,
-        size: event.size,
-        ...(event.cost ? { cost: event.cost as never } : {}),
-        ...(event.breakdown ? { breakdown: event.breakdown as never } : {}),
-      });
-    }
-    if (event.availableCommands && event.availableCommands.length > 0) {
-      onEvent({ type: "prompt.commands", commands: event.availableCommands.map((command) => ({ name: command.name, description: command.description })) as never });
-    }
-  }
 }

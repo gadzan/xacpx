@@ -336,6 +336,31 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
     if (!text) return { ...base, title: fallbackTitle };
     return { ...base, title: fallbackTitle, detail: { type: "text", text: cap(text) } };
   }
+  if (event.kind === "delete") {
+    const path = asString(input.file_path) ?? asString(input.path) ?? locationPath(event) ?? fallbackTitle;
+    const fields = primitiveFields(input);
+    const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
+    if (fields.length === 0 && !out) return { ...base, title: path };
+    return { ...base, title: path, detail: { type: "fields", fields, ...(out ? { output: cap(out) } : {}) } };
+  }
+
+  if (event.kind === "move") {
+    const from = asString(input.from) ?? asString(input.source) ?? asString(input.src) ?? asString(input.old_path) ?? asString(input.oldPath);
+    const to = asString(input.to) ?? asString(input.destination) ?? asString(input.dest) ?? asString(input.new_path) ?? asString(input.newPath);
+    const title = from && to ? `${from} → ${to}` : from ?? to ?? locationPath(event) ?? fallbackTitle;
+    const fields = primitiveFields(input);
+    const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
+    if (fields.length === 0 && !out) return { ...base, title };
+    return { ...base, title, detail: { type: "fields", fields, ...(out ? { output: cap(out) } : {}) } };
+  }
+
+  if (event.kind === "fetch") {
+    const url = asString(input.url) ?? asString(input.uri) ?? asString(input.href) ?? fallbackTitle;
+    const fields = primitiveFields(input);
+    const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
+    if (fields.length === 0 && !out) return { ...base, title: url };
+    return { ...base, title: url, detail: { type: "fields", fields, ...(out ? { output: cap(out) } : {}) } };
+  }
 
   const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
   const fields = primitiveFields(input);

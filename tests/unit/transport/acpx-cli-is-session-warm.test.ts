@@ -1,11 +1,12 @@
 import { test, expect, spyOn, mock } from "bun:test";
+import { AcpxQueueOwnerLauncher } from "../../../src/transport/acpx-queue-owner-launcher";
 
 // Stub the lock-file pid reader and the pid liveness probe so isSessionWarm is
 // tested without touching ~/.acpx/queues or real processes. Re-export the other
 // names the transport pulls from each module so the real ones still resolve.
 const readPid = mock(async (_sessionId: string): Promise<number | undefined> => undefined);
 mock.module("../../../src/transport/acpx-queue-owner-launcher", () => ({
-  AcpxQueueOwnerLauncher: class {},
+  AcpxQueueOwnerLauncher,
   terminateAcpxQueueOwner: async () => {},
   readQueueOwnerPid: readPid,
 }));

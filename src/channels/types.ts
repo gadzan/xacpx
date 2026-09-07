@@ -246,7 +246,15 @@ export type ToolUseStatus = "running" | "success" | "error";
 // Matches the kinds emitted by acpx via streaming-prompt.ts KIND_EMOJI.
 // Any kind the transport doesn't recognize maps to "other".
 export type ToolUseKind =
-  "read" | "search" | "execute" | "edit" | "think" | "other";
+  | "read"
+  | "search"
+  | "execute"
+  | "edit"
+  | "delete"
+  | "move"
+  | "fetch"
+  | "think"
+  | "other";
 
 export interface ToolUseEvent {
   toolCallId: string;

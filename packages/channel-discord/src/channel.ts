@@ -1031,7 +1031,7 @@ export class DiscordChannel implements MessageChannelRuntime {
           if (!accumulated.endsWith("\n")) accumulated += "\n";
         } else if (accumulated.length > 0 && trimmed.length > 0) {
           const lastLine = accumulated.split("\n").pop() ?? "";
-          const lastWasTool = /^[📖🔍🔧✏️💭🧰⚠️]/.test(lastLine.trimStart());
+          const lastWasTool = /^[📖🔍🔧✏️💭🧰⚠️🗑️📦🌐]/.test(lastLine.trimStart());
           if (lastWasTool && !isProgress) {
             if (!accumulated.endsWith("\n\n") && !accumulated.endsWith("\n")) accumulated += "\n\n";
             else if (accumulated.endsWith("\n") && !accumulated.endsWith("\n\n")) accumulated += "\n";
@@ -1049,7 +1049,7 @@ export class DiscordChannel implements MessageChannelRuntime {
         const summary = event.summary && event.summary !== toolName ? event.summary : "";
         const display = summary ? `${toolName}: ${summary}` : toolName;
         const truncated = display.length > 60 ? `${display.slice(0, 57)}…` : display;
-        const emojiMap: Record<string, string> = { read: "📖", search: "🔍", execute: "🔧", edit: "✏️", think: "💭", other: "🔧" };
+        const emojiMap: Record<string, string> = { read: "📖", search: "🔍", execute: "🔧", edit: "✏️", delete: "🗑️", move: "📦", fetch: "🌐", think: "💭", other: "🔧" };
         const emoji = emojiMap[event.kind] ?? "🔧";
         const line = `${emoji} ${truncated} (${event.status})`;
         // dedup identical consecutive truncated lines (e.g. repeated git log)

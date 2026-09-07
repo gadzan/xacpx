@@ -908,3 +908,38 @@ test("wrong-driver Claude metadata does not alter an ordinary tool event", () =>
     status: "success",
   }]);
 });
+
+test("tool_call_update falls back to rawOutput with input-like fields (path, command/query) for structured summary", () => {
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, (e) => events.push(e));
+
+  parseStreamingChunks(state, JSON.stringify({
+    method: "session/update",
+    params: {
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "t-path",
+        title: "Result",
+        rawOutput: { path: "/tmp/result.ts" },
+        status: "completed",
+      },
+    },
+  }));
+
+  expect(events.at(-1)?.summary).toBe("/tmp/result.ts");
+
+  parseStreamingChunks(state, JSON.stringify({
+    method: "session/update",
+    params: {
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "t-cmd",
+        title: "Result",
+        rawOutput: { command: "git status" },
+        status: "completed",
+      },
+    },
+  }));
+
+  expect(events.at(-1)?.summary).toBe("git status");
+});

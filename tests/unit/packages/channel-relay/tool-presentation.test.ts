@@ -483,3 +483,120 @@ test("agentMessageId survives every detail-variant path via the base spread", ()
     expect(step.agentMessageId).toBe(MSG_ID);
   }
 });
+
+test("delete presents path as title and primitive fields in detail", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "d1", toolName: "Delete", kind: "delete", status: "success",
+    rawInput: { file_path: "temp/cache.json", recursive: true },
+  });
+  expect(step.title).toBe("temp/cache.json");
+  expect(step.kind).toBe("delete");
+  expect(step.detail).toMatchObject({
+    type: "fields",
+    fields: [
+      { label: "file_path", value: "temp/cache.json" },
+      { label: "recursive", value: "true" },
+    ],
+  });
+});
+
+test("move presents 'source → destination' as title and fields in detail", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "m1", toolName: "Move", kind: "move", status: "success",
+    rawInput: { source: "src/old.ts", destination: "src/new.ts" },
+  });
+  expect(step.title).toBe("src/old.ts → src/new.ts");
+  expect(step.kind).toBe("move");
+  expect(step.detail).toMatchObject({
+    type: "fields",
+    fields: [
+      { label: "source", value: "src/old.ts" },
+      { label: "destination", value: "src/new.ts" },
+    ],
+  });
+});
+
+test("fetch presents url as title and fields in detail", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "f1", toolName: "Fetch", kind: "fetch", status: "success",
+    rawInput: { url: "https://api.example.com/v1/health" },
+    rawOutput: { stdout: '{"status":"ok"}' },
+  });
+  expect(step.title).toBe("https://api.example.com/v1/health");
+  expect(step.kind).toBe("fetch");
+  expect(step.detail).toMatchObject({
+    type: "fields",
+    fields: [{ label: "url", value: "https://api.example.com/v1/health" }],
+    output: '{"status":"ok"}',
+  });
+});
+
+test("end-to-end: runtime sparse Read sequence results in rich Read step DTO", () => {
+  const { normalizeRuntimeToolCallEvent } = require("../../../../src/bridge/engine/runtime/runtime-tool-call-merge");
+  const { mapRuntimeToolEvent } = require("../../../../src/bridge/engine/runtime-engine");
+
+  const toolCalls = new Map();
+  normalizeRuntimeToolCallEvent(toolCalls, {
+    type: "tool_call",
+    toolCallId: "read-1",
+    title: "Read",
+    kind: "read",
+    rawInput: { path: "/tmp/a.ts" },
+    text: "reading",
+  });
+
+  const terminalSnapshot = normalizeRuntimeToolCallEvent(toolCalls, {
+    type: "tool_call",
+    tag: "tool_call_update",
+    toolCallId: "read-1",
+    title: "tool call",
+    status: "completed",
+    text: "tool call (completed)",
+  });
+
+  const toolEvent = mapRuntimeToolEvent(terminalSnapshot);
+  const step = toolUseEventToStepDto(toolEvent);
+
+  expect(step.title).toBe("/tmp/a.ts");
+  expect(step.status).toBe("success");
+  expect(step.kind).toBe("read");
+  expect(step.detail).toMatchObject({ type: "read", path: "/tmp/a.ts" });
+});
+
+test("end-to-end: runtime sparse Execute sequence results in rich Command step DTO", () => {
+  const { normalizeRuntimeToolCallEvent } = require("../../../../src/bridge/engine/runtime/runtime-tool-call-merge");
+  const { mapRuntimeToolEvent } = require("../../../../src/bridge/engine/runtime-engine");
+
+  const toolCalls = new Map();
+  normalizeRuntimeToolCallEvent(toolCalls, {
+    type: "tool_call",
+    toolCallId: "bash-1",
+    title: "Bash",
+    kind: "execute",
+    rawInput: { command: "bun test" },
+    text: "running",
+  });
+
+  const terminalSnapshot = normalizeRuntimeToolCallEvent(toolCalls, {
+    type: "tool_call",
+    tag: "tool_call_update",
+    toolCallId: "bash-1",
+    title: "tool call",
+    status: "completed",
+    rawOutput: { formatted_output: "42 pass", exit_code: 0 },
+    text: "tool call (completed)",
+  });
+
+  const toolEvent = mapRuntimeToolEvent(terminalSnapshot);
+  const step = toolUseEventToStepDto(toolEvent);
+
+  expect(step.title).toBe("bun test");
+  expect(step.status).toBe("success");
+  expect(step.kind).toBe("execute");
+  expect(step.detail).toMatchObject({
+    type: "command",
+    command: "bun test",
+    output: "42 pass",
+    exitCode: 0,
+  });
+});
