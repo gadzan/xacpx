@@ -177,6 +177,67 @@ describe("ToolStepCard de-cardified activity stream", () => {
       },
     });
     expect(w.text()).toContain("Write");
-    expect(w.text()).toContain("+2");
+    expect(w.text()).toContain("+1");
+  });
+
+  it("does not misclassify a compact Edit diff as Write", () => {
+    const w = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t1",
+          kind: "edit",
+          toolName: "Edit",
+          title: "packages/relay-web/src/index.ts",
+          status: "success",
+          detail: {
+            type: "diff",
+            path: "packages/relay-web/src/index.ts",
+            oldText: "",
+            newText: "",
+          },
+        } as ToolStepDto,
+      },
+    });
+    expect(w.text()).toContain("Edit");
+    expect(w.text()).not.toContain("Write");
+    expect(w.find('[data-test="step-diff-stats"]').exists()).toBe(false);
+  });
+
+  it("still labels an explicit Write tool as Write in compact mode", () => {
+    const w = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t1",
+          kind: "edit",
+          toolName: "Write",
+          title: "packages/relay-web/src/index.ts",
+          status: "success",
+          detail: {
+            type: "diff",
+            path: "packages/relay-web/src/index.ts",
+            oldText: "",
+            newText: "",
+          },
+        } as ToolStepDto,
+      },
+    });
+    expect(w.text()).toContain("Write");
+    expect(w.text()).not.toContain("Edit");
+  });
+
+  it("does not open an empty detail drawer for steps without details", async () => {
+    const w = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t1",
+          toolName: "Todo",
+          kind: "think",
+          title: "Update todos",
+          status: "success",
+        } as ToolStepDto,
+      },
+    });
+    await w.find('[data-test="tool-step-header"]').trigger("click");
+    expect(w.find('[data-test="tool-step-detail"]').exists()).toBe(false);
   });
 });

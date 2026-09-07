@@ -15,8 +15,12 @@ const { t } = useI18n();
 // file previews dominate the message list. Users can expand the detail on demand.
 const open = ref(false);
 const hydrating = ref(false);
+const hasDetail = computed(() => {
+  return props.step.detail !== undefined || props.step.error !== undefined || props.ensureFull !== undefined;
+});
 
 async function onHeaderClick(): Promise<void> {
+  if (!hasDetail.value) return;
   if (open.value) {
     open.value = false;
     return;
@@ -32,7 +36,6 @@ async function onHeaderClick(): Promise<void> {
     hydrating.value = false;
   }
 }
-
 // Compute line additions and deletions for edit/diff steps (e.g. +4, −1).
 const diffStats = computed(() => {
   if (props.step.detail?.type !== "diff") return null;
@@ -43,9 +46,7 @@ const diffStats = computed(() => {
 
 const isWrite = computed(() => {
   const name = (props.step.toolName || "").toLowerCase();
-  if (name.includes("write") || name.includes("create")) return true;
-  if (props.step.detail?.type === "diff" && props.step.detail.oldText === "") return true;
-  return false;
+  return name.includes("write") || name.includes("create");
 });
 
 const kindLabel = computed(() => {
@@ -66,11 +67,6 @@ const fileExt = computed(() => {
   const raw = title.slice(dot + 1).split(/[\s:#?]/)[0]?.toUpperCase() || "";
   return raw.length <= 4 ? raw : "";
 });
-
-const hasDetail = computed(() => {
-  return props.step.detail !== undefined || props.step.error !== undefined || props.ensureFull !== undefined;
-});
-
 // The text the detail body already prints below (so we don't repeat it in the banner).
 const detailOutput = computed(() => {
   const d = props.step.detail;
@@ -105,7 +101,9 @@ function fmtDuration(ms?: number): string {
   <div data-test="tool-step-card" class="text-xs">
     <button type="button" data-test="tool-step-header"
             class="group flex w-full items-center gap-1.5 py-1 px-1.5 -mx-1.5 rounded-md text-left text-fg-muted hover:text-fg hover:bg-fg/5 transition-colors"
-            :aria-expanded="open" @click="onHeaderClick">
+            :aria-expanded="hasDetail ? open : undefined"
+            :class="!hasDetail ? 'cursor-default' : ''"
+            @click="onHeaderClick">
       <component :is="KIND_ICON[step.kind]" :size="13" class="shrink-0 transition-colors"
                  :class="step.status === 'error' ? 'text-danger' : step.status === 'running' ? 'text-accent' : 'text-fg-muted/80 group-hover:text-fg'" />
       <span class="shrink-0 font-medium text-[11.5px] text-fg-muted transition-colors group-hover:text-fg">{{ kindLabel }}</span>
@@ -120,11 +118,11 @@ function fmtDuration(ms?: number): string {
         <Check v-if="step.status === 'success'" data-test="step-status-success" :size="12" class="text-run/70" />
         <Loader2 v-else-if="step.status === 'running'" data-test="step-status-running" :size="12" class="animate-spin motion-reduce:animate-none text-accent" />
         <AlertTriangle v-else data-test="step-status-error" :size="12" class="text-danger" />
-        <ChevronDown v-if="open" :size="12" class="shrink-0 opacity-60 group-hover:opacity-100 transition-opacity" />
+        <ChevronDown v-if="hasDetail && open" :size="12" class="shrink-0 opacity-60 group-hover:opacity-100 transition-opacity" />
         <ChevronRight v-else-if="hasDetail" :size="12" class="shrink-0 opacity-40 group-hover:opacity-80 transition-opacity" />
       </span>
     </button>
-    <div v-if="open" data-test="tool-step-detail" class="ml-2.5 my-1.5 border-l-2 border-border/50 pl-3 space-y-1">
+    <div v-if="hasDetail && open" data-test="tool-step-detail" class="ml-2.5 my-1.5 border-l-2 border-border/50 pl-3 space-y-1">
       <div v-if="hydrating" data-test="tool-step-hydrating" class="flex items-center gap-1.5 py-1 text-fg-muted">
         <Loader2 :size="13" class="animate-spin motion-reduce:animate-none" />
         <span>{{ $t("tools.loadingDetails") }}</span>
