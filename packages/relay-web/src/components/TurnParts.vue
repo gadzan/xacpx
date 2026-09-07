@@ -97,21 +97,21 @@ function toggleTrace(): void {
 </script>
 
 <template>
-  <div class="space-y-1.5">
+  <div class="space-y-2">
     <!-- Collapsed-trace header (finished turns): one muted row summarizing the hidden
          activity; expanding re-renders the trace items inline below it. -->
     <button v-if="collapsible" type="button" data-test="trace-toggle"
-            class="flex w-full flex-wrap items-center gap-x-1.5 gap-y-0.5 py-0.5 text-left text-[11.5px] text-fg-muted transition-colors hover:text-fg"
+            class="group flex w-full flex-wrap items-center gap-x-1.5 gap-y-0.5 py-1 px-1.5 -mx-1.5 rounded-md text-left text-[11.5px] text-fg-muted transition-colors hover:text-fg hover:bg-fg/5"
             :aria-expanded="expanded" :aria-label="$t('turnTrace.toggleTrace')"
             :data-trace-key="traceKey ?? ''" @click="toggleTrace">
-      <ChevronDown v-if="expanded" :size="12" class="shrink-0" />
-      <ChevronRight v-else :size="12" class="shrink-0" />
+      <ChevronDown v-if="expanded" :size="12" class="shrink-0 opacity-60 group-hover:opacity-100 transition-opacity" />
+      <ChevronRight v-else :size="12" class="shrink-0 opacity-40 group-hover:opacity-80 transition-opacity" />
       <span data-test="trace-label">{{ headerLabel }}</span>
     </button>
     <template v-for="item in visibleItems" :key="item.key">
       <StreamMarkdown v-if="item.type === 'text'" data-test="turn-narrative"
                       :text="item.text" :streaming="streaming === true && item.isLatest"
-                      class="text-[14px] leading-relaxed text-fg my-1"
+                      class="text-[14px] leading-relaxed text-fg"
                       :class="streaming === true && item.isLatest ? 'caret' : ''" />
       <ReasoningPanel v-else-if="item.type === 'reasoning'"
                       :reasoning="item.text"

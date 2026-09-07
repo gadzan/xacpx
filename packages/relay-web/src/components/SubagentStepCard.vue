@@ -194,7 +194,7 @@ onBeforeUnmount(() => {
         </p>
       </template>
       <button type="button" data-test="subagent-open-trace"
-              class="mt-2.5 inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-[10.5px] font-medium text-fg-muted transition-colors hover:border-accent/40 hover:text-accent"
+              class="inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[10.5px] font-medium text-accent transition-colors hover:bg-fg/5"
               @click="onOpenTrace">
         <ExternalLink :size="12" /> {{ $t("tools.viewFullTrace") }}
       </button>
