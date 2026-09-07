@@ -8,7 +8,6 @@ import {
   isRecord,
   isEmptyToolField,
   summarizeToolInput,
-  summarizeToolOutput,
   summarizeTaskInput,
   cursorToolInput,
   readFirstString,
@@ -370,7 +369,7 @@ function formatToolCallEvent(update: NonNullable<StreamEvent["params"]>["update"
   // For tool_call_update, the useful payload is often in rawOutput rather
   // than rawInput (e.g. terminal command stdout). Fall back to rawOutput
   // when rawInput yields nothing actionable.
-  const inputSummary = summarizeToolInput(update.rawInput, title) || summarizeToolOutput(update.rawOutput);
+  const inputSummary = summarizeToolInput(update.rawInput, title) || summarizeToolInput(update.rawOutput, title);
   const status = readString(update, "status");
 
   // Some agents first emit a placeholder pending tool_call (for example
@@ -447,7 +446,7 @@ function buildToolUseEvent(
   // For tool_call_update, the useful payload is often in rawOutput rather
   // than rawInput (e.g. terminal command stdout). Fall back to rawOutput
   // when rawInput yields nothing actionable.
-  const summaryRaw = summarizeToolInput(update.rawInput, title) || summarizeToolOutput(update.rawOutput);
+  const summaryRaw = summarizeToolInput(update.rawInput, title) || summarizeToolInput(update.rawOutput, title);
   const summary = summaryRaw && summaryRaw !== title ? summaryRaw : undefined;
   const statusRaw = readString(update, "status");
   // claude-agent-acp sometimes emits a sparse terminal update after the prompt
