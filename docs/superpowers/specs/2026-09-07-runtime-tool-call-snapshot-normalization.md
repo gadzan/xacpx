@@ -1330,3 +1330,11 @@ locations
 ```
 
 尤其是 `acpx@0.13.1` 自动生成的 `"tool call"`，在 `tool_call_update` 中只能作为 fallback placeholder，不能降级一个已经具备更具体 identity 的 tool call。
+
+---
+
+# 21. 已知局限与 Gaps (Known Limitations)
+
+### Claude Status-less Terminal Parity Gap
+
+Pinned `acpx@0.13.1` Runtime `tool_call` event 没有透传 `_meta` 字段。当 Claude emitted 一个省略了 `status`、仅在 `_meta.claudeCode.toolResponse` 中携带执行结果的 sparse terminal frame 时，Runtime engine 无法区分它是 keep-alive running 还是 completed terminal，因此会保持 `running`。CLI 链路能够通过 `hasClaudeToolResponse` 判定完成并关闭 spinner。此 parity gap 需要 upstream acpx 在 Runtime `tool_call` event 中暴露 `_meta` 或规范化 `status` 信号，当前保留 mapping logic 不变。

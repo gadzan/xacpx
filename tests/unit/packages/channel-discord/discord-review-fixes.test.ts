@@ -5,7 +5,7 @@ import type { DiscordBotIdentity, DiscordClientLike } from "../../../../packages
 import type { DiscordInboundMessage } from "../../../../packages/channel-discord/src/types";
 import { MessageChannelRegistry } from "../../../../src/channels/channel-registry";
 import { registerKnownChannelId } from "../../../../src/channels/channel-scope";
-import type { ChannelStartInput } from "xacpx/plugin-api";
+import type { ChannelStartInput, ToolUseEvent } from "xacpx/plugin-api";
 
 beforeAll(() => {
   // Production registers this via registerChannelFactory when the plugin loads.
@@ -658,4 +658,54 @@ test("M4: a thread inherits the parent channel's requireMention override on the 
   h.state.gate.resolve({ text: "late" });
   h.abort.abort();
   await h.startPromise;
+});
+
+test("Discord onToolEvent renders delete (🗑️), move (📦), and fetch (🌐) emoji matching standard kinds", async () => {
+  const client = makeGatewayClient({ botUserId: "bot-123" });
+  const recorded: string[] = [];
+  client.sendMessage = async (_target: unknown, body: { content?: string | null }) => {
+    if (body.content) recorded.push(body.content);
+    return { messageId: `s${recorded.length}` };
+  };
+  client.editMessage = async (_target: unknown, _msgId: string, body: { content?: string | null }) => {
+    if (body.content) recorded.push(body.content);
+  };
+  const abort = new AbortController();
+  const gate = Promise.withResolvers<{ text: string }>();
+  const ch = new DiscordChannel(
+    { token: "x", dmPolicy: "open", guildPolicy: "open", replyMode: "streaming", previewThrottleMs: 250 },
+    { logger: makeLogger() as never, createClient: () => client, identifyStaggerMs: 0 },
+  );
+  const startPromise = ch.start({
+    logger: makeLogger(),
+    abortSignal: abort.signal,
+    agent: {
+      chat: async (req: { onToolEvent?: (event: ToolUseEvent) => Promise<void> }) => {
+        const onTool = req.onToolEvent;
+        if (onTool) {
+          await onTool({ toolCallId: "t1", toolName: "file.txt", kind: "delete", status: "success" });
+          await onTool({ toolCallId: "t2", toolName: "src/a → src/b", kind: "move", status: "success" });
+          await onTool({ toolCallId: "t3", toolName: "https://example.com", kind: "fetch", status: "success" });
+        }
+        return await gate.promise;
+      },
+    },
+    activeTurns: { markActive: () => {}, markInactive: () => {} },
+    sessions: { peekCurrentSessionAlias: () => "worker", setBackgroundResult: async () => {} },
+    quota: { onInbound: () => {} },
+    locale: "en",
+  } as unknown as ChannelStartInput);
+
+  await waitStarted(ch);
+  client.emit(inboundMessage({ author: { id: "u1", bot: false }, content: "run tools" }));
+  await settle(400);
+
+  expect(recorded.some((text) => text.includes("🗑️ file.txt (success)"))).toBe(true);
+  expect(recorded.some((text) => text.includes("📦 src/a → src/b (success)"))).toBe(true);
+  expect(recorded.some((text) => text.includes("🌐 https://example.com (success)"))).toBe(true);
+
+  gate.resolve({ text: "done" });
+  await settle();
+  abort.abort();
+  await startPromise;
 });

@@ -122,10 +122,40 @@ export function summarizeToolInput(rawInput: unknown, title = ""): string | unde
     "working_directory",
     "name",
     "description",
-    "output",
-    "stdout",
-    "formatted_output",
-    "result",
-    "message",
   ]);
+}
+
+export const TOOL_OUTPUT_SUMMARY_MAX_CHARS = 500;
+
+export function summarizeToolOutput(rawOutput: unknown): string | undefined {
+  if (rawOutput == null) return undefined;
+  if (typeof rawOutput === "string" || typeof rawOutput === "number" || typeof rawOutput === "boolean") {
+    const text = String(rawOutput).trim();
+    if (!text) return undefined;
+    return text.length > TOOL_OUTPUT_SUMMARY_MAX_CHARS ? text.slice(0, TOOL_OUTPUT_SUMMARY_MAX_CHARS) : text;
+  }
+  if (!isRecord(rawOutput)) return undefined;
+
+  const direct = readFirstString(rawOutput, ["text", "message", "error", "stdout", "stderr", "content"]);
+  if (direct) {
+    return direct.length > TOOL_OUTPUT_SUMMARY_MAX_CHARS ? direct.slice(0, TOOL_OUTPUT_SUMMARY_MAX_CHARS) : direct;
+  }
+
+  if (Array.isArray(rawOutput.content)) {
+    const parts: string[] = [];
+    for (const item of rawOutput.content) {
+      if (typeof item === "string" && item.trim().length > 0) {
+        parts.push(item.trim());
+      } else if (isRecord(item)) {
+        const itemText = readFirstString(item, ["text", "content"]);
+        if (itemText) parts.push(itemText);
+      }
+    }
+    if (parts.length > 0) {
+      const text = parts.join("\n");
+      return text.length > TOOL_OUTPUT_SUMMARY_MAX_CHARS ? text.slice(0, TOOL_OUTPUT_SUMMARY_MAX_CHARS) : text;
+    }
+  }
+
+  return undefined;
 }

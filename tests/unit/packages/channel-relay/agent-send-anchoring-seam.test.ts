@@ -135,10 +135,12 @@ test("Claude seam: display title ≠ agent_send, machine name in _meta.claudeCod
 
   const terminal = events.at(-1)!;
   expect(terminal.toolName).toBe("Send peer message to Worker B"); // display stays display
+  expect(terminal.summary).toBeUndefined();
   expect(terminal.machineToolName).toBe("mcp__xacpx__agent_send");
   expect(terminal.status).toBe("success");
 
   const step = toolUseEventToStepDto(terminal);
+  expect(step.title).toBe("Send peer message to Worker B");
   expect(step.agentMessageId).toBe(RECEIPT.messageId);
 });
 

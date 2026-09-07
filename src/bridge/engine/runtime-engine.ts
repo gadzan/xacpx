@@ -15,7 +15,7 @@ import type { NonInteractivePermissions, PermissionMode } from "../../config/typ
 import type { BridgeEngine, EngineInjectInput, EngineListInput, EnginePromptInput, EnginePromptStreamEvent, EngineSessionInput } from "./bridge-engine";
 import type { PlanEntry, ToolUseEvent, ToolUseKind, ToolUseStatus } from "../../channels/types.js";
 import { formatToolUseEventForText } from "../../transport/tool-use-text-format.js";
-import { summarizeToolInput } from "../../transport/tool-summary.js";
+import { summarizeToolInput, summarizeToolOutput } from "../../transport/tool-summary.js";
 import { readImageFileBounded } from "../../transport/prompt-media.js";
 import { parseSessionEffortRecord } from "../../transport/session-effort.js";
 import type { PromptMediaInput } from "../../transport/types.js";
@@ -2936,8 +2936,12 @@ export function mapRuntimeToolEvent(event: {
   const toolCallId = event.toolCallId || `tc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const title = (event.title ?? "").trim();
   const toolName = title || "Tool";
-  const summaryRaw = event.summary || summarizeToolInput(event.rawInput, title) || summarizeToolInput(event.rawOutput, title);
+  const summaryRaw = event.summary || summarizeToolInput(event.rawInput, title) || summarizeToolOutput(event.rawOutput);
   const summary = summaryRaw && summaryRaw !== title ? summaryRaw : undefined;
+  // Note: pinned acpx 0.13.1 Runtime tool_call exposes no _meta, so a status-less
+  // terminal carrying only _meta.claudeCode.toolResponse is indistinguishable from
+  // a keep-alive and stays running; CLI closes it via hasClaudeToolResponse; fixing
+  // needs an upstream contract signal — do NOT change mapping logic.
   const statusRaw = (event.status ?? "").toLowerCase();
   const status: ToolUseStatus =
     statusRaw === "completed" || statusRaw === "success"

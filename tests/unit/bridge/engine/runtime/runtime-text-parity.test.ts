@@ -2,7 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { mapEvents } from "../../../../../src/bridge/engine/runtime/runtime-adapter";
 import type { AcpRuntimeEvent } from "acpx/runtime";
 import type { XacpxRuntimeEvent } from "../../../../../src/bridge/engine/runtime/runtime-contract";
-
+import { AcpxBridgeTransport } from "../../../../../src/transport/acpx-bridge/acpx-bridge-transport";
+import type { BridgeEvent } from "../../../../../src/transport/acpx-bridge/acpx-bridge-client";
+import { mapRuntimeToolEvent } from "../../../../../src/bridge/engine/runtime-engine";
+import { toolUseEventToStepDto } from "../../../../../packages/channel-relay/src/tool-presentation";
+import { createStateMirror } from "../../../../../packages/channel-relay/src/state-mirror";
+import { MSG, type TurnPartDto } from "../../../../../packages/relay-protocol/src/index";
+import type { ResolvedSession } from "../../../../../src/transport/types";
 async function collectEvents(events: AsyncIterable<AcpRuntimeEvent>): Promise<XacpxRuntimeEvent[]> {
   const result: XacpxRuntimeEvent[] = [];
   for await (const event of mapEvents(events)) {
@@ -256,6 +262,106 @@ describe("Runtime Text / Ordered Transcript Parity (spec §25-§33)", () => {
 
     expect(mapped[3].type).toBe("text_delta");
     expect((mapped[3] as { text: string }).text).toBe("\n\nStep 2: done.");
+  });
+
+  // Spec T8-Relay — Ordered Relay timeline through bridge-serialized path into StateMirror TurnPartDto[]
+  test("T8-Relay: Ordered timeline end-to-end through bridge-serialized queue into Relay state mirror yields [text(A), tool(completed rich snapshot), text(B)]", async () => {
+    const inputEvents: AcpRuntimeEvent[] = [
+      { type: "text_delta", text: "Step 1: start." },
+      {
+        type: "tool_call",
+        text: "editing",
+        toolCallId: "edit-1",
+        title: "Edit",
+        kind: "edit" as never,
+        rawInput: { file: "test.ts", change: "foo -> bar" },
+        status: "in_progress",
+      },
+      {
+        type: "tool_call",
+        text: "completed",
+        tag: "tool_call_update" as never,
+        toolCallId: "edit-1",
+        status: "completed",
+        rawOutput: { success: true },
+      },
+      { type: "text_delta", text: "Step 2: done." },
+    ];
+
+    const mapped = await collectEvents(asyncStream(inputEvents));
+
+    const mirror = createStateMirror({
+      isReady: () => true,
+      recoveryId: () => "r1",
+      logger: { warn: async () => {} },
+      now: () => 1_700_000_000_000,
+    });
+    mirror.handleEnvelope(MSG.instanceEvent, {
+      event: { type: "turn-started", chatKey: "relay:acc", sessionAlias: "backend", prompt: "do edit" },
+    });
+
+    const client = {
+      async request<TResult>(_method: string, _params: Record<string, unknown>, onEvent?: (event: BridgeEvent) => void): Promise<TResult> {
+        for (const evt of mapped) {
+          if (evt.type === "text_delta") {
+            onEvent?.({ type: "prompt.segment", text: evt.text });
+          } else if (evt.type === "tool_call") {
+            const toolUseEvent = mapRuntimeToolEvent(evt);
+            onEvent?.({ type: "prompt.tool_event", event: toolUseEvent });
+          }
+        }
+        return { text: "done" } as TResult;
+      },
+    };
+
+    const transport = new AcpxBridgeTransport(client);
+    const session = {
+      alias: "backend",
+      type: "claude",
+      account: "default",
+      sessionKey: "backend",
+      replyMode: "stream",
+      effectiveReplyMode: "stream",
+    } as unknown as ResolvedSession;
+
+    await transport.prompt(session, "do edit", undefined, undefined, {
+      onSegment: (segmentText) => {
+        mirror.handleEnvelope(MSG.instanceEvent, {
+          event: { type: "turn-output", chatKey: "relay:acc", sessionAlias: "backend", chunk: segmentText },
+        });
+      },
+      onToolEvent: (toolEvent) => {
+        const step = toolUseEventToStepDto(toolEvent);
+        mirror.handleEnvelope(MSG.instanceEvent, {
+          event: { type: "tool-event", chatKey: "relay:acc", sessionAlias: "backend", step },
+        });
+      },
+      toolEventMode: "both",
+    });
+
+    const { snapshot } = mirror.buildStateSync(new Set(["backend"]));
+    const turn = snapshot.turns[0]!;
+    const parts: TurnPartDto[] = turn.parts;
+
+    expect(parts).toHaveLength(3);
+    expect(parts[0]).toEqual({ type: "text", text: "Step 1: start." });
+
+    expect(parts[1].type).toBe("tool");
+    if (parts[1].type === "tool") {
+      expect(parts[1].step.toolCallId).toBe("edit-1");
+      expect(parts[1].step.kind).toBe("edit");
+      expect(parts[1].step.status).toBe("success");
+      expect(parts[1].step.title).toBe("test.ts");
+      expect(parts[1].step.detail).toMatchObject({
+        type: "fields",
+        fields: [
+          { label: "file", value: "test.ts" },
+          { label: "change", value: "foo -> bar" },
+        ],
+      });
+    }
+
+    expect(parts[2]).toEqual({ type: "text", text: "\n\nStep 2: done." });
   });
 
   // Spec T9 — Consecutive logical messages coalesce keeps A\n\nB
