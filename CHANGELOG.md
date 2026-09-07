@@ -1,4 +1,30 @@
 # Changelog
+## [0.24.2-beta.0] - 2026-09-07
+
+### Added
+
+- acpx Runtime Engine (`feat/acpx-runtime-engine`, PR #312): worker-backed `RuntimeEngine` behind `EngineRouter` — `RuntimeWorkerManager` + worker main over JSON-Lines protocol, durable queue (FIFO journal, enqueue/drain, TTL/delete/recovery, PR6), live permission (PR7, black-box differential vs `acpx@0.13.1`), MCP launch identity (PR8 E2E via real `OrchestrationService`), worker fence state machine with cross-host handoff and fail-closed reads, Windows `terminate-tree`/CIM probing; bridge wiring `logicalSessionId` + `transportEngine`.
+- Activation E/F/G + PR10 auto switch (`47b0be4a`): default engine `cli` → `auto` with eligibility fallback (`runtimeAvailable` gate, `default-auto` activation blockers G2/G4/G6/G11, capability probe, stable P1-11b).
+
+### Fixed
+
+- Lifecycle: single-executor deletion takeover, release-affinity eviction, durable physical-deletion barrier, attach alias/affinity guards, claim-first detached startup teardown (closes start-first race), retirement lease unifying teardown and delegation admission.
+- Ownership/worker-binding: unified ownership lifecycle across RPC drain/retire paths, physical membership, persist-before-owner with `R1` persist-before-ensure migration, preflight inheritance, native provisional cleanup, poisoned-init worker recycling, worker recovery binding cwd.
+- Config: clone rollback pre-images inside mutex, serialize permission transactions with watcher reloads, rotate warm workers on construction drift, `prime` ordering after lock+IPC.
+- `channel-relay`: ensure parent directory exists before exclusive write of terminal owner.
+
+## [relay 0.14.3-beta.0] - 2026-09-07
+
+### Added
+
+- relay-web: rotate playful quips in busy composer placeholder (`working-quips.ts` + `en`/`zh-CN` i18n), with quip catalog invariants and busy-placeholder timer lifecycle locked by tests (PR #327/#328).
+
+## [channel-relay 0.7.2-beta.0] - 2026-09-07
+
+### Fixed
+
+- `terminal-registry-store`: ensure parent directory exists before exclusive (`O_EXCL`) write of terminal owner file (`mkdirSync(dirname, recursive)`), fixes first-write failure when the registry dir is missing.
+
 ## [0.24.1-beta.0] - 2026-09-02
 
 ### Fixed
