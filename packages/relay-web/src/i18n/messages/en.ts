@@ -491,6 +491,12 @@ export default {
     reasoning: "Reasoning",
     reasoningStreaming: "Reasoning…",
   },
+  turnTrace: {
+    worked: "Worked",
+    tools: "{count} tool step | {count} tool steps",
+    thoughts: "{count} thought | {count} thoughts",
+    toggleTrace: "Toggle intermediate steps",
+  },
   taskPanel: {
     noSession: "No session selected.",
   },

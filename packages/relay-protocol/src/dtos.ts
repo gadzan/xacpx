@@ -252,6 +252,11 @@ export type ControlEventDto =
       recoveryId?: string;
       /** Hub-stamped last message id at turn-start (0 = empty transcript). Web live slot. */
       slotAfterId?: number;
+      /** Hub-stamped epoch ms for this turn's start — the SAME value the eventual
+       *  persisted row's `startedAt` carries, so web optimistic rows and their
+       *  persisted replacements share one identity (trace-key stability). Optional:
+       *  older hubs omit it and the web falls back to its own clock. */
+      startedAt?: number;
     }
   | {
       type: "tool-event";

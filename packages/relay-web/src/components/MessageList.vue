@@ -29,6 +29,41 @@ function schedOf(m: ChatMessage): ScheduledOriginDto | undefined {
   return m.scheduled ?? m.structured?.scheduled;
 }
 
+// Finished-turn trace collapse (spec 2026-09-07): assistant rows fold their activity
+// parts behind a summary header. Policy here, presentation in TurnParts. Failed rows
+// never collapse (the error ring/banner must stay unmissable); live rows don't pass
+// the props at all. Duration is display-only: createdAt (browser/hub clock) minus
+// startedAt (connector clock) — cross-machine skew clamps to "counts only".
+function hasTraceParts(m: ChatMessage): boolean {
+  // Wire parts are text | reasoning | tool — agent-message/subagent lanes are
+  // presentation-derived, so everything non-text here is collapsible trace.
+  return m.structured?.parts?.some((p) => p.type !== "text") ?? false;
+}
+// Failure must be judged on the PERSISTED terminal status, not the web-local flag:
+// `failed` lives only on optimistic flush rows and vanishes when hub history
+// convergence replaces the row, which would fold a failed turn's trace right after
+// the user watched it finish. The hub stamps `structured.turnStatus` at persist
+// time (live flush, no-buffer fallback, and offline recovery alike).
+function isFailedTurn(m: ChatMessage): boolean {
+  return m.failed === true || m.structured?.turnStatus === "error";
+}
+// `startedAt` is the STABLE key: the hub persists it (survives convergence and
+// compact history) and the optimistic flush row carries the same connector-stamped
+// value, so the optimistic → persisted transition keeps one key and a manual
+// expand survives convergence. `id` exists only on persisted rows — legacy-row
+// fallback only, it can never be switched to mid-flight. Namespaced by
+// instance+session: connector epochs are unique within a session, not globally.
+function traceKeyOf(m: ChatMessage): string | undefined {
+  if (m.startedAt !== undefined) return `${m.instanceId}:${m.sessionAlias}:t:${m.startedAt}`;
+  if (m.id !== undefined) return `${m.instanceId}:${m.sessionAlias}:id:${m.id}`;
+  return undefined;
+}
+function traceElapsedOf(m: ChatMessage): number | null {
+  if (m.startedAt === undefined) return null;
+  const ms = Date.parse(m.createdAt) - m.startedAt;
+  return Number.isFinite(ms) && ms > 0 ? ms : null;
+}
+
 // Presentation-only join (v0.3 spec §8): a SENT peer-message card anchors right after
 // the agent_send tool step whose structured receipt carries its messageId. The map
 // indexes the transcript's sent card rows; assistant rows and the live turn contribute
@@ -549,8 +584,8 @@ watch(
               <!-- Structured transcript: activity cards stay grouped above one continuous
                    Markdown narrative. Tool cards own their collapsed state. -->
               <div data-test="msg-content" class="space-y-2.5">
-                <TurnParts v-if="m.structured?.parts?.length" :parts="m.structured.parts" :ensure-full="ensureFullOf(m)" :sent-agent-messages="sentAgentMessageById" />
-                <!-- Legacy rows persisted before `parts`: aggregated fallback. -->
+                <TurnParts v-if="m.structured?.parts?.length" :parts="m.structured.parts" :ensure-full="ensureFullOf(m)" :sent-agent-messages="sentAgentMessageById"
+                           :collapse-trace="!isFailedTurn(m) && hasTraceParts(m)" :trace-key="traceKeyOf(m)" :trace-elapsed-ms="traceElapsedOf(m)" />
                 <template v-else>
                   <ToolCallPanel v-if="m.structured?.toolSteps?.length" :steps="m.structured.toolSteps" :ensure-full="ensureFullOf(m)" />
                   <ReasoningPanel v-if="m.structured?.reasoning?.trim()" :reasoning="m.structured.reasoning" :default-open="false" />

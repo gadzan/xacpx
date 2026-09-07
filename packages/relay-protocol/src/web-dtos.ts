@@ -77,7 +77,12 @@ export interface MessageRecordDto {
    *  STATE_SYNC_TEXT_CAP — the persisted text is a prefix, not the full reply.
    *  `compact` is set by `GET .../messages?view=compact`: bulky tool details were
    *  omitted (collapsed cards still render); `GET .../messages/:id` returns the full row. */
-  structured?: { toolSteps?: ToolStepDto[]; reasoning?: string; parts?: TurnPartDto[]; scheduled?: ScheduledOriginDto; truncated?: boolean; compact?: boolean; agentMessage?: PeerMessageHistoryEntry };
+  structured?: { toolSteps?: ToolStepDto[]; reasoning?: string; parts?: TurnPartDto[]; scheduled?: ScheduledOriginDto; truncated?: boolean; compact?: boolean; agentMessage?: PeerMessageHistoryEntry;
+    /** Terminal status of the assistant turn, stamped by the hub at persist time so
+     *  failure/cancel survive history convergence and page reload (the web-local
+     *  `failed`/`status` flags live only on optimistic rows). Collapsing policies key
+     *  off `error` — a failed turn's trace must stay unmissable. */
+    turnStatus?: "done" | "cancelled" | "error"; };
   attachments?: AttachmentMetadata[];
 }
 
@@ -496,7 +501,8 @@ export function validControlEvent(e: unknown): boolean {
         && optStr(c.prompt) && optStr(c.queueItemId) && optStr(c.promptRequestId) && optStr(c.recoveryId)
         && validScheduledOrigin(c.scheduled)
         && validPeerTurnOrigin(c.peerOrigin)
-        && optNonNegInt(c.startedAfterSeq) && optNonNegInt(c.slotAfterId);
+        && optNonNegInt(c.startedAfterSeq) && optNonNegInt(c.slotAfterId)
+        && (c.startedAt === undefined || finiteNonNegative(c.startedAt));
     case "turn-thought":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
     case "plan":

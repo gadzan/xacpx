@@ -488,6 +488,12 @@ export default {
     reasoning: "推理",
     reasoningStreaming: "推理中…",
   },
+  turnTrace: {
+    worked: "已工作",
+    tools: "{count} 步工具",
+    thoughts: "{count} 段思考",
+    toggleTrace: "展开/收起中间过程",
+  },
   taskPanel: {
     noSession: "未选择会话。",
   },

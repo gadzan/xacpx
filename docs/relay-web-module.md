@@ -547,7 +547,8 @@ export interface LiveTurn {
 
 **`MessageList.vue` 渲染**（`packages/relay-web/src/components/MessageList.vue`）
 
-- 历史 `out` 消息正文始终展开，复制、时间及失败/停止状态保持可见；消息本身没有折叠开关。
+- 历史 `out` 消息的复制、时间及失败/停止状态始终可见；失败行永不折叠（错误必须显眼），
+  其余 finished 行的中间过程 trace 默认折叠进回合头部（见下文「回合 trace 折叠」）。
 - `structured.parts` 由 `TurnParts` 按 Markdown 顶层块派生展示顺序：工具或推理不会切断正在生成的段落、
   列表、表格或代码围栏，而是在该块结束后显示；若事件本来位于两个块之间，则保持文字—活动—文字的穿插结构。
   实时 streaming 与历史回放使用同一派生规则。
@@ -563,6 +564,32 @@ export interface LiveTurn {
   user prompt）挪到该 `out` 之后；无 `slotAfterId` 的旧行不重排。**不以** `createdAt` /
   `startedAt` 墙钟比较决定顺序（发送端 daemon、Hub、浏览器时钟不可比）。Stick-to-bottom /
   jump-latest 在 live turn 存在时跟随 live 气泡，而不是最新一行。
+
+### 回合 trace 折叠（turn-trace collapse，spec 2026-09-07）
+
+参照 zcode：回合结束后把思考/工具/子代理等中间过程折叠进一条弱化头部行
+（`▸ 已工作 4分32秒 · 6 步工具 · 3 段思考`），正文（text）与 agent-message 卡永不折叠。
+
+- **触发与折叠时机**：`turn-finished` 把 live turn 定型为历史消息的瞬间（`streaming` prop
+  消失）即折叠。它就是 ACP `session/prompt` response 落定（`stopReason:"end_turn"`）在
+  xacpx 管线里的等价事件，无需引入新的控制事件种类。live（streaming）行不折叠，仍由 HUD 计时。
+- **policy 在 `MessageList`**（`collapseTrace = !isFailedTurn(m) && hasTraceParts(m)`，
+  失败判定读**持久化终态** `structured.turnStatus === "error"`（乐观 `failed` 标志在 hub
+  历史收敛替换行后即消失，不能作为依据）、**presentation 在 `TurnParts`**（`trace-items`
+  过滤 `text`/`agent-message` 之外的全部 presentation 项，头部固定在回合顶部，
+  计数段以 `·` 连接、英文走 vue-i18n 复数）。
+- **终态持久化**：hub 在三个持久化点（live flush、无 buffer 兜底、offline recovery）把
+  `turnStatus: "done" | "cancelled" | "error"`（由 `ok`/`cancelled` 派生）盖进
+  `structured`，compact history 以 spread 原样保留。Web 的 `keepRicherStructured()`
+  在收到 compact 页面时合并 hub 权威元数据（`turnStatus` / `truncated`），不再整份覆盖
+  导致冲掉状态。失败 trace 因此在刷新与收敛后依然不折叠。
+- **展开记忆按 `traceKey`**：一律优先 `«instance»:«session»:t:«startedAt»`——hub 在
+  `turn-started` 广播中携带自身 buffer 的 `startedAt`，乐观 flush 行与持久行同源同值
+  且被 hub 持久化（compact 也保留），所以乐观行 → 持久行收敛时 key 不变，手动展开必然存活；无 `startedAt` 的 legacy 行退回
+  `«instance»:«session»:id:«n»`。存模块级 reactive Set（`lib/trace-expansion.ts`）；
+  无身份行回退组件局部状态（不记忆）。
+- **耗时口径**：`createdAt − startedAt`（浏览器/hub 时钟 − connector 时钟），仅展示用、
+  非正值得降级为只显计数，亚秒显示 `<1s`；精确耗时需 hub 落 durationMs 列（未做）。
 
 ## 桌面系统通知（Web Push 与 本地 Notification Fallback）
 

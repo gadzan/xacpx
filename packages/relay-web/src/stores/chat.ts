@@ -107,8 +107,26 @@ function isFullStructured(structured: MessageRecordDto["structured"] | undefined
   return structured !== undefined && structured.compact !== true;
 }
 
+/** The hub stamps authoritative metadata at persist time (turnStatus, truncated) —
+ *  a locally richer payload (live-flushed / previously-hydrated) lacks it. Keep the
+ *  full transcript payload from the local row but let the incoming compact row's
+ *  authoritative fields survive the merge; `compact` itself is dropped because the
+ *  result is a full payload. */
+function mergeCompactMetadata(
+  incoming: MessageRecordDto["structured"],
+  richer: MessageRecordDto["structured"],
+): MessageRecordDto["structured"] {
+  if (!incoming || !richer) return richer ?? incoming;
+  const merged = { ...incoming, ...richer };
+  delete merged.compact;
+  return merged;
+}
+
 /** Prefer already-hydrated / live-flushed structured over a compact list row so
- *  turn-finished convergence and a cache seed with full details don't regress. */
+ *  turn-finished convergence and a cache seed with full details don't regress.
+ *  The merge keeps hub-authoritative metadata (turnStatus/truncated) that the
+ *  local payload cannot have — replacing wholesale used to drop a failed turn's
+ *  terminal status at the exact moment of convergence. */
 function keepRicherStructured(incoming: MessageRecordDto[], previous: ChatMessage[]): MessageRecordDto[] {
   if (previous.length === 0) return incoming;
   const byId = new Map<number, ChatMessage>();
@@ -124,9 +142,9 @@ function keepRicherStructured(incoming: MessageRecordDto[], previous: ChatMessag
     const prev = typeof row.id === "number" ? byId.get(row.id) : undefined;
     let next: MessageRecordDto = row;
     if (row.structured?.compact === true && isFullStructured(prev?.structured)) {
-      next = { ...row, structured: prev!.structured };
+      next = { ...row, structured: mergeCompactMetadata(row.structured, prev!.structured) };
     } else if (i === lastOutIndex && flushed?.structured && row.structured?.compact === true && flushed.text === row.text) {
-      next = { ...row, structured: flushed.structured };
+      next = { ...row, structured: mergeCompactMetadata(row.structured, flushed.structured) };
     }
     const startedAt = next.startedAt ?? prev?.startedAt ?? (i === lastOutIndex ? flushed?.startedAt : undefined);
     if (startedAt !== undefined && next.startedAt === undefined) next = { ...next, startedAt };
@@ -243,14 +261,17 @@ export const useChatStore = defineStore("chat", () => {
   let transcriptRevision = 0;
   const touchTranscript = (): void => { transcriptRevision += 1; };
 
-  function ensureTurn(k: string): LiveTurn {
+  function ensureTurn(k: string, startedAt?: number): LiveTurn {
     let t = liveTurns.value[k];
     if (!t) {
       const selected = selectedKey.value === k;
       t = {
         parts: [],
         status: "working",
-        startedAt: Date.now(),
+        // Hub-stamped turn start (newer hubs broadcast it on turn-started): the SAME
+        // value the persisted row will carry, so the optimistic → persisted transition
+        // keeps one identity. Browser clock is the fallback for older hubs.
+        startedAt: startedAt ?? Date.now(),
         slotAfterIndex: selected ? messages.value.length - 1 : -1,
       };
       liveTurns.value[k] = t;
@@ -679,7 +700,7 @@ export const useChatStore = defineStore("chat", () => {
     if (e.type === "turn-started") {
       const k = bufKey(event.instanceId, e.sessionAlias);
       finishedTurns.delete(k); // a fresh turn supersedes any prior finish on this key
-      ensureTurn(k);
+      ensureTurn(k, e.startedAt);
       // Scheduled turns have no optimistic bubble; drained queue turns use queueItemId
       // to move their existing bubble. Other clients can add the carried prompt here.
       const selected = event.instanceId === instanceId.value && e.sessionAlias === sessionAlias.value;
