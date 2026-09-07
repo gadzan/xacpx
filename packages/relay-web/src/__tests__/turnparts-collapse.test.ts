@@ -44,7 +44,7 @@ describe("TurnParts trace collapse", () => {
     expect(w.findAll(".shimmer-text, [data-test='tool-step-card']").length).toBeGreaterThan(0);
   });
 
-  it("collapses finished-turn trace behind a summary header, keeping text in order", () => {
+  it("collapses the entire process and keeps only the trailing final reply", () => {
     const w = mount(TurnParts, {
       props: { parts: finishedTurn(), collapseTrace: true, traceKey: "t:123", traceElapsedMs: 272_000 },
     });
@@ -54,8 +54,9 @@ describe("TurnParts trace collapse", () => {
     expect(header.text()).toContain("Worked 4m 32s");
     expect(header.text()).toContain("2 tool steps");
     expect(header.text()).toContain("2 thoughts");
-    // Only the reply survives; every trace card is gone.
-    expect(w.findAll('[data-test="turn-narrative"]').map((n) => n.text().trim())).toEqual(["first paragraph", "final answer"]);
+    // Process text interleaved before/between activity folds with the trace;
+    // only the trailing text after the last process item is the final reply.
+    expect(w.findAll('[data-test="turn-narrative"]').map((n) => n.text().trim())).toEqual(["final answer"]);
     expect(w.find('[data-test="tool-step-card"]').exists()).toBe(false);
   });
 
@@ -112,10 +113,11 @@ describe("TurnParts trace collapse", () => {
     expect(header.text()).toContain("2 段思考");
   });
 
-  it("keeps agent-message cards visible while the trace is collapsed", () => {
+  it("collapses anchored agent-message cards as part of the process", async () => {
     // A REAL anchor: the send step carries agentMessageId and the map holds the sent
-    // entry, so deriveTurnPresentation actually emits an agent-message item — the
-    // card must survive the collapse while its tool step folds away.
+    // entry, so deriveTurnPresentation actually emits an agent-message item. A mid-turn
+    // peer message is process, not the final reply — it folds with the trace and
+    // returns on expand.
     const parts: TurnPartDto[] = [
       { type: "tool", step: { ...tool("send-1"), agentMessageId: "m1" } },
       { type: "text", text: "answer" },
@@ -128,10 +130,12 @@ describe("TurnParts trace collapse", () => {
         sentAgentMessages: new Map([["m1", { messageId: "m1", direction: "sent", peer: { handle: "p", displayName: "Peer" }, content: "hi", createdAt: 1 } as never]]),
       },
     });
+    expect(w.find('[data-test="turn-agent-message"]').exists()).toBe(false);
+    expect(w.findAll('[data-test="turn-narrative"]').map((n) => n.text())).toEqual(["answer"]);
+
+    await w.find('[data-test="trace-toggle"]').trigger("click");
     expect(w.find('[data-test="turn-agent-message"]').exists()).toBe(true);
     expect(w.find('[data-test="agent-message-card"]').text()).toContain("hi");
-    expect(w.find('[data-test="tool-step-card"]').exists()).toBe(false);
-    expect(w.findAll('[data-test="turn-narrative"]').map((n) => n.text())).toEqual(["answer"]);
   });
 
   it("renders sub-second elapsed as <1s", () => {
@@ -139,6 +143,60 @@ describe("TurnParts trace collapse", () => {
       props: { parts: finishedTurn(), collapseTrace: true, traceKey: "t:6", traceElapsedMs: 400 },
     });
     expect(w.find('[data-test="trace-label"]').text()).toContain("Worked <1s");
+  });
+
+  it("folds interleaved narrative into the trace and leaves only the final answer", async () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "I'll inspect the implementation.\n\n" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "I found the likely cause.\n\n" },
+      { type: "reasoning", text: "checking another path" },
+      { type: "tool", step: tool("edit-1") },
+      { type: "text", text: "Fixed. The issue was caused by X." },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:process-text" },
+    });
+    expect(w.findAll('[data-test="turn-narrative"]').map((n) => n.text().trim())).toEqual([
+      "Fixed. The issue was caused by X.",
+    ]);
+
+    // Expanding restores the full interleaved process + final reply in arrival order.
+    await w.find('[data-test="trace-toggle"]').trigger("click");
+    expect(w.findAll('[data-test="turn-narrative"]').map((n) => n.text().trim())).toEqual([
+      "I'll inspect the implementation.",
+      "I found the likely cause.",
+      "Fixed. The issue was caused by X.",
+    ]);
+  });
+
+  it("collapses to only the summary header when a turn ends on a process item with no trailing text", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "running the checks" },
+      { type: "tool", step: tool("read-1") },
+      { type: "reasoning", text: "verifying" },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:no-trailing" },
+    });
+    expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-test="turn-narrative"]').exists()).toBe(false);
+    expect(w.find('[data-test="tool-step-card"]').exists()).toBe(false);
+  });
+
+  it("keeps reasoning-then-text turns to only the trailing text", () => {
+    const w = mount(TurnParts, {
+      props: {
+        parts: [
+          { type: "reasoning", text: "hmm" },
+          { type: "tool", step: tool("read-1") },
+          { type: "text", text: "final only" },
+        ] as TurnPartDto[],
+        collapseTrace: true,
+        traceKey: "t:reasoning-first",
+      },
+    });
+    expect(w.findAll('[data-test="turn-narrative"]').map((n) => n.text().trim())).toEqual(["final only"]);
   });
 });
 

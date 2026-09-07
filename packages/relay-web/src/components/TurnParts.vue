@@ -40,10 +40,14 @@ const presentation = computed(() =>
   ),
 );
 
-// Trace = activity cards that fold away on turn end; text and agent-message cards
-// are the reply itself and never collapse.
+// A finished turn collapses everything up through its LAST process item —
+// reasoning, tool, subagent, agent-message, AND the narrative text interleaved
+// between them all belongs to the process. Only trailing text after all process
+// activity is the final reply (deriveTurnPresentation already anchors activity in
+// arrival order, so "last non-text item" is the reliable process/reply boundary —
+// never m.text, which aggregates the whole turn's text).
 const hasTrace = computed(() =>
-  presentation.value.some((item) => item.type !== "text" && item.type !== "agent-message"),
+  presentation.value.some((item) => item.type !== "text"),
 );
 const collapsible = computed(() => props.collapseTrace === true && hasTrace.value);
 // Keyed rows remember toggles in the module set (survives hub history convergence,
@@ -54,12 +58,15 @@ const expanded = computed(() => {
   if (!collapsible.value) return false;
   return props.traceKey ? expandedTraces.has(props.traceKey) : localExpanded.value;
 });
-// When collapsed, only reply-shaped items render; the header summarizes the hidden rest.
-const visibleItems = computed(() =>
-  expanded.value || !collapsible.value
-    ? presentation.value
-    : presentation.value.filter((item) => item.type === "text" || item.type === "agent-message"),
-);
+// Collapsed view: only the trailing text after the last process item (the final
+// reply). A pure-text turn keeps everything (no process to fold, no header).
+const visibleItems = computed(() => {
+  if (expanded.value || !collapsible.value) return presentation.value;
+  const items = presentation.value;
+  const lastProcessIndex = items.findLastIndex((item) => item.type !== "text");
+  if (lastProcessIndex < 0) return items;
+  return items.slice(lastProcessIndex + 1);
+});
 const toolCount = computed(() =>
   presentation.value.filter((item) => item.type === "tool" || item.type === "subagent").length,
 );

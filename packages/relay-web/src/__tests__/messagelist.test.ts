@@ -516,9 +516,11 @@ describe("MessageList", () => {
       props: { messages: [turnWithSend("m1"), sentCard("m1")], liveTurn: null },
     });
 
-    // Exactly one card — the anchored one; the standalone m1 row is suppressed.
-    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
+    // The anchored card is process: it folds with the collapsed trace and appears
+    // on expand (the standalone m1 row is suppressed either way).
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(0);
     await expandTrace(wrapper);
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
     const anchored = wrapper.find('[data-test="msg-out"] [data-test="turn-agent-message"]');
     expect(anchored.exists()).toBe(true);
     expect(wrapper.text()).toContain("hello m1");
@@ -556,8 +558,10 @@ describe("MessageList", () => {
     await wrapper.setProps({
       messages: [turnWithSend("m1"), sentCard("m1")],
     });
-    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
+    // The re-anchored card is process: folded with the collapsed trace, visible on expand.
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(0);
     await expandTrace(wrapper);
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
     const anchored = wrapper.find('[data-test="msg-out"] [data-test="turn-agent-message"]');
     expect(anchored.exists()).toBe(true);
     const tool = wrapper.find('[data-test="tool-step-card"]');
@@ -599,13 +603,17 @@ describe("MessageList", () => {
     expect(wrapper.find('[data-test="tool-step-card"]').exists()).toBe(true);
   });
 
-  it("never suppresses a received card whose id is also an anchored sent card (echo topology)", () => {
+  it("never suppresses a received card whose id is also an anchored sent card (echo topology)", async () => {
     const wrapper = mount(MessageList, {
       props: { messages: [turnWithSend("m1"), sentCard("m1"), receivedCard("m1")], liveTurn: null },
     });
 
-    // Both render: the sent twin anchors inside the turn; the received twin keeps
-    // its own standalone row — the anchored id must not swallow the receiver's copy.
+    // Both render after expanding the folded trace: the sent twin anchors inside the
+    // turn; the received twin keeps its own standalone row — the anchored id must not
+    // swallow the receiver's copy.
+    expect(wrapper.find('[data-test="msg-out"] [data-test="turn-agent-message"]').exists()).toBe(false);
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
+    await expandTrace(wrapper);
     expect(wrapper.find('[data-test="msg-out"] [data-test="turn-agent-message"]').exists()).toBe(true);
     expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(2);
     const received = wrapper.find('[data-test="agent-message-card"][data-direction="received"]');
@@ -642,7 +650,7 @@ describe("MessageList", () => {
     expect(wrapper.find('[data-test="turn-agent-message"]').exists()).toBe(false);
   });
 
-  it("anchors two sends in one turn in tool order (no swap)", () => {
+  it("anchors two sends in one turn in tool order (no swap)", async () => {
     const wrapper = mount(MessageList, {
       props: {
         messages: [
@@ -664,6 +672,10 @@ describe("MessageList", () => {
       },
     });
 
+    // Both anchored cards are process: folded until the trace expands, then rendered
+    // in tool order (no swap).
+    expect(wrapper.findAll('[data-test="turn-agent-message"]')).toHaveLength(0);
+    await expandTrace(wrapper);
     const anchoredCards = wrapper.findAll('[data-test="turn-agent-message"]');
     expect(anchoredCards).toHaveLength(2);
     expect(anchoredCards[0]!.text()).toContain("hello m1");
@@ -677,10 +689,12 @@ describe("MessageList", () => {
     const assistant = turnWithSend("m1");
     const wrapper = mount(MessageList, { props: { messages: [assistant], liveTurn: null } });
     expect(wrapper.find('[data-test="agent-message-card"]').exists()).toBe(false);
-
     // The agent-message ControlEvent lands after the tool event: the store pushes the
     // row, and the reactive join moves the card into the turn — no manual refresh.
+    // The turn is finished, so the anchored card is folded; it shows once expanded.
     await wrapper.setProps({ messages: [assistant, sentCard("m1")] });
+    expect(wrapper.find('[data-test="msg-out"] [data-test="turn-agent-message"]').exists()).toBe(false);
+    await expandTrace(wrapper);
     expect(wrapper.find('[data-test="msg-out"] [data-test="turn-agent-message"]').exists()).toBe(true);
     expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
   });
