@@ -27,12 +27,12 @@ relay-web 现状：`turn-finished` 后 live turn 经 `flushTurn` 定型为历史
 - **折叠是纯视图状态，放演示层（TurnParts），不动 store/wire 数据**。`structured.parts` 是不可变传输数据，hub 历史收敛（`keepRicherStructured`）会整行替换消息对象，任何写进 store 的折叠状态都会被冲掉或引出同步负担。
 - **头部固定在回合顶部**（zcode 一致），不是第一个 trace 项的位置——回合常以正文开头，按 trace 位置插头部会把头部夹在两段正文中间。
 - **error 行永不折叠**：红色失败 ring 与错误卡片必须显眼；cancelled 行折叠（与 done 一致，内容一键可展开）。
-- **手动展开状态放模块级 `Set<string>`，key = `traceKey`**，不用组件局部 ref：`turn-finished` 后 hub 历史收敛替换消息行，组件会被重建，局部状态必丢。`traceKey` 用持久行 `id:<n>`、乐观行 `t:<startedAt>`——flush 行与持久行的 `startedAt` 同源（都是 connector 在 turn-start 盖的戳，hub 存 `started_at` 列并回传 `MessageRecordDto.startedAt`），跨收敛稳定。
+- **手动展开状态放模块级 reactive `Set`，key = `traceKey`**，不用组件局部 ref：`turn-finished` 后 hub 历史收敛替换消息行，组件会被重建，局部状态必丢。`traceKey` **一律优先 `«instance»:«session»:t:«startedAt»`**——`startedAt` 为 connector 戳，乐观 flush 行与持久行同值、且被 hub 持久化（`started_at` 列，compact 亦保留），收敛前后 key 不变，手动展开必然存活；无 `startedAt` 的 legacy 行退回 `…:id:«n»`（只出现在已持久行，不存在中途切换）。无任何身份的行回退组件局部状态（不记忆）。
 - **纯 v-show/v-if 切换，无过渡动画**：省掉 `prefers-reduced-motion` 分支；行高变化由既有的 `content-visibility` 虚拟化和 tail-follow watcher 自然消化。
 
 ## 组件设计
 
-### `TurnParts.vue`（唯一改动的渲染组件）
+### `TurnParts.vue`（渲染层改动；hub/protocol 侧见「终态持久化」）
 
 新增 props（全部可选，现有调用点零破坏）：
 
@@ -61,58 +61,94 @@ traceElapsedMs?: number | null  // 回合耗时（展示用；null/undefined = �
 
 ### `MessageList.vue`（policy 计算与 props 装配）
 
-仅 assistant 历史行的 `TurnParts` 调用点（`msg-content` 内，现 `:parts="m.structured.parts"` 一处）传新 props；live 行的三个调用点不动：
+
+仅 assistant 历史行的 `TurnParts` 调用点（`msg-content` 内）传新 props；live 行的调用点不动：
 
 ```ts
 // script:
-const hasTrace = (m: ChatMessage): boolean => {
-  const parts = m.structured?.parts ?? [];
-  return parts.some((p) => p.type !== "text" && p.type !== "agent-message");
-};
-const traceKeyOf = (m: ChatMessage): string =>
-  m.id !== undefined ? `id:${m.id}` : m.startedAt !== undefined ? `t:${m.startedAt}` : "";
-const traceElapsedOf = (m: ChatMessage): number | null => {
+function hasTraceParts(m: ChatMessage): boolean {
+  return m.structured?.parts?.some((p) => p.type !== "text") ?? false;  // wire parts: text | reasoning | tool
+}
+function isFailedTurn(m: ChatMessage): boolean {
+  return m.failed === true || m.structured?.turnStatus === "error";
+}
+function traceKeyOf(m: ChatMessage): string | undefined {
+  if (m.startedAt !== undefined) return `${m.instanceId}:${m.sessionAlias}:t:${m.startedAt}`;
+  if (m.id !== undefined) return `${m.instanceId}:${m.sessionAlias}:id:${m.id}`;
+  return undefined;
+}
+function traceElapsedOf(m: ChatMessage): number | null {
   if (m.startedAt === undefined) return null;
   const ms = Date.parse(m.createdAt) - m.startedAt;
   return Number.isFinite(ms) && ms > 0 ? ms : null;   // 跨机时钟偏差 → clamp 成 null
-};
+}
 ```
 
-- `:collapse-trace="!m.failed && hasTrace(m)"`（failed 行永不折叠）。
+- `:collapse-trace="!isFailedTurn(m) && hasTraceParts(m)"`。
 - `:trace-key="traceKeyOf(m)"`、`:trace-elapsed-ms="traceElapsedOf(m)"`。
+
+### 终态持久化（评审修正）：`structured.turnStatus`
+
+web 本地的 `failed`/`status` 只存在于乐观 flush 行，hub 历史收敛（`loadHistory` 用
+`MessageRecordDto[]` 整表替换）后即丢失——只看 `m.failed` 会让失败 trace 在收敛后
+被折叠（对 main 是回归）。因此 hub 在**全部三个持久化点**把终态盖进 `structured`：
+
+```ts
+turnStatus: cancelled ? "cancelled" : ok ? "done" : "error"
+```
+
+- live flush（有 buffer）：`structured` 始终携带 `turnStatus`（含此前 `structured` 为
+  undefined 的纯文本回合——现在是一枚 `{ turnStatus }`）；
+- 无 buffer 兜底（hub 重启于回合中）：`{ turnStatus }`（text/errorMessage 兜底行同样盖戳）；
+- offline recovery（`finishedOffline`）：由 `finished.ok/cancelled` 就地派生，连接器零改动。
+
+compact history 以 `{ ...structured }` spread 透传未知 key，`turnStatus` 天然存活；
+`capSeededStructured`/`capSyncedParts` 只裁剪超长字符串，不影响该字段。
 
 耗时口径：`createdAt`（乐观行=浏览器时钟 / 持久行=hub 时钟）减 `startedAt`（connector 时钟）。同机部署近似精确；跨机有时钟偏差，只作展示、偏差过大（负值）时降级为只显计数。精确耗时若将来要保证，需 hub 落 `durationMs` 列，不在本期。
 
 ### 数据流不变
 
-`turn-finished` → `flushTurn` 定型（行带 `startedAt`/`createdAt`/`structured.parts`）→ `streaming` prop 消失 → 折叠即时生效；随后 hub 历史收敛整行替换，`traceKey` 从乐观 `t:` 切到持久 `id:` —— 已记录的展开状态会丢一次（`Set` 里是 `t:` 键，替换后查 `id:` 键不中）。接受：收敛发生在回合结束的亚秒级窗口内，用户此时还没来得及点开；不做双键迁移的复杂度。
+`turn-finished` → `flushTurn` 定型（行带 `startedAt`/`createdAt`/`structured.parts`）→ `streaming` prop 消失 → 折叠即时生效；随后 hub 历史收敛整行替换——`traceKey` 以 `startedAt` 为主键、收敛前后不变，手动展开跨收敛存活（有回归测试：乐观行点开 → setProps 持久行（同 `startedAt`、新 `id`）→ 仍展开）。
 
 ## i18n（`en.ts` + `zh-CN.ts` 镜像，parity 测试强制）
 
 ```ts
 turnTrace: {
   worked: "Worked",            // 已工作
-  tools: "{n} tool steps",     // {n} 步工具
-  thoughts: "{n} thoughts",    // {n} 段思考
+  tools: "{count} tool step | {count} tool steps",  // {count} 步工具（zh 单形）
+  thoughts: "{count} thought | {count} thoughts",   // {count} 段思考
   toggleTrace: "Toggle intermediate steps",  // aria-label：展开/收起中间过程
 },
 ```
 
-时长格式不走 i18n（`4:32` → `4分32秒` / `4m 32s` 在组件内按 locale 分支，与 `ChatPane` HUD 的 mm:ss 同级别近似；如 parity 不允许硬分支则退化为 `fmtDuration` 现有秒格式）。
+时长格式不走 i18n（`m分s秒` / `m m s s` 在组件内按 locale 分支；亚秒显示 `<1s`）。
 
 ## 测试
 
 `packages/relay-web/src/__tests__/turnparts-collapse.test.ts`（新，mount TurnParts）：
 
 1. `collapseTrace` 缺省/live：trace 项内联、无头部（回归确认）。
-2. finished + trace 存在：头部渲染且含计数，trace 项不在 DOM；text 项保留。
+2. finished + trace 存在：头部渲染且计数以 `·` 连接（英文复数：`1 tool step` / `2 tool steps`），trace 项不在 DOM；text 项保留。
 3. 点头部展开：trace 项出现、`aria-expanded=true`；再点收起。
 4. 同 `traceKey` 重挂载（模拟行替换）：展开状态保持；不同 key 不串。
 5. 纯 text 行：无头部。
-6. `traceElapsedMs` 传/不传：头部带/不带耗时段。
+6. `traceElapsedMs` 传/不传/亚秒（`<1s`）：头部耗时段相应变化。
 7. zh/en 文案分支冒烟（设置 locale 后断言头部文本）。
+8. agent-message 真锚定（step 带 `agentMessageId` + map 含该条目）：折叠态下卡片仍在、tool 卡不在。
 
-`messagelist.test.ts` 补一条：failed 行 `collapseTrace=false`、done 行 `=true`（可通过 DOM 断言头部有无）。
+`turnparts-collapse.test.ts` 的 MessageList 收敛组（评审回归）：
+
+1. 乐观行（无 id、`startedAt=X`）点开 → setProps 持久行（`id=7`、同 `startedAt`）→ 仍展开（key 稳定性）。
+2. 持久行 `structured.turnStatus: "error"`（无本地 `failed` 标志）→ 不折叠，trace 内联。
+3. 持久行 `turnStatus: "done"` → 折叠。
+
+hub 侧（bun test）：
+
+- `runtime-fanout.test.ts`：live flush 持久行的 `structured.turnStatus` 为 error/cancelled/done（含 buffered trace 的失败回合）。
+- `runtime-state-sync.test.ts`：recovery 行按 `finished.ok/cancelled` 派生 turnStatus；既有 exact-equality structured 断言更新为带 `turnStatus` 的新形状。
+
+`messagelist.test.ts`：failed 行（乐观标志）不折叠、done 行折叠（DOM 断言头部有无）。
 
 `i18n-parity.test.ts` 自动覆盖新 key。
 

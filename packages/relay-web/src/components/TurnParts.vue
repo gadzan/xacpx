@@ -29,7 +29,7 @@ const props = defineProps<{
   traceElapsedMs?: number | null;
 }>();
 
-const { locale } = useI18n();
+const { t, locale } = useI18n();
 
 const presentation = computed(() =>
   deriveTurnPresentation(
@@ -64,7 +64,8 @@ const toolCount = computed(() =>
 const thoughtCount = computed(() => presentation.value.filter((item) => item.type === "reasoning").length);
 
 function formatElapsed(ms: number): string {
-  const total = Math.max(1, Math.round(ms / 1000));
+  if (ms < 1000) return locale.value.startsWith("zh") ? "<1秒" : "<1s";
+  const total = Math.round(ms / 1000);
   const m = Math.floor(total / 60);
   const s = total % 60;
   return locale.value.startsWith("zh") ? (m > 0 ? `${m}分${s}秒` : `${s}秒`) : m > 0 ? `${m}m ${s}s` : `${s}s`;
@@ -72,6 +73,15 @@ function formatElapsed(ms: number): string {
 const elapsedText = computed(() => {
   const ms = props.traceElapsedMs;
   return typeof ms === "number" && Number.isFinite(ms) && ms > 0 ? formatElapsed(ms) : "";
+});
+// One " · "-separated label (zcode-style) so segments never wrap apart; vue-i18n
+// plural picks "1 tool step" vs "2 tool steps".
+const headerLabel = computed(() => {
+  const parts: string[] = [];
+  if (elapsedText.value) parts.push(`${t("turnTrace.worked")} ${elapsedText.value}`);
+  if (toolCount.value > 0) parts.push(t("turnTrace.tools", toolCount.value));
+  if (thoughtCount.value > 0) parts.push(t("turnTrace.thoughts", thoughtCount.value));
+  return parts.join(" · ");
 });
 
 function toggleTrace(): void {
@@ -94,9 +104,7 @@ function toggleTrace(): void {
             :data-trace-key="traceKey ?? ''" @click="toggleTrace">
       <ChevronDown v-if="expanded" :size="12" class="shrink-0" />
       <ChevronRight v-else :size="12" class="shrink-0" />
-      <span v-if="elapsedText">{{ $t("turnTrace.worked") }} {{ elapsedText }}</span>
-      <span v-if="toolCount > 0" data-test="trace-tools">{{ $t("turnTrace.tools", { n: toolCount }) }}</span>
-      <span v-if="thoughtCount > 0" data-test="trace-thoughts">{{ $t("turnTrace.thoughts", { n: thoughtCount }) }}</span>
+      <span data-test="trace-label">{{ headerLabel }}</span>
     </button>
     <template v-for="item in visibleItems" :key="item.key">
       <StreamMarkdown v-if="item.type === 'text'" data-test="turn-narrative"

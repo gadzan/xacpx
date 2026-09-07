@@ -97,6 +97,14 @@ function capSyncedParts(parts: TurnPartDto[]): TurnPartDto[] {
   return out;
 }
 
+/** Terminal status stamped into a persisted `out` row's `structured` so failure and
+ *  cancellation survive history convergence and page reload (the web's `failed`/
+ *  `status` flags live only on optimistic rows). The turn-trace collapse policy keys
+ *  off `error` — a failed turn's trace must stay visible. */
+function turnStatusOf(ok: boolean, cancelled?: boolean): "done" | "cancelled" | "error" {
+  return cancelled ? "cancelled" : ok ? "done" : "error";
+}
+
 export interface RelayRuntime {
   db: SqlDriver;
   accounts: AccountStore;
@@ -622,9 +630,9 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                   startedAt: event.startedAt,
                 });
                 if (event.text !== undefined) {
-                  appendAssistantOut(event.sessionAlias, event.text, undefined, slot);
+                  appendAssistantOut(event.sessionAlias, event.text, { turnStatus: turnStatusOf(event.ok, event.cancelled) }, slot);
                 } else if (!event.ok && event.errorMessage !== undefined) {
-                  appendAssistantOut(event.sessionAlias, event.errorMessage, undefined, slot);
+                  appendAssistantOut(event.sessionAlias, event.errorMessage, { turnStatus: turnStatusOf(event.ok, event.cancelled) }, slot);
                 } else {
                   logger.warn("relay.event.turn_finished_without_content", "turn finished with no buffered content", {
                     instanceId, sessionAlias: event.sessionAlias,
@@ -655,9 +663,10 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 return;
               }
               if (hasStructured || text !== "" || event.ok) {
+                const turnStatus = turnStatusOf(event.ok, event.cancelled);
                 const structured = hasStructured
-                  ? { toolSteps: steps, ...(hasReasoning ? { reasoning: a.reasoning } : {}), ...(a.parts.length ? { parts: a.parts } : {}), ...(a.truncated ? { truncated: true } : {}) }
-                  : (a.truncated ? { truncated: true } : undefined);
+                  ? { toolSteps: steps, ...(hasReasoning ? { reasoning: a.reasoning } : {}), ...(a.parts.length ? { parts: a.parts } : {}), ...(a.truncated ? { truncated: true } : {}), turnStatus }
+                  : { ...(a.truncated ? { truncated: true } : {}), turnStatus };
                 slotAnchors.take(instanceId, event.sessionAlias, event.recoveryId);
                 appendAssistantOut(event.sessionAlias, text, structured, {
                   slotAfterId: a.slotAfterId,
@@ -881,7 +890,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                   appendAssistantOut(
                     finished.sessionAlias,
                     text,
-                    finished.truncated ? { truncated: true } : undefined,
+                    { ...(finished.truncated ? { truncated: true } : {}), turnStatus: turnStatusOf(finished.ok, finished.cancelled) },
                     slot,
                   );
                 } else {

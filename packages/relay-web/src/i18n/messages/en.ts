@@ -494,8 +494,8 @@ export default {
   },
   turnTrace: {
     worked: "Worked",
-    tools: "{n} tool steps",
-    thoughts: "{n} thoughts",
+    tools: "{count} tool step | {count} tool steps",
+    thoughts: "{count} thought | {count} thoughts",
     toggleTrace: "Toggle intermediate steps",
   },
   taskPanel: {

@@ -113,8 +113,11 @@ describe("TurnParts trace collapse", () => {
   });
 
   it("keeps agent-message cards visible while the trace is collapsed", () => {
+    // A REAL anchor: the send step carries agentMessageId and the map holds the sent
+    // entry, so deriveTurnPresentation actually emits an agent-message item — the
+    // card must survive the collapse while its tool step folds away.
     const parts: TurnPartDto[] = [
-      { type: "tool", step: tool("send-1") },
+      { type: "tool", step: { ...tool("send-1"), agentMessageId: "m1" } },
       { type: "text", text: "answer" },
     ];
     const w = mount(TurnParts, {
@@ -122,13 +125,59 @@ describe("TurnParts trace collapse", () => {
         parts,
         collapseTrace: true,
         traceKey: "t:11",
-        sentAgentMessages: new Map([["m1", { messageId: "m1", direction: "sent", peer: { handle: "p" }, content: "hi", createdAt: 1 } as never]]),
+        sentAgentMessages: new Map([["m1", { messageId: "m1", direction: "sent", peer: { handle: "p", displayName: "Peer" }, content: "hi", createdAt: 1 } as never]]),
       },
     });
-    // agent-message items only render when joined via presentation; the unjoined map
-    // here means the send step still renders as a plain tool card in expanded mode —
-    // collapsed mode must at minimum keep the narrative.
+    expect(w.find('[data-test="turn-agent-message"]').exists()).toBe(true);
+    expect(w.find('[data-test="agent-message-card"]').text()).toContain("hi");
+    expect(w.find('[data-test="tool-step-card"]').exists()).toBe(false);
     expect(w.findAll('[data-test="turn-narrative"]').map((n) => n.text())).toEqual(["answer"]);
+  });
+
+  it("renders sub-second elapsed as <1s", () => {
+    const w = mount(TurnParts, {
+      props: { parts: finishedTurn(), collapseTrace: true, traceKey: "t:6", traceElapsedMs: 400 },
+    });
+    expect(w.find('[data-test="trace-label"]').text()).toContain("Worked <1s");
+  });
+});
+
+describe("MessageList convergence", () => {
+  const parts: TurnPartDto[] = [{ type: "tool", step: tool("read-1") }, { type: "text", text: "done" }];
+  const STARTED = 1_757_000_000_000;
+  const optimistic = {
+    instanceId: "i1", sessionAlias: "s1", direction: "out" as const, text: "reply",
+    createdAt: "2026-09-07T10:00:30.000Z", startedAt: STARTED, structured: { parts },
+  };
+
+  it("keeps a manual expansion across hub history convergence (optimistic → persisted row)", async () => {
+    const w = mount(MessageList, { props: { messages: [optimistic as never], liveTurn: null } });
+    expect(w.find('[data-test="trace-toggle"]').attributes("aria-expanded")).toBe("false");
+    await w.find('[data-test="trace-toggle"]').trigger("click");
+    expect(w.find('[data-test="trace-toggle"]').attributes("aria-expanded")).toBe("true");
+
+    // Convergence replaces the optimistic row with the persisted one (new object
+    // identity → TurnParts rebuilds). startedAt is the stable key (both rows carry
+    // the same connector-stamped value), so the expansion must survive.
+    await w.setProps({ messages: [{ ...optimistic, id: 7 } as never] });
+    expect(w.find('[data-test="trace-toggle"]').attributes("aria-expanded")).toBe("true");
+    expect(w.find('[data-test="tool-step-card"]').exists()).toBe(true);
+  });
+
+  it("never collapses a failed turn after convergence (persisted turnStatus = error, no local failed flag)", () => {
+    const failedRow = { ...optimistic, id: 8, structured: { parts, turnStatus: "error" as const } };
+    const w = mount(MessageList, { props: { messages: [failedRow as never], liveTurn: null } });
+    // The optimistic `failed` flag is gone; only the hub-stamped terminal status
+    // says this turn failed — its trace must stay inline.
+    expect(w.find('[data-test="trace-toggle"]').exists()).toBe(false);
+    expect(w.find('[data-test="tool-step-card"]').exists()).toBe(true);
+  });
+
+  it("collapses a converged done row (persisted turnStatus = done)", () => {
+    const doneRow = { ...optimistic, id: 9, structured: { parts, turnStatus: "done" as const } };
+    const w = mount(MessageList, { props: { messages: [doneRow as never], liveTurn: null } });
+    expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-test="tool-step-card"]').exists()).toBe(false);
   });
 });
 

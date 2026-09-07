@@ -509,8 +509,8 @@ test("a restored turn keeps absorbing live events and flushes exactly one comple
   expect(cached).toHaveLength(1);
   expect(cached[0].direction).toBe("out");
   expect(cached[0].text).toBe("partial"); // pre-restart mirror text + post-restart chunks
-  // Text-only turns persist without `structured` (same as the live flush path).
-  expect(cached[0].structured).toBeUndefined();
+  // Text-only turns persist with just the terminal status (same as the live path).
+  expect(cached[0].structured).toEqual({ turnStatus: "done" });
   expect(runtime.stateSnapshot("i1").turns).toEqual([]); // buffer flushed
   runtime.close();
 });
@@ -615,7 +615,7 @@ test("a truncated offline reply is persisted with the flag in its structured met
   });
   const rows = runtime.messages.listBySession("a1", "i1", "backend").messages;
   expect(rows.map((m) => [m.direction, m.text])).toEqual([["in", "q"], ["out", "capped"]]);
-  expect(rows[1]!.structured).toEqual({ truncated: true });
+  expect(rows[1]!.structured).toEqual({ truncated: true, turnStatus: "done" });
   runtime.close();
 });
 
@@ -763,7 +763,7 @@ test("a restored turn that was truncated by the connector persists structured.tr
   fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
   const rows = runtime.messages.listBySession("a1", "i1", "backend").messages;
   expect(rows.map((m) => [m.direction, m.text])).toEqual([["out", "capped prefix"]]);
-  expect(rows[0]!.structured).toEqual({ truncated: true });
+  expect(rows[0]!.structured).toEqual({ truncated: true, turnStatus: "done" });
   runtime.close();
 });
 
@@ -802,5 +802,19 @@ test("a live turn-finished with no buffer and an errorMessage persists the error
   fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: false, errorMessage: "boom" });
   expect(runtime.messages.listBySession("a1", "i1", "backend").messages.map((m) => [m.direction, m.text]))
     .toEqual([["out", "boom"]]);
+  runtime.close();
+});
+
+test("recovered offline rows carry turnStatus derived from ok/cancelled", async () => {
+  const { runtime } = await seeded();
+  sync(runtime, {
+    turns: [], usage: [], commands: [],
+    finishedOffline: [
+      { sessionAlias: "done", ok: true, text: "offline reply" },
+      { sessionAlias: "failed", ok: false, errorMessage: "agent exploded" },
+    ],
+  });
+  expect(runtime.messages.listBySession("a1", "i1", "done").messages[0]!.structured?.turnStatus).toBe("done");
+  expect(runtime.messages.listBySession("a1", "i1", "failed").messages[0]!.structured?.turnStatus).toBe("error");
   runtime.close();
 });

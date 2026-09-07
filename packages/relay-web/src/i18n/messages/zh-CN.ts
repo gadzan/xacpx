@@ -491,8 +491,8 @@ export default {
   },
   turnTrace: {
     worked: "已工作",
-    tools: "{n} 步工具",
-    thoughts: "{n} 段思考",
+    tools: "{count} 步工具",
+    thoughts: "{count} 段思考",
     toggleTrace: "展开/收起中间过程",
   },
   taskPanel: {
