@@ -1,5 +1,5 @@
-import { flushPromises, mount } from "@vue/test-utils";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mount } from "@vue/test-utils";
+import { beforeEach, describe, expect, it } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import PromptInput from "../components/PromptInput.vue";
 import { useInstancesStore } from "../stores/instances";
@@ -1537,37 +1537,18 @@ describe("PromptInput composer", () => {
   });
 });
 
-describe("PromptInput busy quip rotation", () => {
-  beforeEach(() => {
-    setActivePinia(createPinia());
-    vi.useFakeTimers();
-  });
-  afterEach(() => vi.useRealTimers());
-
-  it("picks a quip on busy, rotates every 5s, stops on busy=false, clears on unmount", async () => {
+describe("PromptInput busy placeholder", () => {
+  it("keeps the static working placeholder while busy (quips live in the turn HUD)", async () => {
     const w = mount(PromptInput, { props: { busy: false } });
-    const ta = w.find("textarea");
-    const placeholder = () => (ta.element as HTMLTextAreaElement).placeholder;
-    expect(placeholder()).toBe("Message");
+    const ta = () => (w.find("textarea").element as HTMLTextAreaElement).placeholder;
+    expect(ta()).toBe("Message");
 
     await w.setProps({ busy: true });
-    const first = placeholder();
-    expect(first).toMatch(/\(Esc to stop\)$/);
-    expect(first).not.toBe("Agent is working… (Esc to stop)"); // quip picked, not the fallback
-
-    vi.advanceTimersByTime(5000);
-    await flushPromises();
-    const second = placeholder();
-    expect(second).toMatch(/\(Esc to stop\)$/);
-    expect(second).not.toBe(first); // pickQuip never repeats immediately
+    await w.vm.$nextTick();
+    expect(ta()).toBe("Agent is working… (Esc to stop)");
 
     await w.setProps({ busy: false });
-    expect(placeholder()).toBe("Message");
-    expect(vi.getTimerCount()).toBe(0);
-
-    await w.setProps({ busy: true });
-    expect(vi.getTimerCount()).toBe(1);
-    w.unmount();
-    expect(vi.getTimerCount()).toBe(0); // interval must not survive unmount
+    await w.vm.$nextTick();
+    expect(ta()).toBe("Message");
   });
 });

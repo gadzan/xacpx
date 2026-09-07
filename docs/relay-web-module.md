@@ -534,10 +534,11 @@ export interface LiveTurn {
 
 **`ChatPane` 状态 HUD**（`packages/relay-web/src/components/ChatPane.vue`）
 
-`chat.busy` 时在输入框上方显示一行 HUD：
-- 脉冲点 `●`（`animate-pulse`）+ `Working… M:SS`（每秒刷新的 elapsed 计时，由 `setInterval(1000)` + `liveTurn.startedAt` 驱动）。
+`chat.busy` 时在输入框上方显示一行 HUD（`data-test="turn-hud"`）：
+- 脉冲点 `●`（`animate-pulse`）+ 俏皮状态行 `data-test="hud-quip"`（`chat.workingQuips` 池随机抽、每 20s 轮换不连重；池为空回退 `chat.mentionActivity.working`）+ `M:SS`（每秒刷新的 elapsed 计时，由 `setInterval(1000)` + `liveTurn.startedAt` 驱动）。
 - 若有 running 状态的步骤：`· 🔧 N`（N 为 running tool 数量）。
 - 右侧 `Cancel` 按钮 → `chat.cancel()`（调 `control.prompt.cancel` RPC）。
+- 输入框 busy 时 placeholder 保持静态 `chat.working`，不再轮换俏皮语。
 
 **`PromptInput` busy-guard**（`packages/relay-web/src/components/PromptInput.vue`）
 
