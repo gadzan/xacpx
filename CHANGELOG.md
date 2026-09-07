@@ -1,4 +1,52 @@
 # Changelog
+## [0.24.3-beta.0] - 2026-09-07
+
+### Added
+
+- Runtime transcript normalization (#331): per-turn tool-call snapshot normalization and text ordered-transcript parity — new `runtime-tool-call-merge.ts`, `transcript-text-boundary.ts`, `tool-summary.ts` extraction; `ChannelType`/`ToolUseKind` gain `delete`/`move`/`fetch` kinds (`src/channels/types.ts`).
+
+### Fixed
+
+- Restore CLI summary semantics (`69f118d4`): `summarizeToolInput` final key list restored to exact base semantics, output-ish keys moved to capped (500ch, acpx parity) `summarizeToolOutput` used only on `rawOutput` fallback (CLI text + structured, Runtime mapper); `agent_send rawInput {to, message}` no longer summarizes; Claude status-less terminal documented as known parity gap (spec §21).
+- Restore base `rawOutput` fallback to legacy summarizer (`37db455b`).
+
+## [relay-protocol 0.5.2-beta.0] - 2026-09-07
+
+### Added
+
+- `ToolStepKind`: add `delete`/`move`/`fetch` (`dtos.ts`, mirrors `acpx` streaming kinds).
+- `turn-started`: add Hub-stamped `startedAt` (epoch ms) so web optimistic rows and their persisted replacements share one trace-key identity; `validControlEvent` accepts it.
+- `MessageRecordDto.structured`: add `turnStatus: "done" | "cancelled" | "error"` stamped by the hub at persist time so failure/cancel survive history convergence and reload; collapse policy keys off `error`.
+
+## [relay 0.14.4-beta.0] - 2026-09-07
+
+### Added
+
+- relay-web: collapse finished-turn activity trace behind summary header (`TurnParts.vue` + `trace-expansion.ts`, PR #329); show working quips in turn HUD instead of composer placeholder, re-picked per turn and rendered verbatim (PR #330).
+- Hub stamps `turnStatus` into persisted `out` rows and broadcasts buffer `startedAt` on `turn-started` so web trace-key identity survives convergence (`server.ts` `turnStatusOf`).
+
+### Fixed
+
+- relay-web: merge compact metadata on convergence and align `startedAt` clock; persist turn terminal status and stabilize trace key.
+
+## [channel-relay 0.7.3-beta.0] - 2026-09-07
+
+### Added
+
+- `tool-presentation`: `delete`/`move`/`fetch` step rendering (path / `from → to` / url titles with primitive fields + capped output).
+
+## [channel-feishu 0.8.2-beta.0] - 2026-09-07
+
+### Added
+
+- Card builder: `delete`/`move`/`fetch` tool-kind icons (🗑️/📦/🌐).
+
+## [channel-discord 0.8.1-beta.0] - 2026-09-07
+
+### Added
+
+- Tool emoji map + progress/tool boundary regex cover `delete`/`move`/`fetch` (🗑️/📦/🌐).
+
 ## [0.24.2-beta.0] - 2026-09-07
 
 ### Added
