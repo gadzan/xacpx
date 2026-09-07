@@ -97,7 +97,7 @@ function toggleTrace(): void {
 </script>
 
 <template>
-  <div class="space-y-2.5">
+  <div class="space-y-1.5">
     <!-- Collapsed-trace header (finished turns): one muted row summarizing the hidden
          activity; expanding re-renders the trace items inline below it. -->
     <button v-if="collapsible" type="button" data-test="trace-toggle"
@@ -111,7 +111,7 @@ function toggleTrace(): void {
     <template v-for="item in visibleItems" :key="item.key">
       <StreamMarkdown v-if="item.type === 'text'" data-test="turn-narrative"
                       :text="item.text" :streaming="streaming === true && item.isLatest"
-                      class="text-[14px] leading-relaxed text-fg"
+                      class="text-[14px] leading-relaxed text-fg my-1"
                       :class="streaming === true && item.isLatest ? 'caret' : ''" />
       <ReasoningPanel v-else-if="item.type === 'reasoning'"
                       :reasoning="item.text"

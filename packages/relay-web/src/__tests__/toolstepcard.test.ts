@@ -107,3 +107,76 @@ describe("ToolStepCard error banner de-duplication", () => {
     expect(w.find('[data-test="read-path"]').text()).toContain("a.ts");
   });
 });
+
+describe("ToolStepCard de-cardified activity stream", () => {
+  it("renders as a borderless minimal stream item without card background or shadow", () => {
+    const w = card({ status: "success", title: "npm test" });
+    const root = w.find('[data-test="tool-step-card"]');
+    expect(root.classes()).not.toContain("bg-surface");
+    expect(root.classes()).not.toContain("shadow-e1");
+    expect(root.classes()).not.toContain("border");
+  });
+
+  it("renders kind verb label and file extension badge", () => {
+    const w = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t1",
+          kind: "execute",
+          title: "grep -rn foo",
+          status: "success",
+        } as ToolStepDto,
+      },
+    });
+    expect(w.text()).toContain("Terminal");
+    expect(w.text()).toContain("grep -rn foo");
+  });
+
+  it("renders diff stats (+add, −del) in the header for edit steps", () => {
+    const w = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t1",
+          kind: "edit",
+          toolName: "Edit",
+          title: "packages/relay-web/src/index.ts",
+          status: "success",
+          detail: {
+            type: "diff",
+            path: "packages/relay-web/src/index.ts",
+            oldText: "line 1\nline 2",
+            newText: "line 1\nline 2 modified\nline 3\nline 4\nline 5",
+          },
+        } as ToolStepDto,
+      },
+    });
+    expect(w.text()).toContain("Edit");
+    expect(w.text()).toContain("TS");
+    const stats = w.find('[data-test="step-diff-stats"]');
+    expect(stats.exists()).toBe(true);
+    expect(stats.text()).toContain("+4");
+    expect(stats.text()).toContain("−1");
+  });
+
+  it("identifies new-file write operations as Write instead of Edit", () => {
+    const w = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t1",
+          kind: "edit",
+          toolName: "Write",
+          title: "packages/relay-web/src/new-file.ts",
+          status: "success",
+          detail: {
+            type: "diff",
+            path: "packages/relay-web/src/new-file.ts",
+            oldText: "",
+            newText: "export const x = 1;\n",
+          },
+        } as ToolStepDto,
+      },
+    });
+    expect(w.text()).toContain("Write");
+    expect(w.text()).toContain("+2");
+  });
+});

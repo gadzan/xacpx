@@ -482,6 +482,15 @@ export default {
     noRecordedActivity: "No recorded activity",
     viewFullTrace: "View full trace",
     loadingDetails: "Loading details…",
+    kinds: {
+      read: "Read",
+      search: "Search",
+      execute: "Terminal",
+      edit: "Edit",
+      write: "Write",
+      think: "Thinking",
+      other: "Tool",
+    },
   },
   plan: {
     title: "Plan",

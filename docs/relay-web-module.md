@@ -509,18 +509,18 @@ export interface LiveTurn {
 **`ToolCallPanel.vue`**（`packages/relay-web/src/components/ToolCallPanel.vue`）
 
 - props: `steps: ToolStepDto[]`。
-- 兼容旧历史格式的聚合面板，默认折叠；展开后列出每个 step（状态图标、kind 图标、title、耗时）。
-- 点击行展开 `<ToolDetail>` 详情；折叠头显示总步数。
+- 兼容旧历史格式的聚合面板，去卡片化单行头部（Wrench 图标、kind 统计小标、步数）；默认折叠，展开后以左侧导向线缩进呈现各 step。
+- 点击行展开 `<ToolDetail>` 详情。
 
 **`ToolStepCard.vue`**（`packages/relay-web/src/components/ToolStepCard.vue`）
 
-- 有序 `parts` 中单个 tool call 的卡片，标题行始终可见，详情默认折叠。
-- 点击标题展开 `<ToolDetail>`；历史消息和实时 streaming 消息使用相同的默认折叠规则。
+- 有序 `parts` 中单个 tool call 的去卡片化流式行（zcode 风格）：无外层边框与卡片背景，由图标、操作动词（终端/编辑/写入/查阅/搜索等）、文件扩展名角标（TS/VUE/PY 等）、标题、行级 diff stat（`+4` / `−1`）、耗时及状态图标构成单行摘要。
+- 详情默认折叠，点击后在行下方以左侧导向线（`border-l-2`）无缝缩发展开 `<ToolDetail>`；历史消息和实时 streaming 消息遵循同一规则。
 
 **`ReasoningPanel.vue`**（`packages/relay-web/src/components/ReasoningPanel.vue`）
 
-- props: `reasoning: string; defaultOpen?: boolean`。
-- 可折叠，`defaultOpen` 默认 `false`；历史与实时 reasoning 都默认折叠，用户可按需展开。
+- props: `reasoning: string; defaultOpen?: boolean; streaming?: boolean`。
+- 去卡片化极简单行（Brain 图标、思考/思考中文案、streaming 脉冲点）；默认折叠，展开后在下方以左侧导向线缩进渲染思考正文，不产生外层卡片框线。用户可按需展开。
 
 **`ToolDetail.vue`**（`packages/relay-web/src/components/ToolDetail.vue`）
 
