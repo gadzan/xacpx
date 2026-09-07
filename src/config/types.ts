@@ -30,8 +30,8 @@ export interface TransportConfig {
   type: "acpx-cli" | "acpx-bridge";
   /**
    * acpx-bridge engine selection: which bridge engine executes a session.
-   * - absent / "cli": every session runs on the CLI engine (default).
-   * - "auto": eligible new sessions bind Runtime, ineligible fall back to CLI.
+   * - absent / "auto" (default): eligible new sessions bind Runtime, ineligible fall back to CLI.
+   * - "cli": every session runs on the CLI engine.
    * - "runtime": strict — sessions must be eligible or creation fails loudly.
    * Non-bridge transports always resolve new sessions to cli. Explicit
    * transport.command (self-provided acpx) always forces cli under "auto"

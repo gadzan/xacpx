@@ -95,8 +95,8 @@ export function probeRuntimeWorkerAvailable(): boolean {
  * 1. Persisted per-session binding wins — never re-derived per request.
  * 2. Explicit `transport.command` (self-provided acpx) forces cli; under strict
  *    `engine: "runtime"` this is a configuration error, not a silent fallback.
- * 3. Config mode decides for new sessions:
- *    - `cli` (default): resolves to cli.
+ * 3. Config mode decides for new sessions (PR10: absent defaults to auto):
+ *    - `cli`: resolves to cli.
  *    - `runtime`: strict — requires runtime support, valid session shape, and
  *      compatible permission policy/mode; throws diagnostic errors on ineligibility.
  *    - `auto`: resolves to runtime when eligible (worker available, shape valid,
@@ -114,7 +114,7 @@ export function resolveTransportEngine(input: ResolveTransportEngineInput): Tran
   const configured: BridgeEngineMode =
     input.config.engine === "auto" || input.config.engine === "cli" || input.config.engine === "runtime"
       ? input.config.engine
-      : "cli";
+      : "auto";
   const hasExplicitCommand = typeof input.config.command === "string" && input.config.command.trim().length > 0;
 
   if (hasExplicitCommand) {

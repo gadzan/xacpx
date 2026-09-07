@@ -103,8 +103,14 @@ test("auto mode selects runtime when runtime is available and eligible", () => {
   expect(choice.reason).toBeUndefined();
 });
 
-test("missing engine field defaults to cli (development-phase default)", () => {
-  expect(resolveTransportEngine({ config: baseConfig })).toEqual({ engine: "cli" });
+test("missing engine field defaults to auto (PR10 default switch)", () => {
+  expect(resolveTransportEngine({ config: baseConfig, runtimeAvailable: true })).toEqual({
+    engine: "runtime",
+  });
+  expect(resolveTransportEngine({ config: baseConfig, runtimeAvailable: false })).toEqual({
+    engine: "cli",
+    reason: "runtime-import-failed",
+  });
 });
 
 test("strict runtime with nonInteractivePermissions=fail throws configuration error", () => {

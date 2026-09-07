@@ -1787,8 +1787,7 @@ export class SessionService {
         // a physical sibling group owns exactly one engine, so a new alias
         // inherits it instead of re-deriving from config (which could bind
         // a CLI and a Runtime alias to one physical session). Otherwise the
-        // config decides (development default: cli).
-        // Full eligibility (runtime availability, permission policy,
+        // config decides (PR10 default: auto with eligibility fallback).
         // nonInteractivePermissions, session shape) is evaluated BEFORE
         // persisting affinity. If strict runtime is ineligible, an error is thrown
         // before state mutation (preventing durable binding).
