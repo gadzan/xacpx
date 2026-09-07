@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { useChatStore } from "../stores/chat";
 import { useInstancesStore } from "../stores/instances";
 import { useFilesStore } from "../stores/files";
 import { useComposerStore } from "../stores/composer";
 import { useVirtualKeyboardInset } from "../lib/use-virtual-keyboard";
+import { parseQuips, pickQuip } from "../lib/working-quips";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import MessageList from "./MessageList.vue";
 import PromptInput from "./PromptInput.vue";
@@ -14,6 +16,7 @@ import { AlertTriangle, Bot, Folder, GitBranch, Loader2, X } from "lucide-vue-ne
 
 const emit = defineEmits<{ (e: "show-files"): void }>();
 
+const { t } = useI18n();
 const chat = useChatStore();
 const instances = useInstancesStore();
 const files = useFilesStore();
@@ -108,7 +111,47 @@ watch(
 // Live elapsed clock for the active turn HUD.
 const nowMs = ref(Date.now());
 const timer = setInterval(() => { nowMs.value = Date.now(); }, 1000);
-onUnmounted(() => clearInterval(timer));
+
+// Playful rotating status line in the turn HUD while a turn runs (à la Claude
+// Code / HAPI's "vibing messages"). Pool is locale-aware (chat.workingQuips);
+// pick randomly per turn, rotate every 20s without immediate repeats, fall back
+// to the short localized "Working" label when the pool is empty. Purely
+// cosmetic; the 1Hz elapsed clock stays on its own always-on interval.
+const hudQuip = ref("");
+let quipTimer: ReturnType<typeof setInterval> | null = null;
+const QUIP_ROTATE_MS = 20000;
+function rotateHudQuip(): void {
+  const quips = parseQuips(t("chat.workingQuips"));
+  if (quips.length > 0) hudQuip.value = pickQuip(quips, hudQuip.value || undefined);
+}
+watch(
+  () => chat.busy,
+  (busy) => {
+    if (quipTimer) {
+      clearInterval(quipTimer);
+      quipTimer = null;
+    }
+    if (busy) {
+      rotateHudQuip();
+      quipTimer = setInterval(rotateHudQuip, QUIP_ROTATE_MS);
+    } else {
+      hudQuip.value = "";
+    }
+  },
+  { immediate: true },
+);
+// Re-pick on locale switch mid-turn so the HUD doesn't stick in the old
+// language until the next 20s rotation.
+watch(
+  () => t("chat.workingQuips"),
+  () => {
+    if (chat.busy) rotateHudQuip();
+  },
+);
+onUnmounted(() => {
+  clearInterval(timer);
+  if (quipTimer) clearInterval(quipTimer);
+});
 
 const elapsed = computed(() => {
   if (!chat.liveTurn) return "";
@@ -116,20 +159,7 @@ const elapsed = computed(() => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 });
 const runningTools = computed(() => chat.liveToolSteps.filter((t) => t.status === "running").length);
-
-// Whimsical near-synonyms cycled through while a turn runs (à la Claude Code / HAPI's
-// "vibing messages"). Purely cosmetic; reuses the 1Hz clock, rotating every ~10s on a
-// calm interval rather than re-rolling every frame. "Working" stays first for t≈0.
-const VERBS = [
-  "Working", "Thinking", "Pondering", "Cogitating", "Reasoning", "Computing",
-  "Churning", "Crunching", "Percolating", "Noodling", "Mulling", "Brewing",
-  "Processing", "Deliberating", "Ruminating", "Synthesizing", "Wrangling", "Tinkering",
-];
-const verb = computed(() => {
-  if (!chat.liveTurn) return VERBS[0];
-  const s = Math.max(0, Math.floor((nowMs.value - chat.liveTurn.startedAt) / 1000));
-  return VERBS[Math.floor(s / 10) % VERBS.length];
-});
+const hudStatus = computed(() => hudQuip.value || t("chat.mentionActivity.working"));
 </script>
 
 <template>
@@ -230,7 +260,7 @@ const verb = computed(() => {
           <div v-if="chat.busy" key="status-layer" data-test="turn-hud"
                class="stack-layer stack-layer--status relative z-10 mx-4 flex items-center gap-2 rounded-xl border border-run/20 bg-surface/95 px-3 pt-1.5 pb-[calc(0.375rem+var(--stack-overlap))] shadow-e2 backdrop-blur-md sm:mx-6">
             <span class="h-2 w-2 rounded-full bg-run pulse-dot" aria-hidden="true" />
-            <span class="text-[12px] font-semibold text-run">{{ verb }}…</span>
+            <span data-test="hud-quip" class="text-[12px] font-semibold text-run">{{ hudStatus }}…</span>
             <span class="font-mono text-[12px] font-semibold tabular-nums text-run">{{ elapsed }}</span>
             <span v-if="runningTools > 0" class="text-[11.5px] text-fg-muted">· {{ runningTools }} {{ runningTools === 1 ? $t("chat.tool") : $t("chat.tools") }}</span>
             <span class="flex-1" />

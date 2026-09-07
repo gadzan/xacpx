@@ -1,4 +1,4 @@
-// Playful status lines for the busy composer placeholder. The i18n catalog keeps
+// Playful status lines for the turn HUD while a turn runs. The i18n catalog keeps
 // values as plain strings, so the pool is stored as one newline-delimited string.
 export function parseQuips(raw: string | undefined | null): string[] {
   if (!raw) return [];

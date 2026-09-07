@@ -74,7 +74,9 @@ it("shows a working HUD while a live turn is active", async () => {
   const w = mount(ChatPane);
   await w.vm.$nextTick();
   expect(w.find('[data-test="turn-hud"]').exists()).toBe(true);
-  expect(w.find('[data-test="turn-hud"]').text()).toContain("Working");
+  // Quips render in the HUD status line, not the composer placeholder.
+  expect(w.find('[data-test="hud-quip"]').exists()).toBe(true);
+  expect(w.find('[data-test="hud-quip"]').text().length).toBeGreaterThan(0);
 });
 
 it("stacks status, plan, and composer as document-flow layers (status → plan → input)", async () => {
@@ -385,22 +387,28 @@ it("surfaces a create failure in the booting view with a dismiss action", async 
   expect(chat.sessionAlias).toBeNull();
 });
 
-it("cycles the working verb every ~10s while the turn runs", async () => {
+it("rotates a HUD quip every 20s while the turn runs, clears the timer when idle", async () => {
   vi.useFakeTimers();
-  vi.setSystemTime(0);
   const chat = useChatStore();
   chat.select("i1", "backend");
   chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "backend" } } as never);
   const w = mount(ChatPane);
   await w.vm.$nextTick();
-  expect(w.find('[data-test="turn-hud"]').text()).toContain("Working"); // bucket 0
-  vi.advanceTimersByTime(5000); // 5s → still bucket 0 on the calm ~10s cadence
+  const first = w.find('[data-test="hud-quip"]').text();
+  expect(first.length).toBeGreaterThan(1); // quip picked, not an empty fallback
+
+  vi.advanceTimersByTime(19000);
   await w.vm.$nextTick();
-  expect(w.find('[data-test="turn-hud"]').text()).toContain("Working");
-  vi.advanceTimersByTime(6000); // 11s total → bucket 1, also drives the 1Hz clock
+  expect(w.find('[data-test="hud-quip"]').text()).toBe(first); // calm cadence: no rotation before 20s
+
+  vi.advanceTimersByTime(1000);
   await w.vm.$nextTick();
-  const t = w.find('[data-test="turn-hud"]').text();
-  expect(t).not.toContain("Working");
-  expect(t).toContain("Thinking");
+  expect(w.find('[data-test="hud-quip"]').text()).not.toBe(first); // pickQuip never repeats immediately
+
+  chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "backend", ok: true } } as never);
+  await w.vm.$nextTick();
+  expect(w.find('[data-test="turn-hud"]').exists()).toBe(false);
+  w.unmount();
+  expect(vi.getTimerCount()).toBe(0); // quip interval must not survive unmount
   vi.useRealTimers();
 });

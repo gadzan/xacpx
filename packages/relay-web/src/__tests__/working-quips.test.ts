@@ -26,12 +26,9 @@ describe("working quips", () => {
     expect(pickQuip([], undefined)).toBe("");
   });
 
-  it("both locales ship a 20-entry unique quip pool plus an Esc suffix (catalog invariant)", () => {
-    const pools = [
-      { workingQuips: en.chat.workingQuips, escToStop: en.chat.escToStop },
-      { workingQuips: zhCN.chat.workingQuips, escToStop: zhCN.chat.escToStop },
-    ];
-    for (const { workingQuips, escToStop } of pools) {
+  it("both locales ship a 20-entry unique turn-HUD quip pool (catalog invariant)", () => {
+    const pools = [en.chat.workingQuips, zhCN.chat.workingQuips];
+    for (const workingQuips of pools) {
       // Inspect raw catalog lines: parseQuips dedupes, so routing the catalog
       // through it would mask accidental duplicate entries.
       const rawQuips = workingQuips
@@ -39,11 +36,12 @@ describe("working quips", () => {
         .map((q) => q.trim())
         .filter(Boolean);
       expect(rawQuips).toHaveLength(20);
-      expect(new Set(rawQuips).size).toBe(rawQuips.length);
+      const seen: Record<string, true> = {};
+      for (const q of rawQuips) seen[q] = true;
+      expect(Object.keys(seen)).toHaveLength(rawQuips.length);
       // vue-i18n reserves @ | { } in message syntax — quips must never use them.
       expect(rawQuips.every((q) => !/[@|{}]/.test(q))).toBe(true);
       expect(rawQuips.every((q) => q.length > 0 && q.length <= 40)).toBe(true);
-      expect(escToStop.length).toBeGreaterThan(0);
     }
   });
 });
