@@ -4,11 +4,25 @@ import { isAsyncAgentLaunchOutput } from "./background-followup.js";
 import { resolveToolEventMode } from "./tool-event-mode.js";
 import type { ToolEventMode } from "./tool-event-mode.js";
 import { TOOL_KIND_EMOJI, DEFAULT_TOOL_EMOJI } from "./tool-kind-emoji.js";
+import {
+  isRecord,
+  isEmptyToolField,
+  summarizeToolInput,
+  summarizeTaskInput,
+  cursorToolInput,
+  readFirstString,
+  readFirstStringArray,
+} from "./tool-summary.js";
+import {
+  createTranscriptTextBoundaryState,
+  markTranscriptActivity,
+  normalizeTranscriptTextChunk,
+  type TranscriptTextBoundaryState,
+} from "./transcript-text-boundary.js";
 
-export interface StreamingPromptState {
+export interface StreamingPromptState extends TranscriptTextBoundaryState {
   buffer: string;
   segments: string[];
-  hasAgentMessage: boolean;
   pendingLine: string;
   formatToolCalls: boolean;
   emittedToolCallIds: Set<string>;
@@ -30,9 +44,6 @@ export interface StreamingPromptState {
   // trades the batched paragraph model (good for discrete chat messages) for low
   // first-token latency and smooth token streaming.
   rawStream: boolean;
-  lastMessageId?: string;
-  lastTextTail: string;
-  activitySinceLastText: boolean;
   onBeforeActivityEvent?: () => void;
   onToolEvent?: (event: ToolUseEvent) => void | Promise<void>;
   onThought?: (chunk: string) => void | Promise<void>;
@@ -140,9 +151,9 @@ export function createStreamingPromptState(
   }
 
   return {
+    ...createTranscriptTextBoundaryState(),
     buffer: "",
     segments: [],
-    hasAgentMessage: false,
     pendingLine: "",
     formatToolCalls,
     emittedToolCallIds: new Set(),
@@ -152,8 +163,6 @@ export function createStreamingPromptState(
     toolEventMode,
     driver,
     rawStream,
-    lastTextTail: "",
-    activitySinceLastText: false,
     onBeforeActivityEvent,
     onToolEvent,
     onThought,
@@ -315,31 +324,15 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
 
   if (!isMessageChunk) return;
 
-  state.hasAgentMessage = true;
-  let chunk = update.content!.text ?? "";
-  if (chunk.length === 0) return;
+  const rawChunk = update.content!.text ?? "";
+  if (rawChunk.length === 0) return;
 
-  const messageId =
-    typeof update.messageId === "string" && update.messageId.length > 0
-      ? update.messageId
-      : undefined;
-  const messageIdChanged =
-    state.lastMessageId !== undefined &&
-    messageId !== undefined &&
-    state.lastMessageId !== messageId;
-  const fallbackBoundary =
-    state.activitySinceLastText &&
-    (state.lastMessageId === undefined || messageId === undefined) &&
-    endsWithSentenceTerminal(state.lastTextTail);
-  if ((messageIdChanged || fallbackBoundary) && !hasParagraphBoundaryAtJoin(state.lastTextTail, chunk)) {
-    chunk = `\n\n${chunk}`;
-    state.lastTextTail = "";
-  }
+  const chunk = normalizeTranscriptTextChunk(state, {
+    text: rawChunk,
+    messageId: update.messageId,
+  });
 
   state.buffer += chunk;
-  state.lastMessageId = messageId;
-  state.activitySinceLastText = false;
-  state.lastTextTail = `${state.lastTextTail}${chunk}`.slice(-256);
 
   // Raw streaming: leave the text in `buffer` untouched — the transport's short flush
   // timer drains it verbatim, so paragraph structure is preserved without splitting.
@@ -356,33 +349,10 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
   }
 }
 
-const SENTENCE_TERMINAL_AT_END =
-  /(?:\p{Sentence_Terminal}|…|⋯)[\p{Close_Punctuation}\p{Final_Punctuation}"“”‘’*_~`]*$/u;
-const PARAGRAPH_BOUNDARY_AT_END = /\r?\n[\t ]*\r?\n[\t ]*$/;
-const PARAGRAPH_BOUNDARY_AT_START = /^[\t ]*\r?\n[\t ]*\r?\n/;
-const LINE_BREAK_AT_END = /\r?\n[\t ]*$/;
-const LINE_BREAK_AT_START = /^[\t ]*\r?\n/;
-const PARTIAL_CRLF_PARAGRAPH_BOUNDARY_AT_END = /\r?\n[\t ]*\r$/;
-
-function endsWithSentenceTerminal(text: string): boolean {
-  return SENTENCE_TERMINAL_AT_END.test(text.trimEnd());
-}
-
-function hasParagraphBoundaryAtJoin(left: string, right: string): boolean {
-  const leftHasBoundary = PARAGRAPH_BOUNDARY_AT_END.test(left);
-  const rightHasBoundary = PARAGRAPH_BOUNDARY_AT_START.test(right);
-  const boundarySpansJoin =
-    LINE_BREAK_AT_END.test(left) &&
-    LINE_BREAK_AT_START.test(right);
-  const crlfBoundarySpansJoin =
-    PARTIAL_CRLF_PARAGRAPH_BOUNDARY_AT_END.test(left) &&
-    right.startsWith("\n");
-  return leftHasBoundary || rightHasBoundary || boundarySpansJoin || crlfBoundarySpansJoin;
-}
 
 function markActivityBoundary(state: StreamingPromptState): void {
   flushBeforeActivityEvent(state);
-  state.activitySinceLastText = state.hasAgentMessage;
+  markTranscriptActivity(state);
 }
 
 function flushBeforeActivityEvent(state: StreamingPromptState): void {
@@ -417,17 +387,6 @@ function formatToolCallEvent(update: NonNullable<StreamEvent["params"]>["update"
 /** Accumulated raw tool-call fields across partial ACP `tool_call_update` frames. */
 export type MergedToolUpdate = NonNullable<NonNullable<StreamEvent["params"]>["update"]>;
 
-/** True for values that carry no information and so must NOT clobber a prior value:
- *  undefined/null, blank strings, and empty objects/arrays. acpx's initial `tool_call`
- *  frame ships empty `content: []` / `rawInput: {}`, and a terminal frame omits fields
- *  entirely — neither should erase data a richer in-progress frame already supplied. */
-function isEmptyToolField(v: unknown): boolean {
-  if (v === undefined || v === null) return true;
-  if (typeof v === "string") return v.trim().length === 0;
-  if (Array.isArray(v)) return v.length === 0;
-  if (typeof v === "object") return Object.keys(v as object).length === 0;
-  return false;
-}
 
 /** Merge a partial update into the per-toolCallId accumulator (present, non-empty
  *  fields override; absent/empty fields keep the prior value) and return the merged
@@ -720,16 +679,10 @@ function normalizePlanPriority(value: unknown): PlanEntry["priority"] | undefine
   return value;
 }
 
-function cursorToolInput(rawInput: unknown): Record<string, unknown> | undefined {
-  if (!isRecord(rawInput)) return undefined;
-  if (isRecord(rawInput.args)) return rawInput.args;
-  return rawInput;
-}
 
 function normalizeCursorToolName(title: string | undefined): string {
   return (title ?? "").trim().toLowerCase().replace(/[\s_-]+/g, "");
 }
-
 /** cursor-agent labels a call with a display `title` ("Update TODOs", "Read File")
  *  and puts the machine name in `rawInput._toolName` ("updateTodos"). Match on the
  *  machine name first — the display title is prose and varies between releases. */
@@ -749,7 +702,7 @@ function normalizeToolKind(
 ): ToolUseKind {
   const kindRaw = update?.kind?.trim().toLowerCase() ?? "";
   switch (kindRaw) {
-    case "read": case "search": case "execute": case "edit": case "think": return kindRaw;
+    case "read": case "search": case "execute": case "edit": case "delete": case "move": case "fetch": case "think": return kindRaw;
   }
   if (driver !== "cursor") return "other";
   switch (cursorToolIdentity(update ?? {})) {
@@ -794,7 +747,6 @@ function isCursorSubagentInput(rawInput: unknown, title: string): boolean {
   return input !== undefined
     && readFirstString(input, ["subagent_type", "subagentType", "agent", "agentType", "prompt", "instructions"]) !== undefined;
 }
-
 function isKimiSubagentInput(rawInput: unknown): boolean {
   return isRecord(rawInput)
     && readFirstString(rawInput, ["prompt"]) !== undefined
@@ -808,105 +760,6 @@ function isCodexSubagentMeta(meta: { threadId?: string; activity?: string } | un
     && meta.activity.trim().length > 0;
 }
 
-function summarizeToolInput(rawInput: unknown, title = ""): string | undefined {
-  if (rawInput == null) return undefined;
-  if (typeof rawInput === "string" || typeof rawInput === "number" || typeof rawInput === "boolean") {
-    return String(rawInput);
-  }
-  if (!isRecord(rawInput)) return undefined;
-
-  const nestedInput = cursorToolInput(rawInput);
-  if (nestedInput !== rawInput) {
-    const nestedSummary = summarizeToolInput(nestedInput, title);
-    if (nestedSummary) return nestedSummary;
-  }
-
-  const taskSummary = summarizeTaskInput(rawInput, title);
-  if (taskSummary) return taskSummary;
-
-  const command = readFirstString(rawInput, ["command", "cmd", "program"]);
-  const args = readFirstStringArray(rawInput, ["args", "arguments"]);
-  if (command) {
-    return [command, ...(args ?? [])].join(" ");
-  }
-
-  const parsedCmd = rawInput.parsed_cmd;
-  if (Array.isArray(parsedCmd) && parsedCmd.length > 0) {
-    const parts: string[] = [];
-    for (const entry of parsedCmd) {
-      if (isRecord(entry) && typeof entry.cmd === "string" && entry.cmd.length > 0) {
-        parts.push(entry.cmd);
-      }
-    }
-    if (parts.length > 0) {
-      return parts.join(" ");
-    }
-  }
-
-  const globPattern = readFirstString(rawInput, ["glob_pattern"]);
-  if (globPattern) {
-    const targetDirectory = readFirstString(rawInput, ["target_directory"]);
-    return targetDirectory ? `${globPattern} in ${targetDirectory}` : globPattern;
-  }
-
-  const mode = readFirstString(rawInput, ["target_mode_id", "mode_id"]);
-  const explanation = readFirstString(rawInput, ["explanation"]);
-  if (mode || explanation) {
-    return mode && explanation ? `${mode}: ${explanation}` : mode ?? explanation;
-  }
-
-  return readFirstString(rawInput, [
-    "path",
-    "file",
-    "filePath",
-    "filepath",
-    "file_path",
-    "target",
-    "uri",
-    "url",
-    "query",
-    "pattern",
-    "text",
-    "search",
-    "working_directory",
-    "name",
-    "description",
-  ]);
-}
-
-function summarizeTaskInput(rawInput: Record<string, unknown>, title: string): string | undefined {
-  const subagentType = readFirstString(rawInput, ["subagent_type", "subagentType", "agent", "agentType"]);
-  const description = readFirstString(rawInput, ["description", "task", "summary"]);
-  if (subagentType && description) {
-    return description === title ? subagentType : `${subagentType}: ${description}`;
-  }
-  if (subagentType) return subagentType;
-  return undefined;
-}
-
-function readFirstString(record: Record<string, unknown>, keys: readonly string[]): string | undefined {
-  for (const key of keys) {
-    const value = record[key];
-    if (typeof value === "string" && value.trim().length > 0) {
-      return value.trim();
-    }
-  }
-  return undefined;
-}
-
-function readFirstStringArray(record: Record<string, unknown>, keys: readonly string[]): string[] | undefined {
-  for (const key of keys) {
-    const value = record[key];
-    if (!Array.isArray(value)) continue;
-    const entries = value
-      .map((entry) => (typeof entry === "string" && entry.trim().length > 0 ? entry.trim() : undefined))
-      .filter((entry): entry is string => entry !== undefined);
-    if (entries.length > 0) {
-      return entries;
-    }
-  }
-  return undefined;
-}
 
 const USAGE_BREAKDOWN_FIELDS: ReadonlyArray<readonly [keyof UsageBreakdown, readonly string[]]> = [
   ["inputTokens", ["inputTokens", "input_tokens"]],
@@ -960,9 +813,6 @@ function normalizeAgentCommands(value: unknown): AgentCommand[] {
   return out;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function readString(rawInput: unknown, key: string): string | undefined {
   if (!isRecord(rawInput)) return undefined;

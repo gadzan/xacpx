@@ -9,7 +9,22 @@ export type XacpxNonInteractivePermissions = "deny" | "fail";
 
 /** Streamed runtime turn event, shaped for the bridge prompt.* mapping. */
 export type XacpxRuntimeEvent =
-  | { type: "text_delta"; text: string; stream?: "output" | "thought" }
+  | {
+      type: "text_delta";
+      text: string;
+      stream?: "output" | "thought";
+      tag?: string;
+      messageId?: string;
+      /**
+       * Producer-supplied routing hint (e.g. subagent / worker origin);
+       * never use for auth or authorization boundaries.
+       */
+      meta?: {
+        origin?: string;
+        kind?: string;
+        source?: string;
+      };
+    }
   | {
       type: "status";
       text: string;
@@ -23,6 +38,7 @@ export type XacpxRuntimeEvent =
   | {
       type: "tool_call";
       text: string;
+      tag?: string;
       toolCallId?: string;
       status?: string;
       title?: string;

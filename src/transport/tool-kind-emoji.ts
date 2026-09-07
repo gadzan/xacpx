@@ -5,6 +5,9 @@ export const TOOL_KIND_EMOJI: Record<ToolUseKind, string> = {
   search: "\u{1F50D}",
   execute: "\u{1F4BB}",
   edit: "\u{270F}\u{FE0F}",
+  delete: "\u{1F5D1}\u{FE0F}",
+  move: "\u{1F4E6}",
+  fetch: "\u{1F310}",
   think: "\u{1F9E0}",
   other: "\u{1F527}",
 };

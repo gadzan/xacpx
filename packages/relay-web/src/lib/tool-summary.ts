@@ -1,5 +1,5 @@
 import type { Component } from "vue";
-import { BookOpen, Search, SquareTerminal, Pencil, Brain, Wrench, Loader2, Check, X } from "lucide-vue-next";
+import { BookOpen, Search, SquareTerminal, Pencil, Brain, Trash2, FolderInput, Globe, Wrench, Loader2, Check, X } from "lucide-vue-next";
 import type { ToolStepDto, ToolStepKind, ToolStepStatus } from "@ganglion/xacpx-relay-protocol";
 
 /** Shared icon tables + a pure step-summarizer for ToolCallPanel. Borrowed from
@@ -12,6 +12,9 @@ export const KIND_ICON: Record<ToolStepKind, Component> = {
   execute: SquareTerminal,
   edit: Pencil,
   think: Brain,
+  delete: Trash2,
+  move: FolderInput,
+  fetch: Globe,
   other: Wrench,
 };
 
@@ -21,7 +24,7 @@ export const STATUS_ICON: Record<ToolStepStatus, Component> = {
   error: X,
 };
 
-const KIND_ORDER: ToolStepKind[] = ["read", "search", "execute", "edit", "think", "other"];
+const KIND_ORDER: ToolStepKind[] = ["read", "search", "execute", "edit", "think", "delete", "move", "fetch", "other"];
 const STATUS_ORDER: ToolStepStatus[] = ["running", "success", "error"];
 
 /** Only long legacy groups need the first-use hint; every group starts collapsed. */

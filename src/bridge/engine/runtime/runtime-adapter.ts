@@ -31,6 +31,15 @@ import type {
   XacpxTurnHandle,
   XacpxTurnResult,
 } from "./runtime-contract";
+import {
+  normalizeRuntimeToolCallEvent,
+  type RuntimeToolCallSnapshot,
+} from "./runtime-tool-call-merge";
+import {
+  createTranscriptTextBoundaryState,
+  markTranscriptActivity,
+  normalizeTranscriptTextChunk,
+} from "../../../transport/transcript-text-boundary.js";
 
 export type XacpxMcpServers = AcpRuntimeOptions["mcpServers"];
 export type XacpxPermissionRequest = AcpPermissionRequest;
@@ -161,10 +170,51 @@ export function createXacpxRuntimeAdapter(options: CreateXacpxRuntimeAdapterOpti
   };
 }
 
-async function* mapEvents(events: AsyncIterable<AcpRuntimeEvent>): AsyncIterable<XacpxRuntimeEvent> {
+function normalizeTextDeltaMeta(
+  meta: unknown,
+): { origin?: string; kind?: string; source?: string } | undefined {
+  if (!meta || typeof meta !== "object") return undefined;
+  const raw = meta as Record<string, unknown>;
+  const result: { origin?: string; kind?: string; source?: string } = {};
+  if (typeof raw.origin === "string" && raw.origin.length > 0) result.origin = raw.origin;
+  if (typeof raw.kind === "string" && raw.kind.length > 0) result.kind = raw.kind;
+  if (typeof raw.source === "string" && raw.source.length > 0) result.source = raw.source;
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+export async function* mapEvents(events: AsyncIterable<AcpRuntimeEvent>): AsyncIterable<XacpxRuntimeEvent> {
+  const toolCalls = new Map<string, RuntimeToolCallSnapshot>();
+  const textBoundary = createTranscriptTextBoundaryState();
+
   for await (const event of events) {
     if (event.type === "text_delta") {
-      yield { type: "text_delta", text: event.text, ...(event.stream ? { stream: event.stream } : {}) };
+      const isThought = event.stream === "thought";
+      if (isThought) {
+        markTranscriptActivity(textBoundary);
+        const meta = normalizeTextDeltaMeta(event.meta);
+        yield {
+          type: "text_delta",
+          text: event.text,
+          stream: "thought",
+          ...(event.tag ? { tag: event.tag } : {}),
+          ...(event.messageId ? { messageId: event.messageId } : {}),
+          ...(meta ? { meta } : {}),
+        };
+      } else {
+        const text = normalizeTranscriptTextChunk(textBoundary, {
+          text: event.text,
+          messageId: event.messageId,
+        });
+        const meta = normalizeTextDeltaMeta(event.meta);
+        yield {
+          type: "text_delta",
+          text,
+          ...(event.stream ? { stream: event.stream } : {}),
+          ...(event.tag ? { tag: event.tag } : {}),
+          ...(event.messageId ? { messageId: event.messageId } : {}),
+          ...(meta ? { meta } : {}),
+        };
+      }
     } else if (event.type === "status") {
       yield {
         type: "status",
@@ -177,9 +227,16 @@ async function* mapEvents(events: AsyncIterable<AcpRuntimeEvent>): AsyncIterable
         ...(event.availableCommands ? { availableCommands: event.availableCommands } : {}),
       };
     } else if (event.type === "tool_call") {
-      yield {
+      const isInitialToolEvent = typeof event.toolCallId === "string"
+        ? !toolCalls.has(event.toolCallId)
+        : event.tag !== "tool_call_update";
+      if (isInitialToolEvent) {
+        markTranscriptActivity(textBoundary);
+      }
+      yield normalizeRuntimeToolCallEvent(toolCalls, {
         type: "tool_call",
         text: event.text,
+        ...(event.tag ? { tag: event.tag } : {}),
         ...(event.toolCallId ? { toolCallId: event.toolCallId } : {}),
         ...(event.status ? { status: event.status } : {}),
         ...(event.title ? { title: event.title } : {}),
@@ -188,7 +245,7 @@ async function* mapEvents(events: AsyncIterable<AcpRuntimeEvent>): AsyncIterable
         ...(event.rawInput !== undefined ? { rawInput: event.rawInput } : {}),
         ...(event.rawOutput !== undefined ? { rawOutput: event.rawOutput } : {}),
         ...(event.content !== undefined ? { content: event.content } : {}),
-      };
+      });
     }
     // "done"/"error" only surface via runTurn(); startTurn uses .result instead.
   }

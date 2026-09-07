@@ -1,11 +1,12 @@
 import { test, expect, mock } from "bun:test";
+import { AcpxQueueOwnerLauncher } from "../../../src/transport/acpx-queue-owner-launcher";
 
 const terminate = mock(async (_sessionId: string) => {});
 // Stub the launcher helper; bridge-runtime imports it from
 // "../transport/acpx-queue-owner-launcher". Re-export AcpxQueueOwnerLauncher so
 // the runtime's other import from that module still resolves.
 mock.module("../../../src/transport/acpx-queue-owner-launcher", () => ({
-  AcpxQueueOwnerLauncher: class {},
+  AcpxQueueOwnerLauncher,
   terminateAcpxQueueOwner: terminate,
 }));
 

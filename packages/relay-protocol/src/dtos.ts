@@ -129,7 +129,15 @@ export interface OrchestrationTaskDto {
 
 export type ToolStepStatus = "running" | "success" | "error";
 export type ToolStepKind =
-  "read" | "search" | "execute" | "edit" | "think" | "other";
+  | "read"
+  | "search"
+  | "execute"
+  | "edit"
+  | "delete"
+  | "move"
+  | "fetch"
+  | "think"
+  | "other";
 
 /** Friendly, presentation-ready detail for one tool call (no raw JSON crosses the wire). */
 export type ToolDetailDto =
