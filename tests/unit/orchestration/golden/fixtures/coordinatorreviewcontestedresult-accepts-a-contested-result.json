@@ -88,7 +88,9 @@
           "coordinatorSession": "backend:main",
           "workspace": "backend",
           "targetAgent": "claude",
-          "guardAcpOutput": true
+          "guardAcpOutput": true,
+          "logicalSessionId": "lid-1",
+          "transportEngine": "cli"
         }
       },
       "groups": {},
@@ -113,6 +115,43 @@
     {
       "port": "loadState",
       "request": null
+    },
+    {
+      "port": "loadState",
+      "request": null
+    },
+    {
+      "port": "resolveWorkerBindingEngine",
+      "request": {
+        "workerSession": "backend:claude:backend:main",
+        "targetAgent": "claude",
+        "workspace": "backend"
+      }
+    },
+    {
+      "port": "saveState",
+      "request": {
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": [],
+        "groups": [],
+        "humanQuestionPackages": [],
+        "tasks": [],
+        "workerBindings": [
+          {
+            "key": "backend:claude:backend:main",
+            "value": {
+              "sourceHandle": "backend:claude:backend:main",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude",
+              "guardAcpOutput": true,
+              "logicalSessionId": "lid-1",
+              "transportEngine": "cli"
+            }
+          }
+        ]
+      }
     },
     {
       "port": "ensureWorkerSession",
@@ -177,7 +216,9 @@
               "coordinatorSession": "backend:main",
               "workspace": "backend",
               "targetAgent": "claude",
-              "guardAcpOutput": true
+              "guardAcpOutput": true,
+              "logicalSessionId": "lid-1",
+              "transportEngine": "cli"
             }
           }
         ]
@@ -275,7 +316,9 @@
               "coordinatorSession": "backend:main",
               "workspace": "backend",
               "targetAgent": "claude",
-              "guardAcpOutput": true
+              "guardAcpOutput": true,
+              "logicalSessionId": "lid-1",
+              "transportEngine": "cli"
             }
           }
         ]
@@ -364,7 +407,9 @@
               "coordinatorSession": "backend:main",
               "workspace": "backend",
               "targetAgent": "claude",
-              "guardAcpOutput": true
+              "guardAcpOutput": true,
+              "logicalSessionId": "lid-1",
+              "transportEngine": "cli"
             }
           }
         ]
@@ -468,7 +513,9 @@
               "coordinatorSession": "backend:main",
               "workspace": "backend",
               "targetAgent": "claude",
-              "guardAcpOutput": true
+              "guardAcpOutput": true,
+              "logicalSessionId": "lid-1",
+              "transportEngine": "cli"
             }
           }
         ]
@@ -589,7 +636,9 @@
               "coordinatorSession": "backend:main",
               "workspace": "backend",
               "targetAgent": "claude",
-              "guardAcpOutput": true
+              "guardAcpOutput": true,
+              "logicalSessionId": "lid-1",
+              "transportEngine": "cli"
             }
           }
         ]
@@ -711,7 +760,9 @@
               "coordinatorSession": "backend:main",
               "workspace": "backend",
               "targetAgent": "claude",
-              "guardAcpOutput": true
+              "guardAcpOutput": true,
+              "logicalSessionId": "lid-1",
+              "transportEngine": "cli"
             }
           }
         ]

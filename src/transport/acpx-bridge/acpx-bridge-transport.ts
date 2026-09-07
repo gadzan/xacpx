@@ -19,7 +19,8 @@ import {
 } from "../quota-gated-reply-sink";
 import { createSerializedCallbackQueue } from "../serialized-callback-queue";
 import { resolveToolEventMode } from "../tool-event-mode.js";
-import type { BridgeMethod } from "./acpx-bridge-protocol";
+import type { BridgeEngineCapabilities, BridgeMethod } from "./acpx-bridge-protocol";
+import { decodeBridgeEngineCapabilities } from "./acpx-bridge-protocol";
 import type { BridgeEvent } from "./acpx-bridge-client";
 
 interface BridgeRequestClient {
@@ -57,17 +58,9 @@ export class AcpxBridgeTransport implements SessionTransport {
   }
 
   async resumeAgentSession(session: ResolvedSession, agentSessionId: string): Promise<void> {
-    await this.client.request("resumeAgentSession", {
-      agent: session.agent,
-      driver: session.driver,
-      settingsPolicy: session.settingsPolicy,
-      ...(session.agentCommand ? { agentCommand: session.agentCommand } : {}),
-      ...(session.acpxAgent ? { acpxAgent: session.acpxAgent } : {}),
-      ...(session.rawCommand ? { rawCommand: session.rawCommand } : {}),
-      cwd: session.cwd,
-      name: session.transportSession,
-      agentSessionId,
-    });
+    // Identity + engine affinity MUST ride along (plan §48): a hand-built
+    // param set would silently re-key the session on the host side.
+    await this.client.request("resumeAgentSession", { ...this.toParams(session), agentSessionId });
   }
 
   async prompt(
@@ -280,6 +273,10 @@ export class AcpxBridgeTransport implements SessionTransport {
     await this.client.request("deleteSession", this.toParams(session));
   }
 
+  async releaseLogicalSession(session: ResolvedSession): Promise<void> {
+    await this.client.request("releaseLogicalSession", this.toParams(session));
+  }
+
   async freeWarmProcess(session: ResolvedSession): Promise<void> {
     await this.client.request("freeWarmProcess", this.toParams(session));
   }
@@ -305,6 +302,15 @@ export class AcpxBridgeTransport implements SessionTransport {
   async updatePermissionPolicy(policy: PermissionPolicy): Promise<void> {
     await this.client.request("updatePermissionPolicy", { ...policy });
   }
+  async primeRuntimeQueues(sessions: ResolvedSession[]): Promise<void> {
+    await this.client.request("primeRuntimeQueues", {
+      sessions: sessions.map((s) => this.toParams(s)),
+    });
+  }
+  async getEngineCapabilities(): Promise<BridgeEngineCapabilities> {
+    const raw = await this.client.request<unknown>("getEngineCapabilities", {});
+    return decodeBridgeEngineCapabilities(raw);
+  }
   async dispose(): Promise<void> {
     await this.client.dispose?.();
   }
@@ -323,6 +329,9 @@ export class AcpxBridgeTransport implements SessionTransport {
       mcpCoordinatorSession: session.mcpCoordinatorSession,
       mcpSourceHandle: session.mcpSourceHandle,
       replyMode: session.effectiveReplyMode ?? session.replyMode ?? "verbose",
+      // Stable worker-ownership identity + persisted engine affinity (plan §9.1/§48).
+      logicalSessionId: session.logicalSessionId,
+      transportEngine: session.transportEngine ?? "cli",
       ...(session.model?.trim() ? { model: session.model.trim() } : {}),
       ...(session.effort?.trim() ? { effort: session.effort.trim() } : {}),
     };

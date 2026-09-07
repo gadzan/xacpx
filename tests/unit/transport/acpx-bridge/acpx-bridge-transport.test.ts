@@ -41,11 +41,16 @@ test("proxies ensureSession through the bridge client", async () => {
     driver: undefined,
     settingsPolicy: undefined,
     agentCommand: "./node_modules/.bin/codex-acp",
+    acpxAgent: undefined,
+    rawCommand: undefined,
+    agentArgv: undefined,
     cwd: "/tmp/backend",
     name: "backend:api-fix",
     mcpCoordinatorSession: undefined,
     mcpSourceHandle: undefined,
     replyMode: "verbose",
+    logicalSessionId: undefined,
+    transportEngine: "cli",
   }, undefined);
 });
 
@@ -342,13 +347,20 @@ test("proxies setMode through the bridge client", async () => {
 
   expect(request).toHaveBeenCalledWith("setMode", {
     agent: "codex",
+    driver: undefined,
+    settingsPolicy: undefined,
     agentCommand: "./node_modules/.bin/codex-acp",
+    acpxAgent: undefined,
+    rawCommand: undefined,
+    agentArgv: undefined,
     cwd: "/tmp/backend",
     name: "backend:api-fix",
-    modeId: "plan",
     mcpCoordinatorSession: undefined,
     mcpSourceHandle: undefined,
     replyMode: "verbose",
+    logicalSessionId: undefined,
+    transportEngine: "cli",
+    modeId: "plan",
   });
 });
 
@@ -869,6 +881,73 @@ test("bridge transport proxies native session methods", async () => {
 
   expect(requests).toEqual([
     { method: "listAgentSessions", params: { agent: "codex", cwd: "/repo", filterCwd: "/repo" } },
-    { method: "resumeAgentSession", params: { agent: "codex", cwd: "/repo", name: "project:codex", agentSessionId: "thread-1" } },
+    {
+      method: "resumeAgentSession",
+      params: {
+        agent: "codex",
+        driver: undefined,
+        settingsPolicy: undefined,
+        agentCommand: undefined,
+        acpxAgent: undefined,
+        rawCommand: undefined,
+        agentArgv: undefined,
+        cwd: "/repo",
+        name: "project:codex",
+        mcpCoordinatorSession: undefined,
+        mcpSourceHandle: undefined,
+        replyMode: "verbose",
+        logicalSessionId: undefined,
+        transportEngine: "cli",
+        agentSessionId: "thread-1",
+      },
+    },
+  ]);
+});
+
+test("bridge transport proxies primeRuntimeQueues mapping sessions to EngineSessionInput shape", async () => {
+  const requests: Array<{ method: string; params: unknown }> = [];
+  const transport = new AcpxBridgeTransport({
+    request: async (method, params) => {
+      requests.push({ method, params });
+      return {};
+    },
+  });
+
+  const runtimeSession: ResolvedSession = {
+    alias: "runtime-demo",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "backend:runtime-demo",
+    cwd: "/tmp/backend",
+    logicalSessionId: "log-sess-1",
+    transportEngine: "runtime",
+  };
+
+  await transport.primeRuntimeQueues([runtimeSession]);
+
+  expect(requests).toEqual([
+    {
+      method: "primeRuntimeQueues",
+      params: {
+        sessions: [
+          {
+            agent: "codex",
+            driver: undefined,
+            settingsPolicy: undefined,
+            agentCommand: undefined,
+            acpxAgent: undefined,
+            rawCommand: undefined,
+            agentArgv: undefined,
+            cwd: "/tmp/backend",
+            name: "backend:runtime-demo",
+            mcpCoordinatorSession: undefined,
+            mcpSourceHandle: undefined,
+            replyMode: "verbose",
+            logicalSessionId: "log-sess-1",
+            transportEngine: "runtime",
+          },
+        ],
+      },
+    },
   ]);
 });

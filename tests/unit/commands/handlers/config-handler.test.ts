@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigStore } from "../../../../src/config/config-store";
+import { AsyncMutex } from "../../../../src/orchestration/async-mutex";
 import { handleConfigSet } from "../../../../src/commands/handlers/config-handler";
 import { setLocale } from "../../../../src/i18n";
 
@@ -30,6 +31,7 @@ async function makeContext() {
       replaceConfig: (c: any) => {
         replaced.push(c);
       },
+      configMutationMutex: new AsyncMutex(),
     } as any,
     async cleanup() {
       await rm(dir, { recursive: true, force: true });

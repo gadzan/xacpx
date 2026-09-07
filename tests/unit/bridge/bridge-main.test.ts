@@ -1,6 +1,19 @@
 import { expect, test } from "bun:test";
 
-import { processBridgeInput } from "../../../src/bridge/bridge-main";
+import { processBridgeInput, resolveBridgeSharedConfig } from "../../../src/bridge/bridge-main";
+
+test("resolveBridgeSharedConfig carries queueOwnerTtlSeconds through, including explicit 0", () => {
+  const zero = resolveBridgeSharedConfig((name) =>
+    name === "BRIDGE_QUEUE_OWNER_TTL_SECONDS" ? "0" : undefined,
+  );
+  expect(zero.queueOwnerTtlSeconds).toBe(0);
+  const unset = resolveBridgeSharedConfig(() => undefined);
+  expect(unset.queueOwnerTtlSeconds).toBeUndefined();
+  const configured = resolveBridgeSharedConfig((name) =>
+    name === "BRIDGE_QUEUE_OWNER_TTL_SECONDS" ? "1800" : undefined,
+  );
+  expect(configured.queueOwnerTtlSeconds).toBe(1800);
+});
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;

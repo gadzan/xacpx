@@ -1,4 +1,5 @@
 import type { NonInteractivePermissions, PermissionMode } from "../config/types";
+import type { SessionTransportEngine } from "../state/types";
 import type { ClaudeSettingsPolicy } from "../adapters/claude-settings-policy";
 import type { QuotaManager } from "../weixin/messaging/quota-manager.js";
 import type { PlanEntry, ToolUseEvent } from "../channels/types.js";
@@ -102,8 +103,12 @@ export interface ResolvedSession {
   agentSessionTitle?: string;
   agentSessionUpdatedAt?: string;
   attachedAt?: string;
+  /** Immutable logical-session identity; sent as bridge logicalSessionId (plan §9.1). */
+  logicalSessionId?: string;
   mcpCoordinatorSession?: string;
   mcpSourceHandle?: string;
+  /** Bridge engine affinity resolved for this session ("cli" | "runtime"). */
+  transportEngine?: SessionTransportEngine;
   modeId?: string;
   replyMode?: "stream" | "final" | "verbose";
   /**
@@ -265,6 +270,15 @@ export interface SessionTransport {
    * that can't delete omit it. A missing acpx session is a no-op (idempotent).
    */
   deleteSession?(session: ResolvedSession): Promise<void>;
+  /**
+   * Release one logical alias's engine-side state WITHOUT touching the
+   * shared physical session: terminate/release its worker, retire its fence
+   * ownership, drop its queue journal/catalog/timers — but keep the acpx
+   * record and history (a sibling alias still owns them). Fails closed
+   * while the alias has an active turn (caller keeps the logical row).
+   * Optional: transports without per-logical engine state omit it.
+   */
+  releaseLogicalSession?(session: ResolvedSession): Promise<void>;
   /**
    * Terminate the warm queue-owner process for this session, freeing its
    * resources, WITHOUT closing the acpx session (no `closed` flag, no metadata

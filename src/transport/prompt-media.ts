@@ -109,7 +109,7 @@ const defaultStructuredPromptFileDeps: StructuredPromptFileDeps = {
   tmpdir: defaultTmpdir,
 };
 
-async function readImageFileBounded(filePath: string, maxBytes: number): Promise<Buffer> {
+export async function readImageFileBounded(filePath: string, maxBytes: number): Promise<Buffer> {
   const handle = await open(filePath, "r");
   try {
     const imageStats = await handle.stat();

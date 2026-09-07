@@ -7,6 +7,7 @@ export type BridgeMethod =
   | "ping"
   | "shutdown"
   | "updatePermissionPolicy"
+  | "primeRuntimeQueues"
   | "ensureSession"
   | "hasSession"
   | "tailSessionHistory"
@@ -22,9 +23,11 @@ export type BridgeMethod =
   | "cancel"
   | "removeSession"
   | "deleteSession"
+  | "releaseLogicalSession"
   | "freeWarmProcess"
   | "isSessionWarm"
-  | "getAgentSessionId";
+  | "getAgentSessionId"
+  | "getEngineCapabilities";
 
 export interface BridgeRequest {
   id: string;
@@ -32,12 +35,53 @@ export interface BridgeRequest {
   params: Record<string, unknown>;
 }
 
+export interface BridgeEngineCapabilities {
+  runtimeAvailable: boolean;
+  runtimeImportOk: boolean;
+  contractProbeOk: boolean;
+  acpxVersion?: string;
+  reason?: string;
+}
+
+/**
+ * Strict decoder for getEngineCapabilities responses. The capability probe is
+ * a fail-safe gate: anything that is not a well-formed object (missing or
+ * non-boolean signals) throws, so the daemon pins a known-bad capability
+ * instead of treating an unknown response as Runtime available.
+ */
+export function decodeBridgeEngineCapabilities(value: unknown): BridgeEngineCapabilities {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("invalid engine capabilities response: expected an object");
+  }
+  const record = value as Record<string, unknown>;
+  for (const field of ["runtimeAvailable", "runtimeImportOk", "contractProbeOk"] as const) {
+    if (typeof record[field] !== "boolean") {
+      throw new Error(`invalid engine capabilities response: "${field}" must be a boolean`);
+    }
+  }
+  if (record.acpxVersion !== undefined && typeof record.acpxVersion !== "string") {
+    throw new Error('invalid engine capabilities response: "acpxVersion" must be a string');
+  }
+  if (record.reason !== undefined && typeof record.reason !== "string") {
+    throw new Error('invalid engine capabilities response: "reason" must be a string');
+  }
+  return {
+    runtimeAvailable: record.runtimeAvailable as boolean,
+    runtimeImportOk: record.runtimeImportOk as boolean,
+    contractProbeOk: record.contractProbeOk as boolean,
+    ...(typeof record.acpxVersion === "string" ? { acpxVersion: record.acpxVersion } : {}),
+    ...(typeof record.reason === "string" ? { reason: record.reason } : {}),
+  };
+}
+
 export type BridgeOriginatedMethod =
   | "registerAdapterIntent"
   | "launcherSpawned"
   | "cancelAdapterIntent"
   | "launchSettled"
-  | "resolveAdapterCommand";
+  | "resolveAdapterCommand"
+  | "resolvePermissionRequest"
+  | "resolveElicitationRequest";
 
 export interface BridgeOriginatedRequest {
   direction: "bridge-to-daemon";
@@ -70,6 +114,27 @@ export interface LaunchSettledParams extends AdapterTokenParams {
   ownerAcpxRecordId?: string;
 }
 export interface ResolveAdapterCommandParams { id: string; sessionKey: string; agentCommand: string }
+export interface ResolvePermissionRequestParams {
+  logicalSessionId: string;
+  sessionKey: string;
+  requestId: string;
+  toolCallId: string;
+  title?: string;
+  kind?: string;
+  rawInput?: unknown;
+  policyGeneration: number;
+  workerGeneration: string;
+}
+export interface ResolveElicitationRequestParams {
+  logicalSessionId: string;
+  sessionKey: string;
+  requestId: string;
+  elicitationId: string;
+  mode: string;
+  message: unknown;
+  policyGeneration: number;
+  workerGeneration: string;
+}
 
 export interface BridgeOriginatedParams {
   registerAdapterIntent: RegisterAdapterIntentParams;
@@ -77,6 +142,8 @@ export interface BridgeOriginatedParams {
   cancelAdapterIntent: AdapterTokenParams;
   launchSettled: LaunchSettledParams;
   resolveAdapterCommand: ResolveAdapterCommandParams;
+  resolvePermissionRequest: ResolvePermissionRequestParams;
+  resolveElicitationRequest: ResolveElicitationRequestParams;
 }
 
 const LAUNCH_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -87,25 +154,49 @@ export function decodeBridgeOriginatedRequest(value: unknown): BridgeOriginatedR
   if (item.direction !== "bridge-to-daemon" || typeof item.rpcId !== "string" || !item.rpcId
     || typeof item.method !== "string" || !item.params || typeof item.params !== "object" || Array.isArray(item.params)) return null;
   const params = item.params as Record<string, unknown>;
-  if (typeof params.id !== "string" || !params.id || typeof params.sessionKey !== "string" || !params.sessionKey) return null;
   switch (item.method as BridgeOriginatedMethod) {
     case "registerAdapterIntent":
+      if (typeof params.id !== "string" || !params.id || typeof params.sessionKey !== "string" || !params.sessionKey) return null;
       if (typeof params.agentCommand !== "string" || !params.agentCommand || !validTokenParams(params)
         || !Number.isSafeInteger(params.launcherPid) || Number(params.launcherPid) <= 0
         || parseCanonicalFileTime(params.launcherCreationDate) === null) return null;
       break;
     case "launcherSpawned":
     case "cancelAdapterIntent":
+      if (typeof params.id !== "string" || !params.id || typeof params.sessionKey !== "string" || !params.sessionKey) return null;
       if (!validTokenParams(params)) return null;
       break;
     case "launchSettled":
+      if (typeof params.id !== "string" || !params.id || typeof params.sessionKey !== "string" || !params.sessionKey) return null;
       if (!validTokenParams(params) || (params.outcome !== "owner-committed" && params.outcome !== "launch-failed")) return null;
       if (params.outcome === "owner-committed"
         && (!Number.isSafeInteger(params.ownerPid) || Number(params.ownerPid) <= 0
           || typeof params.ownerAcpxRecordId !== "string" || !params.ownerAcpxRecordId)) return null;
       break;
     case "resolveAdapterCommand":
+      if (typeof params.id !== "string" || !params.id || typeof params.sessionKey !== "string" || !params.sessionKey) return null;
       if (typeof params.agentCommand !== "string" || !params.agentCommand || "intentToken" in params) return null;
+      break;
+    case "resolvePermissionRequest":
+      if (
+        typeof params.logicalSessionId !== "string" || !params.logicalSessionId ||
+        typeof params.sessionKey !== "string" || !params.sessionKey ||
+        typeof params.requestId !== "string" || !params.requestId ||
+        typeof params.toolCallId !== "string" || !params.toolCallId ||
+        typeof params.policyGeneration !== "number" ||
+        typeof params.workerGeneration !== "string" || !params.workerGeneration
+      ) return null;
+      break;
+    case "resolveElicitationRequest":
+      if (
+        typeof params.logicalSessionId !== "string" || !params.logicalSessionId ||
+        typeof params.sessionKey !== "string" || !params.sessionKey ||
+        typeof params.requestId !== "string" || !params.requestId ||
+        typeof params.elicitationId !== "string" || !params.elicitationId ||
+        typeof params.mode !== "string" || !params.mode ||
+        typeof params.policyGeneration !== "number" ||
+        typeof params.workerGeneration !== "string" || !params.workerGeneration
+      ) return null;
       break;
     default:
       return null;

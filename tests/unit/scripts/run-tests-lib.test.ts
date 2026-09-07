@@ -30,6 +30,7 @@ test("builds a test plan with typecheck before unit tests", () => {
     resolve("tests/unit/b.test.ts"),
   ])).toEqual([
     { command: "node", args: ["./node_modules/typescript/bin/tsc", "--noEmit"] },
+    { command: "node", args: ["./scripts/lint-acpx-imports.mjs"] },
     { command: "bun", args: ["test", resolve("tests/unit/a.test.ts")] },
     { command: "bun", args: ["test", resolve("tests/unit/b.test.ts")] },
   ]);

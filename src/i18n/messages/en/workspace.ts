@@ -21,6 +21,10 @@ export const workspace: WorkspaceMessages = {
   // handleWorkspaceRemove — removed confirmation
   removed: (name) => `Workspace "${name}" removed.`,
 
+  // handleWorkspaceRemove — still referenced by persisted sessions
+  stillReferenced: (name, aliases) =>
+    `Workspace "${name}" is still used by sessions: ${aliases}. Remove those sessions first.`,
+
   // workspaceHelp metadata
   helpSummary: "Manage registered workspaces.",
   helpCmdList: "/workspaces",

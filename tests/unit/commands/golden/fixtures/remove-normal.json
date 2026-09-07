@@ -4,9 +4,10 @@
     "sessions.getSession(\"relay:demo\")",
     "orchestration.listSessionBlockingTasks(\"backend:relay:demo\")",
     "sessions.countAliasesSharingTransport(\"backend:relay:demo\", \"relay:demo\")",
+    "sessions.findPhysicalSiblings(session(relay:demo/backend:relay:demo), \"relay:demo\")",
+    "transport.deleteSession(session(relay:demo/backend:relay:demo))",
     "sessions.removeSession(\"relay:demo\")",
-    "orchestration.purgeSessionReferences(\"backend:relay:demo\")",
-    "transport.deleteSession(session(relay:demo/backend:relay:demo))"
+    "orchestration.purgeSessionReferences(\"backend:relay:demo\")"
   ],
   "outcome": {
     "ok": {

@@ -4,6 +4,7 @@ import type { AppLogger } from "../logging/app-logger";
 import type { SessionService } from "../sessions/session-service";
 import type { AgentSession, ResolvedSession, SessionTransport } from "../transport/types";
 import { resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
+import { convergeProvisionalCreate, convergeProvisionalNativeAttach, removeAliasWithPhysicalLifecycle } from "./session-remove-lifecycle";
 import type { OrchestrationRouterOps } from "./router-types";
 import type { TransportInvoker } from "./transport-invoker";
 
@@ -63,54 +64,68 @@ export class SessionControlService {
 
     try {
       const stableTransportSession = `${workspace}:${finalInternalAlias}`;
-      const session = this.sessions.resolveSession(
+      const launchProbe = this.sessions.resolveSession(
         finalInternalAlias,
         agent,
         workspace,
         this.sessions.buildFreshTransportSession(stableTransportSession),
         { guardAcpOutput: true },
       );
-      // An explicit model override must be on the ResolvedSession BEFORE
-      // ensureTransportSession so acpx creates the session under that model
-      // (it carries through as `--model`). Mirrors handleSessionNew.
       const normalizedModel = model?.trim();
-      if (normalizedModel) {
-        session.model = normalizedModel;
-      }
-      // Reserve the stable coordinator identity rather than the incarnation-specific
-      // name. This preserves conflict detection with external coordinators while the
-      // transport name itself can rotate on every explicit create.
+      // R1 + coordinator TOCTOU: reserve BEFORE any logical row appears.
       const release = await this.reserveLogicalTransportSession(stableTransportSession);
+      let persisted: ResolvedSession;
+      let transportSucceeded = false;
       try {
-        await this.invoker.ensureTransportSession(session);
-        const exists = await this.invoker.checkTransportSession(session);
-        if (!exists) {
-          throw new Error(`transport session "${session.transportSession}" could not be verified`);
-        }
-        await this.sessions.attachSession(
-          finalInternalAlias,
-          agent,
-          workspace,
-          session.transportSession,
-          session.agentCommand,
-          session.acpxAgent,
-          session.agentArgv,
-        );
-        if (normalizedModel) {
-          await this.sessions.setSessionModel(finalInternalAlias, normalizedModel);
-        }
-        // Best-effort: a transient refresh failure must not fail a create that has
-        // already succeeded, bound, and verified. Mirrors the chat paths' use of
-        // refreshSessionTransportAgentCommandBestEffort.
         try {
-          await this.invoker.refreshSessionTransportAgentCommand(finalInternalAlias);
+          persisted = await this.sessions.attachSession(
+            finalInternalAlias,
+            agent,
+            workspace,
+            launchProbe.transportSession,
+            launchProbe.agentCommand,
+            launchProbe.acpxAgent,
+            launchProbe.agentArgv,
+          );
+          if (normalizedModel) {
+            await this.sessions.setSessionModel(finalInternalAlias, normalizedModel);
+            const refreshed = this.sessions.getResolvedSessionByInternalAlias(finalInternalAlias);
+            if (refreshed) persisted = refreshed;
+            else persisted.model = normalizedModel;
+          }
         } catch (error) {
-          await this.logger.error("session.agent_command_refresh_failed", "failed to refresh session agent command", {
-            alias: finalInternalAlias,
-            error: error instanceof Error ? error.message : String(error),
-          });
+          // Engine resolution fails before any owner — no ghost to rollback
+          throw error;
         }
-        return session;
+        if (normalizedModel) {
+          persisted.model = normalizedModel;
+        }
+        try {
+          await this.invoker.ensureTransportSession(persisted);
+          const exists = await this.invoker.checkTransportSession(persisted);
+          if (!exists) {
+            await this.cleanupProvisionalCreate(persisted, finalInternalAlias);
+            throw new Error(`transport session "${persisted.transportSession}" could not be verified`);
+          }
+          transportSucceeded = true;
+          // Best-effort: a transient refresh failure must not fail a create that has
+          // already succeeded, bound, and verified. Mirrors the chat paths' use of
+          // refreshSessionTransportAgentCommandBestEffort.
+          try {
+            await this.invoker.refreshSessionTransportAgentCommand(finalInternalAlias);
+          } catch (error) {
+            await this.logger.error("session.agent_command_refresh_failed", "failed to refresh session agent command", {
+              alias: finalInternalAlias,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return persisted;
+        } catch (error) {
+          if (!transportSucceeded) {
+            await this.cleanupProvisionalCreate(persisted, finalInternalAlias, error);
+          }
+          throw error;
+        }
       } finally {
         await release();
       }
@@ -119,6 +134,26 @@ export class SessionControlService {
     }
   }
 
+  /**
+   * Converge a failed create's provisional physical incarnation BEFORE the
+   * logical row disappears (shared primitive in session-remove-lifecycle: a
+   * daemon-side timeout is not a bridge-side cancellation). If the cleanup
+   * cannot be verified, the logical row is kept and the combined failure
+   * propagates for retry/delete.
+   */
+  private async cleanupProvisionalCreate(
+    persisted: ResolvedSession,
+    finalInternalAlias: string,
+    cause?: unknown,
+  ): Promise<void> {
+    await convergeProvisionalCreate({
+      sessions: this.sessions,
+      transport: this.transport,
+      session: persisted,
+      internalAlias: finalInternalAlias,
+      ...(cause !== undefined ? { cause } : {}),
+    });
+  }
   /** Real delete: logical removal + acpx history delete, guarded so a transport
    *  session shared by another alias is left intact. */
   async removeSessionWithTransport(internalAlias: string): Promise<{
@@ -158,7 +193,17 @@ export class SessionControlService {
       }
     }
     const sharedAliasCount = this.sessions.countAliasesSharingTransport(session.transportSession, internalAlias);
-    const { wasActive } = await this.sessions.removeSession(internalAlias);
+    // Same lifecycle contract as the chat remove path: every alias goes
+    // through the physical-group remove transaction (recount, engine
+    // settle, durable logical remove — all under one group lock).
+    const outcome = await removeAliasWithPhysicalLifecycle({
+      sessions: this.sessions,
+      transport: this.transport,
+      session,
+      internalAlias,
+    });
+    const { wasActive } = outcome;
+    const physicalSharedCount = outcome.sharedAliasCount;
 
     if (this.orchestration) {
       try {
@@ -172,24 +217,21 @@ export class SessionControlService {
       }
     }
 
-    let transportTornDown = false;
-    let transportTeardownWarning: string | undefined;
-    if (sharedAliasCount === 0 && this.transport.deleteSession) {
-      try {
-        await this.transport.deleteSession(session);
-        transportTornDown = true;
-      } catch (error) {
-        transportTeardownWarning = error instanceof Error ? error.message : String(error);
-        await this.logger.error("session.transport_delete_failed", "failed to delete acpx session after logical remove", {
-          alias: internalAlias,
-          transportSession: session.transportSession,
-          message: transportTeardownWarning,
-        });
-      }
+    // Transport state was settled inside the transaction above. Runtime
+    // failures threw before the logical row disappeared; CLI keeps its
+    // legacy best-effort warning, surfaced by the helper outcome.
+    const transportTeardownWarning = outcome.transportTeardownWarning;
+    const transportTornDown = outcome.action === "deleted" && transportTeardownWarning === undefined;
+    if (transportTeardownWarning) {
+      await this.logger.error("session.transport_delete_failed", "failed to delete acpx session after logical remove", {
+        alias: internalAlias,
+        transportSession: session.transportSession,
+        message: transportTeardownWarning,
+      });
     }
     return {
       wasActive,
-      sharedAliasCount,
+      sharedAliasCount: physicalSharedCount,
       transportTornDown,
       ...(transportTeardownWarning ? { transportTeardownWarning } : {}),
     };
@@ -307,32 +349,60 @@ export class SessionControlService {
     }
     const { alias: finalInternalAlias, release: releaseAliasReservation } = reserved;
     try {
-      const session = this.sessions.resolveSession(
+      const launchProbe = this.sessions.resolveSession(
         finalInternalAlias,
         agent,
         workspace,
         `${workspace}:${finalInternalAlias}`,
         { guardAcpOutput: true },
       );
-      const release = await this.reserveLogicalTransportSession(session.transportSession);
+      const release = await this.reserveLogicalTransportSession(launchProbe.transportSession);
+      let persisted: ResolvedSession;
       try {
-        await this.transport.resumeAgentSession(session, agentSessionId);
-        const exists = await this.invoker.checkTransportSession(session);
-        if (!exists) {
-          throw new Error(`transport session "${session.transportSession}" could not be verified`);
+        try {
+          persisted = await this.sessions.attachNativeSession({
+            alias: finalInternalAlias,
+            agent,
+            workspace,
+            transportSession: launchProbe.transportSession,
+            ...(launchProbe.agentCommand ? { transportAgentCommand: launchProbe.agentCommand } : {}),
+            ...(launchProbe.acpxAgent ? { transportAcpxAgent: launchProbe.acpxAgent } : {}),
+            ...(launchProbe.agentArgv ? { transportAgentArgv: launchProbe.agentArgv } : {}),
+            agentSessionId,
+            ...(nativeMeta?.title !== undefined ? { title: nativeMeta.title } : {}),
+            ...(nativeMeta?.updatedAt !== undefined ? { updatedAt: nativeMeta.updatedAt } : {}),
+          });
+        } catch (error) {
+          throw error;
         }
-        await this.sessions.attachNativeSession({
-          alias: finalInternalAlias,
-          agent,
-          workspace,
-          transportSession: session.transportSession,
-          ...(session.agentCommand ? { transportAgentCommand: session.agentCommand } : {}),
-          ...(session.acpxAgent ? { transportAcpxAgent: session.acpxAgent } : {}),
-          ...(session.agentArgv ? { transportAgentArgv: session.agentArgv } : {}),
-          agentSessionId,
-          ...(nativeMeta?.title !== undefined ? { title: nativeMeta.title } : {}),
-          ...(nativeMeta?.updatedAt !== undefined ? { updatedAt: nativeMeta.updatedAt } : {}),
-        });
+        try {
+          await this.transport.resumeAgentSession(persisted, agentSessionId);
+          const exists = await this.invoker.checkTransportSession(persisted);
+          if (!exists) {
+            throw new Error(`transport session "${persisted.transportSession}" could not be verified`);
+          }
+        } catch (error) {
+          // Upstream-owned physical session: converge the xacpx provisional
+          // incarnation only (release + soft close, never hard-delete the
+          // native thread). Unverifiable cleanup keeps the row and the
+          // combined failure propagates.
+          try {
+            await convergeProvisionalNativeAttach({
+              sessions: this.sessions,
+              transport: this.transport,
+              session: persisted,
+              internalAlias: persisted.alias,
+              cause: error,
+            });
+          } catch (cleanupError) {
+            await this.logger.error("session.native.rollback_failed", "failed to converge provisional native incarnation", {
+              alias: persisted.alias,
+              error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+            });
+            throw cleanupError;
+          }
+          throw error;
+        }
         // Best-effort: a transient refresh failure must not fail an attach that already
         // succeeded, resumed, and verified. Mirrors createSessionWithTransport.
         try {
@@ -343,7 +413,7 @@ export class SessionControlService {
             error: error instanceof Error ? error.message : String(error),
           });
         }
-        return session;
+        return persisted;
       } finally {
         await release();
       }

@@ -1,6 +1,7 @@
 import { createEmptyOrchestrationState, type OrchestrationState } from "../orchestration/orchestration-types";
 import type { ScheduledTaskRecord } from "../scheduled/scheduled-types";
 
+export type SessionTransportEngine = "cli" | "runtime";
 export type LogicalSessionSource = "xacpx" | "agent-side";
 
 export interface NativeSessionCacheEntry {
@@ -48,6 +49,10 @@ export interface LogicalSession {
   model?: string;
   /** Per-session reasoning-effort preference advertised by the active ACP adapter. */
   effort?: string;
+  /** Persisted bridge-engine affinity for this session ("cli" | "runtime").
+   *  Missing on legacy records => migrated once at load time to "cli" (fail-safe:
+   *  existing sessions are never auto-upgraded onto the Runtime). */
+  transport_engine?: SessionTransportEngine;
   /** Per-session cosmetic display label shown in the relay-web dashboard only.
    *  Never affects identity (`alias`), `/use`, or the transport session. Cleared → UI shows alias. */
   display_name?: string;

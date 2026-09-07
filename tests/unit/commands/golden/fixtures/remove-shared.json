@@ -4,6 +4,7 @@
     "sessions.getSession(\"relay:demo\")",
     "orchestration.listSessionBlockingTasks(\"backend:shared\")",
     "sessions.countAliasesSharingTransport(\"backend:shared\", \"relay:demo\")",
+    "sessions.findPhysicalSiblings(session(relay:demo/backend:shared), \"relay:demo\")",
     "sessions.removeSession(\"relay:demo\")",
     "orchestration.purgeSessionReferences(\"backend:shared\")"
   ],

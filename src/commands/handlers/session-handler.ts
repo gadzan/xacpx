@@ -15,6 +15,7 @@ import { buildCoordinatorPrompt } from "../../orchestration/build-coordinator-pr
 import { stableCoordinatorSession } from "../../orchestration/coordinator-identity";
 import { toDisplaySessionAlias, getChannelIdFromChatKey, scopeDisplayAliasToInternal, resolveSessionAliasForInput } from "../../channels/channel-scope";
 import { resolveChannelDefaultReplyMode, resolveEffectiveReplyMode } from "./resolve-reply-mode";
+import { convergeProvisionalCreate, removeAliasWithPhysicalLifecycle } from "../session-remove-lifecycle";
 import { quoteWorkspaceNameIfNeeded } from "../workspace-name";
 import type { SessionSwitchResult } from "../../sessions/session-service";
 import { decorateUnread } from "./session-list-marker";
@@ -211,6 +212,21 @@ export async function handleSessions(context: SessionHandlerContext, chatKey: st
   };
 }
 
+async function cleanupProvisionalCreate(
+  context: SessionHandlerContext,
+  persisted: ResolvedSession,
+  finalInternalAlias: string,
+  cause?: unknown,
+): Promise<void> {
+  await convergeProvisionalCreate({
+    sessions: context.sessions,
+    transport: context.transport,
+    session: persisted,
+    internalAlias: finalInternalAlias,
+    ...(cause !== undefined ? { cause } : {}),
+  });
+}
+
 export async function handleSessionNew(
   context: SessionHandlerContext,
   chatKey: string,
@@ -247,62 +263,96 @@ export async function handleSessionNew(
 
   try {
     const stableTransportSession = `${workspace}:${finalInternalAlias}`;
-    const session = context.lifecycle.resolveSession(
+    // Resolve launch info (agentCommand etc.) for attach; logical identity
+    // itself will be authoritatively allocated by attachSession before any
+    // transport owner starts (single allocation, I1).
+    const launchProbe = context.lifecycle.resolveSession(
       finalInternalAlias,
       agent,
       workspace,
       context.sessions.buildFreshTransportSession(stableTransportSession),
       { guardAcpOutput: true },
     );
-  // An explicit --model overrides the agent default for this session, and must be
-  // on the ResolvedSession before ensureTransportSession so acpx creates the
-  // session under that model.
     const normalizedModel = model?.trim();
-    if (normalizedModel) {
-      session.model = normalizedModel;
+    // R1 + coordinator TOCTOU: reserve the stable transport identity BEFORE
+    // any logical row appears. A conflicting external coordinator therefore
+    // fails without leaving a ghost session, and authoritative identity
+    // (LID+engine) is still persisted before the first owner starts.
+    let releaseTransportReservation: (() => Promise<void>) | undefined;
+    try {
+      releaseTransportReservation = await context.lifecycle.reserveTransportSession(stableTransportSession);
+    } catch (error) {
+      return context.recovery.renderSessionCreationError(launchProbe, error);
     }
-    const releaseTransportReservation = await context.lifecycle.reserveTransportSession(stableTransportSession);
+    let persisted: ResolvedSession;
     try {
       try {
-        await context.lifecycle.ensureTransportSession(session);
-        const exists = await context.lifecycle.checkTransportSession(session);
-        if (!exists) {
-          return context.recovery.renderSessionCreationVerificationError(session);
+        persisted = await context.sessions.attachSession(
+          finalInternalAlias,
+          agent,
+          workspace,
+          launchProbe.transportSession,
+          launchProbe.agentCommand,
+          launchProbe.acpxAgent,
+          launchProbe.agentArgv,
+        );
+        if (normalizedModel) {
+          await context.sessions.setSessionModel(finalInternalAlias, normalizedModel);
+          const refreshed = context.sessions.getResolvedSessionByInternalAlias(finalInternalAlias);
+          if (refreshed) persisted = refreshed;
+          else persisted.model = normalizedModel;
         }
       } catch (error) {
-        return context.recovery.renderSessionCreationError(session, error);
+        return context.recovery.renderSessionCreationError(launchProbe, error);
       }
-
-      await context.sessions.attachSession(
-        finalInternalAlias,
-        agent,
-        workspace,
-        session.transportSession,
-        session.agentCommand,
-        session.acpxAgent,
-        session.agentArgv,
-      );
+      // Ensure uses the persisted authoritative identity — first bridge
+      // logicalSessionId/transportEngine equals final state (I1).
       if (normalizedModel) {
-        await context.sessions.setSessionModel(finalInternalAlias, normalizedModel);
+        persisted.model = normalizedModel;
       }
-      await context.sessions.useSession(chatKey, finalInternalAlias);
-      await refreshSessionTransportAgentCommandBestEffort(context, finalInternalAlias, "session.agent_command_refresh_failed");
-      await context.logger.info("session.created", "created and selected logical session", {
-        alias: finalInternalAlias,
-        agent,
-        workspace,
-      });
-      if (aliasWasAdjusted) {
-        return {
-          text: [
-            t().session.sessionAliasCollided(alias, finalDisplayAlias),
-            t().session.sessionCreated(finalDisplayAlias),
-          ].join("\n"),
-        };
+      let transportSucceeded = false;
+      try {
+        try {
+          await context.lifecycle.ensureTransportSession(persisted);
+          const exists = await context.lifecycle.checkTransportSession(persisted);
+          if (!exists) {
+            await cleanupProvisionalCreate(context, persisted, finalInternalAlias);
+            return context.recovery.renderSessionCreationVerificationError(persisted);
+          }
+          transportSucceeded = true;
+        } catch (error) {
+          // Converge the provisional physical incarnation BEFORE dropping
+          // the only durable retry handle: a daemon-side timeout is not a
+          // bridge-side cancellation, so the ensure may still complete and
+          // leave a live worker/record behind.
+          await cleanupProvisionalCreate(context, persisted, finalInternalAlias, error);
+          return context.recovery.renderSessionCreationError(persisted, error);
+        }
+
+        await context.sessions.useSession(chatKey, finalInternalAlias);
+        await refreshSessionTransportAgentCommandBestEffort(context, finalInternalAlias, "session.agent_command_refresh_failed");
+        await context.logger.info("session.created", "created and selected logical session", {
+          alias: finalInternalAlias,
+          agent,
+          workspace,
+        });
+        if (aliasWasAdjusted) {
+          return {
+            text: [
+              t().session.sessionAliasCollided(alias, finalDisplayAlias),
+              t().session.sessionCreated(finalDisplayAlias),
+            ].join("\n"),
+          };
+        }
+        return { text: t().session.sessionCreated(finalDisplayAlias) };
+      } finally {
+        // Only release if we actually acquired it; verification failure already handled
+        void transportSucceeded;
       }
-      return { text: t().session.sessionCreated(finalDisplayAlias) };
     } finally {
-      await releaseTransportReservation();
+      if (releaseTransportReservation) {
+        try { await releaseTransportReservation(); } catch {}
+      }
     }
   } finally {
     releaseAliasReservation();
@@ -334,8 +384,29 @@ export async function handleSessionAttach(
     return { text: t().session.sessionLifecycleBusy(alias) };
   }
   try {
-    const attached = context.lifecycle.resolveSession(internalAlias, agent, workspace, transportSession);
+    // Attach rebinds an EXISTING physical session to this alias: overwriting
+    // an existing logical row would orphan its Runtime LID (warm worker,
+    // fence mapping, durable queue journal) with no daemon-side handle left
+    // to converge it — the old journal would never drain. Refuse like the
+    // native-attach path; reset (/clear) is the replace transaction (it
+    // verified-releases the old LID first) and new/shortcut derive free
+    // aliases instead.
+    const claimed = context.sessions.getResolvedSessionByInternalAlias(internalAlias);
+    if (claimed) {
+      return { text: t().session.sessionAlreadyExists(alias, claimed.agent, claimed.workspace) };
+    }
+    // Preflight on the inheritance-aware candidate: the authoritative
+    // attachSession below would bind the physical group's engine, so the
+    // existence check must route to that same engine — never to a
+    // config-derived transient.
+    const attached = context.lifecycle.resolveAttachCandidate(internalAlias, agent, workspace, transportSession);
     const releaseTransportReservation = await context.lifecycle.reserveTransportSession(attached.transportSession);
+    // Set once our fresh row durably lands: a later ensure/check failure
+    // (e.g. a hard delete racing this attach at the engine) must drop the
+    // just-created ghost row — unlike create, attach binds an existing
+    // physical session, so there is no provisional incarnation to keep as
+    // a retry handle, and keeping it would wedge re-attach behind "exists".
+    let persistedFreshRow = false;
     try {
       const exists = await context.lifecycle.checkTransportSession(attached);
       if (!exists) {
@@ -354,6 +425,7 @@ export async function handleSessionAttach(
         attached.acpxAgent,
         attached.agentArgv,
       );
+      persistedFreshRow = true;
       await context.sessions.useSession(chatKey, internalAlias);
       await refreshSessionTransportAgentCommandBestEffort(context, internalAlias, "session.attach.agent_command_refresh_failed");
       await context.logger.info("session.attached", "attached existing transport session", {
@@ -363,6 +435,13 @@ export async function handleSessionAttach(
         transportSession,
       });
       return { text: t().session.sessionAttached(alias) };
+    } catch (error) {
+      if (persistedFreshRow) {
+        try {
+          await context.sessions.removeSession(internalAlias);
+        } catch {}
+      }
+      throw error;
     } finally {
       await releaseTransportReservation();
     }
@@ -720,10 +799,27 @@ async function removeSessionUnderAliasClaim(
       };
     }
   }
-
-  const sharedAliasCount = context.sessions.countAliasesSharingTransport(session.transportSession, internalAlias);
+  // No name-only count here: the physical recount below is the single
+  // source of truth for both the lifecycle decision and the reply, so a
+  // same-name/different-physical alias correctly hard-deletes without
+  // claiming the transport is shared (or vice versa).
+  // All aliases — Runtime or CLI — remove through the physical-group
+  // transaction: the physical co-owner recount, the engine settle decision,
+  // and the durable logical remove all happen under one group lock, so
+  // concurrent sibling removes cannot both skip the final hard delete (and
+  // a same-name/different-physical alias is hard-deleted, never released).
+  // Runtime transport failures propagate before the logical row disappears,
+  // keeping the retry handle; CLI keeps its legacy best-effort warning.
   const wasCurrentInThisChat = context.sessions.peekCurrentSessionAlias(chatKey) === internalAlias;
-  const { wasActive } = await context.sessions.removeSession(internalAlias);
+  const outcome = await removeAliasWithPhysicalLifecycle({
+    sessions: context.sessions,
+    transport: context.transport,
+    session,
+    internalAlias,
+  });
+  const { wasActive } = outcome;
+  const physicalSharedCount = outcome.sharedAliasCount;
+  const transportTeardownWarning = outcome.transportTeardownWarning;
   // removeSession promotes previous_session to current_session; if that
   // happened for this chat, the next plain message routes to the promoted
   // session, so the reply must name it instead of claiming a cleared context.
@@ -746,24 +842,19 @@ async function removeSessionUnderAliasClaim(
     }
   }
 
-  let transportTeardownWarning: string | undefined;
-  const shouldTeardownTransport = sharedAliasCount === 0;
-  if (shouldTeardownTransport && context.transport.deleteSession) {
-    try {
-      await context.transport.deleteSession(session);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      transportTeardownWarning = message;
-      await context.logger.error("session.transport_teardown_failed", "failed to close acpx session after logical remove", {
-        alias: internalAlias,
-        transportSession: session.transportSession,
-        message,
-      });
-    }
+  // Transport state was settled inside the transaction above. CLI keeps its
+  // legacy best-effort warning (logged here); Runtime failures threw before
+  const shouldTeardownTransport = physicalSharedCount === 0;
+  if (transportTeardownWarning) {
+    await context.logger.error("session.transport_teardown_failed", "failed to close acpx session after logical remove", {
+      alias: internalAlias,
+      transportSession: session.transportSession,
+      message: transportTeardownWarning,
+    });
   }
   await context.logger.info("session.removed", "removed logical session", {
     alias: internalAlias,
-    sharedAliasCount,
+    sharedAliasCount: physicalSharedCount,
     transportClosed: shouldTeardownTransport && transportTeardownWarning === undefined,
   });
 
@@ -777,7 +868,7 @@ async function removeSessionUnderAliasClaim(
     );
   }
   if (!shouldTeardownTransport) {
-    lines.push(s.sessionTransportShared(session.transportSession, sharedAliasCount));
+    lines.push(s.sessionTransportShared(session.transportSession, physicalSharedCount));
   }
   if (orchestrationPurgeWarning) {
     lines.push(s.sessionOrchestrationPurgeFailed(orchestrationPurgeWarning));

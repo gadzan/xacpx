@@ -1,0 +1,690 @@
+import { expect, spyOn, test } from "bun:test";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { RuntimeWorkerClient } from "../../../../../src/bridge/engine/runtime/runtime-worker-client";
+import { RuntimeWorkerManager, WorkerTeardownPendingError } from "../../../../../src/bridge/engine/runtime/runtime-worker-manager";
+import { RuntimeWorkerFence, StaleFenceGenerationError, type FencePhase, type RuntimeWorkerFenceRecord } from "../../../../../src/bridge/engine/runtime/runtime-worker-fence";
+async function withFakeEntry(run: (entryPath: string) => Promise<void>): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), "worker-mgr-"));
+  try {
+    // Minimal worker: responds to shutdown then exits; enough to prove
+    // spawn/registry/shutdownAll wiring without acpx.
+    const entry = join(dir, "fake-worker.mjs");
+    await writeFile(
+      entry,
+      [
+        "process.stdin.on('data', () => {});",
+        "let buffer='';",
+        "process.stdin.on('data', (d) => {",
+        "  buffer += d.toString();",
+        "  let idx;",
+        "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+        "    if (!line) continue;",
+        "    try { const msg = JSON.parse(line);",
+        "      process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "      if (msg.method === 'shutdown') process.exit(0);",
+        "    } catch {}",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+    await run(entry);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("manager rejects a missing worker entry at construction", () => {
+  expect(() => new RuntimeWorkerManager({ entryPath: "/nonexistent/worker-main.js" })).toThrow(/entry not found/);
+});
+
+test("one session maps to one worker; same session reuses it", async () => {
+  await withFakeEntry(async (entry) => {
+    const manager = new RuntimeWorkerManager({ entryPath: entry });
+    const first = manager.ensureWorker("logical-1");
+    const second = manager.ensureWorker("logical-1");
+    expect(second).toBe(first);
+    expect(manager.lifecycleFor("logical-1")).not.toBe("stopped");
+    await manager.shutdownAll();
+    expect(manager.lifecycleFor("logical-1")).toBe("stopped");
+  });
+}, 15_000);
+
+test("different sessions never share a worker", async () => {
+  await withFakeEntry(async (entry) => {
+    const manager = new RuntimeWorkerManager({ entryPath: entry });
+    const a = manager.ensureWorker("logical-a");
+    const b = manager.ensureWorker("logical-b");
+    expect(a).not.toBe(b);
+    expect(a.ref.pid).not.toBe(b.ref.pid);
+    await manager.shutdownAll();
+  });
+}, 15_000);
+
+test("shutdownAll stops every registered worker", async () => {
+  await withFakeEntry(async (entry) => {
+    const manager = new RuntimeWorkerManager({ entryPath: entry, maxRestartsPerWindow: 1, restartWindowMs: 5_000 });
+    void manager.ensureWorker("s1");
+    void manager.ensureWorker("s2");
+    await manager.shutdownAll();
+    expect(manager.get("s1")).toBeUndefined();
+    expect(manager.isWarm("s1")).toBe(false);
+    expect(manager.isWarm("s2")).toBe(false);
+  });
+}, 15_000);
+
+test("crash-loop guard ignores clean stops and only counts real crashes", async () => {
+  await withFakeEntry(async (entry) => {
+    // Deliberate terminate (clean stop): budget NOT consumed — freeWarm cool
+    // cycles must never brick the session (plan §43).
+    const manager = new RuntimeWorkerManager({ entryPath: entry, maxRestartsPerWindow: 1, restartWindowMs: 60_000 });
+    const first = manager.ensureWorker("crashy");
+    await first.terminate();
+    expect(() => manager.ensureWorker("crashy")).not.toThrow();
+    // A worker killed unexpectedly by a signal (kill -9) IS an untracked crash:
+    // the restart budget is charged and respawn is refused.
+    const second = manager.ensureWorker("crashy");
+    process.kill(second.ref.pid, "SIGKILL");
+    // Await exit deterministically (no arbitrary delays)
+    const deadline = Date.now() + 2_000;
+    while (second.alive && Date.now() < deadline) {
+      await new Promise<void>((r) => setTimeout(r, 5));
+    }
+    await new Promise<void>((r) => setTimeout(r, 50));
+    expect(() => manager.ensureWorker("crashy")).toThrow(/marked unhealthy|crashed|refusing duplicate worker spawn|failed/);
+  });
+}, 15_000);
+
+test("ensureWorker returns a ref carrying stable identity fields", async () => {
+  await withFakeEntry(async (entry) => {
+    const manager = new RuntimeWorkerManager({ entryPath: entry });
+    const worker = manager.ensureWorker("identity-check");
+    expect(worker.ref.logicalSessionId).toBe("identity-check");
+    expect(worker.ref.generation).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    expect(worker.ref.startedAt).toBeTypeOf("string");
+    await manager.shutdownAll();
+  });
+}, 15_000);
+
+test("ensureWorker refuses duplicate spawn when existing worker is still alive in cooling/stopped state", async () => {
+  await withFakeEntry(async (entry) => {
+    const manager = new RuntimeWorkerManager({ entryPath: entry });
+    const workerA = manager.ensureWorker("sess-cooldown");
+    // Simulate worker undergoing teardown while still alive
+    workerA.lifecycle = "cooling";
+    expect(() => manager.ensureWorker("sess-cooldown")).toThrow(WorkerTeardownPendingError);
+
+    workerA.lifecycle = "stopped";
+    expect(() => manager.ensureWorker("sess-cooldown")).toThrow(WorkerTeardownPendingError);
+
+    workerA.lifecycle = "failed";
+    expect(() => manager.ensureWorker("sess-cooldown")).toThrow(WorkerTeardownPendingError);
+
+    await workerA.terminate();
+  });
+}, 15_000);
+
+test("stale exit callback from previous generation never deletes newer replacement worker", async () => {
+  await withFakeEntry(async (entry) => {
+    const manager = new RuntimeWorkerManager({ entryPath: entry });
+    const workerA = manager.ensureWorker("sess-gen");
+
+    // Manually register replacement worker B for the same session
+    const workerB = manager["ensureWorker"]("sess-gen-other");
+    manager["workersByKey"].set("sess-gen", workerB);
+
+    // Stale exit arrives from worker A
+    manager["handleExit"]("sess-gen", workerA, 0);
+
+    // worker B is preserved in the manager (never deleted by stale exit from A)
+    expect(manager.get("sess-gen")).toBe(workerB);
+
+    await manager.shutdownAll();
+  });
+}, 15_000);
+
+test("shutdownAll propagates termination failures and retains failing workers in tracking", async () => {
+  await withFakeEntry(async (entry) => {
+    const manager = new RuntimeWorkerManager({ entryPath: entry });
+    const workerGood = manager.ensureWorker("sess-good");
+    const workerBad = manager.ensureWorker("sess-bad");
+
+    // Stub bad worker's shutdown to simulate a Windows termination / process-tree error
+    workerBad.shutdown = async () => {
+      throw new Error("Windows tree termination access-denied (simulated)");
+    };
+
+    // shutdownAll must reject with the error message
+    await expect(manager.shutdownAll()).rejects.toThrow(/Windows tree termination access-denied/);
+
+    // workerGood was successfully stopped and removed from tracking
+    expect(manager.get("sess-good")).toBeUndefined();
+
+    // workerBad FAILED to stop, so ownership is RETAINED (never forgotten)
+    expect(manager.get("sess-bad")).toBe(workerBad);
+
+    // Clean up bad worker
+    await workerBad.terminate();
+  });
+}, 15_000);
+test("re-acquiring an admitted live worker preserves admitted fence", async () => {
+  const fenceDir = await mkdtemp(join(tmpdir(), "fence-reacquire-"));
+  try {
+    await withFakeEntry(async (entry) => {
+      const manager = new RuntimeWorkerManager({
+        entryPath: entry,
+        fenceDir,
+        clientDeps: {
+          platform: "win32",
+          probeWindowsIdentity: async (pid) => ({
+            status: "found",
+            identity: {
+              pid,
+              creationDate: "133800000000000000",
+              executablePath: "C:\\node.exe",
+              commandLine: "node worker.mjs",
+            },
+          }),
+          terminateProcessTree: async () => ({ rootOutcome: "killed", outcomes: [] }),
+        },
+      });
+      const worker1 = await manager.acquire("sess-admitted");
+      // Wait for bootstrap barrier to complete (admitted fence)
+      for (let i = 0; i < 50; i++) {
+        const fence = new (await import("../../../../../src/bridge/engine/runtime/runtime-worker-fence")).RuntimeWorkerFence(fenceDir);
+        const read = await fence.read("sess-admitted");
+        if (read.kind === "present" && read.record.phase === "admitted") break;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      const { RuntimeWorkerFence } = await import("../../../../../src/bridge/engine/runtime/runtime-worker-fence");
+      const fence = new RuntimeWorkerFence(fenceDir);
+      const read1 = await fence.read("sess-admitted");
+      expect(read1.kind).toBe("present");
+      if (read1.kind !== "present") return;
+      expect(read1.record.phase).toBe("admitted");
+      const gen1 = read1.record.generation;
+      const worker2 = await manager.acquire("sess-admitted");
+      expect(worker2).toBe(worker1);
+      const read2 = await fence.read("sess-admitted");
+      expect(read2.kind).toBe("present");
+      if (read2.kind !== "present") return;
+      expect(read2.record.generation).toBe(gen1);
+      expect(read2.record.phase).toBe("admitted");
+      await manager.shutdownAll();
+    });
+  } finally {
+    await rm(fenceDir, { recursive: true, force: true });
+  }
+}, 15_000);
+test("deliberate root exit holds terminateProcessTree pending and concurrent ensureWorker rejects with WorkerTeardownPendingError", async () => {
+  await withFakeEntry(async (entry) => {
+    let termResolve: (() => void) | undefined;
+    const termPromise = new Promise<void>((r) => { termResolve = r; });
+
+    const manager = new RuntimeWorkerManager({
+      entryPath: entry,
+      clientDeps: {
+        terminateProcessTree: async () => {
+          await termPromise;
+          return { rootOutcome: "killed", outcomes: [] };
+        },
+      },
+    });
+
+    const client = manager.ensureWorker("sess-race-teardown");
+    await client.request("ensure", {});
+
+    // Start background shutdown (holds tree termination pending)
+    const shutdownPromise = client.shutdown(2_000);
+
+    // Give a short tick for shutdown RPC to deliver
+    await new Promise((r) => setTimeout(r, 20));
+
+    // While tree cleanup is in flight, concurrent ensureWorker MUST fail closed!
+    expect(() => manager.ensureWorker("sess-race-teardown")).toThrow(WorkerTeardownPendingError);
+
+    // Release tree termination
+    termResolve?.();
+    await shutdownPromise;
+    expect(client.lifecycle).toBe("stopped");
+
+    // After cleanup is verified complete, replacement spawn is allowed
+    expect(() => manager.ensureWorker("sess-race-teardown")).not.toThrow();
+
+    await manager.shutdownAll();
+  });
+});
+
+test("unexpected worker crash cleans up process tree before allowing replacement spawn", async () => {
+  await withFakeEntry(async (entry) => {
+    let cleanupRun = false;
+    let termResolve: (() => void) | undefined;
+    const termPromise = new Promise<void>((r) => { termResolve = r; });
+
+    const manager = new RuntimeWorkerManager({
+      entryPath: entry,
+      maxRestartsPerWindow: 5,
+      clientDeps: {
+        terminateProcessTree: async () => {
+          cleanupRun = true;
+          await termPromise;
+          return { rootOutcome: "killed", outcomes: [] };
+        },
+      },
+    });
+
+    const client = manager.ensureWorker("sess-crash-clean");
+    await client.request("ensure", {});
+
+    // Kill worker root abruptly to simulate unexpected crash
+    process.kill(client.ref.pid, "SIGKILL");
+
+    // Give a short tick for exit event to fire and start cleanup
+    await new Promise((r) => setTimeout(r, 20));
+
+    // While tree cleanup is in flight, concurrent ensureWorker MUST reject
+    expect(() => manager.ensureWorker("sess-crash-clean")).toThrow(WorkerTeardownPendingError);
+
+    // Release tree termination
+    termResolve?.();
+
+    // Wait for tree cleanup to finish
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Process tree cleanup was executed
+    expect(cleanupRun).toBe(true);
+
+    // After cleanup is verified complete, replacement spawn is allowed within budget!
+    expect(() => manager.ensureWorker("sess-crash-clean")).not.toThrow();
+
+    await manager.shutdownAll();
+  });
+});
+test("spawn succeeds but owned fence write fails → verified terminate before retire, no orphan", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "worker-mgr-ownfail-"));
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await writeFile(
+      entry,
+      [
+        "process.stdin.on('data', () => {});",
+        "let buffer='';",
+        "process.stdin.on('data', (d) => {",
+        "  buffer += d.toString();",
+        "  let idx;",
+        "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+        "    if (!line) continue;",
+        "    try { const msg = JSON.parse(line);",
+        "      process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "      if (msg.method === 'shutdown') process.exit(0);",
+        "    } catch {}",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+    const fenceDir = join(dir, "worker-fences");
+    const passthrough = new RuntimeWorkerFence(fenceDir);
+    const writeSpy = spyOn(RuntimeWorkerFence.prototype, "compareAndSwap").mockImplementation(
+      (key: string, expected: { generation: string; from: FencePhase[] }, record: RuntimeWorkerFenceRecord) => {
+        if (record.phase === "owned") {
+          return Promise.reject(new Error("ENOSPC: simulated owned-write failure"));
+        }
+        return passthrough.compareAndSwap(key, expected, record);
+      },
+    );
+    const origTerminate = RuntimeWorkerClient.prototype.terminate;
+    let terminatedClient: RuntimeWorkerClient | null = null;
+    const termSpy = spyOn(RuntimeWorkerClient.prototype, "terminate").mockImplementation(
+      async function (this: RuntimeWorkerClient) {
+        terminatedClient = this;
+        return origTerminate.call(this);
+      },
+    );
+    const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+    try {
+      if (process.platform === "win32") {
+        // Windows terminate refuses an unverified live worker: the same
+        // fault must retain tracking+fence and surface teardown-pending.
+        await expect(manager.acquire("ownfail-win")).rejects.toThrow(/refusing replacement spawn/);
+        expect(terminatedClient).not.toBeNull();
+        expect(manager.get("ownfail-win")).toBeDefined();
+        expect((await passthrough.read("ownfail-win")).kind).toBe("present");
+      } else {
+        await expect(manager.acquire("ownfail-sess")).rejects.toThrow(/ENOSPC/);
+        // The spawned worker went through verified termination (not just
+        // untracked): the exact client reached stopped and is dead.
+        expect(terminatedClient).not.toBeNull();
+        expect(terminatedClient!.lifecycle).toBe("stopped");
+        expect(manager.get("ownfail-sess")).toBeUndefined();
+        expect((await passthrough.read("ownfail-sess")).kind).toBe("absent");
+        // Re-arm writes before the recovery acquire below.
+        writeSpy.mockRestore();
+        // Next acquire is not wedged: a fresh owner proceeds.
+        const second = await manager.acquire("ownfail-sess");
+        expect(second.alive).toBe(true);
+      }
+    } finally {
+      writeSpy.mockRestore();
+      termSpy.mockRestore();
+      await manager.shutdownAll().catch(() => {});
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);
+test("owned fence write fails and termination is unverified → retain tracking+fence as teardown-pending", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "worker-mgr-termfail-"));
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await writeFile(
+      entry,
+      [
+        "process.stdin.on('data', () => {});",
+        "let buffer='';",
+        "process.stdin.on('data', (d) => {",
+        "  buffer += d.toString();",
+        "  let idx;",
+        "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+        "    if (!line) continue;",
+        "    try { const msg = JSON.parse(line);",
+        "      process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "      if (msg.method === 'shutdown') process.exit(0);",
+        "    } catch {}",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+    const fenceDir = join(dir, "worker-fences");
+    const passthrough = new RuntimeWorkerFence(fenceDir);
+    const writeSpy = spyOn(RuntimeWorkerFence.prototype, "compareAndSwap").mockImplementation(
+      (key: string, expected: { generation: string; from: FencePhase[] }, record: RuntimeWorkerFenceRecord) => {
+        if (record.phase === "owned") {
+          return Promise.reject(new Error("ENOSPC: simulated owned-write failure"));
+        }
+        return passthrough.compareAndSwap(key, expected, record);
+      },
+    );
+    // Termination cannot be verified: the manager must retain tracking AND
+    // the fence (never retire evidence under a live, untracked worker).
+    const termSpy = spyOn(RuntimeWorkerClient.prototype, "terminate").mockImplementation(
+      async function (this: RuntimeWorkerClient) {
+        throw new Error("simulated tree-verification failure");
+      },
+    );
+    const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+    try {
+      await expect(manager.acquire("termfail-sess")).rejects.toThrow(/refusing replacement spawn/);
+      expect(manager.get("termfail-sess")).toBeDefined();
+      expect((await passthrough.read("termfail-sess")).kind).toBe("present");
+    } finally {
+      writeSpy.mockRestore();
+      termSpy.mockRestore();
+      await manager.shutdownAll().catch(() => {});
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);
+test("owned CAS loses to a successor generation → orphan terminated, successor fence never retired", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "worker-mgr-stale-"));
+  try {
+    const entry = join(dir, "fake-worker.mjs");
+    await writeFile(
+      entry,
+      [
+        "process.stdin.on('data', () => {});",
+        "let buffer='';",
+        "process.stdin.on('data', (d) => {",
+        "  buffer += d.toString();",
+        "  let idx;",
+        "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+        "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+        "    if (!line) continue;",
+        "    try { const msg = JSON.parse(line);",
+        "      process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+        "      if (msg.method === 'shutdown') process.exit(0);",
+        "    } catch {}",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+    const fenceDir = join(dir, "worker-fences");
+    const passthrough = new RuntimeWorkerFence(fenceDir);
+    // A successor takes over between our claim and our owned upgrade.
+    const casSpy = spyOn(RuntimeWorkerFence.prototype, "compareAndSwap").mockImplementation(
+      (key: string, expected: { generation: string; from: FencePhase[] }, record: RuntimeWorkerFenceRecord) => {
+        if (record.phase === "owned") {
+          return Promise.reject(new StaleFenceGenerationError(`fence CAS for "${key}" found successor generation "G2"`));
+        }
+        return passthrough.compareAndSwap(key, expected, record);
+      },
+    );
+    const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+    try {
+      await expect(manager.acquire("stale-sess")).rejects.toThrow(/lost its fence to a successor generation/);
+      // Our claim is still on disk (never retired — it may belong to the
+      // successor flow now) and no untracked worker leaked.
+      const read = await passthrough.read("stale-sess");
+      expect(read.kind).toBe("present");
+      expect(manager.get("stale-sess")).toBeUndefined();
+    } finally {
+      casSpy.mockRestore();
+      await manager.shutdownAll().catch(() => {});
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 20_000);
+test("acquire on a cooling-but-alive fenced worker fails fast, never burns the discharge window", async () => {
+  await withFakeEntry(async (entry) => {
+    const dir = await mkdtemp(join(tmpdir(), "worker-mgr-cooling-"));
+    try {
+      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir: join(dir, "fences") });
+      try {
+        const worker = manager.ensureWorker("cooling-1");
+        expect(worker.alive).toBe(true);
+        worker.lifecycle = "cooling";
+        // Must reject with the teardown-pending contract immediately: the
+        // fence is ours, so discharging it would wait out the 90s
+        // self-discharge window only to refuse. (No timing assert: a
+        // regression hangs past this test's timeout and fails that way.)
+        await expect(manager.acquire("cooling-1")).rejects.toThrow(WorkerTeardownPendingError);
+        expect(manager.get("cooling-1")).toBe(worker);
+      } finally {
+        await manager.shutdownAll().catch(() => {});
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}, 15_000);
+
+test("acquire refuses over a deleting fence without spawning or touching it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fence-deleting-"));
+  try {
+    await withFakeEntry(async (entry) => {
+      const fenceDir = join(dir, "fences");
+      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+      try {
+        const fence = new RuntimeWorkerFence(fenceDir);
+        const physical = "physical-deleting-1";
+        await fence.claim({
+          kind: "runtime-worker-owner",
+          logicalSessionId: physical,
+          generation: "gen-deleter",
+          pid: process.pid,
+          bootstrapVerified: false,
+          phase: "deleting",
+          startedAt: new Date().toISOString(),
+          agent: "runtime-worker",
+        });
+        // Successor admission fails fast (no 90s probe, no discharge, no spawn).
+        await expect(manager.acquire("lid-successor", physical)).rejects.toThrow(WorkerTeardownPendingError);
+        expect(manager.get("lid-successor")).toBeUndefined();
+        const read = await fence.read(physical);
+        expect(read.kind).toBe("present");
+        if (read.kind !== "present") return;
+        expect(read.record.phase).toBe("deleting");
+        expect(read.record.generation).toBe("gen-deleter");
+      } finally {
+        await manager.shutdownAll().catch(() => {});
+      }
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test("claimPhysicalDeletion is single-executor: fresh, re-entry, live refusal, dead takeover", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fence-delclaim-"));
+  try {
+    await withFakeEntry(async (entry) => {
+      const fenceDir = join(dir, "fences");
+      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+      // A second manager in THIS process shares the in-process executor mark.
+      const manager2 = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+      try {
+        const fence = new RuntimeWorkerFence(fenceDir);
+        // Fresh claim wins.
+        const first = await manager.claimPhysicalDeletion("physical-del-1");
+        expect(first).not.toBeNull();
+        expect(first?.adopted).toBe(false);
+        // A concurrent in-process deleter refuses — generations are never shared.
+        await expect(manager2.claimPhysicalDeletion("physical-del-1")).rejects.toThrow(
+          /already running in this process/,
+        );
+        // Ended attempt releases the mark: same-process re-entry takes over
+        // with a NEW generation (never shares the old one).
+        manager.releaseDeletionClaim("physical-del-1");
+        const reentry = await manager2.claimPhysicalDeletion("physical-del-1");
+        expect(reentry?.adopted).toBe(true);
+        expect(reentry?.generation).not.toBe(first?.generation);
+        const owner = reentry!.generation;
+        // Revalidation passes for the owner generation...
+        await manager2.revalidatePhysicalDeletion("physical-del-1", owner);
+        // ...and strict retire refuses a wrong generation without touching the file.
+        await expect(manager2.retirePhysicalDeletion("physical-del-1", "gen-wrong")).rejects.toThrow();
+        expect((await fence.read("physical-del-1")).kind).toBe("present");
+        // ...then retires the real barrier.
+        await manager2.retirePhysicalDeletion("physical-del-1", owner);
+        expect(await fence.read("physical-del-1")).toEqual({ kind: "absent" });
+        // A live owner fence aborts the delete instead of unlinking over it.
+        await fence.claim({
+          kind: "runtime-worker-owner",
+          logicalSessionId: "physical-del-2",
+          generation: "gen-live",
+          pid: process.pid,
+          bootstrapVerified: true,
+          phase: "owned",
+          startedAt: new Date().toISOString(),
+          agent: "runtime-worker",
+        });
+        await expect(manager.claimPhysicalDeletion("physical-del-2")).rejects.toThrow(WorkerTeardownPendingError);
+        expect((await fence.read("physical-del-2")).kind).toBe("present");
+      } finally {
+        await manager.shutdownAll().catch(() => {});
+        await manager2.shutdownAll().catch(() => {});
+      }
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test("takeover after proven death mints a new generation; the stale executor goes impotent", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fence-takeover-"));
+  try {
+    await withFakeEntry(async (entry) => {
+      const fenceDir = join(dir, "fences");
+      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+      try {
+        const fence = new RuntimeWorkerFence(fenceDir);
+        const key = "physical-takeover-1";
+        // Foreign but live deleter (the test runner itself): must refuse,
+        // never share the generation.
+        await fence.claim({
+          kind: "runtime-worker-owner",
+          logicalSessionId: key,
+          generation: "gen-old",
+          pid: process.ppid,
+          bootstrapVerified: false,
+          phase: "deleting",
+          startedAt: new Date().toISOString(),
+          agent: "runtime-worker",
+        });
+        await expect(manager.claimPhysicalDeletion(key)).rejects.toThrow(/still alive/);
+        // ...while a proven-dead deleter is taken over with a NEW generation.
+        await fence.retireDeletion(key, "gen-old");
+        await fence.claim({
+          kind: "runtime-worker-owner",
+          logicalSessionId: key,
+          generation: "gen-dead",
+          pid: 424242,
+          bootstrapVerified: false,
+          phase: "deleting",
+          startedAt: new Date().toISOString(),
+          agent: "runtime-worker",
+        });
+        const take = await manager.claimPhysicalDeletion(key);
+        expect(take?.adopted).toBe(true);
+        expect(take?.generation).not.toBe("gen-dead");
+        // The stale generation can neither revalidate nor retire: no
+        // "H2 retired, successor claimed, H1 still unlinks" sequence exists.
+        await expect(manager.revalidatePhysicalDeletion(key, "gen-dead")).rejects.toThrow(
+          WorkerTeardownPendingError,
+        );
+        await expect(manager.retirePhysicalDeletion(key, "gen-dead")).rejects.toThrow();
+        const live = await fence.read(key);
+        expect(live.kind).toBe("present");
+        if (live.kind !== "present") return;
+        expect(live.record.generation).toBe(take?.generation);
+        expect(live.record.phase).toBe("deleting");
+        // The rightful owner completes.
+        await manager.revalidatePhysicalDeletion(key, take!.generation);
+        await manager.retirePhysicalDeletion(key, take!.generation);
+        expect(await fence.read(key)).toEqual({ kind: "absent" });
+      } finally {
+        await manager.shutdownAll().catch(() => {});
+      }
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test("assertOwnershipQuiescent lets a delete adopt deleting but blocks logical release", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fence-delquiesce-"));
+  try {
+    await withFakeEntry(async (entry) => {
+      const fenceDir = join(dir, "fences");
+      const manager = new RuntimeWorkerManager({ entryPath: entry, fenceDir });
+      try {
+        const fence = new RuntimeWorkerFence(fenceDir);
+        await fence.claim({
+          kind: "runtime-worker-owner",
+          logicalSessionId: "physical-del-3",
+          generation: "gen-del",
+          pid: process.pid,
+          bootstrapVerified: false,
+          phase: "deleting",
+          startedAt: new Date().toISOString(),
+          agent: "runtime-worker",
+        });
+        await expect(manager.assertOwnershipQuiescent("lid-x", "physical-del-3")).rejects.toThrow(
+          WorkerTeardownPendingError,
+        );
+        await expect(
+          manager.assertOwnershipQuiescent("lid-x", "physical-del-3", { allowDeleting: true }),
+        ).resolves.toBeUndefined();
+      } finally {
+        await manager.shutdownAll().catch(() => {});
+      }
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);

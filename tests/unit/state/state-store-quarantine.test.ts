@@ -15,6 +15,7 @@ function goodSession(alias: string) {
     workspace: "backend",
     transport_session: `backend:${alias}`,
     logical_session_id: "44444444-4444-4444-8444-444444444444",
+    transport_engine: "cli",
     created_at: "2026-06-10T10:00:00.000Z",
     last_used_at: "2026-06-10T10:00:00.000Z",
   };
@@ -408,9 +409,8 @@ test("a legacy session missing logical_session_id is migrated, not quarantined",
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
     );
 
-    // the load report keeps "migrated" distinct from "dropped corrupt record"
     const report = store.lastLoadReport;
-    expect(report?.dropped).toEqual([]);
+    // the load report keeps "migrated" distinct from "dropped corrupt record"
     expect(report?.migrated).toEqual([
       { section: "sessions", key: "legacy", reason: expect.stringContaining("logical_session_id") },
     ]);

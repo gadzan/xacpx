@@ -8,11 +8,13 @@ import { coreHomeDir } from "./runtime/core-home";
 import { coreEnv } from "./runtime/core-env";
 
 import { CommandRouter } from "./commands/command-router";
+import type { ConfigMutationMutex } from "./commands/router-types";
 import { ConfigStore } from "./config/config-store";
 import { ensureConfigExists } from "./config/ensure-config";
 import { loadConfig } from "./config/load-config";
 import { resolveAcpxCommand } from "./config/resolve-acpx-command";
 import { ConsoleAgent } from "./console-agent";
+import { isRestartRequiredTransportChange } from "./config/transport-topology";
 import type { AppConfig, LoggingLevel } from "./config/types";
 import {
   terminalEnabled,
@@ -52,6 +54,7 @@ import {
   buildWorkerTaskPrompt,
 } from "./orchestration/worker-prompts";
 import {
+  persistWorkerBindingIdentity,
   resolveWorkerAgentLaunch,
   shouldGuardWorkerAcpOutput,
 } from "./orchestration/worker-launch";
@@ -125,6 +128,98 @@ import {
   ensureAgentOverlays,
   type EnsureAgentOverlaysResult,
 } from "./transport/acpx-agent-overlay";
+import {
+  assertEligibleForRuntimePermissionChange,
+} from "./bridge/engine/runtime/runtime-permission-policy";
+
+export interface ApplyRuntimePermissionConfigOptions {
+  config: AppConfig;
+  nextConfig: AppConfig;
+  sessions: SessionService;
+  transport: SessionTransport;
+  provisionOverlays: (target: AppConfig) => Promise<void>;
+  logger: AppLogger;
+}
+
+export async function applyRuntimePermissionConfig(
+  options: ApplyRuntimePermissionConfigOptions,
+): Promise<AppConfig> {
+  const { config, nextConfig, sessions, transport, provisionOverlays, logger } =
+    options;
+  try {
+    // Transport topology is restart-required: the live transport object is
+    // constructed once in buildApp(). A different type/command on disk is a
+    // pending restart, never a hot apply. replaceRuntimeConfig() below holds
+    // the live type/command while every other field hot-applies, so the
+    // persisted affinity selector (which sees the held live config) cannot
+    // disagree with the transport that actually executes sessions.
+    // 1. Fail-closed Runtime eligibility gate. Shared with the `/config set`
+    // + `/pm` handlers (assertEligibleForRuntimePermissionChange) so the two
+    // paths cannot drift on interaction availability or the error contract.
+    // The helper also parses/validates the policy (malformed → throw).
+    assertEligibleForRuntimePermissionChange(
+      sessions.hasPersistedRuntimeBindings(),
+      {
+        permissionPolicy: nextConfig.transport.permissionPolicy,
+        nonInteractivePermissions: nextConfig.transport.nonInteractivePermissions,
+      },
+    );
+
+    // 3. Diff permission tuple (mode / nonInteractive / policy)
+    const currentMode = config.transport.permissionMode;
+    const currentNonInteractive = config.transport.nonInteractivePermissions;
+    const currentPolicy = config.transport.permissionPolicy;
+
+    const nextMode = nextConfig.transport.permissionMode;
+    const nextNonInteractive = nextConfig.transport.nonInteractivePermissions;
+    const nextPolicy = nextConfig.transport.permissionPolicy;
+    const permissionChanged =
+      currentMode !== nextMode ||
+      currentNonInteractive !== nextNonInteractive ||
+      currentPolicy !== nextPolicy;
+
+    // 4. Provision overlays BEFORE committing the new permission to the live
+    // transport. provisionOverlays() can throw (malformed acpx config, alias
+    // argv conflict, lock/verification failure): committing the policy first
+    // would leave the executor running approve-all while the live config
+    // still says deny-all and the reload reports FAILED (partial commit).
+    // Overlay provisioning is additive — a leftover correct alias is safe,
+    // a widened live policy with a stale config is not.
+    await provisionOverlays(nextConfig);
+
+    // 5. Only then commit the permission tuple to the live transport, then
+    // publish. replaceRuntimeConfig() holds a pending restart topology while
+    // every other field hot-applies; surface the hold so it stays visible.
+    if (permissionChanged && transport.updatePermissionPolicy) {
+      await transport.updatePermissionPolicy({
+        permissionMode: nextMode,
+        nonInteractivePermissions: nextNonInteractive,
+        ...(typeof nextPolicy === "string"
+          ? { permissionPolicy: nextPolicy }
+          : {}),
+      });
+    }
+    setLocale(resolveLocale({ configLanguage: nextConfig.language }));
+    const topologyHeld = replaceRuntimeConfig(config, nextConfig);
+    if (topologyHeld) {
+      void logger.warn(
+        "config.topology_pending_restart",
+        "transport topology change on disk is pending a daemon restart; live transport keeps running",
+        { liveType: config.transport.type, diskType: nextConfig.transport.type },
+      );
+    }
+    return config;
+  } catch (error) {
+    void logger.error(
+      "config.reload_failed",
+      "failed to reload config after file change",
+      {
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+    throw error;
+  }
+}
 
 async function defaultProvisionAgentOverlays(
   config: AppConfig,
@@ -185,6 +280,14 @@ export interface AppRuntime {
   reapStaleQueueOwners: () => Promise<void>;
   reconcileOrphans?: () => Promise<void>;
   dispose: () => Promise<void>;
+  reloadRuntimeConfig?: () => Promise<AppConfig>;
+  applyRuntimePermissionConfig?: (nextConfig: AppConfig) => Promise<AppConfig>;
+  /**
+   * Daemon-wide config disk + permission executor serialization domain.
+   * Exposed so tests can build handler contexts sharing the production
+   * instance (handler transaction vs watcher reload interleavings).
+   */
+  configMutationMutex: ConfigMutationMutex;
 }
 
 interface RuntimeDeps {
@@ -306,19 +409,6 @@ export async function buildApp(
   // Hot-reload path: any new/changed agent (argv, adapter pin, registry) may need
   // a fresh overlay alias. Provision BEFORE swapping the in-memory config so a
   // conflicting/failed overlay never leaves memory and disk disagreeing.
-  const provisionOverlays = async (target: AppConfig): Promise<void> => {
-    await (deps.provisionAgentOverlays ?? defaultProvisionAgentOverlays)(
-      target,
-      logger,
-    );
-  };
-  const reloadRuntimeConfig = async (): Promise<AppConfig> => {
-    const updated = await configStore.load();
-    await provisionOverlays(updated);
-    setLocale(resolveLocale({ configLanguage: updated.language }));
-    replaceRuntimeConfig(config, updated);
-    return config;
-  };
   const logger = createAppLogger({
     filePath: resolveAppLogPath(paths.configPath),
     level: config.logging.level,
@@ -331,6 +421,15 @@ export async function buildApp(
   // world-readable /tmp/openclaw). Must run before any weixin activity starts.
   setWeixinLog(logger);
   await logger.cleanup();
+  // Hot-reload path: any new/changed agent (argv, adapter pin, registry) may need
+  // a fresh overlay alias. Provision BEFORE swapping the in-memory config so a
+  // conflicting/failed overlay never leaves memory and disk disagreeing.
+  const provisionOverlays = async (target: AppConfig): Promise<void> => {
+    await (deps.provisionAgentOverlays ?? defaultProvisionAgentOverlays)(
+      target,
+      logger,
+    );
+  };
   const perfLogPath = paths.perfLogPath ?? resolvePerfLogPath(paths.configPath);
   const perfTracer: PerfTracer = config.logging.perf.enabled
     ? createPerfTracer({
@@ -404,13 +503,18 @@ export async function buildApp(
       const endpointIdentity =
         record.section === "orchestration.workerBindings" ||
         record.section === "orchestration.externalCoordinators";
+      const transportEngineMigrated = record.reason.includes("transport_engine");
       await logger.info(
         endpointIdentity
           ? "state.agent_endpoint_id_migrated"
-          : "state.session_id_migrated",
+          : transportEngineMigrated
+            ? "state.session_transport_engine_migrated"
+            : "state.session_id_migrated",
         endpointIdentity
           ? "assigned a stable Agent Messaging endpoint id to a legacy orchestration record"
-          : "assigned a new logical_session_id to a legacy session record",
+          : transportEngineMigrated
+            ? "assigned transport_engine=cli to a legacy session record missing transport_engine"
+            : "assigned a new logical_session_id to a legacy session record",
         {
           statePath: paths.statePath,
           section: record.section,
@@ -421,6 +525,15 @@ export async function buildApp(
     }
   }
   const stateMutex = new AsyncMutex();
+  /**
+   * Daemon-wide config disk + permission executor serialization domain (see
+   * ConfigMutationMutex in commands/router-types). Held across every
+   * write → permission-transaction → publish/rollback sequence (/config, /pm)
+   * and across every load → permission-transaction → publish sequence
+   * (watcher + orchestration reloads), so a stale reload snapshot can never
+   * commit a value the owning handler already rolled back.
+   */
+  const configMutationMutex = new AsyncMutex();
   const debouncedStateStore = new DebouncedStateStore({
     delegate: stateStore,
     intervalMs: deps.stateSaveDebounceMs ?? 50,
@@ -442,6 +555,24 @@ export async function buildApp(
     stateMutex,
     runtimeRoot,
   });
+  if (sessions.hasPersistedRuntimeBindings()) {
+    // Fail startup LOUD, reusing the shared gate: both a runtime-ineligible
+    // tuple AND a malformed/unreadable policy (parse errors propagate, never
+    // read as "no policy") refuse startup while bindings exist.
+    try {
+      assertEligibleForRuntimePermissionChange(true, {
+        permissionPolicy: config.transport.permissionPolicy,
+        nonInteractivePermissions: config.transport.nonInteractivePermissions,
+      });
+    } catch (error) {
+      // Fail startup LOUD: persisted Runtime bindings can no longer legally
+      // run under this config, and silently starting degraded would brick
+      // every bound session with RUNTIME_ENGINE_UNSUPPORTED.
+      throw new Error(
+        `state has persisted runtime bindings but the current transport permission config is invalid (${error instanceof Error ? error.message : String(error)}); refusing startup (migrate bindings to cli or restore an eligible policy)`,
+      );
+    }
+  }
   // Generic catalog over logical session resources (immutable id, aliases,
   // authoritative workspace cwd, archived flag). Structured channels consume
   // it via ChannelStartInput.sessionResources. Archive/restore/remove
@@ -560,8 +691,19 @@ export async function buildApp(
                     },
                   );
                 },
-                onBridgeRequest: (method, params, context) =>
-                  launchIntentCoordinator.handle(method, params, context),
+                onBridgeRequest: async (method, params, context) => {
+                  if (method === "resolvePermissionRequest") {
+                    const p = params as { logicalSessionId?: string; sessionKey?: string; requestId?: string; toolCallId?: string };
+                    // For now, no channel UI is wired to the bridge permission flow.
+                    // Fail closed: deny unless a future channel handler provides explicit approval.
+                    // This satisfies security: escalate never becomes allow without UI.
+                    return { outcome: "reject_once" };
+                  }
+                  if (method === "resolveElicitationRequest") {
+                    return { action: "cancel" };
+                  }
+                  return await launchIntentCoordinator.handle(method as never, params as never, context);
+                },
                 onBridgeDisconnect: () => launchIntentCoordinator.disconnect(),
               }),
             ),
@@ -602,6 +744,71 @@ export async function buildApp(
     logger,
     resolveDriver: (agent) => config.agents[agent]?.driver,
   });
+  // Affinity/transport boundary: a non-bridge transport cannot execute
+  // Runtime-bound sessions. Refuse startup LOUD rather than letting the CLI
+  // silently run persisted Runtime affinity (the Runtime fence cannot
+  // protect against a CLI queue owner).
+  if (config.transport.type !== "acpx-bridge" && sessions.hasPersistedRuntimeBindings()) {
+    throw new Error(
+      'state has persisted runtime bindings but transport.type is not "acpx-bridge"; refusing startup (migrate bindings to cli or switch transport.type to acpx-bridge)',
+    );
+  }
+  // PR10 capability gate: ask the Bridge host for its real Runtime capability
+  // (public acpx/runtime import + contract probe on the host that will own
+  // workers). Cached into SessionService so auto/strict resolution gates on
+  // the probe BEFORE persisting affinity — a worker file existing locally
+  // must never bind runtime when the Bridge host cannot pass the probe.
+  // Probe failure pins a known-bad capability (fail-safe to cli), never the
+  // local file check.
+  try {
+    const maybeCapable = baseTransport as unknown as { getEngineCapabilities?: () => Promise<{ runtimeAvailable?: boolean; runtimeImportOk?: boolean; contractProbeOk?: boolean }> };
+    if (typeof maybeCapable.getEngineCapabilities === "function") {
+      const capabilities = await maybeCapable.getEngineCapabilities();
+      sessions.setRuntimeCapability({
+        ...(capabilities.runtimeAvailable !== undefined ? { runtimeAvailable: capabilities.runtimeAvailable } : {}),
+        ...(capabilities.runtimeImportOk !== undefined ? { runtimeImportOk: capabilities.runtimeImportOk } : {}),
+        ...(capabilities.contractProbeOk !== undefined ? { contractProbeOk: capabilities.contractProbeOk } : {}),
+      });
+      await logger.info("transport.engine.capabilities", "cached Bridge engine capabilities", {
+        runtimeAvailable: capabilities.runtimeAvailable,
+        runtimeImportOk: capabilities.runtimeImportOk,
+        contractProbeOk: capabilities.contractProbeOk,
+      }).catch(() => {});
+    }
+  } catch (error) {
+    // Fail-safe: an unavailable probe is NOT evidence of availability. Pin a
+    // known-bad capability so auto falls back to cli and strict runtime fails
+    // before persistence, instead of falling back to the local file check.
+    sessions.setRuntimeCapability({
+      runtimeAvailable: false,
+      runtimeImportOk: false,
+      contractProbeOk: false,
+    });
+    await logger.warn("transport.engine.capabilities_failed", "Bridge capability probe failed; treating Runtime as unavailable", {
+      error: error instanceof Error ? error.message : String(error),
+    }).catch(() => {});
+  }
+  const applyPermissionConfig = async (
+    nextConfig: AppConfig,
+  ): Promise<AppConfig> => {
+    return await applyRuntimePermissionConfig({
+      config,
+      nextConfig,
+      sessions,
+      transport,
+      provisionOverlays,
+      logger,
+    });
+  };
+  const reloadRuntimeConfig = async (): Promise<AppConfig> => {
+    // Load + permission transaction + live publish as one serialized unit:
+    // the snapshot must be taken inside the same domain that serializes the
+    // /config + /pm write → transact → publish/rollback sequences.
+    return await configMutationMutex.run(async () => {
+      const updated = await configStore.load();
+      return await applyPermissionConfig(updated);
+    });
+  };
   // Per-chatKey outbound quota (WeChat 24h budget). Shared across SDK boundary
   // (inbound reset / final reservation) and orchestration deliveries (mid gate).
   // Observer pipes every quota decision into the AppLogger so the path is
@@ -827,6 +1034,32 @@ export async function buildApp(
       return undefined;
     }
   };
+  const ensureWorkerBindingIdentity = async (input: {
+    workerSession: string;
+    targetAgent: string;
+    workspace: string;
+    cwd?: string;
+  }): Promise<void> => {
+    // G11 copy-on-write, serialized on the shared stateMutex via
+    // persistWorkerBindingIdentity (see worker-launch.ts for the race
+    // contract). Callers (worker dispatch, ensureWorkerSession) always run
+    // outside the non-reentrant mutex, so this cannot self-deadlock.
+    // The engine inherits the worker's physical group (same rule as logical
+    // sessions): a config-only engine could bind a CLI shell over a
+    // Runtime-owned physical session.
+    await persistWorkerBindingIdentity(state, input, {
+      resolveEngine: (shape) =>
+        sessions.resolveEngineForWorkerBinding({
+          workerSession: input.workerSession,
+          targetAgent: shape.agent,
+          workspace: shape.workspace,
+          ...(input.cwd ? { cwd: input.cwd } : {}),
+        }),
+      saveNow: (nextState) => debouncedStateStore.saveNow(nextState),
+      publish: (nextState) => replaceRuntimeState(state, nextState),
+      runExclusive: (critical) => stateMutex.run(critical),
+    });
+  };
 
   const resolveWorkerRuntimeSession = (
     input: {
@@ -835,20 +1068,49 @@ export async function buildApp(
       workspace: string;
       cwd?: string;
     },
-    bindingSnapshot?: Pick<WorkerBindingRecord, "guardAcpOutput">,
+    bindingSnapshot?: Pick<
+      WorkerBindingRecord,
+      "guardAcpOutput" | "logicalSessionId" | "transportEngine"
+    >,
   ): ResolvedSession => {
     const binding =
       bindingSnapshot ??
       state.orchestration.workerBindings[input.workerSession];
+    // A complete persisted binding IS the worker's identity: resolve through
+    // the same constructor the physical-membership scan and queue recovery
+    // use, so the dispatch key, the fence key, and the scan key cannot
+    // diverge. The durable engine also wins over current config here, so a
+    // config flip between ensure and dispatch cannot rebind the prompt.
+    if (!bindingSnapshot) {
+      const persisted = sessions.resolveWorkerBindingSession(input.workerSession);
+      if (persisted && (input.cwd === undefined || persisted.cwd === input.cwd)) {
+        return persisted;
+      }
+    }
     const guardAcpOutput = shouldGuardWorkerAcpOutput(binding);
+    const logicalSessionId = binding?.logicalSessionId;
+    const transportEngine =
+      binding?.transportEngine ??
+      sessions.resolveEngineForWorkerBinding({
+        workerSession: input.workerSession,
+        targetAgent: input.targetAgent,
+        workspace: input.workspace,
+        ...(input.cwd ? { cwd: input.cwd } : {}),
+      });
     if (!input.cwd) {
-      return sessions.resolveSession(
+      const resolved = sessions.resolveSession(
         input.workerSession,
         input.targetAgent,
         input.workspace,
         input.workerSession,
         { guardAcpOutput },
       );
+      return {
+        ...resolved,
+        ...(logicalSessionId ? { logicalSessionId } : {}),
+        transportEngine:
+          binding?.transportEngine ?? resolved.transportEngine ?? transportEngine,
+      };
     }
 
     const agentConfig = config.agents[input.targetAgent];
@@ -874,6 +1136,8 @@ export async function buildApp(
       workspace: input.workspace,
       transportSession: input.workerSession,
       cwd: input.cwd,
+      ...(logicalSessionId ? { logicalSessionId } : {}),
+      transportEngine,
     };
   };
 
@@ -890,6 +1154,12 @@ export async function buildApp(
       let taskRecord: OrchestrationTaskRecord | undefined;
       try {
         await reloadRuntimeConfig();
+        await ensureWorkerBindingIdentity({
+          workerSession: input.workerSession,
+          targetAgent: input.targetAgent,
+          workspace: input.workspace,
+          ...(input.cwd ? { cwd: input.cwd } : {}),
+        });
         const session = resolveWorkerRuntimeSession(input);
         session.mcpCoordinatorSession = input.coordinatorSession;
         session.mcpSourceHandle = input.workerSession;
@@ -1052,6 +1322,8 @@ export async function buildApp(
       replaceRuntimeState(state, nextState);
     },
     stateMutex,
+    resolveWorkerBindingEngine: (request) =>
+      sessions.resolveEngineForWorkerBinding(request),
     ensureWorkerSession: async ({
       workerSession,
       targetAgent,
@@ -1060,6 +1332,12 @@ export async function buildApp(
       coordinatorSession,
     }) => {
       await reloadRuntimeConfig();
+      await ensureWorkerBindingIdentity({
+        workerSession,
+        targetAgent,
+        workspace,
+        ...(cwd ? { cwd } : {}),
+      });
       const session = resolveWorkerRuntimeSession({
         workerSession,
         targetAgent,
@@ -1115,20 +1393,42 @@ export async function buildApp(
         );
       }
     },
-    closeWorkerSession: async ({
+    // Verified owner teardown for a STAGED worker identity
+    // (rollback-after-owner): the caller passes the staged LID/engine, never
+    // re-resolved, so convergence targets exactly the owner ensure started.
+    // Runtime releases the logical identity (worker shutdown, fence retire,
+    // journal drop — all verified, fails closed on an active turn); CLI
+    // closes its acpx session. Either failure retains the caller's shell.
+    releaseWorkerSession: async ({
       workerSession,
       targetAgent,
       workspace,
       cwd,
-      guardAcpOutput,
+      logicalSessionId,
+      transportEngine,
     }) => {
-      if (!transport.removeSession) {
+      const session = resolveWorkerRuntimeSession({
+        workerSession,
+        targetAgent,
+        workspace,
+        ...(cwd ? { cwd } : {}),
+      });
+      session.logicalSessionId = logicalSessionId;
+      session.transportEngine = transportEngine;
+      if (transportEngine === "runtime") {
+        if (!transport.releaseLogicalSession) {
+          throw new Error(
+            `transport cannot release runtime worker "${workerSession}": no releaseLogicalSession operation`,
+          );
+        }
+        await transport.releaseLogicalSession(session);
         return;
       }
-      const session = resolveWorkerRuntimeSession(
-        { workerSession, targetAgent, workspace, ...(cwd ? { cwd } : {}) },
-        { guardAcpOutput },
-      );
+      if (!transport.removeSession) {
+        throw new Error(
+          `transport cannot converge worker "${workerSession}": no removeSession operation`,
+        );
+      }
       await transport.removeSession(session);
     },
     resumeWorkerTask: async ({
@@ -1442,6 +1742,7 @@ export async function buildApp(
       : undefined,
     activeTurns,
     controlEvents,
+    configMutationMutex,
   );
   const agent = new ConsoleAgent(router, logger);
   const terminalService = createTerminalService({
@@ -1470,6 +1771,19 @@ export async function buildApp(
       })
     : undefined;
   sessionWarmth?.start();
+  // Publish a freshly persisted config onto the live in-memory config. A pending
+  // restart topology on disk is held (live transport.type/command keep running)
+  // while every other field hot-applies; the hold is logged so it stays visible.
+  const publishLiveConfig = (updated: AppConfig): void => {
+    if (replaceRuntimeConfig(config, updated)) {
+      void logger.warn(
+        "config.topology_pending_restart",
+        "transport topology change on disk is pending a daemon restart; live transport keeps running",
+        { liveType: config.transport.type, diskType: updated.transport.type },
+      );
+    }
+  };
+
   const control = new ControlService({
     logger,
     agent,
@@ -1512,14 +1826,29 @@ export async function buildApp(
       catalog: () =>
         listAgentCatalog(config, { registry: loadAgentRegistry() }),
       create: async (name, driver) => {
-        const updated = await configStore.upsertAgent(name, { driver });
-        await provisionOverlays(updated);
-        replaceRuntimeConfig(config, updated);
-        return { name, driver };
+        // Store mutation + whole-snapshot publish join the shared config
+        // mutation domain (see ConfigMutationMutex).
+        return await configMutationMutex.run(async () => {
+          const updated = await configStore.upsertAgent(name, { driver });
+          await provisionOverlays(updated);
+          publishLiveConfig(updated);
+          return { name, driver };
+        });
       },
       remove: async (name) => {
-        const updated = await configStore.removeAgent(name);
-        replaceRuntimeConfig(config, updated);
+        const users = [
+          ...sessions.aliasesUsingAgent(name),
+          ...sessions.workerBindingsUsingAgent(name),
+        ];
+        if (users.length > 0) {
+          throw new Error(
+            `agent "${name}" is still used by sessions: ${users.join(", ")}; remove those sessions first`,
+          );
+        }
+        await configMutationMutex.run(async () => {
+          const updated = await configStore.removeAgent(name);
+          publishLiveConfig(updated);
+        });
       },
     },
     workspaces: {
@@ -1532,24 +1861,37 @@ export async function buildApp(
             : {}),
         })),
       create: async (name, cwd, description) => {
-        const updated = await configStore.upsertWorkspace(
-          name,
-          cwd,
-          description,
-        );
-        replaceRuntimeConfig(config, updated);
-        // Push to every web client (the caller updates optimistically; peers need this).
-        // The config watcher won't double-fire: it diffs against in-memory config, which
-        // replaceRuntimeConfig already refreshed above, so its later event is a no-op.
-        controlEvents.emit({ type: "workspaces-changed" });
-        // The persisted values equal the inputs; build the DTO from them directly
-        // (avoids an unchecked index read of the freshly-written workspaces map).
-        return { name, cwd, ...(description ? { description } : {}) };
+        return await configMutationMutex.run(async () => {
+          const updated = await configStore.upsertWorkspace(
+            name,
+            cwd,
+            description,
+          );
+          publishLiveConfig(updated);
+          // Push to every web client (the caller updates optimistically; peers need this).
+          // The config watcher won't double-fire: it diffs against in-memory config, which
+          // replaceRuntimeConfig already refreshed above, so its later event is a no-op.
+          controlEvents.emit({ type: "workspaces-changed" });
+          // The persisted values equal the inputs; build the DTO from them directly
+          // (avoids an unchecked index read of the freshly-written workspaces map).
+          return { name, cwd, ...(description ? { description } : {}) };
+        });
       },
       remove: async (name) => {
-        const updated = await configStore.removeWorkspace(name);
-        replaceRuntimeConfig(config, updated);
-        controlEvents.emit({ type: "workspaces-changed" });
+        const users = [
+          ...sessions.aliasesUsingWorkspace(name),
+          ...sessions.workerBindingsUsingWorkspace(name),
+        ];
+        if (users.length > 0) {
+          throw new Error(
+            `workspace "${name}" is still used by sessions: ${users.join(", ")}; remove those sessions first`,
+          );
+        }
+        await configMutationMutex.run(async () => {
+          const updated = await configStore.removeWorkspace(name);
+          publishLiveConfig(updated);
+          controlEvents.emit({ type: "workspaces-changed" });
+        });
       },
     },
     uploadStore,
@@ -1830,6 +2172,9 @@ export async function buildApp(
       scheduler: scheduledScheduler,
     },
     control,
+    reloadRuntimeConfig,
+    applyRuntimePermissionConfig: applyPermissionConfig,
+    configMutationMutex,
     reapStaleQueueOwners: () => reapWarmQueueOwners("startup"),
     ...(deps.orphanRegistry && deps.daemonIdentity
       ? { reconcileOrphans: () => reapWarmQueueOwners("periodic") }
@@ -1870,11 +2215,42 @@ export async function buildApp(
   };
 }
 
-function replaceRuntimeConfig(target: AppConfig, source: AppConfig): void {
+function replaceRuntimeConfig(target: AppConfig, source: AppConfig): boolean {
   // Copy every AppConfig field onto the live config object in place, preserving
   // its identity for holders of the reference. Object.assign stays exhaustive
   // automatically, so a newly added AppConfig field cannot be silently missed.
+  // Returns true when a pending restart topology on disk was HELD: the live
+  // transport.type/command keep their current values while every other field
+  // hot-applies. Callers log the hold so the pending restart stays visible.
+  const liveType = target.transport.type;
+  const liveCommand = target.transport.command;
+  const held = isRestartRequiredTransportChange(
+    { type: liveType, ...(liveCommand !== undefined ? { command: liveCommand } : {}) },
+    source.transport,
+  );
   Object.assign(target, source);
+  if (held) {
+    target.transport = {
+      ...source.transport,
+      type: liveType,
+      ...(liveCommand !== undefined ? { command: liveCommand } : {}),
+    };
+    if (liveCommand === undefined) {
+      delete target.transport.command;
+    }
+  }
+  return held;
+}
+
+function hasPrimeRuntimeQueues(
+  target: unknown,
+): target is { primeRuntimeQueues(sessions: ResolvedSession[]): Promise<void> } {
+  return (
+    typeof target === "object" &&
+    target !== null &&
+    "primeRuntimeQueues" in target &&
+    typeof (target as { primeRuntimeQueues?: unknown }).primeRuntimeQueues === "function"
+  );
 }
 
 /**

@@ -50,7 +50,7 @@ test("concurrency: the state mutex serializes two overlapping delegations", asyn
   // worker-session names and don't collide on assertWorkerSessionAvailable — that
   // collision is a separate, already-characterized business rule (see the golden human
   // path fixtures) and is not what this test pins.
-  const harness = makeGoldenHarness({ ids: ["task-1", "task-2"] });
+  const harness = makeGoldenHarness({ ids: ["task-1", "task-2", "lid-a", "lid-b"] });
   let firstLoadGated = false;
   let loadCountWhileGated = 0;
   const gate = deferred<void>();
@@ -107,7 +107,7 @@ test("concurrency: two parallel delegations at cap 1 dispatch exactly one and qu
   // Drive both delegations concurrently and assert exactly one dispatches while the other
   // queues — not sequentially, like the existing golden "at parallel capacity" fixture.
   const harness = makeGoldenHarness({
-    ids: ["task-1", "task-1-slot", "task-2", "task-2-slot"],
+    ids: ["task-1", "task-1-slot", "task-2", "task-2-slot", "lid-a"],
     config: cappedConfig,
   });
   const service = new OrchestrationService(harness.deps);
@@ -156,7 +156,7 @@ test("concurrency: two parallel needs_confirmation tasks approved at cap 1 dispa
   // gates only `input.parallel && autoRun`, and autoRun is false for worker-sourced requests
   // (hence `needs_confirmation`), so their gate is deferred to approveTask.
   const harness = makeGoldenHarness({
-    ids: ["task-1", "task-1-slot", "task-2", "task-2-slot"],
+    ids: ["task-1", "task-1-slot", "task-2", "task-2-slot", "lid-1", "lid-2"],
     config: {
       ...cappedConfig,
       orchestration: { ...cappedConfig.orchestration, allowWorkerChainedRequests: true },
@@ -218,7 +218,7 @@ test("concurrency: two parallel needs_confirmation tasks approved at cap 1 dispa
 async function makeTwoPendingParallelApprovals(maxParallelTasksPerAgent = 1) {
   const empty = createEmptyState();
   const harness = makeGoldenHarness({
-    ids: ["task-1", "task-1-slot", "task-2", "task-2-slot"],
+    ids: ["task-1", "task-1-slot", "task-2", "task-2-slot", "lid-1", "lid-2"],
     config: {
       ...cappedConfig,
       orchestration: {
@@ -363,7 +363,7 @@ test("approveTask releases its parallel slot when ensureWorkerSession fails", as
 
 test("concurrency: reconcileParallelSlots racing a delegation never over-dispatches", async () => {
   const harness = makeGoldenHarness({
-    ids: ["task-1", "task-1-slot", "task-2", "task-2-slot", "task-3", "task-3-slot"],
+    ids: ["task-1", "task-1-slot", "task-2", "task-2-slot", "task-3", "task-3-slot", "lid-a", "lid-b", "lid-c"],
     config: cappedConfig,
   });
   const service = new OrchestrationService(harness.deps);
@@ -499,7 +499,7 @@ test("concurrency: pendingWorkerSessions is shared across its two access points"
   // before it has even attempted to queue its persist mutate(), guaranteeing delegation
   // B's mutate() call is both registered and run first — deterministically, not by
   // tick-counting.
-  const harness = makeGoldenHarness({ ids: ["task-1", "task-2"] });
+  const harness = makeGoldenHarness({ ids: ["task-1", "task-2", "lid-a", "lid-b"] });
   const gate = deferred<void>();
   const aReachedEnsure = deferred<void>();
 

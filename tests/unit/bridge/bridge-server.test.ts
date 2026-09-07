@@ -8,6 +8,8 @@ import { BridgeServer } from "../../../src/bridge/bridge-server";
 import { AcpxQueueOverflowError } from "../../../src/transport/acpx-queue-overflow";
 import { MessageInjectionError } from "../../../src/transport/message-injection";
 import { PromptCommandError } from "../../../src/transport/prompt-output";
+import { EngineRouter } from "../../../src/bridge/engine/engine-router";
+import { SessionEngineBinding } from "../../../src/bridge/engine/session-engine-binding";
 
 test("returns whether a named session exists", async () => {
   const runtime = new BridgeRuntime(
@@ -1971,4 +1973,75 @@ test("dispatches getAgentSessionId to the runtime", async () => {
 
   expect(JSON.parse(line)).toEqual({ id: "1", ok: true, result: { agentSessionId: "agent-xyz" } });
   expect(runtime.getAgentSessionId).toHaveBeenCalledTimes(1);
+});
+
+test("dispatches primeRuntimeQueues to the engine and validates input shape", async () => {
+  const primed: unknown[][] = [];
+  const fakeRuntimeEngine = {
+    primeQueuesFromCatalog: async (sessions: unknown[]) => {
+      primed.push(sessions);
+    },
+    shutdown: async () => ({}),
+  };
+  const router = new EngineRouter(new SessionEngineBinding(), { shutdown: async () => ({}) } as never, fakeRuntimeEngine as never);
+  const server = new BridgeServer(router);
+
+  const validPayload = {
+    id: "prime-1",
+    method: "primeRuntimeQueues",
+    params: {
+      sessions: [
+        {
+          agent: "codex",
+          cwd: "/repo",
+          name: "demo",
+          logicalSessionId: "sess-1",
+          transportEngine: "runtime",
+        },
+      ],
+    },
+  };
+
+  const response = await server.handleLine(JSON.stringify(validPayload));
+  expect(JSON.parse(response!)).toEqual({ id: "prime-1", ok: true, result: {} });
+  expect(primed.length).toBe(1);
+  expect(primed[0]).toEqual([
+    expect.objectContaining({
+      agent: "codex",
+      cwd: "/repo",
+      name: "demo",
+      logicalSessionId: "sess-1",
+      transportEngine: "runtime",
+    }),
+  ]);
+
+  // Invalid sessions type (not an array)
+  const invalidResponse1 = await server.handleLine(JSON.stringify({
+    id: "prime-bad-1",
+    method: "primeRuntimeQueues",
+    params: { sessions: "not-an-array" },
+  }));
+  expect(JSON.parse(invalidResponse1!)).toEqual({
+    id: "prime-bad-1",
+    ok: false,
+    error: {
+      code: "BRIDGE_INVALID_REQUEST",
+      message: "primeRuntimeQueues requires a sessions array",
+    },
+  });
+
+  // Invalid session entry in array (missing required field)
+  const invalidResponse2 = await server.handleLine(JSON.stringify({
+    id: "prime-bad-2",
+    method: "primeRuntimeQueues",
+    params: { sessions: [{ agent: "codex" }] },
+  }));
+  expect(JSON.parse(invalidResponse2!)).toEqual({
+    id: "prime-bad-2",
+    ok: false,
+    error: {
+      code: "BRIDGE_INVALID_REQUEST",
+      message: "cwd must be a non-empty string",
+    },
+  });
 });

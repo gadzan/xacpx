@@ -274,10 +274,23 @@ export class AcpxCliTransport implements SessionTransport {
     this.createAdapterContext = options.createAdapterContext;
   }
 
+  // Defense-in-depth for the affinity/transport boundary: a session whose
+  // persisted affinity selects the Runtime engine must never be executed by
+  // the CLI transport (which would bypass the Runtime ownership fence and
+  // start a second, CLI-owned queue owner for the same physical session).
+  private assertCliAffinity(session: ResolvedSession): void {
+    if (session.transportEngine === "runtime") {
+      throw new Error(
+        `transport mismatch: session "${session.alias}" is bound to engine "runtime" but the active transport is acpx-cli; refusing to execute on the wrong engine (migrate the binding to cli or switch transport.type to acpx-bridge)`,
+      );
+    }
+  }
+
   // acpx-cli transport does not stream stderr back to the caller, so "note" progress
   // is never emitted. Users on this transport still see the initial "spawn" hint from
   // CommandRouter (emitted before the call) but will not receive mid-flight updates.
   async ensureSession(session: ResolvedSession, _onProgress?: (progress: EnsureSessionProgress) => void): Promise<void> {
+    this.assertCliAffinity(session);
     this.invalidateRecordIdCache(session);
     await this.migrateLegacySessionArgvIfNeeded(session);
     try {
@@ -370,6 +383,7 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   async tailSessionHistory(session: ResolvedSession, lines: number): Promise<{ text: string }> {
+    this.assertCliAffinity(session);
     const candidates = [
       ["sessions", "history", session.transportSession, "--limit", String(lines)],
       ["sessions", "history", "quiet", "-s", session.transportSession, String(lines)],
@@ -407,6 +421,7 @@ export class AcpxCliTransport implements SessionTransport {
     replyContext?: ReplyQuotaContext,
     options?: PromptOptions,
   ): Promise<{ text: string }> {
+    this.assertCliAffinity(session);
     await this.syncPersistedSessionEffort(session);
     await this.launchMcpQueueOwnerIfNeeded(session);
     const structuredPrompt = await createStructuredPromptFile(text, options?.media);
@@ -479,6 +494,7 @@ export class AcpxCliTransport implements SessionTransport {
     session: ResolvedSession,
     input: SessionMessageInput,
   ): Promise<SessionMessageReceipt> {
+    this.assertCliAffinity(session);
     if (input.mode === "steer") {
       throw new MessageInjectionError(
         "TARGET_NOT_STEERABLE",
@@ -509,6 +525,7 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   async setMode(session: ResolvedSession, modeId: string): Promise<void> {
+    this.assertCliAffinity(session);
     await this.run(this.buildArgs(session, [
       "set-mode",
       "-s",
@@ -525,6 +542,7 @@ export class AcpxCliTransport implements SessionTransport {
   // acpx validates the id against the agent's advertised models and applies it to
   // a live queue owner immediately (or persists it for the next turn when idle).
   async setModel(session: ResolvedSession, modelId: string): Promise<void> {
+    this.assertCliAffinity(session);
     await this.run(this.buildArgs({ ...session, model: modelId }, [
       "set",
       "-s",
@@ -541,6 +559,7 @@ export class AcpxCliTransport implements SessionTransport {
   // `<agent> status --format json`. Returns an empty list when status output is
   // not parseable, so callers can still show the current model.
   async getSessionModel(session: ResolvedSession): Promise<{ current?: string; available: string[] }> {
+    this.assertCliAffinity(session);
     const args = this.buildAgentQueryArgs(
       this.sessionInput(session),
       "json",
@@ -567,6 +586,7 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   async getSessionEffort(session: ResolvedSession): Promise<SessionEffortState> {
+    this.assertCliAffinity(session);
     const output = await this.run(this.buildArgs(session, [
       "sessions",
       "show",
@@ -582,6 +602,7 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   async setSessionEffort(session: ResolvedSession, effort: string): Promise<void> {
+    this.assertCliAffinity(session);
     const record = await this.readSessionEffortRecord(session);
     await this.applyAdvertisedSessionEffort(session, effort, record);
   }
@@ -670,6 +691,7 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   async cancel(session: ResolvedSession): Promise<{ cancelled: boolean; message: string }> {
+    this.assertCliAffinity(session);
     const output = await this.run(this.buildArgs(session, [
       "cancel",
       "-s",
@@ -685,6 +707,7 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   async resumeAgentSession(session: ResolvedSession, agentSessionId: string): Promise<void> {
+    this.assertCliAffinity(session);
     this.invalidateRecordIdCache(session);
     const args = this.buildArgs(session, [
       "sessions",
@@ -709,6 +732,7 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   async removeSession(session: ResolvedSession): Promise<void> {
+    this.assertCliAffinity(session);
     this.invalidateRecordIdCache(session);
     const result = await this.runCommandWithTimeout(this.runCommand, this.buildArgs(session, [
       "sessions",
@@ -729,6 +753,7 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   async deleteSession(session: ResolvedSession): Promise<void> {
+    this.assertCliAffinity(session);
     let acpxRecordId: string;
     try {
       ({ acpxRecordId } = await this.readSessionRecord(session));
@@ -744,6 +769,7 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   async freeWarmProcess(session: ResolvedSession): Promise<void> {
+    this.assertCliAffinity(session);
     let acpxRecordId: string;
     try {
       ({ acpxRecordId } = await this.readSessionRecord(session));
@@ -775,6 +801,7 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   async isSessionWarm(session: ResolvedSession): Promise<boolean> {
+    this.assertCliAffinity(session);
     const cacheKey = this.recordIdCacheKey(session);
     let acpxRecordId = this.recordIdCache.get(cacheKey);
     if (!acpxRecordId) {
@@ -793,6 +820,7 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   async hasSession(session: ResolvedSession): Promise<boolean> {
+    this.assertCliAffinity(session);
     const result = await this.runCommandWithTimeout(this.runCommand, this.buildArgs(session, [
       "sessions",
       "show",
@@ -907,6 +935,7 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   async getAgentSessionId(session: ResolvedSession): Promise<string | undefined> {
+    this.assertCliAffinity(session);
     const record = await this.readSessionRecord(session);
     return record.agentSessionId;
   }

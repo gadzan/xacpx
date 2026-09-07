@@ -27,6 +27,10 @@ export const agent: AgentMessages = {
   // handleAgentRemove — removed confirmation
   removed: (name) => `Agent "${name}" removed.`,
 
+  // handleAgentRemove — still referenced by persisted sessions
+  stillReferenced: (name, aliases) =>
+    `Agent "${name}" is still used by sessions: ${aliases}. Remove those sessions first.`,
+
   // agentHelp metadata
   helpSummary: "Manage registered agents.",
   helpCmdList: "/agents",

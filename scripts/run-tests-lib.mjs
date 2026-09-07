@@ -11,6 +11,12 @@ export function buildTestPlan(rootDir, collect = collectTests) {
       command: "node",
       args: ["./node_modules/typescript/bin/tsc", "--noEmit"],
     },
+    // G13 (plan §61): only runtime-adapter.ts may import acpx/runtime — no
+    // private acpx/dist or acpx/src imports anywhere in src.
+    {
+      command: "node",
+      args: ["./scripts/lint-acpx-imports.mjs"],
+    },
     ...collect(rootDir).map((file) => ({
       command: "bun",
       args: ["test", file],

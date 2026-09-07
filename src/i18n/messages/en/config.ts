@@ -24,6 +24,9 @@ export const config: ConfigMessages = {
   // handleConfigSet — success
   updated: (path, value) => `Config updated: ${path} = ${value}`,
 
+  // handleConfigSet — restart-required topology change
+  restartRequired: (path, value) => `Config saved: ${path} = ${value}. Transport topology changes require a daemon restart to take effect; the running daemon keeps its previous transport.`,
+
   // applySupportedConfigUpdate — language
   languageInvalid: "language only supports: en, zh",
 

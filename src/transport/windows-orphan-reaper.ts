@@ -2,7 +2,6 @@ import {
   probeWindowsProcessIdentity,
   snapshotWindowsProcessesByToken,
   terminateWindowsProcessTree,
-  terminateWindowsResidual,
   type KillOutcome,
   type ProcessTreeOutcome,
   type WindowsProcessWorkerOptions,
@@ -36,7 +35,6 @@ export interface WindowsOrphanReaperDeps extends WindowsProcessWorkerOptions {
   snapshotToken?: typeof snapshotWindowsProcessesByToken;
   probeIdentity?: typeof probeWindowsProcessIdentity;
   terminateTree?: typeof terminateWindowsProcessTree;
-  terminateResidual?: typeof terminateWindowsResidual;
   onWarning?: (message: string, error?: unknown) => void;
 }
 
@@ -173,7 +171,7 @@ async function reconcileOwner(
     creationDate: owner.fingerprint.creationDate,
     commandLine: owner.fingerprint.commandLine,
     executablePath: owner.fingerprint.executablePath,
-  }, workerOptions(deps));
+  }, terminateOptions(deps));
   if (!isKnownOutcome(batch.rootOutcome) || batch.outcomes.some((entry) => !isKnownOutcome(entry.outcome))) {
     result.ownersRetained += 1;
     return;
@@ -187,7 +185,7 @@ async function reconcileOwner(
     result.ownersRetained += 1;
     return;
   }
-  const residuals = buildResiduals(owner, batch.outcomes);
+  const residuals = buildResiduals({ pid: owner.pid, ownerToken: owner.token, agentCommand: owner.agentCommand, generationId: owner.generationId }, batch.outcomes);
   if (residuals === null) {
     await registry.writeOwner({ ...owner, killAttempts: owner.killAttempts + 1 });
     result.ownersRetained += 1;
@@ -203,20 +201,27 @@ async function reconcileOwner(
   result.ownersRetained += 1;
 }
 
-function buildResiduals(owner: OwnerRecord, outcomes: ProcessTreeOutcome[]): ResidualRecord[] | null {
+interface ResidualSource {
+  pid: number;
+  ownerToken: string;
+  agentCommand: string;
+  generationId: string;
+}
+
+function buildResiduals(source: ResidualSource, outcomes: ProcessTreeOutcome[]): ResidualRecord[] | null {
   const residuals: ResidualRecord[] = [];
   for (const entry of outcomes) {
-    if (entry.target.pid === owner.pid || TERMINAL.has(entry.outcome)) continue;
+    if (entry.target.pid === source.pid || TERMINAL.has(entry.outcome)) continue;
     if (!RESIDUAL.has(entry.outcome) || !entry.target.creationDate || !entry.commandLine || !entry.executablePath) return null;
     residuals.push({
       kind: "residual",
-      ownerToken: owner.token,
+      ownerToken: source.ownerToken,
       pid: entry.target.pid,
       creationDate: entry.target.creationDate,
       commandLine: entry.commandLine,
       executablePath: entry.executablePath,
-      agentCommand: owner.agentCommand,
-      generationId: owner.generationId,
+      agentCommand: source.agentCommand,
+      generationId: source.generationId,
       killAttempts: 0,
     });
   }
@@ -230,21 +235,44 @@ async function reconcileResidual(
   result: WindowsOrphanSweepResult,
   deps: WindowsOrphanReaperDeps,
 ): Promise<void> {
-  const terminate = deps.terminateResidual ?? terminateWindowsResidual;
-  const outcome = await terminate({
+  // A residual is an UNVERIFIED SUBTREE ROOT: kill it through the verified
+  // tree terminator so anything it spawned after spooling converges too.
+  const terminateTree = deps.terminateTree ?? terminateWindowsProcessTree;
+  const batch = await terminateTree({
     pid: residual.pid,
     creationDate: residual.creationDate,
     commandLine: residual.commandLine,
     executablePath: residual.executablePath,
-  }, workerOptions(deps));
-  if (TERMINAL.has(outcome)) {
+  }, terminateOptions(deps));
+  // A root that is already-exited/skipped-replaced does NOT discharge the
+  // subtree: the tree terminator returns BEFORE any descendant snapshot in
+  // that case, so descendants are unverified and MUST keep their evidence.
+  if (!isKnownOutcome(batch.rootOutcome) || batch.rootOutcome === "already-exited" || batch.rootOutcome === "skipped-replaced") {
+    await registry.writeResidual({ ...residual, killAttempts: residual.killAttempts + 1 });
+    result.residualsRetained += 1;
+    retainDegraded(result, deps, "residual subtree termination unavailable or root replaced before snapshot");
+    return;
+  }
+  if (batch.rootOutcome === "killed") {
+    // Migrate every unsafe descendant FIRST (same transaction as owner
+    // reconciliation): the root residual is deleted only when every unsafe
+    // descendant got its own durable residual.
+    const descendants = buildResiduals(residual, batch.outcomes);
+    if (descendants === null) {
+      await registry.writeResidual({ ...residual, killAttempts: residual.killAttempts + 1 });
+      result.residualsRetained += 1;
+      retainDegraded(result, deps, "incomplete descendant fingerprint while migrating residual subtree");
+      return;
+    }
+    for (const descendant of descendants) await registry.writeResidual(descendant);
     await registry.deleteResidual(filename);
     result.residualsDeleted += 1;
     return;
   }
+  // kill-requested-unconfirmed / access-denied / query-failed root: retain.
   await registry.writeResidual({ ...residual, killAttempts: residual.killAttempts + 1 });
   result.residualsRetained += 1;
-  if (!isKnownOutcome(outcome) || outcome === "query-failed" || outcome === "access-denied") {
+  if (batch.rootOutcome === "query-failed" || batch.rootOutcome === "access-denied") {
     retainDegraded(result, deps, "residual identity or termination unavailable");
   }
 }
@@ -263,6 +291,23 @@ function sameTokenFingerprint(owner: OwnerRecord, process: WindowsTokenProcess):
 function isKnownOutcome(value: unknown): value is KillOutcome {
   return typeof value === "string" && (TERMINAL.has(value as KillOutcome)
     || RESIDUAL.has(value as KillOutcome));
+}
+
+/**
+ * Options for the tree-termination calls (owner + residual subtree kill).
+ * These are ownership-sensitive destructive transactions: an external SIGKILL
+ * arriving mid-traversal kills the PowerShell worker AFTER the root but
+ * BEFORE the evidence JSON is emitted — survivors then have no returned
+ * fingerprint and the sweep can only retain the record forever. The in-script
+ * 8s snapshot watchdog and per-handle 2s WaitDead already bound every
+ * primitive, so the outer hard-kill deadline defaults to disabled (null).
+ * A deps-provided workerDeadlineMs is still honored (tests).
+ */
+function terminateOptions(deps: WindowsOrphanReaperDeps): WindowsProcessWorkerOptions {
+  return {
+    workerDeadlineMs: deps.workerDeadlineMs ?? null,
+    ...(deps.runWorker === undefined ? {} : { runWorker: deps.runWorker }),
+  };
 }
 
 function workerOptions(deps: WindowsOrphanReaperDeps): WindowsProcessWorkerOptions {

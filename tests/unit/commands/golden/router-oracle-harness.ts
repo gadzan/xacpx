@@ -36,7 +36,10 @@ function scrubText(text: string): string {
     // (session-reset-handler.buildResetTransportSessionName). The embedded epoch ms is
     // machine/run-varying and is NOT injectable from the harness (the ops factory hardcodes
     // `now: () => Date.now()`), so scrub it to keep the reset fixture byte-stable.
-    .replace(/reset-\d+/g, "reset-<n>");
+    .replace(/reset-\d+/g, "reset-<n>")
+    // Engine wiring (feat/acpx-runtime-engine): resolved sessions now carry a
+    // randomUUID logicalSessionId. Run-varying, so scrub like timestamps.
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi, "<logical-session-id>");
 }
 
 // Compact one arg into a stable, human-diffable token. Sessions/objects collapse to a

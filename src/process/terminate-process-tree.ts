@@ -45,23 +45,50 @@ export async function terminateProcessTree(
 
   try {
     killProcess(targetPid, "SIGTERM");
-  } catch {
+  } catch (error) {
+    const code = (error as { code?: unknown } | null)?.code;
+    if (code === "ESRCH") return;
+    if (code === "EPERM") {
+      // macOS quirk: signalling a JUST-EXITED (zombie, not yet reaped) group
+      // rejects with EPERM even though the tree is dying. Give the parent's
+      // reaping a short window; a group that survives it is a REAL
+      // permission failure and must fail closed (G10).
+      if (await waitGone(targetPid, isProcessRunning, 2_000)) return;
+    }
+    // Any other error (or a surviving EPERM group) is an UNVERIFIED
+    // termination: fail closed instead of letting callers treat ownership
+    // as discharged.
+    throw error;
+  }
+
+  if (!(await waitGone(targetPid, isProcessRunning))) {
+    try {
+      killProcess(targetPid, "SIGKILL");
+    } catch (error) {
+      if ((error as { code?: unknown } | null)?.code === "ESRCH") return;
+      // fall through to final verification; a throwing SIGKILL on a live
+      // group must not be reported as success either.
+    }
+  } else {
     return;
   }
+  // Final verification: SIGKILL is only a request. Ownership is discharged
+  // when the group is GONE, not when the signal was delivered.
+  if (await waitGone(targetPid, isProcessRunning)) return;
+  throw new Error(
+    `process group ${targetPid} did not terminate after SIGKILL; refusing to report verified ownership discharge`,
+  );
+}
 
-  const deadline = Date.now() + 5_000;
+async function waitGone(targetPid: number, isProcessRunning: IsProcessRunning, timeoutMs = 5_000, pollMs = 100): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (!isProcessRunning(targetPid)) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    if (!isProcessRunning(targetPid)) return true;
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, pollMs);
+    await promise;
   }
-
-  try {
-    killProcess(targetPid, "SIGKILL");
-  } catch {
-    // Process already exited.
-  }
+  return false;
 }
 
 function defaultIsProcessRunning(pid: number): boolean {

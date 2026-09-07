@@ -1,0 +1,1295 @@
+import { expect, test } from "bun:test";
+import { mkdtemp, writeFile, rm, mkdir, readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+import { RuntimeEngine, physicalFenceKeyForSession } from "../../../../../src/bridge/engine/runtime-engine";
+
+const baseInput = {
+  agent: "codex",
+  cwd: "/repo",
+  name: "demo",
+  logicalSessionId: "lease-sess-1",
+};
+function uniqueInput(): typeof baseInput {
+  return { ...baseInput, logicalSessionId: `lease-sess-${Math.random().toString(36).slice(2, 10)}` };
+}
+
+async function slowWorker(entry: string): Promise<void> {
+  await writeFile(
+    entry,
+    [
+      "let pending=new Map();",
+      "let buffer='';",
+      "process.stdin.on('data', (d) => {",
+      "  buffer += d.toString();",
+      "  let idx;",
+      "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
+      "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
+      "    if (!line) continue;",
+      "    try { const msg = JSON.parse(line);",
+      "      if (msg.method === 'ensure') {",
+      "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true, sessionKey: msg.params.sessionKey, acpxRecordId: 'rec-'+msg.params.sessionKey } }) + '\\n');",
+      "      } else if (msg.method === 'prompt') {",
+      "        const text = msg.params.text;",
+      "        const tid=setTimeout(() => {",
+      "          pending.delete(msg.id);",
+      "          process.stdout.write(JSON.stringify({ id: msg.id, event: 'text_delta', payload: { type: 'text_delta', text: 'ok:'+text } }) + '\\n');",
+      "          process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { result: { status: 'completed' }, finalText: 'ok:'+text } }) + '\\n');",
+      "        }, 400);",
+      "        pending.set(msg.id, tid);",
+      "      } else if (msg.method === 'cancel') {",
+      "        for (const tid of pending.values()) clearTimeout(tid); pending.clear();",
+      "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { cancelled: true } }) + '\\n');",
+      "      } else if (msg.method === 'close') {",
+      "        for (const tid of pending.values()) clearTimeout(tid); pending.clear();",
+      "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+      "      } else {",
+      "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: {} }) + '\\n');",
+      "      }",
+      "      if (msg.method === 'shutdown') process.exit(0);",
+      "    } catch {}",
+      "  }",
+      "});",
+    ].join("\n"),
+  );
+}
+
+test("P1-1a: prompt vs prompt serialised per logicalSessionId (maxConcurrent=1)", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-lease-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    const p1 = engine.prompt({ ...testInput, text: "slow1" });
+    const p2Start = Date.now();
+    const p2 = engine.prompt({ ...testInput, text: "slow2" });
+    const r1 = await p1;
+    expect(r1.text).toBe("ok:slow1");
+    const r2 = await p2;
+    expect(r2.text).toBe("ok:slow2");
+    const elapsed = Date.now() - p2Start;
+    expect(elapsed).toBeGreaterThan(600);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+test.serial("P1-6: archive via cancel->freeWarmProcess does not kick drain", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-archive-cancel-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    // Enqueue two heads: first may be admitted before archive, second must remain
+    await engine.injectMessage({
+      ...testInput,
+      messageId: "m-archive-cancel-1",
+      text: "archived-via-cancel-1",
+      mode: "queue",
+    } as unknown as never);
+    await engine.injectMessage({
+      ...testInput,
+      messageId: "m-archive-cancel-2",
+      text: "archived-via-cancel-2",
+      mode: "queue",
+    } as unknown as never);
+    // Wait until first head truly admitted, not just 50ms gamble
+    for (let i=0; i<20; i++) {
+      const hasActive = (engine as any).activeTurns?.get?.(testInput.logicalSessionId) > 0;
+      const isDraining = (engine as any).draining?.has?.(testInput.logicalSessionId);
+      if (hasActive || isDraining) break;
+      const { promise, resolve } = Promise.withResolvers<void>(); setTimeout(resolve, 10); await promise;
+    }
+    // Real archive chain: cancel then freeWarmProcess (cancel no longer kicks)
+    await engine.cancel(testInput as unknown as never);
+    await engine.freeWarmProcess(testInput as unknown as never);
+    const hasPendingAfterArchive = await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId);
+    expect(hasPendingAfterArchive).toBe(true);
+    const isSuspended = await (engine as any).getQueueStore().isSuspended(testInput.logicalSessionId);
+    expect(isSuspended).toBe(true);
+    // First head may have been admitted before suspend (then dequeues leaving 1) or not yet (leaving 2); both satisfy suspend blocks next head
+    for (let i=0;i<40;i++) {
+      const hasActive = (engine as any).activeTurns?.get?.(testInput.logicalSessionId) > 0;
+      const warm = (await engine.isSessionWarm(testInput as unknown as never)).warm;
+      if (!hasActive && !warm) break;
+      const { promise, resolve } = Promise.withResolvers<void>(); setTimeout(resolve, 50); await promise;
+    }
+    const stillPending = await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId);
+    expect(stillPending).toBe(true);
+    const qlen = await (engine as any).getQueueStore().queueLength(testInput.logicalSessionId);
+    expect([1,2]).toContain(qlen);
+    const warm = await engine.isSessionWarm(testInput as unknown as never);
+    expect(warm.warm).toBe(false);
+    // Direct prompt should clear suspend and drain
+    const r = await engine.prompt({ ...testInput, text: "resume-after-cancel-archive" });
+    expect(r.text).toBe("ok:resume-after-cancel-archive");
+    const { promise: _p600, resolve: _r600 } = Promise.withResolvers<void>(); setTimeout(_r600, 600); await _p600;
+    const after = await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId);
+    expect(after).toBe(false);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test.serial("P1-7: delete generation blocks waiter that was queued behind policy lock (prompt)", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-delete-policy-prompt-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    // Hold policy lock
+    await (engine as any).acquirePolicyLock();
+    // Start delete and prompt while lock held; both will await lock
+    const pDelete = engine.deleteSession(testInput as unknown as never);
+    const pPrompt = engine.prompt({ ...testInput, text: "should-not-recreate" });
+    pPrompt.catch(() => {});
+    // Give them time to queue on lock
+    const { promise: _p50, resolve: _r50 } = Promise.withResolvers<void>(); setTimeout(_r50, 50); await _p50;
+    // Release lock: D should acquire first (it was queued first), then P
+    (engine as any).releasePolicyLock();
+    await pDelete;
+    // P must be rejected with RUNTIME_INIT_FAILED (generation mismatch), not recreate
+    await expect(pPrompt).rejects.toMatchObject({ code: "RUNTIME_INIT_FAILED" });
+    expect(await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId).catch(()=>false)).toBe(false);
+    expect((await engine.isSessionWarm(testInput as unknown as never)).warm).toBe(false);
+    // Ensure no record was recreated
+    const recId = await (engine as any).resolveRecordId(testInput, undefined);
+    expect(recId).toBeUndefined();
+  } finally {
+    // Ensure lock released if still held
+    try { (engine as any).releasePolicyLock(); } catch {}
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test.serial("P1-8: delete generation blocks waiter that was queued behind policy lock (inject)", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-delete-policy-inject-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    await (engine as any).acquirePolicyLock();
+    const pDelete = engine.deleteSession(testInput as unknown as never);
+    const pInject = engine.injectMessage({
+      logicalSessionId: testInput.logicalSessionId,
+      messageId: "m-inject-after-delete",
+      text: "should-not-queue",
+      mode: "queue",
+    } as unknown as never);
+    (pInject as any).catch(() => {});
+    const { promise: _p50, resolve: _r50 } = Promise.withResolvers<void>(); setTimeout(_r50, 50); await _p50;
+    (engine as any).releasePolicyLock();
+    await pDelete;
+    await expect(pInject).rejects.toMatchObject({ code: "RUNTIME_INIT_FAILED" });
+    expect(await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId).catch(()=>false)).toBe(false);
+  } finally {
+    try { (engine as any).releasePolicyLock(); } catch {}
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+
+test("P1-1b: prompt vs drain serialised (shared lease)", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-lease-drain-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    const p1 = engine.prompt({ ...testInput, text: "slow1" });
+    // Enqueue a second turn via durable queue while p1 is active; drain must wait for p1's lease
+    const inject = await engine.injectMessage({
+      ...testInput,
+      messageId: "m1",
+      text: "queued1",
+      mode: "queue",
+    } as unknown as never); // test helper: EngineInjectInput shape not fully typed for queue suspension test, unchecked cast with reason
+    const before = Date.now();
+    const r1 = await p1;
+    expect(r1.text).toBe("ok:slow1");
+    // After p1, drain for queued1 should still be pending (serialised, not concurrent)
+    // Poll hasPending shortly after p1 — should still be true because drain needs 400ms
+    const hasPendingImmediately = await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId);
+    // If serialised, drain hasn't yet completed queued1, so pending remains true for a short window
+    // If concurrent, drain would have already completed queued1 during p1, so pending would be false
+    // Allow for timing: check within 50ms after p1
+    expect(hasPendingImmediately).toBe(true);
+    // Wait for drain to complete queued1 (400ms)
+    const { promise: _p500, resolve: _r500 } = Promise.withResolvers<void>(); setTimeout(_r500, 500); await _p500; // real timer: drain needs 400ms wall-clock, fake timers cannot advance worker process
+    const hasPendingAfter = await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId);
+    expect(hasPendingAfter).toBe(false);
+    const elapsed = Date.now() - before;
+    expect(elapsed).toBeGreaterThan(300);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test("P1-2: shutdown is bounded and does not hang forever on draining", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-shutdown-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    // test helper: access private draining for bounded-shutdown verification, unchecked cast with reason
+    const engineWithDraining = engine as unknown as { draining: Map<string, Promise<void>> };
+    const quickDrain = Promise.resolve();
+    engineWithDraining.draining.set("lease-sess-1", quickDrain);
+    const start = Date.now();
+    await engine.shutdown();
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(1000);
+    expect(elapsed).toBeGreaterThanOrEqual(0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test.serial("P1-3: archive suspends drain, direct prompt resumes", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-archive-suspend-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    // Enqueue two pending turns to test suspend blocks next head but terminal head still dequeues
+    await engine.injectMessage({
+      ...testInput,
+      messageId: "m-archive-1",
+      text: "archived-pending-1",
+      mode: "queue",
+    } as unknown as never); // test helper: EngineInjectInput shape not fully typed for queue suspension test, unchecked cast with reason
+    await engine.injectMessage({
+      ...testInput,
+      messageId: "m-archive-2",
+      text: "archived-pending-2",
+      mode: "queue",
+    } as unknown as never);
+    // Allow drain to start on first head, then archive (freeWarmProcess) while pending
+    // Wait until first head is truly admitted (activeTurn or draining), not just 50ms gamble
+    for (let i=0; i<20; i++) {
+      const hasActive = (engine as any).activeTurns?.get?.(testInput.logicalSessionId) > 0;
+      const isDraining = (engine as any).draining?.has?.(testInput.logicalSessionId);
+      if (hasActive || isDraining) break;
+      const { promise, resolve } = Promise.withResolvers<void>(); setTimeout(resolve, 10); await promise;
+    }
+    // Archive should suspend draining, not kick it
+    await engine.freeWarmProcess(testInput as unknown as never); // test helper: freeWarmProcess expects EngineSessionInput, baseInput satisfies with unchecked cast
+    const hasPendingAfterArchive = await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId);
+    expect(hasPendingAfterArchive).toBe(true);
+    // Archive must cool the owner even while suspend keeps next head; worker should not remain warm.
+    // If first head was already admitted before suspend, it will dequeue and leave 1; if not yet admitted, both remain (2). Both satisfy suspend blocks next head.
+    // Wait for first head to settle and worker to cool (hasActiveTurn==0) before asserting !warm, not just 700ms gamble
+    for (let i=0;i<40;i++) {
+      const hasActive = (engine as any).activeTurns?.get?.(testInput.logicalSessionId) > 0;
+      const warm = (await engine.isSessionWarm(testInput as unknown as never)).warm;
+      if (!hasActive && !warm) break;
+      const { promise, resolve } = Promise.withResolvers<void>(); setTimeout(resolve, 50); await promise;
+    }
+    const stillPending = await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId);
+    expect(stillPending).toBe(true);
+    const queueLen = await (engine as any).getQueueStore().queueLength(testInput.logicalSessionId);
+    expect([1,2]).toContain(queueLen);
+    const warmAfterArchive = await engine.isSessionWarm(testInput as unknown as never);
+    expect(warmAfterArchive.warm).toBe(false);
+    // Direct prompt should clear suspend and drain the remaining pending
+    const r = await engine.prompt({ ...testInput, text: "resume" });
+    expect(r.text).toBe("ok:resume");
+    const { promise: _p600, resolve: _r600 } = Promise.withResolvers<void>(); setTimeout(_r600, 600); await _p600; // real timer: drain after prompt needs wall-clock
+    const afterPromptPending = await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId);
+    expect(afterPromptPending).toBe(false);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test.serial("P1-4: delete pending lease waiter does not ghost-recreate session (deleting gate)", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-delete-lease-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    // Long A owns lease
+    const pA = engine.prompt({ ...testInput, text: "longA" });
+    pA.catch(() => {});
+    // B waits for lease
+    const pB = engine.prompt({ ...testInput, text: "waiterB" });
+    pB.catch(() => {});
+    // Give A time to acquire and start, B to block on lease
+    const { promise: _p50, resolve: _r50 } = Promise.withResolvers<void>(); setTimeout(_r50, 50); await _p50;
+    // Delete while B is waiting on lease — delete will wait for active turn to settle (A completes, B rejected via deleteGenerations)
+    await engine.deleteSession(testInput as unknown as never);
+    const hasPendingAfterDelete = await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId).catch(() => false);
+    expect(hasPendingAfterDelete).toBe(false);
+    // B should have been rejected due to deleting gate, not executed
+    // pB should be rejected due to deleting gate, pA may be cancelled or terminated - both are expected
+    await expect(pB).rejects.toMatchObject({ code: "RUNTIME_INIT_FAILED" });
+    await pA.catch(() => {});
+    // Ensure any dangling worker termination rejections are settled
+    await new Promise((r) => setTimeout(r, 100));
+    const warmAfterDelete = await engine.isSessionWarm(testInput as unknown as never);
+    expect(warmAfterDelete.warm).toBe(false);
+    // Ensure no new worker was spawned for B: queue still empty, no pending, and no new session file
+    const stillPending = await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId).catch(() => false);
+    expect(stillPending).toBe(false);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test.serial("P1-5: lease FIFO - C does not overtake B (A owns, B then C wait)", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-lease-fifo-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    const order: string[] = [];
+    const pA = engine.prompt({ ...testInput, text: "A" }).then((r) => { order.push("A"); return r; });
+    // Small stagger to ensure FIFO order B before C
+    const { promise: _p20, resolve: _r20 } = Promise.withResolvers<void>(); setTimeout(_r20, 20); await _p20;
+    const pB = engine.prompt({ ...testInput, text: "B" }).then((r) => { order.push("B"); return r; });
+    const { promise: _p10, resolve: _r10 } = Promise.withResolvers<void>(); setTimeout(_r10, 10); await _p10;
+    const pC = engine.prompt({ ...testInput, text: "C" }).then((r) => { order.push("C"); return r; });
+    await Promise.all([pA, pB, pC]);
+    expect(order).toEqual(["A", "B", "C"]);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test.serial("P1-3b: durable suspend survives restart (prime does not re-kick)", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-durable-suspend-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine1 = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    // Use two heads so first can dequeue even when suspended (terminal) while second remains blocked
+    await engine1.injectMessage({
+      logicalSessionId: testInput.logicalSessionId,
+      messageId: "m-durable-1",
+      text: "durable-pending-1",
+      mode: "queue",
+    } as unknown as never);
+    await engine1.injectMessage({
+      logicalSessionId: testInput.logicalSessionId,
+      messageId: "m-durable-2",
+      text: "durable-pending-2",
+      mode: "queue",
+    } as unknown as never);
+    const { promise: _p50, resolve: _r50 } = Promise.withResolvers<void>(); setTimeout(_r50, 50); await _p50;
+    await engine1.freeWarmProcess(testInput as unknown as never);
+    // Verify durable flag is set
+    const isSuspended = await (engine1 as any).getQueueStore().isSuspended(testInput.logicalSessionId);
+    expect(isSuspended).toBe(true);
+    await engine1.shutdown().catch(() => {});
+    // Simulate daemon restart with new engine instance sharing same dirs
+    const engine2 = new RuntimeEngine({
+      workerEntryPath: entry,
+      permissionMode: "approve-all",
+      stateDir: stateSessionsDir,
+      queueDir,
+      fenceDir,
+      idleTtlMs: 200,
+    });
+    try {
+      await engine2.primeQueuesFromCatalog([testInput as unknown as never]);
+        // Prime should have hydrated suspend and not kicked drain, so pending remains and not warm
+      const { promise: _p700, resolve: _r700 } = Promise.withResolvers<void>(); setTimeout(_r700, 700); await _p700;
+      const stillPending = await (engine2 as any).getQueueStore().hasPending(testInput.logicalSessionId);
+      expect(stillPending).toBe(true);
+      const warm = await engine2.isSessionWarm(testInput as unknown as never);
+      expect(warm.warm).toBe(false);
+      // Direct prompt should clear suspend and drain
+      const r = await engine2.prompt({ ...testInput, text: "resume2" });
+      expect(r.text).toBe("ok:resume2");
+      const { promise: _p600, resolve: _r600 } = Promise.withResolvers<void>(); setTimeout(_r600, 600); await _p600;
+      const after = await (engine2 as any).getQueueStore().hasPending(testInput.logicalSessionId);
+      expect(after).toBe(false);
+    } finally {
+      await engine2.shutdown().catch(() => {});
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+test.serial("P1-9: withWorker cooling ghost acquire blocked (setMode vs delete)", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-withworker-cooling-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    // Create worker via prompt
+    const r = await engine.prompt({ ...testInput, text: "prime" });
+    expect(r.text).toBe("ok:prime");
+    const worker = (engine as any).manager?.get(testInput.logicalSessionId);
+    expect(worker).toBeDefined();
+    // Put worker into cooling (simulate archive coolPending termination in progress)
+    worker.lifecycle = "cooling";
+    // Start setMode (withWorker) and delete concurrently; setMode should be blocked by epoch/lifecycle
+    const pSetMode = engine.setMode({ ...testInput, modeId: "plan" } as any);
+    pSetMode.catch(()=>{});
+    const pDelete = engine.deleteSession(testInput as unknown as never);
+    // Delete should wait for no activeTurn (setMode does not inc activeTurn, but withWorker has epoch check)
+    // setMode should be rejected with RUNTIME_INIT_FAILED (ghost), not recreate
+    await expect(pSetMode).rejects.toMatchObject({ code: "RUNTIME_INIT_FAILED" });
+    await pDelete;
+    expect((await engine.isSessionWarm(testInput as unknown as never)).warm).toBe(false);
+    const recId = await (engine as any).resolveRecordId(testInput, undefined);
+    expect(recId).toBeUndefined();
+  } finally {
+    await engine.shutdown().catch(()=>{});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test.serial("P1-10: drain loaded head but not yet incActiveTurn — delete does not resurrect", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-drain-load-race-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    // Inject Q but pause drain before it inc's by holding turnLease via a long prompt that owns lease
+    const pLong = engine.prompt({ ...testInput, text: "longLeaseHolder" });
+    pLong.catch(()=>{});
+    // Give long prompt time to acquire lease and start (hasActiveTurn true, turnLease held)
+    const { promise: _p50, resolve: _r50 } = Promise.withResolvers<void>(); setTimeout(_r50, 50); await _p50;
+    await engine.injectMessage({
+      logicalSessionId: testInput.logicalSessionId,
+      messageId: "m-drain-race",
+      text: "should-not-execute",
+      mode: "queue",
+    } as unknown as never);
+    // Delete while drain has loaded head but not yet inc (drain is waiting on lease held by long prompt)
+    // Delete will wait for hasActiveTurn (true due to long prompt) then succeed
+    const pDelete = engine.deleteSession(testInput as unknown as never);
+    // Let long prompt finish, then delete should complete
+    await pLong.catch(()=>{});
+    await pDelete;
+    // Drain should have aborted due to epoch mismatch after load, not executed
+    await new Promise((r)=>setTimeout(r, 700));
+    expect(await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId).catch(()=>false)).toBe(false);
+    expect((await engine.isSessionWarm(testInput as unknown as never)).warm).toBe(false);
+    // No record should have been resurrected
+    const recId2 = await (engine as any).resolveRecordId(testInput, undefined);
+    expect(recId2).toBeUndefined();
+  } finally {
+    await engine.shutdown().catch(()=>{});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+test.serial("P1-11: delete waits for in-flight acquiring (fence discharge) before returning success", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-acquiring-barrier-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    const manager: any = (engine as any).manager;
+    const origAcquire = manager.acquire.bind(manager);
+    let holdRelease: () => void;
+    const holdGate = new Promise<void>((r) => (holdRelease = r));
+    let acquireStarted = false;
+    manager.acquire = async (key: string) => {
+      if (key === testInput.logicalSessionId) {
+        acquireStarted = true;
+        await holdGate;
+      }
+      return origAcquire(key);
+    };
+    // Start withWorker that will enter acquiring and block on fence discharge (no prior worker)
+    const pSetMode = engine.setMode({ ...testInput, modeId: "plan" } as any);
+    pSetMode.catch(()=>{});
+    for (let i=0;i<100;i++) {
+      if ((engine as any).acquiring?.has?.(testInput.logicalSessionId) || acquireStarted) break;
+      const { promise, resolve } = Promise.withResolvers<void>(); setTimeout(resolve, 10); await promise;
+    }
+    expect((engine as any).acquiring.has(testInput.logicalSessionId) || acquireStarted).toBe(true);
+    const pDelete = engine.deleteSession(testInput as unknown as never);
+    let deleteDone = false;
+    pDelete.then(()=>{ deleteDone = true; }).catch(()=>{ deleteDone = true; });
+    const { promise: _p150, resolve: _r150 } = Promise.withResolvers<void>(); setTimeout(_r150, 150); await _p150;
+    expect(deleteDone).toBe(false);
+    holdRelease!();
+    await expect(pSetMode).rejects.toMatchObject({ code: "RUNTIME_INIT_FAILED" });
+    await pDelete;
+    expect((await engine.isSessionWarm(testInput as unknown as never)).warm).toBe(false);
+    expect(manager.get(testInput.logicalSessionId)).toBeUndefined();
+    // Fence must be retired (no retained owner fence) — only ENOENT is allowed, expect failure must not be swallowed
+    let fenceFiles: string[] = [];
+    try {
+      fenceFiles = await readdir(fenceDir);
+    } catch (err: any) {
+      if (err?.code !== "ENOENT" && err?.code !== "ENOTDIR") throw err;
+      fenceFiles = [];
+    }
+    const hasFence = fenceFiles.some((f: string) => f.includes(testInput.logicalSessionId) || f.includes(encodeURIComponent(testInput.logicalSessionId)));
+    expect(hasFence).toBe(false);
+    const recId = await (engine as any).resolveRecordId(testInput, undefined);
+    expect(recId).toBeUndefined();
+  } finally {
+    await engine.shutdown().catch(()=>{});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+test.serial("P1-11b: two cold same-key ensureWorkers join one acquire promise (early single-flight)", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-acquire-singleflight-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    const manager: any = (engine as any).manager;
+    let acquireCalls = 0;
+    const origAcquire = manager.acquire.bind(manager);
+    // Gate the FIRST acquire INSIDE the wrapper: the single-flight entry then
+    // stays published until we explicitly release, so the join observation is
+    // deterministic on any platform speed (without the gate, a fast first
+    // acquire settles and deletes the entry before the second caller
+    // arrives — platform-timing flake, the macOS/Linux CI failure).
+    const gate = Promise.withResolvers<void>();
+    manager.acquire = async (key: string, physical: string) => {
+      acquireCalls += 1;
+      if (acquireCalls === 1) await gate.promise;
+      return origAcquire(key, physical);
+    };
+    const first = engine.setMode({ ...testInput, modeId: "plan" } as any);
+    first.catch(() => {});
+    // The acquisition promise is published BEFORE the (gated) acquire call:
+    // poll the observable map, never wall-clock time.
+    for (let i = 0; i < 400; i++) {
+      if ((engine as any).acquiring.has(testInput.logicalSessionId)) break;
+      const { promise: tick, resolve: tickResolve } = Promise.withResolvers<void>();
+      setTimeout(tickResolve, 5);
+      await tick;
+    }
+    const pending = (engine as any).acquiring.get(testInput.logicalSessionId);
+    expect(pending).toBeDefined();
+    // A second cold same-key caller must JOIN the published promise — both
+    // via a direct ensureWorker call and via the engine path (asserted by
+    // acquireCalls staying 1 after both settle: a setMode cannot complete
+    // without either joining or issuing its own acquire).
+    const second = engine.setMode({ ...testInput, modeId: "code" } as any);
+    second.catch(() => {});
+    // Created while the gate is held (entry guaranteed published): ensureWorker
+    // reads `acquiring` synchronously before its first await, so this call
+    // must JOIN the published entry — never issue a second acquire.
+    const joinedPromise = (engine as any).ensureWorker(testInput as any);
+    gate.resolve();
+    const joined = await joinedPromise;
+    expect(joined).toBe(await pending);
+    await Promise.all([first, second]);
+    expect(acquireCalls).toBe(1);
+    expect((engine as any).acquiring.has(testInput.logicalSessionId)).toBe(false);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test.serial("P1-13: construction identity drift rotates the warm worker (old PID dies, old fence retired)", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-construction-rotate-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 60_000,
+  });
+  try {
+    const key = testInput.logicalSessionId;
+    const manager: any = (engine as any).manager;
+    const inputA = { ...testInput, cwd: "/repo/a" };
+    const inputB = { ...testInput, cwd: "/repo/b" };
+    const physicalA = physicalFenceKeyForSession(inputA as any);
+    const physicalB = physicalFenceKeyForSession(inputB as any);
+    expect(physicalB).not.toBe(physicalA);
+
+    // Warm worker under identity A serves normally.
+    await engine.setMode({ ...inputA, modeId: "plan" } as any);
+    const oldPid: number = manager.get(key).ref.pid;
+    expect(oldPid).toBeGreaterThan(0);
+    expect(manager.physicalFenceKeyFor(key)).toBe(physicalA);
+    const oldFencePath = join(fenceDir, `${encodeURIComponent(physicalA)}.json`);
+    await expect(readFile(oldFencePath, "utf8")).resolves.toContain('"pid"');
+
+    // Hot drift to identity B: the warm worker must be rotated — old PID
+    // dead, old fence retired, new PID serving — instead of sending a
+    // drifted ensure the worker would fail closed on until TTL.
+    await engine.setMode({ ...inputB, modeId: "plan" } as any);
+    const newPid: number = manager.get(key).ref.pid;
+    expect(newPid).toBeGreaterThan(0);
+    expect(newPid).not.toBe(oldPid);
+    expect(pidAlive(oldPid)).toBe(false);
+    expect(pidAlive(newPid)).toBe(true);
+    expect(manager.physicalFenceKeyFor(key)).toBe(physicalB);
+    await expect(readFile(oldFencePath, "utf8")).rejects.toThrow();
+    expect((await engine.isSessionWarm(inputB as any)).warm).toBe(true);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test.serial("P1-14: drift during an active turn fails fast without a second owner, rotates after settle", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-construction-busy-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 60_000,
+  });
+  try {
+    const key = testInput.logicalSessionId;
+    const manager: any = (engine as any).manager;
+    const inputA = { ...testInput, cwd: "/repo/a" };
+    const inputB = { ...testInput, cwd: "/repo/b" };
+    const physicalA = physicalFenceKeyForSession(inputA as any);
+    const oldFencePath = join(fenceDir, `${encodeURIComponent(physicalA)}.json`);
+
+    const pPrompt = engine.prompt({ ...inputA, text: "slow-busy" });
+    pPrompt.catch(() => {});
+    // Wait until the turn is genuinely active on the worker.
+    for (let i = 0; i < 400; i++) {
+      if (manager.get(key)?.lifecycle === "busy") break;
+      const { promise: tick, resolve: tickResolve } = Promise.withResolvers<void>();
+      setTimeout(tickResolve, 5);
+      await tick;
+    }
+    const oldPid: number = manager.get(key).ref.pid;
+    expect(manager.get(key)?.lifecycle).toBe("busy");
+
+    // Drifted call during the turn: fail fast with the stale code — no
+    // second worker may be spawned while the old owner is still live.
+    await expect(engine.setMode({ ...inputB, modeId: "plan" } as any)).rejects.toMatchObject({
+      code: "RUNTIME_IDENTITY_STALE",
+    });
+    expect(manager.get(key)?.ref.pid).toBe(oldPid);
+    expect(manager.physicalFenceKeyFor(key)).toBe(physicalA);
+    await expect(readFile(oldFencePath, "utf8")).resolves.toContain("runtime-worker-owner");
+
+    // Turn settles → stale worker retired cooperatively → next drifted call
+    // rotates to a fresh PID and succeeds.
+    await pPrompt;
+    await engine.setMode({ ...inputB, modeId: "plan" } as any);
+    const newPid: number = manager.get(key).ref.pid;
+    expect(newPid).not.toBe(oldPid);
+    expect(pidAlive(oldPid)).toBe(false);
+    expect(pidAlive(newPid)).toBe(true);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test.serial("P1-15: idle sibling alias hands off the shared physical session without discharge wait", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-sibling-handoff-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 60_000,
+    // Fail fast (not 90s) if the handoff regresses and the newcomer falls
+    // back to the cross-host self-discharge path for our own worker.
+    workerClientDeps: { selfDischargeWaitMs: 1_000 },
+  });
+  try {
+    const manager: any = (engine as any).manager;
+    // Two logical aliases, one physical session (same name/cwd/agent).
+    const siblingA = { ...testInput, name: "shared-physical-session", logicalSessionId: "alias-worker-1", cwd: "/repo/shared" };
+    const siblingB = { ...testInput, name: "shared-physical-session", logicalSessionId: "alias-worker-2", cwd: "/repo/shared" };
+    expect(physicalFenceKeyForSession(siblingB as any)).toBe(physicalFenceKeyForSession(siblingA as any));
+
+    await engine.setMode({ ...siblingA, modeId: "plan" } as any);
+    const oldPid: number = manager.get(siblingA.logicalSessionId).ref.pid;
+    expect(oldPid).toBeGreaterThan(0);
+
+    // B takes over: verified handoff (old shutdown + released) then a fresh
+    // worker on the same physical fence — never a second concurrent owner.
+    await engine.setMode({ ...siblingB, modeId: "plan" } as any);
+    expect(manager.get(siblingA.logicalSessionId)).toBeUndefined();
+    const newPid: number = manager.get(siblingB.logicalSessionId).ref.pid;
+    expect(newPid).toBeGreaterThan(0);
+    expect(newPid).not.toBe(oldPid);
+    expect(pidAlive(oldPid)).toBe(false);
+    expect(pidAlive(newPid)).toBe(true);
+    // Physical fence still unique and owned: exactly one live worker overall.
+    expect(manager.workers().length).toBe(1);
+    expect((await engine.isSessionWarm(siblingB as any)).warm).toBe(true);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test.serial("P1-16: busy sibling alias fails fast without a second owner, hands off after settle", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-sibling-busy-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 60_000,
+    workerClientDeps: { selfDischargeWaitMs: 1_000 },
+  });
+  try {
+    const manager: any = (engine as any).manager;
+    const siblingA = { ...testInput, name: "shared-physical-session", logicalSessionId: "alias-worker-1", cwd: "/repo/shared" };
+    const siblingB = { ...testInput, name: "shared-physical-session", logicalSessionId: "alias-worker-2", cwd: "/repo/shared" };
+
+    const pPrompt = engine.prompt({ ...siblingA, text: "slow-sibling" });
+    pPrompt.catch(() => {});
+    for (let i = 0; i < 400; i++) {
+      if (manager.get(siblingA.logicalSessionId)?.lifecycle === "busy") break;
+      const { promise: tick, resolve: tickResolve } = Promise.withResolvers<void>();
+      setTimeout(tickResolve, 5);
+      await tick;
+    }
+    const oldPid: number = manager.get(siblingA.logicalSessionId).ref.pid;
+    expect(manager.get(siblingA.logicalSessionId)?.lifecycle).toBe("busy");
+
+    // Drifted sibling call during A's turn: fail fast, no second worker, A's
+    // ownership untouched.
+    await expect(engine.setMode({ ...siblingB, modeId: "plan" } as any)).rejects.toMatchObject({
+      code: "RUNTIME_PHYSICAL_OWNER_BUSY",
+    });
+    expect(manager.get(siblingB.logicalSessionId)).toBeUndefined();
+    expect(manager.get(siblingA.logicalSessionId)?.ref.pid).toBe(oldPid);
+    expect(manager.workers().length).toBe(1);
+
+    // A settles → B retries → idle handoff to a fresh PID.
+    await pPrompt;
+    await engine.setMode({ ...siblingB, modeId: "plan" } as any);
+    const newPid: number = manager.get(siblingB.logicalSessionId).ref.pid;
+    expect(newPid).not.toBe(oldPid);
+    expect(pidAlive(oldPid)).toBe(false);
+    expect(pidAlive(newPid)).toBe(true);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test.serial("P1-17: releaseLogicalSession refuses while the alias turn is active", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-release-busy-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 60_000,
+  });
+  try {
+    const manager: any = (engine as any).manager;
+    const input = { ...testInput, cwd: "/repo/release-busy" };
+    const key = testInput.logicalSessionId;
+    const pPrompt = engine.prompt({ ...input, text: "slow-release" });
+    pPrompt.catch(() => {});
+    for (let i = 0; i < 400; i++) {
+      if (manager.get(key)?.lifecycle === "busy") break;
+      const { promise: tick, resolve: tickResolve } = Promise.withResolvers<void>();
+      setTimeout(tickResolve, 5);
+      await tick;
+    }
+    const pid: number = manager.get(key).ref.pid;
+    expect(manager.get(key)?.lifecycle).toBe("busy");
+    // Release during the turn must fail closed WITHOUT touching the worker:
+    // the logical row stays, the turn keeps running.
+    await expect(engine.releaseLogicalSession(input as any)).rejects.toMatchObject({
+      code: "RUNTIME_WORKER_TEARDOWN_PENDING",
+    });
+    expect(manager.get(key)?.ref.pid).toBe(pid);
+    expect(pidAlive(pid)).toBe(true);
+    await pPrompt;
+    // After settle the same release succeeds and retires the worker.
+    await engine.releaseLogicalSession(input as any);
+    expect(manager.get(key)).toBeUndefined();
+    expect(pidAlive(pid)).toBe(false);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test.serial("P1-18: driver hot-change with stable agentCommand rotates via construction identity", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-construction-driver-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 60_000,
+  });
+  try {
+    const manager: any = (engine as any).manager;
+    const key = testInput.logicalSessionId;
+    // Explicit launch command stays X across the driver change, so the
+    // PHYSICAL fence key is identical — only the worker's immutable
+    // construction identity (runtime agent name + overrides) drifts.
+    const inputCodex = { ...testInput, agentCommand: "/usr/bin/fake-agent", acpxAgent: "codex" };
+    const inputClaude = { ...testInput, agentCommand: "/usr/bin/fake-agent", acpxAgent: "claude" };
+    expect(physicalFenceKeyForSession(inputClaude as any)).toBe(physicalFenceKeyForSession(inputCodex as any));
+
+    await engine.setMode({ ...inputCodex, modeId: "plan" } as any);
+    const oldPid: number = manager.get(key).ref.pid;
+    expect(oldPid).toBeGreaterThan(0);
+
+    // Same physical, drifted construction: the warm worker must rotate
+    // (old PID dead, new PID serving, fence still present for the same
+    // physical). Without the construction key the Host would warm-reuse
+    // forever while a real worker fail-closed on every ensure.
+    await engine.setMode({ ...inputClaude, modeId: "plan" } as any);
+    const newPid: number = manager.get(key).ref.pid;
+    expect(newPid).toBeGreaterThan(0);
+    expect(newPid).not.toBe(oldPid);
+    expect(pidAlive(oldPid)).toBe(false);
+    expect(pidAlive(newPid)).toBe(true);
+    expect((await engine.isSessionWarm(inputClaude as any)).warm).toBe(true);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test.serial("P1-20: release fails closed on unreadable fence and retries after repair", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-fence-unreadable-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 60_000,
+  });
+  try {
+    const manager: any = (engine as any).manager;
+    const store = (engine as any).getQueueStore();
+    const input = { ...testInput, cwd: "/repo/unreadable" };
+    const key = testInput.logicalSessionId;
+    const physicalKey = physicalFenceKeyForSession(input as any);
+    const fencePath = join(fenceDir, `${encodeURIComponent(physicalKey)}.json`);
+
+    await engine.setMode({ ...input, modeId: "plan" } as any);
+    const pid: number = manager.get(key).ref.pid;
+    await store.enqueue(key, { messageId: "m-u1", text: "queued-u", mode: "queue" });
+    expect(await store.hasPending(key)).toBe(true);
+    // Corrupt the durable fence while the worker is still alive (the fake
+    // worker never touches the fence file itself, so the corruption stands
+    // until the release below attempts its guarded retire).
+    await writeFile(fencePath, "not-json{{{");
+    // First release: worker shuts down fine, but the guarded retire must
+    // refuse the unreadable evidence — mappings AND journal stay for retry.
+    await expect(engine.releaseLogicalSession(input as any)).rejects.toMatchObject({
+      code: "RUNTIME_WORKER_TEARDOWN_PENDING",
+    });
+    expect(manager.get(key)).toBeDefined();
+    expect(manager.physicalFenceKeyFor(key)).toBe(physicalKey);
+    expect(await store.hasPending(key)).toBe(true);
+    // Repair (drop the corrupt file; absent is idempotent retire success),
+    // then retry: the stopped worker is forgotten and the journal dropped.
+    await rm(fencePath, { force: true });
+    await engine.releaseLogicalSession(input as any);
+    expect(manager.get(key)).toBeUndefined();
+    expect(manager.physicalFenceKeyFor(key)).toBeUndefined();
+    expect(await store.hasPending(key)).toBe(false);
+    expect(pidAlive(pid)).toBe(false);
+  } finally {
+    await engine.shutdown().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+test.serial("P1-19: queueOwnerTtlSeconds 0 disables idle reap", async () => {
+  for (const [tag, ttlSeconds, expectTimer] of [
+    ["ttl-zero", 0, false],
+    ["ttl-default", undefined, true],
+  ] as Array<[string, number | undefined, boolean]>) {
+    const testInput = uniqueInput();
+    const dir = await mkdtemp(join(tmpdir(), `rt-ttl-${tag}-`));
+    const stateSessionsDir = join(dir, "state", "sessions");
+    await mkdir(stateSessionsDir, { recursive: true });
+    const queueDir = join(dir, "state", "runtime-queue");
+    const fenceDir = join(dir, "state", "worker-fences");
+    const entry = join(dir, "slow-worker.mjs");
+    await slowWorker(entry);
+    const engine = new RuntimeEngine({
+      workerEntryPath: entry,
+      permissionMode: "approve-all",
+      stateDir: stateSessionsDir,
+      queueDir,
+      fenceDir,
+      ...(ttlSeconds !== undefined ? { queueOwnerTtlSeconds: ttlSeconds } : {}),
+    });
+    try {
+      // Constructor mapping: configured seconds reach idleTtlMs (0 stays 0
+      // instead of falling back to the 60s default).
+      expect((engine as any).idleTtlMs).toBe(ttlSeconds === undefined ? 60_000 : ttlSeconds * 1000);
+      const manager: any = (engine as any).manager;
+      const input = { ...testInput, cwd: `/repo/${tag}` };
+      const key = testInput.logicalSessionId;
+      await engine.setMode({ ...input, modeId: "plan" } as any);
+      const client = manager.get(key);
+      expect(client).toBeDefined();
+      // Reap can only happen via the scheduled timer: ttl=0 must not
+      // schedule one, so the worker never reaps no matter how much time
+      // passes; default must schedule.
+      (engine as any).scheduleIdleTtl(key, client);
+      expect((engine as any).idleTimers.has(key)).toBe(expectTimer);
+    } finally {
+      await engine.shutdown().catch(() => {});
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+}, 15_000);
+
+test.serial("P1-12: residual fence without record blocks delete (fail-closed)", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-residual-fence-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  await mkdir(fenceDir, { recursive: true });
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    // Seed a residual fence (present) without any worker/record — in the real
+    // physical fence namespace the engine checks (G2 stable hash, not logical id).
+    const physicalKey = physicalFenceKeyForSession(testInput);
+    const fencePath = join(fenceDir, `${encodeURIComponent(physicalKey)}.json`);
+    const record = {
+      kind: "runtime-worker-owner",
+      logicalSessionId: physicalKey,
+      generation: "test-gen-residual",
+      pid: 99999,
+      creationDate: null,
+      bootstrapVerified: true,
+      phase: "admitted" as const,
+      startedAt: new Date().toISOString(),
+      agent: "runtime-worker",
+    };
+    await writeFile(fencePath, JSON.stringify(record, null, 2), "utf8");
+    // Ensure fence is present
+    const fenceFilesBefore = await readdir(fenceDir);
+    expect(fenceFilesBefore.some((f: string) => f.includes(encodeURIComponent(physicalKey)))).toBe(true);
+    // Delete with no record but residual fence must fail-closed
+    await expect(engine.deleteSession(testInput as unknown as never)).rejects.toMatchObject({ code: "RUNTIME_WORKER_TEARDOWN_PENDING" });
+    // Fence must still be present (not spuriously cleared)
+    const fenceFilesAfter = await readdir(fenceDir);
+    expect(fenceFilesAfter.some((f: string) => f.includes(encodeURIComponent(physicalKey)))).toBe(true);
+    expect((await engine.isSessionWarm(testInput as unknown as never)).warm).toBe(false);
+    const recId = await (engine as any).resolveRecordId(testInput, undefined);
+    expect(recId).toBeUndefined();
+  } finally {
+    await engine.shutdown().catch(()=>{});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+test.serial("P1-12b: residual discharged fence does NOT block delete (proven gone)", async () => {
+  const testInput = uniqueInput();
+  const dir = await mkdtemp(join(tmpdir(), "rt-residual-discharged-"));
+  const stateSessionsDir = join(dir, "state", "sessions");
+  await mkdir(stateSessionsDir, { recursive: true });
+  const queueDir = join(dir, "state", "runtime-queue");
+  const fenceDir = join(dir, "state", "worker-fences");
+  await mkdir(fenceDir, { recursive: true });
+  const entry = join(dir, "slow-worker.mjs");
+  await slowWorker(entry);
+  const engine = new RuntimeEngine({
+    workerEntryPath: entry,
+    permissionMode: "approve-all",
+    stateDir: stateSessionsDir,
+    queueDir,
+    fenceDir,
+    idleTtlMs: 200,
+  });
+  try {
+    const physicalKey = physicalFenceKeyForSession(testInput);
+    const fencePath = join(fenceDir, `${encodeURIComponent(physicalKey)}.json`);
+    const record = {
+      kind: "runtime-worker-owner",
+      logicalSessionId: physicalKey,
+      generation: "test-gen-discharged",
+      pid: 99999,
+      creationDate: null,
+      bootstrapVerified: true,
+      phase: "discharged" as const,
+      startedAt: new Date().toISOString(),
+      agent: "runtime-worker",
+    };
+    await writeFile(fencePath, JSON.stringify(record, null, 2), "utf8");
+    // Ensure fence is present as discharged
+    const fenceFilesBefore = await readdir(fenceDir);
+    expect(fenceFilesBefore.some((f: string) => f.includes(encodeURIComponent(physicalKey)))).toBe(true);
+    // Delete with no worker/no record but discharged fence must succeed (proven gone)
+    await expect(engine.deleteSession(testInput as unknown as never)).resolves.toEqual({});
+    expect((await engine.isSessionWarm(testInput as unknown as never)).warm).toBe(false);
+    const recId = await (engine as any).resolveRecordId(testInput, undefined);
+    expect(recId).toBeUndefined();
+    // Fence may be absent or still discharged — retired best-effort, but must not be admitted/owned
+    let after: string[] = [];
+    try {
+      after = await readdir(fenceDir);
+    } catch (err: any) {
+      if (err?.code !== "ENOENT" && err?.code !== "ENOTDIR") throw err;
+      after = [];
+    }
+    const stillPresent = after.filter((f: string) => f.includes(encodeURIComponent(physicalKey)));
+    if (stillPresent.length > 0) {
+      const content = await (await import("node:fs/promises")).readFile(join(fenceDir, stillPresent[0]!), "utf8");
+      const parsed = JSON.parse(content);
+      expect(parsed.phase).toBe("discharged");
+    }
+  } finally {
+    await engine.shutdown().catch(()=>{});
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 15_000);
+
+
+

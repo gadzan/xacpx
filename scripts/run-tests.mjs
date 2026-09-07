@@ -33,6 +33,27 @@ if (buildCode !== 0) {
   process.exit(buildCode ?? 1);
 }
 
+const runtimeWorkerBuildCode = await runOne("bun", [
+  "build",
+  "./src/bridge/engine/runtime/runtime-worker-main.ts",
+  "./src/bridge/bridge-main.ts",
+  "--outdir",
+  "./dist",
+  "--target",
+  "node",
+  "--external",
+  "node-pty",
+  "--external",
+  "fs-ext",
+  "--external",
+  "write-file-atomic",
+  "--external",
+  "acpx",
+]);
+if (runtimeWorkerBuildCode !== 0) {
+  process.exit(runtimeWorkerBuildCode ?? 1);
+}
+
 // relay/channel-relay tests import "@ganglion/xacpx-relay-protocol", which the
 // workspace link resolves to packages/relay-protocol/dist — build it up front
 // for the same order-independence reason as plugin-api above. Use the full

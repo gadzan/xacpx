@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  decodeBridgeEngineCapabilities,
   decodeBridgeOriginatedRequest,
   encodeBridgePromptThoughtEvent,
   encodeBridgeSessionProgressEvent,
@@ -81,5 +82,37 @@ describe("bridge protocol progress + structured error", () => {
       intentToken: "11111111-1111-4111-8111-111111111111",
       outcome: "owner-committed",
     } })).toBeNull();
+  });
+});
+describe("decodeBridgeEngineCapabilities", () => {
+  test("accepts a complete response", () => {
+    expect(
+      decodeBridgeEngineCapabilities({
+        runtimeAvailable: true,
+        runtimeImportOk: true,
+        contractProbeOk: true,
+        acpxVersion: "0.13.1",
+      }),
+    ).toEqual({
+      runtimeAvailable: true,
+      runtimeImportOk: true,
+      contractProbeOk: true,
+      acpxVersion: "0.13.1",
+    });
+  });
+
+  test("rejects partial, mistyped, and non-object responses", () => {
+    expect(() => decodeBridgeEngineCapabilities({})).toThrow(/must be a boolean/);
+    expect(() =>
+      decodeBridgeEngineCapabilities({ runtimeAvailable: true, runtimeImportOk: true }),
+    ).toThrow(/contractProbeOk/);
+    expect(() =>
+      decodeBridgeEngineCapabilities({ runtimeAvailable: "yes", runtimeImportOk: true, contractProbeOk: true }),
+    ).toThrow(/must be a boolean/);
+    expect(() => decodeBridgeEngineCapabilities(null)).toThrow(/expected an object/);
+    expect(() => decodeBridgeEngineCapabilities([])).toThrow(/expected an object/);
+    expect(() =>
+      decodeBridgeEngineCapabilities({ runtimeAvailable: true, runtimeImportOk: true, contractProbeOk: true, reason: 42 }),
+    ).toThrow(/reason/);
   });
 });

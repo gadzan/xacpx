@@ -3,6 +3,8 @@ import { basenameForWorkspacePath, normalizeWorkspacePath, pathExists, sameWorks
 import type { CommandRouterContext, RouterResponse, SessionShortcutOps } from "../router-types";
 import { AutoInstallFailedError } from "../../recovery/errors";
 import { getChannelIdFromChatKey, scopeDisplayAliasToInternal, toDisplaySessionAlias } from "../../channels/channel-scope";
+import { convergeProvisionalCreate } from "../session-remove-lifecycle";
+import type { ResolvedSession } from "../../transport/types";
 import { t } from "../../i18n";
 
 interface ShortcutWorkspaceResolution {
@@ -78,35 +80,49 @@ export async function handleSessionShortcutCommand(
 
   try {
     const stableTransportSession = channelId === "weixin" ? finalAlias : context.sessions.buildDefaultTransportSessionForChat(chatKey, finalDisplay);
-    const session = ops.resolveSession(
+    const launchProbe = ops.resolveSession(
       finalAlias,
       agent,
       workspace.name,
       context.sessions.buildFreshTransportSession(stableTransportSession),
       { guardAcpOutput: true },
     );
-    const releaseTransportReservation = await ops.reserveTransportSession(stableTransportSession);
+    let releaseTransportReservation: any;
+    try {
+      releaseTransportReservation = await ops.reserveTransportSession(stableTransportSession);
+    } catch (err) {
+      return renderShortcutSessionCreationError(workspace, finalDisplay);
+    }
+    let persisted: any;
     try {
       try {
-        await ops.ensureTransportSession(session);
-        const exists = await ops.checkTransportSession(session);
-        if (!exists) {
-          return renderShortcutSessionCreationError(workspace, finalDisplay);
-        }
+        persisted = await context.sessions.attachSession(
+          finalAlias,
+          agent,
+          workspace.name,
+          launchProbe.transportSession,
+          launchProbe.agentCommand,
+          launchProbe.acpxAgent,
+          launchProbe.agentArgv,
+        );
       } catch (err) {
         if (err instanceof AutoInstallFailedError) throw err;
         return renderShortcutSessionCreationError(workspace, finalDisplay);
       }
+      try {
+        await ops.ensureTransportSession(persisted);
+        const exists = await ops.checkTransportSession(persisted);
+        if (!exists) {
+          await cleanupProvisionalCreate(context, persisted);
+          return renderShortcutSessionCreationError(workspace, finalDisplay);
+        }
+      } catch (err) {
+        await cleanupProvisionalCreate(context, persisted, err);
+        if (err instanceof AutoInstallFailedError) throw err;
+        return renderShortcutSessionCreationError(workspace, finalDisplay);
+      }
 
-      await context.sessions.attachSession(
-        finalAlias,
-        agent,
-        workspace.name,
-        session.transportSession,
-        session.agentCommand,
-        session.acpxAgent,
-        session.agentArgv,
-      );
+      // attach already done as persisted, no second attach needed
       await context.sessions.useSession(chatKey, finalAlias);
       try {
         await ops.refreshSessionTransportAgentCommand(finalAlias);
@@ -138,6 +154,20 @@ export async function handleSessionShortcutCommand(
   } finally {
     releaseAliasReservation();
   }
+}
+
+async function cleanupProvisionalCreate(
+  context: CommandRouterContext,
+  persisted: ResolvedSession,
+  cause?: unknown,
+): Promise<void> {
+  await convergeProvisionalCreate({
+    sessions: context.sessions,
+    transport: context.transport,
+    session: persisted,
+    internalAlias: persisted.alias,
+    ...(cause !== undefined ? { cause } : {}),
+  });
 }
 
 async function resolveShortcutWorkspace(
@@ -182,8 +212,13 @@ async function resolveShortcutWorkspace(
     sanitizeWorkspaceName(basenameForWorkspacePath(cwd)),
     context.config?.workspaces ?? {},
   );
-  const updated = await context.configStore!.upsertWorkspace(workspaceName, cwd);
-  context.replaceConfig(updated);
+  // Whole-snapshot publish joins the shared config mutation domain (see
+  // ConfigMutationMutex).
+  const configStore = context.configStore;
+  await context.configMutationMutex.run(async () => {
+    const next = await configStore!.upsertWorkspace(workspaceName, cwd);
+    context.replaceConfig(next);
+  });
 
   return {
     name: workspaceName,

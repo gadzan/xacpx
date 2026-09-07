@@ -6,8 +6,8 @@ import type { ClaudeSettingsPolicy } from "../../adapters/claude-settings-policy
 import { allocateWorkspaceName, sanitizeWorkspaceName } from "../workspace-name";
 import { basenameForWorkspacePath, normalizeWorkspacePath, pathExists, sameWorkspacePath } from "../workspace-path";
 import type { CommandRouterContext, RouterResponse, SessionLifecycleOps } from "../router-types";
+import { convergeProvisionalNativeAttach } from "../session-remove-lifecycle";
 import { t } from "../../i18n";
-
 export interface NativeSessionListCommand {
   agent?: string;
   cwd?: string;
@@ -255,51 +255,98 @@ async function attachNativeSession(
     finalDisplayAlias = toDisplaySessionAlias(finalInternalAlias);
   }
 
-  const transportSession = context.sessions.buildDefaultTransportSessionForChat(chatKey, finalDisplayAlias);
-  const resolvedSession = context.lifecycle.resolveSession(
+  const transportSessionForProbe = context.sessions.buildDefaultTransportSessionForChat(chatKey, finalDisplayAlias);
+  const launchProbe = context.lifecycle.resolveSession(
     finalInternalAlias,
     nativeTarget.agent,
     nativeTarget.workspace,
-    transportSession,
+    transportSessionForProbe,
     { guardAcpOutput: true },
   );
-  const releaseTransportReservation = await context.lifecycle.reserveTransportSession(resolvedSession.transportSession);
-
+  // R1 + I4: reserve coordinator identity BEFORE any logical row appears,
+  // so a conflicting external coordinator fails without leaving a ghost.
+  // Alias reservation is held in outer finally so every early return
+  // releases it (strict-runtime attach failure must not leak alias).
   try {
+    const releaseTransportReservation = await context.lifecycle.reserveTransportSession(launchProbe.transportSession);
+    let persisted: ResolvedSession;
     try {
-      await context.transport.resumeAgentSession(resolvedSession, session.sessionId);
-    } catch (error) {
-      return { text: renderNativeResumeError(target, error) };
-    }
-    const verified = await context.lifecycle.checkTransportSession(resolvedSession);
-    if (!verified) {
-      return { text: t().nativeSession.attachVerificationFailed(target.agentDisplayName) };
-    }
+      try {
+        persisted = await context.sessions.attachNativeSession({
+          alias: finalInternalAlias,
+          agent: nativeTarget.agent,
+          workspace: nativeTarget.workspace,
+          transportSession: launchProbe.transportSession,
+          ...(launchProbe.agentCommand ? { transportAgentCommand: launchProbe.agentCommand } : {}),
+          ...(launchProbe.acpxAgent ? { transportAcpxAgent: launchProbe.acpxAgent } : {}),
+          ...(launchProbe.agentArgv ? { transportAgentArgv: launchProbe.agentArgv } : {}),
+          agentSessionId: session.sessionId,
+          title: session.title,
+          updatedAt: session.updatedAt,
+        });
+      } catch (error) {
+        return { text: renderNativeResumeError(target, error) };
+      }
+      try {
+        await context.transport.resumeAgentSession(persisted, session.sessionId);
+      } catch (error) {
+        // Upstream-owned physical session: converge the xacpx provisional
+        // incarnation only (release + soft close, never hard-delete), then
+        // drop the row. An unverifiable cleanup keeps the row; the resume
+        // error text still reports the failure.
+        try {
+          await convergeProvisionalNativeAttach({
+            sessions: context.sessions,
+            transport: context.transport,
+            session: persisted,
+            internalAlias: persisted.alias,
+            cause: error,
+          });
+        } catch (cleanupError) {
+          await context.logger.error(
+            "session.native.cleanup_failed",
+            "failed to converge provisional native incarnation; logical session kept",
+            {
+              alias: persisted.alias,
+              error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+            },
+          );
+        }
+        return { text: renderNativeResumeError(target, error) };
+      }
+      const verified = await context.lifecycle.checkTransportSession(persisted);
+      if (!verified) {
+        try {
+          await convergeProvisionalNativeAttach({
+            sessions: context.sessions,
+            transport: context.transport,
+            session: persisted,
+            internalAlias: persisted.alias,
+          });
+        } catch (cleanupError) {
+          await context.logger.error(
+            "session.native.cleanup_failed",
+            "failed to converge provisional native incarnation; logical session kept",
+            {
+              alias: persisted.alias,
+              error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+            },
+          );
+        }
+        return { text: t().nativeSession.attachVerificationFailed(target.agentDisplayName) };
+      }
 
-    await context.sessions.attachNativeSession({
-      alias: finalInternalAlias,
-      agent: nativeTarget.agent,
-      workspace: nativeTarget.workspace,
-      transportSession,
-      ...(resolvedSession.agentCommand ? { transportAgentCommand: resolvedSession.agentCommand } : {}),
-      ...(resolvedSession.acpxAgent ? { transportAcpxAgent: resolvedSession.acpxAgent } : {}),
-      ...(resolvedSession.agentArgv ? { transportAgentArgv: resolvedSession.agentArgv } : {}),
-      agentSessionId: session.sessionId,
-      title: session.title,
-      updatedAt: session.updatedAt,
-    });
-    await context.sessions.useSession(chatKey, finalInternalAlias);
-    await refreshAgentCommandBestEffort(context, finalInternalAlias);
+      await context.sessions.useSession(chatKey, finalInternalAlias);
+      await refreshAgentCommandBestEffort(context, finalInternalAlias);
 
-    return {
-      text: t().nativeSession.attachedAndSwitched(target.agentDisplayName, toDisplaySessionAlias(finalInternalAlias)),
-    };
-  } finally {
-    try {
-      await releaseTransportReservation();
+      return {
+        text: t().nativeSession.attachedAndSwitched(target.agentDisplayName, toDisplaySessionAlias(finalInternalAlias)),
+      };
     } finally {
-      releaseAliasReservation();
+      try { await releaseTransportReservation(); } catch {}
     }
+  } finally {
+    releaseAliasReservation();
   }
 }
 
@@ -408,8 +455,15 @@ async function resolveNativeWorkspace(
     }
 
     const workspaceName = allocateWorkspaceName(sanitizeWorkspaceName(basenameForWorkspacePath(cwd)), context.config.workspaces);
-    const updated = await context.configStore.upsertWorkspace(workspaceName, cwd);
-    context.replaceConfig(updated);
+    // Whole-snapshot publish joins the shared config mutation domain so it
+    // cannot publish an uncommitted permission value (or clobber a
+    // concurrent rollback) mid-transaction.
+    const configStore = context.configStore;
+    const updated = await context.configMutationMutex.run(async () => {
+      const next = await configStore.upsertWorkspace(workspaceName, cwd);
+      context.replaceConfig(next);
+      return next;
+    });
     return {
       workspace: workspaceName,
       workspaceLabel: workspaceName,

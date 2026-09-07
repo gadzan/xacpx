@@ -52,7 +52,9 @@
           "workspace": "backend",
           "targetAgent": "codex",
           "role": "reviewer",
-          "guardAcpOutput": true
+          "guardAcpOutput": true,
+          "logicalSessionId": "lid-1",
+          "transportEngine": "cli"
         }
       },
       "groups": {},
@@ -162,6 +164,83 @@
       "request": null
     },
     {
+      "port": "loadState",
+      "request": null
+    },
+    {
+      "port": "resolveWorkerBindingEngine",
+      "request": {
+        "workerSession": "backend:codex:reviewer:backend:main",
+        "targetAgent": "codex",
+        "workspace": "backend"
+      }
+    },
+    {
+      "port": "saveState",
+      "request": {
+        "coordinatorQuestionState": [],
+        "coordinatorRoutes": [],
+        "externalCoordinators": [],
+        "groups": [],
+        "humanQuestionPackages": [],
+        "tasks": [
+          {
+            "key": "task-1",
+            "value": {
+              "taskId": "task-1",
+              "sourceHandle": "backend:claude:backend:main",
+              "sourceKind": "worker",
+              "coordinatorSession": "backend:main",
+              "workerSession": "backend:codex:reviewer:backend:main",
+              "workspace": "backend",
+              "targetAgent": "codex",
+              "role": "reviewer",
+              "task": "dangerous thing",
+              "status": "needs_confirmation",
+              "summary": "",
+              "resultText": "",
+              "createdAt": "2026-04-13T10:00:00.000Z",
+              "updatedAt": "2026-04-13T10:00:00.000Z",
+              "eventSeq": 1,
+              "events": [
+                {
+                  "seq": 1,
+                  "at": "2026-04-13T10:00:00.000Z",
+                  "type": "created",
+                  "status": "needs_confirmation",
+                  "message": "Task created"
+                }
+              ]
+            }
+          }
+        ],
+        "workerBindings": [
+          {
+            "key": "backend:claude:backend:main",
+            "value": {
+              "sourceHandle": "backend:claude:backend:main",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "claude"
+            }
+          },
+          {
+            "key": "backend:codex:reviewer:backend:main",
+            "value": {
+              "sourceHandle": "backend:codex:reviewer:backend:main",
+              "coordinatorSession": "backend:main",
+              "workspace": "backend",
+              "targetAgent": "codex",
+              "role": "reviewer",
+              "guardAcpOutput": true,
+              "logicalSessionId": "lid-1",
+              "transportEngine": "cli"
+            }
+          }
+        ]
+      }
+    },
+    {
       "port": "ensureWorkerSession",
       "request": {
         "workerSession": "backend:codex:reviewer:backend:main",
@@ -241,7 +320,9 @@
               "workspace": "backend",
               "targetAgent": "codex",
               "role": "reviewer",
-              "guardAcpOutput": true
+              "guardAcpOutput": true,
+              "logicalSessionId": "lid-1",
+              "transportEngine": "cli"
             }
           }
         ]

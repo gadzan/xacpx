@@ -334,6 +334,9 @@ export interface WorkspaceMessages {
   // handleWorkspaceRemove — removed confirmation
   removed: (name: string) => string;
 
+  // handleWorkspaceRemove — still referenced by persisted sessions
+  stillReferenced: (name: string, aliases: string) => string;
+
   // workspaceHelp metadata
   helpSummary: string;
   helpCmdList: string;
@@ -371,6 +374,9 @@ export interface AgentMessages {
 
   // handleAgentRemove — removed confirmation
   removed: (name: string) => string;
+
+  // handleAgentRemove — still referenced by persisted sessions
+  stillReferenced: (name: string, aliases: string) => string;
 
   // agentHelp metadata
   helpSummary: string;
@@ -720,6 +726,9 @@ export interface ConfigMessages {
 
   // handleConfigSet — success
   updated: (path: string, value: string) => string;
+
+  // handleConfigSet — restart-required topology change (file saved, live config untouched)
+  restartRequired: (path: string, value: string) => string;
 
   // applySupportedConfigUpdate — language
   languageInvalid: string;
@@ -1361,6 +1370,7 @@ export interface MiscMessages {
   // commands/handlers/session-reset-handler
   sessionResetNoCurrentSession: string;
   sessionResetFailed: (alias: string) => string;
+  sessionResetTurnActive: (alias: string) => string;
   sessionResetSuccess: (alias: string) => string;
 
   // scheduled/scheduled-dispatch

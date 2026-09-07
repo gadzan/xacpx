@@ -46,7 +46,9 @@
           "coordinatorSession": "backend:main",
           "workspace": "backend",
           "targetAgent": "claude",
-          "guardAcpOutput": true
+          "guardAcpOutput": true,
+          "logicalSessionId": "lid-1",
+          "transportEngine": "cli"
         }
       },
       "groups": {},
@@ -79,6 +81,14 @@
     {
       "port": "loadState",
       "request": null
+    },
+    {
+      "port": "resolveWorkerBindingEngine",
+      "request": {
+        "workerSession": "backend:claude:backend:main",
+        "targetAgent": "claude",
+        "workspace": "backend"
+      }
     },
     {
       "port": "saveState",
@@ -126,7 +136,9 @@
               "coordinatorSession": "backend:main",
               "workspace": "backend",
               "targetAgent": "claude",
-              "guardAcpOutput": true
+              "guardAcpOutput": true,
+              "logicalSessionId": "lid-1",
+              "transportEngine": "cli"
             }
           }
         ]

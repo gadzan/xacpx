@@ -1,5 +1,5 @@
 import { expect, test, beforeEach } from "bun:test";
-import { handleCancel, handlePrompt, handlePromptWithSession, handleReplyModeShow, handleSessionUse, handleSessions } from "../../../../src/commands/handlers/session-handler";
+import { handleCancel, handlePrompt, handlePromptWithSession, handleReplyModeShow, handleSessionAttach, handleSessionUse, handleSessions } from "../../../../src/commands/handlers/session-handler";
 import { setLocale, t } from "../../../../src/i18n";
 import { AcpxQueueOverflowError } from "../../../../src/transport/acpx-queue-overflow";
 import { renderTransportError, tryRecoverMissingSession, queueOverflowTipText } from "../../../../src/commands/handlers/session-recovery-handler";
@@ -583,4 +583,71 @@ test("handlePromptWithSession does not retry overflow with diagnostic containing
   expect(setAgentCommandCalls).toBe(0);
   expect(result.silent).toBe(true);
   expect(result.text).toBeUndefined();
+});
+
+test("handleSessionAttach refuses an existing alias without touching its row", async () => {
+  const calls: string[] = [];
+  const existing = { alias: "wx:a", agent: "codex", workspace: "backend" };
+  const context = {
+    sessions: {
+      tryReserveSessionAliasOperation: (_alias: string) => {
+        calls.push("reserve-alias");
+        return () => {
+          calls.push("release-alias");
+        };
+      },
+      getResolvedSessionByInternalAlias: (alias: string) => {
+        calls.push("getByInternal:" + alias);
+        return existing;
+      },
+      attachSession: async () => {
+        calls.push("attach");
+        throw new Error("must not overwrite");
+      },
+    },
+    lifecycle: {},
+    logger: { info: async () => {}, warn: async () => {}, error: async () => {}, debug: async () => {} },
+  } as unknown as SessionHandlerContext;
+  const result = await handleSessionAttach(context, "weixin:a:u", "a", "codex", "backend", "backend:a");
+  expect(result).toEqual({ text: t().session.sessionAlreadyExists("a", "codex", "backend") });
+  expect(calls).not.toContain("attach");
+});
+
+test("handleSessionAttach drops its fresh row when post-persist setup fails", async () => {
+  const calls: string[] = [];
+  const context = {
+    sessions: {
+      tryReserveSessionAliasOperation: (_alias: string) => {
+        return () => {};
+      },
+      getResolvedSessionByInternalAlias: (_alias: string) => null,
+      attachSession: async () => {
+        calls.push("attach");
+        return { alias: "wx:a", agent: "codex", workspace: "backend", transportSession: "backend:a" };
+      },
+      removeSession: async (alias: string) => {
+        calls.push("remove:" + alias);
+        return { wasActive: false };
+      },
+      useSession: async () => {
+        throw new Error("chat context store unavailable");
+      },
+    },
+    lifecycle: {
+      resolveAttachCandidate: () => ({
+        transportSession: "backend:a",
+        agentCommand: undefined,
+        acpxAgent: undefined,
+        agentArgv: undefined,
+      }),
+      reserveTransportSession: async () => async () => {},
+      checkTransportSession: async () => true,
+      markSessionReady: () => {},
+    },
+    logger: { info: async () => {}, warn: async () => {}, error: async () => {}, debug: async () => {} },
+  } as unknown as SessionHandlerContext;
+  await expect(
+    handleSessionAttach(context, "weixin:a:u", "a", "codex", "backend", "backend:a"),
+  ).rejects.toThrow("chat context store unavailable");
+  expect(calls).toEqual(["attach", "remove:a"]);
 });

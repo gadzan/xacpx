@@ -711,6 +711,11 @@ test("wires orchestration into the runtime router so /delegate creates and persi
     transportSession: "backend:claude:backend:main",
   });
   expect(ensureSession.mock.calls.at(1)?.[0].agentArgv?.[1]).toContain("acp-output-guard-main.");
+  // Worker dispatch persists binding identity (saveNow) before the first
+  // prompt, so allow real wall-clock time for the async dispatch to arrive.
+  for (let i = 0; i < 250 && prompt.mock.calls.length < 1; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
   expect(prompt.mock.calls).toHaveLength(1);
   expect(prompt.mock.calls.at(0)?.[0]).toMatchObject({
     alias: "backend:claude:backend:main",
@@ -2594,7 +2599,7 @@ test("coordinatorAnswerQuestion resumes asynchronously and persists the resumed 
   await rm(dir, { recursive: true, force: true });
 });
 
-test("closeWorkerSession dep calls transport.removeSession with the resolved session", async () => {
+test("releaseWorkerSession dep calls transport.removeSession with the resolved session", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-app-"));
   const configPath = join(dir, "config.json");
   const statePath = join(dir, "state.json");
@@ -2768,16 +2773,18 @@ test("reconcileParallelSlots is called after a worker turn completes", async () 
     cwd: "/tmp/backend",
     parallel: true,
   });
-
-  // Wait for the post-worker-turn reconcile to run (launchWorkerTurn calls it).
+  // Wait for the post-worker-turn reconcile to retire the ephemeral binding:
+  // verified release first, then durable deletion, then the closed flag.
   for (let attempt = 0; attempt < 50; attempt += 1) {
-    if (removeSession.mock.calls.length > 0) {
+    const task = await runtime.orchestration.service.getTask(result.taskId);
+    if (task?.ephemeralWorkerSessionClosed === true) {
       break;
     }
     await Bun.sleep(10);
   }
 
-  // The post-turn reconcile should have triggered removeSession for the ephemeral session.
+  // The post-turn reconcile must have verified-released the owner (CLI
+  // closes its acpx session) before the binding disappeared.
   expect(removeSession.mock.calls.length).toBeGreaterThan(0);
   expect(await runtime.orchestration.service.getTask(result.taskId)).toMatchObject({
     status: "completed",
@@ -2920,29 +2927,30 @@ test(
 
     expect(provisioned).toHaveLength(1); // startup provision
 
-    // Add an argv agent at runtime; the watcher reload must provision its alias.
-    await writeFile(
-      configPath,
-      JSON.stringify({
-        transport: { type: "acpx-cli", command: "acpx" },
-        agents: {
-          codex: { driver: "codex" },
-          custom: { driver: "custom", argv: ["C:\\Program Files\\agent.exe", "--acp"] },
-        },
-        workspaces: { backend: { cwd: "/tmp/backend" } },
-      }),
-    );
-    await readJsonWithRetry<{ agents?: unknown }>(configPath).then(async () => {
-      // The config watcher debounces 100ms and then reloads asynchronously;
-      // under the load of the 40+ buildApp tests above, fs.watch delivery can
-      // push the provision past a 1s window (observed ~30-50% flake on both
-      // main and feature branches). 5s keeps the poll bounded and robust.
-      for (let attempt = 0; attempt < 250 && provisioned.length < 2; attempt += 1) {
-        await Bun.sleep(20);
-      }
+    // Give the newly started fs.watch FSEvents listener 150ms to settle
+    await Bun.sleep(150);
+    const updatedConfig = JSON.stringify({
+      transport: { type: "acpx-cli", command: "acpx" },
+      agents: {
+        codex: { driver: "codex" },
+        custom: { driver: "custom", argv: ["C:\\Program Files\\agent.exe", "--acp"] },
+      },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
     });
-    expect(provisioned.length).toBeGreaterThanOrEqual(2);
-    expect(provisioned.at(-1)).toMatchObject({
+    await writeFile(configPath, updatedConfig);
+    await readJsonWithRetry<{ agents?: unknown }>(configPath);
+    for (let attempt = 0; attempt < 500; attempt++) {
+      const hasCustom = provisioned.some((p) => (p as Record<string, unknown>).custom !== undefined);
+      if (hasCustom) break;
+      await Bun.sleep(20);
+      if (attempt === 50) {
+        // Safety poke: if FSEvents missed the burst or the first reload raced the write and read stale content,
+        // touch the file again so the watcher re-fires with the correct updated content.
+        await writeFile(configPath, updatedConfig);
+      }
+    }
+    expect(provisioned.some((p) => (p as Record<string, unknown>).custom !== undefined)).toBe(true);
+    expect(provisioned.find((p) => (p as Record<string, unknown>).custom !== undefined)).toMatchObject({
       custom: { driver: "custom", argv: ["C:\\Program Files\\agent.exe", "--acp"] },
     });
     await runtime.dispose();
@@ -3049,3 +3057,209 @@ itUnix("buildApp fails and publishes no temporary ids when the migration save ca
     await rm(dir, { recursive: true, force: true });
   }
 }, 30_000);
+test("bridge capability RPC failure pins Runtime unavailable: auto falls back to cli", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-cap-fail-"));
+  try {
+    const configPath = join(dir, "config.json");
+    const statePath = join(dir, "state.json");
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        transport: { type: "acpx-bridge", engine: "auto" },
+        agents: { codex: { driver: "codex" } },
+        workspaces: { backend: { cwd: "/tmp/backend" } },
+      }),
+    );
+    const runtime = await buildApp(
+      { configPath, statePath },
+      {
+        createBridgeTransport: async () => ({
+          ensureSession: async () => {},
+          prompt: async () => ({ text: "ok" }),
+          cancel: async () => ({ cancelled: true, message: "cancelled" }),
+          hasSession: async () => true,
+          getEngineCapabilities: async () => {
+            throw new Error("bridge probe unavailable");
+          },
+        }),
+      },
+    );
+    const session = await runtime.sessions.createSession("cap-fail", "codex", "backend");
+    expect(session.transportEngine).toBe("cli");
+    await runtime.dispose();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("bridge capability RPC failure rejects strict runtime before persistence", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-cap-fail-strict-"));
+  try {
+    const configPath = join(dir, "config.json");
+    const statePath = join(dir, "state.json");
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        transport: { type: "acpx-bridge", engine: "runtime" },
+        agents: { codex: { driver: "codex" } },
+        workspaces: { backend: { cwd: "/tmp/backend" } },
+      }),
+    );
+    const runtime = await buildApp(
+      { configPath, statePath },
+      {
+        createBridgeTransport: async () => ({
+          ensureSession: async () => {},
+          prompt: async () => ({ text: "ok" }),
+          cancel: async () => ({ cancelled: true, message: "cancelled" }),
+          hasSession: async () => true,
+          getEngineCapabilities: async () => {
+            throw new Error("bridge probe unavailable");
+          },
+        }),
+      },
+    );
+    await expect(runtime.sessions.createSession("cap-fail-strict", "codex", "backend")).rejects.toThrow();
+    await runtime.dispose();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+test("startup refuses acpx-cli transport when persisted runtime bindings exist", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-cli-gate-"));
+  try {
+    const configPath = join(dir, "config.json");
+    const statePath = join(dir, "state.json");
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        transport: { type: "acpx-cli", command: "acpx" },
+        agents: { codex: { driver: "codex" } },
+        workspaces: { backend: { cwd: "/tmp/backend" } },
+      }),
+    );
+    const now = new Date().toISOString();
+    const rawState = JSON.stringify({
+      sessions: {
+        demo: {
+          alias: "demo",
+          agent: "codex",
+          workspace: "backend",
+          transport_session: "backend:demo",
+          transport_engine: "runtime",
+          logical_session_id: "11111111-1111-4111-8111-111111111111",
+          created_at: now,
+          last_used_at: now,
+        },
+      },
+      chat_contexts: {},
+      orchestration: {
+        tasks: {},
+        workerBindings: {},
+        groups: {},
+        humanQuestionPackages: {},
+        coordinatorQuestionState: {},
+        coordinatorRoutes: {},
+        externalCoordinators: {},
+      },
+      scheduled_tasks: {},
+    });
+    await writeFile(statePath, rawState);
+    await expect(
+      buildApp(
+        { configPath, statePath },
+        {
+          createCliTransport: () => ({
+            ensureSession: async () => {},
+            prompt: async () => ({ text: "ok" }),
+            setMode: async () => {},
+            cancel: async () => ({ cancelled: true, message: "cancelled" }),
+            hasSession: () => false,
+            dispose: async () => {},
+          }),
+        },
+      ),
+    ).rejects.toThrow(/not "acpx-bridge"/);
+    expect(await readFile(statePath, "utf8")).toBe(rawState);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("control agent/workspace remove refuses while persisted sessions reference them", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-app-refguard-"));
+  const configPath = join(dir, "config.json");
+  const statePath = join(dir, "state.json");
+  await writeFile(configPath, JSON.stringify({
+    transport: { type: "acpx-cli", command: "acpx" },
+    agents: { codex: { driver: "codex" } },
+    workspaces: { backend: { cwd: "/tmp/backend" } },
+  }));
+  const now = new Date().toISOString();
+  await writeFile(statePath, JSON.stringify({
+    chat_contexts: {},
+    sessions: {
+      "guarded": {
+        alias: "guarded",
+        agent: "codex",
+        workspace: "backend",
+        transport_session: "backend:guarded",
+        source: "xacpx",
+        created_at: now,
+        last_used_at: now,
+      },
+    },
+    tasks: {},
+    orchestration: { groups: {}, tasks: {}, workers: {}, workerBindings: {}, externalCoordinators: {} },
+  }));
+  const app = await buildApp({ configPath, statePath });
+  try {
+    await expect(app.control.removeWorkspace("backend")).rejects.toThrow(/in use by an existing session/);
+    await expect(app.control.removeAgent("codex")).rejects.toThrow(/in use by an existing session/);
+    // Config on disk untouched by the refused removes.
+    const saved = JSON.parse(await readFile(configPath, "utf8"));
+    expect(saved.workspaces.backend).toBeDefined();
+    expect(saved.agents.codex).toBeDefined();
+  } finally {
+    await app.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("control agent/workspace remove refuses while worker bindings reference them", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-app-refguard-binding-"));
+  const configPath = join(dir, "config.json");
+  const statePath = join(dir, "state.json");
+  await writeFile(configPath, JSON.stringify({
+    transport: { type: "acpx-cli", command: "acpx" },
+    agents: { codex: { driver: "codex" } },
+    workspaces: { backend: { cwd: "/tmp/backend" } },
+  }));
+  await writeFile(statePath, JSON.stringify({
+    chat_contexts: {},
+    sessions: {},
+    tasks: {},
+    orchestration: {
+      groups: {},
+      tasks: {},
+      workers: {},
+      workerBindings: {
+        "backend:codex:backend:main": {
+          sourceHandle: "backend:codex:backend:main",
+          coordinatorSession: "backend:main",
+          workspace: "backend",
+          targetAgent: "codex",
+        },
+      },
+      externalCoordinators: {},
+    },
+  }));
+  const app = await buildApp({ configPath, statePath });
+  try {
+    await expect(app.control.removeWorkspace("backend")).rejects.toThrow(/backend:codex:backend:main/);
+    await expect(app.control.removeAgent("codex")).rejects.toThrow(/backend:codex:backend:main/);
+  } finally {
+    await app.dispose();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

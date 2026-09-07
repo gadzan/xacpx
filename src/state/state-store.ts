@@ -272,7 +272,12 @@ function isWorkerBindingRecord(value: unknown): value is WorkerBindingRecord {
     isString(value.targetAgent) &&
     isOptionalString(value.role) &&
     isOptionalBoolean(value.ephemeral) &&
-    isOptionalBoolean(value.guardAcpOutput)
+    isOptionalBoolean(value.guardAcpOutput) &&
+    // Identity follows the ordinary-session rule: absent enters migration,
+    // but present-but-invalid is corruption (quarantine/drop) — never
+    // silently re-minted, which would switch an existing identity.
+    (value.logicalSessionId === undefined || isLogicalSessionId(value.logicalSessionId)) &&
+    (value.transportEngine === undefined || value.transportEngine === "cli" || value.transportEngine === "runtime")
   );
 }
 
@@ -449,12 +454,31 @@ function parseOrchestrationState(
         reason: "legacy worker binding missing agentEndpointId; assigned a new endpoint id",
       });
     }
+    if (binding.transportEngine === undefined) {
+      // Fail-safe engine binding: a legacy worker binding must never silently
+      // upgrade to Runtime on first use — default it to cli once, durably.
+      migrated.push({
+        section: "orchestration.workerBindings",
+        key: workerSession,
+        reason: "legacy worker binding missing transportEngine; defaulted to cli",
+      });
+    }
+    if (binding.logicalSessionId === undefined) {
+      // Assign the immutable identity at load so every later dispatch sees a
+      // stable id and restart is idempotent (no per-dispatch minting).
+      migrated.push({
+        section: "orchestration.workerBindings",
+        key: workerSession,
+        reason: "legacy worker binding missing logicalSessionId; assigned a new UUIDv4",
+      });
+    }
     parsedWorkerBindings[workerSession] = {
       ...binding,
       agentEndpointId: binding.agentEndpointId ?? createAgentEndpointId(),
+      logicalSessionId: binding.logicalSessionId ?? randomUUID(),
+      transportEngine: binding.transportEngine ?? "cli",
     };
   }
-
   const parsedGroups: OrchestrationState["groups"] = {};
   for (const [groupId, group] of Object.entries(groups)) {
     if (!isGroupRecord(group)) {
@@ -608,11 +632,12 @@ function repairAgentEndpointIdCollisions(
       } else {
         delete externalCoordinators[ref.key];
       }
-      const migratedIndex = migrated.findIndex(
-        (record) => record.section === ref.section && record.key === ref.key,
-      );
-      if (migratedIndex >= 0) {
-        migrated.splice(migratedIndex, 1);
+      // A quarantined record must not claim any migration: remove every
+      // migrated entry for the dropped key (a binding can carry several).
+      for (let i = migrated.length - 1; i >= 0; i--) {
+        if (migrated[i]!.section === ref.section && migrated[i]!.key === ref.key) {
+          migrated.splice(i, 1);
+        }
       }
       dropped.push({
         section: ref.section,
@@ -665,6 +690,7 @@ function isSessionRecord(value: unknown): value is MaybeLegacySession {
     isOptionalString(value.transport_agent_command) &&
     isOptionalString(value.transport_acpx_agent) &&
     (value.transport_agent_argv === undefined || isStringArray(value.transport_agent_argv)) &&
+    (value.transport_engine === undefined || value.transport_engine === "cli" || value.transport_engine === "runtime") &&
     isOptionalString(value.mode_id) &&
     isOptionalString(value.effort) &&
     (value.reply_mode === undefined || isReplyMode(value.reply_mode)) &&
@@ -687,18 +713,27 @@ function parseSessions(
     if (value.logical_session_id === undefined) {
       // Legacy record from before logical_session_id existed: assign a fresh
       // UUIDv4 exactly once. StateStore.load() persists this synchronously
-      // before returning (failing closed when the save fails); inspect() keeps
-      // it in-memory only. Reports list this under `migrated`, never under
-      // `dropped` — a migration is not a quarantined corrupt record.
+      // before returning (failing closed when the save fails); inspect()
+      // keeps it in-memory only.
       migrated.push({
         section: "sessions",
         key: alias,
         reason: "legacy record missing logical_session_id; assigned a new UUIDv4",
       });
     }
+    if (value.transport_engine === undefined) {
+      // Fail-safe engine binding (plan §47): never auto-upgrade existing
+      // sessions onto the Runtime — default them to cli once, durably.
+      migrated.push({
+        section: "sessions",
+        key: alias,
+        reason: "legacy record missing transport_engine; defaulted to cli",
+      });
+    }
     sessions[alias] = {
       ...value,
       logical_session_id: value.logical_session_id ?? randomUUID(),
+      transport_engine: value.transport_engine ?? "cli",
     };
   }
   return sessions;

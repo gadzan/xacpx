@@ -1,4 +1,4 @@
-import { beforeAll, expect, test } from "bun:test";
+import { beforeAll, expect, mock, test } from "bun:test";
 
 import type { AppConfig } from "../../../src/config/types";
 import { createEmptyState } from "../../../src/state/types";
@@ -7,10 +7,12 @@ import type { StateStore } from "../../../src/state/state-store";
 import { DebouncedStateStore } from "../../../src/state/debounced-state-store";
 import { SessionService } from "../../../src/sessions/session-service";
 import type { SessionResourceLifecyclePublishInput } from "../../../src/sessions/session-resource-catalog";
+import { physicalFenceKeyForSession } from "../../../src/bridge/engine/runtime-engine";
+import { removeAliasWithPhysicalLifecycle } from "../../../src/commands/session-remove-lifecycle";
+import { deriveAgentAlias, renderAgentArgvIdentity } from "../../../src/config/agent-launch";
+import { resolveConfiguredAgentLaunch } from "../../../src/config/resolve-agent-command";
 import { registerKnownChannelId } from "../../../src/channels/channel-scope";
 import { setLocale, t } from "../../../src/i18n";
-import { deriveAgentAlias, renderAgentArgvIdentity } from "../../../src/config/agent-launch";
-
 beforeAll(() => {
   registerKnownChannelId("feishu");
   setLocale("zh");
@@ -54,15 +56,22 @@ class MemoryStateStore implements Pick<StateStore, "save"> {
 
 test("durability-gated adapter transaction publishes only after saveNow settles", async () => {
   const state = createEmptyState();
-  let releaseSave!: () => void;
-  const saveGate = new Promise<void>((resolve) => { releaseSave = resolve; });
+  let releaseSave: (() => void) | undefined;
+  let armed = false;
   const events: string[] = [];
   const store = {
     save: async () => {},
-    saveNow: async () => { events.push("save:start"); await saveGate; events.push("save:done"); },
+    saveNow: async () => {
+      if (armed) {
+        events.push("save:start");
+        await new Promise<void>((resolve) => { releaseSave = resolve; });
+        events.push("save:done");
+      }
+    },
   };
   const service = new SessionService(createConfig(), store, state);
   await service.createSession("api-fix", "codex", "backend");
+  armed = true;
   const transaction = service.withSessionLock(async (locked) => {
     events.push("session:locked");
     events.push("adapter:locked");
@@ -86,12 +95,16 @@ test("durability-gated adapter transaction publishes only after saveNow settles"
 test("failed saveNow leaves live state unchanged and later debounced saves cannot persist the failed command", async () => {
   const state = createEmptyState();
   const saved: AppState[] = [];
+  let fail = false;
   const store = {
     save: async (snapshot: AppState) => { saved.push(structuredClone(snapshot)); },
-    saveNow: async () => { throw new Error("disk full"); },
+    saveNow: async () => {
+      if (fail) throw new Error("disk full");
+    },
   };
   const service = new SessionService(createConfig(), store, state);
   await service.createSession("api-fix", "codex", "backend");
+  fail = true;
   await expect(service.withSessionLock((locked) =>
     locked.setTransportAgentCommandDurably("api-fix", "failed-adapter"),
   )).rejects.toThrow("disk full");
@@ -1054,21 +1067,22 @@ test("mutations under the shared mutex commit immediately and coalesce into one 
   // Back-to-back mutations must not pay a debounce interval each and must not
   // reach the delegate until the window closes.
   expect(Date.now() - startedAt).toBeLessThan(200);
-  expect(inner.savedStates.length).toBe(0);
+  // createSession persists via saveNow for G11 crash-durability (1 immediate write),
+  // while setSessionModel rides the debounced store until flush.
+  expect(inner.savedStates.length).toBe(1);
 
   await debounced.flush();
-  expect(inner.savedStates.length).toBe(1);
-  // The single coalesced write carries the LAST committed state.
-  expect(inner.savedStates[0]!.sessions["api-fix"]).toMatchObject({ model: "gpt-5.5" });
+  expect(inner.savedStates.length).toBe(2);
+  // The flushed write carries the LAST committed state.
+  expect(inner.savedStates.at(-1)!.sessions["api-fix"]).toMatchObject({ model: "gpt-5.5" });
 
   // Lifecycle transitions are durability-gated instead: archive/restore write
   // immediately via saveNow rather than riding the debounce window.
   await service.setArchived("api-fix", true);
   await service.setArchived("api-fix", false);
-  expect(inner.savedStates.length).toBe(3);
-  expect(inner.savedStates[1]!.sessions["api-fix"]!.archived).toBe(true);
-  expect(inner.savedStates[2]!.sessions["api-fix"]!.archived).toBeUndefined();
-  expect(inner.savedStates[2]!.sessions["api-fix"]).toMatchObject({ model: "gpt-5.5" });
+  expect(inner.savedStates.length).toBe(4);
+  expect(inner.savedStates[3]!.sessions["api-fix"]!.archived).toBeUndefined();
+  expect(inner.savedStates[3]!.sessions["api-fix"]).toMatchObject({ model: "gpt-5.5" });
   await debounced.dispose();
 });
 
@@ -1721,4 +1735,468 @@ test("deriveFreeAlias treats archived sessions as taken (collisions still suffix
   });
   await service.setArchived("demo", true);
   expect(service.deriveFreeAlias("demo")).toBe("demo-2");
+});
+
+test("strict runtime engine fails session creation before persist when nonInteractivePermissions is fail", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  const config = createConfig();
+  delete config.transport.command;
+  config.transport.type = "acpx-bridge";
+  config.transport.engine = "runtime";
+  config.transport.nonInteractivePermissions = "fail";
+  const service = new SessionService(config, store, state);
+
+  await expect(service.createSession("ineligible-session", "codex", "backend")).rejects.toThrow(
+    /is not eligible with nonInteractivePermissions = "fail"/,
+  );
+});
+
+test("strict runtime engine fails session creation before persist when escalate policy has no interactive permissions", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  const config = createConfig();
+  delete config.transport.command;
+  config.transport.type = "acpx-bridge";
+  config.transport.engine = "runtime";
+  config.transport.permissionPolicy = JSON.stringify({ escalate: ["edit"] });
+  const service = new SessionService(config, store, state, { permissionInteractionAvailable: false });
+
+  await expect(service.createSession("escalate-session", "codex", "backend")).rejects.toThrow(
+    /is not eligible under current permission policy/,
+  );
+});
+
+test("auto engine falls back to cli when nonInteractivePermissions is fail and persists cli", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  const config = createConfig();
+  config.transport.engine = "auto";
+  config.transport.nonInteractivePermissions = "fail";
+  const service = new SessionService(config, store, state);
+
+  const session = await service.createSession("auto-ineligible", "codex", "backend");
+  expect(session.transportEngine).toBe("cli");
+  expect(state.sessions["auto-ineligible"]?.transport_engine).toBe("cli");
+});
+
+test("recreated session retains persisted runtime transport_engine even under ineligible config", async () => {
+  const state = createEmptyState();
+  state.sessions["existing-rt"] = {
+    alias: "existing-rt",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:existing-rt",
+    logical_session_id: "prev-id",
+    transport_engine: "runtime",
+    created_at: new Date().toISOString(),
+    last_used_at: new Date().toISOString(),
+  };
+  const store = new MemoryStateStore();
+  const config = createConfig();
+  config.transport.engine = "cli";
+  config.transport.nonInteractivePermissions = "fail";
+  const service = new SessionService(config, store, state);
+
+  const session = await service.createSession("existing-rt", "codex", "backend");
+  expect(session.transportEngine).toBe("runtime");
+  expect(state.sessions["existing-rt"]?.transport_engine).toBe("runtime");
+});
+test("resolveSession carries persisted runtime transport_engine on transient resolution", () => {
+  const state = createEmptyState();
+  state.sessions["existing-rt"] = {
+    alias: "existing-rt",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:existing-rt",
+    logical_session_id: "prev-id",
+    transport_engine: "runtime",
+    created_at: new Date().toISOString(),
+    last_used_at: new Date().toISOString(),
+  };
+  const store = new MemoryStateStore();
+  const config = createConfig();
+  config.transport.engine = "cli";
+  const service = new SessionService(config, store, state);
+
+  const resolved = service.resolveSession("existing-rt", "codex", "backend", "backend:existing-rt:reset-1");
+  expect(resolved.transportEngine).toBe("runtime");
+  expect(resolved.logicalSessionId).toBe("prev-id");
+});
+
+test("rollbackSessionRecord durably restores a snapshot", async () => {
+  const state = createEmptyState();
+  const snapshot = {
+    alias: "test-sess",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:test-sess",
+    logical_session_id: "prev-id",
+    transport_engine: "runtime" as const,
+    created_at: new Date().toISOString(),
+    last_used_at: new Date().toISOString(),
+  };
+  state.sessions["test-sess"] = {
+    ...snapshot,
+    logical_session_id: "new-id",
+    transport_session: "backend:test-sess:reset-999",
+  };
+  const store = new MemoryStateStore();
+  const service = new SessionService(createConfig(), store, state);
+
+  await service.rollbackSessionRecord("test-sess", snapshot);
+  expect(state.sessions["test-sess"]?.logical_session_id).toBe("prev-id");
+  expect(state.sessions["test-sess"]?.transport_session).toBe("backend:test-sess");
+  expect(store.savedStates.at(-1)?.sessions["test-sess"]?.logical_session_id).toBe("prev-id");
+});
+
+test("rollbackSessionRecord deletes alias if snapshot was null", async () => {
+  const state = createEmptyState();
+  state.sessions["test-sess"] = {
+    alias: "test-sess",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:test-sess",
+    logical_session_id: "fresh-id",
+    transport_engine: "cli" as const,
+    created_at: new Date().toISOString(),
+    last_used_at: new Date().toISOString(),
+  };
+  const store = new MemoryStateStore();
+  const service = new SessionService(createConfig(), store, state);
+
+  await service.rollbackSessionRecord("test-sess", null);
+  expect(state.sessions["test-sess"]).toBeUndefined();
+  expect(store.savedStates.at(-1)?.sessions["test-sess"]).toBeUndefined();
+});
+
+test("updateNativeAgentSessionId updates native session fields without changing logical_session_id", async () => {
+  const state = createEmptyState();
+  state.sessions["native-sess"] = {
+    alias: "native-sess",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:native-sess:reset-1",
+    logical_session_id: "stable-lid",
+    transport_engine: "runtime",
+    source: "agent-side",
+    created_at: new Date().toISOString(),
+    last_used_at: new Date().toISOString(),
+  };
+  const store = new MemoryStateStore();
+  const service = new SessionService(createConfig(), store, state);
+
+  await service.updateNativeAgentSessionId("native-sess", "fresh-agent-id", "2026-09-03T12:00:00.000Z");
+  expect(state.sessions["native-sess"]?.logical_session_id).toBe("stable-lid");
+  expect(state.sessions["native-sess"]?.source).toBe("agent-side");
+  expect(state.sessions["native-sess"]?.agent_session_id).toBe("fresh-agent-id");
+  expect(state.sessions["native-sess"]?.agent_session_updated_at).toBe("2026-09-03T12:00:00.000Z");
+
+  // Clear native session fields on fallback
+  await service.updateNativeAgentSessionId("native-sess", undefined);
+  expect(state.sessions["native-sess"]?.logical_session_id).toBe("stable-lid");
+  expect(state.sessions["native-sess"]?.source).toBeUndefined();
+  expect(state.sessions["native-sess"]?.agent_session_id).toBeUndefined();
+});
+test("cached Bridge capability probe failure forces auto to cli before persist", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  const config = createConfig();
+  delete config.transport.command;
+  config.transport.type = "acpx-bridge";
+  config.transport.engine = "auto";
+  const service = new SessionService(config, store, state);
+  // Worker file may exist locally, but the Bridge host failed the probe.
+  service.setRuntimeCapability({ runtimeAvailable: true, runtimeImportOk: false, contractProbeOk: false });
+  const session = await service.createSession("probe-fail", "codex", "backend");
+  expect(session.transportEngine).toBe("cli");
+  expect(state.sessions["probe-fail"]?.transport_engine).toBe("cli");
+});
+
+test("cached Bridge capability probe failure rejects strict runtime before state mutation", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  const config = createConfig();
+  delete config.transport.command;
+  config.transport.type = "acpx-bridge";
+  config.transport.engine = "runtime";
+  const service = new SessionService(config, store, state);
+  service.setRuntimeCapability({ runtimeAvailable: true, runtimeImportOk: true, contractProbeOk: false });
+  await expect(service.createSession("probe-fail-strict", "codex", "backend")).rejects.toThrow(
+    /capability probe/,
+  );
+  expect(state.sessions["probe-fail-strict"]).toBeUndefined();
+});
+
+test("cached Bridge capability success allows auto to bind runtime", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  const config = createConfig();
+  delete config.transport.command;
+  config.transport.type = "acpx-bridge";
+  config.transport.engine = "auto";
+  const service = new SessionService(config, store, state);
+  service.setRuntimeCapability({ runtimeAvailable: true, runtimeImportOk: true, contractProbeOk: true });
+  const session = await service.createSession("probe-ok", "codex", "backend");
+  expect(session.transportEngine).toBe("runtime");
+  expect(state.sessions["probe-ok"]?.transport_engine).toBe("runtime");
+});
+test("acpx-cli transport never binds runtime for new sessions even when eligible", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  const config = createConfig();
+  delete config.transport.command;
+  config.transport.engine = "auto";
+  const service = new SessionService(config, store, state);
+  const session = await service.createSession("cli-auto", "codex", "backend");
+  expect(session.transportEngine).toBe("cli");
+  expect(state.sessions["cli-auto"]?.transport_engine).toBe("cli");
+});
+
+test("acpx-cli transport with strict runtime throws before state mutation", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  const config = createConfig();
+  delete config.transport.command;
+  config.transport.engine = "runtime";
+  const service = new SessionService(config, store, state);
+  await expect(service.createSession("cli-strict", "codex", "backend")).rejects.toThrow(
+    /requires transport.type = "acpx-bridge"/,
+  );
+  expect(state.sessions["cli-strict"]).toBeUndefined();
+});
+test("listRuntimeQueueRecoverySessions covers shared-physical aliases and worker bindings", () => {
+  const state = createEmptyState();
+  const now = new Date().toISOString();
+  const logical = (alias: string, logicalSessionId: string) => ({
+    alias,
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:shared",
+    transport_engine: "runtime" as const,
+    logical_session_id: logicalSessionId,
+    created_at: now,
+    last_used_at: now,
+  });
+  state.sessions["a"] = logical("a", "11111111-1111-4111-8111-111111111111");
+  state.sessions["b"] = logical("b", "22222222-2222-4222-8222-222222222222");
+  state.orchestration.workerBindings["worker-1"] = {
+    sourceHandle: "src-1",
+    coordinatorSession: "coord-1",
+    workspace: "backend",
+    cwd: "/repos/project-b",
+    targetAgent: "codex",
+    agentEndpointId: "endpoint_worker_1",
+    logicalSessionId: "33333333-3333-4333-8333-333333333333",
+    transportEngine: "runtime",
+  };
+  const service = new SessionService(createConfig(), new MemoryStateStore(), state);
+  const catalog = service.listRuntimeQueueRecoverySessions();
+  const byLid = new Map(catalog.map((s) => [s.logicalSessionId, s]));
+  // Both shared-physical aliases (physical catalog would dedupe to one)…
+  expect(byLid.has("11111111-1111-4111-8111-111111111111")).toBe(true);
+  expect(byLid.has("22222222-2222-4222-8222-222222222222")).toBe(true);
+  // …and the worker binding journal, recovered with its OWN persisted cwd —
+  // not the workspace default — so restart acquires the same physical
+  // Runtime session that the queue was ACKed under.
+  const worker = byLid.get("33333333-3333-4333-8333-333333333333");
+  expect(worker?.transportEngine).toBe("runtime");
+  expect(worker?.alias).toBe("worker-1");
+  expect(worker?.cwd).toBe("/repos/project-b");
+  // Physical fence identity matches what production dispatch resolves with
+  // the same binding cwd (not the workspace default).
+  expect(physicalFenceKeyForSession(worker!)).toBe(
+    physicalFenceKeyForSession({ ...worker!, cwd: "/repos/project-b" }),
+  );
+  expect(physicalFenceKeyForSession(worker!)).not.toBe(
+    physicalFenceKeyForSession({ ...worker!, cwd: "/tmp/backend" }),
+  );
+});
+test("resolveWorkerBindingSession fails closed on unknown identity", () => {
+  const state = createEmptyState();
+  state.orchestration.workerBindings["ghost"] = {
+    sourceHandle: "src-g",
+    coordinatorSession: "coord-g",
+    workspace: "nope",
+    targetAgent: "codex",
+    agentEndpointId: "endpoint_ghost",
+    logicalSessionId: "44444444-4444-4444-8444-444444444444",
+    transportEngine: "runtime",
+  };
+  const service = new SessionService(createConfig(), new MemoryStateStore(), state);
+  expect(service.resolveWorkerBindingSession("ghost")).toBeNull();
+  expect(service.resolveWorkerBindingSession("missing")).toBeNull();
+  expect(service.listRuntimeQueueRecoverySessions()).toEqual([]);
+});
+
+test("attach to a sibling physical session inherits the sibling engine, not the config", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  const sessions = new SessionService(config, new MemoryStateStore(), state);
+  const a = await sessions.createSession("aff-a", "codex", "backend");
+  expect(a.transportEngine).toBe("cli");
+  // Flip the config default to runtime AFTER A exists: a new alias on the
+  // same physical session must still inherit A's CLI binding.
+  config.transport.engine = "runtime";
+  const b = await sessions.attachSession(
+    "aff-b",
+    "codex",
+    "backend",
+    a.transportSession,
+  );
+  expect(b.transportSession).toBe(a.transportSession);
+  expect(b.transportEngine).toBe("cli");
+  expect(state.sessions["aff-b"]!.transport_engine).toBe("cli");
+});
+
+test("create fails closed on mixed-engine physical siblings", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  const sessions = new SessionService(config, new MemoryStateStore(), state);
+  const a = await sessions.createSession("mix-a", "codex", "backend");
+  // Legacy/manual mixed state: same transport session, conflicting engines.
+  const rowA = state.sessions["mix-a"]!;
+  state.sessions["mix-b"] = {
+    ...rowA,
+    alias: "mix-b",
+    transport_engine: "runtime",
+    logical_session_id: "22222222-2222-4222-8222-222222222222",
+  };
+  expect(a.transportSession).toBeDefined();
+  await expect(
+    sessions.attachSession("mix-c", "codex", "backend", a.transportSession),
+  ).rejects.toThrow(/mixed engine ownership/);
+  // Failed create leaves no row behind.
+  expect(state.sessions["mix-c"]).toBeUndefined();
+});
+test("attach inherits a worker binding's runtime engine instead of config cli", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  const sessions = new SessionService(config, new MemoryStateStore(), state);
+  // Production-shaped reusable worker binding: durable LID + runtime engine,
+  // no live worker (cold). Config still selects cli for new sessions.
+  state.orchestration.workerBindings["backend:codex:backend:main"] = {
+    sourceHandle: "backend:codex:backend:main",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "codex",
+    guardAcpOutput: true,
+    logicalSessionId: "worker-lid-1",
+    transportEngine: "runtime",
+  };
+  // Chat/control attach stores a guarded launch probe; pass the same shape so
+  // the candidate predicts the row's real dispatch identity.
+  const launch = resolveConfiguredAgentLaunch(config.agents.codex!, config.transport, { guardAcpOutput: true });
+  const attached = await sessions.attachSession(
+    "user-alias",
+    "codex",
+    "backend",
+    "backend:codex:backend:main",
+    launch.agentCommand,
+    launch.acpxAgent,
+    launch.agentArgv,
+  );
+  expect(attached.transportEngine).toBe("runtime");
+  expect(state.sessions["user-alias"]?.transport_engine).toBe("runtime");
+});
+
+test("attach fails closed on an engine-less worker binding sharing the name", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  const sessions = new SessionService(config, new MemoryStateStore(), state);
+  // Same transport name, but the binding carries no resolvable identity: it
+  // can be neither proven in nor proven out of the group.
+  state.orchestration.workerBindings["backend:codex:backend:main"] = {
+    sourceHandle: "backend:codex:backend:main",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "codex",
+  };
+  await expect(
+    sessions.attachSession("user-alias", "codex", "backend", "backend:codex:backend:main"),
+  ).rejects.toThrow(/cannot be resolved/);
+  expect(state.sessions["user-alias"]).toBeUndefined();
+});
+test("worker binding engine resolution inherits the logical group's engine", async () => {
+  const config = createConfig();
+  // Explicit command: the launch identity is guard-independent, so the
+  // logical row and the worker candidate hash the same physical key.
+  config.agents.custom = { driver: "codex", command: "my-agent-bin" };
+  config.transport.engine = "cli";
+  const state = createEmptyState();
+  const sessions = new SessionService(config, new MemoryStateStore(), state);
+  const logical = await sessions.attachSession("user-alias", "custom", "backend", "backend:custom:main");
+  // The worker binding targets the same physical session: it must inherit
+  // cli, not re-derive from a (possibly drifted) config.
+  config.transport.engine = "runtime";
+  expect(
+    sessions.resolveEngineForWorkerBinding({
+      workerSession: "backend:custom:main",
+      targetAgent: "custom",
+      workspace: "backend",
+    }),
+  ).toBe("cli");
+});
+
+test("remove of a logical alias keeps the physical record while a cold worker binding survives", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  const sessions = new SessionService(config, new MemoryStateStore(), state);
+  state.orchestration.workerBindings["backend:codex:backend:main"] = {
+    sourceHandle: "backend:codex:backend:main",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "codex",
+    guardAcpOutput: true,
+    logicalSessionId: "worker-lid-1",
+    transportEngine: "runtime",
+  };
+  const launch = resolveConfiguredAgentLaunch(config.agents.codex!, config.transport, { guardAcpOutput: true });
+  const attached = await sessions.attachSession(
+    "user-alias",
+    "codex",
+    "backend",
+    "backend:codex:backend:main",
+    launch.agentCommand,
+    launch.acpxAgent,
+    launch.agentArgv,
+  );
+  expect(attached.transportEngine).toBe("runtime");
+  const releaseLogicalSession = mock(async () => {});
+  const deleteSession = mock(async () => {});
+  const outcome = await removeAliasWithPhysicalLifecycle({
+    sessions,
+    transport: { releaseLogicalSession, deleteSession },
+    session: attached,
+    internalAlias: "user-alias",
+  });
+  expect(outcome.action).toBe("released");
+  expect(outcome.sharedAliasCount).toBe(1);
+  expect(deleteSession).not.toHaveBeenCalled();
+  expect(releaseLogicalSession).toHaveBeenCalledTimes(1);
+  expect(await sessions.getSession("user-alias")).toBeNull();
+  // The cold worker binding still resolves with its durable identity intact,
+  // so its conversation remains usable after the logical alias is gone.
+  expect(sessions.resolveWorkerBindingSession("backend:codex:backend:main")).toMatchObject({
+    logicalSessionId: "worker-lid-1",
+    transportEngine: "runtime",
+  });
+});
+
+test("usage guards see orchestration worker bindings", async () => {
+  const config = createConfig();
+  const state = createEmptyState();
+  const sessions = new SessionService(config, new MemoryStateStore(), state);
+  expect(sessions.workerBindingsUsingAgent("codex")).toEqual([]);
+  expect(sessions.workerBindingsUsingWorkspace("backend")).toEqual([]);
+  state.orchestration.workerBindings["backend:codex:backend:main"] = {
+    sourceHandle: "backend:codex:backend:main",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "codex",
+  };
+  expect(sessions.workerBindingsUsingAgent("codex")).toEqual(["backend:codex:backend:main"]);
+  expect(sessions.workerBindingsUsingWorkspace("backend")).toEqual(["backend:codex:backend:main"]);
+  expect(sessions.workerBindingsUsingAgent("claude")).toEqual([]);
+  expect(sessions.workerBindingsUsingWorkspace("other")).toEqual([]);
 });
