@@ -546,7 +546,8 @@ export interface LiveTurn {
 
 **`MessageList.vue` 渲染**（`packages/relay-web/src/components/MessageList.vue`）
 
-- 历史 `out` 消息正文始终展开，复制、时间及失败/停止状态保持可见；消息本身没有折叠开关。
+- 历史 `out` 消息的复制、时间及失败/停止状态始终可见；失败行永不折叠（错误必须显眼），
+  其余 finished 行的中间过程 trace 默认折叠进回合头部（见下文「回合 trace 折叠」）。
 - `structured.parts` 由 `TurnParts` 按 Markdown 顶层块派生展示顺序：工具或推理不会切断正在生成的段落、
   列表、表格或代码围栏，而是在该块结束后显示；若事件本来位于两个块之间，则保持文字—活动—文字的穿插结构。
   实时 streaming 与历史回放使用同一派生规则。
@@ -562,6 +563,25 @@ export interface LiveTurn {
   user prompt）挪到该 `out` 之后；无 `slotAfterId` 的旧行不重排。**不以** `createdAt` /
   `startedAt` 墙钟比较决定顺序（发送端 daemon、Hub、浏览器时钟不可比）。Stick-to-bottom /
   jump-latest 在 live turn 存在时跟随 live 气泡，而不是最新一行。
+
+### 回合 trace 折叠（turn-trace collapse，spec 2026-09-07）
+
+参照 zcode：回合结束后把思考/工具/子代理等中间过程折叠进一条弱化头部行
+（`▸ 已工作 4分32秒 · 6 步工具 · 3 段思考`），正文（text）与 agent-message 卡永不折叠。
+
+- **触发与折叠时机**：`turn-finished` 把 live turn 定型为历史消息的瞬间（`streaming` prop
+  消失）即折叠。它就是 ACP `session/prompt` response 落定（`stopReason:"end_turn"`）在
+  xacpx 管线里的等价事件，无需协议改动。live（streaming）行不折叠，仍由 HUD 计时。
+- **policy 在 `MessageList`**（`collapseTrace = !m.failed && hasTraceParts(m)`）、
+  **presentation 在 `TurnParts`**（`trace-items` 过滤 `text`/`agent-message` 之外的全部
+  presentation 项，头部固定在回合顶部）。
+- **展开记忆按 `traceKey`**（`id:<n>` 持久行 / `t:<startedAt>` 乐观 flush 行，hub 历史收敛
+  整行替换后 key 不变——两处的 `startedAt` 同为 connector 戳）存模块级 reactive Set
+  （`lib/trace-expansion.ts`）；无身份行回退组件局部状态（不记忆）。
+- **耗时口径**：`createdAt − startedAt`（浏览器/hub 时钟 − connector 时钟），仅展示用、
+  非正值得降级为只显计数；精确耗时需 hub 落 durationMs 列（未做）。
+- 手动展开状态在 `turn-finished` 后的 hub 历史收敛窗口内可能丢一次（乐观 `t:` 键切到持久
+  `id:` 键），接受：收敛在亚秒级窗口内完成，用户尚未交互。
 
 ## 桌面系统通知（Web Push 与 本地 Notification Fallback）
 

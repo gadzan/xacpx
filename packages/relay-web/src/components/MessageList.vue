@@ -29,6 +29,25 @@ function schedOf(m: ChatMessage): ScheduledOriginDto | undefined {
   return m.scheduled ?? m.structured?.scheduled;
 }
 
+// Finished-turn trace collapse (spec 2026-09-07): assistant rows fold their activity
+// parts behind a summary header. Policy here, presentation in TurnParts. Failed rows
+// never collapse (the error ring/banner must stay unmissable); live rows don't pass
+// the props at all. Duration is display-only: createdAt (browser/hub clock) minus
+// startedAt (connector clock) — cross-machine skew clamps to "counts only".
+function hasTraceParts(m: ChatMessage): boolean {
+  // Wire parts are text | reasoning | tool — agent-message/subagent lanes are
+  // presentation-derived, so everything non-text here is collapsible trace.
+  return m.structured?.parts?.some((p) => p.type !== "text") ?? false;
+}
+function traceKeyOf(m: ChatMessage): string | undefined {
+  return m.id !== undefined ? `id:${m.id}` : m.startedAt !== undefined ? `t:${m.startedAt}` : undefined;
+}
+function traceElapsedOf(m: ChatMessage): number | null {
+  if (m.startedAt === undefined) return null;
+  const ms = Date.parse(m.createdAt) - m.startedAt;
+  return Number.isFinite(ms) && ms > 0 ? ms : null;
+}
+
 // Presentation-only join (v0.3 spec §8): a SENT peer-message card anchors right after
 // the agent_send tool step whose structured receipt carries its messageId. The map
 // indexes the transcript's sent card rows; assistant rows and the live turn contribute
@@ -549,8 +568,8 @@ watch(
               <!-- Structured transcript: activity cards stay grouped above one continuous
                    Markdown narrative. Tool cards own their collapsed state. -->
               <div data-test="msg-content" class="space-y-2.5">
-                <TurnParts v-if="m.structured?.parts?.length" :parts="m.structured.parts" :ensure-full="ensureFullOf(m)" :sent-agent-messages="sentAgentMessageById" />
-                <!-- Legacy rows persisted before `parts`: aggregated fallback. -->
+                <TurnParts v-if="m.structured?.parts?.length" :parts="m.structured.parts" :ensure-full="ensureFullOf(m)" :sent-agent-messages="sentAgentMessageById"
+                           :collapse-trace="!m.failed && hasTraceParts(m)" :trace-key="traceKeyOf(m)" :trace-elapsed-ms="traceElapsedOf(m)" />
                 <template v-else>
                   <ToolCallPanel v-if="m.structured?.toolSteps?.length" :steps="m.structured.toolSteps" :ensure-full="ensureFullOf(m)" />
                   <ReasoningPanel v-if="m.structured?.reasoning?.trim()" :reasoning="m.structured.reasoning" :default-open="false" />

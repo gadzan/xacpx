@@ -1,4 +1,4 @@
-import { mount } from "@vue/test-utils";
+import { mount, type DOMWrapper } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 
@@ -93,8 +93,15 @@ const turnWithSend = (messageId?: string): ChatMessage => msg({
   },
 });
 
+// Finished turns collapse their activity trace behind a summary header (spec
+// 2026-09-07); tests that assert inline trace items expand it first.
+async function expandTrace(wrapper: { find(selector: string): DOMWrapper<Element> }): Promise<void> {
+  const toggle = wrapper.find('[data-test="trace-toggle"]');
+  if (toggle.exists()) await toggle.trigger("click");
+}
+
 describe("MessageList", () => {
-  it("shows agent text immediately while keeping inline tool details collapsed by default", () => {
+  it("shows agent text immediately while keeping inline tool details collapsed by default", async () => {
     const wrapper = mount(MessageList, {
       props: {
         messages: [msg({
@@ -121,8 +128,14 @@ describe("MessageList", () => {
       },
     });
 
+    // Finished turn: the trace folds behind a header, the reply text stays visible.
     expect(wrapper.find('[data-test="msg-content"]').exists()).toBe(true);
     expect(wrapper.find('[data-test="msg-out"]').html()).toContain("<strong>finished</strong>");
+    expect(wrapper.find('[data-test="trace-toggle"]').exists()).toBe(true);
+    expect(wrapper.findComponent(ToolStepCard).exists()).toBe(false);
+
+    // Expanding restores the inline trace with its detail collapsed by default.
+    await expandTrace(wrapper);
     expect(wrapper.findComponent(ToolStepCard).exists()).toBe(true);
     expect(wrapper.find('[data-test="cmd-output"]').exists()).toBe(false);
   });
@@ -498,13 +511,14 @@ describe("MessageList", () => {
     expect(wrapper.find('[data-test="msg-in"]').exists()).toBe(false);
   });
 
-  it("anchors a sent card after its agent_send step and suppresses the standalone row (Gate A)", () => {
+  it("anchors a sent card after its agent_send step and suppresses the standalone row (Gate A)", async () => {
     const wrapper = mount(MessageList, {
       props: { messages: [turnWithSend("m1"), sentCard("m1")], liveTurn: null },
     });
 
     // Exactly one card — the anchored one; the standalone m1 row is suppressed.
     expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
+    await expandTrace(wrapper);
     const anchored = wrapper.find('[data-test="msg-out"] [data-test="turn-agent-message"]');
     expect(anchored.exists()).toBe(true);
     expect(wrapper.text()).toContain("hello m1");
@@ -543,6 +557,7 @@ describe("MessageList", () => {
       messages: [turnWithSend("m1"), sentCard("m1")],
     });
     expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
+    await expandTrace(wrapper);
     const anchored = wrapper.find('[data-test="msg-out"] [data-test="turn-agent-message"]');
     expect(anchored.exists()).toBe(true);
     const tool = wrapper.find('[data-test="tool-step-card"]');
@@ -550,7 +565,7 @@ describe("MessageList", () => {
     expect(tool.element.compareDocumentPosition(anchored.element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("keeps a received card standalone even when a turn step references its message id (Gate B)", () => {
+  it("keeps a received card standalone even when a turn step references its message id (Gate B)", async () => {
     const wrapper = mount(MessageList, {
       props: {
         messages: [
@@ -579,7 +594,8 @@ describe("MessageList", () => {
     expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
     expect(wrapper.find('[data-test="agent-message-card"]').attributes("data-direction")).toBe("received");
     expect(wrapper.find('[data-test="turn-agent-message"]').exists()).toBe(false);
-    // The assistant turn itself renders unchanged.
+    // The assistant turn itself renders unchanged (trace expanded).
+    await expandTrace(wrapper);
     expect(wrapper.find('[data-test="tool-step-card"]').exists()).toBe(true);
   });
 
@@ -748,7 +764,7 @@ it("renders legacy persisted tool steps (no parts) in a collapsed panel", () => 
   expect(wrapper.find('[data-test="tool-row"]').exists()).toBe(false);
 });
 
-it("replays persisted activity after the Markdown block it interrupted", () => {
+it("replays persisted activity after the Markdown block it interrupted", async () => {
   const wrapper = mount(MessageList, {
     props: {
       messages: [msg({
@@ -766,7 +782,7 @@ it("replays persisted activity after the Markdown block it interrupted", () => {
       liveTurn: null,
     },
   });
-
+  await expandTrace(wrapper);
   const output = wrapper.find('[data-test="msg-out"]');
   expect(output.findAll(".stream-md")).toHaveLength(1);
   expect(output.find(".stream-md").html()).toContain("<strong>continuous prose</strong>");
@@ -799,6 +815,7 @@ it("shows a failed tool's error message in red when its card is expanded", async
     },
   });
   expect(wrapper.find('[data-test="tool-step-error"]').exists()).toBe(false);
+  await expandTrace(wrapper);
   await wrapper.find('[data-test="tool-step-header"]').trigger("click");
   const err = wrapper.find('[data-test="tool-step-error"]');
   expect(err.exists()).toBe(true);
