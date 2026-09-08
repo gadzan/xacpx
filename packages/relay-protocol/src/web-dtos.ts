@@ -1,5 +1,5 @@
 import { RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "./envelope.js";
-import type { AgentAddressDto, AgentCommandDto, ControlEventDto, PeerMessageHistoryEntry, PeerTurnOriginDto, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
+import type { AgentAddressDto, AgentCommandDto, ControlEventDto, PeerMessageHistoryEntry, PeerTurnOriginDto, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, ToolStepKind, ToolStepStatus, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
 import {
   MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
   MAX_TERMINAL_COLS,
@@ -298,8 +298,27 @@ const CONTROL_EVENT_TYPE_MAP = {
 
 const CONTROL_EVENT_TYPES: ReadonlySet<string> = new Set(Object.keys(CONTROL_EVENT_TYPE_MAP));
 
-const TOOL_STEP_KINDS = new Set(["read", "search", "execute", "edit", "think", "other"]);
-const TOOL_STEP_STATUSES = new Set(["running", "success", "error"]);
+const TOOL_STEP_KIND_MAP = {
+  read: true,
+  search: true,
+  execute: true,
+  edit: true,
+  delete: true,
+  move: true,
+  fetch: true,
+  think: true,
+  other: true,
+} satisfies Record<ToolStepKind, true>;
+
+const TOOL_STEP_KINDS: ReadonlySet<string> = new Set(Object.keys(TOOL_STEP_KIND_MAP));
+
+const TOOL_STEP_STATUS_MAP = {
+  running: true,
+  success: true,
+  error: true,
+} satisfies Record<ToolStepStatus, true>;
+
+const TOOL_STEP_STATUSES: ReadonlySet<string> = new Set(Object.keys(TOOL_STEP_STATUS_MAP));
 const finiteNonNegative = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value) && value >= 0;
 

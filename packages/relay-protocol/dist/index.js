@@ -288,8 +288,24 @@ var CONTROL_EVENT_TYPE_MAP = {
   "agent-message-completion": true
 };
 var CONTROL_EVENT_TYPES = new Set(Object.keys(CONTROL_EVENT_TYPE_MAP));
-var TOOL_STEP_KINDS = new Set(["read", "search", "execute", "edit", "think", "other"]);
-var TOOL_STEP_STATUSES = new Set(["running", "success", "error"]);
+var TOOL_STEP_KIND_MAP = {
+  read: true,
+  search: true,
+  execute: true,
+  edit: true,
+  delete: true,
+  move: true,
+  fetch: true,
+  think: true,
+  other: true
+};
+var TOOL_STEP_KINDS = new Set(Object.keys(TOOL_STEP_KIND_MAP));
+var TOOL_STEP_STATUS_MAP = {
+  running: true,
+  success: true,
+  error: true
+};
+var TOOL_STEP_STATUSES = new Set(Object.keys(TOOL_STEP_STATUS_MAP));
 var finiteNonNegative = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;
 function validUsageCost(value) {
   if (value === undefined)

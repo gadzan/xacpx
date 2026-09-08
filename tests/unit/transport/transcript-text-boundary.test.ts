@@ -81,5 +81,6 @@ describe("Transcript Text Boundary State Machine (spec §26-§27)", () => {
     const result = normalizeTranscriptTextChunk(state, { text: "", messageId: "m1" });
     expect(result).toBe("");
     expect(state.lastMessageId).toBeUndefined();
+    expect(state.hasAgentMessage).toBe(false);
   });
 });

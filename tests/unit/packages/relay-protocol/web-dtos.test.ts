@@ -7,6 +7,8 @@ import {
   encodeEnvelope,
   parseWebClientMessage,
   parseWebServerEvent,
+  validControlEvent,
+  validInstanceStateSync,
   webClientEnvelope,
   webEventEnvelope,
   type FsEntryDto,
@@ -103,6 +105,63 @@ test("accepts the new turn-status control events", () => {
     kind: "control-event", instanceId: "i1",
     event: { type: "tool-event", chatKey: "c", sessionAlias: "s", step: { toolCallId: "t1", toolName: "Read", kind: "read", status: "running", title: "x" } },
   })).not.toBeNull();
+});
+
+test("validControlEvent and parseWebServerEvent accept tool-event with delete, move, and fetch kinds", () => {
+  for (const kind of ["delete", "move", "fetch"] as const) {
+    const event = {
+      type: "tool-event",
+      chatKey: "c",
+      sessionAlias: "s",
+      step: {
+        toolCallId: `t_${kind}`,
+        toolName: kind,
+        kind,
+        status: "success",
+        title: `test ${kind}`,
+      },
+    };
+    expect(validControlEvent(event)).toBe(true);
+    expect(
+      roundtrip({
+        kind: "control-event",
+        instanceId: "i1",
+        event,
+      }),
+    ).not.toBeNull();
+  }
+});
+
+test("validInstanceStateSync accepts turn parts with delete, move, and fetch tool steps", () => {
+  for (const kind of ["delete", "move", "fetch"] as const) {
+    const payload = {
+      turns: [
+        {
+          sessionAlias: "backend",
+          startedAt: 12345,
+          text: "",
+          reasoning: "",
+          steps: [],
+          parts: [
+            {
+              type: "tool" as const,
+              step: {
+                toolCallId: `t_${kind}`,
+                toolName: kind,
+                kind,
+                status: "success" as const,
+                title: `${kind} item`,
+              },
+            },
+          ],
+        },
+      ],
+      usage: [],
+      commands: [],
+      finishedOffline: [],
+    };
+    expect(validInstanceStateSync(payload)).toBe(true);
+  }
 });
 
 test("rejects turn-finished fields the hub persists when they are not strings/booleans", () => {

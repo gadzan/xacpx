@@ -55,9 +55,9 @@ export function normalizeTranscriptTextChunk(
     messageId?: string;
   },
 ): string {
-  state.hasAgentMessage = true;
   let chunk = input.text;
   if (chunk.length === 0) return chunk;
+  state.hasAgentMessage = true;
 
   const messageId =
     typeof input.messageId === "string" && input.messageId.length > 0
