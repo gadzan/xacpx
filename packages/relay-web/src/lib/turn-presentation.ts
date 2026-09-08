@@ -210,7 +210,7 @@ const SAFE_SLICE_BLOCK_TYPES: Record<string, true> = {
  *     blockquote) that never closed with a subsequent reply block, mid-block slicing would
  *     corrupt Markdown (turning closing fences into unclosed opening fences, breaking table
  *     rows, or severing nested blocks). The fail-safe is fail-closed: only explicitly safe
- *     top-level prose blocks (paragraph, heading) permit slicing trailing text; all other
+ *     top-level prose blocks (paragraph) permit slicing trailing text; all other
  *     block types (or missing blocks) return empty string (trace header only, no broken markdown).
  */
 export function extractFinalReplyText(
@@ -258,7 +258,8 @@ export function extractFinalReplyText(
     if (part.type === "text") narrative += part.text;
   }
 
-  const block = topLevelBlockAt(narrative, toolOffset);
+  const docEnv: Record<string, unknown> = {};
+  const block = topLevelBlockAt(narrative, toolOffset, docEnv);
   if (!block || !SAFE_SLICE_BLOCK_TYPES[block.type]) {
     return "";
   }
@@ -271,9 +272,9 @@ export function extractFinalReplyText(
   }
   // Inline boundary guard: verify that the tool arrived at an unstyled top-level text
   // boundary within the paragraph, rather than severing an active inline construct
-  // (code span, emphasis, bold, link label, strikethrough, image, html_inline, etc.).
+  // (code span, emphasis, bold, link label/delimiter, reference link, HTML entity, etc.).
   const offsetInBlock = toolOffset - block.startOffset;
-  if (!isSafeInlineParagraphOffset(block.source, offsetInBlock)) {
+  if (!isSafeInlineParagraphOffset(block.source, offsetInBlock, docEnv)) {
     return "";
   }
   return trailing;

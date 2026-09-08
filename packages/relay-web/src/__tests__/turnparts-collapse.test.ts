@@ -538,6 +538,46 @@ describe("TurnParts trace collapse", () => {
       "Final answer.",
     ]);
   });
+
+  it("fails safe and shows header only when an HTML entity is severed by a tool", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "Result &" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "amp; done." },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:entity-severed-tool" },
+    });
+    expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-test="turn-narrative"]').exists()).toBe(false);
+  });
+
+  it("fails safe and shows header only when a reference-style link is severed by a tool", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "See [docs]" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "[ref]\n\n[ref]: https://example.com" },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:ref-link-severed-tool" },
+    });
+    expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-test="turn-narrative"]').exists()).toBe(false);
+  });
+
+  it("allows safe paragraph slice when an uncrossed reference-style link is present in the reply", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "Before.\n\n" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "See [docs][ref] now.\n\n[ref]: https://example.com" },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:ref-link-uncrossed" },
+    });
+    expect(w.findAll('[data-test="turn-narrative"]').map((n) => n.text().trim())).toEqual([
+      "See docs now.",
+    ]);
+  });
 });
 
 describe("MessageList convergence", () => {
