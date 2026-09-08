@@ -115,49 +115,48 @@ export function topLevelBlockAt(text: string, offset: number): TopLevelBlockInfo
   }
   return null;
 }
-const INLINE_SENTINEL = "\uFFF0";
-
-/** Check whether `offsetInBlock` inside a paragraph block lands at a safe top-level
- *  text position rather than severing an active inline construct (code_inline,
- *  emphasis, strong, link label, strikethrough, image, html_inline, etc.).
- */
-export function isSafeInlineParagraphOffset(paragraphSource: string, offsetInBlock: number): boolean {
-  if (paragraphSource.includes(INLINE_SENTINEL)) return false;
-  const before = paragraphSource.slice(0, offsetInBlock);
-  const after = paragraphSource.slice(offsetInBlock);
-  const withSentinel = before + INLINE_SENTINEL + after;
-
-  const tokens = md.parse(withSentinel, {});
+function getInlineSignature(source: string): string[] {
+  const tokens = md.parse(source, {});
   const inline = tokens.find((t) => t.type === "inline");
-  if (!inline || !inline.children) return false;
-
-  const stack: string[] = [];
-  let found = false;
-  let inConstruct: string | null = null;
-
-  for (const child of inline.children) {
-    if (child.type.endsWith("_open")) {
-      stack.push(child.type);
-    } else if (child.type.endsWith("_close")) {
-      stack.pop();
-    } else if (child.type === "code_inline" || child.type === "image" || child.type === "html_inline") {
-      if (child.content.includes(INLINE_SENTINEL)) {
-        found = true;
-        inConstruct = child.type;
-        break;
-      }
-    } else if (child.type === "text") {
-      if (child.content.includes(INLINE_SENTINEL)) {
-        found = true;
-        if (stack.length > 0) {
-          inConstruct = stack[stack.length - 1] ?? "nested_inline";
-        }
-        break;
-      }
+  if (!inline || !inline.children) return [];
+  const sig: string[] = [];
+  for (const c of inline.children) {
+    if (c.type === "text" || c.type === "softbreak") continue;
+    if (c.type === "link_open") {
+      sig.push(`link_open:${c.info || ""}:${JSON.stringify(c.attrs || [])}`);
+    } else if (c.type === "link_close") {
+      sig.push(`link_close:${c.info || ""}`);
+    } else if (c.type === "code_inline" || c.type === "image" || c.type === "html_inline") {
+      sig.push(`${c.type}:${c.content}:${JSON.stringify(c.attrs || [])}`);
+    } else {
+      sig.push(c.type);
     }
   }
+  return sig;
+}
 
-  return found && inConstruct === null && stack.length === 0;
+/** Check whether `offsetInBlock` inside a paragraph block lands at a safe top-level
+ *  text position rather than severing an active inline construct (code span,
+ *  emphasis, strong, link label/delimiter, strikethrough, image, hardbreak, etc.).
+ *  Compares the inline structural signature of the full block against the concatenated
+ *  signatures of the prefix and suffix parsed independently; if any construct crosses
+ *  the boundary, their structures diverge and this returns false.
+ */
+export function isSafeInlineParagraphOffset(paragraphSource: string, offsetInBlock: number): boolean {
+  if (offsetInBlock < 0 || offsetInBlock > paragraphSource.length) return false;
+  const prefix = paragraphSource.slice(0, offsetInBlock);
+  const suffix = paragraphSource.slice(offsetInBlock);
+
+  const fullSig = getInlineSignature(paragraphSource);
+  const prefixSig = getInlineSignature(prefix);
+  const suffixSig = getInlineSignature(suffix);
+  const combinedSig = [...prefixSig, ...suffixSig];
+
+  if (fullSig.length !== combinedSig.length) return false;
+  for (let i = 0; i < fullSig.length; i += 1) {
+    if (fullSig[i] !== combinedSig[i]) return false;
+  }
+  return true;
 }
 
 /** Render markdown to sanitized, XSS-safe HTML. */

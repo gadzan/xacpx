@@ -127,13 +127,13 @@ turnTrace: {
 `packages/relay-web/src/__tests__/turnparts-collapse.test.ts`（新，mount TurnParts）：
 
 1. `collapseTrace` 缺省/live：trace 项内联、无头部（回归确认）。
-2. finished + trace 存在：头部渲染且计数以 `·` 连接（英文复数：`1 tool step` / `2 tool steps`），trace 项不在 DOM；text 项保留。
+2. finished + trace 存在：头部渲染且计数以 `·` 连接（英文复数：`1 tool step` / `2 tool steps`），中间过程（推理、工具、过程文字）折叠收起，仅保留 trailing final reply。
 3. 点头部展开：trace 项出现、`aria-expanded=true`；再点收起。
 4. 同 `traceKey` 重挂载（模拟行替换）：展开状态保持；不同 key 不串。
 5. 纯 text 行：无头部。
 6. `traceElapsedMs` 传/不传/亚秒（`<1s`）：头部耗时段相应变化。
 7. zh/en 文案分支冒烟（设置 locale 后断言头部文本）。
-8. agent-message 真锚定（step 带 `agentMessageId` + map 含该条目）：折叠态下卡片仍在、tool 卡不在。
+8. agent-message 真锚定（step 带 `agentMessageId` + map 含该条目）：中间发送卡作为过程活动折叠收起，展开后出现。
 
 `turnparts-collapse.test.ts` 的 MessageList 收敛组（评审回归）：
 

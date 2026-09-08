@@ -144,8 +144,7 @@ describe("ToolStepCard de-cardified activity stream", () => {
         } as ToolStepDto,
       },
     });
-    expect(w1.text()).not.toContain("V2/X");
-    expect(w1.text()).not.toContain("V2");
+    expect(w1.find('[data-test="file-ext-badge"]').exists()).toBe(false);
 
     const w2 = mount(ToolStepCard, {
       props: {
@@ -157,7 +156,7 @@ describe("ToolStepCard de-cardified activity stream", () => {
         } as ToolStepDto,
       },
     });
-    expect(w2.text()).not.toContain("B/C");
+    expect(w2.find('[data-test="file-ext-badge"]').exists()).toBe(false);
 
     const w3 = mount(ToolStepCard, {
       props: {
@@ -169,7 +168,45 @@ describe("ToolStepCard de-cardified activity stream", () => {
         } as ToolStepDto,
       },
     });
-    expect(w3.text()).toContain("VUE");
+    expect(w3.find('[data-test="file-ext-badge"]').text()).toBe("VUE");
+  });
+
+  it("correctly extracts extension from Windows absolute paths and scheme URIs", () => {
+    const w1 = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t1",
+          kind: "read",
+          title: "C:\\repo\\src\\index.ts",
+          status: "success",
+        } as ToolStepDto,
+      },
+    });
+    expect(w1.find('[data-test="file-ext-badge"]').text()).toBe("TS");
+
+    const w2 = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t2",
+          kind: "read",
+          title: "C:\\repo.v2\\README",
+          status: "success",
+        } as ToolStepDto,
+      },
+    });
+    expect(w2.find('[data-test="file-ext-badge"]').exists()).toBe(false);
+
+    const w3 = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t3",
+          kind: "read",
+          title: "file:///home/user/src/main.py?line=10",
+          status: "success",
+        } as ToolStepDto,
+      },
+    });
+    expect(w3.find('[data-test="file-ext-badge"]').text()).toBe("PY");
   });
   it("renders diff stats (+add, −del) in the header for edit steps", () => {
     const w = mount(ToolStepCard, {

@@ -67,14 +67,14 @@ const fileExt = computed(() => {
   const title = props.step.detail?.type === "diff" || props.step.detail?.type === "read"
     ? props.step.detail.path
     : props.step.title || "";
-  // Strip trailing line/query specifiers first, then isolate basename so dotted
-  // directory names (e.g. "src.v2/x", "a.b/c") or dotfiles (".gitignore") are not
-  // misidentified as extensions.
-  const cleanTitle = title.split(/[\s:#?]/)[0] ?? "";
-  const basename = cleanTitle.split(/[\\/]/).pop() ?? "";
-  const dot = basename.lastIndexOf(".");
-  if (dot <= 0 || dot === basename.length - 1) return "";
-  const raw = basename.slice(dot + 1).toUpperCase();
+  // Isolate basename first so Windows drive letters (C:\...) or scheme colons (file://...)
+  // are not stripped. Then strip trailing line/query specifiers so dotted directory
+  // names (e.g. "src.v2/x", "a.b/c") or dotfiles (".gitignore") are not misidentified.
+  const basename = title.split(/[\\/]/).pop() ?? "";
+  const cleanBasename = basename.split(/[\s:#?]/)[0] ?? "";
+  const dot = cleanBasename.lastIndexOf(".");
+  if (dot <= 0 || dot === cleanBasename.length - 1) return "";
+  const raw = cleanBasename.slice(dot + 1).toUpperCase();
   return raw.length <= 4 ? raw : "";
 });
 // The text the detail body already prints below (so we don't repeat it in the banner).
@@ -120,7 +120,7 @@ function fmtDuration(ms?: number): string {
                  :class="step.status === 'error' ? 'text-danger' : step.status === 'running' ? 'text-accent' : hasDetail ? 'text-fg-muted/80 group-hover:text-fg' : 'text-fg-muted/80'" />
       <span class="shrink-0 font-medium text-[11.5px] text-fg-muted transition-colors"
             :class="hasDetail ? 'group-hover:text-fg' : ''">{{ kindLabel }}</span>
-      <span v-if="fileExt" class="shrink-0 rounded bg-accent/10 px-1 py-0.5 text-[9px] font-semibold text-accent/80 font-mono leading-none">{{ fileExt }}</span>
+      <span v-if="fileExt" data-test="file-ext-badge" class="shrink-0 rounded bg-accent/10 px-1 py-0.5 text-[9px] font-semibold text-accent/80 font-mono leading-none">{{ fileExt }}</span>
       <span class="min-w-0 truncate font-mono text-[11.5px] text-fg-muted/90"
             :class="hasDetail ? 'group-hover:text-fg' : ''">{{ step.title }}</span>
       <span class="ml-auto flex shrink-0 items-center gap-1.5">

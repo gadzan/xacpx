@@ -498,6 +498,46 @@ describe("TurnParts trace collapse", () => {
       "final reply",
     ]);
   });
+
+  it("fails safe and shows header only when a link delimiter boundary [docs] | (url) is severed by a tool", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "See [docs]" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "(https://example.com) for details." },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:link-delimiter-tool" },
+    });
+    expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-test="turn-narrative"]').exists()).toBe(false);
+  });
+
+  it("fails safe and shows header only when two hard-break trailing spaces are severed by a tool", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "foo " },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: " \nbar" },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:hardbreak-severed-tool" },
+    });
+    expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-test="turn-narrative"]').exists()).toBe(false);
+  });
+
+  it("allows safe paragraph slice when a complete link precedes the tool without crossing it", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "See [docs](https://example.com) first. " },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "Final answer." },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:link-before-tool" },
+    });
+    expect(w.findAll('[data-test="turn-narrative"]').map((n) => n.text().trim())).toEqual([
+      "Final answer.",
+    ]);
+  });
 });
 
 describe("MessageList convergence", () => {
