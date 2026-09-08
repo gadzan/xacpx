@@ -39,7 +39,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@ganglion/xacpx-relay-protocol": "^0.5.2-beta.0",
+    "@ganglion/xacpx-relay-protocol": "^0.5.3-beta.0",
     "proper-lockfile": "^4.1.2",
     "ws": "^8.20.0"
   },

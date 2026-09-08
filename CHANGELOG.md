@@ -1,4 +1,20 @@
 # Changelog
+## [relay-protocol 0.5.3-beta.0] - 2026-09-08
+
+### Fixed
+
+- `web-dtos`: `TOOL_STEP_KINDS` allow `delete`/`move`/`fetch` — the hard-coded 6-kind set dropped live tool-events for the new kinds with `relay.event.invalid` and rejected them on reconnect/refresh via `validInstanceStateSync`; replaced with compile-time exhaustive `TOOL_STEP_KIND_MAP satisfies Record<ToolStepKind, true>` so future kind expansions cannot drift again (PR #333).
+
+## [relay 0.14.5-beta.0] - 2026-09-08
+
+### Added
+
+- relay-web: de-cardify tool steps and reasoning into zcode-style stream (`ToolStepCard`/`ToolCallPanel`/`ReasoningPanel`/`SubagentStepCard`, PR #332); collapse process text and show only trailing final reply.
+
+### Fixed
+
+- relay-web: render-markdown hardening — fail-closed block slice, table normalization guard, inline boundary guards, structural signature guard, Windows path badge; derive collapsed reply boundary from `parts`; preserve edit semantics and diff stats; align trace headers, demote trace CTA to ghost pill.
+
 ## [0.24.3-beta.0] - 2026-09-07
 
 ### Added
