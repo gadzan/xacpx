@@ -266,6 +266,30 @@ describe("MessageList", () => {
     expect(copy.exists()).toBe(false);
   });
 
+  it("omits the assistant copy button when trailing content is only reference link definitions", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [
+          msg({
+            direction: "out",
+            text: "See [docs][ref]\n\n[ref]: https://example.com",
+            status: "done",
+            structured: {
+              parts: [
+                { type: "text", text: "See [docs][ref]" },
+                { type: "tool", step: sendStep("read-1") },
+                { type: "text", text: "\n\n[ref]: https://example.com" },
+              ],
+            },
+          }),
+        ],
+        liveTurn: null,
+      },
+    });
+    const copy = wrapper.find('[data-test="msg-out"] [data-test="msg-actions"]').findComponent(CopyButton);
+    expect(copy.exists()).toBe(false);
+  });
+
   it("retains full text on failed assistant turns that do not collapse", () => {
     const wrapper = mount(MessageList, {
       props: {

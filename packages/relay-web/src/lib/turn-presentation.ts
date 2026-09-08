@@ -270,6 +270,13 @@ export function extractFinalReplyText(
   if (normalizeMarkdownTables(block.source) !== block.source) {
     return "";
   }
+  // Scope constraint: the fallback only applies when the trailing prose is strictly contained
+  // within the validated top-level block. Any unrendered Markdown metadata outside the block
+  // (such as trailing reference link definitions) must not leak as final reply.
+  const outsideBlock = narrative.slice(block.endOffset);
+  if (outsideBlock.trim().length > 0) {
+    return "";
+  }
   // Inline boundary guard: verify that the tool arrived at an unstyled top-level text
   // boundary within the paragraph, rather than severing an active inline construct
   // (code span, emphasis, bold, link label/delimiter, reference link, HTML entity, etc.).
@@ -277,7 +284,8 @@ export function extractFinalReplyText(
   if (!isSafeInlineParagraphOffset(block.source, offsetInBlock, docEnv)) {
     return "";
   }
-  return trailing;
+  const reply = narrative.slice(toolOffset, block.endOffset);
+  return reply.trim() ? reply : "";
 }
 
 export interface CollapsedTraceSummary {

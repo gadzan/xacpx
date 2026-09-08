@@ -578,6 +578,19 @@ describe("TurnParts trace collapse", () => {
       "See docs now.",
     ]);
   });
+
+  it("fails safe and shows header only when trailing content is only reference link definitions", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "See [docs][ref]" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "\n\n[ref]: https://example.com" },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:ref-def-only" },
+    });
+    expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-test="turn-narrative"]').exists()).toBe(false);
+  });
 });
 
 describe("MessageList convergence", () => {
