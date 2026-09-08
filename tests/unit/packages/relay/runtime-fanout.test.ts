@@ -1,7 +1,7 @@
 // tests/unit/packages/relay/runtime-fanout.test.ts
 import { expect, test } from "bun:test";
 import {
-  MSG, RELAY_PROTOCOL_VERSION, decodeEnvelope, parseWebServerEvent,
+  MSG, RELAY_PROTOCOL_VERSION, decodeEnvelope, parseWebServerEvent, type TurnPartDto,
 } from "../../../../packages/relay-protocol/src/index";
 import { createRelayRuntime } from "../../../../packages/relay/src/server";
 import type { RelayLogger } from "../../../../packages/relay/src/logging";
@@ -48,6 +48,62 @@ test("control events broadcast to web sockets and turn output is cached on finis
 
   const cached = runtime.messages.listBySession("a1", "i1", "backend").messages;
   expect(cached.map((m) => [m.direction, m.text])).toEqual([["out", "hello"]]);
+
+  runtime.close();
+});
+
+test("tool-event with delete/move/fetch kinds broadcasts to web sockets and persists into history", async () => {
+  const logs: Array<[string, string, Record<string, unknown> | undefined]> = [];
+  const logger: RelayLogger = {
+    debug: (e, m, c) => logs.push([e, m, c]),
+    info: (e, m, c) => logs.push([e, m, c]),
+    warn: (e, m, c) => logs.push([e, m, c]),
+    error: (e, m, c) => logs.push([e, m, c]),
+  };
+  const runtime = await createRelayRuntime(":memory:", { logger });
+  runtime.db.run("INSERT INTO accounts (id, username, created_at) VALUES (?,?,?)", ["a1", "u", "t"]);
+  runtime.db.run("INSERT INTO instances (id, account_id, name, credential_hash, created_at) VALUES (?,?,?,?,?)", ["i1", "a1", "pc", "h", "t"]);
+  const web = new FakeSocket();
+  runtime.webGateway.register("a1", web as never);
+  const fire = (event: unknown) =>
+    runtime.gateway["deps"].onEvent!("i1", "a1", {
+      protocolVersion: RELAY_PROTOCOL_VERSION,
+      kind: "event",
+      type: MSG.instanceEvent,
+      payload: { event },
+    });
+
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "backend" });
+  for (const kind of ["delete", "move", "fetch"] as const) {
+    fire({
+      type: "tool-event",
+      chatKey: "relay:a1",
+      sessionAlias: "backend",
+      step: {
+        toolCallId: `call_${kind}`,
+        toolName: `Tool_${kind}`,
+        kind,
+        status: "success",
+        title: `${kind} test`,
+      },
+    });
+  }
+  fire({ type: "turn-output", chatKey: "relay:a1", sessionAlias: "backend", chunk: "done" });
+  fire({ type: "turn-finished", chatKey: "relay:a1", sessionAlias: "backend", ok: true });
+  // No invalid event log
+  expect(logs.some(([e]) => e === "relay.event.invalid")).toBe(false);
+
+  // Broadcast to web: turn-started (1) + 3 tool-events (3) + turn-output (1) + turn-finished (1) = 6
+  expect(web.sent.length).toBe(6);
+
+  // History persists the delete/move/fetch tool steps in parts
+  const msgs = runtime.messages.listBySession("a1", "i1", "backend").messages;
+  expect(msgs.length).toBe(1);
+  const parts = msgs[0]?.structured?.parts ?? [];
+  const kinds = parts
+    .filter((p): p is Extract<TurnPartDto, { type: "tool" }> => p.type === "tool")
+    .map((p) => p.step.kind);
+  expect(kinds).toEqual(["delete", "move", "fetch"]);
 
   runtime.close();
 });
