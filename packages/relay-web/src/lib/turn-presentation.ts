@@ -187,12 +187,14 @@ export function deriveTurnPresentation(
   return result;
 }
 
-const UNSAFE_BLOCK_TYPES: Record<string, true> = {
-  fence: true,
-  code_block: true,
-  table_open: true,
-  bullet_list_open: true,
-  ordered_list_open: true,
+/** Top-level block types that are strictly safe to slice mid-block across an activity.
+ *  Containers (blockquotes, lists, tables) can be nested arbitrarily, and code blocks
+ *  (fences) cannot be cleanly split. We fail-closed: only top-level paragraphs and
+ *  headings permit extracting trailing text after a mid-block activity.
+ */
+const SAFE_SLICE_BLOCK_TYPES: Record<string, true> = {
+  paragraph_open: true,
+  heading_open: true,
 };
 
 /** Extract the conversational final reply from a turn's wire parts.
@@ -204,10 +206,12 @@ const UNSAFE_BLOCK_TYPES: Record<string, true> = {
  *  2. If presentation placed the process item at the end, it was anchored at narrative end
  *     because it arrived inside the final Markdown block. If that block is safe prose
  *     (a paragraph), trailing text arriving after the process item is returned.
- *  3. If the process item arrived inside an unsafe container (fence, table, list) that
- *     never closed with a subsequent reply block, mid-block slicing would corrupt Markdown
- *     (turning closing fences into unclosed opening fences, breaking table rows). The
- *     fail-safe returns empty string (trace header only, no broken code block).
+ *  3. If the process item arrived inside an unsafe or nested container (fence, table, list,
+ *     blockquote) that never closed with a subsequent reply block, mid-block slicing would
+ *     corrupt Markdown (turning closing fences into unclosed opening fences, breaking table
+ *     rows, or severing nested blocks). The fail-safe is fail-closed: only explicitly safe
+ *     top-level prose blocks (paragraph, heading) permit slicing trailing text; all other
+ *     block types (or missing blocks) return empty string (trace header only, no broken markdown).
  */
 export function extractFinalReplyText(
   parts: TurnPartDto[],
@@ -255,7 +259,7 @@ export function extractFinalReplyText(
   }
 
   const blockType = topLevelBlockTypeAt(narrative, toolOffset);
-  if (blockType && UNSAFE_BLOCK_TYPES[blockType]) {
+  if (!blockType || !SAFE_SLICE_BLOCK_TYPES[blockType]) {
     return "";
   }
   return trailing;

@@ -360,6 +360,49 @@ describe("TurnParts trace collapse", () => {
     expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
     expect(w.find('[data-test="turn-narrative"]').exists()).toBe(false);
   });
+
+  it("fails safe and shows header only when a turn ends inside a code fence nested in a blockquote", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "> ```ts\n> const a = 1;\n" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "> const b = 2;\n> ```" },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:bq-fence-no-after" },
+    });
+    expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-test="turn-narrative"]').exists()).toBe(false);
+    expect(w.find("pre code").exists()).toBe(false);
+  });
+
+  it("fails safe and shows header only when a turn ends inside a list nested in a blockquote", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "> 1. item one\n" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "> 2. item two\n" },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:bq-list-no-after" },
+    });
+    expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-test="turn-narrative"]').exists()).toBe(false);
+  });
+
+  it("preserves blockquote integrity and extracts trailing reply outside the blockquote", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "> ```ts\n> const a = 1;\n" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "> const b = 2;\n> ```\n\nafter blockquote" },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:bq-fence-after" },
+    });
+    expect(w.findAll('[data-test="turn-narrative"]').map((n) => n.text().trim())).toEqual([
+      "after blockquote",
+    ]);
+    expect(w.find('[data-test="tool-step-card"]').exists()).toBe(false);
+    expect(w.find("pre code").exists()).toBe(false);
+  });
 });
 
 describe("MessageList convergence", () => {

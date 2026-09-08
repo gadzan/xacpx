@@ -63,9 +63,23 @@ function traceElapsedOf(m: ChatMessage): number | null {
   return Number.isFinite(ms) && ms > 0 ? ms : null;
 }
 
+// Cache final-reply extraction by message object and parts reference to prevent
+// redundant markdown parses across MessageList (CopyButton) and TurnParts.
+const replyTextCache = new WeakMap<ChatMessage, { parts: TurnPartDto[]; text: string }>();
+
+function finalReplyTextOf(m: ChatMessage): string {
+  const parts = m.structured?.parts;
+  if (!parts?.length) return "";
+  const cached = replyTextCache.get(m);
+  if (cached && cached.parts === parts) return cached.text;
+  const text = extractFinalReplyText(parts);
+  replyTextCache.set(m, { parts, text });
+  return text;
+}
+
 function copyTextOf(m: ChatMessage): string {
   if (m.direction === "out" && m.structured?.parts?.length && !isFailedTurn(m) && hasTraceParts(m)) {
-    return extractFinalReplyText(m.structured.parts);
+    return finalReplyTextOf(m);
   }
   return m.text ?? "";
 }
@@ -591,7 +605,8 @@ watch(
                    Markdown narrative. Tool cards own their collapsed state. -->
               <div data-test="msg-content" class="space-y-2.5">
                 <TurnParts v-if="m.structured?.parts?.length" :parts="m.structured.parts" :ensure-full="ensureFullOf(m)" :sent-agent-messages="sentAgentMessageById"
-                           :collapse-trace="!isFailedTurn(m) && hasTraceParts(m)" :trace-key="traceKeyOf(m)" :trace-elapsed-ms="traceElapsedOf(m)" />
+                           :collapse-trace="!isFailedTurn(m) && hasTraceParts(m)" :trace-key="traceKeyOf(m)" :trace-elapsed-ms="traceElapsedOf(m)"
+                           :collapsed-reply-text="!isFailedTurn(m) && hasTraceParts(m) ? finalReplyTextOf(m) : undefined" />
                 <template v-else>
                   <ToolCallPanel v-if="m.structured?.toolSteps?.length" :steps="m.structured.toolSteps" :ensure-full="ensureFullOf(m)" />
                   <ReasoningPanel v-if="m.structured?.reasoning?.trim()" :reasoning="m.structured.reasoning" :default-open="false" />
@@ -599,7 +614,9 @@ watch(
                 </template>
               </div>
               <div data-test="msg-actions" class="flex items-center gap-1.5 pt-0.5 text-fg-muted">
-                <CopyButton v-if="copyTextOf(m)" :text="copyTextOf(m)" />
+                <template v-for="copyText in [copyTextOf(m)]" :key="0">
+                  <CopyButton v-if="copyText" :text="copyText" />
+                </template>
                 <span v-if="fmtTime(m.createdAt)" data-test="msg-time" class="font-mono text-[10.5px] tabular-nums">{{ fmtTime(m.createdAt) }}</span>
                 <span v-if="m.structured?.truncated" data-test="msg-truncated" class="inline-flex items-center gap-1 text-[11px] text-warn"><TriangleAlert :size="12" /> {{ $t("chat.truncated") }}</span>
                 <span v-if="m.status === 'cancelled'" data-test="msg-cancelled" class="inline-flex items-center gap-1 text-[11px] text-warn"><CircleStop :size="12" /> {{ $t("chat.stopped") }}</span>

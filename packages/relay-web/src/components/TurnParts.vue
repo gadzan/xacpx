@@ -29,6 +29,9 @@ const props = defineProps<{
   traceKey?: string;
   /** Display-only turn duration (finished rows). Absent/non-positive → counts only. */
   traceElapsedMs?: number | null;
+  /** Precomputed final reply text (e.g. cached by parent MessageList). When provided,
+   *  extractFinalReplyText is bypassed on collapsed turns. */
+  collapsedReplyText?: string;
 }>();
 
 const { t, locale } = useI18n();
@@ -63,7 +66,9 @@ const expanded = computed(() => {
 });
 
 const finalReplyText = computed(() =>
-  extractFinalReplyText(props.parts, { presentation: presentation.value }),
+  props.collapsedReplyText !== undefined
+    ? props.collapsedReplyText
+    : extractFinalReplyText(props.parts, { presentation: presentation.value }),
 );
 
 // Collapsed view: directly construct a single text presentation item from the

@@ -12,6 +12,7 @@ import type { ChatMessage, LiveTurn } from "../stores/chat";
 import ToolCallPanel from "../components/ToolCallPanel.vue";
 import ToolStepCard from "../components/ToolStepCard.vue";
 import CopyButton from "../components/CopyButton.vue";
+import TurnParts from "../components/TurnParts.vue";
 
 // StreamMarkdown (rendered for "out" messages) reads useThemeStore() to re-hydrate mermaid
 // diagrams on theme change, so every mount here needs an active Pinia instance.
@@ -207,6 +208,35 @@ describe("MessageList", () => {
         liveTurn: null,
       },
     });
+    const copy = wrapper.find('[data-test="msg-out"] [data-test="msg-actions"]').findComponent(CopyButton);
+    expect(copy.exists()).toBe(true);
+    expect(copy.props("text")).toBe("Fixed. The issue was X.");
+  });
+
+  it("shares precomputed collapsed reply text with TurnParts and caches it across renders", () => {
+    const assistantMessage = msg({
+      direction: "out",
+      text: "I'll inspect this.Fixed. The issue was X.",
+      status: "done",
+      structured: {
+        parts: [
+          { type: "text", text: "I'll inspect this." },
+          { type: "tool", step: sendStep("read-1") },
+          { type: "text", text: "Fixed. The issue was X." },
+        ],
+      },
+    });
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [assistantMessage],
+        liveTurn: null,
+      },
+    });
+
+    const turnParts = wrapper.findComponent(TurnParts);
+    expect(turnParts.exists()).toBe(true);
+    expect(turnParts.props("collapsedReplyText")).toBe("Fixed. The issue was X.");
+
     const copy = wrapper.find('[data-test="msg-out"] [data-test="msg-actions"]').findComponent(CopyButton);
     expect(copy.exists()).toBe(true);
     expect(copy.props("text")).toBe("Fixed. The issue was X.");
