@@ -1,7 +1,7 @@
 # relay-web 回合 trace 折叠（zcode 式「结束即收起中间过程」）
 
 日期：2026-09-07
-状态：已定稿，随实现微调
+状态：已被 2026-09-08 去卡片化与过程折叠增强设计（docs/superpowers/specs/2026-09-08-relay-web-decardify-tools-reasoning.md）supersede。最终契约：折叠时将中间过程（推理、工具、子代理、已发出 peer 消息卡及穿插其间的过程文字）全部收起，仅保留最终回复正文；复制按钮（CopyButton）与折叠显示共享同一语义结果。
 
 ## 背景与目标
 
@@ -9,8 +9,7 @@
 
 relay-web 现状：`turn-finished` 后 live turn 经 `flushTurn` 定型为历史消息，`TurnParts` 原样渲染全部 parts——推理面板、工具卡、子代理卡永远内联常驻，长回合把最终回复淹没。回合耗时只存在于输入框上方的 HUD（`ChatPane` `turn-hud`），回合结束即消失。
 
-目标：**回合结束后默认折叠 trace**，收进一条回合头部；用户可展开。正文（text）与已发出的 peer 消息卡（agent-message）永不折叠。
-
+目标：**回合结束后默认折叠 trace**，收进一条回合头部；用户可展开。中间过程（推理、工具、子代理、发送卡及过程叙述文字）全部折叠，仅保留最终回复正文。
 **触发信号（已用真实流验证）**：ACP 回合边界 = `session/prompt` 的 JSON-RPC response（`{"result":{"stopReason":"end_turn",…}}`，实际值为 snake_case `end_turn`）。xacpx 管线里它的等价物就是 `turn-finished` 控制事件（`src/control/session-turn-runner.ts` 在 `agent.chat()` resolve 后发出，带 `ok/cancelled/errorMessage`）——web 端在该事件定型消息的瞬间折叠（无需新增事件种类；为闭环持久化和收敛键稳定性，我们在既有 DTO 上增补了 `structured.turnStatus` 与 `turn-started.startedAt` 字段）。
 
 ## 非目标
@@ -54,7 +53,7 @@ traceElapsedMs?: number | null  // 回合耗时（展示用；null/undefined = �
   - 计数：tool+subagent 卡数为「步工具」，reasoning 段数为「段思考」；为 0 的段省略。
   - 耗时：`traceElapsedMs` 格式化为 `m分s秒` / `m m s s`（<1s 显示 `<1s`）；缺失时头部只有计数。
   - 无 trace 项（纯文本回复）→ 不渲染头部，与现状一致。
-- **折叠态**：trace 项全部不渲染，只保留 text / agent-message 项（保持其在 parts 中的相对顺序）。
+- **折叠态**：中间过程（推理、工具、子代理、发送卡及过程叙述文字）全部折叠收起，仅保留最终回复正文。
 - **展开态**：头部 chevron 翻转，trace 项按原顺序内联渲染（`ensure-full`、subagent 卡、`streaming` 锚定等行为不变——live 才传 `streaming`，finished 行本就不传）。
 - 展开状态：模块级 `const expandedTraces = new Set<string>()`；`traceKey` 存在时 toggle 增删；无 `traceKey` 的行不可记忆（始终折叠）。头部 `<button>` 带 `aria-expanded` 与 `data-test="trace-toggle"`。
 - 头部样式：无边框弱化行（`text-fg-muted text-[11.5px]`），与 zcode 的低调头部对齐；整行可点。

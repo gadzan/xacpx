@@ -132,6 +132,45 @@ describe("ToolStepCard de-cardified activity stream", () => {
     expect(w.text()).toContain("grep -rn foo");
   });
 
+
+  it("does not treat dotted directory names or dotfiles as file extensions", () => {
+    const w1 = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t1",
+          kind: "read",
+          title: "src.v2/x",
+          status: "success",
+        } as ToolStepDto,
+      },
+    });
+    expect(w1.text()).not.toContain("V2/X");
+    expect(w1.text()).not.toContain("V2");
+
+    const w2 = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t2",
+          kind: "read",
+          title: "a.b/c",
+          status: "success",
+        } as ToolStepDto,
+      },
+    });
+    expect(w2.text()).not.toContain("B/C");
+
+    const w3 = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t3",
+          kind: "read",
+          title: "src.v2/component.vue",
+          status: "success",
+        } as ToolStepDto,
+      },
+    });
+    expect(w3.text()).toContain("VUE");
+  });
   it("renders diff stats (+add, −del) in the header for edit steps", () => {
     const w = mount(ToolStepCard, {
       props: {

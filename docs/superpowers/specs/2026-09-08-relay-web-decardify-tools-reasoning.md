@@ -46,9 +46,10 @@ PR #329 实现了回合结束后的 trace 折叠与展开。但在回合进行�
 ### 4. `ToolCallPanel.vue`（旧历史兼容）
 - 去除外层边框与背景，头部单行对齐，展开列表缩进。
 
-### 5. `TurnParts.vue`
-- 容器采用统一 `space-y-2` 间距，使中间过程的多行步骤紧凑咬合且垂直节奏一致；折叠时通过 `extractFinalReplyText` 保证 Markdown 顶层块完整性，且与 `MessageList` 复制按钮共用同一语义结果。
-
+### 5. `TurnParts.vue` 与 `MessageList.vue` 架构分工
+- 容器采用统一 `space-y-2` 间距，使中间过程的多行步骤紧凑咬合且垂直节奏一致。
+- 架构采用「父层预计算 + 子层 fallback」模式：`MessageList` 通过 `extractCollapsedTraceSummary()` 一次性派生 final reply 与步骤/思考计数并通过 WeakMap 缓存，预计算结果下发给 `TurnParts`（`:collapsed-reply-text`, `:collapsed-tool-count`, `:collapsed-thought-count`），使折叠状态无需访问 `presentation.value`；`TurnParts` 在独立调用时 fallback 派生。
+- 折叠时严格检验块级与 inline 级 Markdown 完整性（fail-safe 防破损），且与 `MessageList` 复制按钮共用同一语义结果。
 ### 6. i18n
 - `en.ts` 与 `zh-CN.ts` 增补 `tools.kinds.*`（read, search, execute, edit, write, think, other）。
 - `zh-CN.ts` 中 `reasoning` 更新为 `思考` 与 `思考中…`。

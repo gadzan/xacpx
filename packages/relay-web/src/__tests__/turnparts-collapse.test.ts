@@ -432,6 +432,72 @@ describe("TurnParts trace collapse", () => {
     ]);
     expect(w.find('[data-test="tool-step-card"]').exists()).toBe(false);
   });
+
+  it("fails safe and shows header only when an active bold construct crosses a tool", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "I'll inspect **this " },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "carefully**. Fixed." },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:bold-crosses-tool" },
+    });
+    expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-test="turn-narrative"]').exists()).toBe(false);
+  });
+
+  it("fails safe and shows header only when an inline code span crosses a tool", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "Use `foo " },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "bar` now" },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:code-crosses-tool" },
+    });
+    expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-test="turn-narrative"]').exists()).toBe(false);
+  });
+
+  it("fails safe and shows header only when a markdown link label crosses a tool", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "See [the " },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "docs](https://example.com)" },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:link-crosses-tool" },
+    });
+    expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-test="turn-narrative"]').exists()).toBe(false);
+  });
+
+  it("fails safe and shows header only when a tool is contained inside a heading", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "# Status " },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "Fixed" },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:heading-crosses-tool" },
+    });
+    expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-test="turn-narrative"]').exists()).toBe(false);
+  });
+
+  it("allows safe paragraph slice when inline formatting precedes the tool but does not cross it", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "Before **bold** after " },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "final reply" },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:inline-before-tool" },
+    });
+    expect(w.findAll('[data-test="turn-narrative"]').map((n) => n.text().trim())).toEqual([
+      "final reply",
+    ]);
+  });
 });
 
 describe("MessageList convergence", () => {

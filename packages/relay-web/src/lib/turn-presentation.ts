@@ -1,5 +1,5 @@
 import type { PeerMessageHistoryEntry, ToolStepDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
-import { markdownBlockBoundaries, topLevelBlockAt } from "./render-markdown";
+import { isSafeInlineParagraphOffset, markdownBlockBoundaries, topLevelBlockAt } from "./render-markdown";
 import { normalizeMarkdownTables } from "./normalize-markdown";
 import { hasToolStepAncestor, indexToolSteps } from "./subagent-trace";
 
@@ -189,13 +189,12 @@ export function deriveTurnPresentation(
 }
 
 /** Top-level block types that are strictly safe to slice mid-block across an activity.
- *  Containers (blockquotes, lists, tables) can be nested arbitrarily, and code blocks
- *  (fences) cannot be cleanly split. We fail-closed: only top-level paragraphs and
- *  headings permit extracting trailing text after a mid-block activity.
+ *  Containers (blockquotes, lists, tables, headings) can be nested arbitrarily or change
+ *  block semantics if split. We fail-closed: only top-level paragraphs permit extracting
+ *  trailing text after a mid-block activity.
  */
 const SAFE_SLICE_BLOCK_TYPES: Record<string, true> = {
   paragraph_open: true,
-  heading_open: true,
 };
 
 /** Extract the conversational final reply from a turn's wire parts.
@@ -268,6 +267,13 @@ export function extractFinalReplyText(
   // delimiterless tables recognized as a table during render but appearing as a paragraph
   // to raw markdown-it), fail-closed so we do not slice mid-table or synthesize corrupted tables.
   if (normalizeMarkdownTables(block.source) !== block.source) {
+    return "";
+  }
+  // Inline boundary guard: verify that the tool arrived at an unstyled top-level text
+  // boundary within the paragraph, rather than severing an active inline construct
+  // (code span, emphasis, bold, link label, strikethrough, image, html_inline, etc.).
+  const offsetInBlock = toolOffset - block.startOffset;
+  if (!isSafeInlineParagraphOffset(block.source, offsetInBlock)) {
     return "";
   }
   return trailing;

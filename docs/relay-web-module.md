@@ -573,8 +573,7 @@ export interface LiveTurn {
 - **触发与折叠时机**：`turn-finished` 把 live turn 定型为历史消息的瞬间（`streaming` prop
   消失）即折叠。它就是 ACP `session/prompt` response 落定（`stopReason:"end_turn"`）在
   xacpx 管线里的等价事件，无需引入新的控制事件种类。live（streaming）行不折叠，仍由 HUD 计时。
-- **policy 在 `MessageList`**（`collapseTrace = !isFailedTurn(m) && hasTraceParts(m)`，
-  失败判定读**持久化终态** `structured.turnStatus === "error"`，复制按钮通过 `copyTextOf` 与折叠态显示使用同一 `extractFinalReplyText` 语义结果）、**presentation 在 `TurnParts`**（折叠时调用 `extractFinalReplyText` 安全提取 Markdown 顶层块级别的最终回复，未闭合的 unsafe block 如代码块/表格通过 fail-safe 仅留折叠头；点击展开恢复完整交错 presentation）。
+- **架构与计算分工**：`MessageList` 作为父层持有 `sentAgentMessageById` 并管理复制按钮与折叠参数，通过 `extractCollapsedTraceSummary()` 一次性从同一 presentation 派生提取 `finalReplyText`、`toolCount` 与 `thoughtCount`，并以 WeakMap（`(ChatMessage, parts)` 为键）缓存，避免父子重复解析。计算结果作为 `:collapsed-reply-text`、`:collapsed-tool-count`、`:collapsed-thought-count` 下发给 `TurnParts`；`TurnParts` 在独立测试或未提供预计算 props 时 fallback 执行 `extractFinalReplyText`。折叠时安全提取 Markdown 顶层块级别的最终回复（未闭合的 unsafe block 如代码块/表格/列表、或被切断的 inline 结构通过 fail-safe 仅留折叠头）；点击展开时延迟渲染完整的交错 presentation。复制按钮通过 `copyTextOf` 与折叠态显示使用同一 `finalReplyText` 语义结果。
 - **终态持久化**：hub 在三个持久化点（live flush、无 buffer 兜底、offline recovery）把
   `turnStatus: "done" | "cancelled" | "error"`（由 `ok`/`cancelled` 派生）盖进
   `structured`，compact history 以 spread 原样保留。Web 的 `keepRicherStructured()`

@@ -115,10 +115,49 @@ export function topLevelBlockAt(text: string, offset: number): TopLevelBlockInfo
   }
   return null;
 }
+const INLINE_SENTINEL = "\uFFF0";
 
-/** Return the markdown-it token type of the top-level block enclosing `offset`. */
-export function topLevelBlockTypeAt(text: string, offset: number): string | null {
-  return topLevelBlockAt(text, offset)?.type ?? null;
+/** Check whether `offsetInBlock` inside a paragraph block lands at a safe top-level
+ *  text position rather than severing an active inline construct (code_inline,
+ *  emphasis, strong, link label, strikethrough, image, html_inline, etc.).
+ */
+export function isSafeInlineParagraphOffset(paragraphSource: string, offsetInBlock: number): boolean {
+  if (paragraphSource.includes(INLINE_SENTINEL)) return false;
+  const before = paragraphSource.slice(0, offsetInBlock);
+  const after = paragraphSource.slice(offsetInBlock);
+  const withSentinel = before + INLINE_SENTINEL + after;
+
+  const tokens = md.parse(withSentinel, {});
+  const inline = tokens.find((t) => t.type === "inline");
+  if (!inline || !inline.children) return false;
+
+  const stack: string[] = [];
+  let found = false;
+  let inConstruct: string | null = null;
+
+  for (const child of inline.children) {
+    if (child.type.endsWith("_open")) {
+      stack.push(child.type);
+    } else if (child.type.endsWith("_close")) {
+      stack.pop();
+    } else if (child.type === "code_inline" || child.type === "image" || child.type === "html_inline") {
+      if (child.content.includes(INLINE_SENTINEL)) {
+        found = true;
+        inConstruct = child.type;
+        break;
+      }
+    } else if (child.type === "text") {
+      if (child.content.includes(INLINE_SENTINEL)) {
+        found = true;
+        if (stack.length > 0) {
+          inConstruct = stack[stack.length - 1] ?? "nested_inline";
+        }
+        break;
+      }
+    }
+  }
+
+  return found && inConstruct === null && stack.length === 0;
 }
 
 /** Render markdown to sanitized, XSS-safe HTML. */

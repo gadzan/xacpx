@@ -67,9 +67,14 @@ const fileExt = computed(() => {
   const title = props.step.detail?.type === "diff" || props.step.detail?.type === "read"
     ? props.step.detail.path
     : props.step.title || "";
-  const dot = title.lastIndexOf(".");
-  if (dot <= 0) return "";
-  const raw = title.slice(dot + 1).split(/[\s:#?]/)[0]?.toUpperCase() || "";
+  // Strip trailing line/query specifiers first, then isolate basename so dotted
+  // directory names (e.g. "src.v2/x", "a.b/c") or dotfiles (".gitignore") are not
+  // misidentified as extensions.
+  const cleanTitle = title.split(/[\s:#?]/)[0] ?? "";
+  const basename = cleanTitle.split(/[\\/]/).pop() ?? "";
+  const dot = basename.lastIndexOf(".");
+  if (dot <= 0 || dot === basename.length - 1) return "";
+  const raw = basename.slice(dot + 1).toUpperCase();
   return raw.length <= 4 ? raw : "";
 });
 // The text the detail body already prints below (so we don't repeat it in the banner).
