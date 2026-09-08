@@ -86,6 +86,24 @@ export function markdownBlockBoundaries(text: string): number[] {
   });
 }
 
+/** Return the markdown-it token type of the top-level block enclosing `offset`. */
+export function topLevelBlockTypeAt(text: string, offset: number): string | null {
+  const lineStarts = [0];
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === "\n") lineStarts.push(i + 1);
+  }
+  const tokens = md.parse(text, {});
+  const blocks = tokens.filter((t) => t.level === 0 && t.map !== null);
+  for (const block of blocks) {
+    const startOffset = lineStarts[block.map![0]] ?? 0;
+    const endOffset = lineStarts[block.map![1]] ?? text.length;
+    if (offset >= startOffset && offset <= endOffset) {
+      return block.type;
+    }
+  }
+  return null;
+}
+
 /** Render markdown to sanitized, XSS-safe HTML. */
 export function renderMarkdown(text: string, options: RenderMarkdownOptions = {}): string {
   // Heal unterminated markup first (streaming), then run table normalization so it

@@ -225,7 +225,7 @@ describe("ToolStepCard de-cardified activity stream", () => {
     expect(w.text()).not.toContain("Edit");
   });
 
-  it("does not open an empty detail drawer for steps without details", async () => {
+  it("renders step header as a non-interactive div without button semantics when hasDetail is false", async () => {
     const w = mount(ToolStepCard, {
       props: {
         step: {
@@ -237,7 +237,57 @@ describe("ToolStepCard de-cardified activity stream", () => {
         } as ToolStepDto,
       },
     });
-    await w.find('[data-test="tool-step-header"]').trigger("click");
+    const header = w.find('[data-test="tool-step-header"]');
+    expect(header.element.tagName).toBe("DIV");
+    expect(header.attributes("type")).toBeUndefined();
+    expect(header.attributes("aria-expanded")).toBeUndefined();
+    expect(header.classes()).not.toContain("hover:bg-fg/5");
+    expect(header.classes()).toContain("cursor-default");
+    await header.trigger("click");
     expect(w.find('[data-test="tool-step-detail"]').exists()).toBe(false);
+  });
+
+  it("omits diff stats when naive diff fallback triggers on large inputs (501 lines)", () => {
+    const lines501 = Array.from({ length: 501 }, (_, i) => `${i}`).join("\n");
+    const mod501 = lines501.replace("0", "zero");
+    const w = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t1",
+          kind: "edit",
+          toolName: "Edit",
+          title: "big.ts",
+          status: "success",
+          detail: {
+            type: "diff",
+            path: "big.ts",
+            oldText: lines501,
+            newText: mod501,
+          },
+        } as ToolStepDto,
+      },
+    });
+    expect(w.find('[data-test="step-diff-stats"]').exists()).toBe(false);
+  });
+
+  it("omits diff stats when diff input contains truncated marker", () => {
+    const w = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t1",
+          kind: "edit",
+          toolName: "Edit",
+          title: "truncated.ts",
+          status: "success",
+          detail: {
+            type: "diff",
+            path: "truncated.ts",
+            oldText: "const a = 1;\n…(truncated)",
+            newText: "const a = 2;\n…(truncated)",
+          },
+        } as ToolStepDto,
+      },
+    });
+    expect(w.find('[data-test="step-diff-stats"]').exists()).toBe(false);
   });
 });

@@ -1,5 +1,5 @@
 import type { PeerMessageHistoryEntry, ToolStepDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
-import { markdownBlockBoundaries } from "./render-markdown";
+import { markdownBlockBoundaries, topLevelBlockTypeAt } from "./render-markdown";
 import { hasToolStepAncestor, indexToolSteps } from "./subagent-trace";
 
 export type TurnPresentationItem =
@@ -185,4 +185,78 @@ export function deriveTurnPresentation(
   }
 
   return result;
+}
+
+const UNSAFE_BLOCK_TYPES: Record<string, true> = {
+  fence: true,
+  code_block: true,
+  table_open: true,
+  bullet_list_open: true,
+  ordered_list_open: true,
+};
+
+/** Extract the conversational final reply from a turn's wire parts.
+ *
+ *  When a turn finishes with tool/reasoning activity:
+ *  1. If deriveTurnPresentation() produced text items after the last process item,
+ *     those items are already cleanly anchored at top-level Markdown block boundaries
+ *     (e.g. after a code fence or table closed). We join and return them.
+ *  2. If presentation placed the process item at the end, it was anchored at narrative end
+ *     because it arrived inside the final Markdown block. If that block is safe prose
+ *     (a paragraph), trailing text arriving after the process item is returned.
+ *  3. If the process item arrived inside an unsafe container (fence, table, list) that
+ *     never closed with a subsequent reply block, mid-block slicing would corrupt Markdown
+ *     (turning closing fences into unclosed opening fences, breaking table rows). The
+ *     fail-safe returns empty string (trace header only, no broken code block).
+ */
+export function extractFinalReplyText(
+  parts: TurnPartDto[],
+  opts?: { presentation?: TurnPresentationItem[] },
+): string {
+  const pres = opts?.presentation ?? deriveTurnPresentation(parts);
+  const lastProcessIndex = pres.findLastIndex((item) => item.type !== "text");
+
+  // Pure-text turn: no process items to fold
+  if (lastProcessIndex < 0) {
+    return parts
+      .filter((p): p is Extract<TurnPartDto, { type: "text" }> => p.type === "text")
+      .map((p) => p.text)
+      .join("");
+  }
+
+  // deriveTurnPresentation already placed subsequent Markdown blocks after the activity
+  if (lastProcessIndex < pres.length - 1) {
+    return pres
+      .slice(lastProcessIndex + 1)
+      .filter((item): item is Extract<TurnPresentationItem, { type: "text" }> => item.type === "text")
+      .map((item) => item.text)
+      .join("");
+  }
+
+  // presentation ended on the process item (anchored at narrative.length).
+  const lastPartIdx = parts.findLastIndex(
+    (p) => p.type === "tool" || (p.type === "reasoning" && p.text.trim().length > 0),
+  );
+  if (lastPartIdx < 0) return "";
+  const trailing = parts
+    .slice(lastPartIdx + 1)
+    .filter((p): p is Extract<TurnPartDto, { type: "text" }> => p.type === "text")
+    .map((p) => p.text)
+    .join("");
+  if (!trailing.trim()) return "";
+
+  // Check if the last activity was inside an unsafe Markdown block.
+  let narrative = "";
+  let toolOffset = 0;
+  for (let i = 0; i < parts.length; i += 1) {
+    if (i === lastPartIdx) toolOffset = narrative.length;
+    const part = parts[i]!;
+    if (part.type === "text") narrative += part.text;
+  }
+
+  const blockType = topLevelBlockTypeAt(narrative, toolOffset);
+  if (blockType && UNSAFE_BLOCK_TYPES[blockType]) {
+    return "";
+  }
+  return trailing;
 }

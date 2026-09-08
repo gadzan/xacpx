@@ -21,7 +21,7 @@ function naiveDiff(oldLines: string[], newLines: string[]): ParsedDiff {
     rows.push({ type: "add", oldNo: null, newNo: newNo++, text });
     add++;
   }
-  return { rows, add, del };
+  return { rows, add, del, exact: false };
 }
 
 function splitLines(text: string): string[] {
@@ -85,5 +85,5 @@ export function diffLines(oldText: string, newText: string): ParsedDiff {
     rows.push({ type: "add", oldNo: null, newNo: newNo++, text: newLines[j++] });
     add++;
   }
-  return { rows, add, del };
+  return { rows, add, del, exact: true };
 }

@@ -567,17 +567,14 @@ export interface LiveTurn {
 
 ### 回合 trace 折叠（turn-trace collapse，spec 2026-09-07）
 
-参照 zcode：回合结束后把思考/工具/子代理等中间过程折叠进一条弱化头部行
-（`▸ 已工作 4分32秒 · 6 步工具 · 3 段思考`），正文（text）与 agent-message 卡永不折叠。
+参照 zcode：回合结束后把思考、工具、子代理以及穿插在过程中的叙述文字等中间过程全部折叠进一条弱化头部行
+（`▸ 已工作 4分32秒 · 6 步工具 · 3 段思考`），仅在折叠行下方展示最终回复正文；点击展开恢复完整的交错执行过程。纯文字回合与失败回合不折叠。
 
 - **触发与折叠时机**：`turn-finished` 把 live turn 定型为历史消息的瞬间（`streaming` prop
   消失）即折叠。它就是 ACP `session/prompt` response 落定（`stopReason:"end_turn"`）在
   xacpx 管线里的等价事件，无需引入新的控制事件种类。live（streaming）行不折叠，仍由 HUD 计时。
 - **policy 在 `MessageList`**（`collapseTrace = !isFailedTurn(m) && hasTraceParts(m)`，
-  失败判定读**持久化终态** `structured.turnStatus === "error"`（乐观 `failed` 标志在 hub
-  历史收敛替换行后即消失，不能作为依据）、**presentation 在 `TurnParts`**（`trace-items`
-  过滤 `text`/`agent-message` 之外的全部 presentation 项，头部固定在回合顶部，
-  计数段以 `·` 连接、英文走 vue-i18n 复数）。
+  失败判定读**持久化终态** `structured.turnStatus === "error"`，复制按钮通过 `copyTextOf` 与折叠态显示使用同一 `extractFinalReplyText` 语义结果）、**presentation 在 `TurnParts`**（折叠时调用 `extractFinalReplyText` 安全提取 Markdown 顶层块级别的最终回复，未闭合的 unsafe block 如代码块/表格通过 fail-safe 仅留折叠头；点击展开恢复完整交错 presentation）。
 - **终态持久化**：hub 在三个持久化点（live flush、无 buffer 兜底、offline recovery）把
   `turnStatus: "done" | "cancelled" | "error"`（由 `ok`/`cancelled` 派生）盖进
   `structured`，compact history 以 spread 原样保留。Web 的 `keepRicherStructured()`

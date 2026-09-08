@@ -187,6 +187,80 @@ describe("MessageList", () => {
     expect(copy.props("text")).toBe("**raw source**");
   });
 
+  it("copies only the final reply on collapsed assistant rows, suppressing hidden process text", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [
+          msg({
+            direction: "out",
+            text: "I'll inspect this.Fixed. The issue was X.",
+            status: "done",
+            structured: {
+              parts: [
+                { type: "text", text: "I'll inspect this." },
+                { type: "tool", step: sendStep("read-1") },
+                { type: "text", text: "Fixed. The issue was X." },
+              ],
+            },
+          }),
+        ],
+        liveTurn: null,
+      },
+    });
+    const copy = wrapper.find('[data-test="msg-out"] [data-test="msg-actions"]').findComponent(CopyButton);
+    expect(copy.exists()).toBe(true);
+    expect(copy.props("text")).toBe("Fixed. The issue was X.");
+  });
+
+  it("omits the assistant copy button when the turn ends on a process item with no final reply", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [
+          msg({
+            direction: "out",
+            text: "running the checks",
+            status: "done",
+            structured: {
+              parts: [
+                { type: "text", text: "running the checks" },
+                { type: "tool", step: sendStep("read-1") },
+              ],
+            },
+          }),
+        ],
+        liveTurn: null,
+      },
+    });
+    const copy = wrapper.find('[data-test="msg-out"] [data-test="msg-actions"]').findComponent(CopyButton);
+    expect(copy.exists()).toBe(false);
+  });
+
+  it("retains full text on failed assistant turns that do not collapse", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [
+          msg({
+            direction: "out",
+            text: "I'll inspect this.Error occurred.",
+            status: "error",
+            structured: {
+              turnStatus: "error",
+              parts: [
+                { type: "text", text: "I'll inspect this." },
+                { type: "tool", step: sendStep("read-1") },
+                { type: "text", text: "Error occurred." },
+              ],
+            },
+          }),
+        ],
+        liveTurn: null,
+      },
+    });
+    const copy = wrapper.find('[data-test="msg-out"] [data-test="msg-actions"]').findComponent(CopyButton);
+    expect(copy.exists()).toBe(true);
+    expect(copy.props("text")).toBe("I'll inspect this.Error occurred.");
+  });
+
   it("badges an inbound prompt from a fired scheduled task (live origin)", () => {
     const wrapper = mount(MessageList, {
       props: { messages: [msg({ direction: "in", text: "summarize commits", scheduled: { taskId: "ab12", executeAt: "2026-06-16T09:00:00.000Z" } })], liveTurn: null },

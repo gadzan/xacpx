@@ -11,7 +11,7 @@ PR #329 实现了回合结束后的 trace 折叠与展开。但在回合进行�
 - **去卡片化（De-cardified）**：中间过程是轻量级的背景元数据，不应使用厚重边框、阴影和 surface 底色独立成卡。
 - **单行流式时间线**：每项以极简单行呈现——动作图标 + 操作动词（终端/编辑/写入/查阅等）+ 文件角标（TS/VUE/PY）+ 标题/路径 + 右侧 diff stat（`+4` / `−1`）、耗时和状态。
 - **左导向线展开**：展开时在步骤行下方以 `border-l-2 border-border/50` 导向线缩进展示思考文本或工具输出（diff / command output），不包裹在额外的卡片中。
-- **紧凑垂直节奏**：步骤行之间采用紧凑间距（`space-y-1.5`），与正文叙述（`text`）拉开清晰层次。
+- **紧凑垂直节奏**：步骤行之间采用统一 `space-y-2` 呼吸间距，与正文叙述（`text`）拉开清晰层次。
 
 ## 详细设计
 
@@ -47,7 +47,7 @@ PR #329 实现了回合结束后的 trace 折叠与展开。但在回合进行�
 - 去除外层边框与背景，头部单行对齐，展开列表缩进。
 
 ### 5. `TurnParts.vue`
-- 容器间距调优为 `space-y-1.5`，使中间过程的多行步骤紧凑咬合；正文叙述附带 `my-1` 上下微距，清晰区隔活动与正文。
+- 容器采用统一 `space-y-2` 间距，使中间过程的多行步骤紧凑咬合且垂直节奏一致；折叠时通过 `extractFinalReplyText` 保证 Markdown 顶层块完整性，且与 `MessageList` 复制按钮共用同一语义结果。
 
 ### 6. i18n
 - `en.ts` 与 `zh-CN.ts` 增补 `tools.kinds.*`（read, search, execute, edit, write, think, other）。
@@ -60,5 +60,5 @@ PR #329 实现了回合结束后的 trace 折叠与展开。但在回合进行�
   - 断言各种类操作动词与文件角标正确展示。
   - 断言 edit 步骤展示 `+add` / `−del` 差分数据。
   - 断言新文件写入被识别为 `Write`（写入）。
-- 既有测试全部兼容并绿：`toolstepcard.test.ts`（11/11）、`toolcallpanel.test.ts`（11/11）、`subagentstepcard.test.ts`（13/13）、`tooldetail.test.ts`（9/9）、`turnparts-collapse.test.ts`（13/13）、`messagelist.test.ts`（62/62）、`i18n-parity.test.ts`（2/2）。
-- Web 全套 131 文件 / 1415 测试全绿，`vue-tsc` 与根 `tsc` 零错误。
+- 既有测试全部兼容并绿：`toolstepcard.test.ts`、`toolcallpanel.test.ts`、`subagentstepcard.test.ts`、`tooldetail.test.ts`、`turnparts-collapse.test.ts`、`messagelist.test.ts`、`i18n-parity.test.ts`。
+- Web 全套 131 文件所有测试全绿，`vue-tsc` 与根 `tsc` 零错误。

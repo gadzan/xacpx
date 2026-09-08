@@ -37,9 +37,14 @@ async function onHeaderClick(): Promise<void> {
   }
 }
 // Compute line additions and deletions for edit/diff steps (e.g. +4, −1).
+// Exclude inaccurate stats: naive fallback on huge inputs (d.exact === false)
+// and truncated inputs from connector cap (includes "…(truncated)").
 const diffStats = computed(() => {
   if (props.step.detail?.type !== "diff") return null;
-  const d = diffLines(props.step.detail.oldText, props.step.detail.newText);
+  const { oldText, newText } = props.step.detail;
+  if (oldText.includes("…(truncated)") || newText.includes("…(truncated)")) return null;
+  const d = diffLines(oldText, newText);
+  if (!d.exact) return null;
   if (d.add === 0 && d.del === 0) return null;
   return { add: d.add, del: d.del };
 });
@@ -99,16 +104,20 @@ function fmtDuration(ms?: number): string {
 
 <template>
   <div data-test="tool-step-card" class="text-xs">
-    <button type="button" data-test="tool-step-header"
-            class="group flex w-full items-center gap-1.5 py-1 px-1.5 -mx-1.5 rounded-md text-left text-fg-muted hover:text-fg hover:bg-fg/5 transition-colors"
-            :aria-expanded="hasDetail ? open : undefined"
-            :class="!hasDetail ? 'cursor-default' : ''"
-            @click="onHeaderClick">
+    <component :is="hasDetail ? 'button' : 'div'"
+               :type="hasDetail ? 'button' : undefined"
+               data-test="tool-step-header"
+               class="group flex w-full items-center gap-1.5 py-1 px-1.5 -mx-1.5 rounded-md text-left text-fg-muted"
+               :class="hasDetail ? 'hover:text-fg hover:bg-fg/5 transition-colors cursor-pointer' : 'cursor-default select-text'"
+               :aria-expanded="hasDetail ? open : undefined"
+               @click="hasDetail ? onHeaderClick() : undefined">
       <component :is="KIND_ICON[step.kind]" :size="13" class="shrink-0 transition-colors"
-                 :class="step.status === 'error' ? 'text-danger' : step.status === 'running' ? 'text-accent' : 'text-fg-muted/80 group-hover:text-fg'" />
-      <span class="shrink-0 font-medium text-[11.5px] text-fg-muted transition-colors group-hover:text-fg">{{ kindLabel }}</span>
+                 :class="step.status === 'error' ? 'text-danger' : step.status === 'running' ? 'text-accent' : hasDetail ? 'text-fg-muted/80 group-hover:text-fg' : 'text-fg-muted/80'" />
+      <span class="shrink-0 font-medium text-[11.5px] text-fg-muted transition-colors"
+            :class="hasDetail ? 'group-hover:text-fg' : ''">{{ kindLabel }}</span>
       <span v-if="fileExt" class="shrink-0 rounded bg-accent/10 px-1 py-0.5 text-[9px] font-semibold text-accent/80 font-mono leading-none">{{ fileExt }}</span>
-      <span class="min-w-0 truncate font-mono text-[11.5px] text-fg-muted/90 group-hover:text-fg">{{ step.title }}</span>
+      <span class="min-w-0 truncate font-mono text-[11.5px] text-fg-muted/90"
+            :class="hasDetail ? 'group-hover:text-fg' : ''">{{ step.title }}</span>
       <span class="ml-auto flex shrink-0 items-center gap-1.5">
         <span v-if="diffStats" data-test="step-diff-stats" class="flex items-center gap-1 font-mono text-[11px]">
           <span v-if="diffStats.add" class="text-run font-medium">+{{ diffStats.add }}</span>
@@ -121,7 +130,7 @@ function fmtDuration(ms?: number): string {
         <ChevronDown v-if="hasDetail && open" :size="12" class="shrink-0 opacity-60 group-hover:opacity-100 transition-opacity" />
         <ChevronRight v-else-if="hasDetail" :size="12" class="shrink-0 opacity-40 group-hover:opacity-80 transition-opacity" />
       </span>
-    </button>
+    </component>
     <div v-if="hasDetail && open" data-test="tool-step-detail" class="ml-2.5 my-1.5 border-l-2 border-border/50 pl-3 space-y-1">
       <div v-if="hydrating" data-test="tool-step-hydrating" class="flex items-center gap-1.5 py-1 text-fg-muted">
         <Loader2 :size="13" class="animate-spin motion-reduce:animate-none" />

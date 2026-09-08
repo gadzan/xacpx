@@ -11,6 +11,7 @@ export interface ParsedDiff {
   rows: DiffRow[];
   add: number;
   del: number;
+  exact?: boolean;
 }
 
 const HUNK_RE = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/;

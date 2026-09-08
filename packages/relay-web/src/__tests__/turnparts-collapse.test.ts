@@ -280,6 +280,86 @@ describe("TurnParts trace collapse", () => {
     expect(w.find('[data-test="turn-narrative"]').exists()).toBe(false);
     expect(w.find('[data-test="tool-step-card"]').exists()).toBe(false);
   });
+
+  it("preserves fenced code block integrity and extracts trailing reply outside the fence", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "```ts\nconst a = 1;\n" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "\nconst b = 2;\n```\n\nafter" },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:fence-after" },
+    });
+    expect(w.findAll('[data-test="turn-narrative"]').map((n) => n.text().trim())).toEqual(["after"]);
+    expect(w.find('[data-test="tool-step-card"]').exists()).toBe(false);
+    // Crucially: "after" must be a clean paragraph, NOT sucked into an unclosed code block
+    expect(w.find("pre code").exists()).toBe(false);
+  });
+
+  it("fails safe and shows header only when a turn ends inside a code fence with no reply", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "```ts\nconst a = 1;\n" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "\nconst b = 2;\n```" },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:fence-no-after" },
+    });
+    expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-test="turn-narrative"]').exists()).toBe(false);
+    expect(w.find("pre code").exists()).toBe(false);
+  });
+
+  it("preserves table integrity and extracts trailing reply outside the table", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "| a | b |\n| - | - |\n" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "| 1 | 2 |\n\nafter" },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:table-after" },
+    });
+    expect(w.findAll('[data-test="turn-narrative"]').map((n) => n.text().trim())).toEqual(["after"]);
+    expect(w.find('[data-test="tool-step-card"]').exists()).toBe(false);
+  });
+
+  it("fails safe and shows header only when a turn ends inside a table with no reply", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "| a | b |\n| - | - |\n" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "| 1 | 2 |\n" },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:table-no-after" },
+    });
+    expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-test="turn-narrative"]').exists()).toBe(false);
+  });
+
+  it("extracts trailing reply after a markdown list", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "- one\n" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "\n- two\n\nafter" },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:list-after" },
+    });
+    expect(w.findAll('[data-test="turn-narrative"]').map((n) => n.text().trim())).toEqual(["after"]);
+  });
+
+  it("fails safe and shows header only when tool is inside a list without trailing reply", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "- one\n" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "\n- two" },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:list-no-after" },
+    });
+    expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-test="turn-narrative"]').exists()).toBe(false);
+  });
 });
 
 describe("MessageList convergence", () => {

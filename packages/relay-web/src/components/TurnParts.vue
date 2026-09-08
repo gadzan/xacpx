@@ -8,7 +8,7 @@ import ReasoningPanel from "./ReasoningPanel.vue";
 import ToolStepCard from "./ToolStepCard.vue";
 import SubagentStepCard from "./SubagentStepCard.vue";
 import AgentMessageCard from "./AgentMessageCard.vue";
-import { deriveTurnPresentation } from "../lib/turn-presentation";
+import { deriveTurnPresentation, extractFinalReplyText } from "../lib/turn-presentation";
 import { expandedTraces } from "../lib/trace-expansion";
 
 // Wire parts preserve arrival order, but transport events are not necessarily safe
@@ -40,16 +40,9 @@ const presentation = computed(() =>
   ),
 );
 
-// The process trace boundary comes from props.parts (the raw event sequence),
-// NOT from presentation. presentation is a Markdown-safe layout model that
-// re-anchors activity to block boundaries. If interleaved process text and a
-// final reply share one Markdown block (e.g. streaming chunks without \n\n),
-// presentation emits the joined text before the activity, so slicing
-// presentation after the last non-text item drops the entire final reply.
-//
-// In the event sequence (props.parts), the semantic boundary is unambiguous:
-// the last visible process part (tool or non-empty reasoning). Everything
-// up through that part is process; any trailing text after it is the final reply.
+// A finished turn collapses everything up through its last process item (tool or
+// non-empty reasoning). The conversational final reply is extracted safely respecting
+// Markdown block boundaries via extractFinalReplyText.
 const lastProcessPartIndex = computed(() =>
   props.parts.findLastIndex(
     (part) =>
@@ -69,37 +62,26 @@ const expanded = computed(() => {
   return props.traceKey ? expandedTraces.has(props.traceKey) : localExpanded.value;
 });
 
-const collapsedReplyText = computed(() => {
-  const boundary = lastProcessPartIndex.value;
-  if (boundary < 0) {
-    return props.parts
-      .filter((part) => part.type === "text")
-      .map((part) => part.text)
-      .join("");
-  }
-  return props.parts
-    .slice(boundary + 1)
-    .filter((part) => part.type === "text")
-    .map((part) => part.text)
-    .join("");
-});
+const finalReplyText = computed(() =>
+  extractFinalReplyText(props.parts, { presentation: presentation.value }),
+);
 
 // Collapsed view: directly construct a single text presentation item from the
-// trailing reply text. When expanded (or when the turn has no process to fold),
-// deriveTurnPresentation provides the full Markdown-safe interleaved layout.
-const visibleItems = computed(() => {
-  if (expanded.value || !collapsible.value) return presentation.value;
-  const text = collapsedReplyText.value;
-  if (!text.trim()) return [];
-  return [
-    {
-      key: "collapsed-final-reply",
-      type: "text" as const,
-      text,
-      isLatest: false,
-    },
-  ];
-});
+// Markdown-safe trailing reply text. When expanded (or when the turn has no
+// process to fold), deriveTurnPresentation provides the full interleaved layout.
+ const visibleItems = computed(() => {
+   if (expanded.value || !collapsible.value) return presentation.value;
+  const text = finalReplyText.value;
+   if (!text.trim()) return [];
+   return [
+     {
+       key: "collapsed-final-reply",
+       type: "text" as const,
+       text,
+       isLatest: false,
+     },
+   ];
+ });
 const toolCount = computed(() =>
   presentation.value.filter((item) => item.type === "tool" || item.type === "subagent").length,
 );

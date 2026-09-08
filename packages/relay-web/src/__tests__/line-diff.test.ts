@@ -90,4 +90,16 @@ describe("diffLines", () => {
     expect(diffLines("a", "a\n")).toMatchObject({ add: 0, del: 0 });
     expect(diffLines("a\n", "a")).toMatchObject({ add: 0, del: 0 });
   });
+
+  it("marks exact: true for standard LCS diffs", () => {
+    const d = diffLines("a\nb\nc", "a\nx\nc");
+    expect(d.exact).toBe(true);
+  });
+
+  it("marks exact: false when falling back to naive diff on n * m > 250,000 cells (501 lines)", () => {
+    const lines501 = Array.from({ length: 501 }, (_, i) => `${i}`).join("\n");
+    const mod501 = lines501.replace("0", "zero");
+    const d = diffLines(lines501, mod501);
+    expect(d.exact).toBe(false);
+  });
 });
