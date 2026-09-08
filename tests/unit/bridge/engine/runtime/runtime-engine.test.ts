@@ -751,7 +751,7 @@ test("toolEventMode structured emits structured event but skips text segment for
   }
 });
 
-test("tailSessionHistory parses real acpx 0.13.1 stream rotation and JSON-RPC message formats", async () => {
+test("tailSessionHistory parses legacy acpx stream rotation and JSON-RPC message formats (schema v1, 0.13.1-era records still readable on 0.15.1)", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-acpx-history-"));
   const sessionsDir = join(dir, ".acpx", "sessions");
   try {

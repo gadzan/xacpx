@@ -1,5 +1,5 @@
 /**
- * Windows legacy raw `--agent` selector vs acpx@0.13.0.
+ * Windows legacy raw `--agent` selector vs acpx@0.15.1 (spike written against 0.13.0; backfill verified still present on 0.15.1).
  *
  * Proves historical built-in sessions resume when xacpx passes only the raw
  * command as selector — no xacpx-managed migration overlay, no guessed argv.
@@ -324,9 +324,9 @@ for (const kind of TRANSPORTS) {
   }, { timeout: 180_000 });
 }
 
-test("sanity: installed acpx is 0.13.x (spike depends on built-in backfill)", async () => {
+test("sanity: installed acpx is 0.15.x (spike depends on built-in backfill)", async () => {
   const versionFile = join(process.cwd(), "node_modules", "acpx", "package.json");
   const pkg = JSON.parse(await readFile(versionFile, "utf8")) as { version: string };
-  expect(pkg.version.startsWith("0.13.")).toBe(true);
+  expect(pkg.version.startsWith("0.15.")).toBe(true);
   expect(ACPX.length).toBeGreaterThan(0);
 });

@@ -4,10 +4,14 @@ import { RuntimePermissionResolver } from "../../../../../src/bridge/engine/runt
 import type { RuntimePermissionConfig, RuntimePermissionRequest } from "../../../../../src/bridge/engine/runtime/runtime-permission-resolver";
 
 /**
- * Pinned-reference differential — acpx@0.13.1 (frozen copy, not black-box CLI execution)
- * Source: node_modules/acpx/dist/live-checkpoint-BSIrfgVo.js (acpx 0.13.1)
+ * Pinned-reference differential — acpx@0.15.1 (frozen copy, not black-box CLI execution)
+ * Source: node_modules/acpx/dist/live-checkpoint-sB7dFOYR.js (acpx 0.15.1)
  * Helpers pinned: normalizeMatcher, permissionMatchTokens, findPolicyRule, matchPermissionPolicy, isAutoApprovedReadKind.
  * This file is a frozen oracle for resolver parity. A true black-box differential would drive the real CLI/MCP and is deferred to activation.
+ * Rebased 0.13.1 → 0.15.1: upstream inferToolKind is now the full canonical-kind
+ * needle table (read/cat, search/find/grep, edit/write/patch, delete/remove,
+ * move/rename, execute/run/bash, fetch/http/url, think) with an "other" fallback,
+ * replacing the minimal read/search/think substring table.
  */
 
 function req(text: string, kind?: string): RuntimePermissionRequest {
@@ -18,9 +22,7 @@ function req(text: string, kind?: string): RuntimePermissionRequest {
   } as unknown as RuntimePermissionRequest;
 }
 
-// Reference implementation — pinned frozen copy from acpx@0.13.1 live-checkpoint-BSIrfgVo.js
-// Note: inferToolKindRef is minimal (only read/search/think) vs upstream full matcher (read/cat/search/find/grep/edit/write/patch/delete/remove/move/rename/run/execute/bash/fetch/http/url/think/other). Kept minimal for parity focus.
-
+// Reference implementation — pinned frozen copy from acpx@0.15.1 live-checkpoint-sB7dFOYR.js
 function normalizeMatcherRef(value: string): string {
   return value.trim().toLowerCase();
 }
@@ -36,11 +38,17 @@ function inferToolKindRef(params: { toolCall: any }): string | undefined {
   if (!title) return undefined;
   const head = title.split(":", 1)[0]?.trim();
   if (!head) return undefined;
-  // minimal: only read/search are distinguished for approve-reads; others pass through as head
-  if (head.includes("read")) return "read";
-  if (head.includes("search")) return "search";
-  if (head.includes("think")) return "think";
-  return head;
+  const matchers: Array<{ kind: string; needles: string[] }> = [
+    { kind: "read", needles: ["read", "cat"] },
+    { kind: "search", needles: ["search", "find", "grep"] },
+    { kind: "edit", needles: ["write", "edit", "patch"] },
+    { kind: "delete", needles: ["delete", "remove"] },
+    { kind: "move", needles: ["move", "rename"] },
+    { kind: "execute", needles: ["run", "execute", "bash"] },
+    { kind: "fetch", needles: ["fetch", "http", "url"] },
+    { kind: "think", needles: ["think"] },
+  ];
+  return matchers.find(({ needles }) => needles.some((needle) => head.includes(needle)))?.kind ?? "other";
 }
 function permissionMatchTokensRef(params: { toolCall: any }): string[] {
   const tokens = new Set<string>();
@@ -120,14 +128,13 @@ function expectParity(cfg: RuntimePermissionConfig, r: RuntimePermissionRequest)
   expect(ours.outcome).toBe(theirs.outcome);
 }
 
-test("acpx@0.13.1 pinned version still 0.13.1", () => {
+test("acpx@0.15.1 pinned version still 0.15.1", () => {
   const pkg = JSON.parse(readFileSync("node_modules/acpx/package.json", "utf8"));
-  expect(pkg.version).toBe("0.13.1");
-  const dist = readFileSync("node_modules/acpx/dist/live-checkpoint-BSIrfgVo.js", "utf8");
+  expect(pkg.version).toBe("0.15.1");
+  const dist = readFileSync("node_modules/acpx/dist/live-checkpoint-sB7dFOYR.js", "utf8");
   expect(dist).toContain("function findPolicyRule");
   expect(dist).toContain("permissionMatchTokens");
 });
-
 test("autoDeny beats autoApprove", () => {
   const cfg = { generation: 0, permissionMode: "approve-all" as const, nonInteractivePermissions: "deny" as const, permissionPolicy: { autoApprove: ["read"], autoDeny: ["read"] } };
   expectParity(cfg, req("read"));
@@ -148,9 +155,31 @@ test("escalate", () => {
 
 test("token matching not glob: pattern read matches via kind token (upstream substring)", () => {
   const cfg = { generation: 0, permissionMode: "deny-all" as const, nonInteractivePermissions: "deny" as const, permissionPolicy: { autoApprove: ["read"] } };
-  // Upstream inferToolKind for "bread" yields "read" (head.includes("read")), so token set includes "read" and rule "read" matches — this is upstream 0.13.1 behavior
-  expectParity(cfg, req("bread"));
+  // Upstream inferToolKind for "bread" yields "read" (head.includes("read")), so token set includes "read" and rule "read" matches — this is upstream 0.15.1 behavior
   expect(resolver.resolve(cfg, req("bread"))).toEqual({ outcome: "allow_once" });
+});
+
+test("0.15.1 needle table: cat/find/grep infer read/search (approve-reads allows)", () => {
+  const cfg = { generation: 0, permissionMode: "approve-reads" as const, nonInteractivePermissions: "deny" as const, permissionPolicy: {} };
+  for (const title of ["Cat config", "Find files", "Grep pattern"]) {
+    expectParity(cfg, req(title));
+    expect(resolver.resolve(cfg, req(title))).toEqual({ outcome: "allow_once" });
+  }
+});
+
+test("0.15.1 needle table: bash/run infer execute (approve-reads rejects, execute rule matches)", () => {
+  const reads = { generation: 0, permissionMode: "approve-reads" as const, nonInteractivePermissions: "deny" as const, permissionPolicy: {} };
+  expectParity(reads, req("Bash"));
+  expect(resolver.resolve(reads, req("Bash"))).toEqual({ outcome: "reject_once" });
+  const execRule = { generation: 0, permissionMode: "deny-all" as const, nonInteractivePermissions: "deny" as const, permissionPolicy: { autoApprove: ["execute"] } };
+  expectParity(execRule, req("Bash"));
+  expect(resolver.resolve(execRule, req("Bash"))).toEqual({ outcome: "allow_once" });
+});
+
+test("0.15.1 needle table: unmatched title falls back to other", () => {
+  const cfg = { generation: 0, permissionMode: "deny-all" as const, nonInteractivePermissions: "deny" as const, permissionPolicy: { autoApprove: ["other"] } };
+  expectParity(cfg, req("Foobar"));
+  expect(resolver.resolve(cfg, req("Foobar"))).toEqual({ outcome: "allow_once" });
 });
 
 test("rawInput.name autoDeny beats approve-all (production parity)", () => {

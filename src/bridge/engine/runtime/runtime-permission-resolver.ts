@@ -66,20 +66,33 @@ function readRawKindFromReq(req: RuntimePermissionRequest): string | undefined {
   }
   return undefined;
 }
+/**
+ * Tool-kind inference, rebased on acpx 0.15.1 observable behavior
+ * (live-checkpoint-sB7dFOYR.js): canonical-kind needle table with substring
+ * match plus an "other" fallback. Previously a minimal read/search/think table
+ * from the 0.13.1 era, which misclassified e.g. "Cat"/"Find"/"Grep" titles as
+ * non-reads. This is black-box behavior parity, not a private-internals copy:
+ * any title → kind mapping is derivable by driving the real CLI.
+ */
+const TOOL_KIND_TITLE_MATCHERS: Array<{ kind: string; needles: string[] }> = [
+  { kind: "read", needles: ["read", "cat"] },
+  { kind: "search", needles: ["search", "find", "grep"] },
+  { kind: "edit", needles: ["write", "edit", "patch"] },
+  { kind: "delete", needles: ["delete", "remove"] },
+  { kind: "move", needles: ["move", "rename"] },
+  { kind: "execute", needles: ["run", "execute", "bash"] },
+  { kind: "fetch", needles: ["fetch", "http", "url"] },
+  { kind: "think", needles: ["think"] },
+];
 function inferToolKindForReq(req: RuntimePermissionRequest): string | undefined {
   if (req.inferredKind && typeof req.inferredKind === "string" && req.inferredKind.trim().length > 0) {
     return normalizeMatcher(req.inferredKind);
   }
   const title = readTitleFromReq(req);
-  if (title) {
-    const head = title.split(":", 1)[0]?.trim().toLowerCase();
-    if (head) {
-      if (head.includes("read") || head.includes("search")) return head.includes("search") ? "search" : "read";
-      if (head.includes("think")) return "think";
-      return head;
-    }
-  }
-  return undefined;
+  if (!title) return undefined;
+  const head = title.split(":", 1)[0]?.trim().toLowerCase();
+  if (!head) return undefined;
+  return TOOL_KIND_TITLE_MATCHERS.find(({ needles }) => needles.some((needle) => head.includes(needle)))?.kind ?? "other";
 }
 
 function permissionMatchTokens(req: RuntimePermissionRequest): string[] {

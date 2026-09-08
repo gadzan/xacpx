@@ -18,7 +18,7 @@ import {
 /**
  * P2 / Activation Gate: Pinned acpx CLI black-box differential test.
  *
- * Spawns the real pinned acpx 0.13.1 CLI binary against an isolated mock ACP agent,
+ * Spawns the real pinned acpx 0.15.1 CLI binary against an isolated mock ACP agent,
  * passing identical permission CLI flags and policy configurations.
  *
  * Compares that:
@@ -44,9 +44,9 @@ function resolveAcpxCli(): { command: string; args: string[] } | null {
     return { command: localBin, args: [] };
   }
   try {
-    const res = spawnSync("npx", ["--no-install", "acpx@0.13.1", "--version"], { stdio: "ignore", timeout: 5000 });
+    const res = spawnSync("npx", ["--no-install", "acpx@0.15.1", "--version"], { stdio: "ignore", timeout: 5000 });
     if (res.status === 0) {
-      return { command: "npx", args: ["acpx@0.13.1"] };
+      return { command: "npx", args: ["acpx@0.15.1"] };
     }
   } catch {}
   return null;
