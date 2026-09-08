@@ -12,6 +12,7 @@ import type { ChatMessage, LiveTurn } from "../stores/chat";
 import ToolCallPanel from "../components/ToolCallPanel.vue";
 import ToolStepCard from "../components/ToolStepCard.vue";
 import CopyButton from "../components/CopyButton.vue";
+import TurnParts from "../components/TurnParts.vue";
 
 // StreamMarkdown (rendered for "out" messages) reads useThemeStore() to re-hydrate mermaid
 // diagrams on theme change, so every mount here needs an active Pinia instance.
@@ -185,6 +186,134 @@ describe("MessageList", () => {
     const copy = wrapper.findComponent(CopyButton);
     expect(copy.exists()).toBe(true);
     expect(copy.props("text")).toBe("**raw source**");
+  });
+
+  it("copies only the final reply on collapsed assistant rows, suppressing hidden process text", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [
+          msg({
+            direction: "out",
+            text: "I'll inspect this.Fixed. The issue was X.",
+            status: "done",
+            structured: {
+              parts: [
+                { type: "text", text: "I'll inspect this." },
+                { type: "tool", step: sendStep("read-1") },
+                { type: "text", text: "Fixed. The issue was X." },
+              ],
+            },
+          }),
+        ],
+        liveTurn: null,
+      },
+    });
+    const copy = wrapper.find('[data-test="msg-out"] [data-test="msg-actions"]').findComponent(CopyButton);
+    expect(copy.exists()).toBe(true);
+    expect(copy.props("text")).toBe("Fixed. The issue was X.");
+  });
+
+  it("shares precomputed collapsed reply text with TurnParts and caches it across renders", () => {
+    const assistantMessage = msg({
+      direction: "out",
+      text: "I'll inspect this.Fixed. The issue was X.",
+      status: "done",
+      structured: {
+        parts: [
+          { type: "text", text: "I'll inspect this." },
+          { type: "tool", step: sendStep("read-1") },
+          { type: "text", text: "Fixed. The issue was X." },
+        ],
+      },
+    });
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [assistantMessage],
+        liveTurn: null,
+      },
+    });
+
+    const turnParts = wrapper.findComponent(TurnParts);
+    expect(turnParts.exists()).toBe(true);
+    expect(turnParts.props("collapsedReplyText")).toBe("Fixed. The issue was X.");
+    expect(turnParts.props("collapsedToolCount")).toBe(1);
+    expect(turnParts.props("collapsedThoughtCount")).toBe(0);
+    const copy = wrapper.find('[data-test="msg-out"] [data-test="msg-actions"]').findComponent(CopyButton);
+    expect(copy.exists()).toBe(true);
+    expect(copy.props("text")).toBe("Fixed. The issue was X.");
+  });
+
+  it("omits the assistant copy button when the turn ends on a process item with no final reply", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [
+          msg({
+            direction: "out",
+            text: "running the checks",
+            status: "done",
+            structured: {
+              parts: [
+                { type: "text", text: "running the checks" },
+                { type: "tool", step: sendStep("read-1") },
+              ],
+            },
+          }),
+        ],
+        liveTurn: null,
+      },
+    });
+    const copy = wrapper.find('[data-test="msg-out"] [data-test="msg-actions"]').findComponent(CopyButton);
+    expect(copy.exists()).toBe(false);
+  });
+
+  it("omits the assistant copy button when trailing content is only reference link definitions", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [
+          msg({
+            direction: "out",
+            text: "See [docs][ref]\n\n[ref]: https://example.com",
+            status: "done",
+            structured: {
+              parts: [
+                { type: "text", text: "See [docs][ref]" },
+                { type: "tool", step: sendStep("read-1") },
+                { type: "text", text: "\n\n[ref]: https://example.com" },
+              ],
+            },
+          }),
+        ],
+        liveTurn: null,
+      },
+    });
+    const copy = wrapper.find('[data-test="msg-out"] [data-test="msg-actions"]').findComponent(CopyButton);
+    expect(copy.exists()).toBe(false);
+  });
+
+  it("retains full text on failed assistant turns that do not collapse", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [
+          msg({
+            direction: "out",
+            text: "I'll inspect this.Error occurred.",
+            status: "error",
+            structured: {
+              turnStatus: "error",
+              parts: [
+                { type: "text", text: "I'll inspect this." },
+                { type: "tool", step: sendStep("read-1") },
+                { type: "text", text: "Error occurred." },
+              ],
+            },
+          }),
+        ],
+        liveTurn: null,
+      },
+    });
+    const copy = wrapper.find('[data-test="msg-out"] [data-test="msg-actions"]').findComponent(CopyButton);
+    expect(copy.exists()).toBe(true);
+    expect(copy.props("text")).toBe("I'll inspect this.Error occurred.");
   });
 
   it("badges an inbound prompt from a fired scheduled task (live origin)", () => {
@@ -516,9 +645,11 @@ describe("MessageList", () => {
       props: { messages: [turnWithSend("m1"), sentCard("m1")], liveTurn: null },
     });
 
-    // Exactly one card — the anchored one; the standalone m1 row is suppressed.
-    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
+    // The anchored card is process: it folds with the collapsed trace and appears
+    // on expand (the standalone m1 row is suppressed either way).
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(0);
     await expandTrace(wrapper);
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
     const anchored = wrapper.find('[data-test="msg-out"] [data-test="turn-agent-message"]');
     expect(anchored.exists()).toBe(true);
     expect(wrapper.text()).toContain("hello m1");
@@ -556,8 +687,10 @@ describe("MessageList", () => {
     await wrapper.setProps({
       messages: [turnWithSend("m1"), sentCard("m1")],
     });
-    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
+    // The re-anchored card is process: folded with the collapsed trace, visible on expand.
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(0);
     await expandTrace(wrapper);
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
     const anchored = wrapper.find('[data-test="msg-out"] [data-test="turn-agent-message"]');
     expect(anchored.exists()).toBe(true);
     const tool = wrapper.find('[data-test="tool-step-card"]');
@@ -599,13 +732,17 @@ describe("MessageList", () => {
     expect(wrapper.find('[data-test="tool-step-card"]').exists()).toBe(true);
   });
 
-  it("never suppresses a received card whose id is also an anchored sent card (echo topology)", () => {
+  it("never suppresses a received card whose id is also an anchored sent card (echo topology)", async () => {
     const wrapper = mount(MessageList, {
       props: { messages: [turnWithSend("m1"), sentCard("m1"), receivedCard("m1")], liveTurn: null },
     });
 
-    // Both render: the sent twin anchors inside the turn; the received twin keeps
-    // its own standalone row — the anchored id must not swallow the receiver's copy.
+    // Both render after expanding the folded trace: the sent twin anchors inside the
+    // turn; the received twin keeps its own standalone row — the anchored id must not
+    // swallow the receiver's copy.
+    expect(wrapper.find('[data-test="msg-out"] [data-test="turn-agent-message"]').exists()).toBe(false);
+    expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
+    await expandTrace(wrapper);
     expect(wrapper.find('[data-test="msg-out"] [data-test="turn-agent-message"]').exists()).toBe(true);
     expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(2);
     const received = wrapper.find('[data-test="agent-message-card"][data-direction="received"]');
@@ -642,7 +779,7 @@ describe("MessageList", () => {
     expect(wrapper.find('[data-test="turn-agent-message"]').exists()).toBe(false);
   });
 
-  it("anchors two sends in one turn in tool order (no swap)", () => {
+  it("anchors two sends in one turn in tool order (no swap)", async () => {
     const wrapper = mount(MessageList, {
       props: {
         messages: [
@@ -664,6 +801,10 @@ describe("MessageList", () => {
       },
     });
 
+    // Both anchored cards are process: folded until the trace expands, then rendered
+    // in tool order (no swap).
+    expect(wrapper.findAll('[data-test="turn-agent-message"]')).toHaveLength(0);
+    await expandTrace(wrapper);
     const anchoredCards = wrapper.findAll('[data-test="turn-agent-message"]');
     expect(anchoredCards).toHaveLength(2);
     expect(anchoredCards[0]!.text()).toContain("hello m1");
@@ -677,10 +818,12 @@ describe("MessageList", () => {
     const assistant = turnWithSend("m1");
     const wrapper = mount(MessageList, { props: { messages: [assistant], liveTurn: null } });
     expect(wrapper.find('[data-test="agent-message-card"]').exists()).toBe(false);
-
     // The agent-message ControlEvent lands after the tool event: the store pushes the
     // row, and the reactive join moves the card into the turn — no manual refresh.
+    // The turn is finished, so the anchored card is folded; it shows once expanded.
     await wrapper.setProps({ messages: [assistant, sentCard("m1")] });
+    expect(wrapper.find('[data-test="msg-out"] [data-test="turn-agent-message"]').exists()).toBe(false);
+    await expandTrace(wrapper);
     expect(wrapper.find('[data-test="msg-out"] [data-test="turn-agent-message"]').exists()).toBe(true);
     expect(wrapper.findAll('[data-test="agent-message-card"]')).toHaveLength(1);
   });

@@ -12,8 +12,12 @@ import AgentMessageCard from "./AgentMessageCard.vue";
 import AgentIcon from "./AgentIcon.vue";
 import MessageAttachments from "./MessageAttachments.vue";
 import { fmtTime, fmtDateTime } from "../lib/format";
-import { anchoredAgentMessageIds } from "../lib/turn-presentation";
-
+import {
+  anchoredAgentMessageIds,
+  extractCollapsedTraceSummary,
+  extractFinalReplyText,
+  type CollapsedTraceSummary,
+} from "../lib/turn-presentation";
 const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; loadingHistory?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null; ensureFull?: (messageId: number) => Promise<void> }>();
 const emit = defineEmits<{ resend: [message: ChatMessage]; loadOlder: [] }>();
 
@@ -62,6 +66,29 @@ function traceElapsedOf(m: ChatMessage): number | null {
   if (m.startedAt === undefined) return null;
   const ms = Date.parse(m.createdAt) - m.startedAt;
   return Number.isFinite(ms) && ms > 0 ? ms : null;
+}
+
+// Cache collapsed trace metrics by message object and parts reference to prevent
+// redundant markdown parses and presentation derivations across MessageList and TurnParts.
+const traceSummaryCache = new WeakMap<ChatMessage, { parts: TurnPartDto[]; summary: CollapsedTraceSummary }>();
+
+function traceSummaryOf(m: ChatMessage): CollapsedTraceSummary {
+  const parts = m.structured?.parts;
+  if (!parts?.length) return { finalReplyText: "", toolCount: 0, thoughtCount: 0 };
+  const cached = traceSummaryCache.get(m);
+  if (cached && cached.parts === parts) return cached.summary;
+  const summary = extractCollapsedTraceSummary(parts, {
+    sentAgentMessageById: sentAgentMessageById.value,
+  });
+  traceSummaryCache.set(m, { parts, summary });
+  return summary;
+}
+
+function copyTextOf(m: ChatMessage): string {
+  if (m.direction === "out" && m.structured?.parts?.length && !isFailedTurn(m) && hasTraceParts(m)) {
+    return traceSummaryOf(m).finalReplyText;
+  }
+  return m.text ?? "";
 }
 
 // Presentation-only join (v0.3 spec §8): a SENT peer-message card anchors right after
@@ -585,7 +612,10 @@ watch(
                    Markdown narrative. Tool cards own their collapsed state. -->
               <div data-test="msg-content" class="space-y-2.5">
                 <TurnParts v-if="m.structured?.parts?.length" :parts="m.structured.parts" :ensure-full="ensureFullOf(m)" :sent-agent-messages="sentAgentMessageById"
-                           :collapse-trace="!isFailedTurn(m) && hasTraceParts(m)" :trace-key="traceKeyOf(m)" :trace-elapsed-ms="traceElapsedOf(m)" />
+                           :collapse-trace="!isFailedTurn(m) && hasTraceParts(m)" :trace-key="traceKeyOf(m)" :trace-elapsed-ms="traceElapsedOf(m)"
+                           :collapsed-reply-text="!isFailedTurn(m) && hasTraceParts(m) ? traceSummaryOf(m).finalReplyText : undefined"
+                           :collapsed-tool-count="!isFailedTurn(m) && hasTraceParts(m) ? traceSummaryOf(m).toolCount : undefined"
+                           :collapsed-thought-count="!isFailedTurn(m) && hasTraceParts(m) ? traceSummaryOf(m).thoughtCount : undefined" />
                 <template v-else>
                   <ToolCallPanel v-if="m.structured?.toolSteps?.length" :steps="m.structured.toolSteps" :ensure-full="ensureFullOf(m)" />
                   <ReasoningPanel v-if="m.structured?.reasoning?.trim()" :reasoning="m.structured.reasoning" :default-open="false" />
@@ -593,7 +623,9 @@ watch(
                 </template>
               </div>
               <div data-test="msg-actions" class="flex items-center gap-1.5 pt-0.5 text-fg-muted">
-                <CopyButton v-if="m.text" :text="m.text" />
+                <template v-for="copyText in [copyTextOf(m)]" :key="0">
+                  <CopyButton v-if="copyText" :text="copyText" />
+                </template>
                 <span v-if="fmtTime(m.createdAt)" data-test="msg-time" class="font-mono text-[10.5px] tabular-nums">{{ fmtTime(m.createdAt) }}</span>
                 <span v-if="m.structured?.truncated" data-test="msg-truncated" class="inline-flex items-center gap-1 text-[11px] text-warn"><TriangleAlert :size="12" /> {{ $t("chat.truncated") }}</span>
                 <span v-if="m.status === 'cancelled'" data-test="msg-cancelled" class="inline-flex items-center gap-1 text-[11px] text-warn"><CircleStop :size="12" /> {{ $t("chat.stopped") }}</span>

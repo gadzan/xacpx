@@ -509,18 +509,18 @@ export interface LiveTurn {
 **`ToolCallPanel.vue`**（`packages/relay-web/src/components/ToolCallPanel.vue`）
 
 - props: `steps: ToolStepDto[]`。
-- 兼容旧历史格式的聚合面板，默认折叠；展开后列出每个 step（状态图标、kind 图标、title、耗时）。
-- 点击行展开 `<ToolDetail>` 详情；折叠头显示总步数。
+- 兼容旧历史格式的聚合面板，去卡片化单行头部（Wrench 图标、kind 统计小标、步数）；默认折叠，展开后以左侧导向线缩进呈现各 step。
+- 点击行展开 `<ToolDetail>` 详情。
 
 **`ToolStepCard.vue`**（`packages/relay-web/src/components/ToolStepCard.vue`）
 
-- 有序 `parts` 中单个 tool call 的卡片，标题行始终可见，详情默认折叠。
-- 点击标题展开 `<ToolDetail>`；历史消息和实时 streaming 消息使用相同的默认折叠规则。
+- 有序 `parts` 中单个 tool call 的去卡片化流式行（zcode 风格）：无外层边框与卡片背景，由图标、操作动词（终端/编辑/写入/查阅/搜索等）、文件扩展名角标（TS/VUE/PY 等）、标题、行级 diff stat（`+4` / `−1`）、耗时及状态图标构成单行摘要。
+- 详情默认折叠，点击后在行下方以左侧导向线（`border-l-2`）无缝缩发展开 `<ToolDetail>`；历史消息和实时 streaming 消息遵循同一规则。
 
 **`ReasoningPanel.vue`**（`packages/relay-web/src/components/ReasoningPanel.vue`）
 
-- props: `reasoning: string; defaultOpen?: boolean`。
-- 可折叠，`defaultOpen` 默认 `false`；历史与实时 reasoning 都默认折叠，用户可按需展开。
+- props: `reasoning: string; defaultOpen?: boolean; streaming?: boolean`。
+- 去卡片化极简单行（Brain 图标、思考/思考中文案、streaming 脉冲点）；默认折叠，展开后在下方以左侧导向线缩进渲染思考正文，不产生外层卡片框线。用户可按需展开。
 
 **`ToolDetail.vue`**（`packages/relay-web/src/components/ToolDetail.vue`）
 
@@ -567,17 +567,13 @@ export interface LiveTurn {
 
 ### 回合 trace 折叠（turn-trace collapse，spec 2026-09-07）
 
-参照 zcode：回合结束后把思考/工具/子代理等中间过程折叠进一条弱化头部行
-（`▸ 已工作 4分32秒 · 6 步工具 · 3 段思考`），正文（text）与 agent-message 卡永不折叠。
+参照 zcode：回合结束后把思考、工具、子代理以及穿插在过程中的叙述文字等中间过程全部折叠进一条弱化头部行
+（`▸ 已工作 4分32秒 · 6 步工具 · 3 段思考`），仅在折叠行下方展示最终回复正文；点击展开恢复完整的交错执行过程。纯文字回合与失败回合不折叠。
 
 - **触发与折叠时机**：`turn-finished` 把 live turn 定型为历史消息的瞬间（`streaming` prop
   消失）即折叠。它就是 ACP `session/prompt` response 落定（`stopReason:"end_turn"`）在
   xacpx 管线里的等价事件，无需引入新的控制事件种类。live（streaming）行不折叠，仍由 HUD 计时。
-- **policy 在 `MessageList`**（`collapseTrace = !isFailedTurn(m) && hasTraceParts(m)`，
-  失败判定读**持久化终态** `structured.turnStatus === "error"`（乐观 `failed` 标志在 hub
-  历史收敛替换行后即消失，不能作为依据）、**presentation 在 `TurnParts`**（`trace-items`
-  过滤 `text`/`agent-message` 之外的全部 presentation 项，头部固定在回合顶部，
-  计数段以 `·` 连接、英文走 vue-i18n 复数）。
+- **架构与计算分工**：`MessageList` 作为父层持有 `sentAgentMessageById` 并管理复制按钮与折叠参数，通过 `extractCollapsedTraceSummary()` 一次性从同一 presentation 派生提取 `finalReplyText`、`toolCount` 与 `thoughtCount`，并以 WeakMap（`(ChatMessage, parts)` 为键）缓存，避免父子重复解析。计算结果作为 `:collapsed-reply-text`、`:collapsed-tool-count`、`:collapsed-thought-count` 下发给 `TurnParts`；`TurnParts` 在独立测试或未提供预计算 props 时 fallback 执行 `extractFinalReplyText`。折叠时安全提取 Markdown 顶层块级别的最终回复（未闭合的 unsafe block 如代码块/表格/列表、或被切断的 inline 结构通过 fail-safe 仅留折叠头）；点击展开时延迟渲染完整的交错 presentation。复制按钮通过 `copyTextOf` 与折叠态显示使用同一 `finalReplyText` 语义结果。
 - **终态持久化**：hub 在三个持久化点（live flush、无 buffer 兜底、offline recovery）把
   `turnStatus: "done" | "cancelled" | "error"`（由 `ok`/`cancelled` 派生）盖进
   `structured`，compact history 以 spread 原样保留。Web 的 `keepRicherStructured()`

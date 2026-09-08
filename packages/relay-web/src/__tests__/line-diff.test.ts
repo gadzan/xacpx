@@ -67,4 +67,39 @@ describe("diffLines", () => {
     expect(d.add).toBe(0);
     expect(d.rows.some((r) => r.type === "context")).toBe(false);
   });
+
+  it("handles a single-line file with a trailing newline as 1 addition", () => {
+    expect(diffLines("", "export const x = 1;\n")).toMatchObject({ add: 1, del: 0 });
+  });
+
+  it("handles deleting a single-line file with a trailing newline as 1 deletion", () => {
+    expect(diffLines("export const x = 1;\n", "")).toMatchObject({ add: 0, del: 1 });
+  });
+
+  it("handles multi-line files with trailing newline correctly without off-by-one", () => {
+    expect(diffLines("", "a\nb\n")).toMatchObject({ add: 2, del: 0 });
+    expect(diffLines("a\nb\n", "")).toMatchObject({ add: 0, del: 2 });
+  });
+
+  it("preserves true empty lines in the middle of text", () => {
+    const d = diffLines("", "a\n\nb\n");
+    expect(d.add).toBe(3);
+  });
+
+  it("does not treat adding or removing a terminal newline as a whole line addition/deletion", () => {
+    expect(diffLines("a", "a\n")).toMatchObject({ add: 0, del: 0 });
+    expect(diffLines("a\n", "a")).toMatchObject({ add: 0, del: 0 });
+  });
+
+  it("marks exact: true for standard LCS diffs", () => {
+    const d = diffLines("a\nb\nc", "a\nx\nc");
+    expect(d.exact).toBe(true);
+  });
+
+  it("marks exact: false when falling back to naive diff on n * m > 250,000 cells (501 lines)", () => {
+    const lines501 = Array.from({ length: 501 }, (_, i) => `${i}`).join("\n");
+    const mod501 = lines501.replace("0", "zero");
+    const d = diffLines(lines501, mod501);
+    expect(d.exact).toBe(false);
+  });
 });

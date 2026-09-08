@@ -86,6 +86,141 @@ export function markdownBlockBoundaries(text: string): number[] {
   });
 }
 
+export interface TopLevelBlockInfo {
+  type: string;
+  startOffset: number;
+  endOffset: number;
+  source: string;
+}
+
+/** Return the top-level block enclosing `offset`, including its source slice.
+ *  Accepts an optional markdown-it `env` object that collects document-level
+ *  metadata (such as reference link definitions) during the parse.
+ */
+export function topLevelBlockAt(
+  text: string,
+  offset: number,
+  env: Record<string, unknown> = {},
+): TopLevelBlockInfo | null {
+  const lineStarts = [0];
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === "\n") lineStarts.push(i + 1);
+  }
+  const tokens = md.parse(text, env);
+  const blocks = tokens.filter((t) => t.level === 0 && t.map !== null);
+  for (const block of blocks) {
+    const startOffset = lineStarts[block.map![0]] ?? 0;
+    const endOffset = lineStarts[block.map![1]] ?? text.length;
+    if (offset >= startOffset && offset <= endOffset) {
+      return {
+        type: block.type,
+        startOffset,
+        endOffset,
+        source: text.slice(startOffset, endOffset),
+      };
+    }
+  }
+  return null;
+}
+
+interface SemanticInlineToken {
+  type: string;
+  content: string;
+  attrs: string;
+  info: string;
+}
+
+function canonicalInlineTokens(source: string, env: Record<string, unknown>): SemanticInlineToken[] {
+  const tokens = md.parseInline(source, { ...env });
+  const inline = tokens.find((t) => t.type === "inline");
+  if (!inline || !inline.children) return [];
+
+  const result: SemanticInlineToken[] = [];
+  for (const c of inline.children) {
+    if (c.type === "softbreak") {
+      if (result.length > 0 && result[result.length - 1]!.type === "text") {
+        result[result.length - 1]!.content += "\n";
+      } else {
+        result.push({ type: "text", content: "\n", attrs: "", info: "" });
+      }
+      continue;
+    }
+    if (c.type === "text") {
+      if (result.length > 0 && result[result.length - 1]!.type === "text") {
+        result[result.length - 1]!.content += c.content;
+      } else {
+        result.push({ type: "text", content: c.content, attrs: "", info: "" });
+      }
+      continue;
+    }
+    result.push({
+      type: c.type,
+      content: c.content || "",
+      attrs: c.attrs ? JSON.stringify(c.attrs) : "",
+      info: c.info || "",
+    });
+  }
+  return result;
+}
+
+function mergeTokenStreams(a: SemanticInlineToken[], b: SemanticInlineToken[]): SemanticInlineToken[] {
+  if (a.length === 0) return b;
+  if (b.length === 0) return a;
+  const merged = [...a];
+  const lastA = merged[merged.length - 1]!;
+  const firstB = b[0]!;
+  if (lastA.type === "text" && firstB.type === "text") {
+    merged[merged.length - 1] = {
+      ...lastA,
+      content: lastA.content + firstB.content,
+    };
+    merged.push(...b.slice(1));
+  } else {
+    merged.push(...b);
+  }
+  return merged;
+}
+
+function areSemanticTokensEqual(a: SemanticInlineToken[], b: SemanticInlineToken[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (
+      a[i]!.type !== b[i]!.type ||
+      a[i]!.content !== b[i]!.content ||
+      a[i]!.attrs !== b[i]!.attrs ||
+      a[i]!.info !== b[i]!.info
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Check whether `offsetInBlock` inside a paragraph block lands at a safe top-level
+ *  text position rather than severing an active inline construct (code span,
+ *  emphasis, strong, link label/delimiter, reference link, HTML entity, hardbreak, etc.).
+ *  Compares the canonical inline semantic tokens of the full block against the concatenated
+ *  tokens of the prefix and suffix parsed independently within the same document env.
+ *  Adjacent text tokens across the slice boundary are merged so normal prose splits match;
+ *  if any inline construct or entity was severed, their token streams diverge and this returns false.
+ */
+export function isSafeInlineParagraphOffset(
+  paragraphSource: string,
+  offsetInBlock: number,
+  env: Record<string, unknown> = {},
+): boolean {
+  if (offsetInBlock < 0 || offsetInBlock > paragraphSource.length) return false;
+  const prefix = paragraphSource.slice(0, offsetInBlock);
+  const suffix = paragraphSource.slice(offsetInBlock);
+
+  const fullTokens = canonicalInlineTokens(paragraphSource, env);
+  const prefixTokens = canonicalInlineTokens(prefix, env);
+  const suffixTokens = canonicalInlineTokens(suffix, env);
+  const combinedTokens = mergeTokenStreams(prefixTokens, suffixTokens);
+
+  return areSemanticTokensEqual(fullTokens, combinedTokens);
+}
+
 /** Render markdown to sanitized, XSS-safe HTML. */
 export function renderMarkdown(text: string, options: RenderMarkdownOptions = {}): string {
   // Heal unterminated markup first (streaming), then run table normalization so it

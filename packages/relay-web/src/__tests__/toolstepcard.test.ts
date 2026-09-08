@@ -107,3 +107,263 @@ describe("ToolStepCard error banner de-duplication", () => {
     expect(w.find('[data-test="read-path"]').text()).toContain("a.ts");
   });
 });
+
+describe("ToolStepCard de-cardified activity stream", () => {
+  it("renders as a borderless minimal stream item without card background or shadow", () => {
+    const w = card({ status: "success", title: "npm test" });
+    const root = w.find('[data-test="tool-step-card"]');
+    expect(root.classes()).not.toContain("bg-surface");
+    expect(root.classes()).not.toContain("shadow-e1");
+    expect(root.classes()).not.toContain("border");
+  });
+
+  it("renders kind verb label and file extension badge", () => {
+    const w = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t1",
+          kind: "execute",
+          title: "grep -rn foo",
+          status: "success",
+        } as ToolStepDto,
+      },
+    });
+    expect(w.text()).toContain("Terminal");
+    expect(w.text()).toContain("grep -rn foo");
+  });
+
+
+  it("does not treat dotted directory names or dotfiles as file extensions", () => {
+    const w1 = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t1",
+          kind: "read",
+          title: "src.v2/x",
+          status: "success",
+        } as ToolStepDto,
+      },
+    });
+    expect(w1.find('[data-test="file-ext-badge"]').exists()).toBe(false);
+
+    const w2 = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t2",
+          kind: "read",
+          title: "a.b/c",
+          status: "success",
+        } as ToolStepDto,
+      },
+    });
+    expect(w2.find('[data-test="file-ext-badge"]').exists()).toBe(false);
+
+    const w3 = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t3",
+          kind: "read",
+          title: "src.v2/component.vue",
+          status: "success",
+        } as ToolStepDto,
+      },
+    });
+    expect(w3.find('[data-test="file-ext-badge"]').text()).toBe("VUE");
+  });
+
+  it("correctly extracts extension from Windows absolute paths and scheme URIs", () => {
+    const w1 = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t1",
+          kind: "read",
+          title: "C:\\repo\\src\\index.ts",
+          status: "success",
+        } as ToolStepDto,
+      },
+    });
+    expect(w1.find('[data-test="file-ext-badge"]').text()).toBe("TS");
+
+    const w2 = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t2",
+          kind: "read",
+          title: "C:\\repo.v2\\README",
+          status: "success",
+        } as ToolStepDto,
+      },
+    });
+    expect(w2.find('[data-test="file-ext-badge"]').exists()).toBe(false);
+
+    const w3 = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t3",
+          kind: "read",
+          title: "file:///home/user/src/main.py?line=10",
+          status: "success",
+        } as ToolStepDto,
+      },
+    });
+    expect(w3.find('[data-test="file-ext-badge"]').text()).toBe("PY");
+  });
+  it("renders diff stats (+add, −del) in the header for edit steps", () => {
+    const w = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t1",
+          kind: "edit",
+          toolName: "Edit",
+          title: "packages/relay-web/src/index.ts",
+          status: "success",
+          detail: {
+            type: "diff",
+            path: "packages/relay-web/src/index.ts",
+            oldText: "line 1\nline 2",
+            newText: "line 1\nline 2 modified\nline 3\nline 4\nline 5",
+          },
+        } as ToolStepDto,
+      },
+    });
+    expect(w.text()).toContain("Edit");
+    expect(w.text()).toContain("TS");
+    const stats = w.find('[data-test="step-diff-stats"]');
+    expect(stats.exists()).toBe(true);
+    expect(stats.text()).toContain("+4");
+    expect(stats.text()).toContain("−1");
+  });
+
+  it("identifies new-file write operations as Write instead of Edit", () => {
+    const w = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t1",
+          kind: "edit",
+          toolName: "Write",
+          title: "packages/relay-web/src/new-file.ts",
+          status: "success",
+          detail: {
+            type: "diff",
+            path: "packages/relay-web/src/new-file.ts",
+            oldText: "",
+            newText: "export const x = 1;\n",
+          },
+        } as ToolStepDto,
+      },
+    });
+    expect(w.text()).toContain("Write");
+    expect(w.text()).toContain("+1");
+  });
+
+  it("does not misclassify a compact Edit diff as Write", () => {
+    const w = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t1",
+          kind: "edit",
+          toolName: "Edit",
+          title: "packages/relay-web/src/index.ts",
+          status: "success",
+          detail: {
+            type: "diff",
+            path: "packages/relay-web/src/index.ts",
+            oldText: "",
+            newText: "",
+          },
+        } as ToolStepDto,
+      },
+    });
+    expect(w.text()).toContain("Edit");
+    expect(w.text()).not.toContain("Write");
+    expect(w.find('[data-test="step-diff-stats"]').exists()).toBe(false);
+  });
+
+  it("still labels an explicit Write tool as Write in compact mode", () => {
+    const w = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t1",
+          kind: "edit",
+          toolName: "Write",
+          title: "packages/relay-web/src/index.ts",
+          status: "success",
+          detail: {
+            type: "diff",
+            path: "packages/relay-web/src/index.ts",
+            oldText: "",
+            newText: "",
+          },
+        } as ToolStepDto,
+      },
+    });
+    expect(w.text()).toContain("Write");
+    expect(w.text()).not.toContain("Edit");
+  });
+
+  it("renders step header as a non-interactive div without button semantics when hasDetail is false", async () => {
+    const w = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t1",
+          toolName: "Todo",
+          kind: "think",
+          title: "Update todos",
+          status: "success",
+        } as ToolStepDto,
+      },
+    });
+    const header = w.find('[data-test="tool-step-header"]');
+    expect(header.element.tagName).toBe("DIV");
+    expect(header.attributes("type")).toBeUndefined();
+    expect(header.attributes("aria-expanded")).toBeUndefined();
+    expect(header.classes()).not.toContain("hover:bg-fg/5");
+    expect(header.classes()).toContain("cursor-default");
+    await header.trigger("click");
+    expect(w.find('[data-test="tool-step-detail"]').exists()).toBe(false);
+  });
+
+  it("omits diff stats when naive diff fallback triggers on large inputs (501 lines)", () => {
+    const lines501 = Array.from({ length: 501 }, (_, i) => `${i}`).join("\n");
+    const mod501 = lines501.replace("0", "zero");
+    const w = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t1",
+          kind: "edit",
+          toolName: "Edit",
+          title: "big.ts",
+          status: "success",
+          detail: {
+            type: "diff",
+            path: "big.ts",
+            oldText: lines501,
+            newText: mod501,
+          },
+        } as ToolStepDto,
+      },
+    });
+    expect(w.find('[data-test="step-diff-stats"]').exists()).toBe(false);
+  });
+
+  it("omits diff stats when diff input contains truncated marker", () => {
+    const w = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t1",
+          kind: "edit",
+          toolName: "Edit",
+          title: "truncated.ts",
+          status: "success",
+          detail: {
+            type: "diff",
+            path: "truncated.ts",
+            oldText: "const a = 1;\n…(truncated)",
+            newText: "const a = 2;\n…(truncated)",
+          },
+        } as ToolStepDto,
+      },
+    });
+    expect(w.find('[data-test="step-diff-stats"]').exists()).toBe(false);
+  });
+});

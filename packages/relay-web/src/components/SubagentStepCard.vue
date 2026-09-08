@@ -118,38 +118,29 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <article data-test="subagent-card"
-           class="overflow-hidden rounded-xl border bg-surface text-xs shadow-e1 transition-colors"
-           :class="status === 'error' ? 'border-danger/40' : status === 'running' ? 'border-accent/35' : 'border-border'"
+  <article data-test="subagent-card" class="text-xs"
            @mouseenter="paused = true" @mouseleave="paused = false" @focusin="paused = true" @focusout="paused = false">
     <button type="button" data-test="subagent-header"
-            class="group flex w-full items-center gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-bg/70"
+            class="group flex w-full items-center gap-1.5 py-1 px-1.5 -mx-1.5 rounded-md text-left text-fg-muted hover:text-fg hover:bg-fg/5 transition-colors"
             :aria-expanded="open" @click="onHeaderClick">
-      <ChevronDown v-if="open" :size="14" class="shrink-0 text-fg-muted" />
-      <ChevronRight v-else :size="14" class="shrink-0 text-fg-muted" />
-      <span class="relative grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-accent/20 bg-accent/10 text-accent">
-        <Bot :size="15" />
-        <span v-if="status === 'running'" class="pulse-dot absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-run-bright" />
-      </span>
-      <span class="min-w-0 flex-1">
-        <span class="flex items-center gap-2">
-          <span class="shrink-0 whitespace-nowrap rounded-full bg-accent/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-accent">{{ $t("tools.subagent") }}</span>
-          <span class="truncate text-[12px] font-semibold text-fg">{{ step.title }}</span>
-        </span>
-        <span class="mt-0.5 block text-[10.5px] text-fg-muted">
+      <Bot :size="13" class="shrink-0 text-accent" />
+      <span class="shrink-0 font-medium text-[11.5px] text-accent">{{ $t("tools.subagent") }}</span>
+      <span class="min-w-0 truncate font-mono text-[11.5px] text-fg-muted group-hover:text-fg">{{ step.title }}</span>
+      <span class="ml-auto flex shrink-0 items-center gap-1.5">
+        <span class="font-mono text-[10.5px] text-fg-muted/70">
           <template v-if="hasTrace">{{ $t("tools.traceCount", { count: children.length }) }}</template>
           <template v-else-if="status === 'running'">{{ $t("tools.running") }} · {{ elapsedLabel }}</template>
           <template v-else>{{ status === "error" ? $t("tools.failed") : $t("tools.finished") }}</template>
         </span>
-      </span>
-      <span class="shrink-0">
-        <Loader2 v-if="status === 'running'" data-test="subagent-running" :size="14" class="animate-spin motion-reduce:animate-none text-accent" />
-        <AlertTriangle v-else-if="status === 'error'" data-test="subagent-error" :size="14" class="text-danger" />
-        <Check v-else data-test="subagent-success" :size="14" class="text-run" />
+        <Loader2 v-if="status === 'running'" data-test="subagent-running" :size="12" class="animate-spin motion-reduce:animate-none text-accent" />
+        <AlertTriangle v-else-if="status === 'error'" data-test="subagent-error" :size="12" class="text-danger" />
+        <Check v-else data-test="subagent-success" :size="12" class="text-run/70" />
+        <ChevronDown v-if="open" :size="12" class="shrink-0 opacity-60 group-hover:opacity-100 transition-opacity" />
+        <ChevronRight v-else :size="12" class="shrink-0 opacity-40 group-hover:opacity-80 transition-opacity" />
       </span>
     </button>
 
-    <div v-if="!open" data-test="subagent-activity" class="border-t border-border/70 bg-bg/45 px-3 py-2">
+    <div v-if="!open" data-test="subagent-activity" class="ml-2.5 my-0.5 border-l-2 border-border/40 pl-3 py-0.5 text-[11px] text-fg-muted/80">
       <Transition v-if="hasTrace" name="activity-slide" mode="out-in">
         <div v-if="currentActivity" :key="currentActivity.toolCallId" class="flex min-w-0 items-center gap-2">
           <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="currentActivity.status === 'running' ? 'bg-accent' : currentActivity.status === 'error' ? 'bg-danger' : 'bg-run'" />
@@ -177,7 +168,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-else data-test="subagent-timeline" class="border-t border-border bg-bg/30 px-3 pb-3 pt-2.5">
+    <div v-else data-test="subagent-timeline" class="ml-2.5 my-1.5 border-l-2 border-border/50 pl-3 space-y-2">
       <ol v-if="hasTrace" class="relative ml-1 space-y-1.5 before:absolute before:bottom-2 before:left-[7px] before:top-2 before:w-px before:bg-border">
         <li v-for="child in children" :key="child.toolCallId" class="relative flex min-w-0 items-center gap-2 pl-5">
           <span class="absolute left-0 grid h-3.5 w-3.5 place-items-center rounded-full border border-border bg-surface">
@@ -203,7 +194,7 @@ onBeforeUnmount(() => {
         </p>
       </template>
       <button type="button" data-test="subagent-open-trace"
-              class="mt-2.5 inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-[10.5px] font-medium text-fg-muted transition-colors hover:border-accent/40 hover:text-accent"
+              class="inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[10.5px] font-medium text-accent transition-colors hover:bg-fg/5"
               @click="onOpenTrace">
         <ExternalLink :size="12" /> {{ $t("tools.viewFullTrace") }}
       </button>

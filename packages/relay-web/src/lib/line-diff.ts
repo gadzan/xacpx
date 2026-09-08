@@ -21,16 +21,25 @@ function naiveDiff(oldLines: string[], newLines: string[]): ParsedDiff {
     rows.push({ type: "add", oldNo: null, newNo: newNo++, text });
     add++;
   }
-  return { rows, add, del };
+  return { rows, add, del, exact: false };
+}
+
+function splitLines(text: string): string[] {
+  if (!text) return [];
+  const lines = text.split("\n");
+  // A terminal newline terminates the final real line;
+  // the trailing split element is not an extra source line.
+  if (text.endsWith("\n")) {
+    lines.pop();
+  }
+  return lines;
 }
 
 /** Diff two independent text blobs at line granularity via classic LCS DP, then
  *  backtrack into renderable rows with old/new line numbers. */
 export function diffLines(oldText: string, newText: string): ParsedDiff {
-  // "".split("\n") returns [""], not []; treat an empty blob as zero lines so a
-  // new-file or full-delete edit doesn't emit a phantom empty row / miscount.
-  const oldLines = oldText ? oldText.split("\n") : [];
-  const newLines = newText ? newText.split("\n") : [];
+  const oldLines = splitLines(oldText);
+  const newLines = splitLines(newText);
   const n = oldLines.length;
   const m = newLines.length;
 
@@ -76,5 +85,5 @@ export function diffLines(oldText: string, newText: string): ParsedDiff {
     rows.push({ type: "add", oldNo: null, newNo: newNo++, text: newLines[j++] });
     add++;
   }
-  return { rows, add, del };
+  return { rows, add, del, exact: true };
 }

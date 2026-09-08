@@ -479,14 +479,23 @@ export default {
     noRecordedActivity: "暂无执行记录",
     viewFullTrace: "查看完整过程",
     loadingDetails: "正在加载详情…",
+    kinds: {
+      read: "查阅",
+      search: "搜索",
+      execute: "终端",
+      edit: "编辑",
+      write: "写入",
+      think: "思考",
+      other: "工具",
+    },
   },
   plan: {
     title: "计划",
     togglePlan: "切换计划",
   },
   reasoning: {
-    reasoning: "推理",
-    reasoningStreaming: "推理中…",
+    reasoning: "思考",
+    reasoningStreaming: "思考中…",
   },
   turnTrace: {
     worked: "已工作",

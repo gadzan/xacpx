@@ -1,5 +1,6 @@
 import type { PeerMessageHistoryEntry, ToolStepDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
-import { markdownBlockBoundaries } from "./render-markdown";
+import { isSafeInlineParagraphOffset, markdownBlockBoundaries, topLevelBlockAt } from "./render-markdown";
+import { normalizeMarkdownTables } from "./normalize-markdown";
 import { hasToolStepAncestor, indexToolSteps } from "./subagent-trace";
 
 export type TurnPresentationItem =
@@ -185,4 +186,129 @@ export function deriveTurnPresentation(
   }
 
   return result;
+}
+
+/** Top-level block types that are strictly safe to slice mid-block across an activity.
+ *  Containers (blockquotes, lists, tables, headings) can be nested arbitrarily or change
+ *  block semantics if split. We fail-closed: only top-level paragraphs permit extracting
+ *  trailing text after a mid-block activity.
+ */
+const SAFE_SLICE_BLOCK_TYPES: Record<string, true> = {
+  paragraph_open: true,
+};
+
+/** Extract the conversational final reply from a turn's wire parts.
+ *
+ *  When a turn finishes with tool/reasoning activity:
+ *  1. If deriveTurnPresentation() produced text items after the last process item,
+ *     those items are already cleanly anchored at top-level Markdown block boundaries
+ *     (e.g. after a code fence or table closed). We join and return them.
+ *  2. If presentation placed the process item at the end, it was anchored at narrative end
+ *     because it arrived inside the final Markdown block. If that block is safe prose
+ *     (a paragraph), trailing text arriving after the process item is returned.
+ *  3. If the process item arrived inside an unsafe or nested container (fence, table, list,
+ *     blockquote) that never closed with a subsequent reply block, mid-block slicing would
+ *     corrupt Markdown (turning closing fences into unclosed opening fences, breaking table
+ *     rows, or severing nested blocks). The fail-safe is fail-closed: only explicitly safe
+ *     top-level prose blocks (paragraph) permit slicing trailing text; all other
+ *     block types (or missing blocks) return empty string (trace header only, no broken markdown).
+ */
+export function extractFinalReplyText(
+  parts: TurnPartDto[],
+  opts?: { presentation?: TurnPresentationItem[] },
+): string {
+  const pres = opts?.presentation ?? deriveTurnPresentation(parts);
+  const lastProcessIndex = pres.findLastIndex((item) => item.type !== "text");
+
+  // Pure-text turn: no process items to fold
+  if (lastProcessIndex < 0) {
+    return parts
+      .filter((p): p is Extract<TurnPartDto, { type: "text" }> => p.type === "text")
+      .map((p) => p.text)
+      .join("");
+  }
+
+  // deriveTurnPresentation already placed subsequent Markdown blocks after the activity
+  if (lastProcessIndex < pres.length - 1) {
+    return pres
+      .slice(lastProcessIndex + 1)
+      .filter((item): item is Extract<TurnPresentationItem, { type: "text" }> => item.type === "text")
+      .map((item) => item.text)
+      .join("");
+  }
+
+  // presentation ended on the process item (anchored at narrative.length).
+  const lastPartIdx = parts.findLastIndex(
+    (p) => p.type === "tool" || (p.type === "reasoning" && p.text.trim().length > 0),
+  );
+  if (lastPartIdx < 0) return "";
+  const trailing = parts
+    .slice(lastPartIdx + 1)
+    .filter((p): p is Extract<TurnPartDto, { type: "text" }> => p.type === "text")
+    .map((p) => p.text)
+    .join("");
+  if (!trailing.trim()) return "";
+
+  // Check if the last activity was inside an unsafe Markdown block.
+  let narrative = "";
+  let toolOffset = 0;
+  for (let i = 0; i < parts.length; i += 1) {
+    if (i === lastPartIdx) toolOffset = narrative.length;
+    const part = parts[i]!;
+    if (part.type === "text") narrative += part.text;
+  }
+
+  const docEnv: Record<string, unknown> = {};
+  const block = topLevelBlockAt(narrative, toolOffset, docEnv);
+  if (!block || !SAFE_SLICE_BLOCK_TYPES[block.type]) {
+    return "";
+  }
+  // Normalization guard: the renderer runs normalizeMarkdownTables() before parsing.
+  // If the candidate block would be reshaped by table normalization (e.g. malformed
+  // delimiterless tables recognized as a table during render but appearing as a paragraph
+  // to raw markdown-it), fail-closed so we do not slice mid-table or synthesize corrupted tables.
+  if (normalizeMarkdownTables(block.source) !== block.source) {
+    return "";
+  }
+  // Scope constraint: the fallback only applies when the trailing prose is strictly contained
+  // within the validated top-level block. Any unrendered Markdown metadata outside the block
+  // (such as trailing reference link definitions) must not leak as final reply.
+  const outsideBlock = narrative.slice(block.endOffset);
+  if (outsideBlock.trim().length > 0) {
+    return "";
+  }
+  // Inline boundary guard: verify that the tool arrived at an unstyled top-level text
+  // boundary within the paragraph, rather than severing an active inline construct
+  // (code span, emphasis, bold, link label/delimiter, reference link, HTML entity, etc.).
+  const offsetInBlock = toolOffset - block.startOffset;
+  if (!isSafeInlineParagraphOffset(block.source, offsetInBlock, docEnv)) {
+    return "";
+  }
+  const reply = narrative.slice(toolOffset, block.endOffset);
+  return reply.trim() ? reply : "";
+}
+
+export interface CollapsedTraceSummary {
+  finalReplyText: string;
+  toolCount: number;
+  thoughtCount: number;
+}
+
+/** Extract all collapsed-trace header metrics in a single pass, sharing the
+ *  presentation derivation between the final conversational reply and the
+ *  activity counters so MessageList and TurnParts never perform duplicate Markdown parses.
+ */
+export interface CollapsedTraceSummaryOptions extends TurnPresentationOptions {
+  presentation?: TurnPresentationItem[];
+}
+
+export function extractCollapsedTraceSummary(
+  parts: TurnPartDto[],
+  opts?: CollapsedTraceSummaryOptions,
+): CollapsedTraceSummary {
+  const pres: TurnPresentationItem[] = opts?.presentation ?? deriveTurnPresentation(parts, opts);
+  const finalReplyText = extractFinalReplyText(parts, { presentation: pres });
+  const toolCount = pres.filter((item: TurnPresentationItem) => item.type === "tool" || item.type === "subagent").length;
+  const thoughtCount = pres.filter((item: TurnPresentationItem) => item.type === "reasoning").length;
+  return { finalReplyText, toolCount, thoughtCount };
 }
