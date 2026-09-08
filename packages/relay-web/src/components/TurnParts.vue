@@ -40,15 +40,25 @@ const presentation = computed(() =>
   ),
 );
 
-// A finished turn collapses everything up through its LAST process item —
-// reasoning, tool, subagent, agent-message, AND the narrative text interleaved
-// between them all belongs to the process. Only trailing text after all process
-// activity is the final reply (deriveTurnPresentation already anchors activity in
-// arrival order, so "last non-text item" is the reliable process/reply boundary —
-// never m.text, which aggregates the whole turn's text).
-const hasTrace = computed(() =>
-  presentation.value.some((item) => item.type !== "text"),
+// The process trace boundary comes from props.parts (the raw event sequence),
+// NOT from presentation. presentation is a Markdown-safe layout model that
+// re-anchors activity to block boundaries. If interleaved process text and a
+// final reply share one Markdown block (e.g. streaming chunks without \n\n),
+// presentation emits the joined text before the activity, so slicing
+// presentation after the last non-text item drops the entire final reply.
+//
+// In the event sequence (props.parts), the semantic boundary is unambiguous:
+// the last visible process part (tool or non-empty reasoning). Everything
+// up through that part is process; any trailing text after it is the final reply.
+const lastProcessPartIndex = computed(() =>
+  props.parts.findLastIndex(
+    (part) =>
+      part.type === "tool"
+      || (part.type === "reasoning" && part.text.trim().length > 0),
+  ),
 );
+
+const hasTrace = computed(() => lastProcessPartIndex.value >= 0);
 const collapsible = computed(() => props.collapseTrace === true && hasTrace.value);
 // Keyed rows remember toggles in the module set (survives hub history convergence,
 // which replaces the message row and rebuilds this component); anonymous rows fall
@@ -58,14 +68,37 @@ const expanded = computed(() => {
   if (!collapsible.value) return false;
   return props.traceKey ? expandedTraces.has(props.traceKey) : localExpanded.value;
 });
-// Collapsed view: only the trailing text after the last process item (the final
-// reply). A pure-text turn keeps everything (no process to fold, no header).
+
+const collapsedReplyText = computed(() => {
+  const boundary = lastProcessPartIndex.value;
+  if (boundary < 0) {
+    return props.parts
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join("");
+  }
+  return props.parts
+    .slice(boundary + 1)
+    .filter((part) => part.type === "text")
+    .map((part) => part.text)
+    .join("");
+});
+
+// Collapsed view: directly construct a single text presentation item from the
+// trailing reply text. When expanded (or when the turn has no process to fold),
+// deriveTurnPresentation provides the full Markdown-safe interleaved layout.
 const visibleItems = computed(() => {
   if (expanded.value || !collapsible.value) return presentation.value;
-  const items = presentation.value;
-  const lastProcessIndex = items.findLastIndex((item) => item.type !== "text");
-  if (lastProcessIndex < 0) return items;
-  return items.slice(lastProcessIndex + 1);
+  const text = collapsedReplyText.value;
+  if (!text.trim()) return [];
+  return [
+    {
+      key: "collapsed-final-reply",
+      type: "text" as const,
+      text,
+      isLatest: false,
+    },
+  ];
 });
 const toolCount = computed(() =>
   presentation.value.filter((item) => item.type === "tool" || item.type === "subagent").length,

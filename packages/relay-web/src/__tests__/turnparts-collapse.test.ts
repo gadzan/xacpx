@@ -198,6 +198,88 @@ describe("TurnParts trace collapse", () => {
     });
     expect(w.findAll('[data-test="turn-narrative"]').map((n) => n.text().trim())).toEqual(["final only"]);
   });
+
+  it("keeps trailing final text when process and reply share one markdown block", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "I'll inspect this." },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "Fixed. The issue was X." },
+    ];
+    const w = mount(TurnParts, {
+      props: {
+        parts,
+        collapseTrace: true,
+        traceKey: "t:same-paragraph",
+      },
+    });
+    expect(
+      w.findAll('[data-test="turn-narrative"]')
+        .map((n) => n.text().trim()),
+    ).toEqual([
+      "Fixed. The issue was X.",
+    ]);
+    expect(
+      w.find('[data-test="tool-step-card"]').exists(),
+    ).toBe(false);
+  });
+
+  it("keeps only trailing text for text before -> reasoning -> final", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "I'm thinking about this." },
+      { type: "reasoning", text: "analyzing root cause" },
+      { type: "text", text: "Root cause identified." },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:text-reasoning-final" },
+    });
+    expect(w.findAll('[data-test="turn-narrative"]').map((n) => n.text().trim())).toEqual([
+      "Root cause identified.",
+    ]);
+    expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-test="trace-label"]').text()).toContain("1 thought");
+  });
+
+  it("keeps trailing text for tool -> final", () => {
+    const parts: TurnPartDto[] = [
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "Here is the result." },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:tool-final" },
+    });
+    expect(w.findAll('[data-test="turn-narrative"]').map((n) => n.text().trim())).toEqual([
+      "Here is the result.",
+    ]);
+    expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-test="tool-step-card"]').exists()).toBe(false);
+  });
+
+  it("concatenates consecutive trailing text chunks after the last process item", () => {
+    const parts: TurnPartDto[] = [
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "Result: " },
+      { type: "text", text: "success." },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:consecutive-text" },
+    });
+    expect(w.findAll('[data-test="turn-narrative"]').map((n) => n.text().trim())).toEqual([
+      "Result: success.",
+    ]);
+  });
+
+  it("shows header only when turn has text -> tool with no trailing text", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "Working on it..." },
+      { type: "tool", step: tool("read-1") },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:text-tool-no-trailing" },
+    });
+    expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-test="turn-narrative"]').exists()).toBe(false);
+    expect(w.find('[data-test="tool-step-card"]').exists()).toBe(false);
+  });
 });
 
 describe("MessageList convergence", () => {
