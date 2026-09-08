@@ -168,3 +168,17 @@ test("pool and zeroclaw probe their own binaries when not builtin", () => {
   expect(none.find((e) => e.driver === "pool")!.installed).toBe("unknown");
   expect(none.find((e) => e.driver === "zeroclaw")!.installed).toBe("unknown");
 });
+
+// acpx 0.15 builtin (MiniMax Code): command-free template resolving to `mcode acp`.
+test("mcode is a command-free usable template resolving to mcode acp", () => {
+  expect(getAgentTemplate("mcode")).toEqual({ driver: "mcode" });
+  expect(listAgentTemplates()).toContain("mcode");
+  expect(registry.resolve("mcode")).toEqual(["mcode", "acp"]);
+});
+
+test("mcode probes its own binary when not builtin", () => {
+  const cat = catalog(cfg({}), { probe: (bin) => bin === "mcode" });
+  expect(cat.find((e) => e.driver === "mcode")!.installed).toBe("yes");
+  const none = catalog(cfg({}), { probe: () => false });
+  expect(none.find((e) => e.driver === "mcode")!.installed).toBe("unknown");
+});

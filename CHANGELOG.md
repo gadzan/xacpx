@@ -1,3 +1,12 @@
+## [Unreleased]
+
+### Changed
+
+- `acpx` pinned `0.13.1` → `0.15.1` (exact pin kept). Compatibility rebaseline: permission kind inference follows the 0.15 needle table (`read`/`cat`, `search`/`find`/`grep`, `edit`, `delete`, `move`, `execute`, `fetch`, `think`, `other` fallback); legacy `0.13.1`-era session records still load (schema `acpx.session.v1` unchanged); legacy raw-selector backfill verified still present.
+- Runtime Engine adopts 0.15 embedding contracts: `agentProcessEnv` child-only overlay (construction snapshot, part of worker identity — env change recycles the worker, never persisted to records), `processLifecycle` direct-agent lease (awaited admission, best-effort exit; fence/orphan recovery unchanged), accepted `configOptions` snapshot on `setConfigOption`, lossless turn `_meta` pass-through as narrow `meta`, stable `AGENT_SPAWN_ENOENT` mapping (was misclassified as session-missing), unified `AcpxHostPolicy` ceilings for both engine lanes.
+- New `transport.acpxMaxIncomingMessageBytes` / `transport.acpxTerminalMaxOutputBytes` advanced options (`null` = upstream default; warm owners need a recycle after change; never set the message ceiling to `0` without a real workload reason). Inbound over-limit turns fail with an actionable `ACPX_MAX_ACP_MESSAGE_BYTES` error.
+- New `mcode` (MiniMax Code) agent template resolving to `mcode acp` via the acpx registry.
+
 # Changelog
 ## [relay-protocol 0.5.3-beta.0] - 2026-09-08
 

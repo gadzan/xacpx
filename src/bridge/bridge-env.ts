@@ -34,3 +34,16 @@ export function normalizeBridgeQueueOwnerTtlSeconds(value: string | undefined): 
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }
+
+/**
+ * Bridge-side byte ceiling normalizer (plan B5). Daemon config is validated
+ * at parse time, so this stays lenient like its siblings: absent or
+ * malformed input means "follow upstream default", never a guess.
+ */
+export function normalizeBridgeByteLimit(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim().length === 0) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}

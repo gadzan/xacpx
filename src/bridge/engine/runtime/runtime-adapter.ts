@@ -24,6 +24,7 @@ import {
 } from "acpx/runtime";
 
 import type {
+  XacpxConfigSnapshot,
   XacpxPermissionMode,
   XacpxNonInteractivePermissions,
   XacpxRuntimeEvent,
@@ -56,6 +57,21 @@ export interface CreateXacpxRuntimeAdapterOptions {
    * this worker launches, instead of syncing the whole xacpx agent config.
    */
   agentOverrides?: Record<string, string | string[]>;
+  /**
+   * Trusted child-only agent environment (plan B1, acpx 0.15 agentProcessEnv).
+   * Snapshotted by upstream at construction; applies to probes, first launch
+   * and reconnects alike. Never persisted to the session record, never touches
+   * the worker's own process.env. Auth precedence stays upstream-owned: xacpx
+   * never passes authCredentials, so protected auth always wins over this.
+   */
+  agentProcessEnv?: Record<string, string>;
+  /**
+   * Agent-root lifecycle observer (plan B2, acpx 0.15 processLifecycle).
+   * Awaited admission boundary: rejecting onBeforeSpawn/onSpawned aborts
+   * startup (upstream terminates a spawned-but-rejected child itself).
+   * Covers ACP agent roots only — never terminal/descendant cleanup.
+   */
+  processLifecycle?: AcpRuntimeOptions["processLifecycle"];
   onPermissionRequest?: (req: import("acpx/runtime").AcpPermissionRequest, ctx: { signal: AbortSignal }) => Promise<import("acpx/runtime").AcpPermissionDecision | undefined>;
   mcpServers?: import("acpx/runtime").AcpRuntimeOptions["mcpServers"];
 }
@@ -84,7 +100,12 @@ export interface XacpxRuntimeAdapter {
   ensure(input: XacpxEnsureInput): Promise<XacpxRuntimeSessionHandle>;
   startTurn(input: XacpxStartTurnInput): XacpxTurnHandle;
   setMode(handle: XacpxRuntimeSessionHandle, mode: string): Promise<void>;
-  setConfigOption(handle: XacpxRuntimeSessionHandle, key: string, value: string): Promise<void>;
+  /**
+   * Applies a config option and returns the agent-accepted snapshot (plan
+   * B3). `undefined` when upstream resolves void (no accepted state to
+   * report). Never expose the SDK response type above this boundary.
+   */
+  setConfigOption(handle: XacpxRuntimeSessionHandle, key: string, value: string): Promise<XacpxConfigSnapshot | undefined>;
   getStatus(handle: XacpxRuntimeSessionHandle): Promise<unknown>;
   cancel(handle: XacpxRuntimeSessionHandle): Promise<void>;
   close(handle: XacpxRuntimeSessionHandle, options?: { discardPersistentState?: boolean }): Promise<void>;
@@ -95,11 +116,16 @@ export interface XacpxRuntimeAdapter {
 export function createXacpxRuntimeAdapter(options: CreateXacpxRuntimeAdapterOptions): XacpxRuntimeAdapter {
   const runtime = createAcpRuntime({
     cwd: process.cwd(),
+    // B2: direct-agent-root admission/observation. Terminal/descendant
+    // cleanup stays with the worker fence + orphan convergence.
+    ...(options.processLifecycle ? { processLifecycle: options.processLifecycle } : {}),
     sessionStore: createRuntimeStore({ stateDir: options.stateDir }),
     agentRegistry: createAgentRegistry(
       options.agentOverrides ? { overrides: options.agentOverrides } : undefined,
     ),
     permissionMode: options.permissionMode,
+    // B1: child-only overlay for every agent child this Runtime owns.
+    ...(options.agentProcessEnv ? { agentProcessEnv: options.agentProcessEnv } : {}),
     // Without this, upstream answers every agent elicitation with
     // "unsupported" and the worker/host elicitation pipeline (decision
     // dispatch, accept mapping) is dead code. Only "form" is enabled: it
@@ -149,7 +175,8 @@ export function createXacpxRuntimeAdapter(options: CreateXacpxRuntimeAdapterOpti
       await runtime.setMode({ handle: toHandle(handle), mode });
     },
     async setConfigOption(handle, key, value) {
-      await runtime.setConfigOption({ handle: toHandle(handle), key, value });
+      const response = await runtime.setConfigOption({ handle: toHandle(handle), key, value });
+      return toConfigSnapshot(response);
     },
     async getStatus(handle) {
       return await runtime.getStatus({ handle: toHandle(handle) });
@@ -167,6 +194,29 @@ export function createXacpxRuntimeAdapter(options: CreateXacpxRuntimeAdapterOpti
     raw() {
       return runtime;
     },
+  };
+}
+
+/**
+ * Narrow the upstream accepted-config response to the xacpx-owned snapshot
+ * (plan B3). `void` stays `undefined` — no accepted state was reported.
+ * Only stable id/currentValue cross the boundary; sibling-option changes the
+ * agent made alongside are visible as entries, never as SDK objects.
+ */
+export function toConfigSnapshot(response: unknown): XacpxConfigSnapshot | undefined {
+  if (!response || typeof response !== "object" || !("configOptions" in response)) return undefined;
+  const rawOptions = response.configOptions;
+  if (!Array.isArray(rawOptions)) return undefined;
+  return {
+    options: rawOptions.flatMap((entry) => {
+      if (!entry || typeof entry !== "object" || !("id" in entry)) return [];
+      const id = entry.id;
+      if (typeof id !== "string") return [];
+      const current = "currentValue" in entry ? entry.currentValue : undefined;
+      if (typeof current === "string") return [{ id, currentValue: current }];
+      if (typeof current === "boolean") return [{ id, currentValue: String(current) }];
+      return [{ id }];
+    }),
   };
 }
 
@@ -251,16 +301,20 @@ export async function* mapEvents(events: AsyncIterable<AcpRuntimeEvent>): AsyncI
   }
 }
 
-async function mapResult(result: Promise<{
+export async function mapResult(result: Promise<{
   status: "completed" | "cancelled" | "failed";
   stopReason?: string;
+  _meta?: Record<string, unknown> | null;
   error?: { message: string; code?: string; detailCode?: string; retryable?: boolean };
 }>): Promise<XacpxTurnResult> {
   const settled = await result;
   if (settled.status === "failed") {
     return { status: "failed", error: settled.error ?? { message: "runtime turn failed" } };
   }
+  // Lossless opaque pass-through (plan B4): upstream `_meta` becomes narrow
+  // `meta`. Failed turns never carry meta, even if a producer attached one.
+  const meta = settled._meta === undefined ? undefined : settled._meta;
   return settled.status === "cancelled"
-    ? { status: "cancelled", ...(settled.stopReason ? { stopReason: settled.stopReason } : {}) }
-    : { status: "completed", ...(settled.stopReason ? { stopReason: settled.stopReason } : {}) };
+    ? { status: "cancelled", ...(settled.stopReason ? { stopReason: settled.stopReason } : {}), ...(meta !== undefined ? { meta } : {}) }
+    : { status: "completed", ...(settled.stopReason ? { stopReason: settled.stopReason } : {}), ...(meta !== undefined ? { meta } : {}) };
 }

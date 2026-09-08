@@ -10,6 +10,7 @@ import {
   manageBridgeChild,
 } from "../../../../src/transport/acpx-bridge/acpx-bridge-client";
 import {
+  normalizeBridgeByteLimit,
   normalizeBridgePermissionPolicy,
   normalizeBridgeSessionInitTimeoutMs,
 } from "../../../../src/bridge/bridge-env";
@@ -369,6 +370,16 @@ test("omits the permission policy from the bridge spawn env when unset", () => {
   expect(env.XACPX_BRIDGE_PERMISSION_MODE).toBe("approve-all");
   expect(env.XACPX_BRIDGE_NON_INTERACTIVE_PERMISSIONS).toBe("deny");
   expect(env.XACPX_BRIDGE_ACPX_COMMAND).toBe("acpx");
+});
+
+test("forwards host ceilings in the bridge spawn env and round-trips them", () => {
+  const env = buildBridgeSpawnEnv({ acpxMaxIncomingMessageBytes: 8 * 1024 * 1024, acpxTerminalMaxOutputBytes: 0 });
+  expect(env.XACPX_BRIDGE_ACPX_MAX_MESSAGE_BYTES).toBe(String(8 * 1024 * 1024));
+  expect(env.XACPX_BRIDGE_ACPX_TERMINAL_MAX_OUTPUT_BYTES).toBe("0");
+  expect(normalizeBridgeByteLimit(env.XACPX_BRIDGE_ACPX_MAX_MESSAGE_BYTES)).toBe(8 * 1024 * 1024);
+  expect(normalizeBridgeByteLimit(env.XACPX_BRIDGE_ACPX_TERMINAL_MAX_OUTPUT_BYTES)).toBe(0);
+  expect("XACPX_BRIDGE_ACPX_MAX_MESSAGE_BYTES" in buildBridgeSpawnEnv({})).toBe(false);
+  expect("XACPX_BRIDGE_ACPX_TERMINAL_MAX_OUTPUT_BYTES" in buildBridgeSpawnEnv({})).toBe(false);
 });
 
 test("hands the CLI command down to the bridge so its mcp-stdio launcher targets the CLI, not bridge-main", () => {

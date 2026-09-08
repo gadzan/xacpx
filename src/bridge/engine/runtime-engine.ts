@@ -27,6 +27,10 @@ import { RuntimeQueueStore } from "./runtime/runtime-queue";
 import type { RuntimeQueueRecord } from "./runtime/runtime-queue";
 import { isEligibleForRuntime, parseXacpxPermissionPolicy } from "./runtime/runtime-permission-policy";
 import { RuntimePermissionResolver, type RuntimePermissionRequest } from "./runtime/runtime-permission-resolver";
+import { resolveClaudeSpawnEnvironment, type ClaudeExecutionSettings } from "../../adapters/claude-settings-policy";
+import { agentProcessEnvIdentityKey, normalizeAgentProcessEnv } from "./runtime/runtime-worker-protocol";
+import { resolveAcpxHostPolicyEnv } from "../../transport/acpx-host-policy";
+
 function sleep(ms: number): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, ms);
@@ -346,7 +350,6 @@ async function findTombstoneRecordId(
     `ambiguous delete tombstone resolution for session "${criteria.name}": found ${matchingTombstones.length} matching tombstones on disk`,
   );
 }
-
 export interface RuntimeEngineOptions {
   /** Resolved worker entry; defaults to the bundled dist output. */
   workerEntryPath?: string;
@@ -362,6 +365,21 @@ export interface RuntimeEngineOptions {
   permissionMode: PermissionMode;
   nonInteractivePermissions?: NonInteractivePermissions;
   permissionPolicy?: string;
+  /**
+   * Test seam for filtered per-agent process environments (plan B1), mirroring
+   * the CLI transport's resolveSpawnEnvironment. Defaults to
+   * resolveClaudeSpawnEnvironment. The resolved overlay becomes the Runtime
+   * child's agentProcessEnv and part of the construction identity.
+   */
+  resolveSpawnEnvironment?: (input: ClaudeExecutionSettings) => NodeJS.ProcessEnv | undefined;
+  /**
+   * Advanced acpx host ceilings (plan B5). `null`/absent follows upstream
+   * defaults. Merged into the Runtime worker HOST process env at spawn;
+   * warm workers keep their startup values until recycled.
+   */
+  acpxMaxIncomingMessageBytes?: number | null;
+  acpxTerminalMaxOutputBytes?: number | null;
+
   /** Idle TTL in seconds for warm worker processes (plan §16). Set to 0 to disable. */
   queueOwnerTtlSeconds?: number;
   idleTtlMs?: number;
@@ -685,6 +703,16 @@ export class RuntimeEngine implements BridgeEngine {
       const fenceDir: string | (() => string) | undefined = this.options.fenceDir ?? (() => join(this.durableRoot(), "worker-fences"));
       const permissionDeps: RuntimeWorkerClientDeps = {
         ...(options.workerClientDeps ?? {}),
+        // Plan B5: acpx host ceilings ride the worker HOST process env (read
+        // by the embedding client at Runtime construction). Explicit test
+        // spawnEnv still wins on collision; unset policy contributes nothing.
+        spawnEnv: {
+          ...resolveAcpxHostPolicyEnv({
+            acpxMaxIncomingMessageBytes: options.acpxMaxIncomingMessageBytes,
+            acpxTerminalMaxOutputBytes: options.acpxTerminalMaxOutputBytes,
+          }),
+          ...(options.workerClientDeps?.spawnEnv ?? {}),
+        },
         resolvePermissionRequest: (payload) => this.handlePermissionRequest(payload),
         resolveElicitationRequest: (payload) => this.handleElicitationRequest(payload),
       };
@@ -1157,13 +1185,34 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   /**
+   * Per-agent child environment for the Runtime (plan B1). Same source as the
+   * CLI lane's spawn environment (resolveClaudeSpawnEnvironment: claude
+   * provider/model/settings-policy overlay), normalized to the canonical
+   * child-only overlay. `undefined` for drivers with no overlay — the common
+   * case, and the only one with zero worker-recycle churn on host env drift.
+   * Upstream snapshots this at Runtime construction; it is part of the
+   * immutable construction identity on both sides of the worker boundary.
+   */
+  private resolveAgentProcessEnv(input: EngineSessionInput): Record<string, string> | undefined {
+    const raw = (this.options.resolveSpawnEnvironment ?? resolveClaudeSpawnEnvironment)({
+      driver: input.driver ?? input.agent,
+      settingsPolicy: input.settingsPolicy,
+      model: input.model,
+    });
+    return normalizeAgentProcessEnv(raw);
+  }
+
+  /**
    * Host-side mirror of the worker's ensureIdentityKey (plan §3-R1): the
    * exact Runtime-construction fields the worker treats as immutable launch
    * identity. Derived with the same rules as buildEnsureParams (runtime
    * agent name = acpxAgent ?? agent; overrides from agentArgv ?? rawCommand;
    * stateDir = runtimeStateRoot), so a key the worker would accept always
-   * matches the stored key. Mutable per-invocation parameters (model,
-   * effort, resumeSessionId, permission snapshot) are excluded on both sides.
+   * matches the stored key. B1: the resolved agentProcessEnv overlay joins
+   * the identity on both sides (via agentProcessEnvIdentityKey). Mutable
+   * per-invocation parameters (effort, resumeSessionId, permission snapshot)
+   * are excluded on both sides; model feeds env resolution, so a model
+   * change that alters the overlay recycles the worker.
    */
   private constructionIdentityForInput(input: EngineSessionInput): string {
     const runtimeAgentName = input.acpxAgent ?? input.agent;
@@ -1181,6 +1230,7 @@ export class RuntimeEngine implements BridgeEngine {
       overrideValue !== undefined ? { [runtimeAgentName]: overrideValue } : null,
       input.mcpCoordinatorSession ?? null,
       input.mcpSourceHandle ?? null,
+      agentProcessEnvIdentityKey(this.resolveAgentProcessEnv(input)),
     ]);
   }
 
@@ -1489,6 +1539,9 @@ export class RuntimeEngine implements BridgeEngine {
         : input.rawCommand
           ? input.rawCommand
           : undefined;
+    // Resolved once: the resolver can perform idempotent FS work (settings
+    // profiles), and params + identity must observe the same overlay.
+    const agentProcessEnv = this.resolveAgentProcessEnv(input);
     return {
       logicalSessionId: this.workerKey(input),
       sessionKey: input.name,
@@ -1505,6 +1558,9 @@ export class RuntimeEngine implements BridgeEngine {
       ...(this.permissionGeneration > 0 ? { permissionGeneration: this.permissionGeneration } : {}),
       ...(input.mcpCoordinatorSession ? { mcpCoordinatorSession: input.mcpCoordinatorSession } : {}),
       ...(input.mcpSourceHandle ? { mcpSourceHandle: input.mcpSourceHandle } : {}),
+      // B1: child-only overlay, resolved once above so params and the
+      // identity mirror observe the same snapshot.
+      ...(agentProcessEnv ? { agentProcessEnv } : {}),
     };
   }
 
@@ -2904,7 +2960,7 @@ async function buildRuntimeAttachments(
       attachments.push({ mediaType: item.mimeType || "audio/mpeg", data: audioData.toString("base64") });
       continue;
     }
-    // video/file: pinned acpx 0.13.1 public Runtime maps ONLY image/* and
+    // video/file: pinned acpx 0.15.1 public Runtime maps ONLY image/* and
     // audio/* attachments to ACP content blocks. Silently dropping them would
     // make the agent unaware an attachment exists — fail closed instead
     // (CLI lane remains available for these types).
@@ -2916,7 +2972,7 @@ async function buildRuntimeAttachments(
   return attachments;
 }
 
-// Plan parity gate: pinned acpx 0.13.1 public Runtime flattens plan events to a
+// Plan parity gate: pinned acpx 0.15.1 public Runtime flattens plan events to a
 // single status text ("plan: <first entry content>") — full entries and real
 // statuses are lost upstream. Fabricating a PlanEntry would feed the上层 wrong
 // data, so the plan side-channel is explicitly unsupported until a public
@@ -2938,7 +2994,7 @@ export function mapRuntimeToolEvent(event: {
   const toolName = title || "Tool";
   const summaryRaw = event.summary || summarizeToolInput(event.rawInput, title) || summarizeToolOutput(event.rawOutput);
   const summary = summaryRaw && summaryRaw !== title ? summaryRaw : undefined;
-  // Note: pinned acpx 0.13.1 Runtime tool_call exposes no _meta, so a status-less
+  // Note: pinned acpx 0.15.1 Runtime tool_call exposes no _meta, so a status-less
   // terminal carrying only _meta.claudeCode.toolResponse is indistinguishable from
   // a keep-alive and stays running; CLI closes it via hasClaudeToolResponse; fixing
   // needs an upstream contract signal — do NOT change mapping logic.

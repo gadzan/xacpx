@@ -13,10 +13,12 @@ import {
   type XacpxRuntimeAdapter,
 } from "./runtime-adapter";
 import type {
+  XacpxConfigSnapshot,
   XacpxRuntimeSessionHandle,
   XacpxTurnHandle,
 } from "./runtime-contract";
 import {
+  agentProcessEnvIdentityKey,
   encodeWorkerMessage,
   parseWorkerLine,
   type RuntimeWorkerEvent,
@@ -34,6 +36,7 @@ import {
 import { mapRuntimeError } from "./runtime-contract";
 import { parseSessionEffortRecord } from "../../../transport/session-effort";
 import { parseXacpxPermissionPolicy } from "./runtime-permission-policy";
+import { RuntimeAgentLeaseStore, createAgentLifecycleHooks } from "./runtime-agent-lease";
 import { RuntimePermissionResolver, type RuntimePermissionConfig, type RuntimePermissionRequest } from "./runtime-permission-resolver";
 
 class RuntimeError extends Error {
@@ -62,6 +65,12 @@ interface WorkerState {
    * owner. The Host must tear down this worker and respawn a fresh one.
    */
   initFailed?: true;
+  /**
+   * Direct-agent launch evidence (plan B2). Bound once at first
+   * initialization to the owning worker generation; the fence stays the
+   * crash-safe ownership source, this store is live admission evidence.
+   */
+  agentLeases?: RuntimeAgentLeaseStore;
 }
 const gate = createDispatchGate();
 const initialWorkerGeneration =
@@ -98,6 +107,10 @@ function ensureIdentityKey(p: RuntimeWorkerEnsureParams): string {
     p.agentOverrides ?? null,
     p.mcpCoordinatorSession ?? null,
     p.mcpSourceHandle ?? null,
+    // B1: env is Runtime-construction identity (upstream snapshots at
+    // createAcpRuntime). A warm worker silently keeping a stale env is
+    // worse than a recycle — mismatch fails closed so the Host respawns.
+    agentProcessEnvIdentityKey(p.agentProcessEnv),
   ]);
 }
 
@@ -225,12 +238,26 @@ async function initializeRuntime(params: RuntimeWorkerEnsureParams): Promise<voi
       if (servers.length > 0) mcpServers = servers as unknown as import("./runtime-adapter").XacpxMcpServers;
       else throw new RuntimeError("RUNTIME_INIT_FAILED", "MCP coordinator requires mcpServers but none were built");
     }
+    // Plan B2: direct-agent-root admission/observation at the real spawn
+    // boundary. Bound once: one worker process is one worker generation.
+    // ACP agent roots only — terminal/descendant cleanup stays with the
+    // fence + worker-eof convergence + residual registry (see
+    // runtime-agent-lease.ts for the non-goals).
+    state.agentLeases ??= new RuntimeAgentLeaseStore(params.workerGeneration ?? state.workerGeneration);
+    const agentLifecycle = createAgentLifecycleHooks({
+      generation: () => state.workerGeneration,
+      store: state.agentLeases,
+    });
     state.adapter = createXacpxRuntimeAdapter({
       stateDir: params.stateDir,
       permissionMode: params.permissionMode,
       ...(params.nonInteractivePermissions ? { nonInteractivePermissions: params.nonInteractivePermissions } : {}),
+      processLifecycle: agentLifecycle,
       ...(params.permissionPolicy !== undefined ? { permissionPolicy: params.permissionPolicy } : {}),
       ...(params.agentOverrides ? { agentOverrides: params.agentOverrides } : {}),
+      // B1: child-only overlay, snapshotted by upstream at construction and
+      // never persisted. Identity-bound above: a changed overlay recycles.
+      ...(params.agentProcessEnv ? { agentProcessEnv: params.agentProcessEnv } : {}),
       ...(mcpServers ? { mcpServers } : {}),
       onPermissionRequest: async (req, ctx) => {
         const snap = state.permissionSnapshot;
@@ -466,13 +493,17 @@ async function dispatch(request: RuntimeWorkerRequest): Promise<void> {
       case "setConfigOption": {
         const { key, value } = request.params as { key: string; value: string };
         if (!state.adapter || !state.handle) throw new Error("worker not ensured");
+        // B3: the accepted snapshot is host-visible on the response. The
+        // effort alias resolves through applySessionEffort and reports no
+        // snapshot (its accepted state is read back via status, PR C).
+        let snapshot: XacpxConfigSnapshot | undefined;
         if (key === "effort") {
           // Resolve the REAL advertised config id (CLI parity) instead of a hardcoded key
           await applySessionEffort(state.adapter, state.handle, value);
         } else {
-          await state.adapter.setConfigOption(state.handle, key, value);
+          snapshot = await state.adapter.setConfigOption(state.handle, key, value);
         }
-        respond({ id, ok: true, result: {} });
+        respond({ id, ok: true, result: snapshot ? { snapshot } : {} });
         break;
       }
       case "status": {

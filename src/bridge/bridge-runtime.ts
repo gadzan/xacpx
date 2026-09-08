@@ -20,6 +20,7 @@ import { isModelNotAdvertisedError } from "../transport/model-not-advertised";
 import { deriveParentPackageName } from "../recovery/discover-parent-package-paths";
 import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, terminateAcpxQueueOwnerVerified, type LaunchQueueOwnerInput, type QueueOwnerAdapterContext } from "../transport/acpx-queue-owner-launcher";
 import { AcpxQueueOverflowError, isAcpxQueueMessageOverflow, type AcpxQueueCleanupResult } from "../transport/acpx-queue-overflow";
+import { queueOwnerBaseEnvOption } from "../transport/acpx-host-policy";
 import { classifyPreinstalledAdapterCommandShape } from "../adapters/adapter-catalog";
 import { migrateSessionArgvFile } from "../transport/acpx-session-argv-migration";
 import { renderAgentArgvIdentity } from "../config/agent-launch";
@@ -152,6 +153,12 @@ interface BridgeRuntimeOptions {
   permissionPolicy?: string;
   /** Idle TTL (seconds) passed to acpx as `--ttl` on prompt; 0 = keep alive forever. */
   queueOwnerTtlSeconds?: number;
+  /**
+   * Advanced acpx host ceilings (plan B5, acpx 0.15.1). `null`/absent follows
+   * upstream defaults. Baked into the queue-owner HOST base env.
+   */
+  acpxMaxIncomingMessageBytes?: number | null;
+  acpxTerminalMaxOutputBytes?: number | null;
   /** Time bound for session-creation spawns (ensure/new/resume); defaults to 120s like acpx-cli. */
   sessionInitTimeoutMs?: number;
   /**
@@ -193,6 +200,11 @@ export class BridgeRuntime {
     private readonly runPromptCommand: PromptRunner = defaultPromptRunner,
     private readonly repairSessionIndex: RepairSessionIndexFn = tryRepairAcpxSessionIndex,
     private readonly queueOwnerLauncher: QueueOwnerLaunchPort = new AcpxQueueOwnerLauncher({
+      // Plan B5: host ceilings ride the queue-owner HOST base env.
+      ...queueOwnerBaseEnvOption({
+        acpxMaxIncomingMessageBytes: options.acpxMaxIncomingMessageBytes,
+        acpxTerminalMaxOutputBytes: options.acpxTerminalMaxOutputBytes,
+      }),
       acpxCommand: command,
       // Coordinator sessions pre-spawn the queue owner here (before `acpx prompt`),
       // so the owner's warm window must be set at launch — the prompt's `--ttl`

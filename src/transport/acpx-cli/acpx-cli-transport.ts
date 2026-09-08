@@ -65,6 +65,7 @@ import {
 } from "../acpx-command-builder";
 import { MessageInjectionError } from "../message-injection";
 import { AcpxQueueOverflowError, isAcpxQueueMessageOverflow, type AcpxQueueCleanupResult } from "../acpx-queue-overflow";
+import { queueOwnerBaseEnvOption } from "../acpx-host-policy";
 
 interface AcpxCliTransportOptions {
   command?: string;
@@ -80,6 +81,14 @@ interface AcpxCliTransportOptions {
   permissionPolicy?: string;
   /** Idle TTL (seconds) passed to acpx as `--ttl` on prompt; 0 = keep alive forever. */
   queueOwnerTtlSeconds?: number;
+  /**
+   * Advanced acpx host ceilings (plan B5, acpx 0.15.1). `null`/absent follows
+   * upstream defaults. Baked into the queue-owner HOST base env at
+   * construction; warm owners keep startup values until recycled. Flows from
+   * TransportConfig via the `{...config.transport}` spread.
+   */
+  acpxMaxIncomingMessageBytes?: number | null;
+  acpxTerminalMaxOutputBytes?: number | null;
   /** Test seam for filtered per-agent process environments. */
   resolveSpawnEnvironment?: (input: ClaudeExecutionSettings) => NodeJS.ProcessEnv | undefined;
   createAdapterContext?: (input: {
@@ -260,7 +269,15 @@ export class AcpxCliTransport implements SessionTransport {
     this.queueOwnerTtlSeconds = options.queueOwnerTtlSeconds;
     this.runCommand = runCommand;
     this.runPtyCommand = runPtyCommand;
+    // Plan B5: host ceilings ride the queue-owner HOST base env (read by the
+    // embedding client at owner startup). Unset policy keeps the launcher
+    // default (live process.env) bit-identical.
+    const queueOwnerBaseEnv = queueOwnerBaseEnvOption({
+      acpxMaxIncomingMessageBytes: options.acpxMaxIncomingMessageBytes,
+      acpxTerminalMaxOutputBytes: options.acpxTerminalMaxOutputBytes,
+    });
     this.queueOwnerLauncher = queueOwnerLauncher ?? new AcpxQueueOwnerLauncher({
+      ...queueOwnerBaseEnv,
       acpxCommand: this.command,
       // Coordinator sessions pre-spawn the queue owner here (before `acpx prompt`),
       // so the owner's warm window must be set at launch — the prompt's `--ttl`
