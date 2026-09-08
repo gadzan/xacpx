@@ -86,8 +86,15 @@ export function markdownBlockBoundaries(text: string): number[] {
   });
 }
 
-/** Return the markdown-it token type of the top-level block enclosing `offset`. */
-export function topLevelBlockTypeAt(text: string, offset: number): string | null {
+export interface TopLevelBlockInfo {
+  type: string;
+  startOffset: number;
+  endOffset: number;
+  source: string;
+}
+
+/** Return the top-level block enclosing `offset`, including its source slice. */
+export function topLevelBlockAt(text: string, offset: number): TopLevelBlockInfo | null {
   const lineStarts = [0];
   for (let i = 0; i < text.length; i += 1) {
     if (text[i] === "\n") lineStarts.push(i + 1);
@@ -98,10 +105,20 @@ export function topLevelBlockTypeAt(text: string, offset: number): string | null
     const startOffset = lineStarts[block.map![0]] ?? 0;
     const endOffset = lineStarts[block.map![1]] ?? text.length;
     if (offset >= startOffset && offset <= endOffset) {
-      return block.type;
+      return {
+        type: block.type,
+        startOffset,
+        endOffset,
+        source: text.slice(startOffset, endOffset),
+      };
     }
   }
   return null;
+}
+
+/** Return the markdown-it token type of the top-level block enclosing `offset`. */
+export function topLevelBlockTypeAt(text: string, offset: number): string | null {
+  return topLevelBlockAt(text, offset)?.type ?? null;
 }
 
 /** Render markdown to sanitized, XSS-safe HTML. */

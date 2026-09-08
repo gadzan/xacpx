@@ -32,6 +32,11 @@ const props = defineProps<{
   /** Precomputed final reply text (e.g. cached by parent MessageList). When provided,
    *  extractFinalReplyText is bypassed on collapsed turns. */
   collapsedReplyText?: string;
+  /** Precomputed trace activity counts (e.g. cached by parent MessageList). When provided,
+   *  reading presentation is bypassed while collapsed so full layout derivation is deferred
+   *  until the user explicitly clicks to expand. */
+  collapsedToolCount?: number;
+  collapsedThoughtCount?: number;
 }>();
 
 const { t, locale } = useI18n();
@@ -88,9 +93,15 @@ const finalReplyText = computed(() =>
    ];
  });
 const toolCount = computed(() =>
-  presentation.value.filter((item) => item.type === "tool" || item.type === "subagent").length,
+  props.collapsedToolCount !== undefined
+    ? props.collapsedToolCount
+    : presentation.value.filter((item) => item.type === "tool" || item.type === "subagent").length,
 );
-const thoughtCount = computed(() => presentation.value.filter((item) => item.type === "reasoning").length);
+const thoughtCount = computed(() =>
+  props.collapsedThoughtCount !== undefined
+    ? props.collapsedThoughtCount
+    : presentation.value.filter((item) => item.type === "reasoning").length,
+);
 
 function formatElapsed(ms: number): string {
   if (ms < 1000) return locale.value.startsWith("zh") ? "<1秒" : "<1s";

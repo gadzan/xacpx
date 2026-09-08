@@ -403,6 +403,35 @@ describe("TurnParts trace collapse", () => {
     expect(w.find('[data-test="tool-step-card"]').exists()).toBe(false);
     expect(w.find("pre code").exists()).toBe(false);
   });
+
+  it("fails safe and shows header only when a turn ends inside a table lacking delimiter row with no reply", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "| name | value |\n" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "| foo | 1 |\n| bar | 2 |" },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:table-no-delim-no-reply" },
+    });
+    expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-test="turn-narrative"]').exists()).toBe(false);
+    expect(w.find("table").exists()).toBe(false);
+  });
+
+  it("extracts trailing reply outside a table lacking delimiter row", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "| name | value |\n" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "| foo | 1 |\n| bar | 2 |\n\nafter" },
+    ];
+    const w = mount(TurnParts, {
+      props: { parts, collapseTrace: true, traceKey: "t:table-no-delim-after" },
+    });
+    expect(w.findAll('[data-test="turn-narrative"]').map((n) => n.text().trim())).toEqual([
+      "after",
+    ]);
+    expect(w.find('[data-test="tool-step-card"]').exists()).toBe(false);
+  });
 });
 
 describe("MessageList convergence", () => {

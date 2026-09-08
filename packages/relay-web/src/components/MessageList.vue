@@ -12,7 +12,12 @@ import AgentMessageCard from "./AgentMessageCard.vue";
 import AgentIcon from "./AgentIcon.vue";
 import MessageAttachments from "./MessageAttachments.vue";
 import { fmtTime, fmtDateTime } from "../lib/format";
-import { anchoredAgentMessageIds, extractFinalReplyText } from "../lib/turn-presentation";
+import {
+  anchoredAgentMessageIds,
+  extractCollapsedTraceSummary,
+  extractFinalReplyText,
+  type CollapsedTraceSummary,
+} from "../lib/turn-presentation";
 const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; loadingHistory?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null; ensureFull?: (messageId: number) => Promise<void> }>();
 const emit = defineEmits<{ resend: [message: ChatMessage]; loadOlder: [] }>();
 
@@ -63,23 +68,25 @@ function traceElapsedOf(m: ChatMessage): number | null {
   return Number.isFinite(ms) && ms > 0 ? ms : null;
 }
 
-// Cache final-reply extraction by message object and parts reference to prevent
-// redundant markdown parses across MessageList (CopyButton) and TurnParts.
-const replyTextCache = new WeakMap<ChatMessage, { parts: TurnPartDto[]; text: string }>();
+// Cache collapsed trace metrics by message object and parts reference to prevent
+// redundant markdown parses and presentation derivations across MessageList and TurnParts.
+const traceSummaryCache = new WeakMap<ChatMessage, { parts: TurnPartDto[]; summary: CollapsedTraceSummary }>();
 
-function finalReplyTextOf(m: ChatMessage): string {
+function traceSummaryOf(m: ChatMessage): CollapsedTraceSummary {
   const parts = m.structured?.parts;
-  if (!parts?.length) return "";
-  const cached = replyTextCache.get(m);
-  if (cached && cached.parts === parts) return cached.text;
-  const text = extractFinalReplyText(parts);
-  replyTextCache.set(m, { parts, text });
-  return text;
+  if (!parts?.length) return { finalReplyText: "", toolCount: 0, thoughtCount: 0 };
+  const cached = traceSummaryCache.get(m);
+  if (cached && cached.parts === parts) return cached.summary;
+  const summary = extractCollapsedTraceSummary(parts, {
+    sentAgentMessageById: sentAgentMessageById.value,
+  });
+  traceSummaryCache.set(m, { parts, summary });
+  return summary;
 }
 
 function copyTextOf(m: ChatMessage): string {
   if (m.direction === "out" && m.structured?.parts?.length && !isFailedTurn(m) && hasTraceParts(m)) {
-    return finalReplyTextOf(m);
+    return traceSummaryOf(m).finalReplyText;
   }
   return m.text ?? "";
 }
@@ -606,7 +613,9 @@ watch(
               <div data-test="msg-content" class="space-y-2.5">
                 <TurnParts v-if="m.structured?.parts?.length" :parts="m.structured.parts" :ensure-full="ensureFullOf(m)" :sent-agent-messages="sentAgentMessageById"
                            :collapse-trace="!isFailedTurn(m) && hasTraceParts(m)" :trace-key="traceKeyOf(m)" :trace-elapsed-ms="traceElapsedOf(m)"
-                           :collapsed-reply-text="!isFailedTurn(m) && hasTraceParts(m) ? finalReplyTextOf(m) : undefined" />
+                           :collapsed-reply-text="!isFailedTurn(m) && hasTraceParts(m) ? traceSummaryOf(m).finalReplyText : undefined"
+                           :collapsed-tool-count="!isFailedTurn(m) && hasTraceParts(m) ? traceSummaryOf(m).toolCount : undefined"
+                           :collapsed-thought-count="!isFailedTurn(m) && hasTraceParts(m) ? traceSummaryOf(m).thoughtCount : undefined" />
                 <template v-else>
                   <ToolCallPanel v-if="m.structured?.toolSteps?.length" :steps="m.structured.toolSteps" :ensure-full="ensureFullOf(m)" />
                   <ReasoningPanel v-if="m.structured?.reasoning?.trim()" :reasoning="m.structured.reasoning" :default-open="false" />

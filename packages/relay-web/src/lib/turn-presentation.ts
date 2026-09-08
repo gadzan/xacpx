@@ -1,5 +1,6 @@
 import type { PeerMessageHistoryEntry, ToolStepDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
-import { markdownBlockBoundaries, topLevelBlockTypeAt } from "./render-markdown";
+import { markdownBlockBoundaries, topLevelBlockAt } from "./render-markdown";
+import { normalizeMarkdownTables } from "./normalize-markdown";
 import { hasToolStepAncestor, indexToolSteps } from "./subagent-trace";
 
 export type TurnPresentationItem =
@@ -258,9 +259,41 @@ export function extractFinalReplyText(
     if (part.type === "text") narrative += part.text;
   }
 
-  const blockType = topLevelBlockTypeAt(narrative, toolOffset);
-  if (!blockType || !SAFE_SLICE_BLOCK_TYPES[blockType]) {
+  const block = topLevelBlockAt(narrative, toolOffset);
+  if (!block || !SAFE_SLICE_BLOCK_TYPES[block.type]) {
+    return "";
+  }
+  // Normalization guard: the renderer runs normalizeMarkdownTables() before parsing.
+  // If the candidate block would be reshaped by table normalization (e.g. malformed
+  // delimiterless tables recognized as a table during render but appearing as a paragraph
+  // to raw markdown-it), fail-closed so we do not slice mid-table or synthesize corrupted tables.
+  if (normalizeMarkdownTables(block.source) !== block.source) {
     return "";
   }
   return trailing;
+}
+
+export interface CollapsedTraceSummary {
+  finalReplyText: string;
+  toolCount: number;
+  thoughtCount: number;
+}
+
+/** Extract all collapsed-trace header metrics in a single pass, sharing the
+ *  presentation derivation between the final conversational reply and the
+ *  activity counters so MessageList and TurnParts never perform duplicate Markdown parses.
+ */
+export interface CollapsedTraceSummaryOptions extends TurnPresentationOptions {
+  presentation?: TurnPresentationItem[];
+}
+
+export function extractCollapsedTraceSummary(
+  parts: TurnPartDto[],
+  opts?: CollapsedTraceSummaryOptions,
+): CollapsedTraceSummary {
+  const pres: TurnPresentationItem[] = opts?.presentation ?? deriveTurnPresentation(parts, opts);
+  const finalReplyText = extractFinalReplyText(parts, { presentation: pres });
+  const toolCount = pres.filter((item: TurnPresentationItem) => item.type === "tool" || item.type === "subagent").length;
+  const thoughtCount = pres.filter((item: TurnPresentationItem) => item.type === "reasoning").length;
+  return { finalReplyText, toolCount, thoughtCount };
 }

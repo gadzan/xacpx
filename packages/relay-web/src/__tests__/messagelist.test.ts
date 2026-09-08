@@ -236,7 +236,8 @@ describe("MessageList", () => {
     const turnParts = wrapper.findComponent(TurnParts);
     expect(turnParts.exists()).toBe(true);
     expect(turnParts.props("collapsedReplyText")).toBe("Fixed. The issue was X.");
-
+    expect(turnParts.props("collapsedToolCount")).toBe(1);
+    expect(turnParts.props("collapsedThoughtCount")).toBe(0);
     const copy = wrapper.find('[data-test="msg-out"] [data-test="msg-actions"]').findComponent(CopyButton);
     expect(copy.exists()).toBe(true);
     expect(copy.props("text")).toBe("Fixed. The issue was X.");
