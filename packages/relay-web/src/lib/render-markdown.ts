@@ -56,41 +56,69 @@ export interface RenderMarkdownOptions {
   streaming?: boolean;
 }
 
-/**
- * Return source offsets where a top-level Markdown block can safely hand over to
- * non-Markdown turn activity. Gaps between blocks stay attached to the preceding
- * block, so an activity observed after "\n\n" lands before the next block. Parsing
- * the raw source is intentionally conservative: normalization may recognize more
- * constructs, but it must never create an unsafe split inside the original source.
- */
-export function markdownBlockBoundaries(text: string): number[] {
-  const lineStarts = [0];
-  for (let i = 0; i < text.length; i += 1) {
-    if (text[i] === "\n") lineStarts.push(i + 1);
-  }
-
-  const ranges = md
-    .parse(text, {})
-    .filter((token) => token.level === 0 && token.map !== null)
-    .map((token) => token.map!)
-    .filter((range, index, all) =>
-      index === 0 || range[0] !== all[index - 1]![0] || range[1] !== all[index - 1]![1],
-    );
-
-  if (ranges.length === 0) return [text.length];
-  return ranges.map((_, index) => {
-    const nextStartLine = ranges[index + 1]?.[0];
-    return nextStartLine === undefined
-      ? text.length
-      : (lineStarts[nextStartLine] ?? text.length);
-  });
-}
-
 export interface TopLevelBlockInfo {
   type: string;
   startOffset: number;
   endOffset: number;
   source: string;
+}
+
+export interface MarkdownDocumentAnalysis {
+  boundaries: number[];
+  blocks: TopLevelBlockInfo[];
+  env: Record<string, unknown>;
+}
+
+/** Parse a Markdown document once and retain all top-level block ranges plus the
+ * document env populated by markdown-it (notably reference link definitions).
+ * Gaps between blocks stay attached to the preceding boundary, so activity after
+ * "\n\n" lands before the next block.
+ */
+export function analyzeMarkdownDocument(
+  text: string,
+  env: Record<string, unknown> = {},
+): MarkdownDocumentAnalysis {
+  const lineStarts = [0];
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === "\n") lineStarts.push(i + 1);
+  }
+
+  const topLevelTokens = md
+    .parse(text, env)
+    .filter((token) => token.level === 0 && token.map !== null)
+    .filter((token, index, all) =>
+      index === 0
+      || token.map![0] !== all[index - 1]!.map![0]
+      || token.map![1] !== all[index - 1]!.map![1],
+    );
+  const blocks = topLevelTokens.map((token): TopLevelBlockInfo => {
+    const startOffset = lineStarts[token.map![0]] ?? 0;
+    const endOffset = lineStarts[token.map![1]] ?? text.length;
+    return {
+      type: token.type,
+      startOffset,
+      endOffset,
+      source: text.slice(startOffset, endOffset),
+    };
+  });
+  const boundaries = blocks.length === 0 ? [text.length] : blocks.map((_, index) => {
+    const nextStartLine = topLevelTokens[index + 1]?.map![0];
+    return nextStartLine === undefined
+      ? text.length
+      : (lineStarts[nextStartLine] ?? text.length);
+  });
+
+  return { boundaries, blocks, env };
+}
+
+/**
+ * Return source offsets where a top-level Markdown block can safely hand over to
+ * non-Markdown turn activity. Parsing the raw source is intentionally conservative:
+ * normalization may recognize more constructs, but it must never create an unsafe
+ * split inside the original source.
+ */
+export function markdownBlockBoundaries(text: string): number[] {
+  return analyzeMarkdownDocument(text).boundaries;
 }
 
 /** Return the top-level block enclosing `offset`, including its source slice.
@@ -102,25 +130,9 @@ export function topLevelBlockAt(
   offset: number,
   env: Record<string, unknown> = {},
 ): TopLevelBlockInfo | null {
-  const lineStarts = [0];
-  for (let i = 0; i < text.length; i += 1) {
-    if (text[i] === "\n") lineStarts.push(i + 1);
-  }
-  const tokens = md.parse(text, env);
-  const blocks = tokens.filter((t) => t.level === 0 && t.map !== null);
-  for (const block of blocks) {
-    const startOffset = lineStarts[block.map![0]] ?? 0;
-    const endOffset = lineStarts[block.map![1]] ?? text.length;
-    if (offset >= startOffset && offset <= endOffset) {
-      return {
-        type: block.type,
-        startOffset,
-        endOffset,
-        source: text.slice(startOffset, endOffset),
-      };
-    }
-  }
-  return null;
+  return analyzeMarkdownDocument(text, env).blocks.find(
+    (block) => offset >= block.startOffset && offset <= block.endOffset,
+  ) ?? null;
 }
 
 interface SemanticInlineToken {
@@ -196,6 +208,14 @@ function areSemanticTokensEqual(a: SemanticInlineToken[], b: SemanticInlineToken
   return true;
 }
 
+function isStandaloneParagraph(source: string): boolean {
+  if (!source.trim()) return true;
+  const blocks = md
+    .parse(source, {})
+    .filter((token) => token.level === 0 && token.map !== null);
+  return blocks.length === 1 && blocks[0]!.type === "paragraph_open";
+}
+
 /** Check whether `offsetInBlock` inside a paragraph block lands at a safe top-level
  *  text position rather than severing an active inline construct (code span,
  *  emphasis, strong, link label/delimiter, reference link, HTML entity, hardbreak, etc.).
@@ -216,6 +236,30 @@ export function isSafeInlineParagraphOffset(
   const fullTokens = canonicalInlineTokens(paragraphSource, env);
   const prefixTokens = canonicalInlineTokens(prefix, env);
   const suffixTokens = canonicalInlineTokens(suffix, env);
+  const combinedTokens = mergeTokenStreams(prefixTokens, suffixTokens);
+
+  return areSemanticTokensEqual(fullTokens, combinedTokens);
+}
+
+/** Check a paragraph split as it will actually render in TurnParts: the full
+ * paragraph resolves against its document env, while the prefix and suffix are
+ * parsed by separate StreamMarkdown instances with isolated env objects. This
+ * rejects document-context dependencies such as reference-style links while still
+ * allowing ordinary prose in an earlier block to interleave with activity.
+ */
+export function isSafeStandaloneInlineParagraphOffset(
+  paragraphSource: string,
+  offsetInBlock: number,
+  documentEnv: Record<string, unknown> = {},
+): boolean {
+  if (offsetInBlock < 0 || offsetInBlock > paragraphSource.length) return false;
+  const prefix = paragraphSource.slice(0, offsetInBlock);
+  const suffix = paragraphSource.slice(offsetInBlock);
+  if (!isStandaloneParagraph(prefix) || !isStandaloneParagraph(suffix)) return false;
+
+  const fullTokens = canonicalInlineTokens(paragraphSource, documentEnv);
+  const prefixTokens = canonicalInlineTokens(prefix, {});
+  const suffixTokens = canonicalInlineTokens(suffix, {});
   const combinedTokens = mergeTokenStreams(prefixTokens, suffixTokens);
 
   return areSemanticTokensEqual(fullTokens, combinedTokens);

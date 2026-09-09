@@ -39,6 +39,22 @@ describe("deriveTurnPresentation", () => {
     ]);
   });
 
+  it("keeps progress interleaved before a later Markdown result block", () => {
+    expect(visibleShape([
+      { type: "text", text: "plan A " },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "plan B" },
+      { type: "tool", step: tool("read-2") },
+      { type: "text", text: "\n\n## Result\nDone" },
+    ])).toEqual([
+      { type: "text", text: "plan A " },
+      { type: "tool", id: "read-1" },
+      { type: "text", text: "plan B" },
+      { type: "tool", id: "read-2" },
+      { type: "text", text: "\n\n## Result\nDone" },
+    ]);
+  });
+
   it("keeps a tool event at a safe plain-text paragraph offset", () => {
     expect(visibleShape([
       { type: "text", text: "before " },
@@ -48,6 +64,28 @@ describe("deriveTurnPresentation", () => {
       { type: "text", text: "before " },
       { type: "tool", id: "read-1" },
       { type: "text", text: "after" },
+    ]);
+  });
+
+  it("does not split a paragraph when the suffix would become a standalone heading", () => {
+    expect(visibleShape([
+      { type: "text", text: "before " },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "# not a heading" },
+    ])).toEqual([
+      { type: "text", text: "before # not a heading" },
+      { type: "tool", id: "read-1" },
+    ]);
+  });
+
+  it("does not split a paragraph that depends on a later reference definition", () => {
+    expect(visibleShape([
+      { type: "text", text: "See [docs][ref]" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "\n\n[ref]: https://example.com" },
+    ])).toEqual([
+      { type: "text", text: "See [docs][ref]\n\n[ref]: https://example.com" },
+      { type: "tool", id: "read-1" },
     ]);
   });
 

@@ -1,5 +1,11 @@
 import type { PeerMessageHistoryEntry, ToolStepDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
-import { isSafeInlineParagraphOffset, markdownBlockBoundaries, topLevelBlockAt } from "./render-markdown";
+import {
+  analyzeMarkdownDocument,
+  isSafeInlineParagraphOffset,
+  isSafeStandaloneInlineParagraphOffset,
+  topLevelBlockAt,
+  type TopLevelBlockInfo,
+} from "./render-markdown";
 import { normalizeMarkdownTables } from "./normalize-markdown";
 import { hasToolStepAncestor, indexToolSteps } from "./subagent-trace";
 
@@ -96,16 +102,37 @@ export function deriveTurnPresentation(
     activities.push({ offset: narrative.length, index, part });
   });
 
-  const boundaries = markdownBlockBoundaries(narrative);
-  const documentEnv: Record<string, unknown> = {};
+  const markdown = analyzeMarkdownDocument(narrative);
+
+  const blockAtOffset = (offset: number): TopLevelBlockInfo | null => {
+    let low = 0;
+    let high = markdown.blocks.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (markdown.blocks[middle]!.endOffset < offset) low = middle + 1;
+      else high = middle;
+    }
+    const block = markdown.blocks[low];
+    return block && offset >= block.startOffset ? block : null;
+  };
+
+  const boundaryAtOrAfter = (offset: number): number | null => {
+    let low = 0;
+    let high = markdown.boundaries.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (markdown.boundaries[middle]! < offset) low = middle + 1;
+      else high = middle;
+    }
+    return markdown.boundaries[low] ?? null;
+  };
 
   const safeNarrativeAnchor = (offset: number): number | null => {
-    const block = topLevelBlockAt(narrative, offset, documentEnv);
+    const block = blockAtOffset(offset);
     if (!block || block.type !== "paragraph_open") return null;
     if (normalizeMarkdownTables(block.source) !== block.source) return null;
-    if (narrative.slice(block.endOffset).trim().length > 0) return null;
     const offsetInBlock = offset - block.startOffset;
-    return isSafeInlineParagraphOffset(block.source, offsetInBlock, documentEnv)
+    return isSafeStandaloneInlineParagraphOffset(block.source, offsetInBlock, markdown.env)
       ? offset
       : null;
   };
@@ -115,7 +142,7 @@ export function deriveTurnPresentation(
     const anchor = narrative.slice(0, activity.offset).trim().length === 0
       ? 0
       : (safeNarrativeAnchor(activity.offset)
-        ?? boundaries.find((boundary) => boundary >= activity.offset)
+        ?? boundaryAtOrAfter(activity.offset)
         ?? narrative.length);
     const group = anchored.get(anchor) ?? [];
     group.push(activity);
