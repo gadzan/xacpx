@@ -1292,8 +1292,8 @@ test("/ssn lists native sessions from the current session context", async () => 
   expect(reply.text).not.toContain("61456d60-b7e1-47e6-8641-72bbe8e552e7");
   expect(transport.listAgentSessions).toHaveBeenCalledWith({
     agent: "codex",
-    acpxAgent: "xacpx-managed-codex-f4349e35c3c8",
-    agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
+    acpxAgent: "xacpx-managed-codex-1eddaa92b9a5",
+    agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.10.0",
     driver: "codex",
     cwd: "/tmp/project",
     filterCwd: "/tmp/project",
@@ -1388,8 +1388,8 @@ test("/ssn preserves transport method this binding when listing native sessions"
   expect(transport.client.calls).toEqual([
     {
       agent: "codex",
-      acpxAgent: "xacpx-managed-codex-f4349e35c3c8",
-      agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
+      acpxAgent: "xacpx-managed-codex-1eddaa92b9a5",
+      agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.10.0",
       driver: "codex",
       cwd: "/tmp/project",
       filterCwd: "/tmp/project",
@@ -1580,8 +1580,8 @@ test("/ssn --all preserves all scope in next page commands", async () => {
   expect(reply.text).toContain("更多：/ssn codex --ws project --all --cursor cursor-2");
   expect(transport.listAgentSessions).toHaveBeenCalledWith({
     agent: "codex",
-    acpxAgent: "xacpx-managed-codex-f4349e35c3c8",
-    agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
+    acpxAgent: "xacpx-managed-codex-1eddaa92b9a5",
+    agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.10.0",
     driver: "codex",
     cwd: "/tmp/project",
   });

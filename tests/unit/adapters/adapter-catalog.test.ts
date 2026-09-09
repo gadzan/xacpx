@@ -44,8 +44,8 @@ test("recorded preinstalled classification requires the trusted complete release
 });
 
 test("managed adapters use tested exact defaults and accept local overrides", () => {
-  expect(effectiveAdapterVersion("codex", {})).toBe("1.1.9");
-  expect(effectiveAdapterVersion("claude", {})).toBe("0.64.2");
+  expect(effectiveAdapterVersion("codex", {})).toBe("1.10.0");
+  expect(effectiveAdapterVersion("claude", {})).toBe("0.75.1");
   expect(effectiveAdapterVersion("codex", { codex: "1.1.2" })).toBe("1.1.2");
   expect(buildManagedAdapterCommand("codex", "1.1.2")).toBe(
     "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.2",
@@ -146,12 +146,12 @@ test("adapter versions are exact semver values, never ranges or package specs", 
 test("recognizes only generated commands for managed adapter packages", () => {
   expect(isManagedAdapterCommand(
     "codex",
-    "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
+    "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.10.0",
   )).toBe(true);
-  expect(isManagedAdapterCommand("codex", "npx -y @agentclientprotocol/codex-acp@1.1.9")).toBe(true);
+  expect(isManagedAdapterCommand("codex", "npx -y @agentclientprotocol/codex-acp@1.10.0")).toBe(true);
   expect(isManagedAdapterCommand("codex", "npx -y @agentclientprotocol/codex-acp@^0.0.44")).toBe(true);
   expect(isManagedAdapterCommand("codex", "custom-codex-acp")).toBe(false);
-  expect(isManagedAdapterCommand("claude", "npx -y @agentclientprotocol/codex-acp@1.1.9")).toBe(false);
+  expect(isManagedAdapterCommand("claude", "npx -y @agentclientprotocol/codex-acp@1.10.0")).toBe(false);
 });
 
 import {

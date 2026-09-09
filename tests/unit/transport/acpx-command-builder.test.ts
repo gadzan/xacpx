@@ -142,7 +142,7 @@ test("selection: acpxAgent wins as the positional agent for structured launches"
     {
       agent: "codex",
       acpxAgent: "xacpx-managed-codex-abc123def456",
-      agentCommand: "npx -y @agentclientprotocol/codex-acp@1.1.9",
+      agentCommand: "npx -y @agentclientprotocol/codex-acp@1.10.0",
       cwd: "/repo",
       permission,
     },
@@ -154,10 +154,10 @@ test("selection: acpxAgent wins as the positional agent for structured launches"
 
 test("selection: legacy agentCommand falls back to --agent when no acpxAgent is sent (old bridge clients)", () => {
   const args = buildSessionArgs(
-    { agent: "codex", agentCommand: "npx -y @agentclientprotocol/codex-acp@1.1.9", cwd: "/repo", permission: launchPermission },
+    { agent: "codex", agentCommand: "npx -y @agentclientprotocol/codex-acp@1.10.0", cwd: "/repo", permission: launchPermission },
     ["sessions", "list"],
   );
-  expect(args).toEqual(expect.arrayContaining(["--agent", "npx -y @agentclientprotocol/codex-acp@1.1.9"]));
+  expect(args).toEqual(expect.arrayContaining(["--agent", "npx -y @agentclientprotocol/codex-acp@1.10.0"]));
 });
 
 test("selection: bare driver stays positional", () => {
