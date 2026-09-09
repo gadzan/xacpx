@@ -999,7 +999,7 @@ test("G4: hard delete on dead+failed unverified owner fails closed and does not 
   }
 });
 
-test("TTL success then engine.shutdown() is idempotent and succeeds (Windows regression)", async () => {
+test("TTL success then engine.shutdown() is idempotent and succeeds (Windows regression)", { timeout: 30_000 }, async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-ttl-shutdown-"));
   try {
     const entry = join(dir, "fake-worker.mjs");

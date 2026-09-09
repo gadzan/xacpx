@@ -194,6 +194,7 @@ test("engine sends the resolved overlay and recycles the worker when it changes"
       workerEntryPath: entry,
       permissionMode: "approve-all",
       fenceDir: join(dir, "wf"),
+      durableRootDir: join(dir, "durable"),
       workerClientDeps: { spawnEnv: { CAPTURE_FILE: capture } },
       resolveSpawnEnvironment: (input) => {
         seenInputs.push({ driver: input.driver });
@@ -234,6 +235,7 @@ test("one ensure resolves the overlay once: recorded identity matches sent param
       workerEntryPath: entry,
       permissionMode: "approve-all",
       fenceDir: join(dir, "wf"),
+      durableRootDir: join(dir, "durable"),
       workerClientDeps: { spawnEnv: { CAPTURE_FILE: capture } },
       // Stateful resolver: a double resolution inside one ensure would
       // observe A then B and split identity from params.
@@ -266,6 +268,7 @@ test("throwing resolver rejects the op but leaks no business-op count", async ()
       workerEntryPath: entry,
       permissionMode: "approve-all",
       fenceDir: join(dir, "wf"),
+      durableRootDir: join(dir, "durable"),
       workerClientDeps: { spawnEnv: { CAPTURE_FILE: capture } },
       resolveSpawnEnvironment: () => {
         throw new Error("profile failure");
@@ -298,6 +301,7 @@ test("engine narrows full resolver output to the intentional overlay", async () 
       workerEntryPath: entry,
       permissionMode: "approve-all",
       fenceDir: join(dir, "wf"),
+      durableRootDir: join(dir, "durable"),
       workerClientDeps: { spawnEnv: { CAPTURE_FILE: capture } },
       // A resolver returning the whole parent plus one intentional key must
       // not re-elevate the parent above persisted session env: only the
@@ -357,6 +361,7 @@ test("B5: host ceilings reach the worker HOST env; unset policy leaves it alone"
         workerEntryPath: entry,
         permissionMode: "approve-all",
         fenceDir: join(dir, "wf"),
+        durableRootDir: join(dir, "durable"),
         acpxMaxIncomingMessageBytes: 123456,
         acpxTerminalMaxOutputBytes: 789,
       });

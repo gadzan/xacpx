@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-import { narrowToAgentProcessEnvOverlay, resolveClaudeSpawnEnvironment } from "../../../src/adapters/claude-settings-policy";
+import { narrowToAgentProcessEnvOverlay, resolveClaudeAgentProcessEnv, resolveClaudeSpawnEnvironment } from "../../../src/adapters/claude-settings-policy";
 
 test("provider-only imports provider env and overlays settings without moving session state", () => {
   let profilePath = "";
@@ -407,8 +407,34 @@ test("isolated narrows to the profile dir plus the cleared flag", () => {
     },
   );
   const overlay = narrowToAgentProcessEnvOverlay(resolved, baseEnv);
-  expect(overlay?.CLAUDE_CONFIG_DIR?.startsWith("/profiles/")).toBe(true);
+  const profileDir = overlay?.CLAUDE_CONFIG_DIR ?? "";
+  expect(profileDir.length).toBeGreaterThan(0);
+  expect(dirname(profileDir)).toBe(join("/profiles"));
   expect(overlay?.ACPX_CLAUDE_INCLUDE_USER_SETTINGS).toBe("0");
   expect(overlay).not.toHaveProperty("PATH");
   expect(overlay).not.toHaveProperty("HTTP_PROXY");
+});
+
+test("same-value intentional writes ride the overlay via provenance", () => {
+  // Explicit session model matching the inherited value: a pure value diff
+  // would drop it, letting a stale persisted ANTHROPIC_MODEL win downstream.
+  const overlay = resolveClaudeAgentProcessEnv(
+    { driver: "claude", settingsPolicy: "isolated", model: "foo" },
+    {
+      baseEnv: { ANTHROPIC_MODEL: "foo", PATH: "/bin" },
+      profileRoot: "/profiles",
+      writeProfile: () => {},
+      linkSessionState: () => {},
+    },
+  );
+  expect(overlay?.ANTHROPIC_MODEL).toBe("foo");
+  expect(overlay).not.toHaveProperty("PATH");
+});
+
+test("full-user same-value flag rides the overlay via provenance", () => {
+  const overlay = resolveClaudeAgentProcessEnv(
+    { driver: "claude", settingsPolicy: "full-user" },
+    { baseEnv: { ACPX_CLAUDE_INCLUDE_USER_SETTINGS: "1", PATH: "/bin" } },
+  );
+  expect(overlay).toEqual({ ACPX_CLAUDE_INCLUDE_USER_SETTINGS: "1" });
 });

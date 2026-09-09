@@ -27,7 +27,7 @@ import { RuntimeQueueStore } from "./runtime/runtime-queue";
 import type { RuntimeQueueRecord } from "./runtime/runtime-queue";
 import { isEligibleForRuntime, parseXacpxPermissionPolicy } from "./runtime/runtime-permission-policy";
 import { RuntimePermissionResolver, type RuntimePermissionRequest } from "./runtime/runtime-permission-resolver";
-import { resolveClaudeSpawnEnvironment, narrowToAgentProcessEnvOverlay, type ClaudeExecutionSettings } from "../../adapters/claude-settings-policy";
+import { narrowToAgentProcessEnvOverlay, resolveClaudeAgentProcessEnv, type ClaudeExecutionSettings } from "../../adapters/claude-settings-policy";
 import { agentProcessEnvIdentityKey } from "./runtime/runtime-worker-protocol";
 import { resolveAcpxHostPolicyEnv } from "../../transport/acpx-host-policy";
 
@@ -367,9 +367,11 @@ export interface RuntimeEngineOptions {
   permissionPolicy?: string;
   /**
    * Test seam for filtered per-agent process environments (plan B1), mirroring
-   * the CLI transport's resolveSpawnEnvironment. Defaults to
-   * resolveClaudeSpawnEnvironment. The resolved overlay becomes the Runtime
-   * child's agentProcessEnv and part of the construction identity.
+   * the CLI transport's resolveSpawnEnvironment. A seam-provided env carries
+   * no provenance and falls back to value-diff narrowing; without a seam the
+   * engine resolves overlay + provenance together. Either way the result
+   * becomes the Runtime child's agentProcessEnv and part of the
+   * construction identity.
    */
   resolveSpawnEnvironment?: (input: ClaudeExecutionSettings) => NodeJS.ProcessEnv | undefined;
   /**
@@ -1197,15 +1199,24 @@ export class RuntimeEngine implements BridgeEngine {
    * boundary.
    */
   private resolveAgentProcessEnv(input: EngineSessionInput): Record<string, string> | undefined {
-    // One resolver invocation per call (see withWorker's single snapshot);
-    // narrowed to the intentional overlay so persisted session env keeps
-    // its upstream precedence instead of being shadowed by parent echoes.
-    const resolved = (this.options.resolveSpawnEnvironment ?? resolveClaudeSpawnEnvironment)({
+    // One resolver invocation per call (see withWorker's single snapshot).
+    // The default path resolves overlay + provenance together, so even a
+    // same-value intentional write (e.g. an explicit session model matching
+    // an inherited ANTHROPIC_MODEL) rides above persisted session env. An
+    // injected seam returns a bare env without provenance and falls back to
+    // value-diff narrowing (tests only).
+    if (this.options.resolveSpawnEnvironment) {
+      return narrowToAgentProcessEnvOverlay(this.options.resolveSpawnEnvironment({
+        driver: input.driver ?? input.agent,
+        settingsPolicy: input.settingsPolicy,
+        model: input.model,
+      }));
+    }
+    return resolveClaudeAgentProcessEnv({
       driver: input.driver ?? input.agent,
       settingsPolicy: input.settingsPolicy,
       model: input.model,
     });
-    return narrowToAgentProcessEnvOverlay(resolved);
   }
 
   /**
