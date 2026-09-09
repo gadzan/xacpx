@@ -603,6 +603,7 @@ export class BridgeRuntime {
         ? await this.runPromptCommand(spawnSpec.command, spawnSpec.args, onEvent, {
             formatToolCalls,
             toolEventMode,
+            driver: input.driver ?? input.agent,
             env: this.effectiveSpawnEnvironment(input),
             rawStream,
           })
@@ -1254,6 +1255,9 @@ export class BridgeRuntime {
       permissionPolicy: this.options.permissionPolicy,
     };
   }
+  // Internal primitive: agent-specific env only, WITHOUT host policy.
+  // Never spawn directly from this — use effectiveSpawnEnvironment() (all
+  // child env) or the merged queueOwnerLaunchInput() branch.
 
   private spawnEnvironment(input: ClaudeExecutionSettings): NodeJS.ProcessEnv | undefined {
     return (this.options.resolveSpawnEnvironment ?? resolveClaudeSpawnEnvironment)(input);

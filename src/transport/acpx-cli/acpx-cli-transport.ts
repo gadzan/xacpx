@@ -349,7 +349,7 @@ export class AcpxCliTransport implements SessionTransport {
       // argv migration backfilled just above); `sessions new` would orphan it.
       await runEnsure.call(this, ensureArgs, {
         timeoutMs: remainingTimeoutMs(),
-        env: this.spawnEnvironment(session),
+        env: this.effectiveSpawnEnvironment(session),
       });
       return;
     } catch (error) {
@@ -362,7 +362,7 @@ export class AcpxCliTransport implements SessionTransport {
           session.transportSession,
         ], "quiet"), {
           timeoutMs: Math.min(this.managementCommandTimeoutMs, remainingTimeoutMs()),
-          env: this.spawnEnvironment(session),
+          env: this.effectiveSpawnEnvironment(session),
         });
         return;
       } catch {
@@ -376,7 +376,7 @@ export class AcpxCliTransport implements SessionTransport {
       ]);
       await runEnsure.call(this, newArgs, {
         timeoutMs: remainingTimeoutMs(),
-        env: this.spawnEnvironment(session),
+        env: this.effectiveSpawnEnvironment(session),
       });
     }
   }
@@ -393,7 +393,7 @@ export class AcpxCliTransport implements SessionTransport {
         ]);
         return await this.runCommandWithTimeout(this.runCommand, args, {
           timeoutMs: this.sessionInitTimeoutMs,
-          env: this.spawnEnvironment(query),
+          env: this.effectiveSpawnEnvironment(query),
         });
       },
       formatError: (result) => normalizeCommandError(result) ?? `command failed with exit code ${result.code}`,
@@ -423,7 +423,7 @@ export class AcpxCliTransport implements SessionTransport {
       const result = await this.runCommandWithTimeout(this.runCommand, args, {
         timeoutMs: Math.max(deadline - Date.now(), 1),
         stage: "session-history",
-        env: this.spawnEnvironment(session),
+        env: this.effectiveSpawnEnvironment(session),
       });
       if (result.code === 0) {
         return { text: result.stdout.trimEnd() };
@@ -589,7 +589,7 @@ export class AcpxCliTransport implements SessionTransport {
     const result = await this.runCommandWithTimeout(this.runCommand, args, {
       timeoutMs: this.managementCommandTimeoutMs,
       stage: "get-session-model",
-      env: this.spawnEnvironment(session),
+      env: this.effectiveSpawnEnvironment(session),
     });
     if (result.code !== 0) {
       const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
@@ -745,7 +745,7 @@ export class AcpxCliTransport implements SessionTransport {
     const runResume = session.agentCommand ? this.run : this.runWithPty;
     await runResume.call(this, args, {
       timeoutMs: this.sessionInitTimeoutMs,
-      env: this.spawnEnvironment(session),
+      env: this.effectiveSpawnEnvironment(session),
     });
   }
 
@@ -1254,6 +1254,9 @@ export class AcpxCliTransport implements SessionTransport {
     return resolveEffectiveAcpxEnv(agentEnv, this.hostPolicyEnv);
   }
 
+  // Internal primitive: agent-specific env only, WITHOUT host policy.
+  // Never spawn directly from this — use effectiveSpawnEnvironment() (all
+  // child env) or the merged queueOwnerLaunchInput() branch.
   private spawnEnvironment(input: ClaudeExecutionSettings): NodeJS.ProcessEnv | undefined {
     return this.resolveSpawnEnvironment(input);
   }

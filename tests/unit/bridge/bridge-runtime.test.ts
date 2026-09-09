@@ -1847,3 +1847,43 @@ test("bridge queue owner launch keeps host ceilings alongside agent env", async 
   expect(launches[0]?.env?.FILTERED_AGENT).toBe("1");
   expect(launches[0]?.env?.ACPX_MAX_ACP_MESSAGE_BYTES).toBe("1234");
 });
+
+test("streaming prompt preserves driver and merges host ceilings", async () => {
+  const seenOptions: Array<{ driver?: string; env?: NodeJS.ProcessEnv }> = [];
+  const run = async (_command: string, args: string[]) => {
+    if (args.includes("show")) {
+      return { code: 0, stdout: JSON.stringify({ acpxRecordId: "acpx-record-1" }), stderr: "" };
+    }
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  const runtime = new BridgeRuntime(
+    "acpx",
+    run,
+    undefined,
+    {
+      acpxMaxIncomingMessageBytes: 5678,
+      resolveSpawnEnvironment: () => ({ FILTERED_AGENT: "1" }),
+    },
+    async (_command, _args, _onEvent, options) => {
+      seenOptions.push({ driver: options.driver, env: options.env });
+      return { code: 0, stdout: "", stderr: "" };
+    },
+  );
+
+  await expect(runtime.prompt(
+    {
+      agent: "qoder",
+      driver: "qoder",
+      cwd: "/repo",
+      name: "worker",
+      text: "hello",
+    },
+    () => {},
+  )).resolves.toEqual({ text: "" });
+
+  expect(seenOptions.length).toBe(1);
+  // driver must survive: undefined would flip provider normalization to Claude-compatible.
+  expect(seenOptions[0]?.driver).toBe("qoder");
+  expect(seenOptions[0]?.env?.FILTERED_AGENT).toBe("1");
+  expect(seenOptions[0]?.env?.ACPX_MAX_ACP_MESSAGE_BYTES).toBe("5678");
+});

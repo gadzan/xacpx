@@ -3057,3 +3057,47 @@ test("explicit agent env does not drop host ceilings on queue owner launch", asy
   expect(launches[0]?.env?.FILTERED_AGENT).toBe("1");
   expect(launches[0]?.env?.ACPX_MAX_ACP_MESSAGE_BYTES).toBe("1234");
 });
+
+test("ensure/new carries host ceilings alongside explicit agent env", async () => {
+  const seenEnvs: Array<NodeJS.ProcessEnv | undefined> = [];
+  const run = mock(async (_command: string, _args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
+    seenEnvs.push(options?.env);
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const runPty = mock(async () => ({ code: 0, stdout: "", stderr: "" }));
+  const transport = new AcpxCliTransport(
+    {
+      command: "acpx",
+      acpxMaxIncomingMessageBytes: 5678,
+      resolveSpawnEnvironment: () => ({ FILTERED_AGENT: "1" }),
+    },
+    run,
+    runPty,
+  );
+
+  await transport.ensureSession(session);
+
+  expect(seenEnvs.some((env) => env?.FILTERED_AGENT === "1" && env?.ACPX_MAX_ACP_MESSAGE_BYTES === "5678")).toBe(true);
+});
+
+test("resume carries host ceilings alongside explicit agent env", async () => {
+  const seenEnvs: Array<NodeJS.ProcessEnv | undefined> = [];
+  const run = mock(async (_command: string, _args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
+    seenEnvs.push(options?.env);
+    return { code: 0, stdout: "", stderr: "" };
+  });
+  const runPty = mock(async () => ({ code: 0, stdout: "", stderr: "" }));
+  const transport = new AcpxCliTransport(
+    {
+      command: "acpx",
+      acpxMaxIncomingMessageBytes: 5678,
+      resolveSpawnEnvironment: () => ({ FILTERED_AGENT: "1" }),
+    },
+    run,
+    runPty,
+  );
+
+  await transport.resumeAgentSession?.(session, "thread-1");
+
+  expect(seenEnvs.some((env) => env?.FILTERED_AGENT === "1" && env?.ACPX_MAX_ACP_MESSAGE_BYTES === "5678")).toBe(true);
+});
