@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 
 
 import {
+  normalizeBridgeByteLimit,
   normalizeBridgeNonInteractivePermissions,
   normalizeBridgePermissionMode,
   normalizeBridgePermissionPolicy,
@@ -82,6 +83,8 @@ export interface BridgeSharedConfig {
   nonInteractivePermissions: NonInteractivePermissions;
   permissionPolicy: string | undefined;
   queueOwnerTtlSeconds: number | undefined;
+  acpxMaxIncomingMessageBytes: number | undefined;
+  acpxTerminalMaxOutputBytes: number | undefined;
 }
 
 /**
@@ -102,6 +105,8 @@ export function resolveBridgeSharedConfig(
     queueOwnerTtlSeconds: normalizeBridgeQueueOwnerTtlSeconds(
       readEnv("BRIDGE_QUEUE_OWNER_TTL_SECONDS"),
     ),
+    acpxMaxIncomingMessageBytes: normalizeBridgeByteLimit(readEnv("BRIDGE_ACPX_MAX_MESSAGE_BYTES")),
+    acpxTerminalMaxOutputBytes: normalizeBridgeByteLimit(readEnv("BRIDGE_ACPX_TERMINAL_MAX_OUTPUT_BYTES")),
   };
 }
 
@@ -124,6 +129,8 @@ export async function runBridgeMain(): Promise<void> {
       nonInteractivePermissions: bridgeConfig.nonInteractivePermissions,
       permissionPolicy: bridgeConfig.permissionPolicy,
       queueOwnerTtlSeconds: bridgeConfig.queueOwnerTtlSeconds,
+      acpxMaxIncomingMessageBytes: bridgeConfig.acpxMaxIncomingMessageBytes,
+      acpxTerminalMaxOutputBytes: bridgeConfig.acpxTerminalMaxOutputBytes,
       sessionInitTimeoutMs: normalizeBridgeSessionInitTimeoutMs(
         coreEnv("BRIDGE_SESSION_INIT_TIMEOUT_MS"),
       ),
@@ -181,6 +188,8 @@ export async function runBridgeMain(): Promise<void> {
         nonInteractivePermissions: bridgeConfig.nonInteractivePermissions,
         permissionPolicy: bridgeConfig.permissionPolicy,
         queueOwnerTtlSeconds: bridgeConfig.queueOwnerTtlSeconds,
+        acpxMaxIncomingMessageBytes: bridgeConfig.acpxMaxIncomingMessageBytes,
+        acpxTerminalMaxOutputBytes: bridgeConfig.acpxTerminalMaxOutputBytes,
         durableRootDir: durableRoot,
         queueDir,
         fenceDir,

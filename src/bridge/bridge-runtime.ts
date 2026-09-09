@@ -20,6 +20,7 @@ import { isModelNotAdvertisedError } from "../transport/model-not-advertised";
 import { deriveParentPackageName } from "../recovery/discover-parent-package-paths";
 import { AcpxQueueOwnerLauncher, readQueueOwnerPid, terminateAcpxQueueOwner, terminateAcpxQueueOwnerVerified, type LaunchQueueOwnerInput, type QueueOwnerAdapterContext } from "../transport/acpx-queue-owner-launcher";
 import { AcpxQueueOverflowError, isAcpxQueueMessageOverflow, type AcpxQueueCleanupResult } from "../transport/acpx-queue-overflow";
+import { queueOwnerBaseEnvOption, resolveAcpxHostPolicyEnv, resolveEffectiveAcpxEnv } from "../transport/acpx-host-policy";
 import { classifyPreinstalledAdapterCommandShape } from "../adapters/adapter-catalog";
 import { migrateSessionArgvFile } from "../transport/acpx-session-argv-migration";
 import { renderAgentArgvIdentity } from "../config/agent-launch";
@@ -152,6 +153,12 @@ interface BridgeRuntimeOptions {
   permissionPolicy?: string;
   /** Idle TTL (seconds) passed to acpx as `--ttl` on prompt; 0 = keep alive forever. */
   queueOwnerTtlSeconds?: number;
+  /**
+   * Advanced acpx host ceilings (plan B5, acpx 0.15.1). `null`/absent follows
+   * upstream defaults. Baked into the queue-owner HOST base env.
+   */
+  acpxMaxIncomingMessageBytes?: number | null;
+  acpxTerminalMaxOutputBytes?: number | null;
   /** Time bound for session-creation spawns (ensure/new/resume); defaults to 120s like acpx-cli. */
   sessionInitTimeoutMs?: number;
   /**
@@ -183,6 +190,9 @@ export class BridgeRuntime {
   // Older acpx builds don't accept --verbose; we feature-detect lazily on first
   // ensure failure that looks like "unknown option", then disable verbose for
   // this runtime's lifetime. A restart re-probes.
+  private readonly hostPolicyEnv: Record<string, string>;
+  /** Gates env attachment so unset policy stays bit-identical (same as CLI lane). */
+  private readonly hostPolicyConfigured: boolean;
   private acpxVerboseSupported: boolean | undefined = undefined;
 
   constructor(
@@ -193,6 +203,11 @@ export class BridgeRuntime {
     private readonly runPromptCommand: PromptRunner = defaultPromptRunner,
     private readonly repairSessionIndex: RepairSessionIndexFn = tryRepairAcpxSessionIndex,
     private readonly queueOwnerLauncher: QueueOwnerLaunchPort = new AcpxQueueOwnerLauncher({
+      // Plan B5: host ceilings ride the queue-owner HOST base env.
+      ...queueOwnerBaseEnvOption({
+        acpxMaxIncomingMessageBytes: options.acpxMaxIncomingMessageBytes,
+        acpxTerminalMaxOutputBytes: options.acpxTerminalMaxOutputBytes,
+      }),
       acpxCommand: command,
       // Coordinator sessions pre-spawn the queue owner here (before `acpx prompt`),
       // so the owner's warm window must be set at launch — the prompt's `--ttl`
@@ -201,7 +216,15 @@ export class BridgeRuntime {
         ? { ttlMs: options.queueOwnerTtlSeconds * 1000 }
         : {}),
     }),
-  ) {}
+  ) {
+    // Host ceilings ride every acpx child env on this lane (same as CLI):
+    // agent env (or inheritance) with policy overlaid last.
+    this.hostPolicyEnv = resolveAcpxHostPolicyEnv({
+      acpxMaxIncomingMessageBytes: options.acpxMaxIncomingMessageBytes,
+      acpxTerminalMaxOutputBytes: options.acpxTerminalMaxOutputBytes,
+    });
+    this.hostPolicyConfigured = Object.keys(this.hostPolicyEnv).length > 0;
+  }
 
   async updatePermissionPolicy(policy: {
     permissionMode: PermissionMode;
@@ -581,8 +604,8 @@ export class BridgeRuntime {
             formatToolCalls,
             toolEventMode,
             driver: input.driver ?? input.agent,
+            env: this.effectiveSpawnEnvironment(input),
             rawStream,
-            env: this.spawnEnvironment(input),
           })
         : await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input));
       return { text: getPromptText(result) };
@@ -983,7 +1006,9 @@ export class BridgeRuntime {
       ...(input.model?.trim() ? { sessionOptions: { model: input.model.trim() } } : {}),
       ...(adapterId && input.agentCommand ? { agentCommand: input.agentCommand } : {}),
       ...(adapterContext ? { adapterContext } : {}),
-      ...(env ? { env } : {}),
+      // Same bypass guard as the CLI lane: explicit agent env must not drop
+      // the host ceilings; agent-undefined stays omitted (baseEnv covers it).
+      ...(env ? { env: { ...env, ...this.hostPolicyEnv } } : {}),
     };
   }
 
@@ -1230,16 +1255,30 @@ export class BridgeRuntime {
       permissionPolicy: this.options.permissionPolicy,
     };
   }
+  // Internal primitive: agent-specific env only, WITHOUT host policy.
+  // Never spawn directly from this — use effectiveSpawnEnvironment() (all
+  // child env) or the merged queueOwnerLaunchInput() branch.
 
   private spawnEnvironment(input: ClaudeExecutionSettings): NodeJS.ProcessEnv | undefined {
     return (this.options.resolveSpawnEnvironment ?? resolveClaudeSpawnEnvironment)(input);
+  }
+
+  /**
+   * Effective acpx-host env for one child (same contract as the CLI lane):
+   * undefined when there is neither agent env nor policy, preserving the
+   * legacy inherit path bit-identically.
+   */
+  private effectiveSpawnEnvironment(input: ClaudeExecutionSettings): NodeJS.ProcessEnv | undefined {
+    const agentEnv = this.spawnEnvironment(input);
+    if (!agentEnv && !this.hostPolicyConfigured) return undefined;
+    return resolveEffectiveAcpxEnv(agentEnv, this.hostPolicyEnv);
   }
 
   private withSpawnEnvironment(
     input: ClaudeExecutionSettings,
     options?: CommandRunnerOptions,
   ): CommandRunnerOptions | undefined {
-    const env = this.spawnEnvironment(input);
+    const env = this.effectiveSpawnEnvironment(input);
     return env ? { ...(options ?? {}), env } : options;
   }
 }

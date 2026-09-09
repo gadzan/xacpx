@@ -315,7 +315,7 @@ test("capability probe: worker file exists but import fails => auto mode selects
       runtimeAvailable: false,
       runtimeImportOk: false,
       contractProbeOk: false,
-      acpxVersion: "0.13.1",
+      acpxVersion: "0.15.1",
       reason: "acpx/runtime import failed: Cannot find module",
     },
   });
@@ -332,7 +332,7 @@ test("capability probe: worker file exists but import fails => strict runtime th
         runtimeAvailable: false,
         runtimeImportOk: false,
         contractProbeOk: false,
-        acpxVersion: "0.13.1",
+        acpxVersion: "0.15.1",
         reason: "acpx/runtime import failed: Cannot find module",
       },
     }),
@@ -347,7 +347,7 @@ test("capability probe: worker file exists but contract check fails => auto mode
       runtimeAvailable: false,
       runtimeImportOk: true,
       contractProbeOk: false,
-      acpxVersion: "0.13.1",
+      acpxVersion: "0.15.1",
       reason: "missing required exports [createAgentRegistry]",
     },
   });
@@ -364,7 +364,7 @@ test("capability probe: worker file exists but contract check fails => strict ru
         runtimeAvailable: false,
         runtimeImportOk: true,
         contractProbeOk: false,
-        acpxVersion: "0.13.1",
+        acpxVersion: "0.15.1",
         reason: "missing required exports [createAgentRegistry]",
       },
     }),
@@ -378,7 +378,7 @@ test("capability probe: capability ok => auto mode selects runtime", () => {
       runtimeAvailable: true,
       runtimeImportOk: true,
       contractProbeOk: true,
-      acpxVersion: "0.13.1",
+      acpxVersion: "0.15.1",
     },
   });
   expect(choice.engine).toBe("runtime");
@@ -392,7 +392,7 @@ test("capability probe: capability ok => strict runtime selects runtime", () => 
       runtimeAvailable: true,
       runtimeImportOk: true,
       contractProbeOk: true,
-      acpxVersion: "0.13.1",
+      acpxVersion: "0.15.1",
     },
   });
   expect(choice.engine).toBe("runtime");

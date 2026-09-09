@@ -24,7 +24,20 @@ export interface ClaudeExecutionSettings {
   model?: string;
 }
 
-interface ResolveClaudeSpawnEnvironmentOptions {
+/**
+ * Mutation provenance for one Claude spawn-env resolution: which keys the
+ * resolver explicitly wrote or removed, independent of whether the value
+ * happens to equal the parent. A same-value intentional write (e.g. an
+ * explicit session model matching an inherited ANTHROPIC_MODEL) must still
+ * ride the Runtime overlay above persisted session env — a pure value diff
+ * cannot recover that intent.
+ */
+export interface ClaudeEnvironmentProvenance {
+  setKeys: Set<string>;
+  clearedKeys: Set<string>;
+}
+
+export interface ResolveClaudeSpawnEnvironmentOptions {
   baseEnv?: NodeJS.ProcessEnv;
   homeDir?: string;
   platform?: NodeJS.Platform;
@@ -44,31 +57,57 @@ export function resolveClaudeSpawnEnvironment(
   input: ClaudeExecutionSettings,
   options: ResolveClaudeSpawnEnvironmentOptions = {},
 ): NodeJS.ProcessEnv | undefined {
-  if (input.driver !== "claude") return undefined;
+  return resolveClaudeSpawnEnvironmentWithProvenance(input, options).env;
+}
+
+/**
+ * Resolves the Runtime `agentProcessEnv` overlay in a single pass: the
+ * intentional overlay for acpx, derived with the resolver's own mutation
+ * provenance (not a value diff — a same-value intentional write still rides
+ * above persisted session env). `undefined` when the resolver yields no env.
+ */
+export function resolveClaudeAgentProcessEnv(
+  input: ClaudeExecutionSettings,
+  options: ResolveClaudeSpawnEnvironmentOptions = {},
+): Record<string, string> | undefined {
+  const baseEnv = options.baseEnv ?? process.env;
+  const platform = options.platform ?? process.platform;
+  const { env, provenance } = resolveClaudeSpawnEnvironmentWithProvenance(input, options);
+  return narrowToAgentProcessEnvOverlay(env, baseEnv, platform, provenance);
+}
+
+function resolveClaudeSpawnEnvironmentWithProvenance(
+  input: ClaudeExecutionSettings,
+  options: ResolveClaudeSpawnEnvironmentOptions = {},
+): { env: NodeJS.ProcessEnv | undefined; provenance: ClaudeEnvironmentProvenance } {
+  if (input.driver !== "claude") {
+    return { env: undefined, provenance: { setKeys: new Set(), clearedKeys: new Set() } };
+  }
 
   const policy = input.settingsPolicy ?? DEFAULT_CLAUDE_SETTINGS_POLICY;
   const baseEnv = { ...(options.baseEnv ?? process.env) };
   const platform = options.platform ?? process.platform;
+  const provenance: ClaudeEnvironmentProvenance = { setKeys: new Set(), clearedKeys: new Set() };
   const explicitModel = readModel(input.model);
   if (explicitModel) {
     // The Claude adapter gives ANTHROPIC_MODEL precedence over its --model
     // argument and over settings.json. Keep every policy on the same explicit
     // session model, including full-user and isolated.
-    setEnvironmentValue(baseEnv, "ANTHROPIC_MODEL", explicitModel, platform);
+    setEnvironmentValue(baseEnv, "ANTHROPIC_MODEL", explicitModel, platform, provenance);
   }
 
   if (policy === "full-user") {
-    setEnvironmentValue(baseEnv, "ACPX_CLAUDE_INCLUDE_USER_SETTINGS", "1", platform);
-    return baseEnv;
+    setEnvironmentValue(baseEnv, "ACPX_CLAUDE_INCLUDE_USER_SETTINGS", "1", platform, provenance);
+    return { env: baseEnv, provenance };
   }
 
   const homeDir = options.homeDir ?? homedir();
   const sourceConfigDir = resolveClaudeConfigDir(baseEnv, homeDir, platform);
 
   if (policy === "isolated") {
-    deleteEnvironmentValue(baseEnv, "ACPX_CLAUDE_INCLUDE_USER_SETTINGS", platform);
-    installSettingsProfile(baseEnv, sourceConfigDir, policy, {}, options, platform);
-    return baseEnv;
+    deleteEnvironmentValue(baseEnv, "ACPX_CLAUDE_INCLUDE_USER_SETTINGS", platform, provenance);
+    installSettingsProfile(baseEnv, sourceConfigDir, policy, {}, options, platform, provenance);
+    return { env: baseEnv, provenance };
   }
 
   const settingsPath = join(sourceConfigDir, "settings.json");
@@ -78,11 +117,11 @@ export function resolveClaudeSpawnEnvironment(
   const settingsEnv = readAnthropicEnvironment(rawSettings?.env, platform);
   const effectiveProviderEnv = { ...settingsEnv, ...pickAnthropicEnvironment(baseEnv, platform) };
   if (!isThirdPartyProviderEnvironment(effectiveProviderEnv)) {
-    return undefined;
+    return { env: undefined, provenance };
   }
   for (const [key, value] of Object.entries(settingsEnv)) {
     if (!nonEmpty(getEnvironmentValue(baseEnv, key, platform))) {
-      setEnvironmentValue(baseEnv, key, value, platform);
+      setEnvironmentValue(baseEnv, key, value, platform, provenance);
     }
   }
 
@@ -90,15 +129,15 @@ export function resolveClaudeSpawnEnvironment(
   // The managed Claude adapter accepts these narrow environment seams. The
   // filtered profile redirects settings reads while its state-directory links
   // keep session history in the user's original profile.
-  deleteEnvironmentValue(baseEnv, "ACPX_CLAUDE_INCLUDE_USER_SETTINGS", platform);
+  deleteEnvironmentValue(baseEnv, "ACPX_CLAUDE_INCLUDE_USER_SETTINGS", platform, provenance);
   if (!explicitModel && !nonEmpty(getEnvironmentValue(baseEnv, "ANTHROPIC_MODEL", platform))) {
     const settingsModel = readModel(rawSettings?.model);
-    if (settingsModel) setEnvironmentValue(baseEnv, "ANTHROPIC_MODEL", settingsModel, platform);
+    if (settingsModel) setEnvironmentValue(baseEnv, "ANTHROPIC_MODEL", settingsModel, platform, provenance);
   }
   if (!nonEmpty(getEnvironmentValue(baseEnv, "CLAUDE_MODEL_CONFIG", platform))) {
     const modelConfig = sanitizeClaudeModelConfig(rawSettings);
     if (Object.keys(modelConfig).length > 0) {
-      setEnvironmentValue(baseEnv, "CLAUDE_MODEL_CONFIG", JSON.stringify(modelConfig), platform);
+      setEnvironmentValue(baseEnv, "CLAUDE_MODEL_CONFIG", JSON.stringify(modelConfig), platform, provenance);
     }
   }
   installSettingsProfile(
@@ -108,8 +147,82 @@ export function resolveClaudeSpawnEnvironment(
     sanitizeClaudeSettings(rawSettings, !input.model),
     options,
     platform,
+    provenance,
   );
-  return baseEnv;
+  return { env: baseEnv, provenance };
+}
+
+/**
+ * xacpx-owned control keys whose REMOVAL from the resolved env is itself an
+ * intentional policy decision (the resolver deletes them to force a
+ * restricted profile). An additive-only overlay like acpx `agentProcessEnv`
+ * cannot express deletion, so these are re-expressed as explicit clear
+ * values — the Claude adapter only treats the exact string `"1"` as enabled
+ * (`resolveClaudeCodeSettingSources`), hence `"0"` provably restores the
+ * restricted default.
+ */
+const RUNTIME_CLEARED_CONTROL_KEYS = ["ACPX_CLAUDE_INCLUDE_USER_SETTINGS"] as const;
+
+/**
+ * Narrows a fully-resolved Claude spawn env (see
+ * resolveClaudeSpawnEnvironment) to the intentional Runtime overlay for
+ * acpx `agentProcessEnv`. A key crosses the boundary when the resolver
+ * explicitly wrote it (provenance, when provided) or when its value
+ * differs from the base — the inherited parent remainder stays out, so
+ * persisted `sessionOptions.env` keeps its upstream precedence (protected
+ * auth > agentProcessEnv > persisted session env > inherited parent env)
+ * instead of being shadowed by a re-elevated copy of the parent. A
+ * same-value intentional write (e.g. an explicit session model matching
+ * an inherited ANTHROPIC_MODEL) still rides the overlay: without
+ * provenance a pure value diff cannot tell it apart from inheritance.
+ *
+ * `resolved === undefined` (first-party provider-only: nothing intentional)
+ * narrows to `undefined`, as does an empty delta. `baseEnv` must be the
+ * same base the resolver derived from (defaults to process.env, matching
+ * the resolver default).
+ */
+export function narrowToAgentProcessEnvOverlay(
+  resolved: NodeJS.ProcessEnv | undefined,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  provenance?: ClaudeEnvironmentProvenance,
+): Record<string, string> | undefined {
+  if (resolved === undefined) return undefined;
+  const overlay: Record<string, string> = {};
+  for (const [key, value] of Object.entries(resolved)) {
+    if (typeof value !== "string") continue;
+    if ((provenance && hasProvenanceKey(provenance.setKeys, key, platform)) || getEnvironmentValue(baseEnv, key, platform) !== value) {
+      overlay[key] = value;
+    }
+  }
+  for (const name of RUNTIME_CLEARED_CONTROL_KEYS) {
+    // A resolver-deleted control key is re-expressed as an explicit clear
+    // so it keeps beating persisted session env. With provenance, the
+    // recorded clear is itself the intent — no base-presence gate, otherwise
+    // a stale persisted "1" could resurrect a restricted policy the parent
+    // never had. Without provenance, fall back to base-has/resolved-lacks
+    // detection to avoid inventing noise. Either way a re-set value present
+    // in the resolved env is never covered.
+    const resolvedLacks = getEnvironmentValue(resolved, name, platform) === undefined;
+    if (provenance) {
+      if (hasProvenanceKey(provenance.clearedKeys, name, platform) && resolvedLacks) {
+        overlay[name] = "0";
+      }
+    } else if (getEnvironmentValue(baseEnv, name, platform) !== undefined && resolvedLacks) {
+      overlay[name] = "0";
+    }
+  }
+  return Object.keys(overlay).length > 0 ? overlay : undefined;
+}
+
+function hasProvenanceKey(keys: Set<string>, name: string, platform: NodeJS.Platform): boolean {
+  if (keys.has(name)) return true;
+  if (platform !== "win32") return false;
+  const upper = name.toUpperCase();
+  for (const candidate of keys) {
+    if (candidate.toUpperCase() === upper) return true;
+  }
+  return false;
 }
 
 function resolveClaudeConfigDir(env: NodeJS.ProcessEnv, homeDir: string, platform: NodeJS.Platform): string {
@@ -124,6 +237,7 @@ function installSettingsProfile(
   settings: Record<string, unknown>,
   options: ResolveClaudeSpawnEnvironmentOptions,
   platform: NodeJS.Platform,
+  provenance?: ClaudeEnvironmentProvenance,
 ): void {
   const serialized = `${JSON.stringify(settings, null, 2)}\n`;
   const digest = createHash("sha256")
@@ -143,7 +257,7 @@ function installSettingsProfile(
     sourceConfigDir,
     profileDir,
   );
-  setEnvironmentValue(env, "CLAUDE_CONFIG_DIR", profileDir, platform);
+  setEnvironmentValue(env, "CLAUDE_CONFIG_DIR", profileDir, platform, provenance);
 }
 
 // Link only durable state that native list/resume and transcript discovery need.
@@ -277,12 +391,18 @@ function getEnvironmentValue(
   return key ? env[key] : undefined;
 }
 
-function deleteEnvironmentValue(env: NodeJS.ProcessEnv, name: string, platform: NodeJS.Platform): void {
+function deleteEnvironmentValue(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  platform: NodeJS.Platform,
+  provenance?: ClaudeEnvironmentProvenance,
+): void {
   for (const key of Object.keys(env)) {
     if (key === name || (platform === "win32" && key.toUpperCase() === name.toUpperCase())) {
       delete env[key];
     }
   }
+  provenance?.clearedKeys.add(name);
 }
 
 function setEnvironmentValue(
@@ -290,9 +410,11 @@ function setEnvironmentValue(
   name: string,
   value: string,
   platform: NodeJS.Platform,
+  provenance?: ClaudeEnvironmentProvenance,
 ): void {
   deleteEnvironmentValue(env, name, platform);
   env[name] = value;
+  provenance?.setKeys.add(name);
 }
 
 export const __claudeSettingsPolicyForTests = {

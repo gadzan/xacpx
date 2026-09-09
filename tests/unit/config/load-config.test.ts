@@ -1488,3 +1488,28 @@ test("rejects an agent with both command and argv", () => {
     workspaces: {},
   })).toThrow('agent "a" command and argv are mutually exclusive');
 });
+
+test("passes host ceilings through, defaulting to undefined", () => {
+  const configured = parseConfig({
+    transport: { acpxMaxIncomingMessageBytes: 8 * 1024 * 1024, acpxTerminalMaxOutputBytes: 0 },
+    agents: {},
+    workspaces: {},
+  });
+  expect(configured.transport.acpxMaxIncomingMessageBytes).toBe(8 * 1024 * 1024);
+  expect(configured.transport.acpxTerminalMaxOutputBytes).toBe(0);
+  const unset = parseConfig({ transport: {}, agents: {}, workspaces: {} });
+  expect(unset.transport.acpxMaxIncomingMessageBytes).toBeUndefined();
+  expect(unset.transport.acpxTerminalMaxOutputBytes).toBeUndefined();
+});
+
+test("rejects invalid host ceilings fail-closed", () => {
+  for (const transport of [
+    { acpxMaxIncomingMessageBytes: -1 },
+    { acpxMaxIncomingMessageBytes: 1.5 },
+    { acpxMaxIncomingMessageBytes: "big" },
+    { acpxTerminalMaxOutputBytes: -1 },
+    { acpxTerminalMaxOutputBytes: Number.NaN },
+  ]) {
+    expect(() => parseConfig({ transport, agents: {}, workspaces: {} })).toThrow("byte count");
+  }
+});

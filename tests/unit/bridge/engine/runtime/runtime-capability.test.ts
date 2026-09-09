@@ -12,13 +12,13 @@ test("probeEngineCapabilities: returns failure when runtime import throws", asyn
     loadRuntime: () => {
       throw new Error("Module not found: acpx/runtime");
     },
-    loadAcpxVersion: () => "0.13.1",
+    loadAcpxVersion: () => "0.15.1",
   });
 
   expect(result.runtimeAvailable).toBe(false);
   expect(result.runtimeImportOk).toBe(false);
   expect(result.contractProbeOk).toBe(false);
-  expect(result.acpxVersion).toBe("0.13.1");
+  expect(result.acpxVersion).toBe("0.15.1");
   expect(result.reason).toContain("acpx/runtime import failed: Module not found");
 });
 
@@ -29,13 +29,13 @@ test("probeEngineCapabilities: returns failure when required exports are missing
       // createRuntimeStore missing
       createAgentRegistry: () => {},
     }),
-    loadAcpxVersion: () => "0.13.1",
+    loadAcpxVersion: () => "0.15.1",
   });
 
   expect(result.runtimeAvailable).toBe(false);
   expect(result.runtimeImportOk).toBe(true);
   expect(result.contractProbeOk).toBe(false);
-  expect(result.acpxVersion).toBe("0.13.1");
+  expect(result.acpxVersion).toBe("0.15.1");
   expect(result.reason).toContain("missing required exports [createRuntimeStore]");
 });
 
@@ -46,14 +46,14 @@ test("probeEngineCapabilities: returns failure when worker entry is missing", as
       createRuntimeStore: () => {},
       createAgentRegistry: () => {},
     }),
-    loadAcpxVersion: () => "0.13.1",
+    loadAcpxVersion: () => "0.15.1",
     workerEntryPath: "/nonexistent/path/worker.js",
   });
 
   expect(result.runtimeAvailable).toBe(false);
   expect(result.runtimeImportOk).toBe(true);
   expect(result.contractProbeOk).toBe(true);
-  expect(result.acpxVersion).toBe("0.13.1");
+  expect(result.acpxVersion).toBe("0.15.1");
   expect(result.reason).toContain("runtime worker entry not found");
 });
 
@@ -69,7 +69,7 @@ test("probeEngineCapabilities: returns failure when RuntimeEngine construction t
         createRuntimeStore: () => {},
         createAgentRegistry: () => {},
       }),
-      loadAcpxVersion: () => "0.13.1",
+      loadAcpxVersion: () => "0.15.1",
       createRuntimeEngine: () => {
         throw new Error("Construction failed: invalid state dir");
       },
@@ -78,7 +78,7 @@ test("probeEngineCapabilities: returns failure when RuntimeEngine construction t
     expect(result.runtimeAvailable).toBe(false);
     expect(result.runtimeImportOk).toBe(true);
     expect(result.contractProbeOk).toBe(false);
-    expect(result.acpxVersion).toBe("0.13.1");
+    expect(result.acpxVersion).toBe("0.15.1");
     expect(result.reason).toContain("RuntimeEngine construction failed: Construction failed");
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -97,14 +97,14 @@ test("probeEngineCapabilities: returns success when all checks pass", async () =
         createRuntimeStore: () => {},
         createAgentRegistry: () => {},
       }),
-      loadAcpxVersion: () => "0.13.1",
+      loadAcpxVersion: () => "0.15.1",
       createRuntimeEngine: () => ({}),
     });
 
     expect(result.runtimeAvailable).toBe(true);
     expect(result.runtimeImportOk).toBe(true);
     expect(result.contractProbeOk).toBe(true);
-    expect(result.acpxVersion).toBe("0.13.1");
+    expect(result.acpxVersion).toBe("0.15.1");
     expect(result.reason).toBeUndefined();
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -116,7 +116,7 @@ test("BridgeServer handles getEngineCapabilities dispatch", async () => {
     runtimeAvailable: true,
     runtimeImportOk: true,
     contractProbeOk: true,
-    acpxVersion: "0.13.1",
+    acpxVersion: "0.15.1",
   };
 
   const runtime = new BridgeRuntime("acpx", async () => ({ code: 0, stdout: "", stderr: "" }));
@@ -144,7 +144,7 @@ test("AcpxBridgeTransport.getEngineCapabilities calls bridge method", async () =
     runtimeAvailable: false,
     runtimeImportOk: false,
     contractProbeOk: false,
-    acpxVersion: "0.13.1",
+    acpxVersion: "0.15.1",
     reason: "worker missing",
   };
 

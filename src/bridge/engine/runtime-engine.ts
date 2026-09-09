@@ -27,6 +27,10 @@ import { RuntimeQueueStore } from "./runtime/runtime-queue";
 import type { RuntimeQueueRecord } from "./runtime/runtime-queue";
 import { isEligibleForRuntime, parseXacpxPermissionPolicy } from "./runtime/runtime-permission-policy";
 import { RuntimePermissionResolver, type RuntimePermissionRequest } from "./runtime/runtime-permission-resolver";
+import { narrowToAgentProcessEnvOverlay, resolveClaudeAgentProcessEnv, type ClaudeExecutionSettings } from "../../adapters/claude-settings-policy";
+import { agentProcessEnvIdentityKey } from "./runtime/runtime-worker-protocol";
+import { resolveAcpxHostPolicyEnv } from "../../transport/acpx-host-policy";
+
 function sleep(ms: number): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   setTimeout(resolve, ms);
@@ -346,7 +350,6 @@ async function findTombstoneRecordId(
     `ambiguous delete tombstone resolution for session "${criteria.name}": found ${matchingTombstones.length} matching tombstones on disk`,
   );
 }
-
 export interface RuntimeEngineOptions {
   /** Resolved worker entry; defaults to the bundled dist output. */
   workerEntryPath?: string;
@@ -362,6 +365,23 @@ export interface RuntimeEngineOptions {
   permissionMode: PermissionMode;
   nonInteractivePermissions?: NonInteractivePermissions;
   permissionPolicy?: string;
+  /**
+   * Test seam for filtered per-agent process environments (plan B1), mirroring
+   * the CLI transport's resolveSpawnEnvironment. A seam-provided env carries
+   * no provenance and falls back to value-diff narrowing; without a seam the
+   * engine resolves overlay + provenance together. Either way the result
+   * becomes the Runtime child's agentProcessEnv and part of the
+   * construction identity.
+   */
+  resolveSpawnEnvironment?: (input: ClaudeExecutionSettings) => NodeJS.ProcessEnv | undefined;
+  /**
+   * Advanced acpx host ceilings (plan B5). `null`/absent follows upstream
+   * defaults. Merged into the Runtime worker HOST process env at spawn;
+   * warm workers keep their startup values until recycled.
+   */
+  acpxMaxIncomingMessageBytes?: number | null;
+  acpxTerminalMaxOutputBytes?: number | null;
+
   /** Idle TTL in seconds for warm worker processes (plan §16). Set to 0 to disable. */
   queueOwnerTtlSeconds?: number;
   idleTtlMs?: number;
@@ -685,6 +705,16 @@ export class RuntimeEngine implements BridgeEngine {
       const fenceDir: string | (() => string) | undefined = this.options.fenceDir ?? (() => join(this.durableRoot(), "worker-fences"));
       const permissionDeps: RuntimeWorkerClientDeps = {
         ...(options.workerClientDeps ?? {}),
+        // Plan B5: acpx host ceilings ride the worker HOST process env (read
+        // by the embedding client at Runtime construction). Explicit test
+        // spawnEnv still wins on collision; unset policy contributes nothing.
+        spawnEnv: {
+          ...resolveAcpxHostPolicyEnv({
+            acpxMaxIncomingMessageBytes: options.acpxMaxIncomingMessageBytes,
+            acpxTerminalMaxOutputBytes: options.acpxTerminalMaxOutputBytes,
+          }),
+          ...(options.workerClientDeps?.spawnEnv ?? {}),
+        },
         resolvePermissionRequest: (payload) => this.handlePermissionRequest(payload),
         resolveElicitationRequest: (payload) => this.handleElicitationRequest(payload),
       };
@@ -788,9 +818,9 @@ export class RuntimeEngine implements BridgeEngine {
     const renderText = toolEventMode === "text" || toolEventMode === "both";
     const renderStructured = toolEventMode === "structured" || toolEventMode === "both" || options.toolEvents === true;
     const textRenderState = { emittedToolCallIds: new Set<string>() };
-    return await this.withWorker(input, async (client) => {
+    return await this.withWorker(input, async (client, agentProcessEnv) => {
       client.lifecycle = "busy";
-      await this.ensureSessionHandle(input, client);
+      await this.ensureSessionHandle(input, client, agentProcessEnv);
       try {
         const attachments = await buildRuntimeAttachments(options.media);
         const outcome = await client.request<{ result: XacpxTurnResult; finalText: string }>(
@@ -1157,15 +1187,54 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   /**
+   * Per-agent child environment for the Runtime (plan B1). Same resolver as
+   * the CLI lane's spawn environment, but narrowed to the intentional
+   * overlay: only keys the resolver added/changed (plus explicit clears
+   * for xacpx-owned control keys it removed) cross into agentProcessEnv.
+   * The inherited parent remainder stays out, so persisted session env
+   * keeps its upstream precedence. `undefined` for drivers with no overlay
+   * — the common case, and the only one with zero worker-recycle churn on
+   * host env drift. Upstream snapshots this at Runtime construction; it is
+   * part of the immutable construction identity on both sides of the worker
+   * boundary.
+   */
+  private resolveAgentProcessEnv(input: EngineSessionInput): Record<string, string> | undefined {
+    // One resolver invocation per call (see withWorker's single snapshot).
+    // The default path resolves overlay + provenance together, so even a
+    // same-value intentional write (e.g. an explicit session model matching
+    // an inherited ANTHROPIC_MODEL) rides above persisted session env. An
+    // injected seam returns a bare env without provenance and falls back to
+    // value-diff narrowing (tests only).
+    if (this.options.resolveSpawnEnvironment) {
+      return narrowToAgentProcessEnvOverlay(this.options.resolveSpawnEnvironment({
+        driver: input.driver ?? input.agent,
+        settingsPolicy: input.settingsPolicy,
+        model: input.model,
+      }));
+    }
+    return resolveClaudeAgentProcessEnv({
+      driver: input.driver ?? input.agent,
+      settingsPolicy: input.settingsPolicy,
+      model: input.model,
+    });
+  }
+
+  /**
    * Host-side mirror of the worker's ensureIdentityKey (plan §3-R1): the
    * exact Runtime-construction fields the worker treats as immutable launch
    * identity. Derived with the same rules as buildEnsureParams (runtime
    * agent name = acpxAgent ?? agent; overrides from agentArgv ?? rawCommand;
    * stateDir = runtimeStateRoot), so a key the worker would accept always
-   * matches the stored key. Mutable per-invocation parameters (model,
-   * effort, resumeSessionId, permission snapshot) are excluded on both sides.
+   * matches the stored key. B1: the resolved agentProcessEnv overlay joins
+   * the identity on both sides (via agentProcessEnvIdentityKey). The caller
+   * MUST pass the same snapshot that buildEnsureParams receives for this
+   * op — resolving twice would let a mid-flight settings mutation split
+   * the recorded identity from the sent params. Mutable per-invocation
+   * parameters (effort, resumeSessionId, permission snapshot) are excluded
+   * on both sides; model feeds env resolution, so a model change that
+   * alters the overlay recycles the worker.
    */
-  private constructionIdentityForInput(input: EngineSessionInput): string {
+  private constructionIdentityForInput(input: EngineSessionInput, agentProcessEnv: Record<string, string> | undefined): string {
     const runtimeAgentName = input.acpxAgent ?? input.agent;
     const overrideValue =
       input.agentArgv && input.agentArgv.length > 0
@@ -1181,12 +1250,13 @@ export class RuntimeEngine implements BridgeEngine {
       overrideValue !== undefined ? { [runtimeAgentName]: overrideValue } : null,
       input.mcpCoordinatorSession ?? null,
       input.mcpSourceHandle ?? null,
+      agentProcessEnvIdentityKey(agentProcessEnv),
     ]);
   }
 
-  private async checkConstructionStaleAndRotate(input: EngineSessionInput): Promise<boolean> {
+  private async checkConstructionStaleAndRotate(input: EngineSessionInput, agentProcessEnv: Record<string, string> | undefined): Promise<boolean> {
     const key = this.workerKey(input);
-    const requested = this.constructionIdentityForInput(input);
+    const requested = this.constructionIdentityForInput(input, agentProcessEnv);
     // Accepted identity wins; while the first ensure RPC is still
     // outstanding, fall back to its synchronously-published in-flight
     // identity so a drifted concurrent op fails fast exactly like the
@@ -1308,7 +1378,7 @@ export class RuntimeEngine implements BridgeEngine {
   private physicalFenceKeyForInput(input: EngineSessionInput): string {
     return physicalFenceKeyForSession(input);
   }
-  private async withWorker<T>(input: EngineSessionInput, run: (client: RuntimeWorkerClient) => Promise<T>): Promise<T> {
+  private async withWorker<T>(input: EngineSessionInput, run: (client: RuntimeWorkerClient, agentProcessEnv: Record<string, string> | undefined) => Promise<T>): Promise<T> {
     const key = this.workerKey(input);
     const _lifecycleEpochAtEntry = this.deleteGenerations.get(key) ?? 0;
     if (this.policyTransitionLock) {
@@ -1318,13 +1388,20 @@ export class RuntimeEngine implements BridgeEngine {
     this.incBusinessOp(key);
     let client: RuntimeWorkerClient | undefined;
     try {
+      // Single construction snapshot per op: the rotation check, the ensure
+      // params, and the recorded identity all observe this one resolution, so
+      // a mid-flight settings mutation cannot split the recorded identity
+      // from the params the worker snapshots. Resolved INSIDE the balance
+      // scope: a throwing resolver (e.g. failed Claude profile FS work) must
+      // still reach the finally below, or its phantom count would block every
+      // later permission policy transition with RUNTIME_PERMISSION_BUSY.
+      const agentProcessEnv = this.resolveAgentProcessEnv(input);
       try {
         await this.checkMcpStaleAndRotate(input, false);
         // Construction-identity drift (hot-updated agent command / workspace
         // cwd) rotates the warm worker BEFORE acquire: the worker would
         // otherwise fail closed on every subsequent ensure until TTL.
-        await this.checkConstructionStaleAndRotate(input);
-        // Sibling-alias handoff (shared physical session): a warm worker
+        await this.checkConstructionStaleAndRotate(input, agentProcessEnv);
         // owned by another local logical key must be handed off BEFORE
         // acquire, or the newcomer mistakes our own live fence for
         // cross-host stale ownership and burns the discharge wait.
@@ -1399,7 +1476,7 @@ export class RuntimeEngine implements BridgeEngine {
       }
       try {
         client.lifecycle = "busy";
-        const result = await run(client);
+        const result = await run(client, agentProcessEnv);
         return result;
       } catch (error) {
         if (error instanceof WorkerCrashError) {
@@ -1479,7 +1556,7 @@ export class RuntimeEngine implements BridgeEngine {
       // that is about to propagate to the caller.
     }
   }
-  private buildEnsureParams(input: EngineSessionInput, options?: { resumeSessionId?: string }) {
+  private buildEnsureParams(input: EngineSessionInput, agentProcessEnv: Record<string, string> | undefined, options?: { resumeSessionId?: string }) {
     // Exact structured argv / raw command (plan §35 / G8): when xacpx resolved an explicit
     // argv or raw command string, runtimeAgentName (acpxAgent ?? agent) is the registry alias.
     const runtimeAgentName = input.acpxAgent ?? input.agent;
@@ -1489,6 +1566,9 @@ export class RuntimeEngine implements BridgeEngine {
         : input.rawCommand
           ? input.rawCommand
           : undefined;
+    // agentProcessEnv arrives as the op's single construction snapshot (see
+    // withWorker): never re-resolve here, or params could split from the
+    // recorded identity under a mid-flight settings mutation.
     return {
       logicalSessionId: this.workerKey(input),
       sessionKey: input.name,
@@ -1505,16 +1585,22 @@ export class RuntimeEngine implements BridgeEngine {
       ...(this.permissionGeneration > 0 ? { permissionGeneration: this.permissionGeneration } : {}),
       ...(input.mcpCoordinatorSession ? { mcpCoordinatorSession: input.mcpCoordinatorSession } : {}),
       ...(input.mcpSourceHandle ? { mcpSourceHandle: input.mcpSourceHandle } : {}),
+      // B1: child-only overlay, resolved once above so params and the
+      // identity mirror observe the same snapshot.
+      ...(agentProcessEnv ? { agentProcessEnv } : {}),
     };
   }
 
   private async ensureSessionHandle(
     input: EngineSessionInput,
     client: RuntimeWorkerClient,
+    agentProcessEnv: Record<string, string> | undefined,
     options?: { resumeSessionId?: string },
   ): Promise<{ acpxRecordId?: string }> {
     const key = this.workerKey(input);
-    const identity = this.constructionIdentityForInput(input);
+    // Same snapshot as the params below: the recorded identity always
+    // describes what this RPC actually sends the worker.
+    const identity = this.constructionIdentityForInput(input, agentProcessEnv);
     // Visible synchronously to concurrent rotation checks: the accepted
     // entry below only lands after the ensure RPC round-trips, but the
     // worker is already alive/busy by then.
@@ -1523,7 +1609,7 @@ export class RuntimeEngine implements BridgeEngine {
       const handle = await client.request<{ sessionKey: string; acpxRecordId?: string; agentSessionId?: string }>(
         "ensure",
         {
-          ...this.buildEnsureParams(input, options),
+          ...this.buildEnsureParams(input, agentProcessEnv, options),
           workerGeneration: client.ref.generation,
         },
       );
@@ -1648,8 +1734,8 @@ export class RuntimeEngine implements BridgeEngine {
 
   async ensureSession(input: EngineSessionInput): Promise<Record<string, never>> {
     this.sessionCatalog.set(this.workerKey(input), input);
-    await this.withWorker(input, async (client) => {
-      await this.ensureSessionHandle(input, client);
+    await this.withWorker(input, async (client, agentProcessEnv) => {
+      await this.ensureSessionHandle(input, client, agentProcessEnv);
       return {};
     });
     // PR6: after ensure, if durable queue has pending items (bridge restart recovery), kick drain
@@ -1663,8 +1749,8 @@ export class RuntimeEngine implements BridgeEngine {
 
   async resumeAgentSession(input: EngineSessionInput & { agentSessionId: string }): Promise<Record<string, never>> {
     this.sessionCatalog.set(this.workerKey(input), input);
-    await this.withWorker(input, async (client) => {
-      await this.ensureSessionHandle(input, client, { resumeSessionId: input.agentSessionId });
+    await this.withWorker(input, async (client, agentProcessEnv) => {
+      await this.ensureSessionHandle(input, client, agentProcessEnv, { resumeSessionId: input.agentSessionId });
       return {};
     });
     return {};
@@ -1825,8 +1911,8 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   async setMode(input: EngineSessionInput & { modeId: string }) {
-    await this.withWorker(input, async (client) => {
-      await this.ensureSessionHandle(input, client);
+    await this.withWorker(input, async (client, agentProcessEnv) => {
+      await this.ensureSessionHandle(input, client, agentProcessEnv);
       await client.request("setMode", { mode: input.modeId });
       return {};
     });
@@ -1834,8 +1920,8 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   async setModel(input: EngineSessionInput & { modelId: string }) {
-    await this.withWorker(input, async (client) => {
-      await this.ensureSessionHandle(input, client);
+    await this.withWorker(input, async (client, agentProcessEnv) => {
+      await this.ensureSessionHandle(input, client, agentProcessEnv);
       await client.request("setConfigOption", { key: "model", value: input.modelId });
       return {};
     });
@@ -1843,8 +1929,8 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   async getSessionModel(input: EngineSessionInput): Promise<{ current?: string; available: string[] }> {
-    return await this.withWorker(input, async (client) => {
-      await this.ensureSessionHandle(input, client);
+    return await this.withWorker(input, async (client, agentProcessEnv) => {
+      await this.ensureSessionHandle(input, client, agentProcessEnv);
       const status = (await client.request<{ models?: { currentModelId?: string; availableModelIds: string[] } }>("status")) ?? {};
       return {
         current: status.models?.currentModelId,
@@ -1858,8 +1944,8 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   private async applyConfigOption(input: EngineSessionInput, key: string, value: string): Promise<Record<string, never>> {
-    await this.withWorker(input, async (client) => {
-      await this.ensureSessionHandle(input, client);
+    await this.withWorker(input, async (client, agentProcessEnv) => {
+      await this.ensureSessionHandle(input, client, agentProcessEnv);
       await client.request("setConfigOption", { key, value });
       return {};
     });
@@ -1867,8 +1953,8 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   async getSessionEffort(input: EngineSessionInput): Promise<SessionEffortState> {
-    return await this.withWorker(input, async (client) => {
-      await this.ensureSessionHandle(input, client);
+    return await this.withWorker(input, async (client, agentProcessEnv) => {
+      await this.ensureSessionHandle(input, client, agentProcessEnv);
       // Public acpx Runtime exposes config options via status.details.configOptions
       // (same shape as the CLI record's acpx.config_options) — reuse the shared
       // CLI effort resolver instead of a fabricated top-level field.
@@ -2546,8 +2632,8 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   async getAgentSessionId(input: EngineSessionInput): Promise<{ agentSessionId: string | undefined }> {
-    return await this.withWorker(input, async (client) => {
-      await this.ensureSessionHandle(input, client);
+    return await this.withWorker(input, async (client, agentProcessEnv) => {
+      await this.ensureSessionHandle(input, client, agentProcessEnv);
       const status = (await client.request<{ acpxRecordId?: string; agentSessionId?: string }>("status")) ?? {};
       return { agentSessionId: status.agentSessionId };
     });
@@ -2904,7 +2990,7 @@ async function buildRuntimeAttachments(
       attachments.push({ mediaType: item.mimeType || "audio/mpeg", data: audioData.toString("base64") });
       continue;
     }
-    // video/file: pinned acpx 0.13.1 public Runtime maps ONLY image/* and
+    // video/file: pinned acpx 0.15.1 public Runtime maps ONLY image/* and
     // audio/* attachments to ACP content blocks. Silently dropping them would
     // make the agent unaware an attachment exists — fail closed instead
     // (CLI lane remains available for these types).
@@ -2916,7 +3002,7 @@ async function buildRuntimeAttachments(
   return attachments;
 }
 
-// Plan parity gate: pinned acpx 0.13.1 public Runtime flattens plan events to a
+// Plan parity gate: pinned acpx 0.15.1 public Runtime flattens plan events to a
 // single status text ("plan: <first entry content>") — full entries and real
 // statuses are lost upstream. Fabricating a PlanEntry would feed the上层 wrong
 // data, so the plan side-channel is explicitly unsupported until a public
@@ -2938,7 +3024,7 @@ export function mapRuntimeToolEvent(event: {
   const toolName = title || "Tool";
   const summaryRaw = event.summary || summarizeToolInput(event.rawInput, title) || summarizeToolOutput(event.rawOutput);
   const summary = summaryRaw && summaryRaw !== title ? summaryRaw : undefined;
-  // Note: pinned acpx 0.13.1 Runtime tool_call exposes no _meta, so a status-less
+  // Note: pinned acpx 0.15.1 Runtime tool_call exposes no _meta, so a status-less
   // terminal carrying only _meta.claudeCode.toolResponse is indistinguishable from
   // a keep-alive and stays running; CLI closes it via hasClaudeToolResponse; fixing
   // needs an upstream contract signal — do NOT change mapping logic.

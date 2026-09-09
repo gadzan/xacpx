@@ -45,8 +45,38 @@ export interface RuntimeWorkerEnsureParams {
   /** PR8: MCP coordinator identity (immutable launch identity). */
   mcpCoordinatorSession?: string;
   mcpSourceHandle?: string;
+  /**
+   * Trusted child-only agent environment (plan B1, acpx 0.15 agentProcessEnv).
+   * Snapshot at Runtime construction: never persisted to the session record,
+   * part of the immutable construction identity — a change recycles the
+   * worker. Intentional overlay only (no parent echoes); the worker uses it
+   * as received.
+   */
+  agentProcessEnv?: Record<string, string>;
   /** Host-assigned worker generation identity. */
   workerGeneration?: string;
+}
+
+/**
+ * Stable identity fragment for an agent env overlay. Key order never
+ * distinguishes identical overlays. On Windows the comparison mirrors
+ * upstream assignSessionEnv (live-checkpoint bundle): case-insensitive,
+ * entries applied in insertion order with last-writer-wins, then serialized
+ * sorted by folded key — so equal identity always means equal effective
+ * child env.
+ */
+export function agentProcessEnvIdentityKey(
+  env: Record<string, string> | undefined,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  if (env === undefined) return null;
+  if (platform === "win32") {
+    const folded = new Map<string, string>();
+    for (const [key, value] of Object.entries(env)) folded.set(key.toUpperCase(), value);
+    return JSON.stringify([...folded.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  }
+  const entries = Object.entries(env).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return JSON.stringify(entries);
 }
 export interface RuntimeWorkerPromptParams {
   text: string;

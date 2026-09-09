@@ -58,9 +58,28 @@ export interface UsageBreakdownLike {
 }
 
 export type XacpxTurnResult =
-  | { status: "completed"; stopReason?: string }
-  | { status: "cancelled"; stopReason?: string }
+  // acpx 0.15.1 carries opaque producer `_meta` on completed/cancelled turns.
+  // xacpx maps it to narrow `meta` (never `_meta` — that name stays upstream).
+  // Opaque routing/debug hint only: never auth/authorization/ownership proof,
+  // same rule as text_delta.meta. Failed turns never fabricate meta.
+  | { status: "completed"; stopReason?: string; meta?: Record<string, unknown> | null }
+  | { status: "cancelled"; stopReason?: string; meta?: Record<string, unknown> | null }
   | { status: "failed"; error: { message: string; code?: string; detailCode?: string; retryable?: boolean } };
+
+/**
+ * xacpx-owned narrow view of an agent-accepted config option (plan B3).
+ * Only the stable identity + current value cross the adapter boundary —
+ * never the upstream SDK type.
+ */
+export interface XacpxConfigOptionState {
+  id: string;
+  currentValue?: string;
+}
+
+/** Agent-accepted config snapshot returned by setConfigOption. */
+export interface XacpxConfigSnapshot {
+  options: XacpxConfigOptionState[];
+}
 
 export interface XacpxTurnHandle {
   requestId: string;
@@ -95,6 +114,7 @@ export type RuntimeBridgeErrorCode =
 export function mapRuntimeError(err: unknown): { code: RuntimeBridgeErrorCode; message: string } {
   const message = err instanceof Error ? err.message : String(err);
   const rawCode = (err as { code?: unknown } | null)?.code;
+  const detailCode = (err as { detailCode?: unknown } | null)?.detailCode;
   const name = (err as { name?: string } | null)?.name ?? "";
   const codeText = typeof rawCode === "string" ? rawCode : "";
   // Poisoned-init is an explicit worker signal — never let the message
@@ -105,14 +125,38 @@ export function mapRuntimeError(err: unknown): { code: RuntimeBridgeErrorCode; m
   if (codeText === "RUNTIME_TURN_CANCELLED" || /cancel/i.test(message) || /cancel/i.test(codeText)) {
     return { code: "RUNTIME_TURN_CANCELLED", message };
   }
+  // acpx 0.15.1 stable spawn failure (detailCode over message regex): the
+  // ENOENT message contains "not found", which must NOT fall through to
+  // RUNTIME_SESSION_MISSING below. Upstream attaches AGENT_SPAWN_ENOENT only
+  // when the underlying cause is ENOENT — a bare AgentSpawnError (e.g. a
+  // lifecycle admission rejection, a PID-less spawn) is NOT proof of a
+  // missing executable and must not get install/PATH remediation.
+  if (detailCode === "AGENT_SPAWN_ENOENT") {
+    return { code: "RUNTIME_INIT_FAILED", message: `${message} (xacpx: agent executable missing — install it, fix PATH, or correct the agent command/argv)` };
+  }
+  if (name === "AgentSpawnError") {
+    return { code: "RUNTIME_INIT_FAILED", message };
+  }
   if (/not found|missing|no such session|unknown session/i.test(message) || codeText === "ACP_BACKEND_MISSING") {
     return { code: "RUNTIME_SESSION_MISSING", message };
   }
   if (/permission/i.test(message) || codeText === "PERMISSION_DENIED" || codeText === "RUNTIME_PERMISSION_DENIED") {
     return { code: "RUNTIME_PERMISSION_DENIED", message };
   }
-  if (name === "AcpRuntimeError" || /runtime|init|backend/i.test(message) || codeText === "RUNTIME_INIT_FAILED") {
-    return { code: "RUNTIME_INIT_FAILED", message };
+  // acpx 0.15.1 incoming message ceiling (default 64 MiB). Upstream already
+  // names ACPX_MAX_ACP_MESSAGE_BYTES in the message; xacpx appends the
+  // operational half: the limit is read once at Runtime construction, so a
+  // warm worker/queue owner must be recycled for a raised value to apply.
+  // Match on stable detailCode first, message second (detailCode may not
+  // survive the worker JSON protocol, but the message always does).
+  if (detailCode === "ACP_MESSAGE_TOO_LARGE" || /ACPX_MAX_ACP_MESSAGE_BYTES/.test(message)) {
+    return {
+      code: "RUNTIME_TURN_FAILED",
+      message: `${message} (xacpx: the limit is read at Runtime worker/queue-owner startup — raise ACPX_MAX_ACP_MESSAGE_BYTES and recycle the worker for it to apply; do not default it to 0)`,
+    };
   }
-  return { code: "RUNTIME_TURN_FAILED", message };
+   if (name === "AcpRuntimeError" || /runtime|init|backend/i.test(message) || codeText === "RUNTIME_INIT_FAILED") {
+     return { code: "RUNTIME_INIT_FAILED", message };
+   }
+   return { code: "RUNTIME_TURN_FAILED", message };
 }

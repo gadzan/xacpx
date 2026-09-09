@@ -51,6 +51,11 @@ const TEMPLATES: Record<string, AgentConfig> = {
   kiro: {
     driver: "kiro",
   },
+  // acpx 0.15 builtin: command-free so the default command comes from acpx's own
+  // registry (`mcode acp`), never duplicated here.
+  mcode: {
+    driver: "mcode",
+  },
   mux: {
     driver: "mux",
   },

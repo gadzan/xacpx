@@ -665,6 +665,12 @@ export async function buildApp(
                         config.transport.queueOwnerTtlSeconds,
                     }
                   : {}),
+                ...(typeof config.transport.acpxMaxIncomingMessageBytes === "number"
+                  ? { acpxMaxIncomingMessageBytes: config.transport.acpxMaxIncomingMessageBytes }
+                  : {}),
+                ...(typeof config.transport.acpxTerminalMaxOutputBytes === "number"
+                  ? { acpxTerminalMaxOutputBytes: config.transport.acpxTerminalMaxOutputBytes }
+                  : {}),
                 ...(typeof config.transport.sessionInitTimeoutMs === "number"
                   ? {
                       sessionInitTimeoutMs:

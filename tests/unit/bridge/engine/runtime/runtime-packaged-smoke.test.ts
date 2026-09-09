@@ -115,4 +115,4 @@ test("WorkerTeardownPendingError surfaces exact error code through withWorker", 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
-});
+}, 30_000);

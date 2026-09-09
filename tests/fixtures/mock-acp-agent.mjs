@@ -270,7 +270,9 @@ rl.on("line", (line) => {
       respond(id, {});
       break;
     case "session/set_config_option":
-      respond(id, {});
+      // acpx 0.15.1 reconciles response.configOptions (accepted snapshot);
+      // ACP requires the array, so a bare {} would crash upstream reconcile.
+      respond(id, { configOptions: [] });
       break;
     default:
       respondError(id, `mock agent: unknown method ${method}`);

@@ -222,6 +222,16 @@ export function parseConfig(
   ) {
     throw new Error("transport.turnIdleTimeoutSeconds must be a non-negative number (0 disables the turn watchdog)");
   }
+  for (const key of ["acpxMaxIncomingMessageBytes", "acpxTerminalMaxOutputBytes"] as const) {
+    const value = transport[key];
+    if (value === undefined || value === null) continue;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+      const zeroMeaning = key === "acpxMaxIncomingMessageBytes"
+        ? "0 disables the limit"
+        : "0 lifts only the host ceiling (agent/requested limits still apply)";
+      throw new Error(`transport.${key} must be a non-negative safe integer byte count, null, or absent (${zeroMeaning})`);
+    }
+  }
   if ("preferLocalAgents" in transport && typeof transport.preferLocalAgents !== "boolean") {
     throw new Error("transport.preferLocalAgents must be a boolean");
   }
@@ -391,6 +401,12 @@ export function parseConfig(
       ...(adapterRegistry ? { adapterRegistry } : {}),
       ...(typeof transport.turnIdleTimeoutSeconds === "number"
         ? { turnIdleTimeoutSeconds: transport.turnIdleTimeoutSeconds }
+        : {}),
+      ...(typeof transport.acpxMaxIncomingMessageBytes === "number"
+        ? { acpxMaxIncomingMessageBytes: transport.acpxMaxIncomingMessageBytes }
+        : {}),
+      ...(typeof transport.acpxTerminalMaxOutputBytes === "number"
+        ? { acpxTerminalMaxOutputBytes: transport.acpxTerminalMaxOutputBytes }
         : {}),
       type: transportType,
       permissionMode,

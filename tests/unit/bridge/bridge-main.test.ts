@@ -15,6 +15,26 @@ test("resolveBridgeSharedConfig carries queueOwnerTtlSeconds through, including 
   expect(configured.queueOwnerTtlSeconds).toBe(1800);
 });
 
+test("resolveBridgeSharedConfig carries host ceilings, dropping malformed input", () => {
+  const configured = resolveBridgeSharedConfig((name) =>
+    name === "BRIDGE_ACPX_MAX_MESSAGE_BYTES" ? String(8 * 1024 * 1024)
+    : name === "BRIDGE_ACPX_TERMINAL_MAX_OUTPUT_BYTES" ? "65536"
+    : undefined,
+  );
+  expect(configured.acpxMaxIncomingMessageBytes).toBe(8 * 1024 * 1024);
+  expect(configured.acpxTerminalMaxOutputBytes).toBe(65536);
+  const unset = resolveBridgeSharedConfig(() => undefined);
+  expect(unset.acpxMaxIncomingMessageBytes).toBeUndefined();
+  expect(unset.acpxTerminalMaxOutputBytes).toBeUndefined();
+  const malformed = resolveBridgeSharedConfig((name) =>
+    name === "BRIDGE_ACPX_MAX_MESSAGE_BYTES" ? "lots"
+    : name === "BRIDGE_ACPX_TERMINAL_MAX_OUTPUT_BYTES" ? "-5"
+    : undefined,
+  );
+  expect(malformed.acpxMaxIncomingMessageBytes).toBeUndefined();
+  expect(malformed.acpxTerminalMaxOutputBytes).toBeUndefined();
+});
+
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;

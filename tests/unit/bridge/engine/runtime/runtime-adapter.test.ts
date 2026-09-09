@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 import { createXacpxRuntimeAdapter } from "../../../../../src/bridge/engine/runtime/runtime-adapter";
-// Plan Task 1 / PR0 gate: prove the packaged acpx 0.13.1 Runtime public contract
+// Plan Task 1 / PR0 gate: prove the packaged acpx 0.15.1 Runtime public contract
 // works end-to-end from xacpx — import → createRuntime → ensureSession →
 // startTurn → completed result — against tests/fixtures/mock-acp-agent.mjs,
 // with zero upstream modification. The session record must be visible through
@@ -80,3 +80,61 @@ test("adapter-scoped ensure/startTurn/cancel surface through the narrow interfac
   expect(typeof adapter.setMode).toBe("function");
   expect(typeof adapter.close).toBe("function");
 });
+
+test("adapter setConfigOption returns the agent-accepted snapshot (B3)", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "xacpx-adapter-cfg-"));
+  try {
+    const adapter = createXacpxRuntimeAdapter({
+      stateDir,
+      permissionMode: "approve-all",
+      nonInteractivePermissions: "deny",
+      agentOverrides: { mock: [process.execPath, MOCK_AGENT] },
+    });
+    const handle = await adapter.ensure({ sessionKey: "cfg-session", agent: "mock", cwd: stateDir });
+    // The mock agent accepts with an empty option list — the narrow snapshot
+    // still comes back instead of void.
+    const snapshot = await adapter.setConfigOption(handle, "model", "mock-model");
+    expect(snapshot).toEqual({ options: [] });
+    await adapter.close(handle, { discardPersistentState: true });
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("adapter processLifecycle observes the direct-agent launch (B2)", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "xacpx-adapter-lease-"));
+  try {
+    const seen: Array<{ hook: string; launchId: string; scope: string; pid?: number }> = [];
+    const adapter = createXacpxRuntimeAdapter({
+      stateDir,
+      permissionMode: "approve-all",
+      nonInteractivePermissions: "deny",
+      agentOverrides: { mock: [process.execPath, MOCK_AGENT] },
+      processLifecycle: {
+        onBeforeSpawn: (launch) => {
+          seen.push({ hook: "beforeSpawn", launchId: launch.launchId, scope: launch.scope.kind });
+        },
+        onSpawned: (started) => {
+          seen.push({ hook: "spawned", launchId: started.launchId, scope: started.scope.kind, pid: started.pid });
+        },
+      },
+    });
+    const handle = await adapter.ensure({ sessionKey: "lease-session", agent: "mock", cwd: stateDir });
+    const turn = adapter.startTurn({ handle, text: "hello lease" });
+    await turn.promptStarted;
+    for await (const _event of turn.events) {
+      /* drain */
+    }
+    expect((await turn.result).status).toBe("completed");
+    // The Runtime spawn is admitted and observed with a real child pid —
+    // no inference from records or snapshots.
+    const before = seen.find((s) => s.hook === "beforeSpawn");
+    const spawned = seen.find((s) => s.hook === "spawned");
+    expect(before?.scope).toBe("runtime-session");
+    expect(spawned?.launchId).toBe(before?.launchId);
+    expect(spawned?.pid).toBeGreaterThan(0);
+    await adapter.close(handle, { discardPersistentState: true });
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+}, 30_000);

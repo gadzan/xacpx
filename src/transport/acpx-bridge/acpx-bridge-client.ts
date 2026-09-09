@@ -457,6 +457,9 @@ interface SpawnedBridgeClientOptions {
   permissionPolicy?: string;
   queueOwnerTtlSeconds?: number;
   sessionInitTimeoutMs?: number;
+  /** Advanced acpx host ceilings (plan B5); forwarded as XACPX_BRIDGE_* env. */
+  acpxMaxIncomingMessageBytes?: number | null;
+  acpxTerminalMaxOutputBytes?: number | null;
   generationFilePath?: string;
   /** Overlay entries the bridge re-provisions into ~/.acpx/config.json at startup. */
   agentOverlays?: AcpxAgentOverlayEntry[];
@@ -489,6 +492,12 @@ export function buildBridgeSpawnEnv(
       && Number.isFinite(options.sessionInitTimeoutMs)
       && options.sessionInitTimeoutMs > 0
       ? { XACPX_BRIDGE_SESSION_INIT_TIMEOUT_MS: String(options.sessionInitTimeoutMs) }
+      : {}),
+    ...(typeof options.acpxMaxIncomingMessageBytes === "number"
+      ? { XACPX_BRIDGE_ACPX_MAX_MESSAGE_BYTES: String(options.acpxMaxIncomingMessageBytes) }
+      : {}),
+    ...(typeof options.acpxTerminalMaxOutputBytes === "number"
+      ? { XACPX_BRIDGE_ACPX_TERMINAL_MAX_OUTPUT_BYTES: String(options.acpxTerminalMaxOutputBytes) }
       : {}),
     ...(options.generationFilePath ? { XACPX_BRIDGE_GENERATION_FILE: options.generationFilePath } : {}),
     ...(options.agentOverlays && options.agentOverlays.length > 0

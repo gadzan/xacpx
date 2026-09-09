@@ -91,13 +91,13 @@ describe("decodeBridgeEngineCapabilities", () => {
         runtimeAvailable: true,
         runtimeImportOk: true,
         contractProbeOk: true,
-        acpxVersion: "0.13.1",
+        acpxVersion: "0.15.1",
       }),
     ).toEqual({
       runtimeAvailable: true,
       runtimeImportOk: true,
       contractProbeOk: true,
-      acpxVersion: "0.13.1",
+      acpxVersion: "0.15.1",
     });
   });
 

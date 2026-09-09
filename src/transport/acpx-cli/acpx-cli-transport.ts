@@ -65,6 +65,7 @@ import {
 } from "../acpx-command-builder";
 import { MessageInjectionError } from "../message-injection";
 import { AcpxQueueOverflowError, isAcpxQueueMessageOverflow, type AcpxQueueCleanupResult } from "../acpx-queue-overflow";
+import { resolveAcpxHostPolicyEnv, resolveEffectiveAcpxEnv } from "../acpx-host-policy";
 
 interface AcpxCliTransportOptions {
   command?: string;
@@ -80,6 +81,14 @@ interface AcpxCliTransportOptions {
   permissionPolicy?: string;
   /** Idle TTL (seconds) passed to acpx as `--ttl` on prompt; 0 = keep alive forever. */
   queueOwnerTtlSeconds?: number;
+  /**
+   * Advanced acpx host ceilings (plan B5, acpx 0.15.1). `null`/absent follows
+   * upstream defaults. Baked into the queue-owner HOST base env at
+   * construction; warm owners keep startup values until recycled. Flows from
+   * TransportConfig via the `{...config.transport}` spread.
+   */
+  acpxMaxIncomingMessageBytes?: number | null;
+  acpxTerminalMaxOutputBytes?: number | null;
   /** Test seam for filtered per-agent process environments. */
   resolveSpawnEnvironment?: (input: ClaudeExecutionSettings) => NodeJS.ProcessEnv | undefined;
   createAdapterContext?: (input: {
@@ -236,6 +245,9 @@ export class AcpxCliTransport implements SessionTransport {
   private permissionMode: PermissionMode;
   private nonInteractivePermissions: NonInteractivePermissions;
   private permissionPolicy: string | undefined;
+  private readonly hostPolicyEnv: Record<string, string>;
+  /** True when any ceiling is configured; gates env attachment so unset policy stays bit-identical. */
+  private readonly hostPolicyConfigured: boolean;
   private readonly queueOwnerTtlSeconds: number | undefined;
   private readonly runCommand: CommandRunner;
   private readonly runPtyCommand: PtyRunner;
@@ -260,7 +272,16 @@ export class AcpxCliTransport implements SessionTransport {
     this.queueOwnerTtlSeconds = options.queueOwnerTtlSeconds;
     this.runCommand = runCommand;
     this.runPtyCommand = runPtyCommand;
+    // Plan B5: host ceilings ride every acpx child env on this lane (not just
+    // the queue-owner base): agent-specific env first, policy overlaid last so
+    // config can never be shadowed by inheritance.
+    this.hostPolicyEnv = resolveAcpxHostPolicyEnv({
+      acpxMaxIncomingMessageBytes: options.acpxMaxIncomingMessageBytes,
+      acpxTerminalMaxOutputBytes: options.acpxTerminalMaxOutputBytes,
+    });
+    this.hostPolicyConfigured = Object.keys(this.hostPolicyEnv).length > 0;
     this.queueOwnerLauncher = queueOwnerLauncher ?? new AcpxQueueOwnerLauncher({
+      ...(this.hostPolicyConfigured ? { baseEnv: { ...process.env, ...this.hostPolicyEnv } } : {}),
       acpxCommand: this.command,
       // Coordinator sessions pre-spawn the queue owner here (before `acpx prompt`),
       // so the owner's warm window must be set at launch — the prompt's `--ttl`
@@ -328,7 +349,7 @@ export class AcpxCliTransport implements SessionTransport {
       // argv migration backfilled just above); `sessions new` would orphan it.
       await runEnsure.call(this, ensureArgs, {
         timeoutMs: remainingTimeoutMs(),
-        env: this.spawnEnvironment(session),
+        env: this.effectiveSpawnEnvironment(session),
       });
       return;
     } catch (error) {
@@ -341,7 +362,7 @@ export class AcpxCliTransport implements SessionTransport {
           session.transportSession,
         ], "quiet"), {
           timeoutMs: Math.min(this.managementCommandTimeoutMs, remainingTimeoutMs()),
-          env: this.spawnEnvironment(session),
+          env: this.effectiveSpawnEnvironment(session),
         });
         return;
       } catch {
@@ -355,7 +376,7 @@ export class AcpxCliTransport implements SessionTransport {
       ]);
       await runEnsure.call(this, newArgs, {
         timeoutMs: remainingTimeoutMs(),
-        env: this.spawnEnvironment(session),
+        env: this.effectiveSpawnEnvironment(session),
       });
     }
   }
@@ -372,7 +393,7 @@ export class AcpxCliTransport implements SessionTransport {
         ]);
         return await this.runCommandWithTimeout(this.runCommand, args, {
           timeoutMs: this.sessionInitTimeoutMs,
-          env: this.spawnEnvironment(query),
+          env: this.effectiveSpawnEnvironment(query),
         });
       },
       formatError: (result) => normalizeCommandError(result) ?? `command failed with exit code ${result.code}`,
@@ -402,7 +423,7 @@ export class AcpxCliTransport implements SessionTransport {
       const result = await this.runCommandWithTimeout(this.runCommand, args, {
         timeoutMs: Math.max(deadline - Date.now(), 1),
         stage: "session-history",
-        env: this.spawnEnvironment(session),
+        env: this.effectiveSpawnEnvironment(session),
       });
       if (result.code === 0) {
         return { text: result.stdout.trimEnd() };
@@ -453,7 +474,7 @@ export class AcpxCliTransport implements SessionTransport {
           options?.onUsage,
           options?.onCommands,
           rawStream,
-          this.spawnEnvironment(session),
+          this.effectiveSpawnEnvironment(session),
           session.driver ?? session.agent,
         );
         const baseText = getPromptText(result);
@@ -568,7 +589,7 @@ export class AcpxCliTransport implements SessionTransport {
     const result = await this.runCommandWithTimeout(this.runCommand, args, {
       timeoutMs: this.managementCommandTimeoutMs,
       stage: "get-session-model",
-      env: this.spawnEnvironment(session),
+      env: this.effectiveSpawnEnvironment(session),
     });
     if (result.code !== 0) {
       const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
@@ -643,7 +664,7 @@ export class AcpxCliTransport implements SessionTransport {
   }
 
   private queueOwnerLaunchInput(session: ResolvedSession, acpxRecordId: string): LaunchQueueOwnerInput {
-    const env = this.spawnEnvironment(session);
+    const agentEnv = this.spawnEnvironment(session);
     const adapterId = classifyPreinstalledAdapterCommandShape(session.agentCommand);
     const adapterContext = adapterId && session.agentCommand
       ? this.createAdapterContext?.({ id: adapterId, sessionKey: session.alias, agentCommand: session.agentCommand })
@@ -657,7 +678,11 @@ export class AcpxCliTransport implements SessionTransport {
       ...(adapterId && session.agentCommand ? { agentCommand: session.agentCommand } : {}),
       ...(adapterContext ? { adapterContext } : {}),
       ...(session.model?.trim() ? { sessionOptions: { model: session.model.trim() } } : {}),
-      ...(env ? { env } : {}),
+      // Agent env wins the base, but an explicitly set agent env must not
+      // drop the host ceilings (launcher uses input.env ?? baseEnv verbatim).
+      // Agent-undefined stays omitted so warm-owner fingerprinting keeps
+      // riding the construction-time baseEnv.
+      ...(agentEnv ? { env: { ...agentEnv, ...this.hostPolicyEnv } } : {}),
     };
   }
 
@@ -720,7 +745,7 @@ export class AcpxCliTransport implements SessionTransport {
     const runResume = session.agentCommand ? this.run : this.runWithPty;
     await runResume.call(this, args, {
       timeoutMs: this.sessionInitTimeoutMs,
-      env: this.spawnEnvironment(session),
+      env: this.effectiveSpawnEnvironment(session),
     });
   }
 
@@ -1217,15 +1242,29 @@ export class AcpxCliTransport implements SessionTransport {
     };
   }
 
+  /**
+   * Effective acpx-host env for one child: agent env (or inheritance) with
+   * configured ceilings overlaid last. Returns undefined when there is
+   * neither agent env nor policy, preserving the legacy inherit path
+   * (and warm-owner fingerprint stability) bit-identically.
+   */
+  private effectiveSpawnEnvironment(input: ClaudeExecutionSettings): NodeJS.ProcessEnv | undefined {
+    const agentEnv = this.spawnEnvironment(input);
+    if (!agentEnv && !this.hostPolicyConfigured) return undefined;
+    return resolveEffectiveAcpxEnv(agentEnv, this.hostPolicyEnv);
+  }
+
+  // Internal primitive: agent-specific env only, WITHOUT host policy.
+  // Never spawn directly from this — use effectiveSpawnEnvironment() (all
+  // child env) or the merged queueOwnerLaunchInput() branch.
   private spawnEnvironment(input: ClaudeExecutionSettings): NodeJS.ProcessEnv | undefined {
     return this.resolveSpawnEnvironment(input);
   }
-
   private withSpawnEnvironment(
     input: ClaudeExecutionSettings,
     options?: RunOptions,
   ): RunOptions | undefined {
-    const env = this.spawnEnvironment(input);
+    const env = this.effectiveSpawnEnvironment(input);
     return env ? { ...(options ?? {}), env } : options;
   }
 

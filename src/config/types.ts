@@ -74,6 +74,18 @@ export interface TransportConfig {
    * `0` disables the watchdog. Defaults to 600 (10 min).
    */
   turnIdleTimeoutSeconds?: number;
+  /**
+   * Advanced acpx embedding-host ceilings (acpx 0.15.1, plan B5).
+   * `acpxMaxIncomingMessageBytes` overrides the 64 MiB default ceiling on
+   * agent → acpx inbound ACP messages (`0` = unlimited — avoid unless a real
+   * workload needs it); `acpxTerminalMaxOutputBytes` caps retained
+   * terminal stdout+stderr bytes. `null`/absent = follow upstream defaults.
+   * Both apply to the CLI queue-owner lane and the Runtime worker lane.
+   * Changing either requires recycling warm queue owners / Runtime workers:
+   * the limit is read once at owner startup.
+   */
+  acpxMaxIncomingMessageBytes?: number | null;
+  acpxTerminalMaxOutputBytes?: number | null;
 }
 
 export interface TerminalConfig {

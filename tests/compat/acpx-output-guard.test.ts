@@ -11,7 +11,7 @@ import type { ResolvedSession } from "../../src/transport/types";
 
 const ACPX = resolveAcpxCommand({ configuredCommand: undefined });
 
-test("official acpx 0.13 queue stays healthy behind the xacpx ACP output guard", async () => {
+test("official pinned acpx queue stays healthy behind the xacpx ACP output guard", async () => {
   const home = await mkdtemp(join(tmpdir(), "xacpx-guard-acpx-home-"));
   const workspace = await mkdtemp(join(tmpdir(), "xacpx-guard-acpx-workspace-"));
   const agentDir = await mkdtemp(join(tmpdir(), "xacpx-guard-agent-"));
@@ -71,7 +71,7 @@ test("official acpx 0.13 queue stays healthy behind the xacpx ACP output guard",
     };
 
     const acpxPackage = JSON.parse(await readFile(join(process.cwd(), "node_modules", "acpx", "package.json"))) as { version?: string };
-    expect(acpxPackage.version?.startsWith("0.13.")).toBe(true);
+    expect(acpxPackage.version?.startsWith("0.15.")).toBe(true);
     transport = new AcpxCliTransport({
       command: ACPX,
       permissionMode: "approve-all",

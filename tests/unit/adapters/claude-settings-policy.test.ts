@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-import { resolveClaudeSpawnEnvironment } from "../../../src/adapters/claude-settings-policy";
+import { narrowToAgentProcessEnvOverlay, resolveClaudeAgentProcessEnv, resolveClaudeSpawnEnvironment } from "../../../src/adapters/claude-settings-policy";
 
 test("provider-only imports provider env and overlays settings without moving session state", () => {
   let profilePath = "";
@@ -352,4 +352,106 @@ test("non-Claude agents do not receive a copied process environment", () => {
     { driver: "codex", settingsPolicy: "full-user" },
     { baseEnv: { SECRET: "value" } },
   )).toBeUndefined();
+});
+
+test("narrowToAgentProcessEnvOverlay keeps only added/changed keys", () => {
+  expect(narrowToAgentProcessEnvOverlay(undefined)).toBeUndefined();
+  expect(narrowToAgentProcessEnvOverlay(
+    { PATH: "/bin", SECRET: "s", ANTHROPIC_MODEL: "m", DROPPED: undefined },
+    { PATH: "/bin", SECRET: "s" },
+  )).toEqual({ ANTHROPIC_MODEL: "m" });
+  // No delta at all narrows to undefined (inherit; no overlay).
+  expect(narrowToAgentProcessEnvOverlay({ A: "1" }, { A: "1", B: "2" })).toBeUndefined();
+});
+
+test("narrowToAgentProcessEnvOverlay folds Windows keys and re-expresses control-key removal", () => {
+  expect(narrowToAgentProcessEnvOverlay(
+    { PATH: "/a", NEW: "1" },
+    { path: "/a" },
+    "win32",
+  )).toEqual({ NEW: "1" });
+  // The resolver deletes ACPX_CLAUDE_INCLUDE_USER_SETTINGS to force a
+  // restricted profile; the additive overlay re-expresses that as "0"
+  // (the adapter only treats "1" as enabled).
+  expect(narrowToAgentProcessEnvOverlay(
+    { PATH: "/bin" },
+    { PATH: "/bin", ACPX_CLAUDE_INCLUDE_USER_SETTINGS: "1" },
+  )).toEqual({ ACPX_CLAUDE_INCLUDE_USER_SETTINGS: "0" });
+});
+
+test("full-user narrows to the flag (and explicit model), never parent echoes", () => {
+  const baseEnv = { PATH: "/bin", HTTP_PROXY: "host-proxy", SOME_TOKEN: "secret" };
+  const resolved = resolveClaudeSpawnEnvironment(
+    { driver: "claude", settingsPolicy: "full-user", model: "web-model" },
+    { baseEnv },
+  );
+  expect(narrowToAgentProcessEnvOverlay(resolved, baseEnv)).toEqual({
+    ANTHROPIC_MODEL: "web-model",
+    ACPX_CLAUDE_INCLUDE_USER_SETTINGS: "1",
+  });
+});
+
+test("isolated narrows to the profile dir plus the cleared flag", () => {
+  const baseEnv = {
+    PATH: "/bin",
+    HTTP_PROXY: "host-proxy",
+    ACPX_CLAUDE_INCLUDE_USER_SETTINGS: "1",
+  };
+  const resolved = resolveClaudeSpawnEnvironment(
+    { driver: "claude", settingsPolicy: "isolated" },
+    {
+      baseEnv,
+      profileRoot: "/profiles",
+      writeProfile: () => {},
+      linkSessionState: () => {},
+    },
+  );
+  const overlay = narrowToAgentProcessEnvOverlay(resolved, baseEnv);
+  const profileDir = overlay?.CLAUDE_CONFIG_DIR ?? "";
+  expect(profileDir.length).toBeGreaterThan(0);
+  expect(dirname(profileDir)).toBe(join("/profiles"));
+  expect(overlay?.ACPX_CLAUDE_INCLUDE_USER_SETTINGS).toBe("0");
+  expect(overlay).not.toHaveProperty("PATH");
+  expect(overlay).not.toHaveProperty("HTTP_PROXY");
+});
+
+test("same-value intentional writes ride the overlay via provenance", () => {
+  // Explicit session model matching the inherited value: a pure value diff
+  // would drop it, letting a stale persisted ANTHROPIC_MODEL win downstream.
+  const overlay = resolveClaudeAgentProcessEnv(
+    { driver: "claude", settingsPolicy: "isolated", model: "foo" },
+    {
+      baseEnv: { ANTHROPIC_MODEL: "foo", PATH: "/bin" },
+      profileRoot: "/profiles",
+      writeProfile: () => {},
+      linkSessionState: () => {},
+    },
+  );
+  expect(overlay?.ANTHROPIC_MODEL).toBe("foo");
+  expect(overlay).not.toHaveProperty("PATH");
+});
+
+test("full-user same-value flag rides the overlay via provenance", () => {
+  const overlay = resolveClaudeAgentProcessEnv(
+    { driver: "claude", settingsPolicy: "full-user" },
+    { baseEnv: { ACPX_CLAUDE_INCLUDE_USER_SETTINGS: "1", PATH: "/bin" } },
+  );
+  expect(overlay).toEqual({ ACPX_CLAUDE_INCLUDE_USER_SETTINGS: "1" });
+});
+
+test("isolated clear rides the overlay even when the parent never had the flag", () => {
+  // Provenance records the resolver's explicit delete; the "0" must be
+  // emitted without a base-presence gate, or a stale persisted "1" would
+  // resurrect a restricted policy the parent never had.
+  const overlay = resolveClaudeAgentProcessEnv(
+    { driver: "claude", settingsPolicy: "isolated" },
+    {
+      baseEnv: { PATH: "/bin" },
+      profileRoot: "/profiles",
+      writeProfile: () => {},
+      linkSessionState: () => {},
+    },
+  );
+  expect(overlay?.ACPX_CLAUDE_INCLUDE_USER_SETTINGS).toBe("0");
+  expect(overlay).not.toHaveProperty("PATH");
 });

@@ -69,7 +69,7 @@ test("Scenario 1: Windows identity probe is a hard gate — RPCs await probe res
   }
 });
 
-test("Scenario 1b: warmth positive whitelist — false while probe pending, true after bootstrap verified, false when stopped", async () => {
+test("Scenario 1b: warmth positive whitelist — false while probe pending, true after bootstrap verified, false when stopped", { timeout: 30_000 }, async () => {
   const dir = await mkdtemp(join(tmpdir(), "win-warm-timing-"));
   try {
     const entry = join(dir, "worker.mjs");
@@ -82,6 +82,7 @@ test("Scenario 1b: warmth positive whitelist — false while probe pending, true
     const engine = new RuntimeEngine({
       workerEntryPath: entry,
       permissionMode: "approve-all",
+      durableRootDir: join(dir, "durable"),
       workerClientDeps: {
         platform: "win32",
         probeWindowsIdentity: async (pid) => {
@@ -381,7 +382,7 @@ test("Ownership invariant: request() during teardown rejects with WorkerTeardown
   }
 });
 
-test("Quiescence: Windows bootstrap probe pending causes concurrent permission update to fail closed without corrupting ensure", async () => {
+test("Quiescence: Windows bootstrap probe pending causes concurrent permission update to fail closed without corrupting ensure", { timeout: 30_000 }, async () => {
   const dir = await mkdtemp(join(tmpdir(), "win-probe-quiesce-"));
   try {
     const entry = join(dir, "worker.mjs");
@@ -395,6 +396,7 @@ test("Quiescence: Windows bootstrap probe pending causes concurrent permission u
     const engine = new RuntimeEngine({
       workerEntryPath: entry,
       permissionMode: "approve-all",
+      durableRootDir: join(dir, "durable"),
       workerClientDeps: {
         platform: "win32",
         probeWindowsIdentity: async (pid) => {
@@ -433,7 +435,7 @@ test("Quiescence: Windows bootstrap probe pending causes concurrent permission u
   }
 });
 
-test("Quiescence: concurrent cancel() during permission transition waits on transition lock", async () => {
+test("Quiescence: concurrent cancel() during permission transition waits on transition lock", { timeout: 30_000 }, async () => {
   const dir = await mkdtemp(join(tmpdir(), "win-cancel-quiesce-"));
   try {
     const entry = join(dir, "worker.mjs");
@@ -442,6 +444,7 @@ test("Quiescence: concurrent cancel() during permission transition waits on tran
     const engine = new RuntimeEngine({
       workerEntryPath: entry,
       permissionMode: "approve-all",
+      durableRootDir: join(dir, "durable"),
     });
 
     const sessionInput = {
