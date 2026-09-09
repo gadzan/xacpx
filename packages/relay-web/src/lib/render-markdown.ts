@@ -56,6 +56,15 @@ export interface RenderMarkdownOptions {
   streaming?: boolean;
 }
 
+/** Apply the exact source preprocessing used before every markdown-it render. */
+export function preprocessMarkdownSource(
+  text: string,
+  options: RenderMarkdownOptions = {},
+): string {
+  const healed = options.streaming ? remend(text) : text;
+  return normalizeMarkdownTables(healed);
+}
+
 export interface TopLevelBlockInfo {
   type: string;
   startOffset: number;
@@ -216,6 +225,11 @@ function isStandaloneParagraph(source: string): boolean {
   return blocks.length === 1 && blocks[0]!.type === "paragraph_open";
 }
 
+function preprocessingPreservesSource(source: string, streaming: boolean): boolean {
+  if (preprocessMarkdownSource(source) !== source) return false;
+  return !streaming || preprocessMarkdownSource(source, { streaming: true }) === source;
+}
+
 /** Check whether `offsetInBlock` inside a paragraph block lands at a safe top-level
  *  text position rather than severing an active inline construct (code span,
  *  emphasis, strong, link label/delimiter, reference link, HTML entity, hardbreak, etc.).
@@ -241,20 +255,27 @@ export function isSafeInlineParagraphOffset(
   return areSemanticTokensEqual(fullTokens, combinedTokens);
 }
 
-/** Check a paragraph split as it will actually render in TurnParts: the full
- * paragraph resolves against its document env, while the prefix and suffix are
- * parsed by separate StreamMarkdown instances with isolated env objects. This
- * rejects document-context dependencies such as reference-style links while still
- * allowing ordinary prose in an earlier block to interleave with activity.
+/** Check a paragraph split as it will actually render in TurnParts: preprocessing
+ * must preserve the full paragraph and both standalone fragments, the full paragraph
+ * resolves against its document env, and the fragments parse with isolated env objects.
+ * This rejects preprocessing-created block semantics and document-context dependencies
+ * while still allowing ordinary prose in an earlier block to interleave with activity.
  */
-export function isSafeStandaloneInlineParagraphOffset(
+export function isSafeStandaloneParagraphOffset(
   paragraphSource: string,
   offsetInBlock: number,
   documentEnv: Record<string, unknown> = {},
+  options: RenderMarkdownOptions = {},
 ): boolean {
   if (offsetInBlock < 0 || offsetInBlock > paragraphSource.length) return false;
   const prefix = paragraphSource.slice(0, offsetInBlock);
   const suffix = paragraphSource.slice(offsetInBlock);
+  const streaming = options.streaming === true;
+  if (
+    !preprocessingPreservesSource(paragraphSource, streaming)
+    || !preprocessingPreservesSource(prefix, streaming)
+    || !preprocessingPreservesSource(suffix, streaming)
+  ) return false;
   if (!isStandaloneParagraph(prefix) || !isStandaloneParagraph(suffix)) return false;
 
   const fullTokens = canonicalInlineTokens(paragraphSource, documentEnv);
@@ -267,10 +288,7 @@ export function isSafeStandaloneInlineParagraphOffset(
 
 /** Render markdown to sanitized, XSS-safe HTML. */
 export function renderMarkdown(text: string, options: RenderMarkdownOptions = {}): string {
-  // Heal unterminated markup first (streaming), then run table normalization so it
-  // sees correct fence state, then parse.
-  const healed = options.streaming ? remend(text) : text;
-  const source = normalizeMarkdownTables(healed);
+  const source = preprocessMarkdownSource(text, options);
   const rawHtml = md.render(source);
   return DOMPurify.sanitize(rawHtml);
 }

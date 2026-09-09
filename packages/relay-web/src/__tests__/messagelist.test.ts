@@ -356,6 +356,87 @@ describe("MessageList", () => {
     expect(bubble.find(".stream-md.caret").exists()).toBe(true);
   });
 
+  it("does not create a table by splitting pipe prose around live activity", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [],
+        liveTurn: live([
+          { type: "text", text: "Progress: " },
+          {
+            type: "tool",
+            step: {
+              toolCallId: "read-1",
+              toolName: "Read",
+              kind: "read",
+              status: "success",
+              title: "index.css",
+            },
+          },
+          { type: "text", text: "| a | b |\n| 1 | 2 |" },
+        ]),
+      },
+    });
+
+    const bubble = wrapper.find('[data-test="msg-streaming"]');
+    const narrative = bubble.find(".stream-md");
+    const tool = bubble.find('[data-test="tool-step-header"]');
+    expect(bubble.findAll(".stream-md")).toHaveLength(1);
+    expect(bubble.find("table").exists()).toBe(false);
+    expect(
+      narrative.element.compareDocumentPosition(tool.element)
+      & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("keeps activity anchored after a streaming paragraph while remend heals it", async () => {
+    const incompleteParts: LiveTurn["parts"] = [
+      { type: "text", text: "Working **carefully " },
+      {
+        type: "tool",
+        step: {
+          toolCallId: "read-1",
+          toolName: "Read",
+          kind: "read",
+          status: "success",
+          title: "index.css",
+        },
+      },
+      { type: "text", text: "now" },
+    ];
+    const wrapper = mount(MessageList, {
+      props: { messages: [], liveTurn: live(incompleteParts) },
+    });
+
+    let bubble = wrapper.find('[data-test="msg-streaming"]');
+    let narrative = bubble.find(".stream-md");
+    let tool = bubble.find('[data-test="tool-step-header"]');
+    expect(bubble.findAll(".stream-md")).toHaveLength(1);
+    expect(narrative.html()).toContain("<strong>carefully now</strong>");
+    expect(
+      narrative.element.compareDocumentPosition(tool.element)
+      & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    await wrapper.setProps({
+      liveTurn: live([
+        ...incompleteParts.slice(0, -1),
+        { type: "text", text: "now** done" },
+      ]),
+    });
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-test="msg-streaming"] .stream-md').html())
+        .toContain("<strong>carefully now</strong> done");
+    });
+    bubble = wrapper.find('[data-test="msg-streaming"]');
+    narrative = bubble.find(".stream-md");
+    tool = bubble.find('[data-test="tool-step-header"]');
+    expect(bubble.findAll(".stream-md")).toHaveLength(1);
+    expect(
+      narrative.element.compareDocumentPosition(tool.element)
+      & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it("keeps a caret host when streaming Markdown ends with a horizontal rule", () => {
     const wrapper = mount(MessageList, {
       props: { messages: [], liveTurn: live([{ type: "text", text: "---" }]) },

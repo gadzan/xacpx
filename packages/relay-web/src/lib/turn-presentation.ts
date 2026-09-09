@@ -2,7 +2,7 @@ import type { PeerMessageHistoryEntry, ToolStepDto, TurnPartDto } from "@ganglio
 import {
   analyzeMarkdownDocument,
   isSafeInlineParagraphOffset,
-  isSafeStandaloneInlineParagraphOffset,
+  isSafeStandaloneParagraphOffset,
   topLevelBlockAt,
   type TopLevelBlockInfo,
 } from "./render-markdown";
@@ -34,6 +34,8 @@ export type TurnPresentationItem =
  *  The persisted rows stay the canonical record; nothing here mutates them. */
 export interface TurnPresentationOptions {
   sentAgentMessageById?: Map<string, PeerMessageHistoryEntry>;
+  /** Mirror StreamMarkdown's live preprocessing so unsafe temporary splits fail closed. */
+  streaming?: boolean;
 }
 
 type ActivityPart =
@@ -130,9 +132,13 @@ export function deriveTurnPresentation(
   const safeNarrativeAnchor = (offset: number): number | null => {
     const block = blockAtOffset(offset);
     if (!block || block.type !== "paragraph_open") return null;
-    if (normalizeMarkdownTables(block.source) !== block.source) return null;
     const offsetInBlock = offset - block.startOffset;
-    return isSafeStandaloneInlineParagraphOffset(block.source, offsetInBlock, markdown.env)
+    return isSafeStandaloneParagraphOffset(
+      block.source,
+      offsetInBlock,
+      markdown.env,
+      { streaming: opts?.streaming === true },
+    )
       ? offset
       : null;
   };

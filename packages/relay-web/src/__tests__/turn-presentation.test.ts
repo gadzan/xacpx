@@ -78,6 +78,40 @@ describe("deriveTurnPresentation", () => {
     ]);
   });
 
+  it("does not split prose when the standalone suffix would normalize into a table", () => {
+    expect(visibleShape([
+      { type: "text", text: "Progress: " },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "| a | b |\n| 1 | 2 |" },
+    ])).toEqual([
+      { type: "text", text: "Progress: | a | b |\n| 1 | 2 |" },
+      { type: "tool", id: "read-1" },
+    ]);
+  });
+
+  it("does not split a streaming paragraph while remend still needs to heal it", () => {
+    const incomplete: TurnPartDto[] = [
+      { type: "text", text: "Working **carefully " },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "now" },
+    ];
+    const completed: TurnPartDto[] = [
+      ...incomplete.slice(0, -1),
+      { type: "text", text: "now** done" },
+    ];
+    const expectedIncomplete = [
+      { type: "text", text: "Working **carefully now" },
+      { type: "tool", id: "read-1" },
+    ];
+    const expectedCompleted = [
+      { type: "text", text: "Working **carefully now** done" },
+      { type: "tool", id: "read-1" },
+    ];
+
+    expect(visibleShape(incomplete, { streaming: true })).toEqual(expectedIncomplete);
+    expect(visibleShape(completed, { streaming: true })).toEqual(expectedCompleted);
+  });
+
   it("does not split a paragraph that depends on a later reference definition", () => {
     expect(visibleShape([
       { type: "text", text: "See [docs][ref]" },

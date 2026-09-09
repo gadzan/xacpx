@@ -12,8 +12,8 @@ import { deriveTurnPresentation, extractFinalReplyText } from "../lib/turn-prese
 import { expandedTraces } from "../lib/trace-expansion";
 
 // Wire parts preserve arrival order, but transport events are not necessarily safe
-// Markdown boundaries. The presentation module anchors activity after the top-level
-// Markdown block that was in progress when the activity arrived.
+// Markdown boundaries. The presentation module keeps safe standalone prose splits in
+// place and otherwise anchors activity after the enclosing top-level Markdown block.
 const props = defineProps<{
   parts: TurnPartDto[];
   streaming?: boolean;
@@ -44,7 +44,10 @@ const { t, locale } = useI18n();
 const presentation = computed(() =>
   deriveTurnPresentation(
     props.parts,
-    props.sentAgentMessages ? { sentAgentMessageById: props.sentAgentMessages } : undefined,
+    {
+      streaming: props.streaming === true,
+      ...(props.sentAgentMessages ? { sentAgentMessageById: props.sentAgentMessages } : {}),
+    },
   ),
 );
 
