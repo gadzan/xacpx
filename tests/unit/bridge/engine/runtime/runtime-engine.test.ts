@@ -322,7 +322,7 @@ test("G8 structured launch: buildEnsureParams uses acpxAgent as registry alias f
     acpxAgent: "codex",
     agentCommand: "npx @acpx/codex",
     agentArgv: ["node", "/path with spaces/agent.mjs", "--flag", ""],
-  });
+  }, undefined);
 
   // agent must resolve to runtimeAgentName (acpxAgent ?? agent)
   expect(params.agent).toBe("codex");
@@ -544,7 +544,7 @@ test("initial session model is forwarded through buildEnsureParams to ensure opt
   const params = engine["buildEnsureParams"]({
     ...sessionInput,
     model: "gpt-5.5-preview",
-  });
+  }, undefined);
   expect(params.model).toBe("gpt-5.5-preview");
 });
 
@@ -633,7 +633,7 @@ test("G8 raw command launch: buildEnsureParams sets string override for explicit
     agentCommand: "/custom/my-acp --arg 1",
     rawCommand: "/custom/my-acp --arg 1",
     agentArgv: undefined,
-  });
+  }, undefined);
 
   expect(params.agent).toBe("codex");
   expect(params.agentOverrides).toEqual({
@@ -1143,7 +1143,7 @@ test("Host crash (SIGKILL) → worker EOF self-exit → adapter descendant also 
 test("buildEnsureParams passes state ROOT (not sessions dir) to runtime store", async () => {
   const sessionsDir = join("/tmp/fake-home", ".acpx", "sessions");
   const engine = new RuntimeEngine({ workerEntryPath: "/fake/worker.js", stateDir: sessionsDir, permissionMode: "approve-all" });
-  const params = engine["buildEnsureParams"]({ ...sessionInput });
+  const params = engine["buildEnsureParams"]({ ...sessionInput }, undefined);
   expect(params.stateDir).toBe(join("/tmp/fake-home", ".acpx"));
   // Sessions dir itself is unchanged for disk helpers
   expect(engine["sessionsDir"]()).toBe(sessionsDir);

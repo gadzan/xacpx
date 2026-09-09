@@ -232,6 +232,41 @@ test("engine sends the resolved overlay and recycles the worker when it changes"
   }
 }, 60_000);
 
+test("one ensure resolves the overlay once: recorded identity matches sent params", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-env-snapshot-"));
+  try {
+    const entry = join(dir, "worker.mjs");
+    const capture = join(dir, "ensures.ndjson");
+    await writeEnvCaptureWorker(entry);
+    const A = { B1_TEST_VAR: "snap-a" };
+    const B = { B1_TEST_VAR: "snap-b" };
+    let calls = 0;
+    const engine = new RuntimeEngine({
+      workerEntryPath: entry,
+      permissionMode: "approve-all",
+      fenceDir: join(dir, "wf"),
+      workerClientDeps: { spawnEnv: { CAPTURE_FILE: capture } },
+      // Stateful resolver: a double resolution inside one ensure would
+      // observe A then B and split identity from params.
+      resolveSpawnEnvironment: () => {
+        calls += 1;
+        return calls === 1 ? { ...A } : { ...B };
+      },
+    });
+    await engine.ensureSession(engineSessionInput);
+    await engine.shutdown().catch(() => {});
+    expect(calls).toBe(1);
+    const lines = (await readFile(capture, "utf8")).trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines.length).toBe(1);
+    expect(lines[0].agentProcessEnv).toEqual(A);
+    const recorded = engine["lastConstructionIdentity"].get("logical-env-1");
+    const expected = engine["constructionIdentityForInput"](engineSessionInput, A);
+    expect(recorded).toBe(expected);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 60_000);
+
 /** Fake worker: dumps its own HOST process env once, then speaks ensure/shutdown. */
 async function writeHostEnvCaptureWorker(entry: string, capture: string): Promise<void> {
   await writeFile(

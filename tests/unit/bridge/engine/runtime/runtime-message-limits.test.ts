@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { createXacpxRuntimeAdapter } from "../../../../../src/bridge/engine/runtime/runtime-adapter";
+import { createXacpxRuntimeAdapter, type XacpxRuntimeAdapter, type XacpxRuntimeSessionHandle } from "../../../../../src/bridge/engine/runtime/runtime-adapter";
 
 /**
  * PR A6 gate: acpx 0.15.1 default 64 MiB incoming ACP message ceiling.
@@ -82,22 +82,57 @@ test("above the default cap the turn fails with an actionable overflow error", a
 
 test("raising the override fixes new runtimes; warm runtimes retain startup setting", async () => {
   const stateDir = await mkdtemp(join(tmpdir(), "xacpx-limit-warm-"));
+  const savedLimit = process.env.ACPX_MAX_ACP_MESSAGE_BYTES;
+  const savedHuge = process.env.HUGE_BYTES;
+  const runTurn = async (adapter: XacpxRuntimeAdapter, handle: XacpxRuntimeSessionHandle) => {
+    const turn = adapter.startTurn({ handle, text: "go" });
+    await turn.promptStarted;
+    for await (const _event of turn.events) {
+      /* drain */
+    }
+    return turn.result;
+  };
+  const makeAdapter = () => createXacpxRuntimeAdapter({
+    stateDir,
+    permissionMode: "approve-all",
+    nonInteractivePermissions: "deny",
+    agentOverrides: { huge: [process.execPath, HUGE_AGENT] },
+  });
   try {
-    // Adapter A is constructed under a 1 MiB ceiling and fails a 2 MiB chunk.
-    await withEnv({ ACPX_MAX_ACP_MESSAGE_BYTES: String(MIB) }, async () => {
-      const failed = await runHugeTurn(stateDir, 2 * MIB, "warm-a");
-      expect(failed.status).toBe("failed");
-    });
-    // Raising the env does NOT heal the already-constructed runtime, but a
-    // freshly constructed runtime picks the new ceiling up.
-    await withEnv({ ACPX_MAX_ACP_MESSAGE_BYTES: String(8 * MIB) }, async () => {
-      const healed = await runHugeTurn(stateDir, 2 * MIB, "warm-b");
-      expect(healed.status).toBe("completed");
-    });
+    process.env.HUGE_BYTES = String(2 * MIB);
+    // One adapter constructed under a 1 MiB ceiling fails a 2 MiB chunk...
+    process.env.ACPX_MAX_ACP_MESSAGE_BYTES = String(MIB);
+    const adapter = makeAdapter();
+    const handle = await adapter.ensure({ sessionKey: "warm-same", agent: "huge", cwd: stateDir });
+    expect((await runTurn(adapter, handle)).status).toBe("failed");
+    // ...and STILL enforces 1 MiB after the process env moves to 8 MiB: the
+    // warm runtime retains its construction-time setting. (On a session
+    // reused after a limit failure the ceiling surfaces as a thrown
+    // ACP_MESSAGE_TOO_LARGE rather than a failed result — either way the
+    // raised env did not take effect. Re-ensure mirrors engine behavior and
+    // returns the same warm handle.)
+    process.env.ACPX_MAX_ACP_MESSAGE_BYTES = String(8 * MIB);
+    const warmHandle = await adapter.ensure({ sessionKey: "warm-same", agent: "huge", cwd: stateDir });
+    let retained = false;
+    try {
+      retained = (await runTurn(adapter, warmHandle)).status === "failed";
+    } catch (error) {
+      retained = (error as { detailCode?: unknown })?.detailCode === "ACP_MESSAGE_TOO_LARGE";
+    }
+    expect(retained).toBe(true);
+    // A freshly constructed runtime picks the new ceiling up.
+    const fresh = makeAdapter();
+    const freshHandle = await fresh.ensure({ sessionKey: "warm-fresh", agent: "huge", cwd: stateDir });
+    expect((await runTurn(fresh, freshHandle)).status).toBe("completed");
+    await fresh.close(freshHandle, { discardPersistentState: true }).catch(() => {});
   } finally {
+    if (savedLimit === undefined) delete process.env.ACPX_MAX_ACP_MESSAGE_BYTES;
+    else process.env.ACPX_MAX_ACP_MESSAGE_BYTES = savedLimit;
+    if (savedHuge === undefined) delete process.env.HUGE_BYTES;
+    else process.env.HUGE_BYTES = savedHuge;
     await rm(stateDir, { recursive: true, force: true });
   }
-}, 120_000);
+}, 180_000);
 
 test("0 disables the incoming limit (isolated)", async () => {
   const stateDir = await mkdtemp(join(tmpdir(), "xacpx-limit-zero-"));
