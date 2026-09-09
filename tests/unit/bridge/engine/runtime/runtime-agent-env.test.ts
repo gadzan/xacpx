@@ -267,6 +267,38 @@ test("one ensure resolves the overlay once: recorded identity matches sent param
   }
 }, 60_000);
 
+test("throwing resolver rejects the op but leaks no business-op count", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-env-resolver-throw-"));
+  try {
+    const entry = join(dir, "worker.mjs");
+    const capture = join(dir, "ensures.ndjson");
+    await writeEnvCaptureWorker(entry);
+    const engine = new RuntimeEngine({
+      workerEntryPath: entry,
+      permissionMode: "approve-all",
+      fenceDir: join(dir, "wf"),
+      workerClientDeps: { spawnEnv: { CAPTURE_FILE: capture } },
+      resolveSpawnEnvironment: () => {
+        throw new Error("profile failure");
+      },
+    });
+    // The op fails closed with the resolver's own error (no worker spawned)...
+    await expect(engine.ensureSession(engineSessionInput)).rejects.toThrow("profile failure");
+    // ...and leaves no phantom count behind: the permission plane must not
+    // see a stuck RUNTIME_PERMISSION_BUSY afterwards.
+    expect(engine["inFlightBusinessOps"].size).toBe(0);
+    expect(engine["hasAnyBusinessOp"]()).toBe(false);
+    const outcome = await engine.preparePolicyTransition().then(
+      () => "prepared" as const,
+      (error: unknown) => (typeof error === "object" && error !== null && "code" in error ? String(error.code) : "threw"),
+    );
+    expect(outcome).not.toBe("RUNTIME_PERMISSION_BUSY");
+    await engine.shutdown().catch(() => {});
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 60_000);
+
 /** Fake worker: dumps its own HOST process env once, then speaks ensure/shutdown. */
 async function writeHostEnvCaptureWorker(entry: string, capture: string): Promise<void> {
   await writeFile(

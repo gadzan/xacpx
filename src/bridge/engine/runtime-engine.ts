@@ -1370,12 +1370,15 @@ export class RuntimeEngine implements BridgeEngine {
     this.assertLifecycleEpoch(key, _lifecycleEpochAtEntry);
     this.incBusinessOp(key);
     let client: RuntimeWorkerClient | undefined;
-    // Single construction snapshot per op: the rotation check, the ensure
-    // params, and the recorded identity all observe this one resolution, so
-    // a mid-flight settings mutation cannot split the recorded identity
-    // from the params the worker snapshots.
-    const agentProcessEnv = this.resolveAgentProcessEnv(input);
     try {
+      // Single construction snapshot per op: the rotation check, the ensure
+      // params, and the recorded identity all observe this one resolution, so
+      // a mid-flight settings mutation cannot split the recorded identity
+      // from the params the worker snapshots. Resolved INSIDE the balance
+      // scope: a throwing resolver (e.g. failed Claude profile FS work) must
+      // still reach the finally below, or its phantom count would block every
+      // later permission policy transition with RUNTIME_PERMISSION_BUSY.
+      const agentProcessEnv = this.resolveAgentProcessEnv(input);
       try {
         await this.checkMcpStaleAndRotate(input, false);
         // Construction-identity drift (hot-updated agent command / workspace

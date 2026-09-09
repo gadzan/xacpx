@@ -120,6 +120,7 @@ test("raising the override fixes new runtimes; warm runtimes retain startup sett
       retained = (error as { detailCode?: unknown })?.detailCode === "ACP_MESSAGE_TOO_LARGE";
     }
     expect(retained).toBe(true);
+    await adapter.close(handle, { discardPersistentState: true }).catch(() => {});
     // A freshly constructed runtime picks the new ceiling up.
     const fresh = makeAdapter();
     const freshHandle = await fresh.ensure({ sessionKey: "warm-fresh", agent: "huge", cwd: stateDir });
