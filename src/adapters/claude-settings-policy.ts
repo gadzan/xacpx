@@ -112,6 +112,50 @@ export function resolveClaudeSpawnEnvironment(
   return baseEnv;
 }
 
+/**
+ * xacpx-owned control keys whose REMOVAL from the resolved env is itself an
+ * intentional policy decision (the resolver deletes them to force a
+ * restricted profile). An additive-only overlay like acpx `agentProcessEnv`
+ * cannot express deletion, so these are re-expressed as explicit clear
+ * values — the Claude adapter only treats the exact string `"1"` as enabled
+ * (`resolveClaudeCodeSettingSources`), hence `"0"` provably restores the
+ * restricted default.
+ */
+const RUNTIME_CLEARED_CONTROL_KEYS = ["ACPX_CLAUDE_INCLUDE_USER_SETTINGS"] as const;
+
+/**
+ * Narrows a fully-resolved Claude spawn env (see
+ * resolveClaudeSpawnEnvironment) to the intentional Runtime overlay for
+ * acpx `agentProcessEnv`. Only keys the resolver added or changed cross
+ * the boundary — the inherited parent remainder stays out, so persisted
+ * `sessionOptions.env` keeps its upstream precedence (protected auth >
+ * agentProcessEnv > persisted session env > inherited parent env) instead
+ * of being shadowed by a re-elevated copy of the parent.
+ *
+ * `resolved === undefined` (first-party provider-only: nothing intentional)
+ * narrows to `undefined`, as does an empty delta. `baseEnv` must be the
+ * same base the resolver derived from (defaults to process.env, matching
+ * the resolver default).
+ */
+export function narrowToAgentProcessEnvOverlay(
+  resolved: NodeJS.ProcessEnv | undefined,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): Record<string, string> | undefined {
+  if (resolved === undefined) return undefined;
+  const overlay: Record<string, string> = {};
+  for (const [key, value] of Object.entries(resolved)) {
+    if (typeof value !== "string") continue;
+    if (getEnvironmentValue(baseEnv, key, platform) !== value) overlay[key] = value;
+  }
+  for (const name of RUNTIME_CLEARED_CONTROL_KEYS) {
+    if (getEnvironmentValue(baseEnv, name, platform) !== undefined && getEnvironmentValue(resolved, name, platform) === undefined) {
+      overlay[name] = "0";
+    }
+  }
+  return Object.keys(overlay).length > 0 ? overlay : undefined;
+}
+
 function resolveClaudeConfigDir(env: NodeJS.ProcessEnv, homeDir: string, platform: NodeJS.Platform): string {
   const configured = getEnvironmentValue(env, "CLAUDE_CONFIG_DIR", platform)?.trim();
   return configured ? resolve(configured) : join(homeDir, ".claude");

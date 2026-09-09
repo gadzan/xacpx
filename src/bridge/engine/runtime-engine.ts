@@ -27,8 +27,8 @@ import { RuntimeQueueStore } from "./runtime/runtime-queue";
 import type { RuntimeQueueRecord } from "./runtime/runtime-queue";
 import { isEligibleForRuntime, parseXacpxPermissionPolicy } from "./runtime/runtime-permission-policy";
 import { RuntimePermissionResolver, type RuntimePermissionRequest } from "./runtime/runtime-permission-resolver";
-import { resolveClaudeSpawnEnvironment, type ClaudeExecutionSettings } from "../../adapters/claude-settings-policy";
-import { agentProcessEnvIdentityKey, normalizeAgentProcessEnv } from "./runtime/runtime-worker-protocol";
+import { resolveClaudeSpawnEnvironment, narrowToAgentProcessEnvOverlay, type ClaudeExecutionSettings } from "../../adapters/claude-settings-policy";
+import { agentProcessEnvIdentityKey } from "./runtime/runtime-worker-protocol";
 import { resolveAcpxHostPolicyEnv } from "../../transport/acpx-host-policy";
 
 function sleep(ms: number): Promise<void> {
@@ -1185,21 +1185,27 @@ export class RuntimeEngine implements BridgeEngine {
   }
 
   /**
-   * Per-agent child environment for the Runtime (plan B1). Same source as the
-   * CLI lane's spawn environment (resolveClaudeSpawnEnvironment: claude
-   * provider/model/settings-policy overlay), normalized to the canonical
-   * child-only overlay. `undefined` for drivers with no overlay — the common
-   * case, and the only one with zero worker-recycle churn on host env drift.
-   * Upstream snapshots this at Runtime construction; it is part of the
-   * immutable construction identity on both sides of the worker boundary.
+   * Per-agent child environment for the Runtime (plan B1). Same resolver as
+   * the CLI lane's spawn environment, but narrowed to the intentional
+   * overlay: only keys the resolver added/changed (plus explicit clears
+   * for xacpx-owned control keys it removed) cross into agentProcessEnv.
+   * The inherited parent remainder stays out, so persisted session env
+   * keeps its upstream precedence. `undefined` for drivers with no overlay
+   * — the common case, and the only one with zero worker-recycle churn on
+   * host env drift. Upstream snapshots this at Runtime construction; it is
+   * part of the immutable construction identity on both sides of the worker
+   * boundary.
    */
   private resolveAgentProcessEnv(input: EngineSessionInput): Record<string, string> | undefined {
-    const raw = (this.options.resolveSpawnEnvironment ?? resolveClaudeSpawnEnvironment)({
+    // One resolver invocation per call (see withWorker's single snapshot);
+    // narrowed to the intentional overlay so persisted session env keeps
+    // its upstream precedence instead of being shadowed by parent echoes.
+    const resolved = (this.options.resolveSpawnEnvironment ?? resolveClaudeSpawnEnvironment)({
       driver: input.driver ?? input.agent,
       settingsPolicy: input.settingsPolicy,
       model: input.model,
     });
-    return normalizeAgentProcessEnv(raw);
+    return narrowToAgentProcessEnvOverlay(resolved);
   }
 
   /**

@@ -7,10 +7,7 @@ import type { EngineSessionInput } from "../../../../../src/bridge/engine/bridge
 import { createXacpxRuntimeAdapter } from "../../../../../src/bridge/engine/runtime/runtime-adapter";
 import { RuntimeEngine } from "../../../../../src/bridge/engine/runtime-engine";
 
-import {
-  agentProcessEnvIdentityKey,
-  normalizeAgentProcessEnv,
-} from "../../../../../src/bridge/engine/runtime/runtime-worker-protocol";
+import { agentProcessEnvIdentityKey } from "../../../../../src/bridge/engine/runtime/runtime-worker-protocol";
 
 /**
  * PR B1 gate: Runtime child env parity via acpx 0.15 agentProcessEnv.
@@ -45,14 +42,6 @@ async function runMarkerTurn(
   await adapter.close(handle, { discardPersistentState: true }).catch(() => {});
   return text;
 }
-
-test("normalizeAgentProcessEnv drops non-strings and keeps empty values", () => {
-  expect(normalizeAgentProcessEnv(undefined)).toBeUndefined();
-  expect(normalizeAgentProcessEnv({ A: "1", B: undefined, C: "", D: 42 } as unknown as NodeJS.ProcessEnv)).toEqual({
-    A: "1",
-    C: "",
-  });
-});
 
 test("agentProcessEnvIdentityKey is order-stable and folds Windows case collisions", () => {
   const left = agentProcessEnvIdentityKey({ B: "2", A: "1" });
@@ -299,6 +288,32 @@ test("throwing resolver rejects the op but leaks no business-op count", async ()
   }
 }, 60_000);
 
+test("engine narrows full resolver output to the intentional overlay", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "rt-env-narrow-"));
+  try {
+    const entry = join(dir, "worker.mjs");
+    const capture = join(dir, "ensures.ndjson");
+    await writeEnvCaptureWorker(entry);
+    const engine = new RuntimeEngine({
+      workerEntryPath: entry,
+      permissionMode: "approve-all",
+      fenceDir: join(dir, "wf"),
+      workerClientDeps: { spawnEnv: { CAPTURE_FILE: capture } },
+      // A resolver returning the whole parent plus one intentional key must
+      // not re-elevate the parent above persisted session env: only the
+      // delta crosses into agentProcessEnv.
+      resolveSpawnEnvironment: () => ({ ...process.env, B1_NARROW_VAR: "one" }),
+    });
+    await engine.ensureSession({ ...engineSessionInput, name: "env-narrow", logicalSessionId: "logical-narrow-1" });
+    await engine.shutdown().catch(() => {});
+    const lines = (await readFile(capture, "utf8")).trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines.length).toBe(1);
+    expect(lines[0].agentProcessEnv).toEqual({ B1_NARROW_VAR: "one" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 60_000);
+
 /** Fake worker: dumps its own HOST process env once, then speaks ensure/shutdown. */
 async function writeHostEnvCaptureWorker(entry: string, capture: string): Promise<void> {
   await writeFile(
@@ -309,6 +324,7 @@ async function writeHostEnvCaptureWorker(entry: string, capture: string): Promis
       "let buffer = '';",
       "process.stdin.on('data', (d) => {",
       "  buffer += d.toString();",
+
       "  let idx;",
       "  while ((idx = buffer.indexOf('\\n')) >= 0) {",
       "    const line = buffer.slice(0, idx); buffer = buffer.slice(idx + 1);",
@@ -358,3 +374,91 @@ test("B5: host ceilings reach the worker HOST env; unset policy leaves it alone"
     await rm(dir, { recursive: true, force: true });
   }
 }, 60_000);
+
+/** Raw-runtime turn against the marker agent with explicit persisted session env. */
+async function runRawMarkerTurn(
+  stateDir: string,
+  sessionKey: string,
+  agentProcessEnv: Record<string, string> | undefined,
+  persistedEnv: Record<string, string> | undefined,
+  requestId: string,
+): Promise<string> {
+  const adapter = createXacpxRuntimeAdapter({
+    stateDir,
+    permissionMode: "approve-all",
+    nonInteractivePermissions: "deny",
+    agentOverrides: { marker: [process.execPath, MARKER_AGENT] },
+    ...(agentProcessEnv ? { agentProcessEnv } : {}),
+  });
+  const runtime = adapter.raw();
+  const handle = await runtime.ensureSession({
+    sessionKey,
+    agent: "marker",
+    mode: "persistent" as const,
+    cwd: stateDir,
+    ...(persistedEnv ? { sessionOptions: { env: persistedEnv } } : {}),
+  });
+  const turn = runtime.startTurn({ handle, text: "go", mode: "prompt" as const, requestId });
+  await turn.promptStarted;
+  let text = "";
+  for await (const event of turn.events) {
+    if (event.type === "text_delta") text += event.text;
+  }
+  const result = await turn.result;
+  expect(result.status).toBe("completed");
+  // No discard: the record (with its persisted env) must survive for reconnect.
+  await runtime.close({ handle, reason: "test done" });
+  return text;
+}
+
+async function withTestEnv(vars: Record<string, string | undefined>, fn: () => Promise<void>): Promise<void> {
+  const saved = new Map<string, string | undefined>();
+  for (const key of Object.keys(vars)) {
+    saved.set(key, process.env[key]);
+    const value = vars[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    await fn();
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+test("persisted session env beats parent; explicit overlay beats persisted env", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "xacpx-env-precedence-"));
+  try {
+    await withTestEnv({ MARKER_VAR: "XACPX_ENV_PRECEDENCE", XACPX_ENV_PRECEDENCE: "parent" }, async () => {
+      // No overlay for the key: the agent must see the persisted record value.
+      const first = await runRawMarkerTurn(
+        stateDir, "prec-session", { UNRELATED: "1" }, { XACPX_ENV_PRECEDENCE: "session" }, "prec-1",
+      );
+      expect(first).toContain("marker=session");
+      // Reconnect (same key, no sessionOptions): "session" can now only come
+      // from the record — and the explicit overlay must win over it.
+      const second = await runRawMarkerTurn(
+        stateDir, "prec-session", { XACPX_ENV_PRECEDENCE: "runtime" }, undefined, "prec-2",
+      );
+      expect(second).toContain("marker=runtime");
+    });
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+}, 120_000);
+
+test("persisted empty string masks the parent even with an unrelated overlay", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "xacpx-env-mask-"));
+  try {
+    await withTestEnv({ MARKER_VAR: "SECRET", SECRET: "secret" }, async () => {
+      const text = await runRawMarkerTurn(stateDir, "prec-mask", { UNRELATED: "1" }, { SECRET: "" }, "prec-mask-1");
+      expect(text).toContain("marker=");
+      expect(text).not.toContain("secret");
+    });
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+}, 120_000);

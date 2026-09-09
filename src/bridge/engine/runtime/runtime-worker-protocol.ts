@@ -49,29 +49,12 @@ export interface RuntimeWorkerEnsureParams {
    * Trusted child-only agent environment (plan B1, acpx 0.15 agentProcessEnv).
    * Snapshot at Runtime construction: never persisted to the session record,
    * part of the immutable construction identity — a change recycles the
-   * worker. Host-normalized before send; the worker uses it as received.
+   * worker. Intentional overlay only (no parent echoes); the worker uses it
+   * as received.
    */
   agentProcessEnv?: Record<string, string>;
   /** Host-assigned worker generation identity. */
   workerGeneration?: string;
-}
-
-/**
- * Normalize a resolved agent environment into the canonical child-only
- * overlay (plan B1). Drops non-string values defensively; keeps empty
- * strings (explicitly cleared vars). `undefined` stays `undefined` (no
- * overlay). Shared by Host (before send) and worker identity so both sides
- * derive the identical key without a second normalization pass.
- */
-export function normalizeAgentProcessEnv(
-  env: NodeJS.ProcessEnv | Record<string, string> | undefined,
-): Record<string, string> | undefined {
-  if (env === undefined) return undefined;
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(env)) {
-    if (typeof value === "string") out[key] = value;
-  }
-  return out;
 }
 
 /**

@@ -38,7 +38,10 @@ rl.on("line", (line) => {
       respond(id, {
         protocolVersion: 1,
         authMethods: [],
-        agentCapabilities: { sessionCapabilities: { new: {}, load: {}, close: {}, cancel: {} } },
+        agentCapabilities: {
+          loadSession: true,
+          sessionCapabilities: { new: {}, load: {}, close: {}, cancel: {} },
+        },
       });
       break;
     case "session/new":
