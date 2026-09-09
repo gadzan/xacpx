@@ -1,13 +1,21 @@
-## [Unreleased]
+# Changelog
+## [0.24.3-beta.1] - 2026-09-09
+
+### Added
+
+- New `transport.acpxMaxIncomingMessageBytes` / `transport.acpxTerminalMaxOutputBytes` advanced options (`null` = upstream default; warm owners need a recycle after change; never set the message ceiling to `0` without a real workload reason). Inbound over-limit turns fail with an actionable `ACPX_MAX_ACP_MESSAGE_BYTES` error (PR #334).
+- New `mcode` (MiniMax Code) agent template resolving to `mcode acp` via the acpx registry (PR #334).
 
 ### Changed
 
-- `acpx` pinned `0.13.1` → `0.15.1` (exact pin kept). Compatibility rebaseline: permission kind inference follows the 0.15 needle table (`read`/`cat`, `search`/`find`/`grep`, `edit`, `delete`, `move`, `execute`, `fetch`, `think`, `other` fallback); legacy `0.13.1`-era session records still load (schema `acpx.session.v1` unchanged); legacy raw-selector backfill verified still present.
-- Runtime Engine adopts 0.15 embedding contracts: `agentProcessEnv` child-only overlay (intentional delta only — no parent echoes — so persisted session env keeps its upstream precedence; construction snapshot, part of worker identity — env change recycles the worker, never persisted to records), `processLifecycle` direct-agent lease (awaited admission hooks over a live in-memory launch registry — timeout/reject machinery tested via injected sinks, durable sink is follow-up work; fence/orphan recovery unchanged and still the crash-safe source), accepted `configOptions` snapshot retained through the adapter + worker protocol (plumbed for future consumers; engine setters still return the existing contract), lossless turn `_meta` pass-through as narrow `meta`, stable `AGENT_SPAWN_ENOENT` mapping (was misclassified as session-missing), unified `AcpxHostPolicy` ceilings for both engine lanes (agent env first, configured ceilings overlaid last on every CLI/Bridge acpx child).
-- New `transport.acpxMaxIncomingMessageBytes` / `transport.acpxTerminalMaxOutputBytes` advanced options (`null` = upstream default; warm owners need a recycle after change; never set the message ceiling to `0` without a real workload reason). Inbound over-limit turns fail with an actionable `ACPX_MAX_ACP_MESSAGE_BYTES` error.
-- New `mcode` (MiniMax Code) agent template resolving to `mcode acp` via the acpx registry.
+- `acpx` pinned `0.13.1` → `0.15.1` (exact pin kept). Compatibility rebaseline: permission kind inference follows the 0.15 needle table (`read`/`cat`, `search`/`find`/`grep`, `edit`, `delete`, `move`, `execute`, `fetch`, `think`, `other` fallback); legacy `0.13.1`-era session records still load (schema `acpx.session.v1` unchanged); legacy raw-selector backfill verified still present (PR #334).
+- Runtime Engine adopts 0.15 embedding contracts: `agentProcessEnv` child-only overlay (intentional delta only — no parent echoes — so persisted session env keeps its upstream precedence; construction snapshot, part of worker identity — env change recycles the worker, never persisted to records), `processLifecycle` direct-agent lease (awaited admission hooks over a live in-memory launch registry — timeout/reject machinery tested via injected sinks, durable sink is follow-up work; fence/orphan recovery unchanged and still the crash-safe source), accepted `configOptions` snapshot retained through the adapter + worker protocol (plumbed for future consumers; engine setters still return the existing contract), lossless turn `_meta` pass-through as narrow `meta`, stable `AGENT_SPAWN_ENOENT` mapping (was misclassified as session-missing), unified `AcpxHostPolicy` ceilings for both engine lanes (agent env first, configured ceilings overlaid last on every CLI/Bridge acpx child) (PR #334).
 
-# Changelog
+### Fixed
+
+- Runtime: stable MCP identity as transport-boundary invariant — `coordinator-identity.ts` extraction ensures MCP identity survives session ensure and transport rebind (PR #335).
+- Runtime: `TOOL_STEP_KINDS` validator in runtime tool-step merge now allows `delete`/`move`/`fetch` — closes gap where new kinds triggered `relay.event.invalid` and broke reconnect state sync.
+
 ## [relay-protocol 0.5.3-beta.0] - 2026-09-08
 
 ### Fixed
