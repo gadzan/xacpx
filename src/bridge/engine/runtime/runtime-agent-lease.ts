@@ -2,10 +2,19 @@ import { createHash } from "node:crypto";
 
 /**
  * Direct-agent launch lease/evidence layer (plan B2, acpx 0.15
- * processLifecycle). Awaited admission at the real spawn boundary:
- * onBeforeSpawn/onSpawned persist (bounded, fail-closed — a slow or failed
- * write REJECTS admission, and upstream terminates a spawned-but-rejected
- * child itself), while onSpawnFailed/onExit are best-effort observations.
+ * processLifecycle). Awaited hooks at the real spawn boundary:
+ * onBeforeSpawn/onSpawned record through a bounded, fail-closed persist
+ * seam (a slow or failed write REJECTS admission, and upstream terminates a
+ * spawned-but-rejected child itself), while onSpawnFailed/onExit are
+ * best-effort observations.
+ *
+ * Durability status, stated plainly: the production sink is the in-memory
+ * store below — there is no durable I/O on the admission path today, so a
+ * worker crash loses these records. That is acceptable because nothing
+ * crash-critical reads them. The AgentLeasePersist seam exists precisely so
+ * a future generation-bound durable sidecar can plug in without touching
+ * hook logic; until then the timeout/reject machinery is exercised by tests
+ * with injected sinks, not by production traffic.
  *
  * Scope is deliberately narrow:
  * - ACP agent ROOTS only (client / runtime-session / runtime-probe scopes).
@@ -13,12 +22,10 @@ import { createHash } from "node:crypto";
  *   crash-safe descendant recovery stays in the worker fence, worker-eof
  *   convergence and the residual orphan registry. Never delete those because
  *   this file exists.
- * - Live evidence + admission, not crash-safe ownership: the store is
- *   in-memory per worker. Host restarts reconcile through the durable
- *   RuntimeWorkerFence, never through this file.
+ * - Live evidence + admission, not crash-safe ownership: Host restarts
+ *   reconcile through the durable RuntimeWorkerFence, never through this file.
  * - No env values, no full paths: argv is hashed, cwd is hashed.
  */
-
 export type RuntimeAgentLeaseScope = "client" | "runtime-session" | "runtime-probe";
 export type RuntimeAgentLeasePhase = "pending" | "running" | "exited" | "spawn-failed";
 

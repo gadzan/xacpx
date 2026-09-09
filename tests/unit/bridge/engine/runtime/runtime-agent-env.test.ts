@@ -63,6 +63,11 @@ test("agentProcessEnvIdentityKey is order-stable and folds Windows case collisio
   // Windows: PATH and Path are one variable upstream; identity must agree.
   const folded = agentProcessEnvIdentityKey({ PATH: "/a", Path: "/b" }, "win32");
   expect(folded).toBe(agentProcessEnvIdentityKey({ path: "/b" }, "win32"));
+  // Insertion order decides the winner exactly like upstream assignSessionEnv
+  // (delete-then-set in entry order): reversed duplicates build different
+  // effective envs, so their identities must differ.
+  expect(agentProcessEnvIdentityKey({ Path: "/a", PATH: "/b" }, "win32")).toBe(folded);
+  expect(agentProcessEnvIdentityKey({ PATH: "/b", Path: "/a" }, "win32")).not.toBe(folded);
   // POSIX keeps case-distinct keys apart.
   expect(agentProcessEnvIdentityKey({ PATH: "/a", Path: "/b" }, "darwin")).not.toBe(
     agentProcessEnvIdentityKey({ path: "/b" }, "darwin"),

@@ -75,23 +75,24 @@ export function normalizeAgentProcessEnv(
 }
 
 /**
- * Stable identity fragment for an agent env overlay. Sorted entries, so key
- * order never distinguishes identical overlays. On Windows the comparison is
- * case-insensitive (upstream applies the same rule to the child env): keys
- * that collide after upper-casing collapse deterministically, last sorted
- * value wins.
+ * Stable identity fragment for an agent env overlay. Key order never
+ * distinguishes identical overlays. On Windows the comparison mirrors
+ * upstream assignSessionEnv (live-checkpoint bundle): case-insensitive,
+ * entries applied in insertion order with last-writer-wins, then serialized
+ * sorted by folded key — so equal identity always means equal effective
+ * child env.
  */
 export function agentProcessEnvIdentityKey(
   env: Record<string, string> | undefined,
   platform: NodeJS.Platform = process.platform,
 ): string | null {
   if (env === undefined) return null;
-  const entries = Object.entries(env).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   if (platform === "win32") {
     const folded = new Map<string, string>();
-    for (const [key, value] of entries) folded.set(key.toUpperCase(), value);
+    for (const [key, value] of Object.entries(env)) folded.set(key.toUpperCase(), value);
     return JSON.stringify([...folded.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
   }
+  const entries = Object.entries(env).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   return JSON.stringify(entries);
 }
 export interface RuntimeWorkerPromptParams {

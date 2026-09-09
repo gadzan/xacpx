@@ -126,11 +126,16 @@ export function mapRuntimeError(err: unknown): { code: RuntimeBridgeErrorCode; m
     return { code: "RUNTIME_TURN_CANCELLED", message };
   }
   // acpx 0.15.1 stable spawn failure (detailCode over message regex): the
-  // message contains "not found", which must NOT fall through to
-  // RUNTIME_SESSION_MISSING below. Broad message fallbacks stay for old
-  // records and other adapter errors.
-  if (detailCode === "AGENT_SPAWN_ENOENT" || name === "AgentSpawnError") {
+  // ENOENT message contains "not found", which must NOT fall through to
+  // RUNTIME_SESSION_MISSING below. Upstream attaches AGENT_SPAWN_ENOENT only
+  // when the underlying cause is ENOENT — a bare AgentSpawnError (e.g. a
+  // lifecycle admission rejection, a PID-less spawn) is NOT proof of a
+  // missing executable and must not get install/PATH remediation.
+  if (detailCode === "AGENT_SPAWN_ENOENT") {
     return { code: "RUNTIME_INIT_FAILED", message: `${message} (xacpx: agent executable missing — install it, fix PATH, or correct the agent command/argv)` };
+  }
+  if (name === "AgentSpawnError") {
+    return { code: "RUNTIME_INIT_FAILED", message };
   }
   if (/not found|missing|no such session|unknown session/i.test(message) || codeText === "ACP_BACKEND_MISSING") {
     return { code: "RUNTIME_SESSION_MISSING", message };

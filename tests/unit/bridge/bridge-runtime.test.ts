@@ -1777,3 +1777,73 @@ test("getAgentSessionId returns undefined agentSessionId when absent", async () 
 
   expect(result).toEqual({ agentSessionId: undefined });
 });
+
+test("plain bridge commands carry configured host ceilings over agent env", async () => {
+  const observed: Array<NodeJS.ProcessEnv | undefined> = [];
+  const runtime = new BridgeRuntime(
+    "acpx",
+    async (_command, _args, options) => {
+      observed.push(options?.env);
+      return { code: 0, stdout: "", stderr: "" };
+    },
+    undefined,
+    {
+      acpxMaxIncomingMessageBytes: 1234,
+      resolveSpawnEnvironment: () => ({ FILTERED_AGENT: "1" }),
+    },
+  );
+
+  await runtime.ensureSession({
+    agent: "claude-provider",
+    driver: "claude",
+    cwd: "/repo",
+    name: "demo",
+  });
+
+  expect(observed.length).toBeGreaterThan(0);
+  for (const env of observed) {
+    expect(env?.FILTERED_AGENT).toBe("1");
+    expect(env?.ACPX_MAX_ACP_MESSAGE_BYTES).toBe("1234");
+  }
+});
+
+test("bridge queue owner launch keeps host ceilings alongside agent env", async () => {
+  const launches: Array<{ env?: NodeJS.ProcessEnv }> = [];
+  const queueOwnerLauncher = {
+    launch: async (input: { env?: NodeJS.ProcessEnv }) => {
+      launches.push(input);
+    },
+  } as Pick<AcpxQueueOwnerLauncher, "launch">;
+  const run = async (_command: string, args: string[]) => {
+    if (args.includes("show")) {
+      return { code: 0, stdout: JSON.stringify({ acpxRecordId: "acpx-record-1" }), stderr: "" };
+    }
+    return { code: 0, stdout: "worker response", stderr: "" };
+  };
+  const runtime = new BridgeRuntime(
+    "acpx",
+    run,
+    undefined,
+    {
+      acpxMaxIncomingMessageBytes: 1234,
+      resolveSpawnEnvironment: () => ({ FILTERED_AGENT: "1" }),
+    },
+    undefined,
+    undefined,
+    queueOwnerLauncher,
+  );
+
+  await expect(runtime.prompt({
+    agent: "codex",
+    driver: "claude",
+    cwd: "/repo",
+    name: "worker",
+    text: "hello",
+    mcpCoordinatorSession: "backend:main",
+    mcpSourceHandle: "backend:claude:backend:main",
+  })).resolves.toEqual({ text: "worker response" });
+
+  expect(launches.length).toBe(1);
+  expect(launches[0]?.env?.FILTERED_AGENT).toBe("1");
+  expect(launches[0]?.env?.ACPX_MAX_ACP_MESSAGE_BYTES).toBe("1234");
+});

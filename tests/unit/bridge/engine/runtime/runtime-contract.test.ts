@@ -15,12 +15,15 @@ test("AGENT_SPAWN_ENOENT maps to init failure, not session-missing", () => {
   expect(mapped.message).toContain("PATH");
 });
 
-/** Name-only fallback: detailCode may not survive every transport hop. */
-test("AgentSpawnError name alone maps to init failure", () => {
-  const err = new Error("Failed to spawn agent command: ghost acp (not found).") as Error;
+/** Bare AgentSpawnError (e.g. lifecycle admission rejection) is init failure
+ *  WITHOUT install/PATH remediation — only AGENT_SPAWN_ENOENT proves that. */
+test("AgentSpawnError without ENOENT detail gets no install hint", () => {
+  const err = new Error("Failed to spawn agent command: ghost acp") as Error;
   err.name = "AgentSpawnError";
   const mapped = mapRuntimeError(err);
   expect(mapped.code).toBe("RUNTIME_INIT_FAILED");
+  expect(mapped.message).not.toContain("PATH");
+  expect(mapped.message).not.toContain("install it");
 });
 
 /** Broad fallback still catches plain missing-session wording. */

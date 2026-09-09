@@ -47,3 +47,16 @@ export function queueOwnerBaseEnvOption(
   if (Object.keys(hostPolicyEnv).length === 0) return {};
   return { baseEnv: { ...base, ...hostPolicyEnv } };
 }
+
+/**
+ * Effective acpx-host environment for one spawned acpx process: the
+ * agent-specific env (or the inherited process env when the agent has none)
+ * with the host policy overlaid LAST, so an explicitly configured ceiling
+ * can never be silently shadowed by an inherited value.
+ */
+export function resolveEffectiveAcpxEnv(
+  agentEnv: NodeJS.ProcessEnv | undefined,
+  hostPolicyEnv: Record<string, string>,
+): NodeJS.ProcessEnv {
+  return { ...(agentEnv ?? process.env), ...hostPolicyEnv };
+}

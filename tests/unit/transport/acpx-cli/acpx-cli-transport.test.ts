@@ -2997,3 +2997,63 @@ test("cli-bound and unbound sessions still execute on the CLI transport", async 
   await transport.hasSession({ ...session }).catch(() => {});
   expect(run).toHaveBeenCalled();
 });
+
+test("plain prompt carries configured host ceilings even without agent env", async () => {
+  const seenEnvs: Array<NodeJS.ProcessEnv | undefined> = [];
+  const run = mock(async (_command: string, _args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
+    seenEnvs.push(options?.env);
+    return {
+      code: 0,
+      stdout: [
+        JSON.stringify({ jsonrpc: "2.0", id: 0, method: "initialize" }),
+        JSON.stringify({ jsonrpc: "2.0", id: 2, result: { stopReason: "end_turn" } }),
+      ].join("\n"),
+      stderr: "",
+    };
+  });
+  const transport = new AcpxCliTransport({ command: "acpx", acpxMaxIncomingMessageBytes: 1234 }, run);
+
+  await transport.prompt(session, "hello");
+
+  expect(seenEnvs.length).toBeGreaterThan(0);
+  for (const env of seenEnvs) {
+    expect(env?.ACPX_MAX_ACP_MESSAGE_BYTES).toBe("1234");
+  }
+});
+
+test("explicit agent env does not drop host ceilings on queue owner launch", async () => {
+  const mcpSession: ResolvedSession = {
+    ...session,
+    driver: "claude",
+    mcpCoordinatorSession: "backend:main",
+    mcpSourceHandle: "backend:claude:backend:main",
+  };
+  const run = mock(async (_command: string, args: string[]) => {
+    if (args.includes("show")) {
+      return { code: 0, stdout: JSON.stringify({ acpxRecordId: "acpx-record-1" }), stderr: "" };
+    }
+    return { code: 0, stdout: "worker response", stderr: "" };
+  });
+  const launches: Array<{ env?: NodeJS.ProcessEnv }> = [];
+  const queueOwnerLauncher = {
+    launch: async (input: { env?: NodeJS.ProcessEnv }) => {
+      launches.push(input);
+    },
+  } as Pick<AcpxQueueOwnerLauncher, "launch">;
+  const transport = new AcpxCliTransport(
+    {
+      command: "acpx",
+      acpxMaxIncomingMessageBytes: 1234,
+      resolveSpawnEnvironment: () => ({ FILTERED_AGENT: "1" }),
+    },
+    run,
+    undefined,
+    queueOwnerLauncher,
+  );
+
+  await transport.prompt(mcpSession, "hello");
+
+  expect(launches.length).toBe(1);
+  expect(launches[0]?.env?.FILTERED_AGENT).toBe("1");
+  expect(launches[0]?.env?.ACPX_MAX_ACP_MESSAGE_BYTES).toBe("1234");
+});
