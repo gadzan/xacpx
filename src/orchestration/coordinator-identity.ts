@@ -17,6 +17,37 @@ export function stableCoordinatorSession(transportSession: string): string {
 }
 
 /**
+ * Unified transport-boundary default for the stable coordinator identity.
+ *
+ * Runtime workers treat `mcpCoordinatorSession + mcpSourceHandle` as immutable
+ * construction identity: `none -> coordinator` and `coordinator -> none` both
+ * rotate the worker. A plain logical session (no explicit worker binding) must
+ * therefore default to the stable coordinator identity on EVERY session-scoped
+ * operation — not only ensure/prompt, but also the model/effort reads that
+ * Relay Web fires in parallel right after create — otherwise a read carrying
+ * `none` rotates the fresh worker back and the next prompt rotates it again.
+ *
+ * Explicit worker bindings (`mcpCoordinatorSession` already set) win untouched.
+ * CLI sessions historically carry this binding too (it drives the MCP queue
+ * owner), so the default is unconditional: callers that must preserve the
+ * legacy CLI wire shape (bridge direct reads) gate on `transportEngine`
+ * themselves instead. Returns the input by reference when no default applies,
+ * so callers avoid needless allocation.
+ */
+export function withDefaultMcpIdentity<
+  T extends {
+    transportSession: string;
+    mcpCoordinatorSession?: string;
+  },
+>(session: T): T {
+  if (session.mcpCoordinatorSession !== undefined) return session;
+  return {
+    ...session,
+    mcpCoordinatorSession: stableCoordinatorSession(session.transportSession),
+  };
+}
+
+/**
  * The single chokepoint for asking "do these two transport names refer to the
  * same coordinator?". Both sides are reduced to their stable identity before
  * comparison, so it is robust to either side carrying a volatile

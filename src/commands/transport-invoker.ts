@@ -16,7 +16,7 @@ import {
   summarizeTransportNdjson,
 } from "./transport-diagnostics";
 import { t } from "../i18n";
-import { stableCoordinatorSession } from "../orchestration/coordinator-identity";
+import { withDefaultMcpIdentity } from "../orchestration/coordinator-identity";
 
 type AutoInstallFn = typeof defaultAutoInstall;
 type DiscoverPathsFn = typeof defaultDiscoverPaths;
@@ -156,10 +156,17 @@ export class TransportInvoker {
     reply?: (text: string) => Promise<void>,
     perfSpan?: PerfSpan,
   ): Promise<void> {
+    // Runtime workers treat MCP identity as immutable construction state. Bind
+    // the coordinator before the first ensure so the first prompt does not
+    // rotate an otherwise-empty agent session and then try to resume it. Keep
+    // the binding transport-local so it does not leak into logical session DTOs.
+    // Unconditional like the historical prompt binding (CLI queue owner relies
+    // on it); the bridge boundary gates direct reads on the runtime engine.
+    const ensuredSession: ResolvedSession = withDefaultMcpIdentity(session);
     const attemptSession = (operation: string): Promise<void> => {
       const { handler, dispose } = this.createProgressHandler(session, reply);
       return this.measureTransportCall(operation, session, () =>
-        this.transport.ensureSession(session, handler),
+        this.transport.ensureSession(ensuredSession, handler),
       ).finally(dispose);
     };
 
@@ -211,7 +218,10 @@ export class TransportInvoker {
     onUsage?: (usage: PromptUsage) => void | Promise<void>,
     onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
   ) {
-    session.mcpCoordinatorSession ??= stableCoordinatorSession(session.transportSession);
+    // Same invariant as ensure, kept transport-local: the bridge boundary is
+    // the authoritative default, but non-bridge transports (and the abort
+    // cancel below) must see the identical identity for this call.
+    const promptSession: ResolvedSession = withDefaultMcpIdentity(session);
     // `done` closes the race window between prompt resolving and the abort
     // listener firing: once we're in finally we suppress any late abort so
     // it can't cancel a *follow-up* prompt that happens to reuse this session.
@@ -222,7 +232,7 @@ export class TransportInvoker {
       abortRequested = true;
       if (done) return;
       try {
-        const result = this.transport.cancel(session);
+        const result = this.transport.cancel(promptSession);
         if (result && typeof (result as { catch?: unknown }).catch === "function") {
           (result as Promise<unknown>).catch(async (error) => {
             await this.logger.error("transport.cancel_on_abort_failed", "transport cancel triggered by abort signal failed", {
@@ -271,7 +281,7 @@ export class TransportInvoker {
         transportKind: this.config?.transport.type ?? inferTransportKind(this.transport),
       });
       return await this.measureTransportCall("prompt", session, () =>
-        this.transport.prompt(session, text, reply, replyContext, {
+        this.transport.prompt(promptSession, text, reply, replyContext, {
           ...(abortSignal ? { signal: abortSignal } : {}),
           ...(media ? { media } : {}),
           ...(reply ? { onSegment } : {}),
@@ -298,15 +308,17 @@ export class TransportInvoker {
   }
 
   async setModeTransportSession(session: ResolvedSession, modeId: string) {
-    return await this.measureTransportCall("set_mode", session, () => this.transport.setMode(session, modeId));
+    const bound = withDefaultMcpIdentity(session);
+    return await this.measureTransportCall("set_mode", session, () => this.transport.setMode(bound, modeId));
   }
 
   async setModelTransportSession(session: ResolvedSession, modelId: string) {
     if (!this.transport.setModel) {
       throw new Error("the active transport does not support switching models");
     }
+    const bound = withDefaultMcpIdentity(session);
     const setModel = this.transport.setModel.bind(this.transport);
-    return await this.measureTransportCall("set_model", session, () => setModel(session, modelId));
+    return await this.measureTransportCall("set_model", session, () => setModel(bound, modelId));
   }
 
   async getModelTransportSession(session: ResolvedSession): Promise<{ current?: string; available: string[] }> {
@@ -314,8 +326,9 @@ export class TransportInvoker {
       // Transport can't query acpx; fall back to the resolved model with no catalog.
       return { current: session.model, available: [] };
     }
+    const bound = withDefaultMcpIdentity(session);
     const getSessionModel = this.transport.getSessionModel.bind(this.transport);
-    return await this.measureTransportCall("get_model", session, () => getSessionModel(session));
+    return await this.measureTransportCall("get_model", session, () => getSessionModel(bound));
   }
 
   async cancelTransportSession(session: ResolvedSession) {
