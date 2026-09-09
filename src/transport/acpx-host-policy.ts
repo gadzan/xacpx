@@ -12,10 +12,10 @@ export interface AcpxHostPolicy {
   acpxTerminalMaxOutputBytes?: number | null;
 }
 
-function checkedByteLimit(name: string, value: number | null | undefined): number | undefined {
+function checkedByteLimit(name: string, value: number | null | undefined, zeroMeaning: string): number | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-    throw new Error(`${name} must be a non-negative safe integer byte count (0 = unlimited); got ${JSON.stringify(value)}`);
+    throw new Error(`${name} must be a non-negative safe integer byte count (${zeroMeaning}); got ${JSON.stringify(value)}`);
   }
   return value;
 }
@@ -26,8 +26,8 @@ function checkedByteLimit(name: string, value: number | null | undefined): numbe
  * so a misconfigured ceiling can never silently widen into `0`/unlimited.
  */
 export function resolveAcpxHostPolicyEnv(policy: AcpxHostPolicy): Record<string, string> {
-  const incoming = checkedByteLimit("acpxMaxIncomingMessageBytes", policy.acpxMaxIncomingMessageBytes);
-  const terminal = checkedByteLimit("acpxTerminalMaxOutputBytes", policy.acpxTerminalMaxOutputBytes);
+  const incoming = checkedByteLimit("acpxMaxIncomingMessageBytes", policy.acpxMaxIncomingMessageBytes, "0 disables the limit");
+  const terminal = checkedByteLimit("acpxTerminalMaxOutputBytes", policy.acpxTerminalMaxOutputBytes, "0 lifts only the host ceiling (agent/requested limits still apply)");
   return {
     ...(incoming !== undefined ? { ACPX_MAX_ACP_MESSAGE_BYTES: String(incoming) } : {}),
     ...(terminal !== undefined ? { ACPX_TERMINAL_MAX_OUTPUT_BYTES: String(terminal) } : {}),

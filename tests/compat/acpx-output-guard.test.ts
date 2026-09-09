@@ -11,7 +11,7 @@ import type { ResolvedSession } from "../../src/transport/types";
 
 const ACPX = resolveAcpxCommand({ configuredCommand: undefined });
 
-test("official acpx 0.13 queue stays healthy behind the xacpx ACP output guard", async () => {
+test("official pinned acpx queue stays healthy behind the xacpx ACP output guard", async () => {
   const home = await mkdtemp(join(tmpdir(), "xacpx-guard-acpx-home-"));
   const workspace = await mkdtemp(join(tmpdir(), "xacpx-guard-acpx-workspace-"));
   const agentDir = await mkdtemp(join(tmpdir(), "xacpx-guard-agent-"));

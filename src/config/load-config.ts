@@ -226,7 +226,10 @@ export function parseConfig(
     const value = transport[key];
     if (value === undefined || value === null) continue;
     if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-      throw new Error(`transport.${key} must be a non-negative safe integer byte count, null, or absent (0 = unlimited)`);
+      const zeroMeaning = key === "acpxMaxIncomingMessageBytes"
+        ? "0 disables the limit"
+        : "0 lifts only the host ceiling (agent/requested limits still apply)";
+      throw new Error(`transport.${key} must be a non-negative safe integer byte count, null, or absent (${zeroMeaning})`);
     }
   }
   if ("preferLocalAgents" in transport && typeof transport.preferLocalAgents !== "boolean") {
