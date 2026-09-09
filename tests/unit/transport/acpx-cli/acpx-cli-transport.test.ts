@@ -3059,9 +3059,12 @@ test("explicit agent env does not drop host ceilings on queue owner launch", asy
 });
 
 test("ensure/new carries host ceilings alongside explicit agent env", async () => {
-  const seenEnvs: Array<NodeJS.ProcessEnv | undefined> = [];
-  const run = mock(async (_command: string, _args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
-    seenEnvs.push(options?.env);
+  const seen: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
+  const run = mock(async (_command: string, args: string[], options?: { env?: NodeJS.ProcessEnv }) => {
+    seen.push({ args, env: options?.env });
+    // Force the full fallback chain: ensure fails, show fails, real new runs.
+    if (args.includes("ensure")) throw new Error("ensure failed");
+    if (args.includes("show")) throw new Error("show failed");
     return { code: 0, stdout: "", stderr: "" };
   });
   const runPty = mock(async () => ({ code: 0, stdout: "", stderr: "" }));
@@ -3077,7 +3080,12 @@ test("ensure/new carries host ceilings alongside explicit agent env", async () =
 
   await transport.ensureSession(session);
 
-  expect(seenEnvs.some((env) => env?.FILTERED_AGENT === "1" && env?.ACPX_MAX_ACP_MESSAGE_BYTES === "5678")).toBe(true);
+  const created = seen.filter(({ args }) => args.includes("new"));
+  expect(created.length).toBeGreaterThan(0);
+  for (const { env } of created) {
+    expect(env?.FILTERED_AGENT).toBe("1");
+    expect(env?.ACPX_MAX_ACP_MESSAGE_BYTES).toBe("5678");
+  }
 });
 
 test("resume carries host ceilings alongside explicit agent env", async () => {
