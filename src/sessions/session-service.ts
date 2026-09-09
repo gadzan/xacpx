@@ -23,6 +23,7 @@ import type { AppState, BackgroundResult, ChatContextState, LogicalSession, Sess
 import { resolveTransportEngine } from "./transport-engine";
 import type { SessionResourceLifecyclePublishInput } from "./session-resource-catalog";
 import type { AgentSession, ResolvedSession } from "../transport/types";
+import type { ReapTarget } from "../transport/queue-owner-reaper";
 import { physicalLifecycleKeyForResolvedSession } from "../bridge/engine/runtime/physical-session-identity";
 import {
   buildDefaultTransportSession,
@@ -235,6 +236,60 @@ export class SessionService {
       resolved.push(candidate);
     }
     return resolved;
+  }
+
+  /**
+   * Warm acpx queue-owner reap targets, including HISTORICAL identities.
+   * Derived recorded commands (managed adapter pins, hermes shim, preinstalled
+   * adapters) are recomputed from the CURRENT pin on restart, so a current-only
+   * target cannot locate an owner spawned under a previous pin: after a crash
+   * + pin upgrade, the old owner would survive startup/shutdown reaping, and
+   * with `queueOwnerTtlSeconds=0` it would linger forever. The persisted
+   * `transport_agent_command` is byte-identical to the acpx record's
+   * `agent_command`, so it is emitted command-only (no alias): the reaper
+   * passes it as `--agent`, which acpx matches verbatim with no
+   * alias-registry round trip. Sticky custom commands resolve to themselves
+   * and dedupe away here. Sessions whose agent/workspace are de-registered
+   * are skipped, same as listAllResolvedSessions; never throws.
+   */
+  listReapTargets(): ReapTarget[] {
+    const seen = new Set<string>();
+    const targets: ReapTarget[] = [];
+    const push = (target: ReapTarget): void => {
+      // Same composite key as listAllResolvedSessions/reapQueueOwners.
+      const key = JSON.stringify([target.agent, target.agentCommand ?? null, target.cwd, target.transportSession]);
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      targets.push(target);
+    };
+    for (const session of Object.values(this.state.sessions)) {
+      let candidate: ResolvedSession;
+      try {
+        candidate = this.toResolvedSession(session);
+      } catch {
+        // Agent/workspace de-registered since this session was created — skip it.
+        continue;
+      }
+      push({
+        agent: candidate.agent,
+        ...(candidate.agentCommand ? { agentCommand: candidate.agentCommand } : {}),
+        ...(candidate.acpxAgent ? { acpxAgent: candidate.acpxAgent } : {}),
+        ...(candidate.rawCommand ? { rawCommand: candidate.rawCommand } : {}),
+        cwd: candidate.cwd,
+        transportSession: candidate.transportSession,
+      });
+      if (session.transport_agent_command) {
+        push({
+          agent: candidate.agent,
+          agentCommand: session.transport_agent_command,
+          cwd: candidate.cwd,
+          transportSession: candidate.transportSession,
+        });
+      }
+    }
+    return targets;
   }
 
   /**

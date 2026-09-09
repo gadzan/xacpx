@@ -4,6 +4,7 @@ import { AsyncMutex } from "../../../src/orchestration/async-mutex";
 import {
   persistWorkerBindingIdentity,
   stageWorkerBindingIdentity,
+  stageWorkerBindingLaunch,
 } from "../../../src/orchestration/worker-launch";
 import type { AppState } from "../../../src/state/types";
 import { createEmptyState } from "../../../src/state/types";
@@ -236,4 +237,40 @@ test("pass-through exclusivity documents the lost-update it permits", async () =
   // incomplete. Production must never take this path.
   expect(state.orchestration.workerBindings["worker-b"]!.logicalSessionId).toBeUndefined();
   expect(state.orchestration.workerBindings["worker-a"]!.logicalSessionId).toBeTruthy();
+});
+
+test("launch snapshot stages on first dispatch and is a no-op when unchanged", () => {
+  const launch = { agentCommand: "npx codex@1", acpxAgent: "xacpx-managed-codex-aaa" };
+  const state = stateWithBinding({ sourceHandle: "src-1" });
+  const before = structuredClone(state);
+  const out = stageWorkerBindingLaunch(state, { workerSession: "worker-1" }, launch);
+  expect(out.changed).toBe(true);
+  if (!out.changed) return;
+  expect(state).toEqual(before);
+  const staged = out.nextState.orchestration.workerBindings["worker-1"]!;
+  expect(staged.launchAgentCommand).toBe("npx codex@1");
+  expect(staged.launchAcpxAgent).toBe("xacpx-managed-codex-aaa");
+  // Steady-state redispatch resolves the same launch: no save.
+  const again = stageWorkerBindingLaunch(out.nextState, { workerSession: "worker-1" }, launch);
+  expect(again).toEqual({ changed: false });
+});
+
+test("launch snapshot refresh clears keys the new launch no longer carries", () => {
+  const state = stateWithBinding({
+    sourceHandle: "src-1",
+    launchAgentCommand: "npx codex@1",
+    launchAcpxAgent: "xacpx-managed-codex-aaa",
+  });
+  const out = stageWorkerBindingLaunch(state, { workerSession: "worker-1" }, {});
+  expect(out.changed).toBe(true);
+  if (!out.changed) return;
+  const staged = out.nextState.orchestration.workerBindings["worker-1"]!;
+  expect(staged.launchAgentCommand).toBeUndefined();
+  expect(staged.launchAcpxAgent).toBeUndefined();
+  expect(staged.sourceHandle).toBe("src-1");
+});
+
+test("launch snapshot stages nothing for a missing binding", () => {
+  const out = stageWorkerBindingLaunch(createEmptyState(), { workerSession: "worker-1" }, { agentCommand: "x" });
+  expect(out).toEqual({ changed: false });
 });

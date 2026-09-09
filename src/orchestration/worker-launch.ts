@@ -209,6 +209,78 @@ export async function persistWorkerBindingIdentity(
   });
 }
 
+/** Launch identity resolved for one worker dispatch (reap snapshot source). */
+export interface WorkerBindingLaunchSnapshot {
+  agentCommand?: string;
+  acpxAgent?: string;
+  rawCommand?: string;
+}
+
+/**
+ * Stage a worker binding's launch snapshot onto a copy-on-write clone.
+ * Unlike the immutable LID/engine identity above, the snapshot is refreshed
+ * whenever the resolved launch differs, so a later restart can reap the
+ * previous owner after a managed-pin/config change. Returns
+ * `{ changed: false }` when the binding is missing or the snapshot already
+ * matches (steady-state dispatches skip the save). The caller must
+ * `saveNow(nextState)` and publish ONLY on success, same G11 contract as
+ * the identity staging above. Stale keys the new launch no longer carries
+ * are cleared so they cannot reap a phantom identity forever.
+ */
+export function stageWorkerBindingLaunch(
+  state: AppState,
+  input: { workerSession: string },
+  launch: WorkerBindingLaunchSnapshot,
+): { changed: false } | { changed: true; nextState: AppState } {
+  const binding = state.orchestration.workerBindings[input.workerSession];
+  if (!binding) {
+    return { changed: false };
+  }
+  const snapshot = {
+    ...(launch.agentCommand ? { launchAgentCommand: launch.agentCommand } : {}),
+    ...(launch.acpxAgent ? { launchAcpxAgent: launch.acpxAgent } : {}),
+    ...(launch.rawCommand ? { launchRawCommand: launch.rawCommand } : {}),
+  };
+  if (
+    binding.launchAgentCommand === snapshot.launchAgentCommand &&
+    binding.launchAcpxAgent === snapshot.launchAcpxAgent &&
+    binding.launchRawCommand === snapshot.launchRawCommand
+  ) {
+    return { changed: false };
+  }
+  const nextState = structuredClone(state);
+  const nextBinding = nextState.orchestration.workerBindings[input.workerSession];
+  if (!nextBinding) {
+    return { changed: false };
+  }
+  delete nextBinding.launchAgentCommand;
+  delete nextBinding.launchAcpxAgent;
+  delete nextBinding.launchRawCommand;
+  Object.assign(nextBinding, snapshot);
+  return { changed: true, nextState };
+}
+
+/**
+ * Persist a worker binding's launch snapshot as one atomic transaction on the
+ * shared state mutex (stage on a clone, saveNow, then publish to live state
+ * ONLY on success). Callers must run outside the non-reentrant mutex.
+ */
+export async function persistWorkerBindingLaunch(
+  state: AppState,
+  input: { workerSession: string },
+  launch: WorkerBindingLaunchSnapshot,
+  deps: Pick<WorkerBindingIdentityPersistence, "saveNow" | "publish" | "runExclusive">,
+): Promise<void> {
+  await deps.runExclusive(async () => {
+    const staged = stageWorkerBindingLaunch(state, input, launch);
+    if (!staged.changed) {
+      return;
+    }
+    await deps.saveNow(staged.nextState);
+    deps.publish(staged.nextState);
+  });
+}
+
 export function resolveWorkerAgentLaunch(
   agent: Pick<AgentConfig, "driver" | "command" | "argv">,
   transport: Pick<TransportConfig, "preferLocalAgents" | "adapterVersions" | "adapterRegistry"> | undefined,

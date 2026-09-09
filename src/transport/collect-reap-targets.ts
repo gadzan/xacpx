@@ -1,7 +1,6 @@
 import type { AppConfig } from "../config/types";
 import type { OrchestrationState } from "../orchestration/orchestration-types";
 import { resolveWorkerAgentLaunch } from "../orchestration/worker-launch";
-import type { ResolvedSession } from "./types";
 import type { ReapTarget } from "./queue-owner-reaper";
 
 /**
@@ -9,23 +8,21 @@ import type { ReapTarget } from "./queue-owner-reaper";
  * orchestration worker sessions. Both spawn warm acpx queue owners honoring `--ttl`,
  * so both must be swept at shutdown (so they don't linger) and at startup (so owners
  * orphaned by a previously crashed/force-killed daemon get cleaned up). Sessions whose
- * agent/workspace are de-registered are already filtered by listAllResolvedSessions and
+ * agent/workspace are de-registered are already filtered by listReapTargets and
  * workerBindingReapTargets respectively.
+ *
+ * Logical targets come from SessionService.listReapTargets (NOT
+ * listAllResolvedSessions): besides the current resolution each session also
+ * contributes its persisted historical launch identity, so an owner spawned
+ * under a previous managed pin is still found after a crash + upgrade.
  */
 export function collectReapTargets(
-  sessions: { listAllResolvedSessions(): ResolvedSession[] },
+  sessions: { listReapTargets(): ReapTarget[] },
   orchestration: OrchestrationState,
   config: AppConfig,
 ): ReapTarget[] {
   return [
-    ...sessions.listAllResolvedSessions().map((session) => ({
-      agent: session.agent,
-      ...(session.agentCommand ? { agentCommand: session.agentCommand } : {}),
-      ...(session.acpxAgent ? { acpxAgent: session.acpxAgent } : {}),
-      ...(session.rawCommand ? { rawCommand: session.rawCommand } : {}),
-      cwd: session.cwd,
-      transportSession: session.transportSession,
-    })),
+    ...sessions.listReapTargets(),
     ...workerBindingReapTargets(orchestration, config),
   ];
 }
@@ -66,6 +63,24 @@ export function workerBindingReapTargets(
       cwd,
       transportSession: workerSession,
     });
+    // Historical identity from the last dispatch's launch snapshot (same
+    // pin-upgrade orphan case as logical sessions): command-only `--agent`
+    // so acpx matches the old record verbatim with no alias round trip.
+    // Bindings predating the snapshot (or bare-driver launches) carry no
+    // snapshot and fall back to the current resolution above.
+    const historicalCommand = binding.launchAgentCommand ?? binding.launchRawCommand;
+    if (
+      historicalCommand &&
+      historicalCommand !== launch.agentCommand &&
+      historicalCommand !== launch.rawCommand
+    ) {
+      targets.push({
+        agent: binding.targetAgent,
+        agentCommand: historicalCommand,
+        cwd,
+        transportSession: workerSession,
+      });
+    }
   }
   return targets;
 }

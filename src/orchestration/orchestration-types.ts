@@ -141,6 +141,17 @@ export interface WorkerBindingRecord {
   coordinatorSession: string;
   workspace: string;
   cwd?: string;
+  /**
+   * Launch identity last used to dispatch this worker (persist-before-owner,
+   * refreshed on every dispatch). Queue-owner reaping needs the PREVIOUS
+   * identity after a managed-pin/config change recomputes the current launch:
+   * without it a crashed-then-upgraded daemon cannot locate the old owner.
+   * Absent on bindings created before this field existed (reap falls back to
+   * the current resolution) and on bare-driver launches (no command to record).
+   */
+  launchAgentCommand?: string;
+  launchAcpxAgent?: string;
+  launchRawCommand?: string;
   targetAgent: string;
   role?: string;
   /** True for ephemeral parallel-slot sessions; excluded from findReusableWorkerSession matching. */

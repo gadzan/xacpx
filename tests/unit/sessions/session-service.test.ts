@@ -191,6 +191,52 @@ test("refreshes a recorded legacy codex shim to the current managed pin", async 
   );
 });
 
+test("listReapTargets keeps the previous-pin identity after a managed-pin upgrade", () => {
+  // Crash + upgrade: the persisted record still carries codex 1.1.9 while the
+  // current catalog resolves 1.10.0. Both must be reaped, or the old owner
+  // survives startup/shutdown cleanup (forever, with queueOwnerTtlSeconds=0).
+  const state = createEmptyState();
+  state.sessions.review = {
+    alias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:review",
+    transport_agent_command: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
+    transport_acpx_agent: "xacpx-managed-codex-f4349e35c3c8",
+  };
+  const service = new SessionService(createConfig(), new MemoryStateStore(), state);
+  expect(service.listReapTargets()).toEqual([
+    {
+      agent: "codex",
+      agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.10.0",
+      acpxAgent: "xacpx-managed-codex-1eddaa92b9a5",
+      cwd: "/tmp/backend",
+      transportSession: "backend:review",
+    },
+    {
+      agent: "codex",
+      agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.1.9",
+      cwd: "/tmp/backend",
+      transportSession: "backend:review",
+    },
+  ]);
+});
+
+test("listReapTargets dedupes sticky custom commands to a single target", () => {
+  const state = createEmptyState();
+  state.sessions.review = {
+    alias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:review",
+    transport_agent_command: "my-codex-wrapper --safe",
+  };
+  const service = new SessionService(createConfig(), new MemoryStateStore(), state);
+  const targets = service.listReapTargets();
+  expect(targets).toHaveLength(1);
+  expect(targets[0]?.agentCommand).toBe("my-codex-wrapper --safe");
+});
+
 test("an explicit agents.<name>.command overrides a recorded session command", async () => {
   const config = createConfig();
   config.agents.codex = { driver: "codex", command: "configured-codex-wrapper" };

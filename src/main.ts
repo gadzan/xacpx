@@ -55,6 +55,7 @@ import {
 } from "./orchestration/worker-prompts";
 import {
   persistWorkerBindingIdentity,
+  persistWorkerBindingLaunch,
   resolveWorkerAgentLaunch,
   shouldGuardWorkerAcpOutput,
 } from "./orchestration/worker-launch";
@@ -1065,6 +1066,23 @@ export async function buildApp(
       publish: (nextState) => replaceRuntimeState(state, nextState),
       runExclusive: (critical) => stateMutex.run(critical),
     });
+    // Snapshot the launch this dispatch is about to use (persist-before-owner,
+    // same rule as logical sessions): after a managed-pin/config change the
+    // current resolution can no longer locate the previous owner, so restart
+    // reaping needs the last-dispatched identity. No-op save when unchanged.
+    const agentConfig = config.agents[input.targetAgent];
+    if (agentConfig) {
+      const launch = resolveWorkerAgentLaunch(
+        agentConfig,
+        config.transport,
+        state.orchestration.workerBindings[input.workerSession],
+      );
+      await persistWorkerBindingLaunch(state, { workerSession: input.workerSession }, launch, {
+        saveNow: (nextState) => debouncedStateStore.saveNow(nextState),
+        publish: (nextState) => replaceRuntimeState(state, nextState),
+        runExclusive: (critical) => stateMutex.run(critical),
+      });
+    }
   };
 
   const resolveWorkerRuntimeSession = (
