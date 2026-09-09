@@ -156,10 +156,19 @@ export class TransportInvoker {
     reply?: (text: string) => Promise<void>,
     perfSpan?: PerfSpan,
   ): Promise<void> {
+    // Runtime workers treat MCP identity as immutable construction state. Bind
+    // the coordinator before the first ensure so the first prompt does not
+    // rotate an otherwise-empty agent session and then try to resume it. Keep
+    // the binding transport-local so it does not leak into logical session DTOs.
+    const ensuredSession: ResolvedSession = {
+      ...session,
+      mcpCoordinatorSession:
+        session.mcpCoordinatorSession ?? stableCoordinatorSession(session.transportSession),
+    };
     const attemptSession = (operation: string): Promise<void> => {
       const { handler, dispose } = this.createProgressHandler(session, reply);
       return this.measureTransportCall(operation, session, () =>
-        this.transport.ensureSession(session, handler),
+        this.transport.ensureSession(ensuredSession, handler),
       ).finally(dispose);
     };
 
