@@ -196,15 +196,19 @@ export function narrowToAgentProcessEnvOverlay(
     }
   }
   for (const name of RUNTIME_CLEARED_CONTROL_KEYS) {
-    // A resolver-deleted control key is re-expressed as an explicit clear;
-    // without provenance, fall back to base-has/resolved-lacks detection.
-    // Either way the key must have existed in the base and be absent from
-    // the resolved env — never invent noise, never cover a re-set value.
+    // A resolver-deleted control key is re-expressed as an explicit clear
+    // so it keeps beating persisted session env. With provenance, the
+    // recorded clear is itself the intent — no base-presence gate, otherwise
+    // a stale persisted "1" could resurrect a restricted policy the parent
+    // never had. Without provenance, fall back to base-has/resolved-lacks
+    // detection to avoid inventing noise. Either way a re-set value present
+    // in the resolved env is never covered.
     const resolvedLacks = getEnvironmentValue(resolved, name, platform) === undefined;
-    const intentionallyCleared = provenance
-      ? hasProvenanceKey(provenance.clearedKeys, name, platform) && resolvedLacks
-      : resolvedLacks;
-    if (getEnvironmentValue(baseEnv, name, platform) !== undefined && intentionallyCleared) {
+    if (provenance) {
+      if (hasProvenanceKey(provenance.clearedKeys, name, platform) && resolvedLacks) {
+        overlay[name] = "0";
+      }
+    } else if (getEnvironmentValue(baseEnv, name, platform) !== undefined && resolvedLacks) {
       overlay[name] = "0";
     }
   }

@@ -438,3 +438,20 @@ test("full-user same-value flag rides the overlay via provenance", () => {
   );
   expect(overlay).toEqual({ ACPX_CLAUDE_INCLUDE_USER_SETTINGS: "1" });
 });
+
+test("isolated clear rides the overlay even when the parent never had the flag", () => {
+  // Provenance records the resolver's explicit delete; the "0" must be
+  // emitted without a base-presence gate, or a stale persisted "1" would
+  // resurrect a restricted policy the parent never had.
+  const overlay = resolveClaudeAgentProcessEnv(
+    { driver: "claude", settingsPolicy: "isolated" },
+    {
+      baseEnv: { PATH: "/bin" },
+      profileRoot: "/profiles",
+      writeProfile: () => {},
+      linkSessionState: () => {},
+    },
+  );
+  expect(overlay?.ACPX_CLAUDE_INCLUDE_USER_SETTINGS).toBe("0");
+  expect(overlay).not.toHaveProperty("PATH");
+});

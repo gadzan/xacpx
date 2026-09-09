@@ -467,3 +467,23 @@ test("persisted empty string masks the parent even with an unrelated overlay", a
     await rm(stateDir, { recursive: true, force: true });
   }
 }, 120_000);
+
+test("explicit overlay clear beats a stale persisted flag", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "xacpx-env-clear-"));
+  try {
+    // Parent never had the flag; the persisted record still carries "1"
+    // (e.g. from an older full-user session). An isolated-policy overlay
+    await withTestEnv({ MARKER_VAR: "ACPX_CLAUDE_INCLUDE_USER_SETTINGS", ACPX_CLAUDE_INCLUDE_USER_SETTINGS: undefined }, async () => {
+      const text = await runRawMarkerTurn(
+        stateDir,
+        "prec-clear",
+        { ACPX_CLAUDE_INCLUDE_USER_SETTINGS: "0" },
+        { ACPX_CLAUDE_INCLUDE_USER_SETTINGS: "1" },
+        "prec-clear-1",
+      );
+      expect(text).toContain("marker=0");
+    });
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+}, 120_000);
