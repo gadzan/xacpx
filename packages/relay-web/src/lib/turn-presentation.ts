@@ -97,12 +97,26 @@ export function deriveTurnPresentation(
   });
 
   const boundaries = markdownBlockBoundaries(narrative);
+  const documentEnv: Record<string, unknown> = {};
+
+  const safeNarrativeAnchor = (offset: number): number | null => {
+    const block = topLevelBlockAt(narrative, offset, documentEnv);
+    if (!block || block.type !== "paragraph_open") return null;
+    if (normalizeMarkdownTables(block.source) !== block.source) return null;
+    if (narrative.slice(block.endOffset).trim().length > 0) return null;
+    const offsetInBlock = offset - block.startOffset;
+    return isSafeInlineParagraphOffset(block.source, offsetInBlock, documentEnv)
+      ? offset
+      : null;
+  };
 
   const anchored = new Map<number, typeof activities>();
   for (const activity of activities) {
     const anchor = narrative.slice(0, activity.offset).trim().length === 0
       ? 0
-      : (boundaries.find((boundary) => boundary >= activity.offset) ?? narrative.length);
+      : (safeNarrativeAnchor(activity.offset)
+        ?? boundaries.find((boundary) => boundary >= activity.offset)
+        ?? narrative.length);
     const group = anchored.get(anchor) ?? [];
     group.push(activity);
     anchored.set(anchor, group);

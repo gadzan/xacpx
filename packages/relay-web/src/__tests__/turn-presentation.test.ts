@@ -19,14 +19,35 @@ const visibleShape = (parts: TurnPartDto[], opts?: TurnPresentationOptions) =>
   });
 
 describe("deriveTurnPresentation", () => {
-  it("does not let a tool event split one narrative paragraph", () => {
+  it("keeps repeated plain-text progress updates interleaved with their tools", () => {
+    expect(visibleShape([
+      { type: "text", text: "plan: inspect the reap target" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "plan: inspect the reap target" },
+      { type: "tool", step: tool("read-2") },
+      { type: "text", text: "plan: inspect the reap target" },
+      { type: "tool", step: tool("edit-1") },
+      { type: "text", text: "High 修完，继续检查。" },
+    ])).toEqual([
+      { type: "text", text: "plan: inspect the reap target" },
+      { type: "tool", id: "read-1" },
+      { type: "text", text: "plan: inspect the reap target" },
+      { type: "tool", id: "read-2" },
+      { type: "text", text: "plan: inspect the reap target" },
+      { type: "tool", id: "edit-1" },
+      { type: "text", text: "High 修完，继续检查。" },
+    ]);
+  });
+
+  it("keeps a tool event at a safe plain-text paragraph offset", () => {
     expect(visibleShape([
       { type: "text", text: "before " },
       { type: "tool", step: tool("read-1") },
       { type: "text", text: "after" },
     ])).toEqual([
-      { type: "text", text: "before after" },
+      { type: "text", text: "before " },
       { type: "tool", id: "read-1" },
+      { type: "text", text: "after" },
     ]);
   });
 
@@ -77,14 +98,15 @@ describe("deriveTurnPresentation", () => {
     ]);
   });
 
-  it("treats a single line break as part of the same Markdown paragraph", () => {
+  it("keeps a tool event at a safe soft-break offset", () => {
     expect(visibleShape([
       { type: "text", text: "line one\n" },
       { type: "tool", step: tool("read-1") },
       { type: "text", text: "line two" },
     ])).toEqual([
-      { type: "text", text: "line one\nline two" },
+      { type: "text", text: "line one\n" },
       { type: "tool", id: "read-1" },
+      { type: "text", text: "line two" },
     ]);
   });
 

@@ -366,7 +366,7 @@ describe("MessageList", () => {
     expect(narrative.find(":scope > hr:last-child").exists()).toBe(true);
   });
 
-  it("keeps one paragraph continuous and places its activity after the paragraph", () => {
+  it("keeps plain-text progress updates interleaved with activity", () => {
     const wrapper = mount(MessageList, {
       props: {
         messages: [],
@@ -389,20 +389,26 @@ describe("MessageList", () => {
     });
 
     const bubble = wrapper.find('[data-test="msg-streaming"]');
-    expect(bubble.findAll(".stream-md")).toHaveLength(1);
-    expect(bubble.find(".stream-md").text()).toBe(
-      "先检查这一层的 flex，再确认间接约束行高。",
-    );
+    const narratives = bubble.findAll(".stream-md");
+    expect(narratives).toHaveLength(2);
+    expect(narratives.map((item) => item.text())).toEqual([
+      "先检查这一层的 flex，",
+      "再确认间接约束行高。",
+    ]);
     const toolHeader = bubble.find('[data-test="tool-step-header"]');
     const reasoningPanel = bubble.findComponent({ name: "ReasoningPanel" });
     expect(toolHeader.exists()).toBe(true);
     expect(reasoningPanel.exists()).toBe(true);
     expect(
-      bubble.find(".stream-md").element.compareDocumentPosition(toolHeader.element)
+      narratives[0]!.element.compareDocumentPosition(toolHeader.element)
       & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(
       toolHeader.element.compareDocumentPosition(reasoningPanel.element)
+      & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      reasoningPanel.element.compareDocumentPosition(narratives[1]!.element)
       & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
