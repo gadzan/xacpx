@@ -940,7 +940,7 @@ test("bridge transport proxies primeRuntimeQueues mapping sessions to EngineSess
             agentArgv: undefined,
             cwd: "/tmp/backend",
             name: "backend:runtime-demo",
-            mcpCoordinatorSession: undefined,
+            mcpCoordinatorSession: "backend:runtime-demo",
             mcpSourceHandle: undefined,
             replyMode: "verbose",
             logicalSessionId: "log-sess-1",

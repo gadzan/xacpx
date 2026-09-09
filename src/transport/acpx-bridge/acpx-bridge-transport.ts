@@ -19,6 +19,7 @@ import {
 } from "../quota-gated-reply-sink";
 import { createSerializedCallbackQueue } from "../serialized-callback-queue";
 import { resolveToolEventMode } from "../tool-event-mode.js";
+import { withDefaultMcpIdentity } from "../../orchestration/coordinator-identity";
 import type { BridgeEngineCapabilities, BridgeMethod } from "./acpx-bridge-protocol";
 import { decodeBridgeEngineCapabilities } from "./acpx-bridge-protocol";
 import type { BridgeEvent } from "./acpx-bridge-client";
@@ -316,6 +317,7 @@ export class AcpxBridgeTransport implements SessionTransport {
   }
 
   private toParams(session: ResolvedSession): Record<string, unknown> {
+    const transportEngine = session.transportEngine ?? "cli";
     return {
       agent: session.agent,
       driver: session.driver,
@@ -326,12 +328,21 @@ export class AcpxBridgeTransport implements SessionTransport {
       agentArgv: session.agentArgv,
       cwd: session.cwd,
       name: session.transportSession,
-      mcpCoordinatorSession: session.mcpCoordinatorSession,
+      // Every session-scoped Runtime operation may ensure/rotate a worker, not
+      // only prompt. Default at this shared bridge boundary so model/effort
+      // reads cannot move a fresh coordinator worker back to MCP=none. Gated
+      // on the runtime engine: CLI wire shape keeps `undefined` (the invoker
+      // already binds coordinator identity on its own paths for the queue
+      // owner), and explicit worker bindings ride through untouched.
+      mcpCoordinatorSession:
+        transportEngine === "runtime"
+          ? withDefaultMcpIdentity(session).mcpCoordinatorSession
+          : session.mcpCoordinatorSession,
       mcpSourceHandle: session.mcpSourceHandle,
       replyMode: session.effectiveReplyMode ?? session.replyMode ?? "verbose",
       // Stable worker-ownership identity + persisted engine affinity (plan §9.1/§48).
       logicalSessionId: session.logicalSessionId,
-      transportEngine: session.transportEngine ?? "cli",
+      transportEngine,
       ...(session.model?.trim() ? { model: session.model.trim() } : {}),
       ...(session.effort?.trim() ? { effort: session.effort.trim() } : {}),
     };
