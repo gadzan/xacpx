@@ -184,10 +184,10 @@ export interface ToolStepDto {
   agentMessageId?: string;
 }
 
-/** One entry in a turn's ordered wire transcript, retained for transport and
- *  persistence. A presentation layer may move an activity to the end of the
- *  Markdown block that was in progress when it arrived, but must not globally
- *  bucket narrative and activity into separate lanes. */
+/** One entry in a turn's canonical ordered wire transcript, retained for transport,
+ *  persistence, and presentation timeline construction. Consecutive text may be
+ *  coalesced, but consumers must preserve the relative arrival order of text and
+ *  activity parts. */
 export type TurnPartDto =
   | { type: "text"; text: string }
   | { type: "reasoning"; text: string }
