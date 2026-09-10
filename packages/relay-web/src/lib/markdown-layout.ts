@@ -11,6 +11,7 @@ import {
   type TopLevelBlockInfo,
 } from "./render-markdown";
 import type {
+  BlockActivityDisposition,
   LayoutActivityGeometry,
   LayoutSlotCandidate,
   MarkdownLayoutNode,
@@ -100,12 +101,41 @@ function pushMarkdownNode(
     isLatest: false,
   });
 }
-
 interface BlockRenderInput {
   block: TopLevelBlockInfo;
-  boundary: number;
   internalActivities: readonly LayoutActivityGeometry[];
   streamingBlock: boolean;
+}
+
+/**
+ * Rebuild a block's slot candidates from its cached-or-fresh disposition.
+ * Runs on every frame for every block: `exact-inline` resolves to the
+ * activity's current wire offset, `block-end` to the block's *current*
+ * boundary. Absolute slots are never read back from the cache, so a
+ * neighboring gap shrink/grow cannot resurrect a stale slot.
+ */
+function placeBlockActivities(
+  candidates: Map<string, LayoutSlotCandidate>,
+  internalActivities: readonly LayoutActivityGeometry[],
+  boundary: number,
+  dispositions: ReadonlyArray<{ id: string; disposition: BlockActivityDisposition }>,
+): void {
+  const byId = new Map(internalActivities.map((activity) => [activity.id, activity]));
+  for (const { id, disposition } of dispositions) {
+    if (disposition.kind === "exact-inline") {
+      candidates.set(id, {
+        sourceOffset: byId.get(id)!.sourceOffset,
+        kind: "exact-inline",
+        reason: "exact",
+      });
+      continue;
+    }
+    candidates.set(id, {
+      sourceOffset: boundary,
+      kind: "block-end",
+      reason: disposition.reason,
+    });
+  }
 }
 
 /**
@@ -119,10 +149,10 @@ function renderLayoutBlock(
   narrative: string,
   documentEnv: Record<string, unknown>,
   input: BlockRenderInput,
-): { nodes: MarkdownLayoutNode[]; candidates: Array<[string, LayoutSlotCandidate]> } {
+): { nodes: MarkdownLayoutNode[]; activities: Array<{ id: string; disposition: BlockActivityDisposition }> } {
   const nodes: MarkdownLayoutNode[] = [];
-  const candidates: Array<[string, LayoutSlotCandidate]> = [];
-  const { block, boundary, internalActivities, streamingBlock } = input;
+  const activities: Array<{ id: string; disposition: BlockActivityDisposition }> = [];
+  const { block, internalActivities, streamingBlock } = input;
   const normalized = normalizeMarkdownTables(block.source) !== block.source;
   // The marker planner only understands proven inline coordinates: an
   // unprovable projection (null) or any activity in the trimmed edge gap
@@ -166,13 +196,9 @@ function renderLayoutBlock(
     const inlineEnd = inlineStart + inlineSource!.length;
     pushMarkdownNode(nodes, narrative, inlineEnd, block.endOffset, "", "");
     for (const activity of internalActivities) {
-      candidates.push([activity.id, {
-        sourceOffset: activity.sourceOffset,
-        kind: "exact-inline",
-        reason: "exact",
-      }]);
+      activities.push({ id: activity.id, disposition: { kind: "exact-inline" } });
     }
-    return { nodes, candidates };
+    return { nodes, activities };
   }
   const rendered = renderAtomicBlock(block, documentEnv, streamingBlock);
   pushMarkdownNode(
@@ -184,15 +210,17 @@ function renderLayoutBlock(
     rendered.copyText,
   );
   for (const activity of internalActivities) {
-    candidates.push([activity.id, {
-      sourceOffset: boundary,
-      kind: "block-end",
-      reason: inlineSource !== null && !normalized
-        ? "marker-unsafe"
-        : "structural-block",
-    }]);
+    activities.push({
+      id: activity.id,
+      disposition: {
+        kind: "block-end",
+        reason: inlineSource !== null && !normalized
+          ? "marker-unsafe"
+          : "structural-block",
+      },
+    });
   }
-  return { nodes, candidates };
+  return { nodes, activities };
 }
 /**
  * Analyze Markdown once, derive legal slots, and pre-render a complete source-range
@@ -244,8 +272,9 @@ export function deriveMarkdownLayout(
       && options.latestVisibleIsText === true
       && block.endOffset >= lastNonWhitespaceOffset;
     // Positional key: identical text at different offsets must NOT share an
-    // entry — node sourceRanges and candidate slots are absolute. Sharing
-    // only happens for the same block across frames (streaming appends).
+    // entry — node sourceRanges are absolute. Slot candidates are rebuilt
+    // from dispositions every frame, so they never go stale. Sharing only
+    // happens for the same block across frames (streaming appends).
     const cacheKey = blockCache ? `block:${block.startOffset}:${block.endOffset}` : null;
     if (cacheKey) liveBlockKeys.add(cacheKey);
     const fingerprint: TurnLayoutBlockFingerprint | null = blockCache
@@ -271,27 +300,25 @@ export function deriveMarkdownLayout(
           sourceRange: [node.sourceRange[0], node.sourceRange[1]],
         });
       }
-      for (const [id, candidate] of cached.candidates) candidates.set(id, candidate);
+      placeBlockActivities(candidates, internalActivities, document.boundaries[blockIndex] ?? block.endOffset, cached.activities);
       cursor = block.endOffset;
       return;
     }
     const rendered = renderLayoutBlock(narrative, document.env, {
       block,
-      boundary: document.boundaries[blockIndex] ?? block.endOffset,
       internalActivities,
       streamingBlock,
     });
     for (const node of rendered.nodes) markdownNodes.push(node);
-    for (const [id, candidate] of rendered.candidates) candidates.set(id, candidate);
+    placeBlockActivities(candidates, internalActivities, document.boundaries[blockIndex] ?? block.endOffset, rendered.activities);
     if (cacheKey && fingerprint && blockCache) {
       blockCache.set(cacheKey, {
         fingerprint,
-        baseStart: block.startOffset,
         nodes: rendered.nodes.map((node) => ({
           ...node,
           sourceRange: [node.sourceRange[0], node.sourceRange[1]] as [number, number],
         })),
-        candidates: rendered.candidates,
+        activities: rendered.activities,
       });
     }
     cursor = block.endOffset;

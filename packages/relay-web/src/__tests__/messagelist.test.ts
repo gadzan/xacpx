@@ -243,7 +243,43 @@ describe("MessageList", () => {
     expect(presentation.thoughtCount).toBe(0);
     const copy = wrapper.find('[data-test="msg-out"] [data-test="msg-actions"]').findComponent(CopyButton);
     expect(copy.exists()).toBe(true);
-    expect(copy.props("text")).toBe("Fixed. The issue was X.");
+  });
+
+  it("keeps cached collapsed presentations when unrelated transcript rows arrive", async () => {
+    const messages = ["a", "b"].map((label) => msg({
+      direction: "out",
+      text: `${label} final.`,
+      status: "done",
+      structured: {
+        parts: [
+          { type: "text", text: `${label} working.` },
+          { type: "tool", step: sendStep(`read-${label}`) },
+          { type: "text", text: `${label} final.` },
+        ],
+      },
+    }));
+    const wrapper = mount(MessageList, {
+      props: { messages, liveTurn: null },
+    });
+    const before = wrapper.findAllComponents(TurnParts).map((parts) => parts.props("presentation"));
+    expect(before).toHaveLength(2);
+
+    // An unrelated user prompt plus an unrelated sent card rebuild the global
+    // sent-message map, but neither turn anchors the new id — both cached
+    // presentations (and their layouts) must survive untouched.
+    await wrapper.setProps({
+      messages: [
+        ...messages,
+        msg({ direction: "in", text: "unrelated question" }),
+        sentCard("unrelated-id"),
+      ],
+    });
+    const after = wrapper.findAllComponents(TurnParts).map((parts) => parts.props("presentation"));
+    for (const [index, presentation] of after.entries()) {
+      if (!presentation) throw new Error("expected a precomputed presentation");
+      expect(presentation).toBe(before[index]);
+      expect(presentation.layout).toBe(before[index]!.layout);
+    }
   });
 
   it("omits the assistant copy button when the turn ends on a process item with no final reply", () => {

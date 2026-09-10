@@ -17,6 +17,7 @@ import {
   extractCollapsedTraceSummary,
   type CollapsedTraceSummary,
 } from "../lib/turn-presentation";
+import { createTurnLayoutGeometryCache, type TurnLayoutGeometryCache } from "../lib/turn-layout";
 const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; loadingHistory?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null; ensureFull?: (messageId: number) => Promise<void> }>();
 const emit = defineEmits<{ resend: [message: ChatMessage]; loadOlder: [] }>();
 
@@ -67,28 +68,41 @@ function traceElapsedOf(m: ChatMessage): number | null {
   return Number.isFinite(ms) && ms > 0 ? ms : null;
 }
 
-// Cache collapsed trace metrics by message object and parts reference to prevent
-// redundant markdown parses and presentation derivations across MessageList and TurnParts.
+// Cache collapsed trace summaries per message row. The dependency is
+// per-turn, not per-transcript: only the parts array identity plus the
+// anchored sent-message entries this turn actually renders. An unrelated
+// transcript change (new prompt, history prepend, receiver row) rebuilds the
+// global sent-message map but leaves every untouched row's cache hit. Each
+// entry also owns a TurnLayoutGeometryCache, so even a genuine decoration
+// change reuses Markdown geometry instead of re-laying out.
 const traceSummaryCache = new WeakMap<ChatMessage, {
   parts: TurnPartDto[];
-  sentAgentMessages: Map<string, PeerMessageHistoryEntry>;
+  anchoredMessages: Array<[string, PeerMessageHistoryEntry | undefined]>;
+  layoutCache: TurnLayoutGeometryCache;
   summary: CollapsedTraceSummary;
 }>();
 
 function traceSummaryOf(m: ChatMessage): CollapsedTraceSummary {
   const parts = m.structured?.parts;
   if (!parts?.length) throw new Error("Trace summary requires structured turn parts");
-  const sentAgentMessages = sentAgentMessageById.value;
+  const byId = sentAgentMessageById.value;
+  const anchoredMessages = [...anchoredAgentMessageIds(parts)].map(
+    (id) => [id, byId.get(id)] as [string, PeerMessageHistoryEntry | undefined],
+  );
   const cached = traceSummaryCache.get(m);
+  const layoutCache = cached?.layoutCache ?? createTurnLayoutGeometryCache();
   if (
     cached
     && cached.parts === parts
-    && cached.sentAgentMessages === sentAgentMessages
+    && cached.anchoredMessages.length === anchoredMessages.length
+    && cached.anchoredMessages.every(([id, entry], index) =>
+      anchoredMessages[index]![0] === id && anchoredMessages[index]![1] === entry)
   ) return cached.summary;
   const summary = extractCollapsedTraceSummary(parts, {
-    sentAgentMessageById: sentAgentMessages,
+    sentAgentMessageById: byId,
+    layoutCache,
   });
-  traceSummaryCache.set(m, { parts, sentAgentMessages, summary });
+  traceSummaryCache.set(m, { parts, anchoredMessages, layoutCache, summary });
   return summary;
 }
 

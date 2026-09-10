@@ -126,8 +126,12 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   对应 Agent；旧历史里没有父子字段的工具仍按普通卡片渲染。
 - turn layout 有三层流式性能保护：无 activity 的 turn 直接走单个 Markdown render；全量 geometry cache 以
   narrative、activity id/offset/wireIndex 和 streaming 几何为 key，因此 tool status/title/output 更新只替换卡片 payload，
-  不重跑 Markdown；block 级 cache 以 block source、相对 activity 几何、streaming flag 和 reference fingerprint 为 key，
-  text streaming 追加时已沉降的头部 block 直接复用 marker plan 与 sanitized HTML/copy，只重算 tail block；同一
+  不重跑 Markdown；block 级 cache 以 block source、activity 几何、streaming flag 和 reference fingerprint 为 key，
+  text streaming 追加时已沉降的头部 block 直接复用 marker plan 与 sanitized HTML/copy，只重算 tail block——缓存只存
+  block-local 的 nodes 与 exact-inline/atomic disposition，slot 的绝对 sourceOffset 每帧按当前 boundary 重建，因此相邻
+  gap 收缩/扩张不会复活 stale slot；每帧按 live block key 剪枝，tail 历史版本不累积。`MessageList` 的 collapsed
+  summary cache 以 parts identity 加本 turn 实际 anchor 的 sent-message 条目为依赖（外加每 turn 独立的 layoutCache），
+  无关 transcript 行（普通 prompt、历史 prepend、receiver 行、未 anchor 的 sent 卡）不会让已有 trace 重做 layout；同一
   browser frame 内的 text delta 通过 `requestAnimationFrame` 合并。activity-bearing paragraph
   超过 50,000 字符或 256 个 marker 时自动降级为 atomic block，降级只牺牲精确 interleave，不牺牲 Markdown 语义或顺序。
   marker 抽取为单次线性扫描（`MARKER_OPEN → MARKER_CLOSE → Map`），不再按 encoding 逐个 `indexOf`。

@@ -43,11 +43,28 @@ describe("turn layout", () => {
     planTurnLayout(narrative, activities);
   });
 
+  // Steady-state streaming frame: the cache is warmed once outside the
+  // measured closure, then every iteration appends a slightly longer tail.
+  // The full-plan key always misses (new narrative) while the settled head
+  // blocks hit — so this measures one frame's incremental cost, not cold
+  // render plus one append. An activity in the settled head keeps the
+  // marker-plan reuse path in the measurement.
+  const warmHead = "settled paragraph one\n\nsettled paragraph two\n\n";
+  const warmTail = "streaming tail with **formatting** plus more text";
+  const warmActivities: LayoutActivityGeometry[] = [
+    { id: "tool:warm", wireIndex: 1, sourceOffset: "settled ".length },
+  ];
+  const warmOptions = { streaming: true, latestVisibleIsText: true } as const;
+  const warmCache = createTurnLayoutGeometryCache();
+  planTurnLayout(`${warmHead}${warmTail}`, warmActivities, warmOptions, warmCache);
+  let warmTick = 0;
   bench("streaming tail append with a warm block cache", () => {
-    const head = "settled paragraph one\n\nsettled paragraph two\n\n";
-    const tail = "streaming tail with **formatting** plus more text";
-    const cache = createTurnLayoutGeometryCache();
-    planTurnLayout(`${head}${tail}`, [], { streaming: true, latestVisibleIsText: true }, cache);
-    planTurnLayout(`${head}${tail}!`, [], { streaming: true, latestVisibleIsText: true }, cache);
+    warmTick += 1;
+    planTurnLayout(
+      `${warmHead}${warmTail}${".".repeat(warmTick % 8)}`,
+      warmActivities,
+      warmOptions,
+      warmCache,
+    );
   });
 });

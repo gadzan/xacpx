@@ -68,11 +68,21 @@ export interface TurnLayoutBlockFingerprint {
   references: string;
 }
 
+/**
+ * A block's verdict on its internal activities, without any absolute
+ * document geometry. `exact-inline` slots resolve to the activity's own
+ * wire offset; `block-end` slots resolve to the block's *current* boundary,
+ * which depends on the neighboring gap — so the boundary is rebound on every
+ * frame, never read back from the cache.
+ */
+export type BlockActivityDisposition =
+  | { kind: "exact-inline" }
+  | { kind: "block-end"; reason: Exclude<ActivityPlacementReason, "order-barrier"> };
+
 export interface TurnLayoutBlockCacheEntry {
   fingerprint: TurnLayoutBlockFingerprint;
-  baseStart: number;
   nodes: MarkdownLayoutNode[];
-  candidates: Array<[string, LayoutSlotCandidate]>;
+  activities: Array<{ id: string; disposition: BlockActivityDisposition }>;
 }
 
 export interface TurnLayoutGeometryCache {

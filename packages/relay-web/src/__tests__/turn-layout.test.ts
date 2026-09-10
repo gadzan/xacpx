@@ -127,6 +127,31 @@ describe("planTurnLayout", () => {
     }
   });
 
+  it.each([
+    ["shrinks the blank gap", "[docs](https://example.com)\n\n\nNext", "[docs](https://example.com)\n\nNext"],
+    ["grows the blank gap", "[docs](https://example.com)\n\nNext", "[docs](https://example.com)\n\n\n\nNext"],
+  ])("matches a fresh layout when replacement %s around a marker-unsafe block", (_label, first, second) => {
+    const cache = createTurnLayoutGeometryCache();
+    const activity = [{ id: "tool:read-1", wireIndex: 1, sourceOffset: "[docs](https://exa".length }];
+    planTurnLayout(first, activity, {}, cache);
+    const cached = planTurnLayout(second, activity, {}, cache);
+    const fresh = planTurnLayout(second, activity, {});
+
+    expect(cached.nodes).toEqual(fresh.nodes);
+    expect([...cached.activityPlacements]).toEqual([...fresh.activityPlacements]);
+  });
+
+  it("matches a fresh layout when replacement shifts a structural block boundary", () => {
+    const cache = createTurnLayoutGeometryCache();
+    const activity = [{ id: "tool:read-1", wireIndex: 1, sourceOffset: "- one\n".length }];
+    planTurnLayout("- one\n\n- two\n\nafter", activity, {}, cache);
+    const cached = planTurnLayout("- one\n\n\n- two\n\nafter", activity, {}, cache);
+    const fresh = planTurnLayout("- one\n\n\n- two\n\nafter", activity, {});
+
+    expect(cached.nodes).toEqual(fresh.nodes);
+    expect([...cached.activityPlacements]).toEqual([...fresh.activityPlacements]);
+  });
+
   it("materializes marker-aware paragraph fragments in source order", () => {
     const narrative = "Working **carefully now** done";
     const offset = "Working **carefully ".length;
