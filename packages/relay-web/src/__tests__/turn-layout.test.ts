@@ -101,21 +101,29 @@ describe("planTurnLayout", () => {
   it("reuses unchanged leading blocks when a streaming tail grows", () => {
     const cache = createTurnLayoutGeometryCache();
     const head = "settled paragraph one\n\nsettled paragraph two\n\n";
-    const firstHtml = (narrative: string) =>
+    const layoutHtml = (narrative: string) =>
       planTurnLayout(narrative, [], { streaming: true, latestVisibleIsText: true }, cache).nodes
         .filter((node) => node.type === "markdown")
         .map((node) => node.html)
         .join("");
-    const before = firstHtml(`${head}tail one`);
-    const settledKeys = [...cache.blocks.keys()].filter((key) => key !== "block:46:54");
-    const settledFingerprints = settledKeys.map((key) => cache.blocks.get(key)!.fingerprint);
-    const after = firstHtml(`${head}tail one plus more`);
+    const before = layoutHtml(`${head}tail one`);
+    const settledFingerprints = new Map(
+      [...cache.blocks.entries()]
+        .filter(([key]) => key !== "block:46:54")
+        .map(([key, entry]) => [key, entry.fingerprint] as const),
+    );
+    // Grow the tail in small increments the way streaming appends do: every
+    // frame mints a new tail range, but settled head entries must keep
+    // hitting and stale tail generations must not accumulate.
+    let after = before;
+    for (let index = 0; index < 60; index += 1) {
+      after = layoutHtml(`${head}tail one plus ${"more ".repeat(index + 1)}`);
+      expect(cache.blocks.size).toBeLessThanOrEqual(3);
+    }
 
     expect(after).toContain(before.split("</p>")[0]!);
-    for (const key of settledKeys) {
-      expect(cache.blocks.get(key)!.fingerprint).toEqual(
-        settledFingerprints[settledKeys.indexOf(key)]!,
-      );
+    for (const [key, fingerprint] of settledFingerprints) {
+      expect(cache.blocks.get(key)!.fingerprint).toEqual(fingerprint);
     }
   });
 

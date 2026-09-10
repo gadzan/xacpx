@@ -30,19 +30,30 @@ export interface MarkdownLayoutGeometry {
  * Fingerprint of the document-wide reference universe: reference definitions
  * live outside any single block but change what every link block renders, so
  * a block cache entry is only reusable while this fingerprint is unchanged.
+ * JSON-encoded so hrefs/titles containing `#`, `|`, or `=` cannot collide.
  */
 export function referenceEnvFingerprint(env: Record<string, unknown>): string {
   const references = env["references"];
-  if (!references || typeof references !== "object") return "";
+  if (!references || typeof references !== "object") return "[]";
   const table = references as Record<string, { href?: unknown; title?: unknown }>;
-  return Object.keys(table).sort()
-    .map((label) => {
-      const entry = table[label];
-      const href = typeof entry?.href === "string" ? entry.href : "";
-      const title = typeof entry?.title === "string" ? entry.title : "";
-      return `${label}=${href}#${title}`;
-    })
-    .join("|");
+  return JSON.stringify(Object.keys(table).sort().map((label) => {
+    const entry = table[label];
+    return [
+      label,
+      typeof entry?.href === "string" ? entry.href : "",
+      typeof entry?.title === "string" ? entry.title : "",
+    ];
+  }));
+}
+
+/**
+ * Fingerprint of a block's activity geometry. JSON-encoded so provider
+ * toolCallIds containing `@` or `,` cannot collide across splits.
+ */
+export function activityGeometryFingerprint(
+  activities: readonly LayoutActivityGeometry[],
+): string {
+  return JSON.stringify(activities.map((activity) => [activity.id, activity.sourceOffset]));
 }
 
 const MAX_INLINE_PARAGRAPH_CHARS = 50_000;
@@ -198,6 +209,7 @@ export function deriveMarkdownLayout(
   const references = referenceEnvFingerprint(document.env);
   const candidates = new Map<string, LayoutSlotCandidate>();
   const markdownNodes: MarkdownLayoutNode[] = [];
+  const liveBlockKeys = new Set<string>();
   const activitiesByBlock = document.blocks.map((): LayoutActivityGeometry[] => []);
   let activityBlockIndex = 0;
   for (const activity of activities) {
@@ -235,10 +247,11 @@ export function deriveMarkdownLayout(
     // entry — node sourceRanges and candidate slots are absolute. Sharing
     // only happens for the same block across frames (streaming appends).
     const cacheKey = blockCache ? `block:${block.startOffset}:${block.endOffset}` : null;
+    if (cacheKey) liveBlockKeys.add(cacheKey);
     const fingerprint: TurnLayoutBlockFingerprint | null = blockCache
       ? {
         source: block.source,
-        activityIds: internalActivities.map((activity) => `${activity.id}@${activity.sourceOffset}`).join(","),
+        activityIds: activityGeometryFingerprint(internalActivities),
         streaming: streamingBlock,
         references,
       }
@@ -284,6 +297,15 @@ export function deriveMarkdownLayout(
     cursor = block.endOffset;
   });
   pushMarkdownNode(markdownNodes, narrative, cursor, narrative.length, "", "");
+  if (blockCache) {
+    // A growing streaming tail mints a new `block:start:end` key every frame;
+    // without pruning, every historical tail length (with its full html/copy
+    // strings) would accumulate for the component's lifetime. The cache may
+    // only hold this frame's blocks.
+    for (const key of [...blockCache.keys()]) {
+      if (!liveBlockKeys.has(key)) blockCache.delete(key);
+    }
+  }
 
   const markdownBoundaries = new Set<number>([0, narrative.length]);
   for (const node of markdownNodes) {

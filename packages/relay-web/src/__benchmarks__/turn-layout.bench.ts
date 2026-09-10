@@ -1,5 +1,5 @@
 import { bench, describe } from "vitest";
-import { planTurnLayout, type LayoutActivityGeometry } from "../lib/turn-layout";
+import { createTurnLayoutGeometryCache, planTurnLayout, type LayoutActivityGeometry } from "../lib/turn-layout";
 
 function trace(paragraphs: number): {
   narrative: string;
@@ -41,5 +41,13 @@ describe("turn layout", () => {
       activities.push({ id: `tool:${index}`, wireIndex: index, sourceOffset });
     }
     planTurnLayout(narrative, activities);
+  });
+
+  bench("streaming tail append with a warm block cache", () => {
+    const head = "settled paragraph one\n\nsettled paragraph two\n\n";
+    const tail = "streaming tail with **formatting** plus more text";
+    const cache = createTurnLayoutGeometryCache();
+    planTurnLayout(`${head}${tail}`, [], { streaming: true, latestVisibleIsText: true }, cache);
+    planTurnLayout(`${head}${tail}!`, [], { streaming: true, latestVisibleIsText: true }, cache);
   });
 });
