@@ -170,6 +170,34 @@ describe("deriveTurnPresentation", () => {
     expect(markdown?.type === "markdown" && markdown.html).toContain('href="https://example.com"');
   });
 
+  it("keeps a reference link alive when table normalization forces a block reparse", () => {
+    // The first paragraph needs table normalization (missing delimiter row),
+    // which forces renderAtomicBlock down the standalone-reparse path; without
+    // the document env the [docs][ref] link would render as literal text.
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "See [docs][ref]\n| a | b |\n| 1 | 2 |" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: " plus tail\n\n[ref]: https://example.com\n\nfinal" },
+    ];
+    const markdown = deriveTurnPresentation(parts).nodes
+      .filter((node) => node.type === "markdown");
+    expect(markdown.length).toBeGreaterThan(0);
+    expect(markdown.some((node) => node.type === "markdown" && node.html.includes('href="https://example.com"'))).toBe(true);
+  });
+
+  it("copies the displayed final reply instead of a raw broken fragment", () => {
+    const presentation = deriveTurnPresentation([
+      { type: "text", text: "I'll inspect **this " },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "carefully**. Fixed." },
+    ]);
+    const hidden = presentation.nodes.filter((node) => node.type === "markdown");
+    expect(hidden.length).toBeGreaterThan(0);
+    expect(presentation.finalReplyNodes.map((node) => node.source).join("")).toContain("carefully**. Fixed.");
+    expect(presentation.finalReplyNodes.map((node) => node.copyText).join("")).toBe("carefully. Fixed.");
+    expect(presentation.finalReplyNodes.map((node) => node.copyText).join("")).not.toContain("**");
+  });
+
   it("never reorders activities across streaming Markdown prefixes", () => {
     const closing = "** done";
     for (let length = 0; length <= closing.length; length += 1) {

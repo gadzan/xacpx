@@ -173,6 +173,43 @@ describe("planTurnLayout", () => {
     }
   });
 
+  it("keeps a tool before the text when leading whitespace is trimmed from the paragraph", () => {
+    for (const leading of [" ", "  ", "   "]) {
+      const narrative = `${leading}hello`;
+      const plan = planTurnLayout(narrative, [
+        { id: "tool:read-1", wireIndex: 1, sourceOffset: leading.length },
+      ]);
+
+      // The tool slot coincides with the proven inline start, so the leading
+      // whitespace stays attached to the preceding empty node and the tool
+      // renders before the text — never spliced into the middle of "hello".
+      expect(plan.nodes.map((node) => node.type)).toEqual(["markdown", "activity", "markdown"]);
+      const markdownNodes = plan.nodes.filter((node) => node.type === "markdown");
+      expect(markdownNodes.map((node) => node.source).join("")).toBe(narrative);
+      expect(markdownNodes[0]!.source).toBe(leading);
+      expect(markdownNodes[0]!.html).toBe("");
+      expect(markdownNodes[1]!.source).toBe("hello");
+      expect(markdownNodes[1]!.html).toContain("<p>hello</p>");
+      expect(plan.activityPlacements.get("tool:read-1")).toEqual({
+        sourceOffset: leading.length,
+        effectiveSlot: leading.length,
+        slotKind: "exact-inline",
+        reason: "exact",
+      });
+    }
+  });
+
+  it("keeps every markdown source range on the raw projection it claims to consume", () => {
+    const narrative = "  hello\n\nsecond paragraph";
+    const plan = planTurnLayout(narrative, [
+      { id: "tool:read-1", wireIndex: 1, sourceOffset: 2 },
+    ]);
+    const markdown = plan.nodes.filter((node) => node.type === "markdown");
+    for (const node of markdown) {
+      expect(narrative.slice(node.sourceRange[0], node.sourceRange[1])).toBe(node.source);
+    }
+  });
+
   it("degrades an extreme activity-bearing paragraph to one atomic block", () => {
     const narrative = `${"a".repeat(50_001)} tail`;
     const plan = planTurnLayout(narrative, [

@@ -3,8 +3,8 @@ import { normalizeMarkdownTables } from "./normalize-markdown";
 import {
   analyzeMarkdownDocument,
   preprocessMarkdownSource,
-  renderMarkdown,
   renderMarkdownTokens,
+  renderMarkdownWithEnv,
   type RenderMarkdownOptions,
   type TopLevelBlockInfo,
 } from "./render-markdown";
@@ -31,9 +31,10 @@ function renderAtomicBlock(
   env: Record<string, unknown>,
   streaming: boolean,
 ): string {
-  return preprocessMarkdownSource(block.source, { streaming }) === block.source
-    ? renderMarkdownTokens(block.tokens, env)
-    : renderMarkdown(block.source, { streaming });
+  if (preprocessMarkdownSource(block.source, { streaming }) === block.source) {
+    return renderMarkdownTokens(block.tokens, env);
+  }
+  return renderMarkdownWithEnv(block.source, { streaming }, env);
 }
 
 function pushMarkdownNode(
@@ -42,14 +43,17 @@ function pushMarkdownNode(
   start: number,
   end: number,
   html: string,
+  copyText?: string,
 ): void {
   if (end <= start) return;
+  const source = narrative.slice(start, end);
   nodes.push({
     type: "markdown",
     key: `markdown:${start}:${end}`,
     sourceRange: [start, end],
-    source: narrative.slice(start, end),
+    source,
     html,
+    copyText: copyText ?? source,
     isLatest: false,
   });
 }
@@ -101,36 +105,46 @@ export function deriveMarkdownLayout(
       && options.latestVisibleIsText === true
       && block.endOffset >= lastNonWhitespaceOffset;
     const normalized = normalizeMarkdownTables(block.source) !== block.source;
+    // The marker planner only understands proven inline coordinates: an
+    // unprovable projection (null) or any activity in the trimmed edge gap
+    // stays atomic instead of guessing a coordinate.
     const inlineSource = block.type === "paragraph_open" && !normalized
+      && block.inlineSource !== null
+      && block.inlineStartOffset !== null
       ? block.inlineSource
       : null;
-    const markers = inlineSource === null
+    const inlineStart = inlineSource === null ? null : block.inlineStartOffset;
+    const markers = inlineSource === null || inlineStart === null
       ? []
       : internalActivities
-        .filter((activity) => activity.sourceOffset - block.startOffset <= inlineSource.length)
+        .filter((activity) => activity.sourceOffset >= inlineStart
+          && activity.sourceOffset - inlineStart <= inlineSource.length)
         .map((activity) => ({
           id: activity.id,
-          offset: activity.sourceOffset - block.startOffset,
+          offset: activity.sourceOffset - inlineStart,
         }));
     const markerPlan = markers.length === internalActivities.length && markers.length > 0
-      && inlineSource!.length <= MAX_INLINE_PARAGRAPH_CHARS
+      && inlineSource !== null && inlineStart !== null
+      && inlineSource.length <= MAX_INLINE_PARAGRAPH_CHARS
       && markers.length <= MAX_INLINE_MARKERS_PER_PARAGRAPH
-      ? planInlineActivityMarkers(inlineSource!, markers, document.env, {
+      ? planInlineActivityMarkers(inlineSource, markers, document.env, {
         streaming: streamingBlock,
       })
       : null;
 
-    if (markerPlan) {
+    if (markerPlan && inlineStart !== null) {
+      pushMarkdownNode(markdownNodes, narrative, block.startOffset, inlineStart, "");
       for (const fragment of markerPlan.fragments) {
         pushMarkdownNode(
           markdownNodes,
           narrative,
-          block.startOffset + fragment.sourceRange[0],
-          block.startOffset + fragment.sourceRange[1],
+          inlineStart + fragment.sourceRange[0],
+          inlineStart + fragment.sourceRange[1],
           fragment.html,
+          fragment.copyText,
         );
       }
-      const inlineEnd = block.startOffset + inlineSource!.length;
+      const inlineEnd = inlineStart + inlineSource!.length;
       pushMarkdownNode(markdownNodes, narrative, inlineEnd, block.endOffset, "");
       for (const activity of internalActivities) {
         candidates.set(activity.id, {

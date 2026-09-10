@@ -175,6 +175,7 @@ export function deriveTurnPresentation(
         sourceRange: [0, timeline.narrative.length],
         source: timeline.narrative,
         html,
+        copyText: timeline.narrative,
         isLatest: options.streaming === true && latestVisibleIsText,
       }
       : null;
@@ -292,7 +293,7 @@ export function extractCollapsedTraceSummary(
 ): CollapsedTraceSummary {
   const presentation = deriveTurnPresentation(parts, options);
   return {
-    finalReplyText: presentation.finalReplyNodes.map((node) => node.source).join(""),
+    finalReplyText: presentation.finalReplyNodes.map((node) => node.copyText).join(""),
     toolCount: presentation.toolCount,
     thoughtCount: presentation.thoughtCount,
     presentation,

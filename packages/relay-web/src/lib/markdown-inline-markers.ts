@@ -19,6 +19,13 @@ export interface InlineMarkdownFragment {
   sourceRange: [number, number];
   source: string;
   html: string;
+  /**
+   * Standalone copy representation derived from the fragment's own inline
+   * tokens (text/code content, breaks as newlines, markup delimiters dropped),
+   * so copying a fragment cut out of an inline construct never ships a
+   * dangling `**`, backtick, or link destination.
+   */
+  copyText: string;
 }
 
 export interface InlineMarkerPlan {
@@ -199,6 +206,22 @@ function hasRenderableContent(tokens: readonly Token[]): boolean {
   );
 }
 
+function fragmentCopyText(tokens: readonly Token[]): string {
+  // Tokens here are the fragment's own inline stream (already synthetic-closed
+  // and reopened by splitAndRender): text/code content is user-visible,
+  // softbreaks/hardbreaks are line breaks, everything else (strong/link/code
+  // delimiters, markers) is markup, not copyable content.
+  const parts: string[] = [];
+  for (const token of tokens) {
+    if (token.type === "text" || token.type === "code_inline") {
+      parts.push(token.content);
+    } else if (token.type === "softbreak" || token.type === "hardbreak") {
+      parts.push("\n");
+    }
+  }
+  return parts.join("");
+}
+
 function splitAndRender(
   source: string,
   tokens: readonly Token[],
@@ -220,6 +243,7 @@ function splitAndRender(
       html: hasRenderableContent(fragmentTokens)
         ? renderMarkdownInlineFragment(fragmentTokens, env)
         : "",
+      copyText: fragmentCopyText(fragmentTokens),
     });
   };
 

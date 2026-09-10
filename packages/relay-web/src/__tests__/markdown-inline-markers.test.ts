@@ -21,6 +21,10 @@ describe("planInlineActivityMarkers", () => {
     ]);
     expect(plan?.fragments[0]!.html).toContain("<strong>carefully </strong>");
     expect(plan?.fragments[1]!.html).toContain("<strong>now</strong> done");
+    expect(plan?.fragments.map((fragment) => fragment.copyText)).toEqual([
+      "Working carefully ",
+      "now done",
+    ]);
   });
 
   it("preserves markers while remend heals an incomplete streaming span", () => {

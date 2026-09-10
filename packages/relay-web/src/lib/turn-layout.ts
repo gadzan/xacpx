@@ -37,6 +37,13 @@ export interface MarkdownLayoutNode {
   sourceRange: [number, number];
   source: string;
   html: string;
+  /**
+   * Standalone copy representation. `source` stays the canonical raw slice for
+   * geometry/debug/reconstruction; this field is what the clipboard should get
+   * so a fragment cut out of the middle of an inline construct never ships a
+   * dangling `**`, backtick, or link destination.
+   */
+  copyText: string;
   isLatest: boolean;
 }
 
@@ -125,11 +132,15 @@ function sliceEmptyMarkdownNode(
 ): MarkdownLayoutNode {
   const relativeStart = start - node.sourceRange[0];
   const relativeEnd = end - node.sourceRange[0];
+  // Empty-HTML whitespace splits carry no rendered content, so slicing the raw
+  // source slice is exact here; copyText only diverges on marker-aware fragments
+  // which already sit on node boundaries and never enter this path with content.
   return {
     ...node,
     key: `markdown:${start}:${end}`,
     sourceRange: [start, end],
     source: node.source.slice(relativeStart, relativeEnd),
+    copyText: node.copyText.slice(relativeStart, relativeEnd),
   };
 }
 
@@ -188,6 +199,7 @@ export function planTurnLayout(
       previous.key = `markdown:${previous.sourceRange[0]}:${node.sourceRange[1]}`;
       previous.sourceRange = [previous.sourceRange[0], node.sourceRange[1]];
       previous.source += node.source;
+      previous.copyText += node.copyText;
       previous.html += node.html;
       previous.isLatest ||= node.isLatest;
       return;

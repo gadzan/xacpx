@@ -90,6 +90,14 @@ export interface TopLevelBlockInfo {
   endOffset: number;
   source: string;
   inlineSource: string | null;
+  /**
+   * Raw-narrative offset where `inlineSource` begins, or null when it cannot be
+   * proven. markdown-it derives paragraph inline content via `asciiTrim` (plus
+   * at most an indent-strip on continuation lines), so `inlineSource` is NOT in
+   * general a view of `source` at a raw offset. Marker planning must only use
+   * this proven projection; anything else stays atomic.
+   */
+  inlineStartOffset: number | null;
   tokens: Token[];
 }
 
@@ -97,6 +105,42 @@ export interface MarkdownDocumentAnalysis {
   boundaries: number[];
   blocks: TopLevelBlockInfo[];
   env: Record<string, unknown>;
+}
+
+/**
+ * Prove the raw-narrative projection of a top-level paragraph's inline content.
+ * markdown-it builds paragraph inline content with `getLines(...)` (which strips
+ * at most the block indent, never content) followed by a leading/trailing ASCII
+ * trim, so the proof is exact: find the largest leading run and smallest trailing
+ * run of ASCII-trimmable characters whose removal reproduces `inlineSource`, then
+ * verify the middle slice byte-for-byte. Returns the raw start offset of the
+ * inline content, or null when no such projection exists (indented-code-looking
+ * blocks, list/quote/heading wrappers, tabs expanded by getLines, ...). Callers
+ * must treat null as "marker path unprovable, stay atomic".
+ */
+export function locateInlineProjection(
+  source: string,
+  startOffset: number,
+  inlineSource: string,
+): number | null {
+  if (inlineSource.length === 0) return null;
+  // markdown-it trims only ASCII space/tab/LF/CR at block edges; anything else
+  // (unicode spaces, content) must match byte-for-byte below.
+  let leading = 0;
+  while (leading < source.length) {
+    const code = source.charCodeAt(leading)!;
+    if (code !== 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) break;
+    leading += 1;
+  }
+  let trailing = 0;
+  while (trailing < source.length - leading) {
+    const code = source.charCodeAt(source.length - 1 - trailing)!;
+    if (code !== 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) break;
+    trailing += 1;
+  }
+  const candidate = source.slice(leading, source.length - trailing);
+  if (candidate !== inlineSource) return null;
+  return startOffset + leading;
 }
 
 /** Parse a Markdown document once and retain all top-level block ranges plus the
@@ -125,16 +169,22 @@ export function analyzeMarkdownDocument(
   const blocks = topLevelEntries.map(({ token, tokenIndex }, index): TopLevelBlockInfo => {
     const startOffset = lineStarts[token.map![0]] ?? 0;
     const endOffset = lineStarts[token.map![1]] ?? text.length;
+    const blockSource = text.slice(startOffset, endOffset);
     const blockTokens = tokens.slice(
       tokenIndex,
       topLevelEntries[index + 1]?.tokenIndex ?? tokens.length,
     );
+    const inlineSource = blockTokens.find((blockToken) => blockToken.type === "inline")?.content ?? null;
+    const inlineStartOffset = token.type === "paragraph_open" && inlineSource !== null
+      ? locateInlineProjection(blockSource, startOffset, inlineSource)
+      : null;
     return {
       type: token.type,
       startOffset,
       endOffset,
-      source: text.slice(startOffset, endOffset),
-      inlineSource: blockTokens.find((blockToken) => blockToken.type === "inline")?.content ?? null,
+      source: blockSource,
+      inlineSource,
+      inlineStartOffset,
       tokens: blockTokens,
     };
   });
@@ -158,7 +208,21 @@ export function renderMarkdownTokens(
 
 /** Render markdown to sanitized, XSS-safe HTML. */
 export function renderMarkdown(text: string, options: RenderMarkdownOptions = {}): string {
+  return renderMarkdownWithEnv(text, options, {});
+}
+
+/**
+ * Render markdown reusing a previously parsed document env, so reference-style
+ * links keep resolving even when preprocessing rewrites the block source and
+ * forces a standalone reparse. The env is shallow-copied: definitions already
+ * collected by the full document parse win over anything the reparse sees.
+ */
+export function renderMarkdownWithEnv(
+  text: string,
+  options: RenderMarkdownOptions = {},
+  env: Record<string, unknown> = {},
+): string {
   const source = preprocessMarkdownSource(text, options);
-  const rawHtml = md.render(source);
+  const rawHtml = md.render(source, { ...env });
   return DOMPurify.sanitize(rawHtml);
 }
