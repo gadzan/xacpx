@@ -84,6 +84,79 @@ export function renderMarkdownInlineFragment(
   return DOMPurify.sanitize(`<p>${inner}</p>`);
 }
 
+/**
+ * Plaintext projection of already-parsed Markdown tokens: the single Copy
+ * contract for every layout node. Text and inline code contribute their
+ * visible content, fenced/indented code contributes its source, images
+ * contribute their alt text (falling back to the URL when alt is empty, so a
+ * visible image never copies as nothing), links contribute their label (never
+ * the destination), and soft/hard breaks become newlines. Table cells are
+ * separated by spaces and rows by newlines; paragraphs and headings are
+ * separated by blank lines. Block containers contribute their inline
+ * children; everything else — emphasis/link delimiters, fences metadata,
+ * thematic breaks — contributes nothing. Reference definitions are invisible
+ * by construction: md.parse drops them from the token stream, so they can
+ * never leak into the clipboard.
+ */
+export function markdownTokensToPlainText(tokens: readonly Token[]): string {
+  const parts: string[] = [];
+  const visit = (token: Token): void => {
+    switch (token.type) {
+      case "text":
+      case "code_inline":
+        parts.push(token.content);
+        return;
+      case "softbreak":
+      case "hardbreak":
+        parts.push("\n");
+        return;
+      case "image": {
+        const alt = token.children?.map((child) => child.content).join("") ?? token.content;
+        parts.push(alt || token.attrs?.find(([name]) => name === "src")?.[1] || "");
+        return;
+      }
+      case "fence":
+      case "code_block":
+      case "html_block":
+        parts.push(token.content);
+        return;
+      case "th_close":
+      case "td_close":
+        parts.push(" ");
+        return;
+      case "tr_close":
+        parts.push("\n");
+        return;
+      case "paragraph_close":
+      case "heading_close":
+        parts.push("\n\n");
+        return;
+      default:
+        if (token.children) {
+          for (const child of token.children) visit(child);
+        }
+    }
+  };
+  for (const token of tokens) visit(token);
+  return parts.join("").replace(/[ \t]+\n/g, "\n");
+}
+
+/**
+ * Plaintext projection of a Markdown source string through the exact
+ * preprocessing used for rendering, so Copy always describes what the healed
+ * HTML shows rather than the raw pre-heal source. The env is shallow-copied
+ * so document reference definitions resolve exactly as in the display parse.
+ */
+export function markdownSourceToPlainText(
+  text: string,
+  options: RenderMarkdownOptions = {},
+  env: Record<string, unknown> = {},
+): string {
+  const source = preprocessMarkdownSource(text, options);
+  if (!source.trim()) return "";
+  return markdownTokensToPlainText(md.parse(source, { ...env }));
+}
+
 export interface TopLevelBlockInfo {
   type: string;
   startOffset: number;

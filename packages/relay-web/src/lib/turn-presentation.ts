@@ -1,5 +1,5 @@
 import type { PeerMessageHistoryEntry, ToolStepDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
-import { renderMarkdown } from "./render-markdown";
+import { markdownSourceToPlainText, renderMarkdown } from "./render-markdown";
 import {
   planTurnLayout,
   type MarkdownLayoutNode,
@@ -175,7 +175,11 @@ export function deriveTurnPresentation(
         sourceRange: [0, timeline.narrative.length],
         source: timeline.narrative,
         html,
-        copyText: timeline.narrative,
+        copyText: html.trim()
+          ? markdownSourceToPlainText(timeline.narrative, {
+            streaming: options.streaming === true && latestVisibleIsText,
+          }).trim()
+          : "",
         isLatest: options.streaming === true && latestVisibleIsText,
       }
       : null;

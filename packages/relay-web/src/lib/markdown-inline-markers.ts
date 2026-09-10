@@ -1,5 +1,6 @@
 import type Token from "markdown-it/lib/token.mjs";
 import {
+  markdownTokensToPlainText,
   parseMarkdownInline,
   preprocessMarkdownSource,
   renderMarkdownInlineFragment,
@@ -92,7 +93,6 @@ function isInsideHtmlLikeSyntax(source: string, offset: number): boolean {
   const close = source.lastIndexOf(">", Math.max(0, offset - 1));
   return open > close && source.indexOf(">", offset) >= 0;
 }
-
 function markerToken(token: Token, marker: EncodedMarker): Token {
   return cloneToken(token, {
     type: "turn_activity_marker",
@@ -111,8 +111,11 @@ function extractMarkerTokens(
   tokens: readonly Token[],
   markers: readonly EncodedMarker[],
 ): { tokens: Token[]; activityIds: string[] } {
+  // Single linear scan: every encoded marker starts with MARKER_OPEN and ends
+  // at the next MARKER_CLOSE, so one indexOf pair per occurrence finds the
+  // next candidate and a Map lookup validates it. The previous version probed
+  // every encoding at every position (O(markers) indexOf calls per hit).
   const byEncoding = new Map(markers.map((marker) => [marker.encoded, marker]));
-  const encodings = markers.map((marker) => marker.encoded);
   const result: Token[] = [];
   const activityIds: string[] = [];
 
@@ -124,24 +127,20 @@ function extractMarkerTokens(
     let cursor = 0;
     let found = false;
     while (cursor < token.content.length) {
-      let nextIndex = -1;
-      let nextEncoding = "";
-      for (const encoding of encodings) {
-        const index = token.content.indexOf(encoding, cursor);
-        if (index >= 0 && (nextIndex < 0 || index < nextIndex)) {
-          nextIndex = index;
-          nextEncoding = encoding;
-        }
-      }
-      if (nextIndex < 0) break;
+      const openIndex = token.content.indexOf(MARKER_OPEN, cursor);
+      if (openIndex < 0) break;
+      const closeIndex = token.content.indexOf(MARKER_CLOSE, openIndex + MARKER_OPEN.length);
+      if (closeIndex < 0) break;
+      const candidate = token.content.slice(openIndex, closeIndex + MARKER_CLOSE.length);
+      const marker = byEncoding.get(candidate);
+      if (!marker) break;
       found = true;
-      if (nextIndex > cursor) {
-        result.push(cloneToken(token, { content: token.content.slice(cursor, nextIndex) }));
+      if (openIndex > cursor) {
+        result.push(cloneToken(token, { content: token.content.slice(cursor, openIndex) }));
       }
-      const marker = byEncoding.get(nextEncoding)!;
       result.push(markerToken(token, marker));
       activityIds.push(marker.id);
-      cursor = nextIndex + nextEncoding.length;
+      cursor = openIndex + candidate.length;
     }
     if (!found) {
       result.push(token);
@@ -207,19 +206,9 @@ function hasRenderableContent(tokens: readonly Token[]): boolean {
 }
 
 function fragmentCopyText(tokens: readonly Token[]): string {
-  // Tokens here are the fragment's own inline stream (already synthetic-closed
-  // and reopened by splitAndRender): text/code content is user-visible,
-  // softbreaks/hardbreaks are line breaks, everything else (strong/link/code
-  // delimiters, markers) is markup, not copyable content.
-  const parts: string[] = [];
-  for (const token of tokens) {
-    if (token.type === "text" || token.type === "code_inline") {
-      parts.push(token.content);
-    } else if (token.type === "softbreak" || token.type === "hardbreak") {
-      parts.push("\n");
-    }
-  }
-  return parts.join("");
+  // Fragments reuse the single Copy contract: the fragment's own inline
+  // stream (already synthetic-closed/reopened) serialized as plaintext.
+  return markdownTokensToPlainText(tokens);
 }
 
 function splitAndRender(

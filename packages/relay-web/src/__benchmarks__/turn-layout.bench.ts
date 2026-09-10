@@ -30,4 +30,16 @@ describe("turn layout", () => {
   bench("500 marker-bearing paragraphs", () => {
     planTurnLayout(long.narrative, long.activities);
   });
+
+  bench("one dense paragraph with 256 markers", () => {
+    const words = Array.from({ length: 257 }, (_, index) => `word${index}`);
+    const narrative = `${words.join(" ")} end`;
+    let sourceOffset = 0;
+    const activities: LayoutActivityGeometry[] = [];
+    for (let index = 0; index < 256; index += 1) {
+      sourceOffset += words[index]!.length + 1;
+      activities.push({ id: `tool:${index}`, wireIndex: index, sourceOffset });
+    }
+    planTurnLayout(narrative, activities);
+  });
 });

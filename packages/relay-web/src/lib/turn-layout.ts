@@ -61,13 +61,28 @@ export interface TurnLayoutPlan {
   activityPlacements: Map<string, ActivityPlacement>;
 }
 
+export interface TurnLayoutBlockFingerprint {
+  source: string;
+  activityIds: string;
+  streaming: boolean;
+  references: string;
+}
+
+export interface TurnLayoutBlockCacheEntry {
+  fingerprint: TurnLayoutBlockFingerprint;
+  baseStart: number;
+  nodes: MarkdownLayoutNode[];
+  candidates: Array<[string, LayoutSlotCandidate]>;
+}
+
 export interface TurnLayoutGeometryCache {
   key: string | null;
   plan: TurnLayoutPlan | null;
+  blocks: Map<string, TurnLayoutBlockCacheEntry>;
 }
 
 export function createTurnLayoutGeometryCache(): TurnLayoutGeometryCache {
-  return { key: null, plan: null };
+  return { key: null, plan: null, blocks: new Map() };
 }
 
 function layoutGeometryKey(
@@ -184,7 +199,7 @@ export function planTurnLayout(
 ): TurnLayoutPlan {
   const cacheKey = cache ? layoutGeometryKey(narrative, activities, options) : null;
   if (cache && cache.key === cacheKey && cache.plan) return cache.plan;
-  const markdown = deriveMarkdownLayout(narrative, activities, options);
+  const markdown = deriveMarkdownLayout(narrative, activities, options, cache?.blocks);
   const activityPlacements = placeActivitiesMonotonically(
     activities,
     (activity) => markdown.candidates.get(activity.id)!,

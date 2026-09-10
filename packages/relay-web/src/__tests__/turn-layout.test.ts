@@ -98,6 +98,27 @@ describe("planTurnLayout", () => {
     expect(changed).not.toBe(first);
   });
 
+  it("reuses unchanged leading blocks when a streaming tail grows", () => {
+    const cache = createTurnLayoutGeometryCache();
+    const head = "settled paragraph one\n\nsettled paragraph two\n\n";
+    const firstHtml = (narrative: string) =>
+      planTurnLayout(narrative, [], { streaming: true, latestVisibleIsText: true }, cache).nodes
+        .filter((node) => node.type === "markdown")
+        .map((node) => node.html)
+        .join("");
+    const before = firstHtml(`${head}tail one`);
+    const settledKeys = [...cache.blocks.keys()].filter((key) => key !== "block:46:54");
+    const settledFingerprints = settledKeys.map((key) => cache.blocks.get(key)!.fingerprint);
+    const after = firstHtml(`${head}tail one plus more`);
+
+    expect(after).toContain(before.split("</p>")[0]!);
+    for (const key of settledKeys) {
+      expect(cache.blocks.get(key)!.fingerprint).toEqual(
+        settledFingerprints[settledKeys.indexOf(key)]!,
+      );
+    }
+  });
+
   it("materializes marker-aware paragraph fragments in source order", () => {
     const narrative = "Working **carefully now** done";
     const offset = "Working **carefully ".length;

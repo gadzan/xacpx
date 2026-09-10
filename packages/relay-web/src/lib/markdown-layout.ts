@@ -2,6 +2,8 @@ import { planInlineActivityMarkers } from "./markdown-inline-markers";
 import { normalizeMarkdownTables } from "./normalize-markdown";
 import {
   analyzeMarkdownDocument,
+  markdownSourceToPlainText,
+  markdownTokensToPlainText,
   preprocessMarkdownSource,
   renderMarkdownTokens,
   renderMarkdownWithEnv,
@@ -12,8 +14,9 @@ import type {
   LayoutActivityGeometry,
   LayoutSlotCandidate,
   MarkdownLayoutNode,
+  TurnLayoutBlockCacheEntry,
+  TurnLayoutBlockFingerprint,
 } from "./turn-layout";
-
 export interface MarkdownLayoutOptions extends RenderMarkdownOptions {
   latestVisibleIsText?: boolean;
 }
@@ -23,6 +26,25 @@ export interface MarkdownLayoutGeometry {
   candidates: Map<string, LayoutSlotCandidate>;
 }
 
+/**
+ * Fingerprint of the document-wide reference universe: reference definitions
+ * live outside any single block but change what every link block renders, so
+ * a block cache entry is only reusable while this fingerprint is unchanged.
+ */
+export function referenceEnvFingerprint(env: Record<string, unknown>): string {
+  const references = env["references"];
+  if (!references || typeof references !== "object") return "";
+  const table = references as Record<string, { href?: unknown; title?: unknown }>;
+  return Object.keys(table).sort()
+    .map((label) => {
+      const entry = table[label];
+      const href = typeof entry?.href === "string" ? entry.href : "";
+      const title = typeof entry?.title === "string" ? entry.title : "";
+      return `${label}=${href}#${title}`;
+    })
+    .join("|");
+}
+
 const MAX_INLINE_PARAGRAPH_CHARS = 50_000;
 const MAX_INLINE_MARKERS_PER_PARAGRAPH = 256;
 
@@ -30,11 +52,21 @@ function renderAtomicBlock(
   block: TopLevelBlockInfo,
   env: Record<string, unknown>,
   streaming: boolean,
-): string {
+): { html: string; copyText: string } {
   if (preprocessMarkdownSource(block.source, { streaming }) === block.source) {
-    return renderMarkdownTokens(block.tokens, env);
+    return {
+      html: renderMarkdownTokens(block.tokens, env),
+      copyText: markdownTokensToPlainText(block.tokens),
+    };
   }
-  return renderMarkdownWithEnv(block.source, { streaming }, env);
+  // A preprocessing rewrite heals display (remend/table fix) through a
+  // standalone reparse, and Copy must describe the healed output — not the
+  // raw pre-heal tokens. Reference definitions still resolve from the full
+  // document env, never from the standalone block alone.
+  return {
+    html: renderMarkdownWithEnv(block.source, { streaming }, env),
+    copyText: markdownSourceToPlainText(block.source, { streaming }, env).trim(),
+  };
 }
 
 function pushMarkdownNode(
@@ -43,7 +75,7 @@ function pushMarkdownNode(
   start: number,
   end: number,
   html: string,
-  copyText?: string,
+  copyText: string,
 ): void {
   if (end <= start) return;
   const source = narrative.slice(start, end);
@@ -53,11 +85,104 @@ function pushMarkdownNode(
     sourceRange: [start, end],
     source,
     html,
-    copyText: copyText ?? source,
+    copyText,
     isLatest: false,
   });
 }
 
+interface BlockRenderInput {
+  block: TopLevelBlockInfo;
+  boundary: number;
+  internalActivities: readonly LayoutActivityGeometry[];
+  streamingBlock: boolean;
+}
+
+/**
+ * Render one top-level block in isolation: the unit of work the streaming
+ * cache reuses. Pure in its inputs — same block source, same relative
+ * activity geometry, same streaming flag, same reference fingerprint — so a
+ * cache hit reproduces exactly what a fresh render would. The inter-block gap
+ * prefix stays with the caller: it depends on cursor position, not the block.
+ */
+function renderLayoutBlock(
+  narrative: string,
+  documentEnv: Record<string, unknown>,
+  input: BlockRenderInput,
+): { nodes: MarkdownLayoutNode[]; candidates: Array<[string, LayoutSlotCandidate]> } {
+  const nodes: MarkdownLayoutNode[] = [];
+  const candidates: Array<[string, LayoutSlotCandidate]> = [];
+  const { block, boundary, internalActivities, streamingBlock } = input;
+  const normalized = normalizeMarkdownTables(block.source) !== block.source;
+  // The marker planner only understands proven inline coordinates: an
+  // unprovable projection (null) or any activity in the trimmed edge gap
+  // stays atomic instead of guessing a coordinate.
+  const inlineSource = block.type === "paragraph_open" && !normalized
+    && block.inlineSource !== null
+    && block.inlineStartOffset !== null
+    ? block.inlineSource
+    : null;
+  const inlineStart = inlineSource === null ? null : block.inlineStartOffset;
+  const markers = inlineSource === null || inlineStart === null
+    ? []
+    : internalActivities
+      .filter((activity) => activity.sourceOffset >= inlineStart
+        && activity.sourceOffset - inlineStart <= inlineSource.length)
+      .map((activity) => ({
+        id: activity.id,
+        offset: activity.sourceOffset - inlineStart,
+      }));
+  const markerPlan = markers.length === internalActivities.length && markers.length > 0
+    && inlineSource !== null && inlineStart !== null
+    && inlineSource.length <= MAX_INLINE_PARAGRAPH_CHARS
+    && markers.length <= MAX_INLINE_MARKERS_PER_PARAGRAPH
+    ? planInlineActivityMarkers(inlineSource, markers, documentEnv, {
+      streaming: streamingBlock,
+    })
+    : null;
+
+  if (markerPlan && inlineStart !== null) {
+    pushMarkdownNode(nodes, narrative, block.startOffset, inlineStart, "", "");
+    for (const fragment of markerPlan.fragments) {
+      pushMarkdownNode(
+        nodes,
+        narrative,
+        inlineStart + fragment.sourceRange[0],
+        inlineStart + fragment.sourceRange[1],
+        fragment.html,
+        fragment.copyText,
+      );
+    }
+    const inlineEnd = inlineStart + inlineSource!.length;
+    pushMarkdownNode(nodes, narrative, inlineEnd, block.endOffset, "", "");
+    for (const activity of internalActivities) {
+      candidates.push([activity.id, {
+        sourceOffset: activity.sourceOffset,
+        kind: "exact-inline",
+        reason: "exact",
+      }]);
+    }
+    return { nodes, candidates };
+  }
+  const rendered = renderAtomicBlock(block, documentEnv, streamingBlock);
+  pushMarkdownNode(
+    nodes,
+    narrative,
+    block.startOffset,
+    block.endOffset,
+    rendered.html,
+    rendered.copyText,
+  );
+  for (const activity of internalActivities) {
+    candidates.push([activity.id, {
+      sourceOffset: boundary,
+      kind: "block-end",
+      reason: inlineSource !== null && !normalized
+        ? "marker-unsafe"
+        : "structural-block",
+    }]);
+  }
+  return { nodes, candidates };
+}
 /**
  * Analyze Markdown once, derive legal slots, and pre-render a complete source-range
  * partition. Only top-level paragraphs may contain exact inline activity markers;
@@ -67,8 +192,10 @@ export function deriveMarkdownLayout(
   narrative: string,
   activities: readonly LayoutActivityGeometry[],
   options: MarkdownLayoutOptions = {},
+  blockCache?: Map<string, TurnLayoutBlockCacheEntry>,
 ): MarkdownLayoutGeometry {
   const document = analyzeMarkdownDocument(narrative);
+  const references = referenceEnvFingerprint(document.env);
   const candidates = new Map<string, LayoutSlotCandidate>();
   const markdownNodes: MarkdownLayoutNode[] = [];
   const activitiesByBlock = document.blocks.map((): LayoutActivityGeometry[] => []);
@@ -99,82 +226,64 @@ export function deriveMarkdownLayout(
   }
 
   document.blocks.forEach((block, blockIndex) => {
-    pushMarkdownNode(markdownNodes, narrative, cursor, block.startOffset, "");
+    pushMarkdownNode(markdownNodes, narrative, cursor, block.startOffset, "", "");
     const internalActivities = activitiesByBlock[blockIndex]!;
     const streamingBlock = options.streaming === true
       && options.latestVisibleIsText === true
       && block.endOffset >= lastNonWhitespaceOffset;
-    const normalized = normalizeMarkdownTables(block.source) !== block.source;
-    // The marker planner only understands proven inline coordinates: an
-    // unprovable projection (null) or any activity in the trimmed edge gap
-    // stays atomic instead of guessing a coordinate.
-    const inlineSource = block.type === "paragraph_open" && !normalized
-      && block.inlineSource !== null
-      && block.inlineStartOffset !== null
-      ? block.inlineSource
-      : null;
-    const inlineStart = inlineSource === null ? null : block.inlineStartOffset;
-    const markers = inlineSource === null || inlineStart === null
-      ? []
-      : internalActivities
-        .filter((activity) => activity.sourceOffset >= inlineStart
-          && activity.sourceOffset - inlineStart <= inlineSource.length)
-        .map((activity) => ({
-          id: activity.id,
-          offset: activity.sourceOffset - inlineStart,
-        }));
-    const markerPlan = markers.length === internalActivities.length && markers.length > 0
-      && inlineSource !== null && inlineStart !== null
-      && inlineSource.length <= MAX_INLINE_PARAGRAPH_CHARS
-      && markers.length <= MAX_INLINE_MARKERS_PER_PARAGRAPH
-      ? planInlineActivityMarkers(inlineSource, markers, document.env, {
+    // Positional key: identical text at different offsets must NOT share an
+    // entry — node sourceRanges and candidate slots are absolute. Sharing
+    // only happens for the same block across frames (streaming appends).
+    const cacheKey = blockCache ? `block:${block.startOffset}:${block.endOffset}` : null;
+    const fingerprint: TurnLayoutBlockFingerprint | null = blockCache
+      ? {
+        source: block.source,
+        activityIds: internalActivities.map((activity) => `${activity.id}@${activity.sourceOffset}`).join(","),
         streaming: streamingBlock,
-      })
+        references,
+      }
       : null;
-
-    if (markerPlan && inlineStart !== null) {
-      pushMarkdownNode(markdownNodes, narrative, block.startOffset, inlineStart, "");
-      for (const fragment of markerPlan.fragments) {
-        pushMarkdownNode(
-          markdownNodes,
-          narrative,
-          inlineStart + fragment.sourceRange[0],
-          inlineStart + fragment.sourceRange[1],
-          fragment.html,
-          fragment.copyText,
-        );
-      }
-      const inlineEnd = inlineStart + inlineSource!.length;
-      pushMarkdownNode(markdownNodes, narrative, inlineEnd, block.endOffset, "");
-      for (const activity of internalActivities) {
-        candidates.set(activity.id, {
-          sourceOffset: activity.sourceOffset,
-          kind: "exact-inline",
-          reason: "exact",
+    const cached = cacheKey && fingerprint && blockCache ? blockCache.get(cacheKey) : undefined;
+    const hit = cached
+      && fingerprint
+      && cached.fingerprint.source === fingerprint.source
+      && cached.fingerprint.activityIds === fingerprint.activityIds
+      && cached.fingerprint.streaming === fingerprint.streaming
+      && cached.fingerprint.references === fingerprint.references;
+    if (hit) {
+      // Fresh copies: callers mutate isLatest on the returned nodes.
+      for (const node of cached.nodes) {
+        markdownNodes.push({
+          ...node,
+          sourceRange: [node.sourceRange[0], node.sourceRange[1]],
         });
       }
-    } else {
-      pushMarkdownNode(
-        markdownNodes,
-        narrative,
-        block.startOffset,
-        block.endOffset,
-        renderAtomicBlock(block, document.env, streamingBlock),
-      );
-      const boundary = document.boundaries[blockIndex] ?? block.endOffset;
-      for (const activity of internalActivities) {
-        candidates.set(activity.id, {
-          sourceOffset: boundary,
-          kind: "block-end",
-          reason: inlineSource !== null && !normalized
-            ? "marker-unsafe"
-            : "structural-block",
-        });
-      }
+      for (const [id, candidate] of cached.candidates) candidates.set(id, candidate);
+      cursor = block.endOffset;
+      return;
+    }
+    const rendered = renderLayoutBlock(narrative, document.env, {
+      block,
+      boundary: document.boundaries[blockIndex] ?? block.endOffset,
+      internalActivities,
+      streamingBlock,
+    });
+    for (const node of rendered.nodes) markdownNodes.push(node);
+    for (const [id, candidate] of rendered.candidates) candidates.set(id, candidate);
+    if (cacheKey && fingerprint && blockCache) {
+      blockCache.set(cacheKey, {
+        fingerprint,
+        baseStart: block.startOffset,
+        nodes: rendered.nodes.map((node) => ({
+          ...node,
+          sourceRange: [node.sourceRange[0], node.sourceRange[1]] as [number, number],
+        })),
+        candidates: rendered.candidates,
+      });
     }
     cursor = block.endOffset;
   });
-  pushMarkdownNode(markdownNodes, narrative, cursor, narrative.length, "");
+  pushMarkdownNode(markdownNodes, narrative, cursor, narrative.length, "", "");
 
   const markdownBoundaries = new Set<number>([0, narrative.length]);
   for (const node of markdownNodes) {

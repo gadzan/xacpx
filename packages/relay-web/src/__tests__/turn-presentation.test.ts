@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PeerMessageHistoryEntry, ToolStepDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
-import { deriveTurnPresentation, type TurnPresentationOptions } from "../lib/turn-presentation";
+import { deriveTurnPresentation, extractCollapsedTraceSummary, type TurnPresentationOptions } from "../lib/turn-presentation";
 import { createTurnLayoutGeometryCache } from "../lib/turn-layout";
 
 const tool = (id: string): ToolStepDto => ({
@@ -196,6 +196,31 @@ describe("deriveTurnPresentation", () => {
     expect(presentation.finalReplyNodes.map((node) => node.source).join("")).toContain("carefully**. Fixed.");
     expect(presentation.finalReplyNodes.map((node) => node.copyText).join("")).toBe("carefully. Fixed.");
     expect(presentation.finalReplyNodes.map((node) => node.copyText).join("")).not.toContain("**");
+  });
+
+  it("copies an image-only final reply as its alt text instead of nothing", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "Before " },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "![plot](https://example.com/p.png)" },
+    ];
+    const presentation = deriveTurnPresentation(parts);
+    expect(presentation.finalReplyNodes.map((node) => node.source).join(""))
+      .toBe("![plot](https://example.com/p.png)");
+    expect(presentation.finalReplyNodes.map((node) => node.copyText).join("")).toBe("plot");
+    expect(extractCollapsedTraceSummary(parts).finalReplyText).toBe("plot");
+  });
+
+  it("copies a reference link label without leaking its definition", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "See [docs][ref]" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: " now\n\n[ref]: https://example.com" },
+    ];
+    const presentation = deriveTurnPresentation(parts);
+    expect(presentation.finalReplyNodes.map((node) => node.copyText).join("")).toBe(" now");
+    expect(extractCollapsedTraceSummary(parts).finalReplyText)
+      .not.toContain("[ref]: https://example.com");
   });
 
   it("never reorders activities across streaming Markdown prefixes", () => {
