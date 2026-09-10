@@ -433,7 +433,7 @@ describe("TurnParts trace collapse", () => {
     expect(w.find('[data-test="tool-step-card"]').exists()).toBe(false);
   });
 
-  it("fails safe and shows header only when an active bold construct crosses a tool", () => {
+  it("uses the shared layout fragment when bold crosses a collapsed tool", () => {
     const parts: TurnPartDto[] = [
       { type: "text", text: "I'll inspect **this " },
       { type: "tool", step: tool("read-1") },
@@ -443,10 +443,11 @@ describe("TurnParts trace collapse", () => {
       props: { parts, collapseTrace: true, traceKey: "t:bold-crosses-tool" },
     });
     expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
-    expect(w.find('[data-test="turn-narrative"]').exists()).toBe(false);
+    const narrative = w.find('[data-test="turn-narrative"]');
+    expect(narrative.html()).toContain("<strong>carefully</strong>. Fixed.");
   });
 
-  it("fails safe and shows header only when an inline code span crosses a tool", () => {
+  it("uses the shared layout fragment when inline code crosses a collapsed tool", () => {
     const parts: TurnPartDto[] = [
       { type: "text", text: "Use `foo " },
       { type: "tool", step: tool("read-1") },
@@ -456,10 +457,11 @@ describe("TurnParts trace collapse", () => {
       props: { parts, collapseTrace: true, traceKey: "t:code-crosses-tool" },
     });
     expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
-    expect(w.find('[data-test="turn-narrative"]').exists()).toBe(false);
+    const narrative = w.find('[data-test="turn-narrative"]');
+    expect(narrative.html()).toContain("<code>bar</code> now");
   });
 
-  it("fails safe and shows header only when a markdown link label crosses a tool", () => {
+  it("uses the shared layout fragment when a link label crosses a collapsed tool", () => {
     const parts: TurnPartDto[] = [
       { type: "text", text: "See [the " },
       { type: "tool", step: tool("read-1") },
@@ -469,7 +471,9 @@ describe("TurnParts trace collapse", () => {
       props: { parts, collapseTrace: true, traceKey: "t:link-crosses-tool" },
     });
     expect(w.find('[data-test="trace-toggle"]').exists()).toBe(true);
-    expect(w.find('[data-test="turn-narrative"]').exists()).toBe(false);
+    const narrative = w.find('[data-test="turn-narrative"]');
+    expect(narrative.html()).toContain('<a href="https://example.com"');
+    expect(narrative.html()).toContain("docs</a>");
   });
 
   it("fails safe and shows header only when a tool is contained inside a heading", () => {

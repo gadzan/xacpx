@@ -15,7 +15,6 @@ import { fmtTime, fmtDateTime } from "../lib/format";
 import {
   anchoredAgentMessageIds,
   extractCollapsedTraceSummary,
-  extractFinalReplyText,
   type CollapsedTraceSummary,
 } from "../lib/turn-presentation";
 const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; loadingHistory?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null; ensureFull?: (messageId: number) => Promise<void> }>();
@@ -70,17 +69,26 @@ function traceElapsedOf(m: ChatMessage): number | null {
 
 // Cache collapsed trace metrics by message object and parts reference to prevent
 // redundant markdown parses and presentation derivations across MessageList and TurnParts.
-const traceSummaryCache = new WeakMap<ChatMessage, { parts: TurnPartDto[]; summary: CollapsedTraceSummary }>();
+const traceSummaryCache = new WeakMap<ChatMessage, {
+  parts: TurnPartDto[];
+  sentAgentMessages: Map<string, PeerMessageHistoryEntry>;
+  summary: CollapsedTraceSummary;
+}>();
 
 function traceSummaryOf(m: ChatMessage): CollapsedTraceSummary {
   const parts = m.structured?.parts;
-  if (!parts?.length) return { finalReplyText: "", toolCount: 0, thoughtCount: 0 };
+  if (!parts?.length) throw new Error("Trace summary requires structured turn parts");
+  const sentAgentMessages = sentAgentMessageById.value;
   const cached = traceSummaryCache.get(m);
-  if (cached && cached.parts === parts) return cached.summary;
+  if (
+    cached
+    && cached.parts === parts
+    && cached.sentAgentMessages === sentAgentMessages
+  ) return cached.summary;
   const summary = extractCollapsedTraceSummary(parts, {
-    sentAgentMessageById: sentAgentMessageById.value,
+    sentAgentMessageById: sentAgentMessages,
   });
-  traceSummaryCache.set(m, { parts, summary });
+  traceSummaryCache.set(m, { parts, sentAgentMessages, summary });
   return summary;
 }
 
@@ -613,9 +621,7 @@ watch(
               <div data-test="msg-content" class="space-y-2.5">
                 <TurnParts v-if="m.structured?.parts?.length" :parts="m.structured.parts" :ensure-full="ensureFullOf(m)" :sent-agent-messages="sentAgentMessageById"
                            :collapse-trace="!isFailedTurn(m) && hasTraceParts(m)" :trace-key="traceKeyOf(m)" :trace-elapsed-ms="traceElapsedOf(m)"
-                           :collapsed-reply-text="!isFailedTurn(m) && hasTraceParts(m) ? traceSummaryOf(m).finalReplyText : undefined"
-                           :collapsed-tool-count="!isFailedTurn(m) && hasTraceParts(m) ? traceSummaryOf(m).toolCount : undefined"
-                           :collapsed-thought-count="!isFailedTurn(m) && hasTraceParts(m) ? traceSummaryOf(m).thoughtCount : undefined" />
+                           :presentation="!isFailedTurn(m) && hasTraceParts(m) ? traceSummaryOf(m).presentation : undefined" />
                 <template v-else>
                   <ToolCallPanel v-if="m.structured?.toolSteps?.length" :steps="m.structured.toolSteps" :ensure-full="ensureFullOf(m)" />
                   <ReasoningPanel v-if="m.structured?.reasoning?.trim()" :reasoning="m.structured.reasoning" :default-open="false" />

@@ -235,9 +235,12 @@ describe("MessageList", () => {
 
     const turnParts = wrapper.findComponent(TurnParts);
     expect(turnParts.exists()).toBe(true);
-    expect(turnParts.props("collapsedReplyText")).toBe("Fixed. The issue was X.");
-    expect(turnParts.props("collapsedToolCount")).toBe(1);
-    expect(turnParts.props("collapsedThoughtCount")).toBe(0);
+    const presentation = turnParts.props("presentation");
+    if (!presentation) throw new Error("expected a precomputed presentation");
+    expect(presentation.finalReplyNodes.map((node: { source: string }) => node.source).join(""))
+      .toBe("Fixed. The issue was X.");
+    expect(presentation.toolCount).toBe(1);
+    expect(presentation.thoughtCount).toBe(0);
     const copy = wrapper.find('[data-test="msg-out"] [data-test="msg-actions"]').findComponent(CopyButton);
     expect(copy.exists()).toBe(true);
     expect(copy.props("text")).toBe("Fixed. The issue was X.");
@@ -378,17 +381,21 @@ describe("MessageList", () => {
     });
 
     const bubble = wrapper.find('[data-test="msg-streaming"]');
-    const narrative = bubble.find(".stream-md");
+    const narratives = bubble.findAll(".stream-md");
     const tool = bubble.find('[data-test="tool-step-header"]');
-    expect(bubble.findAll(".stream-md")).toHaveLength(1);
+    expect(narratives).toHaveLength(2);
     expect(bubble.find("table").exists()).toBe(false);
     expect(
-      narrative.element.compareDocumentPosition(tool.element)
+      narratives[0]!.element.compareDocumentPosition(tool.element)
+      & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      tool.element.compareDocumentPosition(narratives[1]!.element)
       & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
 
-  it("keeps activity anchored after a streaming paragraph while remend heals it", async () => {
+  it("keeps activity inside a streaming strong span without changing wire order", async () => {
     const incompleteParts: LiveTurn["parts"] = [
       { type: "text", text: "Working **carefully " },
       {
@@ -408,12 +415,17 @@ describe("MessageList", () => {
     });
 
     let bubble = wrapper.find('[data-test="msg-streaming"]');
-    let narrative = bubble.find(".stream-md");
+    let narratives = bubble.findAll(".stream-md");
     let tool = bubble.find('[data-test="tool-step-header"]');
-    expect(bubble.findAll(".stream-md")).toHaveLength(1);
-    expect(narrative.html()).toContain("<strong>carefully now</strong>");
+    expect(narratives).toHaveLength(2);
+    expect(narratives[0]!.html()).toContain("<strong>carefully </strong>");
+    expect(narratives[1]!.html()).toContain("<strong>now</strong>");
     expect(
-      narrative.element.compareDocumentPosition(tool.element)
+      narratives[0]!.element.compareDocumentPosition(tool.element)
+      & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      tool.element.compareDocumentPosition(narratives[1]!.element)
       & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
 
@@ -424,15 +436,20 @@ describe("MessageList", () => {
       ]),
     });
     await vi.waitFor(() => {
-      expect(wrapper.find('[data-test="msg-streaming"] .stream-md').html())
-        .toContain("<strong>carefully now</strong> done");
+      const updated = wrapper.findAll('[data-test="msg-streaming"] .stream-md');
+      expect(updated).toHaveLength(2);
+      expect(updated[0]!.html()).toContain("<strong>carefully </strong>");
+      expect(updated[1]!.html()).toContain("<strong>now</strong> done");
     });
     bubble = wrapper.find('[data-test="msg-streaming"]');
-    narrative = bubble.find(".stream-md");
+    narratives = bubble.findAll(".stream-md");
     tool = bubble.find('[data-test="tool-step-header"]');
-    expect(bubble.findAll(".stream-md")).toHaveLength(1);
     expect(
-      narrative.element.compareDocumentPosition(tool.element)
+      narratives[0]!.element.compareDocumentPosition(tool.element)
+      & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      tool.element.compareDocumentPosition(narratives[1]!.element)
       & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
@@ -994,7 +1011,7 @@ it("renders legacy persisted tool steps (no parts) in a collapsed panel", () => 
   expect(wrapper.find('[data-test="tool-row"]').exists()).toBe(false);
 });
 
-it("replays persisted activity after the Markdown block it interrupted", async () => {
+it("replays persisted activity inside marker-aware continuous prose", async () => {
   const wrapper = mount(MessageList, {
     props: {
       messages: [msg({
@@ -1014,19 +1031,25 @@ it("replays persisted activity after the Markdown block it interrupted", async (
   });
   await expandTrace(wrapper);
   const output = wrapper.find('[data-test="msg-out"]');
-  expect(output.findAll(".stream-md")).toHaveLength(1);
-  expect(output.find(".stream-md").html()).toContain("<strong>continuous prose</strong>");
+  const narratives = output.findAll(".stream-md");
+  expect(narratives).toHaveLength(2);
+  expect(narratives[0]!.html()).toContain("<strong>continuous</strong>");
+  expect(narratives[1]!.html()).toContain("<strong> prose</strong>");
   const tool = wrapper.findComponent(ToolStepCard);
   const reasoning = wrapper.findComponent({ name: "ReasoningPanel" });
   expect(tool.exists()).toBe(true);
   expect(wrapper.findComponent(ToolCallPanel).exists()).toBe(false);
   expect(reasoning.exists()).toBe(true);
   expect(
-    output.find(".stream-md").element.compareDocumentPosition(tool.element)
+    narratives[0]!.element.compareDocumentPosition(tool.element)
     & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
   expect(
     tool.element.compareDocumentPosition(reasoning.element)
+    & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(
+    reasoning.element.compareDocumentPosition(narratives[1]!.element)
     & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
 });

@@ -1,3 +1,5 @@
+import { deriveMarkdownLayout, type MarkdownLayoutOptions } from "./markdown-layout";
+
 export type LayoutSlotKind =
   | "exact-inline"
   | "block-end"
@@ -92,4 +94,114 @@ export function placeActivitiesMonotonically(
   }
 
   return placements;
+}
+
+function splitEmptyMarkdownNode(
+  node: MarkdownLayoutNode,
+  splitOffset: number,
+): [MarkdownLayoutNode, MarkdownLayoutNode] {
+  const [start, end] = node.sourceRange;
+  const relative = splitOffset - start;
+  return [
+    {
+      ...node,
+      key: `markdown:${start}:${splitOffset}`,
+      sourceRange: [start, splitOffset],
+      source: node.source.slice(0, relative),
+    },
+    {
+      ...node,
+      key: `markdown:${splitOffset}:${end}`,
+      sourceRange: [splitOffset, end],
+      source: node.source.slice(relative),
+    },
+  ];
+}
+
+function ensureSlotBoundaries(
+  markdownNodes: readonly MarkdownLayoutNode[],
+  placements: ReadonlyMap<string, ActivityPlacement>,
+): MarkdownLayoutNode[] {
+  const result = [...markdownNodes];
+  for (const placement of placements.values()) {
+    const containingIndex = result.findIndex((node) =>
+      placement.effectiveSlot > node.sourceRange[0]
+      && placement.effectiveSlot < node.sourceRange[1],
+    );
+    if (containingIndex < 0) continue;
+    const containing = result[containingIndex]!;
+    if (containing.html !== "" || containing.source.trim().length > 0) {
+      throw new Error("A legal activity slot must coincide with a Markdown node boundary");
+    }
+    result.splice(
+      containingIndex,
+      1,
+      ...splitEmptyMarkdownNode(containing, placement.effectiveSlot),
+    );
+  }
+  return result.filter((node) => node.sourceRange[1] > node.sourceRange[0]);
+}
+
+/** Build the render-safe turn layout from ordered activity geometry. */
+export function planTurnLayout(
+  narrative: string,
+  activities: readonly LayoutActivityGeometry[],
+  options: MarkdownLayoutOptions = {},
+): TurnLayoutPlan {
+  const markdown = deriveMarkdownLayout(narrative, activities, options);
+  const activityPlacements = placeActivitiesMonotonically(
+    activities,
+    (activity) => markdown.candidates.get(activity.id)!,
+  );
+  const markdownNodes = ensureSlotBoundaries(markdown.markdownNodes, activityPlacements);
+  const nodes: TurnLayoutNode[] = [];
+  let activityIndex = 0;
+
+  const pushMarkdown = (node: MarkdownLayoutNode): void => {
+    const previous = nodes[nodes.length - 1];
+    if (previous?.type === "markdown" && previous.sourceRange[1] === node.sourceRange[0]) {
+      previous.key = `markdown:${previous.sourceRange[0]}:${node.sourceRange[1]}`;
+      previous.sourceRange = [previous.sourceRange[0], node.sourceRange[1]];
+      previous.source += node.source;
+      previous.html += node.html;
+      previous.isLatest ||= node.isLatest;
+      return;
+    }
+    nodes.push({ ...node, sourceRange: [...node.sourceRange] });
+  };
+
+  const pushActivitiesAt = (slot: number): void => {
+    while (activityIndex < activities.length) {
+      const activity = activities[activityIndex]!;
+      const placement = activityPlacements.get(activity.id)!;
+      if (placement.effectiveSlot !== slot) break;
+      nodes.push({
+        type: "activity",
+        key: `activity:${activity.id}`,
+        activityId: activity.id,
+        wireIndex: activity.wireIndex,
+      });
+      activityIndex += 1;
+    }
+  };
+
+  pushActivitiesAt(0);
+  for (const markdownNode of markdownNodes) {
+    const [start, end] = markdownNode.sourceRange;
+    const nextActivity = activities[activityIndex];
+    if (nextActivity) {
+      const slot = activityPlacements.get(nextActivity.id)!.effectiveSlot;
+      if (slot > start && slot < end) {
+        throw new Error("Activity slot was not materialized as a Markdown boundary");
+      }
+    }
+    pushMarkdown(markdownNode);
+    pushActivitiesAt(end);
+  }
+  pushActivitiesAt(narrative.length);
+  if (activityIndex !== activities.length) {
+    throw new Error("Every layout activity must be materialized exactly once");
+  }
+
+  return { nodes, activityPlacements };
 }

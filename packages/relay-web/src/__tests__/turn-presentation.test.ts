@@ -11,8 +11,8 @@ const tool = (id: string): ToolStepDto => ({
 });
 
 const visibleShape = (parts: TurnPartDto[], opts?: TurnPresentationOptions) =>
-  deriveTurnPresentation(parts, opts).map((item) => {
-    if (item.type === "text") return { type: item.type, text: item.text };
+  deriveTurnPresentation(parts, opts).nodes.map((item) => {
+    if (item.type === "markdown") return { type: "text", text: item.source };
     if (item.type === "reasoning") return { type: item.type, text: item.text };
     if (item.type === "agent-message") return { type: item.type, id: item.message.messageId, anchor: item.anchorToolCallId };
     return { type: item.type, id: item.step.toolCallId };
@@ -67,29 +67,31 @@ describe("deriveTurnPresentation", () => {
     ]);
   });
 
-  it("does not split a paragraph when the suffix would become a standalone heading", () => {
+  it("interleaves without reparsing a heading-like suffix", () => {
     expect(visibleShape([
       { type: "text", text: "before " },
       { type: "tool", step: tool("read-1") },
       { type: "text", text: "# not a heading" },
     ])).toEqual([
-      { type: "text", text: "before # not a heading" },
+      { type: "text", text: "before " },
       { type: "tool", id: "read-1" },
+      { type: "text", text: "# not a heading" },
     ]);
   });
 
-  it("does not split prose when the standalone suffix would normalize into a table", () => {
+  it("interleaves without normalizing a pipe-prose suffix into a table", () => {
     expect(visibleShape([
       { type: "text", text: "Progress: " },
       { type: "tool", step: tool("read-1") },
       { type: "text", text: "| a | b |\n| 1 | 2 |" },
     ])).toEqual([
-      { type: "text", text: "Progress: | a | b |\n| 1 | 2 |" },
+      { type: "text", text: "Progress: " },
       { type: "tool", id: "read-1" },
+      { type: "text", text: "| a | b |\n| 1 | 2 |" },
     ]);
   });
 
-  it("does not split a streaming paragraph while remend still needs to heal it", () => {
+  it("keeps streaming activity exact while marker-aware remend heals the paragraph", () => {
     const incomplete: TurnPartDto[] = [
       { type: "text", text: "Working **carefully " },
       { type: "tool", step: tool("read-1") },
@@ -100,25 +102,27 @@ describe("deriveTurnPresentation", () => {
       { type: "text", text: "now** done" },
     ];
     const expectedIncomplete = [
-      { type: "text", text: "Working **carefully now" },
+      { type: "text", text: "Working **carefully " },
       { type: "tool", id: "read-1" },
+      { type: "text", text: "now" },
     ];
     const expectedCompleted = [
-      { type: "text", text: "Working **carefully now** done" },
+      { type: "text", text: "Working **carefully " },
       { type: "tool", id: "read-1" },
+      { type: "text", text: "now** done" },
     ];
 
     expect(visibleShape(incomplete, { streaming: true })).toEqual(expectedIncomplete);
     expect(visibleShape(completed, { streaming: true })).toEqual(expectedCompleted);
   });
 
-  it("does not split a paragraph that depends on a later reference definition", () => {
+  it("renders a reference-dependent paragraph from the shared document env", () => {
     expect(visibleShape([
       { type: "text", text: "See [docs][ref]" },
       { type: "tool", step: tool("read-1") },
       { type: "text", text: "\n\n[ref]: https://example.com" },
     ])).toEqual([
-      { type: "text", text: "See [docs][ref]\n\n[ref]: https://example.com" },
+      { type: "text", text: "See [docs][ref]" },
       { type: "tool", id: "read-1" },
     ]);
   });
@@ -189,7 +193,7 @@ describe("deriveTurnPresentation", () => {
       { type: "text", text: "after" },
     ])).toEqual([
       { type: "tool", id: "read-1" },
-      { type: "text", text: " \nafter" },
+      { type: "text", text: "after" },
     ]);
   });
 
@@ -241,8 +245,8 @@ describe("deriveTurnPresentation", () => {
         { type: "text", text: "after" },
       ],
       { sentAgentMessageById: new Map([["m1", entry]]) },
-    );
-    expect(items.map((item) => item.type)).toEqual(["text", "tool", "agent-message", "text"]);
+    ).nodes;
+    expect(items.map((item) => item.type)).toEqual(["markdown", "tool", "agent-message", "markdown"]);
     const card = items[2]!;
     expect(card.type).toBe("agent-message");
     if (card.type === "agent-message") {

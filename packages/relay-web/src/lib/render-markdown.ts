@@ -89,6 +89,8 @@ export interface TopLevelBlockInfo {
   startOffset: number;
   endOffset: number;
   source: string;
+  inlineSource: string | null;
+  tokens: Token[];
 }
 
 export interface MarkdownDocumentAnalysis {
@@ -111,26 +113,33 @@ export function analyzeMarkdownDocument(
     if (text[i] === "\n") lineStarts.push(i + 1);
   }
 
-  const topLevelTokens = md
-    .parse(text, env)
-    .filter((token) => token.level === 0 && token.map !== null)
-    .filter((token, index, all) =>
+  const tokens = md.parse(text, env);
+  const topLevelEntries = tokens
+    .map((token, tokenIndex) => ({ token, tokenIndex }))
+    .filter(({ token }) => token.level === 0 && token.map !== null)
+    .filter(({ token }, index, all) =>
       index === 0
-      || token.map![0] !== all[index - 1]!.map![0]
-      || token.map![1] !== all[index - 1]!.map![1],
+      || token.map![0] !== all[index - 1]!.token.map![0]
+      || token.map![1] !== all[index - 1]!.token.map![1],
     );
-  const blocks = topLevelTokens.map((token): TopLevelBlockInfo => {
+  const blocks = topLevelEntries.map(({ token, tokenIndex }, index): TopLevelBlockInfo => {
     const startOffset = lineStarts[token.map![0]] ?? 0;
     const endOffset = lineStarts[token.map![1]] ?? text.length;
+    const blockTokens = tokens.slice(
+      tokenIndex,
+      topLevelEntries[index + 1]?.tokenIndex ?? tokens.length,
+    );
     return {
       type: token.type,
       startOffset,
       endOffset,
       source: text.slice(startOffset, endOffset),
+      inlineSource: blockTokens.find((blockToken) => blockToken.type === "inline")?.content ?? null,
+      tokens: blockTokens,
     };
   });
   const boundaries = blocks.length === 0 ? [text.length] : blocks.map((_, index) => {
-    const nextStartLine = topLevelTokens[index + 1]?.map![0];
+    const nextStartLine = topLevelEntries[index + 1]?.token.map![0];
     return nextStartLine === undefined
       ? text.length
       : (lineStarts[nextStartLine] ?? text.length);
@@ -139,170 +148,12 @@ export function analyzeMarkdownDocument(
   return { boundaries, blocks, env };
 }
 
-/**
- * Return source offsets where a top-level Markdown block can safely hand over to
- * non-Markdown turn activity. Parsing the raw source is intentionally conservative:
- * normalization may recognize more constructs, but it must never create an unsafe
- * split inside the original source.
- */
-export function markdownBlockBoundaries(text: string): number[] {
-  return analyzeMarkdownDocument(text).boundaries;
-}
-
-/** Return the top-level block enclosing `offset`, including its source slice.
- *  Accepts an optional markdown-it `env` object that collects document-level
- *  metadata (such as reference link definitions) during the parse.
- */
-export function topLevelBlockAt(
-  text: string,
-  offset: number,
+/** Render already-parsed block tokens in their original document environment. */
+export function renderMarkdownTokens(
+  tokens: Token[],
   env: Record<string, unknown> = {},
-): TopLevelBlockInfo | null {
-  return analyzeMarkdownDocument(text, env).blocks.find(
-    (block) => offset >= block.startOffset && offset <= block.endOffset,
-  ) ?? null;
-}
-
-interface SemanticInlineToken {
-  type: string;
-  content: string;
-  attrs: string;
-  info: string;
-}
-
-function canonicalInlineTokens(source: string, env: Record<string, unknown>): SemanticInlineToken[] {
-  const tokens = md.parseInline(source, { ...env });
-  const inline = tokens.find((t) => t.type === "inline");
-  if (!inline || !inline.children) return [];
-
-  const result: SemanticInlineToken[] = [];
-  for (const c of inline.children) {
-    if (c.type === "softbreak") {
-      if (result.length > 0 && result[result.length - 1]!.type === "text") {
-        result[result.length - 1]!.content += "\n";
-      } else {
-        result.push({ type: "text", content: "\n", attrs: "", info: "" });
-      }
-      continue;
-    }
-    if (c.type === "text") {
-      if (result.length > 0 && result[result.length - 1]!.type === "text") {
-        result[result.length - 1]!.content += c.content;
-      } else {
-        result.push({ type: "text", content: c.content, attrs: "", info: "" });
-      }
-      continue;
-    }
-    result.push({
-      type: c.type,
-      content: c.content || "",
-      attrs: c.attrs ? JSON.stringify(c.attrs) : "",
-      info: c.info || "",
-    });
-  }
-  return result;
-}
-
-function mergeTokenStreams(a: SemanticInlineToken[], b: SemanticInlineToken[]): SemanticInlineToken[] {
-  if (a.length === 0) return b;
-  if (b.length === 0) return a;
-  const merged = [...a];
-  const lastA = merged[merged.length - 1]!;
-  const firstB = b[0]!;
-  if (lastA.type === "text" && firstB.type === "text") {
-    merged[merged.length - 1] = {
-      ...lastA,
-      content: lastA.content + firstB.content,
-    };
-    merged.push(...b.slice(1));
-  } else {
-    merged.push(...b);
-  }
-  return merged;
-}
-
-function areSemanticTokensEqual(a: SemanticInlineToken[], b: SemanticInlineToken[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i += 1) {
-    if (
-      a[i]!.type !== b[i]!.type ||
-      a[i]!.content !== b[i]!.content ||
-      a[i]!.attrs !== b[i]!.attrs ||
-      a[i]!.info !== b[i]!.info
-    ) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function isStandaloneParagraph(source: string): boolean {
-  if (!source.trim()) return true;
-  const blocks = md
-    .parse(source, {})
-    .filter((token) => token.level === 0 && token.map !== null);
-  return blocks.length === 1 && blocks[0]!.type === "paragraph_open";
-}
-
-function preprocessingPreservesSource(source: string, streaming: boolean): boolean {
-  if (preprocessMarkdownSource(source) !== source) return false;
-  return !streaming || preprocessMarkdownSource(source, { streaming: true }) === source;
-}
-
-/** Check whether `offsetInBlock` inside a paragraph block lands at a safe top-level
- *  text position rather than severing an active inline construct (code span,
- *  emphasis, strong, link label/delimiter, reference link, HTML entity, hardbreak, etc.).
- *  Compares the canonical inline semantic tokens of the full block against the concatenated
- *  tokens of the prefix and suffix parsed independently within the same document env.
- *  Adjacent text tokens across the slice boundary are merged so normal prose splits match;
- *  if any inline construct or entity was severed, their token streams diverge and this returns false.
- */
-export function isSafeInlineParagraphOffset(
-  paragraphSource: string,
-  offsetInBlock: number,
-  env: Record<string, unknown> = {},
-): boolean {
-  if (offsetInBlock < 0 || offsetInBlock > paragraphSource.length) return false;
-  const prefix = paragraphSource.slice(0, offsetInBlock);
-  const suffix = paragraphSource.slice(offsetInBlock);
-
-  const fullTokens = canonicalInlineTokens(paragraphSource, env);
-  const prefixTokens = canonicalInlineTokens(prefix, env);
-  const suffixTokens = canonicalInlineTokens(suffix, env);
-  const combinedTokens = mergeTokenStreams(prefixTokens, suffixTokens);
-
-  return areSemanticTokensEqual(fullTokens, combinedTokens);
-}
-
-/** Check a paragraph split as it will actually render in TurnParts: preprocessing
- * must preserve the full paragraph and both standalone fragments, the full paragraph
- * resolves against its document env, and the fragments parse with isolated env objects.
- * This rejects preprocessing-created block semantics and document-context dependencies
- * while still allowing ordinary prose in an earlier block to interleave with activity.
- */
-export function isSafeStandaloneParagraphOffset(
-  paragraphSource: string,
-  offsetInBlock: number,
-  documentEnv: Record<string, unknown> = {},
-  options: RenderMarkdownOptions = {},
-): boolean {
-  if (offsetInBlock < 0 || offsetInBlock > paragraphSource.length) return false;
-  const prefix = paragraphSource.slice(0, offsetInBlock);
-  const suffix = paragraphSource.slice(offsetInBlock);
-  const streaming = options.streaming === true;
-  if (
-    !preprocessingPreservesSource(paragraphSource, streaming)
-    || !preprocessingPreservesSource(prefix, streaming)
-    || !preprocessingPreservesSource(suffix, streaming)
-  ) return false;
-  if (!isStandaloneParagraph(prefix) || !isStandaloneParagraph(suffix)) return false;
-
-  const fullTokens = canonicalInlineTokens(paragraphSource, documentEnv);
-  const prefixTokens = canonicalInlineTokens(prefix, {});
-  const suffixTokens = canonicalInlineTokens(suffix, {});
-  const combinedTokens = mergeTokenStreams(prefixTokens, suffixTokens);
-
-  return areSemanticTokensEqual(fullTokens, combinedTokens);
+): string {
+  return DOMPurify.sanitize(md.renderer.render(tokens, md.options, env));
 }
 
 /** Render markdown to sanitized, XSS-safe HTML. */

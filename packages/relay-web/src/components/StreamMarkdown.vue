@@ -12,7 +12,7 @@ defineOptions({ inheritAttrs: false });
 
 const { t } = useI18n();
 
-const props = defineProps<{ text: string; streaming?: boolean }>();
+const props = defineProps<{ text?: string; renderedHtml?: string; streaming?: boolean }>();
 
 // While streaming, every appended chunk grows `text`, and re-parsing the WHOLE buffer
 // (healing + markdown-it + DOMPurify) per chunk is O(n²) over the turn. Throttle the parse
@@ -157,7 +157,8 @@ function render(): void {
   // their listeners first so a plain (finalized) re-render doesn't strand them until the next
   // theme switch or unmount. The freshly rendered HTML gets its own enhancers after hydration.
   detachEnhancers();
-  html.value = renderMarkdown(props.text, { streaming: props.streaming });
+  html.value = props.renderedHtml
+    ?? renderMarkdown(props.text ?? "", { streaming: props.streaming });
   scheduleHydrate(false);
 }
 
@@ -168,7 +169,7 @@ onMounted(() => {
 });
 
 watch(
-  () => props.text,
+  () => [props.text, props.renderedHtml],
   () => {
     if (!props.streaming) {
       cancelTimer();
