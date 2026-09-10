@@ -1,4 +1,5 @@
 import MarkdownIt from "markdown-it";
+import type Token from "markdown-it/lib/token.mjs";
 import DOMPurify from "dompurify";
 import remend from "remend";
 import { normalizeMarkdownTables } from "./normalize-markdown";
@@ -63,6 +64,24 @@ export function preprocessMarkdownSource(
 ): string {
   const healed = options.streaming ? remend(text) : text;
   return normalizeMarkdownTables(healed);
+}
+
+/** Parse one inline Markdown stream with the same parser and document env as full rendering. */
+export function parseMarkdownInline(
+  source: string,
+  env: Record<string, unknown> = {},
+): Token[] {
+  const inline = md.parseInline(source, env).find((token) => token.type === "inline");
+  return inline?.children ?? [];
+}
+
+/** Render a token fragment as one paragraph through the shared sanitizer. */
+export function renderMarkdownInlineFragment(
+  tokens: Token[],
+  env: Record<string, unknown> = {},
+): string {
+  const inner = md.renderer.renderInline(tokens, md.options, env);
+  return DOMPurify.sanitize(`<p>${inner}</p>`);
 }
 
 export interface TopLevelBlockInfo {
