@@ -80,6 +80,12 @@ function injectMarkers(source: string, markers: readonly EncodedMarker[]): strin
   return result + source.slice(cursor);
 }
 
+function isInsideHtmlLikeSyntax(source: string, offset: number): boolean {
+  const open = source.lastIndexOf("<", Math.max(0, offset - 1));
+  const close = source.lastIndexOf(">", Math.max(0, offset - 1));
+  return open > close && source.indexOf(">", offset) >= 0;
+}
+
 function markerToken(token: Token, marker: EncodedMarker): Token {
   return cloneToken(token, {
     type: "turn_activity_marker",
@@ -255,6 +261,9 @@ export function planInlineActivityMarkers(
   options: RenderMarkdownOptions = {},
 ): InlineMarkerPlan | null {
   if (markers.length === 0) return null;
+  if (markers.some((marker) => isInsideHtmlLikeSyntax(paragraphSource, marker.offset))) {
+    return null;
+  }
   const encodedMarkers = encodeMarkers(markers);
   if (!encodedMarkers) return null;
   const markedSource = injectMarkers(paragraphSource, encodedMarkers);

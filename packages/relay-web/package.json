@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "generate-pwa-icons": "node scripts/generate-pwa-icons.mjs",
     "test": "vitest run",
+    "bench:turn-layout": "vitest bench src/__benchmarks__/turn-layout.bench.ts --run",
     "test:e2e": "playwright test",
     "test:e2e:desktop": "playwright test --project=chromium-desktop",
     "test:e2e:mobile": "playwright test --project=chromium-mobile"

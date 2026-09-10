@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { ChevronDown, ChevronRight } from "lucide-vue-next";
 import type { PeerMessageHistoryEntry, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
@@ -12,6 +12,7 @@ import {
   deriveTurnPresentation,
   type TurnPresentationPlan,
 } from "../lib/turn-presentation";
+import { createTurnLayoutGeometryCache } from "../lib/turn-layout";
 import { expandedTraces } from "../lib/trace-expansion";
 
 const props = defineProps<{
@@ -34,15 +35,51 @@ const props = defineProps<{
 
 const { t, locale } = useI18n();
 
-const presentation = computed(() =>
+const layoutCache = createTurnLayoutGeometryCache();
+const derivePresentation = (): TurnPresentationPlan =>
   props.presentation ?? deriveTurnPresentation(
     props.parts,
     {
       streaming: props.streaming === true,
+      layoutCache,
       ...(props.sentAgentMessages ? { sentAgentMessageById: props.sentAgentMessages } : {}),
     },
-  ),
+  );
+const presentation = shallowRef(derivePresentation());
+let presentationFrame: number | null = null;
+
+function cancelPresentationFrame(): void {
+  if (presentationFrame === null) return;
+  cancelAnimationFrame(presentationFrame);
+  presentationFrame = null;
+}
+
+function refreshPresentation(): void {
+  presentation.value = derivePresentation();
+}
+
+watch(
+  () => [props.parts, props.presentation, props.sentAgentMessages, props.streaming],
+  () => {
+    if (
+      props.presentation
+      || props.streaming !== true
+      || typeof requestAnimationFrame !== "function"
+    ) {
+      cancelPresentationFrame();
+      refreshPresentation();
+      return;
+    }
+    if (presentationFrame !== null) return;
+    presentationFrame = requestAnimationFrame(() => {
+      presentationFrame = null;
+      refreshPresentation();
+    });
+  },
+  { deep: true },
 );
+
+onBeforeUnmount(cancelPresentationFrame);
 
 const lastProcessPartIndex = computed(() =>
   props.parts.findLastIndex(

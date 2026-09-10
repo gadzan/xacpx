@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  createTurnLayoutGeometryCache,
   planTurnLayout,
   placeActivitiesMonotonically,
   type LayoutActivityGeometry,
@@ -84,6 +85,19 @@ describe("placeActivitiesMonotonically", () => {
 });
 
 describe("planTurnLayout", () => {
+  it("reuses geometry when narrative and activity identity stay unchanged", () => {
+    const cache = createTurnLayoutGeometryCache();
+    const geometry = [{ id: "tool:read-1", wireIndex: 1, sourceOffset: 6 }];
+    const first = planTurnLayout("before after", geometry, {}, cache);
+    const second = planTurnLayout("before after", geometry, {}, cache);
+    const changed = planTurnLayout("before! after", [
+      { ...geometry[0]!, sourceOffset: 7 },
+    ], {}, cache);
+
+    expect(second).toBe(first);
+    expect(changed).not.toBe(first);
+  });
+
   it("materializes marker-aware paragraph fragments in source order", () => {
     const narrative = "Working **carefully now** done";
     const offset = "Working **carefully ".length;
@@ -157,5 +171,36 @@ describe("planTurnLayout", () => {
       expect(plan.activityPlacements.get(activity.id)!.effectiveSlot)
         .toBeGreaterThanOrEqual(activity.sourceOffset);
     }
+  });
+
+  it("degrades an extreme activity-bearing paragraph to one atomic block", () => {
+    const narrative = `${"a".repeat(50_001)} tail`;
+    const plan = planTurnLayout(narrative, [
+      { id: "tool:read-1", wireIndex: 1, sourceOffset: 25_000 },
+    ]);
+
+    expect(plan.nodes.map((node) => node.type)).toEqual(["markdown", "activity"]);
+    expect(plan.activityPlacements.get("tool:read-1")?.reason).toBe("marker-unsafe");
+  });
+
+  it("keeps a long mixed trace ordered and source-complete", () => {
+    const chunks: string[] = [];
+    const generated: LayoutActivityGeometry[] = [];
+    let sourceOffset = 0;
+    for (let index = 0; index < 120; index += 1) {
+      const prefix = `paragraph ${index} **before `;
+      const suffix = `after**\n\n`;
+      chunks.push(prefix, suffix);
+      sourceOffset += prefix.length;
+      generated.push({ id: `tool:${index}`, wireIndex: index, sourceOffset });
+      sourceOffset += suffix.length;
+    }
+    const narrative = chunks.join("");
+    const plan = planTurnLayout(narrative, generated);
+
+    expect(plan.nodes.filter((node) => node.type === "activity").map((node) => node.activityId))
+      .toEqual(generated.map((activity) => activity.id));
+    expect(plan.nodes.filter((node) => node.type === "markdown").map((node) => node.source).join(""))
+      .toBe(narrative);
   });
 });

@@ -23,6 +23,9 @@ export interface MarkdownLayoutGeometry {
   candidates: Map<string, LayoutSlotCandidate>;
 }
 
+const MAX_INLINE_PARAGRAPH_CHARS = 50_000;
+const MAX_INLINE_MARKERS_PER_PARAGRAPH = 256;
+
 function renderAtomicBlock(
   block: TopLevelBlockInfo,
   env: Record<string, unknown>,
@@ -51,16 +54,6 @@ function pushMarkdownNode(
   });
 }
 
-function activitiesInside(
-  activities: readonly LayoutActivityGeometry[],
-  start: number,
-  end: number,
-): LayoutActivityGeometry[] {
-  return activities.filter((activity) =>
-    activity.sourceOffset > start && activity.sourceOffset < end,
-  );
-}
-
 /**
  * Analyze Markdown once, derive legal slots, and pre-render a complete source-range
  * partition. Only top-level paragraphs may contain exact inline activity markers;
@@ -74,19 +67,39 @@ export function deriveMarkdownLayout(
   const document = analyzeMarkdownDocument(narrative);
   const candidates = new Map<string, LayoutSlotCandidate>();
   const markdownNodes: MarkdownLayoutNode[] = [];
+  const activitiesByBlock = document.blocks.map((): LayoutActivityGeometry[] => []);
+  let activityBlockIndex = 0;
+  for (const activity of activities) {
+    while (
+      activityBlockIndex < document.blocks.length
+      && activity.sourceOffset >= document.blocks[activityBlockIndex]!.endOffset
+    ) {
+      activityBlockIndex += 1;
+    }
+    const block = document.blocks[activityBlockIndex];
+    if (
+      block
+      && activity.sourceOffset > block.startOffset
+      && activity.sourceOffset < block.endOffset
+    ) {
+      activitiesByBlock[activityBlockIndex]!.push(activity);
+    }
+  }
   let cursor = 0;
+  let lastNonWhitespaceOffset = narrative.length;
+  while (
+    lastNonWhitespaceOffset > 0
+    && /\s/.test(narrative[lastNonWhitespaceOffset - 1]!)
+  ) {
+    lastNonWhitespaceOffset -= 1;
+  }
 
   document.blocks.forEach((block, blockIndex) => {
     pushMarkdownNode(markdownNodes, narrative, cursor, block.startOffset, "");
-    const internalActivities = activitiesInside(
-      activities,
-      block.startOffset,
-      block.endOffset,
-    );
-    const trailingSource = narrative.slice(block.endOffset);
+    const internalActivities = activitiesByBlock[blockIndex]!;
     const streamingBlock = options.streaming === true
       && options.latestVisibleIsText === true
-      && trailingSource.trim().length === 0;
+      && block.endOffset >= lastNonWhitespaceOffset;
     const normalized = normalizeMarkdownTables(block.source) !== block.source;
     const inlineSource = block.type === "paragraph_open" && !normalized
       ? block.inlineSource
@@ -100,6 +113,8 @@ export function deriveMarkdownLayout(
           offset: activity.sourceOffset - block.startOffset,
         }));
     const markerPlan = markers.length === internalActivities.length && markers.length > 0
+      && inlineSource!.length <= MAX_INLINE_PARAGRAPH_CHARS
+      && markers.length <= MAX_INLINE_MARKERS_PER_PARAGRAPH
       ? planInlineActivityMarkers(inlineSource!, markers, document.env, {
         streaming: streamingBlock,
       })
@@ -147,6 +162,12 @@ export function deriveMarkdownLayout(
   });
   pushMarkdownNode(markdownNodes, narrative, cursor, narrative.length, "");
 
+  const markdownBoundaries = new Set<number>([0, narrative.length]);
+  for (const node of markdownNodes) {
+    markdownBoundaries.add(node.sourceRange[0]);
+    markdownBoundaries.add(node.sourceRange[1]);
+  }
+  let markdownNodeIndex = 0;
   for (const activity of activities) {
     if (candidates.has(activity.id)) continue;
     if (activity.sourceOffset === 0) {
@@ -165,13 +186,28 @@ export function deriveMarkdownLayout(
       });
       continue;
     }
-    const gap = markdownNodes.find((node) =>
-      activity.sourceOffset >= node.sourceRange[0]
-      && activity.sourceOffset <= node.sourceRange[1]
-      && node.html === ""
-      && node.source.trim().length === 0,
-    );
-    if (gap) {
+    if (markdownBoundaries.has(activity.sourceOffset)) {
+      candidates.set(activity.id, {
+        sourceOffset: activity.sourceOffset,
+        kind: "block-end",
+        reason: "exact",
+      });
+      continue;
+    }
+    while (
+      markdownNodeIndex < markdownNodes.length
+      && activity.sourceOffset > markdownNodes[markdownNodeIndex]!.sourceRange[1]
+    ) {
+      markdownNodeIndex += 1;
+    }
+    const gap = markdownNodes[markdownNodeIndex];
+    if (
+      gap
+      && activity.sourceOffset > gap.sourceRange[0]
+      && activity.sourceOffset < gap.sourceRange[1]
+      && gap.html === ""
+      && gap.source.trim().length === 0
+    ) {
       candidates.set(activity.id, {
         sourceOffset: activity.sourceOffset,
         kind: "block-end",

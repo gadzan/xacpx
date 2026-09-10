@@ -54,6 +54,28 @@ export interface TurnLayoutPlan {
   activityPlacements: Map<string, ActivityPlacement>;
 }
 
+export interface TurnLayoutGeometryCache {
+  key: string | null;
+  plan: TurnLayoutPlan | null;
+}
+
+export function createTurnLayoutGeometryCache(): TurnLayoutGeometryCache {
+  return { key: null, plan: null };
+}
+
+function layoutGeometryKey(
+  narrative: string,
+  activities: readonly LayoutActivityGeometry[],
+  options: MarkdownLayoutOptions,
+): string {
+  return JSON.stringify([
+    narrative,
+    options.streaming === true,
+    options.latestVisibleIsText === true,
+    activities.map(({ id, wireIndex, sourceOffset }) => [id, wireIndex, sourceOffset]),
+  ]);
+}
+
 /**
  * Place activities in canonical wire order. A delayed activity becomes an order
  * barrier for everything after it, so presentation order is a construction
@@ -96,50 +118,50 @@ export function placeActivitiesMonotonically(
   return placements;
 }
 
-function splitEmptyMarkdownNode(
+function sliceEmptyMarkdownNode(
   node: MarkdownLayoutNode,
-  splitOffset: number,
-): [MarkdownLayoutNode, MarkdownLayoutNode] {
-  const [start, end] = node.sourceRange;
-  const relative = splitOffset - start;
-  return [
-    {
-      ...node,
-      key: `markdown:${start}:${splitOffset}`,
-      sourceRange: [start, splitOffset],
-      source: node.source.slice(0, relative),
-    },
-    {
-      ...node,
-      key: `markdown:${splitOffset}:${end}`,
-      sourceRange: [splitOffset, end],
-      source: node.source.slice(relative),
-    },
-  ];
+  start: number,
+  end: number,
+): MarkdownLayoutNode {
+  const relativeStart = start - node.sourceRange[0];
+  const relativeEnd = end - node.sourceRange[0];
+  return {
+    ...node,
+    key: `markdown:${start}:${end}`,
+    sourceRange: [start, end],
+    source: node.source.slice(relativeStart, relativeEnd),
+  };
 }
 
 function ensureSlotBoundaries(
   markdownNodes: readonly MarkdownLayoutNode[],
   placements: ReadonlyMap<string, ActivityPlacement>,
 ): MarkdownLayoutNode[] {
-  const result = [...markdownNodes];
-  for (const placement of placements.values()) {
-    const containingIndex = result.findIndex((node) =>
-      placement.effectiveSlot > node.sourceRange[0]
-      && placement.effectiveSlot < node.sourceRange[1],
-    );
-    if (containingIndex < 0) continue;
-    const containing = result[containingIndex]!;
-    if (containing.html !== "" || containing.source.trim().length > 0) {
-      throw new Error("A legal activity slot must coincide with a Markdown node boundary");
+  const result: MarkdownLayoutNode[] = [];
+  const effectiveSlots = [...placements.values()].map((placement) => placement.effectiveSlot);
+  let slotIndex = 0;
+  for (const node of markdownNodes) {
+    const [nodeStart, nodeEnd] = node.sourceRange;
+    while (effectiveSlots[slotIndex] !== undefined && effectiveSlots[slotIndex]! <= nodeStart) {
+      slotIndex += 1;
     }
-    result.splice(
-      containingIndex,
-      1,
-      ...splitEmptyMarkdownNode(containing, placement.effectiveSlot),
-    );
+    let segmentStart = nodeStart;
+    while (effectiveSlots[slotIndex] !== undefined && effectiveSlots[slotIndex]! < nodeEnd) {
+      const slot = effectiveSlots[slotIndex]!;
+      if (node.html !== "" || node.source.trim().length > 0) {
+        throw new Error("A legal activity slot must coincide with a Markdown node boundary");
+      }
+      if (slot > segmentStart) {
+        result.push(sliceEmptyMarkdownNode(node, segmentStart, slot));
+        segmentStart = slot;
+      }
+      while (effectiveSlots[slotIndex] === slot) slotIndex += 1;
+    }
+    if (nodeEnd > segmentStart) {
+      result.push(sliceEmptyMarkdownNode(node, segmentStart, nodeEnd));
+    }
   }
-  return result.filter((node) => node.sourceRange[1] > node.sourceRange[0]);
+  return result;
 }
 
 /** Build the render-safe turn layout from ordered activity geometry. */
@@ -147,7 +169,10 @@ export function planTurnLayout(
   narrative: string,
   activities: readonly LayoutActivityGeometry[],
   options: MarkdownLayoutOptions = {},
+  cache?: TurnLayoutGeometryCache,
 ): TurnLayoutPlan {
+  const cacheKey = cache ? layoutGeometryKey(narrative, activities, options) : null;
+  if (cache && cache.key === cacheKey && cache.plan) return cache.plan;
   const markdown = deriveMarkdownLayout(narrative, activities, options);
   const activityPlacements = placeActivitiesMonotonically(
     activities,
@@ -203,5 +228,10 @@ export function planTurnLayout(
     throw new Error("Every layout activity must be materialized exactly once");
   }
 
-  return { nodes, activityPlacements };
+  const plan = { nodes, activityPlacements };
+  if (cache) {
+    cache.key = cacheKey;
+    cache.plan = plan;
+  }
+  return plan;
 }

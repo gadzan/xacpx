@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PeerMessageHistoryEntry, ToolStepDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
 import { deriveTurnPresentation, type TurnPresentationOptions } from "../lib/turn-presentation";
+import { createTurnLayoutGeometryCache } from "../lib/turn-layout";
 
 const tool = (id: string): ToolStepDto => ({
   toolCallId: id,
@@ -19,6 +20,40 @@ const visibleShape = (parts: TurnPartDto[], opts?: TurnPresentationOptions) =>
   });
 
 describe("deriveTurnPresentation", () => {
+  it("reuses layout geometry when only a tool payload changes", () => {
+    const layoutCache = createTurnLayoutGeometryCache();
+    const running = tool("read-1");
+    running.status = "running";
+    const success = { ...running, status: "success" as const };
+    const parts = (step: ToolStepDto): TurnPartDto[] => [
+      { type: "text", text: "before " },
+      { type: "tool", step },
+      { type: "text", text: "after" },
+    ];
+
+    const first = deriveTurnPresentation(parts(running), { layoutCache });
+    const second = deriveTurnPresentation(parts(success), { layoutCache });
+
+    expect(second.layout).toBe(first.layout);
+    const firstTool = first.nodes.find((node) => node.type === "tool");
+    const secondTool = second.nodes.find((node) => node.type === "tool");
+    expect(firstTool?.type === "tool" && firstTool.step.status).toBe("running");
+    expect(secondTool?.type === "tool" && secondTool.step.status).toBe("success");
+  });
+
+  it("uses a single Markdown node for the zero-activity fast path", () => {
+    const presentation = deriveTurnPresentation([
+      { type: "text", text: "first " },
+      { type: "text", text: "**second**" },
+    ]);
+
+    expect(presentation.layout.activityPlacements.size).toBe(0);
+    expect(presentation.nodes).toHaveLength(1);
+    expect(presentation.nodes[0]?.type).toBe("markdown");
+    expect(presentation.nodes[0]?.type === "markdown" && presentation.nodes[0].html)
+      .toContain("<strong>second</strong>");
+  });
+
   it("keeps repeated plain-text progress updates interleaved with their tools", () => {
     expect(visibleShape([
       { type: "text", text: "plan: inspect the reap target" },
@@ -68,15 +103,20 @@ describe("deriveTurnPresentation", () => {
   });
 
   it("interleaves without reparsing a heading-like suffix", () => {
-    expect(visibleShape([
+    const parts: TurnPartDto[] = [
       { type: "text", text: "before " },
       { type: "tool", step: tool("read-1") },
       { type: "text", text: "# not a heading" },
-    ])).toEqual([
+    ];
+    expect(visibleShape(parts)).toEqual([
       { type: "text", text: "before " },
       { type: "tool", id: "read-1" },
       { type: "text", text: "# not a heading" },
     ]);
+    const markdown = deriveTurnPresentation(parts).nodes
+      .filter((node) => node.type === "markdown");
+    expect(markdown[1]!.html).toContain("<p># not a heading</p>");
+    expect(markdown[1]!.html).not.toContain("<h1>");
   });
 
   it("interleaves without normalizing a pipe-prose suffix into a table", () => {
@@ -117,14 +157,35 @@ describe("deriveTurnPresentation", () => {
   });
 
   it("renders a reference-dependent paragraph from the shared document env", () => {
-    expect(visibleShape([
+    const parts: TurnPartDto[] = [
       { type: "text", text: "See [docs][ref]" },
       { type: "tool", step: tool("read-1") },
       { type: "text", text: "\n\n[ref]: https://example.com" },
-    ])).toEqual([
+    ];
+    expect(visibleShape(parts)).toEqual([
       { type: "text", text: "See [docs][ref]" },
       { type: "tool", id: "read-1" },
     ]);
+    const markdown = deriveTurnPresentation(parts).nodes.find((node) => node.type === "markdown");
+    expect(markdown?.type === "markdown" && markdown.html).toContain('href="https://example.com"');
+  });
+
+  it("never reorders activities across streaming Markdown prefixes", () => {
+    const closing = "** done";
+    for (let length = 0; length <= closing.length; length += 1) {
+      const presentation = deriveTurnPresentation([
+        { type: "text", text: "Working **carefully " },
+        { type: "tool", step: tool("read-1") },
+        { type: "text", text: "now" },
+        { type: "tool", step: tool("read-2") },
+        { type: "text", text: closing.slice(0, length) },
+      ], { streaming: true });
+      expect(presentation.nodes
+        .filter((node) => node.type === "tool")
+        .map((node) => node.step.toolCallId)).toEqual(["read-1", "read-2"]);
+      const placements = [...presentation.layout.activityPlacements.values()];
+      expect(placements[1]!.effectiveSlot).toBeGreaterThanOrEqual(placements[0]!.effectiveSlot);
+    }
   });
 
   it("places a tool at the semantic paragraph boundary inserted by the transport", () => {

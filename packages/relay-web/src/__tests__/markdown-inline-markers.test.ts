@@ -58,6 +58,12 @@ describe("planInlineActivityMarkers", () => {
 
     const imageLabel = "![alt text](image.png)";
     expect(planAt(imageLabel, "![alt ".length)).toBeNull();
+
+    const entity = "before &amp; after";
+    expect(planAt(entity, "before &am".length)).toBeNull();
+
+    const htmlLike = "before <span>text</span> after";
+    expect(planAt(htmlLike, "before <sp".length)).toBeNull();
   });
 
   it("preserves marker and source order for multiple activities at one offset", () => {

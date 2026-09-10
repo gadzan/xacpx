@@ -1,7 +1,13 @@
 import type { PeerMessageHistoryEntry, ToolStepDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
-import { planTurnLayout, type MarkdownLayoutNode, type TurnLayoutPlan } from "./turn-layout";
+import { renderMarkdown } from "./render-markdown";
+import {
+  planTurnLayout,
+  type MarkdownLayoutNode,
+  type TurnLayoutGeometryCache,
+  type TurnLayoutPlan,
+} from "./turn-layout";
 import { buildTurnTimeline, type TimelineActivity } from "./turn-timeline";
-import { hasToolStepAncestor, indexToolSteps } from "./subagent-trace";
+import { indexToolSteps } from "./subagent-trace";
 
 export type TurnPresentationMarkdownItem = MarkdownLayoutNode;
 
@@ -35,6 +41,7 @@ export interface TurnPresentationPlan {
 export interface TurnPresentationOptions {
   sentAgentMessageById?: Map<string, PeerMessageHistoryEntry>;
   streaming?: boolean;
+  layoutCache?: TurnLayoutGeometryCache;
 }
 
 type DecoratedActivity =
@@ -81,14 +88,28 @@ function decorateActivities(
   const subagentIds = new Set(
     toolSteps.filter((step) => step.isSubagent === true).map((step) => step.toolCallId),
   );
+  const rootSubagentByStep = new Map<string, string | null>();
+  const resolvingSubagents = new Set<string>();
+  const rootSubagentOf = (step: ToolStepDto): string | null => {
+    const cached = rootSubagentByStep.get(step.toolCallId);
+    if (cached !== undefined) return cached;
+    if (resolvingSubagents.has(step.toolCallId)) return null;
+    resolvingSubagents.add(step.toolCallId);
+    const parentId = step.parentToolCallId;
+    const parent = parentId ? stepsById.get(parentId) : undefined;
+    const parentRoot = parent ? rootSubagentOf(parent) : null;
+    const rootSubagentId = parentRoot ?? (parentId && subagentIds.has(parentId) ? parentId : null);
+    resolvingSubagents.delete(step.toolCallId);
+    rootSubagentByStep.set(step.toolCallId, rootSubagentId);
+    return rootSubagentId;
+  };
   const descendantsByParent = new Map<string, ToolStepDto[]>();
-  for (const parentId of subagentIds) {
-    descendantsByParent.set(
-      parentId,
-      toolSteps.filter((step) =>
-        hasToolStepAncestor(step, stepsById, (ancestorId) => ancestorId === parentId),
-      ),
-    );
+  for (const step of toolSteps) {
+    const rootSubagentId = rootSubagentOf(step);
+    if (!rootSubagentId) continue;
+    const descendants = descendantsByParent.get(rootSubagentId) ?? [];
+    descendants.push(step);
+    descendantsByParent.set(rootSubagentId, descendants);
   }
 
   const result: DecoratedActivity[] = [];
@@ -105,7 +126,7 @@ function decorateActivities(
       continue;
     }
     const step = activity.payload.step;
-    if (hasToolStepAncestor(step, stepsById, (ancestorId) => subagentIds.has(ancestorId))) {
+    if (rootSubagentOf(step)) {
       continue;
     }
     if (step.isSubagent) {
@@ -141,6 +162,34 @@ export function deriveTurnPresentation(
   );
   const latestVisibleIsText = latestVisibleWireIndex >= 0
     && parts[latestVisibleWireIndex]?.type === "text";
+  if (activities.length === 0) {
+    const html = timeline.narrative.trim()
+      ? renderMarkdown(timeline.narrative, {
+        streaming: options.streaming === true && latestVisibleIsText,
+      })
+      : "";
+    const markdownNode: MarkdownLayoutNode | null = timeline.narrative.length > 0
+      ? {
+        type: "markdown",
+        key: `markdown:0:${timeline.narrative.length}`,
+        sourceRange: [0, timeline.narrative.length],
+        source: timeline.narrative,
+        html,
+        isLatest: options.streaming === true && latestVisibleIsText,
+      }
+      : null;
+    const layout: TurnLayoutPlan = {
+      nodes: markdownNode ? [markdownNode] : [],
+      activityPlacements: new Map(),
+    };
+    return {
+      nodes: markdownNode && html.trim() ? [markdownNode] : [],
+      finalReplyNodes: markdownNode && html.trim() ? [markdownNode] : [],
+      layout,
+      toolCount: 0,
+      thoughtCount: 0,
+    };
+  }
   const layout = planTurnLayout(
     timeline.narrative,
     activities.map(({ id, wireIndex, sourceOffset }) => ({
@@ -152,6 +201,7 @@ export function deriveTurnPresentation(
       streaming: options.streaming === true,
       latestVisibleIsText,
     },
+    options.layoutCache,
   );
   const activityById = new Map(activities.map((activity) => [activity.id, activity]));
   const nodes: TurnPresentationItem[] = [];

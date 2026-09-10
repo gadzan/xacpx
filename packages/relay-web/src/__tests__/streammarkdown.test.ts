@@ -72,8 +72,8 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("StreamMarkdown streaming throttle", () => {
-  it("non-streaming: re-renders synchronously on every text change (no throttle)", async () => {
+describe("StreamMarkdown frame coalescing", () => {
+  it("non-streaming: re-renders synchronously on every text change", async () => {
     const w = mount(StreamMarkdown, { props: { text: "a", streaming: false } });
     expect(w.html()).toContain("<p>a</p>");
     await w.setProps({ text: "ab" });
@@ -87,28 +87,35 @@ describe("StreamMarkdown streaming throttle", () => {
   it("streaming: coalesces a burst of chunks into one trailing render with the full text", async () => {
     const w = mount(StreamMarkdown, { props: { text: "a", streaming: true } });
     expect(renderSpy).toHaveBeenCalledTimes(1); // initial mount render
-    // Rapid chunks well inside the throttle window: no immediate re-parse.
+    // Rapid chunks in one browser frame do not trigger repeated parsing.
     await w.setProps({ text: "ab" });
     await w.setProps({ text: "abc" });
     await w.setProps({ text: "abcd" });
     expect(renderSpy).toHaveBeenCalledTimes(1);
     expect(w.html()).toContain("<p>a</p>"); // still the last painted frame
-    // Trailing edge fires once and picks up the LATEST text.
-    vi.advanceTimersByTime(80);
+    // The next frame paints the latest text once.
+    vi.advanceTimersByTime(16);
     await nextTick();
     expect(renderSpy).toHaveBeenCalledTimes(2);
     expect(w.html()).toContain("<p>abcd</p>");
   });
 
-  it("streaming: a chunk arriving after the throttle window renders immediately", async () => {
+  it("streaming: starts a new render only in the next browser frame", async () => {
     const w = mount(StreamMarkdown, { props: { text: "a", streaming: true } });
-    vi.advanceTimersByTime(100); // let the window elapse with no pending chunk
     await w.setProps({ text: "ab" });
-    expect(renderSpy).toHaveBeenCalledTimes(2); // leading edge, no wait
+    expect(renderSpy).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(16);
+    await nextTick();
+    expect(renderSpy).toHaveBeenCalledTimes(2);
     expect(w.html()).toContain("<p>ab</p>");
+    await w.setProps({ text: "abc" });
+    expect(renderSpy).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(16);
+    await nextTick();
+    expect(renderSpy).toHaveBeenCalledTimes(3);
   });
 
-  it("streaming -> false renders the final full text immediately and drops the pending timer", async () => {
+  it("streaming -> false renders the final full text immediately and drops the pending frame", async () => {
     const w = mount(StreamMarkdown, { props: { text: "a", streaming: true } });
     await w.setProps({ text: "ab" }); // schedules a trailing render
     expect(vi.getTimerCount()).toBe(1);
@@ -120,7 +127,7 @@ describe("StreamMarkdown streaming throttle", () => {
     expect(renderSpy).toHaveBeenCalledTimes(calls);
   });
 
-  it("unmount clears a pending throttled render (no stray timer callback)", async () => {
+  it("unmount cancels a pending frame render", async () => {
     const w = mount(StreamMarkdown, { props: { text: "a", streaming: true } });
     await w.setProps({ text: "ab" });
     expect(vi.getTimerCount()).toBe(1);
@@ -129,6 +136,18 @@ describe("StreamMarkdown streaming throttle", () => {
     const calls = renderSpy.mock.calls.length;
     vi.advanceTimersByTime(200);
     expect(renderSpy).toHaveBeenCalledTimes(calls);
+  });
+
+  it("accepts pre-rendered layout HTML without parsing it again", async () => {
+    const w = mount(StreamMarkdown, {
+      props: { renderedHtml: "<p><strong>a</strong></p>", streaming: true },
+    });
+    expect(renderSpy).not.toHaveBeenCalled();
+    expect(w.html()).toContain("<strong>a</strong>");
+
+    await w.setProps({ renderedHtml: "<p><strong>ab</strong></p>" });
+    expect(renderSpy).not.toHaveBeenCalled();
+    expect(w.html()).toContain("<strong>ab</strong>");
   });
 });
 
