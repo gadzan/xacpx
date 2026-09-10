@@ -630,8 +630,8 @@ watch(
             </div>
             <div data-test="msg-out" class="min-w-0 flex-1 space-y-2.5"
                  :class="m.failed ? 'rounded-lg ring-1 ring-danger/40' : ''">
-              <!-- Structured transcript: activity cards stay grouped above one continuous
-                   Markdown narrative. Tool cards own their collapsed state. -->
+              <!-- Structured transcript: activity cards interleave with the Markdown
+                   narrative at wire-ordered slots. Tool cards own their collapsed state. -->
               <div data-test="msg-content" class="space-y-2.5">
                 <TurnParts v-if="m.structured?.parts?.length" :parts="m.structured.parts" :ensure-full="ensureFullOf(m)" :sent-agent-messages="sentAgentMessageById"
                            :collapse-trace="!isFailedTurn(m) && hasTraceParts(m)" :trace-key="traceKeyOf(m)" :trace-elapsed-ms="traceElapsedOf(m)"

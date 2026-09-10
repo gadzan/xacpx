@@ -119,10 +119,12 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   放置 activity（后来的 activity 永不超车）。顶层 paragraph 通过内部 marker 在同一 inline token tree 中拆出安全 HTML
   fragment，跨 `strong`/link label/inline code 时自动闭合并重开格式；list、table、blockquote、fence、heading 等结构块
   保持 atomic，内部 activity 延迟到块末。expanded 与 collapsed 均消费同一 plan，后者只取最后 activity 后的 Markdown
-  nodes，不再二次拼接或重新解析 Markdown。每个 Markdown node 同时携带 canonical raw `source`（geometry/debug 用）
+- nodes，不再二次拼接或重新解析 Markdown。每个 Markdown node 同时携带 canonical raw `source`（geometry/debug 用）
   与 plaintext `copyText`（clipboard 用）：`markdownTokensToPlainText`/`markdownSourceToPlainText` 是唯一的 Copy
   contract——text/code 取内容、image 取 alt（空 alt 回退 URL）、link 取 label、break 取换行、reference definition
-  永不进入 token 流因此永不泄漏；heal 后的 block 按 healed HTML 的语义复制。子工具继续按 `parentToolCallId` 归入
+  永不进入 token 流因此永不泄漏；heal 后的 block 按 healed HTML 的语义复制。copyText 是可组合的：各 block 的
+  terminal newline 保留用于分隔相邻 block，任何 block-local trim 都禁止，只有最终 `finalReplyText` join 之后做一次
+  outer trimEnd。子工具继续按 `parentToolCallId` 归入
   对应 Agent；旧历史里没有父子字段的工具仍按普通卡片渲染。
 - turn layout 有三层流式性能保护：无 activity 的 turn 直接走单个 Markdown render；全量 geometry cache 以
   narrative、activity id/offset/wireIndex 和 streaming 几何为 key，因此 tool status/title/output 更新只替换卡片 payload，

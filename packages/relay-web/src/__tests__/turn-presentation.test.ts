@@ -223,6 +223,17 @@ describe("deriveTurnPresentation", () => {
       .not.toContain("[ref]: https://example.com");
   });
 
+  it("keeps a newline between a healed table and the following paragraph when copying", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "Working" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "\n\n| a | b |\n| 1 | 2 |\n\nAfter" },
+    ];
+    const text = extractCollapsedTraceSummary(parts).finalReplyText;
+    expect(text).not.toContain("2After");
+    expect(text).toMatch(/2\n+After/);
+  });
+
   it("never reorders activities across streaming Markdown prefixes", () => {
     const closing = "** done";
     for (let length = 0; length <= closing.length; length += 1) {

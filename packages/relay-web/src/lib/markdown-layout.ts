@@ -74,10 +74,12 @@ function renderAtomicBlock(
   // A preprocessing rewrite heals display (remend/table fix) through a
   // standalone reparse, and Copy must describe the healed output — not the
   // raw pre-heal tokens. Reference definitions still resolve from the full
-  // document env, never from the standalone block alone.
+  // document env, never from the standalone block alone. No trimming here:
+  // copyText is compositional, and the block's terminal newline separates it
+  // from the next block; the single outer trim happens at the final join.
   return {
     html: renderMarkdownWithEnv(block.source, { streaming }, env),
-    copyText: markdownSourceToPlainText(block.source, { streaming }, env).trim(),
+    copyText: markdownSourceToPlainText(block.source, { streaming }, env),
   };
 }
 

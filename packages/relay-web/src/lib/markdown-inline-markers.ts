@@ -240,7 +240,12 @@ function splitAndRender(
     if (token.type === "turn_activity_marker") {
       const marker = markersById.get(token.content);
       if (!marker) return null;
-      fragmentTokens.push(...openStack.toReversed().map(syntheticClose));
+      // Reverse-index loop, not toReversed(): the latter needs Chrome 110+ /
+      // Firefox 115+ / Safari 16+, while the codebase baseline (findLast)
+      // only requires Chrome 97+ / Firefox 104+ / Safari 15.4+.
+      for (let index = openStack.length - 1; index >= 0; index -= 1) {
+        fragmentTokens.push(syntheticClose(openStack[index]!));
+      }
       pushFragment(marker.offset);
       activityIds.push(marker.id);
       fragmentStart = marker.offset;

@@ -186,8 +186,9 @@ export interface ToolStepDto {
 
 /** One entry in a turn's canonical ordered wire transcript, retained for transport,
  *  persistence, and presentation timeline construction. Consecutive text may be
- *  coalesced, but consumers must preserve the relative arrival order of text and
- *  activity parts. */
+ *  coalesced, but consumers must preserve canonical wire provenance: activities
+ *  never reorder against each other, and presentation may only delay an activity
+ *  to a legal Markdown slot — never move it earlier than its wire offset. */
 export type TurnPartDto =
   | { type: "text"; text: string }
   | { type: "reasoning"; text: string }

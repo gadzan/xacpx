@@ -178,7 +178,7 @@ export function deriveTurnPresentation(
         copyText: html.trim()
           ? markdownSourceToPlainText(timeline.narrative, {
             streaming: options.streaming === true && latestVisibleIsText,
-          }).trim()
+          })
           : "",
         isLatest: options.streaming === true && latestVisibleIsText,
       }
@@ -297,7 +297,10 @@ export function extractCollapsedTraceSummary(
 ): CollapsedTraceSummary {
   const presentation = deriveTurnPresentation(parts, options);
   return {
-    finalReplyText: presentation.finalReplyNodes.map((node) => node.copyText).join(""),
+    // Single outer normalization: per-node copyText stays compositional
+    // (block terminal newlines separate neighbors), so only the reply tail
+    // is trimmed here.
+    finalReplyText: presentation.finalReplyNodes.map((node) => node.copyText).join("").trimEnd(),
     toolCount: presentation.toolCount,
     thoughtCount: presentation.thoughtCount,
     presentation,
