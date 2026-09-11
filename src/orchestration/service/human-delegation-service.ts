@@ -33,6 +33,7 @@ import {
   workerBindingEngineFields,
   workerBindingGuardFields,
   workerBindingIdentityFields,
+  workerBindingLaunchFields,
 } from "../worker-launch";
 import type { StagedWorkerIdentity } from "../worker-launch";
 import type { RpcDelegationService } from "./rpc-delegation-service";
@@ -188,6 +189,7 @@ export class HumanDelegationService {
             targetAgent: input.targetAgent,
             ...(role ? { role } : {}),
             ...workerBindingGuardFields(previousBinding),
+            ...workerBindingLaunchFields(previousBinding),
             ...workerBindingEndpointIdentityFields(previousBinding, this.deps.createAgentEndpointId),
             ...identity,
             ...(input.parallel ? { ephemeral: true } : {}),
@@ -266,6 +268,7 @@ export class HumanDelegationService {
             targetAgent: input.targetAgent,
             role,
             ...workerBindingGuardFields(previousBinding),
+            ...workerBindingLaunchFields(previousBinding),
             ...workerBindingEndpointIdentityFields(previousBinding, this.deps.createAgentEndpointId),
             ...workerBindingEngineFields(previousBinding),
             ...(input.parallel ? { ephemeral: true } : {}),

@@ -234,6 +234,16 @@ export interface OrchestrationServiceDeps {
     role?: string;
     logicalSessionId: string;
     transportEngine: SessionTransportEngine;
+    /**
+     * Last-dispatched launch snapshot (claim-time copy). The CLI teardown
+     * converges this identity alongside the current resolution: after a
+     * managed-pin/config change the current identity cannot locate the
+     * previous owner, and the binding is deleted right after release
+     * returns — this is the last chance to close the old record.
+     */
+    launchAgentCommand?: string;
+    launchAcpxAgent?: string;
+    launchRawCommand?: string;
   }) => Promise<void>;
   wakeCoordinatorSession?: (request: WakeCoordinatorRequest) => Promise<void>;
   deliverCoordinatorMessage?: (

@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import { AsyncMutex } from "../../../src/orchestration/async-mutex";
 import {
   persistWorkerBindingIdentity,
+  releaseWorkerOwnerSessions,
   stageWorkerBindingIdentity,
   stageWorkerBindingLaunch,
 } from "../../../src/orchestration/worker-launch";
@@ -273,4 +274,70 @@ test("launch snapshot refresh clears keys the new launch no longer carries", () 
 test("launch snapshot stages nothing for a missing binding", () => {
   const out = stageWorkerBindingLaunch(createEmptyState(), { workerSession: "worker-1" }, { agentCommand: "x" });
   expect(out).toEqual({ changed: false });
+});
+
+test("release converges the current session plus a differing snapshot identity", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const current = {
+    alias: "wk",
+    agent: "codex",
+    agentCommand: "npx codex@new",
+    acpxAgent: "xacpx-managed-codex-new",
+    cwd: "/tmp/backend",
+    workspace: "backend",
+    transportSession: "wk",
+  };
+  await releaseWorkerOwnerSessions(
+    async (session) => { calls.push({ ...session }); },
+    current,
+    { launchAgentCommand: "npx codex@old", launchAcpxAgent: "xacpx-managed-codex-old" },
+  );
+  expect(calls).toHaveLength(2);
+  expect(calls[0]?.agentCommand).toBe("npx codex@new");
+  expect(calls[0]?.acpxAgent).toBe("xacpx-managed-codex-new");
+  // Historical: command-only so the transport passes it as `--agent`.
+  expect(calls[1]).toMatchObject({
+    agent: "codex",
+    agentCommand: "npx codex@old",
+    cwd: "/tmp/backend",
+    transportSession: "wk",
+  });
+  expect(calls[1]?.acpxAgent).toBeUndefined();
+  expect(calls[1]?.rawCommand).toBeUndefined();
+});
+
+test("release skips the historical step when the snapshot matches or is absent", async () => {
+  const current = {
+    alias: "wk",
+    agent: "codex",
+    agentCommand: "npx codex@new",
+    cwd: "/tmp/backend",
+    workspace: "backend",
+    transportSession: "wk",
+  };
+  const calls: unknown[] = [];
+  await releaseWorkerOwnerSessions(async (session) => { calls.push(session); }, current, { launchAgentCommand: "npx codex@new" });
+  await releaseWorkerOwnerSessions(async (session) => { calls.push(session); }, current, undefined);
+  await releaseWorkerOwnerSessions(async (session) => { calls.push(session); }, current, {});
+  expect(calls).toHaveLength(3);
+});
+
+test("release fails closed when the current converge step throws", async () => {
+  const current = {
+    alias: "wk",
+    agent: "codex",
+    agentCommand: "npx codex@new",
+    cwd: "/tmp/backend",
+    workspace: "backend",
+    transportSession: "wk",
+  };
+  let calls = 0;
+  await expect(
+    releaseWorkerOwnerSessions(
+      async () => { calls += 1; throw new Error("transport down"); },
+      current,
+      { launchAgentCommand: "npx codex@old" },
+    ),
+  ).rejects.toThrow("transport down");
+  expect(calls).toBe(1);
 });

@@ -12,8 +12,8 @@ import { makeGoldenHarness } from "../golden/golden-harness";
 // service must build without `config`, `ensureWorkerSession`, `wakeCoordinatorSession`,
 // `logger` or any of the other ports, and it must not silently reach for a dep outside its
 // declared HumanDelegationDeps.
-function makeService(ids: string[] = ["task-1", "lid-1"], initialState = createEmptyState(), resolveEngine?: () => SessionTransportEngine) {
-  const harness = makeGoldenHarness({ ids, endpointIds: ["worker-endpoint-1"], initialState });
+function makeService(ids: string[] = ["task-1", "lid-1"], initialState = createEmptyState(), resolveEngine?: () => SessionTransportEngine, harnessOverrides: { reusableWorkerSession?: string | null } = {}) {
+  const harness = makeGoldenHarness({ ids, endpointIds: ["worker-endpoint-1"], initialState, ...harnessOverrides });
   const kernel = new OrchestrationStateKernel({ logger: harness.deps.logger });
   const workerSessions = new WorkerSessionManager(harness.deps, kernel);
   const rpcDelegation = new RpcDelegationService(
@@ -165,4 +165,55 @@ test("config drift during ensure cannot rebind the staged worker engine", async 
   const binding = harness.getState().orchestration.workerBindings[result.workerSession]!;
   expect(binding.logicalSessionId).toBe("lid-1");
   expect(binding.transportEngine).toBe("runtime");
+});
+
+test("reusable worker rebuild preserves the old launch snapshot before ensure", async () => {
+  const initial = createEmptyState();
+  initial.orchestration.workerBindings["backend:claude:reused"] = {
+    sourceHandle: "backend:claude:reused",
+    agentEndpointId: "endpoint_reused-1",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    logicalSessionId: "lid-old",
+    transportEngine: "cli",
+    launchAgentCommand: "npx -y old-pin-claude",
+    launchAcpxAgent: "xacpx-managed-claude-old",
+  };
+  const { harness, humanDelegation } = makeService(["task-9", "lid-9"], initial, undefined, {
+    reusableWorkerSession: "backend:claude:reused",
+  });
+  let atEnsure: { launchAgentCommand?: string } | undefined;
+  const baseEnsure = harness.deps.ensureWorkerSession;
+  harness.deps.ensureWorkerSession = async (request) => {
+    const state = await harness.deps.loadState();
+    atEnsure = {
+      ...(state.orchestration.workerBindings[request.workerSession]?.launchAgentCommand
+        ? { launchAgentCommand: state.orchestration.workerBindings[request.workerSession]?.launchAgentCommand }
+        : {}),
+    };
+    return baseEnsure(request);
+  };
+  const result = await humanDelegation.requestDelegate({
+    sourceHandle: "wx:user-1",
+    sourceKind: "human",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "claude",
+    task: "follow-up work",
+  });
+  expect(result.workerSession).toBe("backend:claude:reused");
+  // Crash point: the reuse shell is durably saved with the old snapshot
+  // before ensure runs — a crash here must not lose the previous owner.
+  expect(atEnsure?.launchAgentCommand).toBe("npx -y old-pin-claude");
+  const persisted = harness.getState().orchestration.workerBindings["backend:claude:reused"]!;
+  expect(persisted.launchAgentCommand).toBe("npx -y old-pin-claude");
+  expect(persisted.launchAcpxAgent).toBe("xacpx-managed-claude-old");
+  const firstSave = harness.calls.find((call) => call.port === "saveState")!;
+  const digest = firstSave.request as {
+    workerBindings: Array<{ key: string; value: { launchAgentCommand?: string } }>;
+  };
+  expect(
+    digest.workerBindings.find((entry) => entry.key === "backend:claude:reused")?.value.launchAgentCommand,
+  ).toBe("npx -y old-pin-claude");
 });

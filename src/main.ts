@@ -56,6 +56,7 @@ import {
 import {
   persistWorkerBindingIdentity,
   persistWorkerBindingLaunch,
+  releaseWorkerOwnerSessions,
   resolveWorkerAgentLaunch,
   shouldGuardWorkerAcpOutput,
 } from "./orchestration/worker-launch";
@@ -1430,6 +1431,9 @@ export async function buildApp(
       cwd,
       logicalSessionId,
       transportEngine,
+      launchAgentCommand,
+      launchAcpxAgent,
+      launchRawCommand,
     }) => {
       const session = resolveWorkerRuntimeSession({
         workerSession,
@@ -1453,7 +1457,14 @@ export async function buildApp(
           `transport cannot converge worker "${workerSession}": no removeSession operation`,
         );
       }
-      await transport.removeSession(session);
+      // Converge the last-dispatched identity alongside the current one (see
+      // releaseWorkerOwnerSessions): the binding is deleted right after this
+      // returns, so a previous-pin owner would otherwise become undiscoverable.
+      await releaseWorkerOwnerSessions(
+        (candidate) => transport.removeSession!(candidate),
+        session,
+        { launchAgentCommand, launchAcpxAgent, launchRawCommand },
+      );
     },
     resumeWorkerTask: async ({
       taskId,

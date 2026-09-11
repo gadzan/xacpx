@@ -5,6 +5,7 @@ import type { AppState, SessionTransportEngine } from "../state/types";
 import { resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
 import type { AgentConfig, TransportConfig } from "../config/types";
 import type { WorkerBindingRecord } from "./orchestration-types";
+import type { ResolvedSession } from "../transport/types";
 import { releaseWorkerRetirement, tryClaimWorkerRetirement } from "./worker-binding-retirement";
 
 /**
@@ -26,6 +27,27 @@ export function workerBindingGuardFields(
   return previousBinding && previousBinding.guardAcpOutput !== true
     ? {}
     : { guardAcpOutput: true };
+}
+
+/**
+ * Preserve a reusable worker's last-dispatched launch snapshot across
+ * whole-object binding reconstructions (reuse shells, post-ensure rebuilds).
+ * Every site that rebuilds an existing binding MUST spread this alongside
+ * the guard/endpoint/engine helpers: dropping the snapshot deletes the only
+ * evidence the reaper and retirement convergence have for the previous
+ * owner's identity after a managed-pin/config change. A crash between the
+ * rebuild's saveState and the next launch snapshot would otherwise orphan
+ * the old owner permanently (ttl=0).
+ */
+export function workerBindingLaunchFields(
+  previousBinding: Pick<WorkerBindingRecord, "launchAgentCommand" | "launchAcpxAgent" | "launchRawCommand"> | undefined,
+): { launchAgentCommand?: string; launchAcpxAgent?: string; launchRawCommand?: string } {
+  if (!previousBinding) return {};
+  return {
+    ...(previousBinding.launchAgentCommand ? { launchAgentCommand: previousBinding.launchAgentCommand } : {}),
+    ...(previousBinding.launchAcpxAgent ? { launchAcpxAgent: previousBinding.launchAcpxAgent } : {}),
+    ...(previousBinding.launchRawCommand ? { launchRawCommand: previousBinding.launchRawCommand } : {}),
+  };
 }
 
 /** Preserve a reusable worker's endpoint identity; mint one for a new binding. */
@@ -260,6 +282,56 @@ export function stageWorkerBindingLaunch(
   return { changed: true, nextState };
 }
 
+/**
+ * The extra owner identity a worker retirement must converge besides the
+ * current resolution: the last-dispatched launch snapshot when it names a
+ * different acpx record. Command-only (no alias): the transport passes it as
+ * `--agent`, which acpx matches verbatim against the old record. Returns
+ * undefined when there is no snapshot or it already matches the current
+ * resolution (same pin, sticky custom, or bare launch).
+ */
+export function historicalWorkerReleaseTarget(
+  current: Pick<ResolvedSession, "agentCommand" | "rawCommand">,
+  snapshot:
+    | Pick<WorkerBindingRecord, "launchAgentCommand" | "launchAcpxAgent" | "launchRawCommand">
+    | undefined,
+): { agentCommand: string } | undefined {
+  const historicalCommand = snapshot?.launchAgentCommand ?? snapshot?.launchRawCommand;
+  if (!historicalCommand) {
+    return undefined;
+  }
+  if (historicalCommand === current.agentCommand || historicalCommand === current.rawCommand) {
+    return undefined;
+  }
+  return { agentCommand: historicalCommand };
+}
+
+/**
+ * Converge a retiring worker's engine-side owner(s): always the current
+ * resolution, then the historical snapshot target when it names a different
+ * record. A throw from either step retains the binding (fail-closed retry),
+ * so the old owner is never stranded by a deleted binding. Missing records
+ * read as success on both steps (transport contract).
+ */
+export async function releaseWorkerOwnerSessions(
+  removeSession: (session: ResolvedSession) => Promise<void>,
+  current: ResolvedSession,
+  snapshot:
+    | Pick<WorkerBindingRecord, "launchAgentCommand" | "launchAcpxAgent" | "launchRawCommand">
+    | undefined,
+): Promise<void> {
+  await removeSession(current);
+  const historical = historicalWorkerReleaseTarget(current, snapshot);
+  if (historical) {
+    await removeSession({
+      ...current,
+      agentCommand: historical.agentCommand,
+      acpxAgent: undefined,
+      rawCommand: undefined,
+      agentArgv: undefined,
+    });
+  }
+}
 /**
  * Persist a worker binding's launch snapshot as one atomic transaction on the
  * shared state mutex (stage on a clone, saveNow, then publish to live state
