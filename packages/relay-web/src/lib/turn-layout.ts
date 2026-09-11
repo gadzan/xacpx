@@ -159,15 +159,16 @@ function sliceEmptyMarkdownNode(
   const relativeEnd = end - node.sourceRange[0];
   // copyText is compositional (a node may carry a block terminator beyond its
   // source span), so source-relative slicing is only valid when the copy has
-  // the same length as the source — true for "" gaps and whitespace fragments
-  // (whitespace serializes to itself). Anything else falls back to the source
-  // slice, which for the empty-html nodes reaching a partial split here is
-  // whitespace or "".
-  const copyText = start === node.sourceRange[0] && end === node.sourceRange[1]
-    ? node.copyText
-    : node.copyText.length === node.source.length
-      ? node.copyText.slice(relativeStart, relativeEnd)
-      : node.source.slice(relativeStart, relativeEnd);
+  // the same length as the source — true for whitespace fragments, which
+  // serialize to themselves. Whole-node passthrough keeps the full semantic
+  // copy. A partial split with no 1:1 projection (notably the "" inter-block
+  // gaps) keeps "" instead of inventing clipboard text from raw geometry.
+  const whole = start === node.sourceRange[0] && end === node.sourceRange[1];
+  let copyText: string;
+  if (whole) copyText = node.copyText;
+  else if (node.copyText.length === node.source.length) {
+    copyText = node.copyText.slice(relativeStart, relativeEnd);
+  } else copyText = "";
   return {
     ...node,
     key: `markdown:${start}:${end}`,

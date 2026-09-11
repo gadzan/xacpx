@@ -152,6 +152,20 @@ describe("planTurnLayout", () => {
     expect([...cached.activityPlacements]).toEqual([...fresh.activityPlacements]);
   });
 
+  it.each([
+    ["grows the inter-block gap", "Before\n\n\nAfter", "Before\n\n\n\nAfter"],
+    ["shrinks the inter-block gap", "Before\n\n\n\nAfter", "Before\n\n\nAfter"],
+  ])("matches a fresh layout when replacement %s around a tool in the gap", (_label, first, second) => {
+    const cache = createTurnLayoutGeometryCache();
+    const activity = [{ id: "tool:read-1", wireIndex: 1, sourceOffset: "Before\n\n".length }];
+    planTurnLayout(first, activity, {}, cache);
+    const cached = planTurnLayout(second, activity, {}, cache);
+    const fresh = planTurnLayout(second, activity, {});
+
+    expect(cached.nodes).toEqual(fresh.nodes);
+    expect([...cached.activityPlacements]).toEqual([...fresh.activityPlacements]);
+  });
+
   it("materializes marker-aware paragraph fragments in source order", () => {
     const narrative = "Working **carefully now** done";
     const offset = "Working **carefully ".length;

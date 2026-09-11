@@ -260,6 +260,15 @@ describe("deriveTurnPresentation", () => {
     expect(extractCollapsedTraceSummary(parts).finalReplyText).toBe("text\n\nNext");
   });
 
+  it("does not copy a split inter-block gap around a tool in the gap", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "Before\n\n" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "\nAfter" },
+    ];
+    expect(extractCollapsedTraceSummary(parts).finalReplyText).toBe("After");
+  });
+
   it("never reorders activities across streaming Markdown prefixes", () => {
     const closing = "** done";
     for (let length = 0; length <= closing.length; length += 1) {
