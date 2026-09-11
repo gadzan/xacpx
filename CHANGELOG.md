@@ -1,4 +1,24 @@
 # Changelog
+## [0.24.4-beta.0] - 2026-09-11
+
+### Added
+
+- Managed adapter pins refreshed: Codex `1.1.9` → `1.10.0`, Claude `0.64.2` → `0.75.1` (ACP initialize probe passes on both; PR #336).
+
+### Fixed
+
+- Queue-owner reaping covers previous-pin identities: crash + pin upgrade no longer orphans the old owner (startup/shutdown/periodic reap emits current + last-dispatched launch identity); worker binding rebuilds preserve the launch snapshot and retirement converges the snapshotted identity before deleting the binding; worker launch snapshot is a first-class ownership identity; worker binding cwd load-time validation restored.
+
+## [relay 0.14.6-beta.0] - 2026-09-11
+
+### Added
+
+- relay-web: canonical turn timeline + unified turn layout presentation — new `turn-timeline.ts`/`turn-layout.ts`/`markdown-layout.ts`, monotonic layout slots, marker-aware paragraphs, cached/coalesced turn layouts (PR #337).
+
+### Fixed
+
+- relay-web: progress/tool interleaving preserved; standalone markdown anchors validated, anchors aligned with preprocessing; block-level streaming cache with bounded lifetime and JSON fingerprints, block-local cache dispositions, per-turn summary cache; compositional `copyText` (raw-inline projection, doc env preserved, baseline-safe marker close, scoped table spacing); never invent clipboard text on partial gap splits.
+
 ## [0.24.3-beta.1] - 2026-09-09
 
 ### Added
