@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PeerMessageHistoryEntry, ToolStepDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
-import { deriveTurnPresentation, type TurnPresentationOptions } from "../lib/turn-presentation";
+import { deriveTurnPresentation, extractCollapsedTraceSummary, type TurnPresentationOptions } from "../lib/turn-presentation";
+import { createTurnLayoutGeometryCache } from "../lib/turn-layout";
 
 const tool = (id: string): ToolStepDto => ({
   toolCallId: id,
@@ -11,23 +12,279 @@ const tool = (id: string): ToolStepDto => ({
 });
 
 const visibleShape = (parts: TurnPartDto[], opts?: TurnPresentationOptions) =>
-  deriveTurnPresentation(parts, opts).map((item) => {
-    if (item.type === "text") return { type: item.type, text: item.text };
+  deriveTurnPresentation(parts, opts).nodes.map((item) => {
+    if (item.type === "markdown") return { type: "text", text: item.source };
     if (item.type === "reasoning") return { type: item.type, text: item.text };
     if (item.type === "agent-message") return { type: item.type, id: item.message.messageId, anchor: item.anchorToolCallId };
     return { type: item.type, id: item.step.toolCallId };
   });
 
 describe("deriveTurnPresentation", () => {
-  it("does not let a tool event split one narrative paragraph", () => {
+  it("reuses layout geometry when only a tool payload changes", () => {
+    const layoutCache = createTurnLayoutGeometryCache();
+    const running = tool("read-1");
+    running.status = "running";
+    const success = { ...running, status: "success" as const };
+    const parts = (step: ToolStepDto): TurnPartDto[] => [
+      { type: "text", text: "before " },
+      { type: "tool", step },
+      { type: "text", text: "after" },
+    ];
+
+    const first = deriveTurnPresentation(parts(running), { layoutCache });
+    const second = deriveTurnPresentation(parts(success), { layoutCache });
+
+    expect(second.layout).toBe(first.layout);
+    const firstTool = first.nodes.find((node) => node.type === "tool");
+    const secondTool = second.nodes.find((node) => node.type === "tool");
+    expect(firstTool?.type === "tool" && firstTool.step.status).toBe("running");
+    expect(secondTool?.type === "tool" && secondTool.step.status).toBe("success");
+  });
+
+  it("uses a single Markdown node for the zero-activity fast path", () => {
+    const presentation = deriveTurnPresentation([
+      { type: "text", text: "first " },
+      { type: "text", text: "**second**" },
+    ]);
+
+    expect(presentation.layout.activityPlacements.size).toBe(0);
+    expect(presentation.nodes).toHaveLength(1);
+    expect(presentation.nodes[0]?.type).toBe("markdown");
+    expect(presentation.nodes[0]?.type === "markdown" && presentation.nodes[0].html)
+      .toContain("<strong>second</strong>");
+  });
+
+  it("keeps repeated plain-text progress updates interleaved with their tools", () => {
+    expect(visibleShape([
+      { type: "text", text: "plan: inspect the reap target" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "plan: inspect the reap target" },
+      { type: "tool", step: tool("read-2") },
+      { type: "text", text: "plan: inspect the reap target" },
+      { type: "tool", step: tool("edit-1") },
+      { type: "text", text: "High 修完，继续检查。" },
+    ])).toEqual([
+      { type: "text", text: "plan: inspect the reap target" },
+      { type: "tool", id: "read-1" },
+      { type: "text", text: "plan: inspect the reap target" },
+      { type: "tool", id: "read-2" },
+      { type: "text", text: "plan: inspect the reap target" },
+      { type: "tool", id: "edit-1" },
+      { type: "text", text: "High 修完，继续检查。" },
+    ]);
+  });
+
+  it("keeps progress interleaved before a later Markdown result block", () => {
+    expect(visibleShape([
+      { type: "text", text: "plan A " },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "plan B" },
+      { type: "tool", step: tool("read-2") },
+      { type: "text", text: "\n\n## Result\nDone" },
+    ])).toEqual([
+      { type: "text", text: "plan A " },
+      { type: "tool", id: "read-1" },
+      { type: "text", text: "plan B" },
+      { type: "tool", id: "read-2" },
+      { type: "text", text: "\n\n## Result\nDone" },
+    ]);
+  });
+
+  it("keeps a tool event at a safe plain-text paragraph offset", () => {
     expect(visibleShape([
       { type: "text", text: "before " },
       { type: "tool", step: tool("read-1") },
       { type: "text", text: "after" },
     ])).toEqual([
-      { type: "text", text: "before after" },
+      { type: "text", text: "before " },
+      { type: "tool", id: "read-1" },
+      { type: "text", text: "after" },
+    ]);
+  });
+
+  it("interleaves without reparsing a heading-like suffix", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "before " },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "# not a heading" },
+    ];
+    expect(visibleShape(parts)).toEqual([
+      { type: "text", text: "before " },
+      { type: "tool", id: "read-1" },
+      { type: "text", text: "# not a heading" },
+    ]);
+    const markdown = deriveTurnPresentation(parts).nodes
+      .filter((node) => node.type === "markdown");
+    expect(markdown[1]!.html).toContain("<p># not a heading</p>");
+    expect(markdown[1]!.html).not.toContain("<h1>");
+  });
+
+  it("interleaves without normalizing a pipe-prose suffix into a table", () => {
+    expect(visibleShape([
+      { type: "text", text: "Progress: " },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "| a | b |\n| 1 | 2 |" },
+    ])).toEqual([
+      { type: "text", text: "Progress: " },
+      { type: "tool", id: "read-1" },
+      { type: "text", text: "| a | b |\n| 1 | 2 |" },
+    ]);
+  });
+
+  it("keeps streaming activity exact while marker-aware remend heals the paragraph", () => {
+    const incomplete: TurnPartDto[] = [
+      { type: "text", text: "Working **carefully " },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "now" },
+    ];
+    const completed: TurnPartDto[] = [
+      ...incomplete.slice(0, -1),
+      { type: "text", text: "now** done" },
+    ];
+    const expectedIncomplete = [
+      { type: "text", text: "Working **carefully " },
+      { type: "tool", id: "read-1" },
+      { type: "text", text: "now" },
+    ];
+    const expectedCompleted = [
+      { type: "text", text: "Working **carefully " },
+      { type: "tool", id: "read-1" },
+      { type: "text", text: "now** done" },
+    ];
+
+    expect(visibleShape(incomplete, { streaming: true })).toEqual(expectedIncomplete);
+    expect(visibleShape(completed, { streaming: true })).toEqual(expectedCompleted);
+  });
+
+  it("renders a reference-dependent paragraph from the shared document env", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "See [docs][ref]" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "\n\n[ref]: https://example.com" },
+    ];
+    expect(visibleShape(parts)).toEqual([
+      { type: "text", text: "See [docs][ref]" },
       { type: "tool", id: "read-1" },
     ]);
+    const markdown = deriveTurnPresentation(parts).nodes.find((node) => node.type === "markdown");
+    expect(markdown?.type === "markdown" && markdown.html).toContain('href="https://example.com"');
+  });
+
+  it("keeps a reference link alive when table normalization forces a block reparse", () => {
+    // The first paragraph needs table normalization (missing delimiter row),
+    // which forces renderAtomicBlock down the standalone-reparse path; without
+    // the document env the [docs][ref] link would render as literal text.
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "See [docs][ref]\n| a | b |\n| 1 | 2 |" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: " plus tail\n\n[ref]: https://example.com\n\nfinal" },
+    ];
+    const markdown = deriveTurnPresentation(parts).nodes
+      .filter((node) => node.type === "markdown");
+    expect(markdown.length).toBeGreaterThan(0);
+    expect(markdown.some((node) => node.type === "markdown" && node.html.includes('href="https://example.com"'))).toBe(true);
+  });
+
+  it("copies the displayed final reply instead of a raw broken fragment", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "I'll inspect **this " },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "carefully**. Fixed." },
+    ];
+    const presentation = deriveTurnPresentation(parts);
+    const hidden = presentation.nodes.filter((node) => node.type === "markdown");
+    expect(hidden.length).toBeGreaterThan(0);
+    expect(presentation.finalReplyNodes.map((node) => node.source).join("")).toContain("carefully**. Fixed.");
+    // Node copyText stays compositional (block terminator included); only the
+    // final joined reply is outer-trimmed.
+    expect(presentation.finalReplyNodes.map((node) => node.copyText).join(""))
+      .toBe("carefully. Fixed.\n\n");
+    expect(extractCollapsedTraceSummary(parts).finalReplyText).toBe("carefully. Fixed.");
+    expect(extractCollapsedTraceSummary(parts).finalReplyText).not.toContain("**");
+  });
+
+  it("copies an image-only final reply as its alt text instead of nothing", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "Before " },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "![plot](https://example.com/p.png)" },
+    ];
+    const presentation = deriveTurnPresentation(parts);
+    expect(presentation.finalReplyNodes.map((node) => node.source).join(""))
+      .toBe("![plot](https://example.com/p.png)");
+    expect(presentation.finalReplyNodes.map((node) => node.copyText).join("")).toBe("plot\n\n");
+    expect(extractCollapsedTraceSummary(parts).finalReplyText).toBe("plot");
+  });
+
+  it("copies a reference link label without leaking its definition", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "See [docs][ref]" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: " now\n\n[ref]: https://example.com" },
+    ];
+    const presentation = deriveTurnPresentation(parts);
+    expect(presentation.finalReplyNodes.map((node) => node.copyText).join("")).toBe(" now\n\n");
+    expect(extractCollapsedTraceSummary(parts).finalReplyText).toBe(" now");
+    expect(extractCollapsedTraceSummary(parts).finalReplyText)
+      .not.toContain("[ref]: https://example.com");
+  });
+
+  it("keeps a newline between a healed table and the following paragraph when copying", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "Working" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "\n\n| a | b |\n| 1 | 2 |\n\nAfter" },
+    ];
+    const text = extractCollapsedTraceSummary(parts).finalReplyText;
+    expect(text).not.toContain("2After");
+    expect(text).toMatch(/2\n+After/);
+  });
+
+  it("keeps a blank line between a split paragraph and the next paragraph when copying", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "Before " },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "after\n\nNext" },
+    ];
+    expect(extractCollapsedTraceSummary(parts).finalReplyText).toBe("after\n\nNext");
+  });
+
+  it("combines synthetic strong reopening with the block separator when copying", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "Before **some " },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "text**\n\nNext" },
+    ];
+    // "Before some " precedes the activity so it stays out of the final reply;
+    // the reply fragment carries no dangling "**" and still separates from Next.
+    expect(extractCollapsedTraceSummary(parts).finalReplyText).toBe("text\n\nNext");
+  });
+
+  it("does not copy a split inter-block gap around a tool in the gap", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "Before\n\n" },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "\nAfter" },
+    ];
+    expect(extractCollapsedTraceSummary(parts).finalReplyText).toBe("After");
+  });
+
+  it("never reorders activities across streaming Markdown prefixes", () => {
+    const closing = "** done";
+    for (let length = 0; length <= closing.length; length += 1) {
+      const presentation = deriveTurnPresentation([
+        { type: "text", text: "Working **carefully " },
+        { type: "tool", step: tool("read-1") },
+        { type: "text", text: "now" },
+        { type: "tool", step: tool("read-2") },
+        { type: "text", text: closing.slice(0, length) },
+      ], { streaming: true });
+      expect(presentation.nodes
+        .filter((node) => node.type === "tool")
+        .map((node) => node.step.toolCallId)).toEqual(["read-1", "read-2"]);
+      const placements = [...presentation.layout.activityPlacements.values()];
+      expect(placements[1]!.effectiveSlot).toBeGreaterThanOrEqual(placements[0]!.effectiveSlot);
+    }
   });
 
   it("places a tool at the semantic paragraph boundary inserted by the transport", () => {
@@ -77,14 +334,15 @@ describe("deriveTurnPresentation", () => {
     ]);
   });
 
-  it("treats a single line break as part of the same Markdown paragraph", () => {
+  it("keeps a tool event at a safe soft-break offset", () => {
     expect(visibleShape([
       { type: "text", text: "line one\n" },
       { type: "tool", step: tool("read-1") },
       { type: "text", text: "line two" },
     ])).toEqual([
-      { type: "text", text: "line one\nline two" },
+      { type: "text", text: "line one\n" },
       { type: "tool", id: "read-1" },
+      { type: "text", text: "line two" },
     ]);
   });
 
@@ -95,7 +353,7 @@ describe("deriveTurnPresentation", () => {
       { type: "text", text: "after" },
     ])).toEqual([
       { type: "tool", id: "read-1" },
-      { type: "text", text: " \nafter" },
+      { type: "text", text: "after" },
     ]);
   });
 
@@ -147,8 +405,8 @@ describe("deriveTurnPresentation", () => {
         { type: "text", text: "after" },
       ],
       { sentAgentMessageById: new Map([["m1", entry]]) },
-    );
-    expect(items.map((item) => item.type)).toEqual(["text", "tool", "agent-message", "text"]);
+    ).nodes;
+    expect(items.map((item) => item.type)).toEqual(["markdown", "tool", "agent-message", "markdown"]);
     const card = items[2]!;
     expect(card.type).toBe("agent-message");
     if (card.type === "agent-message") {

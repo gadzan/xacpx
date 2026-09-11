@@ -235,12 +235,51 @@ describe("MessageList", () => {
 
     const turnParts = wrapper.findComponent(TurnParts);
     expect(turnParts.exists()).toBe(true);
-    expect(turnParts.props("collapsedReplyText")).toBe("Fixed. The issue was X.");
-    expect(turnParts.props("collapsedToolCount")).toBe(1);
-    expect(turnParts.props("collapsedThoughtCount")).toBe(0);
+    const presentation = turnParts.props("presentation");
+    if (!presentation) throw new Error("expected a precomputed presentation");
+    expect(presentation.finalReplyNodes.map((node: { source: string }) => node.source).join(""))
+      .toBe("Fixed. The issue was X.");
+    expect(presentation.toolCount).toBe(1);
+    expect(presentation.thoughtCount).toBe(0);
     const copy = wrapper.find('[data-test="msg-out"] [data-test="msg-actions"]').findComponent(CopyButton);
     expect(copy.exists()).toBe(true);
-    expect(copy.props("text")).toBe("Fixed. The issue was X.");
+  });
+
+  it("keeps cached collapsed presentations when unrelated transcript rows arrive", async () => {
+    const messages = ["a", "b"].map((label) => msg({
+      direction: "out",
+      text: `${label} final.`,
+      status: "done",
+      structured: {
+        parts: [
+          { type: "text", text: `${label} working.` },
+          { type: "tool", step: sendStep(`read-${label}`) },
+          { type: "text", text: `${label} final.` },
+        ],
+      },
+    }));
+    const wrapper = mount(MessageList, {
+      props: { messages, liveTurn: null },
+    });
+    const before = wrapper.findAllComponents(TurnParts).map((parts) => parts.props("presentation"));
+    expect(before).toHaveLength(2);
+
+    // An unrelated user prompt plus an unrelated sent card rebuild the global
+    // sent-message map, but neither turn anchors the new id — both cached
+    // presentations (and their layouts) must survive untouched.
+    await wrapper.setProps({
+      messages: [
+        ...messages,
+        msg({ direction: "in", text: "unrelated question" }),
+        sentCard("unrelated-id"),
+      ],
+    });
+    const after = wrapper.findAllComponents(TurnParts).map((parts) => parts.props("presentation"));
+    for (const [index, presentation] of after.entries()) {
+      if (!presentation) throw new Error("expected a precomputed presentation");
+      expect(presentation).toBe(before[index]);
+      expect(presentation.layout).toBe(before[index]!.layout);
+    }
   });
 
   it("omits the assistant copy button when the turn ends on a process item with no final reply", () => {
@@ -356,6 +395,101 @@ describe("MessageList", () => {
     expect(bubble.find(".stream-md.caret").exists()).toBe(true);
   });
 
+  it("does not create a table by splitting pipe prose around live activity", () => {
+    const wrapper = mount(MessageList, {
+      props: {
+        messages: [],
+        liveTurn: live([
+          { type: "text", text: "Progress: " },
+          {
+            type: "tool",
+            step: {
+              toolCallId: "read-1",
+              toolName: "Read",
+              kind: "read",
+              status: "success",
+              title: "index.css",
+            },
+          },
+          { type: "text", text: "| a | b |\n| 1 | 2 |" },
+        ]),
+      },
+    });
+
+    const bubble = wrapper.find('[data-test="msg-streaming"]');
+    const narratives = bubble.findAll(".stream-md");
+    const tool = bubble.find('[data-test="tool-step-header"]');
+    expect(narratives).toHaveLength(2);
+    expect(bubble.find("table").exists()).toBe(false);
+    expect(
+      narratives[0]!.element.compareDocumentPosition(tool.element)
+      & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      tool.element.compareDocumentPosition(narratives[1]!.element)
+      & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("keeps activity inside a streaming strong span without changing wire order", async () => {
+    const incompleteParts: LiveTurn["parts"] = [
+      { type: "text", text: "Working **carefully " },
+      {
+        type: "tool",
+        step: {
+          toolCallId: "read-1",
+          toolName: "Read",
+          kind: "read",
+          status: "success",
+          title: "index.css",
+        },
+      },
+      { type: "text", text: "now" },
+    ];
+    const wrapper = mount(MessageList, {
+      props: { messages: [], liveTurn: live(incompleteParts) },
+    });
+
+    let bubble = wrapper.find('[data-test="msg-streaming"]');
+    let narratives = bubble.findAll(".stream-md");
+    let tool = bubble.find('[data-test="tool-step-header"]');
+    expect(narratives).toHaveLength(2);
+    expect(narratives[0]!.html()).toContain("<strong>carefully </strong>");
+    expect(narratives[1]!.html()).toContain("<strong>now</strong>");
+    expect(
+      narratives[0]!.element.compareDocumentPosition(tool.element)
+      & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      tool.element.compareDocumentPosition(narratives[1]!.element)
+      & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    await wrapper.setProps({
+      liveTurn: live([
+        ...incompleteParts.slice(0, -1),
+        { type: "text", text: "now** done" },
+      ]),
+    });
+    await vi.waitFor(() => {
+      const updated = wrapper.findAll('[data-test="msg-streaming"] .stream-md');
+      expect(updated).toHaveLength(2);
+      expect(updated[0]!.html()).toContain("<strong>carefully </strong>");
+      expect(updated[1]!.html()).toContain("<strong>now</strong> done");
+    });
+    bubble = wrapper.find('[data-test="msg-streaming"]');
+    narratives = bubble.findAll(".stream-md");
+    tool = bubble.find('[data-test="tool-step-header"]');
+    expect(
+      narratives[0]!.element.compareDocumentPosition(tool.element)
+      & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      tool.element.compareDocumentPosition(narratives[1]!.element)
+      & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it("keeps a caret host when streaming Markdown ends with a horizontal rule", () => {
     const wrapper = mount(MessageList, {
       props: { messages: [], liveTurn: live([{ type: "text", text: "---" }]) },
@@ -366,7 +500,7 @@ describe("MessageList", () => {
     expect(narrative.find(":scope > hr:last-child").exists()).toBe(true);
   });
 
-  it("keeps one paragraph continuous and places its activity after the paragraph", () => {
+  it("keeps plain-text progress updates interleaved with activity", () => {
     const wrapper = mount(MessageList, {
       props: {
         messages: [],
@@ -389,20 +523,26 @@ describe("MessageList", () => {
     });
 
     const bubble = wrapper.find('[data-test="msg-streaming"]');
-    expect(bubble.findAll(".stream-md")).toHaveLength(1);
-    expect(bubble.find(".stream-md").text()).toBe(
-      "先检查这一层的 flex，再确认间接约束行高。",
-    );
+    const narratives = bubble.findAll(".stream-md");
+    expect(narratives).toHaveLength(2);
+    expect(narratives.map((item) => item.text())).toEqual([
+      "先检查这一层的 flex，",
+      "再确认间接约束行高。",
+    ]);
     const toolHeader = bubble.find('[data-test="tool-step-header"]');
     const reasoningPanel = bubble.findComponent({ name: "ReasoningPanel" });
     expect(toolHeader.exists()).toBe(true);
     expect(reasoningPanel.exists()).toBe(true);
     expect(
-      bubble.find(".stream-md").element.compareDocumentPosition(toolHeader.element)
+      narratives[0]!.element.compareDocumentPosition(toolHeader.element)
       & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(
       toolHeader.element.compareDocumentPosition(reasoningPanel.element)
+      & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      reasoningPanel.element.compareDocumentPosition(narratives[1]!.element)
       & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
@@ -907,7 +1047,7 @@ it("renders legacy persisted tool steps (no parts) in a collapsed panel", () => 
   expect(wrapper.find('[data-test="tool-row"]').exists()).toBe(false);
 });
 
-it("replays persisted activity after the Markdown block it interrupted", async () => {
+it("replays persisted activity inside marker-aware continuous prose", async () => {
   const wrapper = mount(MessageList, {
     props: {
       messages: [msg({
@@ -927,19 +1067,25 @@ it("replays persisted activity after the Markdown block it interrupted", async (
   });
   await expandTrace(wrapper);
   const output = wrapper.find('[data-test="msg-out"]');
-  expect(output.findAll(".stream-md")).toHaveLength(1);
-  expect(output.find(".stream-md").html()).toContain("<strong>continuous prose</strong>");
+  const narratives = output.findAll(".stream-md");
+  expect(narratives).toHaveLength(2);
+  expect(narratives[0]!.html()).toContain("<strong>continuous</strong>");
+  expect(narratives[1]!.html()).toContain("<strong> prose</strong>");
   const tool = wrapper.findComponent(ToolStepCard);
   const reasoning = wrapper.findComponent({ name: "ReasoningPanel" });
   expect(tool.exists()).toBe(true);
   expect(wrapper.findComponent(ToolCallPanel).exists()).toBe(false);
   expect(reasoning.exists()).toBe(true);
   expect(
-    output.find(".stream-md").element.compareDocumentPosition(tool.element)
+    narratives[0]!.element.compareDocumentPosition(tool.element)
     & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
   expect(
     tool.element.compareDocumentPosition(reasoning.element)
+    & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(
+    reasoning.element.compareDocumentPosition(narratives[1]!.element)
     & Node.DOCUMENT_POSITION_FOLLOWING,
   ).toBeTruthy();
 });

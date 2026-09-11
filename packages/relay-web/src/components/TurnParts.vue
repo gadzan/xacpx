@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { ChevronDown, ChevronRight } from "lucide-vue-next";
 import type { PeerMessageHistoryEntry, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
@@ -8,12 +8,13 @@ import ReasoningPanel from "./ReasoningPanel.vue";
 import ToolStepCard from "./ToolStepCard.vue";
 import SubagentStepCard from "./SubagentStepCard.vue";
 import AgentMessageCard from "./AgentMessageCard.vue";
-import { deriveTurnPresentation, extractFinalReplyText } from "../lib/turn-presentation";
+import {
+  deriveTurnPresentation,
+  type TurnPresentationPlan,
+} from "../lib/turn-presentation";
+import { createTurnLayoutGeometryCache } from "../lib/turn-layout";
 import { expandedTraces } from "../lib/trace-expansion";
 
-// Wire parts preserve arrival order, but transport events are not necessarily safe
-// Markdown boundaries. The presentation module anchors activity after the top-level
-// Markdown block that was in progress when the activity arrived.
 const props = defineProps<{
   parts: TurnPartDto[];
   streaming?: boolean;
@@ -29,28 +30,57 @@ const props = defineProps<{
   traceKey?: string;
   /** Display-only turn duration (finished rows). Absent/non-positive → counts only. */
   traceElapsedMs?: number | null;
-  /** Precomputed final reply text (e.g. cached by parent MessageList). When provided,
-   *  extractFinalReplyText is bypassed on collapsed turns. */
-  collapsedReplyText?: string;
-  /** Precomputed trace activity counts (e.g. cached by parent MessageList). When provided,
-   *  reading presentation is bypassed while collapsed so full layout derivation is deferred
-   *  until the user explicitly clicks to expand. */
-  collapsedToolCount?: number;
-  collapsedThoughtCount?: number;
+  presentation?: TurnPresentationPlan;
 }>();
 
 const { t, locale } = useI18n();
 
-const presentation = computed(() =>
-  deriveTurnPresentation(
+const layoutCache = createTurnLayoutGeometryCache();
+const derivePresentation = (): TurnPresentationPlan =>
+  props.presentation ?? deriveTurnPresentation(
     props.parts,
-    props.sentAgentMessages ? { sentAgentMessageById: props.sentAgentMessages } : undefined,
-  ),
+    {
+      streaming: props.streaming === true,
+      layoutCache,
+      ...(props.sentAgentMessages ? { sentAgentMessageById: props.sentAgentMessages } : {}),
+    },
+  );
+const presentation = shallowRef(derivePresentation());
+let presentationFrame: number | null = null;
+
+function cancelPresentationFrame(): void {
+  if (presentationFrame === null) return;
+  cancelAnimationFrame(presentationFrame);
+  presentationFrame = null;
+}
+
+function refreshPresentation(): void {
+  presentation.value = derivePresentation();
+}
+
+watch(
+  () => [props.parts, props.presentation, props.sentAgentMessages, props.streaming],
+  () => {
+    if (
+      props.presentation
+      || props.streaming !== true
+      || typeof requestAnimationFrame !== "function"
+    ) {
+      cancelPresentationFrame();
+      refreshPresentation();
+      return;
+    }
+    if (presentationFrame !== null) return;
+    presentationFrame = requestAnimationFrame(() => {
+      presentationFrame = null;
+      refreshPresentation();
+    });
+  },
+  { deep: true },
 );
 
-// A finished turn collapses everything up through its last process item (tool or
-// non-empty reasoning). The conversational final reply is extracted safely respecting
-// Markdown block boundaries via extractFinalReplyText.
+onBeforeUnmount(cancelPresentationFrame);
+
 const lastProcessPartIndex = computed(() =>
   props.parts.findLastIndex(
     (part) =>
@@ -70,38 +100,13 @@ const expanded = computed(() => {
   return props.traceKey ? expandedTraces.has(props.traceKey) : localExpanded.value;
 });
 
-const finalReplyText = computed(() =>
-  props.collapsedReplyText !== undefined
-    ? props.collapsedReplyText
-    : extractFinalReplyText(props.parts, { presentation: presentation.value }),
+const visibleItems = computed(() =>
+  expanded.value || !collapsible.value
+    ? presentation.value.nodes
+    : presentation.value.finalReplyNodes,
 );
-
-// Collapsed view: directly construct a single text presentation item from the
-// Markdown-safe trailing reply text. When expanded (or when the turn has no
-// process to fold), deriveTurnPresentation provides the full interleaved layout.
- const visibleItems = computed(() => {
-   if (expanded.value || !collapsible.value) return presentation.value;
-  const text = finalReplyText.value;
-   if (!text.trim()) return [];
-   return [
-     {
-       key: "collapsed-final-reply",
-       type: "text" as const,
-       text,
-       isLatest: false,
-     },
-   ];
- });
-const toolCount = computed(() =>
-  props.collapsedToolCount !== undefined
-    ? props.collapsedToolCount
-    : presentation.value.filter((item) => item.type === "tool" || item.type === "subagent").length,
-);
-const thoughtCount = computed(() =>
-  props.collapsedThoughtCount !== undefined
-    ? props.collapsedThoughtCount
-    : presentation.value.filter((item) => item.type === "reasoning").length,
-);
+const toolCount = computed(() => presentation.value.toolCount);
+const thoughtCount = computed(() => presentation.value.thoughtCount);
 
 function formatElapsed(ms: number): string {
   if (ms < 1000) return locale.value.startsWith("zh") ? "<1秒" : "<1s";
@@ -147,8 +152,8 @@ function toggleTrace(): void {
       <span data-test="trace-label">{{ headerLabel }}</span>
     </button>
     <template v-for="item in visibleItems" :key="item.key">
-      <StreamMarkdown v-if="item.type === 'text'" data-test="turn-narrative"
-                      :text="item.text" :streaming="streaming === true && item.isLatest"
+      <StreamMarkdown v-if="item.type === 'markdown'" data-test="turn-narrative"
+                      :rendered-html="item.html" :streaming="streaming === true && item.isLatest"
                       class="text-[14px] leading-relaxed text-fg"
                       :class="streaming === true && item.isLatest ? 'caret' : ''" />
       <ReasoningPanel v-else-if="item.type === 'reasoning'"
@@ -161,7 +166,7 @@ function toggleTrace(): void {
       <div v-else-if="item.type === 'agent-message'" data-test="turn-agent-message">
         <AgentMessageCard :message="item.message" anchored />
       </div>
-      <SubagentStepCard v-else :step="item.step" :children="item.children" :ensure-full="ensureFull" />
+      <SubagentStepCard v-else-if="item.type === 'subagent'" :step="item.step" :children="item.children" :ensure-full="ensureFull" />
     </template>
   </div>
 </template>

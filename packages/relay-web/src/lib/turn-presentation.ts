@@ -1,10 +1,18 @@
 import type { PeerMessageHistoryEntry, ToolStepDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
-import { isSafeInlineParagraphOffset, markdownBlockBoundaries, topLevelBlockAt } from "./render-markdown";
-import { normalizeMarkdownTables } from "./normalize-markdown";
-import { hasToolStepAncestor, indexToolSteps } from "./subagent-trace";
+import { markdownSourceToPlainText, renderMarkdown } from "./render-markdown";
+import {
+  planTurnLayout,
+  type MarkdownLayoutNode,
+  type TurnLayoutGeometryCache,
+  type TurnLayoutPlan,
+} from "./turn-layout";
+import { buildTurnTimeline, type TimelineActivity } from "./turn-timeline";
+import { indexToolSteps } from "./subagent-trace";
+
+export type TurnPresentationMarkdownItem = MarkdownLayoutNode;
 
 export type TurnPresentationItem =
-  | { key: string; type: "text"; text: string; isLatest: boolean }
+  | TurnPresentationMarkdownItem
   | { key: string; type: "reasoning"; text: string; isLatest: boolean }
   | { key: string; type: "tool"; step: ToolStepDto; isLatest: boolean }
   | {
@@ -22,22 +30,44 @@ export type TurnPresentationItem =
       isLatest: boolean;
     };
 
-/** Optional composition inputs. `sentAgentMessageById` keys SENT peer-message
- *  history entries by messageId so the sent card can be joined — presentation-only —
- *  to the exact agent_send tool step whose structured receipt carries that id.
- *  The persisted rows stay the canonical record; nothing here mutates them. */
-export interface TurnPresentationOptions {
-  sentAgentMessageById?: Map<string, PeerMessageHistoryEntry>;
+export interface TurnPresentationPlan {
+  nodes: TurnPresentationItem[];
+  finalReplyNodes: TurnPresentationMarkdownItem[];
+  layout: TurnLayoutPlan;
+  toolCount: number;
+  thoughtCount: number;
 }
 
-type ActivityPart =
-  | Exclude<TurnPartDto, { type: "text" }>
-  | { type: "subagent"; step: ToolStepDto; children: ToolStepDto[] };
+export interface TurnPresentationOptions {
+  sentAgentMessageById?: Map<string, PeerMessageHistoryEntry>;
+  streaming?: boolean;
+  layoutCache?: TurnLayoutGeometryCache;
+}
 
-/** MessageIds these parts can anchor a sent card to: every tool step's
- *  `agentMessageId`, including steps folded into subagent activities. Mirrors the
- *  anchoring deriveTurnPresentation performs, so a caller can suppress a standalone
- *  card row exactly when the card renders inside a turn. */
+type DecoratedActivity =
+  | {
+      id: string;
+      wireIndex: number;
+      sourceOffset: number;
+      type: "reasoning";
+      text: string;
+    }
+  | {
+      id: string;
+      wireIndex: number;
+      sourceOffset: number;
+      type: "tool";
+      step: ToolStepDto;
+    }
+  | {
+      id: string;
+      wireIndex: number;
+      sourceOffset: number;
+      type: "subagent";
+      step: ToolStepDto;
+      children: ToolStepDto[];
+    };
+
 export function anchoredAgentMessageIds(parts: TurnPartDto[]): Set<string> {
   const ids = new Set<string>();
   for (const part of parts) {
@@ -46,78 +76,145 @@ export function anchoredAgentMessageIds(parts: TurnPartDto[]): Set<string> {
   return ids;
 }
 
-export function deriveTurnPresentation(
-  parts: TurnPartDto[],
-  opts?: TurnPresentationOptions,
-): TurnPresentationItem[] {
-  const latestVisibleIndex = parts.findLastIndex((part) =>
-    part.type === "tool" || part.text.trim().length > 0,
-  );
-  const toolSteps = parts
-    .filter((part): part is Extract<TurnPartDto, { type: "tool" }> => part.type === "tool")
-    .map((part) => part.step);
+function decorateActivities(
+  timelineActivities: readonly TimelineActivity[],
+): DecoratedActivity[] {
+  const toolSteps = timelineActivities
+    .filter((activity): activity is TimelineActivity & {
+      payload: Extract<TurnPartDto, { type: "tool" }>;
+    } => activity.payload.type === "tool")
+    .map((activity) => activity.payload.step);
   const stepsById = indexToolSteps(toolSteps);
   const subagentIds = new Set(
     toolSteps.filter((step) => step.isSubagent === true).map((step) => step.toolCallId),
   );
-  const descendantsOf = (parentToolCallId: string) =>
-    toolSteps.filter((step) =>
-      hasToolStepAncestor(step, stepsById, (ancestorId) => ancestorId === parentToolCallId),
-    );
-  let narrative = "";
-  const activities: Array<{
-    offset: number;
-    index: number;
-    part: ActivityPart;
-  }> = [];
-
-  parts.forEach((part, index) => {
-    if (part.type === "text") {
-      narrative += part.text;
-      return;
-    }
-    if (part.type === "reasoning" && !part.text.trim()) return;
-    if (
-      part.type === "tool"
-      && hasToolStepAncestor(part.step, stepsById, (ancestorId) => subagentIds.has(ancestorId))
-    ) return;
-    if (part.type === "tool" && part.step.isSubagent) {
-      activities.push({
-        offset: narrative.length,
-        index,
-        part: {
-          type: "subagent",
-          step: part.step,
-          children: descendantsOf(part.step.toolCallId),
-        },
-      });
-      return;
-    }
-    activities.push({ offset: narrative.length, index, part });
-  });
-
-  const boundaries = markdownBlockBoundaries(narrative);
-
-  const anchored = new Map<number, typeof activities>();
-  for (const activity of activities) {
-    const anchor = narrative.slice(0, activity.offset).trim().length === 0
-      ? 0
-      : (boundaries.find((boundary) => boundary >= activity.offset) ?? narrative.length);
-    const group = anchored.get(anchor) ?? [];
-    group.push(activity);
-    anchored.set(anchor, group);
+  const rootSubagentByStep = new Map<string, string | null>();
+  const resolvingSubagents = new Set<string>();
+  const rootSubagentOf = (step: ToolStepDto): string | null => {
+    const cached = rootSubagentByStep.get(step.toolCallId);
+    if (cached !== undefined) return cached;
+    if (resolvingSubagents.has(step.toolCallId)) return null;
+    resolvingSubagents.add(step.toolCallId);
+    const parentId = step.parentToolCallId;
+    const parent = parentId ? stepsById.get(parentId) : undefined;
+    const parentRoot = parent ? rootSubagentOf(parent) : null;
+    const rootSubagentId = parentRoot ?? (parentId && subagentIds.has(parentId) ? parentId : null);
+    resolvingSubagents.delete(step.toolCallId);
+    rootSubagentByStep.set(step.toolCallId, rootSubagentId);
+    return rootSubagentId;
+  };
+  const descendantsByParent = new Map<string, ToolStepDto[]>();
+  for (const step of toolSteps) {
+    const rootSubagentId = rootSubagentOf(step);
+    if (!rootSubagentId) continue;
+    const descendants = descendantsByParent.get(rootSubagentId) ?? [];
+    descendants.push(step);
+    descendantsByParent.set(rootSubagentId, descendants);
   }
 
-  const result: TurnPresentationItem[] = [];
-  let cursor = 0;
+  const result: DecoratedActivity[] = [];
+  for (const activity of timelineActivities) {
+    if (activity.payload.type === "reasoning") {
+      if (!activity.payload.text.trim()) continue;
+      result.push({
+        id: activity.id,
+        wireIndex: activity.wireIndex,
+        sourceOffset: activity.sourceOffset,
+        type: "reasoning",
+        text: activity.payload.text,
+      });
+      continue;
+    }
+    const step = activity.payload.step;
+    if (rootSubagentOf(step)) {
+      continue;
+    }
+    if (step.isSubagent) {
+      result.push({
+        id: activity.id,
+        wireIndex: activity.wireIndex,
+        sourceOffset: activity.sourceOffset,
+        type: "subagent",
+        step,
+        children: descendantsByParent.get(step.toolCallId) ?? [],
+      });
+      continue;
+    }
+    result.push({
+      id: activity.id,
+      wireIndex: activity.wireIndex,
+      sourceOffset: activity.sourceOffset,
+      type: "tool",
+      step,
+    });
+  }
+  return result;
+}
 
-  // Sent cards join right after the exact tool step that produced them (a send made
-  // inside a subagent anchors after the whole subagent activity). Each messageId
-  // anchors at most once; receiver-direction entries never join — those stay
-  // standalone timeline rows.
+export function deriveTurnPresentation(
+  parts: TurnPartDto[],
+  options: TurnPresentationOptions = {},
+): TurnPresentationPlan {
+  const timeline = buildTurnTimeline(parts);
+  const activities = decorateActivities(timeline.activities);
+  const latestVisibleWireIndex = parts.findLastIndex((part) =>
+    part.type === "tool" || part.text.trim().length > 0,
+  );
+  const latestVisibleIsText = latestVisibleWireIndex >= 0
+    && parts[latestVisibleWireIndex]?.type === "text";
+  if (activities.length === 0) {
+    const html = timeline.narrative.trim()
+      ? renderMarkdown(timeline.narrative, {
+        streaming: options.streaming === true && latestVisibleIsText,
+      })
+      : "";
+    const markdownNode: MarkdownLayoutNode | null = timeline.narrative.length > 0
+      ? {
+        type: "markdown",
+        key: `markdown:0:${timeline.narrative.length}`,
+        sourceRange: [0, timeline.narrative.length],
+        source: timeline.narrative,
+        html,
+        copyText: html.trim()
+          ? markdownSourceToPlainText(timeline.narrative, {
+            streaming: options.streaming === true && latestVisibleIsText,
+          })
+          : "",
+        isLatest: options.streaming === true && latestVisibleIsText,
+      }
+      : null;
+    const layout: TurnLayoutPlan = {
+      nodes: markdownNode ? [markdownNode] : [],
+      activityPlacements: new Map(),
+    };
+    return {
+      nodes: markdownNode && html.trim() ? [markdownNode] : [],
+      finalReplyNodes: markdownNode && html.trim() ? [markdownNode] : [],
+      layout,
+      toolCount: 0,
+      thoughtCount: 0,
+    };
+  }
+  const layout = planTurnLayout(
+    timeline.narrative,
+    activities.map(({ id, wireIndex, sourceOffset }) => ({
+      id,
+      wireIndex,
+      sourceOffset,
+    })),
+    {
+      streaming: options.streaming === true,
+      latestVisibleIsText,
+    },
+    options.layoutCache,
+  );
+  const activityById = new Map(activities.map((activity) => [activity.id, activity]));
+  const nodes: TurnPresentationItem[] = [];
+  const markdownByKey = new Map<string, TurnPresentationMarkdownItem>();
   const anchoredMessageIds = new Set<string>();
-  const pushAgentMessages = (steps: ToolStepDto[]): void => {
-    const byId = opts?.sentAgentMessageById;
+
+  const pushAgentMessages = (steps: readonly ToolStepDto[]): void => {
+    const byId = options.sentAgentMessageById;
     if (!byId || byId.size === 0) return;
     for (const step of steps) {
       const id = step.agentMessageId;
@@ -125,7 +222,7 @@ export function deriveTurnPresentation(
       const message = byId.get(id);
       if (!message || message.direction !== "sent") continue;
       anchoredMessageIds.add(id);
-      result.push({
+      nodes.push({
         key: `agent-message:${id}`,
         type: "agent-message",
         message,
@@ -135,180 +232,77 @@ export function deriveTurnPresentation(
     }
   };
 
-  const pushText = (end: number) => {
-    const text = narrative.slice(cursor, end);
-    if (text.trim()) {
-      result.push({
-        key: `text:${cursor}`,
-        type: "text",
-        text,
-        isLatest: false,
+  for (const node of layout.nodes) {
+    if (node.type === "markdown") {
+      if (!node.html.trim()) continue;
+      nodes.push(node);
+      markdownByKey.set(node.key, node);
+      continue;
+    }
+    const activity = activityById.get(node.activityId);
+    if (!activity) throw new Error(`Missing presentation activity: ${node.activityId}`);
+    const isLatest = activity.wireIndex === latestVisibleWireIndex;
+    if (activity.type === "reasoning") {
+      nodes.push({
+        key: `reasoning:${activity.id}`,
+        type: "reasoning",
+        text: activity.text,
+        isLatest,
       });
+    } else if (activity.type === "tool") {
+      nodes.push({
+        key: `tool:${activity.step.toolCallId}`,
+        type: "tool",
+        step: activity.step,
+        isLatest,
+      });
+      pushAgentMessages([activity.step]);
+    } else {
+      nodes.push({
+        key: `subagent:${activity.step.toolCallId}`,
+        type: "subagent",
+        step: activity.step,
+        children: activity.children,
+        isLatest,
+      });
+      pushAgentMessages([activity.step, ...activity.children]);
     }
-    cursor = end;
+  }
+
+  const lastLayoutActivityIndex = layout.nodes.findLastIndex((node) => node.type === "activity");
+  const finalReplyNodes = layout.nodes
+    .slice(lastLayoutActivityIndex + 1)
+    .filter((node): node is MarkdownLayoutNode => node.type === "markdown" && node.html.trim().length > 0)
+    .map((node) => markdownByKey.get(node.key) ?? node);
+
+  return {
+    nodes,
+    finalReplyNodes,
+    layout,
+    toolCount: nodes.filter((node) => node.type === "tool" || node.type === "subagent").length,
+    thoughtCount: nodes.filter((node) => node.type === "reasoning").length,
   };
-
-  for (const [anchor, group] of [...anchored.entries()].sort(([a], [b]) => a - b)) {
-    pushText(anchor);
-    for (const activity of group) {
-      if (activity.part.type === "reasoning") {
-        result.push({
-          key: `reasoning:${activity.index}`,
-          type: "reasoning",
-          text: activity.part.text,
-          isLatest: activity.index === latestVisibleIndex,
-        });
-      } else if (activity.part.type === "tool") {
-        result.push({
-          key: `tool:${activity.part.step.toolCallId}`,
-          type: "tool",
-          step: activity.part.step,
-          isLatest: activity.index === latestVisibleIndex,
-        });
-        pushAgentMessages([activity.part.step]);
-      } else {
-        result.push({
-          key: `subagent:${activity.part.step.toolCallId}`,
-          type: "subagent",
-          step: activity.part.step,
-          children: activity.part.children,
-          isLatest: activity.index === latestVisibleIndex,
-        });
-        pushAgentMessages([activity.part.step, ...activity.part.children]);
-      }
-    }
-  }
-  pushText(narrative.length);
-
-  if (latestVisibleIndex >= 0 && parts[latestVisibleIndex]?.type === "text") {
-    const latestText = result.findLast((item) => item.type === "text");
-    if (latestText) latestText.isLatest = true;
-  }
-
-  return result;
-}
-
-/** Top-level block types that are strictly safe to slice mid-block across an activity.
- *  Containers (blockquotes, lists, tables, headings) can be nested arbitrarily or change
- *  block semantics if split. We fail-closed: only top-level paragraphs permit extracting
- *  trailing text after a mid-block activity.
- */
-const SAFE_SLICE_BLOCK_TYPES: Record<string, true> = {
-  paragraph_open: true,
-};
-
-/** Extract the conversational final reply from a turn's wire parts.
- *
- *  When a turn finishes with tool/reasoning activity:
- *  1. If deriveTurnPresentation() produced text items after the last process item,
- *     those items are already cleanly anchored at top-level Markdown block boundaries
- *     (e.g. after a code fence or table closed). We join and return them.
- *  2. If presentation placed the process item at the end, it was anchored at narrative end
- *     because it arrived inside the final Markdown block. If that block is safe prose
- *     (a paragraph), trailing text arriving after the process item is returned.
- *  3. If the process item arrived inside an unsafe or nested container (fence, table, list,
- *     blockquote) that never closed with a subsequent reply block, mid-block slicing would
- *     corrupt Markdown (turning closing fences into unclosed opening fences, breaking table
- *     rows, or severing nested blocks). The fail-safe is fail-closed: only explicitly safe
- *     top-level prose blocks (paragraph) permit slicing trailing text; all other
- *     block types (or missing blocks) return empty string (trace header only, no broken markdown).
- */
-export function extractFinalReplyText(
-  parts: TurnPartDto[],
-  opts?: { presentation?: TurnPresentationItem[] },
-): string {
-  const pres = opts?.presentation ?? deriveTurnPresentation(parts);
-  const lastProcessIndex = pres.findLastIndex((item) => item.type !== "text");
-
-  // Pure-text turn: no process items to fold
-  if (lastProcessIndex < 0) {
-    return parts
-      .filter((p): p is Extract<TurnPartDto, { type: "text" }> => p.type === "text")
-      .map((p) => p.text)
-      .join("");
-  }
-
-  // deriveTurnPresentation already placed subsequent Markdown blocks after the activity
-  if (lastProcessIndex < pres.length - 1) {
-    return pres
-      .slice(lastProcessIndex + 1)
-      .filter((item): item is Extract<TurnPresentationItem, { type: "text" }> => item.type === "text")
-      .map((item) => item.text)
-      .join("");
-  }
-
-  // presentation ended on the process item (anchored at narrative.length).
-  const lastPartIdx = parts.findLastIndex(
-    (p) => p.type === "tool" || (p.type === "reasoning" && p.text.trim().length > 0),
-  );
-  if (lastPartIdx < 0) return "";
-  const trailing = parts
-    .slice(lastPartIdx + 1)
-    .filter((p): p is Extract<TurnPartDto, { type: "text" }> => p.type === "text")
-    .map((p) => p.text)
-    .join("");
-  if (!trailing.trim()) return "";
-
-  // Check if the last activity was inside an unsafe Markdown block.
-  let narrative = "";
-  let toolOffset = 0;
-  for (let i = 0; i < parts.length; i += 1) {
-    if (i === lastPartIdx) toolOffset = narrative.length;
-    const part = parts[i]!;
-    if (part.type === "text") narrative += part.text;
-  }
-
-  const docEnv: Record<string, unknown> = {};
-  const block = topLevelBlockAt(narrative, toolOffset, docEnv);
-  if (!block || !SAFE_SLICE_BLOCK_TYPES[block.type]) {
-    return "";
-  }
-  // Normalization guard: the renderer runs normalizeMarkdownTables() before parsing.
-  // If the candidate block would be reshaped by table normalization (e.g. malformed
-  // delimiterless tables recognized as a table during render but appearing as a paragraph
-  // to raw markdown-it), fail-closed so we do not slice mid-table or synthesize corrupted tables.
-  if (normalizeMarkdownTables(block.source) !== block.source) {
-    return "";
-  }
-  // Scope constraint: the fallback only applies when the trailing prose is strictly contained
-  // within the validated top-level block. Any unrendered Markdown metadata outside the block
-  // (such as trailing reference link definitions) must not leak as final reply.
-  const outsideBlock = narrative.slice(block.endOffset);
-  if (outsideBlock.trim().length > 0) {
-    return "";
-  }
-  // Inline boundary guard: verify that the tool arrived at an unstyled top-level text
-  // boundary within the paragraph, rather than severing an active inline construct
-  // (code span, emphasis, bold, link label/delimiter, reference link, HTML entity, etc.).
-  const offsetInBlock = toolOffset - block.startOffset;
-  if (!isSafeInlineParagraphOffset(block.source, offsetInBlock, docEnv)) {
-    return "";
-  }
-  const reply = narrative.slice(toolOffset, block.endOffset);
-  return reply.trim() ? reply : "";
 }
 
 export interface CollapsedTraceSummary {
   finalReplyText: string;
   toolCount: number;
   thoughtCount: number;
-}
-
-/** Extract all collapsed-trace header metrics in a single pass, sharing the
- *  presentation derivation between the final conversational reply and the
- *  activity counters so MessageList and TurnParts never perform duplicate Markdown parses.
- */
-export interface CollapsedTraceSummaryOptions extends TurnPresentationOptions {
-  presentation?: TurnPresentationItem[];
+  presentation: TurnPresentationPlan;
 }
 
 export function extractCollapsedTraceSummary(
   parts: TurnPartDto[],
-  opts?: CollapsedTraceSummaryOptions,
+  options: TurnPresentationOptions = {},
 ): CollapsedTraceSummary {
-  const pres: TurnPresentationItem[] = opts?.presentation ?? deriveTurnPresentation(parts, opts);
-  const finalReplyText = extractFinalReplyText(parts, { presentation: pres });
-  const toolCount = pres.filter((item: TurnPresentationItem) => item.type === "tool" || item.type === "subagent").length;
-  const thoughtCount = pres.filter((item: TurnPresentationItem) => item.type === "reasoning").length;
-  return { finalReplyText, toolCount, thoughtCount };
+  const presentation = deriveTurnPresentation(parts, options);
+  return {
+    // Single outer normalization: per-node copyText stays compositional
+    // (block terminal newlines separate neighbors), so only the reply tail
+    // is trimmed here.
+    finalReplyText: presentation.finalReplyNodes.map((node) => node.copyText).join("").trimEnd(),
+    toolCount: presentation.toolCount,
+    thoughtCount: presentation.thoughtCount,
+    presentation,
+  };
 }

@@ -1,4 +1,5 @@
 import MarkdownIt from "markdown-it";
+import type Token from "markdown-it/lib/token.mjs";
 import DOMPurify from "dompurify";
 import remend from "remend";
 import { normalizeMarkdownTables } from "./normalize-markdown";
@@ -56,34 +57,108 @@ export interface RenderMarkdownOptions {
   streaming?: boolean;
 }
 
+/** Apply the exact source preprocessing used before every markdown-it render. */
+export function preprocessMarkdownSource(
+  text: string,
+  options: RenderMarkdownOptions = {},
+): string {
+  const healed = options.streaming ? remend(text) : text;
+  return normalizeMarkdownTables(healed);
+}
+
+/** Parse one inline Markdown stream with the same parser and document env as full rendering. */
+export function parseMarkdownInline(
+  source: string,
+  env: Record<string, unknown> = {},
+): Token[] {
+  const inline = md.parseInline(source, env).find((token) => token.type === "inline");
+  return inline?.children ?? [];
+}
+
+/** Render a token fragment as one paragraph through the shared sanitizer. */
+export function renderMarkdownInlineFragment(
+  tokens: Token[],
+  env: Record<string, unknown> = {},
+): string {
+  const inner = md.renderer.renderInline(tokens, md.options, env);
+  return DOMPurify.sanitize(`<p>${inner}</p>`);
+}
+
 /**
- * Return source offsets where a top-level Markdown block can safely hand over to
- * non-Markdown turn activity. Gaps between blocks stay attached to the preceding
- * block, so an activity observed after "\n\n" lands before the next block. Parsing
- * the raw source is intentionally conservative: normalization may recognize more
- * constructs, but it must never create an unsafe split inside the original source.
+ * Plaintext projection of already-parsed Markdown tokens: the single Copy
+ * contract for every layout node. Text and inline code contribute their
+ * visible content, fenced/indented code contributes its source, images
+ * contribute their alt text (falling back to the URL when alt is empty, so a
+ * visible image never copies as nothing), links contribute their label (never
+ * the destination), and soft/hard breaks become newlines. Table cells are
+ * separated by spaces and rows by newlines; paragraphs and headings are
+ * separated by blank lines. Block containers contribute their inline
+ * children; everything else — emphasis/link delimiters, fences metadata,
+ * thematic breaks — contributes nothing. Reference definitions are invisible
+ * by construction: md.parse drops them from the token stream, so they can
+ * never leak into the clipboard.
  */
-export function markdownBlockBoundaries(text: string): number[] {
-  const lineStarts = [0];
-  for (let i = 0; i < text.length; i += 1) {
-    if (text[i] === "\n") lineStarts.push(i + 1);
-  }
+export function markdownTokensToPlainText(tokens: readonly Token[]): string {
+  const parts: string[] = [];
+  const visit = (token: Token): void => {
+    switch (token.type) {
+      case "text":
+      case "code_inline":
+        parts.push(token.content);
+        return;
+      case "softbreak":
+      case "hardbreak":
+        parts.push("\n");
+        return;
+      case "image": {
+        const alt = token.children?.map((child) => child.content).join("") ?? token.content;
+        parts.push(alt || token.attrs?.find(([name]) => name === "src")?.[1] || "");
+        return;
+      }
+      case "fence":
+      case "code_block":
+      case "html_block":
+        parts.push(token.content);
+        return;
+      case "th_close":
+      case "td_close":
+        parts.push(" ");
+        return;
+      case "tr_close":
+        // Drop only the synthetic separator the cell close just added, so a
+        // table row ends cleanly without touching real trailing spaces inside
+        // fenced/indented code content elsewhere in the parts.
+        if (parts[parts.length - 1] === " ") parts[parts.length - 1] = "\n";
+        else parts.push("\n");
+        return;
+      case "paragraph_close":
+      case "heading_close":
+        parts.push("\n\n");
+        return;
+      default:
+        if (token.children) {
+          for (const child of token.children) visit(child);
+        }
+    }
+  };
+  for (const token of tokens) visit(token);
+  return parts.join("");
+}
 
-  const ranges = md
-    .parse(text, {})
-    .filter((token) => token.level === 0 && token.map !== null)
-    .map((token) => token.map!)
-    .filter((range, index, all) =>
-      index === 0 || range[0] !== all[index - 1]![0] || range[1] !== all[index - 1]![1],
-    );
-
-  if (ranges.length === 0) return [text.length];
-  return ranges.map((_, index) => {
-    const nextStartLine = ranges[index + 1]?.[0];
-    return nextStartLine === undefined
-      ? text.length
-      : (lineStarts[nextStartLine] ?? text.length);
-  });
+/**
+ * Plaintext projection of a Markdown source string through the exact
+ * preprocessing used for rendering, so Copy always describes what the healed
+ * HTML shows rather than the raw pre-heal source. The env is shallow-copied
+ * so document reference definitions resolve exactly as in the display parse.
+ */
+export function markdownSourceToPlainText(
+  text: string,
+  options: RenderMarkdownOptions = {},
+  env: Record<string, unknown> = {},
+): string {
+  const source = preprocessMarkdownSource(text, options);
+  if (!source.trim()) return "";
+  return markdownTokensToPlainText(md.parse(source, { ...env }));
 }
 
 export interface TopLevelBlockInfo {
@@ -91,142 +166,140 @@ export interface TopLevelBlockInfo {
   startOffset: number;
   endOffset: number;
   source: string;
+  inlineSource: string | null;
+  /**
+   * Raw-narrative offset where `inlineSource` begins, or null when it cannot be
+   * proven. markdown-it derives paragraph inline content via `asciiTrim` (plus
+   * at most an indent-strip on continuation lines), so `inlineSource` is NOT in
+   * general a view of `source` at a raw offset. Marker planning must only use
+   * this proven projection; anything else stays atomic.
+   */
+  inlineStartOffset: number | null;
+  tokens: Token[];
 }
 
-/** Return the top-level block enclosing `offset`, including its source slice.
- *  Accepts an optional markdown-it `env` object that collects document-level
- *  metadata (such as reference link definitions) during the parse.
+export interface MarkdownDocumentAnalysis {
+  boundaries: number[];
+  blocks: TopLevelBlockInfo[];
+  env: Record<string, unknown>;
+}
+
+/**
+ * Prove the raw-narrative projection of a top-level paragraph's inline content.
+ * markdown-it builds paragraph inline content with `getLines(...)` (which strips
+ * at most the block indent, never content) followed by a leading/trailing ASCII
+ * trim, so the proof is exact: find the largest leading run and smallest trailing
+ * run of ASCII-trimmable characters whose removal reproduces `inlineSource`, then
+ * verify the middle slice byte-for-byte. Returns the raw start offset of the
+ * inline content, or null when no such projection exists (indented-code-looking
+ * blocks, list/quote/heading wrappers, tabs expanded by getLines, ...). Callers
+ * must treat null as "marker path unprovable, stay atomic".
  */
-export function topLevelBlockAt(
+export function locateInlineProjection(
+  source: string,
+  startOffset: number,
+  inlineSource: string,
+): number | null {
+  if (inlineSource.length === 0) return null;
+  // markdown-it trims only ASCII space/tab/LF/CR at block edges; anything else
+  // (unicode spaces, content) must match byte-for-byte below.
+  let leading = 0;
+  while (leading < source.length) {
+    const code = source.charCodeAt(leading)!;
+    if (code !== 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) break;
+    leading += 1;
+  }
+  let trailing = 0;
+  while (trailing < source.length - leading) {
+    const code = source.charCodeAt(source.length - 1 - trailing)!;
+    if (code !== 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) break;
+    trailing += 1;
+  }
+  const candidate = source.slice(leading, source.length - trailing);
+  if (candidate !== inlineSource) return null;
+  return startOffset + leading;
+}
+
+/** Parse a Markdown document once and retain all top-level block ranges plus the
+ * document env populated by markdown-it (notably reference link definitions).
+ * Gaps between blocks stay attached to the preceding boundary, so activity after
+ * "\n\n" lands before the next block.
+ */
+export function analyzeMarkdownDocument(
   text: string,
-  offset: number,
   env: Record<string, unknown> = {},
-): TopLevelBlockInfo | null {
+): MarkdownDocumentAnalysis {
   const lineStarts = [0];
   for (let i = 0; i < text.length; i += 1) {
     if (text[i] === "\n") lineStarts.push(i + 1);
   }
+
   const tokens = md.parse(text, env);
-  const blocks = tokens.filter((t) => t.level === 0 && t.map !== null);
-  for (const block of blocks) {
-    const startOffset = lineStarts[block.map![0]] ?? 0;
-    const endOffset = lineStarts[block.map![1]] ?? text.length;
-    if (offset >= startOffset && offset <= endOffset) {
-      return {
-        type: block.type,
-        startOffset,
-        endOffset,
-        source: text.slice(startOffset, endOffset),
-      };
-    }
-  }
-  return null;
-}
-
-interface SemanticInlineToken {
-  type: string;
-  content: string;
-  attrs: string;
-  info: string;
-}
-
-function canonicalInlineTokens(source: string, env: Record<string, unknown>): SemanticInlineToken[] {
-  const tokens = md.parseInline(source, { ...env });
-  const inline = tokens.find((t) => t.type === "inline");
-  if (!inline || !inline.children) return [];
-
-  const result: SemanticInlineToken[] = [];
-  for (const c of inline.children) {
-    if (c.type === "softbreak") {
-      if (result.length > 0 && result[result.length - 1]!.type === "text") {
-        result[result.length - 1]!.content += "\n";
-      } else {
-        result.push({ type: "text", content: "\n", attrs: "", info: "" });
-      }
-      continue;
-    }
-    if (c.type === "text") {
-      if (result.length > 0 && result[result.length - 1]!.type === "text") {
-        result[result.length - 1]!.content += c.content;
-      } else {
-        result.push({ type: "text", content: c.content, attrs: "", info: "" });
-      }
-      continue;
-    }
-    result.push({
-      type: c.type,
-      content: c.content || "",
-      attrs: c.attrs ? JSON.stringify(c.attrs) : "",
-      info: c.info || "",
-    });
-  }
-  return result;
-}
-
-function mergeTokenStreams(a: SemanticInlineToken[], b: SemanticInlineToken[]): SemanticInlineToken[] {
-  if (a.length === 0) return b;
-  if (b.length === 0) return a;
-  const merged = [...a];
-  const lastA = merged[merged.length - 1]!;
-  const firstB = b[0]!;
-  if (lastA.type === "text" && firstB.type === "text") {
-    merged[merged.length - 1] = {
-      ...lastA,
-      content: lastA.content + firstB.content,
+  const topLevelEntries = tokens
+    .map((token, tokenIndex) => ({ token, tokenIndex }))
+    .filter(({ token }) => token.level === 0 && token.map !== null)
+    .filter(({ token }, index, all) =>
+      index === 0
+      || token.map![0] !== all[index - 1]!.token.map![0]
+      || token.map![1] !== all[index - 1]!.token.map![1],
+    );
+  const blocks = topLevelEntries.map(({ token, tokenIndex }, index): TopLevelBlockInfo => {
+    const startOffset = lineStarts[token.map![0]] ?? 0;
+    const endOffset = lineStarts[token.map![1]] ?? text.length;
+    const blockSource = text.slice(startOffset, endOffset);
+    const blockTokens = tokens.slice(
+      tokenIndex,
+      topLevelEntries[index + 1]?.tokenIndex ?? tokens.length,
+    );
+    const inlineSource = blockTokens.find((blockToken) => blockToken.type === "inline")?.content ?? null;
+    const inlineStartOffset = token.type === "paragraph_open" && inlineSource !== null
+      ? locateInlineProjection(blockSource, startOffset, inlineSource)
+      : null;
+    return {
+      type: token.type,
+      startOffset,
+      endOffset,
+      source: blockSource,
+      inlineSource,
+      inlineStartOffset,
+      tokens: blockTokens,
     };
-    merged.push(...b.slice(1));
-  } else {
-    merged.push(...b);
-  }
-  return merged;
+  });
+  const boundaries = blocks.length === 0 ? [text.length] : blocks.map((_, index) => {
+    const nextStartLine = topLevelEntries[index + 1]?.token.map![0];
+    return nextStartLine === undefined
+      ? text.length
+      : (lineStarts[nextStartLine] ?? text.length);
+  });
+
+  return { boundaries, blocks, env };
 }
 
-function areSemanticTokensEqual(a: SemanticInlineToken[], b: SemanticInlineToken[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i += 1) {
-    if (
-      a[i]!.type !== b[i]!.type ||
-      a[i]!.content !== b[i]!.content ||
-      a[i]!.attrs !== b[i]!.attrs ||
-      a[i]!.info !== b[i]!.info
-    ) {
-      return false;
-    }
-  }
-  return true;
-}
-
-/** Check whether `offsetInBlock` inside a paragraph block lands at a safe top-level
- *  text position rather than severing an active inline construct (code span,
- *  emphasis, strong, link label/delimiter, reference link, HTML entity, hardbreak, etc.).
- *  Compares the canonical inline semantic tokens of the full block against the concatenated
- *  tokens of the prefix and suffix parsed independently within the same document env.
- *  Adjacent text tokens across the slice boundary are merged so normal prose splits match;
- *  if any inline construct or entity was severed, their token streams diverge and this returns false.
- */
-export function isSafeInlineParagraphOffset(
-  paragraphSource: string,
-  offsetInBlock: number,
+/** Render already-parsed block tokens in their original document environment. */
+export function renderMarkdownTokens(
+  tokens: Token[],
   env: Record<string, unknown> = {},
-): boolean {
-  if (offsetInBlock < 0 || offsetInBlock > paragraphSource.length) return false;
-  const prefix = paragraphSource.slice(0, offsetInBlock);
-  const suffix = paragraphSource.slice(offsetInBlock);
-
-  const fullTokens = canonicalInlineTokens(paragraphSource, env);
-  const prefixTokens = canonicalInlineTokens(prefix, env);
-  const suffixTokens = canonicalInlineTokens(suffix, env);
-  const combinedTokens = mergeTokenStreams(prefixTokens, suffixTokens);
-
-  return areSemanticTokensEqual(fullTokens, combinedTokens);
+): string {
+  return DOMPurify.sanitize(md.renderer.render(tokens, md.options, env));
 }
 
 /** Render markdown to sanitized, XSS-safe HTML. */
 export function renderMarkdown(text: string, options: RenderMarkdownOptions = {}): string {
-  // Heal unterminated markup first (streaming), then run table normalization so it
-  // sees correct fence state, then parse.
-  const healed = options.streaming ? remend(text) : text;
-  const source = normalizeMarkdownTables(healed);
-  const rawHtml = md.render(source);
+  return renderMarkdownWithEnv(text, options, {});
+}
+
+/**
+ * Render markdown reusing a previously parsed document env, so reference-style
+ * links keep resolving even when preprocessing rewrites the block source and
+ * forces a standalone reparse. The env is shallow-copied: definitions already
+ * collected by the full document parse win over anything the reparse sees.
+ */
+export function renderMarkdownWithEnv(
+  text: string,
+  options: RenderMarkdownOptions = {},
+  env: Record<string, unknown> = {},
+): string {
+  const source = preprocessMarkdownSource(text, options);
+  const rawHtml = md.render(source, { ...env });
   return DOMPurify.sanitize(rawHtml);
 }

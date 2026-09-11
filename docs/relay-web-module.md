@@ -114,9 +114,29 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   `success`；失败通知会把父 Agent 及仍在运行的子步骤收敛为 `error`。实现入口是 provider-neutral 的
   `src/transport/background-followup.ts` 与 `background-followup-transport.ts`；为兼容既有日志查询，遥测事件 key
   暂时保留 `transport.claude_background_followup.*`。
-- `TurnParts.vue` 保留原始有序 parts，并通过 `turn-presentation` 把推理/工具锚定到事件到达时正在生成的
-  Markdown 顶层块末尾：同一段落、列表、表格或代码围栏内的 text part 会保持连续，显式块边界之间的活动仍与
-  文字穿插展示。子工具继续按 `parentToolCallId` 归入对应 Agent；旧历史里没有父子字段的工具仍按普通卡片渲染。
+- `TurnParts.vue` 保留原始有序 parts，并消费唯一的 `TurnPresentationPlan`：`turn-timeline` 只按 wire order
+  构造 narrative 与 activity offset，`turn-layout`/`markdown-layout` 对整份 Markdown 建立合法 slot，再线性、单调地
+  放置 activity（后来的 activity 永不超车）。顶层 paragraph 通过内部 marker 在同一 inline token tree 中拆出安全 HTML
+  fragment，跨 `strong`/link label/inline code 时自动闭合并重开格式；list、table、blockquote、fence、heading 等结构块
+  保持 atomic，内部 activity 延迟到块末。expanded 与 collapsed 均消费同一 plan，后者只取最后 activity 后的 Markdown
+  nodes，不再二次拼接或重新解析 Markdown。每个 Markdown node 同时携带 canonical raw `source`（geometry/debug 用）
+  与 plaintext `copyText`（clipboard 用）：`markdownTokensToPlainText`/`markdownSourceToPlainText` 是唯一的 Copy
+  contract——text/code 取内容、image 取 alt（空 alt 回退 URL）、link 取 label、break 取换行、reference definition
+  永不进入 token 流因此永不泄漏；heal 后的 block 按 healed HTML 的语义复制。copyText 是可组合的：各 block 的
+  terminal newline 保留用于分隔相邻 block，任何 block-local trim 都禁止，只有最终 `finalReplyText` join 之后做一次
+  outer trimEnd。子工具继续按 `parentToolCallId` 归入
+  对应 Agent；旧历史里没有父子字段的工具仍按普通卡片渲染。
+- turn layout 有三层流式性能保护：无 activity 的 turn 直接走单个 Markdown render；全量 geometry cache 以
+  narrative、activity id/offset/wireIndex 和 streaming 几何为 key，因此 tool status/title/output 更新只替换卡片 payload，
+  不重跑 Markdown；block 级 cache 以 block source、activity 几何、streaming flag 和 reference fingerprint 为 key，
+  text streaming 追加时已沉降的头部 block 直接复用 marker plan 与 sanitized HTML/copy，只重算 tail block——缓存只存
+  block-local 的 nodes 与 exact-inline/atomic disposition，slot 的绝对 sourceOffset 每帧按当前 boundary 重建，因此相邻
+  gap 收缩/扩张不会复活 stale slot；每帧按 live block key 剪枝，tail 历史版本不累积。`MessageList` 的 collapsed
+  summary cache 以 parts identity 加本 turn 实际 anchor 的 sent-message 条目为依赖（外加每 turn 独立的 layoutCache），
+  无关 transcript 行（普通 prompt、历史 prepend、receiver 行、未 anchor 的 sent 卡）不会让已有 trace 重做 layout；同一
+  browser frame 内的 text delta 通过 `requestAnimationFrame` 合并。activity-bearing paragraph
+  超过 50,000 字符或 256 个 marker 时自动降级为 atomic block，降级只牺牲精确 interleave，不牺牲 Markdown 语义或顺序。
+  marker 抽取为单次线性扫描（`MARKER_OPEN → MARKER_CLOSE → Map`），不再按 encoding 逐个 `indexOf`。
 - `SubagentStepCard.vue` 以 `children.length > 0` 判定是否具备真实 trace（provider 无关，仅看数据是否到达）。
   有 trace：默认折叠、运行中轮播当前活动步骤，展开后显示紧凑时间线与 `traceCount`。无 trace：折叠行显示 `detail.output`
   尾行（回退到 prompt）、运行时长与“{ago} 前更新”心跳；展开显示委派 prompt 折叠行 + 输出块（运行中为定高、贴底滚动的

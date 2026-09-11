@@ -12,26 +12,18 @@ defineOptions({ inheritAttrs: false });
 
 const { t } = useI18n();
 
-const props = defineProps<{ text: string; streaming?: boolean }>();
-
-// While streaming, every appended chunk grows `text`, and re-parsing the WHOLE buffer
-// (healing + markdown-it + DOMPurify) per chunk is O(n²) over the turn. Throttle the parse
-// to one render per THROTTLE_MS with a trailing call, so the last chunk always lands. The
-// non-streaming path renders synchronously on every change, exactly like the old computed.
-const THROTTLE_MS = 80;
+const props = defineProps<{ text?: string; renderedHtml?: string; streaming?: boolean }>();
 
 const theme = useThemeStore();
 const rootEl = ref<HTMLElement | null>(null);
 const html = ref("");
-let timer: ReturnType<typeof setTimeout> | null = null;
-let lastRenderAt = 0;
+let renderFrame: number | null = null;
 let disposed = false;
 
-function cancelTimer(): void {
-  if (timer !== null) {
-    clearTimeout(timer);
-    timer = null;
-  }
+function cancelRenderFrame(): void {
+  if (renderFrame === null) return;
+  cancelAnimationFrame(renderFrame);
+  renderFrame = null;
 }
 
 // Message images embedded in markdown (agent output like ![alt](data:...) or a
@@ -152,12 +144,12 @@ function scheduleHydrate(reset: boolean): void {
 }
 
 function render(): void {
-  lastRenderAt = Date.now();
   // Replacing v-html discards the current DOM, including any enhanced mermaid viewports; detach
   // their listeners first so a plain (finalized) re-render doesn't strand them until the next
   // theme switch or unmount. The freshly rendered HTML gets its own enhancers after hydration.
   detachEnhancers();
-  html.value = renderMarkdown(props.text, { streaming: props.streaming });
+  html.value = props.renderedHtml
+    ?? renderMarkdown(props.text ?? "", { streaming: props.streaming });
   scheduleHydrate(false);
 }
 
@@ -168,35 +160,31 @@ onMounted(() => {
 });
 
 watch(
-  () => props.text,
+  () => [props.text, props.renderedHtml],
   () => {
-    if (!props.streaming) {
-      cancelTimer();
+    if (
+      props.renderedHtml !== undefined
+      || !props.streaming
+      || typeof requestAnimationFrame !== "function"
+    ) {
+      cancelRenderFrame();
       render();
       return;
     }
-    const elapsed = Date.now() - lastRenderAt;
-    if (elapsed >= THROTTLE_MS) {
-      cancelTimer();
+    if (renderFrame !== null) return;
+    renderFrame = requestAnimationFrame(() => {
+      renderFrame = null;
       render();
-      return;
-    }
-    // Trailing edge: one pending render picks up whatever `text` holds when it fires.
-    if (timer === null) {
-      timer = setTimeout(() => {
-        timer = null;
-        render();
-      }, THROTTLE_MS - elapsed);
-    }
+    });
   },
 );
 
-// Streaming ended (or toggled): drop any pending throttled render and paint the
+// Streaming ended (or toggled): drop any pending frame render and paint the
 // final full text immediately — the closing frame must never lag or be skipped.
 watch(
   () => props.streaming,
   () => {
-    cancelTimer();
+    cancelRenderFrame();
     render();
   },
 );
@@ -209,7 +197,7 @@ watch(
 
 onBeforeUnmount(() => {
   disposed = true;
-  cancelTimer();
+  cancelRenderFrame();
   detachEnhancers();
   rootEl.value?.removeEventListener("click", onRootClick);
 });

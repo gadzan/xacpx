@@ -15,9 +15,9 @@ import { fmtTime, fmtDateTime } from "../lib/format";
 import {
   anchoredAgentMessageIds,
   extractCollapsedTraceSummary,
-  extractFinalReplyText,
   type CollapsedTraceSummary,
 } from "../lib/turn-presentation";
+import { createTurnLayoutGeometryCache, type TurnLayoutGeometryCache } from "../lib/turn-layout";
 const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; loadingHistory?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null; ensureFull?: (messageId: number) => Promise<void> }>();
 const emit = defineEmits<{ resend: [message: ChatMessage]; loadOlder: [] }>();
 
@@ -68,19 +68,41 @@ function traceElapsedOf(m: ChatMessage): number | null {
   return Number.isFinite(ms) && ms > 0 ? ms : null;
 }
 
-// Cache collapsed trace metrics by message object and parts reference to prevent
-// redundant markdown parses and presentation derivations across MessageList and TurnParts.
-const traceSummaryCache = new WeakMap<ChatMessage, { parts: TurnPartDto[]; summary: CollapsedTraceSummary }>();
+// Cache collapsed trace summaries per message row. The dependency is
+// per-turn, not per-transcript: only the parts array identity plus the
+// anchored sent-message entries this turn actually renders. An unrelated
+// transcript change (new prompt, history prepend, receiver row) rebuilds the
+// global sent-message map but leaves every untouched row's cache hit. Each
+// entry also owns a TurnLayoutGeometryCache, so even a genuine decoration
+// change reuses Markdown geometry instead of re-laying out.
+const traceSummaryCache = new WeakMap<ChatMessage, {
+  parts: TurnPartDto[];
+  anchoredMessages: Array<[string, PeerMessageHistoryEntry | undefined]>;
+  layoutCache: TurnLayoutGeometryCache;
+  summary: CollapsedTraceSummary;
+}>();
 
 function traceSummaryOf(m: ChatMessage): CollapsedTraceSummary {
   const parts = m.structured?.parts;
-  if (!parts?.length) return { finalReplyText: "", toolCount: 0, thoughtCount: 0 };
+  if (!parts?.length) throw new Error("Trace summary requires structured turn parts");
+  const byId = sentAgentMessageById.value;
+  const anchoredMessages = [...anchoredAgentMessageIds(parts)].map(
+    (id) => [id, byId.get(id)] as [string, PeerMessageHistoryEntry | undefined],
+  );
   const cached = traceSummaryCache.get(m);
-  if (cached && cached.parts === parts) return cached.summary;
+  const layoutCache = cached?.layoutCache ?? createTurnLayoutGeometryCache();
+  if (
+    cached
+    && cached.parts === parts
+    && cached.anchoredMessages.length === anchoredMessages.length
+    && cached.anchoredMessages.every(([id, entry], index) =>
+      anchoredMessages[index]![0] === id && anchoredMessages[index]![1] === entry)
+  ) return cached.summary;
   const summary = extractCollapsedTraceSummary(parts, {
-    sentAgentMessageById: sentAgentMessageById.value,
+    sentAgentMessageById: byId,
+    layoutCache,
   });
-  traceSummaryCache.set(m, { parts, summary });
+  traceSummaryCache.set(m, { parts, anchoredMessages, layoutCache, summary });
   return summary;
 }
 
@@ -608,14 +630,12 @@ watch(
             </div>
             <div data-test="msg-out" class="min-w-0 flex-1 space-y-2.5"
                  :class="m.failed ? 'rounded-lg ring-1 ring-danger/40' : ''">
-              <!-- Structured transcript: activity cards stay grouped above one continuous
-                   Markdown narrative. Tool cards own their collapsed state. -->
+              <!-- Structured transcript: activity cards interleave with the Markdown
+                   narrative at wire-ordered slots. Tool cards own their collapsed state. -->
               <div data-test="msg-content" class="space-y-2.5">
                 <TurnParts v-if="m.structured?.parts?.length" :parts="m.structured.parts" :ensure-full="ensureFullOf(m)" :sent-agent-messages="sentAgentMessageById"
                            :collapse-trace="!isFailedTurn(m) && hasTraceParts(m)" :trace-key="traceKeyOf(m)" :trace-elapsed-ms="traceElapsedOf(m)"
-                           :collapsed-reply-text="!isFailedTurn(m) && hasTraceParts(m) ? traceSummaryOf(m).finalReplyText : undefined"
-                           :collapsed-tool-count="!isFailedTurn(m) && hasTraceParts(m) ? traceSummaryOf(m).toolCount : undefined"
-                           :collapsed-thought-count="!isFailedTurn(m) && hasTraceParts(m) ? traceSummaryOf(m).thoughtCount : undefined" />
+                           :presentation="!isFailedTurn(m) && hasTraceParts(m) ? traceSummaryOf(m).presentation : undefined" />
                 <template v-else>
                   <ToolCallPanel v-if="m.structured?.toolSteps?.length" :steps="m.structured.toolSteps" :ensure-full="ensureFullOf(m)" />
                   <ReasoningPanel v-if="m.structured?.reasoning?.trim()" :reasoning="m.structured.reasoning" :default-open="false" />
