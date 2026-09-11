@@ -111,7 +111,7 @@ test("renderSessionCreationVerificationError leaves a clean workspace name unquo
 test("runtime adapter E404 points session creation to the registry CLI", () => {
   const reply = renderSessionCreationError(
     session({
-      agentCommand: "npx -y --registry=https://npm.corp.example/ --@agentclientprotocol:registry=https://npm.corp.example/ @agentclientprotocol/codex-acp@1.1.9",
+      agentCommand: "npx -y --registry=https://npm.corp.example/ --@agentclientprotocol:registry=https://npm.corp.example/ @agentclientprotocol/codex-acp@1.10.0",
     }),
     new Error("npm ERR! code E404\nnpm ERR! 404 Not Found"),
   );
@@ -123,7 +123,7 @@ test("runtime adapter E404 points session creation to the registry CLI", () => {
 test("runtime adapter E404 is actionable when a prompt cold-start fails", () => {
   const reply = renderTransportError(
     session({
-      agentCommand: "npx -y --registry=https://npm.corp.example/ --@agentclientprotocol:registry=https://npm.corp.example/ @agentclientprotocol/codex-acp@1.1.9",
+      agentCommand: "npx -y --registry=https://npm.corp.example/ --@agentclientprotocol:registry=https://npm.corp.example/ @agentclientprotocol/codex-acp@1.10.0",
     }),
     new Error("npm ERR! code E404"),
   );
@@ -135,7 +135,7 @@ test("a non-npm backend 404 is not misreported as an adapter registry failure", 
   const error = new Error("model endpoint returned 404 Not Found");
   expect(() => renderSessionCreationError(
     session({
-      agentCommand: "npx -y --registry=https://npm.corp.example/ --@agentclientprotocol:registry=https://npm.corp.example/ @agentclientprotocol/codex-acp@1.1.9",
+      agentCommand: "npx -y --registry=https://npm.corp.example/ --@agentclientprotocol:registry=https://npm.corp.example/ @agentclientprotocol/codex-acp@1.10.0",
     }),
     error,
   )).toThrow(error);

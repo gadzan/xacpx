@@ -28,6 +28,7 @@ import {
   workerBindingEngineFields,
   workerBindingGuardFields,
   workerBindingIdentityFields,
+  workerBindingLaunchFields,
 } from "../worker-launch";
 import type { StagedWorkerIdentity } from "../worker-launch";
 import type { QuestionFlowCore } from "./question-flow-core";
@@ -189,6 +190,7 @@ export class TaskApprovalService {
           targetAgent: currentTask.targetAgent,
           ...(currentTask.role ? { role: currentTask.role } : {}),
           ...workerBindingGuardFields(previousBinding),
+            ...workerBindingLaunchFields(previousBinding),
           ...workerBindingEndpointIdentityFields(previousBinding, this.deps.createAgentEndpointId),
           ...identity,
           ...(currentTask.ephemeralWorkerSession ? { ephemeral: true } : {}),
@@ -244,6 +246,7 @@ export class TaskApprovalService {
           targetAgent: task.targetAgent,
           role: task.role,
           ...workerBindingGuardFields(previousBinding),
+            ...workerBindingLaunchFields(previousBinding),
           ...workerBindingEndpointIdentityFields(previousBinding, this.deps.createAgentEndpointId),
           ...workerBindingEngineFields(previousBinding),
           ...(task.ephemeralWorkerSession ? { ephemeral: true } : {}),

@@ -18,8 +18,8 @@ If you want to manage WeChat/Feishu message channels, see [`docs/channel-managem
     "queueOwnerTtlSeconds": 1800,
     "adapterRegistry": "https://registry.npmjs.org/",
     "adapterVersions": {
-      "codex": "1.1.9",
-      "claude": "0.64.2"
+      "codex": "1.10.0",
+      "claude": "0.75.1"
     }
   },
   "logging": {
@@ -95,7 +95,7 @@ How xacpx communicates with the acpx backend.
 | `queueOwnerTtlSeconds` | `number` | No | acpx queue owner idle time-to-live (seconds), passed through to the prompt command as `acpx --ttl <value>`. Defaults to `1800` (30 minutes); `0` = live forever. See the "Reducing agent cold starts" notes below |
 | `turnIdleTimeoutSeconds` | `number` | No | Inactivity watchdog for in-flight agent turns. If a turn produces no streamed agent activity (output/tool/thought/usage/plan/command event) for this many seconds, it is aborted and reported as `Turn timed out due to inactivity`, reclaiming its slot. The timer resets on every streamed event, so long but actively-working turns are unaffected — **but a single tool call that stays silent for the whole window (e.g. `sleep`, a long compile/clone with no interleaved output) will still trip it**; raise this value or set `0` for workloads with long silent operations. Defaults to `600` (10 minutes); `0` disables the watchdog. Each reclaim is logged as `control.turn.idle_timeout` (with the session and the concrete threshold) for diagnosis |
 | `preferLocalAgents` | `boolean` | No | Prefer a locally-installed native agent CLI over acpx's `npx -y <pkg>` fallback when one is on `PATH` (currently `opencode`, `kilocode`, plus the local-fallback drivers `reasonix` and `omp` that aren't in acpx's registry but speak ACP via `<bin> acp`). Avoids a per-cold-start npm-registry fetch — faster and immune to network blips (e.g. `ECONNRESET` during agent init). Defaults to `true`; set `false` to always use acpx's default resolution. A per-agent `command` override still takes precedence |
-| `adapterVersions` | `{ "codex"?: string, "claude"?: string }` | No | Local exact-version overrides for xacpx-managed ACP adapters. Values must be exact semver versions, not ranges or tags. Omitted entries use xacpx's tested defaults (`codex` `1.1.9`, `claude` `0.64.2` in this release). Prefer the `xacpx adapter` CLI below over editing this object by hand |
+| `adapterVersions` | `{ "codex"?: string, "claude"?: string }` | No | Local exact-version overrides for xacpx-managed ACP adapters. Values must be exact semver versions, not ranges or tags. Omitted entries use xacpx's tested defaults (`codex` `1.10.0`, `claude` `0.75.1` in this release). Prefer the `xacpx adapter` CLI below over editing this object by hand |
 | `adapterRegistry` | `string` | No | npm registry used only for xacpx-managed Codex/Claude adapters. Defaults to `https://registry.npmjs.org/` and does **not** inherit the machine/company npm default. Change it with `xacpx adapter registry set <url>`; only credential-free HTTP(S) URLs are accepted |
 | `acpxMaxIncomingMessageBytes` | `number` \| `null` | No | Advanced: overrides acpx 0.15.1's default 64 MiB ceiling on agent → acpx inbound ACP messages. Applies to the CLI queue-owner lane and the Runtime worker lane (host process env, never agent env). `null`/absent follows upstream; `0` disables the limit (not recommended). Changing it requires recycling warm queue owners / Runtime workers |
 | `acpxTerminalMaxOutputBytes` | `number` \| `null` | No | Advanced: host ceiling on retained terminal stdout+stderr bytes. `null`/absent follows upstream behavior. Same lane coverage and recycle requirement as above |

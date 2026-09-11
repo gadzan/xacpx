@@ -2026,3 +2026,34 @@ test("inspect reports pending id migrations without writing anything", async () 
 
   await rm(dir, { recursive: true, force: true });
 });
+
+test("load drops a worker binding with a non-string cwd instead of running it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "weacpx-state-"));
+  const path = join(dir, "state.json");
+  const state = createEmptyState();
+  state.orchestration.workerBindings.bad = {
+    sourceHandle: "bad",
+    coordinatorSession: "coord",
+    workspace: "project",
+    targetAgent: "codex",
+    cwd: 123,
+  } as never;
+  state.orchestration.workerBindings.good = {
+    sourceHandle: "good",
+    coordinatorSession: "coord",
+    workspace: "project",
+    targetAgent: "codex",
+    cwd: "/tmp/project",
+  };
+  await Bun.write(path, JSON.stringify(state));
+
+  try {
+    const store = new StateStore(path);
+    const loaded = await store.load();
+    expect(loaded.orchestration.workerBindings.bad).toBeUndefined();
+    expect(loaded.orchestration.workerBindings.good?.cwd).toBe("/tmp/project");
+    expect(store.lastLoadReport?.dropped.map((d) => d.key)).toEqual(["bad"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

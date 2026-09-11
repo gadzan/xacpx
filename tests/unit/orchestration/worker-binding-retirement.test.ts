@@ -208,3 +208,27 @@ test("contended lease retains without disturbing the holder", async () => {
   expect(releases).toHaveLength(0);
   expect((await bindings())[WORKER]).toBeDefined();
 });
+
+test("retirement hands the claim-time launch snapshot to release", async () => {
+  const seed = createEmptyState();
+  seed.orchestration.workerBindings[WORKER] = {
+    ...completeBinding(),
+    launchAgentCommand: "npx codex@old",
+    launchAcpxAgent: "xacpx-managed-codex-old",
+  };
+  const seen: Array<Record<string, unknown>> = [];
+  const { env, bindings } = makeEnv(seed, {
+    releaseWorkerSession: async (request) => {
+      seen.push({ ...request });
+    },
+  });
+  expect(await retireWorkerBinding(env, WORKER)).toBe("retired");
+  expect(seen).toHaveLength(1);
+  expect(seen[0]).toMatchObject({
+    workerSession: WORKER,
+    launchAgentCommand: "npx codex@old",
+    launchAcpxAgent: "xacpx-managed-codex-old",
+  });
+  // The binding is deleted only after release converged: no evidence left behind.
+  expect(await bindings()).not.toHaveProperty(WORKER);
+});

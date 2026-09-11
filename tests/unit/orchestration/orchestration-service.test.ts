@@ -10718,3 +10718,38 @@ test("getGroupSummary/listGroupSummaries with stable id find a group stored unde
   const summaries = await service.listGroupSummaries({ coordinatorSession: "ws:alias" });
   expect(summaries.map((summary) => summary.group.groupId)).toEqual(["legacy-group"]);
 });
+
+test("reconcileParallelSlots hands the old launch snapshot to release before deleting the binding", async () => {
+  // Startup crash-consistency: a terminal ephemeral worker whose last dispatch
+  // ran under a previous pin. Retirement must converge the snapshotted old
+  // identity (not just the current-pin resolution) before the binding — the
+  // only evidence for the old owner — is deleted.
+  const initial = createEmptyState();
+  const workerSession = "backend:codex:old-pin";
+  initial.orchestration.tasks["t-old"] = {
+    ...makeCompletedTask("t-old"),
+    workerSession,
+    ephemeralWorkerSession: true,
+  };
+  initial.orchestration.workerBindings[workerSession] = {
+    sourceHandle: workerSession,
+    agentEndpointId: "endpoint_11111111-1111-4111-8111-111111111111",
+    coordinatorSession: "backend:main",
+    workspace: "backend",
+    targetAgent: "codex",
+    ephemeral: true,
+    logicalSessionId: "lid-old",
+    transportEngine: "cli",
+    launchAgentCommand: "npx -y old-pin-codex",
+    launchAcpxAgent: "xacpx-managed-codex-old",
+  };
+  const harness = makeDeps({ initialState: initial });
+  const service = new OrchestrationService(harness.deps);
+  await service.reconcileParallelSlots();
+  const release = harness.releaseCalls.find((c) => c.workerSession === workerSession);
+  expect(release).toMatchObject({
+    launchAgentCommand: "npx -y old-pin-codex",
+    launchAcpxAgent: "xacpx-managed-codex-old",
+  });
+  expect(harness.getState().orchestration.workerBindings[workerSession]).toBeUndefined();
+});

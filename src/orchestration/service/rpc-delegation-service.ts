@@ -29,6 +29,7 @@ import {
   workerBindingEndpointIdentityFields,
   workerBindingGuardFields,
   workerBindingIdentityFields,
+  workerBindingLaunchFields,
 } from "../worker-launch";
 import type { StagedWorkerIdentity } from "../worker-launch";
 import type { WorkerSessionManager } from "./worker-session-manager";
@@ -241,6 +242,7 @@ export class RpcDelegationService {
               targetAgent: input.targetAgent,
               role: preflight.role,
               ...workerBindingGuardFields(previousBinding),
+            ...workerBindingLaunchFields(previousBinding),
               ...workerBindingEndpointIdentityFields(previousBinding, this.deps.createAgentEndpointId),
               ...identity,
               ...(input.parallel ? { ephemeral: true } : {}),

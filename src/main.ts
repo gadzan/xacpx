@@ -55,6 +55,8 @@ import {
 } from "./orchestration/worker-prompts";
 import {
   persistWorkerBindingIdentity,
+  persistWorkerBindingLaunch,
+  releaseWorkerOwnerSessions,
   resolveWorkerAgentLaunch,
   shouldGuardWorkerAcpOutput,
 } from "./orchestration/worker-launch";
@@ -1065,6 +1067,23 @@ export async function buildApp(
       publish: (nextState) => replaceRuntimeState(state, nextState),
       runExclusive: (critical) => stateMutex.run(critical),
     });
+    // Snapshot the launch this dispatch is about to use (persist-before-owner,
+    // same rule as logical sessions): after a managed-pin/config change the
+    // current resolution can no longer locate the previous owner, so restart
+    // reaping needs the last-dispatched identity. No-op save when unchanged.
+    const agentConfig = config.agents[input.targetAgent];
+    if (agentConfig) {
+      const launch = resolveWorkerAgentLaunch(
+        agentConfig,
+        config.transport,
+        state.orchestration.workerBindings[input.workerSession],
+      );
+      await persistWorkerBindingLaunch(state, { workerSession: input.workerSession }, launch, {
+        saveNow: (nextState) => debouncedStateStore.saveNow(nextState),
+        publish: (nextState) => replaceRuntimeState(state, nextState),
+        runExclusive: (critical) => stateMutex.run(critical),
+      });
+    }
   };
 
   const resolveWorkerRuntimeSession = (
@@ -1412,6 +1431,9 @@ export async function buildApp(
       cwd,
       logicalSessionId,
       transportEngine,
+      launchAgentCommand,
+      launchAcpxAgent,
+      launchRawCommand,
     }) => {
       const session = resolveWorkerRuntimeSession({
         workerSession,
@@ -1435,7 +1457,14 @@ export async function buildApp(
           `transport cannot converge worker "${workerSession}": no removeSession operation`,
         );
       }
-      await transport.removeSession(session);
+      // Converge the last-dispatched identity alongside the current one (see
+      // releaseWorkerOwnerSessions): the binding is deleted right after this
+      // returns, so a previous-pin owner would otherwise become undiscoverable.
+      await releaseWorkerOwnerSessions(
+        (candidate) => transport.removeSession!(candidate),
+        session,
+        { launchAgentCommand, launchAcpxAgent, launchRawCommand },
+      );
     },
     resumeWorkerTask: async ({
       taskId,

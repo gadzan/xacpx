@@ -180,3 +180,30 @@ test("stale startup cleanup backs off while a new delegation holds the start res
   expect(releasesFor("lid-stale")).toBe(1);
   expect(harness.getState().orchestration.workerBindings[WORKER]).toBeUndefined();
 });
+
+test("autoRun reuse preserves the previous launch snapshot on binding rebuild", async () => {
+  const state = seedExternalCoordinatorState();
+  state.orchestration.workerBindings["backend:claude:reused"] = {
+    sourceHandle: "backend:claude:reused",
+    agentEndpointId: "endpoint_11111111-1111-4111-8111-111111111111",
+    coordinatorSession: "coord-1",
+    workspace: "backend",
+    targetAgent: "claude",
+    logicalSessionId: "lid-old",
+    transportEngine: "cli",
+    launchAgentCommand: "npx -y old-pin-claude",
+    launchAcpxAgent: "xacpx-managed-claude-old",
+  };
+  const { harness, rpcDelegation } = makeService(state, { reusableWorkerSession: "backend:claude:reused" });
+  const callsBefore = harness.calls.length;
+  const result = await rpcDelegation.requestDelegateFromRpc({
+    sourceHandle: "ext:coord-1",
+    targetAgent: "claude",
+    task: "run the follow-up audit",
+  });
+  await waitForPortCall(harness, "dispatchWorkerTask", callsBefore);
+  expect(result.workerSession).toBe("backend:claude:reused");
+  const binding = harness.getState().orchestration.workerBindings["backend:claude:reused"]!;
+  expect(binding.launchAgentCommand).toBe("npx -y old-pin-claude");
+  expect(binding.launchAcpxAgent).toBe("xacpx-managed-claude-old");
+});

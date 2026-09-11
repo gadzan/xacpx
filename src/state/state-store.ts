@@ -270,6 +270,9 @@ function isWorkerBindingRecord(value: unknown): value is WorkerBindingRecord {
     isString(value.workspace) &&
     isOptionalString(value.cwd) &&
     isString(value.targetAgent) &&
+    isOptionalString(value.launchAgentCommand) &&
+    isOptionalString(value.launchAcpxAgent) &&
+    isOptionalString(value.launchRawCommand) &&
     isOptionalString(value.role) &&
     isOptionalBoolean(value.ephemeral) &&
     isOptionalBoolean(value.guardAcpOutput) &&

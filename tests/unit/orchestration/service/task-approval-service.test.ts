@@ -88,3 +88,25 @@ test("approveTask rejects a task that is not awaiting confirmation", async () =>
     approvals.approveTask({ taskId: "t1", coordinatorSession: "coord-1" }),
   ).rejects.toThrow('task "t1" is running, not needs_confirmation');
 });
+
+test("approveTask preserves the previous launch snapshot on binding rebuild", async () => {
+  const initialState = createEmptyState();
+  initialState.orchestration.tasks["t1"] = seedTask();
+  initialState.orchestration.workerBindings["backend:codex:coord-1"] = {
+    sourceHandle: "backend:codex:coord-1",
+    agentEndpointId: "endpoint_11111111-1111-4111-8111-111111111111",
+    coordinatorSession: "coord-1",
+    workspace: "backend",
+    targetAgent: "codex",
+    logicalSessionId: "lid-old",
+    transportEngine: "cli",
+    launchAgentCommand: "npx -y old-pin-codex",
+    launchAcpxAgent: "xacpx-managed-codex-old",
+  };
+  const { harness, approvals } = makeService(initialState);
+  const approved = await approvals.approveTask({ taskId: "t1", coordinatorSession: "coord-1" });
+  expect(approved.workerSession).toBe("backend:codex:coord-1");
+  const binding = harness.getState().orchestration.workerBindings["backend:codex:coord-1"]!;
+  expect(binding.launchAgentCommand).toBe("npx -y old-pin-codex");
+  expect(binding.launchAcpxAgent).toBe("xacpx-managed-codex-old");
+});

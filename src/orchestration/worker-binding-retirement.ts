@@ -54,6 +54,9 @@ export interface WorkerBindingRetirementEnv {
         role?: string;
         logicalSessionId: string;
         transportEngine: SessionTransportEngine;
+        launchAgentCommand?: string;
+        launchAcpxAgent?: string;
+        launchRawCommand?: string;
       }) => Promise<void>)
     | undefined;
   isTerminalStatus: (status: OrchestrationTaskStatus) => boolean;
@@ -159,6 +162,9 @@ export async function retireWorkerBinding(
         ...(claimed.role ? { role: claimed.role } : {}),
         logicalSessionId: claimed.logicalSessionId,
         transportEngine: claimed.transportEngine,
+        ...(claimed.launchAgentCommand ? { launchAgentCommand: claimed.launchAgentCommand } : {}),
+        ...(claimed.launchAcpxAgent ? { launchAcpxAgent: claimed.launchAcpxAgent } : {}),
+        ...(claimed.launchRawCommand ? { launchRawCommand: claimed.launchRawCommand } : {}),
       });
     } catch {
       return "retained";

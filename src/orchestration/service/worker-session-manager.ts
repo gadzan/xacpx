@@ -17,6 +17,7 @@ import type { OrchestrationStateKernel } from "./orchestration-state-kernel";
 import {
   teardownStagedWorkerOwner,
   workerBindingIdentityFields,
+  workerBindingLaunchFields,
 } from "../worker-launch";
 import { isWorkerRetirementClaimed, retireWorkerBinding, tryClaimWorkerRetirement } from "../worker-binding-retirement";
 
@@ -457,6 +458,7 @@ export class WorkerSessionManager {
             ...(task.role ? { role: task.role } : {}),
             ephemeral: true,
             guardAcpOutput: true,
+            ...workerBindingLaunchFields(previousBinding),
             ...identity,
           };
           await this.deps.saveState(state);
