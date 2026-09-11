@@ -186,16 +186,21 @@ describe("deriveTurnPresentation", () => {
   });
 
   it("copies the displayed final reply instead of a raw broken fragment", () => {
-    const presentation = deriveTurnPresentation([
+    const parts: TurnPartDto[] = [
       { type: "text", text: "I'll inspect **this " },
       { type: "tool", step: tool("read-1") },
       { type: "text", text: "carefully**. Fixed." },
-    ]);
+    ];
+    const presentation = deriveTurnPresentation(parts);
     const hidden = presentation.nodes.filter((node) => node.type === "markdown");
     expect(hidden.length).toBeGreaterThan(0);
     expect(presentation.finalReplyNodes.map((node) => node.source).join("")).toContain("carefully**. Fixed.");
-    expect(presentation.finalReplyNodes.map((node) => node.copyText).join("")).toBe("carefully. Fixed.");
-    expect(presentation.finalReplyNodes.map((node) => node.copyText).join("")).not.toContain("**");
+    // Node copyText stays compositional (block terminator included); only the
+    // final joined reply is outer-trimmed.
+    expect(presentation.finalReplyNodes.map((node) => node.copyText).join(""))
+      .toBe("carefully. Fixed.\n\n");
+    expect(extractCollapsedTraceSummary(parts).finalReplyText).toBe("carefully. Fixed.");
+    expect(extractCollapsedTraceSummary(parts).finalReplyText).not.toContain("**");
   });
 
   it("copies an image-only final reply as its alt text instead of nothing", () => {
@@ -207,7 +212,7 @@ describe("deriveTurnPresentation", () => {
     const presentation = deriveTurnPresentation(parts);
     expect(presentation.finalReplyNodes.map((node) => node.source).join(""))
       .toBe("![plot](https://example.com/p.png)");
-    expect(presentation.finalReplyNodes.map((node) => node.copyText).join("")).toBe("plot");
+    expect(presentation.finalReplyNodes.map((node) => node.copyText).join("")).toBe("plot\n\n");
     expect(extractCollapsedTraceSummary(parts).finalReplyText).toBe("plot");
   });
 
@@ -218,7 +223,8 @@ describe("deriveTurnPresentation", () => {
       { type: "text", text: " now\n\n[ref]: https://example.com" },
     ];
     const presentation = deriveTurnPresentation(parts);
-    expect(presentation.finalReplyNodes.map((node) => node.copyText).join("")).toBe(" now");
+    expect(presentation.finalReplyNodes.map((node) => node.copyText).join("")).toBe(" now\n\n");
+    expect(extractCollapsedTraceSummary(parts).finalReplyText).toBe(" now");
     expect(extractCollapsedTraceSummary(parts).finalReplyText)
       .not.toContain("[ref]: https://example.com");
   });
@@ -232,6 +238,26 @@ describe("deriveTurnPresentation", () => {
     const text = extractCollapsedTraceSummary(parts).finalReplyText;
     expect(text).not.toContain("2After");
     expect(text).toMatch(/2\n+After/);
+  });
+
+  it("keeps a blank line between a split paragraph and the next paragraph when copying", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "Before " },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "after\n\nNext" },
+    ];
+    expect(extractCollapsedTraceSummary(parts).finalReplyText).toBe("after\n\nNext");
+  });
+
+  it("combines synthetic strong reopening with the block separator when copying", () => {
+    const parts: TurnPartDto[] = [
+      { type: "text", text: "Before **some " },
+      { type: "tool", step: tool("read-1") },
+      { type: "text", text: "text**\n\nNext" },
+    ];
+    // "Before some " precedes the activity so it stays out of the final reply;
+    // the reply fragment carries no dangling "**" and still separates from Next.
+    expect(extractCollapsedTraceSummary(parts).finalReplyText).toBe("text\n\nNext");
   });
 
   it("never reorders activities across streaming Markdown prefixes", () => {

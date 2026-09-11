@@ -185,6 +185,7 @@ function renderLayoutBlock(
 
   if (markerPlan && inlineStart !== null) {
     pushMarkdownNode(nodes, narrative, block.startOffset, inlineStart, "", "");
+    const firstFragmentIndex = nodes.length;
     for (const fragment of markerPlan.fragments) {
       pushMarkdownNode(
         nodes,
@@ -194,6 +195,20 @@ function renderLayoutBlock(
         fragment.html,
         fragment.copyText,
       );
+    }
+    // Marker fragments serialize inline tokens only, so they never see the
+    // block-level terminator (paragraph_close → "\n\n"). Reattach it to the
+    // last fragment from the block's own tokens, but only when proven: the
+    // fragment join must be an exact prefix of the whole-block serialization
+    // (under streaming healing it may not be — then keep today's behavior
+    // and append nothing; layout is never affected, only this copy suffix).
+    if (nodes.length > firstFragmentIndex) {
+      const fragmentCopy = markerPlan.fragments.map((fragment) => fragment.copyText).join("");
+      const wholeCopy = markdownTokensToPlainText(block.tokens);
+      if (wholeCopy.startsWith(fragmentCopy) && wholeCopy.length > fragmentCopy.length) {
+        const last = nodes[nodes.length - 1]!;
+        last.copyText += wholeCopy.slice(fragmentCopy.length);
+      }
     }
     const inlineEnd = inlineStart + inlineSource!.length;
     pushMarkdownNode(nodes, narrative, inlineEnd, block.endOffset, "", "");

@@ -125,7 +125,11 @@ export function markdownTokensToPlainText(tokens: readonly Token[]): string {
         parts.push(" ");
         return;
       case "tr_close":
-        parts.push("\n");
+        // Drop only the synthetic separator the cell close just added, so a
+        // table row ends cleanly without touching real trailing spaces inside
+        // fenced/indented code content elsewhere in the parts.
+        if (parts[parts.length - 1] === " ") parts[parts.length - 1] = "\n";
+        else parts.push("\n");
         return;
       case "paragraph_close":
       case "heading_close":
@@ -138,7 +142,7 @@ export function markdownTokensToPlainText(tokens: readonly Token[]): string {
     }
   };
   for (const token of tokens) visit(token);
-  return parts.join("").replace(/[ \t]+\n/g, "\n");
+  return parts.join("");
 }
 
 /**

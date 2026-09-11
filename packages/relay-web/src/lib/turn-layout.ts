@@ -157,15 +157,23 @@ function sliceEmptyMarkdownNode(
 ): MarkdownLayoutNode {
   const relativeStart = start - node.sourceRange[0];
   const relativeEnd = end - node.sourceRange[0];
-  // Empty-HTML whitespace splits carry no rendered content, so slicing the raw
-  // source slice is exact here; copyText only diverges on marker-aware fragments
-  // which already sit on node boundaries and never enter this path with content.
+  // copyText is compositional (a node may carry a block terminator beyond its
+  // source span), so source-relative slicing is only valid when the copy has
+  // the same length as the source — true for "" gaps and whitespace fragments
+  // (whitespace serializes to itself). Anything else falls back to the source
+  // slice, which for the empty-html nodes reaching a partial split here is
+  // whitespace or "".
+  const copyText = start === node.sourceRange[0] && end === node.sourceRange[1]
+    ? node.copyText
+    : node.copyText.length === node.source.length
+      ? node.copyText.slice(relativeStart, relativeEnd)
+      : node.source.slice(relativeStart, relativeEnd);
   return {
     ...node,
     key: `markdown:${start}:${end}`,
     sourceRange: [start, end],
     source: node.source.slice(relativeStart, relativeEnd),
-    copyText: node.copyText.slice(relativeStart, relativeEnd),
+    copyText,
   };
 }
 
