@@ -268,6 +268,7 @@ function isWorkerBindingRecord(value: unknown): value is WorkerBindingRecord {
     (value.agentEndpointId === undefined || isAgentEndpointId(value.agentEndpointId)) &&
     isString(value.coordinatorSession) &&
     isString(value.workspace) &&
+    isOptionalString(value.cwd) &&
     isString(value.targetAgent) &&
     isOptionalString(value.launchAgentCommand) &&
     isOptionalString(value.launchAcpxAgent) &&
