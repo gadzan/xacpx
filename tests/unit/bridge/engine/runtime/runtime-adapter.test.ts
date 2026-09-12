@@ -3,7 +3,7 @@ import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
-import { createXacpxRuntimeAdapter } from "../../../../../src/bridge/engine/runtime/runtime-adapter";
+import { createXacpxRuntimeAdapter, mapEvents } from "../../../../../src/bridge/engine/runtime/runtime-adapter";
 // Plan Task 1 / PR0 gate: prove the packaged acpx 0.15.1 Runtime public contract
 // works end-to-end from xacpx — import → createRuntime → ensureSession →
 // startTurn → completed result — against tests/fixtures/mock-acp-agent.mjs,
@@ -138,3 +138,32 @@ test("adapter processLifecycle observes the direct-agent launch (B2)", async () 
     await rm(stateDir, { recursive: true, force: true });
   }
 }, 30_000);
+
+test("mapEvents passes normalized plan entries through, preserving explicit empty", async () => {
+  async function* upstream(): AsyncIterable<never> {
+    yield {
+      type: "status",
+      text: "plan: first",
+      tag: "plan",
+      entries: [
+        { content: "first", status: "in_progress", priority: "high" },
+        { content: "  ", status: "pending" },
+        { content: "bad-status", status: "bogus" },
+        "nope",
+      ],
+    } as never;
+    yield { type: "status", text: "plan updated", tag: "plan", entries: [] } as never;
+    yield { type: "status", text: "plan: legacy", tag: "plan" } as never;
+  }
+  const events = [];
+  for await (const event of mapEvents(upstream())) events.push(event);
+  expect(events[0]).toEqual({
+    type: "status",
+    text: "plan: first",
+    tag: "plan",
+    entries: [{ content: "first", status: "in_progress", priority: "high" }],
+  });
+  expect(events[1]).toEqual({ type: "status", text: "plan updated", tag: "plan", entries: [] });
+  // No list upstream → no entries key downstream (text-only legacy plan).
+  expect(events[2]).toEqual({ type: "status", text: "plan: legacy", tag: "plan" });
+});
