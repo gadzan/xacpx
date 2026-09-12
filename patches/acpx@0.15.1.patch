@@ -1,0 +1,107 @@
+diff --git a/dist/runtime.d.ts b/dist/runtime.d.ts
+index 05152b2465f2c97cc3407b3fb3e1ba44e4697430..dea0d069f6bd51d185cb83c5398958250f87580b 100644
+--- a/dist/runtime.d.ts
++++ b/dist/runtime.d.ts
+@@ -141,6 +141,11 @@ type AcpTextDeltaOriginMeta = {
+   kind?: string;
+   source?: string;
+ };
++type AcpRuntimePlanEntry = {
++  content: string;
++  status: "pending" | "in_progress" | "completed";
++  priority?: "high" | "medium" | "low";
++};
+ type AcpRuntimeEvent = {
+   type: "text_delta";
+   text: string;
+@@ -186,6 +191,12 @@ type AcpRuntimeEvent = {
+    * non-null `input` schema.
+    */
+   availableCommands?: AcpRuntimeAvailableCommand[];
++  /**
++   * Populated on `plan` events. Normalized view of the ACP `entries`
++   * payload. An empty array is an explicit replacement that clears a
++   * previously displayed plan.
++   */
++  entries?: AcpRuntimePlanEntry[];
+ } | {
+   type: "tool_call";
+   text: string;
+@@ -556,5 +567,6 @@ export declare function createRuntimeStore(options: {
+   stateDir: string;
+ }): AcpSessionStore;
+ //#endregion
+-export { type AcpAgentRegistry, type AcpElicitationContext, type AcpElicitationHandler, type AcpElicitationMode, type AcpElicitationRequest, type AcpElicitationResponse, type AcpFileSessionStoreOptions, type AcpPermissionDecision, type AcpPermissionRequest, type AcpProcessExit, type AcpProcessLaunch, type AcpProcessLaunchScope, type AcpProcessLifecycle, type AcpProcessSpawnFailure, type AcpProcessStarted, type AcpRuntime, type AcpRuntimeAvailableCommand, type AcpRuntimeCapabilities, type AcpRuntimeDoctorReport, type AcpRuntimeEnsureInput, type AcpRuntimeErrorCode, type AcpRuntimeEvent, type AcpRuntimeHandle, type AcpRuntimeOptions, type AcpRuntimePromptMode, type AcpRuntimeSessionMode, type AcpRuntimeSessionModels, type AcpRuntimeSessionUsage, type AcpRuntimeStatus, type AcpRuntimeTurn, type AcpRuntimeTurnAttachment, type AcpRuntimeTurnInput, type AcpRuntimeTurnResult, type AcpRuntimeTurnResultError, type AcpRuntimeUsageBreakdown, type AcpRuntimeUsageCost, type AcpSessionRecord, type AcpSessionStore, type AcpSessionUpdateTag, type AcpTextDeltaOriginMeta, type PermissionPolicy, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, REQUESTED_MODEL_UNSUPPORTED_REASONS, RequestedModelUnsupportedError, type RequestedModelUnsupportedErrorCode, type RequestedModelUnsupportedReason, type SessionAgentOptions, type SystemPromptOption, isRequestedModelUnsupportedError };
++export { type AcpAgentRegistry, type AcpElicitationContext, type AcpElicitationHandler, type AcpElicitationMode, type AcpElicitationRequest, type AcpElicitationResponse, type AcpFileSessionStoreOptions, type AcpPermissionDecision, type AcpPermissionRequest, type AcpProcessExit, type AcpProcessLaunch, type AcpProcessLaunchScope, type AcpProcessLifecycle, type AcpProcessSpawnFailure, type AcpProcessStarted, type AcpRuntime, type AcpRuntimeAvailableCommand, type AcpRuntimeCapabilities, type AcpRuntimeDoctorReport, type AcpRuntimeEnsureInput, type AcpRuntimeErrorCode, type AcpRuntimeEvent, type AcpRuntimeHandle, type AcpRuntimeOptions,
++  type AcpRuntimePlanEntry, type AcpRuntimePromptMode, type AcpRuntimeSessionMode, type AcpRuntimeSessionModels, type AcpRuntimeSessionUsage, type AcpRuntimeStatus, type AcpRuntimeTurn, type AcpRuntimeTurnAttachment, type AcpRuntimeTurnInput, type AcpRuntimeTurnResult, type AcpRuntimeTurnResultError, type AcpRuntimeUsageBreakdown, type AcpRuntimeUsageCost, type AcpSessionRecord, type AcpSessionStore, type AcpSessionUpdateTag, type AcpTextDeltaOriginMeta, type PermissionPolicy, REQUESTED_MODEL_UNSUPPORTED_ERROR_CODE, REQUESTED_MODEL_UNSUPPORTED_REASONS, RequestedModelUnsupportedError, type RequestedModelUnsupportedErrorCode, type RequestedModelUnsupportedReason, type SessionAgentOptions, type SystemPromptOption, isRequestedModelUnsupportedError };
+ //# sourceMappingURL=runtime.d.ts.map
+\ No newline at end of file
+diff --git a/dist/runtime.js b/dist/runtime.js
+index 3888cc171910d0df938673143dd29b93949488a2..4aebc30d5424e6efc0c90a9aca77c6c251981306 100644
+--- a/dist/runtime.js
++++ b/dist/runtime.js
+@@ -108,6 +108,55 @@ function planStatusText(payload) {
+ 	const content = asTrimmedString((Array.isArray(payload.entries) ? payload.entries : []).find((entry) => isRecord(entry))?.content);
+ 	return content ? `plan: ${content}` : null;
+ }
++const PLAN_ENTRY_STATUSES = /* @__PURE__ */ new Set([
++	"pending",
++	"in_progress",
++	"completed"
++]);
++const PLAN_ENTRY_PRIORITIES = /* @__PURE__ */ new Set([
++	"high",
++	"medium",
++	"low"
++]);
++function planUpdateEvent(payload) {
++	const raw = payload.entries;
++	const entries = normalizePlanEntries(raw);
++	if (Array.isArray(raw) && raw.length === 0) return {
++		type: "status",
++		text: "plan updated",
++		tag: "plan",
++		entries: []
++	};
++	const text = planStatusText(payload) ?? (entries.length > 0 ? `plan: ${entries[0]?.content}` : null);
++	if (!text) return null;
++	return {
++		type: "status",
++		text,
++		tag: "plan",
++		...entries.length > 0 ? { entries } : {}
++	};
++}
++function normalizePlanEntries(value) {
++	if (!Array.isArray(value)) return [];
++	const entries = [];
++	for (const entry of value) {
++		const normalized = normalizePlanEntry(entry);
++		if (normalized) entries.push(normalized);
++	}
++	return entries;
++}
++function normalizePlanEntry(value) {
++	if (!isRecord(value)) return void 0;
++	const content = asTrimmedString(value.content);
++	const status = asTrimmedString(value.status);
++	if (!content || !PLAN_ENTRY_STATUSES.has(status)) return void 0;
++	const priority = asTrimmedString(value.priority);
++	return {
++		content,
++		status,
++		...PLAN_ENTRY_PRIORITIES.has(priority) ? { priority } : {}
++	};
++}
+ /**
+ * Documented allowlist for text_delta.meta origin fields.
+ * Only these keys may be copied from ACP update `_meta`.
+@@ -371,7 +420,7 @@ const PROMPT_EVENT_PARSERS = {
+ 	current_mode_update: (payload) => statusUpdateEvent("current_mode_update", payload),
+ 	config_option_update: (payload) => statusUpdateEvent("config_option_update", payload),
+ 	session_info_update: (payload) => statusUpdateEvent("session_info_update", payload),
+-	plan: (payload) => statusUpdateEvent("plan", payload),
++	plan: planUpdateEvent,
+ 	client_operation: clientOperationEvent,
+ 	update: updateStatusEvent,
+ 	done: () => null,

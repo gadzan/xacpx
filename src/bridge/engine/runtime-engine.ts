@@ -842,7 +842,13 @@ export class RuntimeEngine implements BridgeEngine {
                 }
               } else if (event.type === "status") {
                 if ((event as { tag?: string }).tag === "plan") {
-                  sink({ type: "prompt.segment", text: `${event.text}\n` });
+                  // Structured entries (newer acpx) go to the plan panel with
+                  // replace semantics. Text-only plan (older acpx) is dropped:
+                  // fabricating entries would mislead, and a "plan: ..." chat
+                  // line misrenders as a broken tool call (CLI parity: plan
+                  // never appears as chat text).
+                  const entries = toPromptPlanEntries(event.entries);
+                  if (entries) sink({ type: "prompt.plan", entries });
                   return;
                 }
                 if (typeof event.used === "number" && typeof event.size === "number") {
@@ -3002,11 +3008,41 @@ async function buildRuntimeAttachments(
   return attachments;
 }
 
-// Plan parity gate: pinned acpx 0.15.1 public Runtime flattens plan events to a
-// single status text ("plan: <first entry content>") — full entries and real
-// statuses are lost upstream. Fabricating a PlanEntry would feed the上层 wrong
-// data, so the plan side-channel is explicitly unsupported until a public
-// Runtime version exposes structured plan entries (plan §41 gate).
+// Plan parity gate: acpx versions without structured plan entries flatten
+// plan events to a single status text ("plan: <first entry content>"). The
+// engine forwards structured entries as prompt.plan when present (replace
+// semantics, including explicit empty replacements) and drops text-only plan:
+// fabricating a PlanEntry would feed the upper layers wrong data, and a
+// "plan: ..." chat line misrenders as a broken tool call.
+
+const PROMPT_PLAN_STATUSES: ReadonlySet<string> = new Set(["pending", "in_progress", "completed"]);
+const PROMPT_PLAN_PRIORITIES: ReadonlySet<string> = new Set(["high", "medium", "low"]);
+
+/**
+ * Validate worker-supplied plan entries at the process boundary (worker
+ * speaks JSON over stdio — shape is not trusted). Returns undefined unless
+ * the payload is a list; an empty list is a valid explicit replacement.
+ */
+function toPromptPlanEntries(value: unknown): PlanEntry[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const entries: PlanEntry[] = [];
+  for (const item of value) {
+    if (typeof item !== "object" || item === null) continue;
+    const record = item as Record<string, unknown>;
+    const content = typeof record.content === "string" ? record.content.trim() : "";
+    const status = typeof record.status === "string" ? record.status.trim() : "";
+    if (!content || !PROMPT_PLAN_STATUSES.has(status)) continue;
+    const priority = typeof record.priority === "string" ? record.priority.trim() : "";
+    entries.push({
+      content,
+      status: status as PlanEntry["status"],
+      ...(PROMPT_PLAN_PRIORITIES.has(priority)
+        ? { priority: priority as NonNullable<PlanEntry["priority"]> }
+        : {}),
+    });
+  }
+  return entries;
+}
 
 export function mapRuntimeToolEvent(event: {
   toolCallId?: string;

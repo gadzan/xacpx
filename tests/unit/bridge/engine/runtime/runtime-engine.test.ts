@@ -261,12 +261,14 @@ test("G9: usage events never fabricate 0 for unknown token fields (used-only, si
     await rm(dir, { recursive: true, force: true });
   }
 });
-test("G7 plan: Runtime plan-status degrades to a text segment, never a fabricated prompt.plan", async () => {
+test("G7 plan: structured plan entries reach prompt.plan, text-only plan is dropped", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-plan-"));
   try {
-    // The pinned public acpx/runtime surfaces plan as a tagged status event
-    // with text only ("plan: <first entry>") — no structured entries cross
-    // the boundary, so the engine must not fabricate PlanEntry[].
+    // Newer acpx versions surface plan as a tagged status event WITH
+    // structured entries; older ones send text only ("plan: <first entry>").
+    // The engine forwards entries to the plan panel (replace semantics) and
+    // drops text-only plan — never fabricating entries, never leaking a
+    // "plan: ..." line into chat text (CLI parity).
     const entry = join(dir, "plan-worker.mjs");
     await writeFile(
       entry,
@@ -280,7 +282,16 @@ test("G7 plan: Runtime plan-status degrades to a text segment, never a fabricate
         "    if (!line) continue;",
         "    try { const msg = JSON.parse(line);",
         "      if (msg.method === 'prompt') {",
-        "        process.stdout.write(JSON.stringify({ id: msg.id, event: 'plan', payload: { type: 'status', tag: 'plan', text: 'plan: write the file' } }) + '\\n');",
+        "        const text = (msg.params && msg.params.text) || '';",
+        "        let payload;",
+        "        if (text === 'plan-text') {",
+        "          payload = { type: 'status', tag: 'plan', text: 'plan: write the file' };",
+        "        } else if (text === 'plan-empty') {",
+        "          payload = { type: 'status', tag: 'plan', text: 'plan updated', entries: [] };",
+        "        } else {",
+        "          payload = { type: 'status', tag: 'plan', text: 'plan: write the file', entries: [{ content: 'write the file', status: 'in_progress', priority: 'high' }] };",
+        "        }",
+        "        process.stdout.write(JSON.stringify({ id: msg.id, event: 'plan', payload }) + '\\n');",
         "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { result: { status: 'completed' }, finalText: 'done' } }) + '\\n');",
         "      } else if (msg.method === 'ensure') {",
         "        process.stdout.write(JSON.stringify({ id: msg.id, ok: true, result: { ready: true, sessionKey: msg.params.sessionKey, acpxRecordId: 'rec-plan-1' } }) + '\\n');",
@@ -296,15 +307,29 @@ test("G7 plan: Runtime plan-status degrades to a text segment, never a fabricate
     const stateDir = join(dir, "state", "sessions");
     await import("node:fs/promises").then(m=>m.mkdir(stateDir,{recursive:true}));
     const engine = new RuntimeEngine({ workerEntryPath: entry, permissionMode: "approve-all", stateDir, queueDir: join(dir, "queue"), fenceDir: join(dir, "fences") });
-    const events: Array<{ type: string; text?: string }> = [];
-    const reply = await engine.prompt({ ...sessionInput, text: "plan me" }, (e) => {
-      events.push(e as { type: string; text?: string });
-    });
-    expect(reply.text).toBe("done");
-    // Honest downgrade: plan text stays visible as an ordinary segment …
-    expect(events.some((e) => e.type === "prompt.segment" && (e.text ?? "").includes("plan: write the file"))).toBe(true);
-    // … but no structured prompt.plan is ever emitted (entries would be fabricated).
-    expect(events.some((e) => e.type === "prompt.plan")).toBe(false);
+    const collect = async (text: string) => {
+      const events: Array<{ type: string; text?: string; entries?: Array<{ content: string; status: string }> }> = [];
+      const reply = await engine.prompt({ ...sessionInput, text }, (e) => {
+        events.push(e);
+      });
+      expect(reply.text).toBe("done");
+      return events;
+    };
+    // Structured entries → plan panel.
+    const full = await collect("plan-full");
+    expect(full.some((e) => e.type === "prompt.plan"
+      && Array.isArray(e.entries)
+      && e.entries.length === 1
+      && e.entries[0].content === "write the file"
+      && e.entries[0].status === "in_progress")).toBe(true);
+    expect(full.some((e) => e.type === "prompt.segment" && (e.text ?? "").includes("plan:"))).toBe(false);
+    // Explicit empty replacement → plan panel clears.
+    const empty = await collect("plan-empty");
+    expect(empty.some((e) => e.type === "prompt.plan" && Array.isArray(e.entries) && e.entries.length === 0)).toBe(true);
+    // Text-only plan (older acpx) → dropped entirely: no chat line, no fabrication.
+    const legacy = await collect("plan-text");
+    expect(legacy.some((e) => e.type === "prompt.segment" && (e.text ?? "").includes("plan:"))).toBe(false);
+    expect(legacy.some((e) => e.type === "prompt.plan")).toBe(false);
     await engine.shutdown();
   } finally {
     await rm(dir, { recursive: true, force: true });

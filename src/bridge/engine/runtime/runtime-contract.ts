@@ -7,6 +7,18 @@
 export type XacpxPermissionMode = "approve-all" | "approve-reads" | "deny-all";
 export type XacpxNonInteractivePermissions = "deny" | "fail";
 
+/**
+ * One normalized ACP plan entry crossing the runtime boundary. The agent
+ * re-sends the WHOLE list on each update, so consumers REPLACE rather than
+ * append. An empty array is an explicit replacement that clears a
+ * previously displayed plan.
+ */
+export type XacpxPlanEntry = {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+  priority?: "high" | "medium" | "low";
+};
+
 /** Streamed runtime turn event, shaped for the bridge prompt.* mapping. */
 export type XacpxRuntimeEvent =
   | {
@@ -34,6 +46,12 @@ export type XacpxRuntimeEvent =
       cost?: { amount?: number; currency?: string };
       breakdown?: UsageBreakdownLike;
       availableCommands?: Array<{ name: string; description?: string }>;
+      /**
+       * Populated on tag === "plan" when the acpx Runtime exposes structured
+       * entries. Absent on older acpx versions that flatten plan to text —
+       * never fabricated from the text.
+       */
+      entries?: XacpxPlanEntry[];
     }
   | {
       type: "tool_call";

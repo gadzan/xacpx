@@ -25,6 +25,7 @@ import {
 
 import type {
   XacpxConfigSnapshot,
+  XacpxPlanEntry,
   XacpxPermissionMode,
   XacpxNonInteractivePermissions,
   XacpxRuntimeEvent,
@@ -266,6 +267,11 @@ export async function* mapEvents(events: AsyncIterable<AcpRuntimeEvent>): AsyncI
         };
       }
     } else if (event.type === "status") {
+      // Pinned acpx versions predate structured plan entries: the field is
+      // absent from their types, so read it structurally — present only.
+      const planEntries = normalizeAdapterPlanEntries(
+        (event as { entries?: unknown }).entries,
+      );
       yield {
         type: "status",
         text: event.text,
@@ -275,6 +281,7 @@ export async function* mapEvents(events: AsyncIterable<AcpRuntimeEvent>): AsyncI
         ...(event.cost ? { cost: event.cost } : {}),
         ...(event.breakdown ? { breakdown: event.breakdown } : {}),
         ...(event.availableCommands ? { availableCommands: event.availableCommands } : {}),
+        ...(planEntries !== undefined ? { entries: planEntries } : {}),
       };
     } else if (event.type === "tool_call") {
       const isInitialToolEvent = typeof event.toolCallId === "string"
@@ -299,6 +306,37 @@ export async function* mapEvents(events: AsyncIterable<AcpRuntimeEvent>): AsyncI
     }
     // "done"/"error" only surface via runTurn(); startTurn uses .result instead.
   }
+}
+
+const ADAPTER_PLAN_STATUSES = new Set(["pending", "in_progress", "completed"]);
+const ADAPTER_PLAN_PRIORITIES = new Set(["high", "medium", "low"]);
+
+/**
+ * Normalize upstream plan entries defensively (boundary rule: this module
+ * absorbs upstream shape drift). Returns undefined when upstream sent no
+ * list at all — so "absent" stays distinguishable from "explicitly empty"
+ * (the agent cleared its plan). Malformed entries are skipped, never
+ * fabricated.
+ */
+function normalizeAdapterPlanEntries(value: unknown): XacpxPlanEntry[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const entries: XacpxPlanEntry[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const record = entry as Record<string, unknown>;
+    const content = typeof record.content === "string" ? record.content.trim() : "";
+    const status = typeof record.status === "string" ? record.status.trim() : "";
+    if (!content || !ADAPTER_PLAN_STATUSES.has(status)) continue;
+    const priority = typeof record.priority === "string" ? record.priority.trim() : "";
+    entries.push({
+      content,
+      status: status as XacpxPlanEntry["status"],
+      ...(ADAPTER_PLAN_PRIORITIES.has(priority)
+        ? { priority: priority as XacpxPlanEntry["priority"] }
+        : {}),
+    });
+  }
+  return entries;
 }
 
 export async function mapResult(result: Promise<{
