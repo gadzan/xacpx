@@ -350,6 +350,15 @@ export interface ChannelPermissionRequest {
 
 export interface ChannelPermissionDecision {
   outcome: PermissionOutcome;
+  /**
+   * Platform user id that activated the approval control. REQUIRED: every
+   * `requestPermission()` implementation must return an authenticated
+   * responder; the broker re-verifies it against the bound initiator (I3).
+   * `requestPermission()` is new in this change, so no legacy compatibility
+   * concern applies — a platform that cannot prove responder identity must
+   * not implement the capability at all.
+   */
+  responderId: string;
 }
 ```
 
@@ -393,8 +402,13 @@ handlePromptWithSession
 TransportInvoker.promptTransportSession
 ```
 
-The binding must include the route facts from the original `ChatRequest`, not route state looked up later.
-
+Only `origin === "human"` may mint/bind an `interactionId`. An ABSENT origin
+fails closed (no approval UI) — never infer human for compatibility. Every
+built-in chat channel sets `"human"` explicitly for user turns (Discord,
+Feishu, Yuanbao, WeChat, dry-run) and `"scheduled"` for its scheduled
+dispatch; legacy plugin markers (`scheduledSessionAlias`,
+`preserveCoordinatorRoute`) remain only as a backstop for pre-existing
+channels. Never guess from `senderId` strings.
 ### 6.2 PromptOptions
 
 Extend `src/transport/types.ts`:
@@ -484,7 +498,7 @@ The broker does **not** evaluate permission policy and does **not** persist pend
 
 ```ts
 export interface PermissionInteractionBroker {
-  bindTurn(context: TurnInteractionContext): () => void;
+  bindTurn(context: TurnInteractionContext, abortSignal?: AbortSignal): () => void;
 
   requestPermission(input: RuntimePermissionInteractionRequest):
     Promise<{ outcome: PermissionOutcome }>;
@@ -493,7 +507,14 @@ export interface PermissionInteractionBroker {
 }
 ```
 
-`bindTurn()` should refuse duplicate live `interactionId`s.
+`bindTurn()` should refuse duplicate live `interactionId`s. The optional
+owning-turn `AbortSignal` is subscribed directly: a `/cancel` or Stop aborts
+every pending request for the interaction immediately, without waiting for a
+slow `transport.cancel()` to settle the prompt. No extra worker→host cancel
+event is needed — the worker already drops its pending entry and returns
+`reject_once` on its own abort, so both ends fail closed independently off
+the same turn abort.
+
 
 The returned disposer must only remove the exact binding it created (identity-check the entry) so a stale disposer cannot delete a later binding in pathological tests.
 
@@ -519,7 +540,17 @@ Introduce one business deadline, initially:
 const PERMISSION_INTERACTION_TIMEOUT_MS = 120_000;
 ```
 
-The broker owns this deadline. The bridge RPC watchdog may be slightly larger (for example 125 seconds), but must not create a second independent business timeout with different semantics.
+The broker owns this deadline. Every layer above it is only a transport
+guard set slightly wider — never a second business timeout:
+
+- `src/bridge/engine/runtime/runtime-worker-main.ts` host-permission watchdog: 125s;
+- `src/bridge/engine/runtime/runtime-worker-client.ts` permission watchdog: 125s (seam `permissionTimeoutMs` for fast tests);
+- `src/bridge/engine/runtime-engine.ts` permission watchdog: 125s (seam `permissionRequestTimeoutMs`, fanned into worker clients);
+- `src/bridge/bridge-main.ts` daemon `resolvePermissionRequest` RPC: 125s.
+
+The absolute business deadline travels as `expiresAt` on
+`ChannelPermissionRequest`; a second independent timeout with different
+semantics MUST NOT be introduced at any layer.
 
 On timeout the broker aborts the channel request and returns `reject_once`.
 
@@ -527,8 +558,8 @@ On timeout the broker aborts the channel request and returns `reject_once`.
 
 A pending request must settle/abort on:
 
-- owning prompt abort/cancel;
 - active interaction unbind/turn completion;
+- owning prompt abort/cancel — subscribed DIRECTLY via `bindTurn(ctx, signal)`, not via turn-finally, so a hung `transport.cancel()` cannot keep the UI alive;
 - broker shutdown;
 - channel stop/disconnect where surfaced;
 - business timeout.
@@ -594,6 +625,15 @@ The Runtime already distinguishes “an RPC callback exists” from “a real hu
 
 After this feature lands, set this true only when production wiring can actually dispatch to at least one supported interactive channel path. A bridge callback by itself must not qualify.
 
+
+The SAME authoritative value enters every gate — it is not a per-construction guess:
+
+- `SessionService` (`permissionInteractionAvailable`) for new-session affinity;
+- `RuntimeEngine` (bridge subprocess) for eligibility;
+- the shared `assertEligibleForRuntimePermissionChange(..., { interactionAvailable })` used by daemon startup, the config watcher hot-apply, `/config set`, and `/pm`;
+- `CommandRouterContext.permissionInteractionAvailable`, threaded from `buildApp` into the `/config` + `/pm` handlers.
+
+Without this, persisted Runtime bindings stay stuck on "escalate without interactive" even after Discord approval ships.
 Do not loosen Runtime eligibility merely because `onPermissionRequest` is non-null.
 
 ### 9.2 Mixed channel installations
@@ -681,6 +721,12 @@ if (interaction.userId !== pending.requesterId) {
 
 Do not permit “server owner”, “channel admin”, or “bot owner” as implicit override in v1.
 
+The plugin check alone is not the security boundary: the resolved decision
+MUST carry `responderId: interaction.userId` back to the broker, which
+re-verifies `responderId === requester.senderId` before accepting any allow.
+A forged or mismatched identity fails closed to `reject_once` even if the
+plugin check is ever bypassed.
+
 ### 10.5 First decision wins
 
 Resolve and remove/invalidate the pending entry atomically before doing best-effort cosmetic message edits.
@@ -760,18 +806,31 @@ Broker:
 - `src/permissions/permission-types.ts`
   - core-private turn/origin/runtime request types.
 - `src/permissions/permission-interaction-broker.ts`
-  - route registry, pending lifecycle, timeout, channel dispatch, validation, shutdown.
+  - route registry, pending lifecycle, timeout, channel dispatch, validation, shutdown;
+  - `bindTurn(ctx, abortSignal?)` direct turn-abort subscription (T3);
+  - `responderId` re-verification against the bound initiator (I3).
 - `src/permissions/permission-summary.ts`
   - bounded request presentation.
 
 Turn plumbing:
 
 - `src/weixin/agent/interface.ts`
-  - only if an explicit origin marker is needed in metadata; prefer not to overload plugin-facing metadata with internal broker objects.
-- `src/commands/handlers/session-handler.ts`
-  - bind/unbind human interaction around exact prompt execution.
+  - REQUIRED explicit `origin: "human" | "scheduled" | "peer" | "orchestration"` provenance (Control producers set it; built-in chat channels set `"human"`/`"scheduled"`; absent fails closed).
+- `src/control/control-service.ts`
+  - `prompt` → `"human"`, `runScheduledTurn` → `"scheduled"`, peer/completion params → `"peer"`.
+- `src/control/turn-queue.ts` (`SubmitParams`/`QueuedPrompt`/`pendingInterrupts`/drain/runTurn req)
+- `src/control/session-turn-runner.ts` (`TurnRequest`) + `src/control/turn-support.ts` (`buildControlMetadata`)
+  - carry `turnOrigin` end to end into `ChatRequestMetadata.origin`.
+- `src/commands/router-types.ts` (`CommandRouterContext.permissionInteractionAvailable`)
+- `src/commands/command-router.ts` (constructor + handler context threading)
+- `src/bridge/engine/runtime/runtime-permission-policy.ts`
+  - `assertEligibleForRuntimePermissionChange(..., { interactionAvailable })`; same value in daemon startup, watcher hot-apply, `/config set`, `/pm`.
 - `src/commands/transport-invoker.ts`
   - accept/forward `interactionId`.
+- `src/commands/handlers/session-handler.ts`
+  - mint/bind ONLY on explicit `origin === "human"` (legacy scheduled/peer markers as backstop; absent fails closed); pass the owning turn `AbortSignal` into `bindTurn`.
+- `packages/channel-discord/src/channel.ts`, `packages/channel-feishu/src/channel.ts`, `packages/channel-yuanbao/src/channel.ts`, `src/weixin/messaging/handle-weixin-message-turn.ts`, `src/weixin/messaging/scheduled-turn.ts`, `src/dry-run.ts`
+  - explicit `"human"` for user turns / `"scheduled"` for scheduled dispatch (absent would fail closed).
 - `src/transport/types.ts`
   - `PromptOptions.interactionId?: string`.
 
@@ -787,10 +846,12 @@ Bridge/runtime protocol:
   - add prompt interaction id + permission interaction id.
 - `src/bridge/engine/runtime/runtime-worker-main.ts`
   - bind active interaction during prompt; include it in escalated permission payload; fail closed if absent.
+  - host-permission watchdog 125s (was 9s — otherwise every human decision times out before the user reads the prompt).
 - `src/bridge/engine/runtime-engine.ts`
-  - carry `interactionId`, normalized available outcomes, existing generation fences unchanged.
+  - carry `interactionId`, normalized available outcomes, existing generation fences unchanged;
+  - permission watchdog 125s with `permissionRequestTimeoutMs` seam (fanned into worker clients).
 - `src/bridge/bridge-main.ts`
-  - increase transport watchdog beyond broker business timeout.
+  - daemon `resolvePermissionRequest` RPC watchdog 125s; `permissionInteractionAvailable: true` (per-request fail-closed covers unsupported channels).
 
 Production wiring:
 
@@ -804,10 +865,15 @@ Production wiring:
 
 Tests:
 
-- new `tests/unit/permissions/permission-interaction-broker.test.ts`;
 - bridge protocol/transport tests for `interactionId` propagation;
 - Runtime worker/engine tests for no-interaction-id fail-closed and stale generation behavior;
 - integration test from fake channel → real Runtime permission callback → decision return.
+- `tests/unit/permissions/permission-interaction-broker.test.ts` (T1–T4, T7–T15 + turn-abort-during-hang + responder mismatch/legacy);
+- `tests/unit/bridge/engine/runtime/runtime-permission-policy.test.ts` (shared gate admits escalate with bindings only when interaction is available);
+- `tests/unit/control/control-service-scheduled.test.ts` (`metadata.origin` scheduled/human end to end);
+- `tests/unit/control/control-service-prompt.test.ts` (human origin in metadata);
+- `tests/unit/control/turn-queue.test.ts` (`turnOrigin` drain preservation);
+- `tests/unit/commands/handlers/session-handler.test.ts` (mint gate: only explicit human mints; absent fails closed);
 
 ### PR B — Discord permission UI
 
@@ -819,7 +885,8 @@ Tests:
 - `packages/channel-discord/src/channel.ts`
   - implement `requestPermission()`;
   - pending token lifecycle;
-  - initiator check;
+  - initiator check + `responderId` on every resolved decision;
+  - only a real button click may RESOLVE; expiry/stop/abort REJECT (the broker fails closed on throw), so no fabricated identity ever flows;
   - stop/abort cleanup.
 - `packages/channel-discord/src/i18n/*`
   - permission labels/messages.
@@ -838,6 +905,8 @@ Tests:
 - channel stop with pending request;
 - button custom-id token cannot be forged into an unrelated request;
 - UI edit failure does not change committed decision.
+- decision carries `responderId` (broker re-verification contract);
+- forged disallowed action cannot escalate (e.g. no `allow_always` button, forged `:always` click is inert);
 
 ### PR C — structured channel follow-ups
 
