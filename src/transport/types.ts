@@ -230,6 +230,13 @@ export interface PromptOptions {
    */
   toolEventMode?: ToolEventMode;
   media?: PromptMediaInput;
+  /**
+   * Opaque exact-turn interaction id for permission routing (plan
+   * channel-permission-interaction). Created at prompt dispatch for
+   * human-originated turns; absent for scheduled/peer/orchestration and
+   * internal prompts, which stay non-interactive and fail closed.
+   */
+  interactionId?: string;
 }
 
 export interface SessionTransport {

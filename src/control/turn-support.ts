@@ -6,6 +6,7 @@ import type {
 
 export type { AgentMessageCompletion };
 import type { ChatRequestMetadata } from "../weixin/agent/interface";
+import type { PermissionInteractionOrigin } from "../permissions/permission-types.js";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 
 export interface PeerTurnOrigin {
@@ -22,6 +23,8 @@ export interface QueuedPrompt {
   text: string;
   enqueuedAt: string;
   senderId: string;
+  /** Explicit turn provenance, carried from submit through drain to metadata. */
+  turnOrigin: PermissionInteractionOrigin;
   executionContext: {
     chatKey: string;
     sessionAlias: string;
@@ -101,6 +104,7 @@ export function buildControlMetadata(
   isOwner: boolean | undefined,
   boundSessionAlias?: string,
   preserveCoordinatorRoute?: boolean,
+  turnOrigin?: PermissionInteractionOrigin,
 ): ChatRequestMetadata {
   return {
     channel: "control",
@@ -109,5 +113,6 @@ export function buildControlMetadata(
     ...(isOwner === undefined ? {} : { isOwner }),
     ...(boundSessionAlias ? { boundSessionAlias } : {}),
     ...(preserveCoordinatorRoute ? { preserveCoordinatorRoute } : {}),
+    ...(turnOrigin ? { origin: turnOrigin } : {}),
   };
 }

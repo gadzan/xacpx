@@ -111,6 +111,7 @@ export interface EnginePromptInput extends EngineSessionInput {
   toolEvents?: boolean;
   toolEventMode?: ToolEventMode;
   media?: PromptMediaInput;
+  interactionId?: string;
 }
 
 export interface EngineInjectInput extends EngineSessionInput {

@@ -92,6 +92,12 @@ import type {
   MessageChannelRuntime,
   CoordinatorMessageInput,
 } from "./channels/types.js";
+import {
+  PermissionInteractionBroker,
+  getGlobalPermissionBroker,
+  setGlobalPermissionBroker,
+} from "./permissions/permission-interaction-broker.js";
+import type { RuntimePermissionInteractionRequest } from "./permissions/permission-types.js";
 import { RuntimeMediaStore } from "./channels/media-store.js";
 import { isQuotaDeferredError } from "./weixin/messaging/quota-errors";
 import { normalizeWeixinUserIdFromChatKey } from "./weixin/messaging/inbound.js";
@@ -141,12 +147,14 @@ export interface ApplyRuntimePermissionConfigOptions {
   transport: SessionTransport;
   provisionOverlays: (target: AppConfig) => Promise<void>;
   logger: AppLogger;
+  /** Authoritative interaction capability (broker + channel dispatch wired). */
+  permissionInteractionAvailable?: boolean;
 }
 
 export async function applyRuntimePermissionConfig(
   options: ApplyRuntimePermissionConfigOptions,
 ): Promise<AppConfig> {
-  const { config, nextConfig, sessions, transport, provisionOverlays, logger } =
+  const { config, nextConfig, sessions, transport, provisionOverlays, logger, permissionInteractionAvailable } =
     options;
   try {
     // Transport topology is restart-required: the live transport object is
@@ -165,6 +173,7 @@ export async function applyRuntimePermissionConfig(
         permissionPolicy: nextConfig.transport.permissionPolicy,
         nonInteractivePermissions: nextConfig.transport.nonInteractivePermissions,
       },
+      { interactionAvailable: permissionInteractionAvailable ?? false },
     );
 
     // 3. Diff permission tuple (mode / nonInteractive / policy)
@@ -553,9 +562,33 @@ export async function buildApp(
   const messagingNodeIdentity = await new MessagingNodeIdentityStore(
     join(runtimeRoot, "agent-messaging", "node.json"),
   ).loadOrCreate();
+  // Channel permission interaction broker (plan channel-permission-interaction).
+  // Exact-turn routing only: session-handler binds interactionId → chat route
+  // at prompt dispatch; this resolver maps it back to the originating channel
+  // at permission time. deps.channel is the live MessageChannelRegistry in
+  // production (cli.ts); tests without a registry stay fail-closed.
+  const channelRegistryLike = deps.channel as unknown as {
+    getByChatKey?: (chatKey: string) => MessageChannelRuntime | null;
+  } | undefined;
+  const hasChannelDispatch = typeof channelRegistryLike?.getByChatKey === "function";
+  const permissionBroker = new PermissionInteractionBroker({
+    getChannelByChatKey: (chatKey) => {
+      try {
+        return channelRegistryLike?.getByChatKey?.(chatKey) ?? null;
+      } catch {
+        return null;
+      }
+    },
+    logger,
+  });
+  setGlobalPermissionBroker(permissionBroker);
   const sessions = new SessionService(config, debouncedStateStore, state, {
     stateMutex,
     runtimeRoot,
+    // Interaction infrastructure is installed (broker + registry dispatch).
+    // Per-request fail-closed still applies for unsupported channels and
+    // non-human turns; this flag only means escalation MAY be Runtime-routed.
+    ...(hasChannelDispatch ? { permissionInteractionAvailable: true as const } : {}),
   });
   if (sessions.hasPersistedRuntimeBindings()) {
     // Fail startup LOUD, reusing the shared gate: both a runtime-ineligible
@@ -565,7 +598,7 @@ export async function buildApp(
       assertEligibleForRuntimePermissionChange(true, {
         permissionPolicy: config.transport.permissionPolicy,
         nonInteractivePermissions: config.transport.nonInteractivePermissions,
-      });
+      }, { interactionAvailable: hasChannelDispatch });
     } catch (error) {
       // Fail startup LOUD: persisted Runtime bindings can no longer legally
       // run under this config, and silently starting degraded would brick
@@ -701,11 +734,14 @@ export async function buildApp(
                 },
                 onBridgeRequest: async (method, params, context) => {
                   if (method === "resolvePermissionRequest") {
-                    const p = params as { logicalSessionId?: string; sessionKey?: string; requestId?: string; toolCallId?: string };
-                    // For now, no channel UI is wired to the bridge permission flow.
-                    // Fail closed: deny unless a future channel handler provides explicit approval.
-                    // This satisfies security: escalate never becomes allow without UI.
-                    return { outcome: "reject_once" };
+                    try {
+                      const result = await permissionBroker.requestPermission(
+                        params as unknown as RuntimePermissionInteractionRequest,
+                      );
+                      return { outcome: result.outcome };
+                    } catch {
+                      return { outcome: "reject_once" };
+                    }
                   }
                   if (method === "resolveElicitationRequest") {
                     return { action: "cancel" };
@@ -806,6 +842,7 @@ export async function buildApp(
       transport,
       provisionOverlays,
       logger,
+      permissionInteractionAvailable: hasChannelDispatch,
     });
   };
   const reloadRuntimeConfig = async (): Promise<AppConfig> => {
@@ -1778,6 +1815,7 @@ export async function buildApp(
     activeTurns,
     controlEvents,
     configMutationMutex,
+    hasChannelDispatch,
   );
   const agent = new ConsoleAgent(router, logger);
   const terminalService = createTerminalService({
@@ -2215,6 +2253,14 @@ export async function buildApp(
       ? { reconcileOrphans: () => reapWarmQueueOwners("periodic") }
       : {}),
     dispose: async () => {
+      // Invalidate pending permission UI first: no approval may settle after
+      // shutdown starts. Memory-only state is never resurrected on restart.
+      try {
+        permissionBroker.shutdown();
+      } catch {}
+      if (getGlobalPermissionBroker() === permissionBroker) {
+        setGlobalPermissionBroker(null);
+      }
       scheduledScheduler.stop();
       sessionWarmth?.stop();
       configWatcher.close();

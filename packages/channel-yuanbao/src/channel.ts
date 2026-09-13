@@ -201,7 +201,7 @@ export class YuanbaoChannel implements MessageChannelRuntime {
         text: input.promptText,
         ...(input.replyContextToken ? { replyContextToken: input.replyContextToken } : {}),
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : this.abortSignal ? { abortSignal: this.abortSignal } : {}),
-        metadata: { channel: "yuanbao", scheduledSessionAlias: input.sessionAlias },
+        metadata: { channel: "yuanbao", scheduledSessionAlias: input.sessionAlias, origin: "scheduled" as const },
         reply: async (text) => {
           if (this.isAborted() || input.abortSignal?.aborted) return;
           await queue.push(text);
@@ -506,6 +506,7 @@ export class YuanbaoChannel implements MessageChannelRuntime {
               ...(input.chatType === "group" ? { groupId: target } : {}),
               isOwner: Boolean(raw.bot_owner_id && raw.from_account === raw.bot_owner_id),
               ...(boundAlias ? { boundSessionAlias: boundAlias } : {}),
+              origin: "human" as const,
             },
             // Text-only degradation: no card, so a delegation surfaces as one
             // honest line. Ordinary tool calls stay hidden to avoid flooding

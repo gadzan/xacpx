@@ -100,6 +100,12 @@ export interface CommandRouterContext {
    * `nativeSessionListFormat`); handlers default to "table" when unset.
    */
   resolveNativeSessionListFormat?: (chatKey: string) => "cards" | "table";
+  /**
+   * True when a human permission-interaction dispatch surface is wired
+   * (broker + channel registry). Gates escalate-policy eligibility in
+   * /config + /pm handlers via the shared assert helper. Absent = false.
+   */
+  permissionInteractionAvailable?: boolean;
 }
 
 export interface OrchestrationRouterOps {
@@ -187,6 +193,7 @@ export interface SessionInteractionOps {
     onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
     onUsage?: (usage: PromptUsage) => void | Promise<void>,
     onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
+    interactionId?: string,
   ) => Promise<{ text: string }>;
 }
 

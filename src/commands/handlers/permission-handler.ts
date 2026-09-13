@@ -54,6 +54,7 @@ export async function handlePermissionModeSet(
           permissionPolicy: updated.transport.permissionPolicy,
           nonInteractivePermissions: updated.transport.nonInteractivePermissions,
         },
+        { interactionAvailable: context.permissionInteractionAvailable ?? false },
       );
       await context.transport.updatePermissionPolicy?.(updated.transport);
     } catch (error) {
@@ -100,6 +101,7 @@ export async function handlePermissionAutoSet(
           permissionPolicy: updated.transport.permissionPolicy,
           nonInteractivePermissions: updated.transport.nonInteractivePermissions,
         },
+        { interactionAvailable: context.permissionInteractionAvailable ?? false },
       );
       await context.transport.updatePermissionPolicy?.(updated.transport);
     } catch (error) {

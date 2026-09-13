@@ -14,6 +14,7 @@ import {
   type AgentMessageCompletion,
   type TurnIdleTimeoutDetail,
 } from "./turn-support";
+import type { PermissionInteractionOrigin } from "../permissions/permission-types.js";
 
 export interface QueuedItemSnapshot {
   id: string;
@@ -94,6 +95,12 @@ export interface SubmitParams {
   senderId: string;
   isOwner?: boolean;
   accountId?: string;
+  /**
+   * Explicit turn provenance, set by the producer (human web prompt,
+   * scheduled dispatch, peer delivery). Only "human" may mint a permission
+   * interaction id downstream — all other origins stay non-interactive.
+   */
+  turnOrigin: PermissionInteractionOrigin;
   // External abort (e.g. the scheduler's per-dispatch timeout) linked to this turn.
   abortSignal?: AbortSignal;
   // Extra fields stamped onto turn-started for scheduled-origin turns. `queueItemId`
@@ -279,6 +286,7 @@ export class TurnQueue {
         text: params.text,
         enqueuedAt: new Date().toISOString(),
         senderId: params.senderId,
+        turnOrigin: params.turnOrigin,
         executionContext: {
           chatKey: params.chatKey,
           sessionAlias: params.sessionAlias,
@@ -399,6 +407,7 @@ export class TurnQueue {
       text: params.text,
       enqueuedAt: new Date().toISOString(),
       senderId: params.senderId,
+      turnOrigin: params.turnOrigin,
       executionContext: {
         chatKey: params.chatKey,
         sessionAlias: params.sessionAlias,
@@ -576,6 +585,7 @@ export class TurnQueue {
             text: params.text,
             enqueuedAt: new Date().toISOString(),
             senderId: params.senderId,
+            turnOrigin: params.turnOrigin,
             executionContext: {
               chatKey: params.chatKey,
               sessionAlias: params.sessionAlias,
@@ -691,6 +701,7 @@ export class TurnQueue {
           boundSessionAlias: params.boundSessionAlias,
           text: params.text,
           senderId: params.senderId,
+          turnOrigin: params.turnOrigin,
           isOwner: params.isOwner,
           accountId: params.accountId,
           turnStarted,
@@ -814,6 +825,7 @@ export class TurnQueue {
       concurrencyKey,
       text: next.text,
       senderId: next.senderId,
+      turnOrigin: next.turnOrigin,
       queueable: true,
       drained: true,
       isPeerMessage: next.isPeerMessage,

@@ -193,9 +193,15 @@ export async function runBridgeMain(): Promise<void> {
         durableRootDir: durableRoot,
         queueDir,
         fenceDir,
+        // Human interaction infrastructure lives daemon-side (broker +
+        // channel dispatch). The daemon fails each request closed for
+        // unsupported channels and non-human turns, so the bridge stays
+        // interaction-capable globally; the 125s watchdog sits just above
+        // the broker's 120s business deadline.
+        permissionInteractionAvailable: true,
         onPermissionRequest: async (payload) => {
           try {
-            const result = await server.requestDaemon("resolvePermissionRequest", payload as unknown as import("../transport/acpx-bridge/acpx-bridge-protocol").ResolvePermissionRequestParams, { timeoutMs: 8000 });
+            const result = await server.requestDaemon("resolvePermissionRequest", payload as unknown as import("../transport/acpx-bridge/acpx-bridge-protocol").ResolvePermissionRequestParams, { timeoutMs: 125_000 });
             const outcome = (result as { outcome?: unknown })?.outcome;
             if (outcome === "allow_once" || outcome === "allow_always" || outcome === "reject_once" || outcome === "reject_always" || outcome === "cancel") {
               return { outcome };

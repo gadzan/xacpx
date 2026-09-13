@@ -105,6 +105,7 @@ export async function handleConfigSet(
             permissionPolicy: updated.transport.permissionPolicy,
             nonInteractivePermissions: updated.transport.nonInteractivePermissions,
           },
+          { interactionAvailable: context.permissionInteractionAvailable ?? false },
         );
         await context.transport.updatePermissionPolicy?.(updated.transport);
       } catch (error) {

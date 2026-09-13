@@ -151,6 +151,7 @@ export async function executeScheduledTurn(
           channel: "weixin",
           scheduledSessionAlias: input.sessionAlias,
           ...(input.sessionDescriptor ? { scheduledSessionDescriptor: input.sessionDescriptor } : {}),
+          origin: "scheduled" as const,
         },
       },
       onReplySegment: sendReplySegment,

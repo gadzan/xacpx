@@ -2,6 +2,17 @@ export interface DiscordMessages {
   abortAck: string;
   errorFootnote: (tail: string) => string;
   permissionGenericHint: string;
+  permissionTitle: string;
+  permissionAllowOnce: string;
+  permissionAllowAlways: string;
+  permissionDeny: string;
+  permissionDenyAlways: string;
+  permissionCancel: string;
+  permissionResolved: (outcome: string) => string;
+  permissionExpired: string;
+  permissionCancelled: string;
+  permissionUnauthorized: string;
+  permissionAlreadyResolved: string;
   summaryProcessing: string;
   summaryComplete: string;
   summaryStopped: string;

@@ -124,6 +124,8 @@ export interface ResolvePermissionRequestParams {
   rawInput?: unknown;
   policyGeneration: number;
   workerGeneration: string;
+  interactionId?: string;
+  availableOutcomes?: Array<"allow_once" | "allow_always" | "reject_once" | "reject_always" | "cancel">;
 }
 export interface ResolveElicitationRequestParams {
   logicalSessionId: string;

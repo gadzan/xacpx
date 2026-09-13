@@ -53,4 +53,25 @@ export interface OutboundBody {
   content?: string;
   files?: Array<{ attachment: Buffer | string; name?: string; description?: string }>;
   allowedMentions?: { parse?: string[]; users?: string[]; roles?: string[]; repliedUser?: boolean };
+  components?: DiscordMessageComponents;
+}
+export type DiscordMessageComponents = Array<DiscordActionRow>;
+export interface DiscordActionRow {
+  type: 1;
+  components: DiscordButtonComponent[];
+}
+export interface DiscordButtonComponent {
+  type: 2;
+  style: 1 | 2 | 3 | 4;
+  label: string;
+  customId: string;
+  disabled?: boolean;
+}
+export interface DiscordButtonInteraction {
+  customId: string;
+  userId: string;
+  channelId: string;
+  guildId?: string;
+  acknowledge(): Promise<void>;
+  replyEphemeral(text: string): Promise<void>;
 }

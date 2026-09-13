@@ -70,6 +70,9 @@ test("runScheduledTurn streams a real turn tagged with prompt + schedule origin"
   // The agent ran with the scheduled prompt.
   expect(calls.chat).toHaveLength(1);
   expect((calls.chat[0] as { text: string }).text).toBe("summarize commits");
+  // Permission provenance: scheduled turns are explicitly non-human, so no
+  // approval UI can ever be minted for them downstream (I10).
+  expect((calls.chat[0] as { metadata: { origin: string } }).metadata).toMatchObject({ origin: "scheduled" });
   // turn-started carries the prompt + origin so the hub persists the inbound message
   // and the web badges it; turn-finished closes the turn.
   const started = seen.find((e) => e.type === "turn-started");
@@ -86,7 +89,7 @@ test("runScheduledTurn streams a real turn tagged with prompt + schedule origin"
 });
 
 test("a normal prompt's turn-started carries no scheduled origin", async () => {
-  const { control, seen } = makeControl();
+  const { control, seen, calls } = makeControl();
   await control.prompt({
     chatKey: "relay:acct-1",
     sessionAlias: "backend",
@@ -94,6 +97,7 @@ test("a normal prompt's turn-started carries no scheduled origin", async () => {
     senderId: "acct-1",
     isOwner: true,
   });
+  expect((calls.chat[0] as { metadata: { origin: string } }).metadata).toMatchObject({ origin: "human" });
   const started = seen.find((e) => e.type === "turn-started");
   expect(started).toEqual({
     type: "turn-started",
