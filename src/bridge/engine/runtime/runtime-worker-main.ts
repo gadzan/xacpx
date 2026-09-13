@@ -56,6 +56,7 @@ interface WorkerState {
   pendingPermissions: Map<string, { resolve: (d: { outcome: string }) => void; reject: (e: Error) => void; generation: number; workerGeneration: string }>;
   pendingElicitations: Map<string, { resolve: (d: { action: string; data?: unknown }) => void; reject: (e: Error) => void; requestId: string; generation: number; workerGeneration: string }>;
   workerGeneration: string;
+  activeInteractionId?: string;
   /** Single-flight first initialization: identical-identity concurrent ensures join this; it is cleared on settle. */
   ensureInFlight?: { identityKey: string; promise: Promise<void> };
   /**
@@ -274,27 +275,42 @@ async function initializeRuntime(params: RuntimeWorkerEnsureParams): Promise<voi
         if (evaluated.outcome === "allow_once") return { outcome: "allow_once" };
         if (evaluated.outcome === "reject_once") return { outcome: "reject_once" };
         if (ctx.signal.aborted) return { outcome: "reject_once" };
+        // Interaction stays non-interactive without an exact-turn route.
+        // Scheduled/peer/orchestration/internal prompts carry no interaction
+        // id and must fail closed here, never generating a synthetic route.
+        const activeInteractionId = state.activeInteractionId;
+        if (!activeInteractionId) return { outcome: "reject_once" };
         const requestId = `perm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-        const toolCallId = (() => {
-          const raw = (req as unknown as { raw?: unknown }).raw as { toolCall?: { id?: unknown; toolCallId?: unknown } } | undefined;
-          const id = typeof raw?.toolCall?.toolCallId === "string" && raw.toolCall.toolCallId.length > 0
-            ? raw.toolCall.toolCallId
-            : typeof raw?.toolCall?.id === "string" && raw.toolCall.id.length > 0
-              ? raw.toolCall.id
-              : requestId;
-          return id;
+        // Dynamic-key reads need an index signature; the shape checks above
+        // are the runtime validation for this acpx-owned payload.
+        const asRecord = (value: unknown): Record<string, unknown> | undefined => {
+          if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+          return value as Record<string, unknown>;
+        };
+        const rawValue = "raw" in req ? asRecord(req.raw) : undefined;
+        const toolValue = rawValue?.toolCall ?? rawValue?.tool;
+        const toolRecord = asRecord(toolValue);
+        const readField = (holder: Record<string, unknown> | undefined, key: string): string | undefined => {
+          if (!holder) return undefined;
+          const value = holder[key];
+          return typeof value === "string" && value.length > 0 ? value : undefined;
+        };
+        const toolCallId = readField(toolRecord, "toolCallId") ?? readField(toolRecord, "id") ?? requestId;
+        const title = readField(rawValue, "title") ?? readField(toolRecord, "title");
+        const inferredKind = "inferredKind" in req && typeof req.inferredKind === "string" && req.inferredKind ? req.inferredKind : undefined;
+        const kind = inferredKind ?? readField(rawValue, "kind") ?? readField(toolRecord, "kind");
+        const rawInput = "raw" in req ? req.raw : undefined;
+        const availableOutcomes = (() => {
+          const options = rawValue?.options;
+          if (!Array.isArray(options)) return undefined;
+          const kinds = new Set<string>();
+          for (const option of options) {
+            const record = asRecord(option);
+            if (record && typeof record.kind === "string") kinds.add(record.kind);
+          }
+          const valid = ["allow_once", "allow_always", "reject_once", "reject_always", "cancel"].filter((k) => kinds.has(k));
+          return valid.length > 0 ? valid as Array<"allow_once" | "allow_always" | "reject_once" | "reject_always" | "cancel"> : undefined;
         })();
-        const title = (() => {
-          const raw = (req as unknown as { raw?: unknown }).raw as { toolCall?: { title?: unknown } } | undefined;
-          const t = raw?.toolCall?.title;
-          return typeof t === "string" ? t : undefined;
-        })();
-        const kind = (() => {
-          const raw = (req as unknown as { raw?: unknown }).raw as { toolCall?: { kind?: unknown } } | undefined;
-          const k = raw?.toolCall?.kind;
-          return typeof k === "string" ? k : undefined;
-        })();
-        const rawInput = (req as unknown as { raw?: unknown }).raw;
         const payload: RuntimeWorkerPermissionRequestPayload = {
           logicalSessionId: state.ensureParams?.logicalSessionId ?? params.logicalSessionId ?? state.ensureParams?.sessionKey ?? params.sessionKey,
           sessionKey: state.ensureParams?.sessionKey ?? params.sessionKey,
@@ -305,6 +321,8 @@ async function initializeRuntime(params: RuntimeWorkerEnsureParams): Promise<voi
           ...(rawInput !== undefined ? { rawInput } : {}),
           policyGeneration: state.permissionGeneration,
           workerGeneration: state.workerGeneration,
+          interactionId: activeInteractionId,
+          ...(availableOutcomes ? { availableOutcomes } : {}),
         };
         const pending = new Promise<{ outcome: string }>((resolve, reject) => {
           state.pendingPermissions.set(requestId, { resolve: resolve as (d: { outcome: string }) => void, reject, generation: state.permissionGeneration, workerGeneration: state.workerGeneration });
@@ -323,7 +341,7 @@ async function initializeRuntime(params: RuntimeWorkerEnsureParams): Promise<voi
         try {
           const decision = await Promise.race([
             pending,
-            new Promise<never>((_, reject) => setTimeout(() => reject(new Error("host permission timeout")), 9_000).unref?.()),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error("host permission timeout")), 125_000).unref?.()),
           ]);
           const outcome = decision.outcome;
           if (outcome !== "allow_once" && outcome !== "allow_always" && outcome !== "reject_once" && outcome !== "reject_always" && outcome !== "cancel") {
@@ -430,6 +448,8 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
   // Register BEFORE any await: the host's cancel RPC must reach the live
   // turn instead of reporting false-success on an empty activeTurn.
   state.activeTurn = turn;
+  const promptInteractionId = params.interactionId;
+  if (promptInteractionId) state.activeInteractionId = promptInteractionId;
   try {
     await turn.promptStarted;
     let finalText = "";
@@ -456,6 +476,9 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
     // Identity cleanup: an older turn settling late must never clear a
     // newer turn registered after it.
     if (state.activeTurn === turn) state.activeTurn = undefined;
+    if (promptInteractionId && state.activeInteractionId === promptInteractionId) {
+      state.activeInteractionId = undefined;
+    }
   }
 }
 

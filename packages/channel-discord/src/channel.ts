@@ -2,6 +2,8 @@ import path from "node:path";
 import { ActiveConsumerLockError, coreHomeDir, createConversationExecutor, resolveTurnLane, toDisplaySessionAlias } from "xacpx/plugin-api";
 import type {
   ChannelStartInput,
+  ChannelPermissionDecision,
+  ChannelPermissionRequest,
   ConversationExecutor,
   CoordinatorMessageInput,
   CreateChannelDeps,
@@ -11,6 +13,7 @@ import type {
   ConsumerLock,
   ConsumerLockOptions,
   ConsumerLockMetadata,
+  PermissionOutcome,
   ToolUseEvent,
 } from "xacpx/plugin-api";
 import { homedir } from "node:os";
@@ -19,8 +22,16 @@ import { mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import type { DiscordChannelConfig, DiscordResolvedAccountConfig } from "./config.js";
 import { parseDiscordChannelConfig } from "./config.js";
-import type { DeliveryTarget, DiscordInboundMessage, DiscordRoute, OutboundBody } from "./types.js";
+import type { DeliveryTarget, DiscordButtonInteraction, DiscordInboundMessage, DiscordRoute, OutboundBody } from "./types.js";
 import type { DiscordBotIdentity, DiscordClientLike } from "./discord-client.js";
+import {
+  buildPermissionComponents,
+  buildPermissionContent,
+  createPermissionToken,
+  handlePermissionButtonClick,
+  terminalPermissionText,
+  type PendingDiscordPermission,
+} from "./permission-ui.js";
 import { createDiscordClient } from "./discord-client.js";
 import { MessageDedup, isMessageExpired } from "./message-dedup.js";
 import {
@@ -145,6 +156,7 @@ export class DiscordChannel implements MessageChannelRuntime {
   private abortSignal: AbortSignal | null = null;
   private readonly executor: ConversationExecutor = createConversationExecutor();
   private readonly activeTasks: Map<string, ActiveTask[]> = new Map();
+  private readonly pendingPermissions: Map<string, PendingDiscordPermission> = new Map();
   private readonly config: DiscordChannelConfig;
   private readonly deps: DiscordChannelDeps;
 
@@ -169,6 +181,7 @@ export class DiscordChannel implements MessageChannelRuntime {
   }
 
   async logout(): Promise<void> {
+    this.invalidateAllPendingPermissions("cancelled");
     await this.abortAllActiveTasks();
     for (const runtime of this.accounts.values()) {
       try {
@@ -184,6 +197,9 @@ export class DiscordChannel implements MessageChannelRuntime {
   async stop(_reason?: string): Promise<void> {
     // Abort in-flight turns while the clients are still alive, so a preview
     // message can still be deleted; the turns themselves are not awaited.
+    // Pending permission UI is invalidated first so no stale button can
+    // resolve after shutdown.
+    this.invalidateAllPendingPermissions("cancelled");
     await this.abortAllActiveTasks();
     for (const runtime of this.accounts.values()) {
       try {
@@ -300,10 +316,6 @@ export class DiscordChannel implements MessageChannelRuntime {
 
     // Identity comes from the Gateway session itself. A REST probe can return
     // an empty botUserId while login still succeeds, and every guard keyed on
-    // it (own-message drop, mention gate, reply-to-bot) fails open when it is
-    // empty — so the runtime is registered only after start() resolves with a
-    // non-empty id. Messages that arrive during login find no runtime yet and
-    // are dropped by handleMessageEvent's fail-closed guard.
     let identity: DiscordBotIdentity;
     try {
       identity = await client.start({
@@ -316,6 +328,9 @@ export class DiscordChannel implements MessageChannelRuntime {
                 message: err instanceof Error ? err.message : String(err),
               });
             });
+          },
+          onButton: (interaction) => {
+            void this.handlePermissionButton(interaction).catch(() => {});
           },
         },
         abortSignal: input.abortSignal,
@@ -418,6 +433,162 @@ export class DiscordChannel implements MessageChannelRuntime {
     await this.sendRouteText(input.chatKey, input.text);
   }
 
+  async requestPermission(request: ChannelPermissionRequest): Promise<ChannelPermissionDecision> {
+    const route = parseDiscordChatKey(request.chatKey);
+    if (!route) throw new Error(`cannot route Discord permission to non-Discord chatKey: ${request.chatKey}`);
+    const runtime = this.accounts.get(route.accountId);
+    if (!runtime) throw new Error(`discord account "${route.accountId}" is not started`);
+    const target: DeliveryTarget = { channelId: route.channelId, ...(route.guildId ? { guildId: route.guildId } : {}) };
+    const token = createPermissionToken();
+    const content = buildPermissionContent(request);
+    const components = buildPermissionComponents(token, request.availableOutcomes);
+    let settle: (decision: ChannelPermissionDecision) => void = () => {};
+    let rejectPromise: (error: Error) => void = () => {};
+    const done = new Promise<ChannelPermissionDecision>((resolve, reject) => {
+      settle = resolve;
+      rejectPromise = reject;
+    });
+    const entry: PendingDiscordPermission = {
+      token,
+      requestId: request.requestId,
+      requesterId: request.requester.senderId,
+      allowed: [...request.availableOutcomes],
+      target,
+      accountId: route.accountId,
+      content,
+      settled: false,
+      resolve: settle,
+      reject: rejectPromise,
+    };
+    this.pendingPermissions.set(token, entry);
+    const editTerminal = async (text: string): Promise<void> => {
+      const messageId = entry.messageId;
+      if (!messageId) return;
+      try {
+        await runtime.client.editMessage(target, messageId, {
+          content: `${content}\n\n${text}`,
+          allowedMentions: { parse: [] },
+        });
+      } catch (error) {
+        await this.logger?.warn("discord.permission.edit_failed", "failed to update permission message", {
+          requestId: request.requestId,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+    const cleanup = (): void => {
+      this.pendingPermissions.delete(token);
+      clearTimeout(expiryTimer);
+      request.signal.removeEventListener("abort", onAbort);
+    };
+    const onAbort = (): void => {
+      if (entry.settled) return;
+      entry.settled = true;
+      cleanup();
+      void editTerminal(terminalPermissionText("cancelled"));
+      rejectPromise(new Error("permission request aborted"));
+    };
+    const msUntilExpiry = Math.max(0, request.expiresAt - Date.now());
+    const expiryTimer = setTimeout(() => {
+      if (entry.settled) return;
+      entry.settled = true;
+      cleanup();
+      void editTerminal(terminalPermissionText("expired"));
+      // Reject, don't resolve: only a real user click may produce a decision
+      // (which must carry responderId). The broker fails closed on throw.
+      rejectPromise(new Error("permission request expired"));
+    }, msUntilExpiry);
+    if (typeof expiryTimer.unref === "function") expiryTimer.unref();
+    if (request.signal.aborted) {
+      onAbort();
+    } else {
+      request.signal.addEventListener("abort", onAbort, { once: true });
+    }
+    try {
+      const sent = await runtime.client.sendMessage(target, {
+        content,
+        allowedMentions: { parse: [] },
+        components,
+      });
+      entry.messageId = sent.messageId;
+      await this.logger?.info("discord.permission.sent", "sent discord permission request", {
+        requestId: request.requestId,
+      });
+    } catch (error) {
+      if (!entry.settled) {
+        entry.settled = true;
+        cleanup();
+      } else {
+        cleanup();
+      }
+      await this.logger?.warn("discord.permission.send_failed", "failed to send permission request", {
+        requestId: request.requestId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+    try {
+      const decision = await done;
+      await this.logger?.info("discord.permission.resolved", "discord permission resolved", {
+        requestId: request.requestId,
+        outcome: decision.outcome,
+      });
+      return decision;
+    } finally {
+      cleanup();
+    }
+  }
+
+  private async handlePermissionButton(interaction: DiscordButtonInteraction): Promise<void> {
+    await handlePermissionButtonClick({
+      interaction,
+      pending: this.pendingPermissions,
+      onResolved: (entry, outcome, responderId) => {
+        entry.resolve({ outcome, responderId });
+        void this.editPermissionResolved(entry, outcome);
+      },
+      log: (event, message, fields) => {
+        void this.logger?.warn(event, message, fields);
+      },
+    });
+  }
+
+  private async editPermissionResolved(entry: PendingDiscordPermission, outcome: PermissionOutcome): Promise<void> {
+    const messageId = entry.messageId;
+    if (!messageId) return;
+    const runtime = (entry.accountId ? this.accounts.get(entry.accountId) : undefined)
+      ?? [...this.accounts.values()][0];
+    if (!runtime) return;
+    const terminal = terminalPermissionText(outcome);
+    const content = entry.content ? `${entry.content}\n\n${terminal}` : terminal;
+    try {
+      await runtime.client.editMessage(entry.target, messageId, {
+        content,
+        allowedMentions: { parse: [] },
+      });
+    } catch (error) {
+      await this.logger?.warn("discord.permission.edit_failed", "failed to update permission message", {
+        requestId: entry.requestId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private invalidateAllPendingPermissions(terminal: "expired" | "cancelled"): void {
+    if (this.pendingPermissions.size === 0) return;
+    const entries = [...this.pendingPermissions.values()];
+    this.pendingPermissions.clear();
+    for (const entry of entries) {
+      if (entry.settled) continue;
+      entry.settled = true;
+      try {
+        // Reject, don't resolve: only a real user click may produce a decision.
+        entry.reject(new Error("permission channel stopped"));
+      } catch {}
+      void this.editPermissionResolved(entry, terminal === "expired" ? "reject_once" : "cancel").catch(() => {});
+    }
+  }
+
   async sendScheduledMessage(input: ScheduledChannelMessageInput): Promise<void> {
     if (!this.agent || !this.logger) {
       throw new Error("DiscordChannel.start() must be called before scheduled message delivery");
@@ -459,7 +630,7 @@ export class DiscordChannel implements MessageChannelRuntime {
         text: input.promptText,
         ...(input.replyContextToken ? { replyContextToken: input.replyContextToken } : {}),
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
-        metadata: { channel: "discord", scheduledSessionAlias: input.sessionAlias },
+        metadata: { channel: "discord", scheduledSessionAlias: input.sessionAlias, origin: "scheduled" as const },
         reply: async (delta) => {
           if (input.abortSignal?.aborted) return;
           // Scheduled streaming: we could pipe through preview, but keep static for simplicity.
@@ -1078,6 +1249,7 @@ export class DiscordChannel implements MessageChannelRuntime {
             senderId: active.senderId,
             groupId: guildId,
             ...(boundAlias ? { boundSessionAlias: boundAlias } : {}),
+            origin: "human" as const,
           },
           reply: safeReply,
           onToolEvent,

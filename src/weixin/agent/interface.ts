@@ -1,6 +1,7 @@
 import type { ChannelMediaAttachment, OutboundChannelMedia } from "../../channels/media-types.js";
 import type { PlanEntry, ScheduledSessionDescriptor, ToolUseEvent } from "../../channels/types.js";
 import type { AgentCommand, PromptUsage } from "../../transport/types.js";
+import type { PermissionInteractionOrigin } from "../../permissions/permission-types.js";
 import type { PerfSpan } from "../../perf/perf-tracer.js";
 
 /**
@@ -87,8 +88,15 @@ export interface ChatRequestMetadata {
    * overwrite the coordinator's recorded human return route context.
    */
   preserveCoordinatorRoute?: boolean;
+  /**
+   * Explicit turn provenance for permission interaction routing. Control
+   * paths (scheduled/peer/completion turns) MUST set this, and every
+   * built-in chat channel sets `"human"` for user turns. Only an explicit
+   * `origin === "human"` may mint a permission interaction id; an ABSENT
+   * origin fails closed (no approval UI) — never guess human.
+   */
+  origin?: PermissionInteractionOrigin;
 }
-
 export interface ChatResponse {
   /**
    * Final reply text when no streamed `reply()` output was delivered for

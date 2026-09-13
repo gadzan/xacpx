@@ -156,7 +156,7 @@ test("Phase 6: ControlService.submitPeerTurn passes peerOrigin to TurnQueue", as
     senderId: "agent-messaging",
     promptRequestId: "msg_ctrl_1",
     isPeerMessage: true,
-    peerOrigin,
+    turnOrigin: "peer",
   });
 });
 

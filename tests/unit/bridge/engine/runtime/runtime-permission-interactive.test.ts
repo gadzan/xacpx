@@ -94,7 +94,9 @@ rl.on("line", (line) => {
   } as unknown as ConstructorParameters<typeof RuntimeEngine>[0]);
 
   try {
-    const res = await engine.prompt({ ...base, text: "escalate test" }, async () => {});
+    // Human-turn route: the worker fails closed without an interaction id,
+    // so the E2E drives the exact-turn path a bound prompt would carry.
+    const res = await engine.prompt({ ...base, text: "escalate test", interactionId: "test-interaction-e2e" }, async () => {});
     expect(permissionSeen).not.toBeNull();
     expect(typeof permissionSeen?.workerGeneration).toBe("string");
     expect(permissionSeen?.toolCallId).toBe("t1");
@@ -114,7 +116,7 @@ test("PR9-A fail-closed: timeout/disconnect/malformed → reject_once", async ()
   const workerFile = await buildWorker(dir);
   const base = { agent: "mock", acpxAgent: "mock", agentArgv: [process.execPath, MOCK_AGENT], cwd: "/tmp", name: "perm-fail", logicalSessionId: "perm-fail-1" };
 
-  // Timeout case: handler delays 9s (>8s timeout)
+  // Timeout case: handler delays past the injected watchdog (fast seam).
   const engineTimeout = new RuntimeEngine({
     workerEntryPath: workerFile,
     stateDir,
@@ -122,8 +124,13 @@ test("PR9-A fail-closed: timeout/disconnect/malformed → reject_once", async ()
     fenceDir,
     permissionPolicy: JSON.stringify({ escalate: ["edit"] }),
     permissionInteractionAvailable: true,
+    permissionRequestTimeoutMs: 100,
     onPermissionRequest: async () => {
-      await new Promise((r) => setTimeout(r, 9_000));
+      // Integration: exercises the real watchdog clock; fake timers cannot
+      // drive the engine's internal setTimeout race from outside.
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 500);
+      await promise;
       return { outcome: "allow_once" };
     },
   } as unknown as ConstructorParameters<typeof RuntimeEngine>[0]);

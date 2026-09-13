@@ -269,7 +269,7 @@ export class FeishuChannel implements MessageChannelRuntime {
         text: input.promptText,
         ...(input.replyContextToken ? { replyContextToken: input.replyContextToken } : {}),
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
-        metadata: { channel: "feishu", scheduledSessionAlias: input.sessionAlias },
+        metadata: { channel: "feishu", scheduledSessionAlias: input.sessionAlias, origin: "scheduled" as const },
         reply: deliverReply,
         ...(cardController ? {
           onToolEvent: (event) => {
@@ -738,6 +738,7 @@ export class FeishuChannel implements MessageChannelRuntime {
           metadata: {
             ...buildFeishuRouteMetadata({ chatType, senderOpenId: active.senderOpenId, chatId, senderIsOwner: active.senderIsOwner }),
             ...(boundAlias ? { boundSessionAlias: boundAlias } : {}),
+            origin: "human" as const,
           },
           reply: safeReply,
           // Only consume the structured tool-event side-channel when we actually

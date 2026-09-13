@@ -651,3 +651,68 @@ test("handleSessionAttach drops its fresh row when post-persist setup fails", as
   ).rejects.toThrow("chat context store unavailable");
   expect(calls).toEqual(["attach", "remove:a"]);
 });
+
+test("handlePromptWithSession mints an interaction id only for explicit human origin", async () => {
+  const { resetGlobalPermissionBrokerForTests } = await import("../../../../src/permissions/permission-interaction-broker.js");
+  resetGlobalPermissionBrokerForTests();
+  const session = {
+    alias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "sess-1",
+    archived: false,
+    replyMode: "final" as const,
+  } as unknown as ResolvedSession;
+  const makeMintContext = (seen: unknown[]) => ({
+    sessions: {},
+    lifecycle: { checkTransportSession: async () => true, ensureTransportSession: async () => {} },
+    interaction: {
+      promptTransportSession: async (...args: unknown[]) => {
+        seen.push(args[12]);
+        return { text: "ok" };
+      },
+    },
+    recovery: {},
+    config: undefined as unknown as AppConfig,
+    logger: { info: async () => {}, warn: async () => {}, error: async () => {}, debug: async () => {} },
+    quota: undefined,
+    orchestration: undefined,
+  }) as unknown as SessionHandlerContext;
+
+  // Explicit non-human provenance (Control scheduled turn) mints nothing.
+  const scheduledSeen: unknown[] = [];
+  await handlePromptWithSession(
+    makeMintContext(scheduledSeen), session, "discord:default:g:c1", "hi",
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    { channel: "control", senderId: "scheduler", origin: "scheduled" } as never,
+  );
+  expect(scheduledSeen).toEqual([undefined]);
+
+  // Legacy peer marker without explicit origin still stays non-interactive.
+  const peerSeen: unknown[] = [];
+  await handlePromptWithSession(
+    makeMintContext(peerSeen), session, "discord:default:g:c1", "hi",
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    { channel: "control", senderId: "agent-messaging", preserveCoordinatorRoute: true } as never,
+  );
+  expect(peerSeen).toEqual([undefined]);
+
+  // Explicit human provenance mints an opaque id.
+  const humanSeen: unknown[] = [];
+  await handlePromptWithSession(
+    makeMintContext(humanSeen), session, "discord:default:g:c1", "hi",
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    { channel: "discord", senderId: "user-A", origin: "human" } as never,
+  );
+  expect(typeof humanSeen[0]).toBe("string");
+  expect((humanSeen[0] as string).length).toBeGreaterThan(0);
+
+  // Missing origin fails closed: never guess human, even for chat channels.
+  const absentSeen: unknown[] = [];
+  await handlePromptWithSession(
+    makeMintContext(absentSeen), session, "discord:default:g:c1", "hi",
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    { channel: "discord", senderId: "user-A" } as never,
+  );
+  expect(absentSeen).toEqual([undefined]);
+});

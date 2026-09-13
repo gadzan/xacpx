@@ -99,6 +99,7 @@ export function assertEligibleForRuntimePermissionChange(
     permissionPolicy?: unknown;
     nonInteractivePermissions?: unknown;
   },
+  options?: { interactionAvailable?: boolean },
 ): void {
   if (!hasPersistedRuntimeBindings) return;
   let parsedPolicy: XacpxPermissionPolicy | undefined;
@@ -112,7 +113,7 @@ export function assertEligibleForRuntimePermissionChange(
     typeof transport.nonInteractivePermissions === "string"
       ? transport.nonInteractivePermissions
       : undefined;
-  if (!isEligibleForRuntime(parsedPolicy, nonInteractive, false)) {
+  if (!isEligibleForRuntime(parsedPolicy, nonInteractive, options?.interactionAvailable ?? false)) {
     throw new Error(
       'cannot apply permission policy: runtime-ineligible policy (nonInteractive="fail" or escalate without interactive) with persisted runtime bindings',
     );

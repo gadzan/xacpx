@@ -63,6 +63,7 @@ test("prompt binds session, streams chunks as events, and reports completion", a
     chatType: "direct",
     senderId: "acct-1",
     isOwner: true,
+    origin: "human",
   });
   expect(seen).toEqual([
     { type: "turn-started", chatKey: "relay:acct-1", sessionAlias: "backend" },
