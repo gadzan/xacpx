@@ -315,11 +315,14 @@ const ADAPTER_PLAN_PRIORITIES = new Set(["high", "medium", "low"]);
  * Normalize upstream plan entries defensively (boundary rule: this module
  * absorbs upstream shape drift). Returns undefined when upstream sent no
  * list at all — so "absent" stays distinguishable from "explicitly empty"
- * (the agent cleared its plan). Malformed entries are skipped, never
- * fabricated.
+ * (the agent cleared its plan). A non-empty list with zero usable entries
+ * is also absence, never an empty replacement: mapping garbage to a clear
+ * would wipe a previously displayed valid plan. Malformed entries are
+ * skipped, never fabricated.
  */
 function normalizeAdapterPlanEntries(value: unknown): XacpxPlanEntry[] | undefined {
   if (!Array.isArray(value)) return undefined;
+  if (value.length === 0) return [];
   const entries: XacpxPlanEntry[] = [];
   for (const entry of value) {
     if (typeof entry !== "object" || entry === null) continue;
@@ -336,7 +339,7 @@ function normalizeAdapterPlanEntries(value: unknown): XacpxPlanEntry[] | undefin
         : {}),
     });
   }
-  return entries;
+  return entries.length > 0 ? entries : undefined;
 }
 
 export async function mapResult(result: Promise<{

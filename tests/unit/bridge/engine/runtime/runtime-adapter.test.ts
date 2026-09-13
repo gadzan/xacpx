@@ -154,6 +154,12 @@ test("mapEvents passes normalized plan entries through, preserving explicit empt
     } as never;
     yield { type: "status", text: "plan updated", tag: "plan", entries: [] } as never;
     yield { type: "status", text: "plan: legacy", tag: "plan" } as never;
+    yield {
+      type: "status",
+      text: "plan: junk",
+      tag: "plan",
+      entries: [{ content: "junk", status: "bogus" }],
+    } as never;
   }
   const events = [];
   for await (const event of mapEvents(upstream())) events.push(event);
@@ -166,4 +172,6 @@ test("mapEvents passes normalized plan entries through, preserving explicit empt
   expect(events[1]).toEqual({ type: "status", text: "plan updated", tag: "plan", entries: [] });
   // No list upstream → no entries key downstream (text-only legacy plan).
   expect(events[2]).toEqual({ type: "status", text: "plan: legacy", tag: "plan" });
+  // Non-empty but wholly unusable → absence, never a clearing replacement.
+  expect(events[3]).toEqual({ type: "status", text: "plan: junk", tag: "plan" });
 });
