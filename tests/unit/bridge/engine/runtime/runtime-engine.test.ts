@@ -286,6 +286,8 @@ test("G7 plan: structured plan entries reach prompt.plan, text-only plan is drop
         "        let payload;",
         "        if (text === 'plan-text') {",
         "          payload = { type: 'status', tag: 'plan', text: 'plan: write the file' };",
+        "        } else if (text === 'plan-junk') {",
+        "          payload = { type: 'status', tag: 'plan', text: 'plan: junk', entries: [{ content: 'junk', status: 'bogus' }] };",
         "        } else if (text === 'plan-empty') {",
         "          payload = { type: 'status', tag: 'plan', text: 'plan updated', entries: [] };",
         "        } else {",
@@ -326,6 +328,10 @@ test("G7 plan: structured plan entries reach prompt.plan, text-only plan is drop
     // Explicit empty replacement → plan panel clears.
     const empty = await collect("plan-empty");
     expect(empty.some((e) => e.type === "prompt.plan" && Array.isArray(e.entries) && e.entries.length === 0)).toBe(true);
+    // Wholly unusable entries → dropped, never a clearing replacement.
+    const junk = await collect("plan-junk");
+    expect(junk.some((e) => e.type === "prompt.plan")).toBe(false);
+    expect(junk.some((e) => e.type === "prompt.segment" && (e.text ?? "").includes("plan:"))).toBe(false);
     // Text-only plan (older acpx) → dropped entirely: no chat line, no fabrication.
     const legacy = await collect("plan-text");
     expect(legacy.some((e) => e.type === "prompt.segment" && (e.text ?? "").includes("plan:"))).toBe(false);

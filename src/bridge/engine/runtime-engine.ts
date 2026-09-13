@@ -3021,10 +3021,13 @@ const PROMPT_PLAN_PRIORITIES: ReadonlySet<string> = new Set(["high", "medium", "
 /**
  * Validate worker-supplied plan entries at the process boundary (worker
  * speaks JSON over stdio — shape is not trusted). Returns undefined unless
- * the payload is a list; an empty list is a valid explicit replacement.
+ * the payload is a list; an empty list is a valid explicit replacement,
+ * while a non-empty list with zero usable entries is absence (mapping it
+ * to a clear would wipe a previously displayed valid plan).
  */
 function toPromptPlanEntries(value: unknown): PlanEntry[] | undefined {
   if (!Array.isArray(value)) return undefined;
+  if (value.length === 0) return [];
   const entries: PlanEntry[] = [];
   for (const item of value) {
     if (typeof item !== "object" || item === null) continue;
@@ -3041,7 +3044,7 @@ function toPromptPlanEntries(value: unknown): PlanEntry[] | undefined {
         : {}),
     });
   }
-  return entries;
+  return entries.length > 0 ? entries : undefined;
 }
 
 export function mapRuntimeToolEvent(event: {
