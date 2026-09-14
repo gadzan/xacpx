@@ -191,6 +191,11 @@ export class PermissionInteractionBroker {
     this.pending.set(requestId, pending);
     const expiresAt = Date.now() + this.timeoutMs;
     pending.timer = setTimeout(() => {
+      // Terminal FIRST, then abort: a channel decision that is already
+      // resolved (or resolves in a queued reaction) must never win over the
+      // deadline in the Promise.race below — iterable order would otherwise
+      // let a stale allow through (I4/I5).
+      pending.settled = true;
       controller.abort();
     }, this.timeoutMs);
     if (typeof pending.timer.unref === "function") pending.timer.unref();
@@ -224,6 +229,25 @@ export class PermissionInteractionBroker {
     await this.log("permission.interaction.dispatched", "permission interaction dispatched", {
       requestId,
     });
+    // Pre-dispatch re-verification: the awaits above (logging) may have
+    // carried us past the deadline, or the route may have died. Never invoke
+    // channel UI for a dead race.
+    if (
+      pending.settled ||
+      this.pending.get(requestId) !== pending ||
+      controller.signal.aborted ||
+      Date.now() >= expiresAt ||
+      !this.turns.has(interactionId) ||
+      this.shutDown
+    ) {
+      const reason = !this.turns.has(interactionId) || this.shutDown ? "stale" : "expired";
+      await this.log(
+        reason === "expired" ? "permission.interaction.expired" : "permission.interaction.stale",
+        reason === "expired" ? "permission interaction expired before dispatch" : "permission interaction went stale before dispatch",
+        { requestId, reason },
+      );
+      return this.settle(requestId, { outcome: "reject_once" });
+    }
 
     try {
       const aborted = new Promise<never>((_, reject) => {
@@ -243,6 +267,26 @@ export class PermissionInteractionBroker {
         channel.requestPermission(channelRequest),
         aborted,
       ])) as ChannelPermissionDecision | undefined;
+      // Post-decision re-verification: the channel may have resolved exactly
+      // as (or after) the deadline/abort fired. The settled flag, wall clock,
+      // and route liveness win over whatever the channel returned — a stale
+      // allow must never survive the race (I4/I5).
+      if (
+        pending.settled ||
+        this.pending.get(requestId) !== pending ||
+        controller.signal.aborted ||
+        Date.now() >= expiresAt ||
+        !this.turns.has(interactionId) ||
+        this.shutDown
+      ) {
+        const reason = !this.turns.has(interactionId) || this.shutDown ? "stale" : "expired";
+        await this.log(
+          reason === "expired" ? "permission.interaction.expired" : "permission.interaction.stale",
+          reason === "expired" ? "permission interaction expired before decision" : "permission interaction went stale before decision",
+          { requestId, reason },
+        );
+        return this.settle(requestId, { outcome: "reject_once" });
+      }
       const outcome = decision?.outcome;
       if (!isPermissionOutcome(outcome) || !availableOutcomes.includes(outcome)) {
         await this.log("permission.interaction.channel_failed", "malformed channel decision", {
@@ -255,13 +299,6 @@ export class PermissionInteractionBroker {
       const responderId = decision?.responderId;
       if (typeof responderId !== "string" || responderId !== route.senderId) {
         await this.log("permission.interaction.channel_failed", "responder is not the turn initiator", {
-          requestId,
-        });
-        return this.settle(requestId, { outcome: "reject_once" });
-      }
-      // A late decision after turn unbind/shutdown cannot become allow.
-      if (!this.turns.has(interactionId) || this.shutDown) {
-        await this.log("permission.interaction.stale", "decision arrived after turn ended", {
           requestId,
         });
         return this.settle(requestId, { outcome: "reject_once" });

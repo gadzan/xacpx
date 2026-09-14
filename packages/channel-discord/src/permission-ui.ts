@@ -105,18 +105,26 @@ export function buildPermissionContent(request: ChannelPermissionRequest): strin
   return truncate(body, MAX_CONTENT_CHARS);
 }
 
+/**
+ * Human localized label for a permission outcome, shared by buttons and
+ * terminal state so the card never leaks protocol enums like `allow_once`.
+ */
+export function permissionOutcomeLabel(outcome: PermissionOutcome): string {
+  const messages = getMessages();
+  switch (outcome) {
+    case "allow_once": return messages.permissionAllowOnce;
+    case "allow_always": return messages.permissionAllowAlways;
+    case "reject_once": return messages.permissionDeny;
+    case "reject_always": return messages.permissionDenyAlways;
+    case "cancel": return messages.permissionCancel;
+  }
+}
+
 export function buildPermissionComponents(
   token: string,
   availableOutcomes: PermissionOutcome[],
 ): DiscordActionRow[] {
   const messages = getMessages();
-  const labelByOutcome: Record<PermissionOutcome, string> = {
-    allow_once: messages.permissionAllowOnce,
-    allow_always: messages.permissionAllowAlways,
-    reject_once: messages.permissionDeny,
-    reject_always: messages.permissionDenyAlways,
-    cancel: messages.permissionCancel,
-  };
   const styleByOutcome: Record<PermissionOutcome, 1 | 2 | 3 | 4> = {
     allow_once: 3,
     allow_always: 3,
@@ -137,7 +145,7 @@ export function buildPermissionComponents(
     .map((outcome) => ({
       type: 2 as const,
       style: styleByOutcome[outcome],
-      label: truncate(labelByOutcome[outcome], 80),
+      label: truncate(permissionOutcomeLabel(outcome), 80),
       customId: permissionCustomId(token, outcome),
     }));
   if (buttons.length === 0) {
@@ -155,7 +163,7 @@ export function terminalPermissionText(outcome: PermissionOutcome | "expired" | 
   const messages = getMessages();
   if (outcome === "expired") return messages.permissionExpired;
   if (outcome === "cancelled") return messages.permissionCancelled;
-  return messages.permissionResolved(outcome);
+  return messages.permissionResolved(permissionOutcomeLabel(outcome));
 }
 
 export async function handlePermissionButtonClick(input: {

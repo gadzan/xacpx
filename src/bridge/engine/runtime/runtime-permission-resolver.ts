@@ -66,6 +66,57 @@ function readRawKindFromReq(req: RuntimePermissionRequest): string | undefined {
   }
   return undefined;
 }
+
+/**
+ * Canonical real-tool-input extractor, shared by policy-adjacent readers and
+ * the worker's permission-escalation payload (so the approval UI summarizes
+ * the actual operation, not the ACP envelope). Precedence mirrors the
+ * legacy readers first — identical results for legacy shapes — then text
+ * content blocks (the richest carrier that survives acpx validation), the
+ * ACP `subject`, and `description`.
+ */
+export function readToolInputFromReq(req: RuntimePermissionRequest): unknown {
+  const raw = getRawObject(req);
+  if (!raw) return undefined;
+  const toolCall = raw.toolCall ?? raw.tool;
+  if (toolCall && typeof toolCall === "object" && !Array.isArray(toolCall)) {
+    const rec = toolCall as Record<string, unknown>;
+    if (rec.rawInput !== undefined) return rec.rawInput;
+    if (rec.input !== undefined) return rec.input;
+    // acpx 0.15 strips unknown toolCall fields (notably `input`) at the SDK
+    // validation boundary — only schema fields survive. Text content blocks
+    // are the richest surviving carrier of WHAT the tool will do.
+    const contentText = readTextFromToolContent(rec.content);
+    if (contentText !== undefined) return contentText;
+  }
+  if (raw.rawInput !== undefined) return raw.rawInput;
+  if (raw.input !== undefined) return raw.input;
+  if (raw.subject !== undefined && raw.subject !== null) return raw.subject;
+  if (typeof raw.description === "string" && raw.description.trim().length > 0) {
+    return raw.description;
+  }
+  return undefined;
+}
+
+/**
+ * Best-effort text from ACP tool-call content blocks (text only, bounded
+ * count here; the channel summarizer applies its own length bounds).
+ */
+function readTextFromToolContent(content: unknown): string | undefined {
+  if (!Array.isArray(content)) return undefined;
+  const parts: string[] = [];
+  for (const block of content.slice(0, 8)) {
+    if (block && typeof block === "object" && !Array.isArray(block)) {
+      const rec = block as Record<string, unknown>;
+      if (rec.type === "text" && typeof rec.text === "string" && rec.text.trim().length > 0) {
+        parts.push(rec.text);
+      }
+    }
+  }
+  if (parts.length === 0) return undefined;
+  return parts.join("\n");
+}
+
 /**
  * Tool-kind inference, rebased on acpx 0.15.1 observable behavior
  * (live-checkpoint-sB7dFOYR.js): canonical-kind needle table with substring

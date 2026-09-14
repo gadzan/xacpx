@@ -60,7 +60,7 @@ rl.on("line", (line) => {
     activeSid = msg.params?.sessionId ?? "mock-sess";
     activeTurnId = msg.id;
     requestPerm(99, activeSid, {
-      toolCall: { toolCallId: "t1", title: "edit file", kind: "edit" },
+      toolCall: { toolCallId: "t1", title: "edit file: npm run test -- --watch", kind: "edit" },
       options: [
         { optionId: "allow_once", name: "allow_once", kind: "allow_once" },
         { optionId: "reject_once", name: "reject_once", kind: "reject_once" }
@@ -100,6 +100,15 @@ rl.on("line", (line) => {
     expect(permissionSeen).not.toBeNull();
     expect(typeof permissionSeen?.workerGeneration).toBe("string");
     expect(permissionSeen?.toolCallId).toBe("t1");
+    // acpx 0.15 strips every input carrier at its validation boundary
+    // (probed: toolCall arrives WITHOUT input/content), so the worker must
+    // NOT forward the envelope (which would summarize as `sessionId: ...`).
+    // The title — which real agents fill with the command — is the surviving
+    // operation carrier and must reach the card intact. If an acpx upgrade
+    // starts delivering input again, the absence assertion below will fail:
+    // extend it then instead of weakening it now.
+    expect(permissionSeen?.title).toContain("npm run test -- --watch");
+    expect(permissionSeen).not.toHaveProperty("rawInput");
     expect(res.text).toContain("permission-outcome=allow_once");
     expect((await engine.isSessionWarm(base)).warm).toBe(true);
   } finally {

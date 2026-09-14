@@ -448,6 +448,12 @@ export class DiscordChannel implements MessageChannelRuntime {
       settle = resolve;
       rejectPromise = reject;
     });
+    // Eagerly observe rejections: abort/expiry/stop may reject `done` while
+    // the code below is still awaiting `sendMessage()`. Without an attached
+    // handler the rejection is unobserved until `await done` runs — a real
+    // unhandled-rejection under a slow send. This changes nothing about
+    // settlement: `await done` still throws the same error.
+    void done.catch(() => {});
     const entry: PendingDiscordPermission = {
       token,
       requestId: request.requestId,
@@ -504,10 +510,12 @@ export class DiscordChannel implements MessageChannelRuntime {
     }, msUntilExpiry);
     if (typeof expiryTimer.unref === "function") expiryTimer.unref();
     if (request.signal.aborted) {
+      // Already dead on arrival: settle (via onAbort) and return WITHOUT
+      // posting a card that would be born cancelled.
       onAbort();
-    } else {
-      request.signal.addEventListener("abort", onAbort, { once: true });
+      throw new Error("permission request aborted");
     }
+    request.signal.addEventListener("abort", onAbort, { once: true });
     try {
       const sent = await runtime.client.sendMessage(target, {
         content,

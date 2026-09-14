@@ -506,9 +506,11 @@ export function buildBridgeSpawnEnv(
       ? { XACPX_BRIDGE_ACPX_TERMINAL_MAX_OUTPUT_BYTES: String(options.acpxTerminalMaxOutputBytes) }
       : {}),
     ...(options.generationFilePath ? { XACPX_BRIDGE_GENERATION_FILE: options.generationFilePath } : {}),
-    ...(options.permissionInteractionAvailable === true
-      ? { XACPX_BRIDGE_PERMISSION_INTERACTION_AVAILABLE: "1" }
-      : {}),
+    // Always explicit ("1"/"0"): the spawn env is layered over process.env,
+    // so omitting the key would let a stale parent-process value leak in and
+    // flip bridge eligibility away from the authoritative capability.
+    XACPX_BRIDGE_PERMISSION_INTERACTION_AVAILABLE:
+      options.permissionInteractionAvailable === true ? "1" : "0",
     ...(options.agentOverlays && options.agentOverlays.length > 0
       ? { XACPX_BRIDGE_AGENT_OVERLAYS: JSON.stringify(options.agentOverlays) }
       : {}),

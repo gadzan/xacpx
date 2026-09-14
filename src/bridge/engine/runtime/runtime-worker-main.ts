@@ -37,7 +37,7 @@ import { mapRuntimeError } from "./runtime-contract";
 import { parseSessionEffortRecord } from "../../../transport/session-effort";
 import { parseXacpxPermissionPolicy } from "./runtime-permission-policy";
 import { RuntimeAgentLeaseStore, createAgentLifecycleHooks } from "./runtime-agent-lease";
-import { RuntimePermissionResolver, type RuntimePermissionConfig, type RuntimePermissionRequest } from "./runtime-permission-resolver";
+import { RuntimePermissionResolver, readToolInputFromReq, type RuntimePermissionConfig, type RuntimePermissionRequest } from "./runtime-permission-resolver";
 
 class RuntimeError extends Error {
   constructor(readonly code: string, message: string) {
@@ -299,7 +299,10 @@ async function initializeRuntime(params: RuntimeWorkerEnsureParams): Promise<voi
         const title = readField(rawValue, "title") ?? readField(toolRecord, "title");
         const inferredKind = "inferredKind" in req && typeof req.inferredKind === "string" && req.inferredKind ? req.inferredKind : undefined;
         const kind = inferredKind ?? readField(rawValue, "kind") ?? readField(toolRecord, "kind");
-        const rawInput = "raw" in req ? req.raw : undefined;
+        // Real operation input via the shared extractor — never the whole ACP
+        // envelope (which would summarize as `sessionId: ...` instead of the
+        // command/path the user is actually approving).
+        const rawInput = readToolInputFromReq(req as unknown as RuntimePermissionRequest);
         const availableOutcomes = (() => {
           const options = rawValue?.options;
           if (!Array.isArray(options)) return undefined;

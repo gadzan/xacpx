@@ -594,6 +594,14 @@ Recommended bounds:
 
 If summarization fails, show title/kind only rather than falling back to unrestricted serialization.
 
+The worker forwards the REAL operation input via the shared
+`readToolInputFromReq()` extractor (legacy input → text content blocks →
+ACP subject → description) — never the whole request envelope, which would
+summarize as `sessionId: ...`. Measured boundary on acpx 0.15: unknown
+`toolCall` fields (notably `input`) are stripped at SDK validation, so only
+schema fields (id/title/kind/content-text) reach the worker; title/kind
+remain the guaranteed carriers and input extraction is forward-compatible.
+
 ---
 
 ## 9. Daemon/Runtime integration
@@ -621,8 +629,8 @@ The SAME authoritative value enters every gate — it is not a per-construction 
 
 - `MessageChannelRegistry.hasPermissionInteractionCapability()`: true only when at least one registered runtime implements `requestPermission()` — never mere registry presence (a Feishu/WeChat-only deploy MUST read `false`);
 - `SessionService` (`permissionInteractionAvailable`) for new-session affinity;
-- `RuntimeEngine` (bridge subprocess) for eligibility, fed by spawn env (`XACPX_BRIDGE_PERMISSION_INTERACTION_AVAILABLE`, via `SpawnedBridgeClientOptions.permissionInteractionAvailable`) — the bridge never hardcodes it;
 - the shared `assertEligibleForRuntimePermissionChange(..., { interactionAvailable })` used by daemon startup, the config watcher hot-apply, `/config set`, and `/pm`;
+- `RuntimeEngine` (bridge subprocess) for eligibility, fed by spawn env (`XACPX_BRIDGE_PERMISSION_INTERACTION_AVAILABLE`, via `SpawnedBridgeClientOptions.permissionInteractionAvailable`, always explicit `"1"`/`"0"` so no stale parent env leaks in) — the bridge never hardcodes it;
 - `CommandRouterContext.permissionInteractionAvailable`, threaded from `buildApp` into the `/config` + `/pm` handlers.
 
 Without this, persisted Runtime bindings stay stuck on "escalate without interactive" even after Discord approval ships.
@@ -765,9 +773,17 @@ the terminal edit has no message id yet. The entry remembers its terminal
 state, and the send path re-checks after the id lands and compensates with
 a terminal, button-free edit — a card must never be left looking clickable.
 
+Terminal state renders the shared localized action label
+(`permissionOutcomeLabel`, same source as the buttons) — protocol enums
+never reach the user.
 ### 10.7 Abort/stop cleanup
 
 When core aborts `ChannelPermissionRequest.signal`, remove the pending token and best-effort edit the message to expired/cancelled.
+The internal decision deferred is observed eagerly (`void done.catch(...)`)
+at creation: abort/expiry/stop may reject it while `sendMessage()` is still
+in flight, which would otherwise surface as an unhandled rejection. A
+pre-aborted request skips `sendMessage()` entirely instead of posting a card
+that would be born cancelled.
 
 `DiscordChannel.stop()` must invalidate every pending permission before destroying clients.
 

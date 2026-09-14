@@ -8,6 +8,7 @@ import type {
 import {
   PermissionInteractionBroker,
   resetGlobalPermissionBrokerForTests,
+  type PermissionInteractionBrokerOptions,
 } from "../../../src/permissions/permission-interaction-broker.js";
 import type { TurnInteractionContext } from "../../../src/permissions/permission-types.js";
 import { summarizePermissionRequest } from "../../../src/permissions/permission-summary.js";
@@ -79,11 +80,12 @@ function allowAsInitiator(request: ChannelPermissionRequest): Promise<ChannelPer
 
 function brokerWith(
   channels: Map<string, MessageChannelRuntime>,
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; logger?: PermissionInteractionBrokerOptions["logger"] } = {},
 ): PermissionInteractionBroker {
   return new PermissionInteractionBroker({
     getChannelByChatKey: (chatKey) => channels.get(chatKey) ?? null,
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    ...(options.logger !== undefined ? { logger: options.logger } : {}),
   });
 }
 
@@ -605,4 +607,85 @@ test("H1 matching responderId is accepted; missing responderId fails closed", as
     disposeB();
     broker.shutdown();
   }
+});
+
+test("B1 allow resolved from the abort signal still fails closed after the deadline", async () => {
+  // A channel that resolves allow exactly when its signal aborts simulates
+  // the critical race: both sides of the Promise.race settle on the same
+  // tick, and iterable order would hand the stale allow to the winner.
+  // The settled flag set by the deadline callback must win instead (I4/I5).
+  const seen: ChannelPermissionRequest[] = [];
+  const channels = new Map([
+    ["discord:default:g:c1", fakeChannel((request) => new Promise<ChannelPermissionDecision>((resolve) => {
+      const allow = (): void => {
+        resolve({ outcome: "allow_once", responderId: request.requester.senderId });
+      };
+      if (request.signal.aborted) allow();
+      else request.signal.addEventListener("abort", allow, { once: true });
+    }), seen)],
+  ]);
+  const broker = brokerWith(channels, { timeoutMs: 30 });
+  const ctx = turn();
+  const dispose = broker.bindTurn(ctx);
+  try {
+    const res = await broker.requestPermission({
+      ...baseInput(),
+      interactionId: ctx.interactionId,
+    });
+    expect(res.outcome).toBe("reject_once");
+    expect(seen).toHaveLength(1);
+    expect(broker.pendingCount).toBe(0);
+  } finally {
+    dispose();
+    broker.shutdown();
+  }
+});
+
+test("B1 channel UI is never invoked when a seam stalls past the deadline", async () => {
+  // A slow seam (here: logging) between route validation and channel
+  // dispatch can carry the turn past expiresAt. The pre-dispatch
+  // re-verification must fail closed WITHOUT invoking channel UI.
+  let channelCalled = 0;
+  const channels = new Map([
+    ["discord:default:g:c1", fakeChannel(async (req) => {
+      channelCalled += 1;
+      return { outcome: "allow_once", responderId: req.requester.senderId };
+    })],
+  ]);
+  const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+  const broker = brokerWith(channels, {
+    timeoutMs: 30,
+    logger: {
+      info: async () => { await sleep(100); },
+      warn: async () => {},
+      error: async () => {},
+      debug: async () => {},
+    } as never,
+  });
+  const ctx = turn();
+  const dispose = broker.bindTurn(ctx);
+  try {
+    const res = await broker.requestPermission({
+      ...baseInput(),
+      interactionId: ctx.interactionId,
+    });
+    expect(res.outcome).toBe("reject_once");
+    expect(channelCalled).toBe(0);
+    expect(broker.pendingCount).toBe(0);
+  } finally {
+    dispose();
+    broker.shutdown();
+  }
+});
+
+test("approval summary surfaces the real command/path, not the ACP envelope", () => {
+  // End-to-end presentation pin: given the worker-extracted ACP subject as
+  // rawInput, the summary the approver sees must contain the command.
+  const summary = summarizePermissionRequest({
+    title: "Run command",
+    kind: "execute",
+    rawInput: { type: "command", command: "npm run test -- --watch", cwd: "/repo/backend" },
+  });
+  expect(summary.summary).toContain("npm run test");
+  expect(JSON.stringify(summary)).not.toContain("sessionId");
 });

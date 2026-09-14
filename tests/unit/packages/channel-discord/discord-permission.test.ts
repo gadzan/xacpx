@@ -170,6 +170,9 @@ test("initiator allow_once resolves and strips buttons", async () => {
     expect(decision).toEqual({ outcome: "allow_once", responderId: "user-A" });
     expect(client.edited).toHaveLength(1);
     expect(client.edited[0]!.body.components).toEqual([]);
+    // Terminal state shows the localized action label, never the protocol enum.
+    expect(client.edited[0]!.body.content).toContain("Allow once");
+    expect(client.edited[0]!.body.content).not.toContain("allow_once");
   } finally {
     abort.abort();
     await channel.stop().catch(() => {});
@@ -431,6 +434,21 @@ test("abort during send still strips buttons once the message lands", async () =
     const last = client.edited[client.edited.length - 1]!;
     expect(last.body.components).toEqual([]);
     expect(last.body.content).toContain("cancelled");
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("pre-aborted request never posts a card", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request, abort: reqAbort } = permissionRequest({ expiresAt: Date.now() + 10_000 });
+    reqAbort.abort();
+    const sentBefore = client.sent.length;
+    await expect(channel.requestPermission(request)).rejects.toThrow();
+    expect(client.sent.length).toBe(sentBefore);
   } finally {
     abort.abort();
     await channel.stop().catch(() => {});
