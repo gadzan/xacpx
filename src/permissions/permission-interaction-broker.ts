@@ -303,11 +303,16 @@ export class PermissionInteractionBroker {
         });
         return this.settle(requestId, { outcome: "reject_once" });
       }
+      // Commit synchronously BEFORE observing: validation → commit must
+      // contain no await, so a slow log chain can never reorder the terminal
+      // decision against the deadline. Observability must not participate in
+      // first-terminal-wins.
+      const result = this.settle(requestId, { outcome });
       await this.log("permission.interaction.resolved", "permission interaction resolved", {
         requestId,
         outcome,
       });
-      return this.settle(requestId, { outcome });
+      return result;
     } catch (error) {
       if (controller.signal.aborted) {
         const reason = !this.turns.has(interactionId)

@@ -85,14 +85,16 @@ function truncate(value: string, max: number): string {
 /**
  * Escape untrusted request data for the approval message. Title/summary/kind
  * ultimately come from the ACP agent request: without escaping, spoiler
- * (`||`), code fences, masked links (`[text](url)`), headings, and quotes
- * could change what the approver THINKS they are approving. The fixed
- * heading stays Markdown; every data line is literal. `:` is deliberately
- * left alone (emoji syntax needs word-char wrapping; over-escaping `key:
- * value` summaries hurts readability more than it protects).
+ * (`||`), code fences, masked links (`[text](url)`), headings, quotes, and
+ * the whole `<...>` family (user/channel/role mentions, slash-command and
+ * custom-emoji references, timestamps, guild navigation) could change what
+ * the approver THINKS they are approving. The fixed heading stays Markdown;
+ * every data line is literal. `:` is deliberately left alone (emoji syntax
+ * needs word-char wrapping; over-escaping `key: value` summaries hurts
+ * readability more than it protects).
  */
 export function escapeDiscordLiteralText(value: string): string {
-  return value.replace(/[\\`*_~>|[\]()#]/g, (char) => `\\${char}`);
+  return value.replace(/[<\\`*_~>|[\]()#]/g, (char) => `\\${char}`);
 }
 
 export function buildPermissionContent(request: ChannelPermissionRequest): string {
@@ -193,6 +195,14 @@ export async function handlePermissionButtonClick(input: {
   }
   entry.settled = true;
   input.pending.delete(parsed.token);
-  await input.interaction.acknowledge();
+  // Commit FIRST: the authenticated click is the decision evidence. The
+  // Discord ACK is platform UX protocol (a network call that may hang) and
+  // must never sit between validation and commit — otherwise the decision
+  // lands in a "settled but undecided" limbo while the broker times out.
   input.onResolved(entry, outcome, input.interaction.userId);
+  try {
+    await input.interaction.acknowledge();
+  } catch {
+    // Best-effort: the decision is already committed above.
+  }
 }

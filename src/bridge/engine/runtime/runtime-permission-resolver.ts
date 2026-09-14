@@ -72,8 +72,10 @@ function readRawKindFromReq(req: RuntimePermissionRequest): string | undefined {
  * the worker's permission-escalation payload (so the approval UI summarizes
  * the actual operation, not the ACP envelope). Precedence mirrors the
  * legacy readers first — identical results for legacy shapes — then text
- * content blocks (the richest carrier that survives acpx validation), the
- * ACP `subject`, and `description`.
+ * content blocks, the ACP `subject`, and `description`. Measured boundary on
+ * acpx 0.15: unknown toolCall fields are stripped and content items arrive
+ * emptied, so title/kind are the guaranteed carriers there; the later
+ * branches are forward-compatible for newer acpx versions.
  */
 export function readToolInputFromReq(req: RuntimePermissionRequest): unknown {
   const raw = getRawObject(req);

@@ -597,10 +597,12 @@ If summarization fails, show title/kind only rather than falling back to unrestr
 The worker forwards the REAL operation input via the shared
 `readToolInputFromReq()` extractor (legacy input → text content blocks →
 ACP subject → description) — never the whole request envelope, which would
-summarize as `sessionId: ...`. Measured boundary on acpx 0.15: unknown
-`toolCall` fields (notably `input`) are stripped at SDK validation, so only
-schema fields (id/title/kind/content-text) reach the worker; title/kind
-remain the guaranteed carriers and input extraction is forward-compatible.
+summarize as `sessionId: ...`. Measured boundary on acpx 0.15 (payload probe
+on a live worker): unknown `toolCall` fields are stripped at SDK validation
+and content-block items arrive emptied, so only id/title/kind reliably reach
+the worker today; title/kind are the guaranteed carriers. The extractor's
+content/subject/description branches are forward-compatible for newer acpx
+versions — they are unit-pinned, not live-pinned.
 
 ---
 

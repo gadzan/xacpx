@@ -374,6 +374,14 @@ test("approval content renders request data literally (no markdown injection)", 
   );
   expect(escapeDiscordLiteralText("# not a heading")).toBe("\\# not a heading");
   expect(escapeDiscordLiteralText("> not a quote")).toBe("\\> not a quote");
+  // The whole <...> family must stay literal: timestamps, slash-command and
+  // custom-emoji references, channel/user/role mentions, guild navigation.
+  expect(escapeDiscordLiteralText("<t:1735689600:R>")).toBe("\\<t:1735689600:R\\>");
+  expect(escapeDiscordLiteralText("</deploy:123456789>")).toBe("\\</deploy:123456789\\>");
+  expect(escapeDiscordLiteralText("<#987654321>")).toBe("\\<\\#987654321\\>");
+  expect(escapeDiscordLiteralText("<:party:123456789>")).toBe("\\<:party:123456789\\>");
+  expect(escapeDiscordLiteralText("<id:guide>")).toBe("\\<id:guide\\>");
+  expect(escapeDiscordLiteralText("<@123456789>")).toBe("\\<@123456789\\>");
   expect(escapeDiscordLiteralText("*bold* _italic_ ~strike~")).toBe(
     "\\*bold\\* \\_italic\\_ \\~strike\\~",
   );
@@ -449,6 +457,33 @@ test("pre-aborted request never posts a card", async () => {
     const sentBefore = client.sent.length;
     await expect(channel.requestPermission(request)).rejects.toThrow();
     expect(client.sent.length).toBe(sentBefore);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("hanging platform ACK does not delay the committed decision", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request } = permissionRequest();
+    const pending = channel.requestPermission(request);
+    await new Promise((r) => setTimeout(r, 10));
+    const allowId = customIdsOf(client).find((id) => id.endsWith(":allow"))!;
+    // The platform ACK hangs forever: the authenticated click must still
+    // commit the decision instead of stranding it in settled-but-undecided.
+    const hanging = buttonInteraction(client, allowId, "user-A");
+    hanging.acknowledge = async () => {
+      await new Promise<never>(() => {});
+    };
+    client.emitButton(hanging);
+    const timeout = new Promise<never>((_, reject) => {
+      const timer = setTimeout(() => reject(new Error("decision did not commit while ACK hung")), 2000);
+      if (typeof timer.unref === "function") timer.unref();
+    });
+    const decision = await Promise.race([pending, timeout]);
+    expect(decision).toEqual({ outcome: "allow_once", responderId: "user-A" });
   } finally {
     abort.abort();
     await channel.stop().catch(() => {});
