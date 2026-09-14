@@ -85,9 +85,10 @@ export function readToolInputFromReq(req: RuntimePermissionRequest): unknown {
     const rec = toolCall as Record<string, unknown>;
     if (rec.rawInput !== undefined) return rec.rawInput;
     if (rec.input !== undefined) return rec.input;
-    // acpx 0.15 strips unknown toolCall fields (notably `input`) at the SDK
-    // validation boundary — only schema fields survive. Text content blocks
-    // are the richest surviving carrier of WHAT the tool will do.
+    // acpx 0.15 strips unknown toolCall fields and empties content items at
+    // SDK validation (probed on a live worker) — title/kind are the
+    // guaranteed carriers there. Text content is a forward-compatible
+    // carrier if future acpx versions preserve it.
     const contentText = readTextFromToolContent(rec.content);
     if (contentText !== undefined) return contentText;
   }

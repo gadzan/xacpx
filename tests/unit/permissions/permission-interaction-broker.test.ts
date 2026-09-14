@@ -689,3 +689,41 @@ test("approval summary surfaces the real command/path, not the ACP envelope", ()
   expect(summary.summary).toContain("npm run test");
   expect(JSON.stringify(summary)).not.toContain("sessionId");
 });
+
+test("committed allow is delivered without waiting for observability", async () => {
+  // The resolved log must not sit between commit and delivery: a hanging
+  // log chain would otherwise push delivery past the upstream watchdog even
+  // though the decision already committed.
+  const channels = new Map([
+    ["discord:default:g:c1", fakeChannel(allowAsInitiator)],
+  ]);
+  const broker = brokerWith(channels, {
+    timeoutMs: 5000,
+    logger: {
+      info: async (event: string) => {
+        if (event === "permission.interaction.resolved") {
+          await new Promise<never>(() => {});
+        }
+      },
+      warn: async () => {},
+      error: async () => {},
+      debug: async () => {},
+    } as never,
+  });
+  const ctx = turn();
+  const dispose = broker.bindTurn(ctx);
+  try {
+    const timeout = new Promise<never>((_, reject) => {
+      const timer = setTimeout(() => reject(new Error("delivery waited for observability")), 2000);
+      if (typeof timer.unref === "function") timer.unref();
+    });
+    const res = await Promise.race([
+      broker.requestPermission({ ...baseInput(), interactionId: ctx.interactionId }),
+      timeout,
+    ]);
+    expect(res.outcome).toBe("allow_once");
+  } finally {
+    dispose();
+    broker.shutdown();
+  }
+});
