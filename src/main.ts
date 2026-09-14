@@ -319,6 +319,8 @@ interface RuntimeDeps {
     configureOrchestration?: MessageChannelRuntime["configureOrchestration"];
     supportsScheduledMessages?: (chatKey: string) => boolean;
     nativeSessionListFormat?: (chatKey: string) => "cards" | "table";
+    getByChatKey?: (chatKey: string) => MessageChannelRuntime | null;
+    hasPermissionInteractionCapability?: () => boolean;
   };
   sendOrchestrationNotice?: (task: OrchestrationTaskRecord) => Promise<void>;
   sendCoordinatorMessage?: (input: CoordinatorMessageInput) => Promise<void>;
@@ -567,10 +569,20 @@ export async function buildApp(
   // at prompt dispatch; this resolver maps it back to the originating channel
   // at permission time. deps.channel is the live MessageChannelRegistry in
   // production (cli.ts); tests without a registry stay fail-closed.
-  const channelRegistryLike = deps.channel as unknown as {
-    getByChatKey?: (chatKey: string) => MessageChannelRuntime | null;
-  } | undefined;
-  const hasChannelDispatch = typeof channelRegistryLike?.getByChatKey === "function";
+  const channelRegistryLike = deps.channel;
+  // Authoritative capability: some registered channel truly implements
+  // requestPermission — NOT mere registry presence. This single value feeds
+  // SessionService affinity, the startup gate, the watcher hot-apply, the
+  // /config + /pm handlers (via CommandRouter), and the bridge subprocess
+  // (via spawn env). Per-chat support stays per-request fail-closed.
+  let permissionInteractionAvailable = false;
+  try {
+    permissionInteractionAvailable =
+      typeof channelRegistryLike?.hasPermissionInteractionCapability === "function" &&
+      channelRegistryLike.hasPermissionInteractionCapability() === true;
+  } catch {
+    permissionInteractionAvailable = false;
+  }
   const permissionBroker = new PermissionInteractionBroker({
     getChannelByChatKey: (chatKey) => {
       try {
@@ -585,10 +597,10 @@ export async function buildApp(
   const sessions = new SessionService(config, debouncedStateStore, state, {
     stateMutex,
     runtimeRoot,
-    // Interaction infrastructure is installed (broker + registry dispatch).
+    // True capability only: escalation MAY be Runtime-routed somewhere.
     // Per-request fail-closed still applies for unsupported channels and
-    // non-human turns; this flag only means escalation MAY be Runtime-routed.
-    ...(hasChannelDispatch ? { permissionInteractionAvailable: true as const } : {}),
+    // non-human turns.
+    ...(permissionInteractionAvailable ? { permissionInteractionAvailable: true as const } : {}),
   });
   if (sessions.hasPersistedRuntimeBindings()) {
     // Fail startup LOUD, reusing the shared gate: both a runtime-ineligible
@@ -598,7 +610,7 @@ export async function buildApp(
       assertEligibleForRuntimePermissionChange(true, {
         permissionPolicy: config.transport.permissionPolicy,
         nonInteractivePermissions: config.transport.nonInteractivePermissions,
-      }, { interactionAvailable: hasChannelDispatch });
+      }, { interactionAvailable: permissionInteractionAvailable });
     } catch (error) {
       // Fail startup LOUD: persisted Runtime bindings can no longer legally
       // run under this config, and silently starting degraded would brick
@@ -688,6 +700,7 @@ export async function buildApp(
                 acpxCommand,
                 bridgeEntryPath: resolveBridgeEntryPath(),
                 agentOverlays: computeAgentOverlayEntries(config),
+                permissionInteractionAvailable,
                 permissionMode: config.transport.permissionMode,
                 nonInteractivePermissions:
                   config.transport.nonInteractivePermissions,
@@ -842,7 +855,7 @@ export async function buildApp(
       transport,
       provisionOverlays,
       logger,
-      permissionInteractionAvailable: hasChannelDispatch,
+      permissionInteractionAvailable,
     });
   };
   const reloadRuntimeConfig = async (): Promise<AppConfig> => {
@@ -1815,7 +1828,7 @@ export async function buildApp(
     activeTurns,
     controlEvents,
     configMutationMutex,
-    hasChannelDispatch,
+    permissionInteractionAvailable,
   );
   const agent = new ConsoleAgent(router, logger);
   const terminalService = createTerminalService({

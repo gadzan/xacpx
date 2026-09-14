@@ -490,7 +490,7 @@ test("B4 turn abort invalidates pending UI even when transport cancel hangs", as
   }
 });
 
-test("B4 pre-aborted turn still fails closed", async () => {
+test("B4 pre-aborted turn fails closed without touching a channel", async () => {
   let called = 0;
   const channels = new Map([
     ["discord:default:g:c1", fakeChannel(async (req) => {
@@ -504,15 +504,51 @@ test("B4 pre-aborted turn still fails closed", async () => {
   const ctx = turn();
   const dispose = broker.bindTurn(ctx, abort.signal);
   try {
+    // Per I6 a pre-aborted turn has exactly one legal outcome, and the
+    // pre-aborted bind must not leave a route behind.
     const res = await broker.requestPermission({
       ...baseInput(),
       interactionId: ctx.interactionId,
     });
-    // The abort raced the dispatch: either way the outcome is fail-closed or
-    // the single immediate allow; what matters is no hang and no leak.
-    expect(["allow_once", "reject_once"]).toContain(res.outcome);
+    expect(res.outcome).toBe("reject_once");
+    expect(called).toBe(0);
     expect(broker.pendingCount).toBe(0);
-    void called;
+  } finally {
+    dispose();
+    broker.shutdown();
+  }
+});
+
+test("B4 aborted turn cannot mint new approval UI while transport still hangs", async () => {
+  let called = 0;
+  const channels = new Map([
+    ["discord:default:g:c1", fakeChannel(async (req) => {
+      called += 1;
+      return { outcome: "allow_once", responderId: req.requester.senderId };
+    })],
+  ]);
+  const broker = brokerWith(channels, { timeoutMs: 5000 });
+  const abort = new AbortController();
+  const ctx = turn();
+  const dispose = broker.bindTurn(ctx, abort.signal);
+  // Turn is cancelled while transport.cancel() hangs: the prompt never
+  // settles, so dispose() never runs. A second permission request from the
+  // same worker on the same interaction id must still fail closed WITHOUT
+  // invoking the channel — the abort made the route itself terminal.
+  abort.abort();
+  try {
+    const first = await broker.requestPermission({
+      ...baseInput({ requestId: "perm-after-abort-1" }),
+      interactionId: ctx.interactionId,
+    });
+    expect(first.outcome).toBe("reject_once");
+    const second = await broker.requestPermission({
+      ...baseInput({ requestId: "perm-after-abort-2" }),
+      interactionId: ctx.interactionId,
+    });
+    expect(second.outcome).toBe("reject_once");
+    expect(called).toBe(0);
+    expect(broker.pendingCount).toBe(0);
   } finally {
     dispose();
     broker.shutdown();

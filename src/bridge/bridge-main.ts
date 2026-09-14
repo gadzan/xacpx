@@ -193,12 +193,13 @@ export async function runBridgeMain(): Promise<void> {
         durableRootDir: durableRoot,
         queueDir,
         fenceDir,
-        // Human interaction infrastructure lives daemon-side (broker +
-        // channel dispatch). The daemon fails each request closed for
-        // unsupported channels and non-human turns, so the bridge stays
-        // interaction-capable globally; the 125s watchdog sits just above
-        // the broker's 120s business deadline.
-        permissionInteractionAvailable: true,
+        // Human interaction capability arrives as spawn env from the daemon,
+        // which derives it from the channel registry's true capability probe
+        // (some channel implements requestPermission) — the same fact source
+        // as every daemon-side gate. Per-request fail-closed still covers
+        // unsupported channels; this flag only means escalation MAY be
+        // Runtime-routed somewhere.
+        permissionInteractionAvailable: coreEnv("BRIDGE_PERMISSION_INTERACTION_AVAILABLE") === "1",
         onPermissionRequest: async (payload) => {
           try {
             const result = await server.requestDaemon("resolvePermissionRequest", payload as unknown as import("../transport/acpx-bridge/acpx-bridge-protocol").ResolvePermissionRequestParams, { timeoutMs: 125_000 });

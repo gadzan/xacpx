@@ -468,6 +468,8 @@ export class DiscordChannel implements MessageChannelRuntime {
         await runtime.client.editMessage(target, messageId, {
           content: `${content}\n\n${text}`,
           allowedMentions: { parse: [] },
+          // Strip the buttons: a terminal card must be visibly inert.
+          components: [],
         });
       } catch (error) {
         await this.logger?.warn("discord.permission.edit_failed", "failed to update permission message", {
@@ -484,6 +486,7 @@ export class DiscordChannel implements MessageChannelRuntime {
     const onAbort = (): void => {
       if (entry.settled) return;
       entry.settled = true;
+      entry.terminalState = "cancelled";
       cleanup();
       void editTerminal(terminalPermissionText("cancelled"));
       rejectPromise(new Error("permission request aborted"));
@@ -492,6 +495,7 @@ export class DiscordChannel implements MessageChannelRuntime {
     const expiryTimer = setTimeout(() => {
       if (entry.settled) return;
       entry.settled = true;
+      entry.terminalState = "expired";
       cleanup();
       void editTerminal(terminalPermissionText("expired"));
       // Reject, don't resolve: only a real user click may produce a decision
@@ -511,6 +515,12 @@ export class DiscordChannel implements MessageChannelRuntime {
         components,
       });
       entry.messageId = sent.messageId;
+      // Send race: the turn may have settled (abort/expiry/stop) while the
+      // send was in flight, in which case the terminal edit above was a
+      // no-op for lack of a message id. Settle the card now that it exists.
+      if (entry.settled && entry.terminalState) {
+        void editTerminal(terminalPermissionText(entry.terminalState));
+      }
       await this.logger?.info("discord.permission.sent", "sent discord permission request", {
         requestId: request.requestId,
       });
@@ -565,6 +575,8 @@ export class DiscordChannel implements MessageChannelRuntime {
       await runtime.client.editMessage(entry.target, messageId, {
         content,
         allowedMentions: { parse: [] },
+        // Strip the buttons: a terminal card must be visibly inert.
+        components: [],
       });
     } catch (error) {
       await this.logger?.warn("discord.permission.edit_failed", "failed to update permission message", {
@@ -581,6 +593,7 @@ export class DiscordChannel implements MessageChannelRuntime {
     for (const entry of entries) {
       if (entry.settled) continue;
       entry.settled = true;
+      entry.terminalState = terminal;
       try {
         // Reject, don't resolve: only a real user click may produce a decision.
         entry.reject(new Error("permission channel stopped"));

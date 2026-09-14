@@ -338,3 +338,21 @@ test("stopAll passes different reasons correctly", async () => {
   await registry.stopAll("logout");
   expect(events).toEqual(["weixin:stop:logout"]);
 });
+
+test("hasPermissionInteractionCapability is true only when a channel implements requestPermission", () => {
+  const events: string[] = [];
+  expect(new MessageChannelRegistry([]).hasPermissionInteractionCapability()).toBe(false);
+  expect(
+    new MessageChannelRegistry([fakeChannel("weixin", events)]).hasPermissionInteractionCapability(),
+  ).toBe(false);
+  const interactive: MessageChannelRuntime = {
+    ...fakeChannel("discord", events),
+    requestPermission: async () => ({ outcome: "reject_once", responderId: "u1" }),
+  };
+  expect(
+    new MessageChannelRegistry([
+      fakeChannel("feishu", events),
+      interactive,
+    ]).hasPermissionInteractionCapability(),
+  ).toBe(true);
+});

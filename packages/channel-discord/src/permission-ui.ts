@@ -19,6 +19,8 @@ export interface PendingDiscordPermission {
   content?: string;
   messageId?: string;
   settled: boolean;
+  /** Terminal UI state for a send that completes after settlement (send race). */
+  terminalState?: "expired" | "cancelled";
   resolve: (decision: ChannelPermissionDecision) => void;
   reject: (error: Error) => void;
 }
@@ -76,17 +78,29 @@ export function outcomeForAction(action: PermissionAction): PermissionOutcome {
 }
 
 const MAX_CONTENT_CHARS = 1800;
-
 function truncate(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+}
+
+/**
+ * Escape untrusted request data for the approval message. Title/summary/kind
+ * ultimately come from the ACP agent request: without escaping, spoiler
+ * (`||`), code fences, masked links (`[text](url)`), headings, and quotes
+ * could change what the approver THINKS they are approving. The fixed
+ * heading stays Markdown; every data line is literal. `:` is deliberately
+ * left alone (emoji syntax needs word-char wrapping; over-escaping `key:
+ * value` summaries hurts readability more than it protects).
+ */
+export function escapeDiscordLiteralText(value: string): string {
+  return value.replace(/[\\`*_~>|[\]()#]/g, (char) => `\\${char}`);
 }
 
 export function buildPermissionContent(request: ChannelPermissionRequest): string {
   const messages = getMessages();
   const lines = [`**${messages.permissionTitle}**`];
-  if (request.title) lines.push(truncate(request.title, 200));
-  if (request.kind) lines.push(`\`${truncate(request.kind, 80)}\``);
-  if (request.summary) lines.push(truncate(request.summary, 800));
+  if (request.title) lines.push(escapeDiscordLiteralText(truncate(request.title, 200)));
+  if (request.kind) lines.push(`\`${escapeDiscordLiteralText(truncate(request.kind, 80))}\``);
+  if (request.summary) lines.push(escapeDiscordLiteralText(truncate(request.summary, 800)));
   const body = lines.join("\n");
   return truncate(body, MAX_CONTENT_CHARS);
 }

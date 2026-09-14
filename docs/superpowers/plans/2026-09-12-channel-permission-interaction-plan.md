@@ -514,21 +514,12 @@ slow `transport.cancel()` to settle the prompt. No extra worker→host cancel
 event is needed — the worker already drops its pending entry and returns
 `reject_once` on its own abort, so both ends fail closed independently off
 the same turn abort.
+Abort (signal or pre-aborted) makes the ROUTE itself terminal — the binding is deleted, not just the pending request aborted — so a cancelled turn whose transport settles slowly can never mint new approval UI on the same interaction id.
 
 
 The returned disposer must only remove the exact binding it created (identity-check the entry) so a stale disposer cannot delete a later binding in pathological tests.
 
 ### 7.3 Channel lookup
-
-Use the existing `MessageChannelRegistry.getByChatKey(chatKey)` semantics. Avoid copying chatKey-prefix parsing into the broker.
-
-Production wiring may inject a narrow resolver:
-
-```ts
-getChannelByChatKey(chatKey: string): MessageChannelRuntime | null
-```
-
-rather than making the broker depend on the full registry class. This keeps `buildApp` and tests easy to compose.
 
 ### 7.4 Timeout
 
@@ -628,8 +619,9 @@ After this feature lands, set this true only when production wiring can actually
 
 The SAME authoritative value enters every gate — it is not a per-construction guess:
 
+- `MessageChannelRegistry.hasPermissionInteractionCapability()`: true only when at least one registered runtime implements `requestPermission()` — never mere registry presence (a Feishu/WeChat-only deploy MUST read `false`);
 - `SessionService` (`permissionInteractionAvailable`) for new-session affinity;
-- `RuntimeEngine` (bridge subprocess) for eligibility;
+- `RuntimeEngine` (bridge subprocess) for eligibility, fed by spawn env (`XACPX_BRIDGE_PERMISSION_INTERACTION_AVAILABLE`, via `SpawnedBridgeClientOptions.permissionInteractionAvailable`) — the bridge never hardcodes it;
 - the shared `assertEligibleForRuntimePermissionChange(..., { interactionAvailable })` used by daemon startup, the config watcher hot-apply, `/config set`, and `/pm`;
 - `CommandRouterContext.permissionInteractionAvailable`, threaded from `buildApp` into the `/config` + `/pm` handlers.
 
@@ -753,7 +745,7 @@ and render only supported actions, typically:
 - Deny
 - Always deny
 
-After resolution, edit components away and append/render terminal state:
+After resolution, edit components away (`components: []`) and append/render terminal state:
 
 ```text
 Allowed once
@@ -763,6 +755,15 @@ Cancelled
 ```
 
 All Discord messages continue to use `allowedMentions: { parse: [] }`.
+`allowedMentions` does NOT make content literal: every data line (title,
+kind, summary — all ultimately agent-controlled) MUST pass
+`escapeDiscordLiteralText()` first (spoilers, fences, masked links,
+headings, quotes), while only the fixed heading stays Markdown.
+
+Send race: if the turn settles while `sendMessage()` is still in flight,
+the terminal edit has no message id yet. The entry remembers its terminal
+state, and the send path re-checks after the id lands and compensates with
+a terminal, button-free edit — a card must never be left looking clickable.
 
 ### 10.7 Abort/stop cleanup
 
@@ -860,6 +861,8 @@ Production wiring:
   - replace hard-coded `reject_once` daemon handler;
   - ensure shutdown invalidates pending requests;
   - wire real interaction availability.
+- `src/channels/channel-registry.ts` (`hasPermissionInteractionCapability()` — the single fact source);
+- `src/transport/acpx-bridge/acpx-bridge-client.ts` (spawn env for the capability) + `src/bridge/bridge-main.ts` (read it, never hardcode);
 - channel bootstrap/registry composition files as needed
   - expose a narrow `getChannelByChatKey` resolver to the broker.
 

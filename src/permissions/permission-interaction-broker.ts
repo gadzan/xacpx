@@ -84,17 +84,24 @@ export class PermissionInteractionBroker {
     }
     this.turns.set(context.interactionId, context);
     let disposed = false;
+    // Shared terminal path: identity-check, then delete the route AND abort
+    // pending. Abort MUST go through here too — otherwise a cancelled turn
+    // whose transport settles slowly could mint NEW approval UI for a later
+    // permission request on the same interaction id.
+    const terminate = (reason: string): void => {
+      const current = this.turns.get(context.interactionId);
+      if (current !== context) return;
+      this.turns.delete(context.interactionId);
+      this.abortInteraction(context.interactionId, reason);
+    };
     const dispose = (): void => {
       if (disposed) return;
       disposed = true;
       abortSignal?.removeEventListener("abort", onAbort);
-      const current = this.turns.get(context.interactionId);
-      if (current !== context) return;
-      this.turns.delete(context.interactionId);
-      this.abortInteraction(context.interactionId, "turn_disposed");
+      terminate("turn_disposed");
     };
     const onAbort = (): void => {
-      this.abortInteraction(context.interactionId, "turn_aborted");
+      terminate("turn_aborted");
     };
     if (abortSignal) {
       if (abortSignal.aborted) {

@@ -7,7 +7,11 @@ import type {
   OutboundBody,
 } from "../../../../packages/channel-discord/src/types";
 import { setChannelLocale } from "../../../../packages/channel-discord/src/i18n";
-import { parsePermissionCustomId } from "../../../../packages/channel-discord/src/permission-ui";
+import {
+  buildPermissionContent,
+  escapeDiscordLiteralText,
+  parsePermissionCustomId,
+} from "../../../../packages/channel-discord/src/permission-ui";
 import type { ChannelStartInput } from "xacpx/plugin-api";
 import type { ChannelPermissionRequest } from "xacpx/plugin-api";
 
@@ -165,7 +169,7 @@ test("initiator allow_once resolves and strips buttons", async () => {
     // re-verify initiator-only approval (I3) instead of trusting the plugin.
     expect(decision).toEqual({ outcome: "allow_once", responderId: "user-A" });
     expect(client.edited).toHaveLength(1);
-    expect(client.edited[0]!.body.components).toBeUndefined();
+    expect(client.edited[0]!.body.components).toEqual([]);
   } finally {
     abort.abort();
     await channel.stop().catch(() => {});
@@ -352,6 +356,81 @@ test("only ACP-offered outcomes are rendered as buttons", async () => {
     const denyId = ids.find((id) => id.endsWith(":deny"))!;
     client.emitButton(buttonInteraction(client, denyId, "user-A"));
     const decision = await pending;
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("approval content renders request data literally (no markdown injection)", () => {
+  expect(escapeDiscordLiteralText("||rm -rf ~/important||")).toBe("\\|\\|rm -rf \\~/important\\|\\|");
+  expect(escapeDiscordLiteralText("`rm -rf`")).toBe("\\`rm -rf\\`");
+  expect(escapeDiscordLiteralText("```\nrm -rf\n```")).toBe("\\`\\`\\`\nrm -rf\n\\`\\`\\`");
+  expect(escapeDiscordLiteralText("[click me](https://evil.example)")).toBe(
+    "\\[click me\\]\\(https://evil.example\\)",
+  );
+  expect(escapeDiscordLiteralText("# not a heading")).toBe("\\# not a heading");
+  expect(escapeDiscordLiteralText("> not a quote")).toBe("\\> not a quote");
+  expect(escapeDiscordLiteralText("*bold* _italic_ ~strike~")).toBe(
+    "\\*bold\\* \\_italic\\_ \\~strike\\~",
+  );
+  // Plain prose is untouched.
+  expect(escapeDiscordLiteralText("Run shell command")).toBe("Run shell command");
+  expect(escapeDiscordLiteralText("npm run test")).toBe("npm run test");
+});
+
+test("built permission message escapes hostile tool input end to end", () => {
+  const abort = new AbortController();
+  const content = buildPermissionContent({
+    requestId: "req-x",
+    chatKey: "discord:default:g:c1",
+    requester: { senderId: "user-A" },
+    toolCallId: "tool-1",
+    title: "Run ||rm -rf ~||",
+    kind: "execute",
+    summary: "[see logs](https://evil.example) `secret`",
+    availableOutcomes: ["allow_once", "reject_once"],
+    expiresAt: Date.now() + 1000,
+    signal: abort.signal,
+  });
+  expect(content).toContain("Permission required");
+  expect(content).toContain("\\|\\|rm -rf \\~\\|\\|");
+  expect(content).not.toContain("||rm -rf");
+  expect(content).toContain("\\[see logs\\]\\(https://evil.example\\)");
+  expect(content).not.toContain("[see logs](https://evil.example)");
+});
+
+test("abort during send still strips buttons once the message lands", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  // Gate sends only AFTER startup: the start probe itself sends through
+  // this same client and must not be gated.
+  let releaseSend!: (id: { messageId: string }) => void;
+  const sendGate = new Promise<{ messageId: string }>((resolve) => {
+    releaseSend = resolve;
+  });
+  const realSend = client.sendMessage;
+  client.sendMessage = async (target, body) => {
+    await sendGate;
+    return realSend(target, body);
+  };
+  try {
+    const { request, abort: reqAbort } = permissionRequest({ expiresAt: Date.now() + 10_000 });
+    const pending = channel.requestPermission(request);
+    await new Promise((r) => setTimeout(r, 10));
+    // Abort while the send is still in flight: the terminal edit has no
+    // message id yet and is a no-op. The outer promise only settles once
+    // the gated send itself lands, so release first, then expect rejection.
+    reqAbort.abort();
+    releaseSend({ messageId: "m-late" });
+    await expect(pending).rejects.toThrow();
+    // The channel must compensate with a terminal, button-free edit instead
+    // of leaving a live-looking card.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(client.edited.length).toBeGreaterThan(0);
+    const last = client.edited[client.edited.length - 1]!;
+    expect(last.body.components).toEqual([]);
+    expect(last.body.content).toContain("cancelled");
   } finally {
     abort.abort();
     await channel.stop().catch(() => {});

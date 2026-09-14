@@ -461,7 +461,13 @@ interface SpawnedBridgeClientOptions {
   acpxMaxIncomingMessageBytes?: number | null;
   acpxTerminalMaxOutputBytes?: number | null;
   generationFilePath?: string;
-  /** Overlay entries the bridge re-provisions into ~/.acpx/config.json at startup. */
+  /**
+   * True human permission-interaction capability (some registered channel
+   * implements requestPermission). Forwarded as XACPX_BRIDGE env so the
+   * bridge subprocess computes Runtime eligibility from the same fact
+   * source as the daemon instead of hardcoding it.
+   */
+  permissionInteractionAvailable?: boolean;
   agentOverlays?: AcpxAgentOverlayEntry[];
   /** Forwarded to AcpxBridgeClient: observability for undecodable bridge output lines. */
   onMalformedLine?: (line: string) => void;
@@ -500,6 +506,9 @@ export function buildBridgeSpawnEnv(
       ? { XACPX_BRIDGE_ACPX_TERMINAL_MAX_OUTPUT_BYTES: String(options.acpxTerminalMaxOutputBytes) }
       : {}),
     ...(options.generationFilePath ? { XACPX_BRIDGE_GENERATION_FILE: options.generationFilePath } : {}),
+    ...(options.permissionInteractionAvailable === true
+      ? { XACPX_BRIDGE_PERMISSION_INTERACTION_AVAILABLE: "1" }
+      : {}),
     ...(options.agentOverlays && options.agentOverlays.length > 0
       ? { XACPX_BRIDGE_AGENT_OVERLAYS: JSON.stringify(options.agentOverlays) }
       : {}),
