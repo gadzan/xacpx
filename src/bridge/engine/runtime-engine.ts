@@ -4,6 +4,7 @@ import { join, resolve as resolvePath, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { coreHomeDir } from "../../runtime/core-home";
+import { raceWithTimeout } from "../../util/async.js";
 import { normalizePathForComparison, physicalFenceKeyForSession } from "./runtime/physical-session-identity";
 
 import { deleteAcpxSessionFiles, resolveAcpxHomeDir } from "../../transport/acpx-session-files";
@@ -419,7 +420,7 @@ export interface RuntimeEngineOptions {
    * is false and policies requiring escalation must be judged Runtime-ineligible
    * and routed to CLI. Defaults to false.
    */
-  permissionInteractionAvailable?: boolean;
+  permissionInteractionCapable?: boolean;
   /**
    * PR9-C: Host-side handler for elicitation requests (acpx/runtime onElicitation).
    * If not provided, elicitation fails closed (cancel).
@@ -1073,7 +1074,7 @@ export class RuntimeEngine implements BridgeEngine {
   private isRuntimeEligible(): boolean {
     try {
       const policy = this.options.permissionPolicy !== undefined ? parseXacpxPermissionPolicy(this.options.permissionPolicy) : undefined;
-      const interactiveAvailable = this.options.permissionInteractionAvailable === true;
+      const interactiveAvailable = this.options.permissionInteractionCapable === true;
       return isEligibleForRuntime(policy, this.options.nonInteractivePermissions, interactiveAvailable);
     } catch {
       return false;
@@ -1089,10 +1090,7 @@ export class RuntimeEngine implements BridgeEngine {
     if (this.options.onPermissionRequest) {
       try {
         const timeoutMs = this.options.permissionRequestTimeoutMs ?? 125_000;
-        const res = await Promise.race([
-          this.options.onPermissionRequest(payload),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("permission UI timeout")), timeoutMs).unref?.()),
-        ]);
+        const res = await raceWithTimeout(this.options.onPermissionRequest(payload), timeoutMs, () => new Error("permission UI timeout"));
         // Re-check fencing after await (G → G+1 race)
         if (this.deleting.has(key) || this.shuttingDown) return { outcome: "reject_once" };
         if (payload.policyGeneration !== this.permissionGeneration) return { outcome: "reject_once" };

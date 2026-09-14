@@ -4,7 +4,9 @@
  * by the host as the release primitive — so it must NEVER call runtime.close()
  * during ordinary shutdown (that would close the acpx record; plan §17).
  */
+import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
+import { raceWithTimeout } from "../../../util/async.js";
 import { convergeOrphansBeforeExit, markRuntimeWorkerFence } from "./worker-eof";
 import { createDispatchGate } from "./runtime-worker-gate";
 
@@ -280,7 +282,9 @@ async function initializeRuntime(params: RuntimeWorkerEnsureParams): Promise<voi
         // id and must fail closed here, never generating a synthetic route.
         const activeInteractionId = state.activeInteractionId;
         if (!activeInteractionId) return { outcome: "reject_once" };
-        const requestId = `perm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+        // UUID: broker pending is daemon-global keyed by requestId, so the
+        // id space must not collide under same-millisecond bursts.
+        const requestId = randomUUID();
         // Dynamic-key reads need an index signature; the shape checks above
         // are the runtime validation for this acpx-owned payload.
         const asRecord = (value: unknown): Record<string, unknown> | undefined => {
@@ -342,10 +346,7 @@ async function initializeRuntime(params: RuntimeWorkerEnsureParams): Promise<voi
         });
         process.stdout.write(encodeWorkerMessage({ id: requestId, event: "permission.request", payload } satisfies RuntimeWorkerEvent));
         try {
-          const decision = await Promise.race([
-            pending,
-            new Promise<never>((_, reject) => setTimeout(() => reject(new Error("host permission timeout")), 125_000).unref?.()),
-          ]);
+          const decision = await raceWithTimeout(pending, 125_000, () => new Error("host permission timeout"));
           const outcome = decision.outcome;
           if (outcome !== "allow_once" && outcome !== "allow_always" && outcome !== "reject_once" && outcome !== "reject_always" && outcome !== "cancel") {
             return { outcome: "reject_once" };

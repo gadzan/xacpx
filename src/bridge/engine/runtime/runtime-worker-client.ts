@@ -14,6 +14,7 @@ import {
 } from "./runtime-worker-protocol";
 import { mapRuntimeError } from "./runtime-contract";
 import { terminateProcessTree } from "../../../process/terminate-process-tree";
+import { raceWithTimeout } from "../../../util/async.js";
 import {
   probeWindowsProcessIdentity,
   terminateWindowsDescendantsOf,
@@ -269,10 +270,7 @@ export class RuntimeWorkerClient {
         decision = { outcome: "reject_once" };
       } else {
         const timeoutMs = this.deps?.permissionTimeoutMs ?? 125_000;
-        const withTimeout = await Promise.race([
-          handler(payload),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("permission UI timeout")), timeoutMs).unref?.()),
-        ]);
+        const withTimeout = await raceWithTimeout(handler(payload), timeoutMs, () => new Error("permission UI timeout"));
         const outcome = (withTimeout as { outcome?: unknown })?.outcome;
         if (outcome !== "allow_once" && outcome !== "allow_always" && outcome !== "reject_once" && outcome !== "reject_always" && outcome !== "cancel") {
           decision = { outcome: "reject_once" };

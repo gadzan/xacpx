@@ -105,7 +105,7 @@ export interface CommandRouterContext {
    * (broker + channel registry). Gates escalate-policy eligibility in
    * /config + /pm handlers via the shared assert helper. Absent = false.
    */
-  permissionInteractionAvailable?: boolean;
+  permissionInteractionCapable?: boolean;
 }
 
 export interface OrchestrationRouterOps {

@@ -128,7 +128,7 @@ export class CommandRouter {
      * watcher reload path serialize against each other.
      */
     private readonly configMutationMutex: ConfigMutationMutex = new AsyncMutex(),
-    private readonly permissionInteractionAvailable?: boolean,
+    private readonly permissionInteractionCapable?: boolean,
   ) {
     this.logger = logger ?? createNoopAppLogger();
     this.activeTurns = activeTurns;
@@ -508,7 +508,7 @@ export class CommandRouter {
       configMutationMutex: this.configMutationMutex,
       ...(this.activeTurns ? { activeTurns: this.activeTurns } : {}),
       ...(this.quota ? { quota: this.quota } : {}),
-      ...(this.permissionInteractionAvailable ? { permissionInteractionAvailable: true as const } : {}),
+      ...(this.permissionInteractionCapable ? { permissionInteractionCapable: true as const } : {}),
       ...(this.resolveNativeSessionListFormat ? { resolveNativeSessionListFormat: this.resolveNativeSessionListFormat } : {}),
     };
   }

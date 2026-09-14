@@ -50,6 +50,7 @@ function baseInput(overrides: Record<string, unknown> = {}): {
     rawInput: { command: "npm run test" },
     policyGeneration: 0,
     workerGeneration: "worker-1",
+    availableOutcomes: ["allow_once", "reject_once"],
     ...overrides,
   };
 }
@@ -725,5 +726,28 @@ test("committed allow is delivered without waiting for observability", async () 
   } finally {
     dispose();
     broker.shutdown();
+  }
+});
+
+test("empty outcome set fails closed without invoking channel UI", async () => {
+  for (const outcomes of [undefined, [], ["launch_missiles"]]) {
+    const seen: ChannelPermissionRequest[] = [];
+    const channels = new Map([
+      ["discord:default:g:c1", fakeChannel(allowAsInitiator, seen)],
+    ]);
+    const broker = brokerWith(channels, { timeoutMs: 2000 });
+    const ctx = turn();
+    const dispose = broker.bindTurn(ctx);
+    try {
+      const input = baseInput({ interactionId: ctx.interactionId }) as Record<string, unknown>;
+      if (outcomes === undefined) delete input.availableOutcomes;
+      else input.availableOutcomes = outcomes;
+      const res = await broker.requestPermission(input as never);
+      expect(res.outcome).toBe("reject_once");
+      expect(seen.length).toBe(0);
+    } finally {
+      dispose();
+      broker.shutdown();
+    }
   }
 });

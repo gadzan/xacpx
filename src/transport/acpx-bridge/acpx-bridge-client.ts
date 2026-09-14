@@ -467,7 +467,7 @@ interface SpawnedBridgeClientOptions {
    * bridge subprocess computes Runtime eligibility from the same fact
    * source as the daemon instead of hardcoding it.
    */
-  permissionInteractionAvailable?: boolean;
+  permissionInteractionCapable?: boolean;
   agentOverlays?: AcpxAgentOverlayEntry[];
   /** Forwarded to AcpxBridgeClient: observability for undecodable bridge output lines. */
   onMalformedLine?: (line: string) => void;
@@ -509,8 +509,8 @@ export function buildBridgeSpawnEnv(
     // Always explicit ("1"/"0"): the spawn env is layered over process.env,
     // so omitting the key would let a stale parent-process value leak in and
     // flip bridge eligibility away from the authoritative capability.
-    XACPX_BRIDGE_PERMISSION_INTERACTION_AVAILABLE:
-      options.permissionInteractionAvailable === true ? "1" : "0",
+    XACPX_BRIDGE_PERMISSION_INTERACTION_CAPABLE:
+      options.permissionInteractionCapable === true ? "1" : "0",
     ...(options.agentOverlays && options.agentOverlays.length > 0
       ? { XACPX_BRIDGE_AGENT_OVERLAYS: JSON.stringify(options.agentOverlays) }
       : {}),

@@ -489,3 +489,72 @@ test("hanging platform ACK does not delay the committed decision", async () => {
     await channel.stop().catch(() => {});
   }
 });
+
+async function startChannelWithLogger(
+  client: FakeDiscordClient,
+  logger: ReturnType<typeof makeLogger>,
+): Promise<{ channel: DiscordChannel; abort: AbortController }> {
+  const agent = { chat: async () => ({ text: "ok" }) };
+  const abort = new AbortController();
+  const channel = new DiscordChannel(
+    { token: "x", dmPolicy: "open", guildPolicy: "open", requireMention: false, enableAutocomplete: false },
+    { logger: makeLogger() as never, createClient: () => client, identifyStaggerMs: 0 },
+  );
+  const input = makeStartInput(agent, abort);
+  (input as { logger: unknown }).logger = logger;
+  const startPromise = channel.start(input);
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    try {
+      await channel.sendCoordinatorMessage({ chatKey: "discord:default:g:__probe__", text: "" });
+      break;
+    } catch (error) {
+      if (!(error instanceof Error && error.message.includes("not started"))) throw error;
+    }
+    if (Date.now() > deadline) throw new Error("channel did not start in time");
+    await new Promise((r) => setTimeout(r, 2));
+  }
+  void startPromise.catch(() => {});
+  return { channel, abort };
+}
+
+for (const stalledEvent of ["discord.permission.sent", "discord.permission.resolved"]) {
+  test(`stalled ${stalledEvent} log does not delay the delivered decision`, async () => {
+    const logger = makeLogger();
+    const origInfo = logger.info;
+    logger.info = (async (event: string, ...rest: unknown[]) => {
+      if (event === stalledEvent) await new Promise<never>(() => {});
+      return (origInfo as (...a: unknown[]) => Promise<void>)(event, ...rest);
+    }) as typeof logger.info;
+    const client = makeFakeClient();
+    const { channel, abort } = await startChannelWithLogger(client, logger);
+    try {
+      const { request } = permissionRequest();
+      const pending = channel.requestPermission(request);
+      await new Promise((r) => setTimeout(r, 10));
+      const allowId = customIdsOf(client).find((id) => id.endsWith(":allow"))!;
+      client.emitButton(buttonInteraction(client, allowId, "user-A"));
+      const timeout = new Promise<never>((_, reject) => {
+        const timer = setTimeout(() => reject(new Error(`decision waited for ${stalledEvent}`)), 2000);
+        if (typeof timer.unref === "function") timer.unref();
+      });
+      const decision = await Promise.race([pending, timeout]);
+      expect(decision.outcome).toBe("allow_once");
+    } finally {
+      abort.abort();
+      await channel.stop().catch(() => {});
+    }
+  });
+}
+
+test("approval text strips bidi and invisible controls", async () => {
+  // RLO + isolate overrides can visually reorder a command on a
+  // security-confirmation card; zero-width controls have no legitimate
+  // place in an approval literal. All are stripped, not escaped.
+  expect(escapeDiscordLiteralText("run ‮evil-command")).toBe("run evil-command");
+  expect(escapeDiscordLiteralText("⁦ls -la⁩ /tmp")).toBe("ls -la /tmp");
+  expect(escapeDiscordLiteralText("‪rm -rf /‬")).toBe("rm -rf /");
+  expect(escapeDiscordLiteralText("a​b‌c‍d﻿e­f")).toBe("abcdef");
+  // Legitimate text (emoji, CJK, accents) is untouched.
+  expect(escapeDiscordLiteralText("部署 ✅ café naïve 日本語")).toBe("部署 ✅ café naïve 日本語");
+});

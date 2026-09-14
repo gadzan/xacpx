@@ -529,7 +529,12 @@ export class DiscordChannel implements MessageChannelRuntime {
       if (entry.settled && entry.terminalState) {
         void editTerminal(terminalPermissionText(entry.terminalState));
       }
-      await this.logger?.info("discord.permission.sent", "sent discord permission request", {
+      // Fire-and-forget: observability must not sit on the permission
+      // critical path (send → await user decision → return decision). The
+      // logger swallows errors but a stalled I/O chain has no timeout, and
+      // awaiting it here would delay delivery past the broker deadline after
+      // a legal click already committed.
+      void this.logger?.info("discord.permission.sent", "sent discord permission request", {
         requestId: request.requestId,
       });
     } catch (error) {
@@ -547,7 +552,7 @@ export class DiscordChannel implements MessageChannelRuntime {
     }
     try {
       const decision = await done;
-      await this.logger?.info("discord.permission.resolved", "discord permission resolved", {
+      void this.logger?.info("discord.permission.resolved", "discord permission resolved", {
         requestId: request.requestId,
         outcome: decision.outcome,
       });

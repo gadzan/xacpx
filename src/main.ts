@@ -148,13 +148,13 @@ export interface ApplyRuntimePermissionConfigOptions {
   provisionOverlays: (target: AppConfig) => Promise<void>;
   logger: AppLogger;
   /** Authoritative interaction capability (broker + channel dispatch wired). */
-  permissionInteractionAvailable?: boolean;
+  permissionInteractionCapable?: boolean;
 }
 
 export async function applyRuntimePermissionConfig(
   options: ApplyRuntimePermissionConfigOptions,
 ): Promise<AppConfig> {
-  const { config, nextConfig, sessions, transport, provisionOverlays, logger, permissionInteractionAvailable } =
+  const { config, nextConfig, sessions, transport, provisionOverlays, logger, permissionInteractionCapable } =
     options;
   try {
     // Transport topology is restart-required: the live transport object is
@@ -173,7 +173,7 @@ export async function applyRuntimePermissionConfig(
         permissionPolicy: nextConfig.transport.permissionPolicy,
         nonInteractivePermissions: nextConfig.transport.nonInteractivePermissions,
       },
-      { interactionAvailable: permissionInteractionAvailable ?? false },
+      { interactionAvailable: permissionInteractionCapable ?? false },
     );
 
     // 3. Diff permission tuple (mode / nonInteractive / policy)
@@ -575,13 +575,13 @@ export async function buildApp(
   // SessionService affinity, the startup gate, the watcher hot-apply, the
   // /config + /pm handlers (via CommandRouter), and the bridge subprocess
   // (via spawn env). Per-chat support stays per-request fail-closed.
-  let permissionInteractionAvailable = false;
+  let permissionInteractionCapable = false;
   try {
-    permissionInteractionAvailable =
+    permissionInteractionCapable =
       typeof channelRegistryLike?.hasPermissionInteractionCapability === "function" &&
       channelRegistryLike.hasPermissionInteractionCapability() === true;
   } catch {
-    permissionInteractionAvailable = false;
+    permissionInteractionCapable = false;
   }
   const permissionBroker = new PermissionInteractionBroker({
     getChannelByChatKey: (chatKey) => {
@@ -600,7 +600,7 @@ export async function buildApp(
     // True capability only: escalation MAY be Runtime-routed somewhere.
     // Per-request fail-closed still applies for unsupported channels and
     // non-human turns.
-    ...(permissionInteractionAvailable ? { permissionInteractionAvailable: true as const } : {}),
+    ...(permissionInteractionCapable ? { permissionInteractionCapable: true as const } : {}),
   });
   if (sessions.hasPersistedRuntimeBindings()) {
     // Fail startup LOUD, reusing the shared gate: both a runtime-ineligible
@@ -610,7 +610,7 @@ export async function buildApp(
       assertEligibleForRuntimePermissionChange(true, {
         permissionPolicy: config.transport.permissionPolicy,
         nonInteractivePermissions: config.transport.nonInteractivePermissions,
-      }, { interactionAvailable: permissionInteractionAvailable });
+      }, { interactionAvailable: permissionInteractionCapable });
     } catch (error) {
       // Fail startup LOUD: persisted Runtime bindings can no longer legally
       // run under this config, and silently starting degraded would brick
@@ -700,7 +700,7 @@ export async function buildApp(
                 acpxCommand,
                 bridgeEntryPath: resolveBridgeEntryPath(),
                 agentOverlays: computeAgentOverlayEntries(config),
-                permissionInteractionAvailable,
+                permissionInteractionCapable,
                 permissionMode: config.transport.permissionMode,
                 nonInteractivePermissions:
                   config.transport.nonInteractivePermissions,
@@ -855,7 +855,7 @@ export async function buildApp(
       transport,
       provisionOverlays,
       logger,
-      permissionInteractionAvailable,
+      permissionInteractionCapable,
     });
   };
   const reloadRuntimeConfig = async (): Promise<AppConfig> => {
@@ -1828,7 +1828,7 @@ export async function buildApp(
     activeTurns,
     controlEvents,
     configMutationMutex,
-    permissionInteractionAvailable,
+    permissionInteractionCapable,
   );
   const agent = new ConsoleAgent(router, logger);
   const terminalService = createTerminalService({

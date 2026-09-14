@@ -177,9 +177,16 @@ export class PermissionInteractionBroker {
       return { outcome: "reject_once" };
     }
 
-    const available = validOutcomes(input.availableOutcomes);
-    const availableOutcomes: PermissionOutcome[] =
-      available.length > 0 ? available : ["allow_once", "reject_once"];
+    const availableOutcomes = validOutcomes(input.availableOutcomes);
+    if (availableOutcomes.length === 0) {
+      // No usable ACP-provided outcomes: fail closed WITHOUT invoking
+      // channel UI. Fabricating an allow option the ACP side never offered
+      // would display (and potentially return) an unauthorized decision.
+      await this.log("permission.interaction.channel_failed", "no usable permission outcomes", {
+        requestId,
+      });
+      return { outcome: "reject_once" };
+    }
     const presented = summarizePermissionRequest({
       ...(input.title !== undefined ? { title: input.title } : {}),
       ...(input.kind !== undefined ? { kind: input.kind } : {}),

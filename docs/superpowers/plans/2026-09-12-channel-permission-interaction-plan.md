@@ -620,9 +620,9 @@ if (method === "resolvePermissionRequest") {
 
 The RuntimeEngine callback remains the source of generation/worker fencing.
 
-### 9.1 `permissionInteractionAvailable`
+### 9.1 `permissionInteractionCapable`
 
-The Runtime already distinguishes “an RPC callback exists” from “a real human UI exists” using `permissionInteractionAvailable`.
+The Runtime already distinguishes “an RPC callback exists” from “a real human UI exists” using `permissionInteractionCapable`.
 
 After this feature lands, set this true only when production wiring can actually dispatch to at least one supported interactive channel path. A bridge callback by itself must not qualify.
 
@@ -630,10 +630,10 @@ After this feature lands, set this true only when production wiring can actually
 The SAME authoritative value enters every gate — it is not a per-construction guess:
 
 - `MessageChannelRegistry.hasPermissionInteractionCapability()`: true only when at least one registered runtime implements `requestPermission()` — never mere registry presence (a Feishu/WeChat-only deploy MUST read `false`);
-- `SessionService` (`permissionInteractionAvailable`) for new-session affinity;
+- `SessionService` (`permissionInteractionCapable`) for new-session affinity;
 - the shared `assertEligibleForRuntimePermissionChange(..., { interactionAvailable })` used by daemon startup, the config watcher hot-apply, `/config set`, and `/pm`;
-- `RuntimeEngine` (bridge subprocess) for eligibility, fed by spawn env (`XACPX_BRIDGE_PERMISSION_INTERACTION_AVAILABLE`, via `SpawnedBridgeClientOptions.permissionInteractionAvailable`, always explicit `"1"`/`"0"` so no stale parent env leaks in) — the bridge never hardcodes it;
-- `CommandRouterContext.permissionInteractionAvailable`, threaded from `buildApp` into the `/config` + `/pm` handlers.
+- `RuntimeEngine` (bridge subprocess) for eligibility, fed by spawn env (`XACPX_BRIDGE_PERMISSION_INTERACTION_CAPABLE`, via `SpawnedBridgeClientOptions.permissionInteractionCapable`, always explicit `"1"`/`"0"` so no stale parent env leaks in) — the bridge never hardcodes it;
+- `CommandRouterContext.permissionInteractionCapable`, threaded from `buildApp` into the `/config` + `/pm` handlers.
 
 Without this, persisted Runtime bindings stay stuck on "escalate without interactive" even after Discord approval ships.
 Do not loosen Runtime eligibility merely because `onPermissionRequest` is non-null.
@@ -840,7 +840,7 @@ Turn plumbing:
 - `src/control/turn-queue.ts` (`SubmitParams`/`QueuedPrompt`/`pendingInterrupts`/drain/runTurn req)
 - `src/control/session-turn-runner.ts` (`TurnRequest`) + `src/control/turn-support.ts` (`buildControlMetadata`)
   - carry `turnOrigin` end to end into `ChatRequestMetadata.origin`.
-- `src/commands/router-types.ts` (`CommandRouterContext.permissionInteractionAvailable`)
+- `src/commands/router-types.ts` (`CommandRouterContext.permissionInteractionCapable`)
 - `src/commands/command-router.ts` (constructor + handler context threading)
 - `src/bridge/engine/runtime/runtime-permission-policy.ts`
   - `assertEligibleForRuntimePermissionChange(..., { interactionAvailable })`; same value in daemon startup, watcher hot-apply, `/config set`, `/pm`.
@@ -870,7 +870,7 @@ Bridge/runtime protocol:
   - carry `interactionId`, normalized available outcomes, existing generation fences unchanged;
   - permission watchdog 125s with `permissionRequestTimeoutMs` seam (fanned into worker clients).
 - `src/bridge/bridge-main.ts`
-  - daemon `resolvePermissionRequest` RPC watchdog 125s; `permissionInteractionAvailable: true` (per-request fail-closed covers unsupported channels).
+  - daemon `resolvePermissionRequest` RPC watchdog 125s; `permissionInteractionCapable: true` (per-request fail-closed covers unsupported channels).
 
 Production wiring:
 
@@ -1089,7 +1089,7 @@ Core PR A may land first while no production channel implements `requestPermissi
 
 ### 15.4 Runtime eligibility
 
-Do not switch `permissionInteractionAvailable` to true merely because PR A added the broker. It becomes true only when production actually has a human-capable channel dispatch surface wired.
+Do not switch `permissionInteractionCapable` to true merely because PR A added the broker. It becomes true only when production actually has a human-capable channel dispatch surface wired.
 
 ### 15.5 Default timeout
 

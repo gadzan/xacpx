@@ -86,7 +86,7 @@ export class MessageChannelRegistry {
   /**
    * True permission-interaction capability: at least one registered runtime
    * actually implements `requestPermission()`. This is the single fact
-   * source for `permissionInteractionAvailable` everywhere (daemon startup
+   * source for `permissionInteractionCapable` everywhere (daemon startup
    * gate, watcher hot-apply, /config + /pm handlers, SessionService
    * affinity, bridge Runtime eligibility) — NOT mere registry presence.
    * Per-chat/per-account support is still decided per request by the broker

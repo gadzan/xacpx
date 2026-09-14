@@ -86,7 +86,7 @@ rl.on("line", (line) => {
     fenceDir,
     permissionMode: "approve-all",
     permissionPolicy: JSON.stringify({ escalate: ["edit"], defaultAction: "deny" }),
-    permissionInteractionAvailable: true,
+    permissionInteractionCapable: true,
     onPermissionRequest: async (payload) => {
       permissionSeen = payload as unknown as Record<string, unknown>;
       return { outcome: "allow_once" };
@@ -132,7 +132,7 @@ test("PR9-A fail-closed: timeout/disconnect/malformed → reject_once", async ()
     queueDir,
     fenceDir,
     permissionPolicy: JSON.stringify({ escalate: ["edit"] }),
-    permissionInteractionAvailable: true,
+    permissionInteractionCapable: true,
     permissionRequestTimeoutMs: 100,
     onPermissionRequest: async () => {
       // Integration: exercises the real watchdog clock; fake timers cannot
@@ -165,7 +165,7 @@ test("PR9-A fail-closed: timeout/disconnect/malformed → reject_once", async ()
     fenceDir: join(dir, "fences2"),
     permissionMode: "approve-all",
     permissionPolicy: JSON.stringify({ escalate: ["edit"] }),
-    permissionInteractionAvailable: true,
+    permissionInteractionCapable: true,
     onPermissionRequest: async () => ({ outcome: "bogus" as unknown as "allow_once" }),
   } as unknown as ConstructorParameters<typeof RuntimeEngine>[0]);
   try {
@@ -395,7 +395,7 @@ test("PR9-A generation race: G → G+1 stale response → reject", async () => {
     fenceDir,
     permissionMode: "approve-all",
     permissionPolicy: JSON.stringify({ escalate: ["edit"] }),
-    permissionInteractionAvailable: true,
+    permissionInteractionCapable: true,
     onPermissionRequest: (payload) => {
       if ((payload as { requestId?: string }).requestId === "r1") {
         return new Promise<{ outcome: "allow_once" }>((r) => {

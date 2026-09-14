@@ -710,9 +710,9 @@ test("handles bridge-originated resolveElicitationRequest and returns response t
 
 test("always sets the permission interaction capability explicitly so stale parent env cannot leak in", () => {
   // The spawn env layers over process.env: omitting the key would let an
-  // inherited XACPX_BRIDGE_PERMISSION_INTERACTION_AVAILABLE=1 flip bridge
+  // inherited XACPX_BRIDGE_PERMISSION_INTERACTION_CAPABLE=1 flip bridge
   // eligibility away from the authoritative capability.
-  expect(buildBridgeSpawnEnv({}).XACPX_BRIDGE_PERMISSION_INTERACTION_AVAILABLE).toBe("0");
-  expect(buildBridgeSpawnEnv({ permissionInteractionAvailable: false }).XACPX_BRIDGE_PERMISSION_INTERACTION_AVAILABLE).toBe("0");
-  expect(buildBridgeSpawnEnv({ permissionInteractionAvailable: true }).XACPX_BRIDGE_PERMISSION_INTERACTION_AVAILABLE).toBe("1");
+  expect(buildBridgeSpawnEnv({}).XACPX_BRIDGE_PERMISSION_INTERACTION_CAPABLE).toBe("0");
+  expect(buildBridgeSpawnEnv({ permissionInteractionCapable: false }).XACPX_BRIDGE_PERMISSION_INTERACTION_CAPABLE).toBe("0");
+  expect(buildBridgeSpawnEnv({ permissionInteractionCapable: true }).XACPX_BRIDGE_PERMISSION_INTERACTION_CAPABLE).toBe("1");
 });

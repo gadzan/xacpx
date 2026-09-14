@@ -199,7 +199,7 @@ export async function runBridgeMain(): Promise<void> {
         // as every daemon-side gate. Per-request fail-closed still covers
         // unsupported channels; this flag only means escalation MAY be
         // Runtime-routed somewhere.
-        permissionInteractionAvailable: coreEnv("BRIDGE_PERMISSION_INTERACTION_AVAILABLE") === "1",
+        permissionInteractionCapable: coreEnv("BRIDGE_PERMISSION_INTERACTION_CAPABLE") === "1",
         onPermissionRequest: async (payload) => {
           try {
             const result = await server.requestDaemon("resolvePermissionRequest", payload as unknown as import("../transport/acpx-bridge/acpx-bridge-protocol").ResolvePermissionRequestParams, { timeoutMs: 125_000 });

@@ -36,7 +36,7 @@ export interface ResolveTransportEngineInput {
     permissionMode?: PermissionMode;
     nonInteractivePermissions?: NonInteractivePermissions;
     permissionPolicy?: string;
-    permissionInteractionAvailable?: boolean;
+    permissionInteractionCapable?: boolean;
   };
   /** Existing persisted binding or candidate session shape. `undefined` = brand-new session with no record. */
   session?: {
@@ -56,7 +56,7 @@ export interface ResolveTransportEngineInput {
   permissionMode?: PermissionMode;
   nonInteractivePermissions?: NonInteractivePermissions;
   permissionPolicy?: string | XacpxPermissionPolicy;
-  permissionInteractionAvailable?: boolean;
+  permissionInteractionCapable?: boolean;
   /** Probe or flag for record compatibility */
   recordCompatible?: boolean;
   /** Probe or flag for session shape validity */
@@ -174,8 +174,8 @@ export function resolveTransportEngine(input: ResolveTransportEngineInput): Tran
   const permissionMode = input.permissionMode ?? input.config.permissionMode;
   const permissionPolicyRaw = input.permissionPolicy ?? input.config.permissionPolicy;
   const interactiveAvailable =
-    input.permissionInteractionAvailable ??
-    input.config.permissionInteractionAvailable ??
+    input.permissionInteractionCapable ??
+    input.config.permissionInteractionCapable ??
     false;
 
   if (
