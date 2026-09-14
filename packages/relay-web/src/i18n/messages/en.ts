@@ -181,7 +181,7 @@ export default {
     createFailed: "create failed",
   },
   files: {
-    title: "Files",
+    title: "Browse",
     closeFile: "Close file",
     selectToBrowse: "Select a session to browse its workspace",
     searchPlaceholder: "Search files by name…",
