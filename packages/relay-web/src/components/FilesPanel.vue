@@ -297,7 +297,7 @@ watch(
             <ul class="p-2 space-y-1">
               <li v-for="(h, i) in visibleHits" :key="i">
                 <button data-test="fs-hit" class="block w-full rounded px-1.5 py-1 text-left hover:bg-raised" @click="openSearchResult(h.path, h.line)">
-                  <div class="truncate font-mono text-[10.5px] text-fg-muted/70">{{ h.path }}<span class="text-accent">:{{ h.line }}</span></div>
+                  <div class="truncate font-mono text-[10.5px] text-fg-muted">{{ h.path }}<span class="text-accent">:{{ h.line }}</span></div>
                   <div class="mt-0.5 whitespace-pre-wrap break-words font-mono text-[11.5px] leading-5 text-fg-muted">
                     <template v-for="(seg, j) in segments(h.text)" :key="j"><span :data-test="seg.hit ? 'hit-mark' : null" :class="seg.hit ? 'rounded-sm bg-warn/30 font-semibold text-fg' : ''">{{ seg.text }}</span></template>
                   </div>
@@ -436,7 +436,7 @@ watch(
                         @click="toggleGroup(s.key)">
                   <ChevronRight :size="11" class="shrink-0 transition-transform" :class="collapsed[s.key] ? '' : 'rotate-90'" />
                   <span>{{ $t(`files.${s.key}`) }}</span>
-                  <span class="text-fg-muted/60">{{ s.items.length }}</span>
+                  <span class="text-fg-muted">{{ s.items.length }}</span>
                 </button>
                 <button v-if="s.key !== 'staged'" data-test="git-stage-group" :disabled="gitBusy"
                         class="rounded px-1 py-0.5 text-[10px] text-accent hover:bg-accent/10 disabled:opacity-50"
@@ -449,7 +449,7 @@ watch(
                           :class="selectedDiff === f.path ? 'bg-accent/10' : 'hover:bg-raised'" @click="openDiff(f.path)">
                     <span class="w-3 shrink-0 text-center font-mono text-[10.5px] uppercase" :class="statusBadge(f.status).cls">{{ statusBadge(f.status).label }}</span>
                     <span class="flex min-w-0 flex-1 items-baseline truncate font-mono text-[11px]">
-                      <span v-if="splitPath(f.path).dir" class="truncate text-fg-muted/70">{{ splitPath(f.path).dir }}</span>
+                      <span v-if="splitPath(f.path).dir" class="truncate text-fg-muted">{{ splitPath(f.path).dir }}</span>
                       <span class="shrink-0" :class="selectedDiff === f.path ? 'text-accent' : 'text-fg'">{{ splitPath(f.path).name }}</span>
                     </span>
                   </button>
