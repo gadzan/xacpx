@@ -2063,6 +2063,7 @@ test("handleWeixinMessageTurn forwards direct-chat route metadata to agent.chat"
     channel: "weixin",
     chatType: "direct",
     senderId: "test-user",
+    origin: "human",
   });
   expect(captured?.groupId).toBeUndefined();
 });
@@ -2091,5 +2092,6 @@ test("handleWeixinMessageTurn forwards group-chat route metadata to agent.chat",
     chatType: "group",
     senderId: "test-user",
     groupId: "group-42",
+    origin: "human",
   });
 });

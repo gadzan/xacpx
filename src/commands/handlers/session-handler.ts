@@ -22,6 +22,7 @@ import { decorateUnread } from "./session-list-marker";
 import { t } from "../../i18n";
 import { AcpxQueueOverflowError } from "../../transport/acpx-queue-overflow";
 import { queueOverflowTipText } from "./session-recovery-handler";
+import { PermissionInteractionBroker, getGlobalPermissionBroker } from "../../permissions/permission-interaction-broker.js";
 
 export interface SessionHandlerContext extends CommandRouterContext {
   lifecycle: SessionLifecycleOps;
@@ -984,20 +985,53 @@ async function promptWithSession(
     const replyContext = transportReply && context.quota && getChannelIdFromChatKey(chatKey) === "weixin"
       ? { chatKey, quota: context.quota }
       : undefined;
-    const result = await context.interaction.promptTransportSession(
-      session,
-      promptText,
-      transportReply,
-      replyContext,
-      media,
-      abortSignal,
-      onToolEvent,
-      onThought,
-      perfSpan,
-      onPlan,
-      onUsage,
-      onCommands,
-    );
+    // Explicit provenance only (Control paths always set metadata.origin);
+    // legacy plugin markers are only a backstop for pre-existing channels.
+    // Missing origin FAILS CLOSED: never guess human. Only an explicit
+    // "human" mints an interaction id — every other origin stays
+    // non-interactive and the worker fails closed without one.
+    const resolvedOrigin = metadata?.origin
+      ?? (metadata?.scheduledSessionAlias || metadata?.scheduledSessionDescriptor
+        ? "scheduled"
+        : metadata?.preserveCoordinatorRoute
+          ? "peer"
+          : undefined);
+    const interactionId = resolvedOrigin === "human"
+      ? PermissionInteractionBroker.createInteractionId()
+      : undefined;
+    let disposeInteraction: (() => void) | undefined;
+    if (interactionId) {
+      try {
+        disposeInteraction = getGlobalPermissionBroker()?.bindTurn({
+          interactionId,
+          chatKey,
+          ...(accountId !== undefined ? { accountId } : {}),
+          ...(replyContextToken !== undefined ? { replyContextToken } : {}),
+          ...(metadata?.senderId !== undefined ? { senderId: metadata.senderId } : {}),
+          ...(metadata?.senderName !== undefined ? { senderName: metadata.senderName } : {}),
+          ...(metadata?.isOwner !== undefined ? { isOwner: metadata.isOwner } : {}),
+          origin: "human",
+        }, abortSignal);
+      } catch {
+        disposeInteraction = undefined;
+      }
+    }
+    try {
+      const result = await context.interaction.promptTransportSession(
+        session,
+        promptText,
+        transportReply,
+        replyContext,
+        media,
+        abortSignal,
+        onToolEvent,
+        onThought,
+        perfSpan,
+        onPlan,
+        onUsage,
+        onCommands,
+        interactionId,
+      );
     if (claimHumanReply) {
       try {
         await context.orchestration?.claimActiveHumanReply?.(claimHumanReply);
@@ -1021,6 +1055,11 @@ async function promptWithSession(
     // mid-segments. Returning it lets executeChatTurn surface it as turn.text
     // so handle-weixin-message-turn routes it through the final-message path.
     return { text: result.text };
+    } finally {
+      try {
+        disposeInteraction?.();
+      } catch {}
+    }
   } catch (error) {
     await markCoordinatorResultsInjectionFailed(context, taskIds, groupIds, error);
     throw error;

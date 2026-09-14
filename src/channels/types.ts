@@ -11,6 +11,43 @@ import type { Locale } from "../i18n/index.js";
 import type { ControlService } from "../control/control-service.js";
 
 export type { ChatAgent };
+export type PermissionOutcome =
+  | "allow_once"
+  | "allow_always"
+  | "reject_once"
+  | "reject_always"
+  | "cancel";
+
+export interface ChannelPermissionRequest {
+  requestId: string;
+  chatKey: string;
+  accountId?: string;
+  replyContextToken?: string;
+  requester: {
+    senderId: string;
+    senderName?: string;
+    isOwner?: boolean;
+  };
+  toolCallId: string;
+  title?: string;
+  kind?: string;
+  summary?: string;
+  availableOutcomes: PermissionOutcome[];
+  expiresAt: number;
+  signal: AbortSignal;
+}
+
+export interface ChannelPermissionDecision {
+  outcome: PermissionOutcome;
+  /**
+   * Platform user id that activated the approval control. REQUIRED: every
+   * `requestPermission()` implementation must return an authenticated
+   * responder; the broker re-verifies it against the bound initiator (I3).
+   * A platform that cannot prove responder identity must not implement
+   * `requestPermission()` at all.
+   */
+  responderId: string;
+}
 
 export interface OutboundQuota {
   onInbound(chatKey: string): void;
@@ -189,6 +226,14 @@ export interface MessageChannelRuntime {
   ): Promise<void>;
   sendCoordinatorMessage(input: CoordinatorMessageInput): Promise<void>;
   sendScheduledMessage?(input: ScheduledChannelMessageInput): Promise<void>;
+  /**
+   * Interactive permission UI (plan channel-permission-interaction).
+   * Optional so already-published plugins stay compatible; absent means
+   * interactive permission is unavailable and the broker fails closed.
+   * Implementations MUST verify the responder equals request.requester.senderId
+   * and MUST settle exactly once (first terminal decision wins).
+   */
+  requestPermission?(request: ChannelPermissionRequest): Promise<ChannelPermissionDecision>;
 
   /**
    * Preferred render format for `/ssn` native session lists. weixin renders

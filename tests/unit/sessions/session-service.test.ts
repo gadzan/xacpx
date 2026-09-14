@@ -1806,7 +1806,7 @@ test("strict runtime engine fails session creation before persist when escalate 
   config.transport.type = "acpx-bridge";
   config.transport.engine = "runtime";
   config.transport.permissionPolicy = JSON.stringify({ escalate: ["edit"] });
-  const service = new SessionService(config, store, state, { permissionInteractionAvailable: false });
+  const service = new SessionService(config, store, state, { permissionInteractionCapable: false });
 
   await expect(service.createSession("escalate-session", "codex", "backend")).rejects.toThrow(
     /is not eligible under current permission policy/,

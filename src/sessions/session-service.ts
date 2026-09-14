@@ -91,7 +91,7 @@ interface SessionServiceOptions {
   /** Trusted root for classifying persisted preinstalled adapter identities. */
   runtimeRoot?: string;
   /** Whether interactive permission confirmation is available. */
-  permissionInteractionAvailable?: boolean;
+  permissionInteractionCapable?: boolean;
   /**
    * Cached Bridge capability probe (daemon startup via getEngineCapabilities).
    * When present it outranks the local worker-file check: a file can exist
@@ -142,7 +142,7 @@ export class SessionService {
   private readonly now: () => number;
   private readonly platform: NodeJS.Platform;
   private readonly runtimeRoot: string;
-  private readonly permissionInteractionAvailable?: boolean;
+  private readonly permissionInteractionCapable?: boolean;
   private runtimeCapability?: SessionServiceOptions["runtimeCapability"];
   private readonly pendingSessionAliasOperations = new Set<string>();
   private lifecyclePublisher: ((input: SessionResourceLifecyclePublishInput) => void) | undefined;
@@ -156,7 +156,7 @@ export class SessionService {
     this.now = options.now ?? (() => Date.now());
     this.platform = options.platform ?? process.platform;
     this.runtimeRoot = options.runtimeRoot ?? dirname(resolveConfigPathForCurrentEnv());
-    this.permissionInteractionAvailable = options.permissionInteractionAvailable;
+    this.permissionInteractionCapable = options.permissionInteractionCapable;
     this.runtimeCapability = options.runtimeCapability;
   }
 
@@ -190,8 +190,8 @@ export class SessionService {
         workspace: input.workspace,
       },
       ...this.resolveRuntimeAvailabilityInput(),
-      ...(this.permissionInteractionAvailable !== undefined
-        ? { permissionInteractionAvailable: this.permissionInteractionAvailable }
+      ...(this.permissionInteractionCapable !== undefined
+        ? { permissionInteractionCapable: this.permissionInteractionCapable }
         : {}),
     }).engine;
   }

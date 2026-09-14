@@ -385,6 +385,7 @@ export class BridgeServer {
       case "prompt":
         const media = asOptionalPromptMediaInput(params.media);
         const resolvedToolEventMode = asOptionalToolEventMode(params.toolEventMode);
+        const promptInteractionId = asOptionalString(params.interactionId);
         return await this.engines.prompt({
           agent: requireString(params, "agent"),
           ...agentExecutionSettings(params),
@@ -403,6 +404,7 @@ export class BridgeServer {
           toolEvents: params.toolEvents === true,
           ...(resolvedToolEventMode ? { toolEventMode: resolvedToolEventMode } : {}),
           media,
+          ...(promptInteractionId ? { interactionId: promptInteractionId } : {}),
         }, (event) => {
           if (event.type === "prompt.segment") {
             writeLine?.(encodeBridgePromptSegmentEvent({

@@ -83,6 +83,22 @@ export class MessageChannelRegistry {
   getByChatKey(chatKey: string): MessageChannelRuntime | null {
     return this.channels.get(getChannelIdFromChatKey(chatKey)) ?? null;
   }
+  /**
+   * True permission-interaction capability: at least one registered runtime
+   * actually implements `requestPermission()`. This is the single fact
+   * source for `permissionInteractionCapable` everywhere (daemon startup
+   * gate, watcher hot-apply, /config + /pm handlers, SessionService
+   * affinity, bridge Runtime eligibility) — NOT mere registry presence.
+   * Per-chat/per-account support is still decided per request by the broker
+   * (unsupported channel → fail closed); this flag only means escalation MAY
+   * be Runtime-routed somewhere.
+   */
+  hasPermissionInteractionCapability(): boolean {
+    for (const channel of this.channels.values()) {
+      if (typeof channel.requestPermission === "function") return true;
+    }
+    return false;
+  }
 
   async notifyTaskCompletion(task: OrchestrationTaskRecord): Promise<void> {
     if (!task.chatKey) return;

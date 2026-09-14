@@ -707,3 +707,12 @@ test("handles bridge-originated resolveElicitationRequest and returns response t
     '{"direction":"daemon-to-bridge","rpcId":"rpc-elicit-1","ok":true,"result":{"action":"cancel"}}\n',
   ]);
 });
+
+test("always sets the permission interaction capability explicitly so stale parent env cannot leak in", () => {
+  // The spawn env layers over process.env: omitting the key would let an
+  // inherited XACPX_BRIDGE_PERMISSION_INTERACTION_CAPABLE=1 flip bridge
+  // eligibility away from the authoritative capability.
+  expect(buildBridgeSpawnEnv({}).XACPX_BRIDGE_PERMISSION_INTERACTION_CAPABLE).toBe("0");
+  expect(buildBridgeSpawnEnv({ permissionInteractionCapable: false }).XACPX_BRIDGE_PERMISSION_INTERACTION_CAPABLE).toBe("0");
+  expect(buildBridgeSpawnEnv({ permissionInteractionCapable: true }).XACPX_BRIDGE_PERMISSION_INTERACTION_CAPABLE).toBe("1");
+});

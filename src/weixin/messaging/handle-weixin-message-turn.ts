@@ -449,6 +449,7 @@ export async function handleWeixinMessageTurn(
       // it, instead of re-reading current_session (which may have changed while
       // the prompt waited on the per-session lane).
       ...(deps.boundSessionAlias ? { boundSessionAlias: deps.boundSessionAlias } : {}),
+      origin: "human" as const,
     },
     onToolEvent: (event) => {
       const line = subagentNotices.notice(event);

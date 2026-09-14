@@ -75,3 +75,34 @@ test("malformed raw with approve-all still rejects", () => {
   const reqBigInt = { sessionId: "s", raw: { toolCall: { name: "x", input: { v: BigInt(1) } } } } as unknown as RuntimePermissionRequest;
   expect(r.safeResolve(cfg, reqBigInt)).toEqual({ outcome: "reject_once" });
 });
+
+test("readToolInputFromReq prefers legacy tool input, then ACP subject/description", async () => {
+  const { readToolInputFromReq } = await import("../../../../../src/bridge/engine/runtime/runtime-permission-resolver.js");
+  const wrap = (raw: unknown): RuntimePermissionRequest =>
+    ({ sessionId: "s", raw }) as unknown as RuntimePermissionRequest;
+  // Legacy shapes keep identical results.
+  expect(readToolInputFromReq(wrap({ toolCall: { rawInput: { command: "ls" } } }))).toEqual({ command: "ls" });
+  expect(readToolInputFromReq(wrap({ toolCall: { input: { path: "/a" } } }))).toEqual({ path: "/a" });
+  // Text content blocks are what survives acpx SDK validation (unknown
+  // `input` keys are stripped at the boundary).
+  expect(
+    readToolInputFromReq(
+      wrap({ toolCall: { toolCallId: "t1", title: "edit file", content: [{ type: "text", text: "npm run test" }] } }),
+    ),
+  ).toBe("npm run test");
+  // Real ACP shape: structured command subject wins over the envelope.
+  expect(
+    readToolInputFromReq(
+      wrap({
+        sessionId: "mock-sess",
+        title: "Run command",
+        subject: { type: "command", command: "npm run test", cwd: "/repo" },
+        options: [{ optionId: "allow_once", kind: "allow_once" }],
+      }),
+    ),
+  ).toEqual({ type: "command", command: "npm run test", cwd: "/repo" });
+  // Description is the fallback when no structured input exists.
+  expect(readToolInputFromReq(wrap({ title: "t", description: "needs network" }))).toBe("needs network");
+  // Nothing usable: undefined (caller falls back to title/kind).
+  expect(readToolInputFromReq(wrap({ sessionId: "s", title: "t", options: [] }))).toBeUndefined();
+});

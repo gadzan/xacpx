@@ -217,6 +217,7 @@ export class TransportInvoker {
     onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
     onUsage?: (usage: PromptUsage) => void | Promise<void>,
     onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
+    interactionId?: string,
   ) {
     // Same invariant as ensure, kept transport-local: the bridge boundary is
     // the authoritative default, but non-bridge transports (and the abort
@@ -290,6 +291,7 @@ export class TransportInvoker {
           ...(onPlan ? { onPlan } : {}),
           ...(onUsage ? { onUsage } : {}),
           ...(onCommands ? { onCommands } : {}),
+          ...(interactionId ? { interactionId } : {}),
         }),
       );
     } catch (error) {

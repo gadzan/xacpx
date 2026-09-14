@@ -1,4 +1,4 @@
-import type { DeliveryTarget, DiscordInboundMessage, OutboundBody } from "./types.js";
+import type { DeliveryTarget, DiscordButtonInteraction, DiscordInboundMessage, OutboundBody } from "./types.js";
 
 export interface DiscordBotIdentity {
   botUserId: string;
@@ -8,13 +8,12 @@ export interface DiscordBotIdentity {
 export interface DiscordClientLike {
   /** Connect and log in. Resolves with the authenticated bot identity once the
    *  Gateway session is established; rejects when login fails (bad token,
-   *  disallowed intents, connect error) or when the session came up without a
-   *  bot user id. The long-lived connection stays open afterwards and is torn
-   *  down via the abortSignal passed to start() or via destroy().
-   *  Identity MUST come from this call: the self-message guard, the mention
-   *  gate and the reply-to-bot check all key off botUserId, so an empty id
+   *  disallowed intents, connect error) so the channel can record the account
+   *  startup failure instead of running headless. Button interactions are
+   *  delivered to `onButton` when provided; slash commands continue to arrive
+   *  as synthetic messages via `onMessage` so existing gates still apply.
    *  would silently disable them. */
-  start(input: { handlers: { onMessage(m: DiscordInboundMessage): void }; abortSignal: AbortSignal }): Promise<DiscordBotIdentity>;
+  start(input: { handlers: { onMessage(m: DiscordInboundMessage): void; onButton?(i: DiscordButtonInteraction): void }; abortSignal: AbortSignal }): Promise<DiscordBotIdentity>;
   /** Diagnostic-only REST probe. Never used to derive startup identity. */
   probeBot(): Promise<DiscordBotIdentity>;
   sendMessage(target: DeliveryTarget, body: OutboundBody): Promise<{ messageId: string }>;
@@ -46,7 +45,7 @@ class DiscordJsClient implements DiscordClientLike {
     this.options = options;
   }
 
-  async start(input: { handlers: { onMessage(m: DiscordInboundMessage): void }; abortSignal: AbortSignal }): Promise<DiscordBotIdentity> {
+  async start(input: { handlers: { onMessage(m: DiscordInboundMessage): void; onButton?(i: DiscordButtonInteraction): void }; abortSignal: AbortSignal }): Promise<DiscordBotIdentity> {
     const discord = await import("discord.js") as unknown as Record<string, unknown>;
     const Client = discord.Client as new (opts: unknown) => {
       on: (event: string, cb: (...args: unknown[]) => void) => void;
@@ -84,8 +83,10 @@ class DiscordJsClient implements DiscordClientLike {
 
     client.on("interactionCreate", (interaction: unknown) => {
       const anyI = interaction as {
+        isButton?: () => boolean;
         isChatInputCommand?: () => boolean;
         commandName?: string;
+        customId?: string;
         options?: { data?: Array<{ name?: string; value?: unknown }> };
         channelId?: string;
         channel?: { id?: string };
@@ -96,7 +97,37 @@ class DiscordJsClient implements DiscordClientLike {
         replied?: boolean;
         deferred?: boolean;
         reply?: (opts: unknown) => Promise<void>;
+        deferUpdate?: () => Promise<void>;
       };
+      if (typeof anyI?.isButton === "function" && anyI.isButton()) {
+        const customId = typeof anyI.customId === "string" ? anyI.customId : "";
+        if (!customId || !customId.startsWith("xacpx-perm:")) return;
+        const channelId = anyI.channelId ?? anyI.channel?.id;
+        const userId = anyI.user?.id ?? anyI.member?.user?.id;
+        if (!channelId || !userId) return;
+        const normalized: DiscordButtonInteraction = {
+          customId,
+          userId,
+          channelId,
+          ...(anyI.guildId ? { guildId: anyI.guildId } : {}),
+          acknowledge: async () => {
+            try {
+              if (!anyI.replied && !anyI.deferred && anyI.deferUpdate) {
+                await anyI.deferUpdate();
+              }
+            } catch {}
+          },
+          replyEphemeral: async (text: string) => {
+            try {
+              if (anyI.reply && !anyI.replied && !anyI.deferred) {
+                await anyI.reply({ content: text, ephemeral: true, allowedMentions: { parse: [] } });
+              }
+            } catch {}
+          },
+        };
+        input.handlers.onButton?.(normalized);
+        return;
+      }
       if (!anyI?.isChatInputCommand?.() || !anyI.commandName) return;
       const channelId = anyI.channelId ?? anyI.channel?.id;
       if (!channelId) return;
@@ -219,6 +250,7 @@ class DiscordJsClient implements DiscordClientLike {
     const payload: Record<string, unknown> = {
       content: body.content ?? undefined,
       allowedMentions: body.allowedMentions ?? { parse: [] },
+      ...(body.components ? { components: body.components } : {}),
     };
     if (body.files && body.files.length > 0) {
       payload.files = body.files.map((f) => ({
@@ -241,9 +273,9 @@ class DiscordJsClient implements DiscordClientLike {
     await msg.edit({
       content: body.content ?? undefined,
       allowedMentions: body.allowedMentions ?? { parse: [] },
+      ...(body.components ? { components: body.components } : {}),
     });
   }
-
   async deleteMessage(target: DeliveryTarget, messageId: string): Promise<void> {
     const client = this.client as {
       channels: { fetch: (id: string) => Promise<{ messages: { fetch: (id: string) => Promise<{ delete: () => Promise<void> }> } }> };

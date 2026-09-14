@@ -3,6 +3,7 @@ import type { ControlServiceDeps } from "./control-service";
 import type { ScheduledOrigin } from "./control-event-bus";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import type { AgentMessageCompletion } from "../orchestration/agent-messaging-types";
+import type { PermissionInteractionOrigin } from "../permissions/permission-types.js";
 import { buildPeerCompletionPrompt } from "../orchestration/agent-message-completion";
 import {
   toErrorMessage,
@@ -18,6 +19,8 @@ export interface TurnRequest {
   text: string;
   senderId: string;
   isOwner?: boolean;
+  /** Explicit turn provenance, set by the producer; only "human" may mint permission interactions. */
+  turnOrigin: PermissionInteractionOrigin;
   accountId?: string;
   // Extra fields stamped onto turn-started for scheduled-origin turns. `queueItemId`
   // is set only for a drained queue head so the web can reconcile the badge.
@@ -312,6 +315,7 @@ export class SessionTurnRunner {
           req.isOwner,
           req.boundSessionAlias,
           req.preserveCoordinatorRoute,
+          req.turnOrigin,
         ),
         abortSignal: signal,
         ...(chatMedia.length > 0 ? { media: chatMedia } : {}),

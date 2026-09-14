@@ -60,7 +60,7 @@ rl.on("line", (line) => {
     activeSid = msg.params?.sessionId ?? "mock-sess";
     activeTurnId = msg.id;
     requestPerm(99, activeSid, {
-      toolCall: { toolCallId: "t1", title: "edit file", kind: "edit" },
+      toolCall: { toolCallId: "t1", title: "edit file: npm run test -- --watch", kind: "edit" },
       options: [
         { optionId: "allow_once", name: "allow_once", kind: "allow_once" },
         { optionId: "reject_once", name: "reject_once", kind: "reject_once" }
@@ -86,7 +86,7 @@ rl.on("line", (line) => {
     fenceDir,
     permissionMode: "approve-all",
     permissionPolicy: JSON.stringify({ escalate: ["edit"], defaultAction: "deny" }),
-    permissionInteractionAvailable: true,
+    permissionInteractionCapable: true,
     onPermissionRequest: async (payload) => {
       permissionSeen = payload as unknown as Record<string, unknown>;
       return { outcome: "allow_once" };
@@ -94,10 +94,21 @@ rl.on("line", (line) => {
   } as unknown as ConstructorParameters<typeof RuntimeEngine>[0]);
 
   try {
-    const res = await engine.prompt({ ...base, text: "escalate test" }, async () => {});
+    // Human-turn route: the worker fails closed without an interaction id,
+    // so the E2E drives the exact-turn path a bound prompt would carry.
+    const res = await engine.prompt({ ...base, text: "escalate test", interactionId: "test-interaction-e2e" }, async () => {});
     expect(permissionSeen).not.toBeNull();
     expect(typeof permissionSeen?.workerGeneration).toBe("string");
     expect(permissionSeen?.toolCallId).toBe("t1");
+    // acpx 0.15 strips every input carrier at its validation boundary
+    // (probed: toolCall arrives WITHOUT input/content), so the worker must
+    // NOT forward the envelope (which would summarize as `sessionId: ...`).
+    // The title — which real agents fill with the command — is the surviving
+    // operation carrier and must reach the card intact. If an acpx upgrade
+    // starts delivering input again, the absence assertion below will fail:
+    // extend it then instead of weakening it now.
+    expect(permissionSeen?.title).toContain("npm run test -- --watch");
+    expect(permissionSeen).not.toHaveProperty("rawInput");
     expect(res.text).toContain("permission-outcome=allow_once");
     expect((await engine.isSessionWarm(base)).warm).toBe(true);
   } finally {
@@ -114,16 +125,21 @@ test("PR9-A fail-closed: timeout/disconnect/malformed → reject_once", async ()
   const workerFile = await buildWorker(dir);
   const base = { agent: "mock", acpxAgent: "mock", agentArgv: [process.execPath, MOCK_AGENT], cwd: "/tmp", name: "perm-fail", logicalSessionId: "perm-fail-1" };
 
-  // Timeout case: handler delays 9s (>8s timeout)
+  // Timeout case: handler delays past the injected watchdog (fast seam).
   const engineTimeout = new RuntimeEngine({
     workerEntryPath: workerFile,
     stateDir,
     queueDir,
     fenceDir,
     permissionPolicy: JSON.stringify({ escalate: ["edit"] }),
-    permissionInteractionAvailable: true,
+    permissionInteractionCapable: true,
+    permissionRequestTimeoutMs: 100,
     onPermissionRequest: async () => {
-      await new Promise((r) => setTimeout(r, 9_000));
+      // Integration: exercises the real watchdog clock; fake timers cannot
+      // drive the engine's internal setTimeout race from outside.
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 500);
+      await promise;
       return { outcome: "allow_once" };
     },
   } as unknown as ConstructorParameters<typeof RuntimeEngine>[0]);
@@ -149,7 +165,7 @@ test("PR9-A fail-closed: timeout/disconnect/malformed → reject_once", async ()
     fenceDir: join(dir, "fences2"),
     permissionMode: "approve-all",
     permissionPolicy: JSON.stringify({ escalate: ["edit"] }),
-    permissionInteractionAvailable: true,
+    permissionInteractionCapable: true,
     onPermissionRequest: async () => ({ outcome: "bogus" as unknown as "allow_once" }),
   } as unknown as ConstructorParameters<typeof RuntimeEngine>[0]);
   try {
@@ -379,7 +395,7 @@ test("PR9-A generation race: G → G+1 stale response → reject", async () => {
     fenceDir,
     permissionMode: "approve-all",
     permissionPolicy: JSON.stringify({ escalate: ["edit"] }),
-    permissionInteractionAvailable: true,
+    permissionInteractionCapable: true,
     onPermissionRequest: (payload) => {
       if ((payload as { requestId?: string }).requestId === "r1") {
         return new Promise<{ outcome: "allow_once" }>((r) => {

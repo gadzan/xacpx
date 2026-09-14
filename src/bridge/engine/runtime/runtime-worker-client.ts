@@ -14,6 +14,7 @@ import {
 } from "./runtime-worker-protocol";
 import { mapRuntimeError } from "./runtime-contract";
 import { terminateProcessTree } from "../../../process/terminate-process-tree";
+import { raceWithTimeout } from "../../../util/async.js";
 import {
   probeWindowsProcessIdentity,
   terminateWindowsDescendantsOf,
@@ -59,6 +60,12 @@ export interface RuntimeWorkerClientDeps {
   spooledResidualsRemaining?: (generationId: string) => Promise<boolean>;
   /** Extra env passed to the worker process (durable-fence phase marking). */
   spawnEnv?: Record<string, string>;
+  /**
+   * Host-side permission UI timeout in ms. Defaults to 125_000 (broker owns
+   * the 120s business deadline; this watchdog sits just above it). Tests
+   * override with a small value for fast fail-closed timeout coverage.
+   */
+  permissionTimeoutMs?: number;
   /**
    * PR9-A: Host-side resolver for interactive permission requests.
    * Called when the worker emits `permission.request`. Must return an explicit
@@ -262,10 +269,8 @@ export class RuntimeWorkerClient {
       if (!handler) {
         decision = { outcome: "reject_once" };
       } else {
-        const withTimeout = await Promise.race([
-          handler(payload),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("permission UI timeout")), 8_000).unref?.()),
-        ]);
+        const timeoutMs = this.deps?.permissionTimeoutMs ?? 125_000;
+        const withTimeout = await raceWithTimeout(handler(payload), timeoutMs, () => new Error("permission UI timeout"));
         const outcome = (withTimeout as { outcome?: unknown })?.outcome;
         if (outcome !== "allow_once" && outcome !== "allow_always" && outcome !== "reject_once" && outcome !== "reject_always" && outcome !== "cancel") {
           decision = { outcome: "reject_once" };

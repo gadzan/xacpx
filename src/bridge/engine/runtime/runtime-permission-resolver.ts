@@ -66,6 +66,60 @@ function readRawKindFromReq(req: RuntimePermissionRequest): string | undefined {
   }
   return undefined;
 }
+
+/**
+ * Canonical real-tool-input extractor, shared by policy-adjacent readers and
+ * the worker's permission-escalation payload (so the approval UI summarizes
+ * the actual operation, not the ACP envelope). Precedence mirrors the
+ * legacy readers first — identical results for legacy shapes — then text
+ * content blocks, the ACP `subject`, and `description`. Measured boundary on
+ * acpx 0.15: unknown toolCall fields are stripped and content items arrive
+ * emptied, so title/kind are the guaranteed carriers there; the later
+ * branches are forward-compatible for newer acpx versions.
+ */
+export function readToolInputFromReq(req: RuntimePermissionRequest): unknown {
+  const raw = getRawObject(req);
+  if (!raw) return undefined;
+  const toolCall = raw.toolCall ?? raw.tool;
+  if (toolCall && typeof toolCall === "object" && !Array.isArray(toolCall)) {
+    const rec = toolCall as Record<string, unknown>;
+    if (rec.rawInput !== undefined) return rec.rawInput;
+    if (rec.input !== undefined) return rec.input;
+    // acpx 0.15 strips unknown toolCall fields and empties content items at
+    // SDK validation (probed on a live worker) — title/kind are the
+    // guaranteed carriers there. Text content is a forward-compatible
+    // carrier if future acpx versions preserve it.
+    const contentText = readTextFromToolContent(rec.content);
+    if (contentText !== undefined) return contentText;
+  }
+  if (raw.rawInput !== undefined) return raw.rawInput;
+  if (raw.input !== undefined) return raw.input;
+  if (raw.subject !== undefined && raw.subject !== null) return raw.subject;
+  if (typeof raw.description === "string" && raw.description.trim().length > 0) {
+    return raw.description;
+  }
+  return undefined;
+}
+
+/**
+ * Best-effort text from ACP tool-call content blocks (text only, bounded
+ * count here; the channel summarizer applies its own length bounds).
+ */
+function readTextFromToolContent(content: unknown): string | undefined {
+  if (!Array.isArray(content)) return undefined;
+  const parts: string[] = [];
+  for (const block of content.slice(0, 8)) {
+    if (block && typeof block === "object" && !Array.isArray(block)) {
+      const rec = block as Record<string, unknown>;
+      if (rec.type === "text" && typeof rec.text === "string" && rec.text.trim().length > 0) {
+        parts.push(rec.text);
+      }
+    }
+  }
+  if (parts.length === 0) return undefined;
+  return parts.join("\n");
+}
+
 /**
  * Tool-kind inference, rebased on acpx 0.15.1 observable behavior
  * (live-checkpoint-sB7dFOYR.js): canonical-kind needle table with substring

@@ -82,6 +82,7 @@ export interface RuntimeWorkerPromptParams {
   text: string;
   /** Binary prompt attachments (image/audio) forwarded to ACP content blocks. */
   attachments?: Array<{ mediaType: string; data: string }>;
+  interactionId?: string;
 }
 export interface RuntimeWorkerPermissionUpdate {
   generation: number;
@@ -102,6 +103,8 @@ export interface RuntimeWorkerPermissionRequestPayload {
   rawInput?: unknown;
   policyGeneration: number;
   workerGeneration: string;
+  interactionId?: string;
+  availableOutcomes?: Array<"allow_once" | "allow_always" | "reject_once" | "reject_always" | "cancel">;
 }
 
 export interface RuntimeWorkerPermissionDecisionParams {

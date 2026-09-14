@@ -140,7 +140,7 @@ test("strict runtime with escalate policy and no interactive permissions throws"
         permissionPolicy: JSON.stringify({ escalate: ["edit"] }),
       },
       runtimeAvailable: true,
-      permissionInteractionAvailable: false,
+      permissionInteractionCapable: false,
     }),
   ).toThrow(/is not eligible under current permission policy/);
 });
@@ -153,7 +153,7 @@ test("auto mode with escalate policy and no interactive permissions falls back t
       permissionPolicy: JSON.stringify({ escalate: ["edit"] }),
     },
     runtimeAvailable: true,
-    permissionInteractionAvailable: false,
+    permissionInteractionCapable: false,
   });
   expect(choice.engine).toBe("cli");
   expect(choice.reason).toBe("unsupported-permission-policy");
@@ -167,7 +167,7 @@ test("strict runtime with escalate policy and interactive permissions available 
       permissionPolicy: JSON.stringify({ escalate: ["edit"] }),
     },
     runtimeAvailable: true,
-    permissionInteractionAvailable: true,
+    permissionInteractionCapable: true,
   });
   expect(choice.engine).toBe("runtime");
 });
@@ -180,7 +180,7 @@ test("auto mode with escalate policy and interactive permissions available selec
       permissionPolicy: JSON.stringify({ escalate: ["edit"] }),
     },
     runtimeAvailable: true,
-    permissionInteractionAvailable: true,
+    permissionInteractionCapable: true,
   });
   expect(choice.engine).toBe("runtime");
 });

@@ -4,6 +4,7 @@ import { join, resolve as resolvePath, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { coreHomeDir } from "../../runtime/core-home";
+import { raceWithTimeout } from "../../util/async.js";
 import { normalizePathForComparison, physicalFenceKeyForSession } from "./runtime/physical-session-identity";
 
 import { deleteAcpxSessionFiles, resolveAcpxHomeDir } from "../../transport/acpx-session-files";
@@ -402,11 +403,16 @@ export interface RuntimeEngineOptions {
   /** Quiescence timeout in ms for deleteSession / worker shutdown (tests). Defaults to 8,000. */
   workerQuiescenceTimeoutMs?: number;
   /**
+   * Host-side permission UI timeout in ms. Defaults to 125_000 (broker owns
+   * the 120s business deadline; this watchdog sits just above it). Tests
+   * override with a small value for fast fail-closed timeout coverage.
+   */
+  permissionRequestTimeoutMs?: number;
+  /**
    * PR9-A: Host-side UI handler for interactive permission requests.
    * If not provided, the engine falls back to local resolver (autoDeny/autoApprove) + fail-closed.
-   * Tests should inject a mock that can delay/abort/malform to verify fail-closed.
    */
-  onPermissionRequest?: (payload: { logicalSessionId: string; sessionKey: string; requestId: string; toolCallId: string; title?: string; kind?: string; rawInput?: unknown; policyGeneration: number; workerGeneration: string }) => Promise<{ outcome: "allow_once" | "allow_always" | "reject_once" | "reject_always" | "cancel" }>;
+  onPermissionRequest?: (payload: { logicalSessionId: string; sessionKey: string; requestId: string; toolCallId: string; title?: string; kind?: string; rawInput?: unknown; policyGeneration: number; workerGeneration: string; interactionId?: string; availableOutcomes?: Array<"allow_once" | "allow_always" | "reject_once" | "reject_always" | "cancel"> }) => Promise<{ outcome: "allow_once" | "allow_always" | "reject_once" | "reject_always" | "cancel" }>;
   /**
    * True only if a real channel/human UI interaction channel exists to prompt
    * the user. Having an RPC callback (onPermissionRequest) merely means the
@@ -414,7 +420,7 @@ export interface RuntimeEngineOptions {
    * is false and policies requiring escalation must be judged Runtime-ineligible
    * and routed to CLI. Defaults to false.
    */
-  permissionInteractionAvailable?: boolean;
+  permissionInteractionCapable?: boolean;
   /**
    * PR9-C: Host-side handler for elicitation requests (acpx/runtime onElicitation).
    * If not provided, elicitation fails closed (cancel).
@@ -705,6 +711,11 @@ export class RuntimeEngine implements BridgeEngine {
       const fenceDir: string | (() => string) | undefined = this.options.fenceDir ?? (() => join(this.durableRoot(), "worker-fences"));
       const permissionDeps: RuntimeWorkerClientDeps = {
         ...(options.workerClientDeps ?? {}),
+        ...(options.permissionRequestTimeoutMs !== undefined
+          ? options.workerClientDeps?.permissionTimeoutMs === undefined
+            ? { permissionTimeoutMs: options.permissionRequestTimeoutMs }
+            : {}
+          : {}),
         // Plan B5: acpx host ceilings ride the worker HOST process env (read
         // by the embedding client at Runtime construction). Explicit test
         // spawnEnv still wins on collision; unset policy contributes nothing.
@@ -810,7 +821,7 @@ export class RuntimeEngine implements BridgeEngine {
   private async executeRuntimeTurn(
     input: EngineSessionInput,
     text: string,
-    options: { onEvent?: (event: EnginePromptStreamEvent) => void; media?: PromptMediaInput; toolEventMode?: string; toolEvents?: boolean },
+    options: { onEvent?: (event: EnginePromptStreamEvent) => void; media?: PromptMediaInput; toolEventMode?: string; toolEvents?: boolean; interactionId?: string },
   ): Promise<{ text: string }> {
     this.assertPermissionPlaneHealthy();
     const key = this.workerKey(input);
@@ -825,7 +836,7 @@ export class RuntimeEngine implements BridgeEngine {
         const attachments = await buildRuntimeAttachments(options.media);
         const outcome = await client.request<{ result: XacpxTurnResult; finalText: string }>(
           "prompt",
-          { text, ...(attachments.length > 0 ? { attachments } : {}) },
+          { text, ...(attachments.length > 0 ? { attachments } : {}), ...(options.interactionId ? { interactionId: options.interactionId } : {}) },
           {
             onEvent: (payload) => {
               const event = payload as XacpxRuntimeEvent;
@@ -1063,13 +1074,13 @@ export class RuntimeEngine implements BridgeEngine {
   private isRuntimeEligible(): boolean {
     try {
       const policy = this.options.permissionPolicy !== undefined ? parseXacpxPermissionPolicy(this.options.permissionPolicy) : undefined;
-      const interactiveAvailable = this.options.permissionInteractionAvailable === true;
+      const interactiveAvailable = this.options.permissionInteractionCapable === true;
       return isEligibleForRuntime(policy, this.options.nonInteractivePermissions, interactiveAvailable);
     } catch {
       return false;
     }
   }
-  private async handlePermissionRequest(payload: { logicalSessionId: string; sessionKey: string; requestId: string; toolCallId: string; title?: string; kind?: string; rawInput?: unknown; policyGeneration: number; workerGeneration: string }): Promise<{ outcome: "allow_once" | "allow_always" | "reject_once" | "reject_always" | "cancel" }> {
+  private async handlePermissionRequest(payload: { logicalSessionId: string; sessionKey: string; requestId: string; toolCallId: string; title?: string; kind?: string; rawInput?: unknown; policyGeneration: number; workerGeneration: string; interactionId?: string; availableOutcomes?: Array<"allow_once" | "allow_always" | "reject_once" | "reject_always" | "cancel"> }): Promise<{ outcome: "allow_once" | "allow_always" | "reject_once" | "reject_always" | "cancel" }> {
     const key = payload.logicalSessionId;
     if (this.deleting.has(key) || this.shuttingDown) return { outcome: "reject_once" };
     if (payload.policyGeneration !== this.permissionGeneration) return { outcome: "reject_once" };
@@ -1078,10 +1089,8 @@ export class RuntimeEngine implements BridgeEngine {
     if (payload.workerGeneration !== worker.ref.generation) return { outcome: "reject_once" };
     if (this.options.onPermissionRequest) {
       try {
-        const res = await Promise.race([
-          this.options.onPermissionRequest(payload),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("permission UI timeout")), 8_000).unref?.()),
-        ]);
+        const timeoutMs = this.options.permissionRequestTimeoutMs ?? 125_000;
+        const res = await raceWithTimeout(this.options.onPermissionRequest(payload), timeoutMs, () => new Error("permission UI timeout"));
         // Re-check fencing after await (G → G+1 race)
         if (this.deleting.has(key) || this.shuttingDown) return { outcome: "reject_once" };
         if (payload.policyGeneration !== this.permissionGeneration) return { outcome: "reject_once" };
@@ -1803,7 +1812,7 @@ export class RuntimeEngine implements BridgeEngine {
       throw new RuntimeError("RUNTIME_INIT_FAILED", `session "${key}" is being deleted`);
     }
     try {
-      const result = await this.executeRuntimeTurn(input, input.text, { onEvent, media: input.media, toolEventMode: input.toolEventMode, toolEvents: input.toolEvents });
+      const result = await this.executeRuntimeTurn(input, input.text, { onEvent, media: input.media, toolEventMode: input.toolEventMode, toolEvents: input.toolEvents, ...(input.interactionId ? { interactionId: input.interactionId } : {}) });
       return result;
     } finally {
       try {

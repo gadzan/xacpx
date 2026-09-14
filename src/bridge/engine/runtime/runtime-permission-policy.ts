@@ -88,7 +88,7 @@ export function isEligibleForRuntime(
  * Shared fail-closed gate for permission changes while persisted Runtime
  * bindings exist (watcher reload in main.ts, `/config set` + `/pm` handlers).
  * Pure: takes the already-loaded transport snapshot and the bindings flag, so
- * the two call sites cannot drift on `permissionInteractionAvailable` or the
+ * the two call sites cannot drift on `permissionInteractionCapable` or the
  * error contract. Throws with the canonical message when the change must not
  * apply; returns without effect otherwise (including when no Runtime bindings
  * exist — any permission tuple is then appliable).
@@ -99,6 +99,7 @@ export function assertEligibleForRuntimePermissionChange(
     permissionPolicy?: unknown;
     nonInteractivePermissions?: unknown;
   },
+  options?: { interactionAvailable?: boolean },
 ): void {
   if (!hasPersistedRuntimeBindings) return;
   let parsedPolicy: XacpxPermissionPolicy | undefined;
@@ -112,7 +113,7 @@ export function assertEligibleForRuntimePermissionChange(
     typeof transport.nonInteractivePermissions === "string"
       ? transport.nonInteractivePermissions
       : undefined;
-  if (!isEligibleForRuntime(parsedPolicy, nonInteractive, false)) {
+  if (!isEligibleForRuntime(parsedPolicy, nonInteractive, options?.interactionAvailable ?? false)) {
     throw new Error(
       'cannot apply permission policy: runtime-ineligible policy (nonInteractive="fail" or escalate without interactive) with persisted runtime bindings',
     );

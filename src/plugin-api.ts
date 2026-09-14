@@ -8,12 +8,15 @@ export type {
 export type { ChannelFactory, CreateChannelDeps } from "./channels/create-channel.js";
 export type {
   ChannelStartInput,
+  ChannelPermissionDecision,
+  ChannelPermissionRequest,
   ConsumerLock,
   ConsumerLockMetadata,
   ConsumerLockOptions,
   ChannelStopReason,
   CoordinatorMessageInput,
   MessageChannelRuntime,
+  PermissionOutcome,
   ScheduledChannelMessageInput,
   OrchestrationDeliveryCallbacks,
   OutboundQuota,

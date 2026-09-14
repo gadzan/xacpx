@@ -99,6 +99,7 @@ export class AcpxBridgeTransport implements SessionTransport {
       sessionKey: session.alias,
       text,
       ...(options?.media ? { media: options.media } : {}),
+      ...(options?.interactionId ? { interactionId: options.interactionId } : {}),
       // Back-compat: older bridge subprocesses key on `toolEvents: true` rather
       // than `toolEventMode`. Only set it when the mode requires structured events
       // so an old subprocess still emits them correctly.
