@@ -419,9 +419,10 @@ const rowSwipes = computed(() => {
     <!-- One instance card: header row + session area (flat or grouped) + footer.
          The card background is the level-1 zone of the tinted-zone hierarchy; group
          zones inside are one step lighter (visually isomorphic across all modes). -->
+    <!-- No whole-card opacity: offline text fell below AA (muted name 3.21 dark / 2.52 light);
+         the dimmed state reads from the muted name/label/dot, which pass AA at full opacity. -->
     <div v-for="inst in store.instances" :key="inst.id" data-test="instance-card"
-         class="rounded-lg border border-border bg-surface/60 p-[3px]"
-         :class="inst.online ? '' : 'opacity-60'">
+         class="rounded-lg border border-border bg-surface/60 p-[3px]">
       <!-- Instance header: chevron + online/offline dot + name + session count. -->
       <button
         class="group flex h-7 w-full items-center gap-1.5 rounded-md px-1.5 transition-colors hover:bg-raised"
