@@ -202,11 +202,11 @@ const hudStatus = computed(() => hudQuip.value || `${t("chat.mentionActivity.wor
                   class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-border bg-surface py-0.5 pl-1.5 pr-2 text-[10.5px] font-medium text-fg-muted hover:bg-fg/5"
                   :title="files.gitSummary.branch || $t('chat.viewChanges')"
                   @click="files.tab = 'changes'; emit('show-files')">
-            <GitBranch :size="11" class="shrink-0 text-warn" />
+            <GitBranch :size="11" class="shrink-0" :class="files.gitSummary.changedCount > 0 ? 'text-warn' : 'text-fg-muted'" />
             <span v-if="files.gitSummary.branch" class="font-mono">{{ files.gitSummary.branch }}</span>
             <span v-else-if="files.gitSummary.detached" class="italic">{{ $t("files.detached") }}</span>
-            <span class="h-1 w-1 shrink-0 rounded-full bg-warn" aria-hidden="true" />
-            <span class="text-warn">{{ files.gitSummary.changedCount }} {{ $t("chat.changed") }}</span>
+            <span class="h-1 w-1 shrink-0 rounded-full" :class="files.gitSummary.changedCount > 0 ? 'bg-warn' : 'bg-fg-muted'" aria-hidden="true" />
+            <span :class="files.gitSummary.changedCount > 0 ? 'text-warn' : 'text-fg-muted'">{{ files.gitSummary.changedCount }} {{ $t("chat.changed") }}</span>
           </button>
         </div>
       </div>
