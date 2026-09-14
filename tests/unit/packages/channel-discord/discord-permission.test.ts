@@ -551,10 +551,15 @@ test("approval text strips bidi and invisible controls", async () => {
   // RLO + isolate overrides can visually reorder a command on a
   // security-confirmation card; zero-width controls have no legitimate
   // place in an approval literal. All are stripped, not escaped.
-  expect(escapeDiscordLiteralText("run ‮evil-command")).toBe("run evil-command");
-  expect(escapeDiscordLiteralText("⁦ls -la⁩ /tmp")).toBe("ls -la /tmp");
-  expect(escapeDiscordLiteralText("‪rm -rf /‬")).toBe("rm -rf /");
-  expect(escapeDiscordLiteralText("a​b‌c‍d﻿e­f")).toBe("abcdef");
+  // (Explicit \u escapes: no literal invisible chars in source.)
+  expect(escapeDiscordLiteralText("run \u202Eevil-command")).toBe("run evil-command");
+  expect(escapeDiscordLiteralText("\u2066ls -la\u2069 /tmp")).toBe("ls -la /tmp");
+  expect(escapeDiscordLiteralText("\u202Arm -rf /\u202C")).toBe("rm -rf /");
+  expect(escapeDiscordLiteralText("a\u200Bb\u200Cc\u200Dd\uFEFFe\u00ADf")).toBe("abcdef");
+  expect(escapeDiscordLiteralText("pay\u061C now")).toBe("pay now");
+  expect(escapeDiscordLiteralText("a\u200Eb\u200Fc")).toBe("abc");
   // Legitimate text (emoji, CJK, accents) is untouched.
-  expect(escapeDiscordLiteralText("部署 ✅ café naïve 日本語")).toBe("部署 ✅ café naïve 日本語");
+  expect(escapeDiscordLiteralText("\u90E8\u7F72 \u2705 caf\u00E9 na\u00EFve \u65E5\u672C\u8A9E")).toBe(
+    "\u90E8\u7F72 \u2705 caf\u00E9 na\u00EFve \u65E5\u672C\u8A9E",
+  );
 });

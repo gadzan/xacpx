@@ -93,14 +93,15 @@ function truncate(value: string, max: number): string {
  * needs word-char wrapping; over-escaping `key: value` summaries hurts
  * readability more than it protects).
  *
- * Invisible formatting controls are STRIPPED, not escaped: bidi overrides
- * (U+202A–U+202E, U+2066–U+2069) can visually reorder the command/path on a
+ * Invisible formatting controls are STRIPPED, not escaped: bidi ordering
+ * controls (U+061C, U+200E–U+200F, U+202A–U+202E, U+2066–U+2069) are zero-width
+ * with strong directionality and can visually reorder the command/path on a
  * security-confirmation card, and zero-width controls (U+200B–U+200D, FEFF,
  * soft hyphen) have no legitimate place in an approval literal.
  */
 export function escapeDiscordLiteralText(value: string): string {
   // eslint-disable-next-line no-misleading-character-class, no-control-regex
-  const stripped = value.replace(/[\u202A-\u202E\u2066-\u2069\u200B-\u200D\uFEFF\u00AD]/g, "");
+  const stripped = value.replace(/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069\u200B-\u200D\uFEFF\u00AD]/g, "");
   return stripped.replace(/[<\\`*_~>|[\]()#]/g, (char) => `\\${char}`);
 }
 
