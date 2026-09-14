@@ -178,7 +178,7 @@ export default {
     createFailed: "创建失败",
   },
   files: {
-    title: "文件",
+    title: "浏览",
     closeFile: "关闭文件",
     selectToBrowse: "选择一个会话以浏览其工作区",
     searchPlaceholder: "按名称搜索文件…",
