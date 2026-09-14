@@ -30,7 +30,7 @@
     },
     "packages/channel-discord": {
       "name": "@ganglion/xacpx-channel-discord",
-      "version": "0.8.1-beta.0",
+      "version": "0.8.2-beta.0",
       "dependencies": {
         "discord.js": "^14.26.0",
       },
@@ -43,7 +43,7 @@
     },
     "packages/channel-feishu": {
       "name": "@ganglion/xacpx-channel-feishu",
-      "version": "0.8.2-beta.0",
+      "version": "0.8.3-beta.0",
       "dependencies": {
         "@larksuiteoapi/node-sdk": "~1.60.0",
       },
@@ -78,7 +78,7 @@
     },
     "packages/channel-yuanbao": {
       "name": "@ganglion/xacpx-channel-yuanbao",
-      "version": "0.6.0",
+      "version": "0.6.1-beta.0",
       "dependencies": {
         "protobufjs": "^7.5.6",
         "ws": "^8.20.0",

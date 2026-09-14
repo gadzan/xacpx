@@ -1,4 +1,32 @@
 # Changelog
+## [0.24.5-beta.0] - 2026-09-15
+
+### Added
+
+- Channel-based interactive permission requests with exact-turn routing: upstream acpx `onPermissionRequest` flows through Runtime worker, bridge, and daemon into the originating channel turn and back. Core `PermissionInteractionBroker` (`src/permissions/`) issues an opaque `interactionId` per human turn with initiator-only approval, broker-side responder re-verification, first-terminal-wins, and a 120s business deadline; all permission watchdogs sit at 125s as transport guards. `ChatRequestMetadata.origin` (`human`/`scheduled`) is set by Control producers and all built-in chat channels — absent origin fails closed (non-interactive). Discord ships button UI first (token customIds, ephemeral auth errors, terminal edits); Relay Web / Feishu follow later.
+
+## [channel-discord 0.8.2-beta.0] - 2026-09-15
+
+### Added
+
+- Interactive permission approval UI: new `permission-ui.ts` with token-scoped button customIds, ephemeral auth errors, and terminal message edits.
+
+### Fixed
+
+- Review hardening: commit-then-observe delivery, stale comment sync, strict deadline commit, literal brackets; abort terminality, true capability gate, literal approval UI, button lifecycle; real input, settled promises, explicit env, localized terminal; discord log path, unknown outcomes, full bidi strip set (ALM/LRM/RLM), capable rename, timer cleanup, uuid requestId.
+
+## [channel-feishu 0.8.3-beta.0] - 2026-09-15
+
+### Changed
+
+- Turn provenance: scheduled turns tag `origin: "scheduled"`, human messages tag `origin: "human"` (feeds the core interactive-permission eligibility gate).
+
+## [channel-yuanbao 0.6.1-beta.0] - 2026-09-15
+
+### Changed
+
+- Turn provenance: scheduled turns tag `origin: "scheduled"`, human messages tag `origin: "human"` (feeds the core interactive-permission eligibility gate).
+
 ## [0.24.4-beta.0] - 2026-09-11
 
 ### Added
