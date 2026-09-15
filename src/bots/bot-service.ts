@@ -1,6 +1,5 @@
 import type { AppConfig } from "../config/types";
-import { normalizeWorkspacePath } from "../commands/workspace-path";
-import { createBotId } from "../domain/ids";
+import { createBotId, createDirectBindingId } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
 import type { StateStore } from "../state/state-store";
 import type { AppState } from "../state/types";
@@ -17,15 +16,22 @@ export interface CreateBotInput {
   instructions?: string;
   agent: string;
   workspace: string;
-  cwd?: string;
   model?: string;
   effort?: string;
   enabled?: boolean;
 }
 
-export type UpdateBotInput = {
-  [K in keyof CreateBotInput]?: CreateBotInput[K] | null;
-};
+export interface UpdateBotInput {
+  name?: string;
+  avatar?: string | null;
+  role?: string | null;
+  instructions?: string | null;
+  agent?: string;
+  workspace?: string;
+  model?: string | null;
+  effort?: string | null;
+  enabled?: boolean | null;
+}
 
 export interface BotServiceOptions {
   now?: () => Date;
@@ -63,6 +69,7 @@ export class BotService {
 
   async createBot(input: CreateBotInput): Promise<BotProfile> {
     return await this.mutate(async () => {
+      this.rejectUnsupportedCwd(input);
       const id = this.nextId();
       const timestamp = this.now().toISOString();
       const bot: BotProfile = {
@@ -81,14 +88,18 @@ export class BotService {
 
   async updateBot(id: string, patch: UpdateBotInput): Promise<BotProfile> {
     return await this.mutate(async () => {
+      this.rejectUnsupportedCwd(patch);
       const existing = this.getBot(id);
-      const mergedName = patch.name === undefined ? existing.name : String(patch.name);
-      const mergedAgent = patch.agent === undefined ? existing.agent : String(patch.agent);
-      const mergedWorkspace = patch.workspace === undefined ? existing.workspace : String(patch.workspace);
+      if (patch.agent !== undefined && patch.agent !== existing.agent && this.hasLockedRuntime(id)) {
+        throw new BotError("runtime_identity_locked", `bot "${id}" agent cannot change while a runtime exists`);
+      }
+      if (patch.workspace !== undefined && patch.workspace !== existing.workspace && this.hasLockedRuntime(id)) {
+        throw new BotError("runtime_identity_locked", `bot "${id}" workspace cannot change while a runtime exists`);
+      }
       const identity = this.requireIdentity({
-        name: mergedName,
-        agent: mergedAgent,
-        workspace: mergedWorkspace,
+        name: this.requirePatchString(patch.name, existing.name, "name"),
+        agent: this.requirePatchString(patch.agent, existing.agent, "agent"),
+        workspace: this.requirePatchString(patch.workspace, existing.workspace, "workspace"),
       });
       const next: BotProfile = {
         ...existing,
@@ -113,6 +124,10 @@ export class BotService {
         throw new BotError("bot_in_group", `bot "${id}" is referenced by groups`, {
           conversationIds: groups.map((group) => group.id),
         });
+      }
+      const runtime = this.directRuntimeRefs(id);
+      if (runtime.conversationIds.length > 0 || runtime.bindingIds.length > 0 || runtime.sessionAliases.length > 0) {
+        throw new BotError("bot_in_use", `bot "${id}" still has a direct runtime`, runtime);
       }
       delete this.state.bots[id];
       await this.stateStore.save(this.state);
@@ -141,12 +156,21 @@ export class BotService {
     return { name, agent: input.agent, workspace: input.workspace };
   }
 
-  private optionalFields(input: CreateBotInput): Partial<Pick<BotProfile, "avatar" | "role" | "instructions" | "cwd" | "model" | "effort">> {
+  private requirePatchString(value: string | undefined, fallback: string, field: "name" | "agent" | "workspace"): string {
+    if (value === undefined) {
+      return fallback;
+    }
+    if (typeof value !== "string") {
+      throw new BotError(`${field}_required`, `bot ${field} must be a string`);
+    }
+    return value;
+  }
+
+  private optionalFields(input: CreateBotInput): Partial<Pick<BotProfile, "avatar" | "role" | "instructions" | "model" | "effort">> {
     return {
       ...(this.optionalString(input.avatar, "avatar", 512) ? { avatar: this.optionalString(input.avatar, "avatar", 512) } : {}),
       ...(this.optionalString(input.role, "role", 256) ? { role: this.optionalString(input.role, "role", 256) } : {}),
       ...(this.optionalString(input.instructions, "instructions") ? { instructions: this.optionalString(input.instructions, "instructions") } : {}),
-      ...(this.optionalCwd(input.cwd) ? { cwd: this.optionalCwd(input.cwd) } : {}),
       ...(this.optionalString(input.model, "model", 256) ? { model: this.optionalString(input.model, "model", 256) } : {}),
       ...(this.optionalString(input.effort, "effort", 64) ? { effort: this.optionalString(input.effort, "effort", 64) } : {}),
     };
@@ -163,22 +187,17 @@ export class BotService {
         next[field] = undefined;
         return;
       }
-      const normalized = this.optionalString(value, field, max);
-      next[field] = normalized;
+      next[field] = this.optionalString(value, field, max);
     };
     apply("avatar", 512);
     apply("role", 256);
     apply("instructions");
     apply("model", 256);
     apply("effort", 64);
-    if ("cwd" in patch) {
-      next.cwd = patch.cwd === null || patch.cwd === undefined ? undefined : this.optionalCwd(patch.cwd);
-    }
     return {
       avatar: "avatar" in next ? next.avatar : existing.avatar,
       role: "role" in next ? next.role : existing.role,
       instructions: "instructions" in next ? next.instructions : existing.instructions,
-      cwd: "cwd" in next ? next.cwd : existing.cwd,
       model: "model" in next ? next.model : existing.model,
       effort: "effort" in next ? next.effort : existing.effort,
     };
@@ -198,9 +217,35 @@ export class BotService {
     return trimmed;
   }
 
-  private optionalCwd(value: string | undefined): string | undefined {
-    const trimmed = this.optionalString(value, "cwd", 4096);
-    return trimmed ? normalizeWorkspacePath(trimmed) : undefined;
+  private rejectUnsupportedCwd(input: object): void {
+    if ("cwd" in input && (input as { cwd?: unknown }).cwd !== undefined) {
+      throw new BotError("cwd_unsupported", "bot cwd is not supported until runtime migration exists");
+    }
+  }
+
+  private hasLockedRuntime(botId: string): boolean {
+    const refs = this.directRuntimeRefs(botId);
+    return refs.conversationIds.length > 0 || refs.bindingIds.length > 0 || refs.sessionAliases.length > 0;
+  }
+
+  private directRuntimeRefs(botId: string): {
+    conversationIds: string[];
+    bindingIds: string[];
+    sessionAliases: string[];
+  } {
+    const conversationIds = Object.values(this.state.conversations)
+      .filter((conversation) => conversation.kind === "bot" && conversation.botIds.includes(botId))
+      .map((conversation) => conversation.id);
+    const bindingIds = Object.values(this.state.bot_runtime_bindings)
+      .filter((binding): binding is Extract<typeof binding, { botId: string }> => (
+        binding.scope !== "group-controller" && binding.botId === botId
+      ))
+      .map((binding) => binding.id);
+    const bindingId = createDirectBindingId(botId);
+    const sessionAliases = Object.values(this.state.sessions)
+      .filter((session) => session.owner?.kind === "bot-direct" && session.owner.bindingId === bindingId)
+      .map((session) => session.alias);
+    return { conversationIds, bindingIds, sessionAliases };
   }
 
   private async mutate<T>(fn: () => Promise<T>): Promise<T> {

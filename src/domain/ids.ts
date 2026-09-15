@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 export const DOMAIN_ID_PREFIX = {
   bot: "bot",
@@ -40,4 +40,20 @@ export function createGroupTurnId(createId?: () => string): string {
 
 export function createRuntimeBindingId(createId?: () => string): string {
   return createDomainId("runtimeBinding", createId);
+}
+
+function digestOpaque(parts: readonly string[]): string {
+  return createHash("sha256").update(parts.join("\0")).digest("hex").slice(0, 32);
+}
+
+export function createDirectConversationId(botId: string): string {
+  return `${DOMAIN_ID_PREFIX.conversation}_${digestOpaque(["bot-direct", "conversation", botId])}`;
+}
+
+export function createDirectTopicId(botId: string): string {
+  return `${DOMAIN_ID_PREFIX.topic}_${digestOpaque(["bot-direct", "topic", botId])}`;
+}
+
+export function createDirectBindingId(botId: string): string {
+  return `${DOMAIN_ID_PREFIX.runtimeBinding}_${digestOpaque(["bot-direct", "binding", botId])}`;
 }

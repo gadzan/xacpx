@@ -4,6 +4,9 @@ import {
   createBotId,
   createConversationId,
   createConversationMessageId,
+  createDirectBindingId,
+  createDirectConversationId,
+  createDirectTopicId,
   createDomainId,
   createGroupTurnId,
   createRuntimeBindingId,
@@ -52,4 +55,19 @@ test("1000 generated ids do not collide", () => {
     seen.add(createRuntimeBindingId());
   }
   expect(seen.size).toBe(6000);
+});
+
+test("direct runtime ids are deterministic opaque prefixes of the Bot id", () => {
+  const botId = "bot_reviewer";
+  const conversationId = createDirectConversationId(botId);
+  const topicId = createDirectTopicId(botId);
+  const bindingId = createDirectBindingId(botId);
+  expect(conversationId).toBe(createDirectConversationId(botId));
+  expect(topicId).toBe(createDirectTopicId(botId));
+  expect(bindingId).toBe(createDirectBindingId(botId));
+  expect(conversationId.startsWith(`${DOMAIN_ID_PREFIX.conversation}_`)).toBe(true);
+  expect(topicId.startsWith(`${DOMAIN_ID_PREFIX.topic}_`)).toBe(true);
+  expect(bindingId.startsWith(`${DOMAIN_ID_PREFIX.runtimeBinding}_`)).toBe(true);
+  expect(conversationId).not.toBe(botId);
+  expect(new Set([conversationId, topicId, bindingId]).size).toBe(3);
 });
