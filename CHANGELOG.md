@@ -1,4 +1,86 @@
 # Changelog
+## [0.24.5] - 2026-09-15
+
+### Added
+
+- Channel-based interactive permission requests with exact-turn routing: upstream acpx `onPermissionRequest` flows through Runtime worker, bridge, and daemon into the originating channel turn and back. Core `PermissionInteractionBroker` (`src/permissions/`) issues an opaque `interactionId` per human turn with initiator-only approval, broker-side responder re-verification, first-terminal-wins, and a 120s business deadline; all permission watchdogs sit at 125s as transport guards. `ChatRequestMetadata.origin` (`human`/`scheduled`) is set by Control producers and all built-in chat channels — absent origin fails closed (non-interactive). Discord ships button UI first; Relay Web / Feishu follow later.
+- Bots foundations (#344, #345): `Bot` / `Conversation` durable state (`src/domain/ids.ts`, `src/state/`, `ConversationStore`, `LogicalSession.owner`), `BotService` CRUD with agent/workspace checks, server-owned profile prompt composition, and direct runtime binding (`BotRuntimeManager.getOrCreateDirectSession`, deterministic default topic, per-Bot lifecycle gate).
+- Managed adapter pins refreshed: Codex `1.1.9` → `1.10.0`, Claude `0.64.2` → `0.75.1` (ACP initialize probe passes on both; PR #336).
+- New `transport.acpxMaxIncomingMessageBytes` / `transport.acpxTerminalMaxOutputBytes` advanced options (PR #334); new `mcode` (MiniMax Code) agent template (PR #334).
+- acpx Runtime Engine (PR #312): worker-backed `RuntimeEngine` behind `EngineRouter` with durable queue, live permission, MCP launch identity, worker fence state machine; activation E/F/G + auto switch; `acpx` pinned `0.13.1` → `0.15.1` with compatibility rebaseline and 0.15 embedding contracts.
+- Runtime transcript normalization (#331): per-turn tool-call snapshot normalization and text ordered-transcript parity; `ChannelType`/`ToolUseKind` gain `delete`/`move`/`fetch` kinds.
+
+### Changed
+
+- Queue overflow is now a relay-web toast and silent on every other channel (PR #334 follow-up).
+- `acpx` pinned `0.13.1` → `0.15.1` (exact pin kept) with permission kind inference following the 0.15 needle table; legacy session records still load.
+
+### Fixed
+
+- Queue-owner reaping covers previous-pin identities (PR #336); worker binding rebuilds preserve the launch snapshot; worker launch snapshot is a first-class ownership identity; worker binding cwd load-time validation restored.
+- Runtime: stable MCP identity as transport-boundary invariant (PR #335); `TOOL_STEP_KINDS` validator allows `delete`/`move`/`fetch`.
+- Restore CLI summary semantics and base `rawOutput` fallback to legacy summarizer.
+
+## [relay-protocol 0.5.3] - 2026-09-15
+
+### Added
+
+- `ToolStepKind`: `delete`/`move`/`fetch`; `turn-started` Hub-stamped `startedAt`; `MessageRecordDto.structured.turnStatus`.
+- `queue-overflow-tip` notice DTO and `slotAfterId`/`startedAt` fields for durable Hub `messages.id` anchored turn slotting.
+
+### Fixed
+
+- `web-dtos`: `TOOL_STEP_KINDS` allow `delete`/`move`/`fetch` (compile-time exhaustive map, PR #333); canonical turn transcript ordering (`TurnPartDto`) documented.
+
+## [relay 0.14.7] - 2026-09-15
+
+### Added
+
+- relay-web: canonical turn timeline + unified turn layout presentation (PR #337); de-cardified zcode-style tool/reasoning stream (PR #332); collapse finished-turn activity trace + turn HUD quips (PR #329, #330); Hub-stamped `turnStatus`/`startedAt`.
+- relay-web UI polish batch: files tab renamed to Browse, muted text to WCAG AA, branch chip follows `changedCount`, expandable trace toggle.
+
+### Fixed
+
+- relay-web: render-markdown hardening; progress/tool interleaving; markdown anchors; block-level streaming cache; compositional `copyText`; queue-overflow toast; live turn slotting by Hub insert order; iOS IME 229 input; live model/effort refresh.
+
+## [channel-relay 0.7.3] - 2026-09-15
+
+### Added
+
+- `tool-presentation`: `delete`/`move`/`fetch` step rendering; `queue-overflow-tip` mapped to `instance.notice`; live turns slotted by `slotAfterId`.
+
+### Fixed
+
+- `terminal-registry-store`: ensure parent directory before exclusive owner write; turn `startedAt` preserved through compact history.
+
+## [channel-feishu 0.8.3] - 2026-09-15
+
+### Added
+
+- Card builder: `delete`/`move`/`fetch` tool-kind icons.
+- Turn provenance `origin: human/scheduled` (feeds interactive-permission gate).
+
+### Fixed
+
+- Guard empty `response.text` to avoid spurious empty message after degraded-card path.
+
+## [channel-discord 0.8.2] - 2026-09-15
+
+### Added
+
+- Discord channel plugin (`@ganglion/xacpx-channel-discord`): `discord.js` v14 Gateway, preview-stream, presence-only token validation, `sessionListFormat` cards, `OutboundQuota`, streaming media, slash autocomplete, progress/tool polish.
+- Interactive permission approval UI (`permission-ui.ts`); tool emoji map covers `delete`/`move`/`fetch`.
+
+### Fixed
+
+- Review hardening: commit-then-observe delivery, strict deadline commit, abort terminality, true capability gate, bidi strip set, timer cleanup, uuid requestId.
+
+## [channel-yuanbao 0.6.1] - 2026-09-15
+
+### Changed
+
+- Turn provenance `origin: human/scheduled` (feeds interactive-permission gate).
+
 ## [relay 0.14.7-beta.0] - 2026-09-15
 
 ### Fixed

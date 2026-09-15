@@ -1,6 +1,6 @@
 {
   "name": "@ganglion/xacpx-channel-yuanbao",
-  "version": "0.6.1-beta.0",
+  "version": "0.6.1",
   "description": "Tencent Yuanbao channel plugin for xacpx.",
   "license": "MIT",
   "keywords": ["xacpx", "yuanbao", "channel", "plugin"],
