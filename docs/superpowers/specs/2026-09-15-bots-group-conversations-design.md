@@ -1,8 +1,8 @@
 # xacpx Bots & Group Conversations — Design Spec
 
-> **Status:** Proposed  
+> **Status:** Proposed, revised after architecture review  
 > **Date:** 2026-09-15  
-> **Scope:** first-class Bot profiles, direct Bot conversations, multi-Bot group conversations, Topics, runtime/session isolation, routing, permissions, persistence, Relay Web presentation, and future channel bindings  
+> **Scope:** first-class Bot profiles, direct and group conversations, Topics, Runs, runtime/filesystem isolation, routing, permissions, persistence/recovery, Relay Web presentation, and future channel bindings  
 > **Repository:** `gadzan/xacpx`
 
 ---
@@ -12,22 +12,23 @@
 xacpx already has strong execution primitives:
 
 - durable logical sessions;
-- multiple ACP-backed Agents;
+- ACP-backed Agents;
 - per-session turn queues and cancellation;
-- streaming text, tool, thought, plan and usage side channels;
+- streaming text, tools, thoughts, plans and usage;
 - Agent Messaging for point-to-point peer delivery;
 - Task Orchestration for bounded delegated work;
 - Relay Web for live and historical session interaction;
-- explicit turn provenance for permission interaction routing.
+- exact turn provenance for permission interaction routing.
 
-What it does not yet have is a first-class conversation domain above those execution primitives.
+This feature adds a conversation domain above those primitives. The design keeps identity, conversation history, one user request, one Bot execution, runtime identity and filesystem state as separate layers.
 
-This spec adds two new user-facing concepts:
+The primary user-facing concepts are:
 
-1. **Bot** — a reusable, named persona with runtime defaults, independent from a concrete logical session.
-2. **Conversation** — a durable human-facing conversation that may contain one Bot or a group of Bots, optionally split into Topics.
-
-A group conversation is not a broadcast channel and is not an Orchestration Group. It owns a shared transcript and uses isolated logical sessions for each participating Bot. An invisible controller decides which Bot or Bots should act when the human did not explicitly address members.
+1. **Bot** — a reusable named persona with runtime defaults, independent from a concrete logical session.
+2. **Conversation** — a durable human-facing conversation containing one Bot or a group of Bots.
+3. **Topic** — a transcript and runtime-context boundary inside a Conversation.
+4. **Conversation Run** — the durable lifecycle of one user request and all collaboration caused by that request.
+5. **Member Turn** — one Bot execution inside a Run.
 
 The target architecture is:
 
@@ -37,9 +38,11 @@ Human / channel / Relay Web
           ▼
 Conversation Service
   ├─ Bot profiles
-  ├─ Topics
-  ├─ shared transcript
-  ├─ group router/controller
+  ├─ Conversations / Topics
+  ├─ canonical public transcript
+  ├─ Conversation Runs
+  ├─ Conversation Router
+  ├─ execution targets / workspace policy
   └─ runtime bindings
           │
           ▼
@@ -49,11 +52,21 @@ LogicalSession / TurnQueue
 Agent / ACP runtime
 ```
 
-The central invariant is:
+The core separation rules are:
 
-> **Conversation identity and runtime session identity are different layers.**
+```text
+Bot identity          != LogicalSession identity
+Conversation          != chatKey
+Topic                 != merged hidden session history
+Message               != ConversationRun
+ConversationRun       != MemberTurn
+Model-context isolation != filesystem isolation
+Explicit human target != automatic collaboration
+Failure               != unknown side-effect state
+Router                != persistent participant
+```
 
-A Bot is not a `LogicalSession`. A Group is not an Agent Messaging broadcast. A Group Topic is not reconstructed by merging hidden session histories.
+A Group is not an Agent Messaging broadcast and is not an Orchestration Group.
 
 ---
 
@@ -63,33 +76,35 @@ A Bot is not a `LogicalSession`. A Group is not an Agent Messaging broadcast. A 
 
 The complete feature should support:
 
-- creating reusable Bots with a stable identity;
-- assigning a Bot an Agent, workspace, model, effort and instructions;
+- creating reusable Bots with stable identities;
 - direct human ↔ Bot conversations;
-- putting multiple Bots into one group conversation;
-- choosing a stable lead Bot for an unaddressed group task;
-- explicit `@Bot` and `@everyone` routing;
-- automatic routing for unaddressed requests;
-- single-member, parallel and sequential group work;
+- putting multiple Bots into one Group Conversation;
+- Topics that reset conversation/runtime context without changing group membership;
+- explicit target selection for one or more members;
+- deterministic `@Bot` / `@everyone` shortcuts backed by structured member IDs;
+- optional automatic collaboration through a restricted Router;
+- single-member, parallel and sequential execution;
+- a durable Run representing one user request;
 - shared public transcript with sender attribution;
-- independent Topics inside a group;
-- isolated runtime context per Bot × conversation × Topic;
-- public and private intra-group handoff semantics;
-- graceful member/controller failure handling;
+- isolated runtime context per Bot × Conversation × Topic;
+- explicit workspace/filesystem execution policy per Topic;
+- cancellation, retry and crash recovery with defined semantics;
+- public structured member handoff;
 - first-class Relay Web presentation;
-- future binding of Discord/Feishu/other channel chats or threads to a Conversation/Topic.
+- future binding of external channels to Conversations and Topics.
 
 ## 2.2 Architectural goals
 
 - Reuse existing `LogicalSession`, TurnQueue, Agent, transport, permission and Relay primitives.
-- Keep Bot identity independent of provider/runtime identity.
-- Keep Group Conversation separate from Agent Messaging and Task Orchestration.
-- Make the daemon the canonical owner of Conversation state and transcript.
-- Keep group routing deterministic where the human supplied an explicit recipient.
-- Use structured server-trusted identities for routing whenever the client can provide them.
-- Preserve exact turn provenance through all group dispatches.
-- Make deletion and teardown fail closed rather than leaving hidden orphan sessions.
-- Allow the first implementation to be Relay-Web-first without coupling the domain model to Relay.
+- Keep Bot identity independent of runtime identity.
+- Keep Conversation and Group semantics separate from Agent Messaging and Task Orchestration.
+- Make the daemon and Conversation store canonical; the browser is never the only owner of durable collaboration state.
+- Preserve exact turn provenance through every dispatch.
+- Make explicit human routing deterministic and never infer authorization from display names.
+- Make automatic routing tool-free and permission-free before execution starts.
+- Make deletion and teardown fail closed.
+- Make crash recovery a defined contract rather than best-effort replay.
+- Keep the domain independent from Relay Web and any one external channel.
 
 ---
 
@@ -103,18 +118,20 @@ This feature does **not** redefine:
 - logical session aliases as Bot IDs;
 - permission policy or transport security;
 - cross-account trust semantics;
-- provider-specific multi-agent features;
 - ACP itself.
 
-Initial phases do not need:
+Initial releases do not require:
 
 - cross-account shared groups;
 - public internet group rooms;
-- durable offline group mail to disconnected remote accounts;
 - arbitrary third-party participants;
 - voice/video group chat;
-- hidden controller tool execution;
-- automatic inheritance of human permission authority by model-selected members.
+- private intra-group message secrecy guarantees;
+- fully automatic concurrent source-code mutation in one shared working tree;
+- model-driven routing on adapters that cannot prove tools are disabled before execution;
+- automatic inheritance of human permission authority by downstream model-selected turns.
+
+Private handoff is intentionally deferred. Preventing the private message body from entering the public transcript does not guarantee that the receiving model will not repeat that information in a later public response.
 
 ---
 
@@ -122,19 +139,11 @@ Initial phases do not need:
 
 ## 4.1 Agent
 
-An **Agent** is the runtime definition in `config.agents` that tells xacpx how to start and configure an ACP-capable implementation.
+An **Agent** is the runtime definition in `config.agents` that tells xacpx how an ACP-capable implementation is launched.
 
-Examples:
+It answers:
 
-```text
-codex
-claude
-opencode
-```
-
-Agent answers:
-
-> How is this runtime launched?
+> How is the runtime launched?
 
 It does not answer:
 
@@ -144,18 +153,18 @@ It does not answer:
 
 A **Logical Session** is xacpx's durable execution identity backed by a transport session. It owns runtime continuity, model/session settings and turn execution.
 
-It remains the execution primitive used by Bot conversations.
+It remains an execution primitive, never the product identity for a Bot or Group.
 
 ## 4.3 Bot
 
-A **Bot** is a stable user-facing profile independent from its current runtime session.
+A **Bot** is a stable user-facing profile independent from its current logical session.
 
-A Bot may participate in:
+The same Bot may participate in:
 
-- its direct conversation;
-- multiple groups;
+- its direct Conversation;
+- multiple Groups;
 - multiple Topics;
-- future channel-bound conversations.
+- future channel-bound Conversations.
 
 The same Bot therefore may have many isolated logical sessions.
 
@@ -163,7 +172,7 @@ The same Bot therefore may have many isolated logical sessions.
 
 A **Conversation** is the durable human-facing collaboration object.
 
-Two initial kinds exist:
+Initial kinds:
 
 ```text
 bot
@@ -175,21 +184,36 @@ group
 
 ## 4.5 Topic
 
-A **Topic** is a transcript and runtime-isolation boundary inside a Conversation.
+A **Topic** is a public transcript boundary, runtime-context boundary and execution-target boundary inside a Conversation.
 
-Group work that belongs to unrelated tasks should use separate Topics instead of one indefinite shared transcript.
+A new Topic keeps the Conversation membership/configuration but starts from a fresh Bot runtime context.
 
-## 4.6 Group Controller
+## 4.6 Conversation Run
 
-A **Group Controller** is a hidden coordination session used only when routing cannot be determined directly from structured human addressing.
+A **Conversation Run** represents one user request and the complete collaboration caused by that request.
 
-It chooses an execution mode and member IDs. Its output is not a visible participant message.
+It answers:
 
-## 4.7 Group Turn
+- what is currently running;
+- what the user should stop;
+- what can be retried;
+- what state must be reconstructed after restart;
+- which Member Turns belong to this request;
+- whether the outcome is completed, failed, cancelled or indeterminate.
 
-A **Group Turn** is one member execution caused by a human message, controller decision, handoff or recovery decision.
+A Topic initially allows only one active Run at a time. Later user requests for the same Topic queue behind the active Run unless the user creates a new Topic.
 
-It references the underlying xacpx logical-session turn but carries Conversation-specific metadata such as `triggerMessageIds` and `botId`.
+## 4.7 Member Turn
+
+A **Member Turn** is one Bot execution inside a Run.
+
+It references the underlying xacpx session turn and carries Conversation-specific metadata such as Run ID, Bot ID, batch, assignment and provenance.
+
+## 4.8 Conversation Router
+
+A **Conversation Router** is a restricted decision interface used only for automatic collaboration.
+
+It is not a visible participant, not a Bot, and does not require a persistent conversational session. Its decision must be determined from explicit input supplied for the current Run.
 
 ---
 
@@ -197,46 +221,37 @@ It references the underlying xacpx logical-session turn but carries Conversation
 
 ## 5.1 Bot profile
 
-Recommended core shape:
+Target semantic shape:
 
 ```ts
 export interface BotProfile {
-  id: string;                  // stable opaque id, e.g. bot_01K...
+  id: string;
   name: string;
   avatar?: string;
 
-  /** Human-facing role/summary. */
-  role?: string;
+  /** Human-facing description. Never treated as trusted model instruction. */
+  description?: string;
 
-  /** Model-facing behavior and responsibility guidance. */
+  /** Model-facing behavior guidance. */
   instructions?: string;
 
-  /** Runtime defaults. */
-  agent: string;               // key in config.agents
+  /** Defaults used when a Conversation/Topic does not override execution target. */
+  agent: string;
   workspace: string;
   cwd?: string;
   model?: string;
   effort?: string;
 
   enabled: boolean;
+  profileRevision: number;
   createdAt: string;
   updatedAt: string;
 }
 ```
 
-`role` and `instructions` are intentionally separate:
+The current implementation may still use the field name `role` for presentation metadata. Before the public API is frozen, either rename it to `description` or explicitly preserve the rule that presentation metadata is not injected into model prompts.
 
-- `role` is presentation metadata;
-- `instructions` affects model behavior.
-
-A Bot profile must not override security-sensitive daemon configuration such as:
-
-- transport permission mode;
-- channel owner IDs;
-- peer trust;
-- media roots;
-- filesystem/terminal capability gates;
-- runtime fencing or worker policy.
+Bot runtime defaults do not grant security capabilities and must not override transport permission mode, channel admission, peer trust, filesystem/terminal capability gates or runtime fencing.
 
 ## 5.2 Conversation record
 
@@ -246,10 +261,8 @@ export interface ConversationRecord {
   kind: "bot" | "group";
   title: string;
   description?: string;
-
   botIds: string[];
   leadBotId?: string;
-
   createdAt: string;
   updatedAt: string;
 }
@@ -257,25 +270,37 @@ export interface ConversationRecord {
 
 Invariants:
 
-- `kind="bot"` requires exactly one Bot.
-- `kind="group"` requires at least two Bots.
-- `leadBotId`, when present, must belong to `botIds`.
-- Group membership stores Bot IDs, never session aliases.
+- `kind="bot"` requires exactly one Bot;
+- `kind="group"` requires at least two Bots;
+- `leadBotId`, when present, belongs to `botIds`;
+- membership stores Bot IDs, never aliases.
 
-## 5.3 Topic
+## 5.3 Topic and execution target
 
 ```ts
+export type WorkspaceIsolationPolicy =
+  | "shared"
+  | "shared-single-writer"
+  | "worktree-per-member";
+
+export interface ExecutionTarget {
+  workspace: string;
+  cwd?: string;
+  isolation: WorkspaceIsolationPolicy;
+}
+
 export interface ConversationTopic {
   id: string;
   conversationId: string;
   title: string;
   status: "active" | "archived";
+  executionTarget: ExecutionTarget;
   createdAt: string;
   updatedAt: string;
 }
 ```
 
-Every Conversation has at least one logical Topic. A default Topic may be created eagerly with the Conversation or lazily on first message.
+Bot `workspace` / `cwd` values are defaults. The effective task location belongs to the Topic so the same Bot can safely work in different projects without changing identity.
 
 ## 5.4 Conversation message
 
@@ -284,6 +309,7 @@ export interface ConversationMessage {
   id: string;
   conversationId: string;
   topicId: string;
+  seq: number;
 
   role: "human" | "bot" | "system";
   senderBotId?: string;
@@ -291,10 +317,9 @@ export interface ConversationMessage {
 
   content: string;
   replyTo?: string;
+  runId?: string;
 
   createdAt: string;
-
-  /** Optional reference back to an executed xacpx turn. */
   sourceTurn?: {
     sessionAlias: string;
     turnId?: string;
@@ -302,15 +327,62 @@ export interface ConversationMessage {
 }
 ```
 
-The Conversation store is the canonical source for public group transcript ordering and attribution.
+`seq` is monotonically increasing within a Topic and is the authoritative replay cursor. Timestamp is presentation metadata, not the only ordering primitive.
 
-Do not reconstruct a Group transcript by merging hidden member session histories.
-
-## 5.5 Group turn record
+## 5.5 Conversation Run
 
 ```ts
-export interface GroupTurnRecord {
+export type ConversationRunState =
+  | "queued"
+  | "running"
+  | "waiting-human"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "indeterminate";
+
+export type ConversationRunMode = "explicit" | "automatic";
+
+export interface ConversationRun {
   id: string;
+  conversationId: string;
+  topicId: string;
+  requestMessageId: string;
+  requestId: string;
+
+  mode: ConversationRunMode;
+  state: ConversationRunState;
+
+  completionReason?:
+    | "members-completed"
+    | "plan-completed"
+    | "needs-input"
+    | "human-cancelled"
+    | "budget-exhausted"
+    | "execution-failed"
+    | "execution-state-unknown";
+
+  generation: number;
+  activeBatch?: number;
+  maxMemberTurns: number;
+  consumedMemberTurns: number;
+  failedBotIds: string[];
+  unavailableBotIds: string[];
+
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+}
+```
+
+`requestId` is caller-supplied idempotency identity scoped to the Conversation/Topic API. Retrying a timed-out request with the same `requestId` must not create a second Run.
+
+## 5.6 Member Turn
+
+```ts
+export interface MemberTurnRecord {
+  id: string;
+  runId: string;
   conversationId: string;
   topicId: string;
   botId: string;
@@ -318,9 +390,15 @@ export interface GroupTurnRecord {
   sessionAlias: string;
   triggerMessageIds: string[];
 
+  batch: number;
+  assignmentId?: string;
+  task?: string;
+  expectedOutput?: string;
+  attempt: number;
+
   origin:
     | "human-explicit"
-    | "controller"
+    | "router"
     | "handoff"
     | "recovery";
 
@@ -329,7 +407,8 @@ export interface GroupTurnRecord {
     | "running"
     | "completed"
     | "failed"
-    | "cancelled";
+    | "cancelled"
+    | "indeterminate";
 
   createdAt: string;
   startedAt?: string;
@@ -337,38 +416,38 @@ export interface GroupTurnRecord {
 }
 ```
 
-## 5.6 Runtime binding
+`indeterminate` means xacpx cannot prove whether a side-effect-capable execution changed external state before interruption. Such work must not be blindly retried.
+
+## 5.7 Runtime binding
 
 ```ts
 export interface BotRuntimeBinding {
   id: string;
-
-  scope:
-    | "bot-direct"
-    | "group-member"
-    | "group-controller";
-
+  scope: "bot-direct" | "group-member";
   conversationId: string;
   topicId: string;
-  botId?: string;
+  botId: string;
 
   logicalSessionId: string;
   sessionAlias: string;
+
+  profileRevision: number;
+  runtimeFingerprint: string;
 
   createdAt: string;
   updatedAt: string;
 }
 ```
 
-The binding is the authoritative mapping from Conversation domain identity to xacpx execution identity.
+The runtime fingerprint covers execution-affecting configuration such as effective Agent, workspace and cwd. Model/effort may be applied at a turn boundary where the adapter supports that safely; Agent/workspace/cwd changes require rebind/recreate unless a verified migration primitive exists.
 
-Session aliases may remain readable for debugging, but domain correctness must never depend on parsing an alias string.
+A Router does not require a `group-controller` binding in the target design.
 
 ---
 
-# 6. Session isolation invariants
+# 6. Identity and isolation invariants
 
-The following must be enforced by code and tests:
+## 6.1 Runtime-context isolation
 
 ```text
 Bot direct session
@@ -379,34 +458,63 @@ Bot in Group A
 
 Bot in Topic A
   != same Bot in Topic B
-
-Group controller
-  != lead Bot member session
 ```
 
-For a group member the effective isolation key is:
+Effective member key:
 
 ```text
 conversationId × topicId × botId
 ```
 
-For a controller:
+No direct/private/other-Topic hidden history may leak into a Group Topic context.
+
+## 6.2 Filesystem isolation is separate
+
+Different logical sessions may still read/write the same working tree. Therefore:
 
 ```text
-conversationId × topicId × controller
+same transcript snapshot
+!=
+same filesystem snapshot
 ```
 
-This prevents private/direct context from leaking into shared group context and prevents unrelated group tasks from sharing hidden model state.
+`parallel` is safe only when the execution target policy allows it.
+
+Initial policy:
+
+- `shared`: parallel execution is allowed only for operations proven non-mutating by enforced capability/tool policy; if xacpx cannot prove read-only behavior, treat the turn as potentially mutating.
+- `shared-single-writer`: multiple readers may be planned, but side-effect-capable member turns execute serially. This is the recommended default for software work.
+- `worktree-per-member`: future advanced mode; each member receives an isolated worktree and integration is an explicit later step.
+
+Never infer read-only behavior from a Bot name such as `Reviewer` or `Tester`.
 
 ---
 
-# 7. Bot runtime behavior
+# 7. Bot configuration semantics
 
-## 7.1 BotRuntimeManager
+Bot edits must not be treated uniformly.
 
-Add a daemon-side service responsible for resolving or creating the correct logical session for a Bot execution scope.
+| Change | Required behavior |
+|---|---|
+| name / avatar / description | immediate presentation update; runtime identity unchanged |
+| instructions | next ordinary turn uses new instructions; existing model history is not erased |
+| model / effort | apply at turn boundary when supported; otherwise recreate/rebind |
+| agent | recreate/rebind runtime |
+| workspace | recreate/rebind runtime |
+| cwd | recreate/rebind runtime |
+| reset context | create a new Topic or explicit reset operation |
 
-Suggested responsibilities:
+Clearing `instructions` guarantees only that future prompt composition does not inject the old text. It does not guarantee that a persistent model session forgets instructions already present in historical context.
+
+Every execution-affecting binding records the profile revision/fingerprint it was created against so stale runtime state is detectable rather than silently reused.
+
+---
+
+# 8. BotRuntimeManager
+
+The daemon-side runtime manager resolves the logical session for one Bot execution scope.
+
+Responsibilities:
 
 ```ts
 interface BotRuntimeManager {
@@ -422,167 +530,235 @@ interface BotRuntimeManager {
     topicId: string;
   }): Promise<BotRuntimeBinding>;
 
-  getOrCreateGroupControllerSession(input: {
-    conversationId: string;
-    topicId: string;
-    coordinatorBotId: string;
-  }): Promise<BotRuntimeBinding>;
-
   releaseTopicBindings(...): Promise<void>;
   releaseConversationBindings(...): Promise<void>;
 }
 ```
 
-It does **not** own provider processes. Process warmth and restore remain the responsibility of existing session/transport infrastructure.
+It does not own provider process lifetime.
 
-## 7.2 Bot profile injection
+Hard invariants:
 
-Bot identity/instructions should be added by a server-owned prompt composition layer on every ordinary Bot turn.
+```text
+one effective scope key
+  => at most one authoritative binding
+  => at most one authoritative owned logical session
 
-Reasons:
+failed creation
+  => no half-published Conversation metadata
 
-- profile edits should take effect on the next turn;
-- clearing instructions should not require a new logical session;
-- the client must not be trusted to supply the authoritative Bot profile;
-- the underlying runtime/model must remain accurately identifiable.
+restart
+  => binding/session relationship is recoverable without minting orphan runtimes
+```
 
-Runtime commands that must remain whole-input commands must not be broken by profile composition.
-
-The profile may state name, role and instructions, but must explicitly avoid implying changes to model, tools or permissions.
+Runtime creation must not hold a non-reentrant shared daemon mutex across `SessionService` awaits. Use a scoped single-flight/reservation mechanism and a short publish transaction instead.
 
 ---
 
-# 8. Conversation store
+# 9. Conversation persistence and recovery
 
-Conversation metadata may live in normal xacpx durable state initially, but message history should use a storage abstraction rather than growing the main state JSON without bound.
+The Conversation store is not only transcript storage. It defines durable request/recovery semantics.
 
-Recommended interface:
+SQLite is preferred before Group execution ships because Run creation, message ordering and pending dispatch need transactional guarantees. Another backend is acceptable only if it provides the same contract.
+
+Minimum store responsibilities:
 
 ```ts
 interface ConversationStore {
-  appendMessage(message: ConversationMessage): Promise<void>;
-  appendTurn(turn: GroupTurnRecord): Promise<void>;
-  updateTurn(turnId: string, patch: Partial<GroupTurnRecord>): Promise<void>;
+  createRequest(input: {
+    requestId: string;
+    message: ConversationMessage;
+    run: ConversationRun;
+    dispatches: PendingDispatch[];
+  }): Promise<{ message: ConversationMessage; run: ConversationRun }>;
+
+  appendMessage(...): Promise<ConversationMessage>;
+  createMemberTurn(...): Promise<MemberTurnRecord>;
+  updateMemberTurn(...): Promise<void>;
+  updateRun(...): Promise<void>;
 
   listMessages(input: {
     conversationId: string;
     topicId: string;
-    before?: string;
+    afterSeq?: number;
+    beforeSeq?: number;
     limit: number;
   }): Promise<ConversationMessage[]>;
 
-  getContextWindow(input: {
+  listEventsAfter(input: {
     conversationId: string;
     topicId: string;
-    triggerMessageIds?: string[];
-    budget: number;
-  }): Promise<ConversationMessage[]>;
+    afterSeq: number;
+    limit: number;
+  }): Promise<ConversationEvent[]>;
 
-  deleteTopic(conversationId: string, topicId: string): Promise<void>;
-  deleteConversation(conversationId: string): Promise<void>;
+  claimPendingDispatches(...): Promise<PendingDispatch[]>;
+  deleteTopic(...): Promise<void>;
+  deleteConversation(...): Promise<void>;
 }
 ```
 
-A first implementation may use local JSONL files. SQLite is also acceptable. The domain API must prevent storage choice from leaking into Group routing logic.
+The following transitions must be durable:
 
-The daemon is the canonical owner. Relay Hub history is presentation/storage for Relay, not the source of truth required to continue group coordination.
+```text
+human message + Run + initial pending dispatch intent
+  => one transaction
+
+member visible result + MemberTurn terminal state + Run progress
+  => one transaction where practical
+```
+
+Crash cases must be explicitly defined:
+
+1. Message persisted, dispatch not started: dispatcher can resume from pending intent.
+2. Dispatch started, completion not durably known: potentially side-effecting work becomes `indeterminate` unless the underlying execution primitive proves otherwise.
+3. Result persisted, browser disconnected: reconnect by `seq` cursor, never by hoping WebSocket delivery was received.
+
+Relay Web events are presentation transport. Durable Conversation state is authoritative.
 
 ---
 
-# 9. Direct Bot conversation flow
+# 10. Direct Bot flow
 
-Direct Bot conversation is intentionally simple:
+Direct Bot interaction uses the same Run model even though there is only one member.
 
 ```text
-human message
-   │
-   ▼
-Conversation(kind=bot)
-   │
-   ▼
-resolve BotRuntimeBinding
-   │
-   ▼
-normal xacpx turn
-   │
-   ├─ stream text/tools/thought/plan/usage
-   └─ normal human permission interaction
+human submit
+  → persist human message + explicit Run
+  → resolve direct Bot binding
+  → create MemberTurn(origin=human-explicit)
+  → run normal xacpx turn
+  → persist visible Bot result + terminal MemberTurn/Run
 ```
 
-The turn uses:
+The underlying request preserves:
 
 ```text
 origin = human
 ```
 
-All current exact-turn permission routing behavior remains available.
+Streaming, tools, thoughts, plans, usage, cancellation and permission interactions reuse the existing turn execution path.
 
-Direct Bot chat therefore gains existing xacpx behavior rather than implementing a second chat engine.
+Direct Conversation history and deletion lifecycle must be implemented before the direct Bot UI is considered complete.
 
 ---
 
-# 10. Group routing
+# 11. Explicit Group routing
 
-## 10.1 Explicit addressing first
+Explicit human target selection is deterministic and never invokes the Router.
 
-When the human supplied structured member targets, routing is deterministic and bypasses the controller.
+The preferred API is structured intent, not inferred text:
+
+```ts
+type ConversationTarget =
+  | { mode: "members"; botIds: string[] }
+  | { mode: "everyone" }
+  | { mode: "automatic" };
+```
+
+Relay Web may also send mention ranges for highlighting, but IDs are the authority.
 
 Examples:
 
 ```text
-@Reviewer check this change
-  → single Reviewer turn
+Reviewer
+  → explicit Run with Reviewer only
 
-@Reviewer @Tester check this
-  → parallel Reviewer + Tester turns
+Reviewer + Tester
+  → explicit Run containing those members
 
-@everyone review this
-  → parallel all eligible members
+Everyone
+  → explicit Run containing every eligible current member
 ```
 
-Relay Web should send opaque member IDs as structured metadata. The display name is not canonical routing identity.
+An explicit Run ends when the selected member turns reach terminal states. It does **not** automatically fall through into model-driven routing afterward.
 
-Text-only channels may use a conservative name parser as a fallback, but the result must resolve to exact current membership before execution.
-
-## 10.2 Unaddressed work
-
-When no explicit target exists, the hidden controller receives bounded shared context and returns a structured decision.
-
-```ts
-export interface GroupDecision {
-  mode: "none" | "single" | "parallel" | "sequential";
-  memberIds: string[];
-  triggerMessageIds: string[];
-}
-```
-
-Semantics:
-
-```text
-none
-  no more member execution is required
-
-single
-  run exactly one member
-
-parallel
-  run independent members against the same transcript snapshot
-
-sequential
-  run ordered members, where later members observe earlier results
-```
-
-The transport layer validates the decision. It never guesses a missing recipient or repairs an unknown member name.
+`@Bot` / `@everyone` remain shortcuts that update the same structured target state.
 
 ---
 
-# 11. Parallel and sequential semantics
+# 12. Automatic collaboration and Router contract
 
-These modes are execution contracts, not display hints.
+Automatic collaboration is a different Run mode selected explicitly by the human.
 
-## 11.1 Parallel
+```text
+run.mode = automatic
+```
 
-All primary members in one batch receive the same public transcript snapshot and trigger set.
+The domain interface is:
+
+```ts
+interface ConversationRouter {
+  decide(input: RoutingInput): Promise<RoutingDecision>;
+}
+```
+
+A Router receives only explicit current input:
+
+- bounded public Topic context;
+- current human request;
+- member IDs/descriptions/capabilities/availability;
+- current Run state;
+- completed/failed assignments;
+- remaining budget;
+- effective ExecutionTarget policy.
+
+It must not depend on hidden conversational history from previous Router calls.
+
+A model implementation may reuse a warm process for performance, but the semantic decision must be stateless with respect to prior Router decisions.
+
+## 12.1 Decision shape
+
+```ts
+type RoutingDecision =
+  | {
+      type: "dispatch";
+      mode: "single" | "parallel" | "sequential";
+      assignments: Array<{
+        id: string;
+        botId: string;
+        task: string;
+        expectedOutput?: string;
+        dependsOn?: string[];
+        triggerMessageIds: string[];
+      }>;
+    }
+  | {
+      type: "need-human";
+      question: string;
+    }
+  | {
+      type: "complete";
+      reason: string;
+      synthesisBotId?: string;
+    };
+```
+
+There is no ambiguous `none` decision. The Router must say whether it wants to dispatch work, needs human input or considers the Run complete.
+
+## 12.2 Router capability restriction
+
+Automatic routing must be disabled unless the adapter can prove before execution that the Router has:
+
+```text
+no tools
+no filesystem/terminal capability
+no permission interaction
+no Agent Messaging / Orchestration side effects
+bounded structured output only
+```
+
+Detecting a tool event after it starts is not a security boundary and is insufficient.
+
+The Router is not a persistent product participant and produces no visible assistant message.
+
+---
+
+# 13. Parallel and sequential semantics
+
+## 13.1 Transcript semantics
+
+For a `parallel` assignment batch, all primary members receive the same frozen public transcript snapshot.
 
 ```text
 snapshot S
@@ -591,486 +767,290 @@ snapshot S
   └─ C sees S
 ```
 
-A fast reply from A must not leak into B's already-selected parallel context.
+Completion order must not change already-selected primary inputs.
 
-Results are appended to the canonical Conversation transcript as they complete, but the batch execution input remains stable.
+For `sequential` assignments, later members may see earlier public results.
 
-## 11.2 Sequential
+## 13.2 Filesystem semantics
 
-Each later member receives transcript state after earlier selected members have completed.
+Transcript parallelism does not automatically allow filesystem write parallelism.
+
+Before dispatch:
 
 ```text
-S
-↓ A
-S + A
-↓ B
-S + A + B
-↓ C
+requested execution mode
++ Topic isolation policy
++ enforceable capability/effect classification
+→ actual dispatch schedule
 ```
 
-A sequential member may also receive explicit handoff trigger IDs created by earlier members.
+If xacpx cannot prove that a turn is non-mutating in a shared working tree, `shared-single-writer` serializes side-effect-capable turns even if the Router produced independent assignments.
 
 ---
 
-# 12. Controller contract
+# 14. Completion, cancellation and retry
 
-## 12.1 Controller identity
+## 14.1 Explicit Run completion
 
-The controller has an isolated logical session per Conversation Topic.
-
-It may reuse the lead Bot's runtime defaults:
-
-- Agent;
-- model;
-- effort;
-- workspace/cwd where appropriate.
-
-It does not reuse the lead Bot member session.
-
-## 12.2 Controller capability restrictions
-
-The controller performs a coordination decision only.
-
-Hard restrictions:
-
-- no tools;
-- no permission requests;
-- no Agent Messaging;
-- no Task Orchestration;
-- no visible user reply;
-- bounded structured output only.
-
-Any tool or permission event is a controller failure, not a request to surface approval UI.
-
-## 12.3 Initial limits
-
-Recommended initial guards:
+For `mode=explicit`:
 
 ```text
-per-decision timeout      30 seconds
-controller candidates     max 3
-conversation turn guard   24 member turns
-controller output limit   16 KiB
+selected members terminal
+→ Run terminal
 ```
 
-These are safety/availability guards and may be tuned later from telemetry.
+No Router reevaluation occurs.
 
-## 12.4 Controller failover
+## 14.2 Automatic Run completion
 
-Preferred candidate order:
+For `mode=automatic`, the Router may continue only while the Run has unfinished planned work and budget remains.
 
-1. current lead Bot;
-2. remaining healthy group members in stable order;
-3. at most three attempts total.
+The Run ends through an explicit condition:
 
-A controller candidate that times out, emits invalid output, calls a tool, requests permission or otherwise violates the contract is quarantined as a controller candidate for the current run.
+- Router returns `complete`;
+- Router returns `need-human` → `waiting-human`;
+- all planned assignments complete according to the Run plan;
+- human cancels;
+- budget exhausts;
+- unrecoverable failure;
+- execution state becomes unknown and safe automatic recovery is not possible.
 
-The Conversation does not silently change its saved `leadBotId` because of a transient failover.
+A maximum member-turn count is a guardrail, not a completion definition.
+
+## 14.3 Cancellation
+
+Cancel targets a `runId`, not a vague “latest group task”.
+
+Cancellation:
+
+- prevents new dispatches for that Run;
+- asks active Member Turns to cancel using existing turn cancellation;
+- records terminal/indeterminate outcome per active turn;
+- ignores late results for scheduling decisions while retaining any durable evidence needed for audit/history.
+
+## 14.4 Retry
+
+Automatic retry is allowed only when the system can prove retry safety.
+
+```text
+queued/not-started
+  → safe to redispatch
+
+read-only execution with enforced capability
+  → may retry under policy
+
+started side-effect-capable execution with unknown outcome
+  → indeterminate; no blind retry
+```
 
 ---
 
-# 13. Shared group context
+# 15. Handoff
 
-Each member turn gets a server-built group context containing only data in the current Conversation Topic plus member/group profile metadata.
+Initial collaboration supports **public structured handoff only**.
 
-It must not include:
-
-- the Bot's direct-chat transcript;
-- another Group transcript;
-- another Topic transcript;
-- controller private history;
-- unrelated logical-session history.
-
-Recommended selection priority:
-
-```text
-P0 latest human request
-P0 triggerMessageIds
-P1 original request for the current group run
-P2 recent explicit handoffs
-P3 recent public transcript
-P4 older public transcript if budget remains
-```
-
-Use model-aware token budgeting where available; use a conservative character fallback otherwise.
-
-Every assistant/public message exposed to a member should retain stable sender identity metadata:
-
-```ts
-{
-  id,
-  role: "bot",
-  senderBotId,
-  recipients,
-  content
-}
-```
-
-Human transcript roles must never be interpreted as Bot names or mention targets.
-
----
-
-# 14. Structured group handoff
-
-Group collaboration should use a structured primitive rather than a magic text envelope.
-
-Recommended internal/MCP capability:
+Recommended primitive:
 
 ```ts
 group_send({
-  to: string, // current-group Bot id
-  message: string,
-  visibility: "public" | "private"
+  to: string,
+  task: string,
+  expectedOutput?: string
 })
 ```
 
-The server derives from the bound session:
-
-- source Bot;
-- Conversation;
-- Topic;
-- current Group Turn.
-
-The model does not provide a trusted sender identity.
-
-## 14.1 Public handoff
+The server derives sender Bot, Conversation, Topic and Run from the trusted runtime binding. The model cannot spoof sender identity or target a Bot outside current membership.
 
 A public handoff:
 
-- creates a canonical Conversation message;
-- records sender and recipient Bot IDs;
-- becomes a trigger for the recipient;
-- remains visible in group history.
+- creates canonical Conversation-visible metadata/message as appropriate;
+- creates or extends a Run assignment;
+- preserves structured target identity;
+- never grants human permission provenance.
 
-## 14.2 Private handoff
-
-A private handoff:
-
-- stores body in a private group-delivery store;
-- is readable only to sender/recipient and trusted server components;
-- may expose a body-free public envelope such as “Reviewer sent a private note to Tester” if desired;
-- may trigger the recipient;
-- never enters the ordinary shared transcript body.
-
-A future private delivery to the human may be delivered to the Bot's direct inbox, but that is not required for the first group phase.
-
-## 14.3 Why this is separate from `agent_send`
-
-`agent_send` is canonical point-to-point Agent Messaging and may target another reachable logical endpoint.
-
-`group_send` has additional invariants:
-
-- target must be a current member of the same Group Topic;
-- group transcript/storage must be updated;
-- visibility must be preserved;
-- a `triggerMessageId` is created;
-- scheduler state must be updated.
-
-The implementation may reuse lower-level delivery/queue machinery, but the semantic API remains distinct.
+Private handoff remains a future feature requiring its own information-flow threat model.
 
 ---
 
-# 15. Permission provenance
+# 16. Permission provenance
 
-This is a security boundary.
+The existing origin boundary remains authoritative.
 
-xacpx currently distinguishes human, peer, orchestration and scheduled turn origins. Only an explicit human-origin turn may mint interactive permission routing.
+| Producer | Turn provenance | Interactive human approval authority? |
+|---|---|---|
+| direct Bot request sent by human | `human` | yes, through existing exact routing |
+| explicit Group member target sent by human | `human` | yes |
+| Router decision | orchestration/internal | no |
+| Router-selected Member Turn | `orchestration` | no |
+| public handoff | `peer` or orchestration-equivalent | no |
+| recovery | `orchestration` | no |
+| scheduled work | `scheduled` | no |
 
-Group conversations must preserve this behavior.
+A broad human request never upgrades all downstream automatic work to human authority.
 
-## 15.1 Human explicitly addresses a member
-
-Example:
-
-```text
-@Reviewer run the migration and let me approve what you need
-```
-
-The selected member turn is:
-
-```text
-origin = human
-GroupTurn.origin = human-explicit
-```
-
-It may use the normal exact-turn permission interaction path.
-
-## 15.2 Hidden controller
-
-Controller execution is:
+If an automatic Member Turn is blocked because it needs human-origin permission, the UI may offer:
 
 ```text
-origin = orchestration
+[Start this step myself]
 ```
 
-It may not request permission or call tools.
+Clicking creates a **new** explicit human-origin request targeting that Bot and referencing the blocked step. The old automatic turn keeps its original provenance.
 
-## 15.3 Controller-selected member
-
-Example:
-
-```text
-Human: check whether this feature is ready
-Controller selects Reviewer
-```
-
-The member turn is:
-
-```text
-origin = orchestration
-GroupTurn.origin = controller
-```
-
-It must not inherit the initiating human's ability to mint a permission interaction simply because the original group message was human-authored.
-
-If the selected Bot requires an unavailable interactive permission, the turn fails/blocks according to non-interactive policy and the Group can report or recover.
-
-The human can then explicitly address the member in a later message to create a real human-origin turn.
-
-## 15.4 Handoff/recovery
-
-Bot-triggered handoff turns are `peer` or `orchestration` according to the final internal routing abstraction, but never `human` unless the human explicitly targeted that execution.
+> Authority is never upgraded in place; the human creates a new authoritative turn.
 
 ---
 
-# 16. Group execution loop
+# 17. Relay Web interaction model
 
-Recommended high-level algorithm:
+## 17.1 Navigation
+
+Recommended top-level sections:
 
 ```text
-persist human message
-      │
-      ▼
-resolve explicit structured targets
-      │
-      ├─ targets found
-      │     └─ direct single/parallel schedule
-      │
-      └─ no targets
-            └─ controller decision
-                    │
-                    ▼
-             execute batch/sequence
-                    │
-                    ▼
-             persist public replies
-                    │
-                    ▼
-             process handoffs
-                    │
-                    ├─ explicit next member(s)
-                    │
-                    └─ no handoff
-                           ▼
-                    controller reevaluate
-                           │
-                           ├─ more work
-                           └─ none → finish
+Bots
+Groups
+Sessions
 ```
 
-The controller is not called merely to confirm an explicit recipient supplied by the human.
+Hidden Bot/group sessions do not appear as ordinary Sessions by default.
+
+## 17.2 Group composer
+
+Group input has an explicit target selector:
+
+```text
+Handle with: Reviewer ▾
+
+Reviewer
+Select members…
+Everyone
+Automatic collaboration
+```
+
+`@` remains a shortcut that updates structured target selection.
+
+During the explicit-Group release, default target is the lead Bot so the user can send immediately without receiving an error telling them to mention someone.
+
+Because the currently selected target is visible next to the send action, sending with that selection is explicit human intent.
+
+## 17.3 Run card
+
+Group activity is organized by Run rather than flattening every tool event into the public transcript.
+
+```text
+Check whether this change can ship
+
+┌ Collaboration
+│ Reviewer   completed · 2 blockers
+│ Tester     running · View activity
+│ Builder    waiting
+│
+│ 2 / 6 steps
+│ [View activity] [Stop]
+└
+```
+
+Each Member Turn can expand into the existing `TurnParts` presentation. The feature reuses current tool/thought/plan/subagent rendering instead of introducing a second execution renderer.
+
+## 17.4 New Topic UX
+
+Users see “New topic”, not internal session terminology.
+
+Short explanation:
+
+> A new topic keeps the members and settings but starts with fresh conversation context.
+
+Topic archive, Run stop and Session sleep remain distinct operations.
+
+## 17.5 Bot editor
+
+Primary fields:
+
+- name;
+- description/responsibility;
+- instructions;
+- Agent;
+- default workspace.
+
+Advanced fields:
+
+- avatar;
+- cwd;
+- model;
+- effort.
+
+Execution-affecting changes must explain whether a runtime will be recreated. Presentation metadata and model instructions must not be conflated.
 
 ---
 
-# 17. Failure and recovery
+# 18. Events and reconnect contract
 
-## 17.1 Member failure quarantine
+Public APIs should be Run-aware.
 
-When a member turn fails during one group run:
-
-- mark the failed Bot unavailable for that run;
-- do not repeatedly reschedule it;
-- preserve already completed results;
-- allow other members to continue where safe.
-
-## 17.2 Parallel failure handling
-
-For a parallel batch:
-
-1. launch the primary members against the same snapshot;
-2. record healthy outcomes;
-3. quarantine all failed primaries before selecting any replacements;
-4. perform replacement/recovery serially so one healthy member session is not accidentally reused concurrently.
-
-## 17.3 Recovery owner
-
-If a member is unavailable, a healthy lead may receive a recovery turn with explicit `unavailableMemberIds`.
-
-The recovery prompt must instruct it:
-
-- do not claim unavailable members completed work;
-- report useful status accurately;
-- reorganize, reassign or finish missing work where possible.
-
-If the lead itself is unavailable, the controller may select another healthy recovery owner.
-
-## 17.4 Exhaustion
-
-If no valid controller/member path remains, terminate the group run with an explicit failure result. Do not loop indefinitely.
-
----
-
-# 18. Relay/control API
-
-Names are provisional; the important point is to expose domain-level operations rather than session aliases as the product API.
-
-## 18.1 Bot operations
-
-```text
-control.bots.list
-control.bots.create
-control.bots.update
-control.bots.delete
-```
-
-## 18.2 Conversation operations
-
-```text
-control.conversations.list
-control.conversations.create
-control.conversations.update
-control.conversations.delete
-control.conversations.history
-```
-
-## 18.3 Topic operations
-
-```text
-control.topics.list
-control.topics.create
-control.topics.archive
-control.topics.delete
-```
-
-## 18.4 Prompt/cancel
-
-```text
-control.conversation.prompt
-control.conversation.cancel
-```
-
-The server resolves Bot/Group runtime bindings and does not require the client to know hidden session aliases.
-
----
-
-# 19. Events
-
-Candidate domain events:
+Suggested events:
 
 ```text
 bots-changed
 conversations-changed
 conversation-topic-changed
 conversation-message
-
-group-planning
- group-turn-started
- group-turn-finished
- group-run-finished
- group-run-failed
+conversation-run-changed
+member-turn-started
+member-turn-finished
 ```
 
-For text/tools/thought/plan/usage generated by a member turn, prefer referencing/reusing the existing turn event/presentation contract rather than introducing a second parallel tool-event schema.
+Existing underlying turn events remain associated through exact IDs rather than content/time inference.
 
-A `group-turn-started` event should include enough identity to join the existing session turn stream to:
+Reconnect:
 
-- Conversation;
-- Topic;
-- Bot;
-- GroupTurn.
+```text
+client lastSeq=N
+→ server returns canonical events/messages with seq > N
+→ live subscription resumes after that cursor
+```
+
+A WebSocket disconnect must not create uncertainty about whether a message or completion exists durably.
 
 ---
 
-# 20. Relay Web UX
+# 19. Deletion and lifecycle
 
-Relay Web currently presents instance/session-centric chat. Bots/Groups should become an additional first-class navigation surface, not hidden session aliases in the normal session list.
+## 19.1 Bot deletion
 
-Recommended navigation:
+Until full verified teardown exists, deletion fails closed when the Bot has:
 
-```text
-Instance
-  ├─ Bots
-  │   ├─ Reviewer
-  │   └─ Builder
-  │
-  ├─ Groups
-  │   └─ Release Team
-  │
-  └─ Sessions
-      ├─ backend
-      └─ frontend
-```
+- Group membership;
+- a direct Conversation;
+- a runtime binding;
+- an owned hidden logical session.
 
-Hidden Bot/group logical sessions must not appear as normal user-created sessions unless a diagnostic mode explicitly exposes them.
+Later lifecycle support may convert those rejections into explicit verified teardown.
 
-## 20.1 Bot editor
-
-Fields:
+## 19.2 Topic deletion
 
 ```text
-Avatar
-Name
-Role
-Instructions
-Agent
-Workspace
-Working directory
-Model
-Effort
-Enabled
+mark deleting / reject new Runs
+→ cancel or drain active Runs
+→ verify hidden runtime release
+→ remove runtime bindings
+→ remove transcript / Run state
+→ remove Topic metadata
 ```
 
-## 20.2 Group editor
+Failure before verified release leaves enough durable state to retry cleanup.
 
-Fields:
+## 19.3 Conversation deletion
 
-```text
-Name
-Description
-Members (minimum 2)
-Lead member
-```
-
-## 20.3 Group composer mention scope
-
-Inside a Group:
-
-```text
-@ = current Group members + @everyone
-```
-
-Inside an ordinary session:
-
-```text
-@ = existing Agent Messaging endpoint autocomplete
-```
-
-These scopes are intentionally different even if the visible UX uses the same `@` character.
-
-Relay Web should send structured member IDs with ranges instead of requiring the server to resolve the display text again.
-
-## 20.4 Group activity
-
-The UI should expose per-member state where available:
-
-```text
-Reviewer · working
-Tester   · running tests
-Lead     · waiting
-```
-
-Because member turns reuse normal xacpx turn presentation, their tool/subagent/plan activity can use the existing renderer instead of a custom simplified log.
+Delete all Topics using the same verified lifecycle before Conversation metadata disappears.
 
 ---
 
-# 21. Channel bindings
+# 20. External channel binding
 
-The Conversation domain must not depend on Relay Web.
-
-Future channels may bind an external route to a Conversation/Topic:
+Future binding shape:
 
 ```ts
-export interface ConversationBinding {
+interface ConversationBinding {
   chatKey: string;
   conversationId: string;
   topicId?: string;
@@ -1079,366 +1059,155 @@ export interface ConversationBinding {
 
 Examples:
 
-- Discord channel → Group Conversation;
-- Discord thread → Group Topic;
-- Feishu group → Group Conversation;
-- direct channel route → direct Bot Conversation.
+```text
+Discord channel → Group Conversation
+Discord thread  → Topic
+Feishu group    → Group Conversation
+DM              → direct Bot Conversation
+```
 
-Inbound channel access policy remains a channel responsibility. Once admitted, the binding chooses the Conversation target.
+Channel admission runs first. Binding never bypasses channel authorization.
 
-External platforms without structured Bot mention IDs may use a conservative current-members-only parser. Ambiguous names must fail closed rather than guessing.
+Text-only mentions are only a fallback for current Group membership and ambiguous names fail closed.
 
 ---
 
-# 22. Relationship to Agent Messaging
+# 21. Security invariants
 
-Agent Messaging remains:
+The implementation must preserve all of the following:
 
-> one Agent/session sends a high-value point-to-point peer message to another reachable endpoint.
-
-Group Conversation remains:
-
-> a human-facing shared transcript with explicit membership, Topics, routing and scheduling.
-
-They can reuse transport/queue concepts, but neither replaces the other.
-
-Do not implement:
-
-```text
-Group = agent_send broadcast list
-```
-
-because that loses:
-
-- canonical transcript ordering;
-- group membership policy;
-- Topic isolation;
-- group-specific trigger IDs;
-- controller scheduling;
-- visibility semantics;
-- recovery state.
+1. Opaque IDs are canonical; names are presentation.
+2. Clients cannot provide trusted Bot profile content, sender identity or provenance.
+3. Router output is schema-validated.
+4. Router has no tool/permission capability before execution begins.
+5. Automatic work never inherits human permission authority.
+6. Public transcript excludes direct/other-Topic hidden history.
+7. Membership constrains every structured handoff/dispatch.
+8. Hidden sessions do not bypass normal transport/session safety.
+9. Filesystem parallelism requires an explicit enforceable policy.
+10. `indeterminate` work is not silently retried.
+11. Deletion never removes ownership records before verified runtime release.
+12. External bindings occur only after channel admission.
 
 ---
 
-# 23. Relationship to Task Orchestration
+# 22. Required tests
 
-Task Orchestration remains a bounded work-ownership/lifecycle subsystem.
+## Identity and persistence
 
-Group Conversation is a durable collaboration/conversation subsystem.
+- Bot ID stable across rename.
+- Conversation/Topic/Run/MemberTurn IDs independent from display names.
+- old state loads without new fields.
+- malformed records fail according to existing state-store policy.
+- runtime binding/session restore survives daemon restart.
+- concurrent get-or-create does not leave orphan owned sessions.
 
-Do not reuse `OrchestrationGroupRecord` as the group-chat record. The two models have different lifecycle and completion semantics.
+## Context isolation
 
-A future Bot may call Orchestration tools while acting in a **human-explicit** turn if normal capability/permission policy allows it. Controller-selected non-interactive turns must retain their non-human provenance.
+- direct vs Group session inequality.
+- Group A vs Group B inequality.
+- Topic A vs Topic B inequality.
+- direct/private/other-Topic history excluded from context.
+- clearing instructions affects future prompt composition but does not claim historical forgetting.
 
----
+## Runtime configuration
 
-# 24. Lifecycle and deletion
+- name/avatar/description edit does not recreate runtime.
+- Agent/workspace/cwd change cannot silently reuse old execution environment.
+- model/effort follow adapter turn-boundary/recreate policy.
+- stale runtime fingerprint is detected.
 
-Deletion must be transactional/fail closed with respect to hidden runtime sessions.
+## Run lifecycle
 
-## 24.1 Delete Topic
+- one human request creates one idempotent Run.
+- Topic has at most one active Run initially.
+- later same-Topic request queues.
+- cancel targets exact Run.
+- restart with pending dispatch resumes once.
+- persisted result replays by seq after reconnect.
+- unknown side-effect completion becomes `indeterminate`.
+- no automatic retry for indeterminate write-capable work.
 
-Recommended sequence:
+## Explicit routing
 
-```text
-mark Topic deleting
-→ stop/cancel/drain active group turns
-→ verified release of controller/member bindings
-→ remove bindings
-→ delete/retire transcript data
-→ delete Topic metadata
-```
+- explicit target bypasses Router.
+- multi-target IDs deduplicate.
+- unknown/non-member target rejects.
+- explicit Run ends after selected members terminal.
+- no surprise automatic continuation.
 
-Do not delete Topic metadata first and then attempt best-effort session cleanup.
+## Automatic routing
 
-## 24.2 Delete Group
+- Router receives only explicit bounded input.
+- Router cannot invoke tools before decision validation.
+- unsupported adapter disables automatic mode.
+- malformed/unknown member decisions reject/fail over according to policy.
+- `need-human` and `complete` are explicit states.
+- assignment task/expectedOutput/dependencies preserved.
+- turn budget prevents loops but is not treated as normal completion.
 
-The same pattern applies across all Topics.
+## Filesystem policy
 
-## 24.3 Delete Bot
+- shared-single-writer serializes side-effect-capable Member Turns.
+- read-only parallelism requires enforced capability classification.
+- transcript frozen-snapshot tests remain independent from filesystem scheduling.
 
-If a Bot is currently referenced by Groups, initial behavior should reject deletion and return the referencing Groups, or require an explicit remove-from-groups flow first.
+## Permission provenance
 
-Do not silently mutate Group membership as a side effect of Bot deletion.
+- direct and explicit human turns can use normal permission interaction.
+- Router-selected/handoff/recovery turns cannot mint human approval routing.
+- “Start this step myself” creates a new human-origin request rather than mutating origin.
 
----
+## UI / presentation
 
-# 25. Security boundaries
-
-Hard requirements:
-
-1. Bot IDs are opaque server-owned identities.
-2. User-visible Bot names are never authorization identities.
-3. Clients cannot provide trusted Bot profile/system context.
-4. Clients cannot claim a different sender Bot in `group_send`.
-5. Controller output is schema-validated and membership-checked.
-6. Controller cannot call tools or request permission.
-7. Automatic member turns do not inherit human permission authority.
-8. Private message bodies never enter public transcript/context.
-9. Group membership changes immediately constrain future routing.
-10. Hidden logical sessions cannot bypass normal runtime/session security policy.
-11. Deletion cannot erase the durable binding before verified runtime release where release is required.
-12. Future channel bindings must pass channel admission policy before Conversation routing.
-
----
-
-# 26. Observability
-
-Add structured logs/events around domain decisions without logging secrets or large message bodies.
-
-Suggested event keys:
-
-```text
-bot.created
-bot.updated
-bot.deleted
-
-conversation.created
-conversation.deleted
-conversation.topic_created
-
-group.route.explicit
-group.controller.started
-group.controller.decided
-group.controller.failed
-group.turn.started
-group.turn.finished
-group.turn.failed
-group.member.quarantined
-group.run.finished
-
-group.binding.created
-group.binding.released
-group.binding.release_failed
-```
-
-Useful structured fields:
-
-```text
-conversationId
-topicId
-botId
-groupTurnId
-mode
-memberCount
-origin
-attempt
-failureClass
-```
-
-Do not log full prompt bodies by default.
+- target selector sends structured intent.
+- Run card aggregates Member Turns.
+- expanded activity reuses TurnParts.
+- reconnect by seq converges history/live state.
+- hidden runtime sessions remain absent from normal Sessions navigation.
 
 ---
 
-# 27. Compatibility and migration
+# 23. Implementation invariants
 
-This feature should be additive.
+The feature is ready to expand only while these remain true:
 
-Existing:
+```text
+Bot != session
+Conversation != transport/chat route
+Topic = public context + runtime context + execution target boundary
+Message != Run
+Run != MemberTurn
+Router != participant
+Transcript snapshot != filesystem snapshot
+Explicit human execution != automatic collaboration
+failed != indeterminate
+profile edit != silent runtime drift
+permission provenance is never upgraded in place
+```
 
-- logical sessions;
-- normal Relay session chat;
-- channel chat contexts;
-- Agent Messaging;
-- Task Orchestration;
-- scheduled tasks
-
-continue to work without migration into Bot/Conversation objects.
-
-Do not automatically convert every existing session into a Bot.
-
-Bots are explicitly created product identities.
-
-Hidden Bot/group sessions should use normal session storage and transport semantics while carrying an internal ownership marker/binding that lets ordinary session-list presentation exclude them.
+These invariants are more important than preserving any provisional class name or PR boundary.
 
 ---
 
-# 28. Testing requirements
+# 24. End-to-end acceptance scenario
 
-## 28.1 Identity/isolation
+A representative mature flow:
 
-Required tests:
+1. User creates `Reviewer`, `Builder`, `Tester` Bots.
+2. User creates Group `Release Team` with `Reviewer` as lead.
+3. Default Topic inherits an explicit `ExecutionTarget` for the xacpx workspace using `shared-single-writer`.
+4. Composer visibly defaults to `Reviewer`.
+5. User asks Reviewer to inspect a change. An explicit Run is created and ends when Reviewer completes.
+6. User switches to “Automatic collaboration” and asks whether the change can ship.
+7. Human message, Run and initial dispatch intent are committed atomically.
+8. Stateless Router returns assignments with concrete `task` / `expectedOutput` fields.
+9. Read-only Reviewer/Tester work may run in parallel if capability policy proves it is non-mutating; write-capable work is serialized in the shared tree.
+10. Run card shows member progress while detailed tool activity remains expandable through existing TurnParts.
+11. A downstream automatic Builder step requires human-origin permission. It stays blocked with orchestration provenance.
+12. User clicks “Start this step myself”; xacpx creates a new explicit human-origin request instead of changing the old turn origin.
+13. Browser disconnects and reconnects using Topic `seq`; persisted messages/Run progress replay without duplication.
+14. If a write-capable process disappears after starting and completion cannot be proven, the Member Turn and Run enter an indeterminate/recovery state rather than automatically repeating the mutation.
+15. User creates a new Topic for an unrelated task. Membership and settings remain, while Bot runtime context starts fresh.
 
-```text
-same Bot + different Group      => different logical session
-same Bot + different Topic      => different logical session
-direct Bot + same Bot in Group  => different logical session
-controller + lead member        => different logical session
-restart                         => stable binding restored
-```
-
-## 28.2 Context
-
-```text
-direct private history never enters group context
-another Group history never enters current context
-another Topic history never enters current context
-latest human message is retained
-trigger messages are retained
-sender attribution is retained
-human role never becomes a Bot mention target
-```
-
-## 28.3 Routing
-
-```text
-structured @A        => A only, controller not called
-structured @A @B     => parallel A+B
-@everyone            => all eligible members
-unaddressed           => controller
-parallel              => identical input snapshot
-sequential            => later member sees earlier result
-unknown member id     => rejected
-removed member        => rejected
-```
-
-## 28.4 Controller
-
-```text
-valid JSON decision           => accepted
-unknown member                => rejected
-inaccessible trigger id       => rejected
-malformed output              => failover
-controller tool event         => failover
-controller permission event   => failover
-controller timeout            => failover
-max attempts exhausted        => clean group failure
-```
-
-## 28.5 Permission provenance
-
-```text
-human explicit @Bot
-  => origin human
-  => interactive permission can be minted
-
-controller-selected Bot
-  => non-human origin
-  => no interactive permission mint
-
-handoff/recovery turn
-  => no accidental human origin
-```
-
-## 28.6 Failure/recovery
-
-```text
-one parallel member fails
-  => healthy results remain valid
-
-failed member
-  => quarantined for current run
-
-recovery owner
-  => receives unavailableMemberIds
-
-max turn guard
-  => deterministic limited terminal state
-```
-
-## 28.7 Lifecycle
-
-```text
-delete referenced Bot
-  => rejected or explicit remove required
-
-delete Topic with running turn
-  => active turn drained/cancelled before metadata removal
-
-delete Group
-  => no orphan runtime binding remains
-
-release failure
-  => domain deletion fails closed
-```
-
----
-
-# 29. Recommended source layout
-
-Provisional layout:
-
-```text
-src/bots/
-  bot-types.ts
-  bot-service.ts
-  bot-profile-prompt.ts
-  bot-runtime-manager.ts
-
-src/conversations/
-  conversation-types.ts
-  conversation-service.ts
-  conversation-store.ts
-  conversation-context.ts
-  conversation-bindings.ts
-
-src/groups/
-  group-runtime.ts
-  group-router.ts
-  group-controller.ts
-  group-decision.ts
-  group-handoff.ts
-  group-failover.ts
-
-src/control/
-  bot-control-service.ts
-  conversation-control-service.ts
-
-packages/relay-protocol/
-  bot/conversation DTO additions
-
-packages/relay-web/src/
-  stores/bots.ts
-  stores/conversations.ts
-  components/BotDialog.vue
-  components/GroupDialog.vue
-  components/GroupHeader.vue
-  components/GroupMessage.vue
-  components/GroupMentionMenu.vue
-  views/BotConversationView.vue
-  views/GroupConversationView.vue
-```
-
-File placement may be adjusted during implementation, but domain boundaries should remain explicit.
-
----
-
-# 30. Key invariants to preserve during implementation
-
-The implementation is not complete if any of these are violated:
-
-1. **Bot != AgentConfig.** AgentConfig launches a runtime; Bot is a reusable product identity.
-2. **Bot != LogicalSession.** A Bot can own multiple isolated runtime sessions.
-3. **Group != Orchestration Group.** Chat and delegated task lifecycle remain distinct.
-4. **Group != Agent Messaging broadcast.** Shared transcript and routing are first-class.
-5. **Direct context never leaks into Group context.**
-6. **Topics isolate both transcript and runtime sessions.**
-7. **Explicit human addressing bypasses the controller.**
-8. **Parallel and sequential have deterministic, different visibility semantics.**
-9. **Controller is hidden, structured and tool-less.**
-10. **Automatic dispatch never silently upgrades to human permission authority.**
-11. **Daemon owns canonical Conversation state.**
-12. **Display names are not canonical identities.**
-13. **Hidden sessions are execution details, not the product model.**
-14. **Deletion verifies runtime cleanup before forgetting ownership.**
-
----
-
-# 31. Acceptance criteria for the complete feature
-
-A complete implementation should demonstrate the following end-to-end scenario:
-
-1. User creates `Reviewer`, `Builder` and `Tester` Bots with different runtime defaults.
-2. User talks directly to `Reviewer`; the direct conversation survives daemon/runtime restart.
-3. User creates `Release Team` with all three Bots and `Reviewer` as lead.
-4. Group Topic `PR 400` is created.
-5. A direct `@Tester` message runs only Tester's group-member session and can use human permission interaction when required.
-6. An unaddressed request invokes the hidden controller, which selects independent Reviewer/Tester work in parallel and Builder later in sequence.
-7. Parallel members see the same starting transcript; Builder sees their completed public results.
-8. No Bot's private direct-chat history appears in the Group prompt.
-9. Automatic controller-selected turns cannot mint human permission interactions.
-10. Tools and subagent activity display through existing Relay turn presentation.
-11. A failed member is quarantined without discarding healthy results.
-12. A new Topic creates isolated member/controller bindings and does not share the previous Topic's hidden runtime sessions.
-13. Deleting the Topic releases all of its hidden bindings before its metadata disappears.
-14. Existing ordinary sessions, Agent Messaging and Task Orchestration continue to behave unchanged.
+This is the target user experience: choose assistants, choose a topic, choose who handles the request, and manage one durable collaboration Run without needing to understand hidden sessions.
