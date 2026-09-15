@@ -1,8 +1,15 @@
+import type { BotProfile, BotRuntimeBinding } from "../bots/bot-types";
+import type { ConversationRecord, ConversationTopic } from "../conversations/conversation-types";
 import { createEmptyOrchestrationState, type OrchestrationState } from "../orchestration/orchestration-types";
 import type { ScheduledTaskRecord } from "../scheduled/scheduled-types";
 
 export type SessionTransportEngine = "cli" | "runtime";
 export type LogicalSessionSource = "xacpx" | "agent-side";
+
+export interface LogicalSessionOwner {
+  kind: "bot-direct" | "group-member" | "group-controller";
+  bindingId: string;
+}
 
 export interface NativeSessionCacheEntry {
   session_id: string;
@@ -63,6 +70,7 @@ export interface LogicalSession {
   archived_at?: string;
   created_at: string;
   last_used_at: string;
+  owner?: LogicalSessionOwner;
 }
 
 export interface BackgroundResult {
@@ -83,6 +91,10 @@ export interface AppState {
   native_session_lists: Record<string, NativeSessionListCacheRecord>;
   orchestration: OrchestrationState;
   scheduled_tasks: Record<string, ScheduledTaskRecord>;
+  bots: Record<string, BotProfile>;
+  conversations: Record<string, ConversationRecord>;
+  conversation_topics: Record<string, ConversationTopic>;
+  bot_runtime_bindings: Record<string, BotRuntimeBinding>;
 }
 
 export function createEmptyState(): AppState {
@@ -92,5 +104,9 @@ export function createEmptyState(): AppState {
     native_session_lists: {},
     orchestration: createEmptyOrchestrationState(),
     scheduled_tasks: {},
+    bots: {},
+    conversations: {},
+    conversation_topics: {},
+    bot_runtime_bindings: {},
   };
 }

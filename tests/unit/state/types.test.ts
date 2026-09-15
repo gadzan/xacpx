@@ -6,6 +6,14 @@ test("createEmptyState starts with empty chat_contexts", () => {
   expect(state.chat_contexts).toEqual({});
 });
 
+test("createEmptyState starts with empty Bot and Conversation collections", () => {
+  const state = createEmptyState();
+  expect(state.bots).toEqual({});
+  expect(state.conversations).toEqual({});
+  expect(state.conversation_topics).toEqual({});
+  expect(state.bot_runtime_bindings).toEqual({});
+});
+
 test("ChatContextState accepts a background_results map", () => {
   const state = createEmptyState();
   state.chat_contexts["weixin:a:u"] = {

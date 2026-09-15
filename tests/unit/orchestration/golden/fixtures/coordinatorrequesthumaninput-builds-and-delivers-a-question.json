@@ -115,7 +115,11 @@
       },
       "externalCoordinators": {}
     },
-    "scheduled_tasks": {}
+    "scheduled_tasks": {},
+    "bots": {},
+    "conversations": {},
+    "conversation_topics": {},
+    "bot_runtime_bindings": {}
   },
   "calls": [
     {

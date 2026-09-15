@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { readFile, rename, writeFile } from "node:fs/promises";
 
+import type { BotProfile, BotRuntimeBinding } from "../bots/bot-types";
+import type { ConversationRecord, ConversationTopic } from "../conversations/conversation-types";
 import { writePrivateFileAtomic } from "../util/private-file.js";
-import { createEmptyState, type AppState, type LogicalSession } from "./types";
+import { createEmptyState, type AppState, type LogicalSession, type LogicalSessionOwner } from "./types";
 import type { ScheduledTaskRecord, ScheduledTaskStatus } from "../scheduled/scheduled-types";
 import {
   createEmptyOrchestrationState,
@@ -698,7 +700,19 @@ function isSessionRecord(value: unknown): value is MaybeLegacySession {
     isOptionalString(value.effort) &&
     (value.reply_mode === undefined || isReplyMode(value.reply_mode)) &&
     isString(value.created_at) &&
-    isString(value.last_used_at)
+    isString(value.last_used_at) &&
+    (value.owner === undefined || isLogicalSessionOwner(value.owner))
+  );
+}
+
+function isLogicalSessionOwner(value: unknown): value is LogicalSessionOwner {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    (value.kind === "bot-direct" || value.kind === "group-member" || value.kind === "group-controller") &&
+    isString(value.bindingId) &&
+    value.bindingId.length > 0
   );
 }
 
@@ -866,6 +880,160 @@ function parseScheduledTasks(
   return tasks;
 }
 
+function isBotProfile(value: unknown): value is BotProfile {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    isString(value.id) &&
+    isString(value.name) &&
+    isOptionalString(value.avatar) &&
+    isOptionalString(value.role) &&
+    isOptionalString(value.instructions) &&
+    isString(value.agent) &&
+    isString(value.workspace) &&
+    isOptionalString(value.cwd) &&
+    isOptionalString(value.model) &&
+    isOptionalString(value.effort) &&
+    typeof value.enabled === "boolean" &&
+    isString(value.createdAt) &&
+    isString(value.updatedAt)
+  );
+}
+
+function parseBotProfiles(
+  raw: unknown,
+  dropped: StateLoadDroppedRecord[],
+): Record<string, BotProfile> {
+  const source = sectionRecord(raw, "bots", dropped);
+  const bots: Record<string, BotProfile> = {};
+  for (const [id, value] of Object.entries(source)) {
+    if (!isBotProfile(value) || value.id !== id) {
+      dropped.push({ section: "bots", key: id, reason: "malformed bot profile" });
+      continue;
+    }
+    bots[id] = value;
+  }
+  return bots;
+}
+
+function isUniqueStringArray(value: unknown): value is string[] {
+  return isStringArray(value) && new Set(value).size === value.length;
+}
+
+function isConversationRecord(value: unknown): value is ConversationRecord {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (
+    !isString(value.id) ||
+    !isString(value.title) ||
+    !isOptionalString(value.description) ||
+    !isUniqueStringArray(value.botIds) ||
+    !isOptionalString(value.leadBotId) ||
+    !isString(value.createdAt) ||
+    !isString(value.updatedAt)
+  ) {
+    return false;
+  }
+  if (value.leadBotId !== undefined && !value.botIds.includes(value.leadBotId)) {
+    return false;
+  }
+  if (value.kind === "bot") {
+    return value.botIds.length === 1;
+  }
+  if (value.kind === "group") {
+    return value.botIds.length >= 2;
+  }
+  return false;
+}
+
+function parseConversations(
+  raw: unknown,
+  dropped: StateLoadDroppedRecord[],
+): Record<string, ConversationRecord> {
+  const source = sectionRecord(raw, "conversations", dropped);
+  const conversations: Record<string, ConversationRecord> = {};
+  for (const [id, value] of Object.entries(source)) {
+    if (!isConversationRecord(value) || value.id !== id) {
+      dropped.push({ section: "conversations", key: id, reason: "malformed conversation record" });
+      continue;
+    }
+    conversations[id] = value;
+  }
+  return conversations;
+}
+
+function isConversationTopic(value: unknown): value is ConversationTopic {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    isString(value.id) &&
+    isString(value.conversationId) &&
+    isString(value.title) &&
+    (value.status === "active" || value.status === "archived") &&
+    isString(value.createdAt) &&
+    isString(value.updatedAt)
+  );
+}
+
+function parseConversationTopics(
+  raw: unknown,
+  dropped: StateLoadDroppedRecord[],
+): Record<string, ConversationTopic> {
+  const source = sectionRecord(raw, "conversation_topics", dropped);
+  const topics: Record<string, ConversationTopic> = {};
+  for (const [id, value] of Object.entries(source)) {
+    if (!isConversationTopic(value) || value.id !== id) {
+      dropped.push({ section: "conversation_topics", key: id, reason: "malformed conversation topic" });
+      continue;
+    }
+    topics[id] = value;
+  }
+  return topics;
+}
+
+function isBotRuntimeBinding(value: unknown): value is BotRuntimeBinding {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (
+    !isString(value.id) ||
+    !isString(value.conversationId) ||
+    !isString(value.topicId) ||
+    !isString(value.logicalSessionId) ||
+    !isString(value.sessionAlias) ||
+    !isString(value.createdAt) ||
+    !isString(value.updatedAt)
+  ) {
+    return false;
+  }
+  if (value.scope === "bot-direct" || value.scope === "group-member") {
+    return isString(value.botId) && value.botId.length > 0;
+  }
+  if (value.scope === "group-controller") {
+    return value.botId === undefined;
+  }
+  return false;
+}
+
+function parseBotRuntimeBindings(
+  raw: unknown,
+  dropped: StateLoadDroppedRecord[],
+): Record<string, BotRuntimeBinding> {
+  const source = sectionRecord(raw, "bot_runtime_bindings", dropped);
+  const bindings: Record<string, BotRuntimeBinding> = {};
+  for (const [id, value] of Object.entries(source)) {
+    if (!isBotRuntimeBinding(value) || value.id !== id) {
+      dropped.push({ section: "bot_runtime_bindings", key: id, reason: "malformed bot runtime binding" });
+      continue;
+    }
+    bindings[id] = value;
+  }
+  return bindings;
+}
+
 /**
  * Lenient state parser: a malformed record (or wrong-typed section) is skipped
  * and collected in `dropped` instead of throwing, so one bad record can never
@@ -894,6 +1062,10 @@ export function parseState(
     native_session_lists: parseNativeSessionLists(raw.native_session_lists),
     orchestration,
     scheduled_tasks: parseScheduledTasks(raw.scheduled_tasks, dropped),
+    bots: parseBotProfiles(raw.bots, dropped),
+    conversations: parseConversations(raw.conversations, dropped),
+    conversation_topics: parseConversationTopics(raw.conversation_topics, dropped),
+    bot_runtime_bindings: parseBotRuntimeBindings(raw.bot_runtime_bindings, dropped),
   };
 }
 

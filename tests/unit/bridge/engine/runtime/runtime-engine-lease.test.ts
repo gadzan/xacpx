@@ -148,8 +148,14 @@ test.serial("P1-6: archive via cancel->freeWarmProcess does not kick drain", asy
     // Direct prompt should clear suspend and drain
     const r = await engine.prompt({ ...testInput, text: "resume-after-cancel-archive" });
     expect(r.text).toBe("ok:resume-after-cancel-archive");
-    const { promise: _p600, resolve: _r600 } = Promise.withResolvers<void>(); setTimeout(_r600, 600); await _p600;
-    const after = await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId);
+    let after = true;
+    for (let i = 0; i < 40; i++) {
+      after = await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId);
+      if (!after) break;
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 50);
+      await promise;
+    }
     expect(after).toBe(false);
   } finally {
     await engine.shutdown().catch(() => {});
@@ -382,8 +388,14 @@ test.serial("P1-3: archive suspends drain, direct prompt resumes", async () => {
     // Direct prompt should clear suspend and drain the remaining pending
     const r = await engine.prompt({ ...testInput, text: "resume" });
     expect(r.text).toBe("ok:resume");
-    const { promise: _p600, resolve: _r600 } = Promise.withResolvers<void>(); setTimeout(_r600, 600); await _p600; // real timer: drain after prompt needs wall-clock
-    const afterPromptPending = await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId);
+    let afterPromptPending = true;
+    for (let i = 0; i < 40; i++) {
+      afterPromptPending = await (engine as any).getQueueStore().hasPending(testInput.logicalSessionId);
+      if (!afterPromptPending) break;
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 50);
+      await promise;
+    }
     expect(afterPromptPending).toBe(false);
   } finally {
     await engine.shutdown().catch(() => {});
@@ -528,8 +540,14 @@ test.serial("P1-3b: durable suspend survives restart (prime does not re-kick)", 
       // Direct prompt should clear suspend and drain
       const r = await engine2.prompt({ ...testInput, text: "resume2" });
       expect(r.text).toBe("ok:resume2");
-      const { promise: _p600, resolve: _r600 } = Promise.withResolvers<void>(); setTimeout(_r600, 600); await _p600;
-      const after = await (engine2 as any).getQueueStore().hasPending(testInput.logicalSessionId);
+      let after = true;
+      for (let i = 0; i < 40; i++) {
+        after = await (engine2 as any).getQueueStore().hasPending(testInput.logicalSessionId);
+        if (!after) break;
+        const { promise, resolve } = Promise.withResolvers<void>();
+        setTimeout(resolve, 50);
+        await promise;
+      }
       expect(after).toBe(false);
     } finally {
       await engine2.shutdown().catch(() => {});

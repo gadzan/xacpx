@@ -410,6 +410,10 @@ test("returns an empty state when the file is missing", async () => {
     chat_contexts: {},
     native_session_lists: {},
     scheduled_tasks: {},
+    bots: {},
+    conversations: {},
+    conversation_topics: {},
+    bot_runtime_bindings: {},
     orchestration: {
       tasks: {},
       workerBindings: {},
@@ -495,6 +499,10 @@ test("persists sessions and chat context", async () => {
     ...state,
     native_session_lists: {},
     scheduled_tasks: {},
+    bots: {},
+    conversations: {},
+    conversation_topics: {},
+    bot_runtime_bindings: {},
     orchestration: {
       ...state.orchestration,
       workerBindings: {
@@ -650,6 +658,10 @@ test("round-trips blocker-loop state records through load", async () => {
   await expect(store.load()).resolves.toEqual({
     ...state,
     native_session_lists: {},
+    bots: {},
+    conversations: {},
+    conversation_topics: {},
+    bot_runtime_bindings: {},
     orchestration: {
       ...state.orchestration,
       workerBindings: {
@@ -706,6 +718,10 @@ test("loads orchestration task records with coordinator injection metadata", asy
     chat_contexts: {},
     native_session_lists: {},
     scheduled_tasks: {},
+    bots: {},
+    conversations: {},
+    conversation_topics: {},
+    bot_runtime_bindings: {},
     orchestration: {
       tasks: {
         "task-1": {
@@ -846,6 +862,10 @@ test("loads orchestration task records with reliability metadata", async () => {
     chat_contexts: {},
     native_session_lists: {},
     scheduled_tasks: {},
+    bots: {},
+    conversations: {},
+    conversation_topics: {},
+    bot_runtime_bindings: {},
     orchestration: {
       tasks: {
         "task-1": {
@@ -896,6 +916,10 @@ test("treats an empty state file as empty state", async () => {
     chat_contexts: {},
     native_session_lists: {},
     scheduled_tasks: {},
+    bots: {},
+    conversations: {},
+    conversation_topics: {},
+    bot_runtime_bindings: {},
     orchestration: {
       tasks: {},
       workerBindings: {},
@@ -961,6 +985,10 @@ test("loads older states without orchestration as empty orchestration state", as
     chat_contexts: {},
     native_session_lists: {},
     scheduled_tasks: {},
+    bots: {},
+    conversations: {},
+    conversation_topics: {},
+    bot_runtime_bindings: {},
     orchestration: {
       tasks: {},
       workerBindings: {},
