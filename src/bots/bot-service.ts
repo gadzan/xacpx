@@ -4,6 +4,7 @@ import { AsyncMutex } from "../orchestration/async-mutex";
 import type { StateStore } from "../state/state-store";
 import type { AppState } from "../state/types";
 import { BotError } from "./bot-error";
+import { BotLifecycleGate } from "./bot-lifecycle-gate";
 import type { BotProfile } from "./bot-types";
 
 const NAME_MAX = 80;
@@ -33,16 +34,22 @@ export interface UpdateBotInput {
   enabled?: boolean | null;
 }
 
+export type BotLifecycleMutation = "update" | "delete";
+
 export interface BotServiceOptions {
   now?: () => Date;
   createId?: () => string;
   stateMutex?: AsyncMutex;
+  lifecycleGate?: BotLifecycleGate;
+  beforeLifecycleMutation?: (input: { botId: string; op: BotLifecycleMutation }) => Promise<void>;
 }
 
 export class BotService {
   private readonly now: () => Date;
   private readonly createId: () => string;
   private readonly stateMutex: AsyncMutex;
+  private readonly lifecycleGate: BotLifecycleGate;
+  private readonly beforeLifecycleMutation?: (input: { botId: string; op: BotLifecycleMutation }) => Promise<void>;
 
   constructor(
     private readonly config: Pick<AppConfig, "agents" | "workspaces">,
@@ -53,6 +60,13 @@ export class BotService {
     this.now = options?.now ?? (() => new Date());
     this.createId = options?.createId ?? (() => createBotId());
     this.stateMutex = options?.stateMutex ?? new AsyncMutex();
+    this.lifecycleGate = options?.lifecycleGate ?? new BotLifecycleGate();
+    this.beforeLifecycleMutation = options?.beforeLifecycleMutation;
+  }
+
+  /** Shared with BotRuntimeManager: one botId, one exclusive lifecycle. */
+  runLifecycle<T>(botId: string, critical: () => Promise<T>): Promise<T> {
+    return this.lifecycleGate.run(botId, critical);
   }
 
   listBots(): BotProfile[] {
@@ -87,50 +101,56 @@ export class BotService {
   }
 
   async updateBot(id: string, patch: UpdateBotInput): Promise<BotProfile> {
-    return await this.mutate(async () => {
-      this.rejectUnsupportedCwd(patch);
-      const existing = this.getBot(id);
-      if (patch.agent !== undefined && patch.agent !== existing.agent && this.hasLockedRuntime(id)) {
-        throw new BotError("runtime_identity_locked", `bot "${id}" agent cannot change while a runtime exists`);
-      }
-      if (patch.workspace !== undefined && patch.workspace !== existing.workspace && this.hasLockedRuntime(id)) {
-        throw new BotError("runtime_identity_locked", `bot "${id}" workspace cannot change while a runtime exists`);
-      }
-      const identity = this.requireIdentity({
-        name: this.requirePatchString(patch.name, existing.name, "name"),
-        agent: this.requirePatchString(patch.agent, existing.agent, "agent"),
-        workspace: this.requirePatchString(patch.workspace, existing.workspace, "workspace"),
+    return await this.runLifecycle(id, async () => {
+      await this.beforeLifecycleMutation?.({ botId: id, op: "update" });
+      return await this.mutate(async () => {
+        this.rejectUnsupportedCwd(patch);
+        const existing = this.getBot(id);
+        if (patch.agent !== undefined && patch.agent !== existing.agent && this.hasLockedRuntime(id)) {
+          throw new BotError("runtime_identity_locked", `bot "${id}" agent cannot change while a runtime exists`);
+        }
+        if (patch.workspace !== undefined && patch.workspace !== existing.workspace && this.hasLockedRuntime(id)) {
+          throw new BotError("runtime_identity_locked", `bot "${id}" workspace cannot change while a runtime exists`);
+        }
+        const identity = this.requireIdentity({
+          name: this.requirePatchString(patch.name, existing.name, "name"),
+          agent: this.requirePatchString(patch.agent, existing.agent, "agent"),
+          workspace: this.requirePatchString(patch.workspace, existing.workspace, "workspace"),
+        });
+        const next: BotProfile = {
+          ...existing,
+          ...identity,
+          ...this.patchOptional(existing, patch),
+          enabled: patch.enabled === undefined || patch.enabled === null ? existing.enabled : patch.enabled,
+          updatedAt: this.now().toISOString(),
+        };
+        this.state.bots[id] = next;
+        await this.stateStore.save(this.state);
+        return next;
       });
-      const next: BotProfile = {
-        ...existing,
-        ...identity,
-        ...this.patchOptional(existing, patch),
-        enabled: patch.enabled === undefined || patch.enabled === null ? existing.enabled : patch.enabled,
-        updatedAt: this.now().toISOString(),
-      };
-      this.state.bots[id] = next;
-      await this.stateStore.save(this.state);
-      return next;
     });
   }
 
   async deleteBot(id: string): Promise<void> {
-    await this.mutate(async () => {
-      this.getBot(id);
-      const groups = Object.values(this.state.conversations).filter(
-        (conversation) => conversation.kind === "group" && conversation.botIds.includes(id),
-      );
-      if (groups.length > 0) {
-        throw new BotError("bot_in_group", `bot "${id}" is referenced by groups`, {
-          conversationIds: groups.map((group) => group.id),
-        });
-      }
-      const runtime = this.directRuntimeRefs(id);
-      if (runtime.conversationIds.length > 0 || runtime.bindingIds.length > 0 || runtime.sessionAliases.length > 0) {
-        throw new BotError("bot_in_use", `bot "${id}" still has a direct runtime`, runtime);
-      }
-      delete this.state.bots[id];
-      await this.stateStore.save(this.state);
+    await this.runLifecycle(id, async () => {
+      await this.beforeLifecycleMutation?.({ botId: id, op: "delete" });
+      await this.mutate(async () => {
+        this.getBot(id);
+        const groups = Object.values(this.state.conversations).filter(
+          (conversation) => conversation.kind === "group" && conversation.botIds.includes(id),
+        );
+        if (groups.length > 0) {
+          throw new BotError("bot_in_group", `bot "${id}" is referenced by groups`, {
+            conversationIds: groups.map((group) => group.id),
+          });
+        }
+        const runtime = this.directRuntimeRefs(id);
+        if (runtime.conversationIds.length > 0 || runtime.bindingIds.length > 0 || runtime.sessionAliases.length > 0) {
+          throw new BotError("bot_in_use", `bot "${id}" still has a direct runtime`, runtime);
+        }
+        delete this.state.bots[id];
+        await this.stateStore.save(this.state);
+      });
     });
   }
 

@@ -28,6 +28,7 @@ export interface BotTurnRunner {
 export interface BotRuntimeManagerOptions {
   now?: () => Date;
   stateMutex?: AsyncMutex;
+  afterDirectSnapshot?: (bot: BotProfile) => Promise<void>;
 }
 
 type SessionWriter = Pick<StateStore, "save"> & { saveNow?: (state: AppState) => Promise<void> };
@@ -35,6 +36,7 @@ type SessionWriter = Pick<StateStore, "save"> & { saveNow?: (state: AppState) =>
 export class BotRuntimeManager {
   private readonly now: () => Date;
   private readonly stateMutex: AsyncMutex;
+  private readonly afterDirectSnapshot?: (bot: BotProfile) => Promise<void>;
   private readonly inflight = new Map<string, Promise<BotRuntimeBinding>>();
 
   constructor(
@@ -49,6 +51,7 @@ export class BotRuntimeManager {
   ) {
     this.now = options?.now ?? (() => new Date());
     this.stateMutex = options?.stateMutex ?? new AsyncMutex();
+    this.afterDirectSnapshot = options?.afterDirectSnapshot;
   }
 
   async getOrCreateDirectSession(input: {
@@ -63,7 +66,9 @@ export class BotRuntimeManager {
     if (running) {
       return await running;
     }
-    const pending = this.materializeDirectSession(input).finally(() => {
+    // Per-bot lifecycle is independent of daemon stateMutex and spans the
+    // SessionService await. Identity updates and deletes share this gate.
+    const pending = this.bots.runLifecycle(input.botId, () => this.materializeDirectSession(input)).finally(() => {
       if (this.inflight.get(key) === pending) {
         this.inflight.delete(key);
       }
@@ -100,6 +105,7 @@ export class BotRuntimeManager {
       await this.alignSessionRuntime(existing, bot);
       return existing;
     }
+    await this.afterDirectSnapshot?.(bot);
     const session = await this.ensureOwnedSession(bot, bindingId);
     return await this.publishDirectRuntime(bot, session, bindingId, input);
   }

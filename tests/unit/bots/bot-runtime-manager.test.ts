@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import { BotError } from "../../../src/bots/bot-error";
 import { BotRuntimeManager } from "../../../src/bots/bot-runtime-manager";
 import { BotService } from "../../../src/bots/bot-service";
+import type { BotProfile } from "../../../src/bots/bot-types";
 import type { AppConfig } from "../../../src/config/types";
 import type { ConversationTopic } from "../../../src/conversations/conversation-types";
 import { planDirectConversation } from "../../../src/conversations/direct-conversation";
@@ -55,17 +56,38 @@ function createConfig(): AppConfig {
   };
 }
 
-function createHarness(store: MemoryStateStore = new MemoryStateStore(), state = createEmptyState()) {
+function createHarness(
+  store: MemoryStateStore = new MemoryStateStore(),
+  state: AppState = createEmptyState(),
+  options: {
+    stateMutex?: AsyncMutex;
+    afterDirectSnapshot?: (bot: BotProfile) => Promise<void>;
+    beforeLifecycleMutation?: (input: { botId: string; op: "update" | "delete" }) => Promise<void>;
+  } = {},
+) {
   const config = createConfig();
-  const sessions = new SessionService(config, store, state, { now: () => Date.parse(NOW) });
+  const stateMutex = options.stateMutex ?? new AsyncMutex();
+  const sessions = new SessionService(config, store, state, { now: () => Date.parse(NOW), stateMutex });
   const bots = new BotService(config, state, store, {
     now: () => new Date(NOW),
     createId: () => BOT_ID,
+    stateMutex,
+    beforeLifecycleMutation: options.beforeLifecycleMutation,
   });
   const runtime = new BotRuntimeManager(bots, sessions, state, store, {
     now: () => new Date(NOW),
+    stateMutex,
+    afterDirectSnapshot: options.afterDirectSnapshot,
   });
-  return { state, store, sessions, bots, runtime };
+  return { state, store, sessions, bots, runtime, stateMutex };
+}
+
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
 }
 
 function ownedSessions(state: AppState) {
@@ -239,19 +261,15 @@ test("promptDirect does not wrap a runtime command in profile text", async () =>
 });
 
 test("getOrCreateDirectSession does not deadlock on the shared session mutex", async () => {
-  const state = createEmptyState();
-  const store = new MemoryStateStore();
-  const config = createConfig();
   const mutex = new AsyncMutex();
-  const sessions = new SessionService(config, store, state, { now: () => Date.parse(NOW), stateMutex: mutex });
-  const bots = new BotService(config, state, store, {
-    now: () => new Date(NOW),
-    createId: () => BOT_ID,
+  let acquiredDuringSnapshot = false;
+  const { bots, runtime } = createHarness(new MemoryStateStore(), createEmptyState(), {
     stateMutex: mutex,
-  });
-  const runtime = new BotRuntimeManager(bots, sessions, state, store, {
-    now: () => new Date(NOW),
-    stateMutex: mutex,
+    afterDirectSnapshot: async () => {
+      await mutex.run(async () => {
+        acquiredDuringSnapshot = true;
+      });
+    },
   });
   await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
   const binding = await Promise.race([
@@ -260,6 +278,7 @@ test("getOrCreateDirectSession does not deadlock on the shared session mutex", a
       setTimeout(() => reject(new Error("deadlocked on shared stateMutex")), 2000);
     }),
   ]);
+  expect(acquiredDuringSnapshot).toBe(true);
   expect(binding.sessionAlias).toBe(`brt_${createDirectBindingId(BOT_ID)}`);
   const reused = await Promise.race([
     runtime.getOrCreateDirectSession({ botId: BOT_ID }),
@@ -381,4 +400,115 @@ test("a concurrent second-topic request does not join the default single-flight"
   });
   expect(Object.keys(state.bot_runtime_bindings)).toEqual([createDirectBindingId(BOT_ID)]);
   expect(ownedSessions(state)).toHaveLength(1);
+});
+
+test("update agent racing first materialization is totally ordered by the lifecycle gate", async () => {
+  const snapshot = deferred();
+  const resume = deferred();
+  const { bots, runtime, state } = createHarness(new MemoryStateStore(), createEmptyState(), {
+    afterDirectSnapshot: async (bot) => {
+      expect(bot.agent).toBe("codex");
+      expect(bot.workspace).toBe("backend");
+      snapshot.resolve();
+      await resume.promise;
+    },
+  });
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const materialize = runtime.getOrCreateDirectSession({ botId: BOT_ID });
+  await snapshot.promise;
+  const update = bots.updateBot(BOT_ID, { agent: "claude" });
+  resume.resolve();
+  const [runtimeResult, updateResult] = await Promise.allSettled([materialize, update]);
+  expect(runtimeResult.status).toBe("fulfilled");
+  expect(updateResult.status).toBe("rejected");
+  expect(updateResult.status === "rejected" ? updateResult.reason : undefined).toMatchObject({
+    code: "runtime_identity_locked",
+  });
+  expect(bots.getBot(BOT_ID).agent).toBe("codex");
+  expect(bots.getBot(BOT_ID).workspace).toBe("backend");
+  const owned = ownedSessions(state);
+  expect(owned).toHaveLength(1);
+  expect(owned[0]?.agent).toBe("codex");
+  expect(owned[0]?.workspace).toBe("backend");
+  expect(state.bot_runtime_bindings[createDirectBindingId(BOT_ID)]?.sessionAlias).toBe(owned[0]?.alias);
+});
+
+test("an identity update that wins the lifecycle gate is used by the first materialization", async () => {
+  const entered = deferred();
+  const resume = deferred();
+  const { bots, runtime, state } = createHarness(new MemoryStateStore(), createEmptyState(), {
+    beforeLifecycleMutation: async ({ op }) => {
+      if (op !== "update") {
+        return;
+      }
+      entered.resolve();
+      await resume.promise;
+    },
+  });
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const update = bots.updateBot(BOT_ID, { agent: "claude", workspace: "frontend" });
+  await entered.promise;
+  const materialize = runtime.getOrCreateDirectSession({ botId: BOT_ID });
+  resume.resolve();
+  await update;
+  const binding = await materialize;
+  expect(bots.getBot(BOT_ID).agent).toBe("claude");
+  expect(bots.getBot(BOT_ID).workspace).toBe("frontend");
+  const owned = ownedSessions(state);
+  expect(owned).toHaveLength(1);
+  expect(owned[0]?.agent).toBe("claude");
+  expect(owned[0]?.workspace).toBe("frontend");
+  expect(binding.sessionAlias).toBe(owned[0]?.alias);
+});
+
+test("delete racing first materialization never leaves dangling ownership", async () => {
+  const snapshot = deferred();
+  const resume = deferred();
+  const { bots, runtime, state } = createHarness(new MemoryStateStore(), createEmptyState(), {
+    afterDirectSnapshot: async () => {
+      snapshot.resolve();
+      await resume.promise;
+    },
+  });
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const materialize = runtime.getOrCreateDirectSession({ botId: BOT_ID });
+  await snapshot.promise;
+  const deletion = bots.deleteBot(BOT_ID);
+  resume.resolve();
+  const [runtimeResult, deleteResult] = await Promise.allSettled([materialize, deletion]);
+  expect(runtimeResult.status).toBe("fulfilled");
+  expect(deleteResult.status).toBe("rejected");
+  expect(deleteResult.status === "rejected" ? deleteResult.reason : undefined).toMatchObject({
+    code: "bot_in_use",
+  });
+  expect(bots.getBot(BOT_ID).id).toBe(BOT_ID);
+  expect(Object.keys(state.bot_runtime_bindings)).toEqual([createDirectBindingId(BOT_ID)]);
+  expect(state.conversations[createDirectConversationId(BOT_ID)]?.botIds).toEqual([BOT_ID]);
+  expect(ownedSessions(state)).toHaveLength(1);
+});
+
+test("a delete that wins the lifecycle gate leaves no Conversation, binding, or owned session", async () => {
+  const entered = deferred();
+  const resume = deferred();
+  const { bots, runtime, state } = createHarness(new MemoryStateStore(), createEmptyState(), {
+    beforeLifecycleMutation: async ({ op }) => {
+      if (op !== "delete") {
+        return;
+      }
+      entered.resolve();
+      await resume.promise;
+    },
+  });
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const deletion = bots.deleteBot(BOT_ID);
+  await entered.promise;
+  const materialize = runtime.getOrCreateDirectSession({ botId: BOT_ID });
+  resume.resolve();
+  await deletion;
+  await expect(materialize).rejects.toMatchObject({ code: "bot_not_found" });
+  expect(state.bots[BOT_ID]).toBeUndefined();
+  expect(state.conversations).toEqual({});
+  expect(state.conversation_topics).toEqual({});
+  expect(state.bot_runtime_bindings).toEqual({});
+  expect(ownedSessions(state)).toHaveLength(0);
 });
