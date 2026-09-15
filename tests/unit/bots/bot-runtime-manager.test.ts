@@ -3,8 +3,9 @@ import { expect, test } from "bun:test";
 import { BotRuntimeManager } from "../../../src/bots/bot-runtime-manager";
 import { BotService } from "../../../src/bots/bot-service";
 import type { AppConfig } from "../../../src/config/types";
+import { AsyncMutex } from "../../../src/orchestration/async-mutex";
 import { SessionService } from "../../../src/sessions/session-service";
-import type { StateStore } from "../../../src/state/state-store";
+import { parseState, type StateStore } from "../../../src/state/state-store";
 import { createEmptyState, type AppState } from "../../../src/state/types";
 
 const NOW = "2026-09-15T10:00:00.000Z";
@@ -150,4 +151,64 @@ test("promptDirect does not wrap a runtime command in profile text", async () =>
     },
   );
   expect(sent).toBe("/status");
+});
+
+test("getOrCreateDirectSession does not deadlock on the shared session mutex", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  const config = createConfig();
+  const mutex = new AsyncMutex();
+  const sessions = new SessionService(config, store, state, { now: () => Date.parse(NOW), stateMutex: mutex });
+  const bots = new BotService(config, state, store, {
+    now: () => new Date(NOW),
+    createId: () => "bot_reviewer",
+    stateMutex: mutex,
+  });
+  const runtime = new BotRuntimeManager(bots, sessions, state, store, {
+    now: () => new Date(NOW),
+    createBindingId: () => "bind_direct",
+    createConversationId: () => "conversation_direct",
+    createTopicId: () => "topic_default",
+    stateMutex: mutex,
+  });
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const binding = await Promise.race([
+    runtime.getOrCreateDirectSession({ botId: "bot_reviewer" }),
+    new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error("deadlocked on shared stateMutex")), 2000);
+    }),
+  ]);
+  expect(binding.sessionAlias).toBe("brt_bind_direct");
+  const reused = await Promise.race([
+    runtime.getOrCreateDirectSession({ botId: "bot_reviewer" }),
+    new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error("deadlocked on shared stateMutex reuse")), 2000);
+    }),
+  ]);
+  expect(reused.id).toBe(binding.id);
+});
+
+test("getOrCreateDirectSession restores a live binding after state reload", async () => {
+  const first = createHarness();
+  await first.bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const created = await first.runtime.getOrCreateDirectSession({ botId: "bot_reviewer" });
+  const reloaded = parseState(JSON.parse(JSON.stringify(first.state)) as Record<string, unknown>, "state.json");
+  const store = new MemoryStateStore();
+  const config = createConfig();
+  const sessions = new SessionService(config, store, reloaded, { now: () => Date.parse(NOW) });
+  const bots = new BotService(config, reloaded, store, {
+    now: () => new Date(NOW),
+    createId: () => "bot_other",
+  });
+  const runtime = new BotRuntimeManager(bots, sessions, reloaded, store, {
+    now: () => new Date(NOW),
+    createBindingId: () => "bind_should_not_mint",
+    createConversationId: () => "conversation_should_not_mint",
+    createTopicId: () => "topic_should_not_mint",
+  });
+  const restored = await runtime.getOrCreateDirectSession({ botId: "bot_reviewer" });
+  expect(restored.id).toBe(created.id);
+  expect(restored.logicalSessionId).toBe(created.logicalSessionId);
+  expect(restored.sessionAlias).toBe(created.sessionAlias);
+  expect(store.saved).toHaveLength(0);
 });
