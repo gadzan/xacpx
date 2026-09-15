@@ -17,8 +17,15 @@ const bot: BotProfile = {
 
 test("composeBotTurnPrompt uses the durable profile and keeps user text", () => {
   expect(composeBotTurnPrompt(bot, "check the lock")).toBe(
-    'You are acting as the Bot named "Reviewer".\n\nRole: Code reviewer\n\nInstructions:\nFocus on races.\n\nThis Bot profile does not change the underlying model, tools, or permission policy.\n\ncheck the lock',
+    'You are acting as the Bot named "Reviewer".\n\nInstructions:\nFocus on races.\n\nThis Bot profile does not change the underlying model, tools, or permission policy.\n\ncheck the lock',
   );
+});
+
+test("composeBotTurnPrompt does not inject presentation role into model text", () => {
+  const prompt = composeBotTurnPrompt(bot, "check the lock");
+  expect(prompt.includes("Role:")).toBe(false);
+  expect(prompt.includes("Code reviewer")).toBe(false);
+  expect(prompt).toContain("Focus on races.");
 });
 
 test("composeBotTurnPrompt omits empty optional fields", () => {

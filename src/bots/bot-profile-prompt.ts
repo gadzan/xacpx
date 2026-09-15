@@ -8,7 +8,6 @@ export function composeBotTurnPrompt(profile: BotProfile, userText: string): str
 
   const lines = [
     `You are acting as the Bot named "${profile.name}".`,
-    profile.role ? `Role: ${profile.role}` : undefined,
     profile.instructions ? `Instructions:\n${profile.instructions}` : undefined,
     "This Bot profile does not change the underlying model, tools, or permission policy.",
   ].filter((line): line is string => Boolean(line));

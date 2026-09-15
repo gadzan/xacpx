@@ -180,6 +180,7 @@ test("promptDirect keeps origin human and applies the latest profile", async () 
     name: "Reviewer",
     agent: "codex",
     workspace: "backend",
+    role: "Code reviewer",
     instructions: "Focus on races.",
   });
   const conversationId = createDirectConversationId(BOT_ID);
@@ -209,6 +210,8 @@ test("promptDirect keeps origin human and applies the latest profile", async () 
   expect(calls[1]?.origin).toBe("human");
   expect(calls[0]?.sessionAlias).toBe(calls[1]?.sessionAlias);
   expect(calls[0]?.text).toContain("Focus on races.");
+  expect(calls[0]?.text.includes("Role:")).toBe(false);
+  expect(calls[0]?.text.includes("Code reviewer")).toBe(false);
   expect(calls[1]?.text).toContain("Be terse.");
   expect(calls[1]?.text.includes("Focus on races.")).toBe(false);
 });
