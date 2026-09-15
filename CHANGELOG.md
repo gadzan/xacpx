@@ -1,4 +1,10 @@
 # Changelog
+## [relay 0.14.7-beta.0] - 2026-09-15
+
+### Fixed
+
+- relay-web UI polish batch: inner files tab renamed to Browse (`files.title` en/zh); muted small text raised to WCAG AA (drop `/70`/`/60` opacities, offline instance card no longer dims whole-card to `opacity-60`); branch chip semantic color follows `changedCount` (warn only when dirty); collapsed trace toggle visibly expandable (uniform `opacity-70` chevron + tooltip).
+
 ## [0.24.5-beta.0] - 2026-09-15
 
 ### Added
