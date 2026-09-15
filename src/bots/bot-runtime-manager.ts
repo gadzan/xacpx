@@ -56,6 +56,8 @@ export class BotRuntimeManager {
     conversationId?: string;
     topicId?: string;
   }): Promise<BotRuntimeBinding> {
+    this.requireEnabledBot(input.botId);
+    this.assertRequestedIds(input.botId, input);
     const key = `bot-direct:${input.botId}`;
     const running = this.inflight.get(key);
     if (running) {
@@ -124,6 +126,7 @@ export class BotRuntimeManager {
       if (!requested || requested.conversationId !== planned.conversation.id) {
         throw new BotError("topic_not_found", `topic "${input.topicId}" does not belong to this Bot conversation`);
       }
+      throw new BotError("topic_runtime_unsupported", `direct runtime only supports the default topic for bot "${botId}"`);
     }
   }
 
@@ -171,14 +174,18 @@ export class BotRuntimeManager {
       if (input.conversationId && input.conversationId !== conversation.id) {
         throw new BotError("conversation_mismatch", "direct Bot conversation does not match this Bot");
       }
-      const topicId = input.topicId && this.state.conversation_topics[input.topicId]?.conversationId === conversation.id
-        ? input.topicId
-        : topic.id;
+      if (input.topicId && input.topicId !== topic.id) {
+        const requested = this.state.conversation_topics[input.topicId];
+        if (requested && requested.conversationId === conversation.id) {
+          throw new BotError("topic_runtime_unsupported", `direct runtime only supports the default topic for bot "${bot.id}"`);
+        }
+        throw new BotError("topic_not_found", `topic "${input.topicId}" does not belong to this Bot conversation`);
+      }
       const binding: BotRuntimeBinding = {
         id: bindingId,
         scope: "bot-direct",
         conversationId: conversation.id,
-        topicId,
+        topicId: topic.id,
         botId: bot.id,
         logicalSessionId: session.logical_session_id,
         sessionAlias: session.alias,
@@ -188,12 +195,6 @@ export class BotRuntimeManager {
       const next = structuredClone(this.state);
       next.conversations[conversation.id] = conversation;
       next.conversation_topics[topic.id] = next.conversation_topics[topic.id] ?? topic;
-      if (topicId !== topic.id) {
-        const requested = this.state.conversation_topics[topicId];
-        if (requested) {
-          next.conversation_topics[topicId] = requested;
-        }
-      }
       next.bot_runtime_bindings[bindingId] = binding;
       if (typeof this.stateStore.saveNow === "function") {
         await this.stateStore.saveNow(next);

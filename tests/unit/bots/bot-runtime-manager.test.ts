@@ -4,6 +4,7 @@ import { BotError } from "../../../src/bots/bot-error";
 import { BotRuntimeManager } from "../../../src/bots/bot-runtime-manager";
 import { BotService } from "../../../src/bots/bot-service";
 import type { AppConfig } from "../../../src/config/types";
+import type { ConversationTopic } from "../../../src/conversations/conversation-types";
 import { planDirectConversation } from "../../../src/conversations/direct-conversation";
 import { createDirectBindingId, createDirectConversationId, createDirectTopicId } from "../../../src/domain/ids";
 import { AsyncMutex } from "../../../src/orchestration/async-mutex";
@@ -69,6 +70,19 @@ function createHarness(store: MemoryStateStore = new MemoryStateStore(), state =
 
 function ownedSessions(state: AppState) {
   return Object.values(state.sessions).filter((session) => session.owner?.kind === "bot-direct");
+}
+
+function insertExtraDirectTopic(state: AppState, botId: string, topicId = "topic_manual_second"): string {
+  const extra: ConversationTopic = {
+    id: topicId,
+    conversationId: createDirectConversationId(botId),
+    title: "Second",
+    status: "active",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  state.conversation_topics[topicId] = extra;
+  return topicId;
 }
 
 test("planDirectConversation does not write live AppState", () => {
@@ -264,4 +278,104 @@ test("getOrCreateDirectSession restores a live binding after state reload", asyn
   expect(restored.logicalSessionId).toBe(created.logicalSessionId);
   expect(restored.sessionAlias).toBe(created.sessionAlias);
   expect(recovered.store.saved).toHaveLength(0);
+});
+
+test("planDirectConversation keeps the default topic when another active topic exists", () => {
+  const state = createEmptyState();
+  const conversationId = createDirectConversationId(BOT_ID);
+  state.conversations[conversationId] = {
+    id: conversationId,
+    kind: "bot",
+    title: "Reviewer",
+    botIds: [BOT_ID],
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  insertExtraDirectTopic(state, BOT_ID);
+  const planned = planDirectConversation(state, { botId: BOT_ID, title: "Reviewer", now: NOW });
+  expect(planned.topic.id).toBe(createDirectTopicId(BOT_ID));
+  expect(planned.topic.id).not.toBe("topic_manual_second");
+});
+
+test("getOrCreateDirectSession rejects a second topic on the same direct conversation", async () => {
+  const { bots, runtime, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const extraTopicId = insertExtraDirectTopic(state, BOT_ID);
+
+  await expect(runtime.getOrCreateDirectSession({ botId: BOT_ID, topicId: extraTopicId })).rejects.toMatchObject({
+    code: "topic_runtime_unsupported",
+  });
+
+  expect(state.bot_runtime_bindings).toEqual({});
+  expect(ownedSessions(state)).toHaveLength(0);
+  expect(state.conversations).toEqual({});
+  expect(state.conversation_topics[extraTopicId]?.id).toBe(extraTopicId);
+  expect(state.conversation_topics[createDirectTopicId(BOT_ID)]).toBeUndefined();
+});
+
+test("a topic that does not belong to the direct conversation stays topic_not_found", async () => {
+  const { bots, runtime, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  state.conversation_topics.topic_other = {
+    id: "topic_other",
+    conversationId: "conversation_someone_else",
+    title: "Other",
+    status: "active",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+
+  await expect(runtime.getOrCreateDirectSession({ botId: BOT_ID, topicId: "topic_other" })).rejects.toMatchObject({
+    code: "topic_not_found",
+  });
+  await expect(runtime.getOrCreateDirectSession({ botId: BOT_ID, topicId: "topic_missing" })).rejects.toMatchObject({
+    code: "topic_not_found",
+  });
+  expect(state.bot_runtime_bindings).toEqual({});
+  expect(ownedSessions(state)).toHaveLength(0);
+});
+
+test("a second topic does not reuse the default binding after runtime exists", async () => {
+  const { bots, runtime, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const created = await runtime.getOrCreateDirectSession({ botId: BOT_ID });
+  const extraTopicId = insertExtraDirectTopic(state, BOT_ID);
+
+  await expect(runtime.getOrCreateDirectSession({ botId: BOT_ID, topicId: extraTopicId })).rejects.toMatchObject({
+    code: "topic_runtime_unsupported",
+  });
+
+  expect(Object.keys(state.bot_runtime_bindings)).toEqual([createDirectBindingId(BOT_ID)]);
+  expect(state.bot_runtime_bindings[createDirectBindingId(BOT_ID)]?.topicId).toBe(createDirectTopicId(BOT_ID));
+  expect(state.bot_runtime_bindings[createDirectBindingId(BOT_ID)]?.id).toBe(created.id);
+  expect(ownedSessions(state)).toHaveLength(1);
+  expect(ownedSessions(state)[0]?.alias).toBe(`brt_${createDirectBindingId(BOT_ID)}`);
+});
+
+test("omitting topicId still binds the default topic when another active topic exists", async () => {
+  const { bots, runtime, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  insertExtraDirectTopic(state, BOT_ID);
+  const binding = await runtime.getOrCreateDirectSession({ botId: BOT_ID });
+  expect(binding.topicId).toBe(createDirectTopicId(BOT_ID));
+  expect(binding.topicId).not.toBe("topic_manual_second");
+  expect(Object.keys(state.bot_runtime_bindings)).toEqual([createDirectBindingId(BOT_ID)]);
+  expect(ownedSessions(state)).toHaveLength(1);
+});
+
+test("a concurrent second-topic request does not join the default single-flight", async () => {
+  const { bots, runtime, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const extraTopicId = insertExtraDirectTopic(state, BOT_ID);
+  const [defaultResult, extraResult] = await Promise.allSettled([
+    runtime.getOrCreateDirectSession({ botId: BOT_ID }),
+    runtime.getOrCreateDirectSession({ botId: BOT_ID, topicId: extraTopicId }),
+  ]);
+  expect(defaultResult.status).toBe("fulfilled");
+  expect(extraResult.status).toBe("rejected");
+  expect(extraResult.status === "rejected" ? extraResult.reason : undefined).toMatchObject({
+    code: "topic_runtime_unsupported",
+  });
+  expect(Object.keys(state.bot_runtime_bindings)).toEqual([createDirectBindingId(BOT_ID)]);
+  expect(ownedSessions(state)).toHaveLength(1);
 });

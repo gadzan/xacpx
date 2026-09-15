@@ -28,17 +28,17 @@ export function planDirectConversation(
     createdAt: input.now,
     updatedAt: input.now,
   };
-  const topic = Object.values(state.conversation_topics).find(
-    (candidate) => candidate.conversationId === conversation.id && candidate.status === "active",
-  ) ?? Object.values(state.conversation_topics).find(
-    (candidate) => candidate.conversationId === conversation.id,
-  ) ?? {
-    id: createDirectTopicId(input.botId),
-    conversationId: conversation.id,
-    title: "Default",
-    status: "active" as const,
-    createdAt: input.now,
-    updatedAt: input.now,
-  };
+  const defaultTopicId = createDirectTopicId(input.botId);
+  const existingTopic = state.conversation_topics[defaultTopicId];
+  const topic = existingTopic && existingTopic.conversationId === conversation.id
+    ? existingTopic
+    : {
+      id: defaultTopicId,
+      conversationId: conversation.id,
+      title: "Default",
+      status: "active" as const,
+      createdAt: input.now,
+      updatedAt: input.now,
+    };
   return { conversation, topic };
 }
