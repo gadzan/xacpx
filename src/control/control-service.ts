@@ -355,6 +355,9 @@ export interface ControlPromptInput {
    *  turn-started so the hub can tie a queued prompt back to its pre-written inbound
    *  row (see PromptPayload.promptRequestId). */
   promptRequestId?: string;
+  /** Conversation pre-admission cancel. Checked after any config-tail wait and
+   *  immediately before TurnQueue.submit so a cancelled Run never starts. */
+  abortSignal?: AbortSignal;
 }
 
 export interface ControlPromptResult {
@@ -1297,24 +1300,33 @@ export class ControlService {
     const configTail =
       this.sessionConfigSetTails.get(internalAlias) ??
       this.sessionConfigSetTails.get(input.sessionAlias);
-    const submit = () => this.turnQueue.submit({
-      chatKey: input.chatKey,
-      sessionAlias: input.sessionAlias,
-      concurrencyKey: internalAlias,
-      text: input.text,
-      senderId: input.senderId,
-      turnOrigin: "human",
-      queueable,
-      ...(input.isOwner !== undefined ? { isOwner: input.isOwner } : {}),
-      ...(input.accountId !== undefined ? { accountId: input.accountId } : {}),
-      ...(input.media !== undefined ? { media: input.media } : {}),
-      ...(input.agentMentions !== undefined
-        ? { agentMentions: input.agentMentions }
-        : {}),
-      ...(input.promptRequestId !== undefined
-        ? { promptRequestId: input.promptRequestId }
-        : {}),
-    });
+    const submit = () => {
+      // After config-tail wait (if any) and immediately before admission: a
+      // Conversation cancel that fired while we were waiting must not enter
+      // TurnQueue. Once submit() returns, promptRequestId cancel owns the rest.
+      if (input.abortSignal?.aborted) {
+        return Promise.resolve({ ok: false, errorMessage: "cancelled" });
+      }
+      return this.turnQueue.submit({
+        chatKey: input.chatKey,
+        sessionAlias: input.sessionAlias,
+        concurrencyKey: internalAlias,
+        text: input.text,
+        senderId: input.senderId,
+        turnOrigin: "human",
+        queueable,
+        ...(input.isOwner !== undefined ? { isOwner: input.isOwner } : {}),
+        ...(input.accountId !== undefined ? { accountId: input.accountId } : {}),
+        ...(input.media !== undefined ? { media: input.media } : {}),
+        ...(input.agentMentions !== undefined
+          ? { agentMentions: input.agentMentions }
+          : {}),
+        ...(input.promptRequestId !== undefined
+          ? { promptRequestId: input.promptRequestId }
+          : {}),
+        ...(input.abortSignal !== undefined ? { abortSignal: input.abortSignal } : {}),
+      });
+    };
     // Keep this helper non-async so `prompt()` still reaches TurnQueue.submit on
     // its first microtask (same-tick admission / golden event order).
     if (configTail) {

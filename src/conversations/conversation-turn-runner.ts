@@ -53,6 +53,7 @@ export interface ControlConversationTurnRunnerOptions {
 
 interface TrackedExecution {
   done: Promise<ConversationTurnRunResult>;
+  abort: AbortController;
   finished?: ConversationTurnRunResult;
   finishedAt?: number;
 }
@@ -88,10 +89,16 @@ export class ControlConversationTurnRunner implements ConversationTurnRunner {
     this.now = options?.now ?? (() => Date.now());
   }
 
+  hasTrackedExecution(promptRequestId: string): boolean {
+    return this.executions.has(promptRequestId);
+  }
+
   async run(input: ConversationTurnRunInput): Promise<ConversationTurnRunResult> {
     this.pruneSettled();
+    const abort = new AbortController();
     const tracked: TrackedExecution = {
       done: Promise.resolve({ status: "failed", error: "execution_not_started" }),
+      abort,
     };
     this.executions.set(input.promptRequestId, tracked);
     const chatKey = directConversationChatKey(input.conversationId, input.topicId);
@@ -101,6 +108,7 @@ export class ControlConversationTurnRunner implements ConversationTurnRunner {
       text: input.text,
       senderId: "bot-conversation",
       promptRequestId: input.promptRequestId,
+      abortSignal: abort.signal,
     }).then((result) => this.mapPromptResult(result)).then((result) => {
       tracked.finished = result;
       tracked.finishedAt = this.now();
@@ -121,6 +129,7 @@ export class ControlConversationTurnRunner implements ConversationTurnRunner {
       return { outcome: "unknown" };
     }
     if (!tracked.finished) {
+      tracked.abort.abort();
       this.control.cancelTurnForPromptRequest(chatKey, input.sessionAlias, input.promptRequestId);
     }
     return cancelResultFromRun(await tracked.done);

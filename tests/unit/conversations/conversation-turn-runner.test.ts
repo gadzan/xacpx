@@ -2,6 +2,9 @@ import { expect, test } from "bun:test";
 
 import { ControlConversationTurnRunner } from "../../../src/conversations/conversation-turn-runner";
 import { TurnQueue } from "../../../src/control/turn-queue";
+import { ControlService } from "../../../src/control/control-service";
+import { createControlEventBus } from "../../../src/control/control-event-bus";
+import { directConversationChatKey } from "../../../src/domain/ids";
 
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -220,4 +223,108 @@ test("Conversation promptImmediate never FIFO-enqueues on a busy session lane", 
   expect(started).toEqual(["predecessor"]);
   expect(origins).toEqual(["human"]);
   expect(queue.queueLength("bot:conv:topic", lane, lane)).toBe(0);
+});
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+function makeControlWithConfigTail() {
+  const configTail = deferred();
+  let chatCount = 0;
+  let configTailHeld = false;
+  const events = createControlEventBus();
+  const session = { alias: "alias", agent: "claude", workspace: "/ws" };
+  const control = new ControlService({
+    agent: {
+      chat: async () => {
+        chatCount += 1;
+        return { text: "done" };
+      },
+    },
+    sessions: {
+      listAllResolvedSessions: () => [],
+      createSession: async () => {
+        throw new Error("unused");
+      },
+      removeSession: async () => ({ wasActive: false }),
+      useSession: async () => session,
+      resolveAliasForChat: async (_chatKey: string, alias: string) => alias,
+      getSession: async (internalAlias: string) =>
+        internalAlias === "alias" ? session : null,
+      getResolvedSessionByInternalAlias: (alias: string) =>
+        alias === "alias" ? session : undefined,
+      setSessionModel: async () => {},
+    },
+    transport: {
+      setModel: async () => {
+        configTailHeld = true;
+        await configTail.promise;
+      },
+    },
+    activeTurns: { isActiveAnywhere: () => false },
+    scheduled: {} as never,
+    orchestration: {} as never,
+    events,
+  } as never);
+  return {
+    control,
+    configTail,
+    chatCount: () => chatCount,
+    isConfigTailHeld: () => configTailHeld,
+  };
+}
+
+async function waitUntil(cond: () => boolean, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!cond()) {
+    if (Date.now() > deadline) {
+      throw new Error("waitUntil timed out");
+    }
+    await tick();
+  }
+}
+
+test("cancel during config-tail wait never admits the Conversation turn", async () => {
+  const { control, configTail, chatCount, isConfigTailHeld } = makeControlWithConfigTail();
+  const chatKey = directConversationChatKey(input.conversationId, input.topicId);
+  const modelSet = control.setSessionModel(chatKey, input.sessionAlias, "gpt-x");
+  await waitUntil(isConfigTailHeld);
+  const runner = new ControlConversationTurnRunner(control);
+  const running = runner.run(input);
+  await waitUntil(() => runner.hasTrackedExecution(input.promptRequestId));
+  expect(control.inspectPromptRequest(chatKey, input.sessionAlias, input.promptRequestId)).toBe("absent");
+  expect(control.isBusy(chatKey, input.sessionAlias)).toBe(false);
+  expect(control.queueLength(chatKey, input.sessionAlias)).toBe(0);
+  expect(chatCount()).toBe(0);
+
+  const cancelling = runner.cancel({
+    conversationId: input.conversationId,
+    topicId: input.topicId,
+    sessionAlias: input.sessionAlias,
+    promptRequestId: input.promptRequestId,
+  });
+  configTail.resolve();
+  await modelSet;
+  expect(await running).toMatchObject({ status: "cancelled" });
+  expect(await cancelling).toEqual({ outcome: "cancelled" });
+  expect(chatCount()).toBe(0);
+  expect(control.queueLength(chatKey, input.sessionAlias)).toBe(0);
+  expect(control.isBusy(chatKey, input.sessionAlias)).toBe(false);
+  expect(control.inspectPromptRequest(chatKey, input.sessionAlias, input.promptRequestId)).toBe("absent");
+});
+
+test("a non-cancelled config-tail wait still submits exactly once after the tail settles", async () => {
+  const { control, configTail, chatCount, isConfigTailHeld } = makeControlWithConfigTail();
+  const chatKey = directConversationChatKey(input.conversationId, input.topicId);
+  const modelSet = control.setSessionModel(chatKey, input.sessionAlias, "gpt-x");
+  await waitUntil(isConfigTailHeld);
+  const runner = new ControlConversationTurnRunner(control);
+  const running = runner.run(input);
+  await waitUntil(() => runner.hasTrackedExecution(input.promptRequestId));
+  expect(control.inspectPromptRequest(chatKey, input.sessionAlias, input.promptRequestId)).toBe("absent");
+  expect(chatCount()).toBe(0);
+  configTail.resolve();
+  await modelSet;
+  expect(await running).toMatchObject({ status: "completed", text: "done" });
+  expect(chatCount()).toBe(1);
+  expect(control.queueLength(chatKey, input.sessionAlias)).toBe(0);
 });
