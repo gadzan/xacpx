@@ -791,6 +791,8 @@ export class TurnQueue {
       // otherwise `draining` leaks and every future submission enqueues forever (permanent
       // wedge).
       this.draining.delete(key);
+      const finished = this.inFlight.get(key);
+      this.recordSettledRequestId(finished?.promptRequestId);
       this.inFlight.delete(key);
     }
   }
@@ -850,6 +852,44 @@ export class TurnQueue {
     }
     entry.controller.abort();
     return true;
+  }
+
+  /**
+   * Abort the in-flight turn only when it is the given promptRequestId.
+   * A minted Conversation correlation id is not a lane-wide cancel: a later
+   * prompt on the same session must not be aborted, and a settled request
+   * must not be treated as cancelled just because Stop was pressed late.
+   */
+  cancelTurnForPromptRequest(
+    chatKey: string,
+    sessionAlias: string,
+    promptRequestId: string,
+    concurrencyKey?: string,
+  ): boolean {
+    const key = this.resolveKey(chatKey, sessionAlias, concurrencyKey);
+    const entry = this.inFlight.get(key);
+    if (!entry || entry.promptRequestId !== promptRequestId) {
+      return false;
+    }
+    entry.controller.abort();
+    return true;
+  }
+
+  inspectPromptRequest(
+    chatKey: string,
+    sessionAlias: string,
+    promptRequestId: string,
+    concurrencyKey?: string,
+  ): "in-flight" | "settled" | "absent" {
+    const key = this.resolveKey(chatKey, sessionAlias, concurrencyKey);
+    const entry = this.inFlight.get(key);
+    if (entry?.promptRequestId === promptRequestId) {
+      return "in-flight";
+    }
+    if (this.hasSettledRequestId(promptRequestId)) {
+      return "settled";
+    }
+    return "absent";
   }
 
   /** Tear down all turn state for a session that is being removed or archived: drop every

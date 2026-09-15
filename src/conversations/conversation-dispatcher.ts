@@ -2,10 +2,15 @@ import { randomUUID } from "node:crypto";
 
 import { composeBotTurnPromptFromSnapshot } from "../bots/bot-profile-prompt";
 import type { BotRuntimeManager } from "../bots/bot-runtime-manager";
+import { sessionMatchesExecution } from "../bots/bot-types";
 import { createSourceTurnId } from "../domain/ids";
 import type { SessionService } from "../sessions/session-service";
+import { ConversationError } from "./conversation-error";
 import type { ClaimedWork, ConversationStore } from "./conversation-store";
-import type { ConversationTurnRunner } from "./conversation-turn-runner";
+import type {
+  ConversationTurnCancelResult,
+  ConversationTurnRunner,
+} from "./conversation-turn-runner";
 import type { MemberTurnRecord } from "./conversation-types";
 
 export interface ConversationDispatcherHooks {
@@ -58,7 +63,7 @@ export class ConversationDispatcher {
       for (;;) {
         this.kicked = false;
         this.abortDrain = false;
-        this.store.recoverExpiredClaims(this.now().toISOString(), this.ownerId);
+        this.store.recoverExpiredClaims(this.now().toISOString());
         const claimed = this.claimOne();
         if (!claimed) {
           if (this.kicked) {
@@ -93,11 +98,7 @@ export class ConversationDispatcher {
       queueItemId: outcome.memberTurn.queueItemId,
       promptRequestId: outcome.memberTurn.sourceTurnId ?? "",
     });
-    const latest = this.store.getRun(runId);
-    if (latest && (latest.state === "completed" || latest.state === "failed")) {
-      return;
-    }
-    this.store.completeCancel(runId, outcome.memberTurn.id, this.now().toISOString(), result === "unknown");
+    this.persistCancelOutcome(outcome.run.id, outcome.memberTurn, result);
     await this.kick();
   }
 
@@ -124,15 +125,15 @@ export class ConversationDispatcher {
       if (materializeFail) {
         throw materializeFail;
       }
+      const snapshot = work.run.profileSnapshot;
       const binding = await this.runtime.getOrCreateDirectSession({
         botId: work.memberTurn.botId,
         conversationId: work.run.conversationId,
         topicId: work.run.topicId,
+        execution: snapshot.execution,
       });
-      const snapshot = work.run.profileSnapshot;
       const session = this.sessions.getLogicalSessionRecord(binding.sessionAlias);
-      if (session
-        && (session.agent !== snapshot.execution.agent || session.workspace !== snapshot.execution.workspace)) {
+      if (!session || !sessionMatchesExecution(session, snapshot.execution)) {
         this.store.failExecution({
           runId: work.run.id,
           memberTurnId: work.memberTurn.id,
@@ -148,14 +149,25 @@ export class ConversationDispatcher {
         return;
       }
       const sourceTurnId = createSourceTurnId();
-      const started = this.store.markExecutionStarted({
-        runId: work.run.id,
-        memberTurnId: work.memberTurn.id,
-        sessionAlias: binding.sessionAlias,
-        logicalSessionId: binding.logicalSessionId,
-        sourceTurnId,
-        now: this.now().toISOString(),
-      });
+      let started: MemberTurnRecord;
+      try {
+        started = this.store.markExecutionStarted({
+          dispatchId: work.dispatch.id,
+          owner: this.ownerId,
+          generation: work.dispatch.generation,
+          runId: work.run.id,
+          memberTurnId: work.memberTurn.id,
+          sessionAlias: binding.sessionAlias,
+          logicalSessionId: binding.logicalSessionId,
+          sourceTurnId,
+          now: this.now().toISOString(),
+        });
+      } catch (error) {
+        if (error instanceof ConversationError && (error.code === "stale_claim" || error.code === "run_not_runnable")) {
+          return;
+        }
+        throw error;
+      }
       await this.hooks?.afterExecutionStart?.(started);
       const text = composeBotTurnPromptFromSnapshot(snapshot, this.requestText(work.run.requestMessageId));
       const result = await this.runner.run({
@@ -186,6 +198,39 @@ export class ConversationDispatcher {
       this.abortDrain = true;
       return;
     }
+  }
+
+  private persistCancelOutcome(
+    runId: string,
+    member: MemberTurnRecord,
+    result: ConversationTurnCancelResult,
+  ): void {
+    const latest = this.store.getRun(runId);
+    if (latest && (latest.state === "completed" || latest.state === "failed")) {
+      return;
+    }
+    const now = this.now().toISOString();
+    if (result.outcome === "completed") {
+      this.store.completeExecution({
+        runId,
+        memberTurnId: member.id,
+        botId: member.botId,
+        content: result.text ?? "",
+        sourceTurn: { sessionAlias: member.sessionAlias ?? "", turnId: member.sourceTurnId },
+        now,
+      });
+      return;
+    }
+    if (result.outcome === "failed") {
+      this.store.failExecution({
+        runId,
+        memberTurnId: member.id,
+        now,
+        reason: result.error ?? "failed",
+      });
+      return;
+    }
+    this.store.completeCancel(runId, member.id, now, result.outcome === "unknown");
   }
 
   private persistResult(

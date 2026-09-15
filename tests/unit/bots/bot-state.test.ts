@@ -223,6 +223,48 @@ test("parseState drops a session with a malformed owner and keeps an ownerless s
   ]);
 });
 
+test("parseState keeps PR2 bot-direct owners and scoped owners with botId", () => {
+  const state = parseState({
+    sessions: {
+      legacy: {
+        alias: "legacy",
+        agent: "codex",
+        workspace: "backend",
+        transport_session: "backend:legacy",
+        logical_session_id: "33333333-3333-4333-8333-333333333333",
+        created_at: NOW,
+        last_used_at: NOW,
+        owner: { kind: "bot-direct", bindingId: "bind_legacy" },
+      },
+      scoped: {
+        alias: "scoped",
+        agent: "codex",
+        workspace: "backend",
+        transport_session: "backend:scoped",
+        logical_session_id: "44444444-4444-4444-8444-444444444444",
+        created_at: NOW,
+        last_used_at: NOW,
+        owner: {
+          kind: "bot-direct",
+          bindingId: "bind_scoped",
+          botId: "bot_reviewer",
+          conversationId: "conv_a",
+          topicId: "topic_b",
+        },
+      },
+    },
+  }, "state.json");
+
+  expect(state.sessions.legacy?.owner).toEqual({ kind: "bot-direct", bindingId: "bind_legacy" });
+  expect(state.sessions.scoped?.owner).toEqual({
+    kind: "bot-direct",
+    bindingId: "bind_scoped",
+    botId: "bot_reviewer",
+    conversationId: "conv_a",
+    topicId: "topic_b",
+  });
+});
+
 test("owner metadata round-trips through save and load", async () => {
   const dir = await mkdtemp(join(tmpdir(), "xacpx-bot-state-"));
   const path = join(dir, "state.json");

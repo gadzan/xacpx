@@ -11,7 +11,7 @@ Two durability systems exist. They are **not** one ACID transaction.
 | Bot metadata, Conversation/Topic bounded metadata, `BotRuntimeBinding`, LogicalSession ownership | AppState `state.json` |
 | Messages, Runs, MemberTurns, dispatch/outbox, `seq`, request idempotency | Conversation SQLite DB |
 
-A crash between SQLite commit and AppState runtime materialization is expected. Recovery is the outbox: restart discovers `pending` / expired-or-orphaned `claimed` rows without reading UI state.
+A crash between SQLite commit and AppState runtime materialization is expected. Recovery is the outbox: restart discovers `pending` / lease-expired `claimed` rows without reading UI state.
 
 ## Transaction boundary (accept)
 
@@ -30,23 +30,33 @@ Idempotency key: **`conversationId × topicId × requestId`** (`UNIQUE` constrai
 
 ```text
 accept transaction commits request + pending dispatch
-→ dispatcher claims with owner + lease
-→ runtime materialize (AppState) + persist exact turn identity
+→ dispatcher claims with owner + generation + lease
+→ runtime materialize (AppState) + CAS execution-start fence
 → completion transaction records result + terminal MemberTurn/Run
 ```
 
-Claims use a lease (`owner`, `leaseExpiresAt`). Restart recovers:
+Claims use `owner`, `generation`, and `leaseExpiresAt`. Recovery is **lease-driven**. A different owner is not proof that the previous owner is dead; without explicit process-death evidence, a live claim is left until its lease expires.
 
-- claimed, **never started** → requeue (`pending`); safe to dispatch again
+Restart / reclaim after lease expiry:
+
+- claimed, **never started** → requeue (`pending`, generation++); safe to dispatch again
 - claimed, **started**, completion unproven → `indeterminate` (MemberTurn and Run); **never** blindly replayed
+
+Execution start is a transactional CAS on `dispatchId + owner + generation`: dispatch still `claimed`, owner matches, generation matches, lease has not expired, run/member still runnable. A stale worker whose claim was recovered must not call the underlying runner.
 
 Do not treat “dispatcher process disappeared” as “task never ran” when `startedAt` / `sourceTurnId` exist.
 
-## Exact turn correlation
+Queued Runs on a Topic are claimed in **human request message `seq` order**, not `created_at` + lexical Run id.
 
-On execution start the dispatcher persists `sessionAlias`, `logicalSessionId`, and a minted `sourceTurnId` (also the Control `promptRequestId`) **before** calling the normal xacpx turn runner. Recovery never uses latest-turn-in-alias, text match, or timestamp proximity.
+## Execution correlation
 
-The runner seam is `ConversationTurnRunner` / `ControlConversationTurnRunner` wrapping `ControlService.prompt` / `cancelTurn`. There is no second Bot execution engine.
+On execution start the dispatcher persists `sessionAlias`, `logicalSessionId`, and a minted `sourceTurnId`. That id is passed into Control as `promptRequestId` so TurnQueue can treat it as the durable execution identity for **this** prompt. It is not a pre-existing transport turn id.
+
+Cancel/inspect uses a request-id-aware seam (`cancelTurnForPromptRequest` / `inspectPromptRequest`). Aborting the session lane alone does not prove the turn produced no effects. `ControlConversationTurnRunner.cancel()` waits for the tracked prompt to settle and reports `cancelled` only when that execution settled cancelled; a proven completion is persisted as completed; anything else is `unknown` → `indeterminate`.
+
+Recovery never uses latest-turn-in-alias, text match, or timestamp proximity.
+
+The runner seam is `ConversationTurnRunner` / `ControlConversationTurnRunner` wrapping `ControlService.prompt` / request-id-aware cancel. There is no second Bot execution engine.
 
 ## `indeterminate`
 
@@ -69,7 +79,7 @@ At accept, the Run stores `profileRevision` plus a snapshot of:
 - behavior: instructions
 - execution: agent / workspace / model / effort
 
-Execute composes the prompt from **that** snapshot. Clearing instructions does not erase the owned LogicalSession history. A Run must not mix old runtime identity with newer instructions or an unrelated model; if the owned session identity no longer matches the accepted execution snapshot, the Run fails `runtime_revision_mismatch`.
+Execute composes the prompt from **that** snapshot and materializes/aligns the owned session to the **accepted execution fields**, including model and effort. Clearing instructions does not erase the owned LogicalSession history. A Run must not mix old instructions with a newer model (or any other mixed execution field). If the owned session cannot be made to match the accepted execution snapshot, the Run fails `runtime_revision_mismatch` before the model is called.
 
 ## Direct multi-Topic binding
 
@@ -79,15 +89,25 @@ Runtime key: **`conversationId × topicId × botId`**.
 - PR2 default Topic bindings used `createDirectBindingId(botId)` and alias `brt_<legacyId>`.
 - Adoption: on the default Topic, a live legacy binding/owned session is rewritten onto the scoped binding id; the **alias is kept** so the owned session is not orphaned.
 
+`LogicalSession.owner` for a scoped bot-direct session stores `botId` (and conversation/topic ids) in addition to `bindingId`, so a crash after session persist and before binding publish still attributes the orphan to the Bot. PR2 owners that only have `bindingId` still parse. `deleteBot` stays fail-closed on those orphans.
+
 ## Cancellation
 
-Cancel is by `runId`. Queued/claimed-never-started Runs become `cancelled` and will not dispatch. Running cancel goes through existing `cancelTurn` / `cancelQueuedItem` for that Topic’s chatKey (`bot:<conversationId>:<topicId>`). Late completion cannot resurrect a cancelled Run. If a started write-capable turn’s effect cannot be proven, terminal state is `indeterminate`, not a false `cancelled`.
+Cancel is by `runId`. Queued/claimed-never-started Runs become `cancelled` and will not dispatch. Running cancel goes through request-id-aware cancel for that Topic’s chatKey (`bot:<conversationId>:<topicId>`). A late cancel after the runner has already completed must persist the proven completion (or `indeterminate` if unproven), never a false clean `cancelled`. Late completion cannot resurrect a cancelled Run.
 
-Policy: one active Run per Topic; later accepted requests stay queued in durable dispatch order.
+Policy: one active Run per Topic; later accepted requests stay queued in durable **message seq** order.
 
 ## Teardown
 
-Order: mark Conversation/Topic deleting (SQLite authoritative for dispatch; AppState flag is bounded metadata) → stop future accept/dispatch → cancel/drain → reconcile indeterminate → verified `removeSession` → drop bindings → delete ConversationStore rows → delete Conversation/Topic metadata.
+Order:
+
+1. Mark Conversation/Topic deleting (SQLite is authoritative for accept/dispatch; AppState flag is bounded metadata). This uses the per-Bot lifecycle gate briefly, shared with accept.
+2. Stop future accept/dispatch. Cancel/drain active turns **without** holding the lifecycle gate (so runtime materialize is not deadlocked).
+3. Reconcile indeterminate.
+4. Verified `removeSession`.
+5. Per-Bot lifecycle gate for finalization: remaining ownership release, AppState binding/topic/conversation cleanup, **then** delete ConversationStore rows / deleting tombstone.
+
+A crash before step 5 leaves the SQLite `deleting` barrier in place: new accepts fail closed and teardown is retryable.
 
 Injected release failure leaves `deleting` + ownership in place for retry.
 

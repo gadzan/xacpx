@@ -10,6 +10,7 @@ import { ConversationDispatcher, type ConversationDispatcherHooks } from "../../
 import { ConversationRunService } from "../../../src/conversations/conversation-run-service";
 import type {
   ConversationTurnCancelInput,
+  ConversationTurnCancelResult,
   ConversationTurnRunInput,
   ConversationTurnRunResult,
   ConversationTurnRunner,
@@ -42,6 +43,16 @@ function deferred<T = void>() {
   return { promise, resolve };
 }
 
+async function waitUntil(cond: () => boolean, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!cond()) {
+    if (Date.now() > deadline) {
+      throw new Error("waitUntil timed out");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 function createConfig(): AppConfig {
   return {
     transport: { type: "acpx-cli", command: "acpx", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
@@ -67,35 +78,57 @@ class FakeRunner implements ConversationTurnRunner {
   public cancelCalls: ConversationTurnCancelInput[] = [];
   public hang?: ReturnType<typeof deferred>;
   public result: ConversationTurnRunResult = { status: "completed", text: "done" };
-  public cancelResult: "cancelled" | "unknown" = "cancelled";
+  public cancelResult: ConversationTurnCancelResult = { outcome: "cancelled" };
   private readonly cancelled = new Set<string>();
+  private readonly results = new Map<string, ConversationTurnRunResult>();
   private inFlight?: ConversationTurnRunInput;
+  private runDone?: Promise<void>;
 
   async run(input: ConversationTurnRunInput): Promise<ConversationTurnRunResult> {
     this.runs.push(input);
     this.inFlight = input;
+    let settleRun!: () => void;
+    this.runDone = new Promise<void>((resolve) => {
+      settleRun = resolve;
+    });
     try {
       if (this.hang) {
         await this.hang.promise;
       }
-      if (this.cancelled.has(input.promptRequestId)) {
-        return { status: "cancelled" };
-      }
-      return this.result;
+      const result = this.cancelled.has(input.promptRequestId)
+        ? { status: "cancelled" as const }
+        : this.result;
+      this.results.set(input.promptRequestId, result);
+      return result;
     } finally {
       if (this.inFlight === input) {
         this.inFlight = undefined;
       }
+      settleRun();
     }
   }
 
-  async cancel(input: ConversationTurnCancelInput): Promise<"cancelled" | "unknown"> {
+  async cancel(input: ConversationTurnCancelInput): Promise<ConversationTurnCancelResult> {
     this.cancelCalls.push(input);
-    const target = this.inFlight?.promptRequestId ?? input.promptRequestId;
-    if (target) {
-      this.cancelled.add(target);
+    const running = this.inFlight;
+    if (running) {
+      this.cancelled.add(running.promptRequestId);
+      this.hang?.resolve();
+      await this.runDone;
     }
-    this.hang?.resolve();
+    const settled = this.results.get(input.promptRequestId);
+    if (settled) {
+      if (settled.status === "completed") {
+        return { outcome: "completed", text: settled.text };
+      }
+      if (settled.status === "failed") {
+        return { outcome: "failed", error: settled.error };
+      }
+      if (settled.unknown) {
+        return { outcome: "unknown" };
+      }
+      return { outcome: "cancelled" };
+    }
     return this.cancelResult;
   }
 }
@@ -104,10 +137,12 @@ async function createLifecycle(options: {
   runner?: FakeRunner;
   hooks?: ConversationDispatcherHooks;
   beforeAcceptPersist?: () => Promise<void>;
+  beforeTeardownFinalize?: () => Promise<void>;
   failSessionRelease?: boolean | (() => boolean);
   beforeAcceptCommit?: () => void;
   ownerId?: string;
   autoKick?: boolean;
+  leaseMs?: number;
 } = {}) {
   const path = join(mkdtempSync(join(tmpdir(), "xacpx-life-")), "conversation.sqlite");
   const store = await SqliteConversationStore.open(path, {
@@ -129,24 +164,29 @@ async function createLifecycle(options: {
   });
   const runner = options.runner ?? new FakeRunner();
   let clock = Date.parse(NOW);
-  const nextNow = () => {
-    clock += 1000;
+  const nowFn = () => {
+    clock += 1;
     return new Date(clock);
   };
+  const jump = (ms: number) => {
+    clock += ms;
+  };
   const dispatcher = new ConversationDispatcher(store, runtime, runner, sessions, {
-    now: nextNow,
+    now: nowFn,
     ownerId: options.ownerId ?? "dispatcher-a",
     hooks: options.hooks,
+    ...(options.leaseMs !== undefined ? { leaseMs: options.leaseMs } : {}),
   });
   const service = new ConversationRunService(store, bots, runtime, dispatcher, sessions, state, stateStore, {
-    now: nextNow,
+    now: nowFn,
     stateMutex,
     beforeAcceptPersist: options.beforeAcceptPersist,
+    beforeTeardownFinalize: options.beforeTeardownFinalize,
     failSessionRelease: options.failSessionRelease,
     autoKick: options.autoKick ?? false,
   });
   await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend", instructions: "Focus on races." });
-  return { path, store, state, sessions, bots, runtime, runner, dispatcher, service };
+  return { path, store, state, sessions, bots, runtime, runner, dispatcher, service, nowFn, jump };
 }
 
 test("crash after request transaction and before dispatch resumes exactly once", async () => {
@@ -208,8 +248,9 @@ test("crash after dispatch claim and before execution start redispatches once", 
     first.runtime,
     recoveredRunner,
     first.sessions,
-    { now: () => new Date(NOW), ownerId: "dispatcher-b" },
+    { now: first.nowFn, ownerId: "dispatcher-b" },
   );
+  first.jump(60_000);
   await recovered.kick();
   expect(recoveredRunner.runs).toHaveLength(1);
   expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
@@ -248,8 +289,9 @@ test("crash after execution start and before result persistence is indeterminate
     first.runtime,
     recoveredRunner,
     first.sessions,
-    { now: () => new Date(NOW), ownerId: "dispatcher-b" },
+    { now: first.nowFn, ownerId: "dispatcher-b" },
   );
+  first.jump(60_000);
   await recovered.kick();
   expect(first.store.getRun(accepted.run.id)?.state).toBe("indeterminate");
   expect(first.store.getMemberTurn(accepted.memberTurn.id)?.state).toBe("indeterminate");
@@ -360,6 +402,7 @@ test("cancel running Run uses the exact session and does not touch another Topic
   });
   const drain = first.dispatcher.kick();
   await started.promise;
+  await waitUntil(() => runner.runs.length === 1);
   await first.service.cancelRun(running.run.id);
   await drain;
   expect(first.store.getRun(running.run.id)?.state).toBe("cancelled");
@@ -369,7 +412,7 @@ test("cancel running Run uses the exact session and does not touch another Topic
   expect(runner.cancelCalls[0]?.sessionAlias).not.toBe("");
 });
 
-test("completion vs cancellation race never resurrects a cancelled Run", async () => {
+test("completion vs cancellation race persists the proven completion, not a false cancelled", async () => {
   const beforePersist = deferred();
   const resume = deferred();
   const runner = new FakeRunner();
@@ -392,13 +435,13 @@ test("completion vs cancellation race never resurrects a cancelled Run", async (
   await first.service.cancelRun(accepted.run.id);
   resume.resolve();
   await drain;
-  expect(first.store.getRun(accepted.run.id)?.state).toBe("cancelled");
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
   const messages = first.store.listMessages({
     conversationId: accepted.run.conversationId,
     topicId: accepted.run.topicId,
     limit: 10,
   });
-  expect(messages.filter((message) => message.role === "bot")).toHaveLength(0);
+  expect(messages.filter((message) => message.role === "bot").map((message) => message.content)).toEqual(["done"]);
 });
 
 test("runtime creation failure after accept leaves durable pending work", async () => {
@@ -420,7 +463,7 @@ test("runtime creation failure after accept leaves durable pending work", async 
     first.runtime,
     first.runner,
     first.sessions,
-    { now: () => new Date(NOW), ownerId: "dispatcher-retry" },
+    { now: first.nowFn, ownerId: "dispatcher-retry" },
   );
   await recovered.kick();
   expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
@@ -509,4 +552,122 @@ test("one active Run per Topic queues the next request durably", async () => {
   expect(first.store.getRun(a.run.id)?.state).toBe("completed");
   expect(first.store.getRun(b.run.id)?.state).toBe("completed");
   expect(runner.runs).toHaveLength(2);
+});
+
+test("stale worker cannot cross the execution-start fence after a lease reclaim", async () => {
+  const aPaused = deferred();
+  const aResume = deferred();
+  const bHang = deferred();
+  const runnerA = new FakeRunner();
+  const first = await createLifecycle({
+    runner: runnerA,
+    ownerId: "dispatcher-a",
+    leaseMs: 5_000,
+    hooks: {
+      beforeExecutionStart: async () => {
+        aPaused.resolve();
+        await aResume.promise;
+      },
+    },
+  });
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-fence",
+    content: "hello",
+  });
+  const drainA = first.dispatcher.kick();
+  await aPaused.promise;
+  expect(runnerA.runs).toHaveLength(0);
+  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.startedAt).toBeUndefined();
+
+  const runnerB = new FakeRunner();
+  runnerB.hang = bHang;
+  const dispatcherB = new ConversationDispatcher(first.store, first.runtime, runnerB, first.sessions, {
+    now: first.nowFn,
+    ownerId: "dispatcher-b",
+    leaseMs: 5_000,
+  });
+  first.jump(10_000);
+  const drainB = dispatcherB.kick();
+  await waitUntil(() => runnerB.runs.length === 1);
+  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.state).toBe("running");
+  aResume.resolve();
+  await drainA;
+  expect(runnerA.runs).toHaveLength(0);
+  expect(first.store.listMemberTurns(accepted.run.id).filter((turn) => turn.startedAt)).toHaveLength(1);
+  bHang.resolve();
+  await drainB;
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
+  expect(runnerB.runs).toHaveLength(1);
+});
+
+test("model and effort edits between accept and dispatch execute the accepted snapshot", async () => {
+  const first = await createLifecycle();
+  await first.bots.updateBot(BOT_ID, { model: "gpt-snapshot", effort: "low" });
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-model",
+    content: "hello",
+  });
+  expect(accepted.run.profileSnapshot.execution.model).toBe("gpt-snapshot");
+  expect(accepted.run.profileSnapshot.execution.effort).toBe("low");
+  await first.bots.updateBot(BOT_ID, { model: "gpt-live", effort: "high" });
+  await first.dispatcher.kick();
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
+  expect(first.runner.runs).toHaveLength(1);
+  const session = first.sessions.getLogicalSessionRecord(first.runner.runs[0]!.sessionAlias);
+  expect(session?.model).toBe("gpt-snapshot");
+  expect(session?.effort).toBe("low");
+});
+
+test("agent/workspace drift on an existing session fails runtime_revision_mismatch before the model", async () => {
+  const first = await createLifecycle();
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-identity",
+    content: "hello",
+  });
+  await first.bots.updateBot(BOT_ID, { agent: "claude", workspace: "frontend" });
+  await first.runtime.getOrCreateDirectSession({ botId: BOT_ID });
+  await first.dispatcher.kick();
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("failed");
+  expect(first.store.getRun(accepted.run.id)?.completionReason).toBe("runtime_revision_mismatch");
+  expect(first.runner.runs).toHaveLength(0);
+});
+
+test("teardown keeps the deleting barrier until AppState finalization finishes", async () => {
+  const entered = deferred();
+  const resume = deferred();
+  const first = await createLifecycle({
+    beforeTeardownFinalize: async () => {
+      entered.resolve();
+      await resume.promise;
+    },
+  });
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-teardown-race",
+    content: "hello",
+  });
+  await first.dispatcher.kick();
+  const conversationId = accepted.run.conversationId;
+  const teardown = first.service.teardownDirectConversation(BOT_ID);
+  await entered.promise;
+  expect(first.store.isConversationDeleting(conversationId)).toBe(true);
+  expect(() => first.store.acceptRequest({
+    conversationId,
+    topicId: accepted.run.topicId,
+    requestId: "req-orphan",
+    botId: BOT_ID,
+    content: "late",
+    profileSnapshot: accepted.run.profileSnapshot,
+    now: new Date().toISOString(),
+  })).toThrow(/deleting/);
+  expect(first.store.getRunByRequestId(conversationId, accepted.run.topicId, "req-orphan")).toBeUndefined();
+  resume.resolve();
+  await teardown;
+  expect(first.store.isConversationDeleting(conversationId)).toBe(false);
+  expect(first.store.listRuns(conversationId)).toEqual([]);
+  expect(first.state.conversations[conversationId]).toBeUndefined();
+  expect(first.state.bot_runtime_bindings).toEqual({});
 });

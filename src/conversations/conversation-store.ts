@@ -53,6 +53,9 @@ export interface RecoveredClaim {
 }
 
 export interface MarkExecutionStartedInput {
+  dispatchId: string;
+  owner: string;
+  generation: number;
   runId: string;
   memberTurnId: string;
   sessionAlias: string;
@@ -105,7 +108,7 @@ export interface ConversationStore {
   getMemberTurn(memberTurnId: string): MemberTurnRecord | undefined;
   listMemberTurns(runId: string): MemberTurnRecord[];
   getDispatchForRun(runId: string): PendingDispatch | undefined;
-  recoverExpiredClaims(now: string, ownerId?: string): RecoveredClaim[];
+  recoverExpiredClaims(now: string): RecoveredClaim[];
   claimNextDispatch(input: ClaimNextDispatchInput): ClaimedWork | undefined;
   releaseClaimToPending(dispatchId: string, now: string): PendingDispatch | undefined;
   markExecutionStarted(input: MarkExecutionStartedInput): MemberTurnRecord;

@@ -209,3 +209,101 @@ test("listMessages afterSeq/beforeSeq/limit is the replay cursor", async () => {
   expect(limited).toHaveLength(1);
   store.close();
 });
+
+test("claimNextDispatch follows message seq when timestamps and run ids disagree", async () => {
+  let messages = 0;
+  let members = 0;
+  let dispatches = 0;
+  const runIds = ["run_zzz", "run_aaa"];
+  const store = await SqliteConversationStore.open(":memory:", {
+    ids: {
+      messageId: () => `cmsg_${messages++}`,
+      runId: () => runIds.shift() ?? `run_${messages}`,
+      memberTurnId: () => `mturn_${members++}`,
+      dispatchId: () => `pdsp_${dispatches++}`,
+    },
+  });
+  const first = store.acceptRequest({
+    conversationId: CONV,
+    topicId: TOPIC,
+    requestId: "req-seq-1",
+    botId: BOT_ID,
+    content: "first",
+    profileSnapshot: snapshot(),
+    now: NOW,
+  });
+  const second = store.acceptRequest({
+    conversationId: CONV,
+    topicId: TOPIC,
+    requestId: "req-seq-2",
+    botId: BOT_ID,
+    content: "second",
+    profileSnapshot: snapshot(),
+    now: NOW,
+  });
+  expect(first.message.seq).toBe(1);
+  expect(second.message.seq).toBe(2);
+  expect(first.run.id).toBe("run_zzz");
+  expect(second.run.id).toBe("run_aaa");
+  const claimed = store.claimNextDispatch({
+    now: NOW,
+    owner: "dispatcher-a",
+    leaseExpiresAt: "2026-09-15T12:00:30.000Z",
+  });
+  expect(claimed?.run.id).toBe(first.run.id);
+  expect(claimed?.run.id).not.toBe(second.run.id);
+  store.close();
+});
+
+test("markExecutionStarted rejects a stale owner/generation after reclaim", async () => {
+  const store = await SqliteConversationStore.open(":memory:");
+  const accepted = store.acceptRequest({
+    conversationId: CONV,
+    topicId: TOPIC,
+    requestId: "req-cas",
+    botId: BOT_ID,
+    content: "hello",
+    profileSnapshot: snapshot(),
+    now: NOW,
+  });
+  const firstClaim = store.claimNextDispatch({
+    now: NOW,
+    owner: "owner-a",
+    leaseExpiresAt: "2026-09-15T12:00:01.000Z",
+  });
+  expect(firstClaim?.dispatch.generation).toBe(1);
+  const recovered = store.recoverExpiredClaims("2026-09-15T12:00:02.000Z");
+  expect(recovered).toHaveLength(1);
+  expect(recovered[0]?.outcome).toBe("requeued");
+  const secondClaim = store.claimNextDispatch({
+    now: "2026-09-15T12:00:03.000Z",
+    owner: "owner-b",
+    leaseExpiresAt: "2026-09-15T12:01:03.000Z",
+  });
+  expect(secondClaim?.dispatch.owner).toBe("owner-b");
+  expect(secondClaim?.dispatch.generation).toBe(2);
+  expect(() => store.markExecutionStarted({
+    dispatchId: firstClaim!.dispatch.id,
+    owner: "owner-a",
+    generation: firstClaim!.dispatch.generation,
+    runId: accepted.run.id,
+    memberTurnId: accepted.memberTurn.id,
+    sessionAlias: "alias",
+    logicalSessionId: "11111111-1111-4111-8111-111111111111",
+    sourceTurnId: "sturn_old",
+    now: "2026-09-15T12:00:04.000Z",
+  })).toThrow(/live claim/);
+  const started = store.markExecutionStarted({
+    dispatchId: secondClaim!.dispatch.id,
+    owner: "owner-b",
+    generation: secondClaim!.dispatch.generation,
+    runId: accepted.run.id,
+    memberTurnId: accepted.memberTurn.id,
+    sessionAlias: "alias",
+    logicalSessionId: "11111111-1111-4111-8111-111111111111",
+    sourceTurnId: "sturn_new",
+    now: "2026-09-15T12:00:04.000Z",
+  });
+  expect(started.sourceTurnId).toBe("sturn_new");
+  store.close();
+});

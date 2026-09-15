@@ -29,7 +29,7 @@ import type {
   PendingDispatch,
   PendingDispatchState,
 } from "./conversation-types";
-import { ACTIVE_RUN_STATES, TERMINAL_RUN_STATES } from "./conversation-types";
+import { ACTIVE_RUN_STATES, TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES } from "./conversation-types";
 import { createSqlDriver, isSqliteUniqueViolation, type SqlDriver } from "./sql-driver";
 
 export interface ConversationIdFactory {
@@ -405,26 +405,17 @@ export class SqliteConversationStore implements ConversationStore {
     return row ? mapDispatch(row) : undefined;
   }
 
-  recoverExpiredClaims(now: string, ownerId?: string): RecoveredClaim[] {
+  recoverExpiredClaims(now: string): RecoveredClaim[] {
     return this.db.transaction(() => {
-      const claimed = ownerId
-        ? this.db.all<DispatchRow>(
-          `SELECT * FROM pending_dispatches
-           WHERE state = 'claimed'
-             AND (
-               (lease_expires_at IS NOT NULL AND lease_expires_at <= ?)
-               OR owner IS NULL
-               OR owner != ?
-             )`,
-          [now, ownerId],
-        )
-        : this.db.all<DispatchRow>(
-          `SELECT * FROM pending_dispatches
-           WHERE state = 'claimed'
-             AND lease_expires_at IS NOT NULL
-             AND lease_expires_at <= ?`,
-          [now],
-        );
+      const claimed = this.db.all<DispatchRow>(
+        `SELECT * FROM pending_dispatches
+         WHERE state = 'claimed'
+           AND (
+             (lease_expires_at IS NOT NULL AND lease_expires_at <= ?)
+             OR (owner IS NULL AND lease_expires_at IS NULL)
+           )`,
+        [now],
+      );
       const recovered: RecoveredClaim[] = [];
       for (const row of claimed) {
         const member = this.requireMemberTurn(row.member_turn_id);
@@ -471,6 +462,7 @@ export class SqliteConversationStore implements ConversationStore {
         `SELECT d.* FROM pending_dispatches d
          JOIN runs r ON r.id = d.run_id
          JOIN member_turns m ON m.id = d.member_turn_id
+         JOIN messages msg ON msg.id = r.request_message_id
          WHERE d.state = 'pending'
            AND r.state = 'queued'
            AND m.started_at IS NULL
@@ -493,7 +485,7 @@ export class SqliteConversationStore implements ConversationStore {
              WHERE active.topic_id = r.topic_id
                AND active.state IN ('running', 'waiting-human')
            )
-         ORDER BY r.created_at ASC, r.id ASC
+         ORDER BY msg.seq ASC, r.created_at ASC, r.topic_id ASC
          LIMIT 1`,
       );
       if (!row) {
@@ -539,12 +531,25 @@ export class SqliteConversationStore implements ConversationStore {
 
   markExecutionStarted(input: MarkExecutionStartedInput): MemberTurnRecord {
     return this.db.transaction(() => {
+      const dispatch = this.db.get<DispatchRow>("SELECT * FROM pending_dispatches WHERE id = ?", [input.dispatchId]);
+      if (
+        !dispatch
+        || dispatch.state !== "claimed"
+        || dispatch.owner !== input.owner
+        || dispatch.generation !== input.generation
+        || dispatch.run_id !== input.runId
+        || dispatch.member_turn_id !== input.memberTurnId
+        || (dispatch.lease_expires_at !== null && dispatch.lease_expires_at <= input.now)
+      ) {
+        throw new ConversationError("stale_claim", `dispatch "${input.dispatchId}" is not the live claim`);
+      }
       const run = this.requireRun(input.runId);
-      if (run.state === "cancelled" || run.state === "failed" || run.state === "completed") {
+      const member = this.requireMemberTurn(input.memberTurnId);
+      if (TERMINAL_RUN_STATES.includes(run.state) || TERMINAL_MEMBER_STATES.includes(member.state)) {
         throw new ConversationError("run_not_runnable", `run "${input.runId}" is ${run.state}`);
       }
-      if (run.state === "indeterminate") {
-        throw new ConversationError("run_indeterminate", `run "${input.runId}" is indeterminate`);
+      if (member.startedAt) {
+        throw new ConversationError("stale_claim", `member turn "${input.memberTurnId}" already started`);
       }
       this.db.run(
         `UPDATE member_turns
@@ -554,7 +559,7 @@ export class SqliteConversationStore implements ConversationStore {
              source_turn_id = ?,
              queue_item_id = COALESCE(?, queue_item_id),
              started_at = ?
-         WHERE id = ?`,
+         WHERE id = ? AND started_at IS NULL`,
         [
           input.sessionAlias,
           input.logicalSessionId,
@@ -568,7 +573,11 @@ export class SqliteConversationStore implements ConversationStore {
         `UPDATE runs SET state = 'running', started_at = COALESCE(started_at, ?) WHERE id = ?`,
         [input.now, input.runId],
       );
-      return this.requireMemberTurn(input.memberTurnId);
+      const started = this.requireMemberTurn(input.memberTurnId);
+      if (!started.startedAt) {
+        throw new ConversationError("stale_claim", `dispatch "${input.dispatchId}" lost the execution-start fence`);
+      }
+      return started;
     });
   }
 

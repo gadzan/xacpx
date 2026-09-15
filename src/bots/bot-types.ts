@@ -44,6 +44,16 @@ export interface BotProfile {
   updatedAt: string;
 }
 
+export function sessionMatchesExecution(
+  session: { agent: string; workspace: string; model?: string; effort?: string },
+  execution: BotProfileExecution,
+): boolean {
+  return session.agent === execution.agent
+    && session.workspace === execution.workspace
+    && (session.model ?? undefined) === (execution.model ?? undefined)
+    && (session.effort ?? undefined) === (execution.effort ?? undefined);
+}
+
 export function snapshotBotProfile(bot: BotProfile, capturedAt: string): BotProfileSnapshot {
   return {
     revision: bot.profileRevision,

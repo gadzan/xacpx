@@ -1371,6 +1371,32 @@ export class ControlService {
     return this.turnQueue.cancelTurn(chatKey, sessionAlias, internalAlias);
   }
 
+  cancelTurnForPromptRequest(chatKey: string, sessionAlias: string, promptRequestId: string): boolean {
+    const channelId = getChannelIdFromChatKey(chatKey);
+    const internalAlias =
+      this.deps.sessions.getResolvedSessionByInternalAlias?.(sessionAlias)?.alias ??
+      this.deps.sessions.getResolvedSessionByInternalAlias?.(
+        toInternalSessionAlias(channelId, sessionAlias),
+      )?.alias ??
+      scopeDisplayAliasToInternal(channelId, sessionAlias);
+    return this.turnQueue.cancelTurnForPromptRequest(chatKey, sessionAlias, promptRequestId, internalAlias);
+  }
+
+  inspectPromptRequest(
+    chatKey: string,
+    sessionAlias: string,
+    promptRequestId: string,
+  ): "in-flight" | "settled" | "absent" {
+    const channelId = getChannelIdFromChatKey(chatKey);
+    const internalAlias =
+      this.deps.sessions.getResolvedSessionByInternalAlias?.(sessionAlias)?.alias ??
+      this.deps.sessions.getResolvedSessionByInternalAlias?.(
+        toInternalSessionAlias(channelId, sessionAlias),
+      )?.alias ??
+      scopeDisplayAliasToInternal(channelId, sessionAlias);
+    return this.turnQueue.inspectPromptRequest(chatKey, sessionAlias, promptRequestId, internalAlias);
+  }
+
   async submitPeerTurn(input: {
     chatKey: string;
     sessionAlias: string;

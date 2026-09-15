@@ -11,7 +11,7 @@ import { createDirectBindingId, createDirectConversationId, createDirectTopicId,
 import { AsyncMutex } from "../../../src/orchestration/async-mutex";
 import { SessionService } from "../../../src/sessions/session-service";
 import { parseState, type StateStore } from "../../../src/state/state-store";
-import { createEmptyState, type AppState } from "../../../src/state/types";
+import { createBotDirectOwner, createEmptyState, type AppState } from "../../../src/state/types";
 
 const NOW = "2026-09-15T10:00:00.000Z";
 const BOT_ID = "bot_reviewer";
@@ -142,7 +142,12 @@ test("getOrCreateDirectSession creates a Bot-owned session distinct from ordinar
 
   const owned = sessions.getLogicalSessionRecord(binding.sessionAlias);
   const ordinary = sessions.getLogicalSessionRecord("api-fix");
-  expect(owned?.owner).toEqual({ kind: "bot-direct", bindingId: defaultBindingId() });
+  expect(owned?.owner).toEqual(createBotDirectOwner({
+    bindingId: defaultBindingId(),
+    botId: BOT_ID,
+    conversationId: createDirectConversationId(BOT_ID),
+    topicId: createDirectTopicId(BOT_ID),
+  }));
   expect(ordinary?.owner).toBeUndefined();
   expect(owned?.logical_session_id).not.toBe(ordinary?.logical_session_id);
   expect(state.conversations[binding.conversationId]?.kind).toBe("bot");
@@ -206,6 +211,59 @@ test("a crash after session create repairs the missing binding without orphaning
   expect(ownedSessions(reloaded)).toHaveLength(1);
   expect(Object.values(reloaded.bot_runtime_bindings)).toHaveLength(1);
   expect(reloaded.conversations[binding.conversationId]?.kind).toBe("bot");
+});
+
+test("scoped session without a binding still fail-closes deleteBot and repairs the same session", async () => {
+  const store = new CrashBeforeBindingStore();
+  const first = createHarness(store);
+  await first.bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  store.failBindingPublish = true;
+  await expect(first.runtime.getOrCreateDirectSession({ botId: BOT_ID })).rejects.toThrow("simulated crash");
+  expect(first.state.bot_runtime_bindings).toEqual({});
+  const durable = store.saved.at(-1);
+  const reloaded = parseState(JSON.parse(JSON.stringify(durable)) as Record<string, unknown>, "state.json");
+  const recovered = createHarness(new MemoryStateStore(), reloaded);
+  await expect(recovered.bots.deleteBot(BOT_ID)).rejects.toMatchObject({ code: "bot_in_use" });
+  const alias = ownedSessions(reloaded)[0]?.alias;
+  const logicalId = ownedSessions(reloaded)[0]?.logical_session_id;
+  const binding = await recovered.runtime.getOrCreateDirectSession({ botId: BOT_ID });
+  expect(binding.sessionAlias).toBe(alias);
+  expect(binding.logicalSessionId).toBe(logicalId);
+  expect(ownedSessions(reloaded)).toHaveLength(1);
+});
+
+test("non-default Topic scoped orphan is attributable without a binding", async () => {
+  const store = new CrashBeforeBindingStore();
+  const first = createHarness(store);
+  await first.bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const topicId = insertExtraDirectTopic(first.state, BOT_ID);
+  store.failBindingPublish = true;
+  await expect(first.runtime.getOrCreateDirectSession({ botId: BOT_ID, topicId })).rejects.toThrow("simulated crash");
+  const durable = store.saved.at(-1);
+  const reloaded = parseState(JSON.parse(JSON.stringify(durable)) as Record<string, unknown>, "state.json");
+  expect(reloaded.bot_runtime_bindings).toEqual({});
+  expect(ownedSessions(reloaded)[0]?.owner).toMatchObject({
+    kind: "bot-direct",
+    botId: BOT_ID,
+    topicId,
+  });
+  const recovered = createHarness(new MemoryStateStore(), reloaded);
+  recovered.state.conversation_topics[topicId] = reloaded.conversation_topics[topicId] ?? {
+    id: topicId,
+    conversationId: createDirectConversationId(BOT_ID),
+    title: "Second",
+    status: "active",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  await expect(recovered.bots.deleteBot(BOT_ID)).rejects.toMatchObject({ code: "bot_in_use" });
+  const alias = ownedSessions(reloaded)[0]?.alias;
+  const logicalId = ownedSessions(reloaded)[0]?.logical_session_id;
+  const binding = await recovered.runtime.getOrCreateDirectSession({ botId: BOT_ID, topicId });
+  expect(binding.sessionAlias).toBe(alias);
+  expect(binding.logicalSessionId).toBe(logicalId);
+  expect(binding.topicId).toBe(topicId);
+  expect(ownedSessions(reloaded)).toHaveLength(1);
 });
 
 test("promptDirect keeps origin human and applies the latest profile", async () => {
@@ -569,8 +627,10 @@ test("PR2 default binding is adopted onto the scoped key without orphaning the o
   expect(state.bot_runtime_bindings[legacyId]).toBeUndefined();
   expect(state.bot_runtime_bindings[defaultBindingId()]?.sessionAlias).toBe(alias);
   expect(ownedSessions(state)).toHaveLength(1);
-  expect(sessions.getLogicalSessionRecord(alias)?.owner).toEqual({
-    kind: "bot-direct",
+  expect(sessions.getLogicalSessionRecord(alias)?.owner).toEqual(createBotDirectOwner({
     bindingId: defaultBindingId(),
-  });
+    botId: BOT_ID,
+    conversationId: createDirectConversationId(BOT_ID),
+    topicId: createDirectTopicId(BOT_ID),
+  }));
 });

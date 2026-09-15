@@ -709,11 +709,17 @@ function isLogicalSessionOwner(value: unknown): value is LogicalSessionOwner {
   if (!isRecord(value)) {
     return false;
   }
-  return (
-    (value.kind === "bot-direct" || value.kind === "group-member" || value.kind === "group-controller") &&
-    isString(value.bindingId) &&
-    value.bindingId.length > 0
+  if (
+    (value.kind !== "bot-direct" && value.kind !== "group-member" && value.kind !== "group-controller")
+    || !isString(value.bindingId)
+    || value.bindingId.length === 0
+  ) {
+    return false;
+  }
+  const optional = (field: "botId" | "conversationId" | "topicId"): boolean => (
+    value[field] === undefined || (isString(value[field]) && value[field].length > 0)
   );
+  return optional("botId") && optional("conversationId") && optional("topicId");
 }
 
 function parseSessions(

@@ -143,3 +143,9 @@ export const TERMINAL_RUN_STATES: readonly ConversationRunState[] = [
   "cancelled",
   "indeterminate",
 ];
+export const TERMINAL_MEMBER_STATES: readonly MemberTurnState[] = [
+  "completed",
+  "failed",
+  "cancelled",
+  "indeterminate",
+];

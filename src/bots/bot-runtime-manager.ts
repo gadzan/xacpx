@@ -1,7 +1,7 @@
 import { composeBotTurnPrompt } from "./bot-profile-prompt";
 import { BotError } from "./bot-error";
 import type { BotService } from "./bot-service";
-import type { BotProfile, BotRuntimeBinding } from "./bot-types";
+import type { BotProfile, BotProfileExecution, BotRuntimeBinding } from "./bot-types";
 import { planDirectConversation } from "../conversations/direct-conversation";
 import type { ConversationTopic } from "../conversations/conversation-types";
 import {
@@ -16,7 +16,7 @@ import { AsyncMutex } from "../orchestration/async-mutex";
 import type { SessionService } from "../sessions/session-service";
 import { replaceRuntimeState } from "../state/replace-runtime-state";
 import type { StateStore } from "../state/state-store";
-import type { AppState, LogicalSession } from "../state/types";
+import { createBotDirectOwner, type AppState, type LogicalSession } from "../state/types";
 
 export interface DirectBotTurnInput {
   botId: string;
@@ -67,6 +67,7 @@ export class BotRuntimeManager {
     botId: string;
     conversationId?: string;
     topicId?: string;
+    execution?: BotProfileExecution;
   }): Promise<BotRuntimeBinding> {
     this.requireEnabledBot(input.botId);
     const scope = this.resolveScope(input.botId, input);
@@ -121,13 +122,14 @@ export class BotRuntimeManager {
     botId: string;
     conversationId?: string;
     topicId?: string;
+    execution?: BotProfileExecution;
   }): Promise<BotRuntimeBinding> {
     const bot = this.requireEnabledBot(input.botId);
     const scope = this.resolveScope(bot.id, input);
     const scopedId = createScopedDirectBindingId(scope.conversationId, scope.topicId, bot.id);
     const existing = this.findScopedBinding(scope.conversationId, scope.topicId, bot.id);
     if (existing && this.bindingSessionIsLive(existing)) {
-      await this.alignSessionRuntime(existing, bot);
+      await this.alignSessionRuntime(existing, input.execution ?? bot);
       return existing;
     }
     const adopted = this.findAdoptableLegacyBinding(bot.id, scope);
@@ -136,7 +138,7 @@ export class BotRuntimeManager {
       return await this.publishAdoptedBinding(bot, adopted, scopedId, scope);
     }
     await this.afterDirectSnapshot?.(bot);
-    const session = await this.ensureOwnedSession(bot, scopedId);
+    const session = await this.ensureOwnedSession(bot, scopedId, scope, input.execution);
     return await this.publishDirectRuntime(bot, session, scopedId, scope);
   }
 
@@ -208,7 +210,12 @@ export class BotRuntimeManager {
     };
   }
 
-  private async ensureOwnedSession(bot: BotProfile, bindingId: string): Promise<LogicalSession> {
+  private async ensureOwnedSession(
+    bot: BotProfile,
+    bindingId: string,
+    scope: { conversationId: string; topicId: string },
+    execution?: BotProfileExecution,
+  ): Promise<LogicalSession> {
     const alias = ownedDirectSessionAlias(bindingId);
     const current = this.findOwnedSession(bindingId);
     if (current) {
@@ -218,11 +225,20 @@ export class BotRuntimeManager {
     if (occupant && (occupant.owner?.kind !== "bot-direct" || occupant.owner.bindingId !== bindingId)) {
       throw new BotError("session_alias_conflict", `hidden session alias "${alias}" is already taken`);
     }
+    const agent = execution?.agent ?? bot.agent;
+    const workspace = execution?.workspace ?? bot.workspace;
+    const model = execution?.model ?? bot.model;
+    const effort = execution?.effort ?? bot.effort;
     if (!occupant) {
-      await this.sessions.createSession(alias, bot.agent, bot.workspace, {
-        owner: { kind: "bot-direct", bindingId },
-        ...(bot.model ? { model: bot.model } : {}),
-        ...(bot.effort ? { effort: bot.effort } : {}),
+      await this.sessions.createSession(alias, agent, workspace, {
+        owner: createBotDirectOwner({
+          bindingId,
+          botId: bot.id,
+          conversationId: scope.conversationId,
+          topicId: scope.topicId,
+        }),
+        ...(model ? { model } : {}),
+        ...(effort ? { effort } : {}),
       });
     }
     const record = this.findOwnedSession(bindingId);
@@ -273,7 +289,12 @@ export class BotRuntimeManager {
       }
       const owned = next.sessions[session.alias];
       if (owned?.owner?.kind === "bot-direct") {
-        owned.owner = { kind: "bot-direct", bindingId: scopedId };
+        owned.owner = createBotDirectOwner({
+          bindingId: scopedId,
+          botId: bot.id,
+          conversationId: conversation.id,
+          topicId: scope.topicId,
+        });
       }
       next.bot_runtime_bindings[scopedId] = binding;
       if (typeof this.stateStore.saveNow === "function") {

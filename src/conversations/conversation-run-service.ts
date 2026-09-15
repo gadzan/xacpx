@@ -19,6 +19,7 @@ export interface ConversationRunServiceOptions {
   createTopicId?: () => string;
   stateMutex?: AsyncMutex;
   beforeAcceptPersist?: () => Promise<void>;
+  beforeTeardownFinalize?: () => Promise<void>;
   failSessionRelease?: boolean | (() => boolean);
   autoKick?: boolean;
 }
@@ -30,6 +31,7 @@ export class ConversationRunService {
   private readonly createTopicIdFn: () => string;
   private readonly stateMutex: AsyncMutex;
   private readonly beforeAcceptPersist?: () => Promise<void>;
+  private readonly beforeTeardownFinalize?: () => Promise<void>;
   private readonly failSessionRelease?: boolean | (() => boolean);
   private readonly autoKick: boolean;
 
@@ -47,6 +49,7 @@ export class ConversationRunService {
     this.createTopicIdFn = options?.createTopicId ?? (() => createTopicId());
     this.stateMutex = options?.stateMutex ?? new AsyncMutex();
     this.beforeAcceptPersist = options?.beforeAcceptPersist;
+    this.beforeTeardownFinalize = options?.beforeTeardownFinalize;
     this.failSessionRelease = options?.failSessionRelease;
     this.autoKick = options?.autoKick ?? true;
   }
@@ -132,8 +135,10 @@ export class ConversationRunService {
     const timestamp = this.now().toISOString();
     const planned = planDirectConversation(this.state, { botId: bot.id, title: bot.name, now: timestamp });
     const conversationId = planned.conversation.id;
-    this.store.markConversationDeleting(conversationId, timestamp);
-    await this.markAppStateDeleting(conversationId);
+    await this.bots.runLifecycle(botId, async () => {
+      this.store.markConversationDeleting(conversationId, timestamp);
+      await this.markAppStateDeleting(conversationId);
+    });
 
     const runs = this.store.listRuns(conversationId);
     for (const run of runs) {
@@ -141,7 +146,7 @@ export class ConversationRunService {
         await this.dispatcher.cancelRun(run.id);
       }
     }
-    this.store.recoverExpiredClaims(this.now().toISOString(), "");
+    this.store.recoverExpiredClaims(this.now().toISOString());
     const remaining = this.store.listRuns(conversationId);
     const indeterminate = remaining.filter((run) => run.state === "indeterminate");
     if (indeterminate.length > 0) {
@@ -166,21 +171,41 @@ export class ConversationRunService {
       }
     }
 
-    this.store.deleteConversationRows(conversationId);
-    await this.stateMutex.run(async () => {
-      const next = structuredClone(this.state);
-      for (const [id, binding] of Object.entries(next.bot_runtime_bindings)) {
-        if (binding.conversationId === conversationId) {
-          delete next.bot_runtime_bindings[id];
+    await this.bots.runLifecycle(botId, async () => {
+      await this.beforeTeardownFinalize?.();
+      for (const binding of Object.values(this.state.bot_runtime_bindings)) {
+        if (binding.scope === "bot-direct" && binding.conversationId === conversationId) {
+          const session = this.sessions.getLogicalSessionRecord(binding.sessionAlias);
+          if (session) {
+            await this.sessions.removeSession(binding.sessionAlias);
+          }
         }
       }
-      for (const [id, topic] of Object.entries(next.conversation_topics)) {
-        if (topic.conversationId === conversationId) {
-          delete next.conversation_topics[id];
-        }
+      const leftoverAliases = Object.values(this.state.sessions)
+        .filter((session) => (
+          session.owner?.kind === "bot-direct"
+          && (session.owner.botId === botId || session.owner.conversationId === conversationId)
+        ))
+        .map((session) => session.alias);
+      for (const alias of leftoverAliases) {
+        await this.sessions.removeSession(alias);
       }
-      delete next.conversations[conversationId];
-      await this.persist(next);
+      await this.stateMutex.run(async () => {
+        const next = structuredClone(this.state);
+        for (const [id, binding] of Object.entries(next.bot_runtime_bindings)) {
+          if (binding.conversationId === conversationId) {
+            delete next.bot_runtime_bindings[id];
+          }
+        }
+        for (const [id, topic] of Object.entries(next.conversation_topics)) {
+          if (topic.conversationId === conversationId) {
+            delete next.conversation_topics[id];
+          }
+        }
+        delete next.conversations[conversationId];
+        await this.persist(next);
+      });
+      this.store.deleteConversationRows(conversationId);
     });
   }
 
