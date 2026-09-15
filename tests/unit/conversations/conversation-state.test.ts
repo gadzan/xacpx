@@ -62,7 +62,7 @@ test("a wrong-typed bots section resets to empty and is reported", () => {
   ]);
 });
 
-test("replaceRuntimeState copies Bot collections onto the live state object", () => {
+test("replaceRuntimeState copies Bot collections and leaves native session cache on the live object", () => {
   const target = createEmptyState();
   const source = createEmptyState();
   source.bots.bot_a = {
@@ -74,15 +74,31 @@ test("replaceRuntimeState copies Bot collections onto the live state object", ()
     createdAt: NOW,
     updatedAt: NOW,
   };
+  source.conversations.conv_a = {
+    id: "conv_a",
+    kind: "bot",
+    title: "Reviewer",
+    botIds: ["bot_a"],
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
   source.native_session_lists["wx:user"] = {
     created_at: NOW,
     agent: "codex",
     cwd: "/tmp",
     sessions: [],
   };
+  target.native_session_lists["wx:live"] = {
+    created_at: NOW,
+    agent: "claude",
+    cwd: "/tmp/live",
+    sessions: [],
+  };
 
   replaceRuntimeState(target, source);
 
   expect(target.bots.bot_a?.name).toBe("Reviewer");
-  expect(target.native_session_lists["wx:user"]?.agent).toBe("codex");
+  expect(target.conversations.conv_a?.kind).toBe("bot");
+  expect(target.native_session_lists["wx:live"]?.agent).toBe("claude");
+  expect(target.native_session_lists["wx:user"]).toBeUndefined();
 });
