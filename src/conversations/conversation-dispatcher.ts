@@ -1,0 +1,238 @@
+import { randomUUID } from "node:crypto";
+
+import { composeBotTurnPromptFromSnapshot } from "../bots/bot-profile-prompt";
+import type { BotRuntimeManager } from "../bots/bot-runtime-manager";
+import { createSourceTurnId } from "../domain/ids";
+import type { SessionService } from "../sessions/session-service";
+import type { ClaimedWork, ConversationStore } from "./conversation-store";
+import type { ConversationTurnRunner } from "./conversation-turn-runner";
+import type { MemberTurnRecord } from "./conversation-types";
+
+export interface ConversationDispatcherHooks {
+  afterClaim?: (work: ClaimedWork) => Promise<void>;
+  beforeRuntimeMaterialize?: (work: ClaimedWork) => Promise<void>;
+  failRuntimeMaterialize?: boolean | (() => Error | true | undefined);
+  beforeExecutionStart?: (work: ClaimedWork) => Promise<void>;
+  afterExecutionStart?: (turn: MemberTurnRecord) => Promise<void>;
+  beforeResultPersist?: (work: ClaimedWork) => Promise<void>;
+}
+
+export interface ConversationDispatcherOptions {
+  now?: () => Date;
+  leaseMs?: number;
+  ownerId?: string;
+  hooks?: ConversationDispatcherHooks;
+}
+
+const DEFAULT_LEASE_MS = 30_000;
+
+export class ConversationDispatcher {
+  private readonly now: () => Date;
+  private readonly leaseMs: number;
+  private readonly ownerId: string;
+  private readonly hooks?: ConversationDispatcherHooks;
+  private draining = false;
+  private kicked = false;
+  private abortDrain = false;
+
+  constructor(
+    private readonly store: ConversationStore,
+    private readonly runtime: BotRuntimeManager,
+    private readonly runner: ConversationTurnRunner,
+    private readonly sessions: Pick<SessionService, "getLogicalSessionRecord">,
+    options?: ConversationDispatcherOptions,
+  ) {
+    this.now = options?.now ?? (() => new Date());
+    this.leaseMs = options?.leaseMs ?? DEFAULT_LEASE_MS;
+    this.ownerId = options?.ownerId ?? `dispatcher:${process.pid}:${randomUUID()}`;
+    this.hooks = options?.hooks;
+  }
+
+  async kick(): Promise<void> {
+    this.kicked = true;
+    if (this.draining) {
+      return;
+    }
+    this.draining = true;
+    try {
+      for (;;) {
+        this.kicked = false;
+        this.abortDrain = false;
+        this.store.recoverExpiredClaims(this.now().toISOString(), this.ownerId);
+        const claimed = this.claimOne();
+        if (!claimed) {
+          if (this.kicked) {
+            continue;
+          }
+          break;
+        }
+        await this.execute(claimed);
+        if (this.abortDrain) {
+          break;
+        }
+      }
+    } finally {
+      this.draining = false;
+    }
+  }
+
+  async cancelRun(runId: string): Promise<void> {
+    const now = this.now().toISOString();
+    const outcome = this.store.cancelRun(runId, now);
+    if (outcome.alreadyTerminal) {
+      return;
+    }
+    if (!outcome.executionStarted) {
+      await this.kick();
+      return;
+    }
+    const result = await this.runner.cancel({
+      conversationId: outcome.run.conversationId,
+      topicId: outcome.run.topicId,
+      sessionAlias: outcome.memberTurn.sessionAlias ?? "",
+      queueItemId: outcome.memberTurn.queueItemId,
+      promptRequestId: outcome.memberTurn.sourceTurnId ?? "",
+    });
+    const latest = this.store.getRun(runId);
+    if (latest && (latest.state === "completed" || latest.state === "failed")) {
+      return;
+    }
+    this.store.completeCancel(runId, outcome.memberTurn.id, this.now().toISOString(), result === "unknown");
+    await this.kick();
+  }
+
+  private claimOne(): ClaimedWork | undefined {
+    return this.store.claimNextDispatch({
+      now: this.now().toISOString(),
+      owner: this.ownerId,
+      leaseExpiresAt: new Date(this.now().getTime() + this.leaseMs).toISOString(),
+    });
+  }
+
+  private async execute(work: ClaimedWork): Promise<void> {
+    await this.hooks?.afterClaim?.(work);
+    const current = this.store.getRun(work.run.id);
+    if (!current || current.state === "cancelled" || current.state === "failed" || current.state === "completed") {
+      if (current?.state === "queued") {
+        this.store.releaseClaimToPending(work.dispatch.id, this.now().toISOString());
+      }
+      return;
+    }
+    try {
+      await this.hooks?.beforeRuntimeMaterialize?.(work);
+      const materializeFail = this.resolveMaterializeFail();
+      if (materializeFail) {
+        throw materializeFail;
+      }
+      const binding = await this.runtime.getOrCreateDirectSession({
+        botId: work.memberTurn.botId,
+        conversationId: work.run.conversationId,
+        topicId: work.run.topicId,
+      });
+      const snapshot = work.run.profileSnapshot;
+      const session = this.sessions.getLogicalSessionRecord(binding.sessionAlias);
+      if (session
+        && (session.agent !== snapshot.execution.agent || session.workspace !== snapshot.execution.workspace)) {
+        this.store.failExecution({
+          runId: work.run.id,
+          memberTurnId: work.memberTurn.id,
+          now: this.now().toISOString(),
+          reason: "runtime_revision_mismatch",
+        });
+        return;
+      }
+      await this.hooks?.beforeExecutionStart?.(work);
+      const latestBeforeStart = this.store.getRun(work.run.id);
+      if (!latestBeforeStart || latestBeforeStart.state === "cancelled") {
+        this.store.cancelRun(work.run.id, this.now().toISOString());
+        return;
+      }
+      const sourceTurnId = createSourceTurnId();
+      const started = this.store.markExecutionStarted({
+        runId: work.run.id,
+        memberTurnId: work.memberTurn.id,
+        sessionAlias: binding.sessionAlias,
+        logicalSessionId: binding.logicalSessionId,
+        sourceTurnId,
+        now: this.now().toISOString(),
+      });
+      await this.hooks?.afterExecutionStart?.(started);
+      const text = composeBotTurnPromptFromSnapshot(snapshot, this.requestText(work.run.requestMessageId));
+      const result = await this.runner.run({
+        conversationId: work.run.conversationId,
+        topicId: work.run.topicId,
+        botId: work.memberTurn.botId,
+        sessionAlias: binding.sessionAlias,
+        logicalSessionId: binding.logicalSessionId,
+        text,
+        origin: "human",
+        promptRequestId: sourceTurnId,
+      });
+      await this.hooks?.beforeResultPersist?.(work);
+      this.persistResult(work, started, result);
+    } catch (error) {
+      const member = this.store.getMemberTurn(work.memberTurn.id);
+      if (member?.startedAt) {
+        this.store.failExecution({
+          runId: work.run.id,
+          memberTurnId: work.memberTurn.id,
+          now: this.now().toISOString(),
+          reason: "started_result_unknown",
+          terminalState: "indeterminate",
+        });
+        return;
+      }
+      this.store.releaseClaimToPending(work.dispatch.id, this.now().toISOString());
+      this.abortDrain = true;
+      return;
+    }
+  }
+
+  private persistResult(
+    work: ClaimedWork,
+    started: MemberTurnRecord,
+    result: Awaited<ReturnType<ConversationTurnRunner["run"]>>,
+  ): void {
+    const now = this.now().toISOString();
+    if (result.status === "completed") {
+      this.store.completeExecution({
+        runId: work.run.id,
+        memberTurnId: started.id,
+        botId: work.memberTurn.botId,
+        content: result.text ?? "",
+        sourceTurn: { sessionAlias: started.sessionAlias ?? "", turnId: started.sourceTurnId },
+        now,
+      });
+      return;
+    }
+    if (result.status === "cancelled") {
+      this.store.completeCancel(work.run.id, started.id, now, result.unknown === true);
+      return;
+    }
+    this.store.failExecution({
+      runId: work.run.id,
+      memberTurnId: started.id,
+      now,
+      reason: result.error ?? "failed",
+    });
+  }
+
+  private requestText(messageId: string): string {
+    return this.store.getMessage(messageId)?.content ?? "";
+  }
+
+  private resolveMaterializeFail(): Error | undefined {
+    const fail = this.hooks?.failRuntimeMaterialize;
+    if (!fail) {
+      return undefined;
+    }
+    if (fail === true) {
+      return new Error("simulated AppState/runtime materialize failure");
+    }
+    const result = fail();
+    if (result === true) {
+      return new Error("simulated AppState/runtime materialize failure");
+    }
+    return result;
+  }
+}

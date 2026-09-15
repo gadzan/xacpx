@@ -91,6 +91,7 @@ export class BotService {
         ...this.requireIdentity(input),
         ...this.optionalFields(input),
         enabled: input.enabled ?? true,
+        profileRevision: 1,
         createdAt: timestamp,
         updatedAt: timestamp,
       };
@@ -122,6 +123,7 @@ export class BotService {
           ...identity,
           ...this.patchOptional(existing, patch),
           enabled: patch.enabled === undefined || patch.enabled === null ? existing.enabled : patch.enabled,
+          profileRevision: (existing.profileRevision ?? 1) + 1,
           updatedAt: this.now().toISOString(),
         };
         this.state.bots[id] = next;
@@ -261,9 +263,10 @@ export class BotService {
         binding.scope !== "group-controller" && binding.botId === botId
       ))
       .map((binding) => binding.id);
-    const bindingId = createDirectBindingId(botId);
+    const ownedBindingIds = new Set(bindingIds);
+    ownedBindingIds.add(createDirectBindingId(botId));
     const sessionAliases = Object.values(this.state.sessions)
-      .filter((session) => session.owner?.kind === "bot-direct" && session.owner.bindingId === bindingId)
+      .filter((session) => session.owner?.kind === "bot-direct" && ownedBindingIds.has(session.owner.bindingId))
       .map((session) => session.alias);
     return { conversationIds, bindingIds, sessionAliases };
   }

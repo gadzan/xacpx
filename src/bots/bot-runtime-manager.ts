@@ -3,7 +3,15 @@ import { BotError } from "./bot-error";
 import type { BotService } from "./bot-service";
 import type { BotProfile, BotRuntimeBinding } from "./bot-types";
 import { planDirectConversation } from "../conversations/direct-conversation";
-import { createDirectBindingId } from "../domain/ids";
+import type { ConversationTopic } from "../conversations/conversation-types";
+import {
+  createDirectBindingId,
+  createDirectConversationId,
+  createDirectTopicId,
+  createScopedDirectBindingId,
+  directRuntimeFlightKey,
+  ownedDirectSessionAlias,
+} from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
 import type { SessionService } from "../sessions/session-service";
 import { replaceRuntimeState } from "../state/replace-runtime-state";
@@ -22,6 +30,7 @@ export interface BotTurnRunner {
     sessionAlias: string;
     text: string;
     origin: "human";
+    promptRequestId?: string;
   }): Promise<unknown>;
 }
 
@@ -43,7 +52,7 @@ export class BotRuntimeManager {
     private readonly bots: BotService,
     private readonly sessions: Pick<
       SessionService,
-      "createSession" | "getLogicalSessionRecord" | "getLogicalSessionById" | "setSessionModel" | "setSessionEffort"
+      "createSession" | "getLogicalSessionRecord" | "getLogicalSessionById" | "setSessionModel" | "setSessionEffort" | "removeSession"
     >,
     private readonly state: AppState,
     private readonly stateStore: SessionWriter,
@@ -60,14 +69,12 @@ export class BotRuntimeManager {
     topicId?: string;
   }): Promise<BotRuntimeBinding> {
     this.requireEnabledBot(input.botId);
-    this.assertRequestedIds(input.botId, input);
-    const key = `bot-direct:${input.botId}`;
+    const scope = this.resolveScope(input.botId, input);
+    const key = directRuntimeFlightKey(scope.conversationId, scope.topicId, input.botId);
     const running = this.inflight.get(key);
     if (running) {
       return await running;
     }
-    // Per-bot lifecycle is independent of daemon stateMutex and spans the
-    // SessionService await. Identity updates and deletes share this gate.
     const pending = this.bots.runLifecycle(input.botId, () => this.materializeDirectSession(input)).finally(() => {
       if (this.inflight.get(key) === pending) {
         this.inflight.delete(key);
@@ -92,22 +99,45 @@ export class BotRuntimeManager {
     });
   }
 
+  async releaseDirectBinding(bindingId: string): Promise<void> {
+    const binding = this.state.bot_runtime_bindings[bindingId];
+    if (!binding || binding.scope !== "bot-direct") {
+      return;
+    }
+    await this.sessions.removeSession(binding.sessionAlias);
+    await this.stateMutex.run(async () => {
+      const next = structuredClone(this.state);
+      delete next.bot_runtime_bindings[bindingId];
+      if (typeof this.stateStore.saveNow === "function") {
+        await this.stateStore.saveNow(next);
+      } else {
+        await this.stateStore.save(next);
+      }
+      replaceRuntimeState(this.state, next);
+    });
+  }
+
   private async materializeDirectSession(input: {
     botId: string;
     conversationId?: string;
     topicId?: string;
   }): Promise<BotRuntimeBinding> {
     const bot = this.requireEnabledBot(input.botId);
-    this.assertRequestedIds(bot.id, input);
-    const bindingId = createDirectBindingId(bot.id);
-    const existing = this.findDirectBinding(bot.id);
+    const scope = this.resolveScope(bot.id, input);
+    const scopedId = createScopedDirectBindingId(scope.conversationId, scope.topicId, bot.id);
+    const existing = this.findScopedBinding(scope.conversationId, scope.topicId, bot.id);
     if (existing && this.bindingSessionIsLive(existing)) {
       await this.alignSessionRuntime(existing, bot);
       return existing;
     }
+    const adopted = this.findAdoptableLegacyBinding(bot.id, scope);
+    if (adopted && this.bindingSessionIsLive(adopted)) {
+      await this.afterDirectSnapshot?.(bot);
+      return await this.publishAdoptedBinding(bot, adopted, scopedId, scope);
+    }
     await this.afterDirectSnapshot?.(bot);
-    const session = await this.ensureOwnedSession(bot, bindingId);
-    return await this.publishDirectRuntime(bot, session, bindingId, input);
+    const session = await this.ensureOwnedSession(bot, scopedId);
+    return await this.publishDirectRuntime(bot, session, scopedId, scope);
   }
 
   private requireEnabledBot(botId: string): BotProfile {
@@ -118,7 +148,11 @@ export class BotRuntimeManager {
     return bot;
   }
 
-  private assertRequestedIds(botId: string, input: { conversationId?: string; topicId?: string }): void {
+  private resolveScope(botId: string, input: { conversationId?: string; topicId?: string }): {
+    conversationId: string;
+    topicId: string;
+    topic: ConversationTopic;
+  } {
     const planned = planDirectConversation(this.state, {
       botId,
       title: this.bots.getBot(botId).name,
@@ -127,17 +161,55 @@ export class BotRuntimeManager {
     if (input.conversationId && input.conversationId !== planned.conversation.id) {
       throw new BotError("conversation_mismatch", "direct Bot conversation does not match this Bot");
     }
-    if (input.topicId && input.topicId !== planned.topic.id) {
-      const requested = this.state.conversation_topics[input.topicId];
-      if (!requested || requested.conversationId !== planned.conversation.id) {
-        throw new BotError("topic_not_found", `topic "${input.topicId}" does not belong to this Bot conversation`);
-      }
-      throw new BotError("topic_runtime_unsupported", `direct runtime only supports the default topic for bot "${botId}"`);
+    if (!input.topicId || input.topicId === planned.topic.id) {
+      return {
+        conversationId: planned.conversation.id,
+        topicId: planned.topic.id,
+        topic: planned.topic,
+      };
     }
+    const requested = this.state.conversation_topics[input.topicId];
+    if (!requested || requested.conversationId !== planned.conversation.id) {
+      throw new BotError("topic_not_found", `topic "${input.topicId}" does not belong to this Bot conversation`);
+    }
+    return {
+      conversationId: planned.conversation.id,
+      topicId: requested.id,
+      topic: requested,
+    };
+  }
+
+  private findAdoptableLegacyBinding(
+    botId: string,
+    scope: { conversationId: string; topicId: string },
+  ): BotRuntimeBinding | undefined {
+    if (scope.conversationId !== createDirectConversationId(botId) || scope.topicId !== createDirectTopicId(botId)) {
+      return undefined;
+    }
+    const legacyId = createDirectBindingId(botId);
+    const binding = this.state.bot_runtime_bindings[legacyId];
+    if (binding && binding.scope === "bot-direct" && binding.botId === botId) {
+      return binding;
+    }
+    const owned = this.findOwnedSession(legacyId);
+    if (!owned) {
+      return undefined;
+    }
+    return {
+      id: legacyId,
+      scope: "bot-direct",
+      conversationId: scope.conversationId,
+      topicId: scope.topicId,
+      botId,
+      logicalSessionId: owned.logical_session_id,
+      sessionAlias: owned.alias,
+      createdAt: owned.created_at,
+      updatedAt: owned.last_used_at,
+    };
   }
 
   private async ensureOwnedSession(bot: BotProfile, bindingId: string): Promise<LogicalSession> {
-    const alias = `brt_${bindingId}`;
+    const alias = ownedDirectSessionAlias(bindingId);
     const current = this.findOwnedSession(bindingId);
     if (current) {
       return current;
@@ -160,38 +232,85 @@ export class BotRuntimeManager {
     return record;
   }
 
-  private async publishDirectRuntime(
+  private async publishAdoptedBinding(
     bot: BotProfile,
-    session: LogicalSession,
-    bindingId: string,
-    input: { conversationId?: string; topicId?: string },
+    legacy: BotRuntimeBinding,
+    scopedId: string,
+    scope: { conversationId: string; topicId: string; topic: ConversationTopic },
   ): Promise<BotRuntimeBinding> {
+    const session = this.sessions.getLogicalSessionById(legacy.logicalSessionId)
+      ?? this.findOwnedSession(legacy.id);
+    if (!session) {
+      throw new BotError("session_missing", `failed to adopt owned session for bot "${bot.id}"`);
+    }
     return await this.stateMutex.run(async () => {
-      const live = this.findDirectBinding(bot.id);
+      const live = this.findScopedBinding(scope.conversationId, scope.topicId, bot.id);
       if (live && this.bindingSessionIsLive(live)) {
         return live;
       }
       const timestamp = this.now().toISOString();
-      const { conversation, topic } = planDirectConversation(this.state, {
+      const { conversation } = planDirectConversation(this.state, {
         botId: bot.id,
         title: bot.name,
         now: timestamp,
       });
-      if (input.conversationId && input.conversationId !== conversation.id) {
-        throw new BotError("conversation_mismatch", "direct Bot conversation does not match this Bot");
+      const binding: BotRuntimeBinding = {
+        id: scopedId,
+        scope: "bot-direct",
+        conversationId: conversation.id,
+        topicId: scope.topicId,
+        botId: bot.id,
+        logicalSessionId: session.logical_session_id,
+        sessionAlias: session.alias,
+        createdAt: legacy.createdAt,
+        updatedAt: timestamp,
+      };
+      const next = structuredClone(this.state);
+      next.conversations[conversation.id] = next.conversations[conversation.id] ?? conversation;
+      next.conversation_topics[scope.topic.id] = next.conversation_topics[scope.topic.id] ?? scope.topic;
+      if (legacy.id !== scopedId) {
+        delete next.bot_runtime_bindings[legacy.id];
       }
-      if (input.topicId && input.topicId !== topic.id) {
-        const requested = this.state.conversation_topics[input.topicId];
-        if (requested && requested.conversationId === conversation.id) {
-          throw new BotError("topic_runtime_unsupported", `direct runtime only supports the default topic for bot "${bot.id}"`);
-        }
-        throw new BotError("topic_not_found", `topic "${input.topicId}" does not belong to this Bot conversation`);
+      const owned = next.sessions[session.alias];
+      if (owned?.owner?.kind === "bot-direct") {
+        owned.owner = { kind: "bot-direct", bindingId: scopedId };
+      }
+      next.bot_runtime_bindings[scopedId] = binding;
+      if (typeof this.stateStore.saveNow === "function") {
+        await this.stateStore.saveNow(next);
+      } else {
+        await this.stateStore.save(next);
+      }
+      replaceRuntimeState(this.state, next);
+      return this.state.bot_runtime_bindings[scopedId]!;
+    });
+  }
+
+  private async publishDirectRuntime(
+    bot: BotProfile,
+    session: LogicalSession,
+    bindingId: string,
+    scope: { conversationId: string; topicId: string; topic: ConversationTopic },
+  ): Promise<BotRuntimeBinding> {
+    return await this.stateMutex.run(async () => {
+      const live = this.findScopedBinding(scope.conversationId, scope.topicId, bot.id);
+      if (live && this.bindingSessionIsLive(live)) {
+        return live;
+      }
+      const timestamp = this.now().toISOString();
+      const { conversation } = planDirectConversation(this.state, {
+        botId: bot.id,
+        title: bot.name,
+        now: timestamp,
+      });
+      if (scope.conversationId !== conversation.id) {
+        throw new BotError("conversation_mismatch", "direct Bot conversation does not match this Bot");
       }
       const binding: BotRuntimeBinding = {
         id: bindingId,
         scope: "bot-direct",
         conversationId: conversation.id,
-        topicId: topic.id,
+        topicId: scope.topicId,
         botId: bot.id,
         logicalSessionId: session.logical_session_id,
         sessionAlias: session.alias,
@@ -199,8 +318,8 @@ export class BotRuntimeManager {
         updatedAt: timestamp,
       };
       const next = structuredClone(this.state);
-      next.conversations[conversation.id] = conversation;
-      next.conversation_topics[topic.id] = next.conversation_topics[topic.id] ?? topic;
+      next.conversations[conversation.id] = next.conversations[conversation.id] ?? conversation;
+      next.conversation_topics[scope.topic.id] = next.conversation_topics[scope.topic.id] ?? scope.topic;
       next.bot_runtime_bindings[bindingId] = binding;
       if (typeof this.stateStore.saveNow === "function") {
         await this.stateStore.saveNow(next);
@@ -212,10 +331,13 @@ export class BotRuntimeManager {
     });
   }
 
-  private findDirectBinding(botId: string): BotRuntimeBinding | undefined {
-    return Object.values(this.state.bot_runtime_bindings).find(
-      (binding) => binding.scope === "bot-direct" && binding.botId === botId,
-    );
+  private findScopedBinding(conversationId: string, topicId: string, botId: string): BotRuntimeBinding | undefined {
+    const scopedId = createScopedDirectBindingId(conversationId, topicId, botId);
+    const scoped = this.state.bot_runtime_bindings[scopedId];
+    if (scoped && scoped.scope === "bot-direct" && scoped.botId === botId && scoped.topicId === topicId) {
+      return scoped;
+    }
+    return undefined;
   }
 
   private findOwnedSession(bindingId: string): LogicalSession | undefined {
