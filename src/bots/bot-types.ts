@@ -4,11 +4,8 @@ export interface BotProfile {
   id: string;
   name: string;
   avatar?: string;
-  /** Human-facing role/summary. Does not change model behavior by itself. */
   role?: string;
-  /** Model-facing behavior and responsibility guidance. */
   instructions?: string;
-  /** Key in config.agents. */
   agent: string;
   workspace: string;
   cwd?: string;

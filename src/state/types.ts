@@ -6,7 +6,6 @@ import type { ScheduledTaskRecord } from "../scheduled/scheduled-types";
 export type SessionTransportEngine = "cli" | "runtime";
 export type LogicalSessionSource = "xacpx" | "agent-side";
 
-/** Hidden Bot/group runtime ownership. Absent on ordinary user sessions. */
 export interface LogicalSessionOwner {
   kind: "bot-direct" | "group-member" | "group-controller";
   bindingId: string;
