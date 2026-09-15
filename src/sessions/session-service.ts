@@ -19,7 +19,7 @@ import { resolveWorkerAgentLaunch, shouldGuardWorkerAcpOutput } from "../orchest
 import type { WorkerBindingRecord } from "../orchestration/orchestration-types";
 import type { StateStore } from "../state/state-store";
 import { replaceRuntimeState } from "../state/replace-runtime-state";
-import type { AppState, BackgroundResult, ChatContextState, LogicalSession, SessionTransportEngine } from "../state/types";
+import type { AppState, BackgroundResult, ChatContextState, LogicalSession, LogicalSessionOwner, SessionTransportEngine } from "../state/types";
 import { resolveTransportEngine } from "./transport-engine";
 import type { SessionResourceLifecyclePublishInput } from "./session-resource-catalog";
 import type { AgentSession, ResolvedSession } from "../transport/types";
@@ -196,8 +196,23 @@ export class SessionService {
     }).engine;
   }
 
-  async createSession(alias: string, agent: string, workspace: string): Promise<ResolvedSession> {
-    return await this.createLogicalSession(alias, agent, workspace, `${workspace}:${alias}`);
+  async createSession(
+    alias: string,
+    agent: string,
+    workspace: string,
+    options?: { owner?: LogicalSessionOwner; model?: string; effort?: string },
+  ): Promise<ResolvedSession> {
+    return await this.createLogicalSession(
+      alias,
+      agent,
+      workspace,
+      `${workspace}:${alias}`,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      options,
+    );
   }
 
   /**
@@ -811,6 +826,10 @@ export class SessionService {
    */
   getLogicalSessionRecord(alias: string): LogicalSession | null {
     return this.state.sessions[alias] ?? null;
+  }
+
+  getLogicalSessionById(logicalSessionId: string): LogicalSession | null {
+    return Object.values(this.state.sessions).find((session) => session.logical_session_id === logicalSessionId) ?? null;
   }
 
   /** Read-only view of every persisted logical session record, across all channels. */
@@ -1785,6 +1804,7 @@ export class SessionService {
     },
     transportAcpxAgent?: string,
     transportAgentArgv?: string[],
+    extras?: { owner?: LogicalSessionOwner; model?: string; effort?: string },
   ): Promise<ResolvedSession> {
     return await this.mutate(async () => {
       this.validateSession(alias, agent, workspace);
@@ -1833,8 +1853,8 @@ export class SessionService {
             ? { transport_agent_argv: [...sameAgentExisting.transport_agent_argv] }
             : {}),
         mode_id: sameAgentExisting?.mode_id,
-        model: sameAgentExisting?.model,
-        effort: sameAgentExisting?.effort,
+        model: extras?.model ?? sameAgentExisting?.model,
+        effort: extras?.effort ?? sameAgentExisting?.effort,
         reply_mode: sameAgentExisting?.reply_mode,
         display_name: sameAgentExisting?.display_name,
         // Persist the engine binding BEFORE any owner can launch for this
@@ -1860,6 +1880,7 @@ export class SessionService {
         }),
         created_at: existingSession?.created_at ?? now,
         last_used_at: now,
+        ...(extras?.owner ? { owner: extras.owner } : {}),
       };
 
       // G11 persist-before-owner: the session record (including
