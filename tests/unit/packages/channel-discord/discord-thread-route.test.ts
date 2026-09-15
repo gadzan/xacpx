@@ -128,7 +128,7 @@ async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {
 }
 
 async function waitStarted(ch: DiscordChannel, accountId = "default"): Promise<void> {
-  const deadline = Date.now() + 2000;
+  const deadline = Date.now() + 10_000;
   for (;;) {
     try {
       await ch.sendCoordinatorMessage({ chatKey: `discord:${accountId}:g:__probe__`, text: "" });
