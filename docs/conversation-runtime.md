@@ -42,7 +42,9 @@ Restart / reclaim after lease expiry:
 - claimed, **never started** → requeue (`pending`, generation++); safe to dispatch again
 - claimed, **started**, completion unproven → `indeterminate` (MemberTurn and Run); **never** blindly replayed
 
-Execution start is a transactional CAS on `dispatchId + owner + generation`: dispatch still `claimed`, owner matches, generation matches, lease has not expired, run/member still runnable. A stale worker whose claim was recovered must not call the underlying runner.
+Every pre-start mutation by a claimed worker is a transactional CAS on `dispatchId + owner + generation` (and a still-valid lease): `markExecutionStarted`, `releaseClaimToPending`, and `failClaimBeforeStart`. A stale generation is `stale_claim` / a no-op; it must not clear or terminalize a newer claim.
+
+Execution start is that same fence plus run/member still runnable. A stale worker whose claim was recovered must not call the underlying runner.
 
 Do not treat “dispatcher process disappeared” as “task never ran” when `startedAt` / `sourceTurnId` exist.
 
@@ -53,6 +55,8 @@ Queued Runs on a Topic are claimed in **human request message `seq` order**, not
 On execution start the dispatcher persists `sessionAlias`, `logicalSessionId`, and a minted `sourceTurnId`. That id is passed into Control as `promptRequestId` so TurnQueue can treat it as the durable execution identity for **this** prompt. It is not a pre-existing transport turn id.
 
 Cancel/inspect uses a request-id-aware seam (`cancelTurnForPromptRequest` / `inspectPromptRequest`). Aborting the session lane alone does not prove the turn produced no effects. `ControlConversationTurnRunner.cancel()` waits for the tracked prompt to settle and reports `cancelled` only when that execution settled cancelled; a proven completion is persisted as completed; anything else is `unknown` → `indeterminate`.
+
+After `markExecutionStarted`, the dispatcher re-reads Run/MemberTurn following every await before `runner.run()`. If the Run is no longer `running` (cancel, indeterminate recovery, another worker), it returns without invoking Control. The runner registers `promptRequestId` synchronously before `Control.prompt`. A terminal or indeterminate Run must never start new side effects afterward. Settled runner entries are kept for late-cancel `completed` reporting, bounded by TTL/max like TurnQueue request-id tombstones.
 
 Recovery never uses latest-turn-in-alias, text match, or timestamp proximity.
 
@@ -79,7 +83,9 @@ At accept, the Run stores `profileRevision` plus a snapshot of:
 - behavior: instructions
 - execution: agent / workspace / model / effort
 
-Execute composes the prompt from **that** snapshot and materializes/aligns the owned session to the **accepted execution fields**, including model and effort. Clearing instructions does not erase the owned LogicalSession history. A Run must not mix old instructions with a newer model (or any other mixed execution field). If the owned session cannot be made to match the accepted execution snapshot, the Run fails `runtime_revision_mismatch` before the model is called.
+Execute composes the prompt from **that** snapshot and materializes/aligns the owned session to the **accepted execution fields**, including model and effort. Clearing instructions does not erase the owned LogicalSession history. A Run must not mix old instructions with a newer model (or any other mixed execution field).
+
+Sticky identity is `agent` / `workspace`. Before first materialization, if the accepted snapshot identity no longer matches the live Bot, the dispatcher fails that Run with `runtime_revision_mismatch` **before** creating a LogicalSession. Model and effort remain safely mutable and are aligned to the accepted snapshot (including on PR2 legacy binding adoption). If the owned session still cannot be made to match the accepted execution snapshot, the Run fails `runtime_revision_mismatch` before the model is called.
 
 ## Direct multi-Topic binding
 
@@ -87,7 +93,7 @@ Runtime key: **`conversationId × topicId × botId`**.
 
 - New bindings use `createScopedDirectBindingId(...)`.
 - PR2 default Topic bindings used `createDirectBindingId(botId)` and alias `brt_<legacyId>`.
-- Adoption: on the default Topic, a live legacy binding/owned session is rewritten onto the scoped binding id; the **alias is kept** so the owned session is not orphaned.
+- Adoption: on the default Topic, a live legacy binding/owned session is aligned to the accepted `model` / `effort`, then rewritten onto the scoped binding id; the **alias is kept** so the owned session is not orphaned.
 
 `LogicalSession.owner` for a scoped bot-direct session stores `botId` (and conversation/topic ids) in addition to `bindingId`, so a crash after session persist and before binding publish still attributes the orphan to the Bot. PR2 owners that only have `bindingId` still parse. `deleteBot` stays fail-closed on those orphans.
 
@@ -111,7 +117,7 @@ A crash before step 5 leaves the SQLite `deleting` barrier in place: new accepts
 
 Injected release failure leaves `deleting` + ownership in place for retry.
 
-**Remaining Bot-delete boundary:** `BotService.deleteBot` stays fail-closed (`bot_in_use` / `bot_in_group`) and does **not** auto-teardown. Call `ConversationRunService.teardownDirectConversation` first, then delete the Bot. Group teardown is out of scope.
+**Remaining Bot-delete boundary:** `BotService.deleteBot` stays fail-closed (`bot_in_use` / `bot_in_group`) and does **not** auto-teardown. It consults AppState runtime references **and** ConversationStore durable work (`hasDurableBotWork`) so an accepted Run/outbox cannot outlive a deleted Bot through a crash-before-materialize window. Call `ConversationRunService.teardownDirectConversation` first, then delete the Bot. Group teardown is out of scope.
 
 ## Out of scope
 

@@ -45,9 +45,16 @@ type ControlTurnSeam = Pick<
   "prompt" | "cancelQueuedItem" | "cancelTurnForPromptRequest"
 >;
 
+export interface ControlConversationTurnRunnerOptions {
+  settledMax?: number;
+  settledTtlMs?: number;
+  now?: () => number;
+}
+
 interface TrackedExecution {
   done: Promise<ConversationTurnRunResult>;
   finished?: ConversationTurnRunResult;
+  finishedAt?: number;
 }
 
 function cancelResultFromRun(result: ConversationTurnRunResult): ConversationTurnCancelResult {
@@ -71,29 +78,40 @@ function cancelResultFromRun(result: ConversationTurnRunResult): ConversationTur
  */
 export class ControlConversationTurnRunner implements ConversationTurnRunner {
   private readonly executions = new Map<string, TrackedExecution>();
+  private readonly settledMax: number;
+  private readonly settledTtlMs: number;
+  private readonly now: () => number;
 
-  constructor(private readonly control: ControlTurnSeam) {}
+  constructor(private readonly control: ControlTurnSeam, options?: ControlConversationTurnRunnerOptions) {
+    this.settledMax = options?.settledMax ?? 2_000;
+    this.settledTtlMs = options?.settledTtlMs ?? 24 * 60 * 60_000;
+    this.now = options?.now ?? (() => Date.now());
+  }
 
   async run(input: ConversationTurnRunInput): Promise<ConversationTurnRunResult> {
-    const chatKey = directConversationChatKey(input.conversationId, input.topicId);
+    this.pruneSettled();
     const tracked: TrackedExecution = {
-      done: this.control.prompt({
-        chatKey,
-        sessionAlias: input.sessionAlias,
-        text: input.text,
-        senderId: "bot-conversation",
-        promptRequestId: input.promptRequestId,
-      }).then((result) => this.mapPromptResult(result)),
+      done: Promise.resolve({ status: "failed", error: "execution_not_started" }),
     };
-    tracked.done = tracked.done.then((result) => {
+    this.executions.set(input.promptRequestId, tracked);
+    const chatKey = directConversationChatKey(input.conversationId, input.topicId);
+    tracked.done = this.control.prompt({
+      chatKey,
+      sessionAlias: input.sessionAlias,
+      text: input.text,
+      senderId: "bot-conversation",
+      promptRequestId: input.promptRequestId,
+    }).then((result) => this.mapPromptResult(result)).then((result) => {
       tracked.finished = result;
+      tracked.finishedAt = this.now();
+      this.pruneSettled();
       return result;
     });
-    this.executions.set(input.promptRequestId, tracked);
     return await tracked.done;
   }
 
   async cancel(input: ConversationTurnCancelInput): Promise<ConversationTurnCancelResult> {
+    this.pruneSettled();
     const chatKey = directConversationChatKey(input.conversationId, input.topicId);
     const tracked = this.executions.get(input.promptRequestId);
     if (!tracked) {
@@ -106,6 +124,27 @@ export class ControlConversationTurnRunner implements ConversationTurnRunner {
       this.control.cancelTurnForPromptRequest(chatKey, input.sessionAlias, input.promptRequestId);
     }
     return cancelResultFromRun(await tracked.done);
+  }
+
+  private pruneSettled(): void {
+    const now = this.now();
+    for (const [id, tracked] of this.executions) {
+      if (tracked.finishedAt !== undefined && tracked.finishedAt + this.settledTtlMs <= now) {
+        this.executions.delete(id);
+      }
+    }
+    const settledIds: string[] = [];
+    for (const [id, tracked] of this.executions) {
+      if (tracked.finishedAt !== undefined) {
+        settledIds.push(id);
+      }
+    }
+    const overflow = settledIds.length - this.settledMax;
+    if (overflow > 0) {
+      for (const id of settledIds.slice(0, overflow)) {
+        this.executions.delete(id);
+      }
+    }
   }
 
   private mapPromptResult(result: Awaited<ReturnType<ControlService["prompt"]>>): ConversationTurnRunResult {

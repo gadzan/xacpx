@@ -15,11 +15,12 @@ import type {
   ConversationTurnRunResult,
   ConversationTurnRunner,
 } from "../../../src/conversations/conversation-turn-runner";
+import { ControlConversationTurnRunner } from "../../../src/conversations/conversation-turn-runner";
 import { SqliteConversationStore } from "../../../src/conversations/sqlite-conversation-store";
 import { createDirectConversationId } from "../../../src/domain/ids";
 import { AsyncMutex } from "../../../src/orchestration/async-mutex";
 import { SessionService } from "../../../src/sessions/session-service";
-import type { StateStore } from "../../../src/state/state-store";
+import { parseState, type StateStore } from "../../../src/state/state-store";
 import { createEmptyState, type AppState } from "../../../src/state/types";
 
 const NOW = "2026-09-15T12:00:00.000Z";
@@ -134,7 +135,7 @@ class FakeRunner implements ConversationTurnRunner {
 }
 
 async function createLifecycle(options: {
-  runner?: FakeRunner;
+  runner?: ConversationTurnRunner;
   hooks?: ConversationDispatcherHooks;
   beforeAcceptPersist?: () => Promise<void>;
   beforeTeardownFinalize?: () => Promise<void>;
@@ -189,6 +190,13 @@ async function createLifecycle(options: {
   return { path, store, state, sessions, bots, runtime, runner, dispatcher, service, nowFn, jump };
 }
 
+function fakeRunner(runner: ConversationTurnRunner): FakeRunner {
+  if (!(runner instanceof FakeRunner)) {
+    throw new Error("expected FakeRunner");
+  }
+  return runner;
+}
+
 test("crash after request transaction and before dispatch resumes exactly once", async () => {
   const first = await createLifecycle();
   const accepted = await first.service.acceptDirectPrompt({
@@ -197,7 +205,7 @@ test("crash after request transaction and before dispatch resumes exactly once",
     content: "hello",
   });
   expect(accepted.run.state).toBe("queued");
-  expect(first.runner.runs).toHaveLength(0);
+  expect(fakeRunner(first.runner).runs).toHaveLength(0);
   first.store.close();
 
   const runner = new FakeRunner();
@@ -299,6 +307,7 @@ test("crash after execution start and before result persistence is indeterminate
   resume.resolve();
   runner.hang.resolve();
   await drain;
+  expect(runner.runs).toHaveLength(0);
 });
 
 test("result persisted then client reconnects replays history by seq exactly once", async () => {
@@ -346,7 +355,7 @@ test("second Topic uses a separate runtime binding and session", async () => {
   expect(extraBinding?.sessionAlias).toBeDefined();
   expect(extraBinding?.sessionAlias).not.toBe(defaultBinding?.sessionAlias);
   expect(extraAccepted.run.topicId).toBe(extra.id);
-  expect(first.runner.runs).toHaveLength(2);
+  expect(fakeRunner(first.runner).runs).toHaveLength(2);
 });
 
 test("cancel queued Run never starts execution", async () => {
@@ -365,8 +374,8 @@ test("cancel queued Run never starts execution", async () => {
   await first.service.cancelRun(queued.run.id);
   expect(first.store.getRun(queued.run.id)?.state).toBe("cancelled");
   await first.dispatcher.kick();
-  expect(first.runner.runs).toHaveLength(1);
-  expect(first.runner.runs[0]?.promptRequestId).toBe(
+  expect(fakeRunner(first.runner).runs).toHaveLength(1);
+  expect(fakeRunner(first.runner).runs[0]?.promptRequestId).toBe(
     first.store.listMemberTurns(firstRun.run.id)[0]?.sourceTurnId,
   );
   expect(first.store.getRun(queued.run.id)?.state).toBe("cancelled");
@@ -456,7 +465,7 @@ test("runtime creation failure after accept leaves durable pending work", async 
   await first.dispatcher.kick();
   expect(first.store.getRun(accepted.run.id)?.state).toBe("queued");
   expect(first.store.getDispatchForRun(accepted.run.id)?.state).toBe("pending");
-  expect(first.runner.runs).toHaveLength(0);
+  expect(fakeRunner(first.runner).runs).toHaveLength(0);
 
   const recovered = new ConversationDispatcher(
     first.store,
@@ -467,7 +476,7 @@ test("runtime creation failure after accept leaves durable pending work", async 
   );
   await recovered.kick();
   expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
-  expect(first.runner.runs).toHaveLength(1);
+  expect(fakeRunner(first.runner).runs).toHaveLength(1);
 });
 
 test("teardown release failure leaves recoverable ownership", async () => {
@@ -614,8 +623,8 @@ test("model and effort edits between accept and dispatch execute the accepted sn
   await first.bots.updateBot(BOT_ID, { model: "gpt-live", effort: "high" });
   await first.dispatcher.kick();
   expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
-  expect(first.runner.runs).toHaveLength(1);
-  const session = first.sessions.getLogicalSessionRecord(first.runner.runs[0]!.sessionAlias);
+  expect(fakeRunner(first.runner).runs).toHaveLength(1);
+  const session = first.sessions.getLogicalSessionRecord(fakeRunner(first.runner).runs[0]!.sessionAlias);
   expect(session?.model).toBe("gpt-snapshot");
   expect(session?.effort).toBe("low");
 });
@@ -632,7 +641,7 @@ test("agent/workspace drift on an existing session fails runtime_revision_mismat
   await first.dispatcher.kick();
   expect(first.store.getRun(accepted.run.id)?.state).toBe("failed");
   expect(first.store.getRun(accepted.run.id)?.completionReason).toBe("runtime_revision_mismatch");
-  expect(first.runner.runs).toHaveLength(0);
+  expect(fakeRunner(first.runner).runs).toHaveLength(0);
 });
 
 test("teardown keeps the deleting barrier until AppState finalization finishes", async () => {
@@ -670,4 +679,171 @@ test("teardown keeps the deleting barrier until AppState finalization finishes",
   expect(first.store.listRuns(conversationId)).toEqual([]);
   expect(first.state.conversations[conversationId]).toBeUndefined();
   expect(first.state.bot_runtime_bindings).toEqual({});
+});
+
+test("accepted Run without a runtime fails closed when Bot agent/workspace changes before dispatch", async () => {
+  const first = await createLifecycle();
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-identity-pre-runtime",
+    content: "hello",
+  });
+  expect(Object.keys(first.state.sessions)).toHaveLength(0);
+  await first.bots.updateBot(BOT_ID, { agent: "claude", workspace: "frontend" });
+  await first.dispatcher.kick();
+  const bot = first.bots.getBot(BOT_ID);
+  expect(bot.agent).toBe("claude");
+  expect(bot.workspace).toBe("frontend");
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("failed");
+  expect(first.store.getRun(accepted.run.id)?.completionReason).toBe("runtime_revision_mismatch");
+  expect(fakeRunner(first.runner).runs).toHaveLength(0);
+  const owned = Object.values(first.state.sessions).filter((session) => session.owner?.kind === "bot-direct");
+  expect(owned).toHaveLength(0);
+  expect(Object.keys(first.state.bot_runtime_bindings)).toHaveLength(0);
+});
+
+test("deleteBot fails closed on accepted durable work before runtime materialization", async () => {
+  const first = await createLifecycle();
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-delete-pre-runtime",
+    content: "hello",
+  });
+  expect(Object.keys(first.state.sessions)).toHaveLength(0);
+  await expect(first.bots.deleteBot(BOT_ID)).rejects.toMatchObject({ code: "bot_in_use" });
+  expect(first.state.bots[BOT_ID]).toBeDefined();
+  expect(first.store.getRun(accepted.run.id)?.id).toBe(accepted.run.id);
+  expect(first.store.listMemberTurns(accepted.run.id)[0]?.botId).toBe(BOT_ID);
+  expect(first.store.getDispatchForRun(accepted.run.id)?.state).toBe("pending");
+  expect(first.store.hasDurableBotWork(BOT_ID)).toBe(true);
+});
+
+test("reopened SQLite and parsed AppState still fail-close deleteBot on accepted work", async () => {
+  const first = await createLifecycle();
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-delete-restart",
+    content: "hello",
+  });
+  first.store.close();
+  const parsed = parseState(JSON.parse(JSON.stringify(first.state)), "state.json");
+  const store = await SqliteConversationStore.open(first.path);
+  const recoveredBots = new BotService(createConfig(), parsed, new MemoryStateStore(), {
+    now: () => new Date(NOW),
+    createId: () => BOT_ID,
+  });
+  recoveredBots.setConversationWork(store);
+  await expect(recoveredBots.deleteBot(BOT_ID)).rejects.toMatchObject({ code: "bot_in_use" });
+  expect(parsed.bots[BOT_ID]).toBeDefined();
+  expect(store.getRun(accepted.run.id)?.id).toBe(accepted.run.id);
+  expect(store.listMemberTurns(accepted.run.id)[0]?.botId).toBe(BOT_ID);
+  expect(store.getDispatchForRun(accepted.run.id)?.runId).toBe(accepted.run.id);
+  expect(store.hasDurableBotWork(BOT_ID)).toBe(true);
+  store.close();
+});
+
+test("stale worker cannot release a newer pre-start claim after lease reclaim", async () => {
+  const aPaused = deferred();
+  const aResume = deferred();
+  const bPaused = deferred();
+  const bResume = deferred();
+  const runnerA = new FakeRunner();
+  const first = await createLifecycle({
+    runner: runnerA,
+    ownerId: "dispatcher-a",
+    leaseMs: 5_000,
+    hooks: {
+      beforeRuntimeMaterialize: async () => {
+        aPaused.resolve();
+        await aResume.promise;
+      },
+      failRuntimeMaterialize: true,
+    },
+  });
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-prestart-fence",
+    content: "hello",
+  });
+  const drainA = first.dispatcher.kick();
+  await aPaused.promise;
+  expect(first.store.getDispatchForRun(accepted.run.id)?.generation).toBe(1);
+  expect(first.store.getDispatchForRun(accepted.run.id)?.owner).toBe("dispatcher-a");
+
+  const runnerB = new FakeRunner();
+  const dispatcherB = new ConversationDispatcher(first.store, first.runtime, runnerB, first.sessions, {
+    now: first.nowFn,
+    ownerId: "dispatcher-b",
+    leaseMs: 5_000,
+    hooks: {
+      beforeExecutionStart: async () => {
+        bPaused.resolve();
+        await bResume.promise;
+      },
+    },
+  });
+  first.jump(10_000);
+  const drainB = dispatcherB.kick();
+  await bPaused.promise;
+  const live = first.store.getDispatchForRun(accepted.run.id);
+  expect(live?.state).toBe("claimed");
+  expect(live?.owner).toBe("dispatcher-b");
+  expect(live?.generation).toBe(2);
+  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.startedAt).toBeUndefined();
+  aResume.resolve();
+  await drainA;
+  const afterStale = first.store.getDispatchForRun(accepted.run.id);
+  expect(afterStale?.state).toBe("claimed");
+  expect(afterStale?.owner).toBe("dispatcher-b");
+  expect(afterStale?.generation).toBe(2);
+  expect(runnerA.runs).toHaveLength(0);
+  expect(runnerB.runs).toHaveLength(0);
+  bResume.resolve();
+  await drainB;
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
+  expect(runnerB.runs).toHaveLength(1);
+  expect(runnerA.runs).toHaveLength(0);
+});
+
+test("cancel between durable start and runner registration never starts Control", async () => {
+  const started = deferred();
+  const resume = deferred();
+  const control = {
+    promptCalls: 0,
+    async prompt() {
+      this.promptCalls += 1;
+      return { ok: true, text: "done" };
+    },
+    cancelTurnForPromptRequest() {
+      return true;
+    },
+    cancelQueuedItem() {
+      return { cancelled: true };
+    },
+  };
+  const runner = new ControlConversationTurnRunner(control);
+  const first = await createLifecycle({
+    runner,
+    hooks: {
+      afterExecutionStart: async () => {
+        started.resolve();
+        await resume.promise;
+      },
+    },
+  });
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-handoff-cancel",
+    content: "hello",
+  });
+  const drain = first.dispatcher.kick();
+  await started.promise;
+  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.state).toBe("running");
+  expect(control.promptCalls).toBe(0);
+  await first.service.cancelRun(accepted.run.id);
+  resume.resolve();
+  await drain;
+  expect(control.promptCalls).toBe(0);
+  expect(first.store.getRun(accepted.run.id)?.state).not.toBe("running");
+  expect(first.store.getRun(accepted.run.id)?.state).not.toBe("queued");
 });

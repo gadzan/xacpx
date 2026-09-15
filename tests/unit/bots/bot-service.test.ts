@@ -177,3 +177,11 @@ test("deleteBot removes a Bot that has no conversations or runtime", async () =>
   expect(state.bots.bot_fixed).toBeUndefined();
   expect(() => service.getBot("bot_fixed")).toThrow(BotError);
 });
+
+test("deleteBot fails closed when ConversationStore still has durable work", async () => {
+  const { service, state } = createService();
+  await service.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  service.setConversationWork({ hasDurableBotWork: (botId) => botId === "bot_fixed" });
+  await expect(service.deleteBot("bot_fixed")).rejects.toMatchObject({ code: "bot_in_use" });
+  expect(state.bots.bot_fixed).toBeDefined();
+});

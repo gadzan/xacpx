@@ -52,6 +52,7 @@ export class ConversationRunService {
     this.beforeTeardownFinalize = options?.beforeTeardownFinalize;
     this.failSessionRelease = options?.failSessionRelease;
     this.autoKick = options?.autoKick ?? true;
+    this.bots.setConversationWork(this.store);
   }
 
   async acceptDirectPrompt(input: {

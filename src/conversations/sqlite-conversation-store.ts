@@ -1,6 +1,7 @@
 import {
   createConversationMessageId,
   createConversationRunId,
+  createDirectConversationId,
   createMemberTurnId,
   createPendingDispatchId,
 } from "../domain/ids";
@@ -15,10 +16,12 @@ import type {
   CompleteExecutionInput,
   CompleteExecutionResult,
   ConversationStore,
+  FailClaimBeforeStartInput,
   FailExecutionInput,
   ListMessagesQuery,
   MarkExecutionStartedInput,
   RecoveredClaim,
+  ReleaseClaimToPendingInput,
 } from "./conversation-store";
 import type {
   ConversationMessage,
@@ -506,50 +509,63 @@ export class SqliteConversationStore implements ConversationStore {
     });
   }
 
-  releaseClaimToPending(dispatchId: string, now: string): PendingDispatch | undefined {
+  hasDurableBotWork(botId: string): boolean {
+    const conversationId = createDirectConversationId(botId);
+    if (this.db.get("SELECT 1 AS ok FROM member_turns WHERE bot_id = ? LIMIT 1", [botId])) {
+      return true;
+    }
+    if (this.db.get("SELECT 1 AS ok FROM runs WHERE conversation_id = ? LIMIT 1", [conversationId])) {
+      return true;
+    }
+    if (this.db.get(
+      "SELECT 1 AS ok FROM messages WHERE conversation_id = ? OR sender_bot_id = ? LIMIT 1",
+      [conversationId, botId],
+    )) {
+      return true;
+    }
+    if (this.db.get(
+      `SELECT 1 AS ok FROM pending_dispatches d
+       JOIN member_turns m ON m.id = d.member_turn_id
+       WHERE m.bot_id = ?
+       LIMIT 1`,
+      [botId],
+    )) {
+      return true;
+    }
+    if (this.db.get(
+      "SELECT 1 AS ok FROM conversation_lifecycle WHERE conversation_id = ? LIMIT 1",
+      [conversationId],
+    )) {
+      return true;
+    }
+    return Boolean(this.db.get(
+      "SELECT 1 AS ok FROM topic_lifecycle WHERE conversation_id = ? LIMIT 1",
+      [conversationId],
+    ));
+  }
+
+  releaseClaimToPending(input: ReleaseClaimToPendingInput): PendingDispatch {
     return this.db.transaction(() => {
-      const dispatch = this.db.get<DispatchRow>("SELECT * FROM pending_dispatches WHERE id = ?", [dispatchId]);
-      if (!dispatch || dispatch.state !== "claimed") {
-        return dispatch ? mapDispatch(dispatch) : undefined;
-      }
-      const member = this.requireMemberTurn(dispatch.member_turn_id);
-      if (member.startedAt) {
-        return mapDispatch(dispatch);
-      }
+      const dispatch = this.requireLiveUnstartedClaim(input);
       this.db.run(
         `UPDATE pending_dispatches
          SET state = 'pending', owner = NULL, claimed_at = NULL, lease_expires_at = NULL, generation = generation + 1
          WHERE id = ?`,
-        [dispatchId],
+        [dispatch.id],
       );
       this.db.run(`UPDATE member_turns SET state = 'queued' WHERE id = ?`, [dispatch.member_turn_id]);
       this.db.run(`UPDATE runs SET state = 'queued' WHERE id = ? AND state = 'running'`, [dispatch.run_id]);
-      void now;
-      return this.requireDispatch(dispatchId);
+      return this.requireDispatch(dispatch.id);
     });
   }
 
   markExecutionStarted(input: MarkExecutionStartedInput): MemberTurnRecord {
     return this.db.transaction(() => {
-      const dispatch = this.db.get<DispatchRow>("SELECT * FROM pending_dispatches WHERE id = ?", [input.dispatchId]);
-      if (
-        !dispatch
-        || dispatch.state !== "claimed"
-        || dispatch.owner !== input.owner
-        || dispatch.generation !== input.generation
-        || dispatch.run_id !== input.runId
-        || dispatch.member_turn_id !== input.memberTurnId
-        || (dispatch.lease_expires_at !== null && dispatch.lease_expires_at <= input.now)
-      ) {
-        throw new ConversationError("stale_claim", `dispatch "${input.dispatchId}" is not the live claim`);
-      }
+      this.requireLiveUnstartedClaim(input);
       const run = this.requireRun(input.runId);
       const member = this.requireMemberTurn(input.memberTurnId);
       if (TERMINAL_RUN_STATES.includes(run.state) || TERMINAL_MEMBER_STATES.includes(member.state)) {
         throw new ConversationError("run_not_runnable", `run "${input.runId}" is ${run.state}`);
-      }
-      if (member.startedAt) {
-        throw new ConversationError("stale_claim", `member turn "${input.memberTurnId}" already started`);
       }
       this.db.run(
         `UPDATE member_turns
@@ -652,22 +668,13 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   failExecution(input: FailExecutionInput): ConversationRun {
+    return this.db.transaction(() => this.applyFailExecution(input));
+  }
+
+  failClaimBeforeStart(input: FailClaimBeforeStartInput): ConversationRun {
     return this.db.transaction(() => {
-      const run = this.requireRun(input.runId);
-      if (TERMINAL_RUN_STATES.includes(run.state)) {
-        return run;
-      }
-      const state = input.terminalState ?? "failed";
-      this.db.run(
-        `UPDATE member_turns SET state = ?, finished_at = ? WHERE id = ?`,
-        [state, input.now, input.memberTurnId],
-      );
-      this.db.run(
-        `UPDATE runs SET state = ?, completion_reason = ?, finished_at = ? WHERE id = ?`,
-        [state, input.reason, input.now, input.runId],
-      );
-      this.finishDispatchForRun(input.runId, input.now);
-      return this.requireRun(input.runId);
+      this.requireLiveUnstartedClaim(input);
+      return this.applyFailExecution(input);
     });
   }
 
@@ -917,6 +924,51 @@ export class SqliteConversationStore implements ConversationStore {
        WHERE id = ?`,
       [now, dispatchId],
     );
+  }
+
+  private requireLiveUnstartedClaim(input: {
+    dispatchId: string;
+    owner: string;
+    generation: number;
+    now: string;
+    runId?: string;
+    memberTurnId?: string;
+  }): DispatchRow {
+    const dispatch = this.db.get<DispatchRow>("SELECT * FROM pending_dispatches WHERE id = ?", [input.dispatchId]);
+    if (
+      !dispatch
+      || dispatch.state !== "claimed"
+      || dispatch.owner !== input.owner
+      || Number(dispatch.generation) !== Number(input.generation)
+      || (input.runId !== undefined && dispatch.run_id !== input.runId)
+      || (input.memberTurnId !== undefined && dispatch.member_turn_id !== input.memberTurnId)
+      || (dispatch.lease_expires_at !== null && dispatch.lease_expires_at <= input.now)
+    ) {
+      throw new ConversationError("stale_claim", `dispatch "${input.dispatchId}" is not the live claim`);
+    }
+    const member = this.requireMemberTurn(dispatch.member_turn_id);
+    if (member.startedAt) {
+      throw new ConversationError("stale_claim", `member turn "${member.id}" already started`);
+    }
+    return dispatch;
+  }
+
+  private applyFailExecution(input: FailExecutionInput): ConversationRun {
+    const run = this.requireRun(input.runId);
+    if (TERMINAL_RUN_STATES.includes(run.state)) {
+      return run;
+    }
+    const state = input.terminalState ?? "failed";
+    this.db.run(
+      `UPDATE member_turns SET state = ?, finished_at = ? WHERE id = ?`,
+      [state, input.now, input.memberTurnId],
+    );
+    this.db.run(
+      `UPDATE runs SET state = ?, completion_reason = ?, finished_at = ? WHERE id = ?`,
+      [state, input.reason, input.now, input.runId],
+    );
+    this.finishDispatchForRun(input.runId, input.now);
+    return this.requireRun(input.runId);
   }
 
   private requireRun(runId: string): ConversationRun {

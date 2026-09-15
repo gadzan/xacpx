@@ -97,3 +97,44 @@ test("in-flight cancel uses the request-id seam and waits for settlement", async
   expect(control.cancelLane).toBe(0);
   expect(control.cancelByRequest).toEqual(["sturn_1"]);
 });
+
+test("settled execution cache keeps late cancel completed until TTL/max eviction", async () => {
+  let now = 1_000;
+  const control = fakeControl();
+  const runner = new ControlConversationTurnRunner(control, {
+    settledMax: 2,
+    settledTtlMs: 1_000,
+    now: () => now,
+  });
+  const first = { ...input, promptRequestId: "sturn_keep" };
+  const second = { ...input, promptRequestId: "sturn_second" };
+  const third = { ...input, promptRequestId: "sturn_third" };
+  expect((await runner.run(first)).status).toBe("completed");
+  expect(await runner.cancel({
+    conversationId: first.conversationId,
+    topicId: first.topicId,
+    sessionAlias: first.sessionAlias,
+    promptRequestId: first.promptRequestId,
+  })).toEqual({ outcome: "completed", text: "done" });
+  await runner.run(second);
+  await runner.run(third);
+  expect(await runner.cancel({
+    conversationId: first.conversationId,
+    topicId: first.topicId,
+    sessionAlias: first.sessionAlias,
+    promptRequestId: first.promptRequestId,
+  })).toEqual({ outcome: "unknown" });
+  expect(await runner.cancel({
+    conversationId: third.conversationId,
+    topicId: third.topicId,
+    sessionAlias: third.sessionAlias,
+    promptRequestId: third.promptRequestId,
+  })).toEqual({ outcome: "completed", text: "done" });
+  now += 2_000;
+  expect(await runner.cancel({
+    conversationId: third.conversationId,
+    topicId: third.topicId,
+    sessionAlias: third.sessionAlias,
+    promptRequestId: third.promptRequestId,
+  })).toEqual({ outcome: "unknown" });
+});

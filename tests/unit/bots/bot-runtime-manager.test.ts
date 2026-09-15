@@ -4,6 +4,7 @@ import { BotError } from "../../../src/bots/bot-error";
 import { BotRuntimeManager } from "../../../src/bots/bot-runtime-manager";
 import { BotService } from "../../../src/bots/bot-service";
 import type { BotProfile } from "../../../src/bots/bot-types";
+import { sessionMatchesExecution } from "../../../src/bots/bot-types";
 import type { AppConfig } from "../../../src/config/types";
 import type { ConversationTopic } from "../../../src/conversations/conversation-types";
 import { planDirectConversation } from "../../../src/conversations/direct-conversation";
@@ -633,4 +634,53 @@ test("PR2 default binding is adopted onto the scoped key without orphaning the o
     conversationId: createDirectConversationId(BOT_ID),
     topicId: createDirectTopicId(BOT_ID),
   }));
+});
+
+test("PR2 adoption aligns stale legacy model/effort to the accepted snapshot", async () => {
+  const { bots, runtime, sessions, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const legacyId = createDirectBindingId(BOT_ID);
+  const alias = `brt_${legacyId}`;
+  await sessions.createSession(alias, "codex", "backend", {
+    owner: { kind: "bot-direct", bindingId: legacyId },
+    model: "gpt-old",
+    effort: "low",
+  });
+  const owned = sessions.getLogicalSessionRecord(alias);
+  expect(owned).toBeDefined();
+  state.bot_runtime_bindings[legacyId] = {
+    id: legacyId,
+    scope: "bot-direct",
+    conversationId: createDirectConversationId(BOT_ID),
+    topicId: createDirectTopicId(BOT_ID),
+    botId: BOT_ID,
+    logicalSessionId: owned!.logical_session_id,
+    sessionAlias: alias,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  state.conversations[createDirectConversationId(BOT_ID)] = {
+    id: createDirectConversationId(BOT_ID),
+    kind: "bot",
+    title: "Reviewer",
+    botIds: [BOT_ID],
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  state.conversation_topics[createDirectTopicId(BOT_ID)] = {
+    id: createDirectTopicId(BOT_ID),
+    conversationId: createDirectConversationId(BOT_ID),
+    title: "Default",
+    status: "active",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  const execution = { agent: "codex", workspace: "backend", model: "gpt-snapshot", effort: "high" };
+  const binding = await runtime.getOrCreateDirectSession({ botId: BOT_ID, execution });
+  const adopted = sessions.getLogicalSessionRecord(binding.sessionAlias);
+  expect(adopted?.model).toBe("gpt-snapshot");
+  expect(adopted?.effort).toBe("high");
+  expect(sessionMatchesExecution(adopted!, execution)).toBe(true);
+  expect(state.bot_runtime_bindings[legacyId]).toBeUndefined();
+  expect(binding.sessionAlias).toBe(alias);
 });

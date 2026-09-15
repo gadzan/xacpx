@@ -307,3 +307,63 @@ test("markExecutionStarted rejects a stale owner/generation after reclaim", asyn
   expect(started.sourceTurnId).toBe("sturn_new");
   store.close();
 });
+
+test("stale releaseClaimToPending and failClaimBeforeStart do not mutate a newer claim", async () => {
+  const store = await SqliteConversationStore.open(":memory:");
+  const accepted = store.acceptRequest({
+    conversationId: CONV,
+    topicId: TOPIC,
+    requestId: "req-prestart-cas",
+    botId: BOT_ID,
+    content: "hello",
+    profileSnapshot: snapshot(),
+    now: NOW,
+  });
+  expect(store.hasDurableBotWork(BOT_ID)).toBe(true);
+  const firstClaim = store.claimNextDispatch({
+    now: NOW,
+    owner: "owner-a",
+    leaseExpiresAt: "2026-09-15T12:00:01.000Z",
+  });
+  store.recoverExpiredClaims("2026-09-15T12:00:02.000Z");
+  const secondClaim = store.claimNextDispatch({
+    now: "2026-09-15T12:00:03.000Z",
+    owner: "owner-b",
+    leaseExpiresAt: "2026-09-15T12:01:03.000Z",
+  });
+  expect(secondClaim?.dispatch.generation).toBe(2);
+  expect(() => store.releaseClaimToPending({
+    dispatchId: firstClaim!.dispatch.id,
+    owner: "owner-a",
+    generation: firstClaim!.dispatch.generation,
+    now: "2026-09-15T12:00:04.000Z",
+  })).toThrow(/live claim/);
+  expect(() => store.failClaimBeforeStart({
+    dispatchId: firstClaim!.dispatch.id,
+    owner: "owner-a",
+    generation: firstClaim!.dispatch.generation,
+    runId: accepted.run.id,
+    memberTurnId: accepted.memberTurn.id,
+    now: "2026-09-15T12:00:04.000Z",
+    reason: "runtime_revision_mismatch",
+  })).toThrow(/live claim/);
+  const live = store.getDispatchForRun(accepted.run.id);
+  expect(live?.state).toBe("claimed");
+  expect(live?.owner).toBe("owner-b");
+  expect(live?.generation).toBe(2);
+  expect(store.getRun(accepted.run.id)?.state).toBe("queued");
+  store.failClaimBeforeStart({
+    dispatchId: secondClaim!.dispatch.id,
+    owner: "owner-b",
+    generation: secondClaim!.dispatch.generation,
+    runId: accepted.run.id,
+    memberTurnId: accepted.memberTurn.id,
+    now: "2026-09-15T12:00:05.000Z",
+    reason: "runtime_revision_mismatch",
+  });
+  expect(store.getRun(accepted.run.id)?.state).toBe("failed");
+  expect(store.getRun(accepted.run.id)?.completionReason).toBe("runtime_revision_mismatch");
+  store.deleteConversationRows(CONV);
+  expect(store.hasDurableBotWork(BOT_ID)).toBe(false);
+  store.close();
+});

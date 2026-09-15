@@ -63,6 +63,10 @@ export class BotRuntimeManager {
     this.afterDirectSnapshot = options?.afterDirectSnapshot;
   }
 
+  getBot(botId: string): BotProfile {
+    return this.bots.getBot(botId);
+  }
+
   async getOrCreateDirectSession(input: {
     botId: string;
     conversationId?: string;
@@ -134,6 +138,7 @@ export class BotRuntimeManager {
     }
     const adopted = this.findAdoptableLegacyBinding(bot.id, scope);
     if (adopted && this.bindingSessionIsLive(adopted)) {
+      await this.alignSessionRuntime(adopted, input.execution ?? bot);
       await this.afterDirectSnapshot?.(bot);
       return await this.publishAdoptedBinding(bot, adopted, scopedId, scope);
     }

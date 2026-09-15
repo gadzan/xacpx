@@ -90,6 +90,17 @@ export interface FailExecutionInput {
   terminalState?: Extract<ConversationRun["state"], "failed" | "cancelled" | "indeterminate">;
 }
 
+export interface ClaimFenceInput {
+  dispatchId: string;
+  owner: string;
+  generation: number;
+  now: string;
+}
+
+export interface ReleaseClaimToPendingInput extends ClaimFenceInput {}
+
+export interface FailClaimBeforeStartInput extends ClaimFenceInput, FailExecutionInput {}
+
 export interface CancelRunResult {
   run: ConversationRun;
   memberTurn: MemberTurnRecord;
@@ -110,10 +121,12 @@ export interface ConversationStore {
   getDispatchForRun(runId: string): PendingDispatch | undefined;
   recoverExpiredClaims(now: string): RecoveredClaim[];
   claimNextDispatch(input: ClaimNextDispatchInput): ClaimedWork | undefined;
-  releaseClaimToPending(dispatchId: string, now: string): PendingDispatch | undefined;
+  hasDurableBotWork(botId: string): boolean;
+  releaseClaimToPending(input: ReleaseClaimToPendingInput): PendingDispatch;
   markExecutionStarted(input: MarkExecutionStartedInput): MemberTurnRecord;
   completeExecution(input: CompleteExecutionInput): CompleteExecutionResult;
   failExecution(input: FailExecutionInput): ConversationRun;
+  failClaimBeforeStart(input: FailClaimBeforeStartInput): ConversationRun;
   cancelRun(runId: string, now: string, reason?: string): CancelRunResult;
   completeCancel(runId: string, memberTurnId: string, now: string, indeterminate?: boolean): ConversationRun;
   markConversationDeleting(conversationId: string, now: string): void;

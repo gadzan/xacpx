@@ -113,12 +113,16 @@ export class ConversationDispatcher {
   private async execute(work: ClaimedWork): Promise<void> {
     await this.hooks?.afterClaim?.(work);
     const current = this.store.getRun(work.run.id);
-    if (!current || current.state === "cancelled" || current.state === "failed" || current.state === "completed") {
-      if (current?.state === "queued") {
-        this.store.releaseClaimToPending(work.dispatch.id, this.now().toISOString());
-      }
+    if (
+      !current
+      || current.state === "cancelled"
+      || current.state === "failed"
+      || current.state === "completed"
+      || current.state === "indeterminate"
+    ) {
       return;
     }
+    let started: MemberTurnRecord | undefined;
     try {
       await this.hooks?.beforeRuntimeMaterialize?.(work);
       const materializeFail = this.resolveMaterializeFail();
@@ -126,6 +130,11 @@ export class ConversationDispatcher {
         throw materializeFail;
       }
       const snapshot = work.run.profileSnapshot;
+      const live = this.runtime.getBot(work.memberTurn.botId);
+      if (live.agent !== snapshot.execution.agent || live.workspace !== snapshot.execution.workspace) {
+        this.failOwnClaimBeforeStart(work, "runtime_revision_mismatch");
+        return;
+      }
       const binding = await this.runtime.getOrCreateDirectSession({
         botId: work.memberTurn.botId,
         conversationId: work.run.conversationId,
@@ -134,12 +143,7 @@ export class ConversationDispatcher {
       });
       const session = this.sessions.getLogicalSessionRecord(binding.sessionAlias);
       if (!session || !sessionMatchesExecution(session, snapshot.execution)) {
-        this.store.failExecution({
-          runId: work.run.id,
-          memberTurnId: work.memberTurn.id,
-          now: this.now().toISOString(),
-          reason: "runtime_revision_mismatch",
-        });
+        this.failOwnClaimBeforeStart(work, "runtime_revision_mismatch");
         return;
       }
       await this.hooks?.beforeExecutionStart?.(work);
@@ -149,7 +153,6 @@ export class ConversationDispatcher {
         return;
       }
       const sourceTurnId = createSourceTurnId();
-      let started: MemberTurnRecord;
       try {
         started = this.store.markExecutionStarted({
           dispatchId: work.dispatch.id,
@@ -169,6 +172,17 @@ export class ConversationDispatcher {
         throw error;
       }
       await this.hooks?.afterExecutionStart?.(started);
+      const latestRun = this.store.getRun(work.run.id);
+      const latestMember = this.store.getMemberTurn(started.id);
+      if (
+        !latestRun
+        || latestRun.state !== "running"
+        || !latestMember
+        || latestMember.state !== "running"
+        || latestMember.sourceTurnId !== sourceTurnId
+      ) {
+        return;
+      }
       const text = composeBotTurnPromptFromSnapshot(snapshot, this.requestText(work.run.requestMessageId));
       const result = await this.runner.run({
         conversationId: work.run.conversationId,
@@ -182,9 +196,8 @@ export class ConversationDispatcher {
       });
       await this.hooks?.beforeResultPersist?.(work);
       this.persistResult(work, started, result);
-    } catch (error) {
-      const member = this.store.getMemberTurn(work.memberTurn.id);
-      if (member?.startedAt) {
+    } catch {
+      if (started?.startedAt) {
         this.store.failExecution({
           runId: work.run.id,
           memberTurnId: work.memberTurn.id,
@@ -194,9 +207,43 @@ export class ConversationDispatcher {
         });
         return;
       }
-      this.store.releaseClaimToPending(work.dispatch.id, this.now().toISOString());
+      this.releaseOwnClaim(work);
       this.abortDrain = true;
-      return;
+    }
+  }
+
+  private failOwnClaimBeforeStart(work: ClaimedWork, reason: string): void {
+    try {
+      this.store.failClaimBeforeStart({
+        dispatchId: work.dispatch.id,
+        owner: this.ownerId,
+        generation: work.dispatch.generation,
+        runId: work.run.id,
+        memberTurnId: work.memberTurn.id,
+        now: this.now().toISOString(),
+        reason,
+      });
+    } catch (error) {
+      if (error instanceof ConversationError && error.code === "stale_claim") {
+        return;
+      }
+      throw error;
+    }
+  }
+
+  private releaseOwnClaim(work: ClaimedWork): void {
+    try {
+      this.store.releaseClaimToPending({
+        dispatchId: work.dispatch.id,
+        owner: this.ownerId,
+        generation: work.dispatch.generation,
+        now: this.now().toISOString(),
+      });
+    } catch (error) {
+      if (error instanceof ConversationError && error.code === "stale_claim") {
+        return;
+      }
+      throw error;
     }
   }
 
