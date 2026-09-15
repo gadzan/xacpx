@@ -71,6 +71,7 @@ test("replaceRuntimeState copies Bot collections and leaves native session cache
     agent: "codex",
     workspace: "backend",
     enabled: true,
+    profileRevision: 1,
     createdAt: NOW,
     updatedAt: NOW,
   };
@@ -101,4 +102,21 @@ test("replaceRuntimeState copies Bot collections and leaves native session cache
   expect(target.conversations.conv_a?.kind).toBe("bot");
   expect(target.native_session_lists["wx:live"]?.agent).toBe("claude");
   expect(target.native_session_lists["wx:user"]).toBeUndefined();
+});
+
+test("parseState defaults a missing Bot profileRevision to 1", () => {
+  const state = parseState({
+    bots: {
+      bot_a: {
+        id: "bot_a",
+        name: "Reviewer",
+        agent: "codex",
+        workspace: "backend",
+        enabled: true,
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
+  }, "state.json");
+  expect(state.bots.bot_a?.profileRevision).toBe(1);
 });

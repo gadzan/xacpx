@@ -7,7 +7,7 @@ import type { BotProfile } from "../../../src/bots/bot-types";
 import type { AppConfig } from "../../../src/config/types";
 import type { ConversationTopic } from "../../../src/conversations/conversation-types";
 import { planDirectConversation } from "../../../src/conversations/direct-conversation";
-import { createDirectBindingId, createDirectConversationId, createDirectTopicId } from "../../../src/domain/ids";
+import { createDirectBindingId, createDirectConversationId, createDirectTopicId, createScopedDirectBindingId } from "../../../src/domain/ids";
 import { AsyncMutex } from "../../../src/orchestration/async-mutex";
 import { SessionService } from "../../../src/sessions/session-service";
 import { parseState, type StateStore } from "../../../src/state/state-store";
@@ -15,6 +15,18 @@ import { createEmptyState, type AppState } from "../../../src/state/types";
 
 const NOW = "2026-09-15T10:00:00.000Z";
 const BOT_ID = "bot_reviewer";
+
+function defaultBindingId(botId = BOT_ID): string {
+  return createScopedDirectBindingId(
+    createDirectConversationId(botId),
+    createDirectTopicId(botId),
+    botId,
+  );
+}
+
+function extraBindingId(topicId: string, botId = BOT_ID): string {
+  return createScopedDirectBindingId(createDirectConversationId(botId), topicId, botId);
+}
 
 class MemoryStateStore implements Pick<StateStore, "save" | "saveNow"> {
   public saved: AppState[] = [];
@@ -125,12 +137,12 @@ test("getOrCreateDirectSession creates a Bot-owned session distinct from ordinar
   expect(binding.scope).toBe("bot-direct");
   expect(binding.botId).toBe(BOT_ID);
   expect(binding.conversationId).toBe(createDirectConversationId(BOT_ID));
-  expect(binding.id).toBe(createDirectBindingId(BOT_ID));
+  expect(binding.id).toBe(defaultBindingId());
   expect(binding.id).not.toBe(BOT_ID);
 
   const owned = sessions.getLogicalSessionRecord(binding.sessionAlias);
   const ordinary = sessions.getLogicalSessionRecord("api-fix");
-  expect(owned?.owner).toEqual({ kind: "bot-direct", bindingId: createDirectBindingId(BOT_ID) });
+  expect(owned?.owner).toEqual({ kind: "bot-direct", bindingId: defaultBindingId() });
   expect(ordinary?.owner).toBeUndefined();
   expect(owned?.logical_session_id).not.toBe(ordinary?.logical_session_id);
   expect(state.conversations[binding.conversationId]?.kind).toBe("bot");
@@ -190,7 +202,7 @@ test("a crash after session create repairs the missing binding without orphaning
 
   const recovered = createHarness(new MemoryStateStore(), reloaded);
   const binding = await recovered.runtime.getOrCreateDirectSession({ botId: BOT_ID });
-  expect(binding.id).toBe(createDirectBindingId(BOT_ID));
+  expect(binding.id).toBe(defaultBindingId());
   expect(ownedSessions(reloaded)).toHaveLength(1);
   expect(Object.values(reloaded.bot_runtime_bindings)).toHaveLength(1);
   expect(reloaded.conversations[binding.conversationId]?.kind).toBe("bot");
@@ -279,7 +291,7 @@ test("getOrCreateDirectSession does not deadlock on the shared session mutex", a
     }),
   ]);
   expect(acquiredDuringSnapshot).toBe(true);
-  expect(binding.sessionAlias).toBe(`brt_${createDirectBindingId(BOT_ID)}`);
+  expect(binding.sessionAlias).toBe(`brt_${defaultBindingId()}`);
   const reused = await Promise.race([
     runtime.getOrCreateDirectSession({ botId: BOT_ID }),
     new Promise<never>((_, reject) => {
@@ -319,19 +331,17 @@ test("planDirectConversation keeps the default topic when another active topic e
   expect(planned.topic.id).not.toBe("topic_manual_second");
 });
 
-test("getOrCreateDirectSession rejects a second topic on the same direct conversation", async () => {
+test("getOrCreateDirectSession materializes a second topic on its own runtime key", async () => {
   const { bots, runtime, state } = createHarness();
   await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
   const extraTopicId = insertExtraDirectTopic(state, BOT_ID);
 
-  await expect(runtime.getOrCreateDirectSession({ botId: BOT_ID, topicId: extraTopicId })).rejects.toMatchObject({
-    code: "topic_runtime_unsupported",
-  });
-
-  expect(state.bot_runtime_bindings).toEqual({});
-  expect(ownedSessions(state)).toHaveLength(0);
-  expect(state.conversations).toEqual({});
-  expect(state.conversation_topics[extraTopicId]?.id).toBe(extraTopicId);
+  const extra = await runtime.getOrCreateDirectSession({ botId: BOT_ID, topicId: extraTopicId });
+  expect(extra.topicId).toBe(extraTopicId);
+  expect(extra.id).toBe(extraBindingId(extraTopicId));
+  expect(extra.sessionAlias).toBe(`brt_${extraBindingId(extraTopicId)}`);
+  expect(ownedSessions(state)).toHaveLength(1);
+  expect(state.conversations[createDirectConversationId(BOT_ID)]?.kind).toBe("bot");
   expect(state.conversation_topics[createDirectTopicId(BOT_ID)]).toBeUndefined();
 });
 
@@ -363,15 +373,14 @@ test("a second topic does not reuse the default binding after runtime exists", a
   const created = await runtime.getOrCreateDirectSession({ botId: BOT_ID });
   const extraTopicId = insertExtraDirectTopic(state, BOT_ID);
 
-  await expect(runtime.getOrCreateDirectSession({ botId: BOT_ID, topicId: extraTopicId })).rejects.toMatchObject({
-    code: "topic_runtime_unsupported",
-  });
-
-  expect(Object.keys(state.bot_runtime_bindings)).toEqual([createDirectBindingId(BOT_ID)]);
-  expect(state.bot_runtime_bindings[createDirectBindingId(BOT_ID)]?.topicId).toBe(createDirectTopicId(BOT_ID));
-  expect(state.bot_runtime_bindings[createDirectBindingId(BOT_ID)]?.id).toBe(created.id);
-  expect(ownedSessions(state)).toHaveLength(1);
-  expect(ownedSessions(state)[0]?.alias).toBe(`brt_${createDirectBindingId(BOT_ID)}`);
+  const extra = await runtime.getOrCreateDirectSession({ botId: BOT_ID, topicId: extraTopicId });
+  expect(extra.id).toBe(extraBindingId(extraTopicId));
+  expect(extra.id).not.toBe(created.id);
+  expect(extra.sessionAlias).not.toBe(created.sessionAlias);
+  expect(extra.logicalSessionId).not.toBe(created.logicalSessionId);
+  expect(Object.keys(state.bot_runtime_bindings).sort()).toEqual([defaultBindingId(), extraBindingId(extraTopicId)].sort());
+  expect(state.bot_runtime_bindings[defaultBindingId()]?.topicId).toBe(createDirectTopicId(BOT_ID));
+  expect(ownedSessions(state)).toHaveLength(2);
 });
 
 test("omitting topicId still binds the default topic when another active topic exists", async () => {
@@ -381,7 +390,7 @@ test("omitting topicId still binds the default topic when another active topic e
   const binding = await runtime.getOrCreateDirectSession({ botId: BOT_ID });
   expect(binding.topicId).toBe(createDirectTopicId(BOT_ID));
   expect(binding.topicId).not.toBe("topic_manual_second");
-  expect(Object.keys(state.bot_runtime_bindings)).toEqual([createDirectBindingId(BOT_ID)]);
+  expect(Object.keys(state.bot_runtime_bindings)).toEqual([defaultBindingId()]);
   expect(ownedSessions(state)).toHaveLength(1);
 });
 
@@ -394,12 +403,14 @@ test("a concurrent second-topic request does not join the default single-flight"
     runtime.getOrCreateDirectSession({ botId: BOT_ID, topicId: extraTopicId }),
   ]);
   expect(defaultResult.status).toBe("fulfilled");
-  expect(extraResult.status).toBe("rejected");
-  expect(extraResult.status === "rejected" ? extraResult.reason : undefined).toMatchObject({
-    code: "topic_runtime_unsupported",
-  });
-  expect(Object.keys(state.bot_runtime_bindings)).toEqual([createDirectBindingId(BOT_ID)]);
-  expect(ownedSessions(state)).toHaveLength(1);
+  expect(extraResult.status).toBe("fulfilled");
+  const defaultBinding = defaultResult.status === "fulfilled" ? defaultResult.value : undefined;
+  const extraBinding = extraResult.status === "fulfilled" ? extraResult.value : undefined;
+  expect(defaultBinding?.id).toBe(defaultBindingId());
+  expect(extraBinding?.id).toBe(extraBindingId(extraTopicId));
+  expect(extraBinding?.id).not.toBe(defaultBinding?.id);
+  expect(Object.keys(state.bot_runtime_bindings).sort()).toEqual([defaultBindingId(), extraBindingId(extraTopicId)].sort());
+  expect(ownedSessions(state)).toHaveLength(2);
 });
 
 test("update agent racing first materialization is totally ordered by the lifecycle gate", async () => {
@@ -430,7 +441,7 @@ test("update agent racing first materialization is totally ordered by the lifecy
   expect(owned).toHaveLength(1);
   expect(owned[0]?.agent).toBe("codex");
   expect(owned[0]?.workspace).toBe("backend");
-  expect(state.bot_runtime_bindings[createDirectBindingId(BOT_ID)]?.sessionAlias).toBe(owned[0]?.alias);
+  expect(state.bot_runtime_bindings[defaultBindingId()]?.sessionAlias).toBe(owned[0]?.alias);
 });
 
 test("an identity update that wins the lifecycle gate is used by the first materialization", async () => {
@@ -482,7 +493,7 @@ test("delete racing first materialization never leaves dangling ownership", asyn
     code: "bot_in_use",
   });
   expect(bots.getBot(BOT_ID).id).toBe(BOT_ID);
-  expect(Object.keys(state.bot_runtime_bindings)).toEqual([createDirectBindingId(BOT_ID)]);
+  expect(Object.keys(state.bot_runtime_bindings)).toEqual([defaultBindingId()]);
   expect(state.conversations[createDirectConversationId(BOT_ID)]?.botIds).toEqual([BOT_ID]);
   expect(ownedSessions(state)).toHaveLength(1);
 });
@@ -511,4 +522,55 @@ test("a delete that wins the lifecycle gate leaves no Conversation, binding, or 
   expect(state.conversation_topics).toEqual({});
   expect(state.bot_runtime_bindings).toEqual({});
   expect(ownedSessions(state)).toHaveLength(0);
+});
+
+test("PR2 default binding is adopted onto the scoped key without orphaning the owned session", async () => {
+  const { bots, runtime, sessions, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const legacyId = createDirectBindingId(BOT_ID);
+  const alias = `brt_${legacyId}`;
+  await sessions.createSession(alias, "codex", "backend", {
+    owner: { kind: "bot-direct", bindingId: legacyId },
+  });
+  const owned = sessions.getLogicalSessionRecord(alias);
+  expect(owned).toBeDefined();
+  state.bot_runtime_bindings[legacyId] = {
+    id: legacyId,
+    scope: "bot-direct",
+    conversationId: createDirectConversationId(BOT_ID),
+    topicId: createDirectTopicId(BOT_ID),
+    botId: BOT_ID,
+    logicalSessionId: owned!.logical_session_id,
+    sessionAlias: alias,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  state.conversations[createDirectConversationId(BOT_ID)] = {
+    id: createDirectConversationId(BOT_ID),
+    kind: "bot",
+    title: "Reviewer",
+    botIds: [BOT_ID],
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  state.conversation_topics[createDirectTopicId(BOT_ID)] = {
+    id: createDirectTopicId(BOT_ID),
+    conversationId: createDirectConversationId(BOT_ID),
+    title: "Default",
+    status: "active",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+
+  const binding = await runtime.getOrCreateDirectSession({ botId: BOT_ID });
+  expect(binding.id).toBe(defaultBindingId());
+  expect(binding.sessionAlias).toBe(alias);
+  expect(binding.logicalSessionId).toBe(owned!.logical_session_id);
+  expect(state.bot_runtime_bindings[legacyId]).toBeUndefined();
+  expect(state.bot_runtime_bindings[defaultBindingId()]?.sessionAlias).toBe(alias);
+  expect(ownedSessions(state)).toHaveLength(1);
+  expect(sessions.getLogicalSessionRecord(alias)?.owner).toEqual({
+    kind: "bot-direct",
+    bindingId: defaultBindingId(),
+  });
 });

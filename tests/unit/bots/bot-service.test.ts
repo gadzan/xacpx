@@ -40,10 +40,12 @@ test("createBot persists a profile with a stable id independent from its name", 
   });
   expect(bot.id).toBe("bot_fixed");
   expect(bot.name).toBe("Reviewer");
+  expect(bot.profileRevision).toBe(1);
   expect(state.bots.bot_fixed?.id).toBe("bot_fixed");
   await service.updateBot("bot_fixed", { name: "Senior Reviewer" });
   expect(service.getBot("bot_fixed").id).toBe("bot_fixed");
   expect(service.getBot("bot_fixed").name).toBe("Senior Reviewer");
+  expect(service.getBot("bot_fixed").profileRevision).toBe(2);
 });
 
 test("createBot rejects an empty name and unknown agent or workspace", async () => {
