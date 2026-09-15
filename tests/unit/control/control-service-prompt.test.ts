@@ -93,6 +93,27 @@ test("prompt binds session, streams chunks as events, and reports completion", a
   ]);
 });
 
+test("promptImmediate keeps turnOrigin human on the same TurnQueue path", async () => {
+  let captured: ChatRequest | undefined;
+  const { control } = makeControl(async (request) => {
+    captured = request;
+    return { text: "immediate" };
+  });
+  const result = await control.promptImmediate({
+    chatKey: "relay:acct-1",
+    sessionAlias: "backend",
+    text: "conversation-turn",
+    senderId: "bot-conversation",
+  });
+  expect(result).toEqual({ ok: true, text: "immediate" });
+  expect(captured?.metadata).toEqual({
+    channel: "control",
+    chatType: "direct",
+    senderId: "bot-conversation",
+    origin: "human",
+  });
+});
+
 function makeControlWithArchived(archived: boolean) {
   const events = createControlEventBus();
   const seen: ControlEvent[] = [];

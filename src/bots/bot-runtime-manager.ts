@@ -89,6 +89,18 @@ export class BotRuntimeManager {
     return await pending;
   }
 
+  private assertAcceptedStickyIdentity(bot: BotProfile, execution?: BotProfileExecution): void {
+    if (!execution) {
+      return;
+    }
+    if (bot.agent !== execution.agent || bot.workspace !== execution.workspace) {
+      throw new BotError(
+        "runtime_revision_mismatch",
+        `bot "${bot.id}" sticky identity no longer matches the accepted execution`,
+      );
+    }
+  }
+
   async promptDirect(input: DirectBotTurnInput, runner: BotTurnRunner): Promise<unknown> {
     const binding = await this.getOrCreateDirectSession({
       botId: input.botId,
@@ -129,6 +141,7 @@ export class BotRuntimeManager {
     execution?: BotProfileExecution;
   }): Promise<BotRuntimeBinding> {
     const bot = this.requireEnabledBot(input.botId);
+    this.assertAcceptedStickyIdentity(bot, input.execution);
     const scope = this.resolveScope(bot.id, input);
     const scopedId = createScopedDirectBindingId(scope.conversationId, scope.topicId, bot.id);
     const existing = this.findScopedBinding(scope.conversationId, scope.topicId, bot.id);

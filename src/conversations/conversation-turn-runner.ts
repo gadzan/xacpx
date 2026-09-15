@@ -42,7 +42,7 @@ export interface ConversationTurnRunner {
 
 type ControlTurnSeam = Pick<
   ControlService,
-  "prompt" | "cancelQueuedItem" | "cancelTurnForPromptRequest"
+  "promptImmediate" | "cancelQueuedItem" | "cancelTurnForPromptRequest"
 >;
 
 export interface ControlConversationTurnRunnerOptions {
@@ -73,7 +73,7 @@ function cancelResultFromRun(result: ConversationTurnRunResult): ConversationTur
 /**
  * Control/TurnQueue seam: `promptRequestId` is the durable execution identity
  * for this Run (minted at Conversation execution-start, then passed into
- * Control.prompt). Cancel/inspect must match that id; aborting the lane alone
+ * Control.promptImmediate). Cancel/inspect must match that id; aborting the lane alone
  * does not prove the turn produced no effects.
  */
 export class ControlConversationTurnRunner implements ConversationTurnRunner {
@@ -95,7 +95,7 @@ export class ControlConversationTurnRunner implements ConversationTurnRunner {
     };
     this.executions.set(input.promptRequestId, tracked);
     const chatKey = directConversationChatKey(input.conversationId, input.topicId);
-    tracked.done = this.control.prompt({
+    tracked.done = this.control.promptImmediate({
       chatKey,
       sessionAlias: input.sessionAlias,
       text: input.text,
@@ -147,7 +147,7 @@ export class ControlConversationTurnRunner implements ConversationTurnRunner {
     }
   }
 
-  private mapPromptResult(result: Awaited<ReturnType<ControlService["prompt"]>>): ConversationTurnRunResult {
+  private mapPromptResult(result: Awaited<ReturnType<ControlService["promptImmediate"]>>): ConversationTurnRunResult {
     if (result.queued) {
       return { status: "failed", error: "turn_queued_unexpectedly", queueItemId: result.queueItemId };
     }

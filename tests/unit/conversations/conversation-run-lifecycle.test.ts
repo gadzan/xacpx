@@ -702,6 +702,90 @@ test("accepted Run without a runtime fails closed when Bot agent/workspace chang
   expect(Object.keys(first.state.bot_runtime_bindings)).toHaveLength(0);
 });
 
+test("identity check inside the lifecycle gate wins over an outer stale pass", async () => {
+  const paused = deferred();
+  const resume = deferred();
+  const first = await createLifecycle({
+    hooks: {
+      afterAcceptedIdentityCheck: async () => {
+        paused.resolve();
+        await resume.promise;
+      },
+    },
+  });
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-identity-gate",
+    content: "hello",
+  });
+  const drain = first.dispatcher.kick();
+  await paused.promise;
+  await first.bots.updateBot(BOT_ID, { agent: "claude", workspace: "frontend" });
+  resume.resolve();
+  await drain;
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("failed");
+  expect(first.store.getRun(accepted.run.id)?.completionReason).toBe("runtime_revision_mismatch");
+  expect(first.store.getDispatchForRun(accepted.run.id)?.state).toBe("completed");
+  expect(fakeRunner(first.runner).runs).toHaveLength(0);
+  expect(Object.values(first.state.sessions).filter((session) => session.owner?.kind === "bot-direct")).toHaveLength(0);
+  expect(Object.keys(first.state.bot_runtime_bindings)).toHaveLength(0);
+  expect(first.bots.getBot(BOT_ID).agent).toBe("claude");
+  expect(first.bots.getBot(BOT_ID).workspace).toBe("frontend");
+});
+
+test("retrying an accepted request after disable reuses the durable Run", async () => {
+  const first = await createLifecycle();
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-disable-retry",
+    content: "hello",
+  });
+  await first.bots.updateBot(BOT_ID, { enabled: false });
+  const retry = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-disable-retry",
+    content: "hello again",
+  });
+  expect(retry.reused).toBe(true);
+  expect(retry.run.id).toBe(accepted.run.id);
+  expect(retry.message.id).toBe(accepted.message.id);
+  expect(retry.dispatch.id).toBe(accepted.dispatch.id);
+  await expect(first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-disable-new",
+    content: "fresh",
+  })).rejects.toMatchObject({ code: "bot_disabled" });
+});
+
+test("retrying an accepted extra-Topic request after deleting reuses the durable Run", async () => {
+  const first = await createLifecycle();
+  const extra = await first.service.createDirectTopic(BOT_ID, "Second");
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-deleting-retry",
+    content: "hello",
+    topicId: extra.id,
+  });
+  first.store.markConversationDeleting(accepted.run.conversationId, new Date().toISOString());
+  first.store.markTopicDeleting(extra.id, accepted.run.conversationId, new Date().toISOString());
+  const retry = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-deleting-retry",
+    content: "hello again",
+    topicId: extra.id,
+  });
+  expect(retry.reused).toBe(true);
+  expect(retry.run.id).toBe(accepted.run.id);
+  expect(retry.message.id).toBe(accepted.message.id);
+  expect(retry.dispatch.id).toBe(accepted.dispatch.id);
+  await expect(first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-deleting-new",
+    content: "fresh",
+    topicId: extra.id,
+  })).rejects.toMatchObject({ code: "conversation_deleting" });
+});
+
 test("deleteBot fails closed on accepted durable work before runtime materialization", async () => {
   const first = await createLifecycle();
   const accepted = await first.service.acceptDirectPrompt({
@@ -810,7 +894,7 @@ test("cancel between durable start and runner registration never starts Control"
   const resume = deferred();
   const control = {
     promptCalls: 0,
-    async prompt() {
+    async promptImmediate() {
       this.promptCalls += 1;
       return { ok: true, text: "done" };
     },

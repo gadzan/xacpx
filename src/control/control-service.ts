@@ -1270,6 +1270,22 @@ export class ControlService {
   }
 
   async prompt(input: ControlPromptInput): Promise<ControlPromptResult> {
+    return this.submitHumanPrompt(input, true);
+  }
+
+  /**
+   * Conversation execution seam: same TurnQueue / SessionTurnRunner path as
+   * `prompt()`, including `turnOrigin: "human"`, but never FIFO-enqueues when
+   * the session lane is busy. ConversationStore already owns durable queuing.
+   */
+  async promptImmediate(input: ControlPromptInput): Promise<ControlPromptResult> {
+    return this.submitHumanPrompt(input, false);
+  }
+
+  private async submitHumanPrompt(
+    input: ControlPromptInput,
+    queueable: boolean,
+  ): Promise<ControlPromptResult> {
     const channelId = getChannelIdFromChatKey(input.chatKey);
     const internalAlias =
       this.deps.sessions.getResolvedSessionByInternalAlias?.(input.sessionAlias)?.alias ??
@@ -1292,7 +1308,7 @@ export class ControlService {
       text: input.text,
       senderId: input.senderId,
       turnOrigin: "human",
-      queueable: true,
+      queueable,
       ...(input.isOwner !== undefined ? { isOwner: input.isOwner } : {}),
       ...(input.accountId !== undefined ? { accountId: input.accountId } : {}),
       ...(input.media !== undefined ? { media: input.media } : {}),

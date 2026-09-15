@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { composeBotTurnPromptFromSnapshot } from "../bots/bot-profile-prompt";
+import { BotError } from "../bots/bot-error";
 import type { BotRuntimeManager } from "../bots/bot-runtime-manager";
 import { sessionMatchesExecution } from "../bots/bot-types";
 import { createSourceTurnId } from "../domain/ids";
@@ -17,6 +18,7 @@ export interface ConversationDispatcherHooks {
   afterClaim?: (work: ClaimedWork) => Promise<void>;
   beforeRuntimeMaterialize?: (work: ClaimedWork) => Promise<void>;
   failRuntimeMaterialize?: boolean | (() => Error | true | undefined);
+  afterAcceptedIdentityCheck?: (work: ClaimedWork) => Promise<void>;
   beforeExecutionStart?: (work: ClaimedWork) => Promise<void>;
   afterExecutionStart?: (turn: MemberTurnRecord) => Promise<void>;
   beforeResultPersist?: (work: ClaimedWork) => Promise<void>;
@@ -135,6 +137,7 @@ export class ConversationDispatcher {
         this.failOwnClaimBeforeStart(work, "runtime_revision_mismatch");
         return;
       }
+      await this.hooks?.afterAcceptedIdentityCheck?.(work);
       const binding = await this.runtime.getOrCreateDirectSession({
         botId: work.memberTurn.botId,
         conversationId: work.run.conversationId,
@@ -196,7 +199,11 @@ export class ConversationDispatcher {
       });
       await this.hooks?.beforeResultPersist?.(work);
       this.persistResult(work, started, result);
-    } catch {
+    } catch (error) {
+      if (isRuntimeRevisionMismatch(error)) {
+        this.failOwnClaimBeforeStart(work, "runtime_revision_mismatch");
+        return;
+      }
       if (started?.startedAt) {
         this.store.failExecution({
           runId: work.run.id,
@@ -327,4 +334,9 @@ export class ConversationDispatcher {
     }
     return result;
   }
+}
+
+function isRuntimeRevisionMismatch(error: unknown): boolean {
+  return (error instanceof BotError || error instanceof ConversationError)
+    && error.code === "runtime_revision_mismatch";
 }

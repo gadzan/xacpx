@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import { ControlConversationTurnRunner } from "../../../src/conversations/conversation-turn-runner";
+import { TurnQueue } from "../../../src/control/turn-queue";
 
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -29,6 +30,9 @@ function fakeControl() {
     async prompt(input: { promptRequestId?: string; text: string }) {
       this.promptCalls.push({ promptRequestId: input.promptRequestId });
       return await promptImpl(input);
+    },
+    async promptImmediate(input: { promptRequestId?: string; text: string }) {
+      return await this.prompt(input);
     },
     cancelTurn() {
       this.cancelLane += 1;
@@ -137,4 +141,83 @@ test("settled execution cache keeps late cancel completed until TTL/max eviction
     sessionAlias: third.sessionAlias,
     promptRequestId: third.promptRequestId,
   })).toEqual({ outcome: "unknown" });
+});
+
+test("Conversation promptImmediate never FIFO-enqueues on a busy session lane", async () => {
+  const started: string[] = [];
+  const origins: string[] = [];
+  const pending: Array<(result: { ok: boolean }) => void> = [];
+  const lane = "alias";
+  const queue = new TurnQueue({
+    runTurn: (req) => {
+      started.push(req.text);
+      origins.push(req.turnOrigin);
+      return new Promise((resolve) => {
+        pending.push(resolve);
+      });
+    },
+    emitQueueUpdated: () => {},
+    detectSessionsChanged: async () => {},
+  });
+  const occupancy = queue.submit({
+    chatKey: "bot:conv:topic",
+    sessionAlias: lane,
+    concurrencyKey: lane,
+    senderId: "user",
+    text: "predecessor",
+    turnOrigin: "human",
+    queueable: true,
+  });
+  await Promise.resolve();
+  expect(started).toEqual(["predecessor"]);
+  expect(origins).toEqual(["human"]);
+  expect(queue.queueLength("bot:conv:topic", lane, lane)).toBe(0);
+
+  const control = {
+    async promptImmediate(promptInput: {
+      chatKey: string;
+      sessionAlias: string;
+      text: string;
+      senderId: string;
+      promptRequestId?: string;
+    }) {
+      return await queue.submit({
+        chatKey: promptInput.chatKey,
+        sessionAlias: promptInput.sessionAlias,
+        concurrencyKey: lane,
+        text: promptInput.text,
+        senderId: promptInput.senderId,
+        turnOrigin: "human" as const,
+        queueable: false,
+        ...(promptInput.promptRequestId !== undefined
+          ? { promptRequestId: promptInput.promptRequestId }
+          : {}),
+      });
+    },
+    cancelTurnForPromptRequest() {
+      return true;
+    },
+    cancelQueuedItem() {
+      return { cancelled: true };
+    },
+  };
+  const runner = new ControlConversationTurnRunner(control);
+  const conversation = await runner.run({
+    ...input,
+    conversationId: "conv",
+    topicId: "topic",
+    sessionAlias: lane,
+    text: "conversation-turn",
+    origin: "human",
+    promptRequestId: "sturn_conversation",
+  });
+  expect(conversation).toMatchObject({ status: "failed", error: "turn-already-running" });
+  expect(queue.queueLength("bot:conv:topic", lane, lane)).toBe(0);
+  expect(started).toEqual(["predecessor"]);
+  pending.shift()?.({ ok: true });
+  await occupancy;
+  await Promise.resolve();
+  expect(started).toEqual(["predecessor"]);
+  expect(origins).toEqual(["human"]);
+  expect(queue.queueLength("bot:conv:topic", lane, lane)).toBe(0);
 });

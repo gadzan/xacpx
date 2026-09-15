@@ -24,7 +24,7 @@ One `BEGIN IMMEDIATE` transaction writes:
 
 All four exist, or none do. `seq` is allocated by incrementing `topic_seq` inside that transaction — never `SELECT MAX(seq)+1` outside the write lock.
 
-Idempotency key: **`conversationId × topicId × requestId`** (`UNIQUE` constraint). Sequential or concurrent retries reuse the existing Run/message/dispatch.
+Idempotency key: **`conversationId × topicId × requestId`** (`UNIQUE` constraint). Sequential or concurrent retries reuse the existing Run/message/dispatch. `ConversationRunService.acceptDirectPrompt` looks up that key **before** mutable policy gates (`enabled`, topic existence, deleting). A lost response after a successful accept still returns the same accepted Run if the Bot is later disabled or Conversation teardown has started. New requests still fail those gates.
 
 ## Outbox / claim recovery
 
@@ -60,7 +60,7 @@ After `markExecutionStarted`, the dispatcher re-reads Run/MemberTurn following e
 
 Recovery never uses latest-turn-in-alias, text match, or timestamp proximity.
 
-The runner seam is `ConversationTurnRunner` / `ControlConversationTurnRunner` wrapping `ControlService.prompt` / request-id-aware cancel. There is no second Bot execution engine.
+The runner seam is `ConversationTurnRunner` / `ControlConversationTurnRunner` wrapping `ControlService.promptImmediate` / request-id-aware cancel. `promptImmediate` uses the same TurnQueue / SessionTurnRunner path as interactive `prompt()`, with `turnOrigin: "human"`, but **never FIFO-enqueues** when the session lane is busy (`queueable: false`). ConversationStore already owns durable queuing; a busy lane fails the Run immediately instead of leaving a TurnQueue item that can execute after the durable Run is already failed. There is no second Bot execution engine.
 
 ## `indeterminate`
 
@@ -85,7 +85,7 @@ At accept, the Run stores `profileRevision` plus a snapshot of:
 
 Execute composes the prompt from **that** snapshot and materializes/aligns the owned session to the **accepted execution fields**, including model and effort. Clearing instructions does not erase the owned LogicalSession history. A Run must not mix old instructions with a newer model (or any other mixed execution field).
 
-Sticky identity is `agent` / `workspace`. Before first materialization, if the accepted snapshot identity no longer matches the live Bot, the dispatcher fails that Run with `runtime_revision_mismatch` **before** creating a LogicalSession. Model and effort remain safely mutable and are aligned to the accepted snapshot (including on PR2 legacy binding adoption). If the owned session still cannot be made to match the accepted execution snapshot, the Run fails `runtime_revision_mismatch` before the model is called.
+Sticky identity is `agent` / `workspace`. The dispatcher may reject an obvious mismatch as an optimization, but the **authoritative** accepted-vs-live check runs inside the same per-Bot lifecycle gate that materializes or reuses the owned session — before any LogicalSession creation. A mismatch throws/returns stable `runtime_revision_mismatch`; the dispatcher terminalizes that exact fenced claim via `failClaimBeforeStart` and does not generic-requeue it. Model and effort remain safely mutable and are aligned to the accepted snapshot (including on PR2 legacy binding adoption). If the owned session still cannot be made to match the accepted execution snapshot, the Run fails `runtime_revision_mismatch` before the model is called.
 
 ## Direct multi-Topic binding
 
@@ -122,3 +122,5 @@ Injected release failure leaves `deleting` + ownership in place for retry.
 ## Out of scope
 
 Group routing, member selection, Router, parallel batches, `group_send`, Group UI, external channels, Relay protocol/UI, daemon `main.ts` wiring.
+
+**Follow-up before Direct Bot product release:** global dispatcher parallelism (more than one claimed execution in flight across Topics/Bots) is not part of this contract. Keep the current drain/claim sequencing until that work is designed.

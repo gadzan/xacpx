@@ -503,6 +503,23 @@ test("update agent racing first materialization is totally ordered by the lifecy
   expect(state.bot_runtime_bindings[defaultBindingId()]?.sessionAlias).toBe(owned[0]?.alias);
 });
 
+test("accepted sticky identity is checked inside the lifecycle gate before any session is created", async () => {
+  const { bots, runtime, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  await bots.updateBot(BOT_ID, { agent: "claude", workspace: "frontend" });
+  await expect(runtime.getOrCreateDirectSession({
+    botId: BOT_ID,
+    execution: { agent: "codex", workspace: "backend" },
+  })).rejects.toMatchObject({
+    name: "BotError",
+    code: "runtime_revision_mismatch",
+  });
+  expect(ownedSessions(state)).toHaveLength(0);
+  expect(state.bot_runtime_bindings).toEqual({});
+  expect(bots.getBot(BOT_ID).agent).toBe("claude");
+  expect(bots.getBot(BOT_ID).workspace).toBe("frontend");
+});
+
 test("an identity update that wins the lifecycle gate is used by the first materialization", async () => {
   const entered = deferred();
   const resume = deferred();

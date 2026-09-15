@@ -113,6 +113,7 @@ export interface ConversationStore {
   acceptRequest(input: AcceptRequestInput): AcceptRequestResult;
   getRun(runId: string): ConversationRun | undefined;
   getRunByRequestId(conversationId: string, topicId: string, requestId: string): ConversationRun | undefined;
+  getAcceptedRequest(conversationId: string, topicId: string, requestId: string): AcceptRequestResult | undefined;
   listRuns(conversationId: string, topicId?: string): ConversationRun[];
   getMessage(messageId: string): ConversationMessage | undefined;
   listMessages(query: ListMessagesQuery): ConversationMessage[];

@@ -64,9 +64,6 @@ export class ConversationRunService {
   }): Promise<AcceptRequestResult> {
     const accepted = await this.bots.runLifecycle(input.botId, async () => {
       const bot = this.bots.getBot(input.botId);
-      if (!bot.enabled) {
-        throw new BotError("bot_disabled", `bot "${input.botId}" is disabled`);
-      }
       const timestamp = this.now().toISOString();
       const planned = planDirectConversation(this.state, {
         botId: bot.id,
@@ -78,6 +75,13 @@ export class ConversationRunService {
         throw new BotError("conversation_mismatch", "direct Bot conversation does not match this Bot");
       }
       const topicId = input.topicId ?? planned.topic.id;
+      const existing = this.store.getAcceptedRequest(conversationId, topicId, input.requestId);
+      if (existing) {
+        return existing;
+      }
+      if (!bot.enabled) {
+        throw new BotError("bot_disabled", `bot "${input.botId}" is disabled`);
+      }
       if (topicId !== planned.topic.id) {
         const topic = this.state.conversation_topics[topicId];
         if (!topic || topic.conversationId !== conversationId) {

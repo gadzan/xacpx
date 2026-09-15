@@ -52,6 +52,29 @@ test("acceptRequest atomically persists message, run, member turn, and pending d
   store.close();
 });
 
+test("getAcceptedRequest returns the durable accepted rows without accepting again", async () => {
+  const store = await SqliteConversationStore.open(":memory:");
+  const extraTopic = "topic_manual_second";
+  const accepted = store.acceptRequest({
+    conversationId: CONV,
+    topicId: extraTopic,
+    requestId: "req-lookup",
+    botId: BOT_ID,
+    content: "hello",
+    profileSnapshot: snapshot(),
+    now: NOW,
+  });
+  store.markConversationDeleting(CONV, NOW);
+  store.markTopicDeleting(extraTopic, CONV, NOW);
+  const found = store.getAcceptedRequest(CONV, extraTopic, "req-lookup");
+  expect(found?.reused).toBe(true);
+  expect(found?.run.id).toBe(accepted.run.id);
+  expect(found?.message.id).toBe(accepted.message.id);
+  expect(found?.dispatch.id).toBe(accepted.dispatch.id);
+  expect(store.getAcceptedRequest(CONV, extraTopic, "req-missing")).toBeUndefined();
+  store.close();
+});
+
 test("duplicate requestId sequential retry reuses the same Run", async () => {
   const store = await SqliteConversationStore.open(":memory:");
   const first = store.acceptRequest({

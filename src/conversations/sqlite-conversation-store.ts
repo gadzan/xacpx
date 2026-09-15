@@ -352,6 +352,11 @@ export class SqliteConversationStore implements ConversationStore {
     return row ? mapRun(row) : undefined;
   }
 
+  getAcceptedRequest(conversationId: string, topicId: string, requestId: string): AcceptRequestResult | undefined {
+    const existing = this.loadAccepted(conversationId, topicId, requestId);
+    return existing ? { reused: true, ...existing } : undefined;
+  }
+
   listRuns(conversationId: string, topicId?: string): ConversationRun[] {
     const rows = topicId
       ? this.db.all<RunRow>(
