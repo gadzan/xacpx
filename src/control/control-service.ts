@@ -1282,7 +1282,7 @@ export class ControlService {
     return this.submitHumanPrompt(input, false);
   }
 
-  private async submitHumanPrompt(
+  private submitHumanPrompt(
     input: ControlPromptInput,
     queueable: boolean,
   ): Promise<ControlPromptResult> {
@@ -1297,11 +1297,7 @@ export class ControlService {
     const configTail =
       this.sessionConfigSetTails.get(internalAlias) ??
       this.sessionConfigSetTails.get(input.sessionAlias);
-    if (configTail) {
-      await configTail.catch(() => {});
-    }
-
-    return this.turnQueue.submit({
+    const submit = () => this.turnQueue.submit({
       chatKey: input.chatKey,
       sessionAlias: input.sessionAlias,
       concurrencyKey: internalAlias,
@@ -1319,6 +1315,12 @@ export class ControlService {
         ? { promptRequestId: input.promptRequestId }
         : {}),
     });
+    // Keep this helper non-async so `prompt()` still reaches TurnQueue.submit on
+    // its first microtask (same-tick admission / golden event order).
+    if (configTail) {
+      return configTail.catch(() => {}).then(submit);
+    }
+    return submit();
   }
 
   /** Run a fired scheduled task as a real turn through the same machinery as a manual
