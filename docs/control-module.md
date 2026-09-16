@@ -27,10 +27,15 @@
 - **`src/control/turn-support.ts`** — 中立值模块：`turnKey` / `toErrorMessage` /
   `buildControlMetadata` / `raceWithTimeout` 与相关常量、`QueuedPrompt` 接口。被
   `control-service` / `turn-queue` / `session-turn-runner` 以值导入，避免运行时环依赖。
+- **`src/control/conversation-control-dtos.ts`** — Bot / Conversation 公共 DTO 与
+  store-record 映射。产品身份是 Bot / Conversation / Topic / Run ID 与 Topic `seq`；
+  不暴露 hidden alias、`logicalSessionId`、lease/generation、`bindingId`。
 - **`src/control/control-event-bus.ts`** — `ControlEventBus` 接口与
-  `createControlEventBus` 工厂：支持 `turn-output` / `turn-finished` /
-  `sessions-changed` / `scheduled-changed` / `orchestration-changed` 五类事件；
-  监听器异常彼此隔离（经注入的 `logger.error` 记录，不外抛）。
+  `createControlEventBus` 工厂：turn 事件、`sessions-changed` / `scheduled-changed` /
+  `orchestration-changed`，以及 Bot/Conversation 产品事件（`bots-changed`、
+  `conversation-message`、`member-turn-*` 等）。既有 tool/thought/plan/usage 流仍走
+  原 turn 事件；Conversation 只附加精确 join identity。监听器异常彼此隔离
+  （经注入的 `logger.error` 记录，不外抛）。
 - **`src/control/session-warmth-tracker.ts`** — `SessionWarmthTracker`：常驻轮询器
   （默认 60s），经 `transport.isSessionWarm`（queue-owner lock 文件 pid 存活检查）
   观测每个 transport 会话的热/冷状态；任一会话温度翻转时发出 payload-free
@@ -47,7 +52,12 @@
 
 | 方法 | 说明 |
 |------|------|
-| `listSessions()` | 返回所有已解析逻辑会话的快照（`ControlSessionInfo[]`），含 `running` 字段（来自 `ActiveTurnRegistry`）与可选 `warm` 字段（running 时恒为 true，否则读 `SessionWarmthTracker` 最近观测；无 tracker 或未观测时省略）。 |
+| `listSessions()` | 返回所有已解析逻辑会话的快照（`ControlSessionInfo[]`），含 `running` 字段（来自 `ActiveTurnRegistry`）与可选 `warm` 字段（running 时恒为 true，否则读 `SessionWarmthTracker` 最近观测；无 tracker 或未观测时省略）。`LogicalSession.owner.kind` 为 `bot-direct` / `group-member` / `group-controller` 的隐藏运行时不会出现在普通 Sessions 列表中（按 owner metadata，不是 `brt_` 前缀）。 |
+| `listBots()` / `getBot` / `createBot` / `updateBot` / `deleteBot` | Bot CRUD；DTO wrapper over `BotService`。delete 在 durable/runtime ownership 仍存在时 fail-closed。 |
+| `listConversations()` / `getConversation` / `listTopics` / `createTopic` | Direct Conversation / Topic 查询与创建。不暴露 hidden alias。Topic archive/delete 未接入公共 API。 |
+| `promptConversation(input)` | `{ conversationId, topicId, requestId, text, target? }` → `ConversationRunService.acceptConversationPrompt`。`requestId` 是 caller idempotency key。Direct `target.botId` 必须匹配 Conversation 所属 Bot。 |
+| `conversationHistory(input)` | Durable Topic `seq` 游标分页（`afterSeq` / `beforeSeq` / `limit`），返回 `oldestSeq` / `newestSeq` / `hasMoreBefore` / `hasMoreAfter`。 |
+| `getRun(runId)` / `cancelRun(runId)` | Exact Run 查询/取消。`indeterminate` 原样公开，不映射成 `failed`。 |
 | `createSession(alias, agent, workspace)` | 创建逻辑会话，发出 `sessions-changed` 事件。 |
 | `removeSession(alias)` | 删除逻辑会话，发出 `sessions-changed` 事件；返回 `{ wasActive: boolean }`。 |
 | `listScheduledTasks(chatKey)` | 返回指定 chatKey 下的待执行定时任务列表。 |

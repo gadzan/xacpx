@@ -1,4 +1,10 @@
 # Changelog
+## [Unreleased]
+
+### Added
+
+- Control / Relay Bot and Conversation public API: production daemon wiring of ConversationStore / Dispatcher / RunService / BotRuntimeManager, product DTOs, Control RPCs, additive Relay protocol 0.6.0 events and request types. Public callers use Bot / Conversation / Topic / Run IDs and Topic `seq`; hidden Bot runtime sessions are omitted from ordinary Sessions lists by `LogicalSession.owner` metadata.
+
 ## [0.24.5] - 2026-09-15
 
 ### Added
@@ -21,6 +27,20 @@
 - Runtime: stable MCP identity as transport-boundary invariant (PR #335); `TOOL_STEP_KINDS` validator allows `delete`/`move`/`fetch`.
 - Restore CLI summary semantics and base `rawOutput` fallback to legacy summarizer.
 
+## [relay 0.14.8] - 2026-09-16
+
+### Changed
+
+- Depend on `@ganglion/xacpx-relay-protocol` `^0.6.0` so Hub `validControlEvent` accepts additive Bot / Conversation product events and optional turn `conversation` join identity. Bot/Conversation RPCs stay instance-scoped (not `CHAT_SCOPED_TYPES`).
+
+## [relay-protocol 0.6.0] - 2026-09-16
+
+### Added
+
+- Bot / Conversation Control RPCs: `control.bots.*`, `control.conversations.*`, `control.topics.*`, `control.conversation.prompt|history`, `control.runs.get|cancel`.
+- Product events: `bots-changed`, `conversations-changed`, `conversation-topic-changed`, `conversation-message`, `conversation-run-changed`, `member-turn-started`, `member-turn-finished`.
+- Optional `conversation` join identity on existing turn events and `instance.state.sync` running turns (additive; old clients ignore unknown fields).
+
 ## [relay-protocol 0.5.3] - 2026-09-15
 
 ### Added
@@ -42,6 +62,12 @@
 ### Fixed
 
 - relay-web: render-markdown hardening; progress/tool interleaving; markdown anchors; block-level streaming cache; compositional `copyText`; queue-overflow toast; live turn slotting by Hub insert order; iOS IME 229 input; live model/effort refresh.
+
+## [channel-relay 0.7.4] - 2026-09-16
+
+### Added
+
+- Control bridge dispatch for Bot / Conversation / Topic / Run RPCs; live turn events forward optional `conversation` join identity; state-sync running turns preserve that correlation.
 
 ## [channel-relay 0.7.3] - 2026-09-15
 
