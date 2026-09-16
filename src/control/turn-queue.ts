@@ -16,3 +16,10 @@ import {
 } from "./turn-support";
 import type { PermissionInteractionOrigin } from "../permissions/permission-types.js";
 import type { ConversationTurnCorrelation } from "./conversation-control-dtos";
+
+export interface QueuedItemSnapshot {
+  id: string;
+  textPreview: string;
+  enqueuedAt: string;
+  kind?: "interrupt";
+}
