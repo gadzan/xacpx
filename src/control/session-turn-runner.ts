@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { ControlServiceDeps } from "./control-service";
+import type { ConversationTurnCorrelation } from "./conversation-control-dtos";
 import type { ScheduledOrigin } from "./control-event-bus";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import type { AgentMessageCompletion } from "../orchestration/agent-messaging-types";
@@ -25,6 +26,7 @@ export interface TurnRequest {
   // Extra fields stamped onto turn-started for scheduled-origin turns. `queueItemId`
   // is set only for a drained queue head so the web can reconcile the badge.
   turnStarted?: { prompt?: string; scheduled?: ScheduledOrigin; queueItemId?: string; promptRequestId?: string };
+  conversation?: ConversationTurnCorrelation;
   media?: PromptAttachmentRef[];
   agentMentions?: Array<{ range: [number, number]; handle: string }>;
   allowRestoreArchived?: boolean;
@@ -209,6 +211,7 @@ export class SessionTurnRunner {
       ...(req.turnStarted?.queueItemId ? { queueItemId: req.turnStarted.queueItemId } : {}),
       ...(req.turnStarted?.promptRequestId ? { promptRequestId: req.turnStarted.promptRequestId } : {}),
       ...(req.peerOrigin ? { peerOrigin: req.peerOrigin } : {}),
+      ...(req.conversation ? { conversation: req.conversation } : {}),
     });
     // Stream-mode sessions (replyMode "stream") get raw token streaming: the transport
     // forwards chunks verbatim (paragraph breaks intact), so we concatenate as-is.
@@ -232,6 +235,7 @@ export class SessionTurnRunner {
         chatKey: req.chatKey,
         sessionAlias: req.sessionAlias,
         chunk: output,
+        ...(req.conversation ? { conversation: req.conversation } : {}),
       });
       emittedChunk = true;
     };
@@ -332,6 +336,7 @@ export class SessionTurnRunner {
             chatKey: req.chatKey,
             sessionAlias: req.sessionAlias,
             event,
+            ...(req.conversation ? { conversation: req.conversation } : {}),
           });
         },
         onThought: (chunk) => {
@@ -341,6 +346,7 @@ export class SessionTurnRunner {
             chatKey: req.chatKey,
             sessionAlias: req.sessionAlias,
             chunk,
+            ...(req.conversation ? { conversation: req.conversation } : {}),
           });
         },
         onPlan: (entries) => {
@@ -350,6 +356,7 @@ export class SessionTurnRunner {
             chatKey: req.chatKey,
             sessionAlias: req.sessionAlias,
             entries,
+            ...(req.conversation ? { conversation: req.conversation } : {}),
           });
         },
         onUsage: (usage) => {
@@ -362,6 +369,7 @@ export class SessionTurnRunner {
             size: usage.size,
             ...(usage.cost ? { cost: usage.cost } : {}),
             ...(usage.breakdown ? { breakdown: usage.breakdown } : {}),
+            ...(req.conversation ? { conversation: req.conversation } : {}),
           });
         },
         onCommands: (commands) => {
@@ -371,6 +379,7 @@ export class SessionTurnRunner {
             chatKey: req.chatKey,
             sessionAlias: req.sessionAlias,
             commands,
+            ...(req.conversation ? { conversation: req.conversation } : {}),
           });
         },
       });
@@ -391,6 +400,7 @@ export class SessionTurnRunner {
         ...(finalText !== "" || !response.silent ? { text: finalText } : {}),
         ...(response.silent ? { silent: true } : {}),
         ...(req.peerOrigin ? { peerOrigin: req.peerOrigin } : {}),
+        ...(req.conversation ? { conversation: req.conversation } : {}),
       });
       return {
         ok: true,
@@ -413,6 +423,7 @@ export class SessionTurnRunner {
         errorMessage,
         ...(!timedOut && signal.aborted ? { cancelled: true } : {}),
         ...(req.peerOrigin ? { peerOrigin: req.peerOrigin } : {}),
+        ...(req.conversation ? { conversation: req.conversation } : {}),
       });
       return {
         ok: false,
