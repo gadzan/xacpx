@@ -93,19 +93,41 @@ test("prompt binds session, streams chunks as events, and reports completion", a
   ]);
 });
 
-test("promptImmediate keeps turnOrigin human on the same TurnQueue path", async () => {
+test("promptImmediate fail-closes to orchestration unless executionOrigin is human", async () => {
   let captured: ChatRequest | undefined;
   const { control } = makeControl(async (request) => {
     captured = request;
     return { text: "immediate" };
   });
-  const result = await control.promptImmediate({
+  const omitted = await control.promptImmediate({
     chatKey: "relay:acct-1",
     sessionAlias: "backend",
     text: "conversation-turn",
     senderId: "bot-conversation",
   });
-  expect(result).toEqual({ ok: true, text: "immediate" });
+  expect(omitted).toEqual({ ok: true, text: "immediate" });
+  expect(captured?.metadata?.origin).toBe("orchestration");
+
+  captured = undefined;
+  const recovered = await control.promptImmediate({
+    chatKey: "relay:acct-1",
+    sessionAlias: "backend",
+    text: "recovered-turn",
+    senderId: "bot-conversation",
+    executionOrigin: "orchestration",
+  });
+  expect(recovered).toEqual({ ok: true, text: "immediate" });
+  expect(captured?.metadata?.origin).toBe("orchestration");
+
+  captured = undefined;
+  const fresh = await control.promptImmediate({
+    chatKey: "relay:acct-1",
+    sessionAlias: "backend",
+    text: "fresh-human-turn",
+    senderId: "bot-conversation",
+    executionOrigin: "human",
+  });
+  expect(fresh).toEqual({ ok: true, text: "immediate" });
   expect(captured?.metadata).toEqual({
     channel: "control",
     chatType: "direct",

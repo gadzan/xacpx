@@ -6,8 +6,13 @@ import { expect, test } from "bun:test";
 import { BotRuntimeManager } from "../../../src/bots/bot-runtime-manager";
 import { BotService } from "../../../src/bots/bot-service";
 import type { AppConfig } from "../../../src/config/types";
+import { ControlService } from "../../../src/control/control-service";
+import { createControlEventBus } from "../../../src/control/control-event-bus";
 import { ConversationDispatcher, type ConversationDispatcherHooks } from "../../../src/conversations/conversation-dispatcher";
 import { ConversationRunService } from "../../../src/conversations/conversation-run-service";
+import {
+  canMintHumanPermissionInteraction,
+} from "../../../src/conversations/conversation-execution";
 import type {
   ConversationTurnCancelInput,
   ConversationTurnCancelResult,
@@ -15,13 +20,17 @@ import type {
   ConversationTurnRunResult,
   ConversationTurnRunner,
 } from "../../../src/conversations/conversation-turn-runner";
-import { ControlConversationTurnRunner } from "../../../src/conversations/conversation-turn-runner";
+import {
+  ControlConversationTurnRunner,
+  type ControlConversationTurnRunnerOptions,
+} from "../../../src/conversations/conversation-turn-runner";
 import { SqliteConversationStore } from "../../../src/conversations/sqlite-conversation-store";
 import { createDirectConversationId } from "../../../src/domain/ids";
 import { AsyncMutex } from "../../../src/orchestration/async-mutex";
 import { SessionService } from "../../../src/sessions/session-service";
 import { parseState, type StateStore } from "../../../src/state/state-store";
 import { createEmptyState, type AppState } from "../../../src/state/types";
+import type { ChatRequest, ChatResponse } from "../../../src/weixin/agent/interface";
 
 const NOW = "2026-09-15T12:00:00.000Z";
 const BOT_ID = "bot_reviewer";
@@ -53,6 +62,8 @@ async function waitUntil(cond: () => boolean, timeoutMs = 1000): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 
 function createConfig(): AppConfig {
   return {
@@ -139,11 +150,14 @@ async function createLifecycle(options: {
   hooks?: ConversationDispatcherHooks;
   beforeAcceptPersist?: () => Promise<void>;
   beforeTeardownFinalize?: () => Promise<void>;
+  afterTeardownMarkedDeleting?: () => Promise<void>;
   failSessionRelease?: boolean | (() => boolean);
   beforeAcceptCommit?: () => void;
   ownerId?: string;
   autoKick?: boolean;
   leaseMs?: number;
+  controlChat?: (request: ChatRequest) => Promise<ChatResponse>;
+  runnerOptions?: ControlConversationTurnRunnerOptions;
 } = {}) {
   const path = join(mkdtempSync(join(tmpdir(), "xacpx-life-")), "conversation.sqlite");
   const store = await SqliteConversationStore.open(path, {
@@ -163,7 +177,17 @@ async function createLifecycle(options: {
     now: () => new Date(NOW),
     stateMutex,
   });
-  const runner = options.runner ?? new FakeRunner();
+  const events = createControlEventBus();
+  const runner = options.controlChat
+    ? new ControlConversationTurnRunner(new ControlService({
+      agent: { chat: options.controlChat },
+      sessions,
+      activeTurns: { isActiveAnywhere: () => false },
+      scheduled: {} as never,
+      orchestration: {} as never,
+      events,
+    } as never), options.runnerOptions)
+    : options.runner ?? new FakeRunner();
   let clock = Date.parse(NOW);
   const nowFn = () => {
     clock += 1;
@@ -183,6 +207,7 @@ async function createLifecycle(options: {
     stateMutex,
     beforeAcceptPersist: options.beforeAcceptPersist,
     beforeTeardownFinalize: options.beforeTeardownFinalize,
+    afterTeardownMarkedDeleting: options.afterTeardownMarkedDeleting,
     failSessionRelease: options.failSessionRelease,
     autoKick: options.autoKick ?? false,
   });
@@ -216,6 +241,8 @@ test("crash after request transaction and before dispatch resumes exactly once",
   });
   await dispatcher.kick();
   expect(runner.runs).toHaveLength(1);
+  expect(runner.runs[0]?.executionOrigin).toBe("orchestration");
+  expect(canMintHumanPermissionInteraction(runner.runs[0]?.executionOrigin)).toBe(false);
   expect(store.getRun(accepted.run.id)?.state).toBe("completed");
   expect(store.listMessages({
     conversationId: accepted.run.conversationId,
@@ -261,6 +288,7 @@ test("crash after dispatch claim and before execution start redispatches once", 
   first.jump(60_000);
   await recovered.kick();
   expect(recoveredRunner.runs).toHaveLength(1);
+  expect(recoveredRunner.runs[0]?.executionOrigin).toBe("orchestration");
   expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
   resume.resolve();
   await drain;
@@ -477,6 +505,7 @@ test("runtime creation failure after accept leaves durable pending work", async 
   await recovered.kick();
   expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
   expect(fakeRunner(first.runner).runs).toHaveLength(1);
+  expect(fakeRunner(first.runner).runs[0]?.executionOrigin).toBe("orchestration");
 });
 
 test("teardown release failure leaves recoverable ownership", async () => {
@@ -930,4 +959,204 @@ test("cancel between durable start and runner registration never starts Control"
   expect(control.promptCalls).toBe(0);
   expect(first.store.getRun(accepted.run.id)?.state).not.toBe("running");
   expect(first.store.getRun(accepted.run.id)?.state).not.toBe("queued");
+});
+
+test("fresh same-daemon Conversation dispatch stays human and can mint permission", async () => {
+  const captured: ChatRequest[] = [];
+  const first = await createLifecycle({
+    controlChat: async (request) => {
+      captured.push(request);
+      return { text: "done" };
+    },
+  });
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-fresh-human",
+    content: "hello",
+  });
+  await first.dispatcher.kick();
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
+  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("human");
+  expect(captured[0]?.metadata?.origin).toBe("human");
+  expect(canMintHumanPermissionInteraction(captured[0]?.metadata?.origin)).toBe(true);
+});
+
+test("startup redispatch after accept-before-claim is orchestration and cannot mint", async () => {
+  const captured: ChatRequest[] = [];
+  const first = await createLifecycle();
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-startup-recovery",
+    content: "hello",
+  });
+  expect(accepted.dispatch.generation).toBe(1);
+  const restart = new ConversationDispatcher(
+    first.store,
+    first.runtime,
+    new ControlConversationTurnRunner(new ControlService({
+      agent: {
+        chat: async (request: ChatRequest) => {
+          captured.push(request);
+          return { text: "done" };
+        },
+      },
+      sessions: first.sessions,
+      activeTurns: { isActiveAnywhere: () => false },
+      scheduled: {} as never,
+      orchestration: {} as never,
+      events: createControlEventBus(),
+    } as never)),
+    first.sessions,
+    { now: first.nowFn, ownerId: "dispatcher-restart" },
+  );
+  await restart.kick();
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
+  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("recovery");
+  expect(captured[0]?.metadata?.origin).toBe("orchestration");
+  expect(canMintHumanPermissionInteraction(captured[0]?.metadata?.origin)).toBe(false);
+});
+
+test("lease-expired pre-start redispatch is orchestration even on the same daemon", async () => {
+  const captured: ChatRequest[] = [];
+  const paused = deferred();
+  const resume = deferred();
+  const first = await createLifecycle({
+    leaseMs: 5_000,
+    controlChat: async (request) => {
+      captured.push(request);
+      return { text: "done" };
+    },
+    hooks: {
+      beforeRuntimeMaterialize: async () => {
+        paused.resolve();
+        await resume.promise;
+      },
+    },
+  });
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-lease-recovery",
+    content: "hello",
+  });
+  const drain = first.dispatcher.kick();
+  await paused.promise;
+  first.jump(10_000);
+  resume.resolve();
+  await drain;
+  const recovered = new ConversationDispatcher(
+    first.store,
+    first.runtime,
+    first.runner,
+    first.sessions,
+    {
+      now: first.nowFn,
+      ownerId: "dispatcher-lease",
+      authorityEpoch: first.dispatcher.authorityEpoch,
+    },
+  );
+  await recovered.kick();
+  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("recovery");
+  expect(captured[0]?.metadata?.origin).toBe("orchestration");
+  expect(canMintHumanPermissionInteraction(captured[0]?.metadata?.origin)).toBe(false);
+});
+
+test("pre-start retry after internal failure is orchestration", async () => {
+  const first = await createLifecycle({
+    hooks: { failRuntimeMaterialize: true },
+  });
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-prestart-retry-origin",
+    content: "hello",
+  });
+  await first.dispatcher.kick();
+  expect(first.store.getDispatchForRun(accepted.run.id)?.authorityEpoch).toBeUndefined();
+  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("recovery");
+  const retry = new ConversationDispatcher(
+    first.store,
+    first.runtime,
+    first.runner,
+    first.sessions,
+    {
+      now: first.nowFn,
+      ownerId: "dispatcher-retry-origin",
+      authorityEpoch: first.dispatcher.authorityEpoch,
+    },
+  );
+  await retry.kick();
+  expect(fakeRunner(first.runner).runs[0]?.executionOrigin).toBe("orchestration");
+  expect(canMintHumanPermissionInteraction(fakeRunner(first.runner).runs[0]?.executionOrigin)).toBe(false);
+});
+
+test("wedged provider cancel returns, marks indeterminate, and cannot resurrect", async () => {
+  const hang = deferred<ChatResponse>();
+  let sourceTurnId = "";
+  const started = deferred();
+  const first = await createLifecycle({
+    controlChat: async () => await hang.promise,
+    runnerOptions: { cancelSettleTimeoutMs: 30 },
+    hooks: {
+      afterExecutionStart: async (turn) => {
+        sourceTurnId = turn.sourceTurnId ?? "";
+        started.resolve();
+      },
+    },
+  });
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-wedge-cancel",
+    content: "hello",
+  });
+  const drain = first.dispatcher.kick();
+  await started.promise;
+  const runner = first.runner as ControlConversationTurnRunner;
+  await waitUntil(() => runner.hasTrackedExecution(sourceTurnId));
+  const cancelStarted = Date.now();
+  await first.service.cancelRun(accepted.run.id);
+  expect(Date.now() - cancelStarted).toBeLessThan(1_000);
+  await drain;
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("indeterminate");
+  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.state).toBe("indeterminate");
+  hang.resolve({ text: "late-completion" });
+  await tick();
+  await tick();
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("indeterminate");
+  expect(first.store.listMessages({
+    conversationId: accepted.run.conversationId,
+    topicId: accepted.run.topicId,
+    limit: 10,
+  }).filter((message) => message.role === "bot")).toEqual([]);
+  await expect(first.service.teardownDirectConversation(BOT_ID)).rejects.toMatchObject({
+    code: "conversation_indeterminate",
+  });
+});
+
+test("createDirectTopic during teardown drain fails conversation_deleting", async () => {
+  const hang = deferred();
+  const runner = new FakeRunner();
+  runner.hang = hang;
+  const marked = deferred();
+  const resumeDrain = deferred();
+  const first = await createLifecycle({
+    runner,
+    afterTeardownMarkedDeleting: async () => {
+      marked.resolve();
+      await resumeDrain.promise;
+    },
+  });
+  await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-topic-teardown",
+    content: "hello",
+  });
+  const drain = first.dispatcher.kick();
+  await waitUntil(() => runner.runs.length === 1);
+  const teardown = first.service.teardownDirectConversation(BOT_ID);
+  await marked.promise;
+  await expect(first.service.createDirectTopic(BOT_ID, "During teardown")).rejects.toMatchObject({
+    code: "conversation_deleting",
+  });
+  resumeDrain.resolve();
+  await Promise.all([drain, teardown]);
+  expect(Object.values(first.state.conversation_topics).some((topic) => topic.title === "During teardown")).toBe(false);
 });

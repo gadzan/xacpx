@@ -18,7 +18,7 @@ export type ConversationRunState =
   | "cancelled"
   | "indeterminate";
 
-export type MemberTurnOrigin = "human" | "followup" | "retry";
+export type MemberTurnOrigin = "human" | "followup" | "retry" | "recovery";
 export type MemberTurnState =
   | "queued"
   | "dispatched"
@@ -117,6 +117,9 @@ export interface PendingDispatch {
   state: PendingDispatchState;
   owner?: string;
   leaseExpiresAt?: string;
+  /** Live dispatcher epoch that accepted this work. Matching claim keeps human
+   *  permission authority; mismatch or revoked epoch is recovery/orchestration. */
+  authorityEpoch?: string;
   createdAt: string;
   claimedAt?: string;
   completedAt?: string;

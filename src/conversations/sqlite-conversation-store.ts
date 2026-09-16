@@ -23,6 +23,10 @@ import type {
   RecoveredClaim,
   ReleaseClaimToPendingInput,
 } from "./conversation-store";
+import {
+  conversationExecutionOrigin,
+  memberTurnOriginFromExecution,
+} from "./conversation-execution";
 import type {
   ConversationMessage,
   ConversationRun,
@@ -107,6 +111,7 @@ interface DispatchRow {
   state: string;
   owner: string | null;
   lease_expires_at: string | null;
+  authority_epoch: string | null;
   created_at: string;
   claimed_at: string | null;
   completed_at: string | null;
@@ -194,6 +199,7 @@ CREATE TABLE IF NOT EXISTS pending_dispatches (
   state TEXT NOT NULL,
   owner TEXT,
   lease_expires_at TEXT,
+  authority_epoch TEXT,
   created_at TEXT NOT NULL,
   claimed_at TEXT,
   completed_at TEXT
@@ -284,6 +290,7 @@ function mapDispatch(row: DispatchRow): PendingDispatch {
     ...(optionalString(row.owner) ? { owner: row.owner as string } : {}),
     ...(optionalString(row.lease_expires_at) ? { leaseExpiresAt: row.lease_expires_at as string } : {}),
     createdAt: row.created_at,
+    ...(optionalString(row.authority_epoch) ? { authorityEpoch: row.authority_epoch as string } : {}),
     ...(optionalString(row.claimed_at) ? { claimedAt: row.claimed_at as string } : {}),
     ...(optionalString(row.completed_at) ? { completedAt: row.completed_at as string } : {}),
   };
@@ -309,6 +316,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.ids = options?.ids ?? defaultIds();
     this.beforeAcceptCommit = options?.beforeAcceptCommit;
     this.db.exec(SCHEMA);
+    this.ensureDispatchAuthorityEpochColumn();
   }
 
   static async open(path: string, options?: SqliteConversationStoreOptions): Promise<SqliteConversationStore> {
@@ -444,12 +452,12 @@ export class SqliteConversationStore implements ConversationStore {
         }
         this.db.run(
           `UPDATE pending_dispatches
-           SET state = 'pending', owner = NULL, claimed_at = NULL, lease_expires_at = NULL, generation = generation + 1
+           SET state = 'pending', owner = NULL, claimed_at = NULL, lease_expires_at = NULL, generation = generation + 1, authority_epoch = NULL
            WHERE id = ?`,
           [row.id],
         );
         this.db.run(
-          `UPDATE member_turns SET state = 'queued', attempt = attempt + 1 WHERE id = ?`,
+          `UPDATE member_turns SET state = 'queued', attempt = attempt + 1, origin = 'recovery' WHERE id = ?`,
           [member.id],
         );
         this.db.run(`UPDATE runs SET state = 'queued', started_at = NULL WHERE id = ?`, [run.id]);
@@ -505,7 +513,14 @@ export class SqliteConversationStore implements ConversationStore {
          WHERE id = ? AND state = 'pending'`,
         [input.owner, input.now, input.leaseExpiresAt, row.id],
       );
-      this.db.run(`UPDATE member_turns SET state = 'dispatched' WHERE id = ?`, [row.member_turn_id]);
+      const executionOrigin = conversationExecutionOrigin(
+        optionalString(row.authority_epoch),
+        input.authorityEpoch,
+      );
+      this.db.run(
+        `UPDATE member_turns SET state = 'dispatched', origin = ? WHERE id = ?`,
+        [memberTurnOriginFromExecution(executionOrigin), row.member_turn_id],
+      );
       return {
         dispatch: this.requireDispatch(row.id),
         run: this.requireRun(row.run_id),
@@ -554,11 +569,14 @@ export class SqliteConversationStore implements ConversationStore {
       const dispatch = this.requireLiveUnstartedClaim(input);
       this.db.run(
         `UPDATE pending_dispatches
-         SET state = 'pending', owner = NULL, claimed_at = NULL, lease_expires_at = NULL, generation = generation + 1
+         SET state = 'pending', owner = NULL, claimed_at = NULL, lease_expires_at = NULL, generation = generation + 1, authority_epoch = NULL
          WHERE id = ?`,
         [dispatch.id],
       );
-      this.db.run(`UPDATE member_turns SET state = 'queued' WHERE id = ?`, [dispatch.member_turn_id]);
+      this.db.run(
+        `UPDATE member_turns SET state = 'queued', origin = 'recovery' WHERE id = ?`,
+        [dispatch.member_turn_id],
+      );
       this.db.run(`UPDATE runs SET state = 'queued' WHERE id = ? AND state = 'running'`, [dispatch.run_id]);
       return this.requireDispatch(dispatch.id);
     });
@@ -809,6 +827,14 @@ export class SqliteConversationStore implements ConversationStore {
     this.db.close();
   }
 
+  private ensureDispatchAuthorityEpochColumn(): void {
+    const cols = this.db.all<{ name: string }>("PRAGMA table_info(pending_dispatches)");
+    if (cols.some((col) => col.name === "authority_epoch")) {
+      return;
+    }
+    this.db.exec("ALTER TABLE pending_dispatches ADD COLUMN authority_epoch TEXT");
+  }
+
   private assertAcceptable(conversationId: string, topicId: string): void {
     if (this.isConversationDeleting(conversationId)) {
       throw new ConversationError("conversation_deleting", `conversation "${conversationId}" is deleting`);
@@ -858,9 +884,9 @@ export class SqliteConversationStore implements ConversationStore {
     );
     this.db.run(
       `INSERT INTO pending_dispatches (
-         id, run_id, member_turn_id, generation, state, owner, lease_expires_at, created_at, claimed_at, completed_at
-       ) VALUES (?, ?, ?, 1, 'pending', NULL, NULL, ?, NULL, NULL)`,
-      [dispatchId, runId, memberTurnId, input.now],
+         id, run_id, member_turn_id, generation, state, owner, lease_expires_at, created_at, claimed_at, completed_at, authority_epoch
+       ) VALUES (?, ?, ?, 1, 'pending', NULL, NULL, ?, NULL, NULL, ?)`,
+      [dispatchId, runId, memberTurnId, input.now, input.authorityEpoch ?? null],
     );
     return {
       reused: false,

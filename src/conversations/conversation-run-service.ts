@@ -20,6 +20,7 @@ export interface ConversationRunServiceOptions {
   stateMutex?: AsyncMutex;
   beforeAcceptPersist?: () => Promise<void>;
   beforeTeardownFinalize?: () => Promise<void>;
+  afterTeardownMarkedDeleting?: () => Promise<void>;
   failSessionRelease?: boolean | (() => boolean);
   autoKick?: boolean;
 }
@@ -32,6 +33,7 @@ export class ConversationRunService {
   private readonly stateMutex: AsyncMutex;
   private readonly beforeAcceptPersist?: () => Promise<void>;
   private readonly beforeTeardownFinalize?: () => Promise<void>;
+  private readonly afterTeardownMarkedDeleting?: () => Promise<void>;
   private readonly failSessionRelease?: boolean | (() => boolean);
   private readonly autoKick: boolean;
 
@@ -50,6 +52,7 @@ export class ConversationRunService {
     this.stateMutex = options?.stateMutex ?? new AsyncMutex();
     this.beforeAcceptPersist = options?.beforeAcceptPersist;
     this.beforeTeardownFinalize = options?.beforeTeardownFinalize;
+    this.afterTeardownMarkedDeleting = options?.afterTeardownMarkedDeleting;
     this.failSessionRelease = options?.failSessionRelease;
     this.autoKick = options?.autoKick ?? true;
     this.bots.setConversationWork(this.store);
@@ -101,6 +104,7 @@ export class ConversationRunService {
         content: input.content,
         profileSnapshot: snapshot,
         now: timestamp,
+        authorityEpoch: this.dispatcher.authorityEpoch,
       });
     });
     if (this.autoKick) {
@@ -110,24 +114,28 @@ export class ConversationRunService {
   }
 
   async createDirectTopic(botId: string, title: string): Promise<ConversationTopic> {
-    return await this.stateMutex.run(async () => {
+    return await this.bots.runLifecycle(botId, async () => {
       const bot = this.bots.getBot(botId);
       const timestamp = this.now().toISOString();
       const planned = planDirectConversation(this.state, { botId, title: bot.name, now: timestamp });
-      const topic: ConversationTopic = {
-        id: this.nextTopicId(),
-        conversationId: planned.conversation.id,
-        title: title.trim() || "Topic",
-        status: "active",
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      };
-      const next = structuredClone(this.state);
-      next.conversations[planned.conversation.id] = next.conversations[planned.conversation.id] ?? planned.conversation;
-      next.conversation_topics[planned.topic.id] = next.conversation_topics[planned.topic.id] ?? planned.topic;
-      next.conversation_topics[topic.id] = topic;
-      await this.persist(next);
-      return topic;
+      this.assertConversationNotDeleting(planned.conversation.id);
+      return await this.stateMutex.run(async () => {
+        this.assertConversationNotDeleting(planned.conversation.id);
+        const topic: ConversationTopic = {
+          id: this.nextTopicId(),
+          conversationId: planned.conversation.id,
+          title: title.trim() || "Topic",
+          status: "active",
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        };
+        const next = structuredClone(this.state);
+        next.conversations[planned.conversation.id] = next.conversations[planned.conversation.id] ?? planned.conversation;
+        next.conversation_topics[planned.topic.id] = next.conversation_topics[planned.topic.id] ?? planned.topic;
+        next.conversation_topics[topic.id] = topic;
+        await this.persist(next);
+        return topic;
+      });
     });
   }
 
@@ -144,6 +152,7 @@ export class ConversationRunService {
       this.store.markConversationDeleting(conversationId, timestamp);
       await this.markAppStateDeleting(conversationId);
     });
+    await this.afterTeardownMarkedDeleting?.();
 
     const runs = this.store.listRuns(conversationId);
     for (const run of runs) {
@@ -217,6 +226,15 @@ export class ConversationRunService {
   private nextTopicId(): string {
     const id = this.createTopicIdFn();
     return id.startsWith("topic_") ? id : createTopicId(() => id);
+  }
+
+  private assertConversationNotDeleting(conversationId: string): void {
+    if (
+      this.store.isConversationDeleting(conversationId)
+      || this.state.conversations[conversationId]?.lifecycle === "deleting"
+    ) {
+      throw new ConversationError("conversation_deleting", "conversation is deleting");
+    }
   }
 
   private async markAppStateDeleting(conversationId: string): Promise<void> {

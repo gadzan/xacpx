@@ -746,12 +746,13 @@ export class TurnQueue {
       // release inFlight if empty.
       this.advanceQueue(key);
     }
-    // Strip the internal postTurnDetection so the return value stays exactly
-    // {ok, text?, errorMessage?} — the golden fixtures record this return value.
+    // Strip the internal postTurnDetection so the return value stays
+    // {ok, text?, errorMessage?, cancelled?} — goldens record this return value.
     return {
       ok: result!.ok,
       ...(result!.text !== undefined ? { text: result!.text } : {}),
       ...(result!.errorMessage !== undefined ? { errorMessage: result!.errorMessage } : {}),
+      ...(result!.cancelled ? { cancelled: true } : {}),
     };
   }
 

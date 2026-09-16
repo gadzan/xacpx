@@ -17,7 +17,12 @@ function deferred<T = void>() {
 function fakeControl() {
   const hang = deferred();
   const aborted = new Set<string>();
-  let promptImpl: (input: { promptRequestId?: string }) => Promise<{ ok: boolean; text?: string; errorMessage?: string }> = async () => (
+  let promptImpl: (input: { promptRequestId?: string }) => Promise<{
+    ok: boolean;
+    text?: string;
+    errorMessage?: string;
+    cancelled?: boolean;
+  }> = async () => (
     { ok: true, text: "done" }
   );
   return {
@@ -61,7 +66,7 @@ const input = {
   sessionAlias: "alias",
   logicalSessionId: "11111111-1111-4111-8111-111111111111",
   text: "hello",
-  origin: "human" as const,
+  executionOrigin: "human" as const,
   promptRequestId: "sturn_1",
 };
 
@@ -86,7 +91,7 @@ test("in-flight cancel uses the request-id seam and waits for settlement", async
   control.setPrompt(async (promptInput) => {
     await control.hang.promise;
     if (control.aborted.has(promptInput.promptRequestId ?? "")) {
-      return { ok: false, errorMessage: "cancelled by user" };
+      return { ok: false, cancelled: true, errorMessage: "cancelled by user" };
     }
     return { ok: true, text: "done" };
   });
@@ -103,6 +108,44 @@ test("in-flight cancel uses the request-id seam and waits for settlement", async
   expect(await running).toMatchObject({ status: "cancelled" });
   expect(control.cancelLane).toBe(0);
   expect(control.cancelByRequest).toEqual(["sturn_1"]);
+});
+
+test("a provider error containing cancel stays failed, not cancelled", async () => {
+  const control = fakeControl();
+  control.setPrompt(async () => ({ ok: false, errorMessage: "cannot cancel the reservation" }));
+  const runner = new ControlConversationTurnRunner(control);
+  const result = await runner.run({ ...input, promptRequestId: "sturn_cancel_word" });
+  expect(result).toMatchObject({ status: "failed", error: "cannot cancel the reservation" });
+});
+
+test("wedged abort settles cancel and run as unknown after the deadline", async () => {
+  const control = fakeControl();
+  const late = deferred<{ ok: boolean; text?: string }>();
+  control.setPrompt(async () => {
+    await control.hang.promise;
+    return await late.promise;
+  });
+  const runner = new ControlConversationTurnRunner(control, { cancelSettleTimeoutMs: 20 });
+  const running = runner.run({ ...input, promptRequestId: "sturn_wedge" });
+  await waitUntil(() => runner.hasTrackedExecution("sturn_wedge"));
+  const cancelStarted = Date.now();
+  const cancel = await runner.cancel({
+    conversationId: input.conversationId,
+    topicId: input.topicId,
+    sessionAlias: input.sessionAlias,
+    promptRequestId: "sturn_wedge",
+  });
+  expect(Date.now() - cancelStarted).toBeLessThan(1_000);
+  expect(cancel).toEqual({ outcome: "unknown" });
+  expect(await running).toMatchObject({ status: "cancelled", unknown: true });
+  late.resolve({ ok: true, text: "late-completion" });
+  await tick();
+  expect(await runner.cancel({
+    conversationId: input.conversationId,
+    topicId: input.topicId,
+    sessionAlias: input.sessionAlias,
+    promptRequestId: "sturn_wedge",
+  })).toEqual({ outcome: "unknown" });
 });
 
 test("settled execution cache keeps late cancel completed until TTL/max eviction", async () => {
@@ -211,7 +254,6 @@ test("Conversation promptImmediate never FIFO-enqueues on a busy session lane", 
     topicId: "topic",
     sessionAlias: lane,
     text: "conversation-turn",
-    origin: "human",
     promptRequestId: "sturn_conversation",
   });
   expect(conversation).toMatchObject({ status: "failed", error: "turn-already-running" });

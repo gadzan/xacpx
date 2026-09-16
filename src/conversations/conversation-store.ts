@@ -23,6 +23,9 @@ export interface AcceptRequestInput {
   profileSnapshot: BotProfileSnapshot;
   maxMemberTurns?: number;
   now: string;
+  /** Live Conversation dispatcher epoch. Stamped on the dispatch row so a later
+   *  process or recovered claim cannot inherit human permission authority. */
+  authorityEpoch?: string;
 }
 
 export interface AcceptRequestResult {
@@ -37,6 +40,8 @@ export interface ClaimNextDispatchInput {
   now: string;
   owner: string;
   leaseExpiresAt: string;
+  /** Current process authority epoch. Compared to the dispatch row, never to generation. */
+  authorityEpoch: string;
 }
 
 export interface ClaimedWork {

@@ -30,6 +30,7 @@ import {
   toInternalSessionAlias,
 } from "../channels/channel-scope";
 import { AgentMessagingError } from "../orchestration/agent-messaging-error";
+import type { PermissionInteractionOrigin } from "../permissions/permission-types.js";
 import type { ControlEventBus } from "./control-event-bus";
 import {
   readNativeSessionHistory,
@@ -358,12 +359,21 @@ export interface ControlPromptInput {
   /** Conversation pre-admission cancel. Checked after any config-tail wait and
    *  immediately before TurnQueue.submit so a cancelled Run never starts. */
   abortSignal?: AbortSignal;
+  /**
+   * Conversation execution provenance, derived by ConversationStore at claim
+   * from the live authority epoch. `promptImmediate` fail-closes to
+   * orchestration unless this is exactly `"human"`. Interactive `prompt()`
+   * ignores it and is always human. Omitting it cannot mint human authority.
+   */
+  executionOrigin?: PermissionInteractionOrigin;
 }
 
 export interface ControlPromptResult {
   ok: boolean;
   text?: string;
   errorMessage?: string;
+  /** Proven cancellation (AbortSignal / user Stop), not an error string match. */
+  cancelled?: boolean;
   /** True when this prompt did not run immediately and was instead appended to the
    *  per-session server-side queue (a turn was already in flight). */
   queued?: boolean;
@@ -1278,8 +1288,9 @@ export class ControlService {
 
   /**
    * Conversation execution seam: same TurnQueue / SessionTurnRunner path as
-   * `prompt()`, including `turnOrigin: "human"`, but never FIFO-enqueues when
-   * the session lane is busy. ConversationStore already owns durable queuing.
+   * `prompt()`, but never FIFO-enqueues when the session lane is busy.
+   * Turn origin is the store-derived `executionOrigin` (fail-closed to
+   * orchestration). ConversationStore already owns durable queuing.
    */
   async promptImmediate(input: ControlPromptInput): Promise<ControlPromptResult> {
     return this.submitHumanPrompt(input, false);
@@ -1300,12 +1311,17 @@ export class ControlService {
     const configTail =
       this.sessionConfigSetTails.get(internalAlias) ??
       this.sessionConfigSetTails.get(input.sessionAlias);
+    const turnOrigin: PermissionInteractionOrigin = queueable
+      ? "human"
+      : input.executionOrigin === "human"
+        ? "human"
+        : "orchestration";
     const submit = () => {
       // After config-tail wait (if any) and immediately before admission: a
       // Conversation cancel that fired while we were waiting must not enter
       // TurnQueue. Once submit() returns, promptRequestId cancel owns the rest.
       if (input.abortSignal?.aborted) {
-        return Promise.resolve({ ok: false, errorMessage: "cancelled" });
+        return Promise.resolve({ ok: false, cancelled: true, errorMessage: "cancelled" });
       }
       return this.turnQueue.submit({
         chatKey: input.chatKey,
@@ -1313,7 +1329,7 @@ export class ControlService {
         concurrencyKey: internalAlias,
         text: input.text,
         senderId: input.senderId,
-        turnOrigin: "human",
+        turnOrigin,
         queueable,
         ...(input.isOwner !== undefined ? { isOwner: input.isOwner } : {}),
         ...(input.accountId !== undefined ? { accountId: input.accountId } : {}),

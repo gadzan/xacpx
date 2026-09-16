@@ -7,6 +7,7 @@ import { sessionMatchesExecution } from "../bots/bot-types";
 import { createSourceTurnId } from "../domain/ids";
 import type { SessionService } from "../sessions/session-service";
 import { ConversationError } from "./conversation-error";
+import { conversationExecutionOriginFromMemberTurn } from "./conversation-execution";
 import type { ClaimedWork, ConversationStore } from "./conversation-store";
 import type {
   ConversationTurnCancelResult,
@@ -28,6 +29,8 @@ export interface ConversationDispatcherOptions {
   now?: () => Date;
   leaseMs?: number;
   ownerId?: string;
+  /** Process-lifetime authority epoch. Accept stamps it; claim compares it. */
+  authorityEpoch?: string;
   hooks?: ConversationDispatcherHooks;
 }
 
@@ -37,6 +40,7 @@ export class ConversationDispatcher {
   private readonly now: () => Date;
   private readonly leaseMs: number;
   private readonly ownerId: string;
+  readonly authorityEpoch: string;
   private readonly hooks?: ConversationDispatcherHooks;
   private draining = false;
   private kicked = false;
@@ -52,6 +56,7 @@ export class ConversationDispatcher {
     this.now = options?.now ?? (() => new Date());
     this.leaseMs = options?.leaseMs ?? DEFAULT_LEASE_MS;
     this.ownerId = options?.ownerId ?? `dispatcher:${process.pid}:${randomUUID()}`;
+    this.authorityEpoch = options?.authorityEpoch ?? randomUUID();
     this.hooks = options?.hooks;
   }
 
@@ -109,6 +114,7 @@ export class ConversationDispatcher {
       now: this.now().toISOString(),
       owner: this.ownerId,
       leaseExpiresAt: new Date(this.now().getTime() + this.leaseMs).toISOString(),
+      authorityEpoch: this.authorityEpoch,
     });
   }
 
@@ -194,7 +200,7 @@ export class ConversationDispatcher {
         sessionAlias: binding.sessionAlias,
         logicalSessionId: binding.logicalSessionId,
         text,
-        origin: "human",
+        executionOrigin: conversationExecutionOriginFromMemberTurn(latestMember.origin),
         promptRequestId: sourceTurnId,
       });
       await this.hooks?.beforeResultPersist?.(work);
@@ -260,7 +266,7 @@ export class ConversationDispatcher {
     result: ConversationTurnCancelResult,
   ): void {
     const latest = this.store.getRun(runId);
-    if (latest && (latest.state === "completed" || latest.state === "failed")) {
+    if (latest && (latest.state === "completed" || latest.state === "failed" || latest.state === "indeterminate")) {
       return;
     }
     const now = this.now().toISOString();

@@ -269,6 +269,7 @@ test("claimNextDispatch follows message seq when timestamps and run ids disagree
   expect(first.run.id).toBe("run_zzz");
   expect(second.run.id).toBe("run_aaa");
   const claimed = store.claimNextDispatch({
+    authorityEpoch: "epoch-a",
     now: NOW,
     owner: "dispatcher-a",
     leaseExpiresAt: "2026-09-15T12:00:30.000Z",
@@ -290,6 +291,7 @@ test("markExecutionStarted rejects a stale owner/generation after reclaim", asyn
     now: NOW,
   });
   const firstClaim = store.claimNextDispatch({
+    authorityEpoch: "epoch-a",
     now: NOW,
     owner: "owner-a",
     leaseExpiresAt: "2026-09-15T12:00:01.000Z",
@@ -299,6 +301,7 @@ test("markExecutionStarted rejects a stale owner/generation after reclaim", asyn
   expect(recovered).toHaveLength(1);
   expect(recovered[0]?.outcome).toBe("requeued");
   const secondClaim = store.claimNextDispatch({
+    authorityEpoch: "epoch-a",
     now: "2026-09-15T12:00:03.000Z",
     owner: "owner-b",
     leaseExpiresAt: "2026-09-15T12:01:03.000Z",
@@ -344,12 +347,14 @@ test("stale releaseClaimToPending and failClaimBeforeStart do not mutate a newer
   });
   expect(store.hasDurableBotWork(BOT_ID)).toBe(true);
   const firstClaim = store.claimNextDispatch({
+    authorityEpoch: "epoch-a",
     now: NOW,
     owner: "owner-a",
     leaseExpiresAt: "2026-09-15T12:00:01.000Z",
   });
   store.recoverExpiredClaims("2026-09-15T12:00:02.000Z");
   const secondClaim = store.claimNextDispatch({
+    authorityEpoch: "epoch-a",
     now: "2026-09-15T12:00:03.000Z",
     owner: "owner-b",
     leaseExpiresAt: "2026-09-15T12:01:03.000Z",
@@ -388,5 +393,69 @@ test("stale releaseClaimToPending and failClaimBeforeStart do not mutate a newer
   expect(store.getRun(accepted.run.id)?.completionReason).toBe("runtime_revision_mismatch");
   store.deleteConversationRows(CONV);
   expect(store.hasDurableBotWork(BOT_ID)).toBe(false);
+  store.close();
+});
+
+test("matching authority epoch keeps human origin; mismatch and recovery revoke it", async () => {
+  const store = await SqliteConversationStore.open(":memory:");
+  const accepted = store.acceptRequest({
+    conversationId: CONV,
+    topicId: TOPIC,
+    requestId: "req-epoch",
+    botId: BOT_ID,
+    content: "hello",
+    profileSnapshot: snapshot(),
+    now: NOW,
+    authorityEpoch: "boot-1",
+  });
+  expect(accepted.dispatch.authorityEpoch).toBe("boot-1");
+  expect(accepted.memberTurn.origin).toBe("human");
+  const fresh = store.claimNextDispatch({
+    authorityEpoch: "boot-1",
+    now: NOW,
+    owner: "owner-a",
+    leaseExpiresAt: "2026-09-15T12:00:30.000Z",
+  });
+  expect(fresh?.memberTurn.origin).toBe("human");
+  expect(fresh?.dispatch.generation).toBe(1);
+  store.releaseClaimToPending({
+    dispatchId: fresh!.dispatch.id,
+    owner: "owner-a",
+    generation: fresh!.dispatch.generation,
+    now: NOW,
+  });
+  expect(store.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("recovery");
+  expect(store.getDispatchForRun(accepted.run.id)?.authorityEpoch).toBeUndefined();
+  const retried = store.claimNextDispatch({
+    authorityEpoch: "boot-1",
+    now: "2026-09-15T12:00:32.000Z",
+    owner: "owner-a",
+    leaseExpiresAt: "2026-09-15T12:01:32.000Z",
+  });
+  expect(retried?.memberTurn.origin).toBe("recovery");
+  store.close();
+});
+
+test("crash-before-claim with a new epoch is recovery even at generation 1", async () => {
+  const store = await SqliteConversationStore.open(":memory:");
+  const accepted = store.acceptRequest({
+    conversationId: CONV,
+    topicId: TOPIC,
+    requestId: "req-boot-mismatch",
+    botId: BOT_ID,
+    content: "hello",
+    profileSnapshot: snapshot(),
+    now: NOW,
+    authorityEpoch: "boot-old",
+  });
+  expect(accepted.dispatch.generation).toBe(1);
+  const claimed = store.claimNextDispatch({
+    authorityEpoch: "boot-new",
+    now: NOW,
+    owner: "owner-restart",
+    leaseExpiresAt: "2026-09-15T12:00:30.000Z",
+  });
+  expect(claimed?.dispatch.generation).toBe(1);
+  expect(claimed?.memberTurn.origin).toBe("recovery");
   store.close();
 });

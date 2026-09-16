@@ -54,13 +54,31 @@ Queued Runs on a Topic are claimed in **human request message `seq` order**, not
 
 On execution start the dispatcher persists `sessionAlias`, `logicalSessionId`, and a minted `sourceTurnId`. That id is passed into Control as `promptRequestId` so TurnQueue can treat it as the durable execution identity for **this** prompt. It is not a pre-existing transport turn id.
 
-Cancel/inspect uses a request-id-aware seam (`cancelTurnForPromptRequest` / `inspectPromptRequest`). Aborting the session lane alone does not prove the turn produced no effects. `ControlConversationTurnRunner.cancel()` waits for the tracked prompt to settle and reports `cancelled` only when that execution settled cancelled; a proven completion is persisted as completed; anything else is `unknown` → `indeterminate`.
+Cancel/inspect uses a request-id-aware seam (`cancelTurnForPromptRequest` / `inspectPromptRequest`). Aborting the session lane alone does not prove the turn produced no effects. `ControlConversationTurnRunner.cancel()` aborts the exact prompt, then waits a **bounded** settlement deadline (TurnQueue drain timeout by default). A proven completed/failed/cancelled result is persisted as such; if the provider ignores abort, both `cancel()` and the outward `runner.run()` resolve as `unknown` and the Run/MemberTurn become `indeterminate`. A late provider settle cannot resurrect that Run. Teardown observes indeterminate instead of hanging.
 
-After `markExecutionStarted`, the dispatcher re-reads Run/MemberTurn following every await before `runner.run()`. If the Run is no longer `running` (cancel, indeterminate recovery, another worker), it returns without invoking Control. The runner registers `promptRequestId` synchronously before `Control.promptImmediate`, with an `AbortController` covering the whole pre-admission interval (including a pending `sessionConfigSetTails` wait). Cancel aborts that controller before/alongside `cancelTurnForPromptRequest`. After any config-tail wait and immediately before `TurnQueue.submit`, `promptImmediate` returns a clean cancelled result and never admits the turn if the signal is already aborted. Once TurnQueue has admitted the `promptRequestId`, cancel stays on that exact request-id path. A terminal or indeterminate Run must never start new side effects afterward. Settled runner entries are kept for late-cancel `completed` reporting, bounded by TTL/max like TurnQueue request-id tombstones.
+After `markExecutionStarted`, the dispatcher re-reads Run/MemberTurn following every await before `runner.run()`. If the Run is no longer `running` (cancel, indeterminate recovery, another worker), it returns without invoking Control. The runner registers `promptRequestId` synchronously before `Control.promptImmediate`, with an `AbortController` covering the whole pre-admission interval (including a pending `sessionConfigSetTails` wait). Cancel aborts that controller before/alongside `cancelTurnForPromptRequest`. After any config-tail wait and immediately before `TurnQueue.submit`, `promptImmediate` returns a typed cancelled result (`cancelled: true`) and never admits the turn if the signal is already aborted. Once TurnQueue has admitted the `promptRequestId`, cancel stays on that exact request-id path. A terminal or indeterminate Run must never start new side effects afterward. Settled runner entries are kept for late-cancel `completed` reporting, bounded by TTL/max like TurnQueue request-id tombstones.
 
 Recovery never uses latest-turn-in-alias, text match, or timestamp proximity.
 
-The runner seam is `ConversationTurnRunner` / `ControlConversationTurnRunner` wrapping `ControlService.promptImmediate` / request-id-aware cancel. `promptImmediate` uses the same TurnQueue / SessionTurnRunner path as interactive `prompt()`, with `turnOrigin: "human"`, but **never FIFO-enqueues** when the session lane is busy (`queueable: false`). ConversationStore already owns durable queuing; a busy lane fails the Run immediately instead of leaving a TurnQueue item that can execute after the durable Run is already failed. There is no second Bot execution engine.
+The runner seam is `ConversationTurnRunner` / `ControlConversationTurnRunner` wrapping `ControlService.promptImmediate` / request-id-aware cancel. `promptImmediate` uses the same TurnQueue / SessionTurnRunner path as interactive `prompt()`, but **never FIFO-enqueues** when the session lane is busy (`queueable: false`). ConversationStore already owns durable queuing; a busy lane fails the Run immediately instead of leaving a TurnQueue item that can execute after the durable Run is already failed. There is no second Bot execution engine.
+
+`prompt()` (interactive Control) is always `turnOrigin: "human"`. Conversation `promptImmediate` takes store-derived `executionOrigin` and **fail-closes to `orchestration`** unless that value is exactly `"human"`. Callers cannot mint human permission authority by omitting it.
+
+## Execution permission provenance
+
+Fresh direct work that a human just accepted, claimed, and executed by the **same live dispatcher authority epoch** is human: interactive permission authority is allowed.
+
+Recovery / automatic redispatch is orchestration and cannot mint a human permission interaction:
+
+```text
+fresh human accept + ordinary same-daemon dispatch     → human
+accept committed → daemon crash before first claim
+  → startup redispatch (new authority epoch)           → orchestration
+claim expires before start → automatic redispatch      → orchestration
+automatic pre-start retry after an internal failure    → orchestration
+```
+
+The durable boundary is the dispatch `authorityEpoch`, stamped at accept with the live process epoch. `recoverExpiredClaims` and `releaseClaimToPending` revoke it. Claim compares the live epoch to that row — not `generation > 1` (crash-before-first-claim is still generation 1). MemberTurn.origin becomes `recovery` for those executions. The dispatcher copies that durable origin into Control; it never hardcodes `"human"`.
 
 ## `indeterminate`
 
@@ -107,8 +125,8 @@ Policy: one active Run per Topic; later accepted requests stay queued in durable
 
 Order:
 
-1. Mark Conversation/Topic deleting (SQLite is authoritative for accept/dispatch; AppState flag is bounded metadata). This uses the per-Bot lifecycle gate briefly, shared with accept.
-2. Stop future accept/dispatch. Cancel/drain active turns **without** holding the lifecycle gate (so runtime materialize is not deadlocked).
+1. Mark Conversation/Topic deleting (SQLite is authoritative for accept/dispatch; AppState flag is bounded metadata). This uses the per-Bot lifecycle gate briefly, shared with accept **and** `createDirectTopic`.
+2. Stop future accept/dispatch/topic creation. Cancel/drain active turns **without** holding the lifecycle gate (so runtime materialize is not deadlocked). `createDirectTopic` during this window fails `conversation_deleting` and never returns an active Topic that final teardown would immediately remove.
 3. Reconcile indeterminate.
 4. Verified `removeSession`.
 5. Per-Bot lifecycle gate for finalization: remaining ownership release, AppState binding/topic/conversation cleanup, **then** delete ConversationStore rows / deleting tombstone.
