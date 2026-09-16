@@ -95,6 +95,36 @@ test("submit's busy-decision + enqueue is a synchronous prefix (same tick, zero 
   expect(queue.isBusy("c", "s")).toBe(true);
 });
 
+test("cancelTurnForPromptRequest aborts only the matching in-flight request id", async () => {
+  const h = makeQueue();
+  const p1 = h.queue.submit({ ...BASE, text: "first", queueable: true, promptRequestId: "req-1" });
+  await tick();
+  expect(h.queue.inspectPromptRequest("c", "s", "req-1")).toBe("in-flight");
+  expect(h.queue.cancelTurnForPromptRequest("c", "s", "req-other")).toBe(false);
+  expect(h.head()?.signal.aborted).toBe(false);
+  expect(h.queue.cancelTurnForPromptRequest("c", "s", "req-1")).toBe(true);
+  expect(h.head()?.signal.aborted).toBe(true);
+  h.resolveNext({ ok: false, errorMessage: "cancelled" });
+  await p1;
+  expect(h.queue.inspectPromptRequest("c", "s", "req-1")).toBe("settled");
+  expect(h.queue.cancelTurnForPromptRequest("c", "s", "req-1")).toBe(false);
+});
+
+test("inspectPromptRequest reports settled after a queued successor starts", async () => {
+  const h = makeQueue();
+  const p1 = h.queue.submit({ ...BASE, text: "first", queueable: true, promptRequestId: "req-a" });
+  await tick();
+  void h.queue.submit({ ...BASE, text: "second", queueable: true, promptRequestId: "req-b" });
+  expect(h.queue.inspectPromptRequest("c", "s", "req-a")).toBe("in-flight");
+  expect(h.queue.inspectPromptRequest("c", "s", "req-b")).toBe("absent");
+  h.resolveNext({ ok: true, text: "done-a" });
+  await p1;
+  await tick();
+  expect(h.queue.inspectPromptRequest("c", "s", "req-a")).toBe("settled");
+  expect(h.queue.inspectPromptRequest("c", "s", "req-b")).toBe("in-flight");
+  h.resolveNext({ ok: true, text: "done-b" });
+});
+
 test("a busy second submit enqueues and reports queued:true with an id", async () => {
   const { queue, resolveNext } = makeQueue();
   const p1 = queue.submit({ ...BASE, text: "first", queueable: true });

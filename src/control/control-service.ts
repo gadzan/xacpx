@@ -30,6 +30,7 @@ import {
   toInternalSessionAlias,
 } from "../channels/channel-scope";
 import { AgentMessagingError } from "../orchestration/agent-messaging-error";
+import type { PermissionInteractionOrigin } from "../permissions/permission-types.js";
 import type { ControlEventBus } from "./control-event-bus";
 import {
   readNativeSessionHistory,
@@ -355,12 +356,24 @@ export interface ControlPromptInput {
    *  turn-started so the hub can tie a queued prompt back to its pre-written inbound
    *  row (see PromptPayload.promptRequestId). */
   promptRequestId?: string;
+  /** Conversation pre-admission cancel. Checked after any config-tail wait and
+   *  immediately before TurnQueue.submit so a cancelled Run never starts. */
+  abortSignal?: AbortSignal;
+  /**
+   * Conversation execution provenance, derived by ConversationStore at claim
+   * from the live authority epoch. `promptImmediate` fail-closes to
+   * orchestration unless this is exactly `"human"`. Interactive `prompt()`
+   * ignores it and is always human. Omitting it cannot mint human authority.
+   */
+  executionOrigin?: PermissionInteractionOrigin;
 }
 
 export interface ControlPromptResult {
   ok: boolean;
   text?: string;
   errorMessage?: string;
+  /** Proven cancellation (AbortSignal / user Stop), not an error string match. */
+  cancelled?: boolean;
   /** True when this prompt did not run immediately and was instead appended to the
    *  per-session server-side queue (a turn was already in flight). */
   queued?: boolean;
@@ -1270,6 +1283,23 @@ export class ControlService {
   }
 
   async prompt(input: ControlPromptInput): Promise<ControlPromptResult> {
+    return this.submitHumanPrompt(input, true);
+  }
+
+  /**
+   * Conversation execution seam: same TurnQueue / SessionTurnRunner path as
+   * `prompt()`, but never FIFO-enqueues when the session lane is busy.
+   * Turn origin is the store-derived `executionOrigin` (fail-closed to
+   * orchestration). ConversationStore already owns durable queuing.
+   */
+  async promptImmediate(input: ControlPromptInput): Promise<ControlPromptResult> {
+    return this.submitHumanPrompt(input, false);
+  }
+
+  private submitHumanPrompt(
+    input: ControlPromptInput,
+    queueable: boolean,
+  ): Promise<ControlPromptResult> {
     const channelId = getChannelIdFromChatKey(input.chatKey);
     const internalAlias =
       this.deps.sessions.getResolvedSessionByInternalAlias?.(input.sessionAlias)?.alias ??
@@ -1281,28 +1311,44 @@ export class ControlService {
     const configTail =
       this.sessionConfigSetTails.get(internalAlias) ??
       this.sessionConfigSetTails.get(input.sessionAlias);
+    const turnOrigin: PermissionInteractionOrigin = queueable
+      ? "human"
+      : input.executionOrigin === "human"
+        ? "human"
+        : "orchestration";
+    const submit = () => {
+      // After config-tail wait (if any) and immediately before admission: a
+      // Conversation cancel that fired while we were waiting must not enter
+      // TurnQueue. Once submit() returns, promptRequestId cancel owns the rest.
+      if (input.abortSignal?.aborted) {
+        return Promise.resolve({ ok: false, cancelled: true, errorMessage: "cancelled" });
+      }
+      return this.turnQueue.submit({
+        chatKey: input.chatKey,
+        sessionAlias: input.sessionAlias,
+        concurrencyKey: internalAlias,
+        text: input.text,
+        senderId: input.senderId,
+        turnOrigin,
+        queueable,
+        ...(input.isOwner !== undefined ? { isOwner: input.isOwner } : {}),
+        ...(input.accountId !== undefined ? { accountId: input.accountId } : {}),
+        ...(input.media !== undefined ? { media: input.media } : {}),
+        ...(input.agentMentions !== undefined
+          ? { agentMentions: input.agentMentions }
+          : {}),
+        ...(input.promptRequestId !== undefined
+          ? { promptRequestId: input.promptRequestId }
+          : {}),
+        ...(input.abortSignal !== undefined ? { abortSignal: input.abortSignal } : {}),
+      });
+    };
+    // Keep this helper non-async so `prompt()` still reaches TurnQueue.submit on
+    // its first microtask (same-tick admission / golden event order).
     if (configTail) {
-      await configTail.catch(() => {});
+      return configTail.catch(() => {}).then(submit);
     }
-
-    return this.turnQueue.submit({
-      chatKey: input.chatKey,
-      sessionAlias: input.sessionAlias,
-      concurrencyKey: internalAlias,
-      text: input.text,
-      senderId: input.senderId,
-      turnOrigin: "human",
-      queueable: true,
-      ...(input.isOwner !== undefined ? { isOwner: input.isOwner } : {}),
-      ...(input.accountId !== undefined ? { accountId: input.accountId } : {}),
-      ...(input.media !== undefined ? { media: input.media } : {}),
-      ...(input.agentMentions !== undefined
-        ? { agentMentions: input.agentMentions }
-        : {}),
-      ...(input.promptRequestId !== undefined
-        ? { promptRequestId: input.promptRequestId }
-        : {}),
-    });
+    return submit();
   }
 
   /** Run a fired scheduled task as a real turn through the same machinery as a manual
@@ -1369,6 +1415,32 @@ export class ControlService {
       )?.alias ??
       scopeDisplayAliasToInternal(channelId, sessionAlias);
     return this.turnQueue.cancelTurn(chatKey, sessionAlias, internalAlias);
+  }
+
+  cancelTurnForPromptRequest(chatKey: string, sessionAlias: string, promptRequestId: string): boolean {
+    const channelId = getChannelIdFromChatKey(chatKey);
+    const internalAlias =
+      this.deps.sessions.getResolvedSessionByInternalAlias?.(sessionAlias)?.alias ??
+      this.deps.sessions.getResolvedSessionByInternalAlias?.(
+        toInternalSessionAlias(channelId, sessionAlias),
+      )?.alias ??
+      scopeDisplayAliasToInternal(channelId, sessionAlias);
+    return this.turnQueue.cancelTurnForPromptRequest(chatKey, sessionAlias, promptRequestId, internalAlias);
+  }
+
+  inspectPromptRequest(
+    chatKey: string,
+    sessionAlias: string,
+    promptRequestId: string,
+  ): "in-flight" | "settled" | "absent" {
+    const channelId = getChannelIdFromChatKey(chatKey);
+    const internalAlias =
+      this.deps.sessions.getResolvedSessionByInternalAlias?.(sessionAlias)?.alias ??
+      this.deps.sessions.getResolvedSessionByInternalAlias?.(
+        toInternalSessionAlias(channelId, sessionAlias),
+      )?.alias ??
+      scopeDisplayAliasToInternal(channelId, sessionAlias);
+    return this.turnQueue.inspectPromptRequest(chatKey, sessionAlias, promptRequestId, internalAlias);
   }
 
   async submitPeerTurn(input: {

@@ -116,6 +116,36 @@ test("a second prompt while a turn is running is queued, not rejected, and emits
   await p1;
 });
 
+test("promptImmediate never FIFO-enqueues on a busy session lane and does not run later", async () => {
+  const { service, events, releaseChat } = makeService();
+  const occupancy = service.prompt({
+    chatKey: "c",
+    sessionAlias: "s",
+    text: "predecessor",
+    senderId: "u",
+  });
+  await tick();
+  const conversation = await service.promptImmediate({
+    chatKey: "c",
+    sessionAlias: "s",
+    text: "conversation-turn",
+    senderId: "bot-conversation",
+    promptRequestId: "sturn_conversation",
+  });
+  expect(conversation.ok).toBe(false);
+  expect(conversation.queued).toBeFalsy();
+  expect(conversation.errorMessage).toBe("turn-already-running");
+  expect(service.queueLength("c", "s")).toBe(0);
+  releaseChat();
+  await occupancy;
+  await tick();
+  const started = events.filter((event) => event.type === "turn-started");
+  expect(started).toHaveLength(1);
+  expect(started[0]).toMatchObject({ chatKey: "c", sessionAlias: "s" });
+  expect(events.filter((event) => event.type === "turn-finished")).toHaveLength(1);
+  expect(service.queueLength("c", "s")).toBe(0);
+});
+
 test("scheduled turns are NOT queued (still reject) while a turn runs", async () => {
   const { service, releaseChat } = makeService();
   const p1 = service.prompt({

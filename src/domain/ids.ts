@@ -5,6 +5,10 @@ export const DOMAIN_ID_PREFIX = {
   conversation: "conversation",
   topic: "topic",
   conversationMessage: "cmsg",
+  conversationRun: "run",
+  memberTurn: "mturn",
+  pendingDispatch: "pdsp",
+  sourceTurn: "sturn",
   groupTurn: "gturn",
   runtimeBinding: "bind",
 } as const;
@@ -34,6 +38,22 @@ export function createConversationMessageId(createId?: () => string): string {
   return createDomainId("conversationMessage", createId);
 }
 
+export function createConversationRunId(createId?: () => string): string {
+  return createDomainId("conversationRun", createId);
+}
+
+export function createMemberTurnId(createId?: () => string): string {
+  return createDomainId("memberTurn", createId);
+}
+
+export function createPendingDispatchId(createId?: () => string): string {
+  return createDomainId("pendingDispatch", createId);
+}
+
+export function createSourceTurnId(createId?: () => string): string {
+  return createDomainId("sourceTurn", createId);
+}
+
 export function createGroupTurnId(createId?: () => string): string {
   return createDomainId("groupTurn", createId);
 }
@@ -56,4 +76,31 @@ export function createDirectTopicId(botId: string): string {
 
 export function createDirectBindingId(botId: string): string {
   return `${DOMAIN_ID_PREFIX.runtimeBinding}_${digestOpaque(["bot-direct", "binding", botId])}`;
+}
+
+/** PR3+ scoped identity: conversationId × topicId × botId. */
+export function createScopedDirectBindingId(
+  conversationId: string,
+  topicId: string,
+  botId: string,
+): string {
+  return `${DOMAIN_ID_PREFIX.runtimeBinding}_${digestOpaque([
+    "bot-direct",
+    "binding",
+    conversationId,
+    topicId,
+    botId,
+  ])}`;
+}
+
+export function directRuntimeFlightKey(conversationId: string, topicId: string, botId: string): string {
+  return `bot-direct:${conversationId}:${topicId}:${botId}`;
+}
+
+export function directConversationChatKey(conversationId: string, topicId: string): string {
+  return `bot:${conversationId}:${topicId}`;
+}
+
+export function ownedDirectSessionAlias(bindingId: string): string {
+  return `brt_${bindingId}`;
 }

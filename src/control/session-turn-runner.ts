@@ -39,6 +39,8 @@ export interface TurnResult {
   ok: boolean;
   text?: string;
   errorMessage?: string;
+  /** Proven user-Stop / abort cancellation. Idle-timeout aborts omit this. */
+  cancelled?: boolean;
   // Inputs for the post-turn `sessions-changed` detection (a transport session that moved
   // during the turn — archived-restore or `/clear`). The CALLER performs the getSession
   // compare, not run(), because it must happen AFTER the caller sets `draining`: that await
@@ -415,6 +417,7 @@ export class SessionTurnRunner {
       return {
         ok: false,
         errorMessage,
+        ...(!timedOut && signal.aborted ? { cancelled: true } : {}),
         ...(internalAlias && priorTransportSession
           ? { postTurnDetection: { internalAlias, priorTransportSession } }
           : {}),

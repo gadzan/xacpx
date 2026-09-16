@@ -40,10 +40,12 @@ test("createBot persists a profile with a stable id independent from its name", 
   });
   expect(bot.id).toBe("bot_fixed");
   expect(bot.name).toBe("Reviewer");
+  expect(bot.profileRevision).toBe(1);
   expect(state.bots.bot_fixed?.id).toBe("bot_fixed");
   await service.updateBot("bot_fixed", { name: "Senior Reviewer" });
   expect(service.getBot("bot_fixed").id).toBe("bot_fixed");
   expect(service.getBot("bot_fixed").name).toBe("Senior Reviewer");
+  expect(service.getBot("bot_fixed").profileRevision).toBe(2);
 });
 
 test("createBot rejects an empty name and unknown agent or workspace", async () => {
@@ -174,4 +176,12 @@ test("deleteBot removes a Bot that has no conversations or runtime", async () =>
   await service.deleteBot("bot_fixed");
   expect(state.bots.bot_fixed).toBeUndefined();
   expect(() => service.getBot("bot_fixed")).toThrow(BotError);
+});
+
+test("deleteBot fails closed when ConversationStore still has durable work", async () => {
+  const { service, state } = createService();
+  await service.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  service.setConversationWork({ hasDurableBotWork: (botId) => botId === "bot_fixed" });
+  await expect(service.deleteBot("bot_fixed")).rejects.toMatchObject({ code: "bot_in_use" });
+  expect(state.bots.bot_fixed).toBeDefined();
 });

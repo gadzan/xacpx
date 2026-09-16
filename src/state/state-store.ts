@@ -709,11 +709,17 @@ function isLogicalSessionOwner(value: unknown): value is LogicalSessionOwner {
   if (!isRecord(value)) {
     return false;
   }
-  return (
-    (value.kind === "bot-direct" || value.kind === "group-member" || value.kind === "group-controller") &&
-    isString(value.bindingId) &&
-    value.bindingId.length > 0
+  if (
+    (value.kind !== "bot-direct" && value.kind !== "group-member" && value.kind !== "group-controller")
+    || !isString(value.bindingId)
+    || value.bindingId.length === 0
+  ) {
+    return false;
+  }
+  const optional = (field: "botId" | "conversationId" | "topicId"): boolean => (
+    value[field] === undefined || (isString(value[field]) && value[field].length > 0)
   );
+  return optional("botId") && optional("conversationId") && optional("topicId");
 }
 
 function parseSessions(
@@ -896,6 +902,8 @@ function isBotProfile(value: unknown): value is BotProfile {
     isOptionalString(value.model) &&
     isOptionalString(value.effort) &&
     typeof value.enabled === "boolean" &&
+    (value.profileRevision === undefined
+      || (typeof value.profileRevision === "number" && Number.isInteger(value.profileRevision) && value.profileRevision >= 1)) &&
     isString(value.createdAt) &&
     isString(value.updatedAt)
   );
@@ -912,7 +920,10 @@ function parseBotProfiles(
       dropped.push({ section: "bots", key: id, reason: "malformed bot profile" });
       continue;
     }
-    bots[id] = value;
+    bots[id] = {
+      ...value,
+      profileRevision: value.profileRevision ?? 1,
+    };
   }
   return bots;
 }
@@ -934,6 +945,9 @@ function isConversationRecord(value: unknown): value is ConversationRecord {
     !isString(value.createdAt) ||
     !isString(value.updatedAt)
   ) {
+    return false;
+  }
+  if (value.lifecycle !== undefined && value.lifecycle !== "active" && value.lifecycle !== "deleting") {
     return false;
   }
   if (value.leadBotId !== undefined && !value.botIds.includes(value.leadBotId)) {
@@ -972,7 +986,7 @@ function isConversationTopic(value: unknown): value is ConversationTopic {
     isString(value.id) &&
     isString(value.conversationId) &&
     isString(value.title) &&
-    (value.status === "active" || value.status === "archived") &&
+    (value.status === "active" || value.status === "archived" || value.status === "deleting") &&
     isString(value.createdAt) &&
     isString(value.updatedAt)
   );

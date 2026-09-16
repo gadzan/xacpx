@@ -93,6 +93,49 @@ test("prompt binds session, streams chunks as events, and reports completion", a
   ]);
 });
 
+test("promptImmediate fail-closes to orchestration unless executionOrigin is human", async () => {
+  let captured: ChatRequest | undefined;
+  const { control } = makeControl(async (request) => {
+    captured = request;
+    return { text: "immediate" };
+  });
+  const omitted = await control.promptImmediate({
+    chatKey: "relay:acct-1",
+    sessionAlias: "backend",
+    text: "conversation-turn",
+    senderId: "bot-conversation",
+  });
+  expect(omitted).toEqual({ ok: true, text: "immediate" });
+  expect(captured?.metadata?.origin).toBe("orchestration");
+
+  captured = undefined;
+  const recovered = await control.promptImmediate({
+    chatKey: "relay:acct-1",
+    sessionAlias: "backend",
+    text: "recovered-turn",
+    senderId: "bot-conversation",
+    executionOrigin: "orchestration",
+  });
+  expect(recovered).toEqual({ ok: true, text: "immediate" });
+  expect(captured?.metadata?.origin).toBe("orchestration");
+
+  captured = undefined;
+  const fresh = await control.promptImmediate({
+    chatKey: "relay:acct-1",
+    sessionAlias: "backend",
+    text: "fresh-human-turn",
+    senderId: "bot-conversation",
+    executionOrigin: "human",
+  });
+  expect(fresh).toEqual({ ok: true, text: "immediate" });
+  expect(captured?.metadata).toEqual({
+    channel: "control",
+    chatType: "direct",
+    senderId: "bot-conversation",
+    origin: "human",
+  });
+});
+
 function makeControlWithArchived(archived: boolean) {
   const events = createControlEventBus();
   const seen: ControlEvent[] = [];
