@@ -39,6 +39,9 @@ test("new control message types exist with the control. prefix", () => {
   expect(MSG.agentsRemove).toBe("control.agents.remove");
   expect(MSG.workspacesRemove).toBe("control.workspaces.remove");
   expect(MSG.fsBrowse).toBe("control.fs.browse");
+  expect(MSG.botsList).toBe("control.bots.list");
+  expect(MSG.conversationPrompt).toBe("control.conversation.prompt");
+  expect(MSG.runsCancel).toBe("control.runs.cancel");
 });
 
 test("recoverable terminal message types use the instance.terminal namespace", () => {
