@@ -33,6 +33,7 @@ function makeSessions(overrides: {
     tryReserveSessionAliasOperation: mock((_alias: string) =>
       overrides.lifecycleBusy ? null : () => {},
     ),
+    getLogicalSessionRecord: mock((_alias: string) => null),
     getSession: mock(async (_alias: string) => session),
     countAliasesSharingTransport: mock(
       (_transportSession: string, _excludeAlias?: string) => overrides.sharedCount,

@@ -1,11 +1,16 @@
-import { test, expect, jest } from "bun:test";
+import { beforeAll, test, expect, jest } from "bun:test";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { runRouterOracle, type RouterOracleScenario } from "./router-oracle-harness";
 import { MissingOptionalDepError } from "../../../../src/recovery/errors";
+import { setLocale } from "../../../../src/i18n";
 
 const FIX = join(import.meta.dir, "fixtures");
 const UPDATE = process.env.GOLDEN_UPDATE === "1";
+
+beforeAll(() => {
+  setLocale("en");
+});
 
 async function check(scenario: RouterOracleScenario) {
   const got = await runRouterOracle(scenario);
