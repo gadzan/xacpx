@@ -58,7 +58,14 @@ export function sanitizePublicPromptInput(input: PublicControlPromptInput): Cont
  * Runtime projection of ControlService that cannot mint Conversation execution
  * authority. ChannelStartInput.control must be this object, not the raw class.
  */
-export function asPublicControl(control: ControlService): PublicControlService {
+export function asPublicControl(control: ControlService): PublicControlService;
+export function asPublicControl(control: ControlService | undefined | null): PublicControlService | undefined;
+export function asPublicControl(
+  control: ControlService | undefined | null,
+): PublicControlService | undefined {
+  if (control == null) {
+    return undefined;
+  }
   return new Proxy(control, {
     get(target, prop, receiver) {
       if (isTrustedControlMethod(prop)) {
