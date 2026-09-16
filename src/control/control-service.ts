@@ -79,6 +79,7 @@ import type { AppLogger } from "../logging/app-logger";
 import type { ConversationRuntime } from "../conversations/conversation-composition";
 import { ConversationError } from "../conversations/conversation-error";
 import type { ConversationProductEvent } from "../conversations/conversation-product-events";
+import { assertOrdinarySessionAddressable } from "../sessions/ordinary-session-guard";
 import { isHiddenProductSessionOwner } from "../state/types";
 import {
   toBotDetail,
@@ -973,7 +974,28 @@ export class ControlService {
       chatKey,
       alias,
     );
+    this.assertOrdinaryAddressedAlias(chatKey, alias);
+    this.assertOrdinaryAddressedAlias(chatKey, internalAlias);
     return await this.deps.sessions.getSession(internalAlias);
+  }
+
+  /**
+   * Ordinary Session APIs must not address product-owned LogicalSessions.
+   * Lookup is by owner metadata (exact alias + channel-scoped form), never
+   * `brt_` prefix. Missing records are not hidden — callers handle not-found.
+   */
+  private assertOrdinaryAddressedAlias(chatKey: string, alias: string): void {
+    const channelId = getChannelIdFromChatKey(chatKey);
+    const resolved =
+      this.deps.sessions.getResolvedSessionByInternalAlias?.(alias)?.alias
+      ?? this.deps.sessions.getResolvedSessionByInternalAlias?.(
+        toInternalSessionAlias(channelId, alias),
+      )?.alias;
+    const record =
+      this.deps.sessions.getLogicalSessionRecord?.(resolved ?? alias)
+      ?? this.deps.sessions.getLogicalSessionRecord?.(alias)
+      ?? this.deps.sessions.getLogicalSessionRecord?.(toInternalSessionAlias(channelId, alias));
+    assertOrdinarySessionAddressable(record?.owner);
   }
 
   get events(): ControlEventBus {
@@ -1150,10 +1172,12 @@ export class ControlService {
     chatKey: string,
     alias: string,
   ): Promise<{ wasActive: boolean }> {
+    this.assertOrdinaryAddressedAlias(chatKey, alias);
     const internalAlias = await this.deps.sessions.resolveAliasForChat(
       chatKey,
       alias,
     );
+    this.assertOrdinaryAddressedAlias(chatKey, internalAlias);
     // Drop queued prompts and abort a running turn BEFORE tearing down the transport:
     // a drained turn starting mid-removal (or turn events landing after it) would write
     // history rows for a session that no longer exists. NOTE clearSession is destructive
@@ -1181,10 +1205,12 @@ export class ControlService {
   }
 
   async archiveSession(chatKey: string, alias: string): Promise<void> {
+    this.assertOrdinaryAddressedAlias(chatKey, alias);
     const internalAlias = await this.deps.sessions.resolveAliasForChat(
       chatKey,
       alias,
     );
+    this.assertOrdinaryAddressedAlias(chatKey, internalAlias);
     // Queued prompts must not drain onto the session the user just archived — a drained
     // turn would cold-start a fresh queue owner and effectively undo the archive.
     // clearSession is destructive even on `cleared: false` (turn aborted, queue dropped),
@@ -1211,10 +1237,12 @@ export class ControlService {
   }
 
   async unarchiveSession(chatKey: string, alias: string): Promise<void> {
+    this.assertOrdinaryAddressedAlias(chatKey, alias);
     const internalAlias = await this.deps.sessions.resolveAliasForChat(
       chatKey,
       alias,
     );
+    this.assertOrdinaryAddressedAlias(chatKey, internalAlias);
     await this.deps.unarchiveSession(internalAlias);
     this.deps.events.emit({ type: "sessions-changed" });
   }
@@ -1353,11 +1381,8 @@ export class ControlService {
       const owned =
         this.deps.sessions.getLogicalSessionRecord?.(internalAlias)
         ?? this.deps.sessions.getLogicalSessionRecord?.(input.sessionAlias);
-      if (isHiddenProductSessionOwner(owned?.owner) && (queueable || input.conversation === undefined)) {
-        throw new ConversationError(
-          "hidden_session",
-          "bot-owned sessions are not addressable via the session prompt API",
-        );
+      if (queueable || input.conversation === undefined) {
+        assertOrdinarySessionAddressable(owned?.owner);
       }
       return this.turnQueue.submit({
         chatKey: input.chatKey,
@@ -1395,6 +1420,7 @@ export class ControlService {
   async runScheduledTurn(
     input: ControlScheduledTurnInput,
   ): Promise<ControlPromptResult> {
+    this.assertOrdinaryAddressedAlias(input.chatKey, input.sessionAlias);
     const channelId = getChannelIdFromChatKey(input.chatKey);
     const internalAlias =
       this.deps.sessions.getResolvedSessionByInternalAlias?.(input.sessionAlias)?.alias ??
@@ -1444,6 +1470,7 @@ export class ControlService {
     return this.turnQueue.isBusy("", internalAlias, internalAlias);
   }
   cancelTurn(chatKey: string, sessionAlias: string): boolean {
+    this.assertOrdinaryAddressedAlias(chatKey, sessionAlias);
     const channelId = getChannelIdFromChatKey(chatKey);
     const internalAlias =
       this.deps.sessions.getResolvedSessionByInternalAlias?.(sessionAlias)?.alias ??
@@ -1497,6 +1524,10 @@ export class ControlService {
     modeUsed: "prompt" | "queue" | "interrupt";
     targetState?: "idle" | "running";
   }> {
+    this.assertOrdinaryAddressedAlias(input.chatKey, input.sessionAlias);
+    if (input.boundSessionAlias) {
+      this.assertOrdinaryAddressedAlias(input.chatKey, input.boundSessionAlias);
+    }
     const channelId = getChannelIdFromChatKey(input.chatKey);
     const internalAlias =
       input.boundSessionAlias ??
@@ -1610,7 +1641,11 @@ export class ControlService {
     chatKey: string,
     sessionAlias: string,
     itemId: string,
+    options?: { conversationSeam?: boolean },
   ): { cancelled: boolean } {
+    if (!options?.conversationSeam) {
+      this.assertOrdinaryAddressedAlias(chatKey, sessionAlias);
+    }
     const channelId = getChannelIdFromChatKey(chatKey);
     const internalAlias = scopeDisplayAliasToInternal(channelId, sessionAlias);
     return this.turnQueue.cancelQueuedItem(chatKey, sessionAlias, itemId, internalAlias);
@@ -1620,6 +1655,7 @@ export class ControlService {
     chatKey: string,
     sessionAlias: string,
   ): Promise<{ cleared: boolean }> {
+    this.assertOrdinaryAddressedAlias(chatKey, sessionAlias);
     const channelId = getChannelIdFromChatKey(chatKey);
     const internalAlias = scopeDisplayAliasToInternal(channelId, sessionAlias);
     return this.turnQueue.clearSession(chatKey, sessionAlias, internalAlias);
@@ -1864,7 +1900,7 @@ export class ControlService {
     const conversation = runtime.runs.getConversation(conversationId);
     const topics = runtime.runs.listTopics(conversationId).map(toTopicSummary);
     return {
-      ...toConversationSummary(conversation, topics[0]?.id),
+      ...toConversationSummary(conversation, runtime.runs.defaultTopicId(conversation.id)),
       ...(conversation.description ? { description: conversation.description } : {}),
       topics,
     };

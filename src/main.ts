@@ -2071,6 +2071,7 @@ export async function buildApp(
     releaseOwnedSession: createProductionOwnedSessionRelease({ sessions, transport }),
     onProductEvent: (event) => control.emitConversationProduct(event),
     autoKick: true,
+    stateMutex,
   });
   control.bindConversationRuntime(conversations);
   void conversations.kick().catch((error) => {

@@ -16,17 +16,21 @@ export function planDirectConversation(
   input: {
     botId: string;
     title: string;
-    now: string;
+    /** Durable Bot (or already-persisted Conversation) timestamps — never read-time `now`. */
+    createdAt: string;
+    updatedAt?: string;
   },
 ): { conversation: ConversationRecord; topic: ConversationTopic } {
   const existing = findDirectConversation(state, input.botId);
+  const createdAt = input.createdAt;
+  const updatedAt = input.updatedAt ?? input.createdAt;
   const conversation = existing ?? {
     id: createDirectConversationId(input.botId),
     kind: "bot" as const,
     title: input.title,
     botIds: [input.botId],
-    createdAt: input.now,
-    updatedAt: input.now,
+    createdAt,
+    updatedAt,
   };
   const defaultTopicId = createDirectTopicId(input.botId);
   const existingTopic = state.conversation_topics[defaultTopicId];
@@ -37,8 +41,8 @@ export function planDirectConversation(
       conversationId: conversation.id,
       title: "Default",
       status: "active" as const,
-      createdAt: input.now,
-      updatedAt: input.now,
+      createdAt,
+      updatedAt,
     };
   return { conversation, topic };
 }

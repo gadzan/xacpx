@@ -153,7 +153,9 @@ export class ControlConversationTurnRunner implements ConversationTurnRunner {
     const tracked = this.executions.get(input.promptRequestId);
     if (!tracked) {
       if (input.queueItemId) {
-        this.control.cancelQueuedItem(chatKey, input.sessionAlias, input.queueItemId);
+        this.control.cancelQueuedItem(chatKey, input.sessionAlias, input.queueItemId, {
+          conversationSeam: true,
+        });
       }
       return { outcome: "unknown" };
     }

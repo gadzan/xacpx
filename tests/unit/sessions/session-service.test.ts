@@ -1,7 +1,7 @@
 import { beforeAll, expect, mock, test } from "bun:test";
 
 import type { AppConfig } from "../../../src/config/types";
-import { createEmptyState } from "../../../src/state/types";
+import { createEmptyState, createBotDirectOwner } from "../../../src/state/types";
 import type { AppState } from "../../../src/state/types";
 import type { StateStore } from "../../../src/state/state-store";
 import { DebouncedStateStore } from "../../../src/state/debounced-state-store";
@@ -788,6 +788,23 @@ test("resolveFuzzyAlias matches exact / prefix / substring / ambiguous / none", 
   }
 
   expect(service.resolveFuzzyAlias("weixin:room1", "zzz")).toEqual({ kind: "none" });
+});
+
+test("resolveFuzzyAlias ignores product-owned sessions by owner metadata", async () => {
+  const service = new SessionService(createSwitchConfig(), new MemoryStateStore(), createEmptyState());
+  await service.createSession("api-review", "codex", "backend");
+  await service.createSession("brt_owned", "codex", "backend", {
+    owner: createBotDirectOwner({
+      bindingId: "bind_x",
+      botId: "bot_x",
+      conversationId: "conversation_x",
+      topicId: "topic_x",
+    }),
+  });
+  expect(service.resolveFuzzyAlias("weixin:room1", "brt_owned")).toEqual({ kind: "none" });
+  expect(service.resolveFuzzyAlias("weixin:room1", "brt_")).toEqual({ kind: "none" });
+  expect(service.resolveFuzzyAlias("weixin:room1", "owned")).toEqual({ kind: "none" });
+  expect(service.resolveFuzzyAlias("weixin:room1", "api-review")).toEqual({ kind: "match", alias: "api-review" });
 });
 
 test("removeSession clears dangling previous_session references", async () => {

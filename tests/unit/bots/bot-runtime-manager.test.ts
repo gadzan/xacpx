@@ -125,7 +125,7 @@ function insertExtraDirectTopic(state: AppState, botId: string, topicId = "topic
 
 test("planDirectConversation does not write live AppState", () => {
   const state = createEmptyState();
-  const planned = planDirectConversation(state, { botId: BOT_ID, title: "Reviewer", now: NOW });
+  const planned = planDirectConversation(state, { botId: BOT_ID, title: "Reviewer", createdAt: NOW });
   expect(state.conversations).toEqual({});
   expect(state.conversation_topics).toEqual({});
   expect(planned.conversation.id).toBe(createDirectConversationId(BOT_ID));
@@ -446,7 +446,7 @@ test("planDirectConversation keeps the default topic when another active topic e
     updatedAt: NOW,
   };
   insertExtraDirectTopic(state, BOT_ID);
-  const planned = planDirectConversation(state, { botId: BOT_ID, title: "Reviewer", now: NOW });
+  const planned = planDirectConversation(state, { botId: BOT_ID, title: "Reviewer", createdAt: NOW });
   expect(planned.topic.id).toBe(createDirectTopicId(BOT_ID));
   expect(planned.topic.id).not.toBe("topic_manual_second");
 });

@@ -3,7 +3,7 @@
 
 ### Added
 
-- Control / Relay Bot and Conversation public API: production daemon wiring of ConversationStore / Dispatcher / RunService / BotRuntimeManager, product DTOs, Control RPCs, additive Relay protocol 0.6.0 events and request types. Public callers use Bot / Conversation / Topic / Run IDs and Topic `seq`; hidden Bot runtime sessions are omitted from ordinary Sessions lists by `LogicalSession.owner` metadata.
+- Control / Relay Bot and Conversation public API: production daemon wiring of ConversationStore / Dispatcher / RunService / BotRuntimeManager, product DTOs, Control RPCs, additive Relay protocol 0.6.0 events and request types. Public callers use Bot / Conversation / Topic / Run IDs and Topic `seq`; hidden Bot runtime sessions are omitted from ordinary Sessions lists by `LogicalSession.owner` metadata. Production composition injects the daemon `stateMutex` into Bot/Conversation AppState writers. Ordinary Session APIs fail `hidden_session` for product-owned LogicalSessions. Synthetic Direct Conversation/Topic timestamps come from durable Bot metadata. Idempotent `requestId` retries do not re-emit acceptance product events.
 
 ## [0.24.5] - 2026-09-15
 

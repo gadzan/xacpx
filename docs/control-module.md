@@ -52,7 +52,7 @@
 
 | 方法 | 说明 |
 |------|------|
-| `listSessions()` | 返回所有已解析逻辑会话的快照（`ControlSessionInfo[]`），含 `running` 字段（来自 `ActiveTurnRegistry`）与可选 `warm` 字段（running 时恒为 true，否则读 `SessionWarmthTracker` 最近观测；无 tracker 或未观测时省略）。`LogicalSession.owner.kind` 为 `bot-direct` / `group-member` / `group-controller` 的隐藏运行时不会出现在普通 Sessions 列表中（按 owner metadata，不是 `brt_` 前缀）。 |
+| `listSessions()` | 返回所有已解析逻辑会话的快照（`ControlSessionInfo[]`），含 `running` 字段（来自 `ActiveTurnRegistry`）与可选 `warm` 字段（running 时恒为 true，否则读 `SessionWarmthTracker` 最近观测；无 tracker 或未观测时省略）。`LogicalSession.owner.kind` 为 `bot-direct` / `group-member` / `group-controller` 的隐藏运行时不会出现在普通 Sessions 列表中（按 owner metadata，不是 `brt_` 前缀）。普通 alias 寻址的 Session 操作（prompt / remove / archive / rename / model / effort / cancel 等）对上述 owner 失败 `hidden_session`；Conversation 执行/释放仍走内部 seam。 |
 | `listBots()` / `getBot` / `createBot` / `updateBot` / `deleteBot` | Bot CRUD；DTO wrapper over `BotService`。delete 在 durable/runtime ownership 仍存在时 fail-closed。 |
 | `listConversations()` / `getConversation` / `listTopics` / `createTopic` | Direct Conversation / Topic 查询与创建。不暴露 hidden alias。Topic archive/delete 未接入公共 API。 |
 | `promptConversation(input)` | `{ conversationId, topicId, requestId, text, target? }` → `ConversationRunService.acceptConversationPrompt`。`requestId` 是 caller idempotency key。Direct `target.botId` 必须匹配 Conversation 所属 Bot。 |

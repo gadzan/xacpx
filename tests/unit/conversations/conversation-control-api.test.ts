@@ -15,7 +15,13 @@ import {
   createConversationRuntime,
   createProductionOwnedSessionRelease,
 } from "../../../src/conversations/conversation-composition";
-import { createDirectConversationId, createDirectTopicId } from "../../../src/domain/ids";
+import {
+  createDirectConversationId,
+  createDirectTopicId,
+  createScopedDirectBindingId,
+  ownedDirectSessionAlias,
+} from "../../../src/domain/ids";
+import { AsyncMutex } from "../../../src/orchestration/async-mutex";
 import { SessionService } from "../../../src/sessions/session-service";
 import { createBotDirectOwner } from "../../../src/state/types";
 import { createEmptyState, type AppState } from "../../../src/state/types";
@@ -67,17 +73,31 @@ async function wire(options?: {
   ownerId?: string;
   sqlitePath?: string;
   chat?: (request: ChatRequest) => Promise<{ text: string }>;
+  now?: () => Date;
+  stateMutex?: AsyncMutex;
 }) {
   const dir = mkdtempSync(join(tmpdir(), "xacpx-ctrl-"));
   const sqlitePath = options?.sqlitePath ?? join(dir, "conversations.sqlite");
   const state = createEmptyState();
   const stateStore = new MemoryStateStore();
   const config = createConfig();
-  const sessions = new SessionService(config, stateStore, state, { now: () => Date.parse(NOW) });
+  const now = options?.now ?? (() => new Date(NOW));
+  const stateMutex = options?.stateMutex ?? new AsyncMutex();
+  const sessions = new SessionService(config, stateStore, state, {
+    now: () => now().getTime(),
+    stateMutex,
+  });
   const physical = {
-    async deleteSession() {},
-    async releaseLogicalSession() {},
+    deleteCalls: 0,
+    releaseCalls: 0,
+    async deleteSession() {
+      this.deleteCalls += 1;
+    },
+    async releaseLogicalSession() {
+      this.releaseCalls += 1;
+    },
   };
+  const ordinaryTransportMutations: string[] = [];
   const events = createControlEventBus();
   const seen: ControlEvent[] = [];
   events.subscribe((event) => seen.push(event));
@@ -101,6 +121,29 @@ async function wire(options?: {
       remove: async () => {},
     },
     uploadStore: { save: async () => ({ id: "u", path: "/tmp/u", filename: "f", mimeType: "text/plain", size: 1 }) },
+    transport: {
+      setModel: async () => {
+        ordinaryTransportMutations.push("setModel");
+      },
+      getSessionModel: async () => ({ available: ["gpt"] }),
+      setSessionEffort: async () => {
+        ordinaryTransportMutations.push("setEffort");
+      },
+      getSessionEffort: async () => ({ available: ["high"] }),
+    },
+    removeSessionWithTransport: async (internalAlias: string) => {
+      ordinaryTransportMutations.push(`remove:${internalAlias}`);
+      await sessions.removeSession(internalAlias);
+      return { wasActive: false };
+    },
+    archiveSessionWithTransport: async (internalAlias: string) => {
+      ordinaryTransportMutations.push(`archive:${internalAlias}`);
+      await sessions.setArchived(internalAlias, true);
+    },
+    unarchiveSession: async (internalAlias: string) => {
+      ordinaryTransportMutations.push(`unarchive:${internalAlias}`);
+      await sessions.setArchived(internalAlias, false);
+    },
   } as never);
   const runtime = await createConversationRuntime({
     config,
@@ -112,11 +155,25 @@ async function wire(options?: {
     releaseOwnedSession: createProductionOwnedSessionRelease({ sessions, transport: physical }),
     onProductEvent: (event) => control.emitConversationProduct(event),
     autoKick: options?.autoKick ?? true,
+    stateMutex,
+    now,
     ...(options?.authorityEpoch ? { authorityEpoch: options.authorityEpoch } : {}),
     ...(options?.ownerId ? { ownerId: options.ownerId } : {}),
   });
   control.bindConversationRuntime(runtime);
-  return { dir, sqlitePath, state, sessions, control, runtime, events, seen, origins };
+  return {
+    dir,
+    sqlitePath,
+    state,
+    sessions,
+    control,
+    runtime,
+    events,
+    seen,
+    origins,
+    physical,
+    ordinaryTransportMutations,
+  };
 }
 
 test("Bot CRUD is a BotService DTO wrapper and rename keeps product IDs", async () => {
@@ -408,4 +465,137 @@ test("public Run DTO keeps indeterminate instead of mapping it to failed", async
   });
   expect(dto.state).toBe("indeterminate");
   expect(dto.completionReason).toBe("unproven_side_effects");
+});
+
+test("synthetic Conversation and Topic timestamps stay stable across clock advances", async () => {
+  let current = Date.parse(NOW);
+  const { control } = await wire({
+    autoKick: false,
+    now: () => new Date(current),
+  });
+  const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const conversationId = createDirectConversationId(bot.id);
+  const topicId = createDirectTopicId(bot.id);
+  const listed = control.listConversations({ botId: bot.id });
+  const detail = control.getConversation(conversationId);
+  const topics = control.listTopics(conversationId);
+  expect(listed[0]?.id).toBe(conversationId);
+  expect(listed[0]?.defaultTopicId).toBe(topicId);
+  expect(detail.defaultTopicId).toBe(topicId);
+  expect(detail.createdAt).toBe(bot.createdAt);
+  expect(topics[0]?.id).toBe(topicId);
+  expect(topics[0]?.createdAt).toBe(bot.createdAt);
+
+  current += 60_000;
+  expect(control.listConversations({ botId: bot.id })).toEqual(listed);
+  expect(control.getConversation(conversationId)).toEqual(detail);
+  expect(control.listTopics(conversationId)).toEqual(topics);
+
+  const extra = await control.createTopic(conversationId, "other");
+  expect(extra.id).not.toBe(topicId);
+  expect(control.getConversation(conversationId).defaultTopicId).toBe(topicId);
+  expect(control.listConversations({ botId: bot.id })[0]?.defaultTopicId).toBe(topicId);
+});
+
+test("idempotent prompt retry does not re-emit acceptance product events", async () => {
+  const { control, seen } = await wire({ autoKick: false });
+  const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const conversationId = createDirectConversationId(bot.id);
+  const topicId = createDirectTopicId(bot.id);
+  const first = await control.promptConversation({
+    conversationId,
+    topicId,
+    requestId: "req-once",
+    text: "hello",
+  });
+  const messagesAfterFirst = seen.filter((event) => event.type === "conversation-message");
+  const queuedAfterFirst = seen.filter(
+    (event) => event.type === "conversation-run-changed" && event.run.state === "queued",
+  );
+  expect(messagesAfterFirst).toHaveLength(1);
+  expect(queuedAfterFirst).toHaveLength(1);
+  expect(messagesAfterFirst[0]?.type === "conversation-message" ? messagesAfterFirst[0].message.id : undefined)
+    .toBe(first.message.id);
+
+  const retry = await control.promptConversation({
+    conversationId,
+    topicId,
+    requestId: "req-once",
+    text: "hello",
+  });
+  expect(retry.reused).toBe(true);
+  expect(retry.run.id).toBe(first.run.id);
+  expect(retry.message.id).toBe(first.message.id);
+  expect(retry.memberTurn.id).toBe(first.memberTurn.id);
+  expect(seen.filter((event) => event.type === "conversation-message")).toHaveLength(1);
+  expect(seen.filter(
+    (event) => event.type === "conversation-run-changed" && event.run.state === "queued",
+  )).toHaveLength(1);
+});
+
+test("ordinary Session mutations reject bot-direct owners without physical release", async () => {
+  const { control, sessions, state, runtime, physical, ordinaryTransportMutations } = await wire({
+    autoKick: true,
+  });
+  const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const conversationId = createDirectConversationId(bot.id);
+  const topicId = createDirectTopicId(bot.id);
+  const accepted = await control.promptConversation({
+    conversationId,
+    topicId,
+    requestId: "req-guard",
+    text: "hello",
+  });
+  await waitUntil(() => control.getRun(accepted.run.id).state === "completed");
+  const bindingId = createScopedDirectBindingId(conversationId, topicId, bot.id);
+  const hiddenAlias = ownedDirectSessionAlias(bindingId);
+  expect(sessions.getLogicalSessionRecord(hiddenAlias)?.owner?.kind).toBe("bot-direct");
+  const bindingBefore = structuredClone(state.bot_runtime_bindings[bindingId]);
+  expect(bindingBefore).toBeTruthy();
+  const physicalBefore = { deleteCalls: physical.deleteCalls, releaseCalls: physical.releaseCalls };
+
+  const chatKey = "wx:user";
+  const ops: Array<{ name: string; run: () => unknown }> = [
+    {
+      name: "prompt",
+      run: () => control.prompt({ chatKey, sessionAlias: hiddenAlias, text: "drive", senderId: "user" }),
+    },
+    { name: "remove", run: () => control.removeSession(chatKey, hiddenAlias) },
+    { name: "archive", run: () => control.archiveSession(chatKey, hiddenAlias) },
+    { name: "unarchive", run: () => control.unarchiveSession(chatKey, hiddenAlias) },
+    { name: "rename", run: () => control.setSessionDisplayName(chatKey, hiddenAlias, "nope") },
+    { name: "model", run: () => control.setSessionModel(chatKey, hiddenAlias, "gpt") },
+    { name: "effort", run: () => control.setSessionEffort(chatKey, hiddenAlias, "high") },
+    { name: "getModel", run: () => control.getSessionModel(chatKey, hiddenAlias) },
+    { name: "cancelTurn", run: () => control.cancelTurn(chatKey, hiddenAlias) },
+    { name: "cancelQueuedItem", run: () => control.cancelQueuedItem(chatKey, hiddenAlias, "item") },
+    { name: "clearSession", run: () => control.clearSession(chatKey, hiddenAlias) },
+  ];
+  for (const op of ops) {
+    try {
+      await op.run();
+      throw new Error(`${op.name} addressed a hidden session`);
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConversationError);
+      expect(error).toMatchObject({ code: "hidden_session" });
+    }
+    expect(sessions.getLogicalSessionRecord(hiddenAlias)?.owner?.kind).toBe("bot-direct");
+    expect(state.bot_runtime_bindings[bindingId]).toEqual(bindingBefore);
+    expect(physical.deleteCalls).toBe(physicalBefore.deleteCalls);
+    expect(physical.releaseCalls).toBe(physicalBefore.releaseCalls);
+    expect(ordinaryTransportMutations).toEqual([]);
+  }
+
+  await sessions.createSession("plain", "codex", "backend");
+  await control.removeSession(chatKey, "plain");
+  expect(ordinaryTransportMutations).toEqual(["remove:plain"]);
+  expect(sessions.getLogicalSessionRecord("plain")).toBeNull();
+  expect(sessions.getLogicalSessionRecord(hiddenAlias)?.owner?.kind).toBe("bot-direct");
+
+  await runtime.runs.teardownDirectConversation(bot.id);
+  expect(sessions.getLogicalSessionRecord(hiddenAlias)).toBeNull();
+  expect(state.bot_runtime_bindings[bindingId]).toBeUndefined();
+  expect(physical.deleteCalls + physical.releaseCalls).toBeGreaterThan(
+    physicalBefore.deleteCalls + physicalBefore.releaseCalls,
+  );
 });

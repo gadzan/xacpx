@@ -6,6 +6,7 @@ import { BotService } from "../bots/bot-service";
 import type { AppConfig } from "../config/types";
 import type { ControlService } from "../control/control-service";
 import { resolveRuntimeDirFromConfigPath } from "../daemon/daemon-files";
+import type { AsyncMutex } from "../orchestration/async-mutex";
 import { createStrictOwnedSessionRelease, type ReleaseOwnedSession } from "../sessions/owned-session-release";
 import type { SessionService } from "../sessions/session-service";
 import type { StateStore } from "../state/state-store";
@@ -44,15 +45,26 @@ export interface CreateConversationRuntimeInput {
   authorityEpoch?: string;
   ownerId?: string;
   autoKick?: boolean;
+  /**
+   * Daemon-wide AppState COW mutex. Must be the same instance passed to
+   * SessionService / Orchestration. Do not invent a Conversation-only mutex.
+   */
+  stateMutex?: AsyncMutex;
+  now?: () => Date;
 }
 
 export async function createConversationRuntime(
   input: CreateConversationRuntimeInput,
 ): Promise<ConversationRuntime> {
   const store = await SqliteConversationStore.open(input.sqlitePath);
-  const bots = new BotService(input.config, input.state, input.stateStore);
+  const shared = {
+    ...(input.stateMutex ? { stateMutex: input.stateMutex } : {}),
+    ...(input.now ? { now: input.now } : {}),
+  };
+  const bots = new BotService(input.config, input.state, input.stateStore, shared);
   const botRuntime = new BotRuntimeManager(bots, input.sessions, input.state, input.stateStore, {
     releaseOwnedSession: input.releaseOwnedSession,
+    ...shared,
   });
   const runner = new ControlConversationTurnRunner(input.control);
   const dispatcher = new ConversationDispatcher(store, botRuntime, runner, input.sessions, {
@@ -72,6 +84,7 @@ export async function createConversationRuntime(
       releaseOwnedSession: input.releaseOwnedSession,
       autoKick: input.autoKick ?? true,
       ...(input.onProductEvent ? { onProductEvent: input.onProductEvent } : {}),
+      ...shared,
     },
   );
   return {

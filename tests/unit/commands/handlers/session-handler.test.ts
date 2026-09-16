@@ -1,5 +1,5 @@
 import { expect, test, beforeEach } from "bun:test";
-import { handleCancel, handlePrompt, handlePromptWithSession, handleReplyModeShow, handleSessionAttach, handleSessionUse, handleSessions } from "../../../../src/commands/handlers/session-handler";
+import { handleCancel, handlePrompt, handlePromptWithSession, handleReplyModeShow, handleSessionAttach, handleSessionRemove, handleSessionUse, handleSessions } from "../../../../src/commands/handlers/session-handler";
 import { setLocale, t } from "../../../../src/i18n";
 import { AcpxQueueOverflowError } from "../../../../src/transport/acpx-queue-overflow";
 import { renderTransportError, tryRecoverMissingSession, queueOverflowTipText } from "../../../../src/commands/handlers/session-recovery-handler";
@@ -159,6 +159,8 @@ test("switching to a session with a stored background result appends it", async 
   const context = {
     sessions: {
       resolveFuzzyAlias: () => ({ kind: "match", alias: "backend" }),
+      resolveAliasForChat: async (_chatKey: string, displayAlias: string) => displayAlias,
+      getLogicalSessionRecord: () => null,
       useSession: async () => ({ alias: "backend", agent: "codex", workspace: "ws" }),
       peekCurrentSessionAlias: () => "backend",
       takeBackgroundResult: async () => ({ text: "build finished", status: "done", finished_at: "x" }),
@@ -174,6 +176,8 @@ test("switching to a still-running session appends a running hint", async () => 
   const context = {
     sessions: {
       resolveFuzzyAlias: () => ({ kind: "match", alias: "backend" }),
+      resolveAliasForChat: async (_chatKey: string, displayAlias: string) => displayAlias,
+      getLogicalSessionRecord: () => null,
       useSession: async () => ({ alias: "backend", agent: "codex", workspace: "ws" }),
       peekCurrentSessionAlias: () => "backend",
       takeBackgroundResult: async () => null,
@@ -191,6 +195,7 @@ test("handleCancel without an alias cancels the foreground session", async () =>
   const context = {
     sessions: {
       getCurrentSession: async (_chatKey: string) => foreground,
+      getLogicalSessionRecord: () => null,
       // Resolver/getSession must NOT be consulted on the bare path.
       resolveFuzzyAlias: () => {
         throw new Error("should not resolve alias for bare /cancel");
@@ -230,6 +235,7 @@ test("handleCancel with an alias cancels the named (background) session", async 
         expect(internalAlias).toBe("weixin:backend");
         return backend;
       },
+      getLogicalSessionRecord: () => null,
     },
     interaction: {
       cancelTransportSession: async (session: any) => {
@@ -715,4 +721,32 @@ test("handlePromptWithSession mints an interaction id only for explicit human or
     { channel: "discord", senderId: "user-A" } as never,
   );
   expect(absentSeen).toEqual([undefined]);
+});
+
+test("handleSessionRemove refuses product-owned sessions without physical teardown", async () => {
+  const removed: string[] = [];
+  const context = {
+    sessions: {
+      resolveAliasForChat: async () => "brt_owned",
+      getLogicalSessionRecord: () => ({
+        alias: "brt_owned",
+        owner: { kind: "bot-direct", bindingId: "bind_x", botId: "bot_x" },
+      }),
+      getSession: async () => ({ alias: "brt_owned", agent: "codex", workspace: "backend" }),
+      tryReserveSessionAliasOperation: () => {
+        throw new Error("must not claim a hidden session for ordinary remove");
+      },
+    },
+    transport: {
+      deleteSession: async () => {
+        removed.push("delete");
+      },
+      releaseLogicalSession: async () => {
+        removed.push("release");
+      },
+    },
+  } as any;
+  const res = await handleSessionRemove(context, "weixin:a:u", "brt_owned");
+  expect(res.text).toBe(t().session.sessionHiddenOwned("brt_owned"));
+  expect(removed).toEqual([]);
 });

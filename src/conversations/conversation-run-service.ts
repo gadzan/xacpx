@@ -1,9 +1,9 @@
-import { snapshotBotProfile } from "../bots/bot-types";
+import { snapshotBotProfile, type BotProfile } from "../bots/bot-types";
 import { BotError } from "../bots/bot-error";
 import type { BotRuntimeManager } from "../bots/bot-runtime-manager";
 import type { BotService } from "../bots/bot-service";
 import { planDirectConversation } from "./direct-conversation";
-import { createTopicId } from "../domain/ids";
+import { createDirectTopicId, createTopicId } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
 import type { ReleaseOwnedSession } from "../sessions/owned-session-release";
 import type { SessionService } from "../sessions/session-service";
@@ -110,11 +110,7 @@ export class ConversationRunService {
     const accepted = await this.bots.runLifecycle(input.botId, async () => {
       const bot = this.bots.getBot(input.botId);
       const timestamp = this.now().toISOString();
-      const planned = planDirectConversation(this.state, {
-        botId: bot.id,
-        title: bot.name,
-        now: timestamp,
-      });
+      const planned = this.planDirect(bot);
       const conversationId = input.conversationId ?? planned.conversation.id;
       if (conversationId !== planned.conversation.id) {
         throw new BotError("conversation_mismatch", "direct Bot conversation does not match this Bot");
@@ -150,7 +146,9 @@ export class ConversationRunService {
       });
       return created;
     });
-    this.emitAcceptProjection(accepted);
+    if (!accepted.reused) {
+      this.emitAcceptProjection(accepted);
+    }
     if (this.autoKick) {
       void this.dispatcher.kick();
     }
@@ -202,11 +200,7 @@ export class ConversationRunService {
       if (filter?.botId && bot.id !== filter.botId) {
         continue;
       }
-      const planned = planDirectConversation(this.state, {
-        botId: bot.id,
-        title: bot.name,
-        now: this.now().toISOString(),
-      });
+      const planned = this.planDirect(bot);
       if (!byId.has(planned.conversation.id)) {
         byId.set(planned.conversation.id, planned.conversation);
       }
@@ -225,17 +219,16 @@ export class ConversationRunService {
     }
     const botId = this.resolveDirectBotId(conversationId);
     const bot = this.bots.getBot(botId);
-    return [
-      planDirectConversation(this.state, {
-        botId,
-        title: bot.name,
-        now: this.now().toISOString(),
-      }).topic,
-    ];
+    return [this.planDirect(bot).topic];
   }
 
   defaultTopicId(conversationId: string): string | undefined {
-    return this.listTopics(conversationId)[0]?.id;
+    const conversation = this.requireConversation(conversationId);
+    const botId = conversation.botIds[0];
+    if (conversation.kind !== "bot" || !botId) {
+      return undefined;
+    }
+    return createDirectTopicId(botId);
   }
 
   getRun(runId: string): { run: ConversationRun; memberTurns: MemberTurnRecord[] } {
@@ -285,7 +278,7 @@ export class ConversationRunService {
     const topic = await this.bots.runLifecycle(botId, async () => {
       const bot = this.bots.getBot(botId);
       const timestamp = this.now().toISOString();
-      const planned = planDirectConversation(this.state, { botId, title: bot.name, now: timestamp });
+      const planned = this.planDirect(bot);
       this.assertConversationNotDeleting(planned.conversation.id);
       return await this.stateMutex.run(async () => {
         this.assertConversationNotDeleting(planned.conversation.id);
@@ -323,7 +316,7 @@ export class ConversationRunService {
     this.assertOpen();
     const bot = this.bots.getBot(botId);
     const timestamp = this.now().toISOString();
-    const planned = planDirectConversation(this.state, { botId: bot.id, title: bot.name, now: timestamp });
+    const planned = this.planDirect(bot);
     const conversationId = planned.conversation.id;
     await this.bots.runLifecycle(botId, async () => {
       this.store.markConversationDeleting(conversationId, timestamp);
@@ -390,16 +383,21 @@ export class ConversationRunService {
       return existing;
     }
     for (const bot of this.bots.listBots()) {
-      const planned = planDirectConversation(this.state, {
-        botId: bot.id,
-        title: bot.name,
-        now: this.now().toISOString(),
-      });
+      const planned = this.planDirect(bot);
       if (planned.conversation.id === conversationId) {
         return planned.conversation;
       }
     }
     throw new ConversationError("conversation_not_found", `conversation "${conversationId}" does not exist`);
+  }
+
+  private planDirect(bot: Pick<BotProfile, "id" | "name" | "createdAt" | "updatedAt">) {
+    return planDirectConversation(this.state, {
+      botId: bot.id,
+      title: bot.name,
+      createdAt: bot.createdAt,
+      updatedAt: bot.updatedAt,
+    });
   }
 
   private resolveDirectBotId(conversationId: string): string {

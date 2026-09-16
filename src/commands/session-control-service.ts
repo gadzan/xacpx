@@ -1,6 +1,7 @@
 import type { ActiveTurnRegistry } from "../sessions/active-turn-registry.js";
 import type { AppConfig } from "../config/types";
 import type { AppLogger } from "../logging/app-logger";
+import { assertOrdinarySessionAddressable } from "../sessions/ordinary-session-guard";
 import type { SessionService } from "../sessions/session-service";
 import type { AgentSession, ResolvedSession, SessionTransport } from "../transport/types";
 import { resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
@@ -162,6 +163,7 @@ export class SessionControlService {
     transportTornDown: boolean;
     transportTeardownWarning?: string;
   }> {
+    assertOrdinarySessionAddressable(this.sessions.getLogicalSessionRecord(internalAlias)?.owner);
     const releaseAliasOperation = this.sessions.tryReserveSessionAliasOperation(internalAlias);
     if (!releaseAliasOperation) {
       throw new Error(`session "${internalAlias}" has another lifecycle operation in progress`);
@@ -243,6 +245,7 @@ export class SessionControlService {
    *  resumes the same conversation with full history; the first post-archive
    *  prompt cold-starts a fresh queue owner. */
   async archiveSessionWithTransport(internalAlias: string): Promise<void> {
+    assertOrdinarySessionAddressable(this.sessions.getLogicalSessionRecord(internalAlias)?.owner);
     const session = await this.sessions.getSession(internalAlias);
     if (!session) {
       throw new Error(`session "${internalAlias}" does not exist`);
@@ -287,6 +290,7 @@ export class SessionControlService {
   /** Explicit un-archive (web undo / manual). No process action — it resumes on the
    *  next message via useSession. */
   async unarchiveSession(internalAlias: string): Promise<void> {
+    assertOrdinarySessionAddressable(this.sessions.getLogicalSessionRecord(internalAlias)?.owner);
     await this.sessions.setArchived(internalAlias, false);
   }
 

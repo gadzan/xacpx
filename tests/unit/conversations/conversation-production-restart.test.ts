@@ -12,6 +12,7 @@ import {
   resolveConversationStorePath,
 } from "../../../src/conversations/conversation-composition";
 import { createDirectConversationId, createDirectTopicId } from "../../../src/domain/ids";
+import { AsyncMutex } from "../../../src/orchestration/async-mutex";
 import { SessionService } from "../../../src/sessions/session-service";
 import { createEmptyState, type AppState } from "../../../src/state/types";
 import type { ChatRequest } from "../../../src/weixin/agent/interface";
@@ -64,7 +65,8 @@ async function boot(input: {
   origins: string[];
 }) {
   const config = createConfig();
-  const sessions = new SessionService(config, input.stateStore, input.state);
+  const stateMutex = new AsyncMutex();
+  const sessions = new SessionService(config, input.stateStore, input.state, { stateMutex });
   const events = createControlEventBus();
   const control = new ControlService({
     agent: {
@@ -100,6 +102,7 @@ async function boot(input: {
     autoKick: input.autoKick ?? false,
     authorityEpoch: input.authorityEpoch,
     ownerId: input.ownerId,
+    stateMutex,
   });
   control.bindConversationRuntime(runtime);
   return { control, runtime, sessions };

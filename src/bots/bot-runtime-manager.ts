@@ -168,10 +168,12 @@ export class BotRuntimeManager {
     topicId: string;
     topic: ConversationTopic;
   } {
+    const bot = this.bots.getBot(botId);
     const planned = planDirectConversation(this.state, {
       botId,
-      title: this.bots.getBot(botId).name,
-      now: this.now().toISOString(),
+      title: bot.name,
+      createdAt: bot.createdAt,
+      updatedAt: bot.updatedAt,
     });
     if (input.conversationId && input.conversationId !== planned.conversation.id) {
       throw new BotError("conversation_mismatch", "direct Bot conversation does not match this Bot");
@@ -281,7 +283,8 @@ export class BotRuntimeManager {
       const { conversation } = planDirectConversation(this.state, {
         botId: bot.id,
         title: bot.name,
-        now: timestamp,
+        createdAt: bot.createdAt,
+        updatedAt: bot.updatedAt,
       });
       const binding: BotRuntimeBinding = {
         id: scopedId,
@@ -335,7 +338,8 @@ export class BotRuntimeManager {
       const { conversation } = planDirectConversation(this.state, {
         botId: bot.id,
         title: bot.name,
-        now: timestamp,
+        createdAt: bot.createdAt,
+        updatedAt: bot.updatedAt,
       });
       if (scope.conversationId !== conversation.id) {
         throw new BotError("conversation_mismatch", "direct Bot conversation does not match this Bot");

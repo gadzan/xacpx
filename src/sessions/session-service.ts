@@ -676,6 +676,7 @@ export class SessionService {
     const frag = fragment.trim();
     const items = Object.values(this.state.sessions)
       .filter((session) => isSessionAliasVisibleInChannel(session.alias, channelId))
+      .filter((session) => !isHiddenProductSessionOwner(session.owner))
       .map((session) => ({
         display: toDisplaySessionAlias(session.alias),
         agent: session.agent,
