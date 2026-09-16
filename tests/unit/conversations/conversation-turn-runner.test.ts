@@ -63,6 +63,8 @@ const input = {
   conversationId: "conv",
   topicId: "topic",
   botId: "bot_reviewer",
+  runId: "run_1",
+  memberTurnId: "mturn_1",
   sessionAlias: "alias",
   logicalSessionId: "11111111-1111-4111-8111-111111111111",
   text: "hello",

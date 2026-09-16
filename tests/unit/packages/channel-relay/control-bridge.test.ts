@@ -1624,3 +1624,47 @@ test("fsBrowse maps to browseDirectories and rejects malformed payloads", async 
     path: "/home",
   });
 });
+
+test("Bot and Conversation RPCs dispatch to Control product IDs", async () => {
+  const prompts: unknown[] = [];
+  const cancels: string[] = [];
+  const { control } = makeFakeControl({
+    listBots: () => [{ id: "bot_1", name: "Reviewer", agent: "codex", workspace: "backend", enabled: true, updatedAt: "t" }],
+    promptConversation: async (input: unknown) => {
+      prompts.push(input);
+      return {
+        reused: false,
+        conversationId: "conversation_1",
+        topicId: "topic_1",
+        requestId: "req",
+        run: { id: "run_1", conversationId: "conversation_1", topicId: "topic_1", requestMessageId: "cmsg", requestId: "req", mode: "explicit", state: "queued", profileRevision: 1, createdAt: "t" },
+        message: { id: "cmsg", conversationId: "conversation_1", topicId: "topic_1", seq: 1, role: "human", content: "hi", createdAt: "t" },
+        memberTurn: { id: "mturn_1", runId: "run_1", conversationId: "conversation_1", topicId: "topic_1", botId: "bot_1", batch: 0, attempt: 1, origin: "human", state: "queued", createdAt: "t" },
+      };
+    },
+    cancelRun: async (runId: string) => {
+      cancels.push(runId);
+      return { id: runId, conversationId: "conversation_1", topicId: "topic_1", requestMessageId: "cmsg", requestId: "req", mode: "explicit", state: "cancelled", profileRevision: 1, createdAt: "t", memberTurns: [] };
+    },
+  });
+  const bridge = createControlBridge(control as never);
+  expect(await dispatch(bridge, req(MSG.botsList, {}))).toEqual({
+    bots: [expect.objectContaining({ id: "bot_1" })],
+  });
+  expect(await dispatch(bridge, req(MSG.conversationPrompt, {
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    requestId: "req",
+    text: "hi",
+  }))).toMatchObject({ run: { id: "run_1" } });
+  expect(prompts[0]).toEqual({
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    requestId: "req",
+    text: "hi",
+  });
+  expect(await dispatch(bridge, req(MSG.runsCancel, { runId: "run_1" }))).toMatchObject({
+    run: { id: "run_1", state: "cancelled" },
+  });
+  expect(cancels).toEqual(["run_1"]);
+});

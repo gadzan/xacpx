@@ -583,3 +583,10 @@ test("assertLiveDispatchForMaterialize refuses deleting or cancelled work", asyn
   })).toThrow(/deleting/);
   store.close();
 });
+
+test("store methods fail closed after close", async () => {
+  const store = await SqliteConversationStore.open(":memory:");
+  store.close();
+  expect(() => store.listRuns("conversation_x")).toThrow(/closed/);
+  store.close();
+});

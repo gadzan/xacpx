@@ -816,3 +816,55 @@ test("Phase 6: validControlEvent rejects turn-started / turn-finished with malfo
     }),
   ).toBeNull();
 });
+
+test("validControlEvent accepts Conversation product events and optional turn correlation", () => {
+  expect(validControlEvent({ type: "bots-changed" })).toBe(true);
+  expect(validControlEvent({ type: "conversations-changed" })).toBe(true);
+  expect(validControlEvent({
+    type: "turn-started",
+    chatKey: "c",
+    sessionAlias: "hidden",
+    promptRequestId: "sturn_1",
+    conversation: {
+      conversationId: "conversation_1",
+      topicId: "topic_1",
+      botId: "bot_1",
+      runId: "run_1",
+      memberTurnId: "mturn_1",
+    },
+  })).toBe(true);
+  expect(validControlEvent({
+    type: "turn-started",
+    chatKey: "c",
+    sessionAlias: "s",
+    conversation: { conversationId: "conversation_1" },
+  })).toBe(false);
+  expect(validControlEvent({
+    type: "conversation-run-changed",
+    run: {
+      id: "run_1",
+      conversationId: "conversation_1",
+      topicId: "topic_1",
+      requestMessageId: "cmsg_1",
+      requestId: "req",
+      mode: "explicit",
+      state: "indeterminate",
+      profileRevision: 1,
+      createdAt: "2026-09-16T00:00:00.000Z",
+    },
+  })).toBe(true);
+  expect(validControlEvent({
+    type: "conversation-run-changed",
+    run: {
+      id: "run_1",
+      conversationId: "conversation_1",
+      topicId: "topic_1",
+      requestMessageId: "cmsg_1",
+      requestId: "req",
+      mode: "explicit",
+      state: "failed",
+      profileRevision: 1,
+      createdAt: "2026-09-16T00:00:00.000Z",
+    },
+  })).toBe(true);
+});
