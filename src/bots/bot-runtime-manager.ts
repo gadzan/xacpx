@@ -8,7 +8,6 @@ import {
   createDirectConversationId,
   createDirectTopicId,
   createScopedDirectBindingId,
-  directRuntimeFlightKey,
   ownedDirectSessionAlias,
 } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
@@ -33,7 +32,6 @@ export class BotRuntimeManager {
   private readonly stateMutex: AsyncMutex;
   private readonly afterDirectSnapshot?: (bot: BotProfile) => Promise<void>;
   private readonly releaseOwnedSession: ReleaseOwnedSession;
-  private readonly inflight = new Map<string, Promise<BotRuntimeBinding>>();
 
   constructor(
     private readonly bots: BotService,
@@ -64,19 +62,10 @@ export class BotRuntimeManager {
     assertStillDispatchable?: () => void;
   }): Promise<BotRuntimeBinding> {
     this.requireEnabledBot(input.botId);
-    const scope = this.resolveScope(input.botId, input);
-    const key = directRuntimeFlightKey(scope.conversationId, scope.topicId, input.botId);
-    const running = this.inflight.get(key);
-    if (running) {
-      return await running;
-    }
-    const pending = this.bots.runLifecycle(input.botId, () => this.materializeDirectSession(input)).finally(() => {
-      if (this.inflight.get(key) === pending) {
-        this.inflight.delete(key);
-      }
-    });
-    this.inflight.set(key, pending);
-    return await pending;
+    // Every caller enters the per-Bot gate and runs its own claim fence.
+    // Do not coalesce onto another caller's authorization promise: a later
+    // generation must re-check dispatch/owner/generation/lease and deleting.
+    return await this.bots.runLifecycle(input.botId, () => this.materializeDirectSession(input));
   }
 
   private assertAcceptedStickyIdentity(bot: BotProfile, execution?: BotProfileExecution): void {

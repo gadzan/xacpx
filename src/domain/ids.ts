@@ -93,10 +93,6 @@ export function createScopedDirectBindingId(
   ])}`;
 }
 
-export function directRuntimeFlightKey(conversationId: string, topicId: string, botId: string): string {
-  return `bot-direct:${conversationId}:${topicId}:${botId}`;
-}
-
 export function directConversationChatKey(conversationId: string, topicId: string): string {
   return `bot:${conversationId}:${topicId}`;
 }

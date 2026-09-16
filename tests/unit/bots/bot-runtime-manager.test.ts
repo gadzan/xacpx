@@ -193,6 +193,48 @@ test("concurrent getOrCreateDirectSession keeps one binding and one owned sessio
   expect(ownedSessions(state)).toHaveLength(1);
 });
 
+test("a later same-scope caller runs its own fence instead of joining the first authorization", async () => {
+  const paused = deferred();
+  const resume = deferred();
+  const fences: string[] = [];
+  const { bots, runtime, state } = createHarness(new MemoryStateStore(), createEmptyState(), {
+    afterDirectSnapshot: async () => {
+      if (fences.length === 1) {
+        paused.resolve();
+        await resume.promise;
+      }
+    },
+  });
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const first = runtime.getOrCreateDirectSession({
+    botId: BOT_ID,
+    assertStillDispatchable: () => {
+      fences.push("a");
+    },
+  });
+  await paused.promise;
+  let secondSettled = false;
+  const second = runtime.getOrCreateDirectSession({
+    botId: BOT_ID,
+    assertStillDispatchable: () => {
+      fences.push("b");
+    },
+  }).then((binding) => {
+    secondSettled = true;
+    return binding;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(secondSettled).toBe(false);
+  expect(fences).toEqual(["a"]);
+  resume.resolve();
+  const [firstBinding, secondBinding] = await Promise.all([first, second]);
+  expect(fences).toEqual(["a", "b"]);
+  expect(firstBinding.id).toBe(secondBinding.id);
+  expect(firstBinding.logicalSessionId).toBe(secondBinding.logicalSessionId);
+  expect(Object.values(state.bot_runtime_bindings)).toHaveLength(1);
+  expect(ownedSessions(state)).toHaveLength(1);
+});
+
 test("a crash after session create repairs the missing binding without orphaning the session", async () => {
   const store = new CrashBeforeBindingStore();
   const first = createHarness(store);
@@ -472,7 +514,7 @@ test("omitting topicId still binds the default topic when another active topic e
   expect(ownedSessions(state)).toHaveLength(1);
 });
 
-test("a concurrent second-topic request does not join the default single-flight", async () => {
+test("a concurrent second-topic request materializes a distinct scoped binding", async () => {
   const { bots, runtime, state } = createHarness();
   await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
   const extraTopicId = insertExtraDirectTopic(state, BOT_ID);

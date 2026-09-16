@@ -5,9 +5,11 @@ import { expect, test } from "bun:test";
 
 import { BotRuntimeManager } from "../../../src/bots/bot-runtime-manager";
 import { BotService } from "../../../src/bots/bot-service";
+import type { BotProfile } from "../../../src/bots/bot-types";
 import type { AppConfig } from "../../../src/config/types";
 import { ControlService } from "../../../src/control/control-service";
 import { createControlEventBus } from "../../../src/control/control-event-bus";
+import { ConversationError } from "../../../src/conversations/conversation-error";
 import { ConversationDispatcher, type ConversationDispatcherHooks } from "../../../src/conversations/conversation-dispatcher";
 import { ConversationRunService } from "../../../src/conversations/conversation-run-service";
 import {
@@ -152,6 +154,7 @@ async function createLifecycle(options: {
   beforeAcceptPersist?: () => Promise<void>;
   beforeTeardownFinalize?: () => Promise<void>;
   afterTeardownMarkedDeleting?: () => Promise<void>;
+  afterDirectSnapshot?: (bot: BotProfile) => Promise<void>;
   beforeAcceptCommit?: () => void;
   ownerId?: string;
   autoKick?: boolean;
@@ -194,6 +197,7 @@ async function createLifecycle(options: {
   const runtime = new BotRuntimeManager(bots, sessions, state, stateStore, {
     now: () => new Date(NOW),
     stateMutex,
+    afterDirectSnapshot: options.afterDirectSnapshot,
     releaseOwnedSession,
   });
   const events = createControlEventBus();
@@ -1314,6 +1318,117 @@ test("a persistent pre-start failure does not hot-loop without a new wake", asyn
   expect(first.store.getRun(accepted.run.id)?.state).toBe("queued");
   expect(first.store.getDispatchForRun(accepted.run.id)?.state).toBe("pending");
   expect(fakeRunner(first.runner).runs).toHaveLength(0);
+});
+
+test("a gen-2 claimant cannot skip its deleting fence by joining gen-1 materialization", async () => {
+  const aInsideGate = deferred();
+  const aResume = deferred();
+  const bAboutToMaterialize = deferred();
+  const bAllowMaterialize = deferred();
+  const deletingMarked = deferred();
+  const fenceCalls: Array<{ generation: number; owner: string; code?: string }> = [];
+  const started: Array<{ generation: number; owner: string }> = [];
+  const runnerA = new FakeRunner();
+  const first = await createLifecycle({
+    runner: runnerA,
+    ownerId: "dispatcher-a",
+    leaseMs: 5_000,
+    afterDirectSnapshot: async () => {
+      if (fenceCalls.length === 1) {
+        aInsideGate.resolve();
+        await aResume.promise;
+      }
+    },
+    afterTeardownMarkedDeleting: async () => {
+      deletingMarked.resolve();
+    },
+  });
+  const originalFence = first.store.assertLiveDispatchForMaterialize.bind(first.store);
+  first.store.assertLiveDispatchForMaterialize = (input) => {
+    try {
+      originalFence(input);
+      fenceCalls.push({ generation: input.generation, owner: input.owner });
+    } catch (error) {
+      const code = error instanceof ConversationError ? error.code : "unknown";
+      fenceCalls.push({ generation: input.generation, owner: input.owner, code });
+      throw error;
+    }
+  };
+  const originalStart = first.store.markExecutionStarted.bind(first.store);
+  first.store.markExecutionStarted = (input) => {
+    const member = originalStart(input);
+    started.push({ generation: input.generation, owner: input.owner });
+    return member;
+  };
+  let materializeCalls = 0;
+  const originalMaterialize = first.runtime.getOrCreateDirectSession.bind(first.runtime);
+  first.runtime.getOrCreateDirectSession = async (input) => {
+    materializeCalls += 1;
+    return await originalMaterialize(input);
+  };
+
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-join-inflight-fence",
+    content: "hello",
+  });
+  const drainA = first.dispatcher.kick();
+  await aInsideGate.promise;
+  expect(first.store.getDispatchForRun(accepted.run.id)).toMatchObject({
+    generation: 1,
+    owner: "dispatcher-a",
+    state: "claimed",
+  });
+  expect(fenceCalls).toEqual([{ generation: 1, owner: "dispatcher-a" }]);
+  expect(materializeCalls).toBe(1);
+
+  const runnerB = new FakeRunner();
+  const dispatcherB = new ConversationDispatcher(first.store, first.runtime, runnerB, first.sessions, {
+    now: first.nowFn,
+    ownerId: "dispatcher-b",
+    leaseMs: 5_000,
+    hooks: {
+      afterAcceptedIdentityCheck: async () => {
+        bAboutToMaterialize.resolve();
+        await bAllowMaterialize.promise;
+      },
+    },
+  });
+  first.jump(10_000);
+  const drainB = dispatcherB.kick();
+  await bAboutToMaterialize.promise;
+  expect(first.store.getDispatchForRun(accepted.run.id)).toMatchObject({
+    generation: 2,
+    owner: "dispatcher-b",
+    state: "claimed",
+  });
+  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.startedAt).toBeUndefined();
+
+  const teardown = first.service.teardownDirectConversation(BOT_ID);
+  await tick();
+  bAllowMaterialize.resolve();
+  await waitUntil(() => materializeCalls === 2);
+  expect(fenceCalls).toEqual([{ generation: 1, owner: "dispatcher-a" }]);
+  aResume.resolve();
+  await deletingMarked.promise;
+  await expect(teardown).resolves.toBeUndefined();
+  await drainA;
+  await drainB;
+
+  expect(fenceCalls).toContainEqual({
+    generation: 2,
+    owner: "dispatcher-b",
+    code: "conversation_deleting",
+  });
+  expect(started).toEqual([]);
+  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.startedAt).toBeUndefined();
+  expect(runnerA.runs).toHaveLength(0);
+  expect(runnerB.runs).toHaveLength(0);
+  expect(first.store.listRuns(createDirectConversationId(BOT_ID))).toEqual([]);
+  expect(first.state.sessions).toEqual({});
+  expect(first.state.bot_runtime_bindings).toEqual({});
+  expect(first.state.conversations).toEqual({});
+  expect(first.state.conversation_topics).toEqual({});
 });
 
 test("a worker paused before materialize cannot resurrect runtime after teardown", async () => {
