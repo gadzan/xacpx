@@ -3,6 +3,7 @@
     "logger.debug(command.parsed)",
     "perfSpan.mark(router.authorized)",
     "sessions.getCurrentSession(\"wx:user\")",
+    "sessions.getLogicalSessionRecord(\"demo\")",
     "logger.error(orchestration.coordinator_results.load_failed)",
     "perfSpan.mark(transport.prompt_dispatched)",
     "transport.prompt(session(demo/backend:demo), \"hello there\", fn, ∅, {…})",

@@ -1,5 +1,6 @@
 {
   "record": [
+    "sessions.getLogicalSessionRecord(\"relay:demo\")",
     "sessions.getSession(\"relay:demo\")",
     "sessions.countAliasesSharingTransport(\"backend:shared\", \"relay:demo\")",
     "sessions.setArchived(\"relay:demo\", true)"

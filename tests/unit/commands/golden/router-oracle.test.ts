@@ -50,7 +50,7 @@ test("create-alias-exists", () =>
     run: (router) => router.createSessionWithTransport("relay:demo", "codex", "backend"),
   }));
 
-// 4. Remove blocked by an in-flight orchestration task: throws before sessions.removeSession.
+// 4. Remove blocked by an in-flight orchestration task: owner guard, then throws before sessions.removeSession.
 test("remove-blocking-guard", () =>
   check({
     name: "remove-blocking-guard",
@@ -63,7 +63,7 @@ test("remove-blocking-guard", () =>
     run: (router) => router.removeSessionWithTransport("relay:demo"),
   }));
 
-// 5. Normal remove: guard → count → removeSession → purge → transport.deleteSession.
+// 5. Normal remove: owner guard → count → removeSession → purge → transport.deleteSession.
 test("remove-normal", () =>
   check({
     name: "remove-normal",
@@ -99,7 +99,7 @@ test("remove-purge-throws", () =>
     run: (router) => router.removeSessionWithTransport("relay:demo"),
   }));
 
-// 8. Archive refused while a turn is running: throws before cancel / setArchived.
+// 8. Archive refused while a turn is running: owner guard, then throws before cancel / setArchived.
 test("archive-active-turn", () =>
   check({
     name: "archive-active-turn",
@@ -110,7 +110,7 @@ test("archive-active-turn", () =>
     run: (router) => router.archiveSessionWithTransport("relay:demo"),
   }));
 
-// 9. Normal archive of a non-shared session: cancel → freeWarmProcess → setArchived(true).
+// 9. Normal archive of a non-shared session: owner guard → cancel → freeWarmProcess → setArchived(true).
 test("archive-normal", () =>
   check({
     name: "archive-normal",
@@ -120,7 +120,7 @@ test("archive-normal", () =>
     run: (router) => router.archiveSessionWithTransport("relay:demo"),
   }));
 
-// 10. Archive of a shared session: skips cancel/freeWarmProcess, only setArchived(true).
+// 10. Archive of a shared session: owner guard, then skips cancel/freeWarmProcess, only setArchived(true).
 test("archive-shared", () =>
   check({
     name: "archive-shared",
@@ -182,7 +182,7 @@ test("handle-session-new", () =>
     },
   }));
 
-// 15. handle() `/mode plan`: getCurrentSession → transport.setMode → setCurrentSessionMode.
+// 15. handle() `/mode plan`: getCurrentSession → owner guard → transport.setMode → setCurrentSessionMode.
 test("handle-mode-set", () =>
   check({
     name: "handle-mode-set",
@@ -283,7 +283,7 @@ test("handle-ensure-autoinstall", () => {
 
 // --- Coverage-gap scenarios added after Codex review (spec §等价性判据 场景集). ---
 
-// 19. unarchiveSession on a seeded-archived session: single sessions.setArchived(alias, false).
+// 19. unarchiveSession on a seeded-archived session: owner guard then sessions.setArchived(alias, false).
 //     (Spec "6 CRUD 直接驱动" — unarchive had no scenario.)
 test("unarchive-normal", () =>
   check({
@@ -310,8 +310,8 @@ test("list-native-cwd", () =>
     run: (router) => router.listNativeSessionsForControl("codex", "backend"),
   }));
 
-// 21. handle() `/model <id>`: getCurrentSession → setModelTransportSession (measureTransportCall
-//     → transport.setModel) → setCurrentSessionModel. Valid id per parse-command-model.test.ts.
+// 21. handle() `/model <id>`: getCurrentSession → owner guard → setModelTransportSession
+//     (measureTransportCall → transport.setModel) → setCurrentSessionModel. Valid id per parse-command-model.test.ts.
 test("handle-model-set", () =>
   check({
     name: "handle-model-set",
@@ -326,8 +326,8 @@ test("handle-model-set", () =>
     run: (router) => router.handle("wx:user", "/model gpt-5.2[high]"),
   }));
 
-// 22. handle() `/cancel`: getCurrentSession → cancelTransportSession (measureTransportCall →
-//     transport.cancel).
+// 22. handle() `/cancel`: getCurrentSession → owner guard → cancelTransportSession
+//     (measureTransportCall → transport.cancel).
 test("handle-cancel", () =>
   check({
     name: "handle-cancel",
@@ -338,7 +338,7 @@ test("handle-cancel", () =>
     run: (router) => router.handle("wx:user", "/cancel"),
   }));
 
-// 23. handle() `/clear` (session.reset): resolve fresh reset session → ensure/verify via invoker
+// 23. handle() `/clear` (session.reset): owner guard on current session, then resolve fresh reset session → ensure/verify via invoker
 //     → attachSession → refresh → useSession. The reset transport session name embeds Date.now();
 //     the harness scrubs `reset-<n>` so the fixture is byte-stable.
 test("handle-session-reset", () =>
@@ -351,7 +351,7 @@ test("handle-session-reset", () =>
     run: (router) => router.handle("wx:user", "/clear"),
   }));
 
-// 24. archiveSessionWithTransport, non-shared, where transport.freeWarmProcess THROWS: the
+// 24. archiveSessionWithTransport, non-shared, where transport.freeWarmProcess THROWS: owner guard, then the
 //     best-effort catch swallows it, logs session.free_warm_process_failed, and still reaches
 //     sessions.setArchived(alias, true). (Spec scenario 9's best-effort branch.)
 test("archive-freewarm-fails", () =>

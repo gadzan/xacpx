@@ -1,5 +1,6 @@
 {
   "record": [
+    "sessions.getLogicalSessionRecord(\"relay:demo\")",
     "sessions.tryReserveSessionAliasOperation(\"relay:demo\")",
     "sessions.getSession(\"relay:demo\")",
     "orchestration.listSessionBlockingTasks(\"backend:relay:demo\")"
