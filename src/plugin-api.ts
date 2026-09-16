@@ -91,6 +91,24 @@ export type {
   ControlSessionInfo,
 } from "./control/control-service.js";
 export type { ControlEvent, ControlEventBus, ControlEventListener } from "./control/control-event-bus.js";
+export type {
+  BotCreateRequestDto,
+  BotDetailDto,
+  BotSummaryDto,
+  BotUpdateRequestDto,
+  ConversationDetailDto,
+  ConversationHistoryRequestDto,
+  ConversationHistoryResponseDto,
+  ConversationMessageDto,
+  ConversationPromptRequestDto,
+  ConversationPromptResponseDto,
+  ConversationRunDetailDto,
+  ConversationRunDto,
+  ConversationSummaryDto,
+  ConversationTurnCorrelation,
+  MemberTurnSummaryDto,
+  TopicSummaryDto,
+} from "./control/conversation-control-dtos.js";
 
 // Generic session resource catalog — interface/types ONLY. The production
 // adapter (CoreSessionResourceCatalog) and SessionService internals stay
