@@ -10,6 +10,14 @@ import type {
   ChatResponse,
 } from "../../../src/weixin/agent/interface";
 
+const CONVERSATION = {
+  conversationId: "conversation_1",
+  topicId: "topic_1",
+  botId: "bot_1",
+  runId: "run_1",
+  memberTurnId: "mturn_1",
+} as const;
+
 function makeControl(
   chatImpl: (request: ChatRequest) => Promise<ChatResponse>,
 ) {
@@ -104,6 +112,7 @@ test("promptImmediate fail-closes to orchestration unless executionOrigin is hum
     sessionAlias: "backend",
     text: "conversation-turn",
     senderId: "bot-conversation",
+    conversation: CONVERSATION,
   });
   expect(omitted).toEqual({ ok: true, text: "immediate" });
   expect(captured?.metadata?.origin).toBe("orchestration");
@@ -115,6 +124,7 @@ test("promptImmediate fail-closes to orchestration unless executionOrigin is hum
     text: "recovered-turn",
     senderId: "bot-conversation",
     executionOrigin: "orchestration",
+    conversation: CONVERSATION,
   });
   expect(recovered).toEqual({ ok: true, text: "immediate" });
   expect(captured?.metadata?.origin).toBe("orchestration");
@@ -126,6 +136,7 @@ test("promptImmediate fail-closes to orchestration unless executionOrigin is hum
     text: "fresh-human-turn",
     senderId: "bot-conversation",
     executionOrigin: "human",
+    conversation: CONVERSATION,
   });
   expect(fresh).toEqual({ ok: true, text: "immediate" });
   expect(captured?.metadata).toEqual({

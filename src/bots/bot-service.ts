@@ -56,6 +56,7 @@ export class BotService {
   private readonly lifecycleGate: BotLifecycleGate;
   private readonly beforeLifecycleMutation?: (input: { botId: string; op: BotLifecycleMutation }) => Promise<void>;
   private conversationWork?: BotConversationWork;
+  private closed = false;
 
   constructor(
     private readonly config: Pick<AppConfig, "agents" | "workspaces">,
@@ -80,6 +81,17 @@ export class BotService {
     this.conversationWork = work;
   }
 
+  /** Composition shutdown: no new Bot mutations may start. Reads stay available for drain. */
+  close(): void {
+    this.closed = true;
+  }
+
+  private assertOpen(): void {
+    if (this.closed) {
+      throw new BotError("runtime_closed", "conversation runtime is closed");
+    }
+  }
+
   listBots(): BotProfile[] {
     return Object.values(this.state.bots).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
@@ -93,7 +105,9 @@ export class BotService {
   }
 
   async createBot(input: CreateBotInput): Promise<BotProfile> {
+    this.assertOpen();
     return await this.mutate(async () => {
+      this.assertOpen();
       this.rejectUnsupportedCwd(input);
       const id = this.nextId();
       const timestamp = this.now().toISOString();
@@ -113,9 +127,12 @@ export class BotService {
   }
 
   async updateBot(id: string, patch: UpdateBotInput): Promise<BotProfile> {
+    this.assertOpen();
     return await this.runLifecycle(id, async () => {
+      this.assertOpen();
       await this.beforeLifecycleMutation?.({ botId: id, op: "update" });
       return await this.mutate(async () => {
+        this.assertOpen();
         this.rejectUnsupportedCwd(patch);
         const existing = this.getBot(id);
         if (patch.agent !== undefined && patch.agent !== existing.agent && this.hasLockedRuntime(id)) {
@@ -145,9 +162,12 @@ export class BotService {
   }
 
   async deleteBot(id: string): Promise<void> {
+    this.assertOpen();
     await this.runLifecycle(id, async () => {
+      this.assertOpen();
       await this.beforeLifecycleMutation?.({ botId: id, op: "delete" });
       await this.mutate(async () => {
+        this.assertOpen();
         this.getBot(id);
         const groups = Object.values(this.state.conversations).filter(
           (conversation) => conversation.kind === "group" && conversation.botIds.includes(id),

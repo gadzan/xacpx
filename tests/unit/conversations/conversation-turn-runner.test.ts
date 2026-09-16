@@ -52,7 +52,7 @@ function fakeControl() {
       this.hang.resolve();
       return true;
     },
-    cancelQueuedItem() {
+    cancelQueuedConversationItem() {
       this.queuedCancels += 1;
       return { cancelled: true };
     },
@@ -245,7 +245,7 @@ test("Conversation promptImmediate never FIFO-enqueues on a busy session lane", 
     cancelTurnForPromptRequest() {
       return true;
     },
-    cancelQueuedItem() {
+    cancelQueuedConversationItem() {
       return { cancelled: true };
     },
   };

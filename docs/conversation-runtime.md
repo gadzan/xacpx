@@ -58,15 +58,17 @@ On execution start the dispatcher persists `sessionAlias`, `logicalSessionId`, a
 
 Cancel/inspect uses a request-id-aware seam (`cancelTurnForPromptRequest` / `inspectPromptRequest`). Aborting the session lane alone does not prove the turn produced no effects. `ControlConversationTurnRunner.cancel()` aborts the exact prompt, then waits a **bounded** settlement deadline (TurnQueue drain timeout by default). A proven completed/failed/cancelled result is persisted as such; if the provider ignores abort, both `cancel()` and the outward `runner.run()` resolve as `unknown` and the Run/MemberTurn become `indeterminate`. A late provider settle cannot resurrect that Run. Teardown observes indeterminate instead of hanging.
 
-After `markExecutionStarted`, the dispatcher re-reads Run/MemberTurn following every await before `runner.run()`. If the Run is no longer `running` (cancel, indeterminate recovery, another worker), it returns without invoking Control. The runner registers `promptRequestId` synchronously before `Control.promptImmediate`, with an `AbortController` covering the whole pre-admission interval (including a pending `sessionConfigSetTails` wait). Cancel aborts that controller before/alongside `cancelTurnForPromptRequest`. After any config-tail wait and immediately before `TurnQueue.submit`, `promptImmediate` returns a typed cancelled result (`cancelled: true`) and never admits the turn if the signal is already aborted. Once TurnQueue has admitted the `promptRequestId`, cancel stays on that exact request-id path. A terminal or indeterminate Run must never start new side effects afterward. Settled runner entries are kept for late-cancel `completed` reporting, bounded by TTL/max like TurnQueue request-id tombstones.
+After `markExecutionStarted`, the dispatcher re-reads Run/MemberTurn following every await before `runner.run()`. If the Run is no longer `running` (cancel, indeterminate recovery, another worker), it returns without invoking Control. The runner registers `promptRequestId` synchronously before `ConversationExecutionPort.promptImmediate`, with an `AbortController` covering the whole pre-admission interval (including a pending `sessionConfigSetTails` wait). Cancel aborts that controller before/alongside `cancelTurnForPromptRequest`. After any config-tail wait and immediately before `TurnQueue.submit`, `promptImmediate` returns a typed cancelled result (`cancelled: true`) and never admits the turn if the signal is already aborted. Once TurnQueue has admitted the `promptRequestId`, cancel stays on that exact request-id path. A terminal or indeterminate Run must never start new side effects afterward. Settled runner entries are kept for late-cancel `completed` reporting, bounded by TTL/max like TurnQueue request-id tombstones.
 
 Recovery never uses latest-turn-in-alias, text match, or timestamp proximity.
 
-The runner seam is `ConversationTurnRunner` / `ControlConversationTurnRunner` wrapping `ControlService.promptImmediate` / request-id-aware cancel. `promptImmediate` uses the same TurnQueue / SessionTurnRunner path as interactive `prompt()`, but **never FIFO-enqueues** when the session lane is busy (`queueable: false`). ConversationStore already owns durable queuing; a busy lane fails the Run immediately instead of leaving a TurnQueue item that can execute after the durable Run is already failed.
+The runner seam is `ConversationTurnRunner` / `ControlConversationTurnRunner` wrapping the core-private `ConversationExecutionPort` (`promptImmediate` / request-id-aware cancel / `cancelQueuedConversationItem`). `promptImmediate` uses the same TurnQueue / SessionTurnRunner path as interactive `prompt()`, but **never FIFO-enqueues** when the session lane is busy (`queueable: false`). ConversationStore already owns durable queuing; a busy lane fails the Run immediately instead of leaving a TurnQueue item that can execute after the durable Run is already failed.
+
+That port is **not** the public Control facade. `ChannelStartInput.control` and `xacpx/plugin-api` expose `PublicControlService` only. Public `ControlPromptInput` has no writable `executionOrigin`, `conversation` correlation, or `conversationSeam` boolean. `ConversationTurnCorrelation` remains an **output** event DTO. Public callers route by Bot / Conversation / Topic / Run IDs; they cannot mint human permission authority or address a hidden session.
 
 `BotRuntimeManager` is **runtime materialization/binding only**. Direct Bot turns enter solely through `ConversationRunService` → dispatcher → runner. There is no second Bot execution engine and no `promptDirect` bypass.
 
-`prompt()` (interactive Control) is always `turnOrigin: "human"`. Conversation `promptImmediate` takes store-derived `executionOrigin` and **fail-closes to `orchestration`** unless that value is exactly `"human"`. Callers cannot mint human permission authority by omitting it.
+Interactive `PublicControlService.prompt()` is always `turnOrigin: "human"` and always applies the ordinary-session owner guard. Conversation `promptImmediate` lives only on `ConversationExecutionPort`, takes store-derived `executionOrigin`, and **fail-closes to `orchestration`** unless that value is exactly `"human"`. Omitting origin cannot mint human authority. Extra fields on the public prompt input are stripped before admission.
 
 ## Execution permission provenance
 
@@ -151,15 +153,45 @@ Injected release failure leaves `deleting` + ownership in place for retry.
 - Each daemon process mints a fresh `authorityEpoch`.
 - The daemon-wide AppState `stateMutex` is injected into `SessionService`, `BotService`, `BotRuntimeManager`, and `ConversationRunService`. Conversation COW publication uses that same mutex for short `structuredClone` → `saveNow` → `replaceRuntimeState` sections only; it is never held across `SessionService` awaits. Do not invent a Conversation-only mutex.
 - Startup `kick()` recovers durable pending dispatch. Crash-before-first-claim work is claimed in the new process as `recovery` / `orchestration`.
-- Shutdown stops the dispatcher, waits for in-flight drain, then closes SQLite **before** disposing `state.json`.
+- Shutdown stops the dispatcher, waits for in-flight drain, then closes SQLite **before** disposing `state.json`. The composition marks the runtime `stopping`/`closed` first so Control Bot/Conversation APIs fail `runtime_closed` immediately.
 
 Public Control / Relay APIs are projections of this domain. Callers address Bot ID, Conversation ID, Topic ID, Run ID, and message `seq` only. They never choose hidden session aliases, `logicalSessionId`, TurnQueue ids, `bindingId`, or `chatKey` as product routing identities.
 
-Ordinary alias-addressed Session APIs (`ControlService.prompt` / `removeSession` / archive / rename / model / effort / cancel, chat `/session` lifecycle) fail `hidden_session` when `LogicalSession.owner` is product-owned. The check is owner metadata, not a `brt_` alias prefix. Conversation execution/release keeps using `promptImmediate` + correlation, request-id cancel, and `releaseOwnedSession`.
+```text
+Untrusted/public client
+        │
+        ▼
+PublicControlService / Relay API
+        │
+        ├── Bot IDs
+        ├── Conversation IDs
+        ├── Topic IDs
+        └── Run IDs
+        │
+        ▼
+ConversationRunService
+        │
+        ▼
+durable store / dispatcher
+        │
+        ▼
+core-private ConversationExecutionPort
+        │
+        ▼
+hidden LogicalSession / TurnQueue
+```
 
-Before a Direct Conversation is persisted, public list/get synthesize the bounded Conversation/default Topic from durable Bot timestamps (`createdAt` / `updatedAt`), never read-time `now`. The semantic default Topic id is `createDirectTopicId(botId)`.
+Ordinary alias-addressed Session APIs (`PublicControlService.prompt` / `removeSession` / archive / rename / model / effort / cancel, chat `/session` lifecycle) fail `hidden_session` when `LogicalSession.owner` is product-owned. The check is owner metadata, not a `brt_` alias prefix. Conversation execution/release uses only `ConversationExecutionPort` (`promptImmediate` + store-derived correlation, request-id cancel, `cancelQueuedConversationItem`) and `releaseOwnedSession`.
+
+Direct Conversation **identity** (Conversation id, owning Bot id, default Topic id) is durable and stable across rename and materialization. Direct Conversation **presentation** (`title`, `createdAt`, `updatedAt`) is always the current owning Bot projection, whether or not an AppState Conversation row has been materialized. First prompt / `createTopic` is not a presentation freeze point. Rename does not rewrite durable Conversation identity.
+
+Before a Direct Conversation is persisted, public list/get synthesize the bounded Conversation/default Topic from durable Bot timestamps (`createdAt` / `updatedAt`), never read-time `now`. After persist, list/get still overlay those Bot presentation fields. The semantic default Topic id is `createDirectTopicId(botId)`.
+
+Successful `createBot` / `updateBot` / `deleteBot` emit both `bots-changed` and `conversations-changed`, because `conversations.list` includes a Direct Conversation for every Bot (synthetic until materialized).
 
 Idempotent `requestId` retries reuse the durable accept result and do not re-emit the initial `conversation-message` / queued `conversation-run-changed` projection.
+
+`ConversationRuntime` owns process lifecycle (`open` → `stopping` → `closed`). After `shutdown()`, every public Bot/Conversation Control mutation **and** read fails `runtime_closed` (including Bot CRUD, Topic create, prompt, history, Run cancel). In-flight dispatcher drain may finish; new product work must not start. `BotService.close()` fail-closes Bot mutations as a second gate.
 
 `topic archive/delete` is not a public Control method until domain lifecycle owns it. `BotService.deleteBot` remains fail-closed while durable/runtime ownership exists.
 

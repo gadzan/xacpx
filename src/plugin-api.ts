@@ -82,14 +82,18 @@ export { getLocale } from "./i18n/index.js";
 export type { Locale } from "./i18n/index.js";
 
 // Structured control facade — for relay connectors and other non-text consumers
-// that need programmatic access to sessions, prompt, scheduler, and orchestration.
+// that need programmatic access to sessions, prompt, scheduler, orchestration,
+// and Bot/Conversation product APIs. This is the *public* facade: trusted
+// Conversation execution (immediate prompt / hidden-session cancel) is omitted.
 export type {
   ControlExecuteCommandInput,
   ControlPromptInput,
   ControlPromptResult,
-  ControlService,
   ControlSessionInfo,
-} from "./control/control-service.js";
+  PublicControlPromptInput,
+  PublicControlService,
+} from "./control/public-control.js";
+export type { PublicControlService as ControlService } from "./control/public-control.js";
 export type { ControlEvent, ControlEventBus, ControlEventListener } from "./control/control-event-bus.js";
 export type {
   BotCreateRequestDto,

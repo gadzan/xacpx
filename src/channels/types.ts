@@ -8,7 +8,7 @@ import type { SessionService } from "../sessions/session-service.js";
 import type { SessionResourceCatalog } from "../sessions/session-resource-catalog.js";
 import type { ActiveTurnRegistry } from "../sessions/active-turn-registry.js";
 import type { Locale } from "../i18n/index.js";
-import type { ControlService } from "../control/control-service.js";
+import type { PublicControlService } from "../control/public-control.js";
 
 export type { ChatAgent };
 export type PermissionOutcome =
@@ -126,11 +126,12 @@ export interface ChannelStartInput {
    */
   locale?: Locale;
   /**
-   * Structured control facade (sessions / prompt / scheduler / orchestration)
-   * for structured consumers such as the relay connector. Optional: text-only
-   * channels ignore it.
+   * Public structured control facade (sessions / prompt / scheduler /
+   * orchestration / Bot / Conversation). Trusted Conversation execution
+   * (`promptImmediate`, hidden-session cancel) is core-private and is not
+   * present on this object. Optional: text-only channels ignore it.
    */
-  control?: ControlService;
+  control?: PublicControlService;
   /**
    * Generic catalog of logical-session resources: immutable logical session
    * IDs, internal/display aliases, authoritative workspace cwd, archived flag,

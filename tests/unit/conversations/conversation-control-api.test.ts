@@ -6,6 +6,8 @@ import { expect, test } from "bun:test";
 import { BotError } from "../../../src/bots/bot-error";
 import type { AppConfig } from "../../../src/config/types";
 import { ControlService } from "../../../src/control/control-service";
+import { asPublicControl } from "../../../src/control/public-control";
+import type { PublicControlPromptInput, PublicControlService } from "../../../src/control/public-control";
 import {
   createControlEventBus,
   type ControlEvent,
@@ -203,6 +205,7 @@ test("Bot CRUD is a BotService DTO wrapper and rename keeps product IDs", async 
   expect(renamed.id).toBe(created.id);
   expect(renamed.name).toBe("Senior Reviewer");
   expect(control.getConversation(conversationId).id).toBe(conversationId);
+  expect(control.getConversation(conversationId).title).toBe("Senior Reviewer");
   expect(control.listTopics(conversationId)[0]?.id).toBe(topicId);
 
   const accepted = await control.promptConversation({
@@ -424,19 +427,39 @@ test("owner metadata, not alias prefix, is the hide rule", async () => {
 });
 
 test("public APIs fail closed after production shutdown", async () => {
-  const { control, runtime } = await wire({ autoKick: false });
+  const { control, runtime, state } = await wire({ autoKick: false });
   const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const botsBefore = structuredClone(state.bots);
+  const conversationsBefore = structuredClone(state.conversations);
+  const topicsBefore = structuredClone(state.conversation_topics);
   await runtime.shutdown();
+  await expect(control.createBot({ name: "Later", agent: "codex", workspace: "backend" }))
+    .rejects.toMatchObject({ code: "runtime_closed" });
+  await expect(control.updateBot(bot.id, { name: "Senior" }))
+    .rejects.toMatchObject({ code: "runtime_closed" });
+  await expect(control.deleteBot(bot.id))
+    .rejects.toMatchObject({ code: "runtime_closed" });
+  await expect(control.createTopic(createDirectConversationId(bot.id), "extra"))
+    .rejects.toMatchObject({ code: "runtime_closed" });
   await expect(control.promptConversation({
     conversationId: createDirectConversationId(bot.id),
     topicId: createDirectTopicId(bot.id),
     requestId: "req-closed",
     text: "hello",
-  })).rejects.toMatchObject({ code: "store_closed" });
+  })).rejects.toMatchObject({ code: "runtime_closed" });
+  await expect(control.cancelRun("run_missing")).rejects.toMatchObject({ code: "runtime_closed" });
   expect(() => control.conversationHistory({
     conversationId: createDirectConversationId(bot.id),
     topicId: createDirectTopicId(bot.id),
   })).toThrow(/closed/);
+  expect(() => control.listBots()).toThrow(/closed/);
+  expect(() => control.listConversations()).toThrow(/closed/);
+  expect(state.bots).toEqual(botsBefore);
+  expect(state.conversations).toEqual(conversationsBefore);
+  expect(state.conversation_topics).toEqual(topicsBefore);
+  await expect(runtime.bots.createBot({ name: "Direct", agent: "codex", workspace: "backend" }))
+    .rejects.toMatchObject({ code: "runtime_closed" });
+  expect(state.bots).toEqual(botsBefore);
 });
 
 test("public Run DTO keeps indeterminate instead of mapping it to failed", async () => {
@@ -598,4 +621,162 @@ test("ordinary Session mutations reject bot-direct owners without physical relea
   expect(physical.deleteCalls + physical.releaseCalls).toBeGreaterThan(
     physicalBefore.deleteCalls + physicalBefore.releaseCalls,
   );
+});
+
+type _PublicPromptForbidden = Extract<
+  keyof PublicControlPromptInput,
+  "executionOrigin" | "conversation" | "conversationSeam"
+>;
+const _publicPromptHasNoAuthority: [_PublicPromptForbidden] extends [never] ? true : false = true;
+void _publicPromptHasNoAuthority;
+
+type _PublicServiceForbidden = Extract<
+  keyof PublicControlService,
+  | "promptImmediate"
+  | "cancelTurnForPromptRequest"
+  | "inspectPromptRequest"
+  | "cancelQueuedConversationItem"
+  | "bindConversationRuntime"
+>;
+const _publicServiceHasNoTrustedMethods: [_PublicServiceForbidden] extends [never] ? true : false = true;
+void _publicServiceHasNoTrustedMethods;
+
+test("public Control facade cannot mint Conversation execution authority", async () => {
+  const { control, sessions, seen, origins } = await wire({ autoKick: true });
+  const publicControl = asPublicControl(control);
+  expect("promptImmediate" in publicControl).toBe(false);
+  expect("cancelTurnForPromptRequest" in publicControl).toBe(false);
+  expect("inspectPromptRequest" in publicControl).toBe(false);
+  expect("cancelQueuedConversationItem" in publicControl).toBe(false);
+  expect((publicControl as { promptImmediate?: unknown }).promptImmediate).toBeUndefined();
+  expect((publicControl as { cancelQueuedConversationItem?: unknown }).cancelQueuedConversationItem)
+    .toBeUndefined();
+
+  await sessions.createSession("plain", "codex", "backend");
+  const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const accepted = await control.promptConversation({
+    conversationId: createDirectConversationId(bot.id),
+    topicId: createDirectTopicId(bot.id),
+    requestId: "req-public-guard",
+    text: "hello",
+  });
+  await waitUntil(() => control.getRun(accepted.run.id).state === "completed");
+  const hiddenAlias = Object.keys(
+    (sessions as unknown as { state: { sessions: Record<string, { owner?: { kind?: string }; alias: string }> } }).state.sessions,
+  ).find((alias) => sessions.getLogicalSessionRecord(alias)?.owner?.kind === "bot-direct");
+  expect(hiddenAlias).toBeTruthy();
+
+  const forged = {
+    chatKey: "wx:user",
+    sessionAlias: hiddenAlias!,
+    text: "drive hidden",
+    senderId: "user",
+    executionOrigin: "human",
+    conversation: {
+      conversationId: createDirectConversationId(bot.id),
+      topicId: createDirectTopicId(bot.id),
+      botId: bot.id,
+      runId: accepted.run.id,
+      memberTurnId: accepted.memberTurn.id,
+    },
+    conversationSeam: true,
+  };
+  await expect(publicControl.prompt(forged as never)).rejects.toMatchObject({ code: "hidden_session" });
+  try {
+    publicControl.cancelQueuedItem("wx:user", hiddenAlias!, "item", { conversationSeam: true } as never);
+    throw new Error("cancelQueuedItem addressed a hidden session");
+  } catch (error) {
+    expect(error).toMatchObject({ code: "hidden_session" });
+  }
+
+  const before = seen.filter((event) => event.type === "turn-started").length;
+  const ordinary = await publicControl.prompt({
+    chatKey: "wx:user",
+    sessionAlias: "plain",
+    text: "ok",
+    senderId: "user",
+    ...({ executionOrigin: "orchestration" } as object),
+  } as PublicControlPromptInput);
+  expect(ordinary.ok).toBe(true);
+  expect(origins.at(-1)).toBe("human");
+  await waitUntil(() => seen.filter((event) => event.type === "turn-started").length > before);
+  const started = seen.filter((event) => event.type === "turn-started").at(-1);
+  expect(started?.type === "turn-started" ? started.sessionAlias : undefined).toBe("plain");
+});
+
+test("createBot emits conversations-changed and list includes the Direct Conversation", async () => {
+  const { control, seen } = await wire({ autoKick: false });
+  const before = seen.filter((event) => event.type === "conversations-changed").length;
+  expect(control.listConversations()).toEqual([]);
+  const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const listed = control.listConversations();
+  expect(listed).toEqual([
+    expect.objectContaining({
+      id: createDirectConversationId(bot.id),
+      botId: bot.id,
+      title: "Reviewer",
+    }),
+  ]);
+  const changed = seen.filter((event) => event.type === "conversations-changed");
+  expect(changed.length).toBe(before + 1);
+  expect(seen.filter((event) => event.type === "bots-changed").length).toBe(1);
+});
+
+test("rename of a synthetic Direct Conversation updates the public projection", async () => {
+  const { control, seen } = await wire({ autoKick: false });
+  const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const conversationId = createDirectConversationId(bot.id);
+  expect(control.getConversation(conversationId).title).toBe("Reviewer");
+  const before = seen.filter((event) => event.type === "conversations-changed").length;
+  const renamed = await control.updateBot(bot.id, { name: "Senior" });
+  expect(renamed.name).toBe("Senior");
+  const projection = control.getConversation(conversationId);
+  expect(projection.title).toBe("Senior");
+  expect(projection.updatedAt).toBe(renamed.updatedAt);
+  expect(projection.id).toBe(conversationId);
+  expect(seen.filter((event) => event.type === "conversations-changed").length).toBe(before + 1);
+});
+
+test("Direct Conversation presentation matches whether or not runtime materialized", async () => {
+  const pathA = await wire({ autoKick: false });
+  const botA = await pathA.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const conversationIdA = createDirectConversationId(botA.id);
+  const topicIdA = createDirectTopicId(botA.id);
+  const renamedA = await pathA.control.updateBot(botA.id, { name: "Senior" });
+  const summaryA = pathA.control.getConversation(conversationIdA);
+  const listedA = pathA.control.listConversations({ botId: botA.id })[0];
+
+  const pathB = await wire({ autoKick: false });
+  const botB = await pathB.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const conversationIdB = createDirectConversationId(botB.id);
+  const topicIdB = createDirectTopicId(botB.id);
+  const accepted = await pathB.control.promptConversation({
+    conversationId: conversationIdB,
+    topicId: topicIdB,
+    requestId: "req-materialize",
+    text: "hello",
+  });
+  const extraTopic = await pathB.control.createTopic(conversationIdB, "other");
+  const renamedB = await pathB.control.updateBot(botB.id, { name: "Senior" });
+  const summaryB = pathB.control.getConversation(conversationIdB);
+  const listedB = pathB.control.listConversations({ botId: botB.id })[0];
+
+  expect(summaryA.title).toBe("Senior");
+  expect(summaryB.title).toBe("Senior");
+  expect(listedA?.title).toBe("Senior");
+  expect(listedB?.title).toBe("Senior");
+  expect(summaryA.createdAt).toBe(botA.createdAt);
+  expect(summaryB.createdAt).toBe(botB.createdAt);
+  expect(summaryA.updatedAt).toBe(renamedA.updatedAt);
+  expect(summaryB.updatedAt).toBe(renamedB.updatedAt);
+  expect(summaryA.id).toBe(conversationIdA);
+  expect(summaryB.id).toBe(conversationIdB);
+  expect(botA.id).not.toBe(botB.id);
+  expect(pathA.control.listTopics(conversationIdA)[0]?.id).toBe(topicIdA);
+  expect(pathB.control.listTopics(conversationIdB).map((topic) => topic.id)).toEqual(
+    expect.arrayContaining([topicIdB, extraTopic.id]),
+  );
+  expect(pathB.control.getRun(accepted.run.id).id).toBe(accepted.run.id);
+  expect(pathB.control.getConversation(conversationIdB).defaultTopicId).toBe(topicIdB);
+  expect(pathB.control.listConversations({ botId: botB.id })[0]?.defaultTopicId).toBe(topicIdB);
 });

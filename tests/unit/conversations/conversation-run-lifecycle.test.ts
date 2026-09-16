@@ -956,7 +956,7 @@ test("cancel between durable start and runner registration never starts Control"
     cancelTurnForPromptRequest() {
       return true;
     },
-    cancelQueuedItem() {
+    cancelQueuedConversationItem() {
       return { cancelled: true };
     },
   };

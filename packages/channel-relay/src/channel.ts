@@ -13,7 +13,7 @@ import {
 } from "@ganglion/xacpx-relay-protocol";
 import type {
   ChannelStartInput,
-  ControlService,
+  PublicControlService,
   CoordinatorMessageInput,
   MessageChannelRuntime,
   ScheduledChannelMessageInput,
@@ -123,7 +123,7 @@ export class RelayChannel implements MessageChannelRuntime {
   private client: RelayClientLike | null = null;
   private unsubscribe: (() => void) | null = null;
   private catalogUnsub: (() => void) | null = null;
-  private control: ControlService | null = null;
+  private control: PublicControlService | null = null;
   private terminal: DefaultRelayTerminalRuntime | null = null;
   private terminalReady = false;
   private terminalSupervisor: RmuxSidecarSupervisor | null = null;

@@ -2,7 +2,7 @@ import { snapshotBotProfile, type BotProfile } from "../bots/bot-types";
 import { BotError } from "../bots/bot-error";
 import type { BotRuntimeManager } from "../bots/bot-runtime-manager";
 import type { BotService } from "../bots/bot-service";
-import { planDirectConversation } from "./direct-conversation";
+import { planDirectConversation, presentDirectConversation } from "./direct-conversation";
 import { createDirectTopicId, createTopicId } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
 import type { ReleaseOwnedSession } from "../sessions/owned-session-release";
@@ -181,7 +181,7 @@ export class ConversationRunService {
 
   getConversation(conversationId: string): ConversationRecord {
     this.assertOpen();
-    return this.requireConversation(conversationId);
+    return this.presentDirect(this.requireConversation(conversationId));
   }
 
   listConversations(filter?: { botId?: string }): ConversationRecord[] {
@@ -205,7 +205,9 @@ export class ConversationRunService {
         byId.set(planned.conversation.id, planned.conversation);
       }
     }
-    return [...byId.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    return [...byId.values()]
+      .map((conversation) => this.presentDirect(conversation))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 
   listTopics(conversationId: string): ConversationTopic[] {
@@ -389,6 +391,18 @@ export class ConversationRunService {
       }
     }
     throw new ConversationError("conversation_not_found", `conversation "${conversationId}" does not exist`);
+  }
+
+  private presentDirect(conversation: ConversationRecord): ConversationRecord {
+    const botId = conversation.botIds[0];
+    if (conversation.kind !== "bot" || !botId) {
+      return conversation;
+    }
+    const bot = this.state.bots[botId];
+    if (!bot) {
+      return conversation;
+    }
+    return presentDirectConversation(conversation, bot);
   }
 
   private planDirect(bot: Pick<BotProfile, "id" | "name" | "createdAt" | "updatedAt">) {

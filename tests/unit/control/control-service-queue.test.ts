@@ -131,6 +131,13 @@ test("promptImmediate never FIFO-enqueues on a busy session lane and does not ru
     text: "conversation-turn",
     senderId: "bot-conversation",
     promptRequestId: "sturn_conversation",
+    conversation: {
+      conversationId: "conversation_1",
+      topicId: "topic_1",
+      botId: "bot_1",
+      runId: "run_1",
+      memberTurnId: "mturn_1",
+    },
   });
   expect(conversation.ok).toBe(false);
   expect(conversation.queued).toBeFalsy();

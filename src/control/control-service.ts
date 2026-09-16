@@ -31,6 +31,8 @@ import {
 } from "../channels/channel-scope";
 import { AgentMessagingError } from "../orchestration/agent-messaging-error";
 import type { PermissionInteractionOrigin } from "../permissions/permission-types.js";
+import type { ConversationExecutionPromptInput } from "../conversations/conversation-execution-port.js";
+import { sanitizePublicPromptInput } from "./public-control.js";
 import type { ControlEventBus } from "./control-event-bus";
 import {
   readNativeSessionHistory,
@@ -380,15 +382,6 @@ export interface ControlPromptInput {
   /** Conversation pre-admission cancel. Checked after any config-tail wait and
    *  immediately before TurnQueue.submit so a cancelled Run never starts. */
   abortSignal?: AbortSignal;
-  /**
-   * Conversation execution provenance, derived by ConversationStore at claim
-   * from the live authority epoch. `promptImmediate` fail-closes to
-   * orchestration unless this is exactly `"human"`. Interactive `prompt()`
-   * ignores it and is always human. Omitting it cannot mint human authority.
-   */
-  executionOrigin?: PermissionInteractionOrigin;
-  /** Exact Conversation/Run/MemberTurn join identity for Direct Bot turns. */
-  conversation?: ConversationTurnCorrelation;
 }
 
 export interface ControlPromptResult {
@@ -1338,21 +1331,25 @@ export class ControlService {
   }
 
   async prompt(input: ControlPromptInput): Promise<ControlPromptResult> {
-    return this.submitHumanPrompt(input, true);
+    return this.submitHumanPrompt(sanitizePublicPromptInput(input), true);
   }
 
   /**
-   * Conversation execution seam: same TurnQueue / SessionTurnRunner path as
-   * `prompt()`, but never FIFO-enqueues when the session lane is busy.
+   * Core-private Conversation execution seam. Same TurnQueue / SessionTurnRunner
+   * path as `prompt()`, but never FIFO-enqueues when the session lane is busy.
    * Turn origin is the store-derived `executionOrigin` (fail-closed to
    * orchestration). ConversationStore already owns durable queuing.
+   * Not part of PublicControlService / plugin-api.
    */
-  async promptImmediate(input: ControlPromptInput): Promise<ControlPromptResult> {
+  async promptImmediate(input: ConversationExecutionPromptInput): Promise<ControlPromptResult> {
     return this.submitHumanPrompt(input, false);
   }
 
   private submitHumanPrompt(
-    input: ControlPromptInput,
+    input: ControlPromptInput & {
+      executionOrigin?: PermissionInteractionOrigin;
+      conversation?: ConversationTurnCorrelation;
+    },
     queueable: boolean,
   ): Promise<ControlPromptResult> {
     const channelId = getChannelIdFromChatKey(input.chatKey);
@@ -1381,7 +1378,8 @@ export class ControlService {
       const owned =
         this.deps.sessions.getLogicalSessionRecord?.(internalAlias)
         ?? this.deps.sessions.getLogicalSessionRecord?.(input.sessionAlias);
-      if (queueable || input.conversation === undefined) {
+      const trustedConversationExecution = !queueable && input.conversation !== undefined;
+      if (!trustedConversationExecution) {
         assertOrdinarySessionAddressable(owned?.owner);
       }
       return this.turnQueue.submit({
@@ -1481,6 +1479,7 @@ export class ControlService {
     return this.turnQueue.cancelTurn(chatKey, sessionAlias, internalAlias);
   }
 
+  /** Core-private: exact in-flight cancel for a Conversation promptRequestId. */
   cancelTurnForPromptRequest(chatKey: string, sessionAlias: string, promptRequestId: string): boolean {
     const channelId = getChannelIdFromChatKey(chatKey);
     const internalAlias =
@@ -1492,6 +1491,7 @@ export class ControlService {
     return this.turnQueue.cancelTurnForPromptRequest(chatKey, sessionAlias, promptRequestId, internalAlias);
   }
 
+  /** Core-private: inspect a Conversation promptRequestId in TurnQueue. */
   inspectPromptRequest(
     chatKey: string,
     sessionAlias: string,
@@ -1636,16 +1636,31 @@ export class ControlService {
   /** Remove a pending queued prompt (by id) before it drains. No-ops (returns
    *  `{ cancelled: false }`) when the queue or the id is absent/already drained —
    *  e.g. a race where the item drained into a running turn just before the cancel
-   *  arrived. Does NOT touch a turn that is already running (use `cancelTurn`). */
+   *  arrived. Does NOT touch a turn that is already running (use `cancelTurn`).
+   *  Ordinary Session API: product-owned hidden sessions fail `hidden_session`. */
   cancelQueuedItem(
     chatKey: string,
     sessionAlias: string,
     itemId: string,
-    options?: { conversationSeam?: boolean },
   ): { cancelled: boolean } {
-    if (!options?.conversationSeam) {
-      this.assertOrdinaryAddressedAlias(chatKey, sessionAlias);
-    }
+    this.assertOrdinaryAddressedAlias(chatKey, sessionAlias);
+    return this.cancelQueuedAtAlias(chatKey, sessionAlias, itemId);
+  }
+
+  /** Core-private queue cancel for Conversation-owned hidden sessions. */
+  cancelQueuedConversationItem(
+    chatKey: string,
+    sessionAlias: string,
+    itemId: string,
+  ): { cancelled: boolean } {
+    return this.cancelQueuedAtAlias(chatKey, sessionAlias, itemId);
+  }
+
+  private cancelQueuedAtAlias(
+    chatKey: string,
+    sessionAlias: string,
+    itemId: string,
+  ): { cancelled: boolean } {
     const channelId = getChannelIdFromChatKey(chatKey);
     const internalAlias = scopeDisplayAliasToInternal(channelId, sessionAlias);
     return this.turnQueue.cancelQueuedItem(chatKey, sessionAlias, itemId, internalAlias);
@@ -1824,6 +1839,7 @@ export class ControlService {
         "Conversation runtime is not wired in this process",
       );
     }
+    this.conversationRuntime.assertOpen();
     return this.conversationRuntime;
   }
 
@@ -1872,12 +1888,14 @@ export class ControlService {
   async createBot(input: BotCreateRequestDto) {
     const bot = await this.requireConversations().bots.createBot(input);
     this.deps.events.emit({ type: "bots-changed" });
+    this.deps.events.emit({ type: "conversations-changed" });
     return toBotDetail(bot);
   }
 
   async updateBot(id: string, patch: BotUpdateRequestDto) {
     const bot = await this.requireConversations().bots.updateBot(id, patch);
     this.deps.events.emit({ type: "bots-changed" });
+    this.deps.events.emit({ type: "conversations-changed" });
     return toBotDetail(bot);
   }
 

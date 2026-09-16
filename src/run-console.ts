@@ -8,6 +8,7 @@ import {
 import { listXacpxCommandHints } from "./commands/command-hints.js";
 import { XACPX_CORE_VERSION } from "./version.js";
 import { getLocale } from "./i18n/index.js";
+import { asPublicControl } from "./control/public-control.js";
 
 interface DaemonLifecycle {
   start: (input: { configPath: string; statePath: string }) => Promise<void>;
@@ -270,7 +271,7 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
       commandHints: listXacpxCommandHints(),
       coreVersion: XACPX_CORE_VERSION,
       locale: getLocale(),
-      control: runtime.control,
+      control: asPublicControl(runtime.control),
     });
     // Observe rejections immediately so a channel failure cannot become an
     // unhandled rejection while the scheduler startup path is still running.

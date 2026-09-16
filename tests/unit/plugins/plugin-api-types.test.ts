@@ -6,6 +6,8 @@ import type {
   ChannelFactory,
   ChannelRuntimeConfig,
   MessageChannelRuntime,
+  PublicControlPromptInput,
+  PublicControlService,
   ScheduledChannelMessageInput,
   SessionResourceCatalog,
   SessionResourceDescriptor,
@@ -65,4 +67,26 @@ test("plugin-api exports the session resource catalog contract types", async () 
   expect(source).toContain("SessionResourceCatalog");
   expect(source).toContain("SessionResourceDescriptor");
   expect(source).toContain("SessionResourceLifecycleEvent");
+});
+
+test("plugin-api Control surface is the public facade, not Conversation execution", async () => {
+  type ForbiddenPrompt = Extract<
+    keyof PublicControlPromptInput,
+    "executionOrigin" | "conversation" | "conversationSeam"
+  >;
+  const promptClean: [ForbiddenPrompt] extends [never] ? true : false = true;
+  expect(promptClean).toBe(true);
+
+  type ForbiddenMethods = Extract<
+    keyof PublicControlService,
+    "promptImmediate" | "cancelTurnForPromptRequest" | "inspectPromptRequest" | "cancelQueuedConversationItem"
+  >;
+  const methodsClean: [ForbiddenMethods] extends [never] ? true : false = true;
+  expect(methodsClean).toBe(true);
+
+  const source = await readFile("src/plugin-api.ts", "utf8");
+  expect(source).toContain("PublicControlService");
+  expect(source).not.toContain("promptImmediate");
+  expect(source).not.toContain("ConversationExecutionPort");
+  expect(source).not.toContain("executionOrigin");
 });

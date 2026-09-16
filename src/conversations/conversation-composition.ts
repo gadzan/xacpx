@@ -4,7 +4,8 @@ import { randomUUID } from "node:crypto";
 import { BotRuntimeManager } from "../bots/bot-runtime-manager";
 import { BotService } from "../bots/bot-service";
 import type { AppConfig } from "../config/types";
-import type { ControlService } from "../control/control-service";
+import { ConversationError } from "./conversation-error";
+import type { ConversationExecutionPort } from "./conversation-execution-port";
 import { resolveRuntimeDirFromConfigPath } from "../daemon/daemon-files";
 import type { AsyncMutex } from "../orchestration/async-mutex";
 import { createStrictOwnedSessionRelease, type ReleaseOwnedSession } from "../sessions/owned-session-release";
@@ -30,6 +31,8 @@ export interface ConversationRuntime {
   runs: ConversationRunService;
   authorityEpoch: string;
   kick(): Promise<void>;
+  /** Fail-closed gate for all public Bot/Conversation Control mutations (and reads). */
+  assertOpen(): void;
   shutdown(): Promise<void>;
 }
 
@@ -38,7 +41,8 @@ export interface CreateConversationRuntimeInput {
   state: AppState;
   stateStore: Pick<StateStore, "save"> & { saveNow?: (state: AppState) => Promise<void> };
   sessions: SessionService;
-  control: Pick<ControlService, "promptImmediate" | "cancelQueuedItem" | "cancelTurnForPromptRequest">;
+  /** Core-private Conversation execution port — never the public Control facade. */
+  control: ConversationExecutionPort;
   sqlitePath: string;
   releaseOwnedSession: ReleaseOwnedSession;
   onProductEvent?: ConversationProductEventSink;
@@ -66,7 +70,13 @@ export async function createConversationRuntime(
     releaseOwnedSession: input.releaseOwnedSession,
     ...shared,
   });
-  const runner = new ControlConversationTurnRunner(input.control);
+  const execution: ConversationExecutionPort = {
+    promptImmediate: (promptInput) => input.control.promptImmediate(promptInput),
+    cancelTurnForPromptRequest: (...args) => input.control.cancelTurnForPromptRequest(...args),
+    inspectPromptRequest: (...args) => input.control.inspectPromptRequest(...args),
+    cancelQueuedConversationItem: (...args) => input.control.cancelQueuedConversationItem(...args),
+  };
+  const runner = new ControlConversationTurnRunner(execution);
   const dispatcher = new ConversationDispatcher(store, botRuntime, runner, input.sessions, {
     authorityEpoch: input.authorityEpoch ?? randomUUID(),
     ...(input.ownerId ? { ownerId: input.ownerId } : {}),
@@ -87,6 +97,12 @@ export async function createConversationRuntime(
       ...shared,
     },
   );
+  let lifecycle: "open" | "stopping" | "closed" = "open";
+  const assertOpen = (): void => {
+    if (lifecycle !== "open") {
+      throw new ConversationError("runtime_closed", "conversation runtime is closed");
+    }
+  };
   return {
     store,
     bots,
@@ -95,7 +111,16 @@ export async function createConversationRuntime(
     runs,
     authorityEpoch: dispatcher.authorityEpoch,
     kick: () => dispatcher.kick(),
-    shutdown: () => runs.shutdown(),
+    assertOpen,
+    shutdown: async () => {
+      if (lifecycle !== "open") {
+        return;
+      }
+      lifecycle = "stopping";
+      bots.close();
+      await runs.shutdown();
+      lifecycle = "closed";
+    },
   };
 }
 

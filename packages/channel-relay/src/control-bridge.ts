@@ -9,13 +9,13 @@ import {
   type ScheduledTaskDto,
   type SessionHistoryRowDto,
 } from "@ganglion/xacpx-relay-protocol";
-import type { ControlService } from "xacpx/plugin-api";
+import type { PublicControlService } from "xacpx/plugin-api";
 import { toolUseEventToStepDto } from "./tool-presentation";
 
 // Wire mappers live here (not in relay-protocol) so the protocol package stays
 // free of xacpx imports. Field lists mirror the "Keep in sync" notes in dtos.ts.
 export function scheduledTaskToDto(
-  record: ReturnType<ControlService["listScheduledTasks"]>[number],
+  record: ReturnType<PublicControlService["listScheduledTasks"]>[number],
 ): ScheduledTaskDto {
   return {
     id: record.id,
@@ -31,7 +31,7 @@ export function scheduledTaskToDto(
 }
 
 export function orchestrationTaskToDto(
-  record: Awaited<ReturnType<ControlService["listOrchestrationTasks"]>>[number],
+  record: Awaited<ReturnType<PublicControlService["listOrchestrationTasks"]>>[number],
 ): OrchestrationTaskDto {
   return {
     taskId: record.taskId,
@@ -129,7 +129,7 @@ function modelSetDeadlineAt(
 }
 
 export function createControlBridge(
-  control: ControlService,
+  control: PublicControlService,
   options: ControlBridgeOptions = {},
 ): ControlBridge {
   const setTimeoutFn =
@@ -180,7 +180,7 @@ export function createControlBridge(
 }
 
 async function dispatchControlRequest(
-  control: ControlService,
+  control: PublicControlService,
   envelope: RelayEnvelope,
   deadlineAt?: number,
 ): Promise<unknown> {
@@ -1022,7 +1022,7 @@ async function dispatchControlRequest(
 // tool) plus the flat fallbacks, reusing the same tool-step presentation as live turns.
 function historyMessagesToRows(
   messages: Extract<
-    Parameters<Parameters<ControlService["events"]["subscribe"]>[0]>[0],
+    Parameters<Parameters<PublicControlService["events"]["subscribe"]>[0]>[0],
     { type: "session-history" }
   >["messages"],
 ): SessionHistoryRowDto[] {
@@ -1066,9 +1066,9 @@ function historyMessagesToRows(
   });
 }
 
-/** Routes hub→connector downward terminal event frames to the ControlService. Fire-and-forget. */
+/** Routes hub→connector downward terminal event frames to the PublicControlService. Fire-and-forget. */
 export function dispatchControlEvent(
-  control: ControlService,
+  control: PublicControlService,
   envelope: RelayEnvelope,
 ): void {
   const p = (envelope.payload ?? {}) as {
@@ -1101,7 +1101,7 @@ function toDisplaySessionAlias(internalAlias: string): string {
 }
 
 export function subscribeControlEvents(
-  control: ControlService,
+  control: PublicControlService,
   sendEvent: (type: string, payload: unknown) => void,
 ): () => void {
   return control.events.subscribe((event) => {

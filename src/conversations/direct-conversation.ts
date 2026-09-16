@@ -2,6 +2,7 @@ import {
   createDirectConversationId,
   createDirectTopicId,
 } from "../domain/ids";
+import type { BotProfile } from "../bots/bot-types";
 import type { AppState } from "../state/types";
 import type { ConversationRecord, ConversationTopic } from "./conversation-types";
 
@@ -45,4 +46,24 @@ export function planDirectConversation(
       updatedAt,
     };
   return { conversation, topic };
+}
+
+/**
+ * Direct Conversation public presentation is the current owning Bot projection.
+ * Identity (id, botIds, default Topic id) stays on the durable Conversation
+ * domain; title/createdAt/updatedAt do not freeze at first materialization.
+ */
+export function presentDirectConversation(
+  conversation: ConversationRecord,
+  bot: Pick<BotProfile, "name" | "createdAt" | "updatedAt">,
+): ConversationRecord {
+  if (conversation.kind !== "bot") {
+    return conversation;
+  }
+  return {
+    ...conversation,
+    title: bot.name,
+    createdAt: bot.createdAt,
+    updatedAt: bot.updatedAt,
+  };
 }
