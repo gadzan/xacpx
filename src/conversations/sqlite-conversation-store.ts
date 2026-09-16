@@ -310,14 +310,27 @@ export class SqliteConversationStore implements ConversationStore {
   private readonly ids: ConversationIdFactory;
   private readonly beforeAcceptCommit?: () => void;
 
+  private closed = false;
+
   constructor(
     private readonly db: SqlDriver,
     options?: SqliteConversationStoreOptions,
   ) {
     this.ids = options?.ids ?? defaultIds();
     this.beforeAcceptCommit = options?.beforeAcceptCommit;
-    this.db.exec(SCHEMA);
+    this.sqlite.exec(SCHEMA);
     this.ensureDispatchAuthorityEpochColumn();
+  }
+
+  private assertOpen(): void {
+    if (this.closed) {
+      throw new ConversationError("store_closed", "conversation store is closed");
+    }
+  }
+
+  private get sqlite(): SqlDriver {
+    this.assertOpen();
+    return this.db;
   }
 
   static async open(path: string, options?: SqliteConversationStoreOptions): Promise<SqliteConversationStore> {
@@ -331,7 +344,7 @@ export class SqliteConversationStore implements ConversationStore {
       return { reused: true, ...existing };
     }
     try {
-      return this.db.transaction(() => {
+      return this.sqlite.transaction(() => {
         this.assertAcceptable(input.conversationId, input.topicId);
         const created = this.insertAccepted(input);
         this.beforeAcceptCommit?.();
@@ -349,12 +362,12 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   getRun(runId: string): ConversationRun | undefined {
-    const row = this.db.get<RunRow>("SELECT * FROM runs WHERE id = ?", [runId]);
+    const row = this.sqlite.get<RunRow>("SELECT * FROM runs WHERE id = ?", [runId]);
     return row ? mapRun(row) : undefined;
   }
 
   getRunByRequestId(conversationId: string, topicId: string, requestId: string): ConversationRun | undefined {
-    const row = this.db.get<RunRow>(
+    const row = this.sqlite.get<RunRow>(
       "SELECT * FROM runs WHERE conversation_id = ? AND topic_id = ? AND request_id = ?",
       [conversationId, topicId, requestId],
     );
@@ -368,11 +381,11 @@ export class SqliteConversationStore implements ConversationStore {
 
   listRuns(conversationId: string, topicId?: string): ConversationRun[] {
     const rows = topicId
-      ? this.db.all<RunRow>(
+      ? this.sqlite.all<RunRow>(
         "SELECT * FROM runs WHERE conversation_id = ? AND topic_id = ? ORDER BY created_at ASC, id ASC",
         [conversationId, topicId],
       )
-      : this.db.all<RunRow>(
+      : this.sqlite.all<RunRow>(
         "SELECT * FROM runs WHERE conversation_id = ? ORDER BY created_at ASC, id ASC",
         [conversationId],
       );
@@ -380,13 +393,13 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   getMessage(messageId: string): ConversationMessage | undefined {
-    const row = this.db.get<MessageRow>("SELECT * FROM messages WHERE id = ?", [messageId]);
+    const row = this.sqlite.get<MessageRow>("SELECT * FROM messages WHERE id = ?", [messageId]);
     return row ? mapMessage(row) : undefined;
   }
 
   listMessages(query: ListMessagesQuery): ConversationMessage[] {
     const backward = query.beforeSeq !== undefined && query.afterSeq === undefined;
-    const rows = this.db.all<MessageRow>(
+    const rows = this.sqlite.all<MessageRow>(
       `SELECT * FROM messages
        WHERE conversation_id = ? AND topic_id = ?
          AND (? IS NULL OR seq > ?)
@@ -408,25 +421,25 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   getMemberTurn(memberTurnId: string): MemberTurnRecord | undefined {
-    const row = this.db.get<MemberTurnRow>("SELECT * FROM member_turns WHERE id = ?", [memberTurnId]);
+    const row = this.sqlite.get<MemberTurnRow>("SELECT * FROM member_turns WHERE id = ?", [memberTurnId]);
     return row ? mapMemberTurn(row) : undefined;
   }
 
   listMemberTurns(runId: string): MemberTurnRecord[] {
-    return this.db.all<MemberTurnRow>(
+    return this.sqlite.all<MemberTurnRow>(
       "SELECT * FROM member_turns WHERE run_id = ? ORDER BY created_at ASC, id ASC",
       [runId],
     ).map(mapMemberTurn);
   }
 
   getDispatchForRun(runId: string): PendingDispatch | undefined {
-    const row = this.db.get<DispatchRow>("SELECT * FROM pending_dispatches WHERE run_id = ?", [runId]);
+    const row = this.sqlite.get<DispatchRow>("SELECT * FROM pending_dispatches WHERE run_id = ?", [runId]);
     return row ? mapDispatch(row) : undefined;
   }
 
   recoverExpiredClaims(now: string): RecoveredClaim[] {
-    return this.db.transaction(() => {
-      const claimed = this.db.all<DispatchRow>(
+    return this.sqlite.transaction(() => {
+      const claimed = this.sqlite.all<DispatchRow>(
         `SELECT * FROM pending_dispatches
          WHERE state = 'claimed'
            AND (
@@ -453,17 +466,17 @@ export class SqliteConversationStore implements ConversationStore {
           });
           continue;
         }
-        this.db.run(
+        this.sqlite.run(
           `UPDATE pending_dispatches
            SET state = 'pending', owner = NULL, claimed_at = NULL, lease_expires_at = NULL, generation = generation + 1, authority_epoch = NULL
            WHERE id = ?`,
           [row.id],
         );
-        this.db.run(
+        this.sqlite.run(
           `UPDATE member_turns SET state = 'queued', attempt = attempt + 1, origin = 'recovery' WHERE id = ?`,
           [member.id],
         );
-        this.db.run(`UPDATE runs SET state = 'queued', started_at = NULL WHERE id = ?`, [run.id]);
+        this.sqlite.run(`UPDATE runs SET state = 'queued', started_at = NULL WHERE id = ?`, [run.id]);
         recovered.push({
           dispatch: this.requireDispatch(row.id),
           run: this.requireRun(run.id),
@@ -476,12 +489,12 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   claimNextDispatch(input: ClaimNextDispatchInput): ClaimedWork | undefined {
-    return this.db.transaction(() => {
+    return this.sqlite.transaction(() => {
       const skipTopicIds = input.skipTopicIds ?? [];
       const skipClause = skipTopicIds.length === 0
         ? ""
         : `AND r.topic_id NOT IN (${skipTopicIds.map(() => "?").join(",")})`;
-      const row = this.db.get<DispatchRow>(
+      const row = this.sqlite.get<DispatchRow>(
         `SELECT d.* FROM pending_dispatches d
          JOIN runs r ON r.id = d.run_id
          JOIN member_turns m ON m.id = d.member_turn_id
@@ -516,7 +529,7 @@ export class SqliteConversationStore implements ConversationStore {
       if (!row) {
         return undefined;
       }
-      this.db.run(
+      this.sqlite.run(
         `UPDATE pending_dispatches
          SET state = 'claimed', owner = ?, claimed_at = ?, lease_expires_at = ?
          WHERE id = ? AND state = 'pending'`,
@@ -526,7 +539,7 @@ export class SqliteConversationStore implements ConversationStore {
         optionalString(row.authority_epoch),
         input.authorityEpoch,
       );
-      this.db.run(
+      this.sqlite.run(
         `UPDATE member_turns SET state = 'dispatched', origin = ? WHERE id = ?`,
         [memberTurnOriginFromExecution(executionOrigin), row.member_turn_id],
       );
@@ -540,19 +553,19 @@ export class SqliteConversationStore implements ConversationStore {
 
   hasDurableBotWork(botId: string): boolean {
     const conversationId = createDirectConversationId(botId);
-    if (this.db.get("SELECT 1 AS ok FROM member_turns WHERE bot_id = ? LIMIT 1", [botId])) {
+    if (this.sqlite.get("SELECT 1 AS ok FROM member_turns WHERE bot_id = ? LIMIT 1", [botId])) {
       return true;
     }
-    if (this.db.get("SELECT 1 AS ok FROM runs WHERE conversation_id = ? LIMIT 1", [conversationId])) {
+    if (this.sqlite.get("SELECT 1 AS ok FROM runs WHERE conversation_id = ? LIMIT 1", [conversationId])) {
       return true;
     }
-    if (this.db.get(
+    if (this.sqlite.get(
       "SELECT 1 AS ok FROM messages WHERE conversation_id = ? OR sender_bot_id = ? LIMIT 1",
       [conversationId, botId],
     )) {
       return true;
     }
-    if (this.db.get(
+    if (this.sqlite.get(
       `SELECT 1 AS ok FROM pending_dispatches d
        JOIN member_turns m ON m.id = d.member_turn_id
        WHERE m.bot_id = ?
@@ -561,45 +574,45 @@ export class SqliteConversationStore implements ConversationStore {
     )) {
       return true;
     }
-    if (this.db.get(
+    if (this.sqlite.get(
       "SELECT 1 AS ok FROM conversation_lifecycle WHERE conversation_id = ? LIMIT 1",
       [conversationId],
     )) {
       return true;
     }
-    return Boolean(this.db.get(
+    return Boolean(this.sqlite.get(
       "SELECT 1 AS ok FROM topic_lifecycle WHERE conversation_id = ? LIMIT 1",
       [conversationId],
     ));
   }
 
   releaseClaimToPending(input: ReleaseClaimToPendingInput): PendingDispatch {
-    return this.db.transaction(() => {
+    return this.sqlite.transaction(() => {
       const dispatch = this.requireLiveUnstartedClaim(input);
-      this.db.run(
+      this.sqlite.run(
         `UPDATE pending_dispatches
          SET state = 'pending', owner = NULL, claimed_at = NULL, lease_expires_at = NULL, generation = generation + 1, authority_epoch = NULL
          WHERE id = ?`,
         [dispatch.id],
       );
-      this.db.run(
+      this.sqlite.run(
         `UPDATE member_turns SET state = 'queued', origin = 'recovery' WHERE id = ?`,
         [dispatch.member_turn_id],
       );
-      this.db.run(`UPDATE runs SET state = 'queued' WHERE id = ? AND state = 'running'`, [dispatch.run_id]);
+      this.sqlite.run(`UPDATE runs SET state = 'queued' WHERE id = ? AND state = 'running'`, [dispatch.run_id]);
       return this.requireDispatch(dispatch.id);
     });
   }
 
   markExecutionStarted(input: MarkExecutionStartedInput): MemberTurnRecord {
-    return this.db.transaction(() => {
+    return this.sqlite.transaction(() => {
       this.requireLiveUnstartedClaim(input);
       const run = this.requireRun(input.runId);
       const member = this.requireMemberTurn(input.memberTurnId);
       if (TERMINAL_RUN_STATES.includes(run.state) || TERMINAL_MEMBER_STATES.includes(member.state)) {
         throw new ConversationError("run_not_runnable", `run "${input.runId}" is ${run.state}`);
       }
-      this.db.run(
+      this.sqlite.run(
         `UPDATE member_turns
          SET state = 'running',
              session_alias = ?,
@@ -617,7 +630,7 @@ export class SqliteConversationStore implements ConversationStore {
           input.memberTurnId,
         ],
       );
-      this.db.run(
+      this.sqlite.run(
         `UPDATE runs SET state = 'running', started_at = COALESCE(started_at, ?) WHERE id = ?`,
         [input.now, input.runId],
       );
@@ -630,7 +643,7 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   assertLiveDispatchForMaterialize(input: AssertLiveDispatchForMaterializeInput): void {
-    this.db.transaction(() => {
+    this.sqlite.transaction(() => {
       if (this.isConversationDeleting(input.conversationId)) {
         throw new ConversationError("conversation_deleting", `conversation "${input.conversationId}" is deleting`);
       }
@@ -650,13 +663,13 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   completeExecution(input: CompleteExecutionInput): CompleteExecutionResult {
-    return this.db.transaction(() => {
+    return this.sqlite.transaction(() => {
       const run = this.requireRun(input.runId);
       const member = this.requireMemberTurn(input.memberTurnId);
       if (run.state === "cancelled") {
         this.finishDispatchForRun(run.id, input.now);
         if (!member.finishedAt) {
-          this.db.run(
+          this.sqlite.run(
             `UPDATE member_turns SET state = 'cancelled', finished_at = ? WHERE id = ?`,
             [input.now, member.id],
           );
@@ -680,7 +693,7 @@ export class SqliteConversationStore implements ConversationStore {
       }
       const seq = this.allocateSeq(run.conversationId, run.topicId);
       const messageId = this.ids.messageId();
-      this.db.run(
+      this.sqlite.run(
         `INSERT INTO messages (
            id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
          ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
@@ -696,11 +709,11 @@ export class SqliteConversationStore implements ConversationStore {
           input.now,
         ],
       );
-      this.db.run(
+      this.sqlite.run(
         `UPDATE member_turns SET state = 'completed', finished_at = ? WHERE id = ?`,
         [input.now, member.id],
       );
-      this.db.run(
+      this.sqlite.run(
         `UPDATE runs
          SET state = 'completed',
              completion_reason = ?,
@@ -720,11 +733,11 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   failExecution(input: FailExecutionInput): ConversationRun {
-    return this.db.transaction(() => this.applyFailExecution(input));
+    return this.sqlite.transaction(() => this.applyFailExecution(input));
   }
 
   failClaimBeforeStart(input: FailClaimBeforeStartInput): ConversationRun {
-    return this.db.transaction(() => {
+    return this.sqlite.transaction(() => {
       this.requireLiveUnstartedClaim(input);
       return this.applyFailExecution(input);
     });
@@ -741,7 +754,7 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   cancelRun(runId: string, now: string, reason = "cancelled"): CancelRunResult {
-    return this.db.transaction(() => {
+    return this.sqlite.transaction(() => {
       const run = this.requireRun(runId);
       const member = this.listMemberTurns(runId)[0];
       if (!member) {
@@ -756,7 +769,7 @@ export class SqliteConversationStore implements ConversationStore {
         // Cancellation of a started turn is recorded by the dispatcher after
         // it observes the underlying cancel outcome. Persist a cancelling
         // intent by completing the dispatch only when never started.
-        this.db.run(
+        this.sqlite.run(
           `UPDATE runs SET completion_reason = ? WHERE id = ?`,
           [reason, runId],
         );
@@ -768,11 +781,11 @@ export class SqliteConversationStore implements ConversationStore {
           executionStarted: true,
         };
       }
-      this.db.run(
+      this.sqlite.run(
         `UPDATE member_turns SET state = 'cancelled', finished_at = ? WHERE id = ?`,
         [now, member.id],
       );
-      this.db.run(
+      this.sqlite.run(
         `UPDATE runs SET state = 'cancelled', completion_reason = ?, finished_at = ? WHERE id = ?`,
         [reason, now, runId],
       );
@@ -788,8 +801,8 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   markConversationDeleting(conversationId: string, now: string): void {
-    this.db.transaction(() => {
-      this.db.run(
+    this.sqlite.transaction(() => {
+      this.sqlite.run(
         `INSERT INTO conversation_lifecycle (conversation_id, state, updated_at)
          VALUES (?, 'deleting', ?)
          ON CONFLICT(conversation_id) DO UPDATE SET state = 'deleting', updated_at = excluded.updated_at`,
@@ -799,8 +812,8 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   markTopicDeleting(topicId: string, conversationId: string, now: string): void {
-    this.db.transaction(() => {
-      this.db.run(
+    this.sqlite.transaction(() => {
+      this.sqlite.run(
         `INSERT INTO topic_lifecycle (topic_id, conversation_id, state, updated_at)
          VALUES (?, ?, 'deleting', ?)
          ON CONFLICT(topic_id) DO UPDATE SET state = 'deleting', updated_at = excluded.updated_at`,
@@ -810,7 +823,7 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   isConversationDeleting(conversationId: string): boolean {
-    const row = this.db.get<{ state: string }>(
+    const row = this.sqlite.get<{ state: string }>(
       "SELECT state FROM conversation_lifecycle WHERE conversation_id = ?",
       [conversationId],
     );
@@ -818,7 +831,7 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   isTopicDeleting(topicId: string): boolean {
-    const row = this.db.get<{ state: string }>(
+    const row = this.sqlite.get<{ state: string }>(
       "SELECT state FROM topic_lifecycle WHERE topic_id = ?",
       [topicId],
     );
@@ -826,8 +839,8 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   deleteTopicRows(conversationId: string, topicId: string): void {
-    this.db.transaction(() => {
-      const owned = this.db.get(
+    this.sqlite.transaction(() => {
+      const owned = this.sqlite.get(
         `SELECT 1 AS ok FROM topic_seq WHERE conversation_id = ? AND topic_id = ?
          UNION ALL
          SELECT 1 AS ok FROM topic_lifecycle WHERE conversation_id = ? AND topic_id = ?
@@ -841,28 +854,28 @@ export class SqliteConversationStore implements ConversationStore {
       if (!owned) {
         return;
       }
-      this.db.run(
+      this.sqlite.run(
         `DELETE FROM pending_dispatches
          WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ?)`,
         [conversationId, topicId],
       );
-      this.db.run(
+      this.sqlite.run(
         "DELETE FROM member_turns WHERE conversation_id = ? AND topic_id = ?",
         [conversationId, topicId],
       );
-      this.db.run(
+      this.sqlite.run(
         "DELETE FROM messages WHERE conversation_id = ? AND topic_id = ?",
         [conversationId, topicId],
       );
-      this.db.run(
+      this.sqlite.run(
         "DELETE FROM runs WHERE conversation_id = ? AND topic_id = ?",
         [conversationId, topicId],
       );
-      this.db.run(
+      this.sqlite.run(
         "DELETE FROM topic_seq WHERE conversation_id = ? AND topic_id = ?",
         [conversationId, topicId],
       );
-      this.db.run(
+      this.sqlite.run(
         "DELETE FROM topic_lifecycle WHERE conversation_id = ? AND topic_id = ?",
         [conversationId, topicId],
       );
@@ -870,30 +883,34 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   deleteConversationRows(conversationId: string): void {
-    this.db.transaction(() => {
-      this.db.run(
+    this.sqlite.transaction(() => {
+      this.sqlite.run(
         "DELETE FROM pending_dispatches WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ?)",
         [conversationId],
       );
-      this.db.run("DELETE FROM member_turns WHERE conversation_id = ?", [conversationId]);
-      this.db.run("DELETE FROM messages WHERE conversation_id = ?", [conversationId]);
-      this.db.run("DELETE FROM runs WHERE conversation_id = ?", [conversationId]);
-      this.db.run("DELETE FROM topic_seq WHERE conversation_id = ?", [conversationId]);
-      this.db.run("DELETE FROM topic_lifecycle WHERE conversation_id = ?", [conversationId]);
-      this.db.run("DELETE FROM conversation_lifecycle WHERE conversation_id = ?", [conversationId]);
+      this.sqlite.run("DELETE FROM member_turns WHERE conversation_id = ?", [conversationId]);
+      this.sqlite.run("DELETE FROM messages WHERE conversation_id = ?", [conversationId]);
+      this.sqlite.run("DELETE FROM runs WHERE conversation_id = ?", [conversationId]);
+      this.sqlite.run("DELETE FROM topic_seq WHERE conversation_id = ?", [conversationId]);
+      this.sqlite.run("DELETE FROM topic_lifecycle WHERE conversation_id = ?", [conversationId]);
+      this.sqlite.run("DELETE FROM conversation_lifecycle WHERE conversation_id = ?", [conversationId]);
     });
   }
 
   close(): void {
+    if (this.closed) {
+      return;
+    }
     this.db.close();
+    this.closed = true;
   }
 
   private ensureDispatchAuthorityEpochColumn(): void {
-    const cols = this.db.all<{ name: string }>("PRAGMA table_info(pending_dispatches)");
+    const cols = this.sqlite.all<{ name: string }>("PRAGMA table_info(pending_dispatches)");
     if (cols.some((col) => col.name === "authority_epoch")) {
       return;
     }
-    this.db.exec("ALTER TABLE pending_dispatches ADD COLUMN authority_epoch TEXT");
+    this.sqlite.exec("ALTER TABLE pending_dispatches ADD COLUMN authority_epoch TEXT");
   }
 
   private assertAcceptable(conversationId: string, topicId: string): void {
@@ -912,13 +929,13 @@ export class SqliteConversationStore implements ConversationStore {
     const memberTurnId = this.ids.memberTurnId();
     const dispatchId = this.ids.dispatchId();
     const maxMemberTurns = input.maxMemberTurns ?? 1;
-    this.db.run(
+    this.sqlite.run(
       `INSERT INTO messages (
          id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
        ) VALUES (?, ?, ?, ?, 'human', NULL, ?, ?, NULL, ?)`,
       [messageId, input.conversationId, input.topicId, seq, input.content, runId, input.now],
     );
-    this.db.run(
+    this.sqlite.run(
       `INSERT INTO runs (
          id, conversation_id, topic_id, request_message_id, request_id, mode, state, completion_reason,
          generation, max_member_turns, consumed_member_turns, profile_revision, profile_snapshot_json,
@@ -936,14 +953,14 @@ export class SqliteConversationStore implements ConversationStore {
         input.now,
       ],
     );
-    this.db.run(
+    this.sqlite.run(
       `INSERT INTO member_turns (
          id, run_id, conversation_id, topic_id, bot_id, session_alias, logical_session_id, source_turn_id,
          queue_item_id, batch, attempt, origin, state, trigger_message_ids_json, created_at, started_at, finished_at
        ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 1, 1, 'human', 'queued', ?, ?, NULL, NULL)`,
       [memberTurnId, runId, input.conversationId, input.topicId, input.botId, JSON.stringify([messageId]), input.now],
     );
-    this.db.run(
+    this.sqlite.run(
       `INSERT INTO pending_dispatches (
          id, run_id, member_turn_id, generation, state, owner, lease_expires_at, created_at, claimed_at, completed_at, authority_epoch
        ) VALUES (?, ?, ?, 1, 'pending', NULL, NULL, ?, NULL, NULL, ?)`,
@@ -959,7 +976,7 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   private allocateSeq(conversationId: string, topicId: string): number {
-    const row = this.db.get<{ next_seq: number }>(
+    const row = this.sqlite.get<{ next_seq: number }>(
       `INSERT INTO topic_seq (topic_id, conversation_id, next_seq)
        VALUES (?, ?, 1)
        ON CONFLICT(topic_id) DO UPDATE SET next_seq = next_seq + 1
@@ -991,11 +1008,11 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   private writeIndeterminate(runId: string, memberTurnId: string, now: string, reason: string): void {
-    this.db.run(
+    this.sqlite.run(
       `UPDATE member_turns SET state = 'indeterminate', finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
       [now, memberTurnId],
     );
-    this.db.run(
+    this.sqlite.run(
       `UPDATE runs SET state = 'indeterminate', completion_reason = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
       [reason, now, runId],
     );
@@ -1003,14 +1020,14 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   private finishDispatchForRun(runId: string, now: string): void {
-    const dispatch = this.db.get<DispatchRow>("SELECT * FROM pending_dispatches WHERE run_id = ?", [runId]);
+    const dispatch = this.sqlite.get<DispatchRow>("SELECT * FROM pending_dispatches WHERE run_id = ?", [runId]);
     if (dispatch) {
       this.finishDispatch(dispatch.id, now);
     }
   }
 
   private finishDispatch(dispatchId: string, now: string): void {
-    this.db.run(
+    this.sqlite.run(
       `UPDATE pending_dispatches
        SET state = 'completed', completed_at = COALESCE(completed_at, ?), lease_expires_at = NULL
        WHERE id = ?`,
@@ -1026,7 +1043,7 @@ export class SqliteConversationStore implements ConversationStore {
     runId?: string;
     memberTurnId?: string;
   }): DispatchRow {
-    const dispatch = this.db.get<DispatchRow>("SELECT * FROM pending_dispatches WHERE id = ?", [input.dispatchId]);
+    const dispatch = this.sqlite.get<DispatchRow>("SELECT * FROM pending_dispatches WHERE id = ?", [input.dispatchId]);
     if (
       !dispatch
       || dispatch.state !== "claimed"
@@ -1051,11 +1068,11 @@ export class SqliteConversationStore implements ConversationStore {
       return run;
     }
     const state = input.terminalState ?? "failed";
-    this.db.run(
+    this.sqlite.run(
       `UPDATE member_turns SET state = ?, finished_at = ? WHERE id = ?`,
       [state, input.now, input.memberTurnId],
     );
-    this.db.run(
+    this.sqlite.run(
       `UPDATE runs SET state = ?, completion_reason = ?, finished_at = ? WHERE id = ?`,
       [state, input.reason, input.now, input.runId],
     );
@@ -1088,7 +1105,7 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   private requireDispatch(dispatchId: string): PendingDispatch {
-    const row = this.db.get<DispatchRow>("SELECT * FROM pending_dispatches WHERE id = ?", [dispatchId]);
+    const row = this.sqlite.get<DispatchRow>("SELECT * FROM pending_dispatches WHERE id = ?", [dispatchId]);
     if (!row) {
       throw new ConversationError("dispatch_not_found", `dispatch "${dispatchId}" does not exist`);
     }
