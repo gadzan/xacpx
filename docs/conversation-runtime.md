@@ -143,8 +143,21 @@ Injected release failure leaves `deleting` + ownership in place for retry.
 
 **Remaining Bot-delete boundary:** `BotService.deleteBot` stays fail-closed (`bot_in_use` / `bot_in_group`) and does **not** auto-teardown. It consults AppState runtime references **and** ConversationStore durable work (`hasDurableBotWork`) so an accepted Run/outbox cannot outlive a deleted Bot through a crash-before-materialize window. Call `ConversationRunService.teardownDirectConversation` first, then delete the Bot. Group teardown is out of scope.
 
+## Production composition
+
+`buildApp` (`src/main.ts`) constructs the production Conversation runtime via `createConversationRuntime` (`src/conversations/conversation-composition.ts`) **before** Control/Relay accept Conversation requests:
+
+- SQLite path is `dirname(config.json)/runtime/conversations.sqlite` (`resolveRuntimeDirFromConfigPath`).
+- Each daemon process mints a fresh `authorityEpoch`.
+- Startup `kick()` recovers durable pending dispatch. Crash-before-first-claim work is claimed in the new process as `recovery` / `orchestration`.
+- Shutdown stops the dispatcher, waits for in-flight drain, then closes SQLite **before** disposing `state.json`.
+
+Public Control / Relay APIs are projections of this domain. Callers address Bot ID, Conversation ID, Topic ID, Run ID, and message `seq` only. They never choose hidden session aliases, `logicalSessionId`, TurnQueue ids, `bindingId`, or `chatKey` as product routing identities.
+
+`topic archive/delete` is not a public Control method until domain lifecycle owns it. `BotService.deleteBot` remains fail-closed while durable/runtime ownership exists.
+
 ## Out of scope
 
-Group routing, member selection, Router, parallel batches, `group_send`, Group UI, external channels, Relay protocol/UI, daemon `main.ts` wiring.
+Group routing, member selection, Router, parallel batches, `group_send`, Group UI, Relay Web Bot/Conversation UI, external channel Conversation bindings.
 
 **Follow-up before Direct Bot product release:** global dispatcher parallelism (more than one claimed execution in flight across Topics/Bots) is not part of this contract. Keep the current drain/claim sequencing until that work is designed.
