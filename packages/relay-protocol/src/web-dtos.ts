@@ -294,6 +294,13 @@ const CONTROL_EVENT_TYPE_MAP = {
   "terminal-exit": true,
   "agent-message": true,
   "agent-message-completion": true,
+  "bots-changed": true,
+  "conversations-changed": true,
+  "conversation-topic-changed": true,
+  "conversation-message": true,
+  "conversation-run-changed": true,
+  "member-turn-started": true,
+  "member-turn-finished": true,
 } satisfies Record<ControlEventDto["type"], true>;
 
 const CONTROL_EVENT_TYPES: ReadonlySet<string> = new Set(Object.keys(CONTROL_EVENT_TYPE_MAP));
@@ -493,6 +500,76 @@ function validPeerTurnOrigin(o: unknown): boolean {
 }
 
 
+function validConversationCorrelation(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== "object" || value === null) return false;
+  const c = value as Record<string, unknown>;
+  return typeof c.conversationId === "string"
+    && typeof c.topicId === "string"
+    && typeof c.botId === "string"
+    && typeof c.runId === "string"
+    && typeof c.memberTurnId === "string";
+}
+
+function validTopicSummary(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const c = value as Record<string, unknown>;
+  return typeof c.id === "string"
+    && typeof c.conversationId === "string"
+    && typeof c.title === "string"
+    && (c.status === "active" || c.status === "archived" || c.status === "deleting")
+    && typeof c.createdAt === "string"
+    && typeof c.updatedAt === "string";
+}
+
+function validConversationMessage(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const c = value as Record<string, unknown>;
+  return typeof c.id === "string"
+    && typeof c.conversationId === "string"
+    && typeof c.topicId === "string"
+    && typeof c.seq === "number"
+    && (c.role === "human" || c.role === "bot" || c.role === "system")
+    && typeof c.content === "string"
+    && typeof c.createdAt === "string"
+    && optStr(c.senderBotId) && optStr(c.replyTo) && optStr(c.runId) && optStr(c.promptRequestId);
+}
+
+function validConversationRun(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const c = value as Record<string, unknown>;
+  return typeof c.id === "string"
+    && typeof c.conversationId === "string"
+    && typeof c.topicId === "string"
+    && typeof c.requestMessageId === "string"
+    && typeof c.requestId === "string"
+    && c.mode === "explicit"
+    && (c.state === "queued" || c.state === "running" || c.state === "waiting-human"
+      || c.state === "completed" || c.state === "failed" || c.state === "cancelled"
+      || c.state === "indeterminate")
+    && typeof c.profileRevision === "number"
+    && typeof c.createdAt === "string"
+    && optStr(c.completionReason) && optStr(c.startedAt) && optStr(c.finishedAt);
+}
+
+function validMemberTurnSummary(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const c = value as Record<string, unknown>;
+  return typeof c.id === "string"
+    && typeof c.runId === "string"
+    && typeof c.conversationId === "string"
+    && typeof c.topicId === "string"
+    && typeof c.botId === "string"
+    && typeof c.batch === "number"
+    && typeof c.attempt === "number"
+    && (c.origin === "human" || c.origin === "followup" || c.origin === "retry" || c.origin === "recovery")
+    && (c.state === "queued" || c.state === "dispatched" || c.state === "running"
+      || c.state === "completed" || c.state === "failed" || c.state === "cancelled"
+      || c.state === "indeterminate")
+    && typeof c.createdAt === "string"
+    && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt);
+}
+
 /** Deep-validate an inner ControlEventDto: discriminant + per-variant required fields.
  *  The switch is compile-time exhaustive over ControlEventDto["type"] (see the `never`
  *  check in `default`), mirroring CONTROL_EVENT_TYPE_MAP above. */
@@ -503,7 +580,8 @@ export function validControlEvent(e: unknown): boolean {
   const type = c.type as ControlEventDto["type"];
   switch (type) {
     case "turn-output":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string"
+        && validConversationCorrelation(c.conversation);
     case "turn-finished":
       // All fields the hub persists (text fallback, errorMessage row, cancelled flag,
       // recovery receipt) are validated so a buggy connector cannot slip a non-string
@@ -512,7 +590,8 @@ export function validControlEvent(e: unknown): boolean {
         && optStr(c.text) && optStr(c.recoveryId) && optStr(c.errorMessage) && optBool(c.cancelled) && optBool(c.silent)
         && validPeerTurnOrigin(c.peerOrigin)
         && optNonNegInt(c.startedAfterSeq)
-        && (c.startedAt === undefined || finiteNonNegative(c.startedAt));
+        && (c.startedAt === undefined || finiteNonNegative(c.startedAt))
+        && validConversationCorrelation(c.conversation);
     case "scheduled-changed":
       return typeof c.chatKey === "string";
     case "turn-started":
@@ -521,19 +600,24 @@ export function validControlEvent(e: unknown): boolean {
         && validScheduledOrigin(c.scheduled)
         && validPeerTurnOrigin(c.peerOrigin)
         && optNonNegInt(c.startedAfterSeq) && optNonNegInt(c.slotAfterId)
-        && (c.startedAt === undefined || finiteNonNegative(c.startedAt));
+        && (c.startedAt === undefined || finiteNonNegative(c.startedAt))
+        && validConversationCorrelation(c.conversation);
     case "turn-thought":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string"
+        && validConversationCorrelation(c.conversation);
     case "plan":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.entries);
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.entries)
+        && validConversationCorrelation(c.conversation);
     case "turn-usage":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string"
         && finiteNonNegative(c.used) && finiteNonNegative(c.size)
-        && validUsageCost(c.cost) && validUsageBreakdown(c.breakdown);
+        && validUsageCost(c.cost) && validUsageBreakdown(c.breakdown)
+        && validConversationCorrelation(c.conversation);
     case "agent-commands":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string"
         && Array.isArray(c.commands)
-        && c.commands.every(validAgentCommand);
+        && c.commands.every(validAgentCommand)
+        && validConversationCorrelation(c.conversation);
     case "queue-updated":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.items);
     case "session-history":
@@ -545,7 +629,8 @@ export function validControlEvent(e: unknown): boolean {
           && ((m as { direction?: unknown }).direction === "in" || (m as { direction?: unknown }).direction === "out")
           && typeof (m as { text?: unknown }).text === "string");
     case "tool-event":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && validToolStep(c.step);
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && validToolStep(c.step)
+        && validConversationCorrelation(c.conversation);
     case "terminal-output":
       return typeof c.terminalId === "string" && typeof c.seq === "number" && typeof c.data === "string";
     case "terminal-exit":
@@ -561,7 +646,18 @@ export function validControlEvent(e: unknown): boolean {
     case "sessions-changed":
     case "workspaces-changed":
     case "orchestration-changed":
+    case "bots-changed":
+    case "conversations-changed":
       return true; // no extra fields
+    case "conversation-topic-changed":
+      return validTopicSummary(c.topic);
+    case "conversation-message":
+      return validConversationMessage(c.message);
+    case "conversation-run-changed":
+      return validConversationRun(c.run);
+    case "member-turn-started":
+    case "member-turn-finished":
+      return validConversationRun(c.run) && validMemberTurnSummary(c.memberTurn);
     default: {
       // Exhaustiveness guard: adding a ControlEventDto member without a case above is a tsc error.
       const _exhaustive: never = type;
@@ -591,7 +687,8 @@ export function validInstanceStateSync(p: unknown): boolean {
       && typeof turn.reasoning === "string"
       && Array.isArray(turn.steps) && turn.steps.every(validToolStep)
       && (turn.parts === undefined || (Array.isArray(turn.parts) && validStateSyncParts(turn.parts)))
-      && (turn.truncated === undefined || typeof turn.truncated === "boolean");
+      && (turn.truncated === undefined || typeof turn.truncated === "boolean")
+      && validConversationCorrelation(turn.conversation);
   })) return false;
   if (!Array.isArray(c.usage) || !c.usage.every((u) => {
     if (typeof u !== "object" || u === null) return false;

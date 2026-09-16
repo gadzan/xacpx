@@ -11,7 +11,15 @@ import {
   MSG,
   type AgentsCreatePayload,
   type AgentsRemovePayload,
+  type BotsCreatePayload,
+  type BotsDeletePayload,
+  type BotsGetPayload,
+  type BotsUpdatePayload,
   type CommandExecutePayload,
+  type ConversationHistoryPayload,
+  type ConversationPromptPayload,
+  type ConversationsGetPayload,
+  type ConversationsListPayload,
   type FsCopyPayload,
   type FsCreatePayload,
   type FsDeletePayload,
@@ -36,6 +44,8 @@ import {
   type PromptCancelPayload,
   type PromptPayload,
   type QueueCancelPayload,
+  type RunsCancelPayload,
+  type RunsGetPayload,
   type ScheduledCancelPayload,
   type ScheduledCreatePayload,
   type ScheduledListPayload,
@@ -64,6 +74,8 @@ import {
   type TerminalTerminatePayload,
   type TerminalViewerEventInner,
   type TerminalViewerEventPayload,
+  type TopicsCreatePayload,
+  type TopicsListPayload,
   type UploadPayload,
   type WorkspacesCreatePayload,
   type WorkspacesRemovePayload,
@@ -103,6 +115,8 @@ const fields = (p: unknown): Record<string, unknown> | null => (isObj(p) ? p : n
 const isArr = (v: unknown): boolean => Array.isArray(v);
 const optArr = (v: unknown): boolean => v === undefined || Array.isArray(v);
 const isStrArr = (v: unknown): boolean => Array.isArray(v) && v.every(isStr);
+const optStrOrNull = (v: unknown): boolean => v === undefined || v === null || typeof v === "string";
+const optBoolOrNull = (v: unknown): boolean => v === undefined || v === null || typeof v === "boolean";
 
 // --- session / agent / workspace ---
 const validateSessionsList: Validator<SessionsListPayload> = (p) => {
@@ -358,13 +372,77 @@ const validateUpload: Validator<UploadPayload> = (p) => {
   return o && isStr(o.filename) && isStr(o.content) && isStr(o.mimeType) ? (o as unknown as UploadPayload) : null;
 };
 
+const validateBotsGet: Validator<BotsGetPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.id) ? (o as unknown as BotsGetPayload) : null;
+};
+const validateBotsCreate: Validator<BotsCreatePayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.name) && isStr(o.agent) && isStr(o.workspace)
+    && optStr(o.avatar) && optStr(o.role) && optStr(o.instructions)
+    && optStr(o.model) && optStr(o.effort) && optBool(o.enabled)
+    ? (o as unknown as BotsCreatePayload) : null;
+};
+const validateBotsUpdate: Validator<BotsUpdatePayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.id)
+    && optStr(o.name) && optStrOrNull(o.avatar) && optStrOrNull(o.role)
+    && optStrOrNull(o.instructions) && optStr(o.agent) && optStr(o.workspace)
+    && optStrOrNull(o.model) && optStrOrNull(o.effort) && optBoolOrNull(o.enabled)
+    ? (o as unknown as BotsUpdatePayload) : null;
+};
+const validateBotsDelete: Validator<BotsDeletePayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.id) ? (o as unknown as BotsDeletePayload) : null;
+};
+const validateConversationsList: Validator<ConversationsListPayload> = (p) => {
+  const o = fields(p);
+  return o && optStr(o.botId) ? (o as unknown as ConversationsListPayload) : null;
+};
+const validateConversationsGet: Validator<ConversationsGetPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.conversationId) ? (o as unknown as ConversationsGetPayload) : null;
+};
+const validateTopicsList: Validator<TopicsListPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.conversationId) ? (o as unknown as TopicsListPayload) : null;
+};
+const validateTopicsCreate: Validator<TopicsCreatePayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.conversationId) && isStr(o.title) ? (o as unknown as TopicsCreatePayload) : null;
+};
+const validateConversationPrompt: Validator<ConversationPromptPayload> = (p) => {
+  const o = fields(p);
+  if (!o || !isStr(o.conversationId) || !isStr(o.topicId) || !isStr(o.requestId) || !isStr(o.text)) {
+    return null;
+  }
+  if (o.target !== undefined) {
+    if (!isObj(o.target) || !isStr(o.target.botId)) return null;
+  }
+  return o as unknown as ConversationPromptPayload;
+};
+const validateConversationHistory: Validator<ConversationHistoryPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.conversationId) && isStr(o.topicId)
+    && optNum(o.afterSeq) && optNum(o.beforeSeq) && optNum(o.limit)
+    ? (o as unknown as ConversationHistoryPayload) : null;
+};
+const validateRunsGet: Validator<RunsGetPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.runId) ? (o as unknown as RunsGetPayload) : null;
+};
+const validateRunsCancel: Validator<RunsCancelPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.runId) ? (o as unknown as RunsCancelPayload) : null;
+};
+
 /** The control-RPC message types that carry a client-supplied payload to validate.
  *  Excludes: handshake (instanceRegister/instanceAuth — validated in instance-gateway),
  *  event-direction (instanceEvent/instanceNotice — boundary B via validControlEvent),
  *  terminal I/O events (legacy terminalInput/Resize/Close and recoverable terminal
  *  stream/input/resize/heartbeat/detach/viewer-event/resource-exit — see
- *  parseTerminalEventPayload), and the four no-payload list RPCs
- *  (agentsList/workspacesList/agentsCatalog/orchestrationList). */
+ *  parseTerminalEventPayload), and the no-payload list RPCs
+ *  (agentsList/workspacesList/agentsCatalog/orchestrationList/botsList). */
 export type ControlRpcType =
   | typeof MSG.sessionsList | typeof MSG.sessionsCreate | typeof MSG.sessionsNativeList
   | typeof MSG.sessionsRemove | typeof MSG.sessionsArchive | typeof MSG.sessionsUnarchive
@@ -385,7 +463,12 @@ export type ControlRpcType =
   | typeof MSG.terminalCreate | typeof MSG.terminalAttach
   | typeof MSG.terminalOpen | typeof MSG.terminalTakeControl
   | typeof MSG.terminalResync | typeof MSG.terminalTerminate
-  | typeof MSG.upload;
+  | typeof MSG.upload
+  | typeof MSG.botsGet | typeof MSG.botsCreate | typeof MSG.botsUpdate | typeof MSG.botsDelete
+  | typeof MSG.conversationsList | typeof MSG.conversationsGet
+  | typeof MSG.topicsList | typeof MSG.topicsCreate
+  | typeof MSG.conversationPrompt | typeof MSG.conversationHistory
+  | typeof MSG.runsGet | typeof MSG.runsCancel;
 
 /** Registry: control-RPC type → shape validator. `satisfies` locks both directions —
  *  a ControlRpcType with no validator, or a validator whose key isn't a ControlRpcType,
@@ -444,6 +527,18 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.terminalResync]: validateTerminalResync,
   [MSG.terminalTerminate]: validateTerminalTerminate,
   [MSG.upload]: validateUpload,
+  [MSG.botsGet]: validateBotsGet,
+  [MSG.botsCreate]: validateBotsCreate,
+  [MSG.botsUpdate]: validateBotsUpdate,
+  [MSG.botsDelete]: validateBotsDelete,
+  [MSG.conversationsList]: validateConversationsList,
+  [MSG.conversationsGet]: validateConversationsGet,
+  [MSG.topicsList]: validateTopicsList,
+  [MSG.topicsCreate]: validateTopicsCreate,
+  [MSG.conversationPrompt]: validateConversationPrompt,
+  [MSG.conversationHistory]: validateConversationHistory,
+  [MSG.runsGet]: validateRunsGet,
+  [MSG.runsCancel]: validateRunsCancel,
 } satisfies Record<ControlRpcType, Validator<unknown>>;
 
 /** The payload type bound to a control-RPC message, derived from its validator's return. */

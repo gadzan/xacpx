@@ -930,6 +930,85 @@ async function dispatchControlRequest(
       }
       return await control.uploadFile(input);
     }
+    case MSG.botsList:
+      return { bots: control.listBots() };
+    case MSG.botsGet: {
+      const input = parseControlPayload(MSG.botsGet, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.botsGet}: malformed payload`);
+      return { bot: control.getBot(input.id) };
+    }
+    case MSG.botsCreate: {
+      const input = parseControlPayload(MSG.botsCreate, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.botsCreate}: malformed payload`);
+      return { bot: await control.createBot(input) };
+    }
+    case MSG.botsUpdate: {
+      const input = parseControlPayload(MSG.botsUpdate, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.botsUpdate}: malformed payload`);
+      const { id, ...patch } = input;
+      return { bot: await control.updateBot(id, patch) };
+    }
+    case MSG.botsDelete: {
+      const input = parseControlPayload(MSG.botsDelete, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.botsDelete}: malformed payload`);
+      return await control.deleteBot(input.id);
+    }
+    case MSG.conversationsList: {
+      const input = parseControlPayload(MSG.conversationsList, payload ?? {});
+      if (!input) return errorPayload("invalid-payload", `${MSG.conversationsList}: malformed payload`);
+      return {
+        conversations: control.listConversations(
+          input.botId ? { botId: input.botId } : undefined,
+        ),
+      };
+    }
+    case MSG.conversationsGet: {
+      const input = parseControlPayload(MSG.conversationsGet, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.conversationsGet}: malformed payload`);
+      return { conversation: control.getConversation(input.conversationId) };
+    }
+    case MSG.topicsList: {
+      const input = parseControlPayload(MSG.topicsList, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.topicsList}: malformed payload`);
+      return { topics: control.listTopics(input.conversationId) };
+    }
+    case MSG.topicsCreate: {
+      const input = parseControlPayload(MSG.topicsCreate, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.topicsCreate}: malformed payload`);
+      return { topic: await control.createTopic(input.conversationId, input.title) };
+    }
+    case MSG.conversationPrompt: {
+      const input = parseControlPayload(MSG.conversationPrompt, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.conversationPrompt}: malformed payload`);
+      return await control.promptConversation({
+        conversationId: input.conversationId,
+        topicId: input.topicId,
+        requestId: input.requestId,
+        text: input.text,
+        ...(input.target ? { target: input.target } : {}),
+      });
+    }
+    case MSG.conversationHistory: {
+      const input = parseControlPayload(MSG.conversationHistory, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.conversationHistory}: malformed payload`);
+      return control.conversationHistory({
+        conversationId: input.conversationId,
+        topicId: input.topicId,
+        ...(input.afterSeq !== undefined ? { afterSeq: input.afterSeq } : {}),
+        ...(input.beforeSeq !== undefined ? { beforeSeq: input.beforeSeq } : {}),
+        ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      });
+    }
+    case MSG.runsGet: {
+      const input = parseControlPayload(MSG.runsGet, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.runsGet}: malformed payload`);
+      return { run: control.getRun(input.runId) };
+    }
+    case MSG.runsCancel: {
+      const input = parseControlPayload(MSG.runsCancel, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.runsCancel}: malformed payload`);
+      return { run: await control.cancelRun(input.runId) };
+    }
     default:
       return errorPayload(
         "unknown-type",
@@ -1041,6 +1120,7 @@ export function subscribeControlEvents(
           chatKey: event.chatKey,
           sessionAlias: toDisplaySessionAlias(event.sessionAlias),
           step: toolUseEventToStepDto(event.event),
+          ...(event.conversation ? { conversation: event.conversation } : {}),
         },
       });
       return;
