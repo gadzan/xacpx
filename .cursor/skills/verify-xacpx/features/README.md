@@ -7,17 +7,17 @@ This directory is the maintained source for verifying user-facing xacpx CLI and 
 - Isolated `HOME` at `$VERIFY_HOME` (`/tmp/xacpx-verify-$RUN_ID`). Never the operator's real home.
 - `LANG=en_US.UTF-8` and `LC_ALL=en_US.UTF-8`.
 - `XACPX_CONFIG` / `XACPX_STATE` (and `WEACPX_*` aliases) unset.
-- Seed completed: `control-xacpx cli -- workspace list` exited `0` and `$HOME/.xacpx/config.json` exists.
-- `control-xacpx doctor` reports `PASS Config` and `FAIL` count `0`.
-- `control-xacpx` is on the invocation path shown in the skill Helpers section.
+- Seed completed: `bash "$CONTROL" cli -- workspace list` exited `0` and `$HOME/.xacpx/config.json` exists.
+- `bash "$CONTROL" doctor` reports `PASS Config` and `FAIL` count `0`.
+- Recipe commands written as `control-xacpx …` are invoked as `bash "$CONTROL" …` from Helpers. Do not execute the helper by path alone; GitHub may store it as mode `100644`.
 - Never drive an instance whose `HOME` this run did not create.
 
 ## Driving conventions
 
 - Start every recipe from the baseline state unless its preconditions say otherwise.
 - Treat every command as literal. Keep quoted chat commands and flags unchanged.
-- Run terminal actions through `control-xacpx cli --`.
-- Run chat actions through `control-xacpx dry-run -- --chat-key wx:verify --`.
+- Run terminal actions through `bash …/bin/control-xacpx cli --`.
+- Run chat actions through `bash …/bin/control-xacpx dry-run -- --chat-key wx:verify --`.
 - Restore seeded workspaces after a mutation. Do not remove proof artifacts during cleanup.
 - Do not `xacpx login`, `xacpx start`, or `/session new` unless the feature file says so.
 

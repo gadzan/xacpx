@@ -32,7 +32,7 @@ mkdir -p "$VERIFY_HOME" "$VERIFY_EVIDENCE"
 Seed config (creates `$HOME/.xacpx/config.json` from `config.example.json`; includes the default `home` workspace):
 
 ```bash
-"$VERIFY_REPO_ROOT/.cursor/skills/verify-xacpx/bin/control-xacpx" cli -- workspace list
+bash "$VERIFY_REPO_ROOT/.cursor/skills/verify-xacpx/bin/control-xacpx" cli -- workspace list
 ```
 
 Ready when that command exits `0`, stdout contains `Workspaces:`, and `$HOME/.xacpx/config.json` exists.
@@ -44,8 +44,8 @@ This surface is short-lived CLI / dry-run. There is no server to keep alive. Do 
 Read-only. Run before driving, and whenever a command looks off:
 
 ```bash
-"$VERIFY_REPO_ROOT/.cursor/skills/verify-xacpx/bin/control-xacpx" doctor
-"$VERIFY_REPO_ROOT/.cursor/skills/verify-xacpx/bin/control-xacpx" env
+bash "$VERIFY_REPO_ROOT/.cursor/skills/verify-xacpx/bin/control-xacpx" doctor
+bash "$VERIFY_REPO_ROOT/.cursor/skills/verify-xacpx/bin/control-xacpx" env
 ```
 
 Worth driving when all of these hold:
@@ -66,13 +66,13 @@ Do not pass `--fix` or `--smoke` unless the feature file asks. `--smoke` starts 
 
 ## Drive
 
-Harness: `control-xacpx` (repo-local; see Helpers). It refuses a non-isolated `HOME`.
+Harness: `bash control-xacpx` (repo-local; see Helpers). It refuses a non-isolated `HOME`.
 
 ```bash
-control-xacpx cli -- <xacpx-args...>
-control-xacpx dry-run -- --chat-key wx:verify -- "/help" "/status"
-control-xacpx doctor
-control-xacpx env
+bash "$VERIFY_REPO_ROOT/.cursor/skills/verify-xacpx/bin/control-xacpx" cli -- <xacpx-args...>
+bash "$VERIFY_REPO_ROOT/.cursor/skills/verify-xacpx/bin/control-xacpx" dry-run -- --chat-key wx:verify -- "/help" "/status"
+bash "$VERIFY_REPO_ROOT/.cursor/skills/verify-xacpx/bin/control-xacpx" doctor
+bash "$VERIFY_REPO_ROOT/.cursor/skills/verify-xacpx/bin/control-xacpx" env
 ```
 
 Stable handles (assert these strings; `LANG=en_US.UTF-8` is required):
@@ -107,7 +107,7 @@ Proof standards:
 
 Tear down only what this run created:
 
-1. If this run started a daemon, stop it with `control-xacpx cli -- stop` using the same `HOME`. Wait until `control-xacpx cli -- status` prints `xacpx is not running`. Do not `pkill`.
+1. If this run started a daemon, stop it with `bash "$CONTROL" cli -- stop` using the same `HOME`. Wait until `bash "$CONTROL" cli -- status` prints `xacpx is not running`. Do not `pkill`.
 2. `rm -rf "$VERIFY_HOME"` (the disposable home, including `.xacpx`).
 3. Leave `$VERIFY_EVIDENCE` in place.
 
@@ -115,15 +115,15 @@ If a drive fails, still run cleanup so the next run is not blocked by a leftover
 
 ## Helpers
 
-`bin/control-xacpx` is executable. From a launched verify environment:
+`bin/control-xacpx` is a bash script. From a launched verify environment:
 
 ```bash
 CONTROL="$VERIFY_REPO_ROOT/.cursor/skills/verify-xacpx/bin/control-xacpx"
-"$CONTROL" env
-"$CONTROL" cli -- version
-"$CONTROL" cli -- --help
-"$CONTROL" doctor
-"$CONTROL" dry-run -- --chat-key wx:verify -- "/help" "/status"
+bash "$CONTROL" env
+bash "$CONTROL" cli -- version
+bash "$CONTROL" cli -- --help
+bash "$CONTROL" doctor
+bash "$CONTROL" dry-run -- --chat-key wx:verify -- "/help" "/status"
 ```
 
-It runs `bun "$VERIFY_REPO_ROOT/src/cli.ts"` and `bun "$VERIFY_REPO_ROOT/src/dry-run.ts"` so a `dist/` rebuild is not required. It exits `2` if `HOME` is not an `xacpx-verify-*` directory (`VERIFY_ALLOW_SHARED_HOME=1` overrides; do not use that on a real account).
+It runs `bun "$VERIFY_REPO_ROOT/src/cli.ts"` and `bun "$VERIFY_REPO_ROOT/src/dry-run.ts"` so a `dist/` rebuild is not required. Invoke it with `bash` so a missing executable bit does not matter. It exits `2` if `HOME` is not an `xacpx-verify-*` directory (`VERIFY_ALLOW_SHARED_HOME=1` overrides; do not use that on a real account).

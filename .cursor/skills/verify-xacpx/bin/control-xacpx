@@ -88,10 +88,10 @@ case "$cmd" in
   ""|-h|--help)
     cat <<'EOF'
 Usage:
-  control-xacpx env
-  control-xacpx doctor [--verbose]
-  control-xacpx cli -- <xacpx args>
-  control-xacpx dry-run -- [--chat-key <id>] "<command>"...
+  bash control-xacpx env
+  bash control-xacpx doctor [--verbose]
+  bash control-xacpx cli -- <xacpx args>
+  bash control-xacpx dry-run -- [--chat-key <id>] "<command>"...
 EOF
     ;;
   *)
