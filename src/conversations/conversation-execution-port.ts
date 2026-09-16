@@ -34,7 +34,8 @@ export interface ConversationExecutionPromptInput {
  * (dispatcher → ControlConversationTurnRunner) may hold this port.
  *
  * Public Control / plugin / Relay callers address Bot / Conversation / Topic /
- * Run IDs and never receive this type.
+ * Run IDs and never receive this type. Obtain it only via `conversationKernel()`
+ * in core composition — never as methods on ControlService.
  */
 export interface ConversationExecutionPort {
   promptImmediate(input: ConversationExecutionPromptInput): Promise<ControlPromptResult>;

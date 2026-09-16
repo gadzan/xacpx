@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { expect, test } from "bun:test";
 
 import type { AppConfig } from "../../../src/config/types";
-import { ControlService } from "../../../src/control/control-service";
+import { ControlService, conversationKernel } from "../../../src/control/control-service";
 import { createControlEventBus } from "../../../src/control/control-event-bus";
 import {
   createConversationRuntime,
@@ -87,24 +87,25 @@ async function boot(input: {
     },
     uploadStore: { save: async () => ({ id: "u", path: "/tmp/u", filename: "f", mimeType: "text/plain", size: 1 }) },
   } as never);
+  const kernel = conversationKernel(control);
   const runtime = await createConversationRuntime({
     config,
     state: input.state,
     stateStore: input.stateStore,
     sessions,
-    control,
+    control: kernel,
     sqlitePath: input.sqlitePath,
     releaseOwnedSession: createProductionOwnedSessionRelease({
       sessions,
       transport: { async deleteSession() {}, async releaseLogicalSession() {} },
     }),
-    onProductEvent: (event) => control.emitConversationProduct(event),
+    onProductEvent: (event) => kernel.emitConversationProduct(event),
     autoKick: input.autoKick ?? false,
     authorityEpoch: input.authorityEpoch,
     ownerId: input.ownerId,
     stateMutex,
   });
-  control.bindConversationRuntime(runtime);
+  kernel.bindConversationRuntime(runtime);
   return { control, runtime, sessions };
 }
 

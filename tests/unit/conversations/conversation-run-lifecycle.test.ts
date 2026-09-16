@@ -7,7 +7,7 @@ import { BotRuntimeManager } from "../../../src/bots/bot-runtime-manager";
 import { BotService } from "../../../src/bots/bot-service";
 import type { BotProfile } from "../../../src/bots/bot-types";
 import type { AppConfig } from "../../../src/config/types";
-import { ControlService } from "../../../src/control/control-service";
+import { ControlService, conversationKernel } from "../../../src/control/control-service";
 import { createControlEventBus } from "../../../src/control/control-event-bus";
 import { ConversationError } from "../../../src/conversations/conversation-error";
 import { ConversationDispatcher, type ConversationDispatcherHooks } from "../../../src/conversations/conversation-dispatcher";
@@ -202,14 +202,14 @@ async function createLifecycle(options: {
   });
   const events = createControlEventBus();
   const runner = options.controlChat
-    ? new ControlConversationTurnRunner(new ControlService({
+    ? new ControlConversationTurnRunner(conversationKernel(new ControlService({
       agent: { chat: options.controlChat },
       sessions,
       activeTurns: { isActiveAnywhere: () => false },
       scheduled: {} as never,
       orchestration: {} as never,
       events,
-    } as never), options.runnerOptions)
+    } as never)), options.runnerOptions)
     : options.runner ?? new FakeRunner();
   let clock = Date.parse(NOW);
   const nowFn = () => {
@@ -1019,7 +1019,7 @@ test("startup redispatch after accept-before-claim is orchestration and cannot m
   const restart = new ConversationDispatcher(
     first.store,
     first.runtime,
-    new ControlConversationTurnRunner(new ControlService({
+    new ControlConversationTurnRunner(conversationKernel(new ControlService({
       agent: {
         chat: async (request: ChatRequest) => {
           captured.push(request);
@@ -1031,7 +1031,7 @@ test("startup redispatch after accept-before-claim is orchestration and cannot m
       scheduled: {} as never,
       orchestration: {} as never,
       events: createControlEventBus(),
-    } as never)),
+    } as never))),
     first.sessions,
     { now: first.nowFn, ownerId: "dispatcher-restart" },
   );

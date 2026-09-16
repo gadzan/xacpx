@@ -109,7 +109,7 @@ import {
 } from "./formatting/render-text";
 import { QuotaManager } from "./weixin/messaging/quota-manager";
 import { createControlEventBus } from "./control/control-event-bus";
-import { ControlService } from "./control/control-service";
+import { ControlService, conversationKernel } from "./control/control-service";
 import {
   createConversationRuntime,
   createProductionOwnedSessionRelease,
@@ -2066,14 +2066,14 @@ export async function buildApp(
     state,
     stateStore: debouncedStateStore,
     sessions,
-    control,
+    control: conversationKernel(control),
     sqlitePath: resolveConversationStorePath(paths.configPath),
     releaseOwnedSession: createProductionOwnedSessionRelease({ sessions, transport }),
-    onProductEvent: (event) => control.emitConversationProduct(event),
+    onProductEvent: (event) => conversationKernel(control).emitConversationProduct(event),
     autoKick: true,
     stateMutex,
   });
-  control.bindConversationRuntime(conversations);
+  conversationKernel(control).bindConversationRuntime(conversations);
   void conversations.kick().catch((error) => {
     void logger.error(
       "conversations.recover_failed",

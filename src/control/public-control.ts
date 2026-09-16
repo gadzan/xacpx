@@ -28,10 +28,10 @@ const TRUSTED_CONTROL_METHODS = [
 type TrustedControlMethod = (typeof TRUSTED_CONTROL_METHODS)[number];
 
 /**
- * Plugin / channel / Relay Control facade. Ordinary Session APIs plus Bot,
- * Conversation, Topic, history, and Run APIs. Trusted Conversation execution
- * (`promptImmediate`, exact prompt-request cancel, hidden-session queue cancel)
- * is omitted — that lives on the core-private ConversationExecutionPort.
+ * Plugin / channel / Relay Control facade. This is the ControlService class
+ * type with trusted Conversation execution omitted. Those methods live only on
+ * the core-private `conversationKernel()` / ConversationExecutionPort, never as
+ * ControlService instance methods.
  */
 export type PublicControlService = Omit<ControlService, TrustedControlMethod>;
 
@@ -55,8 +55,10 @@ export function sanitizePublicPromptInput(input: PublicControlPromptInput): Cont
 }
 
 /**
- * Runtime projection of ControlService that cannot mint Conversation execution
- * authority. ChannelStartInput.control must be this object, not the raw class.
+ * Channel injection helper: sanitizes public prompt input and hides trusted
+ * method names if they are ever present. Production ControlService instances
+ * do not own those methods; Conversation execution uses `conversationKernel()`.
+ * `ChannelStartInput.control` must be this object, not a kernel.
  */
 export function asPublicControl(control: ControlService): PublicControlService;
 export function asPublicControl(control: ControlService | undefined | null): PublicControlService | undefined;

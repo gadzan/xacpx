@@ -2,10 +2,11 @@
 
 `ControlService` 是面向结构化消费者（首个是 relay 连接器，见
 [docs/superpowers/specs/2026-06-13-relay-hub-design.md](superpowers/specs/2026-06-13-relay-hub-design.md)）的核心控制门面。
-插件与频道拿到的是 **`PublicControlService`**（`asPublicControl` 运行时投影）：普通 Session API
+插件与频道拿到的是 **`PublicControlService`**（`ControlService` 类本身不含可信执行方法；
+`asPublicControl` 再做 prompt 字段消毒）。普通 Session API
 加上 Bot / Conversation / Topic / history / Run。可信 Conversation 执行
-（`promptImmediate`、精确 `promptRequestId` cancel、hidden-session queue cancel）
-只存在于 core-private `ConversationExecutionPort`，不出现在 `ChannelStartInput.control`
+只存在于 core-private `conversationKernel()` → `ConversationExecutionPort`，
+不是 `ControlService` 实例方法，也不出现在 `ChannelStartInput.control`
 或 `xacpx/plugin-api`。
 它聚合了 `SessionService` / `ActiveTurnRegistry` / `ScheduledTaskService` /
 `OrchestrationService` / `ConsoleAgent`（ChatAgent），自身无持久状态。每轮对话的
@@ -22,8 +23,8 @@
   `ControlExecuteCommandInput`。`prompt` / `runScheduledTurn` / `cancelTurn` /
   `cancelQueuedItem` 都转发给 `TurnQueue`；`prompt` 在转发前等待同会话已登记的配置操作。
   公共 `ControlPromptInput` **不含** `executionOrigin` / writable `conversation`。
-  `promptImmediate` / `cancelTurnForPromptRequest` / `inspectPromptRequest` /
-  `cancelQueuedConversationItem` 实现 `ConversationExecutionPort`，不出现在公共 facade。
+  Conversation 执行通过 `conversationKernel(control)` 取得 `ConversationExecutionPort`，
+  不作为 `ControlService` 的公开方法。
 - **`src/control/public-control.ts`** — `PublicControlService`、`asPublicControl()`。
   `run-console` 注入 `ChannelStartInput.control` 时只传该投影。
 - **`src/control/turn-queue.ts`** — `TurnQueue`：三态并发闸门
@@ -92,7 +93,8 @@
 `AppRuntime.control`。`run-console.ts` 在调用 `channels.startAll()` 时，将
 `asPublicControl(runtime.control)` 作为 `ChannelStartInput.control`（`src/channels/types.ts` 中的
 可选字段）传给所有频道；纯文本频道可忽略该字段。Conversation 运行时经
-`createConversationRuntime({ control })` 只拿到 `ConversationExecutionPort`。
+`createConversationRuntime({ control })` 只拿到 `ConversationExecutionPort`
+（生产路径传入 `conversationKernel(control)`）。
 `ConversationRuntime.shutdown()` 之后，所有公共 Bot/Conversation Control API（含 CRUD
 与只读 list/get/history）失败 `runtime_closed`。
 
@@ -101,7 +103,7 @@
 `ControlSessionInfo`、`ControlPromptInput`、
 `ControlPromptResult`、`ControlExecuteCommandInput`、`ControlEvent`、
 `ControlEventBus`、`ControlEventListener`、`ConversationTurnCorrelation`（**事件输出 DTO**，
-不能作为执行权威回填）。不导出 `promptImmediate` / `ConversationExecutionPort`。
+不能作为执行权威回填）。不导出可信执行方法名 / `ConversationExecutionPort` / `conversationKernel`。
 
 ## 语义要点
 

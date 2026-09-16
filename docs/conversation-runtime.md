@@ -62,9 +62,9 @@ After `markExecutionStarted`, the dispatcher re-reads Run/MemberTurn following e
 
 Recovery never uses latest-turn-in-alias, text match, or timestamp proximity.
 
-The runner seam is `ConversationTurnRunner` / `ControlConversationTurnRunner` wrapping the core-private `ConversationExecutionPort` (`promptImmediate` / request-id-aware cancel / `cancelQueuedConversationItem`). `promptImmediate` uses the same TurnQueue / SessionTurnRunner path as interactive `prompt()`, but **never FIFO-enqueues** when the session lane is busy (`queueable: false`). ConversationStore already owns durable queuing; a busy lane fails the Run immediately instead of leaving a TurnQueue item that can execute after the durable Run is already failed.
+The runner seam is `ConversationTurnRunner` / `ControlConversationTurnRunner` wrapping the core-private `ConversationExecutionPort` (`promptImmediate` / request-id-aware cancel / `cancelQueuedConversationItem`). That port is obtained only via `conversationKernel(control)` — a WeakMap companion, not methods on the `ControlService` class. `promptImmediate` uses the same TurnQueue / SessionTurnRunner path as interactive `prompt()`, but **never FIFO-enqueues** when the session lane is busy (`queueable: false`). ConversationStore already owns durable queuing; a busy lane fails the Run immediately instead of leaving a TurnQueue item that can execute after the durable Run is already failed.
 
-That port is **not** the public Control facade. `ChannelStartInput.control` and `xacpx/plugin-api` expose `PublicControlService` only. Public `ControlPromptInput` has no writable `executionOrigin`, `conversation` correlation, or `conversationSeam` boolean. `ConversationTurnCorrelation` remains an **output** event DTO. Public callers route by Bot / Conversation / Topic / Run IDs; they cannot mint human permission authority or address a hidden session.
+That port is **not** the public Control facade. `ChannelStartInput.control` and `xacpx/plugin-api` expose `PublicControlService` only. The `ControlService` class itself has no `promptImmediate`, `cancelTurnForPromptRequest`, `inspectPromptRequest`, `cancelQueuedConversationItem`, or `{ conversationSeam: true }` bypass. Public `ControlPromptInput` has no writable `executionOrigin` or `conversation` correlation. `ConversationTurnCorrelation` remains an **output** event DTO. Public callers route by Bot / Conversation / Topic / Run IDs; they cannot mint human permission authority or address a hidden session.
 
 `BotRuntimeManager` is **runtime materialization/binding only**. Direct Bot turns enter solely through `ConversationRunService` → dispatcher → runner. There is no second Bot execution engine and no `promptDirect` bypass.
 
@@ -175,7 +175,7 @@ ConversationRunService
 durable store / dispatcher
         │
         ▼
-core-private ConversationExecutionPort
+core-private conversationKernel() / ConversationExecutionPort
         │
         ▼
 hidden LogicalSession / TurnQueue

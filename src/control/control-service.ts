@@ -31,7 +31,9 @@ import {
 } from "../channels/channel-scope";
 import { AgentMessagingError } from "../orchestration/agent-messaging-error";
 import type { PermissionInteractionOrigin } from "../permissions/permission-types.js";
-import type { ConversationExecutionPromptInput } from "../conversations/conversation-execution-port.js";
+import type {
+  ConversationExecutionPort,
+} from "../conversations/conversation-execution-port.js";
 import { sanitizePublicPromptInput } from "./public-control.js";
 import type { ControlEventBus } from "./control-event-bus";
 import {
@@ -398,6 +400,26 @@ export interface ControlPromptResult {
   queueItemId?: string;
 }
 
+/**
+ * Core-private Conversation execution + wiring. Not a ControlService method set;
+ * channel plugins and plugin-api never receive this object.
+ */
+export interface ControlConversationKernel extends ConversationExecutionPort {
+  bindConversationRuntime(runtime: ConversationRuntime): void;
+  emitConversationProduct(event: ConversationProductEvent): void;
+}
+
+const conversationKernels = new WeakMap<ControlService, ControlConversationKernel>();
+
+/** Core-private accessor. Not exported from `xacpx/plugin-api`. */
+export function conversationKernel(control: ControlService): ControlConversationKernel {
+  const kernel = conversationKernels.get(control);
+  if (!kernel) {
+    throw new Error("Conversation execution kernel is not bound to this ControlService");
+  }
+  return kernel;
+}
+
 /** A turn started by a fired scheduled task. Runs through the same agent + turn-event
  *  machinery as a normal prompt, so it streams live and persists to history — but it
  *  also carries the prompt text + schedule origin in turn-started, so the hub can
@@ -511,6 +533,19 @@ export class ControlService {
           /* best-effort: no refresh on detection failure */
         }
       },
+    });
+    conversationKernels.set(this, {
+      promptImmediate: (input) => this.#submitHumanPrompt(input, false),
+      cancelTurnForPromptRequest: (chatKey, sessionAlias, promptRequestId) =>
+        this.#cancelTurnForPromptRequest(chatKey, sessionAlias, promptRequestId),
+      inspectPromptRequest: (chatKey, sessionAlias, promptRequestId) =>
+        this.#inspectPromptRequest(chatKey, sessionAlias, promptRequestId),
+      cancelQueuedConversationItem: (chatKey, sessionAlias, itemId) =>
+        this.#cancelQueuedAtAlias(chatKey, sessionAlias, itemId),
+      bindConversationRuntime: (runtime) => {
+        this.conversationRuntime = runtime;
+      },
+      emitConversationProduct: (event) => this.#publishConversationProduct(event),
     });
   }
 
@@ -1331,21 +1366,10 @@ export class ControlService {
   }
 
   async prompt(input: ControlPromptInput): Promise<ControlPromptResult> {
-    return this.submitHumanPrompt(sanitizePublicPromptInput(input), true);
+    return this.#submitHumanPrompt(sanitizePublicPromptInput(input), true);
   }
 
-  /**
-   * Core-private Conversation execution seam. Same TurnQueue / SessionTurnRunner
-   * path as `prompt()`, but never FIFO-enqueues when the session lane is busy.
-   * Turn origin is the store-derived `executionOrigin` (fail-closed to
-   * orchestration). ConversationStore already owns durable queuing.
-   * Not part of PublicControlService / plugin-api.
-   */
-  async promptImmediate(input: ConversationExecutionPromptInput): Promise<ControlPromptResult> {
-    return this.submitHumanPrompt(input, false);
-  }
-
-  private submitHumanPrompt(
+  #submitHumanPrompt(
     input: ControlPromptInput & {
       executionOrigin?: PermissionInteractionOrigin;
       conversation?: ConversationTurnCorrelation;
@@ -1479,8 +1503,7 @@ export class ControlService {
     return this.turnQueue.cancelTurn(chatKey, sessionAlias, internalAlias);
   }
 
-  /** Core-private: exact in-flight cancel for a Conversation promptRequestId. */
-  cancelTurnForPromptRequest(chatKey: string, sessionAlias: string, promptRequestId: string): boolean {
+  #cancelTurnForPromptRequest(chatKey: string, sessionAlias: string, promptRequestId: string): boolean {
     const channelId = getChannelIdFromChatKey(chatKey);
     const internalAlias =
       this.deps.sessions.getResolvedSessionByInternalAlias?.(sessionAlias)?.alias ??
@@ -1491,8 +1514,7 @@ export class ControlService {
     return this.turnQueue.cancelTurnForPromptRequest(chatKey, sessionAlias, promptRequestId, internalAlias);
   }
 
-  /** Core-private: inspect a Conversation promptRequestId in TurnQueue. */
-  inspectPromptRequest(
+  #inspectPromptRequest(
     chatKey: string,
     sessionAlias: string,
     promptRequestId: string,
@@ -1644,19 +1666,10 @@ export class ControlService {
     itemId: string,
   ): { cancelled: boolean } {
     this.assertOrdinaryAddressedAlias(chatKey, sessionAlias);
-    return this.cancelQueuedAtAlias(chatKey, sessionAlias, itemId);
+    return this.#cancelQueuedAtAlias(chatKey, sessionAlias, itemId);
   }
 
-  /** Core-private queue cancel for Conversation-owned hidden sessions. */
-  cancelQueuedConversationItem(
-    chatKey: string,
-    sessionAlias: string,
-    itemId: string,
-  ): { cancelled: boolean } {
-    return this.cancelQueuedAtAlias(chatKey, sessionAlias, itemId);
-  }
-
-  private cancelQueuedAtAlias(
+  #cancelQueuedAtAlias(
     chatKey: string,
     sessionAlias: string,
     itemId: string,
@@ -1828,10 +1841,6 @@ export class ControlService {
     this.deps.terminal.close(terminalId);
   }
 
-  bindConversationRuntime(runtime: ConversationRuntime): void {
-    this.conversationRuntime = runtime;
-  }
-
   private requireConversations(): ConversationRuntime {
     if (!this.conversationRuntime) {
       throw new ConversationError(
@@ -1843,7 +1852,7 @@ export class ControlService {
     return this.conversationRuntime;
   }
 
-  emitConversationProduct(event: ConversationProductEvent): void {
+  #publishConversationProduct(event: ConversationProductEvent): void {
     switch (event.type) {
       case "bots-changed":
         this.deps.events.emit({ type: "bots-changed" });

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 import { ControlConversationTurnRunner } from "../../../src/conversations/conversation-turn-runner";
 import { TurnQueue } from "../../../src/control/turn-queue";
-import { ControlService } from "../../../src/control/control-service";
+import { ControlService, conversationKernel } from "../../../src/control/control-service";
 import { createControlEventBus } from "../../../src/control/control-event-bus";
 import { directConversationChatKey } from "../../../src/domain/ids";
 
@@ -332,10 +332,10 @@ test("cancel during config-tail wait never admits the Conversation turn", async 
   const chatKey = directConversationChatKey(input.conversationId, input.topicId);
   const modelSet = control.setSessionModel(chatKey, input.sessionAlias, "gpt-x");
   await waitUntil(isConfigTailHeld);
-  const runner = new ControlConversationTurnRunner(control);
+  const runner = new ControlConversationTurnRunner(conversationKernel(control));
   const running = runner.run(input);
   await waitUntil(() => runner.hasTrackedExecution(input.promptRequestId));
-  expect(control.inspectPromptRequest(chatKey, input.sessionAlias, input.promptRequestId)).toBe("absent");
+  expect(conversationKernel(control).inspectPromptRequest(chatKey, input.sessionAlias, input.promptRequestId)).toBe("absent");
   expect(control.isBusy(chatKey, input.sessionAlias)).toBe(false);
   expect(control.queueLength(chatKey, input.sessionAlias)).toBe(0);
   expect(chatCount()).toBe(0);
@@ -353,7 +353,7 @@ test("cancel during config-tail wait never admits the Conversation turn", async 
   expect(chatCount()).toBe(0);
   expect(control.queueLength(chatKey, input.sessionAlias)).toBe(0);
   expect(control.isBusy(chatKey, input.sessionAlias)).toBe(false);
-  expect(control.inspectPromptRequest(chatKey, input.sessionAlias, input.promptRequestId)).toBe("absent");
+  expect(conversationKernel(control).inspectPromptRequest(chatKey, input.sessionAlias, input.promptRequestId)).toBe("absent");
 });
 
 test("a non-cancelled config-tail wait still submits exactly once after the tail settles", async () => {
@@ -361,10 +361,10 @@ test("a non-cancelled config-tail wait still submits exactly once after the tail
   const chatKey = directConversationChatKey(input.conversationId, input.topicId);
   const modelSet = control.setSessionModel(chatKey, input.sessionAlias, "gpt-x");
   await waitUntil(isConfigTailHeld);
-  const runner = new ControlConversationTurnRunner(control);
+  const runner = new ControlConversationTurnRunner(conversationKernel(control));
   const running = runner.run(input);
   await waitUntil(() => runner.hasTrackedExecution(input.promptRequestId));
-  expect(control.inspectPromptRequest(chatKey, input.sessionAlias, input.promptRequestId)).toBe("absent");
+  expect(conversationKernel(control).inspectPromptRequest(chatKey, input.sessionAlias, input.promptRequestId)).toBe("absent");
   expect(chatCount()).toBe(0);
   configTail.resolve();
   await modelSet;

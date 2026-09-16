@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { ControlService } from "../../../src/control/control-service";
+import { ControlService, conversationKernel } from "../../../src/control/control-service";
 import {
   createControlEventBus,
   type ControlEvent,
@@ -107,7 +107,7 @@ test("promptImmediate fail-closes to orchestration unless executionOrigin is hum
     captured = request;
     return { text: "immediate" };
   });
-  const omitted = await control.promptImmediate({
+  const omitted = await conversationKernel(control).promptImmediate({
     chatKey: "relay:acct-1",
     sessionAlias: "backend",
     text: "conversation-turn",
@@ -118,7 +118,7 @@ test("promptImmediate fail-closes to orchestration unless executionOrigin is hum
   expect(captured?.metadata?.origin).toBe("orchestration");
 
   captured = undefined;
-  const recovered = await control.promptImmediate({
+  const recovered = await conversationKernel(control).promptImmediate({
     chatKey: "relay:acct-1",
     sessionAlias: "backend",
     text: "recovered-turn",
@@ -130,7 +130,7 @@ test("promptImmediate fail-closes to orchestration unless executionOrigin is hum
   expect(captured?.metadata?.origin).toBe("orchestration");
 
   captured = undefined;
-  const fresh = await control.promptImmediate({
+  const fresh = await conversationKernel(control).promptImmediate({
     chatKey: "relay:acct-1",
     sessionAlias: "backend",
     text: "fresh-human-turn",

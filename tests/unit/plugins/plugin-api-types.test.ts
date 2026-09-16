@@ -89,4 +89,5 @@ test("plugin-api Control surface is the public facade, not Conversation executio
   expect(source).not.toContain("promptImmediate");
   expect(source).not.toContain("ConversationExecutionPort");
   expect(source).not.toContain("executionOrigin");
+  expect(source).not.toContain("conversationKernel");
 });

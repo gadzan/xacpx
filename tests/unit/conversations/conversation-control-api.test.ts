@@ -5,9 +5,9 @@ import { expect, test } from "bun:test";
 
 import { BotError } from "../../../src/bots/bot-error";
 import type { AppConfig } from "../../../src/config/types";
-import { ControlService } from "../../../src/control/control-service";
+import { ControlService, conversationKernel } from "../../../src/control/control-service";
 import { asPublicControl } from "../../../src/control/public-control";
-import type { PublicControlPromptInput, PublicControlService } from "../../../src/control/public-control";
+import type { PublicControlPromptInput } from "../../../src/control/public-control";
 import {
   createControlEventBus,
   type ControlEvent,
@@ -147,22 +147,23 @@ async function wire(options?: {
       await sessions.setArchived(internalAlias, false);
     },
   } as never);
+  const kernel = conversationKernel(control);
   const runtime = await createConversationRuntime({
     config,
     state,
     stateStore,
     sessions,
-    control,
+    control: kernel,
     sqlitePath,
     releaseOwnedSession: createProductionOwnedSessionRelease({ sessions, transport: physical }),
-    onProductEvent: (event) => control.emitConversationProduct(event),
+    onProductEvent: (event) => kernel.emitConversationProduct(event),
     autoKick: options?.autoKick ?? true,
     stateMutex,
     now,
     ...(options?.authorityEpoch ? { authorityEpoch: options.authorityEpoch } : {}),
     ...(options?.ownerId ? { ownerId: options.ownerId } : {}),
   });
-  control.bindConversationRuntime(runtime);
+  kernel.bindConversationRuntime(runtime);
   return {
     dir,
     sqlitePath,
@@ -631,12 +632,13 @@ const _publicPromptHasNoAuthority: [_PublicPromptForbidden] extends [never] ? tr
 void _publicPromptHasNoAuthority;
 
 type _PublicServiceForbidden = Extract<
-  keyof PublicControlService,
+  keyof ControlService,
   | "promptImmediate"
   | "cancelTurnForPromptRequest"
   | "inspectPromptRequest"
   | "cancelQueuedConversationItem"
   | "bindConversationRuntime"
+  | "emitConversationProduct"
 >;
 const _publicServiceHasNoTrustedMethods: [_PublicServiceForbidden] extends [never] ? true : false = true;
 void _publicServiceHasNoTrustedMethods;
@@ -644,13 +646,18 @@ void _publicServiceHasNoTrustedMethods;
 test("public Control facade cannot mint Conversation execution authority", async () => {
   const { control, sessions, seen, origins } = await wire({ autoKick: true });
   const publicControl = asPublicControl(control);
-  expect("promptImmediate" in publicControl).toBe(false);
-  expect("cancelTurnForPromptRequest" in publicControl).toBe(false);
-  expect("inspectPromptRequest" in publicControl).toBe(false);
-  expect("cancelQueuedConversationItem" in publicControl).toBe(false);
-  expect((publicControl as { promptImmediate?: unknown }).promptImmediate).toBeUndefined();
-  expect((publicControl as { cancelQueuedConversationItem?: unknown }).cancelQueuedConversationItem)
+  expect("promptImmediate" in control).toBe(false);
+  expect("cancelTurnForPromptRequest" in control).toBe(false);
+  expect("inspectPromptRequest" in control).toBe(false);
+  expect("cancelQueuedConversationItem" in control).toBe(false);
+  expect("bindConversationRuntime" in control).toBe(false);
+  expect("emitConversationProduct" in control).toBe(false);
+  expect((control as { promptImmediate?: unknown }).promptImmediate).toBeUndefined();
+  expect((control as { cancelQueuedConversationItem?: unknown }).cancelQueuedConversationItem)
     .toBeUndefined();
+  expect("promptImmediate" in publicControl).toBe(false);
+  expect((publicControl as { promptImmediate?: unknown }).promptImmediate).toBeUndefined();
+  expect(typeof conversationKernel(control).promptImmediate).toBe("function");
 
   await sessions.createSession("plain", "codex", "backend");
   const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
@@ -682,6 +689,7 @@ test("public Control facade cannot mint Conversation execution authority", async
     conversationSeam: true,
   };
   await expect(publicControl.prompt(forged as never)).rejects.toMatchObject({ code: "hidden_session" });
+  await expect(control.prompt(forged as never)).rejects.toMatchObject({ code: "hidden_session" });
   try {
     publicControl.cancelQueuedItem("wx:user", hiddenAlias!, "item", { conversationSeam: true } as never);
     throw new Error("cancelQueuedItem addressed a hidden session");

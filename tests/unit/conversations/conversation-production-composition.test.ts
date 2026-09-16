@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { expect, test } from "bun:test";
 
 import type { AppConfig } from "../../../src/config/types";
-import { ControlService } from "../../../src/control/control-service";
+import { ControlService, conversationKernel } from "../../../src/control/control-service";
 import { createControlEventBus } from "../../../src/control/control-event-bus";
 import {
   createConversationRuntime,
@@ -90,22 +90,23 @@ async function compose(stateStore: BarrierStateStore) {
     },
     uploadStore: { save: async () => ({ id: "u", path: "/tmp/u", filename: "f", mimeType: "text/plain", size: 1 }) },
   } as never);
+  const kernel = conversationKernel(control);
   const runtime = await createConversationRuntime({
     config,
     state,
     stateStore,
     sessions,
-    control,
+    control: kernel,
     sqlitePath: join(dir, "conversations.sqlite"),
     releaseOwnedSession: createProductionOwnedSessionRelease({
       sessions,
       transport: { async deleteSession() {}, async releaseLogicalSession() {} },
     }),
-    onProductEvent: (event) => control.emitConversationProduct(event),
+    onProductEvent: (event) => kernel.emitConversationProduct(event),
     autoKick: false,
     stateMutex,
   });
-  control.bindConversationRuntime(runtime);
+  kernel.bindConversationRuntime(runtime);
   return { state, sessions, control, runtime, stateMutex };
 }
 
