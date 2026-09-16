@@ -349,6 +349,8 @@ test("releaseDirectBinding serializes with materialization and does not orphan a
   expect(ownedSessions(state)[0]?.logical_session_id).toBe(next.logicalSessionId);
   expect(sessions.getLogicalSessionById(next.logicalSessionId)?.alias).toBe(next.sessionAlias);
 });
+
+test("getOrCreateDirectSession does not deadlock on the shared session mutex", async () => {
   const mutex = new AsyncMutex();
   let acquiredDuringSnapshot = false;
   const { bots, runtime } = createHarness(new MemoryStateStore(), createEmptyState(), {
