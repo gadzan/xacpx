@@ -10,6 +10,7 @@ import { ConversationError } from "./conversation-error";
 import type {
   AcceptRequestInput,
   AcceptRequestResult,
+  AssertLiveDispatchForMaterializeInput,
   CancelRunResult,
   ClaimedWork,
   ClaimNextDispatchInput,
@@ -384,12 +385,13 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   listMessages(query: ListMessagesQuery): ConversationMessage[] {
+    const backward = query.beforeSeq !== undefined && query.afterSeq === undefined;
     const rows = this.db.all<MessageRow>(
       `SELECT * FROM messages
        WHERE conversation_id = ? AND topic_id = ?
          AND (? IS NULL OR seq > ?)
          AND (? IS NULL OR seq < ?)
-       ORDER BY seq ASC
+       ORDER BY seq ${backward ? "DESC" : "ASC"}
        LIMIT ?`,
       [
         query.conversationId,
@@ -401,7 +403,8 @@ export class SqliteConversationStore implements ConversationStore {
         query.limit,
       ],
     );
-    return rows.map(mapMessage);
+    const messages = rows.map(mapMessage);
+    return backward ? messages.reverse() : messages;
   }
 
   getMemberTurn(memberTurnId: string): MemberTurnRecord | undefined {
@@ -623,6 +626,26 @@ export class SqliteConversationStore implements ConversationStore {
         throw new ConversationError("stale_claim", `dispatch "${input.dispatchId}" lost the execution-start fence`);
       }
       return started;
+    });
+  }
+
+  assertLiveDispatchForMaterialize(input: AssertLiveDispatchForMaterializeInput): void {
+    this.db.transaction(() => {
+      if (this.isConversationDeleting(input.conversationId)) {
+        throw new ConversationError("conversation_deleting", `conversation "${input.conversationId}" is deleting`);
+      }
+      if (this.isTopicDeleting(input.topicId)) {
+        throw new ConversationError("topic_deleting", `topic "${input.topicId}" is deleting`);
+      }
+      this.requireLiveUnstartedClaim(input);
+      const run = this.requireRun(input.runId);
+      const member = this.requireMemberTurn(input.memberTurnId);
+      if (run.conversationId !== input.conversationId || run.topicId !== input.topicId) {
+        throw new ConversationError("stale_claim", `dispatch "${input.dispatchId}" does not match conversation scope`);
+      }
+      if (TERMINAL_RUN_STATES.includes(run.state) || TERMINAL_MEMBER_STATES.includes(member.state)) {
+        throw new ConversationError("run_not_runnable", `run "${input.runId}" is ${run.state}`);
+      }
     });
   }
 

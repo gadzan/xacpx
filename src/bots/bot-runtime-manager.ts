@@ -60,6 +60,8 @@ export class BotRuntimeManager {
     conversationId?: string;
     topicId?: string;
     execution?: BotProfileExecution;
+    /** Runs inside the Bot lifecycle gate before any Session/AppState mutation. */
+    assertStillDispatchable?: () => void;
   }): Promise<BotRuntimeBinding> {
     this.requireEnabledBot(input.botId);
     const scope = this.resolveScope(input.botId, input);
@@ -90,22 +92,49 @@ export class BotRuntimeManager {
   }
 
   async releaseDirectBinding(bindingId: string): Promise<void> {
-    const binding = this.state.bot_runtime_bindings[bindingId];
-    if (!binding || binding.scope !== "bot-direct") {
+    const snapshot = this.state.bot_runtime_bindings[bindingId];
+    if (!snapshot || snapshot.scope !== "bot-direct") {
       return;
     }
-    if (this.sessions.getLogicalSessionRecord(binding.sessionAlias)) {
-      await this.releaseOwnedSession(binding.sessionAlias);
-    }
-    await this.stateMutex.run(async () => {
-      const next = structuredClone(this.state);
-      delete next.bot_runtime_bindings[bindingId];
-      if (typeof this.stateStore.saveNow === "function") {
-        await this.stateStore.saveNow(next);
-      } else {
-        await this.stateStore.save(next);
+    await this.bots.runLifecycle(snapshot.botId, async () => {
+      const live = this.state.bot_runtime_bindings[bindingId];
+      if (
+        !live
+        || live.scope !== "bot-direct"
+        || live.sessionAlias !== snapshot.sessionAlias
+        || live.logicalSessionId !== snapshot.logicalSessionId
+      ) {
+        return;
       }
-      replaceRuntimeState(this.state, next);
+      if (this.sessions.getLogicalSessionRecord(live.sessionAlias)) {
+        await this.releaseOwnedSession(live.sessionAlias);
+      }
+      const remaining = this.state.bot_runtime_bindings[bindingId];
+      if (
+        !remaining
+        || remaining.sessionAlias !== live.sessionAlias
+        || remaining.logicalSessionId !== live.logicalSessionId
+      ) {
+        return;
+      }
+      await this.stateMutex.run(async () => {
+        const current = this.state.bot_runtime_bindings[bindingId];
+        if (
+          !current
+          || current.sessionAlias !== live.sessionAlias
+          || current.logicalSessionId !== live.logicalSessionId
+        ) {
+          return;
+        }
+        const next = structuredClone(this.state);
+        delete next.bot_runtime_bindings[bindingId];
+        if (typeof this.stateStore.saveNow === "function") {
+          await this.stateStore.saveNow(next);
+        } else {
+          await this.stateStore.save(next);
+        }
+        replaceRuntimeState(this.state, next);
+      });
     });
   }
 
@@ -114,7 +143,9 @@ export class BotRuntimeManager {
     conversationId?: string;
     topicId?: string;
     execution?: BotProfileExecution;
+    assertStillDispatchable?: () => void;
   }): Promise<BotRuntimeBinding> {
+    input.assertStillDispatchable?.();
     const bot = this.requireEnabledBot(input.botId);
     this.assertAcceptedStickyIdentity(bot, input.execution);
     const scope = this.resolveScope(bot.id, input);

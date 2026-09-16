@@ -108,6 +108,13 @@ export interface ReleaseClaimToPendingInput extends ClaimFenceInput {}
 
 export interface FailClaimBeforeStartInput extends ClaimFenceInput, FailExecutionInput {}
 
+export interface AssertLiveDispatchForMaterializeInput extends ClaimFenceInput {
+  runId: string;
+  memberTurnId: string;
+  conversationId: string;
+  topicId: string;
+}
+
 export interface CancelRunResult {
   run: ConversationRun;
   memberTurn: MemberTurnRecord;
@@ -132,6 +139,7 @@ export interface ConversationStore {
   hasDurableBotWork(botId: string): boolean;
   releaseClaimToPending(input: ReleaseClaimToPendingInput): PendingDispatch;
   markExecutionStarted(input: MarkExecutionStartedInput): MemberTurnRecord;
+  assertLiveDispatchForMaterialize(input: AssertLiveDispatchForMaterializeInput): void;
   completeExecution(input: CompleteExecutionInput): CompleteExecutionResult;
   failExecution(input: FailExecutionInput): ConversationRun;
   failClaimBeforeStart(input: FailClaimBeforeStartInput): ConversationRun;

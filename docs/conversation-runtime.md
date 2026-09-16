@@ -50,7 +50,7 @@ Do not treat “dispatcher process disappeared” as “task never ran” when `
 
 Queued Runs on a Topic are claimed in **human request message `seq` order**, not `created_at` + lexical Run id.
 
-A drain pass that hits a generic pre-start failure **requeues that claim and defers its Topic for the rest of the pass**. It does not abort the drain. A wakeup (`kick`) accepted while that execute is in flight is still consumed: other runnable Topics can be claimed. The failed Topic is not hot-looped in the same pass; a later kick/restart may retry it. A kick that lands after the drain has decided to stop and before `draining` clears is re-entered as a new pass (deferred set reset), so that wakeup is not lost.
+A drain pass that hits a generic pre-start failure **requeues that claim and defers its Topic for the rest of the pass**. It does not abort the drain. Each `kick()` records a monotonic wake generation. A pass may skip deferred Topics so a poison row cannot starve other work and cannot hot-loop. If a new wake arrived during that pass — including a same-Topic accept — the dispatcher starts one fresh pass with the deferred set cleared. Without a new wake, a permanently failing Topic is not retried.
 
 ## Execution correlation
 
@@ -109,6 +109,8 @@ Execute composes the prompt from **that** snapshot and materializes/aligns the o
 
 Sticky identity is `agent` / `workspace`. The dispatcher may reject an obvious mismatch as an optimization, but the **authoritative** accepted-vs-live check runs inside the same per-Bot lifecycle gate that materializes or reuses the owned session — before any LogicalSession creation. A mismatch throws/returns stable `runtime_revision_mismatch`; the dispatcher terminalizes that exact fenced claim via `failClaimBeforeStart` and does not generic-requeue it. Model and effort remain safely mutable and are aligned to the accepted snapshot (including on PR2 legacy binding adoption). If the owned session still cannot be made to match the accepted execution snapshot, the Run fails `runtime_revision_mismatch` before the model is called.
 
+The same gate also proves the claimed work is still live before any Session/AppState mutation: exact dispatch + owner + generation + live lease, Run/MemberTurn still runnable, Conversation/Topic not deleting. That check is `assertLiveDispatchForMaterialize`, invoked through `getOrCreateDirectSession({ assertStillDispatchable })`. If teardown wins the gate first, the old worker exits without creating a session. If materialization wins first, teardown subsequently sees and releases that ownership. `BotRuntimeManager.releaseDirectBinding` also runs the full release/re-read/conditional-binding-delete transaction under `bots.runLifecycle(botId)`.
+
 ## Direct multi-Topic binding
 
 Runtime key: **`conversationId × topicId × botId`**.
@@ -132,7 +134,7 @@ Order:
 1. Mark Conversation/Topic deleting (SQLite is authoritative for accept/dispatch; AppState flag is bounded metadata). This uses the per-Bot lifecycle gate briefly, shared with accept **and** `createDirectTopic`.
 2. Stop future accept/dispatch/topic creation. Cancel/drain active turns **without** holding the lifecycle gate (so runtime materialize is not deadlocked). `createDirectTopic` during this window fails `conversation_deleting` and never returns an active Topic that final teardown would immediately remove.
 3. Reconcile indeterminate.
-4. Verified owned-session release via `releaseOwnedSession(alias)` (production wiring: `removeSessionWithTransport` / `removeAliasWithPhysicalLifecycle`). Physical/Runtime teardown must succeed **before** the LogicalSession row disappears. `SessionService.removeSession` is logical-only and is not this path. `BotRuntimeManager.releaseDirectBinding` uses the same seam.
+4. Verified owned-session release via `releaseOwnedSession(alias)` (production wiring: `createStrictOwnedSessionRelease` → `removeAliasWithPhysicalLifecycle` with `physicalFailurePolicy: "strict"`). Any physical Runtime **or CLI** release/delete failure throws **before** the LogicalSession row disappears. Ordinary `/session rm` keeps the helper's default legacy CLI best-effort path and is not this seam. `SessionService.removeSession` is logical-only. `BotRuntimeManager.releaseDirectBinding` uses the same strict seam under the per-Bot lifecycle gate.
 5. Per-Bot lifecycle gate for finalization: remaining ownership release through that same seam, AppState binding/topic/conversation cleanup, **then** delete ConversationStore rows / deleting tombstone.
 
 A crash before step 5 leaves the SQLite `deleting` barrier in place: new accepts fail closed and teardown is retryable.

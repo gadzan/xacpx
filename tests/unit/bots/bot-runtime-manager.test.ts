@@ -307,7 +307,48 @@ test("releaseDirectBinding uses verified physical release and keeps ownership on
   expect(ownedSessions(state)).toHaveLength(0);
 });
 
-test("getOrCreateDirectSession does not deadlock on the shared session mutex", async () => {
+test("releaseDirectBinding serializes with materialization and does not orphan a replacement", async () => {
+  const enteredRelease = deferred();
+  const resumeRelease = deferred();
+  const store = new MemoryStateStore();
+  const state = createEmptyState();
+  const config = createConfig();
+  const stateMutex = new AsyncMutex();
+  const sessions = new SessionService(config, store, state, { now: () => Date.parse(NOW), stateMutex });
+  const bots = new BotService(config, state, store, {
+    now: () => new Date(NOW),
+    createId: () => BOT_ID,
+    stateMutex,
+  });
+  const runtime = new BotRuntimeManager(bots, sessions, state, store, {
+    now: () => new Date(NOW),
+    stateMutex,
+    releaseOwnedSession: async (alias) => {
+      await sessions.removeSession(alias);
+      enteredRelease.resolve();
+      await resumeRelease.promise;
+    },
+  });
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const binding = await runtime.getOrCreateDirectSession({ botId: BOT_ID });
+  const releasing = runtime.releaseDirectBinding(binding.id);
+  await enteredRelease.promise;
+  let materialized = false;
+  const creating = runtime.getOrCreateDirectSession({ botId: BOT_ID }).then((next) => {
+    materialized = true;
+    return next;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  expect(materialized).toBe(false);
+  resumeRelease.resolve();
+  await releasing;
+  const next = await creating;
+  expect(materialized).toBe(true);
+  expect(state.bot_runtime_bindings[next.id]).toBeDefined();
+  expect(ownedSessions(state)).toHaveLength(1);
+  expect(ownedSessions(state)[0]?.logical_session_id).toBe(next.logicalSessionId);
+  expect(sessions.getLogicalSessionById(next.logicalSessionId)?.alias).toBe(next.sessionAlias);
+});
   const mutex = new AsyncMutex();
   let acquiredDuringSnapshot = false;
   const { bots, runtime } = createHarness(new MemoryStateStore(), createEmptyState(), {

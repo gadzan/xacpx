@@ -43,10 +43,11 @@ export class ConversationDispatcher {
   readonly authorityEpoch: string;
   private readonly hooks?: ConversationDispatcherHooks;
   private draining = false;
-  private kicked = false;
+  private wakeGeneration = 0;
   /** Topics that failed pre-start in this drain pass. Skipped so a poison row
-   *  cannot starve other Topics, and so a wakeup accepted during execute is
-   *  still consumed without hot-looping the failed Topic. */
+   *  cannot starve other Topics. A later wake generation starts a fresh pass
+   *  with this set cleared; without a new wake the poison Topic does not
+   *  hot-loop. */
   private readonly deferredTopicIds = new Set<string>();
 
   constructor(
@@ -64,33 +65,30 @@ export class ConversationDispatcher {
   }
 
   async kick(): Promise<void> {
-    this.kicked = true;
+    this.wakeGeneration += 1;
     if (this.draining) {
       return;
     }
     this.draining = true;
-    this.deferredTopicIds.clear();
+    let seen = 0;
     try {
-      for (;;) {
-        this.kicked = false;
-        this.store.recoverExpiredClaims(this.now().toISOString());
-        const claimed = this.claimOne();
-        if (!claimed) {
-          if (this.kicked) {
-            continue;
+      while (seen !== this.wakeGeneration) {
+        seen = this.wakeGeneration;
+        this.deferredTopicIds.clear();
+        for (;;) {
+          this.store.recoverExpiredClaims(this.now().toISOString());
+          const claimed = this.claimOne();
+          if (!claimed) {
+            break;
           }
-          break;
+          await this.execute(claimed);
         }
-        await this.execute(claimed);
       }
     } finally {
       this.draining = false;
       this.deferredTopicIds.clear();
     }
-    // A kick can land after the empty-claim break and before `draining` clears.
-    // Re-enter as a *new* pass (deferred set already reset). skipTopicIds still
-    // stops a poison Topic from starving others inside that pass.
-    if (this.kicked) {
+    if (seen !== this.wakeGeneration) {
       await this.kick();
     }
   }
@@ -157,6 +155,18 @@ export class ConversationDispatcher {
         conversationId: work.run.conversationId,
         topicId: work.run.topicId,
         execution: snapshot.execution,
+        assertStillDispatchable: () => {
+          this.store.assertLiveDispatchForMaterialize({
+            dispatchId: work.dispatch.id,
+            owner: this.ownerId,
+            generation: work.dispatch.generation,
+            runId: work.run.id,
+            memberTurnId: work.memberTurn.id,
+            conversationId: work.run.conversationId,
+            topicId: work.run.topicId,
+            now: this.now().toISOString(),
+          });
+        },
       });
       const session = this.sessions.getLogicalSessionRecord(binding.sessionAlias);
       if (!session || !sessionMatchesExecution(session, snapshot.execution)) {
@@ -216,6 +226,9 @@ export class ConversationDispatcher {
     } catch (error) {
       if (isRuntimeRevisionMismatch(error)) {
         this.failOwnClaimBeforeStart(work, "runtime_revision_mismatch");
+        return;
+      }
+      if (isMaterializeAbandoned(error)) {
         return;
       }
       if (started?.startedAt) {
@@ -353,4 +366,13 @@ export class ConversationDispatcher {
 function isRuntimeRevisionMismatch(error: unknown): boolean {
   return (error instanceof BotError || error instanceof ConversationError)
     && error.code === "runtime_revision_mismatch";
+}
+
+function isMaterializeAbandoned(error: unknown): boolean {
+  return error instanceof ConversationError && (
+    error.code === "stale_claim"
+    || error.code === "run_not_runnable"
+    || error.code === "conversation_deleting"
+    || error.code === "topic_deleting"
+  );
 }

@@ -233,6 +233,31 @@ test("listMessages afterSeq/beforeSeq/limit is the replay cursor", async () => {
   store.close();
 });
 
+test("listMessages beforeSeq returns the nearest previous page in ascending order", async () => {
+  const store = await SqliteConversationStore.open(":memory:");
+  for (const [requestId, content] of [
+    ["r1", "one"],
+    ["r2", "two"],
+    ["r3", "three"],
+    ["r4", "four"],
+    ["r5", "five"],
+  ] as const) {
+    store.acceptRequest({
+      conversationId: CONV,
+      topicId: TOPIC,
+      requestId,
+      botId: BOT_ID,
+      content,
+      profileSnapshot: snapshot(),
+      now: NOW,
+    });
+  }
+  const page = store.listMessages({ conversationId: CONV, topicId: TOPIC, beforeSeq: 5, limit: 2 });
+  expect(page.map((message) => message.seq)).toEqual([3, 4]);
+  expect(page.map((message) => message.content)).toEqual(["three", "four"]);
+  store.close();
+});
+
 test("claimNextDispatch follows message seq when timestamps and run ids disagree", async () => {
   let messages = 0;
   let members = 0;
@@ -513,5 +538,48 @@ test("deleteTopicRows is a no-op when conversationId does not own the topic", as
   store.deleteTopicRows(CONV, TOPIC);
   expect(store.listMessages({ conversationId: CONV, topicId: TOPIC, limit: 10 })).toHaveLength(0);
   expect(store.listRuns(CONV)).toHaveLength(0);
+  store.close();
+});
+
+test("assertLiveDispatchForMaterialize refuses deleting or cancelled work", async () => {
+  const store = await SqliteConversationStore.open(":memory:");
+  const accepted = store.acceptRequest({
+    conversationId: CONV,
+    topicId: TOPIC,
+    requestId: "req-live-dispatch",
+    botId: BOT_ID,
+    content: "hello",
+    profileSnapshot: snapshot(),
+    now: NOW,
+    authorityEpoch: "epoch-a",
+  });
+  const claimed = store.claimNextDispatch({
+    now: NOW,
+    owner: "owner-a",
+    leaseExpiresAt: "2026-09-15T12:00:30.000Z",
+    authorityEpoch: "epoch-a",
+  });
+  expect(claimed?.run.id).toBe(accepted.run.id);
+  store.assertLiveDispatchForMaterialize({
+    dispatchId: claimed!.dispatch.id,
+    owner: "owner-a",
+    generation: claimed!.dispatch.generation,
+    runId: claimed!.run.id,
+    memberTurnId: claimed!.memberTurn.id,
+    conversationId: CONV,
+    topicId: TOPIC,
+    now: NOW,
+  });
+  store.markConversationDeleting(CONV, NOW);
+  expect(() => store.assertLiveDispatchForMaterialize({
+    dispatchId: claimed!.dispatch.id,
+    owner: "owner-a",
+    generation: claimed!.dispatch.generation,
+    runId: claimed!.run.id,
+    memberTurnId: claimed!.memberTurn.id,
+    conversationId: CONV,
+    topicId: TOPIC,
+    now: NOW,
+  })).toThrow(/deleting/);
   store.close();
 });

@@ -28,6 +28,7 @@ import { SqliteConversationStore } from "../../../src/conversations/sqlite-conve
 import { createDirectConversationId } from "../../../src/domain/ids";
 import { AsyncMutex } from "../../../src/orchestration/async-mutex";
 import { SessionService } from "../../../src/sessions/session-service";
+import { createStrictOwnedSessionRelease } from "../../../src/sessions/owned-session-release";
 import { parseState, type StateStore } from "../../../src/state/state-store";
 import { createEmptyState, type AppState } from "../../../src/state/types";
 import type { ChatRequest, ChatResponse } from "../../../src/weixin/agent/interface";
@@ -167,17 +168,24 @@ async function createLifecycle(options: {
   const stateMutex = new AsyncMutex();
   const config = createConfig();
   const sessions = new SessionService(config, stateStore, state, { now: () => Date.parse(NOW), stateMutex });
-  const release = {
-    physicalReleased: [] as string[],
-    failPhysical: false,
-    async releaseOwnedSession(alias: string) {
-      this.physicalReleased.push(alias);
-      if (this.failPhysical) {
+  const physical = {
+    fail: false,
+    deleteCalls: 0,
+    releaseCalls: 0,
+    async deleteSession() {
+      this.deleteCalls += 1;
+      if (this.fail) {
         throw new Error("injected physical teardown failure");
       }
-      await sessions.removeSession(alias);
+    },
+    async releaseLogicalSession() {
+      this.releaseCalls += 1;
+      if (this.fail) {
+        throw new Error("injected physical teardown failure");
+      }
     },
   };
+  const releaseOwnedSession = createStrictOwnedSessionRelease({ sessions, transport: physical });
   const bots = new BotService(config, state, stateStore, {
     now: () => new Date(NOW),
     createId: () => BOT_ID,
@@ -186,7 +194,7 @@ async function createLifecycle(options: {
   const runtime = new BotRuntimeManager(bots, sessions, state, stateStore, {
     now: () => new Date(NOW),
     stateMutex,
-    releaseOwnedSession: (alias) => release.releaseOwnedSession(alias),
+    releaseOwnedSession,
   });
   const events = createControlEventBus();
   const runner = options.controlChat
@@ -220,10 +228,10 @@ async function createLifecycle(options: {
     beforeTeardownFinalize: options.beforeTeardownFinalize,
     afterTeardownMarkedDeleting: options.afterTeardownMarkedDeleting,
     autoKick: options.autoKick ?? false,
-    releaseOwnedSession: (alias) => release.releaseOwnedSession(alias),
+    releaseOwnedSession,
   });
   await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend", instructions: "Focus on races." });
-  return { path, store, state, sessions, bots, runtime, runner, dispatcher, service, nowFn, jump, release };
+  return { path, store, state, sessions, bots, runtime, runner, dispatcher, service, nowFn, jump, physical };
 }
 
 function fakeRunner(runner: ConversationTurnRunner): FakeRunner {
@@ -530,15 +538,15 @@ test("teardown release failure leaves recoverable ownership", async () => {
   expect(Object.keys(first.state.bot_runtime_bindings).length).toBeGreaterThan(0);
   const owned = Object.values(first.state.sessions).filter((session) => session.owner?.kind === "bot-direct");
   expect(owned.length).toBeGreaterThan(0);
-  first.release.failPhysical = true;
+  first.physical.fail = true;
   await expect(first.service.teardownDirectConversation(BOT_ID)).rejects.toMatchObject({
     code: "session_release_failed",
   });
-  expect(first.release.physicalReleased.length).toBeGreaterThan(0);
+  expect(first.physical.deleteCalls + first.physical.releaseCalls).toBeGreaterThan(0);
   expect(Object.keys(first.state.bot_runtime_bindings).length).toBeGreaterThan(0);
   expect(Object.values(first.state.sessions).some((session) => session.owner?.kind === "bot-direct")).toBe(true);
   expect(first.store.isConversationDeleting(createDirectConversationId(BOT_ID))).toBe(true);
-  first.release.failPhysical = false;
+  first.physical.fail = false;
   await first.service.teardownDirectConversation(BOT_ID);
   expect(first.state.bot_runtime_bindings).toEqual({});
   expect(first.state.conversations).toEqual({});
@@ -1241,4 +1249,103 @@ test("a wakeup during a transient pre-start failure still drains the other Topic
   expect(first.store.getRun(runB.run.id)?.state).toBe("completed");
   expect(fakeRunner(first.runner).runs).toHaveLength(1);
   expect(fakeRunner(first.runner).runs[0]?.text).toContain("beta");
+});
+
+test("a same-Topic wakeup after a one-shot materialize failure still drains A then B", async () => {
+  const paused = deferred();
+  const resumeA = deferred();
+  let aFailures = 0;
+  const first = await createLifecycle({
+    hooks: {
+      beforeRuntimeMaterialize: async (work) => {
+        if (work.run.requestId !== "req-same-topic-a") {
+          return;
+        }
+        if (aFailures === 0) {
+          paused.resolve();
+          await resumeA.promise;
+          aFailures += 1;
+          throw new Error("transient materialize failure");
+        }
+      },
+    },
+  });
+  const runA = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-same-topic-a",
+    content: "alpha",
+  });
+  const drain = first.dispatcher.kick();
+  await paused.promise;
+  const runB = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-same-topic-b",
+    content: "beta",
+  });
+  await first.dispatcher.kick();
+  resumeA.resolve();
+  await drain;
+  expect(aFailures).toBe(1);
+  expect(first.store.getRun(runA.run.id)?.state).toBe("completed");
+  expect(first.store.getRun(runB.run.id)?.state).toBe("completed");
+  expect(fakeRunner(first.runner).runs.map((run) => run.text)).toEqual([
+    expect.stringContaining("alpha"),
+    expect.stringContaining("beta"),
+  ]);
+});
+
+test("a persistent pre-start failure does not hot-loop without a new wake", async () => {
+  let attempts = 0;
+  const first = await createLifecycle({
+    hooks: {
+      failRuntimeMaterialize: () => {
+        attempts += 1;
+        return true;
+      },
+    },
+  });
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-poison",
+    content: "hello",
+  });
+  await first.dispatcher.kick();
+  expect(attempts).toBe(1);
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("queued");
+  expect(first.store.getDispatchForRun(accepted.run.id)?.state).toBe("pending");
+  expect(fakeRunner(first.runner).runs).toHaveLength(0);
+});
+
+test("a worker paused before materialize cannot resurrect runtime after teardown", async () => {
+  const paused = deferred();
+  const resume = deferred();
+  const first = await createLifecycle({
+    hooks: {
+      beforeRuntimeMaterialize: async () => {
+        paused.resolve();
+        await resume.promise;
+      },
+    },
+  });
+  await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-resurrect",
+    content: "hello",
+  });
+  const drain = first.dispatcher.kick();
+  await paused.promise;
+  await first.service.teardownDirectConversation(BOT_ID);
+  expect(first.store.listRuns(createDirectConversationId(BOT_ID))).toEqual([]);
+  expect(first.state.sessions).toEqual({});
+  expect(first.state.bot_runtime_bindings).toEqual({});
+  expect(first.state.conversations).toEqual({});
+  expect(first.state.conversation_topics).toEqual({});
+  resume.resolve();
+  await drain;
+  expect(first.store.listRuns(createDirectConversationId(BOT_ID))).toEqual([]);
+  expect(first.state.sessions).toEqual({});
+  expect(first.state.bot_runtime_bindings).toEqual({});
+  expect(first.state.conversations).toEqual({});
+  expect(first.state.conversation_topics).toEqual({});
+  expect(fakeRunner(first.runner).runs).toHaveLength(0);
 });
