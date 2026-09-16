@@ -109,6 +109,7 @@ There are two session concepts:
 - Runtime durable queue: [`docs/runtime-queue.md`](docs/runtime-queue.md)
 - Runtime permission: [`docs/runtime-permission.md`](docs/runtime-permission.md)
 - Runtime MCP: [`docs/runtime-mcp.md`](docs/runtime-mcp.md)
+- Direct Conversation persistence + lifecycle: [`docs/conversation-runtime.md`](docs/conversation-runtime.md)
 ## Gotchas
 
 - **`node-pty` is a native module** — requires C++ build tools. If `bun install` fails on node-pty, the environment lacks a compiler toolchain.

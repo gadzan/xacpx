@@ -23,6 +23,8 @@ function lockForPhysicalKey(physicalKey: string): AsyncMutex {
   return mutex;
 }
 
+export type PhysicalFailurePolicy = "legacy-cli-best-effort" | "strict";
+
 export interface PhysicalRemoveOutcome {
   wasActive: boolean;
   /**
@@ -50,8 +52,17 @@ export async function removeAliasWithPhysicalLifecycle(options: {
   transport: Pick<SessionTransport, "releaseLogicalSession" | "deleteSession">;
   session: ResolvedSession;
   internalAlias: string;
+  /**
+   * Default `legacy-cli-best-effort` keeps `/session rm` semantics: a CLI
+   * last-owner `deleteSession` failure records a warning and still removes
+   * the LogicalSession. `strict` is the Bot/Conversation owned-session
+   * path: any Runtime or CLI physical failure throws BEFORE the logical row
+   * disappears so callers keep the retry handle.
+   */
+  physicalFailurePolicy?: PhysicalFailurePolicy;
 }): Promise<PhysicalRemoveOutcome> {
   const { sessions, transport, session, internalAlias } = options;
+  const policy = options.physicalFailurePolicy ?? "legacy-cli-best-effort";
   const groupKey = physicalLifecycleKeyForResolvedSession(session);
   const isRuntime = session.transportEngine === "runtime";
   return lockForPhysicalKey(groupKey).run(async () => {
@@ -89,9 +100,16 @@ export async function removeAliasWithPhysicalLifecycle(options: {
         await transport.deleteSession(session);
         action = "deleted";
       } catch (error) {
+        if (policy === "strict") {
+          throw error;
+        }
         transportTeardownWarning = error instanceof Error ? error.message : String(error);
         action = "logical-only";
       }
+    } else if (remaining === 0 && policy === "strict") {
+      throw new Error(
+        `cannot hard-delete last CLI alias "${internalAlias}": transport has no deleteSession operation`,
+      );
     } else {
       action = "logical-only";
     }

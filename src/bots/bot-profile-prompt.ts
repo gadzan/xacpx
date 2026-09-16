@@ -1,7 +1,10 @@
 import { isKnownXacpxCommandText } from "../commands/command-list";
-import type { BotProfile } from "./bot-types";
+import type { BotProfile, BotProfileSnapshot } from "./bot-types";
 
-export function composeBotTurnPrompt(profile: BotProfile, userText: string): string {
+export function composeBotTurnPrompt(
+  profile: Pick<BotProfile, "name" | "instructions">,
+  userText: string,
+): string {
   if (isKnownXacpxCommandText(userText)) {
     return userText;
   }
@@ -17,4 +20,11 @@ export function composeBotTurnPrompt(profile: BotProfile, userText: string): str
     return lines.join("\n\n");
   }
   return `${lines.join("\n\n")}\n\n${body}`;
+}
+
+export function composeBotTurnPromptFromSnapshot(snapshot: BotProfileSnapshot, userText: string): string {
+  return composeBotTurnPrompt({
+    name: snapshot.presentation.name,
+    instructions: snapshot.behavior.instructions,
+  }, userText);
 }

@@ -9,6 +9,28 @@ export type LogicalSessionSource = "xacpx" | "agent-side";
 export interface LogicalSessionOwner {
   kind: "bot-direct" | "group-member" | "group-controller";
   bindingId: string;
+  /**
+   * Explicit Bot id for scoped bot-direct ownership. Optional on PR2 records
+   * that only stored `bindingId` (the legacy deterministic default-Topic id).
+   */
+  botId?: string;
+  conversationId?: string;
+  topicId?: string;
+}
+
+export function createBotDirectOwner(input: {
+  bindingId: string;
+  botId: string;
+  conversationId: string;
+  topicId: string;
+}): LogicalSessionOwner {
+  return {
+    kind: "bot-direct",
+    bindingId: input.bindingId,
+    botId: input.botId,
+    conversationId: input.conversationId,
+    topicId: input.topicId,
+  };
 }
 
 export interface NativeSessionCacheEntry {

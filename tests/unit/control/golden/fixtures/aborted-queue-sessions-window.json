@@ -91,7 +91,8 @@
     "label": "first",
     "value": {
       "ok": false,
-      "errorMessage": "boom"
+      "errorMessage": "boom",
+      "cancelled": true
     }
   },
   {

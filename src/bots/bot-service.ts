@@ -1,5 +1,5 @@
 import type { AppConfig } from "../config/types";
-import { createBotId, createDirectBindingId } from "../domain/ids";
+import { createBotId, createDirectBindingId, createDirectConversationId } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
 import type { StateStore } from "../state/state-store";
 import type { AppState } from "../state/types";
@@ -36,12 +36,17 @@ export interface UpdateBotInput {
 
 export type BotLifecycleMutation = "update" | "delete";
 
+export interface BotConversationWork {
+  hasDurableBotWork(botId: string): boolean;
+}
+
 export interface BotServiceOptions {
   now?: () => Date;
   createId?: () => string;
   stateMutex?: AsyncMutex;
   lifecycleGate?: BotLifecycleGate;
   beforeLifecycleMutation?: (input: { botId: string; op: BotLifecycleMutation }) => Promise<void>;
+  conversationWork?: BotConversationWork;
 }
 
 export class BotService {
@@ -50,6 +55,7 @@ export class BotService {
   private readonly stateMutex: AsyncMutex;
   private readonly lifecycleGate: BotLifecycleGate;
   private readonly beforeLifecycleMutation?: (input: { botId: string; op: BotLifecycleMutation }) => Promise<void>;
+  private conversationWork?: BotConversationWork;
 
   constructor(
     private readonly config: Pick<AppConfig, "agents" | "workspaces">,
@@ -62,11 +68,16 @@ export class BotService {
     this.stateMutex = options?.stateMutex ?? new AsyncMutex();
     this.lifecycleGate = options?.lifecycleGate ?? new BotLifecycleGate();
     this.beforeLifecycleMutation = options?.beforeLifecycleMutation;
+    this.conversationWork = options?.conversationWork;
   }
 
   /** Shared with BotRuntimeManager: one botId, one exclusive lifecycle. */
   runLifecycle<T>(botId: string, critical: () => Promise<T>): Promise<T> {
     return this.lifecycleGate.run(botId, critical);
+  }
+
+  setConversationWork(work: BotConversationWork | undefined): void {
+    this.conversationWork = work;
   }
 
   listBots(): BotProfile[] {
@@ -91,6 +102,7 @@ export class BotService {
         ...this.requireIdentity(input),
         ...this.optionalFields(input),
         enabled: input.enabled ?? true,
+        profileRevision: 1,
         createdAt: timestamp,
         updatedAt: timestamp,
       };
@@ -122,6 +134,7 @@ export class BotService {
           ...identity,
           ...this.patchOptional(existing, patch),
           enabled: patch.enabled === undefined || patch.enabled === null ? existing.enabled : patch.enabled,
+          profileRevision: (existing.profileRevision ?? 1) + 1,
           updatedAt: this.now().toISOString(),
         };
         this.state.bots[id] = next;
@@ -147,6 +160,11 @@ export class BotService {
         const runtime = this.directRuntimeRefs(id);
         if (runtime.conversationIds.length > 0 || runtime.bindingIds.length > 0 || runtime.sessionAliases.length > 0) {
           throw new BotError("bot_in_use", `bot "${id}" still has a direct runtime`, runtime);
+        }
+        if (this.conversationWork?.hasDurableBotWork(id)) {
+          throw new BotError("bot_in_use", `bot "${id}" still has durable conversation work`, {
+            conversationIds: [createDirectConversationId(id)],
+          });
         }
         delete this.state.bots[id];
         await this.stateStore.save(this.state);
@@ -261,11 +279,30 @@ export class BotService {
         binding.scope !== "group-controller" && binding.botId === botId
       ))
       .map((binding) => binding.id);
-    const bindingId = createDirectBindingId(botId);
+    const ownedBindingIds = new Set(bindingIds);
+    ownedBindingIds.add(createDirectBindingId(botId));
     const sessionAliases = Object.values(this.state.sessions)
-      .filter((session) => session.owner?.kind === "bot-direct" && session.owner.bindingId === bindingId)
+      .filter((session) => this.sessionOwnedByDirectBot(session, botId, ownedBindingIds))
       .map((session) => session.alias);
     return { conversationIds, bindingIds, sessionAliases };
+  }
+
+  private sessionOwnedByDirectBot(
+    session: AppState["sessions"][string],
+    botId: string,
+    ownedBindingIds: Set<string>,
+  ): boolean {
+    const owner = session.owner;
+    if (owner?.kind !== "bot-direct") {
+      return false;
+    }
+    if (owner.botId === botId) {
+      return true;
+    }
+    if (ownedBindingIds.has(owner.bindingId)) {
+      return true;
+    }
+    return !owner.botId && owner.bindingId === createDirectBindingId(botId);
   }
 
   private async mutate<T>(fn: () => Promise<T>): Promise<T> {

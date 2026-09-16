@@ -4,12 +4,16 @@ import {
   createBotId,
   createConversationId,
   createConversationMessageId,
+  createConversationRunId,
   createDirectBindingId,
   createDirectConversationId,
   createDirectTopicId,
   createDomainId,
   createGroupTurnId,
+  createMemberTurnId,
+  createPendingDispatchId,
   createRuntimeBindingId,
+  createScopedDirectBindingId,
   createTopicId,
   DOMAIN_ID_PREFIX,
 } from "../../../src/domain/ids";
@@ -20,6 +24,9 @@ test("createDomainId prefixes a UUID and never uses a display name", () => {
     createConversationId(),
     createTopicId(),
     createConversationMessageId(),
+    createConversationRunId(),
+    createMemberTurnId(),
+    createPendingDispatchId(),
     createGroupTurnId(),
     createRuntimeBindingId(),
   ];
@@ -28,8 +35,11 @@ test("createDomainId prefixes a UUID and never uses a display name", () => {
   expect(ids[1]!.startsWith(`${DOMAIN_ID_PREFIX.conversation}_`)).toBe(true);
   expect(ids[2]!.startsWith(`${DOMAIN_ID_PREFIX.topic}_`)).toBe(true);
   expect(ids[3]!.startsWith(`${DOMAIN_ID_PREFIX.conversationMessage}_`)).toBe(true);
-  expect(ids[4]!.startsWith(`${DOMAIN_ID_PREFIX.groupTurn}_`)).toBe(true);
-  expect(ids[5]!.startsWith(`${DOMAIN_ID_PREFIX.runtimeBinding}_`)).toBe(true);
+  expect(ids[4]!.startsWith(`${DOMAIN_ID_PREFIX.conversationRun}_`)).toBe(true);
+  expect(ids[5]!.startsWith(`${DOMAIN_ID_PREFIX.memberTurn}_`)).toBe(true);
+  expect(ids[6]!.startsWith(`${DOMAIN_ID_PREFIX.pendingDispatch}_`)).toBe(true);
+  expect(ids[7]!.startsWith(`${DOMAIN_ID_PREFIX.groupTurn}_`)).toBe(true);
+  expect(ids[8]!.startsWith(`${DOMAIN_ID_PREFIX.runtimeBinding}_`)).toBe(true);
   expect(ids.join(" ").includes("Reviewer")).toBe(false);
 });
 
@@ -51,10 +61,13 @@ test("1000 generated ids do not collide", () => {
     seen.add(createConversationId());
     seen.add(createTopicId());
     seen.add(createConversationMessageId());
+    seen.add(createConversationRunId());
+    seen.add(createMemberTurnId());
+    seen.add(createPendingDispatchId());
     seen.add(createGroupTurnId());
     seen.add(createRuntimeBindingId());
   }
-  expect(seen.size).toBe(6000);
+  expect(seen.size).toBe(9000);
 });
 
 test("direct runtime ids are deterministic opaque prefixes of the Bot id", () => {
@@ -70,4 +83,8 @@ test("direct runtime ids are deterministic opaque prefixes of the Bot id", () =>
   expect(bindingId.startsWith(`${DOMAIN_ID_PREFIX.runtimeBinding}_`)).toBe(true);
   expect(conversationId).not.toBe(botId);
   expect(new Set([conversationId, topicId, bindingId]).size).toBe(3);
+  const scoped = createScopedDirectBindingId(conversationId, topicId, botId);
+  expect(scoped).toBe(createScopedDirectBindingId(conversationId, topicId, botId));
+  expect(scoped).not.toBe(bindingId);
+  expect(scoped.startsWith(`${DOMAIN_ID_PREFIX.runtimeBinding}_`)).toBe(true);
 });
