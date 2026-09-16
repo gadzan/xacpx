@@ -251,11 +251,22 @@ jobs:
       # npm will publish, installed the way a real user installs it (no manual
       # copies, no chmod). Windows has no exec-bit concept, so X_OK here
       # passes if the files exist (Node on win32).
+      #
+      # `--prefix packages/channel-relay` re-resolves that package's npm
+      # dependencies. Workspace protocol bumps are unpublished during the PR,
+      # so pack the local protocol tarball and install it alongside the
+      # platform tarball instead of fetching npm latest.
       - name: Install platform package from the publish tarball
         run: |
           $tgz = Get-ChildItem 'platform-packages/xacpx-rmux-bridge-win32-x64/*.tgz' | Select-Object -First 1
+          Push-Location 'packages/relay-protocol'
+          npm pack
+          Pop-Location
+          $protocolTgz = Get-ChildItem 'packages/relay-protocol/@ganglion-xacpx-relay-protocol-*.tgz' | Select-Object -First 1
+          if (-not $protocolTgz) { $protocolTgz = Get-ChildItem 'packages/relay-protocol/*.tgz' | Select-Object -First 1 }
+          if (-not $protocolTgz) { throw 'local relay-protocol tarball missing' }
           Remove-Item -Recurse -Force 'packages/channel-relay/node_modules/@ganglion/xacpx-rmux-bridge-win32-x64' -ErrorAction SilentlyContinue
-          npm install --prefix packages/channel-relay --no-save --no-audit --no-fund --no-package-lock $tgz.FullName
+          npm install --prefix packages/channel-relay --no-save --no-audit --no-fund --no-package-lock $protocolTgz.FullName $tgz.FullName
           $candidates = @(
             'packages/channel-relay/node_modules/@ganglion/xacpx-rmux-bridge-win32-x64',
             'node_modules/@ganglion/xacpx-rmux-bridge-win32-x64'
