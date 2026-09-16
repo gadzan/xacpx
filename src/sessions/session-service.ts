@@ -20,6 +20,7 @@ import type { WorkerBindingRecord } from "../orchestration/orchestration-types";
 import type { StateStore } from "../state/state-store";
 import { replaceRuntimeState } from "../state/replace-runtime-state";
 import type { AppState, BackgroundResult, ChatContextState, LogicalSession, LogicalSessionOwner, SessionTransportEngine } from "../state/types";
+import { isHiddenProductSessionOwner } from "../state/types";
 import { resolveTransportEngine } from "./transport-engine";
 import type { SessionResourceLifecyclePublishInput } from "./session-resource-catalog";
 import type { AgentSession, ResolvedSession } from "../transport/types";
@@ -907,6 +908,7 @@ export class SessionService {
     const currentAlias = this.state.chat_contexts[chatKey]?.current_session;
     return Object.values(this.state.sessions)
       .filter((session) => isSessionAliasVisibleInChannel(session.alias, channelId))
+      .filter((session) => !isHiddenProductSessionOwner(session.owner))
       .map((session) => ({
         alias: toDisplaySessionAlias(session.alias),
         internalAlias: session.alias,

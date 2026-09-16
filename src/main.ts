@@ -110,6 +110,12 @@ import {
 import { QuotaManager } from "./weixin/messaging/quota-manager";
 import { createControlEventBus } from "./control/control-event-bus";
 import { ControlService } from "./control/control-service";
+import {
+  createConversationRuntime,
+  createProductionOwnedSessionRelease,
+  resolveConversationStorePath,
+  type ConversationRuntime,
+} from "./conversations/conversation-composition";
 import { SessionWarmthTracker } from "./control/session-warmth-tracker";
 import { createTerminalService } from "./control/terminal-service";
 import { UploadStore } from "./control/upload-store.js";
@@ -282,6 +288,8 @@ export interface AppRuntime {
     scheduler: ScheduledTaskScheduler;
   };
   control: ControlService;
+  /** Production Conversation/Bot runtime. Bound before Control/Relay accept work. */
+  conversations: ConversationRuntime;
   /**
    * Terminate warm acpx queue owners orphaned by a previous daemon that exited
    * without a clean shutdown (Windows verified stop, crashes,
@@ -2053,6 +2061,25 @@ export async function buildApp(
     },
   });
   controlRef = control;
+  const conversations = await createConversationRuntime({
+    config,
+    state,
+    stateStore: debouncedStateStore,
+    sessions,
+    control,
+    sqlitePath: resolveConversationStorePath(paths.configPath),
+    releaseOwnedSession: createProductionOwnedSessionRelease({ sessions, transport }),
+    onProductEvent: (event) => control.emitConversationProduct(event),
+    autoKick: true,
+  });
+  control.bindConversationRuntime(conversations);
+  void conversations.kick().catch((error) => {
+    void logger.error(
+      "conversations.recover_failed",
+      "failed to recover pending Conversation dispatch on startup",
+      { error: error instanceof Error ? error.message : String(error) },
+    );
+  });
   controlEvents.subscribe((event) => {
     if (
       event.type === "turn-finished" &&
@@ -2258,6 +2285,7 @@ export async function buildApp(
       scheduler: scheduledScheduler,
     },
     control,
+    conversations,
     reloadRuntimeConfig,
     applyRuntimePermissionConfig: applyPermissionConfig,
     configMutationMutex,
@@ -2283,6 +2311,19 @@ export async function buildApp(
         clearInterval(progressHeartbeatInterval);
       }
       await Promise.allSettled([...pendingWorkerDispatches]);
+      try {
+        await conversations.shutdown();
+      } catch (err) {
+        await logger
+          .error(
+            "conversations.shutdown_failed",
+            "conversation runtime shutdown failed",
+            {
+              error: err instanceof Error ? err.message : String(err),
+            },
+          )
+          .catch(() => {});
+      }
       await debouncedStateStore.dispose();
       if ("dispose" in transport && typeof transport.dispose === "function") {
         // Bridge dispose waits for its subprocess to acknowledge shutdown and

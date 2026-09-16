@@ -76,6 +76,25 @@ import {
   isCommandTimeoutError,
 } from "../transport/command-timeouts";
 import type { AppLogger } from "../logging/app-logger";
+import type { ConversationRuntime } from "../conversations/conversation-composition";
+import { ConversationError } from "../conversations/conversation-error";
+import type { ConversationProductEvent } from "../conversations/conversation-product-events";
+import { isHiddenProductSessionOwner } from "../state/types";
+import {
+  toBotDetail,
+  toBotSummary,
+  toConversationMessage,
+  toConversationRun,
+  toConversationSummary,
+  toMemberTurnSummary,
+  toRunDetail,
+  toTopicSummary,
+  type BotCreateRequestDto,
+  type BotUpdateRequestDto,
+  type ConversationHistoryRequestDto,
+  type ConversationPromptRequestDto,
+  type ConversationTurnCorrelation,
+} from "./conversation-control-dtos";
 
 const MODEL_SET_SETTLE_BUDGET_MS =
   2 * (DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS + BRIDGE_REQUEST_TIMEOUT_GRACE_MS);
@@ -162,6 +181,7 @@ export interface ControlServiceDeps {
     | "setSessionModel"
     | "setSessionEffort"
     | "setDisplayName"
+    | "getLogicalSessionRecord"
   >;
   // The active transport, for reading/switching a session's model and effort.
   // These controls are optional on the interface — absence is handled gracefully.
@@ -366,6 +386,8 @@ export interface ControlPromptInput {
    * ignores it and is always human. Omitting it cannot mint human authority.
    */
   executionOrigin?: PermissionInteractionOrigin;
+  /** Exact Conversation/Run/MemberTurn join identity for Direct Bot turns. */
+  conversation?: ConversationTurnCorrelation;
 }
 
 export interface ControlPromptResult {
@@ -412,6 +434,7 @@ export class ControlService {
   private readonly workspaceGit: WorkspaceGit;
   private readonly sessionConfigSetTails = new Map<string, Promise<void>>();
   private readonly worktreeRegistrationTails = new Map<string, Promise<void>>();
+  private conversationRuntime: ConversationRuntime | undefined;
 
   constructor(private readonly deps: ControlServiceDeps) {
     this.workspaceGit = new WorkspaceGit(
@@ -965,9 +988,13 @@ export class ControlService {
     const channelId = getChannelIdFromChatKey(chatKey);
     return this.deps.sessions
       .listAllResolvedSessions()
-      .filter((session) =>
-        isSessionAliasVisibleInChannel(session.alias, channelId),
-      )
+      .filter((session) => {
+        if (!isSessionAliasVisibleInChannel(session.alias, channelId)) {
+          return false;
+        }
+        const record = this.deps.sessions.getLogicalSessionRecord?.(session.alias);
+        return !isHiddenProductSessionOwner(record?.owner);
+      })
       .map((session) => {
         const running = this.deps.activeTurns.isActiveAnywhere(session.alias);
         const warm = running ? true : this.deps.sessionWarmth?.isWarm(session);
@@ -1323,6 +1350,15 @@ export class ControlService {
       if (input.abortSignal?.aborted) {
         return Promise.resolve({ ok: false, cancelled: true, errorMessage: "cancelled" });
       }
+      const owned =
+        this.deps.sessions.getLogicalSessionRecord?.(internalAlias)
+        ?? this.deps.sessions.getLogicalSessionRecord?.(input.sessionAlias);
+      if (isHiddenProductSessionOwner(owned?.owner) && (queueable || input.conversation === undefined)) {
+        throw new ConversationError(
+          "hidden_session",
+          "bot-owned sessions are not addressable via the session prompt API",
+        );
+      }
       return this.turnQueue.submit({
         chatKey: input.chatKey,
         sessionAlias: input.sessionAlias,
@@ -1341,6 +1377,7 @@ export class ControlService {
           ? { promptRequestId: input.promptRequestId }
           : {}),
         ...(input.abortSignal !== undefined ? { abortSignal: input.abortSignal } : {}),
+        ...(input.conversation !== undefined ? { conversation: input.conversation } : {}),
       });
     };
     // Keep this helper non-async so `prompt()` still reaches TurnQueue.submit on
@@ -1738,5 +1775,157 @@ export class ControlService {
 
   closeTerminal(terminalId: string): void {
     this.deps.terminal.close(terminalId);
+  }
+
+  bindConversationRuntime(runtime: ConversationRuntime): void {
+    this.conversationRuntime = runtime;
+  }
+
+  private requireConversations(): ConversationRuntime {
+    if (!this.conversationRuntime) {
+      throw new ConversationError(
+        "conversations_unavailable",
+        "Conversation runtime is not wired in this process",
+      );
+    }
+    return this.conversationRuntime;
+  }
+
+  emitConversationProduct(event: ConversationProductEvent): void {
+    switch (event.type) {
+      case "bots-changed":
+        this.deps.events.emit({ type: "bots-changed" });
+        return;
+      case "conversations-changed":
+        this.deps.events.emit({ type: "conversations-changed" });
+        return;
+      case "conversation-topic-changed":
+        this.deps.events.emit({ type: "conversation-topic-changed", topic: toTopicSummary(event.topic) });
+        return;
+      case "conversation-message":
+        this.deps.events.emit({ type: "conversation-message", message: toConversationMessage(event.message) });
+        return;
+      case "conversation-run-changed":
+        this.deps.events.emit({ type: "conversation-run-changed", run: toConversationRun(event.run) });
+        return;
+      case "member-turn-started":
+        this.deps.events.emit({
+          type: "member-turn-started",
+          run: toConversationRun(event.run),
+          memberTurn: toMemberTurnSummary(event.memberTurn),
+        });
+        return;
+      case "member-turn-finished":
+        this.deps.events.emit({
+          type: "member-turn-finished",
+          run: toConversationRun(event.run),
+          memberTurn: toMemberTurnSummary(event.memberTurn),
+        });
+        return;
+    }
+  }
+
+  listBots() {
+    return this.requireConversations().bots.listBots().map(toBotSummary);
+  }
+
+  getBot(id: string) {
+    return toBotDetail(this.requireConversations().bots.getBot(id));
+  }
+
+  async createBot(input: BotCreateRequestDto) {
+    const bot = await this.requireConversations().bots.createBot(input);
+    this.deps.events.emit({ type: "bots-changed" });
+    return toBotDetail(bot);
+  }
+
+  async updateBot(id: string, patch: BotUpdateRequestDto) {
+    const bot = await this.requireConversations().bots.updateBot(id, patch);
+    this.deps.events.emit({ type: "bots-changed" });
+    return toBotDetail(bot);
+  }
+
+  async deleteBot(id: string): Promise<{ ok: true }> {
+    await this.requireConversations().bots.deleteBot(id);
+    this.deps.events.emit({ type: "bots-changed" });
+    this.deps.events.emit({ type: "conversations-changed" });
+    return { ok: true };
+  }
+
+  listConversations(filter?: { botId?: string }) {
+    const runtime = this.requireConversations();
+    return runtime.runs.listConversations(filter).map((conversation) =>
+      toConversationSummary(conversation, runtime.runs.defaultTopicId(conversation.id)),
+    );
+  }
+
+  getConversation(conversationId: string) {
+    const runtime = this.requireConversations();
+    const conversation = runtime.runs.getConversation(conversationId);
+    const topics = runtime.runs.listTopics(conversationId).map(toTopicSummary);
+    return {
+      ...toConversationSummary(conversation, topics[0]?.id),
+      ...(conversation.description ? { description: conversation.description } : {}),
+      topics,
+    };
+  }
+
+  listTopics(conversationId: string) {
+    return this.requireConversations().runs.listTopics(conversationId).map(toTopicSummary);
+  }
+
+  async createTopic(conversationId: string, title: string) {
+    const topic = await this.requireConversations().runs.createTopic(conversationId, title);
+    return toTopicSummary(topic);
+  }
+
+  async promptConversation(input: ConversationPromptRequestDto) {
+    const accepted = await this.requireConversations().runs.acceptConversationPrompt({
+      conversationId: input.conversationId,
+      topicId: input.topicId,
+      requestId: input.requestId,
+      text: input.text,
+      ...(input.target?.botId ? { targetBotId: input.target.botId } : {}),
+    });
+    return {
+      reused: accepted.reused,
+      conversationId: accepted.run.conversationId,
+      topicId: accepted.run.topicId,
+      requestId: accepted.run.requestId,
+      run: toConversationRun(accepted.run),
+      message: toConversationMessage(accepted.message),
+      memberTurn: toMemberTurnSummary(accepted.memberTurn),
+    };
+  }
+
+  conversationHistory(input: ConversationHistoryRequestDto) {
+    const limit = Math.min(200, Math.max(1, Math.floor(input.limit ?? 50)));
+    const page = this.requireConversations().runs.listHistory({
+      conversationId: input.conversationId,
+      topicId: input.topicId,
+      limit,
+      ...(input.afterSeq !== undefined ? { afterSeq: input.afterSeq } : {}),
+      ...(input.beforeSeq !== undefined ? { beforeSeq: input.beforeSeq } : {}),
+    });
+    return {
+      conversationId: input.conversationId,
+      topicId: input.topicId,
+      messages: page.messages.map(toConversationMessage),
+      hasMoreBefore: page.hasMoreBefore,
+      hasMoreAfter: page.hasMoreAfter,
+      ...(page.oldestSeq !== undefined ? { oldestSeq: page.oldestSeq } : {}),
+      ...(page.newestSeq !== undefined ? { newestSeq: page.newestSeq } : {}),
+    };
+  }
+
+  getRun(runId: string) {
+    const result = this.requireConversations().runs.getRun(runId);
+    return toRunDetail(result.run, result.memberTurns);
+  }
+
+  async cancelRun(runId: string) {
+    const runtime = this.requireConversations();
+    await runtime.runs.cancelRun(runId);
+    return this.getRun(runId);
   }
 }
