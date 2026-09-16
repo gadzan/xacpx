@@ -459,3 +459,59 @@ test("crash-before-claim with a new epoch is recovery even at generation 1", asy
   expect(claimed?.memberTurn.origin).toBe("recovery");
   store.close();
 });
+
+test("claimNextDispatch skipTopicIds defers a Topic without claiming it", async () => {
+  const store = await SqliteConversationStore.open(":memory:");
+  const extra = "topic_skip_second";
+  store.acceptRequest({
+    conversationId: CONV,
+    topicId: TOPIC,
+    requestId: "req-skip-a",
+    botId: BOT_ID,
+    content: "alpha",
+    profileSnapshot: snapshot(),
+    now: NOW,
+    authorityEpoch: "epoch-a",
+  });
+  const b = store.acceptRequest({
+    conversationId: CONV,
+    topicId: extra,
+    requestId: "req-skip-b",
+    botId: BOT_ID,
+    content: "beta",
+    profileSnapshot: snapshot(),
+    now: NOW,
+    authorityEpoch: "epoch-a",
+  });
+  const claimed = store.claimNextDispatch({
+    now: NOW,
+    owner: "owner-a",
+    leaseExpiresAt: "2026-09-15T12:00:30.000Z",
+    authorityEpoch: "epoch-a",
+    skipTopicIds: [TOPIC],
+  });
+  expect(claimed?.run.id).toBe(b.run.id);
+  expect(claimed?.run.topicId).toBe(extra);
+  expect(store.getDispatchForRun(b.run.id)?.state).toBe("claimed");
+  store.close();
+});
+
+test("deleteTopicRows is a no-op when conversationId does not own the topic", async () => {
+  const store = await SqliteConversationStore.open(":memory:");
+  store.acceptRequest({
+    conversationId: CONV,
+    topicId: TOPIC,
+    requestId: "req-topic-rows",
+    botId: BOT_ID,
+    content: "keep me",
+    profileSnapshot: snapshot(),
+    now: NOW,
+  });
+  store.deleteTopicRows("conversation_other", TOPIC);
+  expect(store.listMessages({ conversationId: CONV, topicId: TOPIC, limit: 10 })).toHaveLength(1);
+  expect(store.listRuns(CONV)).toHaveLength(1);
+  store.deleteTopicRows(CONV, TOPIC);
+  expect(store.listMessages({ conversationId: CONV, topicId: TOPIC, limit: 10 })).toHaveLength(0);
+  expect(store.listRuns(CONV)).toHaveLength(0);
+  store.close();
+});

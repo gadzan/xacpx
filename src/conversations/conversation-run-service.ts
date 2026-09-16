@@ -5,6 +5,7 @@ import type { BotService } from "../bots/bot-service";
 import { planDirectConversation } from "./direct-conversation";
 import { createTopicId } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
+import type { ReleaseOwnedSession } from "../sessions/owned-session-release";
 import type { SessionService } from "../sessions/session-service";
 import { replaceRuntimeState } from "../state/replace-runtime-state";
 import type { StateStore } from "../state/state-store";
@@ -21,8 +22,9 @@ export interface ConversationRunServiceOptions {
   beforeAcceptPersist?: () => Promise<void>;
   beforeTeardownFinalize?: () => Promise<void>;
   afterTeardownMarkedDeleting?: () => Promise<void>;
-  failSessionRelease?: boolean | (() => boolean);
   autoKick?: boolean;
+  /** Verified physical+logical release. Required; never LogicalSession-only. */
+  releaseOwnedSession: ReleaseOwnedSession;
 }
 
 type SessionWriter = Pick<StateStore, "save"> & { saveNow?: (state: AppState) => Promise<void> };
@@ -34,27 +36,27 @@ export class ConversationRunService {
   private readonly beforeAcceptPersist?: () => Promise<void>;
   private readonly beforeTeardownFinalize?: () => Promise<void>;
   private readonly afterTeardownMarkedDeleting?: () => Promise<void>;
-  private readonly failSessionRelease?: boolean | (() => boolean);
   private readonly autoKick: boolean;
+  private readonly releaseOwnedSession: ReleaseOwnedSession;
 
   constructor(
     private readonly store: ConversationStore,
     private readonly bots: BotService,
     private readonly runtime: BotRuntimeManager,
     private readonly dispatcher: ConversationDispatcher,
-    private readonly sessions: Pick<SessionService, "removeSession" | "getLogicalSessionRecord">,
+    private readonly sessions: Pick<SessionService, "getLogicalSessionRecord">,
     private readonly state: AppState,
     private readonly stateStore: SessionWriter,
-    options?: ConversationRunServiceOptions,
+    options: ConversationRunServiceOptions,
   ) {
-    this.now = options?.now ?? (() => new Date());
-    this.createTopicIdFn = options?.createTopicId ?? (() => createTopicId());
-    this.stateMutex = options?.stateMutex ?? new AsyncMutex();
-    this.beforeAcceptPersist = options?.beforeAcceptPersist;
-    this.beforeTeardownFinalize = options?.beforeTeardownFinalize;
-    this.afterTeardownMarkedDeleting = options?.afterTeardownMarkedDeleting;
-    this.failSessionRelease = options?.failSessionRelease;
-    this.autoKick = options?.autoKick ?? true;
+    this.now = options.now ?? (() => new Date());
+    this.createTopicIdFn = options.createTopicId ?? (() => createTopicId());
+    this.stateMutex = options.stateMutex ?? new AsyncMutex();
+    this.beforeAcceptPersist = options.beforeAcceptPersist;
+    this.beforeTeardownFinalize = options.beforeTeardownFinalize;
+    this.afterTeardownMarkedDeleting = options.afterTeardownMarkedDeleting;
+    this.autoKick = options.autoKick ?? true;
+    this.releaseOwnedSession = options.releaseOwnedSession;
     this.bots.setConversationWork(this.store);
   }
 
@@ -169,40 +171,18 @@ export class ConversationRunService {
       });
     }
 
-    const bindings = Object.values(this.state.bot_runtime_bindings).filter(
-      (binding) => binding.scope === "bot-direct" && binding.conversationId === conversationId,
-    );
-    if (this.shouldFailRelease()) {
-      throw new ConversationError("session_release_failed", "injected session release failure", {
-        conversationId,
-        bindingIds: bindings.map((binding) => binding.id),
-      });
-    }
-    for (const binding of bindings) {
-      const session = this.sessions.getLogicalSessionRecord(binding.sessionAlias);
-      if (session) {
-        await this.sessions.removeSession(binding.sessionAlias);
+    for (const alias of this.ownedAliases(botId, conversationId)) {
+      if (this.sessions.getLogicalSessionRecord(alias)) {
+        await this.releaseAlias(alias);
       }
     }
 
     await this.bots.runLifecycle(botId, async () => {
       await this.beforeTeardownFinalize?.();
-      for (const binding of Object.values(this.state.bot_runtime_bindings)) {
-        if (binding.scope === "bot-direct" && binding.conversationId === conversationId) {
-          const session = this.sessions.getLogicalSessionRecord(binding.sessionAlias);
-          if (session) {
-            await this.sessions.removeSession(binding.sessionAlias);
-          }
+      for (const alias of this.ownedAliases(botId, conversationId)) {
+        if (this.sessions.getLogicalSessionRecord(alias)) {
+          await this.releaseAlias(alias);
         }
-      }
-      const leftoverAliases = Object.values(this.state.sessions)
-        .filter((session) => (
-          session.owner?.kind === "bot-direct"
-          && (session.owner.botId === botId || session.owner.conversationId === conversationId)
-        ))
-        .map((session) => session.alias);
-      for (const alias of leftoverAliases) {
-        await this.sessions.removeSession(alias);
       }
       await this.stateMutex.run(async () => {
         const next = structuredClone(this.state);
@@ -258,12 +238,37 @@ export class ConversationRunService {
     });
   }
 
-  private shouldFailRelease(): boolean {
-    const fail = this.failSessionRelease;
-    if (!fail) {
-      return false;
+  private ownedAliases(botId: string, conversationId: string): string[] {
+    const aliases = new Set<string>();
+    for (const binding of Object.values(this.state.bot_runtime_bindings)) {
+      if (binding.scope === "bot-direct" && binding.conversationId === conversationId) {
+        aliases.add(binding.sessionAlias);
+      }
     }
-    return typeof fail === "function" ? fail() : fail;
+    for (const session of Object.values(this.state.sessions)) {
+      if (
+        session.owner?.kind === "bot-direct"
+        && (session.owner.botId === botId || session.owner.conversationId === conversationId)
+      ) {
+        aliases.add(session.alias);
+      }
+    }
+    return [...aliases];
+  }
+
+  private async releaseAlias(alias: string): Promise<void> {
+    try {
+      await this.releaseOwnedSession(alias);
+    } catch (error) {
+      if (error instanceof ConversationError && error.code === "session_release_failed") {
+        throw error;
+      }
+      throw new ConversationError(
+        "session_release_failed",
+        error instanceof Error ? error.message : String(error),
+        { alias },
+      );
+    }
   }
 
   private async persist(next: AppState): Promise<void> {

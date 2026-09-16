@@ -91,6 +91,9 @@ function createHarness(
     now: () => new Date(NOW),
     stateMutex,
     afterDirectSnapshot: options.afterDirectSnapshot,
+    releaseOwnedSession: async (alias) => {
+      await sessions.removeSession(alias);
+    },
   });
   return { state, store, sessions, bots, runtime, stateMutex };
 }
@@ -267,68 +270,41 @@ test("non-default Topic scoped orphan is attributable without a binding", async 
   expect(ownedSessions(reloaded)).toHaveLength(1);
 });
 
-test("promptDirect keeps origin human and applies the latest profile", async () => {
-  const { bots, runtime } = createHarness();
-  await bots.createBot({
-    name: "Reviewer",
-    agent: "codex",
-    workspace: "backend",
-    role: "Code reviewer",
-    instructions: "Focus on races.",
+test("releaseDirectBinding uses verified physical release and keeps ownership on failure", async () => {
+  let failPhysical = true;
+  const physicalReleased: string[] = [];
+  const store = new MemoryStateStore();
+  const state = createEmptyState();
+  const config = createConfig();
+  const stateMutex = new AsyncMutex();
+  const sessions = new SessionService(config, store, state, { now: () => Date.parse(NOW), stateMutex });
+  const bots = new BotService(config, state, store, {
+    now: () => new Date(NOW),
+    createId: () => BOT_ID,
+    stateMutex,
   });
-  const conversationId = createDirectConversationId(BOT_ID);
-  const topicId = createDirectTopicId(BOT_ID);
-  const calls: Array<{ sessionAlias: string; text: string; origin: string }> = [];
-  await runtime.promptDirect(
-    { botId: BOT_ID, conversationId, topicId, text: "check it" },
-    {
-      run: async (input) => {
-        calls.push(input);
-        return { ok: true };
-      },
+  const runtime = new BotRuntimeManager(bots, sessions, state, store, {
+    now: () => new Date(NOW),
+    stateMutex,
+    releaseOwnedSession: async (alias) => {
+      physicalReleased.push(alias);
+      if (failPhysical) {
+        throw new Error("injected physical teardown failure");
+      }
+      await sessions.removeSession(alias);
     },
-  );
-  await bots.updateBot(BOT_ID, { instructions: "Be terse." });
-  await runtime.promptDirect(
-    { botId: BOT_ID, conversationId, topicId, text: "check it" },
-    {
-      run: async (input) => {
-        calls.push(input);
-        return { ok: true };
-      },
-    },
-  );
-  expect(calls).toHaveLength(2);
-  expect(calls[0]?.origin).toBe("human");
-  expect(calls[1]?.origin).toBe("human");
-  expect(calls[0]?.sessionAlias).toBe(calls[1]?.sessionAlias);
-  expect(calls[0]?.text).toContain("Focus on races.");
-  expect(calls[0]?.text.includes("Role:")).toBe(false);
-  expect(calls[0]?.text.includes("Code reviewer")).toBe(false);
-  expect(calls[1]?.text).toContain("Be terse.");
-  expect(calls[1]?.text.includes("Focus on races.")).toBe(false);
-});
-
-test("promptDirect does not wrap a runtime command in profile text", async () => {
-  const { bots, runtime } = createHarness();
-  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend", instructions: "Focus." });
-  let sent = "";
-  await runtime.promptDirect(
-    {
-      botId: BOT_ID,
-      conversationId: createDirectConversationId(BOT_ID),
-      topicId: createDirectTopicId(BOT_ID),
-      text: "/status",
-    },
-    {
-      run: async (input) => {
-        sent = input.text;
-        expect(input.origin).toBe("human");
-        return {};
-      },
-    },
-  );
-  expect(sent).toBe("/status");
+  });
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const binding = await runtime.getOrCreateDirectSession({ botId: BOT_ID });
+  expect(ownedSessions(state)).toHaveLength(1);
+  await expect(runtime.releaseDirectBinding(binding.id)).rejects.toThrow("injected physical teardown failure");
+  expect(physicalReleased).toEqual([binding.sessionAlias]);
+  expect(state.bot_runtime_bindings[binding.id]).toBeDefined();
+  expect(ownedSessions(state)).toHaveLength(1);
+  failPhysical = false;
+  await runtime.releaseDirectBinding(binding.id);
+  expect(state.bot_runtime_bindings[binding.id]).toBeUndefined();
+  expect(ownedSessions(state)).toHaveLength(0);
 });
 
 test("getOrCreateDirectSession does not deadlock on the shared session mutex", async () => {

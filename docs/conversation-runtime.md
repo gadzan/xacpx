@@ -50,6 +50,8 @@ Do not treat “dispatcher process disappeared” as “task never ran” when `
 
 Queued Runs on a Topic are claimed in **human request message `seq` order**, not `created_at` + lexical Run id.
 
+A drain pass that hits a generic pre-start failure **requeues that claim and defers its Topic for the rest of the pass**. It does not abort the drain. A wakeup (`kick`) accepted while that execute is in flight is still consumed: other runnable Topics can be claimed. The failed Topic is not hot-looped in the same pass; a later kick/restart may retry it. A kick that lands after the drain has decided to stop and before `draining` clears is re-entered as a new pass (deferred set reset), so that wakeup is not lost.
+
 ## Execution correlation
 
 On execution start the dispatcher persists `sessionAlias`, `logicalSessionId`, and a minted `sourceTurnId`. That id is passed into Control as `promptRequestId` so TurnQueue can treat it as the durable execution identity for **this** prompt. It is not a pre-existing transport turn id.
@@ -60,7 +62,9 @@ After `markExecutionStarted`, the dispatcher re-reads Run/MemberTurn following e
 
 Recovery never uses latest-turn-in-alias, text match, or timestamp proximity.
 
-The runner seam is `ConversationTurnRunner` / `ControlConversationTurnRunner` wrapping `ControlService.promptImmediate` / request-id-aware cancel. `promptImmediate` uses the same TurnQueue / SessionTurnRunner path as interactive `prompt()`, but **never FIFO-enqueues** when the session lane is busy (`queueable: false`). ConversationStore already owns durable queuing; a busy lane fails the Run immediately instead of leaving a TurnQueue item that can execute after the durable Run is already failed. There is no second Bot execution engine.
+The runner seam is `ConversationTurnRunner` / `ControlConversationTurnRunner` wrapping `ControlService.promptImmediate` / request-id-aware cancel. `promptImmediate` uses the same TurnQueue / SessionTurnRunner path as interactive `prompt()`, but **never FIFO-enqueues** when the session lane is busy (`queueable: false`). ConversationStore already owns durable queuing; a busy lane fails the Run immediately instead of leaving a TurnQueue item that can execute after the durable Run is already failed.
+
+`BotRuntimeManager` is **runtime materialization/binding only**. Direct Bot turns enter solely through `ConversationRunService` → dispatcher → runner. There is no second Bot execution engine and no `promptDirect` bypass.
 
 `prompt()` (interactive Control) is always `turnOrigin: "human"`. Conversation `promptImmediate` takes store-derived `executionOrigin` and **fail-closes to `orchestration`** unless that value is exactly `"human"`. Callers cannot mint human permission authority by omitting it.
 
@@ -128,8 +132,8 @@ Order:
 1. Mark Conversation/Topic deleting (SQLite is authoritative for accept/dispatch; AppState flag is bounded metadata). This uses the per-Bot lifecycle gate briefly, shared with accept **and** `createDirectTopic`.
 2. Stop future accept/dispatch/topic creation. Cancel/drain active turns **without** holding the lifecycle gate (so runtime materialize is not deadlocked). `createDirectTopic` during this window fails `conversation_deleting` and never returns an active Topic that final teardown would immediately remove.
 3. Reconcile indeterminate.
-4. Verified `removeSession`.
-5. Per-Bot lifecycle gate for finalization: remaining ownership release, AppState binding/topic/conversation cleanup, **then** delete ConversationStore rows / deleting tombstone.
+4. Verified owned-session release via `releaseOwnedSession(alias)` (production wiring: `removeSessionWithTransport` / `removeAliasWithPhysicalLifecycle`). Physical/Runtime teardown must succeed **before** the LogicalSession row disappears. `SessionService.removeSession` is logical-only and is not this path. `BotRuntimeManager.releaseDirectBinding` uses the same seam.
+5. Per-Bot lifecycle gate for finalization: remaining ownership release through that same seam, AppState binding/topic/conversation cleanup, **then** delete ConversationStore rows / deleting tombstone.
 
 A crash before step 5 leaves the SQLite `deleting` barrier in place: new accepts fail closed and teardown is retryable.
 

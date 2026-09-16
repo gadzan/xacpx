@@ -1,4 +1,3 @@
-import { composeBotTurnPrompt } from "./bot-profile-prompt";
 import { BotError } from "./bot-error";
 import type { BotService } from "./bot-service";
 import type { BotProfile, BotProfileExecution, BotRuntimeBinding } from "./bot-types";
@@ -13,31 +12,18 @@ import {
   ownedDirectSessionAlias,
 } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
+import type { ReleaseOwnedSession } from "../sessions/owned-session-release";
 import type { SessionService } from "../sessions/session-service";
 import { replaceRuntimeState } from "../state/replace-runtime-state";
 import type { StateStore } from "../state/state-store";
 import { createBotDirectOwner, type AppState, type LogicalSession } from "../state/types";
 
-export interface DirectBotTurnInput {
-  botId: string;
-  conversationId: string;
-  topicId: string;
-  text: string;
-}
-
-export interface BotTurnRunner {
-  run(input: {
-    sessionAlias: string;
-    text: string;
-    origin: "human";
-    promptRequestId?: string;
-  }): Promise<unknown>;
-}
-
 export interface BotRuntimeManagerOptions {
   now?: () => Date;
   stateMutex?: AsyncMutex;
   afterDirectSnapshot?: (bot: BotProfile) => Promise<void>;
+  /** Verified physical+logical release. Required; never LogicalSession-only. */
+  releaseOwnedSession: ReleaseOwnedSession;
 }
 
 type SessionWriter = Pick<StateStore, "save"> & { saveNow?: (state: AppState) => Promise<void> };
@@ -46,21 +32,23 @@ export class BotRuntimeManager {
   private readonly now: () => Date;
   private readonly stateMutex: AsyncMutex;
   private readonly afterDirectSnapshot?: (bot: BotProfile) => Promise<void>;
+  private readonly releaseOwnedSession: ReleaseOwnedSession;
   private readonly inflight = new Map<string, Promise<BotRuntimeBinding>>();
 
   constructor(
     private readonly bots: BotService,
     private readonly sessions: Pick<
       SessionService,
-      "createSession" | "getLogicalSessionRecord" | "getLogicalSessionById" | "setSessionModel" | "setSessionEffort" | "removeSession"
+      "createSession" | "getLogicalSessionRecord" | "getLogicalSessionById" | "setSessionModel" | "setSessionEffort"
     >,
     private readonly state: AppState,
     private readonly stateStore: SessionWriter,
-    options?: BotRuntimeManagerOptions,
+    options: BotRuntimeManagerOptions,
   ) {
-    this.now = options?.now ?? (() => new Date());
-    this.stateMutex = options?.stateMutex ?? new AsyncMutex();
-    this.afterDirectSnapshot = options?.afterDirectSnapshot;
+    this.now = options.now ?? (() => new Date());
+    this.stateMutex = options.stateMutex ?? new AsyncMutex();
+    this.afterDirectSnapshot = options.afterDirectSnapshot;
+    this.releaseOwnedSession = options.releaseOwnedSession;
   }
 
   getBot(botId: string): BotProfile {
@@ -101,27 +89,14 @@ export class BotRuntimeManager {
     }
   }
 
-  async promptDirect(input: DirectBotTurnInput, runner: BotTurnRunner): Promise<unknown> {
-    const binding = await this.getOrCreateDirectSession({
-      botId: input.botId,
-      conversationId: input.conversationId,
-      topicId: input.topicId,
-    });
-    const bot = this.bots.getBot(input.botId);
-    const text = composeBotTurnPrompt(bot, input.text);
-    return await runner.run({
-      sessionAlias: binding.sessionAlias,
-      text,
-      origin: "human",
-    });
-  }
-
   async releaseDirectBinding(bindingId: string): Promise<void> {
     const binding = this.state.bot_runtime_bindings[bindingId];
     if (!binding || binding.scope !== "bot-direct") {
       return;
     }
-    await this.sessions.removeSession(binding.sessionAlias);
+    if (this.sessions.getLogicalSessionRecord(binding.sessionAlias)) {
+      await this.releaseOwnedSession(binding.sessionAlias);
+    }
     await this.stateMutex.run(async () => {
       const next = structuredClone(this.state);
       delete next.bot_runtime_bindings[bindingId];

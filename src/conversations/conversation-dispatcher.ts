@@ -44,7 +44,10 @@ export class ConversationDispatcher {
   private readonly hooks?: ConversationDispatcherHooks;
   private draining = false;
   private kicked = false;
-  private abortDrain = false;
+  /** Topics that failed pre-start in this drain pass. Skipped so a poison row
+   *  cannot starve other Topics, and so a wakeup accepted during execute is
+   *  still consumed without hot-looping the failed Topic. */
+  private readonly deferredTopicIds = new Set<string>();
 
   constructor(
     private readonly store: ConversationStore,
@@ -66,10 +69,10 @@ export class ConversationDispatcher {
       return;
     }
     this.draining = true;
+    this.deferredTopicIds.clear();
     try {
       for (;;) {
         this.kicked = false;
-        this.abortDrain = false;
         this.store.recoverExpiredClaims(this.now().toISOString());
         const claimed = this.claimOne();
         if (!claimed) {
@@ -79,12 +82,16 @@ export class ConversationDispatcher {
           break;
         }
         await this.execute(claimed);
-        if (this.abortDrain) {
-          break;
-        }
       }
     } finally {
       this.draining = false;
+      this.deferredTopicIds.clear();
+    }
+    // A kick can land after the empty-claim break and before `draining` clears.
+    // Re-enter as a *new* pass (deferred set already reset). skipTopicIds still
+    // stops a poison Topic from starving others inside that pass.
+    if (this.kicked) {
+      await this.kick();
     }
   }
 
@@ -115,6 +122,7 @@ export class ConversationDispatcher {
       owner: this.ownerId,
       leaseExpiresAt: new Date(this.now().getTime() + this.leaseMs).toISOString(),
       authorityEpoch: this.authorityEpoch,
+      ...(this.deferredTopicIds.size > 0 ? { skipTopicIds: [...this.deferredTopicIds] } : {}),
     });
   }
 
@@ -221,7 +229,7 @@ export class ConversationDispatcher {
         return;
       }
       this.releaseOwnClaim(work);
-      this.abortDrain = true;
+      this.deferredTopicIds.add(work.run.topicId);
     }
   }
 

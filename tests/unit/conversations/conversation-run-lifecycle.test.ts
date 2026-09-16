@@ -151,7 +151,6 @@ async function createLifecycle(options: {
   beforeAcceptPersist?: () => Promise<void>;
   beforeTeardownFinalize?: () => Promise<void>;
   afterTeardownMarkedDeleting?: () => Promise<void>;
-  failSessionRelease?: boolean | (() => boolean);
   beforeAcceptCommit?: () => void;
   ownerId?: string;
   autoKick?: boolean;
@@ -168,6 +167,17 @@ async function createLifecycle(options: {
   const stateMutex = new AsyncMutex();
   const config = createConfig();
   const sessions = new SessionService(config, stateStore, state, { now: () => Date.parse(NOW), stateMutex });
+  const release = {
+    physicalReleased: [] as string[],
+    failPhysical: false,
+    async releaseOwnedSession(alias: string) {
+      this.physicalReleased.push(alias);
+      if (this.failPhysical) {
+        throw new Error("injected physical teardown failure");
+      }
+      await sessions.removeSession(alias);
+    },
+  };
   const bots = new BotService(config, state, stateStore, {
     now: () => new Date(NOW),
     createId: () => BOT_ID,
@@ -176,6 +186,7 @@ async function createLifecycle(options: {
   const runtime = new BotRuntimeManager(bots, sessions, state, stateStore, {
     now: () => new Date(NOW),
     stateMutex,
+    releaseOwnedSession: (alias) => release.releaseOwnedSession(alias),
   });
   const events = createControlEventBus();
   const runner = options.controlChat
@@ -208,11 +219,11 @@ async function createLifecycle(options: {
     beforeAcceptPersist: options.beforeAcceptPersist,
     beforeTeardownFinalize: options.beforeTeardownFinalize,
     afterTeardownMarkedDeleting: options.afterTeardownMarkedDeleting,
-    failSessionRelease: options.failSessionRelease,
     autoKick: options.autoKick ?? false,
+    releaseOwnedSession: (alias) => release.releaseOwnedSession(alias),
   });
   await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend", instructions: "Focus on races." });
-  return { path, store, state, sessions, bots, runtime, runner, dispatcher, service, nowFn, jump };
+  return { path, store, state, sessions, bots, runtime, runner, dispatcher, service, nowFn, jump, release };
 }
 
 function fakeRunner(runner: ConversationTurnRunner): FakeRunner {
@@ -509,10 +520,7 @@ test("runtime creation failure after accept leaves durable pending work", async 
 });
 
 test("teardown release failure leaves recoverable ownership", async () => {
-  let failRelease = true;
-  const first = await createLifecycle({
-    failSessionRelease: () => failRelease,
-  });
+  const first = await createLifecycle();
   await first.service.acceptDirectPrompt({
     botId: BOT_ID,
     requestId: "req-teardown",
@@ -520,15 +528,21 @@ test("teardown release failure leaves recoverable ownership", async () => {
   });
   await first.dispatcher.kick();
   expect(Object.keys(first.state.bot_runtime_bindings).length).toBeGreaterThan(0);
+  const owned = Object.values(first.state.sessions).filter((session) => session.owner?.kind === "bot-direct");
+  expect(owned.length).toBeGreaterThan(0);
+  first.release.failPhysical = true;
   await expect(first.service.teardownDirectConversation(BOT_ID)).rejects.toMatchObject({
     code: "session_release_failed",
   });
+  expect(first.release.physicalReleased.length).toBeGreaterThan(0);
   expect(Object.keys(first.state.bot_runtime_bindings).length).toBeGreaterThan(0);
+  expect(Object.values(first.state.sessions).some((session) => session.owner?.kind === "bot-direct")).toBe(true);
   expect(first.store.isConversationDeleting(createDirectConversationId(BOT_ID))).toBe(true);
-  failRelease = false;
+  first.release.failPhysical = false;
   await first.service.teardownDirectConversation(BOT_ID);
   expect(first.state.bot_runtime_bindings).toEqual({});
   expect(first.state.conversations).toEqual({});
+  expect(Object.values(first.state.sessions).some((session) => session.owner?.kind === "bot-direct")).toBe(false);
   await first.bots.deleteBot(BOT_ID);
   expect(first.state.bots[BOT_ID]).toBeUndefined();
 });
@@ -1159,4 +1173,72 @@ test("createDirectTopic during teardown drain fails conversation_deleting", asyn
   resumeDrain.resolve();
   await Promise.all([drain, teardown]);
   expect(Object.values(first.state.conversation_topics).some((topic) => topic.title === "During teardown")).toBe(false);
+});
+
+test("Conversation prompt uses the accepted snapshot, not a later live profile", async () => {
+  const first = await createLifecycle();
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-snapshot-prompt",
+    content: "check it",
+  });
+  await first.bots.updateBot(BOT_ID, { instructions: "Be terse." });
+  await first.dispatcher.kick();
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
+  const sent = fakeRunner(first.runner).runs[0]?.text ?? "";
+  expect(fakeRunner(first.runner).runs[0]?.executionOrigin).toBe("human");
+  expect(canMintHumanPermissionInteraction(fakeRunner(first.runner).runs[0]?.executionOrigin)).toBe(true);
+  expect(sent).toContain("Focus on races.");
+  expect(sent.includes("Be terse.")).toBe(false);
+  expect(sent.includes("Role:")).toBe(false);
+});
+
+test("Conversation prompt leaves a whole-input runtime command unmodified", async () => {
+  const first = await createLifecycle();
+  await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-status-cmd",
+    content: "/status",
+  });
+  await first.dispatcher.kick();
+  expect(fakeRunner(first.runner).runs[0]?.text).toBe("/status");
+  expect(fakeRunner(first.runner).runs[0]?.executionOrigin).toBe("human");
+});
+
+test("a wakeup during a transient pre-start failure still drains the other Topic", async () => {
+  const paused = deferred();
+  const resumeA = deferred();
+  const first = await createLifecycle({
+    hooks: {
+      beforeRuntimeMaterialize: async (work) => {
+        if (work.run.requestId === "req-wakeup-a") {
+          paused.resolve();
+          await resumeA.promise;
+          throw new Error("transient materialize failure");
+        }
+      },
+    },
+  });
+  const extra = await first.service.createDirectTopic(BOT_ID, "Second");
+  const runA = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-wakeup-a",
+    content: "alpha",
+  });
+  const drain = first.dispatcher.kick();
+  await paused.promise;
+  const runB = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-wakeup-b",
+    content: "beta",
+    topicId: extra.id,
+  });
+  await first.dispatcher.kick();
+  resumeA.resolve();
+  await drain;
+  expect(first.store.getRun(runA.run.id)?.state).toBe("queued");
+  expect(first.store.getDispatchForRun(runA.run.id)?.state).toBe("pending");
+  expect(first.store.getRun(runB.run.id)?.state).toBe("completed");
+  expect(fakeRunner(first.runner).runs).toHaveLength(1);
+  expect(fakeRunner(first.runner).runs[0]?.text).toContain("beta");
 });

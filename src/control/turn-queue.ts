@@ -765,6 +765,11 @@ export class TurnQueue {
   // incoming submission could observe a not-busy session between the ended turn
   // and the drained turn.
   private advanceQueue(key: string): void {
+    // Record the finishing turn while this inFlight entry is still the old one.
+    // Drain overwrites inFlight with the next prompt; queue-empty must not be
+    // the only tombstone path or inspectPromptRequest(A) becomes absent once B starts.
+    const finished = this.inFlight.get(key);
+    this.recordSettledRequestId(finished?.promptRequestId);
     const interrupt = this.pendingInterrupts.get(key);
     if (interrupt) {
       // Removed from the slot SYNCHRONOUSLY before it re-registers as inFlight
@@ -792,8 +797,6 @@ export class TurnQueue {
       // otherwise `draining` leaks and every future submission enqueues forever (permanent
       // wedge).
       this.draining.delete(key);
-      const finished = this.inFlight.get(key);
-      this.recordSettledRequestId(finished?.promptRequestId);
       this.inFlight.delete(key);
     }
   }

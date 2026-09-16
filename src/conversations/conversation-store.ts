@@ -42,6 +42,8 @@ export interface ClaimNextDispatchInput {
   leaseExpiresAt: string;
   /** Current process authority epoch. Compared to the dispatch row, never to generation. */
   authorityEpoch: string;
+  /** Topics deferred for this drain pass after a pre-start failure. */
+  skipTopicIds?: readonly string[];
 }
 
 export interface ClaimedWork {

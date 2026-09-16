@@ -474,6 +474,10 @@ export class SqliteConversationStore implements ConversationStore {
 
   claimNextDispatch(input: ClaimNextDispatchInput): ClaimedWork | undefined {
     return this.db.transaction(() => {
+      const skipTopicIds = input.skipTopicIds ?? [];
+      const skipClause = skipTopicIds.length === 0
+        ? ""
+        : `AND r.topic_id NOT IN (${skipTopicIds.map(() => "?").join(",")})`;
       const row = this.db.get<DispatchRow>(
         `SELECT d.* FROM pending_dispatches d
          JOIN runs r ON r.id = d.run_id
@@ -501,8 +505,10 @@ export class SqliteConversationStore implements ConversationStore {
              WHERE active.topic_id = r.topic_id
                AND active.state IN ('running', 'waiting-human')
            )
+           ${skipClause}
          ORDER BY msg.seq ASC, r.created_at ASC, r.topic_id ASC
          LIMIT 1`,
+        skipTopicIds,
       );
       if (!row) {
         return undefined;
@@ -798,13 +804,45 @@ export class SqliteConversationStore implements ConversationStore {
 
   deleteTopicRows(conversationId: string, topicId: string): void {
     this.db.transaction(() => {
-      this.db.run("DELETE FROM pending_dispatches WHERE run_id IN (SELECT id FROM runs WHERE topic_id = ?)", [topicId]);
-      this.db.run("DELETE FROM member_turns WHERE topic_id = ?", [topicId]);
-      this.db.run("DELETE FROM messages WHERE topic_id = ?", [topicId]);
-      this.db.run("DELETE FROM runs WHERE topic_id = ?", [topicId]);
-      this.db.run("DELETE FROM topic_seq WHERE topic_id = ?", [topicId]);
-      this.db.run("DELETE FROM topic_lifecycle WHERE topic_id = ?", [topicId]);
-      void conversationId;
+      const owned = this.db.get(
+        `SELECT 1 AS ok FROM topic_seq WHERE conversation_id = ? AND topic_id = ?
+         UNION ALL
+         SELECT 1 AS ok FROM topic_lifecycle WHERE conversation_id = ? AND topic_id = ?
+         UNION ALL
+         SELECT 1 AS ok FROM runs WHERE conversation_id = ? AND topic_id = ?
+         UNION ALL
+         SELECT 1 AS ok FROM messages WHERE conversation_id = ? AND topic_id = ?
+         LIMIT 1`,
+        [conversationId, topicId, conversationId, topicId, conversationId, topicId, conversationId, topicId],
+      );
+      if (!owned) {
+        return;
+      }
+      this.db.run(
+        `DELETE FROM pending_dispatches
+         WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ?)`,
+        [conversationId, topicId],
+      );
+      this.db.run(
+        "DELETE FROM member_turns WHERE conversation_id = ? AND topic_id = ?",
+        [conversationId, topicId],
+      );
+      this.db.run(
+        "DELETE FROM messages WHERE conversation_id = ? AND topic_id = ?",
+        [conversationId, topicId],
+      );
+      this.db.run(
+        "DELETE FROM runs WHERE conversation_id = ? AND topic_id = ?",
+        [conversationId, topicId],
+      );
+      this.db.run(
+        "DELETE FROM topic_seq WHERE conversation_id = ? AND topic_id = ?",
+        [conversationId, topicId],
+      );
+      this.db.run(
+        "DELETE FROM topic_lifecycle WHERE conversation_id = ? AND topic_id = ?",
+        [conversationId, topicId],
+      );
     });
   }
 
