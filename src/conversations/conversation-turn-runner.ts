@@ -7,6 +7,8 @@ export interface ConversationTurnRunInput {
   conversationId: string;
   topicId: string;
   botId: string;
+  runId: string;
+  memberTurnId: string;
   sessionAlias: string;
   logicalSessionId: string;
   text: string;
@@ -127,6 +129,13 @@ export class ControlConversationTurnRunner implements ConversationTurnRunner {
       promptRequestId: input.promptRequestId,
       abortSignal: abort.signal,
       executionOrigin: input.executionOrigin,
+      conversation: {
+        conversationId: input.conversationId,
+        topicId: input.topicId,
+        botId: input.botId,
+        runId: input.runId,
+        memberTurnId: input.memberTurnId,
+      },
     });
     void provider.then(
       (result) => this.finishTracked(tracked, this.mapPromptResult(result)),

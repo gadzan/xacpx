@@ -9,6 +9,11 @@ import type { SessionService } from "../sessions/session-service";
 import { ConversationError } from "./conversation-error";
 import { conversationExecutionOriginFromMemberTurn } from "./conversation-execution";
 import type { ClaimedWork, ConversationStore } from "./conversation-store";
+import {
+  emitConversationProductEvent,
+  type ConversationProductEvent,
+  type ConversationProductEventSink,
+} from "./conversation-product-events";
 import type {
   ConversationTurnCancelResult,
   ConversationTurnRunner,
@@ -32,6 +37,7 @@ export interface ConversationDispatcherOptions {
   /** Process-lifetime authority epoch. Accept stamps it; claim compares it. */
   authorityEpoch?: string;
   hooks?: ConversationDispatcherHooks;
+  onProductEvent?: ConversationProductEventSink;
 }
 
 const DEFAULT_LEASE_MS = 30_000;
@@ -49,6 +55,9 @@ export class ConversationDispatcher {
    *  with this set cleared; without a new wake the poison Topic does not
    *  hot-loop. */
   private readonly deferredTopicIds = new Set<string>();
+  private readonly onProductEvent?: ConversationProductEventSink;
+  private closed = false;
+  private drainTask: Promise<void> | undefined;
 
   constructor(
     private readonly store: ConversationStore,
@@ -62,20 +71,54 @@ export class ConversationDispatcher {
     this.ownerId = options?.ownerId ?? `dispatcher:${process.pid}:${randomUUID()}`;
     this.authorityEpoch = options?.authorityEpoch ?? randomUUID();
     this.hooks = options?.hooks;
+    this.onProductEvent = options?.onProductEvent;
   }
 
   async kick(): Promise<void> {
     this.wakeGeneration += 1;
+    if (this.closed) {
+      return;
+    }
     if (this.draining) {
       return;
     }
     this.draining = true;
+    const task = this.runDrain();
+    this.drainTask = task;
+    try {
+      await task;
+    } finally {
+      if (this.drainTask === task) {
+        this.drainTask = undefined;
+      }
+    }
+  }
+
+  /** Refuse new claims. In-flight execute may finish. */
+  stop(): void {
+    this.closed = true;
+  }
+
+  async shutdown(): Promise<void> {
+    this.closed = true;
+    if (this.drainTask) {
+      await this.drainTask.catch(() => undefined);
+    }
+  }
+
+  private async runDrain(): Promise<void> {
     let seen = 0;
     try {
       while (seen !== this.wakeGeneration) {
+        if (this.closed) {
+          return;
+        }
         seen = this.wakeGeneration;
         this.deferredTopicIds.clear();
         for (;;) {
+          if (this.closed) {
+            return;
+          }
           this.store.recoverExpiredClaims(this.now().toISOString());
           const claimed = this.claimOne();
           if (!claimed) {
@@ -88,9 +131,13 @@ export class ConversationDispatcher {
       this.draining = false;
       this.deferredTopicIds.clear();
     }
-    if (seen !== this.wakeGeneration) {
+    if (!this.closed && seen !== this.wakeGeneration) {
       await this.kick();
     }
+  }
+
+  private emitProduct(event: ConversationProductEvent): void {
+    emitConversationProductEvent(this.onProductEvent, event);
   }
 
   async cancelRun(runId: string): Promise<void> {
@@ -100,6 +147,7 @@ export class ConversationDispatcher {
       return;
     }
     if (!outcome.executionStarted) {
+      this.emitRunAndMember(outcome.run, outcome.memberTurn.id);
       await this.kick();
       return;
     }
@@ -210,11 +258,15 @@ export class ConversationDispatcher {
       ) {
         return;
       }
+      this.emitProduct({ type: "conversation-run-changed", run: latestRun });
+      this.emitProduct({ type: "member-turn-started", run: latestRun, memberTurn: latestMember });
       const text = composeBotTurnPromptFromSnapshot(snapshot, this.requestText(work.run.requestMessageId));
       const result = await this.runner.run({
         conversationId: work.run.conversationId,
         topicId: work.run.topicId,
         botId: work.memberTurn.botId,
+        runId: work.run.id,
+        memberTurnId: started.id,
         sessionAlias: binding.sessionAlias,
         logicalSessionId: binding.logicalSessionId,
         text,
@@ -232,13 +284,14 @@ export class ConversationDispatcher {
         return;
       }
       if (started?.startedAt) {
-        this.store.failExecution({
+        const run = this.store.failExecution({
           runId: work.run.id,
           memberTurnId: work.memberTurn.id,
           now: this.now().toISOString(),
           reason: "started_result_unknown",
           terminalState: "indeterminate",
         });
+        this.emitRunAndMember(run, work.memberTurn.id);
         return;
       }
       this.releaseOwnClaim(work);
@@ -257,6 +310,10 @@ export class ConversationDispatcher {
         now: this.now().toISOString(),
         reason,
       });
+      const run = this.store.getRun(work.run.id);
+      if (run) {
+        this.emitRunAndMember(run, work.memberTurn.id);
+      }
     } catch (error) {
       if (error instanceof ConversationError && error.code === "stale_claim") {
         return;
@@ -292,7 +349,7 @@ export class ConversationDispatcher {
     }
     const now = this.now().toISOString();
     if (result.outcome === "completed") {
-      this.store.completeExecution({
+      const completed = this.store.completeExecution({
         runId,
         memberTurnId: member.id,
         botId: member.botId,
@@ -300,18 +357,21 @@ export class ConversationDispatcher {
         sourceTurn: { sessionAlias: member.sessionAlias ?? "", turnId: member.sourceTurnId },
         now,
       });
+      this.emitTerminalProjection(completed.run, completed.memberTurn, completed.assistantMessage);
       return;
     }
     if (result.outcome === "failed") {
-      this.store.failExecution({
+      const run = this.store.failExecution({
         runId,
         memberTurnId: member.id,
         now,
         reason: result.error ?? "failed",
       });
+      this.emitRunAndMember(run, member.id);
       return;
     }
-    this.store.completeCancel(runId, member.id, now, result.outcome === "unknown");
+    const run = this.store.completeCancel(runId, member.id, now, result.outcome === "unknown");
+    this.emitRunAndMember(run, member.id);
   }
 
   private persistResult(
@@ -321,7 +381,7 @@ export class ConversationDispatcher {
   ): void {
     const now = this.now().toISOString();
     if (result.status === "completed") {
-      this.store.completeExecution({
+      const completed = this.store.completeExecution({
         runId: work.run.id,
         memberTurnId: started.id,
         botId: work.memberTurn.botId,
@@ -329,18 +389,44 @@ export class ConversationDispatcher {
         sourceTurn: { sessionAlias: started.sessionAlias ?? "", turnId: started.sourceTurnId },
         now,
       });
+      this.emitTerminalProjection(completed.run, completed.memberTurn, completed.assistantMessage);
       return;
     }
     if (result.status === "cancelled") {
-      this.store.completeCancel(work.run.id, started.id, now, result.unknown === true);
+      const run = this.store.completeCancel(work.run.id, started.id, now, result.unknown === true);
+      this.emitRunAndMember(run, started.id);
       return;
     }
-    this.store.failExecution({
+    const run = this.store.failExecution({
       runId: work.run.id,
       memberTurnId: started.id,
       now,
       reason: result.error ?? "failed",
     });
+    this.emitRunAndMember(run, started.id);
+  }
+
+  private emitTerminalProjection(
+    run: import("./conversation-types").ConversationRun,
+    memberTurn: MemberTurnRecord,
+    assistantMessage?: import("./conversation-types").ConversationMessage,
+  ): void {
+    this.emitProduct({ type: "conversation-run-changed", run });
+    this.emitProduct({ type: "member-turn-finished", run, memberTurn });
+    if (assistantMessage) {
+      this.emitProduct({ type: "conversation-message", message: assistantMessage });
+    }
+  }
+
+  private emitRunAndMember(
+    run: import("./conversation-types").ConversationRun,
+    memberTurnId: string,
+  ): void {
+    this.emitProduct({ type: "conversation-run-changed", run });
+    const memberTurn = this.store.getMemberTurn(memberTurnId);
+    if (memberTurn) {
+      this.emitProduct({ type: "member-turn-finished", run, memberTurn });
+    }
   }
 
   private requestText(messageId: string): string {
