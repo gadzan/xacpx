@@ -234,6 +234,146 @@ export interface QueueItemDto {
   kind?: "interrupt";
 }
 
+/** Exact join from a live turn event onto ConversationRun / MemberTurn. */
+export interface ConversationTurnCorrelationDto {
+  conversationId: string;
+  topicId: string;
+  botId: string;
+  runId: string;
+  memberTurnId: string;
+}
+
+export interface BotSummaryDto {
+  id: string;
+  name: string;
+  avatar?: string;
+  role?: string;
+  agent: string;
+  workspace: string;
+  model?: string;
+  effort?: string;
+  enabled: boolean;
+  updatedAt: string;
+}
+
+export interface BotDetailDto extends BotSummaryDto {
+  instructions?: string;
+  profileRevision: number;
+  createdAt: string;
+}
+
+export interface TopicSummaryDto {
+  id: string;
+  conversationId: string;
+  title: string;
+  status: "active" | "archived" | "deleting";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConversationSummaryDto {
+  id: string;
+  kind: "bot";
+  title: string;
+  botId: string;
+  defaultTopicId?: string;
+  lifecycle?: "active" | "deleting";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConversationDetailDto extends ConversationSummaryDto {
+  description?: string;
+  topics: TopicSummaryDto[];
+}
+
+export interface ConversationMessageDto {
+  id: string;
+  conversationId: string;
+  topicId: string;
+  seq: number;
+  role: "human" | "bot" | "system";
+  senderBotId?: string;
+  content: string;
+  replyTo?: string;
+  runId?: string;
+  createdAt: string;
+  promptRequestId?: string;
+}
+
+export type ConversationRunStateDto =
+  | "queued"
+  | "running"
+  | "waiting-human"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "indeterminate";
+
+export interface ConversationRunDto {
+  id: string;
+  conversationId: string;
+  topicId: string;
+  requestMessageId: string;
+  requestId: string;
+  mode: "explicit";
+  state: ConversationRunStateDto;
+  completionReason?: string;
+  profileRevision: number;
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+}
+
+export interface BotProfileSnapshotDto {
+  revision: number;
+  capturedAt: string;
+  presentation: { name: string; avatar?: string; role?: string };
+  behavior: { instructions?: string };
+  execution: { agent: string; workspace: string; model?: string; effort?: string };
+}
+
+export interface MemberTurnSummaryDto {
+  id: string;
+  runId: string;
+  conversationId: string;
+  topicId: string;
+  botId: string;
+  batch: number;
+  attempt: number;
+  origin: "human" | "followup" | "retry" | "recovery";
+  state: "queued" | "dispatched" | "running" | "completed" | "failed" | "cancelled" | "indeterminate";
+  promptRequestId?: string;
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+}
+
+export interface ConversationRunDetailDto extends ConversationRunDto {
+  profileSnapshot?: BotProfileSnapshotDto;
+  memberTurns: MemberTurnSummaryDto[];
+}
+
+export interface ConversationPromptResponseDto {
+  reused: boolean;
+  conversationId: string;
+  topicId: string;
+  requestId: string;
+  run: ConversationRunDto;
+  message: ConversationMessageDto;
+  memberTurn: MemberTurnSummaryDto;
+}
+
+export interface ConversationHistoryResponseDto {
+  conversationId: string;
+  topicId: string;
+  messages: ConversationMessageDto[];
+  oldestSeq?: number;
+  newestSeq?: number;
+  hasMoreBefore: boolean;
+  hasMoreAfter: boolean;
+}
+
 /** Wire mirror of src/control ControlEvent (tool-event carries the NORMALIZED step). */
 export type ControlEventDto =
   | {
@@ -241,6 +381,7 @@ export type ControlEventDto =
       chatKey: string;
       sessionAlias: string;
       chunk: string;
+      conversation?: ConversationTurnCorrelationDto;
     }
   // `prompt` is set for scheduled turns and drained queued prompts. `queueItemId`
   // associates the latter with the message originally persisted at enqueue time.
@@ -266,24 +407,28 @@ export type ControlEventDto =
        *  persisted replacements share one identity (trace-key stability). Optional:
        *  older hubs omit it and the web falls back to its own clock. */
       startedAt?: number;
+      conversation?: ConversationTurnCorrelationDto;
     }
   | {
       type: "tool-event";
       chatKey: string;
       sessionAlias: string;
       step: ToolStepDto;
+      conversation?: ConversationTurnCorrelationDto;
     }
   | {
       type: "turn-thought";
       chatKey: string;
       sessionAlias: string;
       chunk: string;
+      conversation?: ConversationTurnCorrelationDto;
     }
   | {
       type: "plan";
       chatKey: string;
       sessionAlias: string;
       entries: PlanEntryDto[];
+      conversation?: ConversationTurnCorrelationDto;
     }
   // Context-usage meter: `used` tokens in context, `size` total context window. Replace-latest.
   // `cost`/`breakdown` are optional extras (acpx ≥0.11.0); absent for adapters that don't report them.
@@ -295,6 +440,7 @@ export type ControlEventDto =
       size: number;
       cost?: UsageCostDto;
       breakdown?: UsageBreakdownDto;
+      conversation?: ConversationTurnCorrelationDto;
     }
   // Agent-advertised slash commands (e.g. /compact). Session-scoped, replace-latest.
   | {
@@ -302,6 +448,7 @@ export type ControlEventDto =
       chatKey: string;
       sessionAlias: string;
       commands: AgentCommandDto[];
+      conversation?: ConversationTurnCorrelationDto;
     }
   // `text` carries the final reply text for hub-side fallback persistence: a hub that
   // restarted mid-turn has no buffer for this finish, so it persists `text` directly.
@@ -321,6 +468,7 @@ export type ControlEventDto =
       startedAfterSeq?: number;
       /** Connector-local epoch ms at turn-start — HUD telemetry only; never a reorder key. */
       startedAt?: number;
+      conversation?: ConversationTurnCorrelationDto;
     }
   | { type: "sessions-changed" }
   // The configured workspace set changed (out-of-band CLI edit or `/config`); the web
@@ -360,7 +508,14 @@ export type ControlEventDto =
       sessionAlias: string;
       messageId: string;
       completionStatus: "completed" | "failed" | "cancelled";
-    };
+    }
+  | { type: "bots-changed" }
+  | { type: "conversations-changed" }
+  | { type: "conversation-topic-changed"; topic: TopicSummaryDto }
+  | { type: "conversation-message"; message: ConversationMessageDto }
+  | { type: "conversation-run-changed"; run: ConversationRunDto }
+  | { type: "member-turn-started"; run: ConversationRunDto; memberTurn: MemberTurnSummaryDto }
+  | { type: "member-turn-finished"; run: ConversationRunDto; memberTurn: MemberTurnSummaryDto };
 
 export interface TerminalAttachRequest {
   terminalId: string;
