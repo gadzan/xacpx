@@ -21,6 +21,7 @@ import {
   STATE_SYNC_TEXT_CAP,
   type AgentCommandDto,
   type ControlEventDto,
+  type ConversationTurnCorrelationDto,
   type InstanceEventPayload,
   type InstanceStateSyncPayload,
   type ScheduledOriginDto,
@@ -41,6 +42,7 @@ interface MirrorTurn {
   prompt?: string;
   scheduled?: ScheduledOriginDto;
   queueItemId?: string;
+  conversation?: ConversationTurnCorrelationDto;
   /** Hub-issued pre-write correlation (PromptPayload.promptRequestId); carried into
    *  the sync so the hub can tie the turn back to its pre-written inbound row. */
   promptRequestId?: string;
@@ -224,6 +226,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(event.scheduled ? { scheduled: event.scheduled } : {}),
           ...(event.queueItemId ? { queueItemId: event.queueItemId } : {}),
           ...(event.promptRequestId !== undefined ? { promptRequestId: event.promptRequestId } : {}),
+          ...(event.conversation ? { conversation: event.conversation } : {}),
         });
         bump(event.sessionAlias);
         return { recoveryId: id, startedAfterSeq };
@@ -374,6 +377,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(a.scheduled ? { scheduled: a.scheduled } : {}),
           ...(a.queueItemId ? { queueItemId: a.queueItemId } : {}),
           ...(a.promptRequestId !== undefined ? { promptRequestId: a.promptRequestId } : {}),
+          ...(a.conversation ? { conversation: a.conversation } : {}),
           ...(a.truncated ? { truncated: true } : {}),
           recoveryId: a.recoveryId,
         });
