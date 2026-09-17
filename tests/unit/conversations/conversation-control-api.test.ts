@@ -816,3 +816,46 @@ test("Direct Conversation presentation matches whether or not runtime materializ
     conversationId: "c",
   });
 });
+
+test("PR3 persisted default Topic clocks overlay to Bot createdAt after upgrade", async () => {
+  const t0 = NOW;
+  const t1 = "2026-09-16T12:05:00.000Z";
+  const { control, state } = await wire({
+    autoKick: false,
+    now: () => new Date(t0),
+  });
+  const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  expect(bot.createdAt).toBe(t0);
+  const conversationId = createDirectConversationId(bot.id);
+  const topicId = createDirectTopicId(bot.id);
+  state.conversations[conversationId] = {
+    id: conversationId,
+    kind: "bot",
+    title: "Reviewer",
+    botIds: [bot.id],
+    createdAt: t1,
+    updatedAt: t1,
+  };
+  state.conversation_topics[topicId] = {
+    id: topicId,
+    conversationId,
+    title: "Default",
+    status: "active",
+    createdAt: t1,
+    updatedAt: t1,
+  };
+
+  const listed = control.listTopics(conversationId)[0];
+  const fromGet = control.getConversation(conversationId).topics.find((topic) => topic.id === topicId);
+  expect(listed).toEqual({
+    id: topicId,
+    conversationId,
+    title: "Default",
+    status: "active",
+    createdAt: t0,
+    updatedAt: t0,
+  });
+  expect(fromGet).toEqual(listed);
+  expect(listed?.createdAt).not.toBe(t1);
+  expect(listed?.updatedAt).not.toBe(t1);
+});

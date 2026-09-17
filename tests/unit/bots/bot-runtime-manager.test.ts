@@ -7,7 +7,7 @@ import type { BotProfile } from "../../../src/bots/bot-types";
 import { sessionMatchesExecution } from "../../../src/bots/bot-types";
 import type { AppConfig } from "../../../src/config/types";
 import type { ConversationTopic } from "../../../src/conversations/conversation-types";
-import { planDirectConversation } from "../../../src/conversations/direct-conversation";
+import { planDirectConversation, presentDefaultDirectTopic } from "../../../src/conversations/direct-conversation";
 import { createDirectBindingId, createDirectConversationId, createDirectTopicId, createScopedDirectBindingId } from "../../../src/domain/ids";
 import { AsyncMutex } from "../../../src/orchestration/async-mutex";
 import { SessionService } from "../../../src/sessions/session-service";
@@ -144,6 +144,22 @@ test("planDirectConversation default topic timestamps ignore Bot rename", () => 
   expect(planned.conversation.updatedAt).toBe(renamedAt);
   expect(planned.topic.createdAt).toBe(NOW);
   expect(planned.topic.updatedAt).toBe(NOW);
+});
+
+test("presentDefaultDirectTopic overlays PR3 materialize-now updatedAt onto Bot createdAt", () => {
+  const presented = presentDefaultDirectTopic(
+    {
+      id: createDirectTopicId(BOT_ID),
+      conversationId: createDirectConversationId(BOT_ID),
+      title: "Default",
+      status: "active",
+      createdAt: "2026-09-16T12:05:00.000Z",
+      updatedAt: "2026-09-16T12:05:00.000Z",
+    },
+    { id: BOT_ID, createdAt: NOW },
+  );
+  expect(presented.createdAt).toBe(NOW);
+  expect(presented.updatedAt).toBe(NOW);
 });
 
 test("getOrCreateDirectSession creates a Bot-owned session distinct from ordinary sessions", async () => {

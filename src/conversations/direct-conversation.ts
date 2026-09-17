@@ -73,6 +73,8 @@ export function presentDirectConversation(
 /**
  * Default Topic identity is independent of Bot rename. createdAt is Bot
  * creation; updatedAt is the last real Topic mutation (synthetic equals createdAt).
+ * Overlay both clocks so a PR3 persisted row (materialize-now timestamps) matches
+ * a Topic created under the current presenter.
  */
 export function presentDefaultDirectTopic(
   topic: ConversationTopic,
@@ -84,5 +86,6 @@ export function presentDefaultDirectTopic(
   return {
     ...topic,
     createdAt: bot.createdAt,
+    updatedAt: bot.createdAt,
   };
 }
