@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 import { createXacpxRuntimeAdapter, mapEvents } from "../../../../../src/bridge/engine/runtime/runtime-adapter";
-// Plan Task 1 / PR0 gate: prove the packaged acpx 0.15.1 Runtime public contract
+// Plan Task 1 / PR0 gate: prove the packaged acpx 0.16.0 Runtime public contract
 // works end-to-end from xacpx — import → createRuntime → ensureSession →
 // startTurn → completed result — against tests/fixtures/mock-acp-agent.mjs,
 // with zero upstream modification. The session record must be visible through
