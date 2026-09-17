@@ -358,6 +358,57 @@ describe("Direct Bot Components", () => {
       await loadOlderBtn.trigger("click");
       expect(wrapper.emitted("loadOlder")).toBeTruthy();
     });
+
+    it("awaits async loadOlder prop and preserves scroll distance from bottom", async () => {
+      const messages: ConversationMessageDto[] = [
+        { id: "m2", conversationId: "c1", topicId: "t1", seq: 2, role: "human", content: "Second", createdAt: "now" },
+      ];
+
+      const loadOlderFn = vi.fn().mockImplementation(async () => {
+        messages.unshift({
+          id: "m1",
+          conversationId: "c1",
+          topicId: "t1",
+          seq: 1,
+          role: "human",
+          content: "First",
+          createdAt: "now",
+        });
+      });
+
+      const wrapper = mount(ConversationMessageList, {
+        props: {
+          messages,
+          liveTurn: null,
+          activeRun: null,
+          activeMemberTurn: null,
+          runParts: {},
+          hasMoreOlder: true,
+          loadOlder: loadOlderFn,
+        },
+        global: {
+          plugins: [i18n],
+        },
+      });
+
+      const scrollerEl = wrapper.element as HTMLElement;
+      // Simulate initial scroll position before loading older:
+      // e.g. scrollHeight = 500, scrollTop = 100 -> distance from bottom anchor = 400
+      Object.defineProperty(scrollerEl, "scrollHeight", {
+        configurable: true,
+        get: () => (messages.length === 2 ? 800 : 500),
+      });
+      scrollerEl.scrollTop = 100;
+
+      const loadOlderBtn = wrapper.find('[data-test="load-older-button"]');
+      await loadOlderBtn.trigger("click");
+      await flushPromises();
+
+      expect(loadOlderFn).toHaveBeenCalledTimes(1);
+      // Anchor was 500 - 100 = 400.
+      // After prepending, scrollHeight is 800, so new scrollTop = 800 - 400 = 400.
+      expect(scrollerEl.scrollTop).toBe(400);
+    });
   });
 
   describe("DirectBotPane.vue", () => {
