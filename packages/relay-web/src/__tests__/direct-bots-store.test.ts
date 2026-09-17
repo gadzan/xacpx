@@ -1,5 +1,6 @@
 import { setActivePinia, createPinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { flushPromises } from "@vue/test-utils";
 import type {
   BotDetailDto,
   BotSummaryDto,
@@ -230,6 +231,56 @@ describe("useDirectBotsStore", () => {
       });
       expect(res).toEqual(newTopic);
       expect(store.topicsByConversation["inst_1:conv_1"]).toContainEqual(newTopic);
+    });
+    it("guards against race condition when two selectBot calls resolve in reverse order", async () => {
+      const store = useDirectBotsStore();
+
+      let resolveBotA: (v: unknown) => void;
+      const botAPromise = new Promise((resolve) => { resolveBotA = resolve; });
+      let resolveBotB: (v: unknown) => void;
+      const botBPromise = new Promise((resolve) => { resolveBotB = resolve; });
+
+      mockRpc.mockImplementation((instId: string, type: string, payload: unknown) => {
+        if (type === "control.conversations.list") {
+          const p = payload as { botId?: string };
+          if (p?.botId === "bot_A") return botAPromise;
+          if (p?.botId === "bot_B") return botBPromise;
+        }
+        if (type === "control.topics.list") {
+          const p = payload as { conversationId: string };
+          if (p?.conversationId === "conv_A") return Promise.resolve({ topics: [{ id: "top_A", conversationId: "conv_A", title: "Topic A" }] });
+          if (p?.conversationId === "conv_B") return Promise.resolve({ topics: [{ id: "top_B", conversationId: "conv_B", title: "Topic B" }] });
+        }
+        if (type === "control.conversation.history") {
+          return Promise.resolve({ conversationId: "c", topicId: "t", messages: [], hasMoreBefore: false, hasMoreAfter: false });
+        }
+        return Promise.resolve({});
+      });
+
+      // User rapidly selects Bot A, then Bot B
+      const callA = store.selectBot("inst_1", "bot_A");
+      const callB = store.selectBot("inst_1", "bot_B");
+
+      // Bot B resolves FIRST
+      resolveBotB!({
+        conversations: [{ id: "conv_B", botId: "bot_B", title: "Bot B", defaultTopicId: "top_B" }],
+      });
+      await callB;
+
+      expect(store.selectedBotId).toBe("bot_B");
+      expect(store.activeConversationId).toBe("conv_B");
+      expect(store.activeTopicId).toBe("top_B");
+
+      // Bot A resolves LATER (out-of-order stale response)
+      resolveBotA!({
+        conversations: [{ id: "conv_A", botId: "bot_A", title: "Bot A", defaultTopicId: "top_A" }],
+      });
+      await callA;
+
+      // Stale Bot A response MUST NOT overwrite Bot B!
+      expect(store.selectedBotId).toBe("bot_B");
+      expect(store.activeConversationId).toBe("conv_B");
+      expect(store.activeTopicId).toBe("top_B");
     });
   });
 
@@ -744,6 +795,79 @@ describe("useDirectBotsStore", () => {
       expect(store.liveTurn).toBeTruthy();
       expect(store.liveTurn?.parts).toEqual([{ type: "text", text: "recovered stream" }]);
       expect(store.liveTurn?.status).toBe("streaming");
+    });
+    it("does not overwrite activeRun when stale snapshot runs.get resolves after user switched bot", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.activeRun = {
+        id: "run_old",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "m1",
+        requestId: "r1",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+
+      const { promise: runsGetPromise, resolve: resolveRunsGet } = Promise.withResolvers<unknown>();
+      mockRpc.mockImplementation((instId: string, type: string, payload: unknown) => {
+        if (type === "control.runs.get") return runsGetPromise;
+        if (type === "control.conversation.history") {
+          return Promise.resolve({ conversationId: "c", topicId: "t", messages: [], hasMoreBefore: false, hasMoreAfter: false });
+        }
+        if (type === "control.conversations.list") {
+          return Promise.resolve({ conversations: [{ id: "conv_2", botId: "bot_2", defaultTopicId: "top_2" }] });
+        }
+        if (type === "control.topics.list") {
+          return Promise.resolve({ topics: [{ id: "top_2", conversationId: "conv_2", title: "Topic 2" }] });
+        }
+        return Promise.resolve({});
+      });
+
+      // Snapshot arrives indicating run_old is no longer active in snapshot
+      store.applyEvent({
+        kind: "state-snapshot",
+        instanceId: "inst_1",
+        turns: [],
+        usage: [],
+        commands: [],
+      });
+
+      // While runs.get for run_old is in-flight, user switches to Bot 2
+      await store.selectBot("inst_1", "bot_2");
+      // And starts a new run on Bot 2
+      store.activeRun = {
+        id: "run_new",
+        conversationId: "conv_2",
+        topicId: "top_2",
+        requestMessageId: "m2",
+        requestId: "r2",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+
+      // Now the old runs.get resolves with run_old completed
+      resolveRunsGet({
+        run: {
+          id: "run_old",
+          conversationId: "conv_1",
+          topicId: "top_1",
+          state: "completed",
+        },
+      });
+      await runsGetPromise;
+      await flushPromises();
+
+      // Stale runs.get response MUST NOT overwrite run_new!
+      expect(store.activeRun?.id).toBe("run_new");
+      expect(store.activeRun?.state).toBe("running");
     });
   });
 

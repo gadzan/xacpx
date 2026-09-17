@@ -42,8 +42,8 @@ const props = defineProps<{
   loadingHistory?: boolean;
   bot?: BotDetailDto | BotSummaryDto;
   instanceId?: string | null;
+  loadOlder?: () => Promise<void>;
 }>();
-
 const emit = defineEmits<{
   loadOlder: [];
   cancelRun: [];
@@ -54,6 +54,7 @@ const instancesStore = useInstancesStore();
 
 const scroller = ref<HTMLElement | null>(null);
 const atBottom = ref(true);
+const pendingAnchor = ref<number | null>(null);
 const THRESHOLD = 64;
 
 // Elapsed timer ticker for live turn
@@ -96,9 +97,30 @@ function scrollToBottom(smooth = false): void {
   });
 }
 
-// Keep scroll at bottom on incoming streaming output or new messages if already at bottom
+// Keep scroll at bottom on incoming streaming output or new messages,
+// or restore exact scroll anchor when older messages are prepended.
 watch(
-  () => [props.messages.length, props.liveTurn?.parts.length],
+  () => props.messages.length,
+  (now, prev) => {
+    if (pendingAnchor.value !== null && now > prev) {
+      const anchor = pendingAnchor.value;
+      pendingAnchor.value = null;
+      void nextTick(() => {
+        const el = scroller.value;
+        if (el) {
+          el.scrollTop = el.scrollHeight - anchor;
+        }
+      });
+      return;
+    }
+    if (atBottom.value) {
+      void nextTick(() => scrollToBottom(false));
+    }
+  },
+);
+
+watch(
+  () => props.liveTurn?.parts.length,
   () => {
     if (atBottom.value) {
       void nextTick(() => scrollToBottom(false));
@@ -108,13 +130,22 @@ watch(
 
 async function handleLoadOlder(): Promise<void> {
   const el = scroller.value;
-  const anchor = el ? el.scrollHeight - el.scrollTop : null;
+  if (!el || props.loadingOlder) return;
+  const anchor = el.scrollHeight - el.scrollTop;
+  pendingAnchor.value = anchor;
 
-  emit("loadOlder");
-
-  await nextTick();
-  if (el && anchor !== null) {
-    el.scrollTop = el.scrollHeight - anchor;
+  if (props.loadOlder) {
+    try {
+      await props.loadOlder();
+    } finally {
+      await nextTick();
+      if (el && pendingAnchor.value !== null) {
+        el.scrollTop = el.scrollHeight - pendingAnchor.value;
+        pendingAnchor.value = null;
+      }
+    }
+  } else {
+    emit("loadOlder");
   }
 }
 

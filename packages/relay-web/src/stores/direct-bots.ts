@@ -101,6 +101,8 @@ function persistBotSelection(instanceId: string | null, botId: string | null): v
 }
 
 export const useDirectBotsStore = defineStore("directBots", () => {
+  let currentSelectionGeneration = 0;
+
   // Navigation / Selection identity
   const instanceId = ref<string | null>(null);
   const selectedBotId = ref<string | null>(null);
@@ -419,6 +421,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
   // Selection & Navigation
   async function selectBot(targetInstanceId: string, botId: string): Promise<void> {
+    const generation = ++currentSelectionGeneration;
     instanceId.value = targetInstanceId;
     selectedBotId.value = botId;
     persistBotSelection(targetInstanceId, botId);
@@ -443,10 +446,16 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     // Resolve or find Direct Conversation
     try {
       const convs = await loadConversations(targetInstanceId, { botId });
+      if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedBotId.value !== botId) {
+        return;
+      }
       const conv = convs[0];
       if (conv) {
         activeConversationId.value = conv.id;
         const topics = await loadTopics(targetInstanceId, conv.id);
+        if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedBotId.value !== botId) {
+          return;
+        }
         const targetTopicId = conv.defaultTopicId ?? topics[0]?.id;
         if (targetTopicId) {
           activeTopicId.value = targetTopicId;
@@ -454,12 +463,15 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         }
       }
     } catch (err: unknown) {
-      generalError.value = err instanceof Error ? err.message : String(err);
+      if (generation === currentSelectionGeneration && selectedBotId.value === botId) {
+        generalError.value = err instanceof Error ? err.message : String(err);
+      }
     }
   }
 
   async function switchTopic(topicId: string): Promise<void> {
     if (activeTopicId.value === topicId) return;
+    const generation = ++currentSelectionGeneration;
     activeTopicId.value = topicId;
     messages.value = [];
     oldestSeq.value = undefined;
@@ -474,10 +486,14 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
     if (instanceId.value && activeConversationId.value) {
       await loadHistory(instanceId.value, activeConversationId.value, topicId);
+      if (generation !== currentSelectionGeneration || activeTopicId.value !== topicId) {
+        return;
+      }
     }
   }
 
   function clearSelection(): void {
+    currentSelectionGeneration++;
     instanceId.value = null;
     selectedBotId.value = null;
     activeConversationId.value = null;
@@ -600,28 +616,49 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // Reconcile on reconnect
   async function reconcileOnReconnect(): Promise<void> {
     const iId = instanceId.value;
+    const bId = selectedBotId.value;
+    const cId = activeConversationId.value;
+    const tId = activeTopicId.value;
+    const rId = activeRun.value?.id;
+    const generation = currentSelectionGeneration;
     if (!iId) return;
 
     try {
       await loadBots(iId);
-      if (selectedBotId.value) {
-        await loadBotDetail(iId, selectedBotId.value).catch(() => {});
-        if (activeConversationId.value) {
-          await loadTopics(iId, activeConversationId.value).catch(() => {});
-          if (activeTopicId.value) {
-            await loadHistory(iId, activeConversationId.value, activeTopicId.value);
+      if (generation !== currentSelectionGeneration || instanceId.value !== iId || selectedBotId.value !== bId) return;
+
+      if (bId) {
+        await loadBotDetail(iId, bId).catch(() => {});
+        if (generation !== currentSelectionGeneration || instanceId.value !== iId || selectedBotId.value !== bId) return;
+
+        if (cId) {
+          await loadTopics(iId, cId).catch(() => {});
+          if (generation !== currentSelectionGeneration || activeConversationId.value !== cId) return;
+
+          if (tId) {
+            await loadHistory(iId, cId, tId);
+            if (generation !== currentSelectionGeneration || activeTopicId.value !== tId) return;
           }
         }
       }
 
       // Check active run if we believed one was running
-      if (activeRun.value && (activeRun.value.state === "running" || activeRun.value.state === "queued")) {
+      if (rId && activeRun.value?.id === rId && (activeRun.value.state === "running" || activeRun.value.state === "queued")) {
         try {
           const res = unwrapRpc(
             await api.rpc<{ run: ConversationRunDetailDto }>(iId, MSG.runsGet, {
-              runId: activeRun.value.id,
+              runId: rId,
             }),
           );
+          if (
+            generation !== currentSelectionGeneration ||
+            instanceId.value !== iId ||
+            activeConversationId.value !== cId ||
+            activeTopicId.value !== tId ||
+            activeRun.value?.id !== rId
+          ) {
+            return;
+          }
           activeRun.value = res.run;
           if (res.run.state !== "running" && res.run.state !== "queued" && res.run.state !== "waiting-human") {
             liveTurn.value = null;
@@ -631,7 +668,11 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           }
         } catch {
           // If run not found or error, reload history to converge
-          if (activeConversationId.value && activeTopicId.value) {
+          if (
+            generation === currentSelectionGeneration &&
+            activeConversationId.value &&
+            activeTopicId.value
+          ) {
             await loadHistory(iId, activeConversationId.value, activeTopicId.value);
           }
         }
@@ -676,13 +717,28 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           }
         } else if (activeRun.value && (activeRun.value.state === "running" || activeRun.value.state === "queued")) {
           // Turn completed while offline -> refetch history and active run
+          const targetInstId = event.instanceId;
+          const targetConvId = activeConversationId.value ?? undefined;
+          const targetTopicId = activeTopicId.value ?? undefined;
+          const targetRunId = activeRun.value.id;
+          const targetGeneration = currentSelectionGeneration;
+
           liveTurn.value = null;
-          void loadHistory(event.instanceId, activeConversationId.value, activeTopicId.value);
+          void loadHistory(targetInstId, targetConvId, targetTopicId);
           void api
-            .rpc<{ run: ConversationRunDetailDto }>(event.instanceId, MSG.runsGet, {
-              runId: activeRun.value.id,
+            .rpc<{ run: ConversationRunDetailDto }>(targetInstId, MSG.runsGet, {
+              runId: targetRunId,
             })
             .then((res) => {
+              if (
+                targetGeneration !== currentSelectionGeneration ||
+                instanceId.value !== targetInstId ||
+                activeConversationId.value !== targetConvId ||
+                activeTopicId.value !== targetTopicId ||
+                activeRun.value?.id !== targetRunId
+              ) {
+                return;
+              }
               const run = unwrapRpc(res).run;
               activeRun.value = run;
             })

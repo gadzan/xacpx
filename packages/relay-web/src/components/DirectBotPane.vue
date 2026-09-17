@@ -197,6 +197,7 @@ async function handleCreateTopic(): Promise<void> {
       :loading-history="directBotsStore.loadingHistory"
       :bot="bot"
       :instance-id="directBotsStore.instanceId"
+      :load-older="directBotsStore.loadOlder"
       @load-older="directBotsStore.loadOlder"
       @cancel-run="directBotsStore.cancelCurrentRun"
     />
