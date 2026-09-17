@@ -11,7 +11,7 @@ import { ConversationError } from "../../conversations/conversation-error";
 import {
   assertNativeSessionAddressable,
   filterAddressableNativeSessions,
-  nativeCatalogIdentity,
+  nativeCatalogIdentityForLaunch,
   type NativeCatalogIdentity,
 } from "../../sessions/native-session-guard";
 import { t } from "../../i18n";
@@ -413,12 +413,13 @@ async function resolveNativeTarget(
 }
 
 function catalogFromNativeTarget(target: NativeTarget): NativeCatalogIdentity {
-  return nativeCatalogIdentity({
+  return nativeCatalogIdentityForLaunch({
     cwd: target.cwd,
     agentCommand: target.agentCommand,
     acpxAgent: target.acpxAgent,
     rawCommand: target.rawCommand,
     driver: target.driver,
+    agentArgv: target.agentArgv,
   });
 }
 

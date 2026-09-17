@@ -1,15 +1,19 @@
+import { isAcpOutputGuardArgv, unwrapAcpOutputGuardArgv } from "../adapters/acp-output-guard";
+import { deriveAgentAlias, renderAgentArgvIdentity } from "../config/agent-launch";
 import { ConversationError } from "../conversations/conversation-error";
 import { isHiddenProductSessionOwner, type LogicalSession } from "../state/types";
 import type { AgentSession, ResolvedSession } from "../transport/types";
-import { isSamePath } from "../util/path";
+import { isSamePath, normalizePath } from "../util/path";
 
 /**
  * Native-session addressability is product ownership of the agent-native
  * rollout, not alias prefix and not the ordinary Sessions list.
  *
- * The native catalog is a physical execution namespace (cwd + resolved launch),
- * not a config label. Two workspace names that share a cwd, or two agent aliases
- * that resolve to the same launch, occupy the same catalog.
+ * The native catalog is a physical execution namespace: path-equivalent cwd plus
+ * the underlying agent launch after xacpx-owned ACP transport wrappers (output
+ * guard) are removed. That is not the ACP spawn identity. Two workspace names
+ * that share a cwd, or two agent aliases that resolve to the same underlying
+ * launch, occupy the same catalog. Distinct custom argv still remain distinct.
  */
 export interface NativeCatalogIdentity {
   cwd: string;
@@ -17,6 +21,16 @@ export interface NativeCatalogIdentity {
   acpxAgent?: string;
   rawCommand?: string;
   driver?: string;
+}
+
+/** Launch fields used to derive {@link NativeCatalogIdentity}. */
+export interface NativeCatalogLaunchInput {
+  cwd: string;
+  driver?: string;
+  agentCommand?: string;
+  acpxAgent?: string;
+  rawCommand?: string;
+  agentArgv?: readonly string[];
 }
 
 export interface NativeSessionOwnershipLookup {
@@ -52,16 +66,71 @@ export function nativeCatalogIdentity(input: NativeCatalogIdentity): NativeCatal
   };
 }
 
-export function nativeCatalogFromResolved(
-  session: Pick<ResolvedSession, "cwd" | "agentCommand" | "acpxAgent" | "rawCommand" | "driver">,
-): NativeCatalogIdentity {
+/**
+ * Canonical native-session catalog identity: cwd plus the underlying agent
+ * launch, never the ACP output-guard wrapper used to spawn transport.
+ *
+ * Requested native list/attach and persisted `ResolvedSession` must both call
+ * this. An output-guard wrap that cannot be unwrapped is unproven (empty cwd)
+ * rather than a different catalog.
+ */
+export function nativeCatalogIdentityForLaunch(input: NativeCatalogLaunchInput): NativeCatalogIdentity {
+  const cwd = canonicalizeNativeCatalogCwd(input.cwd);
+  const driver = input.driver?.trim() || undefined;
+  if (!cwd) {
+    return nativeCatalogIdentity({ cwd: "" });
+  }
+
+  const argv = input.agentArgv && input.agentArgv.length > 0 ? [...input.agentArgv] : undefined;
+  if (argv && isAcpOutputGuardArgv(argv) && unwrapAcpOutputGuardArgv(argv).length === 0) {
+    return nativeCatalogIdentity({ cwd: "" });
+  }
+  if (!argv && looksLikeAcpOutputGuardCommand(input.agentCommand)) {
+    return nativeCatalogIdentity({ cwd: "" });
+  }
+  if (argv) {
+    const underlying = unwrapAcpOutputGuardArgv(argv);
+    if (underlying.length > 0) {
+      return nativeCatalogIdentity({
+        cwd,
+        ...(driver ? { driver } : {}),
+        agentCommand: renderAgentArgvIdentity(underlying),
+        ...(driver ? { acpxAgent: deriveAgentAlias(driver, underlying) } : {}),
+      });
+    }
+  }
+
   return nativeCatalogIdentity({
+    cwd,
+    ...(driver ? { driver } : {}),
+    ...(input.agentCommand ? { agentCommand: input.agentCommand } : {}),
+    ...(input.acpxAgent ? { acpxAgent: input.acpxAgent } : {}),
+    ...(input.rawCommand ? { rawCommand: input.rawCommand } : {}),
+  });
+}
+
+export function nativeCatalogFromResolved(
+  session: Pick<ResolvedSession, "cwd" | "agentCommand" | "acpxAgent" | "rawCommand" | "driver" | "agentArgv">,
+): NativeCatalogIdentity {
+  return nativeCatalogIdentityForLaunch({
     cwd: session.cwd,
     agentCommand: session.agentCommand,
     acpxAgent: session.acpxAgent,
     rawCommand: session.rawCommand,
     driver: session.driver,
+    agentArgv: session.agentArgv,
   });
+}
+
+function canonicalizeNativeCatalogCwd(cwd: string): string {
+  const trimmed = cwd.trim();
+  return trimmed ? normalizePath(trimmed) : "";
+}
+
+function looksLikeAcpOutputGuardCommand(command: string | undefined): boolean {
+  if (!command) return false;
+  const normalized = command.replaceAll("\\", "/");
+  return normalized.includes("/acp-output-guard-main.");
 }
 
 function nativeLaunchKey(identity: NativeCatalogIdentity): string {

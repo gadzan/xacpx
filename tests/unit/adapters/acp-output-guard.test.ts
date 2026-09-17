@@ -11,8 +11,11 @@ import {
   SAFE_ACP_LINE_CHARS,
   buildAcpAgentSpawnSpec,
   guardAcpStdoutLine,
+  isAcpOutputGuardArgv,
   pumpAcpStdout,
   resolveAcpOutputGuardEntry,
+  unwrapAcpOutputGuardArgv,
+  wrapAcpOutputGuardArgv,
 } from "../../../src/adapters/acp-output-guard";
 
 function sessionUpdate(update: Record<string, unknown>): string {
@@ -35,6 +38,15 @@ test("small ACP stdout lines are passed through byte-for-byte as strings", () =>
 
   expect(guardAcpStdoutLine(line)).toEqual([line]);
   expect(guardAcpStdoutLine("adapter diagnostic")).toEqual(["adapter diagnostic"]);
+});
+
+test("unwrapAcpOutputGuardArgv restores the underlying agent argv", () => {
+  const original = ["/opt/agent", "--acp"];
+  const wrapped = wrapAcpOutputGuardArgv(original);
+  expect(isAcpOutputGuardArgv(wrapped)).toBe(true);
+  expect(unwrapAcpOutputGuardArgv(wrapped)).toEqual(original);
+  expect(unwrapAcpOutputGuardArgv(original)).toEqual(original);
+  expect(unwrapAcpOutputGuardArgv(wrapAcpOutputGuardArgv(wrapped))).toEqual(original);
 });
 
 test("the bundled launch identity points at the published adapters entry", () => {

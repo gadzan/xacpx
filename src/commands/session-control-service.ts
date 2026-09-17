@@ -4,7 +4,7 @@ import type { AppLogger } from "../logging/app-logger";
 import {
   assertNativeSessionAddressable as rejectOwnedNativeSession,
   filterAddressableNativeSessions,
-  nativeCatalogIdentity,
+  nativeCatalogIdentityForLaunch,
   type NativeCatalogIdentity,
 } from "../sessions/native-session-guard";
 import { assertOrdinarySessionAddressable } from "../sessions/ordinary-session-guard";
@@ -335,10 +335,11 @@ export class SessionControlService {
   }
 
   /**
-   * Native attach is ownership of the agent-native catalog (cwd + resolved
-   * launch), never workspace/agent config labels. Product-owned LogicalSessions
-   * in that catalog occupy their persisted `agentSessionId` or the live identity
-   * from `getAgentSessionId`. Unproven product-owned candidates fail closed.
+   * Native attach is ownership of the agent-native catalog (cwd + underlying
+   * launch after ACP output-guard unwrap), never workspace/agent config labels
+   * and never the ACP transport wrapper. Product-owned LogicalSessions in that
+   * catalog occupy their persisted `agentSessionId` or the live identity from
+   * `getAgentSessionId`. Unproven product-owned candidates fail closed.
    */
   async assertNativeSessionAddressable(
     agent: string,
@@ -354,7 +355,8 @@ export class SessionControlService {
 
   /**
    * Catalog identity used by `acpx sessions list` / resume: resolved cwd and
-   * launch spec, not the workspace or agent config key.
+   * underlying agent launch (output-guard wrappers stripped), not the workspace
+   * or agent config key and not the ACP spawn wrapper.
    */
   private requireNativeCatalog(agent: string, workspace: string): NativeCatalogIdentity {
     const agentConfig = this.config?.agents[agent];
@@ -363,12 +365,10 @@ export class SessionControlService {
       throw new Error(`unknown agent "${agent}" or workspace "${workspace}"`);
     }
     const launch = resolveConfiguredAgentLaunch(agentConfig, this.config?.transport);
-    return nativeCatalogIdentity({
+    return nativeCatalogIdentityForLaunch({
       cwd: workspaceConfig.cwd,
-      ...(launch.agentCommand ? { agentCommand: launch.agentCommand } : {}),
-      ...(launch.acpxAgent ? { acpxAgent: launch.acpxAgent } : {}),
-      ...(launch.rawCommand ? { rawCommand: launch.rawCommand } : {}),
       ...(agentConfig.driver ? { driver: agentConfig.driver } : {}),
+      ...launch,
     });
   }
 

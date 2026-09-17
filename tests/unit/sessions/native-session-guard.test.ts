@@ -1,15 +1,22 @@
 import { expect, mock, test } from "bun:test";
 
+import { isAcpOutputGuardArgv } from "../../../src/adapters/acp-output-guard";
+import { resolveConfiguredAgentLaunch } from "../../../src/config/resolve-agent-command";
+import type { AppConfig } from "../../../src/config/types";
 import { ConversationError } from "../../../src/conversations/conversation-error";
 import {
   assertNativeSessionAddressable,
   filterAddressableNativeSessions,
   inspectProductOwnedNativeSessions,
+  nativeCatalogFromResolved,
   nativeCatalogIdentity,
+  nativeCatalogIdentityForLaunch,
   sameNativeCatalog,
   type NativeCatalogIdentity,
 } from "../../../src/sessions/native-session-guard";
-import { createBotDirectOwner, type LogicalSession } from "../../../src/state/types";
+import { SessionService } from "../../../src/sessions/session-service";
+import type { StateStore } from "../../../src/state/state-store";
+import { createBotDirectOwner, createEmptyState, type LogicalSession } from "../../../src/state/types";
 import type { ResolvedSession } from "../../../src/transport/types";
 
 function record(overrides: Partial<LogicalSession> & Pick<LogicalSession, "alias">): LogicalSession {
@@ -81,6 +88,43 @@ const OWNER = createBotDirectOwner({
   conversationId: "conversation_1",
   topicId: "topic_1",
 });
+
+function createConfig(): AppConfig {
+  return {
+    transport: { type: "acpx-cli", command: "acpx", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
+    logging: {
+      level: "info",
+      maxSizeBytes: 1024,
+      maxFiles: 2,
+      retentionDays: 1,
+      perf: { enabled: false, maxSizeBytes: 1024, maxFiles: 1, retentionDays: 1 },
+    },
+    channel: { type: "weixin", replyMode: "stream" },
+    channels: [{ id: "weixin", type: "weixin", enabled: true }],
+    plugins: [],
+    agents: {
+      custom: { driver: "custom", argv: ["/opt/agent", "--acp"] },
+      claude: { driver: "claude", command: "claude.exe" },
+    },
+    workspaces: {
+      backend: { cwd: "/repo" },
+      win: { cwd: "C:\\repo" },
+    },
+    orchestration: {
+      maxPendingAgentRequestsPerCoordinator: 3,
+      allowWorkerChainedRequests: false,
+      allowedAgentRequestTargets: [],
+      allowedAgentRequestRoles: [],
+      progressHeartbeatSeconds: 300,
+      maxParallelTasksPerAgent: 3,
+    },
+  };
+}
+
+class MemoryStateStore implements Pick<StateStore, "save"> {
+  async save(): Promise<void> {}
+  async saveNow(): Promise<void> {}
+}
 
 test("sameNativeCatalog is cwd path-equivalence plus launch identity, not labels", () => {
   expect(sameNativeCatalog(BACKEND, nativeCatalogIdentity({
@@ -240,4 +284,108 @@ test("a different cwd is a different native catalog even with the same agent lab
   expect(inspected.ownedIds.size).toBe(0);
   expect(inspected.unproven).toBe(false);
   await expect(assertNativeSessionAddressable(ctx, otherCwd, "N1")).resolves.toBeUndefined();
+});
+
+test("canonical native catalogs match guarded SessionService.resolveSession and unguarded configured launch", async () => {
+  const config = createConfig();
+  const sessions = new SessionService(config, new MemoryStateStore(), createEmptyState());
+  await sessions.createSession("brt_bot", "custom", "backend", { owner: OWNER });
+  const created = sessions.getLogicalSessionRecord("brt_bot")!;
+  const guarded = sessions.resolveSession(
+    created.alias,
+    created.agent,
+    created.workspace,
+    created.transport_session,
+  );
+  expect(isAcpOutputGuardArgv(guarded.agentArgv ?? [])).toBe(true);
+  expect(guarded.agentArgv?.slice(3)).toEqual(["/opt/agent", "--acp"]);
+
+  const unguarded = resolveConfiguredAgentLaunch(config.agents.custom!, config.transport);
+  expect(unguarded.agentArgv).toEqual(["/opt/agent", "--acp"]);
+  expect(unguarded.agentArgv).not.toEqual(guarded.agentArgv);
+
+  expect(sameNativeCatalog(
+    nativeCatalogFromResolved(guarded),
+    nativeCatalogIdentityForLaunch({
+      cwd: config.workspaces.backend.cwd,
+      driver: "custom",
+      ...unguarded,
+    }),
+  )).toBe(true);
+
+  const other = resolveConfiguredAgentLaunch(
+    { driver: "custom", argv: ["/opt/other", "--acp"] },
+    config.transport,
+  );
+  expect(sameNativeCatalog(
+    nativeCatalogFromResolved(guarded),
+    nativeCatalogIdentityForLaunch({
+      cwd: config.workspaces.backend.cwd,
+      driver: "custom",
+      ...other,
+    }),
+  )).toBe(false);
+});
+
+test("windows structured command unwraps ACP output-guard to the same native catalog", async () => {
+  const agent = { driver: "claude" as const, command: "claude.exe" };
+  const unguarded = resolveConfiguredAgentLaunch(agent, undefined, { platform: "win32" });
+  const guardedLaunch = resolveConfiguredAgentLaunch(agent, undefined, {
+    platform: "win32",
+    guardAcpOutput: true,
+  });
+  expect(unguarded.agentArgv).toEqual(["claude.exe"]);
+  expect(isAcpOutputGuardArgv(guardedLaunch.agentArgv ?? [])).toBe(true);
+  expect(guardedLaunch.agentArgv?.slice(3)).toEqual(["claude.exe"]);
+
+  const cwd = "C:\\repo";
+  expect(sameNativeCatalog(
+    nativeCatalogIdentityForLaunch({ cwd, driver: "claude", ...unguarded }),
+    nativeCatalogIdentityForLaunch({ cwd, driver: "claude", ...guardedLaunch }),
+  )).toBe(true);
+
+  const config = createConfig();
+  const sessions = new SessionService(config, new MemoryStateStore(), createEmptyState(), { platform: "win32" });
+  await sessions.createSession("brt_bot", "claude", "win", { owner: OWNER });
+  const created = sessions.getLogicalSessionRecord("brt_bot")!;
+  const guardedSession = sessions.resolveSession(
+    created.alias,
+    created.agent,
+    created.workspace,
+    created.transport_session,
+  );
+  expect(isAcpOutputGuardArgv(guardedSession.agentArgv ?? [])).toBe(true);
+  expect(sameNativeCatalog(
+    nativeCatalogFromResolved(guardedSession),
+    nativeCatalogIdentityForLaunch({ cwd, driver: "claude", ...unguarded }),
+  )).toBe(true);
+});
+
+test("a guarded command string without argv is unproven instead of a different catalog", async () => {
+  const records = [record({ alias: "brt_hidden", owner: OWNER, agent_session_id: "N1" })];
+  const ctx = {
+    sessions: {
+      listLogicalSessionRecords: () => records,
+      getResolvedSessionByInternalAlias: () => ({
+        alias: "brt_hidden",
+        agent: "custom",
+        workspace: "backend",
+        cwd: "/repo",
+        driver: "custom",
+        agentCommand: `${process.execPath} /opt/xacpx/dist/adapters/acp-output-guard-main.js -- /opt/agent --acp`,
+        acpxAgent: "xacpx-managed-custom-deadbeef",
+      } as ResolvedSession),
+    },
+    transport: {},
+  };
+  const picker = nativeCatalogIdentityForLaunch({
+    cwd: "/repo",
+    driver: "custom",
+    agentArgv: ["/opt/agent", "--acp"],
+  });
+  const inspected = await inspectProductOwnedNativeSessions(ctx, picker);
+  expect(inspected.ownedIds.size).toBe(0);
+  expect(inspected.unproven).toBe(true);
+  await expect(assertNativeSessionAddressable(ctx, picker, "N2"))
+    .rejects.toMatchObject({ code: "hidden_session" });
 });
