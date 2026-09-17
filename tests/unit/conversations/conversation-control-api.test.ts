@@ -746,15 +746,18 @@ test("rename of a synthetic Direct Conversation updates the public projection", 
 });
 
 test("Direct Conversation presentation matches whether or not runtime materialized", async () => {
-  const pathA = await wire({ autoKick: false });
+  let nowA = Date.parse(NOW);
+  const pathA = await wire({ autoKick: false, now: () => new Date(nowA) });
   const botA = await pathA.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
   const conversationIdA = createDirectConversationId(botA.id);
   const topicIdA = createDirectTopicId(botA.id);
+  nowA += 60_000;
   const renamedA = await pathA.control.updateBot(botA.id, { name: "Senior" });
   const summaryA = pathA.control.getConversation(conversationIdA);
   const listedA = pathA.control.listConversations({ botId: botA.id })[0];
 
-  const pathB = await wire({ autoKick: false });
+  let nowB = Date.parse(NOW);
+  const pathB = await wire({ autoKick: false, now: () => new Date(nowB) });
   const botB = await pathB.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
   const conversationIdB = createDirectConversationId(botB.id);
   const topicIdB = createDirectTopicId(botB.id);
@@ -765,6 +768,7 @@ test("Direct Conversation presentation matches whether or not runtime materializ
     text: "hello",
   });
   const extraTopic = await pathB.control.createTopic(conversationIdB, "other");
+  nowB += 60_000;
   const renamedB = await pathB.control.updateBot(botB.id, { name: "Senior" });
   const summaryB = pathB.control.getConversation(conversationIdB);
   const listedB = pathB.control.listConversations({ botId: botB.id })[0];
@@ -787,4 +791,28 @@ test("Direct Conversation presentation matches whether or not runtime materializ
   expect(pathB.control.getRun(accepted.run.id).id).toBe(accepted.run.id);
   expect(pathB.control.getConversation(conversationIdB).defaultTopicId).toBe(topicIdB);
   expect(pathB.control.listConversations({ botId: botB.id })[0]?.defaultTopicId).toBe(topicIdB);
+
+  const defaultTopicA = pathA.control.listTopics(conversationIdA)[0];
+  const defaultTopicB = pathB.control.listTopics(conversationIdB).find((topic) => topic.id === topicIdB);
+  const defaultFromGetA = pathA.control.getConversation(conversationIdA).topics.find((topic) => topic.id === topicIdA);
+  const defaultFromGetB = pathB.control.getConversation(conversationIdB).topics.find((topic) => topic.id === topicIdB);
+  const expectedDefault = (conversationId: string, topicId: string, createdAt: string) => ({
+    id: topicId,
+    conversationId,
+    title: "Default",
+    status: "active" as const,
+    createdAt,
+    updatedAt: createdAt,
+  });
+  expect(defaultTopicA).toEqual(expectedDefault(conversationIdA, topicIdA, botA.createdAt));
+  expect(defaultTopicB).toEqual(expectedDefault(conversationIdB, topicIdB, botB.createdAt));
+  expect(defaultTopicA?.updatedAt).not.toBe(renamedA.updatedAt);
+  expect(defaultTopicB?.updatedAt).not.toBe(renamedB.updatedAt);
+  expect(defaultFromGetA).toEqual(defaultTopicA);
+  expect(defaultFromGetB).toEqual(defaultTopicB);
+  expect({ ...defaultTopicA, id: "default", conversationId: "c" }).toEqual({
+    ...defaultTopicB,
+    id: "default",
+    conversationId: "c",
+  });
 });

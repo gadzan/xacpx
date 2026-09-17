@@ -65,7 +65,7 @@
 |------|------|
 | `listSessions()` | 返回所有已解析逻辑会话的快照（`ControlSessionInfo[]`），含 `running` 字段（来自 `ActiveTurnRegistry`）与可选 `warm` 字段（running 时恒为 true，否则读 `SessionWarmthTracker` 最近观测；无 tracker 或未观测时省略）。`LogicalSession.owner.kind` 为 `bot-direct` / `group-member` / `group-controller` 的隐藏运行时不会出现在普通 Sessions 列表中（按 owner metadata，不是 `brt_` 前缀）。普通 alias 寻址的 Session 操作（prompt / remove / archive / rename / model / effort / cancel 等）对上述 owner 失败 `hidden_session`；Conversation 执行/释放只走 core-private `ConversationExecutionPort`。 |
 | `listBots()` / `getBot` / `createBot` / `updateBot` / `deleteBot` | Bot CRUD；DTO wrapper over `BotService`。delete 在 durable/runtime ownership 仍存在时 fail-closed。create / update / delete 在成功时同时发出 `bots-changed` 与 `conversations-changed`（Direct Conversation 是 Bot 的公共投影）。 |
-| `listConversations()` / `getConversation` / `listTopics` / `createTopic` | Direct Conversation / Topic 查询与创建。不暴露 hidden alias。Direct 的 `title` / `createdAt` / `updatedAt` 始终取当前 Bot 投影，不因首次 materialize 冻结。Topic archive/delete 未接入公共 API。 |
+| `listConversations()` / `getConversation` / `listTopics` / `createTopic` | Direct Conversation / Topic 查询与创建。不暴露 hidden alias。Direct Conversation 的 `title` / `createdAt` / `updatedAt` 始终取当前 Bot 投影，不因首次 materialize 冻结。Default Topic 的 identity 不随 Bot rename 变化：`createdAt` 为 Bot 创建时间，`updatedAt` 为 Topic 自身最后一次 mutation（尚无 rename/archive API 时等于 `createdAt`，不跟 `Bot.updatedAt`）。Topic archive/delete 未接入公共 API。 |
 | `promptConversation(input)` | `{ conversationId, topicId, requestId, text, target? }` → `ConversationRunService.acceptConversationPrompt`。`requestId` 是 caller idempotency key。Direct `target.botId` 必须匹配 Conversation 所属 Bot。 |
 | `conversationHistory(input)` | Durable Topic `seq` 游标分页（`afterSeq` / `beforeSeq` / `limit`），返回 `oldestSeq` / `newestSeq` / `hasMoreBefore` / `hasMoreAfter`。 |
 | `getRun(runId)` / `cancelRun(runId)` | Exact Run 查询/取消。`indeterminate` 原样公开，不映射成 `failed`。 |
@@ -95,8 +95,10 @@
 可选字段）传给所有频道；纯文本频道可忽略该字段。Conversation 运行时经
 `createConversationRuntime({ control })` 只拿到 `ConversationExecutionPort`
 （生产路径传入 `conversationKernel(control)`）。
-`ConversationRuntime.shutdown()` 之后，所有公共 Bot/Conversation Control API（含 CRUD
-与只读 list/get/history）失败 `runtime_closed`。
+`ConversationRuntime.shutdown()` 返回之后，所有公共 Bot/Conversation Control API（含 CRUD
+与只读 list/get/history）失败 `runtime_closed`。`shutdown()` 会先拒绝新调用，再等待已经进入
+的 public mutation 完成（operation lease），然后才 close BotService / dispatcher / SQLite。
+并发 `shutdown()` 共用同一个 promise。
 
 插件包经 `xacpx/plugin-api` 取得以下类型（仅类型，不含实例）：
 `PublicControlService`（亦以 `ControlService` 别名导出，等同公共 facade）、

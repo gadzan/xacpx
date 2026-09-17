@@ -2,7 +2,7 @@ import { snapshotBotProfile, type BotProfile } from "../bots/bot-types";
 import { BotError } from "../bots/bot-error";
 import type { BotRuntimeManager } from "../bots/bot-runtime-manager";
 import type { BotService } from "../bots/bot-service";
-import { planDirectConversation, presentDirectConversation } from "./direct-conversation";
+import { planDirectConversation, presentDefaultDirectTopic, presentDirectConversation } from "./direct-conversation";
 import { createDirectTopicId, createTopicId } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
 import type { ReleaseOwnedSession } from "../sessions/owned-session-release";
@@ -212,10 +212,11 @@ export class ConversationRunService {
 
   listTopics(conversationId: string): ConversationTopic[] {
     this.assertOpen();
-    this.requireConversation(conversationId);
+    const conversation = this.requireConversation(conversationId);
     const topics = Object.values(this.state.conversation_topics)
       .filter((topic) => topic.conversationId === conversationId)
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .map((topic) => this.presentDefaultTopic(topic, conversation));
     if (topics.length > 0) {
       return topics;
     }
@@ -403,6 +404,18 @@ export class ConversationRunService {
       return conversation;
     }
     return presentDirectConversation(conversation, bot);
+  }
+
+  private presentDefaultTopic(topic: ConversationTopic, conversation: ConversationRecord): ConversationTopic {
+    const botId = conversation.botIds[0];
+    if (conversation.kind !== "bot" || !botId) {
+      return topic;
+    }
+    const bot = this.state.bots[botId];
+    if (!bot) {
+      return topic;
+    }
+    return presentDefaultDirectTopic(topic, bot);
   }
 
   private planDirect(bot: Pick<BotProfile, "id" | "name" | "createdAt" | "updatedAt">) {

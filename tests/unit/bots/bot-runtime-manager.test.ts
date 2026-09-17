@@ -132,6 +132,20 @@ test("planDirectConversation does not write live AppState", () => {
   expect(planned.topic.id).toBe(createDirectTopicId(BOT_ID));
 });
 
+test("planDirectConversation default topic timestamps ignore Bot rename", () => {
+  const state = createEmptyState();
+  const renamedAt = "2026-09-16T13:00:00.000Z";
+  const planned = planDirectConversation(state, {
+    botId: BOT_ID,
+    title: "Senior",
+    createdAt: NOW,
+    updatedAt: renamedAt,
+  });
+  expect(planned.conversation.updatedAt).toBe(renamedAt);
+  expect(planned.topic.createdAt).toBe(NOW);
+  expect(planned.topic.updatedAt).toBe(NOW);
+});
+
 test("getOrCreateDirectSession creates a Bot-owned session distinct from ordinary sessions", async () => {
   const { bots, runtime, sessions, state } = createHarness();
   await sessions.createSession("api-fix", "codex", "backend");

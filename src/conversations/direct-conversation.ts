@@ -24,14 +24,14 @@ export function planDirectConversation(
 ): { conversation: ConversationRecord; topic: ConversationTopic } {
   const existing = findDirectConversation(state, input.botId);
   const createdAt = input.createdAt;
-  const updatedAt = input.updatedAt ?? input.createdAt;
+  const conversationUpdatedAt = input.updatedAt ?? input.createdAt;
   const conversation = existing ?? {
     id: createDirectConversationId(input.botId),
     kind: "bot" as const,
     title: input.title,
     botIds: [input.botId],
     createdAt,
-    updatedAt,
+    updatedAt: conversationUpdatedAt,
   };
   const defaultTopicId = createDirectTopicId(input.botId);
   const existingTopic = state.conversation_topics[defaultTopicId];
@@ -43,7 +43,9 @@ export function planDirectConversation(
       title: "Default",
       status: "active" as const,
       createdAt,
-      updatedAt,
+      // Default Topic identity is independent of Bot rename. Until a Topic
+      // mutation API exists, synthetic updatedAt equals createdAt.
+      updatedAt: createdAt,
     };
   return { conversation, topic };
 }
@@ -65,5 +67,22 @@ export function presentDirectConversation(
     title: bot.name,
     createdAt: bot.createdAt,
     updatedAt: bot.updatedAt,
+  };
+}
+
+/**
+ * Default Topic identity is independent of Bot rename. createdAt is Bot
+ * creation; updatedAt is the last real Topic mutation (synthetic equals createdAt).
+ */
+export function presentDefaultDirectTopic(
+  topic: ConversationTopic,
+  bot: Pick<BotProfile, "id" | "createdAt">,
+): ConversationTopic {
+  if (topic.id !== createDirectTopicId(bot.id)) {
+    return topic;
+  }
+  return {
+    ...topic,
+    createdAt: bot.createdAt,
   };
 }
