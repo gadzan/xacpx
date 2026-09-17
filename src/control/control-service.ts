@@ -34,7 +34,7 @@ import type { PermissionInteractionOrigin } from "../permissions/permission-type
 import type {
   ConversationExecutionPort,
 } from "../conversations/conversation-execution-port.js";
-import { sanitizePublicPromptInput } from "./public-control.js";
+import { sanitizePublicConversationPrompt, sanitizePublicPromptInput } from "./public-control.js";
 import type { ControlEventBus } from "./control-event-bus";
 import {
   readNativeSessionHistory,
@@ -82,7 +82,9 @@ import {
 import type { AppLogger } from "../logging/app-logger";
 import type { ConversationRuntime } from "../conversations/conversation-composition";
 import { ConversationError } from "../conversations/conversation-error";
+import { parseHumanIngress } from "../conversations/conversation-execution";
 import type { ConversationProductEvent } from "../conversations/conversation-product-events";
+import type { HumanIngressContext } from "../conversations/conversation-types";
 import { assertOrdinarySessionAddressable } from "../sessions/ordinary-session-guard";
 import { isHiddenProductSessionOwner } from "../state/types";
 import {
@@ -98,6 +100,7 @@ import {
   type BotUpdateRequestDto,
   type ConversationHistoryRequestDto,
   type ConversationPromptRequestDto,
+  type ConversationPromptResponseDto,
   type ConversationTurnCorrelation,
 } from "./conversation-control-dtos";
 
@@ -407,6 +410,15 @@ export interface ControlPromptResult {
 export interface ControlConversationKernel extends ConversationExecutionPort {
   bindConversationRuntime(runtime: ConversationRuntime): void;
   emitConversationProduct(event: ConversationProductEvent): void;
+  /**
+   * Trusted Direct Conversation accept. Ingress must already be overwritten by
+   * an authenticating channel (Relay Hub). Public `promptConversation` never
+   * takes this context.
+   */
+  promptConversationFromHumanIngress(
+    input: ConversationPromptRequestDto,
+    ingress: HumanIngressContext,
+  ): Promise<ConversationPromptResponseDto>;
 }
 
 const conversationKernels = new WeakMap<ControlService, ControlConversationKernel>();
@@ -546,6 +558,16 @@ export class ControlService {
         this.conversationRuntime = runtime;
       },
       emitConversationProduct: (event) => this.#publishConversationProduct(event),
+      promptConversationFromHumanIngress: (input, ingress) => {
+        const parsed = parseHumanIngress(ingress);
+        if (!parsed) {
+          throw new ConversationError(
+            "human_ingress_invalid",
+            "trusted conversation prompt requires complete human ingress",
+          );
+        }
+        return this.#promptConversation(input, parsed);
+      },
     });
   }
 
@@ -1375,6 +1397,8 @@ export class ControlService {
     input: ControlPromptInput & {
       executionOrigin?: PermissionInteractionOrigin;
       conversation?: ConversationTurnCorrelation;
+      permissionChatKey?: string;
+      senderName?: string;
     },
     queueable: boolean,
   ): Promise<ControlPromptResult> {
@@ -1427,6 +1451,8 @@ export class ControlService {
           : {}),
         ...(input.abortSignal !== undefined ? { abortSignal: input.abortSignal } : {}),
         ...(input.conversation !== undefined ? { conversation: input.conversation } : {}),
+        ...(input.permissionChatKey !== undefined ? { permissionChatKey: input.permissionChatKey } : {}),
+        ...(input.senderName !== undefined ? { senderName: input.senderName } : {}),
       });
     };
     // Keep this helper non-async so `prompt()` still reaches TurnQueue.submit on
@@ -1958,13 +1984,22 @@ export class ControlService {
   }
 
   async promptConversation(input: ConversationPromptRequestDto) {
+    return this.#promptConversation(sanitizePublicConversationPrompt(input));
+  }
+
+  #promptConversation(
+    input: ConversationPromptRequestDto,
+    ingress?: HumanIngressContext,
+  ): Promise<ConversationPromptResponseDto> {
     return this.runConversationMutation(async (runtime) => {
+      const parsedIngress = parseHumanIngress(ingress);
       const accepted = await runtime.runs.acceptConversationPrompt({
         conversationId: input.conversationId,
         topicId: input.topicId,
         requestId: input.requestId,
         text: input.text,
         ...(input.target?.botId ? { targetBotId: input.target.botId } : {}),
+        ...(parsedIngress ? { humanIngress: parsedIngress } : {}),
       });
       return {
         reused: accepted.reused,

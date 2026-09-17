@@ -164,6 +164,9 @@ async function wire(options?: {
     ...(options?.ownerId ? { ownerId: options.ownerId } : {}),
   });
   kernel.bindConversationRuntime(runtime);
+  if (options?.autoKick ?? true) {
+    await runtime.activateAfterConsumerLock();
+  }
   return {
     dir,
     sqlitePath,
@@ -639,6 +642,7 @@ type _PublicServiceForbidden = Extract<
   | "cancelQueuedConversationItem"
   | "bindConversationRuntime"
   | "emitConversationProduct"
+  | "promptConversationFromHumanIngress"
 >;
 const _publicServiceHasNoTrustedMethods: [_PublicServiceForbidden] extends [never] ? true : false = true;
 void _publicServiceHasNoTrustedMethods;
@@ -652,6 +656,7 @@ test("public Control facade cannot mint Conversation execution authority", async
   expect("cancelQueuedConversationItem" in control).toBe(false);
   expect("bindConversationRuntime" in control).toBe(false);
   expect("emitConversationProduct" in control).toBe(false);
+  expect("promptConversationFromHumanIngress" in control).toBe(false);
   expect((control as { promptImmediate?: unknown }).promptImmediate).toBeUndefined();
   expect((control as { cancelQueuedConversationItem?: unknown }).cancelQueuedConversationItem)
     .toBeUndefined();
@@ -858,4 +863,40 @@ test("PR3 persisted default Topic clocks overlay to Bot createdAt after upgrade"
   expect(fromGet).toEqual(listed);
   expect(listed?.createdAt).not.toBe(t1);
   expect(listed?.updatedAt).not.toBe(t1);
+});
+
+test("public promptConversation cannot mint human ingress; kernel stamp can", async () => {
+  const { control, runtime } = await wire({ autoKick: false });
+  const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const publicAccepted = await asPublicControl(control).promptConversation({
+    conversationId: createDirectConversationId(bot.id),
+    topicId: createDirectTopicId(bot.id),
+    requestId: "req-public",
+    text: "hello",
+    ...({
+      humanIngress: { chatKey: "relay:acct", senderId: "acct", isOwner: true },
+      executionOrigin: "human",
+    } as object),
+  } as never);
+  await runtime.dispatcher.kick();
+  expect(control.getRun(publicAccepted.run.id).memberTurns[0]?.origin).toBe("recovery");
+
+  const human = await conversationKernel(control).promptConversationFromHumanIngress({
+    conversationId: createDirectConversationId(bot.id),
+    topicId: createDirectTopicId(bot.id),
+    requestId: "req-trusted",
+    text: "hello",
+  }, { chatKey: "relay:acct", senderId: "acct", accountId: "acct", isOwner: true });
+  await runtime.dispatcher.kick();
+  expect(control.getRun(human.run.id).memberTurns[0]?.origin).toBe("human");
+
+  await expect(conversationKernel(control).promptConversationFromHumanIngress({
+    conversationId: createDirectConversationId(bot.id),
+    topicId: createDirectTopicId(bot.id),
+    requestId: "req-bot-key",
+    text: "hello",
+  }, { chatKey: `bot:${createDirectConversationId(bot.id)}:${createDirectTopicId(bot.id)}`, senderId: "acct" })).rejects.toMatchObject({
+    code: "human_ingress_invalid",
+  });
+  await runtime.shutdown();
 });

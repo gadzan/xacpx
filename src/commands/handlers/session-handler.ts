@@ -23,6 +23,7 @@ import { t } from "../../i18n";
 import { AcpxQueueOverflowError } from "../../transport/acpx-queue-overflow";
 import { queueOverflowTipText } from "./session-recovery-handler";
 import { PermissionInteractionBroker, getGlobalPermissionBroker } from "../../permissions/permission-interaction-broker.js";
+import { resolvePermissionTurnRoute } from "../../permissions/permission-turn-route.js";
 import { isHiddenProductSessionOwner } from "../../state/types";
 
 export interface SessionHandlerContext extends CommandRouterContext {
@@ -1054,21 +1055,27 @@ async function promptWithSession(
         : metadata?.preserveCoordinatorRoute
           ? "peer"
           : undefined);
-    const interactionId = resolvedOrigin === "human"
+    const permissionRoute = resolvePermissionTurnRoute({
+      isolationChatKey: chatKey,
+      origin: resolvedOrigin,
+      metadata,
+      ...(accountId !== undefined ? { accountId } : {}),
+    });
+    const interactionId = permissionRoute
       ? PermissionInteractionBroker.createInteractionId()
       : undefined;
     let disposeInteraction: (() => void) | undefined;
-    if (interactionId) {
+    if (interactionId && permissionRoute) {
       try {
         disposeInteraction = getGlobalPermissionBroker()?.bindTurn({
           interactionId,
-          chatKey,
-          ...(accountId !== undefined ? { accountId } : {}),
-          ...(replyContextToken !== undefined ? { replyContextToken } : {}),
-          ...(metadata?.senderId !== undefined ? { senderId: metadata.senderId } : {}),
-          ...(metadata?.senderName !== undefined ? { senderName: metadata.senderName } : {}),
-          ...(metadata?.isOwner !== undefined ? { isOwner: metadata.isOwner } : {}),
+          chatKey: permissionRoute.chatKey,
           origin: "human",
+          ...(permissionRoute.accountId !== undefined ? { accountId: permissionRoute.accountId } : {}),
+          ...(replyContextToken !== undefined ? { replyContextToken } : {}),
+          ...(permissionRoute.senderId !== undefined ? { senderId: permissionRoute.senderId } : {}),
+          ...(permissionRoute.senderName !== undefined ? { senderName: permissionRoute.senderName } : {}),
+          ...(permissionRoute.isOwner !== undefined ? { isOwner: permissionRoute.isOwner } : {}),
         }, abortSignal);
       } catch {
         disposeInteraction = undefined;

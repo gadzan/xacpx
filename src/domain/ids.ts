@@ -97,6 +97,11 @@ export function directConversationChatKey(conversationId: string, topicId: strin
   return `bot:${conversationId}:${topicId}`;
 }
 
+/** Product TurnQueue isolation key, not a human permission return route. */
+export function isDirectConversationChatKey(chatKey: string): boolean {
+  return chatKey.startsWith("bot:");
+}
+
 export function ownedDirectSessionAlias(bindingId: string): string {
   return `brt_${bindingId}`;
 }

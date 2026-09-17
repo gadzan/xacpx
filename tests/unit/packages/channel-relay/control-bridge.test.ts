@@ -1668,3 +1668,97 @@ test("Bot and Conversation RPCs dispatch to Control product IDs", async () => {
   });
   expect(cancels).toEqual(["run_1"]);
 });
+
+test("conversation.prompt with Hub-stamped ingress uses trusted accept, not public promptConversation", async () => {
+  const publicPrompts: unknown[] = [];
+  const trusted: Array<{ input: unknown; ingress: unknown }> = [];
+  const { control } = makeFakeControl({
+    promptConversation: async (input: unknown) => {
+      publicPrompts.push(input);
+      return {
+        reused: false,
+        conversationId: "conversation_1",
+        topicId: "topic_1",
+        requestId: "req",
+        run: { id: "run_public", conversationId: "conversation_1", topicId: "topic_1", requestMessageId: "cmsg", requestId: "req", mode: "explicit", state: "queued", profileRevision: 1, createdAt: "t" },
+        message: { id: "cmsg", conversationId: "conversation_1", topicId: "topic_1", seq: 1, role: "human", content: "hi", createdAt: "t" },
+        memberTurn: { id: "mturn_1", runId: "run_public", conversationId: "conversation_1", topicId: "topic_1", botId: "bot_1", batch: 0, attempt: 1, origin: "recovery", state: "queued", createdAt: "t" },
+      };
+    },
+  });
+  const ingress = {
+    chatKey: "relay:acct",
+    senderId: "acct",
+    accountId: "acct",
+    senderName: "Ada",
+    isOwner: true,
+  };
+  const bridge = createControlBridge(control as never, {
+    trustedConversationPrompt: async (input, nextIngress) => {
+      trusted.push({ input, ingress: nextIngress });
+      return {
+        reused: false,
+        conversationId: input.conversationId,
+        topicId: input.topicId,
+        requestId: input.requestId,
+        run: { id: "run_trusted", conversationId: input.conversationId, topicId: input.topicId, requestMessageId: "cmsg", requestId: input.requestId, mode: "explicit", state: "queued", profileRevision: 1, createdAt: "t" },
+        message: { id: "cmsg", conversationId: input.conversationId, topicId: input.topicId, seq: 1, role: "human", content: input.text, createdAt: "t" },
+        memberTurn: { id: "mturn_t", runId: "run_trusted", conversationId: input.conversationId, topicId: input.topicId, botId: "bot_1", batch: 0, attempt: 1, origin: "human", state: "queued", createdAt: "t" },
+      };
+    },
+  });
+  expect(await dispatch(bridge, req(MSG.conversationPrompt, {
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    requestId: "req",
+    text: "hi",
+    humanIngress: ingress,
+    executionOrigin: "human",
+  }))).toMatchObject({ run: { id: "run_trusted" } });
+  expect(publicPrompts).toHaveLength(0);
+  expect(trusted).toEqual([{
+    input: {
+      conversationId: "conversation_1",
+      topicId: "topic_1",
+      requestId: "req",
+      text: "hi",
+    },
+    ingress,
+  }]);
+});
+
+test("conversation.prompt without Hub ingress stays on public promptConversation", async () => {
+  const publicPrompts: unknown[] = [];
+  const { control } = makeFakeControl({
+    promptConversation: async (input: unknown) => {
+      publicPrompts.push(input);
+      return {
+        reused: false,
+        conversationId: "conversation_1",
+        topicId: "topic_1",
+        requestId: "req",
+        run: { id: "run_public", conversationId: "conversation_1", topicId: "topic_1", requestMessageId: "cmsg", requestId: "req", mode: "explicit", state: "queued", profileRevision: 1, createdAt: "t" },
+        message: { id: "cmsg", conversationId: "conversation_1", topicId: "topic_1", seq: 1, role: "human", content: "hi", createdAt: "t" },
+        memberTurn: { id: "mturn_1", runId: "run_public", conversationId: "conversation_1", topicId: "topic_1", botId: "bot_1", batch: 0, attempt: 1, origin: "recovery", state: "queued", createdAt: "t" },
+      };
+    },
+  });
+  const bridge = createControlBridge(control as never, {
+    trustedConversationPrompt: async () => {
+      throw new Error("trusted path must not run without Hub ingress");
+    },
+  });
+  expect(await dispatch(bridge, req(MSG.conversationPrompt, {
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    requestId: "req",
+    text: "hi",
+    humanIngress: { chatKey: "bot:conversation_1:topic_1", senderId: "acct" },
+  }))).toMatchObject({ run: { id: "run_public" } });
+  expect(publicPrompts).toEqual([{
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    requestId: "req",
+    text: "hi",
+  }]);
+});

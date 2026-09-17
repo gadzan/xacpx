@@ -603,6 +603,18 @@ export function createApp(deps: AppDeps): Hono<Vars> {
         isOwner: true,
       };
     }
+    if (body.type === MSG.conversationPrompt) {
+      payload = {
+        ...(payload as Record<string, unknown>),
+        humanIngress: {
+          chatKey: `relay:${account.id}`,
+          senderId: account.id,
+          accountId: account.id,
+          senderName: account.username,
+          isOwner: true,
+        },
+      };
+    }
     const releaseSessionRpcLocks: Array<() => void> = [];
     let persistedPromptId: number | undefined;
     let webPromptRequestId: string | undefined;

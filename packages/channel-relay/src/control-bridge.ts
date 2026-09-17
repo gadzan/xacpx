@@ -94,6 +94,26 @@ export interface ControlBridgeOptions {
   setTimeoutFn?: (fn: () => void, ms: number) => unknown;
   clearTimeoutFn?: (timer: unknown) => void;
   now?: () => number;
+  /**
+   * Hub-authenticated Direct Conversation accept. Ingress is overwritten by
+   * the Hub; public `control.promptConversation` never takes it.
+   */
+  trustedConversationPrompt?: (
+    input: {
+      conversationId: string;
+      topicId: string;
+      requestId: string;
+      text: string;
+      target?: { botId: string };
+    },
+    ingress: {
+      chatKey: string;
+      senderId: string;
+      accountId?: string;
+      senderName?: string;
+      isOwner?: boolean;
+    },
+  ) => Promise<unknown>;
 }
 
 function controlRpcTimeoutMs(
@@ -165,7 +185,7 @@ export function createControlBridge(
     }
 
     const deadlineAt = modelSetDeadlineAt(envelope, now);
-    void dispatchControlRequest(control, envelope, deadlineAt)
+    void dispatchControlRequest(control, envelope, deadlineAt, options.trustedConversationPrompt)
       .then(respondOnce)
       .catch((error: unknown) => {
         const code = (error as Error & { code?: string }).code ?? "internal";
@@ -179,10 +199,48 @@ export function createControlBridge(
   };
 }
 
+function readHubHumanIngress(payload: unknown): {
+  chatKey: string;
+  senderId: string;
+  accountId?: string;
+  senderName?: string;
+  isOwner?: boolean;
+} | undefined {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return undefined;
+  }
+  const raw = (payload as { humanIngress?: unknown }).humanIngress;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return undefined;
+  }
+  const ingress = raw as Record<string, unknown>;
+  if (typeof ingress.chatKey !== "string" || !ingress.chatKey.trim()) {
+    return undefined;
+  }
+  if (typeof ingress.senderId !== "string" || !ingress.senderId.trim()) {
+    return undefined;
+  }
+  if (ingress.chatKey.startsWith("bot:")) {
+    return undefined;
+  }
+  return {
+    chatKey: ingress.chatKey.trim(),
+    senderId: ingress.senderId.trim(),
+    ...(typeof ingress.accountId === "string" && ingress.accountId.trim()
+      ? { accountId: ingress.accountId.trim() }
+      : {}),
+    ...(typeof ingress.senderName === "string" && ingress.senderName.trim()
+      ? { senderName: ingress.senderName.trim() }
+      : {}),
+    ...(typeof ingress.isOwner === "boolean" ? { isOwner: ingress.isOwner } : {}),
+  };
+}
+
 async function dispatchControlRequest(
   control: PublicControlService,
   envelope: RelayEnvelope,
   deadlineAt?: number,
+  trustedConversationPrompt?: ControlBridgeOptions["trustedConversationPrompt"],
 ): Promise<unknown> {
   const payload = envelope.payload;
   switch (envelope.type) {
@@ -980,13 +1038,18 @@ async function dispatchControlRequest(
     case MSG.conversationPrompt: {
       const input = parseControlPayload(MSG.conversationPrompt, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.conversationPrompt}: malformed payload`);
-      return await control.promptConversation({
+      const publicInput = {
         conversationId: input.conversationId,
         topicId: input.topicId,
         requestId: input.requestId,
         text: input.text,
         ...(input.target ? { target: input.target } : {}),
-      });
+      };
+      const ingress = readHubHumanIngress(payload);
+      if (ingress && trustedConversationPrompt) {
+        return await trustedConversationPrompt(publicInput, ingress);
+      }
+      return await control.promptConversation(publicInput);
     }
     case MSG.conversationHistory: {
       const input = parseControlPayload(MSG.conversationHistory, payload);

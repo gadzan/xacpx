@@ -183,7 +183,11 @@ export class RelayChannel implements MessageChannelRuntime {
 
     const capabilities = await this.bootstrapTerminal(input);
 
-    const bridge = createControlBridge(control);
+    const bridge = createControlBridge(control, {
+      ...(input.trustedConversationPrompt
+        ? { trustedConversationPrompt: input.trustedConversationPrompt }
+        : {}),
+    });
     const onRequest = (
       envelope: RelayEnvelope,
       respond: (payload: unknown) => void,

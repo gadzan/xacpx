@@ -3,6 +3,7 @@ import { CANCEL_DRAIN_TIMEOUT_MS } from "../control/turn-support";
 import { directConversationChatKey } from "../domain/ids";
 import type { PermissionInteractionOrigin } from "../permissions/permission-types";
 import type { ConversationExecutionPort } from "./conversation-execution-port";
+import type { HumanIngressContext } from "./conversation-types";
 
 export interface ConversationTurnRunInput {
   conversationId: string;
@@ -18,6 +19,11 @@ export interface ConversationTurnRunInput {
    * The dispatcher copies this; callers must not invent human authority.
    */
   executionOrigin: PermissionInteractionOrigin;
+  /**
+   * Trusted permission return route for human MemberTurns. Isolation `chatKey`
+   * stays `bot:<conversation>:<topic>`; the broker must not use that product key.
+   */
+  permissionRoute?: HumanIngressContext;
   promptRequestId: string;
   abortSignal?: AbortSignal;
 }
@@ -122,14 +128,19 @@ export class ControlConversationTurnRunner implements ConversationTurnRunner {
     const tracked: TrackedExecution = { done, resolveDone, abort };
     this.executions.set(input.promptRequestId, tracked);
     const chatKey = directConversationChatKey(input.conversationId, input.topicId);
+    const permission = input.executionOrigin === "human" ? input.permissionRoute : undefined;
     const provider = this.control.promptImmediate({
       chatKey,
       sessionAlias: input.sessionAlias,
       text: input.text,
-      senderId: "bot-conversation",
+      senderId: permission?.senderId ?? "bot-conversation",
       promptRequestId: input.promptRequestId,
       abortSignal: abort.signal,
       executionOrigin: input.executionOrigin,
+      ...(permission?.accountId !== undefined ? { accountId: permission.accountId } : {}),
+      ...(permission?.isOwner !== undefined ? { isOwner: permission.isOwner } : {}),
+      ...(permission?.senderName !== undefined ? { senderName: permission.senderName } : {}),
+      ...(permission?.chatKey ? { permissionChatKey: permission.chatKey } : {}),
       conversation: {
         conversationId: input.conversationId,
         topicId: input.topicId,

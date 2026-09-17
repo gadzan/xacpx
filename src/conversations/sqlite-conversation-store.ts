@@ -27,11 +27,13 @@ import type {
 import {
   conversationExecutionOrigin,
   memberTurnOriginFromExecution,
+  parseHumanIngress,
 } from "./conversation-execution";
 import type {
   ConversationMessage,
   ConversationRun,
   ConversationRunState,
+  HumanIngressContext,
   MemberTurnRecord,
   MemberTurnState,
   PendingDispatch,
@@ -113,6 +115,7 @@ interface DispatchRow {
   owner: string | null;
   lease_expires_at: string | null;
   authority_epoch: string | null;
+  human_ingress: string | null;
   created_at: string;
   claimed_at: string | null;
   completed_at: string | null;
@@ -201,6 +204,7 @@ CREATE TABLE IF NOT EXISTS pending_dispatches (
   owner TEXT,
   lease_expires_at TEXT,
   authority_epoch TEXT,
+  human_ingress TEXT,
   created_at TEXT NOT NULL,
   claimed_at TEXT,
   completed_at TEXT
@@ -214,6 +218,22 @@ CREATE INDEX IF NOT EXISTS idx_member_turns_run ON member_turns (run_id);
 
 function optionalString(value: string | null | undefined): string | undefined {
   return value == null || value === "" ? undefined : value;
+}
+
+function parseStoredHumanIngress(json: string | null | undefined): HumanIngressContext | undefined {
+  if (!json) {
+    return undefined;
+  }
+  try {
+    return parseHumanIngress(JSON.parse(json));
+  } catch {
+    return undefined;
+  }
+}
+
+function serializeHumanIngress(ingress: HumanIngressContext | undefined): string | null {
+  const parsed = parseHumanIngress(ingress);
+  return parsed ? JSON.stringify(parsed) : null;
 }
 
 function parseSnapshot(json: string): BotProfileSnapshot {
@@ -282,6 +302,7 @@ function mapMemberTurn(row: MemberTurnRow): MemberTurnRecord {
 }
 
 function mapDispatch(row: DispatchRow): PendingDispatch {
+  const humanIngress = parseStoredHumanIngress(row.human_ingress);
   return {
     id: row.id,
     runId: row.run_id,
@@ -292,6 +313,7 @@ function mapDispatch(row: DispatchRow): PendingDispatch {
     ...(optionalString(row.lease_expires_at) ? { leaseExpiresAt: row.lease_expires_at as string } : {}),
     createdAt: row.created_at,
     ...(optionalString(row.authority_epoch) ? { authorityEpoch: row.authority_epoch as string } : {}),
+    ...(humanIngress ? { humanIngress } : {}),
     ...(optionalString(row.claimed_at) ? { claimedAt: row.claimed_at as string } : {}),
     ...(optionalString(row.completed_at) ? { completedAt: row.completed_at as string } : {}),
   };
@@ -320,6 +342,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.beforeAcceptCommit = options?.beforeAcceptCommit;
     this.sqlite.exec(SCHEMA);
     this.ensureDispatchAuthorityEpochColumn();
+    this.ensureDispatchHumanIngressColumn();
   }
 
   private assertOpen(): void {
@@ -468,7 +491,7 @@ export class SqliteConversationStore implements ConversationStore {
         }
         this.sqlite.run(
           `UPDATE pending_dispatches
-           SET state = 'pending', owner = NULL, claimed_at = NULL, lease_expires_at = NULL, generation = generation + 1, authority_epoch = NULL
+           SET state = 'pending', owner = NULL, claimed_at = NULL, lease_expires_at = NULL, generation = generation + 1, authority_epoch = NULL, human_ingress = NULL
            WHERE id = ?`,
           [row.id],
         );
@@ -538,11 +561,18 @@ export class SqliteConversationStore implements ConversationStore {
       const executionOrigin = conversationExecutionOrigin(
         optionalString(row.authority_epoch),
         input.authorityEpoch,
+        parseStoredHumanIngress(row.human_ingress),
       );
       this.sqlite.run(
         `UPDATE member_turns SET state = 'dispatched', origin = ? WHERE id = ?`,
         [memberTurnOriginFromExecution(executionOrigin), row.member_turn_id],
       );
+      if (executionOrigin !== "human") {
+        this.sqlite.run(
+          `UPDATE pending_dispatches SET authority_epoch = NULL, human_ingress = NULL WHERE id = ?`,
+          [row.id],
+        );
+      }
       return {
         dispatch: this.requireDispatch(row.id),
         run: this.requireRun(row.run_id),
@@ -591,7 +621,7 @@ export class SqliteConversationStore implements ConversationStore {
       const dispatch = this.requireLiveUnstartedClaim(input);
       this.sqlite.run(
         `UPDATE pending_dispatches
-         SET state = 'pending', owner = NULL, claimed_at = NULL, lease_expires_at = NULL, generation = generation + 1, authority_epoch = NULL
+         SET state = 'pending', owner = NULL, claimed_at = NULL, lease_expires_at = NULL, generation = generation + 1, authority_epoch = NULL, human_ingress = NULL
          WHERE id = ?`,
         [dispatch.id],
       );
@@ -913,6 +943,14 @@ export class SqliteConversationStore implements ConversationStore {
     this.sqlite.exec("ALTER TABLE pending_dispatches ADD COLUMN authority_epoch TEXT");
   }
 
+  private ensureDispatchHumanIngressColumn(): void {
+    const cols = this.sqlite.all<{ name: string }>("PRAGMA table_info(pending_dispatches)");
+    if (cols.some((col) => col.name === "human_ingress")) {
+      return;
+    }
+    this.sqlite.exec("ALTER TABLE pending_dispatches ADD COLUMN human_ingress TEXT");
+  }
+
   private assertAcceptable(conversationId: string, topicId: string): void {
     if (this.isConversationDeleting(conversationId)) {
       throw new ConversationError("conversation_deleting", `conversation "${conversationId}" is deleting`);
@@ -953,18 +991,21 @@ export class SqliteConversationStore implements ConversationStore {
         input.now,
       ],
     );
+    const ingressJson = serializeHumanIngress(input.humanIngress);
+    const authorityEpoch = ingressJson ? (input.authorityEpoch ?? null) : null;
+    const memberOrigin = ingressJson && authorityEpoch ? "human" : "recovery";
     this.sqlite.run(
       `INSERT INTO member_turns (
          id, run_id, conversation_id, topic_id, bot_id, session_alias, logical_session_id, source_turn_id,
          queue_item_id, batch, attempt, origin, state, trigger_message_ids_json, created_at, started_at, finished_at
-       ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 1, 1, 'human', 'queued', ?, ?, NULL, NULL)`,
-      [memberTurnId, runId, input.conversationId, input.topicId, input.botId, JSON.stringify([messageId]), input.now],
+       ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 1, 1, ?, 'queued', ?, ?, NULL, NULL)`,
+      [memberTurnId, runId, input.conversationId, input.topicId, input.botId, memberOrigin, JSON.stringify([messageId]), input.now],
     );
     this.sqlite.run(
       `INSERT INTO pending_dispatches (
-         id, run_id, member_turn_id, generation, state, owner, lease_expires_at, created_at, claimed_at, completed_at, authority_epoch
-       ) VALUES (?, ?, ?, 1, 'pending', NULL, NULL, ?, NULL, NULL, ?)`,
-      [dispatchId, runId, memberTurnId, input.now, input.authorityEpoch ?? null],
+         id, run_id, member_turn_id, generation, state, owner, lease_expires_at, created_at, claimed_at, completed_at, authority_epoch, human_ingress
+       ) VALUES (?, ?, ?, 1, 'pending', NULL, NULL, ?, NULL, NULL, ?, ?)`,
+      [dispatchId, runId, memberTurnId, input.now, authorityEpoch, ingressJson],
     );
     return {
       reused: false,

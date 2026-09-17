@@ -12,6 +12,7 @@ import type { StateStore } from "../state/state-store";
 import type { AppState } from "../state/types";
 import { ConversationError } from "./conversation-error";
 import type { ConversationDispatcher } from "./conversation-dispatcher";
+import { parseHumanIngress } from "./conversation-execution";
 import {
   emitConversationProductEvent,
   type ConversationProductEventSink,
@@ -22,6 +23,7 @@ import type {
   ConversationRecord,
   ConversationRun,
   ConversationTopic,
+  HumanIngressContext,
   MemberTurnRecord,
 } from "./conversation-types";
 
@@ -56,6 +58,7 @@ export class ConversationRunService {
   private readonly beforeTeardownFinalize?: () => Promise<void>;
   private readonly afterTeardownMarkedDeleting?: () => Promise<void>;
   private readonly autoKick: boolean;
+  private consumerActivated = false;
   private readonly releaseOwnedSession: ReleaseOwnedSession;
   private readonly onProductEvent?: ConversationProductEventSink;
   private closed = false;
@@ -99,12 +102,24 @@ export class ConversationRunService {
     this.store.close();
   }
 
+  /**
+   * Start durable Conversation consume after this process holds the daemon
+   * consumer lock. `buildApp` must not call this. Accept-time `autoKick`
+   * stays inert until activation.
+   */
+  async activateAfterConsumerLock(): Promise<void> {
+    this.assertOpen();
+    this.consumerActivated = true;
+    await this.dispatcher.kick();
+  }
+
   async acceptDirectPrompt(input: {
     botId: string;
     requestId: string;
     content: string;
     conversationId?: string;
     topicId?: string;
+    humanIngress?: HumanIngressContext;
   }): Promise<AcceptRequestResult> {
     this.assertOpen();
     const accepted = await this.bots.runLifecycle(input.botId, async () => {
@@ -134,6 +149,7 @@ export class ConversationRunService {
       }
       const snapshot = snapshotBotProfile(bot, timestamp);
       await this.beforeAcceptPersist?.();
+      const humanIngress = parseHumanIngress(input.humanIngress);
       const created = this.store.acceptRequest({
         conversationId,
         topicId,
@@ -142,14 +158,16 @@ export class ConversationRunService {
         content: input.content,
         profileSnapshot: snapshot,
         now: timestamp,
-        authorityEpoch: this.dispatcher.authorityEpoch,
+        ...(humanIngress
+          ? { authorityEpoch: this.dispatcher.authorityEpoch, humanIngress }
+          : {}),
       });
       return created;
     });
     if (!accepted.reused) {
       this.emitAcceptProjection(accepted);
     }
-    if (this.autoKick) {
+    if (this.autoKick && this.consumerActivated) {
       void this.dispatcher.kick();
     }
     return accepted;
@@ -161,6 +179,7 @@ export class ConversationRunService {
     requestId: string;
     text: string;
     targetBotId?: string;
+    humanIngress?: HumanIngressContext;
   }): Promise<AcceptRequestResult> {
     this.assertOpen();
     const botId = this.resolveDirectBotId(input.conversationId);
@@ -176,6 +195,7 @@ export class ConversationRunService {
       content: input.text,
       conversationId: input.conversationId,
       topicId: input.topicId,
+      ...(input.humanIngress ? { humanIngress: input.humanIngress } : {}),
     });
   }
 

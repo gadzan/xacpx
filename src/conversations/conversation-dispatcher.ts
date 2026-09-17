@@ -271,6 +271,9 @@ export class ConversationDispatcher {
         logicalSessionId: binding.logicalSessionId,
         text,
         executionOrigin: conversationExecutionOriginFromMemberTurn(latestMember.origin),
+        ...(latestMember.origin === "human" && work.dispatch.humanIngress
+          ? { permissionRoute: work.dispatch.humanIngress }
+          : {}),
         promptRequestId: sourceTurnId,
       });
       await this.hooks?.beforeResultPersist?.(work);

@@ -2074,13 +2074,6 @@ export async function buildApp(
     stateMutex,
   });
   conversationKernel(control).bindConversationRuntime(conversations);
-  void conversations.kick().catch((error) => {
-    void logger.error(
-      "conversations.recover_failed",
-      "failed to recover pending Conversation dispatch on startup",
-      { error: error instanceof Error ? error.message : String(error) },
-    );
-  });
   controlEvents.subscribe((event) => {
     if (
       event.type === "turn-finished" &&

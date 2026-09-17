@@ -25,6 +25,9 @@ export interface QueuedPrompt {
   senderId: string;
   /** Explicit turn provenance, carried from submit through drain to metadata. */
   turnOrigin: PermissionInteractionOrigin;
+  /** Trusted permission return route when it differs from isolation `chatKey`. */
+  permissionChatKey?: string;
+  senderName?: string;
   executionContext: {
     chatKey: string;
     sessionAlias: string;

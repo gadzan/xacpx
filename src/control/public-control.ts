@@ -5,6 +5,7 @@ import type {
   ControlService,
   ControlSessionInfo,
 } from "./control-service.js";
+import type { ConversationPromptRequestDto } from "./conversation-control-dtos.js";
 
 export type {
   ControlExecuteCommandInput,
@@ -23,6 +24,7 @@ const TRUSTED_CONTROL_METHODS = [
   "cancelQueuedConversationItem",
   "bindConversationRuntime",
   "emitConversationProduct",
+  "promptConversationFromHumanIngress",
 ] as const;
 
 type TrustedControlMethod = (typeof TRUSTED_CONTROL_METHODS)[number];
@@ -37,6 +39,18 @@ export type PublicControlService = Omit<ControlService, TrustedControlMethod>;
 
 function isTrustedControlMethod(prop: PropertyKey): prop is TrustedControlMethod {
   return (TRUSTED_CONTROL_METHODS as readonly PropertyKey[]).includes(prop);
+}
+
+export function sanitizePublicConversationPrompt(
+  input: ConversationPromptRequestDto,
+): ConversationPromptRequestDto {
+  return {
+    conversationId: input.conversationId,
+    topicId: input.topicId,
+    requestId: input.requestId,
+    text: input.text,
+    ...(input.target?.botId ? { target: { botId: input.target.botId } } : {}),
+  };
 }
 
 export function sanitizePublicPromptInput(input: PublicControlPromptInput): ControlPromptInput {
@@ -75,6 +89,10 @@ export function asPublicControl(
       }
       if (prop === "prompt") {
         return (input: PublicControlPromptInput) => target.prompt(sanitizePublicPromptInput(input));
+      }
+      if (prop === "promptConversation") {
+        return (input: ConversationPromptRequestDto) =>
+          target.promptConversation(sanitizePublicConversationPrompt(input));
       }
       if (prop === "cancelQueuedItem") {
         return (chatKey: string, sessionAlias: string, itemId: string) =>

@@ -16,6 +16,12 @@ export interface ConversationExecutionPromptInput {
   accountId?: string;
   senderId: string;
   isOwner?: boolean;
+  /**
+   * Trusted permission return route when it differs from `chatKey`.
+   * Direct Conversation isolation stays `bot:<conversation>:<topic>`.
+   */
+  permissionChatKey?: string;
+  senderName?: string;
   media?: PromptAttachmentRef[];
   agentMentions?: Array<{ range: [number, number]; handle: string }>;
   promptRequestId?: string;

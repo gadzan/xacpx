@@ -22,6 +22,9 @@ export interface TurnRequest {
   isOwner?: boolean;
   /** Explicit turn provenance, set by the producer; only "human" may mint permission interactions. */
   turnOrigin: PermissionInteractionOrigin;
+  /** Trusted permission return route when it differs from isolation `chatKey`. */
+  permissionChatKey?: string;
+  senderName?: string;
   accountId?: string;
   // Extra fields stamped onto turn-started for scheduled-origin turns. `queueItemId`
   // is set only for a drained queue head so the web can reconcile the badge.
@@ -316,13 +319,17 @@ export class SessionTurnRunner {
         accountId: req.accountId ?? "control",
         conversationId: req.chatKey,
         text: chatText,
-        metadata: buildControlMetadata(
-          req.senderId,
-          req.isOwner,
-          req.boundSessionAlias,
-          req.preserveCoordinatorRoute,
-          req.turnOrigin,
-        ),
+        metadata: {
+          ...buildControlMetadata(
+            req.senderId,
+            req.isOwner,
+            req.boundSessionAlias,
+            req.preserveCoordinatorRoute,
+            req.turnOrigin,
+          ),
+          ...(req.permissionChatKey ? { permissionChatKey: req.permissionChatKey } : {}),
+          ...(req.senderName ? { senderName: req.senderName } : {}),
+        },
         abortSignal: signal,
         ...(chatMedia.length > 0 ? { media: chatMedia } : {}),
         reply: async (chunk) => {

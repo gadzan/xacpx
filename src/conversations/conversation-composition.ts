@@ -31,6 +31,11 @@ export interface ConversationRuntime {
   runs: ConversationRunService;
   authorityEpoch: string;
   kick(): Promise<void>;
+  /**
+   * Start durable consume after this process holds the daemon consumer lock.
+   * `buildApp` constructs the runtime; it must not recover or drain work.
+   */
+  activateAfterConsumerLock(): Promise<void>;
   /** Fail-closed gate for all public Bot/Conversation Control mutations (and reads). */
   assertOpen(): void;
   /** Lease one public Bot/Conversation mutation until it returns. Shutdown waits. */
@@ -135,6 +140,7 @@ export async function createConversationRuntime(
     runs,
     authorityEpoch: dispatcher.authorityEpoch,
     kick: () => dispatcher.kick(),
+    activateAfterConsumerLock: () => runs.activateAfterConsumerLock(),
     assertOpen,
     withOperation,
     shutdown: () => {

@@ -68,23 +68,31 @@ That port is **not** the public Control facade. `ChannelStartInput.control` and 
 
 `BotRuntimeManager` is **runtime materialization/binding only**. Direct Bot turns enter solely through `ConversationRunService` → dispatcher → runner. There is no second Bot execution engine and no `promptDirect` bypass.
 
-Interactive `PublicControlService.prompt()` is always `turnOrigin: "human"` and always applies the ordinary-session owner guard. Conversation `promptImmediate` lives only on `ConversationExecutionPort`, takes store-derived `executionOrigin`, and **fail-closes to `orchestration`** unless that value is exactly `"human"`. Omitting origin cannot mint human authority. Extra fields on the public prompt input are stripped before admission.
+Interactive `PublicControlService.prompt()` is always `turnOrigin: "human"` and always applies the ordinary-session owner guard. Conversation `promptImmediate` lives only on `ConversationExecutionPort`, takes store-derived `executionOrigin`, and **fail-closes to `orchestration`** unless that value is exactly `"human"`. Omitting origin cannot mint human authority. Extra fields on the public prompt input are stripped before admission. Public `promptConversation` strips `humanIngress` / `executionOrigin`; only `conversationKernel().promptConversationFromHumanIngress` may bind trusted ingress.
 
 ## Execution permission provenance
 
-Fresh direct work that a human just accepted, claimed, and executed by the **same live dispatcher authority epoch** is human: interactive permission authority is allowed.
+Product routing identity (`ConversationId` / `TopicId` / `RunId`, plus TurnQueue isolation `bot:<conversationId>:<topicId>`) is **not** human permission authority.
 
-Recovery / automatic redispatch is orchestration and cannot mint a human permission interaction:
+Human interactive permission authority requires **both**:
+
+- a fresh same-process `authorityEpoch` match on the claimed dispatch row, **and**
+- complete server-derived `HumanIngressContext` (authenticated `senderId` + a permission return `chatKey` that is **not** a `bot:` isolation key)
 
 ```text
-fresh human accept + ordinary same-daemon dispatch     → human
+trusted human ingress + same-daemon epoch     → human
+public / plugin promptConversation (no ingress) → orchestration
 accept committed → daemon crash before first claim
-  → startup redispatch (new authority epoch)           → orchestration
-claim expires before start → automatic redispatch      → orchestration
-automatic pre-start retry after an internal failure    → orchestration
+  → startup redispatch (new authority epoch; ingress discarded) → orchestration
+claim expires before start → automatic redispatch                 → orchestration
+automatic pre-start retry after an internal failure              → orchestration
 ```
 
-The durable boundary is the dispatch `authorityEpoch`, stamped at accept with the live process epoch. `recoverExpiredClaims` and `releaseClaimToPending` revoke it. Claim compares the live epoch to that row — not `generation > 1` (crash-before-first-claim is still generation 1). MemberTurn.origin becomes `recovery` for those executions. The dispatcher copies that durable origin into Control; it never hardcodes `"human"`.
+Public `ConversationPromptPayload` / `promptConversation` stay `{ conversationId, topicId, requestId, text, target? }`. Callers must **not** send `executionOrigin`. Relay Hub overwrites `humanIngress` from the authenticated account on `control.conversation.prompt` without adding that RPC to `CHAT_SCOPED_TYPES`. Connector `trustedConversationPrompt` is the only path that may pass ingress into `conversationKernel().promptConversationFromHumanIngress`.
+
+The durable boundary is the dispatch `authorityEpoch` **bound to** `humanIngress`. Accept stamps both together or neither. `recoverExpiredClaims` and `releaseClaimToPending` null both. Claim compares the live epoch to that row — not `generation > 1` (crash-before-first-claim is still generation 1) — and requires complete ingress for `human`. MemberTurn.origin becomes `recovery` otherwise. The dispatcher copies that durable origin into Control and, for human MemberTurns, a separate `permissionChatKey` from ingress. It never hardcodes `"human"` and never uses the product `bot:` chatKey as a permission return route.
+
+`PermissionInteractionBroker` resolves via `resolvePermissionTurnRoute`: origin must be `human`, and the return chatKey is `metadata.permissionChatKey` (trusted ingress) rather than the isolation `chatKey`. A `bot:` key never mints an interaction.
 
 ## `indeterminate`
 
@@ -147,12 +155,15 @@ Injected release failure leaves `deleting` + ownership in place for retry.
 
 ## Production composition
 
-`buildApp` (`src/main.ts`) constructs the production Conversation runtime via `createConversationRuntime` (`src/conversations/conversation-composition.ts`) **before** Control/Relay accept Conversation requests:
+`buildApp` (`src/main.ts`) constructs the production Conversation runtime via `createConversationRuntime` (`src/conversations/conversation-composition.ts`) **before** Control/Relay accept Conversation requests. Construction is **passive**:
 
 - SQLite path is `dirname(config.json)/runtime/conversations.sqlite` (`resolveRuntimeDirFromConfigPath`).
 - Each daemon process mints a fresh `authorityEpoch`.
 - The daemon-wide AppState `stateMutex` is injected into `SessionService`, `BotService`, `BotRuntimeManager`, and `ConversationRunService`. Conversation COW publication uses that same mutex for short `structuredClone` → `saveNow` → `replaceRuntimeState` sections only; it is never held across `SessionService` awaits. Do not invent a Conversation-only mutex.
-- Startup `kick()` recovers durable pending dispatch. Crash-before-first-claim work is claimed in the new process as `recovery` / `orchestration`.
+- `BotService` create/update/delete is durability-gated COW: clone → mutate next → `stateStore.saveNow(next)` → `replaceRuntimeState`. `createBot` / `updateBot` returning success means the Bot (including `profileRevision` / execution identity) is already on disk. Conversation SQLite accept may snapshot that Bot; it must not depend on a pending `DebouncedStateStore.save()` flush.
+- `buildApp` must **not** call `dispatcher.kick()` / `conversations.kick()`. Accept-time `autoKick` stays inert until activation.
+- `runConsole` acquires the daemon consumer lock, runs stale-owner / orphan convergence, **then** `runtime.conversations.activateAfterConsumerLock()` (recovery kick), **then** starts channels. A process that loses the lock must not claim or execute durable Conversation work.
+- Crash-before-first-claim work recovered after activation is claimed as `recovery` / `orchestration` (new epoch; saved human ingress discarded).
 - Shutdown stops the dispatcher, waits for in-flight drain, then closes SQLite **before** disposing `state.json`. The composition marks the runtime `stopping` first so **new** Control Bot/Conversation APIs fail `runtime_closed` immediately, then **waits for in-flight public mutations** (operation lease) before `bots.close()` / dispatcher shutdown / SQLite close. Concurrent `shutdown()` callers share one promise. `shutdown()` resolving means the Bot/Conversation subsystem is quiescent: no later `replaceRuntimeState` from a mutation that entered before shutdown.
 
 Public Control / Relay APIs are projections of this domain. Callers address Bot ID, Conversation ID, Topic ID, Run ID, and message `seq` only. They never choose hidden session aliases, `logicalSessionId`, TurnQueue ids, `bindingId`, or `chatKey` as product routing identities.

@@ -96,6 +96,12 @@ export interface ChatRequestMetadata {
    * origin fails closed (no approval UI) — never guess human.
    */
   origin?: PermissionInteractionOrigin;
+  /**
+   * Trusted permission return route when it differs from `conversationId`
+   * (Direct Conversation isolation key `bot:<conversation>:<topic>`).
+   * Ordinary channel prompts omit this and route via `conversationId`.
+   */
+  permissionChatKey?: string;
 }
 export interface ChatResponse {
   /**

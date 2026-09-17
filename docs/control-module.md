@@ -23,6 +23,8 @@
   `ControlExecuteCommandInput`。`prompt` / `runScheduledTurn` / `cancelTurn` /
   `cancelQueuedItem` 都转发给 `TurnQueue`；`prompt` 在转发前等待同会话已登记的配置操作。
   公共 `ControlPromptInput` **不含** `executionOrigin` / writable `conversation`。
+  公共 `promptConversation` **不含** `humanIngress` / `executionOrigin`；可信人机 ingress
+  只存在于 `conversationKernel().promptConversationFromHumanIngress`。
   Conversation 执行通过 `conversationKernel(control)` 取得 `ConversationExecutionPort`，
   不作为 `ControlService` 的公开方法。
 - **`src/control/public-control.ts`** — `PublicControlService`、`asPublicControl()`。
@@ -66,7 +68,7 @@
 | `listSessions()` | 返回所有已解析逻辑会话的快照（`ControlSessionInfo[]`），含 `running` 字段（来自 `ActiveTurnRegistry`）与可选 `warm` 字段（running 时恒为 true，否则读 `SessionWarmthTracker` 最近观测；无 tracker 或未观测时省略）。`LogicalSession.owner.kind` 为 `bot-direct` / `group-member` / `group-controller` 的隐藏运行时不会出现在普通 Sessions 列表中（按 owner metadata，不是 `brt_` 前缀）。普通 alias 寻址的 Session 操作（prompt / remove / archive / rename / model / effort / cancel 等）对上述 owner 失败 `hidden_session`；Conversation 执行/释放只走 core-private `ConversationExecutionPort`。 |
 | `listBots()` / `getBot` / `createBot` / `updateBot` / `deleteBot` | Bot CRUD；DTO wrapper over `BotService`。delete 在 durable/runtime ownership 仍存在时 fail-closed。create / update / delete 在成功时同时发出 `bots-changed` 与 `conversations-changed`（Direct Conversation 是 Bot 的公共投影）。 |
 | `listConversations()` / `getConversation` / `listTopics` / `createTopic` | Direct Conversation / Topic 查询与创建。不暴露 hidden alias。Direct Conversation 的 `title` / `createdAt` / `updatedAt` 始终取当前 Bot 投影，不因首次 materialize 冻结。Default Topic 的 identity 不随 Bot rename 变化：`createdAt` 为 Bot 创建时间，`updatedAt` 为 Topic 自身最后一次 mutation（尚无 rename/archive API 时等于 `createdAt`，不跟 `Bot.updatedAt`）。Presenter 对 default Topic 同时 overlay `createdAt` 与 `updatedAt`，因此 PR3 已持久化的 materialize-now 时间戳在升级后与 PR4 新创建的 Topic 公开展示一致。Topic archive/delete 未接入公共 API。 |
-| `promptConversation(input)` | `{ conversationId, topicId, requestId, text, target? }` → `ConversationRunService.acceptConversationPrompt`。`requestId` 是 caller idempotency key。Direct `target.botId` 必须匹配 Conversation 所属 Bot。 |
+| `promptConversation(input)` | `{ conversationId, topicId, requestId, text, target? }` → `ConversationRunService.acceptConversationPrompt`。`requestId` 是 caller idempotency key。Direct `target.botId` 必须匹配 Conversation 所属 Bot。不含 `humanIngress` / `executionOrigin`；没有可信人机 ingress 的 accept 是 orchestration，不能 mint interactive permission。认证频道通过 `ChannelStartInput.trustedConversationPrompt` → `conversationKernel().promptConversationFromHumanIngress` 绑定 server-derived ingress。 |
 | `conversationHistory(input)` | Durable Topic `seq` 游标分页（`afterSeq` / `beforeSeq` / `limit`），返回 `oldestSeq` / `newestSeq` / `hasMoreBefore` / `hasMoreAfter`。 |
 | `getRun(runId)` / `cancelRun(runId)` | Exact Run 查询/取消。`indeterminate` 原样公开，不映射成 `failed`。 |
 | `createSession(alias, agent, workspace, agentSessionId?)` | 创建逻辑会话，发出 `sessions-changed` 事件。带 `agentSessionId` 时走 native attach（resume 已有 agent-native rollout）。`listNativeSessions` 会隐藏已被 product-owned LogicalSession 占用的 native ID（展示过滤）；attach 在 `resumeAgentSession` 前再次检查，直接提交 hidden native ID 失败 `hidden_session`。Ownership 按 native catalog（cwd + 去掉 ACP output-guard 后的物理 selector：argv identity / raw command / bare agent），不是 workspace/agent 配置名、`driver` 标签或 ACP spawn wrapper。同一 catalog 存在 product-owned candidate 但 transport 无法证明其 native identity 时 fail-closed。Managed overlay `acpxAgent` 丢失 argv 时 selector 为 unproven，但已知 cwd 会保留：只拒绝该 cwd 的 attach，不锁死其它目录。 |

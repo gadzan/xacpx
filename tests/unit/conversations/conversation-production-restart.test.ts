@@ -106,6 +106,9 @@ async function boot(input: {
     stateMutex,
   });
   kernel.bindConversationRuntime(runtime);
+  if (input.autoKick) {
+    await runtime.activateAfterConsumerLock();
+  }
   return { control, runtime, sessions };
 }
 

@@ -9,6 +9,11 @@ import type { SessionResourceCatalog } from "../sessions/session-resource-catalo
 import type { ActiveTurnRegistry } from "../sessions/active-turn-registry.js";
 import type { Locale } from "../i18n/index.js";
 import type { PublicControlService } from "../control/public-control.js";
+import type {
+  ConversationPromptRequestDto,
+  ConversationPromptResponseDto,
+} from "../control/conversation-control-dtos.js";
+import type { HumanIngressContext } from "../conversations/conversation-types.js";
 
 export type { ChatAgent };
 export type PermissionOutcome =
@@ -132,6 +137,15 @@ export interface ChannelStartInput {
    * present on this object. Optional: text-only channels ignore it.
    */
   control?: PublicControlService;
+  /**
+   * Hub-authenticated Direct Conversation accept. Ingress must already be
+   * overwritten by the authenticating channel. Public `control.promptConversation`
+   * never takes this context; plugins must not mint it.
+   */
+  trustedConversationPrompt?: (
+    input: ConversationPromptRequestDto,
+    ingress: HumanIngressContext,
+  ) => Promise<ConversationPromptResponseDto>;
   /**
    * Generic catalog of logical-session resources: immutable logical session
    * IDs, internal/display aliases, authoritative workspace cwd, archived flag,
