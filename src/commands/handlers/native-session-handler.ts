@@ -7,6 +7,11 @@ import { allocateWorkspaceName, sanitizeWorkspaceName } from "../workspace-name"
 import { basenameForWorkspacePath, normalizeWorkspacePath, pathExists, sameWorkspacePath } from "../workspace-path";
 import type { CommandRouterContext, RouterResponse, SessionLifecycleOps } from "../router-types";
 import { convergeProvisionalNativeAttach } from "../session-remove-lifecycle";
+import { ConversationError } from "../../conversations/conversation-error";
+import {
+  assertNativeSessionAddressable,
+  filterAddressableNativeSessions,
+} from "../../sessions/native-session-guard";
 import { t } from "../../i18n";
 export interface NativeSessionListCommand {
   agent?: string;
@@ -116,6 +121,16 @@ export async function handleNativeSessionList(
     return { text: t().nativeSession.transportNotSupported };
   }
 
+  result = {
+    ...result,
+    sessions: await filterAddressableNativeSessions(
+      { sessions: context.sessions, transport: context.transport },
+      target.agent,
+      target.workspace,
+      result.sessions,
+    ),
+  };
+
   await context.sessions.cacheNativeSessionList(chatKey, {
     agent: target.agent,
     workspace: target.workspace,
@@ -198,6 +213,19 @@ async function attachNativeSession(
   }
 
   const nativeTarget = target as NativeTarget;
+  try {
+    await assertNativeSessionAddressable(
+      { sessions: context.sessions, transport: context.transport },
+      nativeTarget.agent,
+      nativeTarget.workspace,
+      session.sessionId,
+    );
+  } catch (error) {
+    if (error instanceof ConversationError && error.code === "hidden_session") {
+      return { text: t().session.sessionHiddenOwned(session.sessionId) };
+    }
+    throw error;
+  }
   const existing = await context.sessions.findAttachedNativeSession(chatKey, nativeTarget.agent, session.sessionId);
   if (existing) {
     await context.sessions.useSession(chatKey, existing.alias);

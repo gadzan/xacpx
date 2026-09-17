@@ -530,6 +530,9 @@ export class SessionService {
       if (session.source !== "agent-side") {
         continue;
       }
+      if (isHiddenProductSessionOwner(session.owner)) {
+        continue;
+      }
       if (session.agent !== agent || session.agent_session_id !== agentSessionId) {
         continue;
       }

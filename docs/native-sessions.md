@@ -101,7 +101,7 @@ After a successful attach, xacpx creates a logical session that points to this n
 - Plain messages continue to be sent to the same Agent native session.
 - `/use <alias>`, `/sessions`, `/status`, etc. still work in terms of the xacpx logical session.
 - `/session rm <alias>` only deletes the logical mapping inside xacpx; it does not equal deleting the Agent native session.
-- When the same native session is selected by `/ssn` again, xacpx will preferentially switch back to the already-attached logical session, avoiding duplicate creation.
+- When the same native session is selected by `/ssn` again, xacpx will preferentially switch back to the already-attached **ordinary** logical session, avoiding duplicate creation. Native IDs already bound to a product-owned (Bot/Group) hidden runtime are omitted from the public native catalog and cannot be attached as an ordinary Session; submitting such an ID fails `hidden_session` rather than remounting the same model context.
 
 ## Command Quick-reference
 

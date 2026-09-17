@@ -1144,11 +1144,13 @@ export class ControlService {
     );
     // When an agentSessionId is supplied the user picked an existing native session to
     // resume; otherwise create a fresh transport session (the default `/session new`).
-    // Native attach: recover the agent-side rollout's prior conversation from acpx's own
-    // persisted record and seed it into history, so the dashboard isn't blank. This MUST
-    // happen BEFORE the attach — acpx's resume reuses the source record and overwrites its
-    // conversation with an empty one, so reading afterwards finds nothing. Best-effort: a
-    // read failure (no record, shape drift) must never fail the attach itself.
+    // Native attach is refused when that ID is already product-owned (hidden Bot/Group
+    // runtime). Resume reuses the source record and overwrites its conversation, so
+    // ownership is checked in SessionControlService before resumeAgentSession.
+    // Native history seed MUST happen BEFORE the attach — acpx's resume overwrites
+    // the source record's conversation with an empty one, so reading afterwards
+    // finds nothing. Best-effort: a read failure (no record, shape drift) must
+    // never fail the attach itself.
     let nativeHistory: NativeHistoryMessage[] = [];
     if (agentSessionId) {
       try {

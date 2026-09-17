@@ -1,6 +1,10 @@
 import type { ActiveTurnRegistry } from "../sessions/active-turn-registry.js";
 import type { AppConfig } from "../config/types";
 import type { AppLogger } from "../logging/app-logger";
+import {
+  assertNativeSessionAddressable as rejectOwnedNativeSession,
+  filterAddressableNativeSessions,
+} from "../sessions/native-session-guard";
 import { assertOrdinarySessionAddressable } from "../sessions/ordinary-session-guard";
 import type { SessionService } from "../sessions/session-service";
 import type { AgentSession, ResolvedSession, SessionTransport } from "../transport/types";
@@ -319,7 +323,33 @@ export class SessionControlService {
       cwd: workspaceConfig.cwd,
       filterCwd: workspaceConfig.cwd,
     });
-    return result?.sessions ?? [];
+    const sessions = result?.sessions ?? [];
+    // Presentation only: attach re-checks ownership and fail-closes.
+    return await filterAddressableNativeSessions(
+      { sessions: this.sessions, transport: this.transport },
+      agent,
+      workspace,
+      sessions,
+    );
+  }
+
+  /**
+   * Native attach is owner metadata of the agent-native rollout, never alias
+   * prefix. Product-owned LogicalSessions in this agent/workspace occupy their
+   * persisted `agentSessionId` or the live identity from `getAgentSessionId`.
+   * Unproven product-owned candidates fail closed.
+   */
+  async assertNativeSessionAddressable(
+    agent: string,
+    workspace: string,
+    agentSessionId: string,
+  ): Promise<void> {
+    await rejectOwnedNativeSession(
+      { sessions: this.sessions, transport: this.transport },
+      agent,
+      workspace,
+      agentSessionId,
+    );
   }
 
   /**
@@ -341,6 +371,10 @@ export class SessionControlService {
     if (!this.transport.resumeAgentSession) {
       throw new Error("the active transport does not support native sessions");
     }
+    // Ownership of the agent-native rollout is a correctness barrier: resume
+    // would remount a product-owned model context as an ordinary Session.
+    // Transport uniqueness stays advisory (below); this guard does not.
+    await this.assertNativeSessionAddressable(agent, workspace, agentSessionId);
     // Deliberately skip the transport-uniqueness derivation that the chat-side
     // /ssn handler performs before atomic reservation: the transport uniqueness
     // constraint is advisory for native attach and never a correctness barrier.

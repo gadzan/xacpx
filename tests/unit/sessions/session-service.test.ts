@@ -707,6 +707,20 @@ test("finds attached native sessions visible in the current channel", async () =
   await expect(sessions.findAttachedNativeSession("wx:user", "codex", "thread-2")).resolves.toBeNull();
 });
 
+test("findAttachedNativeSession ignores product-owned hidden native bindings", async () => {
+  const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  await sessions.createSession("brt_bot", "codex", "backend", {
+    owner: createBotDirectOwner({
+      bindingId: "bind_bot",
+      botId: "bot_reviewer",
+      conversationId: "conversation_bot",
+      topicId: "topic_bot",
+    }),
+  });
+  await sessions.updateNativeAgentSessionId("brt_bot", "thread-1");
+  await expect(sessions.findAttachedNativeSession("wx:user", "codex", "thread-1")).resolves.toBeNull();
+});
+
 test("caches and expires native session lists", async () => {
   const state = createEmptyState();
   const store = new MemoryStateStore();
