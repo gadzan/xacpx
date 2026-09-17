@@ -58,7 +58,9 @@ export class ConversationRunService {
   private readonly beforeTeardownFinalize?: () => Promise<void>;
   private readonly afterTeardownMarkedDeleting?: () => Promise<void>;
   private readonly autoKick: boolean;
-  private consumerActivated = false;
+  /** `pending` until the first successful post-lock kick; `unavailable` is sticky
+   *  fail-closed after that kick throws so accept cannot pile up unconsumed work. */
+  private activation: "pending" | "activated" | "unavailable" = "pending";
   private readonly releaseOwnedSession: ReleaseOwnedSession;
   private readonly onProductEvent?: ConversationProductEventSink;
   private closed = false;
@@ -105,12 +107,33 @@ export class ConversationRunService {
   /**
    * Start durable Conversation consume after this process holds the daemon
    * consumer lock. `buildApp` must not call this. Accept-time `autoKick`
-   * stays inert until activation.
+   * stays inert until this kick succeeds. A failed first drain leaves the
+   * consumer unavailable — not activated — so later accept cannot enqueue
+   * work the dispatcher cannot move.
    */
   async activateAfterConsumerLock(): Promise<void> {
     this.assertOpen();
-    this.consumerActivated = true;
-    await this.dispatcher.kick();
+    try {
+      await this.dispatcher.kick();
+    } catch (error) {
+      this.activation = "unavailable";
+      throw error;
+    }
+    this.activation = "activated";
+  }
+
+  isConsumerActivated(): boolean {
+    return this.activation === "activated";
+  }
+
+  private assertAccepting(): void {
+    this.assertOpen();
+    if (this.activation === "unavailable") {
+      throw new ConversationError(
+        "conversations_unavailable",
+        "Conversation consumer failed to activate; new work is not accepted",
+      );
+    }
   }
 
   async acceptDirectPrompt(input: {
@@ -121,7 +144,7 @@ export class ConversationRunService {
     topicId?: string;
     humanIngress?: HumanIngressContext;
   }): Promise<AcceptRequestResult> {
-    this.assertOpen();
+    this.assertAccepting();
     const accepted = await this.bots.runLifecycle(input.botId, async () => {
       const bot = this.bots.getBot(input.botId);
       const timestamp = this.now().toISOString();
@@ -167,7 +190,7 @@ export class ConversationRunService {
     if (!accepted.reused) {
       this.emitAcceptProjection(accepted);
     }
-    if (this.autoKick && this.consumerActivated) {
+    if (this.autoKick && this.activation === "activated") {
       void this.dispatcher.kick();
     }
     return accepted;

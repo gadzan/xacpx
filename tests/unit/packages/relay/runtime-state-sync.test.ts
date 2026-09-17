@@ -92,6 +92,79 @@ test("state sync restores Conversation correlation onto the live turn snapshot",
   runtime.close();
 });
 
+test("Conversation-correlated live usage/commands stay out of ordinary sessionUsage/sessionCommands", async () => {
+  const { runtime } = await seeded();
+  const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
+    protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: MSG.instanceEvent, payload: { event },
+  });
+  const conversation = {
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    botId: "bot_1",
+    runId: "run_1",
+    memberTurnId: "mt_1",
+  };
+  fire({ type: "turn-started", chatKey: "relay:a1", sessionAlias: "brt_hidden", conversation });
+  fire({
+    type: "turn-usage", chatKey: "relay:a1", sessionAlias: "brt_hidden",
+    used: 9, size: 100, conversation,
+  });
+  fire({
+    type: "agent-commands", chatKey: "relay:a1", sessionAlias: "brt_hidden",
+    commands: [{ name: "compact" }], conversation,
+  });
+  fire({ type: "turn-usage", chatKey: "relay:a1", sessionAlias: "backend", used: 3, size: 50 });
+  fire({
+    type: "agent-commands", chatKey: "relay:a1", sessionAlias: "backend",
+    commands: [{ name: "status" }],
+  });
+
+  const snapshot = runtime.stateSnapshot("i1");
+  expect(snapshot.usage).toEqual([{ instanceId: "i1", sessionAlias: "backend", used: 3, size: 50 }]);
+  expect(snapshot.commands).toEqual([{
+    instanceId: "i1",
+    sessionAlias: "backend",
+    commands: [{ name: "status" }],
+  }]);
+  expect(snapshot.usage.some((row) => row.sessionAlias === "brt_hidden")).toBe(false);
+  expect(snapshot.commands.some((row) => row.sessionAlias === "brt_hidden")).toBe(false);
+  runtime.close();
+});
+
+test("state sync usage/commands for a Conversation-correlated alias stay out of session maps", async () => {
+  const { runtime } = await seeded();
+  const conversation = {
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    botId: "bot_1",
+    runId: "run_1",
+    memberTurnId: "mt_1",
+  };
+  sync(runtime, {
+    turns: [{
+      sessionAlias: "brt_hidden", startedAt: STARTED_AT, text: "partial", reasoning: "",
+      steps: [], parts: [{ type: "text", text: "partial" }], conversation,
+    }],
+    usage: [
+      { sessionAlias: "brt_hidden", used: 9, size: 100 },
+      { sessionAlias: "backend", used: 3, size: 50 },
+    ],
+    commands: [
+      { sessionAlias: "brt_hidden", commands: [{ name: "compact" }] },
+      { sessionAlias: "backend", commands: [{ name: "status" }] },
+    ],
+    finishedOffline: [],
+  });
+  const snapshot = runtime.stateSnapshot("i1");
+  expect(snapshot.usage).toEqual([{ instanceId: "i1", sessionAlias: "backend", used: 3, size: 50 }]);
+  expect(snapshot.commands).toEqual([{
+    instanceId: "i1",
+    sessionAlias: "backend",
+    commands: [{ name: "status" }],
+  }]);
+  runtime.close();
+});
+
 test("state sync broadcasts a fresh snapshot to an already-subscribed browser", async () => {
   const { runtime } = await seeded();
   const sent: string[] = [];

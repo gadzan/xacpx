@@ -219,3 +219,100 @@ test("losing process buildApp does not claim or execute durable Conversation wor
   expect(afterWin.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("recovery");
   afterWin.close();
 });
+
+test("activateAfterConsumerLock does not mark the consumer activated when kick throws", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "xacpx-activate-gate-"));
+  const sqlitePath = join(dir, "conversations.sqlite");
+  const stateStore = new MemoryStateStore();
+  const seeder = await compose({ sqlitePath, state: createEmptyState(), stateStore });
+  const bot = await seeder.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const conversationId = createDirectConversationId(bot.id);
+  const topicId = createDirectTopicId(bot.id);
+  await seeder.runtime.shutdown();
+
+  const restored = structuredClone(stateStore.saved.at(-1)!);
+  const failing = await compose({ sqlitePath, state: restored, stateStore: new MemoryStateStore() });
+  failing.runtime.dispatcher.kick = async () => {
+    throw new Error("injected recovery failure");
+  };
+  await expect(failing.runtime.activateAfterConsumerLock()).rejects.toMatchObject({
+    message: "injected recovery failure",
+  });
+  expect(failing.runtime.runs.isConsumerActivated()).toBe(false);
+  await expect(failing.control.promptConversation({
+    conversationId,
+    topicId,
+    requestId: "req-after-failed-activate",
+    text: "hello",
+  })).rejects.toMatchObject({ code: "conversations_unavailable" });
+  expect(failing.runnerCalls()).toBe(0);
+  const store = await SqliteConversationStore.open(sqlitePath);
+  expect(store.listRuns(conversationId)).toEqual([]);
+  store.close();
+  await failing.runtime.shutdown();
+});
+
+test("initial recovery kick failure leaves Conversation unavailable and does not accept new work", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "xacpx-activate-fail-"));
+  const sqlitePath = join(dir, "conversations.sqlite");
+  const stateStore = new MemoryStateStore();
+  const seeder = await compose({ sqlitePath, state: createEmptyState(), stateStore });
+  const bot = await seeder.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const conversationId = createDirectConversationId(bot.id);
+  const topicId = createDirectTopicId(bot.id);
+  await seeder.runtime.shutdown();
+
+  const restored = structuredClone(stateStore.saved.at(-1)!);
+  const failing = await compose({ sqlitePath, state: restored, stateStore: new MemoryStateStore() });
+  failing.runtime.dispatcher.kick = async () => {
+    throw new Error("injected recovery failure");
+  };
+  const events: string[] = [];
+  const logs: string[] = [];
+  const app = failing.asAppRuntime();
+  app.logger = {
+    ...failing.asAppRuntime().logger,
+    error: async (event: string) => {
+      logs.push(event);
+    },
+  } as never;
+  await runConsole(
+    { configPath: join(dir, "config.json"), statePath: join(dir, "state.json") },
+    {
+      buildApp: async () => {
+        events.push("buildApp");
+        return app;
+      },
+      channels: {
+        startAll: async () => {
+          events.push("channel:start");
+          expect(failing.runtime.runs.isConsumerActivated()).toBe(false);
+          expect(failing.runnerCalls()).toBe(0);
+          await expect(failing.control.promptConversation({
+            conversationId,
+            topicId,
+            requestId: "req-after-failed-activate",
+            text: "hello",
+          })).rejects.toMatchObject({ code: "conversations_unavailable" });
+          expect(failing.runtime.runs.isConsumerActivated()).toBe(false);
+          expect(failing.runnerCalls()).toBe(0);
+          const store = await SqliteConversationStore.open(sqlitePath);
+          expect(store.listRuns(conversationId)).toEqual([]);
+          store.close();
+        },
+      },
+      consumerLock: {
+        acquire: async () => {
+          events.push("lock:acquire");
+        },
+        release: async () => {
+          events.push("lock:release");
+        },
+      },
+    },
+  );
+  expect(events[0]).toBe("buildApp");
+  expect(events).toContain("lock:acquire");
+  expect(events).toContain("channel:start");
+  expect(logs).toContain("conversations.recover_failed");
+});

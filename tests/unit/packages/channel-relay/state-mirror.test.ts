@@ -452,3 +452,63 @@ test("hidden usage-only alias without conversation correlation is still pruned",
   mirror.pruneStateMirror(new Set(["backend"]), aliases);
   expect(mirror.buildStateSync(new Set([HIDDEN])).snapshot.usage).toEqual([]);
 });
+
+test("Conversation turn on a hidden alias does not pull usage or commands into ordinary session sync", () => {
+  const { mirror } = makeMirror(() => true);
+  fire(mirror, {
+    type: "turn-started",
+    chatKey: "relay:acc",
+    sessionAlias: HIDDEN,
+    conversation: CONVERSATION,
+  });
+  fire(mirror, { type: "turn-usage", chatKey: "relay:acc", sessionAlias: HIDDEN, used: 9, size: 100 });
+  fire(mirror, {
+    type: "agent-commands",
+    chatKey: "relay:acc",
+    sessionAlias: HIDDEN,
+    commands: [{ name: "compact" }],
+  });
+  fire(mirror, { type: "turn-usage", chatKey: "relay:acc", sessionAlias: "backend", used: 3, size: 50 });
+  fire(mirror, {
+    type: "agent-commands",
+    chatKey: "relay:acc",
+    sessionAlias: "backend",
+    commands: [{ name: "status" }],
+  });
+
+  const { snapshot } = mirror.buildStateSync(new Set(["backend"]));
+  expect(snapshot.turns).toHaveLength(1);
+  expect(snapshot.turns[0]).toMatchObject({ sessionAlias: HIDDEN, conversation: CONVERSATION });
+  expect(snapshot.usage).toEqual([{ sessionAlias: "backend", used: 3, size: 50 }]);
+  expect(snapshot.commands).toEqual([{ sessionAlias: "backend", commands: [{ name: "status" }] }]);
+});
+
+test("Conversation-correlated usage and commands never enter the ordinary session maps", () => {
+  const { mirror } = makeMirror(() => true);
+  fire(mirror, {
+    type: "turn-started",
+    chatKey: "relay:acc",
+    sessionAlias: HIDDEN,
+    conversation: CONVERSATION,
+  });
+  fire(mirror, {
+    type: "turn-usage",
+    chatKey: "relay:acc",
+    sessionAlias: HIDDEN,
+    used: 9,
+    size: 100,
+    conversation: CONVERSATION,
+  });
+  fire(mirror, {
+    type: "agent-commands",
+    chatKey: "relay:acc",
+    sessionAlias: HIDDEN,
+    commands: [{ name: "compact" }],
+    conversation: CONVERSATION,
+  });
+  const hiddenLive = new Set([HIDDEN]);
+  const { snapshot } = mirror.buildStateSync(hiddenLive);
+  expect(snapshot.turns).toHaveLength(1);
+  expect(snapshot.usage).toEqual([]);
+  expect(snapshot.commands).toEqual([]);
+});

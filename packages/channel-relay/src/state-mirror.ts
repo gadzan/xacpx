@@ -110,7 +110,9 @@ export interface StateMirror {
    *  Ordinary Session turns/usage/commands/pending finishes are included only when
    *  their alias is in `liveAliases`. Conversation-correlated running turns and
    *  pending finishes are product-owned: they stay in the snapshot even when the
-   *  hidden bot-direct alias is absent from the ordinary Sessions list.
+   *  hidden bot-direct alias is absent from the ordinary Sessions list. Usage and
+   *  commands stay in the ordinary Session namespace: they require `liveAliases`
+   *  even when a Conversation turn exists for the same hidden alias.
    *  Returns the payload plus the per-alias generation that existed at build time,
    *  so a later `pruneStateMirror` can compare-and-delete ONLY entries whose
    *  generation is unchanged — state that arrived (or a SAME alias that was
@@ -125,10 +127,11 @@ export interface StateMirror {
    *  re-created or produced a new pending entry after the snapshot belongs to a newer
    *  generation and must not be GC'd by this older callback. Conversation-correlated
    *  running turns and pending finishes are never pruned for hidden-alias absence;
-   *  their correlation is the product recovery identity. Call only after the sync
-   *  frame was CONFIRMED flushed — never on a failed/not-ready send, so a
-   *  transiently-stale session list cannot discard state for a session that still
-   *  exists. */
+   *  their correlation is the product recovery identity. Usage/commands for those
+   *  aliases still follow `liveAliases` and are GC'd from the ordinary session maps.
+   *  Call only after the sync frame was CONFIRMED flushed — never on a failed/not-ready
+   *  send, so a transiently-stale session list cannot discard state for a session that
+   *  still exists. */
   pruneStateMirror(liveAliases: ReadonlySet<string>, aliasesAtBuild: ReadonlyMap<string, number>): void;
   /** Drop pendingFinished entries older than RECOVERY_RETENTION_MS. Call before
    *  building a sync so a stale entry can never ride it: the hub prunes its receipt
@@ -176,15 +179,18 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
     gen.set(alias, (gen.get(alias) ?? 0) + 1);
   };
   /** Product-owned Conversation turns keep reconnect recovery by correlation,
-   *  not by ordinary Session visibility. Usage/commands-only hidden aliases are
-   *  not conversation-owned and still follow liveAliases. */
+   *  not by ordinary Session visibility. Ordinary usage/commands snapshots are
+   *  session-namespace state: they follow `liveAliases` only. A Conversation
+   *  turn on a hidden alias must not pull usage/commands into instance.state.sync. */
   const conversationOwned = (alias: string): boolean => {
     const turn = turns.get(alias);
     if (turn?.conversation) return true;
     return pendingFinished.some((finished) => finished.sessionAlias === alias && finished.conversation !== undefined);
   };
-  const keepAlias = (alias: string, liveAliases: ReadonlySet<string>): boolean =>
+  const keepTurnAlias = (alias: string, liveAliases: ReadonlySet<string>): boolean =>
     liveAliases.has(alias) || conversationOwned(alias);
+  const keepSessionAux = (alias: string, liveAliases: ReadonlySet<string>): boolean =>
+    liveAliases.has(alias);
 
   const pushTextPart = (turn: MirrorTurn, chunk: string): void => {
     if (!chunk) return;
@@ -286,6 +292,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
         return;
       }
       case "turn-usage":
+        if (event.conversation) return;
         usage.set(event.sessionAlias, {
           chatKey: event.chatKey, used: event.used, size: event.size,
           ...(event.cost ? { cost: event.cost } : {}),
@@ -294,6 +301,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
         bump(event.sessionAlias);
         return;
       case "agent-commands":
+        if (event.conversation) return;
         commands.set(event.sessionAlias, { chatKey: event.chatKey, commands: event.commands });
         bump(event.sessionAlias);
         return;
@@ -387,7 +395,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
       const aliases = new Map<string, number>();
       for (const [alias, a] of turns) {
         aliases.set(alias, gen.get(alias) ?? 0);
-        if (!keepAlias(alias, liveAliases)) continue;
+        if (!keepTurnAlias(alias, liveAliases)) continue;
         payload.turns.push({
           sessionAlias: alias,
           startedAt: a.startedAt,
@@ -407,7 +415,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
       }
       for (const [alias, u] of usage) {
         aliases.set(alias, gen.get(alias) ?? 0);
-        if (!keepAlias(alias, liveAliases)) continue;
+        if (!keepSessionAux(alias, liveAliases)) continue;
         payload.usage.push({
           sessionAlias: alias, used: u.used, size: u.size,
           ...(u.cost ? { cost: u.cost } : {}),
@@ -416,13 +424,13 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
       }
       for (const [alias, c] of commands) {
         aliases.set(alias, gen.get(alias) ?? 0);
-        if (!keepAlias(alias, liveAliases)) continue;
+        if (!keepSessionAux(alias, liveAliases)) continue;
         payload.commands.push({ sessionAlias: alias, commands: c.commands });
       }
       for (let i = pendingFinished.length - 1; i >= 0; i--) {
         const f = pendingFinished[i]!;
         aliases.set(f.sessionAlias, gen.get(f.sessionAlias) ?? 0);
-        if (!keepAlias(f.sessionAlias, liveAliases)) continue;
+        if (!keepTurnAlias(f.sessionAlias, liveAliases)) continue;
         payload.finishedOffline.unshift({
           sessionAlias: f.sessionAlias, ok: f.ok,
           ...(f.errorMessage !== undefined ? { errorMessage: f.errorMessage } : {}),
@@ -449,11 +457,13 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
       // left untouched — only an alias whose generation is unchanged since the build
       // and is absent from the live list is GC'd.
       for (const [alias, genAtBuild] of aliasesAtBuild) {
-        if (keepAlias(alias, liveAliases)) continue;
         if ((gen.get(alias) ?? 0) !== genAtBuild) continue;
+        if (!keepSessionAux(alias, liveAliases)) {
+          usage.delete(alias);
+          commands.delete(alias);
+        }
+        if (keepTurnAlias(alias, liveAliases)) continue;
         turns.delete(alias);
-        usage.delete(alias);
-        commands.delete(alias);
         for (let i = pendingFinished.length - 1; i >= 0; i--) {
           if (pendingFinished[i]!.sessionAlias === alias) pendingFinished.splice(i, 1);
         }

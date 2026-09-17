@@ -741,15 +741,16 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               });
             }
           } else if (event.type === "turn-usage") {
-            // Retain the latest usage per session (replace) so a refreshed web client can
-            // restore the context-usage bar from the active-turns snapshot. Already
-            // broadcast above; this is the persistence the snapshot reads back.
-            sessionUsage.set(key(instanceId, event.sessionAlias), { used: event.used, size: event.size, ...(event.cost ? { cost: event.cost } : {}), ...(event.breakdown ? { breakdown: event.breakdown } : {}) });
+            // Ordinary session meter only. Conversation-correlated usage stays
+            // off the sessionUsage map so hidden Bot aliases cannot reappear as
+            // active-turn/session context bars.
+            if (!event.conversation) {
+              sessionUsage.set(key(instanceId, event.sessionAlias), { used: event.used, size: event.size, ...(event.cost ? { cost: event.cost } : {}), ...(event.breakdown ? { breakdown: event.breakdown } : {}) });
+            }
           } else if (event.type === "agent-commands") {
-            // Retain the latest advertised command list per session (replace) so a refreshed
-            // web client can restore the composer's "/" hints from the active-turns snapshot.
-            // Already broadcast above; this is the persistence the snapshot reads back.
-            sessionCommands.set(key(instanceId, event.sessionAlias), event.commands);
+            if (!event.conversation) {
+              sessionCommands.set(key(instanceId, event.sessionAlias), event.commands);
+            }
           } else if (event.type === "session-history") {
             // Seed a freshly-attached native session's recovered prior conversation into
             // history (one-time). Guard against re-seeding an already-populated session so a
@@ -1018,10 +1019,19 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 ...(turn.conversation ? { conversation: turn.conversation } : {}),
               });
             }
+            const productSessionAliases = new Set<string>();
+            for (const turn of sync.turns) {
+              if (turn.conversation) productSessionAliases.add(turn.sessionAlias);
+            }
+            for (const finished of sync.finishedOffline) {
+              if (finished.conversation) productSessionAliases.add(finished.sessionAlias);
+            }
             for (const meter of sync.usage) {
+              if (productSessionAliases.has(meter.sessionAlias)) continue;
               sessionUsage.set(key(instanceId, meter.sessionAlias), { used: meter.used, size: meter.size, ...(meter.cost ? { cost: meter.cost } : {}), ...(meter.breakdown ? { breakdown: meter.breakdown } : {}) });
             }
             for (const entry of sync.commands) {
+              if (productSessionAliases.has(entry.sessionAlias)) continue;
               sessionCommands.set(key(instanceId, entry.sessionAlias), entry.commands);
             }
             // Drop leftover anchors the connector no longer reports (expired /

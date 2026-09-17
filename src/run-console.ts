@@ -257,6 +257,9 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
         await runtime.conversations.activateAfterConsumerLock();
       }
     } catch (error) {
+      // Activation fail-closes the Conversation consumer (`conversations_unavailable`)
+      // rather than leaving `consumerActivated` true while channels serve. Ordinary
+      // session channels may still start; new Conversation accept must not.
       await runtime.logger.error(
         "conversations.recover_failed",
         "failed to recover pending Conversation dispatch after consumer lock",
