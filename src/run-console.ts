@@ -271,6 +271,7 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
       }
     }
 
+    const controlService = runtime.control;
     const channelStartPromise = deps.channels.startAll({
       agent: runtime.agent,
       abortSignal: shutdownController.signal,
@@ -283,10 +284,10 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
       commandHints: listXacpxCommandHints(),
       coreVersion: XACPX_CORE_VERSION,
       locale: getLocale(),
-      control: asPublicControl(runtime.control),
-      trustedConversationPrompt: runtime.control
+      control: asPublicControl(controlService),
+      trustedConversationPrompt: controlService
         ? (input, ingress) =>
-          conversationKernel(runtime.control).promptConversationFromHumanIngress(input, ingress)
+          conversationKernel(controlService).promptConversationFromHumanIngress(input, ingress)
         : undefined,
     });
     // Observe rejections immediately so a channel failure cannot become an

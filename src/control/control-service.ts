@@ -558,7 +558,7 @@ export class ControlService {
         this.conversationRuntime = runtime;
       },
       emitConversationProduct: (event) => this.#publishConversationProduct(event),
-      promptConversationFromHumanIngress: (input, ingress) => {
+      promptConversationFromHumanIngress: async (input, ingress) => {
         const parsed = parseHumanIngress(ingress);
         if (!parsed) {
           throw new ConversationError(
