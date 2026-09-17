@@ -97,14 +97,17 @@ function primitiveFields(input: Record<string, unknown>): Array<{ label: string;
   return out;
 }
 
-/** Input keys whose value already owns the card header title — echoing them as
- *  detail fields would print the same path/URL twice (header + drawer). */
-const TITLE_PATH_KEYS: Record<string, true> = { file_path: true, path: true };
-const MOVE_PATH_KEYS: Record<string, true> = {
-  from: true, source: true, src: true, old_path: true, oldPath: true,
-  to: true, destination: true, dest: true, new_path: true, newPath: true,
-};
-const FETCH_URL_KEYS: Record<string, true> = { url: true, uri: true, href: true };
+/** One candidate alias for a header title: the input key plus a read of its value.
+ *  The title resolver returns which key actually won, so detail fields drop only
+ *  that key — a provider sending two aliases with different values (url vs uri)
+ *  keeps the loser visible instead of losing it to a name-based blanket filter. */
+function firstPresent(input: Record<string, unknown>, keys: string[]): { key: string; value: string } | undefined {
+  for (const key of keys) {
+    const value = asString(input[key]);
+    if (value !== undefined) return { key, value };
+  }
+  return undefined;
+}
 
 /** Cursor reports search results as counts instead of matched text
  *  (`{totalMatches,truncated}` for grep, `{totalFiles,truncated}` for Find). */
@@ -299,7 +302,8 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
       };
       return { ...base, title: path, detail };
     }
-    const fields = primitiveFields(input).filter((f) => !TITLE_PATH_KEYS[f.label]);
+    const picked = firstPresent(input, ["file_path", "path"]);
+    const fields = primitiveFields(input).filter((f) => f.label !== picked?.key);
     if (fields.length === 0) return { ...base, title: path };
     return { ...base, title: path, detail: { type: "fields", fields } };
   }
@@ -352,26 +356,29 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
     return { ...base, title: fallbackTitle, detail: { type: "text", text: cap(text) } };
   }
   if (event.kind === "delete") {
-    const path = asString(input.file_path) ?? asString(input.path) ?? locationPath(event) ?? fallbackTitle;
-    const fields = primitiveFields(input).filter((f) => !TITLE_PATH_KEYS[f.label]);
+    const picked = firstPresent(input, ["file_path", "path"]);
+    const path = picked?.value ?? locationPath(event) ?? fallbackTitle;
+    const fields = primitiveFields(input).filter((f) => f.label !== picked?.key);
     const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
     if (fields.length === 0 && !out) return { ...base, title: path };
     return { ...base, title: path, detail: { type: "fields", fields, ...(out ? { output: cap(out) } : {}) } };
   }
-
   if (event.kind === "move") {
-    const from = asString(input.from) ?? asString(input.source) ?? asString(input.src) ?? asString(input.old_path) ?? asString(input.oldPath);
-    const to = asString(input.to) ?? asString(input.destination) ?? asString(input.dest) ?? asString(input.new_path) ?? asString(input.newPath);
+    const fromPicked = firstPresent(input, ["from", "source", "src", "old_path", "oldPath"]);
+    const toPicked = firstPresent(input, ["to", "destination", "dest", "new_path", "newPath"]);
+    const from = fromPicked?.value;
+    const to = toPicked?.value;
     const title = from && to ? `${from} → ${to}` : from ?? to ?? locationPath(event) ?? fallbackTitle;
-    const fields = primitiveFields(input).filter((f) => !MOVE_PATH_KEYS[f.label]);
+    const fields = primitiveFields(input).filter((f) => f.label !== fromPicked?.key && f.label !== toPicked?.key);
     const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
     if (fields.length === 0 && !out) return { ...base, title };
     return { ...base, title, detail: { type: "fields", fields, ...(out ? { output: cap(out) } : {}) } };
   }
 
   if (event.kind === "fetch") {
-    const url = asString(input.url) ?? asString(input.uri) ?? asString(input.href) ?? fallbackTitle;
-    const fields = primitiveFields(input).filter((f) => !FETCH_URL_KEYS[f.label]);
+    const picked = firstPresent(input, ["url", "uri", "href"]);
+    const url = picked?.value ?? fallbackTitle;
+    const fields = primitiveFields(input).filter((f) => f.label !== picked?.key);
     const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
     if (fields.length === 0 && !out) return { ...base, title: url };
     return { ...base, title: url, detail: { type: "fields", fields, ...(out ? { output: cap(out) } : {}) } };

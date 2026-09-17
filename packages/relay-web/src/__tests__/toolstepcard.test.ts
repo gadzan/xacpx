@@ -122,6 +122,28 @@ describe("ToolStepCard error banner de-duplication", () => {
     expect(header.find("span.min-w-0").attributes("title")).toContain("a-very-long-command");
     expect(w.find('[data-test="tool-step-detail"]').exists()).toBe(true);
   });
+
+  it("wraps a header-only long title without an expandable drawer", () => {
+    // Title-only steps (detail omitted upstream) are non-interactive divs:
+    // open can never flip, so the title must not stay truncated.
+    for (const kind of ["read", "execute", "search"] as const) {
+      const w = mount(ToolStepCard, {
+        props: {
+          step: {
+            toolCallId: `long-${kind}`,
+            kind,
+            title: "a-very-long-title --with --many --flags --that --overflows-the-row",
+            status: "success",
+          } as ToolStepDto,
+        },
+      });
+      const header = w.find('[data-test="tool-step-header"]');
+      expect(header.element.tagName).toBe("DIV");
+      expect(header.find("span.min-w-0").classes()).not.toContain("truncate");
+      expect(header.find("span.min-w-0").attributes("title")).toContain("a-very-long-title");
+      expect(w.find('[data-test="tool-step-detail"]').exists()).toBe(false);
+    }
+  });
 });
 
 describe("ToolStepCard de-cardified activity stream", () => {

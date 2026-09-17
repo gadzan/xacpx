@@ -559,6 +559,43 @@ test("fetch drops the title url from detail fields", () => {
   });
 });
 
+test("fetch keeps a conflicting alias the title did not consume", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "f2", toolName: "Fetch", kind: "fetch", status: "success",
+    rawInput: { url: "https://api.example.com/v1/health", uri: "https://cdn.example.com/v1/health" },
+    rawOutput: { stdout: "ok" },
+  });
+  expect(step.title).toBe("https://api.example.com/v1/health");
+  expect(step.detail).toMatchObject({
+    type: "fields",
+    fields: [{ label: "uri", value: "https://cdn.example.com/v1/health" }],
+  });
+});
+
+test("move keeps a conflicting alias the title did not consume", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "m3", toolName: "Move", kind: "move", status: "success",
+    rawInput: { source: "src/old.ts", src: "legacy/old.ts", destination: "src/new.ts" },
+  });
+  expect(step.title).toBe("src/old.ts → src/new.ts");
+  expect(step.detail).toMatchObject({
+    type: "fields",
+    fields: [{ label: "src", value: "legacy/old.ts" }],
+  });
+});
+
+test("delete keeps a conflicting alias the title did not consume", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "d2", toolName: "Delete", kind: "delete", status: "success",
+    rawInput: { file_path: "temp/cache.json", path: "other/cache.json" },
+  });
+  expect(step.title).toBe("temp/cache.json");
+  expect(step.detail).toMatchObject({
+    type: "fields",
+    fields: [{ label: "path", value: "other/cache.json" }],
+  });
+});
+
 test("end-to-end: runtime sparse Read sequence results in rich Read step DTO", () => {
   const { normalizeRuntimeToolCallEvent } = require("../../../../src/bridge/engine/runtime/runtime-tool-call-merge");
   const { mapRuntimeToolEvent } = require("../../../../src/bridge/engine/runtime-engine");

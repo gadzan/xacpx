@@ -4,8 +4,7 @@ import { useI18n } from "vue-i18n";
 import type { ToolStepDto } from "@ganglion/xacpx-relay-protocol";
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Loader2 } from "lucide-vue-next";
 import ToolDetail from "./ToolDetail.vue";
-import { KIND_ICON } from "../lib/tool-summary";
-import { diffLines } from "../lib/line-diff";
+import { KIND_ICON, diffStatsOf } from "../lib/tool-summary";
 
 const props = defineProps<{ step: ToolStepDto; ensureFull?: () => Promise<void> }>();
 
@@ -36,18 +35,9 @@ async function onHeaderClick(): Promise<void> {
     hydrating.value = false;
   }
 }
-// Compute line additions and deletions for edit/diff steps (e.g. +4, −1).
-// Exclude inaccurate stats: naive fallback on huge inputs (d.exact === false)
-// and truncated inputs from connector cap (includes "…(truncated)").
-const diffStats = computed(() => {
-  if (props.step.detail?.type !== "diff") return null;
-  const { oldText, newText } = props.step.detail;
-  if (oldText.includes("…(truncated)") || newText.includes("…(truncated)")) return null;
-  const d = diffLines(oldText, newText);
-  if (!d.exact) return null;
-  if (d.add === 0 && d.del === 0) return null;
-  return { add: d.add, del: d.del };
-});
+// Header +N/−N for edit/diff steps; shared with ToolCallPanel legacy rows
+// (tool-summary.diffStatsOf) so both surfaces agree.
+const diffStats = computed(() => diffStatsOf(props.step.detail));
 
 const isWrite = computed(() => {
   const name = (props.step.toolName || "").toLowerCase();
@@ -122,7 +112,7 @@ function fmtDuration(ms?: number): string {
             :class="hasDetail ? 'group-hover:text-fg' : ''">{{ kindLabel }}</span>
       <span v-if="fileExt" data-test="file-ext-badge" class="shrink-0 rounded bg-accent/10 px-1 py-0.5 text-[9px] font-semibold text-accent/80 font-mono leading-none">{{ fileExt }}</span>
       <span class="min-w-0 font-mono text-[11.5px] text-fg-muted/90 break-all"
-            :class="[(hasDetail ? 'group-hover:text-fg' : ''), open ? '' : 'truncate']" :title="step.title">{{ step.title }}</span>
+            :class="[(hasDetail ? 'group-hover:text-fg' : ''), (hasDetail && !open) ? 'truncate' : '']" :title="step.title">{{ step.title }}</span>
       <span class="ml-auto flex shrink-0 items-center gap-1.5">
         <span v-if="diffStats" data-test="step-diff-stats" class="flex items-center gap-1 font-mono text-[11px]">
           <span v-if="diffStats.add" class="text-run font-medium">+{{ diffStats.add }}</span>

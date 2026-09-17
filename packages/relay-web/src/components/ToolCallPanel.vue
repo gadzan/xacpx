@@ -7,7 +7,7 @@ import FueDot from "./FueDot.vue";
 import FueCallout from "./FueCallout.vue";
 import { useFue } from "../lib/use-fue";
 import type { Rect } from "../lib/fue-placement";
-import { GROUP_COLLAPSE_FUE_THRESHOLD, KIND_ICON, summarizeSteps } from "../lib/tool-summary";
+import { GROUP_COLLAPSE_FUE_THRESHOLD, KIND_ICON, diffStatsOf, summarizeSteps } from "../lib/tool-summary";
 
 const props = defineProps<{ steps: ToolStepDto[]; ensureFull?: () => Promise<void> }>();
 
@@ -91,6 +91,10 @@ function fmtDuration(ms?: number): string {
         <button type="button" data-test="tool-row" class="flex w-full items-center gap-1.5 py-0.5 text-left text-[11.5px] text-fg-muted hover:text-fg transition-colors" @click="toggleRow(s.toolCallId)">
           <component :is="KIND_ICON[s.kind]" :size="12" class="shrink-0 text-fg-muted" />
           <span class="min-w-0 flex-1 font-mono text-[11px] break-all" :class="expanded.has(s.toolCallId) ? '' : 'truncate'" :title="s.title">{{ s.title }}</span>
+          <span v-if="diffStatsOf(s.detail)" data-test="tool-row-diff-stats" class="flex shrink-0 items-center gap-1 font-mono text-[10px]">
+            <span v-if="diffStatsOf(s.detail)!.add" class="text-run font-medium">+{{ diffStatsOf(s.detail)!.add }}</span>
+            <span v-if="diffStatsOf(s.detail)!.del" class="text-danger font-medium">−{{ diffStatsOf(s.detail)!.del }}</span>
+          </span>
           <span v-if="s.durationMs !== undefined" class="ml-auto shrink-0 font-mono text-[10px] text-fg-muted/70">{{ fmtDuration(s.durationMs) }}</span>
           <Check v-if="s.status === 'success'" data-test="step-status-success" :size="11" class="text-run/70" />
           <Loader2 v-else-if="s.status === 'running'" data-test="step-status-running" :size="11" class="animate-spin motion-reduce:animate-none text-accent" />
