@@ -46,8 +46,8 @@ test("builds reap targets from worker bindings, resolving cwd and agent command"
   expect(targets).toEqual([
     {
       agent: "codex",
-      acpxAgent: "xacpx-managed-codex-1eddaa92b9a5",
-      agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.10.0",
+      acpxAgent: "xacpx-managed-codex-9d1628a76ca9",
+      agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.12.0",
       cwd: "/tmp/backend",
       transportSession: "backend:codex:wk",
     },
@@ -76,8 +76,8 @@ test("falls back to workspace cwd when the binding has no explicit cwd", () => {
   expect(targets).toEqual([
     {
       agent: "codex",
-      acpxAgent: "xacpx-managed-codex-1eddaa92b9a5",
-      agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.10.0",
+      acpxAgent: "xacpx-managed-codex-9d1628a76ca9",
+      agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.12.0",
       cwd: "/tmp/backend",
       transportSession: "backend:codex:wk",
     },
@@ -107,8 +107,8 @@ test("reap resolution honors the persisted worker guard rollout while legacy bin
   expect(targets).toEqual([
     {
       agent: "codex",
-      acpxAgent: "xacpx-managed-codex-1eddaa92b9a5",
-      agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.10.0",
+      acpxAgent: "xacpx-managed-codex-9d1628a76ca9",
+      agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.12.0",
       cwd: "/tmp/backend",
       transportSession: "legacy-worker",
     },
@@ -147,8 +147,8 @@ test("collectReapTargets combines logical sessions and worker bindings", () => {
     { agent: "opencode", agentCommand: "npx -y opencode-ai acp", cwd: "/tmp/b", transportSession: "wx:bob" },
     {
       agent: "codex",
-      acpxAgent: "xacpx-managed-codex-1eddaa92b9a5",
-      agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.10.0",
+      acpxAgent: "xacpx-managed-codex-9d1628a76ca9",
+      agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.12.0",
       cwd: "/tmp/backend",
       transportSession: "backend:codex:wk",
     },
@@ -177,7 +177,7 @@ test("skips bindings whose agent or workspace is no longer resolvable", () => {
 
 test("worker binding reaps the snapshotted previous-pin identity alongside the current one", () => {
   // Crash + managed-pin upgrade: the binding's last dispatch ran codex 1.1.9
-  // (f4349e35c3c8) while the current catalog resolves 1.10.0. Both the live
+  // (f4349e35c3c8) while the current catalog resolves 1.12.0. Both the live
   // owner (old record) and any fresh owner (new record) must be found.
   const state = createEmptyState();
   state.orchestration.workerBindings["backend:codex:wk"] = {
@@ -195,8 +195,8 @@ test("worker binding reaps the snapshotted previous-pin identity alongside the c
   expect(targets).toEqual([
     {
       agent: "codex",
-      acpxAgent: "xacpx-managed-codex-1eddaa92b9a5",
-      agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.10.0",
+      acpxAgent: "xacpx-managed-codex-9d1628a76ca9",
+      agentCommand: "npx -y --registry=https://registry.npmjs.org --@agentclientprotocol:registry=https://registry.npmjs.org @agentclientprotocol/codex-acp@1.12.0",
       cwd: "/tmp/backend",
       transportSession: "backend:codex:wk",
     },
@@ -224,5 +224,5 @@ test("worker binding without a snapshot reaps only the current resolution", () =
   const targets = workerBindingReapTargets(state.orchestration, createConfig());
 
   expect(targets).toHaveLength(1);
-  expect(targets[0]?.agentCommand).toContain("@agentclientprotocol/codex-acp@1.10.0");
+  expect(targets[0]?.agentCommand).toContain("@agentclientprotocol/codex-acp@1.12.0");
 });

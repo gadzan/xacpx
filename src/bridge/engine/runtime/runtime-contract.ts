@@ -76,7 +76,7 @@ export interface UsageBreakdownLike {
 }
 
 export type XacpxTurnResult =
-  // acpx 0.15.1 carries opaque producer `_meta` on completed/cancelled turns.
+  // acpx 0.16.0 carries opaque producer `_meta` on completed/cancelled turns.
   // xacpx maps it to narrow `meta` (never `_meta` — that name stays upstream).
   // Opaque routing/debug hint only: never auth/authorization/ownership proof,
   // same rule as text_delta.meta. Failed turns never fabricate meta.
@@ -143,7 +143,7 @@ export function mapRuntimeError(err: unknown): { code: RuntimeBridgeErrorCode; m
   if (codeText === "RUNTIME_TURN_CANCELLED" || /cancel/i.test(message) || /cancel/i.test(codeText)) {
     return { code: "RUNTIME_TURN_CANCELLED", message };
   }
-  // acpx 0.15.1 stable spawn failure (detailCode over message regex): the
+  // acpx 0.16.0 stable spawn failure (detailCode over message regex): the
   // ENOENT message contains "not found", which must NOT fall through to
   // RUNTIME_SESSION_MISSING below. Upstream attaches AGENT_SPAWN_ENOENT only
   // when the underlying cause is ENOENT — a bare AgentSpawnError (e.g. a
@@ -161,7 +161,7 @@ export function mapRuntimeError(err: unknown): { code: RuntimeBridgeErrorCode; m
   if (/permission/i.test(message) || codeText === "PERMISSION_DENIED" || codeText === "RUNTIME_PERMISSION_DENIED") {
     return { code: "RUNTIME_PERMISSION_DENIED", message };
   }
-  // acpx 0.15.1 incoming message ceiling (default 64 MiB). Upstream already
+  // acpx 0.16.0 incoming message ceiling (default 64 MiB). Upstream already
   // names ACPX_MAX_ACP_MESSAGE_BYTES in the message; xacpx appends the
   // operational half: the limit is read once at Runtime construction, so a
   // warm worker/queue owner must be recycled for a raised value to apply.

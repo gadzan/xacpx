@@ -1,4 +1,9 @@
 # Changelog
+## [Unreleased]
+
+### Changed
+
+- `acpx` pinned `0.15.1` → `0.16.0` (exact pin kept; local `patches/acpx@0.15.1.patch` removed — plan entries now arrive natively). Managed adapter pins refreshed (ACP initialize probe passes on both): Codex `1.10.0` → `1.12.0`, Claude `0.75.1` → `0.78.0`. Permission differential oracle rebased to the 0.16.0 bundle (`live-checkpoint-BEfxBKCh.js`; needle table verified identical). Recorded managed-adapter commands refresh to the new defaults automatically; crash-recovery reaping covers the previous-pin identities.
 ## [0.24.5] - 2026-09-15
 
 ### Added

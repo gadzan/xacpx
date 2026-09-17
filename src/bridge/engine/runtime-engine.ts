@@ -3005,7 +3005,7 @@ async function buildRuntimeAttachments(
       attachments.push({ mediaType: item.mimeType || "audio/mpeg", data: audioData.toString("base64") });
       continue;
     }
-    // video/file: pinned acpx 0.15.1 public Runtime maps ONLY image/* and
+    // video/file: pinned acpx 0.16.0 public Runtime maps ONLY image/* and
     // audio/* attachments to ACP content blocks. Silently dropping them would
     // make the agent unaware an attachment exists — fail closed instead
     // (CLI lane remains available for these types).
@@ -3072,7 +3072,7 @@ export function mapRuntimeToolEvent(event: {
   const toolName = title || "Tool";
   const summaryRaw = event.summary || summarizeToolInput(event.rawInput, title) || summarizeToolOutput(event.rawOutput);
   const summary = summaryRaw && summaryRaw !== title ? summaryRaw : undefined;
-  // Note: pinned acpx 0.15.1 Runtime tool_call exposes no _meta, so a status-less
+  // Note: pinned acpx 0.16.0 Runtime tool_call exposes no _meta, so a status-less
   // terminal carrying only _meta.claudeCode.toolResponse is indistinguishable from
   // a keep-alive and stays running; CLI closes it via hasClaudeToolResponse; fixing
   // needs an upstream contract signal — do NOT change mapping logic.

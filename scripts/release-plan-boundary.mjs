@@ -36,7 +36,18 @@ console.log(`packed: ${tarballPath}`);
 const installDir = join(stage, "install");
 mkdirSync(installDir, { recursive: true });
 sh("npm", ["init", "-y"], { cwd: installDir });
-sh("npm", ["install", tarballPath, "--omit=dev", "--no-audit", "--no-fund"], { cwd: installDir });
+sh(
+  "npm",
+  [
+    "install",
+    tarballPath,
+    "--omit=dev",
+    "--no-audit",
+    "--no-fund",
+    "--registry=https://registry.npmjs.org/",
+  ],
+  { cwd: installDir },
+);
 console.log("tarball installed (production tree)");
 
 const acpxPkg = join(installDir, "node_modules", "acpx", "package.json");
