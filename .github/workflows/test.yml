@@ -110,6 +110,14 @@ jobs:
       - name: Build (all packages)
         run: bun run build:packages
 
+      # Release-boundary gate: packs the repo and drives a real plan turn
+      # through the PACKED bridge (prompt.plan wire events), so a stale acpx
+      # pin or a dropped prompt.plan mapping fails here instead of in users'
+      # hands. Runs after the production build; the script also rebuilds
+      # dist/ itself, so it is self-contained on a clean checkout too.
+      - name: release boundary plan entries (Linux)
+        run: bun run test:release-boundary
+
 
   test-macos:
     name: Test (macOS)

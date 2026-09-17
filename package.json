@@ -86,12 +86,13 @@
     "test:unit": "node ./scripts/run-tests.mjs tests/unit",
     "test:smoke": "node ./scripts/run-tests.mjs tests/smoke",
     "test:compat:acpx": "node ./scripts/run-tests.mjs tests/compat",
+    "test:release-boundary": "node ./scripts/release-plan-boundary.mjs",
     "lint:acpx-imports": "node ./scripts/lint-acpx-imports.mjs",
     "smoke:local-install": "node ./scripts/smoke-local-install.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "acpx": "0.15.1",
+    "acpx": "0.16.0",
     "node-pty": "^1.1.0",
     "proper-lockfile": "^4.1.2",
     "protobufjs": "^7.5.6",
