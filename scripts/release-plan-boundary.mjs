@@ -1,29 +1,28 @@
 /**
  * Release-boundary test: the published xacpx tarball must surface structured
- * plan entries as prompt.plan end to end. Packs the repo (npm pack, like the
- * release workflow; dist/ is built by prepack... see note below), installs
- * the tarball into an empty directory with production npm (like a consumer),
- * then drives a real prompt through the INSTALLED bridge transport
- * (spawnAcpxBridgeClient against the packed dist/bridge/bridge-main.js) with
- * a fixture ACP agent that emits populated and explicitly-empty plan
- * notifications.
- *
- * Self-contained build: this script runs `bun run build` itself before
- * packing, so the tarball always contains the CURRENT checkout's bridge +
- * worker (never a stale dist/ left by an earlier step). It does NOT depend
- * on `npm test`'s implicit prebuild side effect. files:
- * ["dist","README.md","config.example.json"].
+ * plan entries as prompt.plan end to end. This script runs `bun run build`
+ * itself (self-contained: never depends on another step's dist/), packs the
+ * repo with `npm pack` (like the release workflow; files:
+ * ["dist","README.md","config.example.json"]), installs the tarball into an
+ * empty directory with production npm (like a consumer), then drives a real
+ * prompt through the PACKED bridge: it spawns
+ * dist/bridge/bridge-main.js over stdio JSON-RPC by hand (the transport and
+ * client modules are bundled inside it, not importable) with a fixture ACP
+ * agent that emits populated and explicitly-empty plan notifications.
  *
  * This covers the full production path: packed acpx dependency (structured
  * entries must survive shipping) → adapter normalize → worker protocol →
- * RuntimeEngine → prompt.plan (replace semantics, including the empty
- * clearing snapshot). A stale acpx pin, or a regression that drops the
+ * RuntimeEngine → prompt.plan wire events (replace semantics, including the
+ * empty clearing snapshot). A stale acpx pin, or a regression that drops the
  * prompt.plan mapping, fails here with missing prompt.plan events.
  *
- * Lifecycle: the driver owns its bridge client explicitly —
- * client.dispose() (bridge shutdown + process-tree teardown) runs in a
- * finally, and the fixture watchdog is unref'd with EOF/SIGTERM exits, so a
- * failure can never hang the gate on a 120s timer.
+ * Lifecycle: the generated driver owns its bridge subprocess explicitly —
+ * bounded shutdown RPC → stdin.end → bounded exit wait → SIGKILL only when
+ * still alive → bounded reap. Timer ownership rule: bounded timers are
+ * ref'd (they must hold the loop for their budget) and ALWAYS cleared on
+ * early settle (response / exit / close), so teardown never holds the gate
+ * past the actual exit. The fixture watchdog is unref'd with EOF/SIGTERM
+ * exits, so a failure can never hang the gate on a 120s timer.
  *
  * Usage: node ./scripts/release-plan-boundary.mjs [--keep-stage]
  */
@@ -158,7 +157,10 @@ const plans = [];
 const seenLines = [];
 function rejectAllPending(error) {
   if (pending.size === 0) return;
-  for (const handlers of pending.values()) handlers.reject(error);
+  for (const handlers of pending.values()) {
+    if (handlers.timer !== undefined) clearTimeout(handlers.timer);
+    handlers.reject(error);
+  }
   pending.clear();
 }
 rl.on("line", (line) => {
@@ -252,29 +254,49 @@ try {
 } finally {
   // Owned lifecycle, every step bounded: a wedged bridge can delay but
   // never hang the gate. Order: timed shutdown RPC → end stdin → bounded
-  // exit wait → SIGKILL → reap.
+  // exit wait → SIGKILL only when still alive → bounded reap.
+  // waitForBridgeExit never leaks: whichever of exit/close/timeout wins
+  // first clears the timer, unregisters both listeners, and reports
+  // whether the bridge actually exited — so teardown never holds the gate
+  // past the real exit, and never SIGKILLs an already-dead process.
+  async function waitForBridgeExit(timeoutMs) {
+    if (bridgeExited !== null) return true;
+    return new Promise((resolve) => {
+      let done = false;
+      const timer = setTimeout(() => {
+        cleanup();
+        resolve(false);
+      }, timeoutMs);
+      function cleanup() {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        bridge.off("exit", onGone);
+        bridge.off("close", onGone);
+      }
+      function onGone() {
+        cleanup();
+        resolve(true);
+      }
+      bridge.once("exit", onGone);
+      bridge.once("close", onGone);
+    });
+  }
   try { await request("shutdown", {}, SHUTDOWN_TIMEOUT_MS); } catch {}
   try { bridge.stdin.end(); } catch {}
-  await new Promise((resolve) => {
-    if (bridgeExited !== null) { resolve(); return; }
-    let done = false;
-    const finish = () => { if (!done) { done = true; resolve(); } };
-    bridge.once("exit", finish);
-    bridge.once("close", finish);
-    // Ref'd: a dead-already bridge settles via bridgeExited/pending drain,
-    // but if neither fired this bounded wait must still hold the loop.
-    setTimeout(finish, 10000);
-  });
-  try { bridge.kill("SIGKILL"); } catch {}
-  await new Promise((resolve) => {
-    let done = false;
-    const finish = () => { if (!done) { done = true; resolve(); } };
-    bridge.once("exit", finish);
-    bridge.once("close", finish);
-    // Ref'd (bounded 5s): guarantees the TLA settles even when the child is
-    // already reaped and no handle holds the loop.
-    setTimeout(finish, 5000);
-  });
+  // NOTE: the bridge does NOT exit on shutdown/stdin.end by design (it
+  // owns acpx queue-owner/agent children that outlive the RPC). Teardown is
+  // therefore kill-based: SIGTERM for grace, then SIGKILL. waitForBridgeExit
+  // still reports whether the process actually went away at each stage.
+  let exited = await waitForBridgeExit(10000);
+  if (!exited) {
+    try { bridge.kill("SIGTERM"); } catch {}
+    exited = await waitForBridgeExit(10000);
+  }
+  if (!exited) {
+    try { bridge.kill("SIGKILL"); } catch {}
+    await waitForBridgeExit(5000);
+  }
   rejectAllPending(new Error("driver teardown complete"));
 }
 if (failed) process.exit(1);
