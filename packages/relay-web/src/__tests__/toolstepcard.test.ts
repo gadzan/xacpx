@@ -91,7 +91,7 @@ describe("ToolStepCard error banner de-duplication", () => {
           kind: "read",
           title: "a.ts",
           status: "success",
-          detail: { type: "read", path: "a.ts" },
+          detail: { type: "read", path: "a.ts", preview: "file body" },
         } as ToolStepDto,
         ensureFull,
       },
@@ -104,7 +104,45 @@ describe("ToolStepCard error banner de-duplication", () => {
     await nextTick();
     await nextTick();
     expect(w.find('[data-test="tool-step-hydrating"]').exists()).toBe(false);
-    expect(w.find('[data-test="read-path"]').text()).toContain("a.ts");
+    expect(w.find('[data-test="read-preview"]').text()).toContain("file body");
+    expect(w.find('[data-test="tool-step-header"]').text()).toContain("a.ts");
+  });
+
+  it("expands a truncated header title to its full text", async () => {
+    const w = card({
+      status: "success",
+      title: "a-very-long-command --with --many --flags --that --overflows",
+      detail: { type: "command", command: "a-very-long-command --with --many --flags --that --overflows", output: "ok", exitCode: 0 },
+    });
+    const header = w.find('[data-test="tool-step-header"]');
+    expect(header.find("span.min-w-0").classes()).toContain("truncate");
+    await header.trigger("click");
+    expect(header.attributes("aria-expanded")).toBe("true");
+    expect(header.find("span.min-w-0").classes()).not.toContain("truncate");
+    expect(header.find("span.min-w-0").attributes("title")).toContain("a-very-long-command");
+    expect(w.find('[data-test="tool-step-detail"]').exists()).toBe(true);
+  });
+
+  it("wraps a header-only long title without an expandable drawer", () => {
+    // Title-only steps (detail omitted upstream) are non-interactive divs:
+    // open can never flip, so the title must not stay truncated.
+    for (const kind of ["read", "execute", "search"] as const) {
+      const w = mount(ToolStepCard, {
+        props: {
+          step: {
+            toolCallId: `long-${kind}`,
+            kind,
+            title: "a-very-long-title --with --many --flags --that --overflows-the-row",
+            status: "success",
+          } as ToolStepDto,
+        },
+      });
+      const header = w.find('[data-test="tool-step-header"]');
+      expect(header.element.tagName).toBe("DIV");
+      expect(header.find("span.min-w-0").classes()).not.toContain("truncate");
+      expect(header.find("span.min-w-0").attributes("title")).toContain("a-very-long-title");
+      expect(w.find('[data-test="tool-step-detail"]').exists()).toBe(false);
+    }
   });
 });
 
