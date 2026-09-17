@@ -103,19 +103,20 @@ jobs:
       - name: acpx compat smoke (Linux)
         run: bun run test:compat:acpx
 
-      # Release-boundary gate for this PR's dependency-shipping fix: packs the
-      # repo and drives a real plan turn against the packed production tree,
-      # so a consumer-side patch that never ships fails here instead of in
-      # users' hands.
-      - name: release boundary plan entries (Linux)
-        run: bun run test:release-boundary
-
       # Build ALL workspace packages, not just the root. Each package's own
       # tsconfig (e.g. the relay stack's stricter noUncheckedIndexedAccess) is
       # only compiled by its `build:*` script — `bun run build` alone misses
       # them, so package-level type/build errors used to surface only at publish.
       - name: Build (all packages)
         run: bun run build:packages
+
+      # Release-boundary gate: packs the repo and drives a real plan turn
+      # through the PACKED bridge (prompt.plan wire events), so a stale acpx
+      # pin or a dropped prompt.plan mapping fails here instead of in users'
+      # hands. Runs after the production build; the script also rebuilds
+      # dist/ itself, so it is self-contained on a clean checkout too.
+      - name: release boundary plan entries (Linux)
+        run: bun run test:release-boundary
 
 
   test-macos:

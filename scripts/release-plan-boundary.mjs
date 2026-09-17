@@ -8,10 +8,11 @@
  * a fixture ACP agent that emits populated and explicitly-empty plan
  * notifications.
  *
- * NOTE on prepack: `npm pack` runs the root prepack script? NO — this repo
- * has no prepack hook, so dist/ must already be built in the checkout
- * (CI runs build:packages before this gate). The tarball ships dist/ as-is;
- * files: ["dist","README.md","config.example.json"].
+ * Self-contained build: this script runs `bun run build` itself before
+ * packing, so the tarball always contains the CURRENT checkout's bridge +
+ * worker (never a stale dist/ left by an earlier step). It does NOT depend
+ * on `npm test`'s implicit prebuild side effect. files:
+ * ["dist","README.md","config.example.json"].
  *
  * This covers the full production path: packed acpx dependency (structured
  * entries must survive shipping) → adapter normalize → worker protocol →
@@ -44,6 +45,8 @@ const cleanup = () => {
 };
 process.on("exit", cleanup);
 
+console.log("building dist/ from current checkout (bun run build)...");
+sh("bun", ["run", "build"], { cwd: REPO });
 const tarball = sh("npm", ["pack", "--pack-destination", stage], { cwd: REPO }).trim().split("\n").pop().trim();
 const tarballPath = join(stage, tarball);
 console.log(`packed: ${tarballPath}`);
@@ -153,6 +156,11 @@ let nextId = 1;
 const pending = new Map();
 const plans = [];
 const seenLines = [];
+function rejectAllPending(error) {
+  if (pending.size === 0) return;
+  for (const handlers of pending.values()) handlers.reject(error);
+  pending.clear();
+}
 rl.on("line", (line) => {
   let msg;
   try { msg = JSON.parse(line); } catch { process.stderr.write("non-json bridge line: " + line.slice(0, 200) + "\\n"); return; }
@@ -163,6 +171,7 @@ rl.on("line", (line) => {
   if (msg && typeof msg === "object" && msg.id !== undefined && pending.has(String(msg.id))) {
     const handlers = pending.get(String(msg.id));
     pending.delete(String(msg.id));
+    if (handlers.timer !== undefined) clearTimeout(handlers.timer);
     if (msg.ok) handlers.resolve(msg.result);
     else handlers.reject(new Error("bridge error: " + JSON.stringify(msg).slice(0, 4000)));
     return;
@@ -170,17 +179,33 @@ rl.on("line", (line) => {
   seenLines.push(line.slice(0, 300));
   if (seenLines.length <= 5) process.stderr.write("unrouted bridge line: " + line.slice(0, 300) + "\\n");
 });
-bridge.on("error", (error) => {
-  for (const handlers of pending.values()) handlers.reject(error);
-  pending.clear();
-});
-function request(method, params) {
+// A crashed/exited bridge never fires "error" — reject everything on
+// exit/close so no request() hangs past the process lifetime.
+let bridgeExited = null;
+function onBridgeGone(reason) {
+  if (bridgeExited === null) bridgeExited = reason;
+  rejectAllPending(new Error("bridge " + reason + " before responding"));
+}
+bridge.on("error", (error) => onBridgeGone("error: " + String(error?.message ?? error)));
+bridge.on("exit", (code, signal) => onBridgeGone("exited (code=" + code + ", signal=" + signal + ")"));
+bridge.on("close", (code, signal) => onBridgeGone("closed (code=" + code + ", signal=" + signal + ")"));
+// Every RPC is bounded: a wedged-but-alive bridge cannot stall the gate.
+// Shutdown uses the shortest budget (it must never block the reap below).
+const REQUEST_TIMEOUT_MS = 120000;
+const SHUTDOWN_TIMEOUT_MS = 30000;
+function request(method, params, timeoutMs) {
+  const budget = timeoutMs ?? REQUEST_TIMEOUT_MS;
+  if (bridgeExited !== null) return Promise.reject(new Error("bridge already " + bridgeExited));
   const id = String(nextId++);
   return new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject });
+    // Ref'd on purpose (see above): bounded budgets only, cleared on settle.
+    const timer = setTimeout(() => {
+      if (pending.delete(id)) reject(new Error('bridge request "' + method + '" timed out after ' + budget + 'ms'));
+    }, budget);
+    pending.set(id, { resolve, reject, timer });
     bridge.stdin.write(JSON.stringify({ id, method, params }) + "\\n", (error) => {
       if (error) {
-        pending.delete(id);
+        if (pending.delete(id)) clearTimeout(timer);
         reject(error);
       }
     });
@@ -225,18 +250,32 @@ try {
   failed = String(error?.message ?? error);
   console.error("FAIL: bridge request error: " + failed);
 } finally {
-  // Owned lifecycle: ask the bridge to shut down, then close stdin and reap
-  // the process tree. Never hangs on the fixture 120s watchdog (unref'd) —
-  // and even a wedged bridge is SIGKILLed after a bounded wait.
-  try { await request("shutdown", {}); } catch {}
-  bridge.stdin.end();
+  // Owned lifecycle, every step bounded: a wedged bridge can delay but
+  // never hang the gate. Order: timed shutdown RPC → end stdin → bounded
+  // exit wait → SIGKILL → reap.
+  try { await request("shutdown", {}, SHUTDOWN_TIMEOUT_MS); } catch {}
+  try { bridge.stdin.end(); } catch {}
   await new Promise((resolve) => {
+    if (bridgeExited !== null) { resolve(); return; }
     let done = false;
     const finish = () => { if (!done) { done = true; resolve(); } };
-    bridge.on("exit", finish);
+    bridge.once("exit", finish);
+    bridge.once("close", finish);
+    // Ref'd: a dead-already bridge settles via bridgeExited/pending drain,
+    // but if neither fired this bounded wait must still hold the loop.
     setTimeout(finish, 10000);
   });
   try { bridge.kill("SIGKILL"); } catch {}
+  await new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+    bridge.once("exit", finish);
+    bridge.once("close", finish);
+    // Ref'd (bounded 5s): guarantees the TLA settles even when the child is
+    // already reaped and no handle holds the loop.
+    setTimeout(finish, 5000);
+  });
+  rejectAllPending(new Error("driver teardown complete"));
 }
 if (failed) process.exit(1);
 `,
