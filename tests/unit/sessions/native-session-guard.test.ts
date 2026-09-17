@@ -447,7 +447,11 @@ test("managed overlay without argv is unproven even when historical agentCommand
     agentCommand: "/opt/agent --acp",
     acpxAgent: "xacpx-managed-custom-deadbeef",
   });
-  expect(identity.selector.kind).toBe("unproven");
+  expect(identity).toEqual({
+    cwd: "/repo",
+    selector: { kind: "unproven" },
+  });
+  expect(nativeCatalogIdentity(identity)).toEqual(identity);
 
   const historicalOnly = nativeCatalogIdentityForLaunch({
     cwd: "/repo",
@@ -501,4 +505,61 @@ test("lost-argv managed overlay fail-closes attach instead of guessing a differe
     { sessionId: "N2" },
   ]);
   expect(listed.map((session) => session.sessionId)).toEqual(["N1", "N2"]);
+});
+
+test("unproven selector at a known cwd does not fail-close a different cwd", async () => {
+  const records = [record({ alias: "brt_hidden", owner: OWNER, agent_session_id: "N1" })];
+  const ctx = {
+    sessions: {
+      listLogicalSessionRecords: () => records,
+      getResolvedSessionByInternalAlias: () => ({
+        alias: "brt_hidden",
+        agent: "custom",
+        workspace: "backend",
+        cwd: "/repo-a",
+        driver: "custom",
+        agentCommand: "/opt/agent --acp",
+        acpxAgent: "xacpx-managed-custom-deadbeef",
+      } as ResolvedSession),
+    },
+    transport: {},
+  };
+  const otherCwd = nativeCatalogIdentityForLaunch({
+    cwd: "/repo-b",
+    agentArgv: ["/opt/agent", "--acp"],
+  });
+  expect(otherCwd.selector.kind).toBe("argv");
+  const inspected = await inspectProductOwnedNativeSessions(ctx, otherCwd);
+  expect(inspected.ownedIds.size).toBe(0);
+  expect(inspected.unproven).toBe(false);
+  await expect(assertNativeSessionAddressable(ctx, otherCwd, "N1")).resolves.toBeUndefined();
+  await expect(assertNativeSessionAddressable(ctx, otherCwd, "N2")).resolves.toBeUndefined();
+});
+
+test("unknown owned cwd still fail-closes attach in every catalog", async () => {
+  const records = [record({ alias: "brt_hidden", owner: OWNER, agent_session_id: "N1" })];
+  const ctx = {
+    sessions: {
+      listLogicalSessionRecords: () => records,
+      getResolvedSessionByInternalAlias: () => ({
+        alias: "brt_hidden",
+        agent: "custom",
+        workspace: "backend",
+        cwd: "   ",
+        driver: "custom",
+        agentCommand: "/opt/agent --acp",
+        acpxAgent: "xacpx-managed-custom-deadbeef",
+      } as ResolvedSession),
+    },
+    transport: {},
+  };
+  const otherCwd = nativeCatalogIdentityForLaunch({
+    cwd: "/repo-b",
+    agentArgv: ["/opt/agent", "--acp"],
+  });
+  const inspected = await inspectProductOwnedNativeSessions(ctx, otherCwd);
+  expect(inspected.ownedIds.size).toBe(0);
+  expect(inspected.unproven).toBe(true);
+  await expect(assertNativeSessionAddressable(ctx, otherCwd, "N2"))
+    .rejects.toMatchObject({ code: "hidden_session" });
 });

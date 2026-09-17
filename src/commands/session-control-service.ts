@@ -344,9 +344,11 @@ export class SessionControlService {
    * Config labels (`driver`, overlay alias, workspace/agent names) and ACP
    * transport wrappers are not part of that identity. A managed overlay
    * without argv is unproven: historical `agentCommand` does not prove a raw
-   * `--agent` selector. Product-owned LogicalSessions in that catalog occupy
-   * their persisted `agentSessionId` or the live identity from
-   * `getAgentSessionId`. Unproven product-owned candidates fail closed.
+   * `--agent` selector. Known cwd is kept even when the selector is unproven,
+   * so fail-closed is scoped to that cwd rather than every native attach.
+   * Product-owned LogicalSessions in that catalog occupy their persisted
+   * `agentSessionId` or the live identity from `getAgentSessionId`. Unproven
+   * product-owned candidates in the requested catalog fail closed.
    */
   async assertNativeSessionAddressable(
     agent: string,

@@ -52,20 +52,22 @@ export interface ProductOwnedNativeIdentityInspection {
    * True when at least one product-owned candidate in this native catalog
    * could not prove its native identity, or a product-owned session could not
    * be resolved far enough to prove it lives in a different catalog. Attach
-   * must fail closed rather than guess "not conflicting". List filtering still
-   * only hides proven IDs.
+   * must fail closed rather than guess "not conflicting". A known cwd with an
+   * unproven selector only fail-closes that cwd, not every native catalog.
+   * List filtering still only hides proven IDs.
    */
   unproven: boolean;
 }
 
 export function nativeCatalogIdentity(input: NativeCatalogIdentity): NativeCatalogIdentity {
-  if (isNativeCatalogUnproven(input)) {
+  const cwd = canonicalizeNativeCatalogCwd(input.cwd);
+  if (input.selector.kind === "unproven") {
+    return { cwd, selector: { kind: "unproven" } };
+  }
+  if (!cwd) {
     return { cwd: "", selector: { kind: "unproven" } };
   }
-  return {
-    cwd: canonicalizeNativeCatalogCwd(input.cwd),
-    selector: input.selector,
-  };
+  return { cwd, selector: input.selector };
 }
 
 /**
@@ -82,18 +84,19 @@ export function nativeCatalogIdentity(input: NativeCatalogIdentity): NativeCatal
  * Explicit `rawCommand` proves a raw `--agent` selector. Recorded
  * `agentCommand` is only historical identity and cannot override a managed
  * overlay alias that lost its argv. `driver` / overlay names are otherwise
- * launch-registration metadata, not store identity.
+ * launch-registration metadata, not store identity. An unproven selector
+ * still keeps a known cwd so fail-closed can stay scoped to that namespace.
  */
 export function nativeCatalogIdentityForLaunch(input: NativeCatalogLaunchInput): NativeCatalogIdentity {
   const cwd = canonicalizeNativeCatalogCwd(input.cwd);
   if (!cwd) {
-    return { cwd: "", selector: { kind: "unproven" } };
+    return unprovenNativeCatalog("");
   }
 
   const argv = input.agentArgv && input.agentArgv.length > 0 ? [...input.agentArgv] : undefined;
   if (argv) {
     if (isAcpOutputGuardArgv(argv) && unwrapAcpOutputGuardArgv(argv).length === 0) {
-      return { cwd: "", selector: { kind: "unproven" } };
+      return unprovenNativeCatalog(cwd);
     }
     const underlying = unwrapAcpOutputGuardArgv(argv);
     if (underlying.length > 0) {
@@ -111,13 +114,13 @@ export function nativeCatalogIdentityForLaunch(input: NativeCatalogLaunchInput):
 
   const acpxAgent = input.acpxAgent?.trim();
   if (!argv && acpxAgent && looksLikeManagedOverlayAlias(acpxAgent)) {
-    return { cwd: "", selector: { kind: "unproven" } };
+    return unprovenNativeCatalog(cwd);
   }
 
   const historical = input.agentCommand?.trim();
   if (historical && !argv) {
     if (looksLikeAcpOutputGuardCommand(historical)) {
-      return { cwd: "", selector: { kind: "unproven" } };
+      return unprovenNativeCatalog(cwd);
     }
     return { cwd, selector: { kind: "raw-command", command: historical } };
   }
@@ -126,7 +129,7 @@ export function nativeCatalogIdentityForLaunch(input: NativeCatalogLaunchInput):
     return { cwd, selector: { kind: "bare-agent", agent: acpxAgent } };
   }
 
-  return { cwd: "", selector: { kind: "unproven" } };
+  return unprovenNativeCatalog(cwd);
 }
 
 export function nativeCatalogFromResolved(
@@ -143,7 +146,15 @@ export function nativeCatalogFromResolved(
 }
 
 export function isNativeCatalogUnproven(identity: NativeCatalogIdentity): boolean {
-  return identity.selector.kind === "unproven" || !identity.cwd.trim();
+  return identity.selector.kind === "unproven" || !nativeCatalogCwdKnown(identity);
+}
+
+function unprovenNativeCatalog(cwd: string): NativeCatalogIdentity {
+  return { cwd, selector: { kind: "unproven" } };
+}
+
+function nativeCatalogCwdKnown(identity: NativeCatalogIdentity): boolean {
+  return Boolean(identity.cwd.trim());
 }
 
 function canonicalizeNativeCatalogCwd(cwd: string): string {
@@ -201,7 +212,15 @@ export async function inspectProductOwnedNativeSessions(
       continue;
     }
     const ownedCatalog = nativeCatalogFromResolved(resolved);
-    if (isNativeCatalogUnproven(ownedCatalog)) {
+    if (!nativeCatalogCwdKnown(ownedCatalog)) {
+      // Cwd itself unknown: cannot prove this owner lives in another catalog.
+      unproven = true;
+      continue;
+    }
+    if (nativeCatalogCwdKnown(catalog) && !isSamePath(ownedCatalog.cwd, catalog.cwd)) {
+      continue;
+    }
+    if (ownedCatalog.selector.kind === "unproven") {
       unproven = true;
       continue;
     }
