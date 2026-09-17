@@ -39,6 +39,25 @@ describe("ToolCallPanel", () => {
     expect(rows[1].find('[data-test="step-status-running"]').exists()).toBe(true);
   });
 
+  it("shows diff +N/−N stats on legacy edit rows", async () => {
+    const w = mount(ToolCallPanel, {
+      props: {
+        steps: [
+          {
+            toolCallId: "e1", toolName: "Edit", kind: "edit", status: "success",
+            title: "src/index.ts",
+            detail: { type: "diff", path: "src/index.ts", oldText: "line 1\nline 2", newText: "line 1\nline 2 modified\nline 3\nline 4\nline 5" },
+          } as ToolStepDto,
+        ],
+      },
+    });
+    await w.find("button").trigger("click");
+    const stats = w.find('[data-test="tool-row-diff-stats"]');
+    expect(stats.exists()).toBe(true);
+    expect(stats.text()).toContain("+4");
+    expect(stats.text()).toContain("−1");
+  });
+
   it("renders a kind/status summary in the header", () => {
     const w = mount(ToolCallPanel, { props: { steps } });
     // Icons are now Lucide components; each entry carries a `sum-<label>` data-test

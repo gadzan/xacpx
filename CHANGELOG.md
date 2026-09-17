@@ -5,9 +5,30 @@
 
 - Control / Relay Bot and Conversation public API: production daemon wiring of ConversationStore / Dispatcher / RunService / BotRuntimeManager, product DTOs, Control RPCs, additive Relay protocol 0.6.0 events and request types. Public callers use Bot / Conversation / Topic / Run IDs and Topic `seq`; hidden Bot runtime sessions are omitted from ordinary Sessions lists by `LogicalSession.owner` metadata. Production composition injects the daemon `stateMutex` into Bot/Conversation AppState writers. Ordinary Session APIs fail `hidden_session` for product-owned LogicalSessions. Native-session list/attach refuse product-owned agent-native rollouts (`assertNativeSessionAddressable` before `resumeAgentSession`; ownership is cwd + physical selector after ACP output-guard unwrap, not `driver` / overlay alias / workspace labels; list filtering is presentation only; a managed overlay without argv is an unproven selector that keeps its known cwd, so fail-closed is scoped to that cwd rather than every native attach). Synthetic Direct Conversation/Topic timestamps come from durable Bot metadata; default Topic presenter overlays both `createdAt` and `updatedAt`. Idempotent `requestId` retries do not re-emit acceptance product events. Relay StateMirror keeps Conversation correlation on finish-without-start recovery. Conversation durable recovery starts only after the daemon consumer lock (`activateAfterConsumerLock`); `buildApp` is passive composition. The first recovery `kick()` is the activation success gate: a failed drain leaves the consumer unavailable (`conversations_unavailable`) instead of activated+accepting. Relay StateMirror and Hub keep Conversation turns by correlation, but ordinary `usage` / `commands` snapshots require an ordinary live session alias and ignore Conversation-correlated meters. Bot CRUD is durability-gated `saveNow` COW before live AppState publish, so SQLite accept cannot snapshot a Bot that exists only in a pending debounce. Human Conversation permission authority requires server-derived `humanIngress` plus the live authority epoch; public `promptConversation` cannot mint it. Relay Hub overwrites `humanIngress` on `control.conversation.prompt` without adding that RPC to `CHAT_SCOPED_TYPES`. Permission broker uses a separate `permissionChatKey`, not the product `bot:<conversation>:<topic>` isolation key.
 
-### Changed
+## [0.24.6-beta.0] - 2026-09-17
 
-- `acpx` pinned `0.15.1` → `0.16.0` (exact pin kept; local `patches/acpx@0.15.1.patch` removed — plan entries now arrive natively). Managed adapter pins refreshed (ACP initialize probe passes on both): Codex `1.10.0` → `1.12.0`, Claude `0.75.1` → `0.78.0`. Permission differential oracle rebased to the 0.16.0 bundle (`live-checkpoint-BEfxBKCh.js`; needle table verified identical). Recorded managed-adapter commands refresh to the new defaults automatically; crash-recovery reaping covers the previous-pin identities.
+### Added
+
+- Direct conversation persistence (#346): `Direct` runs persist via SQLite outbox store with `Topic` isolation, crash recovery, and store idempotency/seq coverage.
+- acpx Runtime plan panel routing (#339): runtime `plan` entries render in the plan panel; wholly-unusable plan lists are treated as absence (not a clear); npm-pack release boundary harness with new `test:release-boundary` script.
+- `acpx` pinned `0.15.1` → `0.16.0` (exact pin kept; local `patches/acpx@0.15.1.patch` removed — plan entries now arrive natively). Managed adapter pins refreshed (ACP initialize probe passes on both): Codex `1.10.0` → `1.12.0`, Claude `0.75.1` → `0.78.0`. Permission differential oracle rebased to the 0.16.0 bundle; recorded managed-adapter commands refresh to the new defaults automatically; crash-recovery reaping covers the previous-pin identities.
+
+### Fixed
+
+- Direct conversation lifecycle (#346): claim, snapshot, ownership, seq, cancel, and teardown holes closed; Bot delete bound to durable work; identity/accept/TurnQueue kept on one path; prompt admission on the first microtask; `promptImmediate` cancelled before TurnQueue admission; recovery without human authority with bound cancel; physical teardown and dispatcher liveness; same-Topic wakes with strict physical release; release boundary driven through packed bridge with owned lifecycle (timers/RPC sealed).
+
+## [relay 0.14.8-beta.0] - 2026-09-17
+
+### Fixed
+
+- relay-web: dedup tool-card title echo in the detail drawer — drawer keeps only complementary info (diff body, output/preview, exit code, line range, search line count); headers truncate when collapsed and wrap on expand (#349).
+
+## [channel-relay 0.7.4-beta.0] - 2026-09-17
+
+### Fixed
+
+- `tool-presentation`: omit header-only details (read/execute/search/diff with no body render as non-interactive title-only rows); title resolver drops only the key that actually won the title, so conflicting `url` vs `uri` aliases stay visible (#349).
+
 ## [0.24.5] - 2026-09-15
 
 ### Added

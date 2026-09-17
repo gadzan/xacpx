@@ -97,6 +97,18 @@ function primitiveFields(input: Record<string, unknown>): Array<{ label: string;
   return out;
 }
 
+/** One candidate alias for a header title: the input key plus a read of its value.
+ *  The title resolver returns which key actually won, so detail fields drop only
+ *  that key — a provider sending two aliases with different values (url vs uri)
+ *  keeps the loser visible instead of losing it to a name-based blanket filter. */
+function firstPresent(input: Record<string, unknown>, keys: string[]): { key: string; value: string } | undefined {
+  for (const key of keys) {
+    const value = asString(input[key]);
+    if (value !== undefined) return { key, value };
+  }
+  return undefined;
+}
+
 /** Cursor reports search results as counts instead of matched text
  *  (`{totalMatches,truncated}` for grep, `{totalFiles,truncated}` for Find). */
 function countSummary(output: Record<string, unknown>): string | undefined {
@@ -281,6 +293,14 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
     const newText = asString(diff?.newText) ?? asString(input.new_string) ?? asString(input.newText) ?? asString(input.content);
     const instruction = asString(input.instruction) ?? asString(input.description);
     if (diff || oldText !== undefined || newText !== undefined) {
+      // An empty diff ("" → "", no instruction) renders nothing in the drawer:
+      // ToolDetail dropped the path echo and the body needs parsedDiff rows.
+      // Keep it title-only like read/execute/search, so the header stays a
+      // non-interactive row instead of an expandable empty drawer.
+      // Error steps still expand via step.error on the card.
+      if ((oldText ?? "") === "" && (newText ?? "") === "" && !instruction) {
+        return { ...base, title: path };
+      }
       const detail: ToolDetailDto = {
         type: "diff",
         path,
@@ -290,7 +310,12 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
       };
       return { ...base, title: path, detail };
     }
-    const fields = primitiveFields(input);
+    // The title prefers the ACP location over the input aliases; only drop the
+    // input key when it actually supplied the title, so a location-won title
+    // keeps a possibly conflicting input path visible.
+    const locPath = locationPath(event);
+    const picked = locPath === undefined ? firstPresent(input, ["file_path", "path"]) : undefined;
+    const fields = primitiveFields(input).filter((f) => f.label !== picked?.key);
     if (fields.length === 0) return { ...base, title: path };
     return { ...base, title: path, detail: { type: "fields", fields } };
   }
@@ -301,6 +326,8 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
     // `output.content` is cursor-agent's file body — without it a Cursor read card
     // has no preview at all, since it sends neither content blocks nor stdout.
     const preview = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? asString(output.content) ?? rawOutputText;
+    // The header already shows the path: a detail carrying only the path echoes it.
+    if (!lines && !preview) return { ...base, title: path };
     const detail: ToolDetailDto = { type: "read", path, ...(lines ? { lines } : {}), ...(preview ? { preview: cap(preview) } : {}) };
     return { ...base, title: path, detail };
   }
@@ -309,6 +336,8 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
     const command = asString(input.command) ?? asString(input.cmd) ?? asString(pc?.cmd) ?? fallbackTitle;
     const out = asString(output.stdout) ?? terminalOut ?? textFromBlocks(blocks) ?? asString(output.text) ?? rawOutputText;
     const exitCode = typeof output.exitCode === "number" ? output.exitCode : typeof output.exit_code === "number" ? output.exit_code : undefined;
+    // The header already shows the command: skip the drawer when there is nothing below it.
+    if (!out && exitCode === undefined) return { ...base, title: command };
     const detail: ToolDetailDto = { type: "command", command, ...(out ? { output: cap(out) } : {}), ...(exitCode !== undefined ? { exitCode } : {}) };
     return { ...base, title: command, detail };
   }
@@ -320,6 +349,8 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
       ? (targetDirectory ? `${globPattern} in ${targetDirectory}` : globPattern)
       : asString(input.query) ?? asString(input.pattern) ?? asString(input.search) ?? asString(input.command) ?? asString(pc?.cmd) ?? fallbackTitle;
     const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText ?? countSummary(output);
+    // The header already shows the query: a detail carrying only the query echoes it.
+    if (!out) return { ...base, title: query };
     const detail: ToolDetailDto = { type: "search", query, ...(out ? { output: cap(out) } : {}) };
     return { ...base, title: query, detail };
   }
@@ -337,26 +368,29 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
     return { ...base, title: fallbackTitle, detail: { type: "text", text: cap(text) } };
   }
   if (event.kind === "delete") {
-    const path = asString(input.file_path) ?? asString(input.path) ?? locationPath(event) ?? fallbackTitle;
-    const fields = primitiveFields(input);
+    const picked = firstPresent(input, ["file_path", "path"]);
+    const path = picked?.value ?? locationPath(event) ?? fallbackTitle;
+    const fields = primitiveFields(input).filter((f) => f.label !== picked?.key);
     const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
     if (fields.length === 0 && !out) return { ...base, title: path };
     return { ...base, title: path, detail: { type: "fields", fields, ...(out ? { output: cap(out) } : {}) } };
   }
-
   if (event.kind === "move") {
-    const from = asString(input.from) ?? asString(input.source) ?? asString(input.src) ?? asString(input.old_path) ?? asString(input.oldPath);
-    const to = asString(input.to) ?? asString(input.destination) ?? asString(input.dest) ?? asString(input.new_path) ?? asString(input.newPath);
+    const fromPicked = firstPresent(input, ["from", "source", "src", "old_path", "oldPath"]);
+    const toPicked = firstPresent(input, ["to", "destination", "dest", "new_path", "newPath"]);
+    const from = fromPicked?.value;
+    const to = toPicked?.value;
     const title = from && to ? `${from} → ${to}` : from ?? to ?? locationPath(event) ?? fallbackTitle;
-    const fields = primitiveFields(input);
+    const fields = primitiveFields(input).filter((f) => f.label !== fromPicked?.key && f.label !== toPicked?.key);
     const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
     if (fields.length === 0 && !out) return { ...base, title };
     return { ...base, title, detail: { type: "fields", fields, ...(out ? { output: cap(out) } : {}) } };
   }
 
   if (event.kind === "fetch") {
-    const url = asString(input.url) ?? asString(input.uri) ?? asString(input.href) ?? fallbackTitle;
-    const fields = primitiveFields(input);
+    const picked = firstPresent(input, ["url", "uri", "href"]);
+    const url = picked?.value ?? fallbackTitle;
+    const fields = primitiveFields(input).filter((f) => f.label !== picked?.key);
     const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText;
     if (fields.length === 0 && !out) return { ...base, title: url };
     return { ...base, title: url, detail: { type: "fields", fields, ...(out ? { output: cap(out) } : {}) } };

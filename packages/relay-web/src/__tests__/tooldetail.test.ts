@@ -14,11 +14,10 @@ describe("ToolDetail", () => {
     expect(w.find('[data-test="diff-add"]').text()).toContain("const a = 2");
   });
 
-  it("shows +N/−N stat badges from a real line diff", () => {
+  it("renders a diff body without a header-echo path row", () => {
     const w = render({ type: "diff", path: "src/x.ts", oldText: "a\nb", newText: "a\nb\nc\nd" });
-    const stats = w.find('[data-test="diff-stats"]').text();
-    expect(stats).toContain("+2"); // 2 appended lines
-    expect(stats).not.toContain("−"); // nothing removed
+    expect(w.find('[data-test="diff-add"]').text()).toContain("c");
+    expect(w.text()).not.toContain("src/x.ts");
   });
 
   it("renders the edit instruction at the top of a diff card", () => {
@@ -33,23 +32,30 @@ describe("ToolDetail", () => {
     expect(w.find('[data-test="diff-add"]').text()).toContain("new");
   });
 
-  it("renders a command with a terminal output block and exit code", () => {
+  it("renders a command output block and exit code without echoing the command", () => {
     const w = render({ type: "command", command: "npm test", output: "12 passed", exitCode: 0 });
-    expect(w.find('[data-test="cmd-command"]').text()).toContain("npm test");
     expect(w.find('[data-test="cmd-output"]').text()).toContain("12 passed");
     expect(w.text()).toContain("exit 0");
+    expect(w.text()).not.toContain("npm test");
   });
 
-  it("renders a read with path and line range", () => {
+  it("renders a read with the line range only when present", () => {
     const w = render({ type: "read", path: "src/a.ts", lines: "1–20" });
-    expect(w.find('[data-test="read-path"]').text()).toContain("src/a.ts");
-    expect(w.text()).toContain("1–20");
+    expect(w.find('[data-test="read-lines"]').text()).toContain("1–20");
+    expect(w.text()).not.toContain("src/a.ts");
   });
 
-  it("renders search query and matches", () => {
-    const w = render({ type: "search", query: "rg foo", output: "a.ts:1" });
-    expect(w.find('[data-test="search-query"]').text()).toContain("rg foo");
+  it("renders search matches without echoing the query", () => {
+    const w = render({ type: "search", query: "rg foo", output: "a.ts:1\na.ts:2" });
     expect(w.find('[data-test="search-output"]').text()).toContain("a.ts:1");
+    expect(w.find('[data-test="search-count"]').text()).toContain("2 lines");
+    expect(w.text()).not.toContain("rg foo");
+  });
+
+  it("skips the line count when the output already states its own total", () => {
+    const w = render({ type: "search", query: "grep", output: "4 matches" });
+    expect(w.find('[data-test="search-count"]').exists()).toBe(false);
+    expect(w.find('[data-test="search-output"]').text()).toContain("4 matches");
   });
 
   it("renders fields as a labeled list, not JSON", () => {
