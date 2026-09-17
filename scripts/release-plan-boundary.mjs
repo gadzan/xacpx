@@ -115,8 +115,7 @@ writeFileSync(
   join(installDir, "plan-driver.mjs"),
   `import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 // Drive the PACKED bridge over stdio JSON-RPC. dist/bridge/bridge-main.js is
 // the only bridge surface the tarball ships (transport/client modules are
@@ -124,7 +123,11 @@ import { join } from "node:path";
 // production chain: packed acpx → adapter → worker → RuntimeEngine →
 // prompt.plan wire events.
 const here = process.cwd();
-const home = mkdtempSync(join(tmpdir(), "xacpx-boundary-home-"));
+// Keep the isolated HOME under the outer release stage so the parent's exit
+// cleanup owns every filesystem artifact from this boundary test. --keep-stage
+// intentionally preserves it together with the rest of the stage for debugging.
+const home = join(here, ".boundary-home");
+mkdirSync(home, { recursive: true });
 process.env.HOME = home;
 process.env.USERPROFILE = home;
 // Isolate ALL filesystem state the bridge touches: acpx sessions (~/.acpx),
