@@ -314,16 +314,20 @@ export class SessionControlService {
     if (!agentConfig || !workspaceConfig) {
       throw new Error(`unknown agent "${agent}" or workspace "${workspace}"`);
     }
-    const catalog = this.requireNativeCatalog(agent, workspace);
+    const launch = resolveConfiguredAgentLaunch(agentConfig, this.config?.transport);
+    const catalog = nativeCatalogIdentityForLaunch({
+      cwd: workspaceConfig.cwd,
+      ...launch,
+    });
     const result = await listAgentSessions({
       agent,
-      ...(catalog.agentCommand ? { agentCommand: catalog.agentCommand } : {}),
-      ...(catalog.acpxAgent ? { acpxAgent: catalog.acpxAgent } : {}),
-      ...(catalog.rawCommand ? { rawCommand: catalog.rawCommand } : {}),
-      ...(catalog.driver ? { driver: catalog.driver } : {}),
+      ...(launch.agentCommand ? { agentCommand: launch.agentCommand } : {}),
+      ...(launch.acpxAgent ? { acpxAgent: launch.acpxAgent } : {}),
+      ...(launch.rawCommand ? { rawCommand: launch.rawCommand } : {}),
+      ...(agentConfig.driver ? { driver: agentConfig.driver } : {}),
       ...(agentConfig.settingsPolicy ? { settingsPolicy: agentConfig.settingsPolicy } : {}),
-      cwd: catalog.cwd,
-      filterCwd: catalog.cwd,
+      cwd: workspaceConfig.cwd,
+      filterCwd: workspaceConfig.cwd,
     });
     const sessions = result?.sessions ?? [];
     // Presentation only: attach re-checks ownership and fail-closes.
@@ -335,11 +339,12 @@ export class SessionControlService {
   }
 
   /**
-   * Native attach is ownership of the agent-native catalog (cwd + underlying
-   * launch after ACP output-guard unwrap), never workspace/agent config labels
-   * and never the ACP transport wrapper. Product-owned LogicalSessions in that
-   * catalog occupy their persisted `agentSessionId` or the live identity from
-   * `getAgentSessionId`. Unproven product-owned candidates fail closed.
+   * Native attach is ownership of the agent-native catalog (cwd + physical
+   * selector: unwrapped argv, raw command, or bare positional agent). Config
+   * labels (`driver`, overlay alias, workspace/agent names) and ACP transport
+   * wrappers are not part of that identity. Product-owned LogicalSessions in
+   * that catalog occupy their persisted `agentSessionId` or the live identity
+   * from `getAgentSessionId`. Unproven product-owned candidates fail closed.
    */
   async assertNativeSessionAddressable(
     agent: string,
@@ -354,9 +359,9 @@ export class SessionControlService {
   }
 
   /**
-   * Catalog identity used by `acpx sessions list` / resume: resolved cwd and
-   * underlying agent launch (output-guard wrappers stripped), not the workspace
-   * or agent config key and not the ACP spawn wrapper.
+   * Catalog identity used by native list/attach ownership: resolved cwd and
+   * physical agent selector, not workspace/agent config keys, not `driver`,
+   * and not the ACP spawn wrapper.
    */
   private requireNativeCatalog(agent: string, workspace: string): NativeCatalogIdentity {
     const agentConfig = this.config?.agents[agent];
@@ -367,7 +372,6 @@ export class SessionControlService {
     const launch = resolveConfiguredAgentLaunch(agentConfig, this.config?.transport);
     return nativeCatalogIdentityForLaunch({
       cwd: workspaceConfig.cwd,
-      ...(agentConfig.driver ? { driver: agentConfig.driver } : {}),
       ...launch,
     });
   }

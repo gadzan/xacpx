@@ -418,7 +418,6 @@ function catalogFromNativeTarget(target: NativeTarget): NativeCatalogIdentity {
     agentCommand: target.agentCommand,
     acpxAgent: target.acpxAgent,
     rawCommand: target.rawCommand,
-    driver: target.driver,
     agentArgv: target.agentArgv,
   });
 }

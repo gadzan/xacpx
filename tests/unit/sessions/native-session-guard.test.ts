@@ -1,6 +1,7 @@
 import { expect, mock, test } from "bun:test";
 
 import { isAcpOutputGuardArgv } from "../../../src/adapters/acp-output-guard";
+import { deriveAgentAlias } from "../../../src/config/agent-launch";
 import { resolveConfiguredAgentLaunch } from "../../../src/config/resolve-agent-command";
 import type { AppConfig } from "../../../src/config/types";
 import { ConversationError } from "../../../src/conversations/conversation-error";
@@ -33,14 +34,12 @@ function record(overrides: Partial<LogicalSession> & Pick<LogicalSession, "alias
 
 const BACKEND = nativeCatalogIdentity({
   cwd: "/tmp/backend",
-  driver: "codex",
-  acpxAgent: "codex",
+  selector: { kind: "bare-agent", agent: "codex" },
 });
 
 const FRONTEND = nativeCatalogIdentity({
   cwd: "/tmp/frontend",
-  driver: "claude",
-  acpxAgent: "claude",
+  selector: { kind: "bare-agent", agent: "claude" },
 });
 
 function lookup(opts: {
@@ -68,10 +67,7 @@ function lookup(opts: {
           agent: found.agent,
           workspace: found.workspace,
           cwd: catalog.cwd,
-          driver: catalog.driver,
-          agentCommand: catalog.agentCommand,
-          acpxAgent: catalog.acpxAgent,
-          rawCommand: catalog.rawCommand,
+          ...resolvedLaunchFromCatalog(catalog),
         } as ResolvedSession;
       },
     },
@@ -126,16 +122,28 @@ class MemoryStateStore implements Pick<StateStore, "save"> {
   async saveNow(): Promise<void> {}
 }
 
-test("sameNativeCatalog is cwd path-equivalence plus launch identity, not labels", () => {
+function resolvedLaunchFromCatalog(catalog: NativeCatalogIdentity): Partial<ResolvedSession> {
+  const selector = catalog.selector;
+  if (selector.kind === "argv") {
+    return { agentCommand: selector.identity, agentArgv: selector.identity.split(" ") };
+  }
+  if (selector.kind === "raw-command") {
+    return { rawCommand: selector.command, agentCommand: selector.command };
+  }
+  if (selector.kind === "bare-agent") {
+    return { acpxAgent: selector.agent };
+  }
+  return {};
+}
+
+test("sameNativeCatalog is cwd path-equivalence plus physical selector, not labels", () => {
   expect(sameNativeCatalog(BACKEND, nativeCatalogIdentity({
     cwd: "/tmp/./backend",
-    driver: "codex",
-    acpxAgent: "codex",
+    selector: { kind: "bare-agent", agent: "codex" },
   }))).toBe(true);
   expect(sameNativeCatalog(BACKEND, nativeCatalogIdentity({
     cwd: "/tmp/backend",
-    driver: "codex",
-    acpxAgent: "codex2",
+    selector: { kind: "bare-agent", agent: "codex2" },
   }))).toBe(false);
   expect(sameNativeCatalog(BACKEND, FRONTEND)).toBe(false);
 });
@@ -242,8 +250,7 @@ test("workspace labels that share cwd occupy the same native catalog", async () 
   });
   const viaAlias = nativeCatalogIdentity({
     cwd: "/tmp/backend",
-    driver: "codex",
-    acpxAgent: "codex",
+    selector: { kind: "bare-agent", agent: "codex" },
   });
   const listed = await filterAddressableNativeSessions(ctx, viaAlias, [
     { sessionId: "N1" },
@@ -261,9 +268,7 @@ test("agent aliases that share launch identity occupy the same native catalog", 
   });
   const otherAlias = nativeCatalogIdentity({
     cwd: "/tmp/backend",
-    driver: "codex",
-    acpxAgent: "codex",
-    agentCommand: BACKEND.agentCommand,
+    selector: { kind: "bare-agent", agent: "codex" },
   });
   await expect(assertNativeSessionAddressable(ctx, otherAlias, "N1"))
     .rejects.toMatchObject({ code: "hidden_session" });
@@ -277,8 +282,7 @@ test("a different cwd is a different native catalog even with the same agent lab
   });
   const otherCwd = nativeCatalogIdentity({
     cwd: "/tmp/other",
-    driver: "codex",
-    acpxAgent: "codex",
+    selector: { kind: "bare-agent", agent: "codex" },
   });
   const inspected = await inspectProductOwnedNativeSessions(ctx, otherCwd);
   expect(inspected.ownedIds.size).toBe(0);
@@ -388,4 +392,51 @@ test("a guarded command string without argv is unproven instead of a different c
   expect(inspected.unproven).toBe(true);
   await expect(assertNativeSessionAddressable(ctx, picker, "N2"))
     .rejects.toMatchObject({ code: "hidden_session" });
+});
+
+test("same argv and cwd occupy one catalog even when driver labels differ", () => {
+  const argv = ["/opt/agent", "--acp"] as const;
+  const left = nativeCatalogIdentityForLaunch({
+    cwd: "/repo",
+    driver: "custom-a",
+    agentArgv: argv,
+    acpxAgent: deriveAgentAlias("custom-a", argv),
+  });
+  const right = nativeCatalogIdentityForLaunch({
+    cwd: "/repo",
+    driver: "custom-b",
+    agentArgv: argv,
+    acpxAgent: deriveAgentAlias("custom-b", argv),
+  });
+  expect(deriveAgentAlias("custom-a", argv)).not.toBe(deriveAgentAlias("custom-b", argv));
+  expect(left.selector).toEqual({ kind: "argv", identity: "/opt/agent --acp" });
+  expect(right.selector).toEqual({ kind: "argv", identity: "/opt/agent --acp" });
+  expect(sameNativeCatalog(left, right)).toBe(true);
+
+  const otherArgv = nativeCatalogIdentityForLaunch({
+    cwd: "/repo",
+    driver: "custom-a",
+    agentArgv: ["/opt/other", "--acp"],
+  });
+  expect(sameNativeCatalog(left, otherArgv)).toBe(false);
+});
+
+test("same raw command and cwd occupy one catalog even when driver labels differ", () => {
+  const left = nativeCatalogIdentityForLaunch({
+    cwd: "/repo",
+    driver: "custom-a",
+    rawCommand: "/opt/agent --acp",
+    agentCommand: "/opt/agent --acp",
+    acpxAgent: "custom-a",
+  });
+  const right = nativeCatalogIdentityForLaunch({
+    cwd: "/repo",
+    driver: "custom-b",
+    rawCommand: "/opt/agent --acp",
+    agentCommand: "/opt/agent --acp",
+    acpxAgent: "custom-b",
+  });
+  expect(left.selector).toEqual({ kind: "raw-command", command: "/opt/agent --acp" });
+  expect(right.selector).toEqual({ kind: "raw-command", command: "/opt/agent --acp" });
+  expect(sameNativeCatalog(left, right)).toBe(true);
 });

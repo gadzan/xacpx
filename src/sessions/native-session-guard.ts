@@ -1,5 +1,5 @@
 import { isAcpOutputGuardArgv, unwrapAcpOutputGuardArgv } from "../adapters/acp-output-guard";
-import { deriveAgentAlias, renderAgentArgvIdentity } from "../config/agent-launch";
+import { renderAgentArgvIdentity } from "../config/agent-launch";
 import { ConversationError } from "../conversations/conversation-error";
 import { isHiddenProductSessionOwner, type LogicalSession } from "../state/types";
 import type { AgentSession, ResolvedSession } from "../transport/types";
@@ -10,17 +10,19 @@ import { isSamePath, normalizePath } from "../util/path";
  * rollout, not alias prefix and not the ordinary Sessions list.
  *
  * The native catalog is a physical execution namespace: path-equivalent cwd plus
- * the underlying agent launch after xacpx-owned ACP transport wrappers (output
- * guard) are removed. That is not the ACP spawn identity. Two workspace names
- * that share a cwd, or two agent aliases that resolve to the same underlying
- * launch, occupy the same catalog. Distinct custom argv still remain distinct.
+ * the underlying agent selector after xacpx-owned ACP transport wrappers are
+ * removed. Config labels (`driver`, overlay `acpxAgent`, workspace/agent names)
+ * are not part of that store identity. Distinct argv still remain distinct.
  */
+export type NativeCatalogSelector =
+  | { kind: "argv"; identity: string }
+  | { kind: "raw-command"; command: string }
+  | { kind: "bare-agent"; agent: string }
+  | { kind: "unproven" };
+
 export interface NativeCatalogIdentity {
   cwd: string;
-  agentCommand?: string;
-  acpxAgent?: string;
-  rawCommand?: string;
-  driver?: string;
+  selector: NativeCatalogSelector;
 }
 
 /** Launch fields used to derive {@link NativeCatalogIdentity}. */
@@ -57,56 +59,65 @@ export interface ProductOwnedNativeIdentityInspection {
 }
 
 export function nativeCatalogIdentity(input: NativeCatalogIdentity): NativeCatalogIdentity {
+  if (isNativeCatalogUnproven(input)) {
+    return { cwd: "", selector: { kind: "unproven" } };
+  }
   return {
-    cwd: input.cwd,
-    ...(input.agentCommand ? { agentCommand: input.agentCommand } : {}),
-    ...(input.acpxAgent ? { acpxAgent: input.acpxAgent } : {}),
-    ...(input.rawCommand ? { rawCommand: input.rawCommand } : {}),
-    ...(input.driver ? { driver: input.driver } : {}),
+    cwd: canonicalizeNativeCatalogCwd(input.cwd),
+    selector: input.selector,
   };
 }
 
 /**
- * Canonical native-session catalog identity: cwd plus the underlying agent
- * launch, never the ACP output-guard wrapper used to spawn transport.
+ * Canonical native-session catalog identity: cwd plus the physical agent
+ * selector, never ACP spawn wrappers and never config-label aliases.
  *
- * Requested native list/attach and persisted `ResolvedSession` must both call
- * this. An output-guard wrap that cannot be unwrapped is unproven (empty cwd)
- * rather than a different catalog.
+ * Selection precedence matches how acpx actually chooses an agent:
+ * argv (after unwrap) → rawCommand → historical agentCommand → bare positional.
+ * `driver` / derived overlay `acpxAgent` are launch-registration metadata.
  */
 export function nativeCatalogIdentityForLaunch(input: NativeCatalogLaunchInput): NativeCatalogIdentity {
   const cwd = canonicalizeNativeCatalogCwd(input.cwd);
-  const driver = input.driver?.trim() || undefined;
   if (!cwd) {
-    return nativeCatalogIdentity({ cwd: "" });
+    return { cwd: "", selector: { kind: "unproven" } };
   }
 
   const argv = input.agentArgv && input.agentArgv.length > 0 ? [...input.agentArgv] : undefined;
-  if (argv && isAcpOutputGuardArgv(argv) && unwrapAcpOutputGuardArgv(argv).length === 0) {
-    return nativeCatalogIdentity({ cwd: "" });
-  }
-  if (!argv && looksLikeAcpOutputGuardCommand(input.agentCommand)) {
-    return nativeCatalogIdentity({ cwd: "" });
-  }
   if (argv) {
+    if (isAcpOutputGuardArgv(argv) && unwrapAcpOutputGuardArgv(argv).length === 0) {
+      return { cwd: "", selector: { kind: "unproven" } };
+    }
     const underlying = unwrapAcpOutputGuardArgv(argv);
     if (underlying.length > 0) {
-      return nativeCatalogIdentity({
+      return {
         cwd,
-        ...(driver ? { driver } : {}),
-        agentCommand: renderAgentArgvIdentity(underlying),
-        ...(driver ? { acpxAgent: deriveAgentAlias(driver, underlying) } : {}),
-      });
+        selector: { kind: "argv", identity: renderAgentArgvIdentity(underlying) },
+      };
     }
   }
 
-  return nativeCatalogIdentity({
-    cwd,
-    ...(driver ? { driver } : {}),
-    ...(input.agentCommand ? { agentCommand: input.agentCommand } : {}),
-    ...(input.acpxAgent ? { acpxAgent: input.acpxAgent } : {}),
-    ...(input.rawCommand ? { rawCommand: input.rawCommand } : {}),
-  });
+  const rawCommand = input.rawCommand?.trim();
+  if (rawCommand) {
+    return { cwd, selector: { kind: "raw-command", command: rawCommand } };
+  }
+
+  const historical = input.agentCommand?.trim();
+  if (historical && !argv) {
+    if (looksLikeAcpOutputGuardCommand(historical)) {
+      return { cwd: "", selector: { kind: "unproven" } };
+    }
+    return { cwd, selector: { kind: "raw-command", command: historical } };
+  }
+
+  const bare = input.acpxAgent?.trim();
+  if (bare) {
+    if (looksLikeManagedOverlayAlias(bare)) {
+      return { cwd: "", selector: { kind: "unproven" } };
+    }
+    return { cwd, selector: { kind: "bare-agent", agent: bare } };
+  }
+
+  return { cwd: "", selector: { kind: "unproven" } };
 }
 
 export function nativeCatalogFromResolved(
@@ -122,6 +133,10 @@ export function nativeCatalogFromResolved(
   });
 }
 
+export function isNativeCatalogUnproven(identity: NativeCatalogIdentity): boolean {
+  return identity.selector.kind === "unproven" || !identity.cwd.trim();
+}
+
 function canonicalizeNativeCatalogCwd(cwd: string): string {
   const trimmed = cwd.trim();
   return trimmed ? normalizePath(trimmed) : "";
@@ -133,21 +148,30 @@ function looksLikeAcpOutputGuardCommand(command: string | undefined): boolean {
   return normalized.includes("/acp-output-guard-main.");
 }
 
-function nativeLaunchKey(identity: NativeCatalogIdentity): string {
-  return [
-    identity.driver ?? "",
-    identity.rawCommand ?? "",
-    identity.agentCommand ?? "",
-    identity.acpxAgent ?? "",
-  ].join("\0");
+function looksLikeManagedOverlayAlias(value: string): boolean {
+  return value.startsWith("xacpx-managed-");
 }
 
-/** True when two identities select the same acpx native-session catalog. */
+function nativeSelectorKey(identity: NativeCatalogIdentity): string {
+  const selector = identity.selector;
+  switch (selector.kind) {
+    case "argv":
+      return `argv\0${selector.identity}`;
+    case "raw-command":
+      return `raw-command\0${selector.command}`;
+    case "bare-agent":
+      return `bare-agent\0${selector.agent}`;
+    case "unproven":
+      return "unproven";
+  }
+}
+
+/** True when two identities select the same agent-native session catalog. */
 export function sameNativeCatalog(left: NativeCatalogIdentity, right: NativeCatalogIdentity): boolean {
-  if (!left.cwd.trim() || !right.cwd.trim()) {
+  if (isNativeCatalogUnproven(left) || isNativeCatalogUnproven(right)) {
     return false;
   }
-  return isSamePath(left.cwd, right.cwd) && nativeLaunchKey(left) === nativeLaunchKey(right);
+  return isSamePath(left.cwd, right.cwd) && nativeSelectorKey(left) === nativeSelectorKey(right);
 }
 
 export async function inspectProductOwnedNativeSessions(
@@ -168,7 +192,7 @@ export async function inspectProductOwnedNativeSessions(
       continue;
     }
     const ownedCatalog = nativeCatalogFromResolved(resolved);
-    if (!ownedCatalog.cwd.trim()) {
+    if (isNativeCatalogUnproven(ownedCatalog)) {
       unproven = true;
       continue;
     }
@@ -209,7 +233,7 @@ export async function assertNativeSessionAddressable(
   catalog: NativeCatalogIdentity,
   agentSessionId: string,
 ): Promise<void> {
-  if (!catalog.cwd.trim()) {
+  if (isNativeCatalogUnproven(catalog)) {
     throw new ConversationError(
       "hidden_session",
       "product-owned native sessions are not addressable via ordinary Session APIs",

@@ -66,7 +66,7 @@ Responsibilities:
 - `createSessionWithTransport` / `attachNativeSessionWithTransport` (resolve → reserve
   → ensure/resume → verify → bind → refresh, best-effort refresh). Native attach
   calls `assertNativeSessionAddressable` before resume: product-owned native IDs
-  in the same native catalog (cwd + underlying launch after ACP output-guard unwrap, not workspace/agent labels)
+  in the same native catalog (cwd + physical selector after ACP output-guard unwrap; not `driver` / overlay alias / workspace labels)
   fail `hidden_session`; unproven product-owned candidates fail closed.
 - `removeSessionWithTransport` (orchestration blocking-task guard → logical remove →
   best-effort reference purge → transport delete only when no other alias shares it).
