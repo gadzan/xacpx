@@ -293,6 +293,14 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
     const newText = asString(diff?.newText) ?? asString(input.new_string) ?? asString(input.newText) ?? asString(input.content);
     const instruction = asString(input.instruction) ?? asString(input.description);
     if (diff || oldText !== undefined || newText !== undefined) {
+      // An empty diff ("" → "", no instruction) renders nothing in the drawer:
+      // ToolDetail dropped the path echo and the body needs parsedDiff rows.
+      // Keep it title-only like read/execute/search, so the header stays a
+      // non-interactive row instead of an expandable empty drawer.
+      // Error steps still expand via step.error on the card.
+      if ((oldText ?? "") === "" && (newText ?? "") === "" && !instruction) {
+        return { ...base, title: path };
+      }
       const detail: ToolDetailDto = {
         type: "diff",
         path,

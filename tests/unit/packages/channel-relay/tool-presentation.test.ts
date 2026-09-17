@@ -75,6 +75,43 @@ test("edit prefers the ACP diff block over conflicting rawInput old/new text", (
   expect(step.detail).toMatchObject({ type: "diff", path: "src/b.ts", oldText: "block old", newText: "block new" });
 });
 
+test("edit omits the detail for an empty Write (empty content, no instruction)", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "e7", toolName: "Write", kind: "edit", status: "success",
+    rawInput: { file_path: "empty.txt", content: "" },
+  });
+  expect(step.title).toBe("empty.txt");
+  expect(step.detail).toBeUndefined();
+});
+
+test("edit omits the detail for an empty diff block without instruction", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "e8", toolName: "Edit", kind: "edit", status: "success",
+    content: [{ type: "diff", path: "src/empty.ts", oldText: "", newText: "" }],
+  });
+  expect(step.title).toBe("src/empty.ts");
+  expect(step.detail).toBeUndefined();
+});
+
+test("edit keeps an empty diff when an instruction gives the drawer content", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "e9", toolName: "Edit", kind: "edit", status: "success",
+    rawInput: { file_path: "empty.txt", content: "", instruction: "touch the file" },
+  });
+  expect(step.detail).toMatchObject({ type: "diff", path: "empty.txt", instruction: "touch the file" });
+});
+
+test("edit keeps an empty diff on error so the card can still surface the failure", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "e10", toolName: "Write", kind: "edit", status: "error",
+    rawInput: { file_path: "empty.txt", content: "" },
+    rawOutput: { error: "disk full" },
+  });
+  expect(step.title).toBe("empty.txt");
+  expect(step.error).toContain("disk full");
+  expect(step.detail).toBeUndefined();
+});
+
 test("execute reads command + stdout + exit code", () => {
   const step = toolUseEventToStepDto({
     toolCallId: "t2", toolName: "Bash", kind: "execute", status: "success",
