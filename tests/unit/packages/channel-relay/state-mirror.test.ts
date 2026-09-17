@@ -410,6 +410,40 @@ test("Conversation-correlated finishedOffline copies correlation and is not prun
   expect(mirror.buildStateSync(ordinaryLive).snapshot.finishedOffline).toEqual([]);
 });
 
+test("finish-without-start still keeps Conversation correlation on a hidden alias", () => {
+  const { mirror } = makeMirror(() => true);
+  fire(mirror, {
+    type: "turn-finished",
+    chatKey: "relay:acc",
+    sessionAlias: HIDDEN,
+    ok: true,
+    text: "late finish",
+    conversation: CONVERSATION,
+  });
+
+  const ordinaryLive = new Set<string>();
+  const { snapshot, aliases } = mirror.buildStateSync(ordinaryLive);
+  expect(snapshot.turns).toEqual([]);
+  expect(snapshot.finishedOffline).toHaveLength(1);
+  expect(snapshot.finishedOffline[0]).toMatchObject({
+    sessionAlias: HIDDEN,
+    ok: true,
+    text: "late finish",
+    recoveryId: "r1",
+    conversation: CONVERSATION,
+  });
+  expect(snapshot.finishedOffline[0]!.prompt).toBeUndefined();
+  expect(validInstanceStateSync(snapshot)).toBe(true);
+
+  mirror.pruneStateMirror(ordinaryLive, aliases);
+  const still = mirror.buildStateSync(ordinaryLive);
+  expect(still.snapshot.finishedOffline).toHaveLength(1);
+  expect(still.snapshot.finishedOffline[0]!.conversation).toEqual(CONVERSATION);
+
+  mirror.confirmFinished(["r1"]);
+  expect(mirror.buildStateSync(ordinaryLive).snapshot.finishedOffline).toEqual([]);
+});
+
 test("hidden usage-only alias without conversation correlation is still pruned", () => {
   const { mirror } = makeMirror(() => true);
   fire(mirror, { type: "turn-usage", chatKey: "relay:acc", sessionAlias: HIDDEN, used: 1, size: 2 });

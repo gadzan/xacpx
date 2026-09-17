@@ -314,8 +314,10 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
 - 带 `conversation` 的 live Control event 仍携带 `sessionAlias`（旧客户端兼容）。那是
   **legacy transport plumbing**，不得再用于产品 liveness / ownership / routing；产品身份是
   `conversationId` / `topicId` / `botId` / `runId` / `memberTurnId`。
-- `PendingFinishedTurn` 从 running `MirrorTurn` 拷贝 `conversation`，finishedOffline 快照
-  同样带上这五个 id，hub validator / accumulator / `state-snapshot` 原样保留。
+- `PendingFinishedTurn` 优先从 running `MirrorTurn` 拷贝 `conversation`；若 mirror 没看到
+  `turn-started`（例如 connector 在 core turn 中途重启），则回退到 `turn-finished` 事件上的
+  `event.conversation`。finishedOffline 快照同样带上这五个 id，hub validator / accumulator /
+  `state-snapshot` 原样保留。没有 correlation 的 hidden-alias finish 仍按 ordinary liveAliases 过滤。
 - FIFO 条目**不做 flush 回调确认**：ws flush 只证明帧离开本地进程，不代表 hub 已持久化；条目
   只在收到 hub 的 `instance.recovery.ack`（对应 recoveryId）后由 `mirror.confirmFinished()` 清除。
   live `turn-finished` 转发同样打上 recoveryId，清 FIFO 同样等 ACK —— hub 在 send 之后、SQLite

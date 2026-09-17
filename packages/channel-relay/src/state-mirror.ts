@@ -309,6 +309,10 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
         const text = a?.text ?? event.text;
         const hasText = (text !== undefined && text !== "")
           || (event.ok && (a !== undefined || event.text !== undefined));
+        // Finish-without-start (mirror restarted mid-turn) still carries
+        // core `event.conversation`; do not drop it just because the
+        // accumulator never saw `turn-started`.
+        const conversation = a?.conversation ?? event.conversation;
         pendingFinished.push({
           chatKey: a?.chatKey ?? event.chatKey,
           sessionAlias: event.sessionAlias,
@@ -320,7 +324,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(a?.queueItemId !== undefined ? { queueItemId: a.queueItemId } : {}),
           ...(a?.scheduled ? { scheduled: a.scheduled } : {}),
           ...(a?.promptRequestId !== undefined ? { promptRequestId: a.promptRequestId } : {}),
-          ...(a?.conversation ? { conversation: a.conversation } : {}),
+          ...(conversation ? { conversation } : {}),
           ...(a?.truncated ? { truncated: true } : {}),
           recoveryId: id,
           createdAt: now(),
