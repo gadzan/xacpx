@@ -11,6 +11,8 @@ import { ConversationError } from "../../conversations/conversation-error";
 import {
   assertNativeSessionAddressable,
   filterAddressableNativeSessions,
+  nativeCatalogIdentity,
+  type NativeCatalogIdentity,
 } from "../../sessions/native-session-guard";
 import { t } from "../../i18n";
 export interface NativeSessionListCommand {
@@ -125,8 +127,7 @@ export async function handleNativeSessionList(
     ...result,
     sessions: await filterAddressableNativeSessions(
       { sessions: context.sessions, transport: context.transport },
-      target.agent,
-      target.workspace,
+      catalogFromNativeTarget(target),
       result.sessions,
     ),
   };
@@ -216,8 +217,7 @@ async function attachNativeSession(
   try {
     await assertNativeSessionAddressable(
       { sessions: context.sessions, transport: context.transport },
-      nativeTarget.agent,
-      nativeTarget.workspace,
+      catalogFromNativeTarget(nativeTarget),
       session.sessionId,
     );
   } catch (error) {
@@ -410,6 +410,16 @@ async function resolveNativeTarget(
     cwd: workspaceResolution.cwd,
     source: workspaceResolution.source,
   };
+}
+
+function catalogFromNativeTarget(target: NativeTarget): NativeCatalogIdentity {
+  return nativeCatalogIdentity({
+    cwd: target.cwd,
+    agentCommand: target.agentCommand,
+    acpxAgent: target.acpxAgent,
+    rawCommand: target.rawCommand,
+    driver: target.driver,
+  });
 }
 
 function nativeTargetLaunchFields(

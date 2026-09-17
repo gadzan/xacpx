@@ -4,6 +4,8 @@ import type { AppLogger } from "../logging/app-logger";
 import {
   assertNativeSessionAddressable as rejectOwnedNativeSession,
   filterAddressableNativeSessions,
+  nativeCatalogIdentity,
+  type NativeCatalogIdentity,
 } from "../sessions/native-session-guard";
 import { assertOrdinarySessionAddressable } from "../sessions/ordinary-session-guard";
 import type { SessionService } from "../sessions/session-service";
@@ -312,32 +314,31 @@ export class SessionControlService {
     if (!agentConfig || !workspaceConfig) {
       throw new Error(`unknown agent "${agent}" or workspace "${workspace}"`);
     }
-    const launch = resolveConfiguredAgentLaunch(agentConfig, this.config?.transport);
+    const catalog = this.requireNativeCatalog(agent, workspace);
     const result = await listAgentSessions({
       agent,
-      ...(launch.agentCommand ? { agentCommand: launch.agentCommand } : {}),
-      ...(launch.acpxAgent ? { acpxAgent: launch.acpxAgent } : {}),
-      ...(launch.rawCommand ? { rawCommand: launch.rawCommand } : {}),
-      ...(agentConfig.driver ? { driver: agentConfig.driver } : {}),
+      ...(catalog.agentCommand ? { agentCommand: catalog.agentCommand } : {}),
+      ...(catalog.acpxAgent ? { acpxAgent: catalog.acpxAgent } : {}),
+      ...(catalog.rawCommand ? { rawCommand: catalog.rawCommand } : {}),
+      ...(catalog.driver ? { driver: catalog.driver } : {}),
       ...(agentConfig.settingsPolicy ? { settingsPolicy: agentConfig.settingsPolicy } : {}),
-      cwd: workspaceConfig.cwd,
-      filterCwd: workspaceConfig.cwd,
+      cwd: catalog.cwd,
+      filterCwd: catalog.cwd,
     });
     const sessions = result?.sessions ?? [];
     // Presentation only: attach re-checks ownership and fail-closes.
     return await filterAddressableNativeSessions(
       { sessions: this.sessions, transport: this.transport },
-      agent,
-      workspace,
+      catalog,
       sessions,
     );
   }
 
   /**
-   * Native attach is owner metadata of the agent-native rollout, never alias
-   * prefix. Product-owned LogicalSessions in this agent/workspace occupy their
-   * persisted `agentSessionId` or the live identity from `getAgentSessionId`.
-   * Unproven product-owned candidates fail closed.
+   * Native attach is ownership of the agent-native catalog (cwd + resolved
+   * launch), never workspace/agent config labels. Product-owned LogicalSessions
+   * in that catalog occupy their persisted `agentSessionId` or the live identity
+   * from `getAgentSessionId`. Unproven product-owned candidates fail closed.
    */
   async assertNativeSessionAddressable(
     agent: string,
@@ -346,10 +347,29 @@ export class SessionControlService {
   ): Promise<void> {
     await rejectOwnedNativeSession(
       { sessions: this.sessions, transport: this.transport },
-      agent,
-      workspace,
+      this.requireNativeCatalog(agent, workspace),
       agentSessionId,
     );
+  }
+
+  /**
+   * Catalog identity used by `acpx sessions list` / resume: resolved cwd and
+   * launch spec, not the workspace or agent config key.
+   */
+  private requireNativeCatalog(agent: string, workspace: string): NativeCatalogIdentity {
+    const agentConfig = this.config?.agents[agent];
+    const workspaceConfig = this.config?.workspaces[workspace];
+    if (!agentConfig || !workspaceConfig) {
+      throw new Error(`unknown agent "${agent}" or workspace "${workspace}"`);
+    }
+    const launch = resolveConfiguredAgentLaunch(agentConfig, this.config?.transport);
+    return nativeCatalogIdentity({
+      cwd: workspaceConfig.cwd,
+      ...(launch.agentCommand ? { agentCommand: launch.agentCommand } : {}),
+      ...(launch.acpxAgent ? { acpxAgent: launch.acpxAgent } : {}),
+      ...(launch.rawCommand ? { rawCommand: launch.rawCommand } : {}),
+      ...(agentConfig.driver ? { driver: agentConfig.driver } : {}),
+    });
   }
 
   /**

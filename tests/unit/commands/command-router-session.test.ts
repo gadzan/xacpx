@@ -1870,6 +1870,82 @@ test("native list and attach refuse a product-owned hidden native ID without res
   expect(sessions.getLogicalSessionRecord("brt_bot")).toEqual(before);
 });
 
+test("native list and attach refuse a hidden native ID across workspaces that share cwd", async () => {
+  const { router, transport, sessions, config } = buildRouter();
+  config.workspaces.backend2 = { cwd: config.workspaces.backend.cwd };
+  await sessions.createSession("brt_bot", "codex", "backend", {
+    owner: createBotDirectOwner({
+      bindingId: "bind_bot",
+      botId: "bot_reviewer",
+      conversationId: "conversation_bot",
+      topicId: "topic_bot",
+    }),
+  });
+  await sessions.updateNativeAgentSessionId("brt_bot", "N1");
+  const before = structuredClone(sessions.getLogicalSessionRecord("brt_bot"));
+  (transport.listAgentSessions as ReturnType<typeof mock>).mockImplementationOnce(async () => ({
+    source: "agent" as const,
+    sessions: [
+      { sessionId: "N1", title: "Bot work" },
+      { sessionId: "N2", title: "Other work" },
+    ],
+  }));
+
+  const listed = await router.listNativeSessionsForControl("codex", "backend2");
+  expect(listed.map((session) => session.sessionId)).toEqual(["N2"]);
+
+  (transport.resumeAgentSession as ReturnType<typeof mock>).mockClear();
+  await expect(
+    router.attachNativeSessionWithTransport("relay:stolen", "codex", "backend2", "N1"),
+  ).rejects.toMatchObject({ code: "hidden_session" });
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  expect(sessions.getResolvedSessionByInternalAlias("relay:stolen")).toBeNull();
+  expect(sessions.getLogicalSessionRecord("brt_bot")).toEqual(before);
+
+  const attached = await router.attachNativeSessionWithTransport("relay:ok", "codex", "backend2", "N2");
+  expect(attached.alias).toBe("relay:ok");
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.at(-1)?.[1]).toBe("N2");
+  expect(sessions.getLogicalSessionRecord("brt_bot")).toEqual(before);
+});
+
+test("native list and attach refuse a hidden native ID across agent aliases that share launch identity", async () => {
+  const { router, transport, sessions, config } = buildRouter();
+  config.agents.codex2 = { driver: "codex" };
+  await sessions.createSession("brt_bot", "codex", "backend", {
+    owner: createBotDirectOwner({
+      bindingId: "bind_bot",
+      botId: "bot_reviewer",
+      conversationId: "conversation_bot",
+      topicId: "topic_bot",
+    }),
+  });
+  await sessions.updateNativeAgentSessionId("brt_bot", "N1");
+  const before = structuredClone(sessions.getLogicalSessionRecord("brt_bot"));
+  (transport.listAgentSessions as ReturnType<typeof mock>).mockImplementationOnce(async () => ({
+    source: "agent" as const,
+    sessions: [
+      { sessionId: "N1", title: "Bot work" },
+      { sessionId: "N2", title: "Other work" },
+    ],
+  }));
+
+  const listed = await router.listNativeSessionsForControl("codex2", "backend");
+  expect(listed.map((session) => session.sessionId)).toEqual(["N2"]);
+
+  (transport.resumeAgentSession as ReturnType<typeof mock>).mockClear();
+  await expect(
+    router.attachNativeSessionWithTransport("relay:stolen", "codex2", "backend", "N1"),
+  ).rejects.toMatchObject({ code: "hidden_session" });
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  expect(sessions.getResolvedSessionByInternalAlias("relay:stolen")).toBeNull();
+  expect(sessions.getLogicalSessionRecord("brt_bot")).toEqual(before);
+
+  const attached = await router.attachNativeSessionWithTransport("relay:ok", "codex2", "backend", "N2");
+  expect(attached.alias).toBe("relay:ok");
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.at(-1)?.[1]).toBe("N2");
+  expect(sessions.getLogicalSessionRecord("brt_bot")).toEqual(before);
+});
+
 test("native attach fail-closes when a product-owned session cannot prove native identity", async () => {
   const { router, transport, sessions } = buildRouter();
   await sessions.createSession("brt_bot", "codex", "backend", {

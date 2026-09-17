@@ -66,13 +66,14 @@ Responsibilities:
 - `createSessionWithTransport` / `attachNativeSessionWithTransport` (resolve → reserve
   → ensure/resume → verify → bind → refresh, best-effort refresh). Native attach
   calls `assertNativeSessionAddressable` before resume: product-owned native IDs
+  in the same native catalog (cwd + launch identity, not workspace/agent labels)
   fail `hidden_session`; unproven product-owned candidates fail closed.
 - `removeSessionWithTransport` (orchestration blocking-task guard → logical remove →
   best-effort reference purge → transport delete only when no other alias shares it).
 - `archiveSessionWithTransport` (active-turn guard → cancel + free warm process when
   unshared → flag archived) / `unarchiveSession`.
-- `listNativeSessionsForControl` (cwd filter plus presentation filter of
-  product-owned native IDs; attach re-checks ownership).
+- `listNativeSessionsForControl` (cwd + launch catalog query plus presentation
+  filter of product-owned native IDs; attach re-checks ownership).
 
 Composes a `TransportInvoker` (uses its `ensureTransportSession`/`checkTransportSession`/
 `refreshSessionTransportAgentCommand`) and takes `reserveLogicalTransportSession` as an
