@@ -336,3 +336,85 @@ test("ignores non-instanceEvent envelopes and malformed payloads", () => {
   mirror.handleEnvelope(MSG.instanceEvent, {});
   expect(mirror.buildStateSync(LIVE).snapshot).toEqual({ turns: [], usage: [], commands: [], finishedOffline: [] });
 });
+
+const CONVERSATION = {
+  conversationId: "conversation_bot_1",
+  topicId: "topic_bot_1_default",
+  botId: "bot_1",
+  runId: "run_1",
+  memberTurnId: "mt_1",
+} as const;
+const HIDDEN = "brt_hidden";
+
+test("Conversation-correlated running turn survives reconnect when ordinary list hides the alias", () => {
+  const { mirror } = makeMirror(() => true);
+  fire(mirror, {
+    type: "turn-started",
+    chatKey: "relay:acc",
+    sessionAlias: HIDDEN,
+    prompt: "review this",
+    conversation: CONVERSATION,
+  });
+  fire(mirror, { type: "turn-output", chatKey: "relay:acc", sessionAlias: HIDDEN, chunk: "partial" });
+
+  const ordinaryLive = new Set(["backend"]);
+  const { snapshot, aliases } = mirror.buildStateSync(ordinaryLive);
+  expect(snapshot.turns).toHaveLength(1);
+  expect(snapshot.turns[0]).toMatchObject({
+    sessionAlias: HIDDEN,
+    text: "partial",
+    prompt: "review this",
+    conversation: CONVERSATION,
+    recoveryId: "r1",
+  });
+  expect(validInstanceStateSync(snapshot)).toBe(true);
+
+  mirror.pruneStateMirror(ordinaryLive, aliases);
+  const after = mirror.buildStateSync(ordinaryLive);
+  expect(after.snapshot.turns).toHaveLength(1);
+  expect(after.snapshot.turns[0]!.conversation).toEqual(CONVERSATION);
+});
+
+test("Conversation-correlated finishedOffline copies correlation and is not pruned for a hidden alias", () => {
+  const { mirror } = makeMirror(() => true);
+  fire(mirror, {
+    type: "turn-started",
+    chatKey: "relay:acc",
+    sessionAlias: HIDDEN,
+    prompt: "review this",
+    conversation: CONVERSATION,
+  });
+  fire(mirror, { type: "turn-output", chatKey: "relay:acc", sessionAlias: HIDDEN, chunk: "done" });
+  fire(mirror, { type: "turn-finished", chatKey: "relay:acc", sessionAlias: HIDDEN, ok: true });
+
+  const ordinaryLive = new Set<string>();
+  const { snapshot, aliases } = mirror.buildStateSync(ordinaryLive);
+  expect(snapshot.turns).toEqual([]);
+  expect(snapshot.finishedOffline).toHaveLength(1);
+  expect(snapshot.finishedOffline[0]).toMatchObject({
+    sessionAlias: HIDDEN,
+    ok: true,
+    text: "done",
+    prompt: "review this",
+    recoveryId: "r1",
+    conversation: CONVERSATION,
+  });
+  expect(validInstanceStateSync(snapshot)).toBe(true);
+
+  mirror.pruneStateMirror(ordinaryLive, aliases);
+  const still = mirror.buildStateSync(ordinaryLive);
+  expect(still.snapshot.finishedOffline).toHaveLength(1);
+  expect(still.snapshot.finishedOffline[0]!.conversation).toEqual(CONVERSATION);
+
+  mirror.confirmFinished(["r1"]);
+  expect(mirror.buildStateSync(ordinaryLive).snapshot.finishedOffline).toEqual([]);
+});
+
+test("hidden usage-only alias without conversation correlation is still pruned", () => {
+  const { mirror } = makeMirror(() => true);
+  fire(mirror, { type: "turn-usage", chatKey: "relay:acc", sessionAlias: HIDDEN, used: 1, size: 2 });
+  const { snapshot, aliases } = mirror.buildStateSync(new Set(["backend"]));
+  expect(snapshot.usage).toEqual([]);
+  mirror.pruneStateMirror(new Set(["backend"]), aliases);
+  expect(mirror.buildStateSync(new Set([HIDDEN])).snapshot.usage).toEqual([]);
+});

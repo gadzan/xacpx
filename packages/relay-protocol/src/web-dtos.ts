@@ -1,5 +1,5 @@
 import { RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "./envelope.js";
-import type { AgentAddressDto, AgentCommandDto, ControlEventDto, PeerMessageHistoryEntry, PeerTurnOriginDto, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, ToolStepKind, ToolStepStatus, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
+import type { AgentAddressDto, AgentCommandDto, ControlEventDto, ConversationTurnCorrelationDto, PeerMessageHistoryEntry, PeerTurnOriginDto, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, ToolStepKind, ToolStepStatus, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
 import {
   MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
   MAX_TERMINAL_COLS,
@@ -102,6 +102,11 @@ export interface LiveTurnSnapshotDto {
    * Web places the live turn by this id, never by comparing clocks.
    */
   slotAfterId?: number;
+  /**
+   * Exact Conversation/Run/MemberTurn join identity when this live turn belongs
+   * to a Conversation Run. Additive; `sessionAlias` remains legacy plumbing.
+   */
+  conversation?: ConversationTurnCorrelationDto;
 }
 
 /** The latest context-usage meter retained per session, handed to a (re)connecting web
@@ -714,7 +719,8 @@ export function validInstanceStateSync(p: unknown): boolean {
       && (finished.cancelled === undefined || typeof finished.cancelled === "boolean")
       && (finished.truncated === undefined || typeof finished.truncated === "boolean")
       && (finished.startedAt === undefined || finiteNonNegative(finished.startedAt))
-      && optNonNegInt(finished.startedAfterSeq);
+      && optNonNegInt(finished.startedAfterSeq)
+      && validConversationCorrelation(finished.conversation);
   });
 }
 

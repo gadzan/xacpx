@@ -75,6 +75,8 @@ interface PendingFinishedTurn {
   scheduled?: ScheduledOriginDto;
   /** Hub-issued pre-write correlation (see MirrorTurn.promptRequestId). */
   promptRequestId?: string;
+  /** Exact Conversation/Run/MemberTurn join copied off the running mirror. */
+  conversation?: ConversationTurnCorrelationDto;
   /** The connector capped this turn's text at STATE_SYNC_TEXT_CAP; the hub must
    *  persist the flag so the recovered reply is not mistaken for a complete one. */
   truncated?: boolean;
@@ -104,20 +106,26 @@ export interface StateMirror {
   /** All session aliases mirrored for one chatKey (fallback keep-set when the live
    *  session list cannot be read — never prune what we cannot verify). */
   aliasesForChatKey(chatKey: string): string[];
-  /** Snapshot for `instance.state.sync` — a PURE copy: builds the payload with only
-   *  aliases present in `liveAliases`, mutates nothing. Returns the payload plus the
-   *  per-alias generation that existed at build time, so a later `pruneStateMirror`
-   *  can compare-and-delete ONLY entries whose generation is unchanged — state that
-   *  arrived (or a SAME alias that was re-created / produced new entries) after the
-   *  snapshot is never GC'd by an older callback. Pruning itself is a separate,
-   *  explicit step so a failed/aborted send can never destroy mirror state that a
-   *  later sync might still need. */
+  /** Snapshot for `instance.state.sync` — a PURE copy: mutates nothing.
+   *  Ordinary Session turns/usage/commands/pending finishes are included only when
+   *  their alias is in `liveAliases`. Conversation-correlated running turns and
+   *  pending finishes are product-owned: they stay in the snapshot even when the
+   *  hidden bot-direct alias is absent from the ordinary Sessions list.
+   *  Returns the payload plus the per-alias generation that existed at build time,
+   *  so a later `pruneStateMirror` can compare-and-delete ONLY entries whose
+   *  generation is unchanged — state that arrived (or a SAME alias that was
+   *  re-created / produced new entries) after the snapshot is never GC'd by an
+   *  older callback. Pruning itself is a separate, explicit step so a
+   *  failed/aborted send can never destroy mirror state that a later sync might
+   *  still need. */
   buildStateSync(liveAliases: ReadonlySet<string>): { snapshot: InstanceStateSyncPayload; aliases: ReadonlyMap<string, number> };
   /** Remove mirror state for aliases present at the LAST build (`aliasesAtBuild`,
    *  alias → generation) that are absent from `liveAliases` — BUT only when the
    *  alias's generation is unchanged since the build: a same-alias turn that was
    *  re-created or produced a new pending entry after the snapshot belongs to a newer
-   *  generation and must not be GC'd by this older callback. Call only after the sync
+   *  generation and must not be GC'd by this older callback. Conversation-correlated
+   *  running turns and pending finishes are never pruned for hidden-alias absence;
+   *  their correlation is the product recovery identity. Call only after the sync
    *  frame was CONFIRMED flushed — never on a failed/not-ready send, so a
    *  transiently-stale session list cannot discard state for a session that still
    *  exists. */
@@ -167,6 +175,16 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
   const bump = (alias: string): void => {
     gen.set(alias, (gen.get(alias) ?? 0) + 1);
   };
+  /** Product-owned Conversation turns keep reconnect recovery by correlation,
+   *  not by ordinary Session visibility. Usage/commands-only hidden aliases are
+   *  not conversation-owned and still follow liveAliases. */
+  const conversationOwned = (alias: string): boolean => {
+    const turn = turns.get(alias);
+    if (turn?.conversation) return true;
+    return pendingFinished.some((finished) => finished.sessionAlias === alias && finished.conversation !== undefined);
+  };
+  const keepAlias = (alias: string, liveAliases: ReadonlySet<string>): boolean =>
+    liveAliases.has(alias) || conversationOwned(alias);
 
   const pushTextPart = (turn: MirrorTurn, chunk: string): void => {
     if (!chunk) return;
@@ -302,6 +320,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(a?.queueItemId !== undefined ? { queueItemId: a.queueItemId } : {}),
           ...(a?.scheduled ? { scheduled: a.scheduled } : {}),
           ...(a?.promptRequestId !== undefined ? { promptRequestId: a.promptRequestId } : {}),
+          ...(a?.conversation ? { conversation: a.conversation } : {}),
           ...(a?.truncated ? { truncated: true } : {}),
           recoveryId: id,
           createdAt: now(),
@@ -364,7 +383,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
       const aliases = new Map<string, number>();
       for (const [alias, a] of turns) {
         aliases.set(alias, gen.get(alias) ?? 0);
-        if (!liveAliases.has(alias)) continue;
+        if (!keepAlias(alias, liveAliases)) continue;
         payload.turns.push({
           sessionAlias: alias,
           startedAt: a.startedAt,
@@ -384,7 +403,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
       }
       for (const [alias, u] of usage) {
         aliases.set(alias, gen.get(alias) ?? 0);
-        if (!liveAliases.has(alias)) continue;
+        if (!keepAlias(alias, liveAliases)) continue;
         payload.usage.push({
           sessionAlias: alias, used: u.used, size: u.size,
           ...(u.cost ? { cost: u.cost } : {}),
@@ -393,13 +412,13 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
       }
       for (const [alias, c] of commands) {
         aliases.set(alias, gen.get(alias) ?? 0);
-        if (!liveAliases.has(alias)) continue;
+        if (!keepAlias(alias, liveAliases)) continue;
         payload.commands.push({ sessionAlias: alias, commands: c.commands });
       }
       for (let i = pendingFinished.length - 1; i >= 0; i--) {
         const f = pendingFinished[i]!;
         aliases.set(f.sessionAlias, gen.get(f.sessionAlias) ?? 0);
-        if (!liveAliases.has(f.sessionAlias)) continue;
+        if (!keepAlias(f.sessionAlias, liveAliases)) continue;
         payload.finishedOffline.unshift({
           sessionAlias: f.sessionAlias, ok: f.ok,
           ...(f.errorMessage !== undefined ? { errorMessage: f.errorMessage } : {}),
@@ -409,6 +428,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
           ...(f.queueItemId !== undefined ? { queueItemId: f.queueItemId } : {}),
           ...(f.scheduled ? { scheduled: f.scheduled } : {}),
           ...(f.promptRequestId !== undefined ? { promptRequestId: f.promptRequestId } : {}),
+          ...(f.conversation ? { conversation: f.conversation } : {}),
           ...(f.truncated ? { truncated: true } : {}),
           recoveryId: f.recoveryId,
           ...(f.startedAt !== undefined ? { startedAt: f.startedAt } : {}),
@@ -425,7 +445,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
       // left untouched — only an alias whose generation is unchanged since the build
       // and is absent from the live list is GC'd.
       for (const [alias, genAtBuild] of aliasesAtBuild) {
-        if (liveAliases.has(alias)) continue;
+        if (keepAlias(alias, liveAliases)) continue;
         if ((gen.get(alias) ?? 0) !== genAtBuild) continue;
         turns.delete(alias);
         usage.delete(alias);

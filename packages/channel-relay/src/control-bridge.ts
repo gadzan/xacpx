@@ -1137,6 +1137,9 @@ export function subscribeControlEvents(
       return;
     }
     if ("sessionAlias" in event && typeof event.sessionAlias === "string") {
+      // sessionAlias on a conversation-correlated event is legacy transport
+      // plumbing for old clients. Product liveness / ownership / routing use
+      // event.conversation (runId / memberTurnId), never this display alias.
       sendEvent(MSG.instanceEvent, {
         event: {
           ...event,

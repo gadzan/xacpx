@@ -64,6 +64,34 @@ test("state sync restores turns/usage/commands into stateSnapshot with the origi
   runtime.close();
 });
 
+test("state sync restores Conversation correlation onto the live turn snapshot", async () => {
+  const { runtime } = await seeded();
+  const conversation = {
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    botId: "bot_1",
+    runId: "run_1",
+    memberTurnId: "mt_1",
+  };
+  sync(runtime, {
+    turns: [{
+      sessionAlias: "brt_hidden", startedAt: STARTED_AT, text: "partial", reasoning: "",
+      steps: [], parts: [{ type: "text", text: "partial" }], conversation,
+    }],
+    usage: [], commands: [], finishedOffline: [],
+  });
+  expect(runtime.stateSnapshot("i1").turns).toEqual([{
+    instanceId: "i1",
+    sessionAlias: "brt_hidden",
+    status: "streaming",
+    startedAt: STARTED_AT,
+    slotAfterId: 0,
+    parts: [{ type: "text", text: "partial" }],
+    conversation,
+  }]);
+  runtime.close();
+});
+
 test("state sync broadcasts a fresh snapshot to an already-subscribed browser", async () => {
   const { runtime } = await seeded();
   const sent: string[] = [];

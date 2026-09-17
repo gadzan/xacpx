@@ -256,6 +256,9 @@ export class RelayChannel implements MessageChannelRuntime {
       },
       logger: input.logger,
       onReady: () => {
+        // Ordinary Session liveness only. Hidden bot-direct aliases are
+        // intentionally absent from listSessions; Conversation-correlated
+        // turns stay in the snapshot via product correlation, not this set.
         const liveAliases = new Set<string>();
         for (const chatKey of mirror.chatKeys()) {
           try {

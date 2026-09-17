@@ -234,7 +234,13 @@ export interface QueueItemDto {
   kind?: "interrupt";
 }
 
-/** Exact join from a live turn event onto ConversationRun / MemberTurn. */
+/**
+ * Exact join from a live turn event onto ConversationRun / MemberTurn.
+ *
+ * When this field is present on a Control event, `sessionAlias` is legacy
+ * transport plumbing for old clients. Product liveness, ownership, and
+ * routing use these ids — never the hidden session alias.
+ */
 export interface ConversationTurnCorrelationDto {
   conversationId: string;
   topicId: string;

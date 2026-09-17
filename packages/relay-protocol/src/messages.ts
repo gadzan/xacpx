@@ -230,7 +230,11 @@ export interface InstanceStateSyncPayload {
     startedAt: number;
     /** Connector-local per-session seq at the original turn-start (receive order). */
     startedAfterSeq?: number;
-    /** Exact Conversation/Run/MemberTurn join identity. Additive; old hubs ignore. */
+    /**
+     * Exact Conversation/Run/MemberTurn join identity. Additive; old hubs ignore.
+     * Presence means this turn is product-owned: reconnect recovery must keep it
+     * even when the hidden session alias is absent from ordinary Sessions list.
+     */
     conversation?: ConversationTurnCorrelationDto;
     text: string;
     reasoning: string;
@@ -277,6 +281,12 @@ export interface InstanceStateSyncPayload {
     startedAt?: number;
     /** Connector-local per-session seq at the original turn-start (receive order). */
     startedAfterSeq?: number;
+    /**
+     * Exact Conversation/Run/MemberTurn join identity carried off the running
+     * mirror at finish. Additive; old hubs ignore. Required so reconnect can
+     * restore a Conversation Run that finished while the hub was offline.
+     */
+    conversation?: ConversationTurnCorrelationDto;
   }>;
 }
 export interface InstanceNoticePayload {

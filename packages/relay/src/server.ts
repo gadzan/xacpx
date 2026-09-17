@@ -5,7 +5,7 @@ import { WebSocketServer } from "ws";
 
 import {
   MAX_TOOL_STEPS, MSG, REASONING_CAP, STATE_SYNC_PARTS_CAP, STATE_SYNC_TEXT_CAP,
-  type AgentCommandDto, type ControlEventDto, type InstanceEventPayload, type InstanceNoticePayload, type InstanceRecoveryAckPayload, type InstanceStateSyncPayload, type LiveTurnSnapshotDto, type RelayEnvelope,
+  type AgentCommandDto, type ControlEventDto, type ConversationTurnCorrelationDto, type InstanceEventPayload, type InstanceNoticePayload, type InstanceRecoveryAckPayload, type InstanceStateSyncPayload, type LiveTurnSnapshotDto, type RelayEnvelope,
   type InstanceStateSnapshotDto, type ScheduledOriginDto, type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto, type ToolStepDto, type TurnPartDto, type UsageBreakdownDto, type UsageCostDto,
   validControlEvent, validInstanceStateSync,
 } from "@ganglion/xacpx-relay-protocol";
@@ -187,6 +187,8 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     startedAfterSeq?: number;
     truncated?: boolean;
     notification?: TurnNotificationContext;
+    /** Product-owned Conversation join. sessionAlias is legacy plumbing when set. */
+    conversation?: ConversationTurnCorrelationDto;
   }
   interface OutSlot {
     slotAfterId: number;
@@ -343,6 +345,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         status: a.text ? "streaming" : "working",
         startedAt: a.startedAt,
         ...(typeof a.slotAfterId === "number" ? { slotAfterId: a.slotAfterId } : {}),
+        ...(a.conversation ? { conversation: a.conversation } : {}),
       });
     }
     return out;
@@ -579,6 +582,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 slotAfterId: slot!.slotAfterId,
                 ...(slot!.startedAfterSeq !== undefined ? { startedAfterSeq: slot!.startedAfterSeq } : {}),
                 ...(notification ? { notification } : {}),
+                ...(event.conversation ? { conversation: event.conversation } : {}),
               });
               // Broadcast the buffer's startedAt so the web's optimistic row and the
               // eventual persisted row (flushed from THIS buffer) carry the SAME value —
@@ -1011,6 +1015,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
                 // that reads as complete.
                 ...(turn.truncated ? { truncated: true } : {}),
                 ...(notification ? { notification } : {}),
+                ...(turn.conversation ? { conversation: turn.conversation } : {}),
               });
             }
             for (const meter of sync.usage) {

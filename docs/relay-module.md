@@ -301,13 +301,21 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
   `pendingFinished`，上限 32，逐出最旧并 log warning）。每个回合在 `turn-started` 时生成一个
   稳定 `recoveryId`。注意 FIFO 里同时有断线期间完成的回合和**刚结束、正在等持久化 ack 的 live
   回合**——live 转发照常发生，条目只是等 ack 才删除。
-- `RelayChannel.start()` 接线了 `RelayClient` 的 `onReady`：`mirror.buildStateSync(liveAliases)` 返回
-  `{ snapshot, aliases }`（snapshot 是**纯拷贝**，只过滤不在 liveAliases 里的别名，不改动 mirror；
-  aliases 是构建时各 alias 的**代际 generation**）。破坏性 GC 是单独的
-  `pruneStateMirror(liveAliases, aliasesAtBuild)`，只在**确认 flush 成功之后**调用，且只对
-  generation **未变化** 且不在 liveAliases 里的 alias 做 compare-and-delete——snapshot 之后新到达的
+- `RelayChannel.start()` 接线了 `RelayClient` 的 `onReady`：`liveAliases` 只来自 ordinary
+  `listSessions()`（hidden bot-direct alias 故意不在其中）。`mirror.buildStateSync(liveAliases)`
+  返回 `{ snapshot, aliases }`（snapshot 是**纯拷贝**）：ordinary Session turn 仍按 liveAliases
+  过滤；**带 `conversation` correlation 的 running turn / finishedOffline 是产品 recovery
+  身份，不因 hidden alias 缺席而从 snapshot 丢掉或被 prune**。aliases 是构建时各 alias 的
+  **代际 generation**。破坏性 GC 是单独的 `pruneStateMirror(liveAliases, aliasesAtBuild)`，
+  只在**确认 flush 成功之后**调用，且只对 generation **未变化**、不在 liveAliases 里、且
+  **不是 Conversation-correlated** 的 alias 做 compare-and-delete——snapshot 之后新到达的
   session/turn（正被 live 转发）或**同 alias 换代**（新 turn / 新 pending 条目）都会被代际保护，
   绝不会被这个旧回调误删；send 失败/not-ready 时也绝不 prune。
+- 带 `conversation` 的 live Control event 仍携带 `sessionAlias`（旧客户端兼容）。那是
+  **legacy transport plumbing**，不得再用于产品 liveness / ownership / routing；产品身份是
+  `conversationId` / `topicId` / `botId` / `runId` / `memberTurnId`。
+- `PendingFinishedTurn` 从 running `MirrorTurn` 拷贝 `conversation`，finishedOffline 快照
+  同样带上这五个 id，hub validator / accumulator / `state-snapshot` 原样保留。
 - FIFO 条目**不做 flush 回调确认**：ws flush 只证明帧离开本地进程，不代表 hub 已持久化；条目
   只在收到 hub 的 `instance.recovery.ack`（对应 recoveryId）后由 `mirror.confirmFinished()` 清除。
   live `turn-finished` 转发同样打上 recoveryId，清 FIFO 同样等 ACK —— hub 在 send 之后、SQLite

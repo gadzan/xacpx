@@ -191,6 +191,124 @@ test("finishedOffline entries clear only on the hub's recovery ack, not on a flu
   await startPromise;
 });
 
+const CONVERSATION = {
+  conversationId: "conversation_bot_1",
+  topicId: "topic_bot_1_default",
+  botId: "bot_1",
+  runId: "run_1",
+  memberTurnId: "mt_1",
+} as const;
+
+test("reconnect state sync keeps a running Conversation turn while ordinary sessions still hide the alias", async () => {
+  const events: Array<{ type: string; payload: unknown }> = [];
+  const flushes: Array<((error?: Error) => void) | undefined> = [];
+  const fakeClient = {
+    start: () => {},
+    stop: () => {},
+    sendEvent: (type: string, payload: unknown, onFlush?: (error?: Error) => void) => {
+      events.push({ type, payload });
+      flushes.push(onFlush);
+    },
+    isReady: () => true,
+  };
+  let capturedOptions: { onReady?: () => void } = {};
+  const channel = new RelayChannel({ url: "ws://h:1", pairingToken: "t" }, {
+    credentialStore: new MemoryCredentialStore(),
+    createClient: (options) => { capturedOptions = options; return fakeClient as never; },
+  });
+  const controller = new AbortController();
+  const { input, subscribed } = makeStartInput({ abortSignal: controller.signal });
+  (input.control as Record<string, unknown>).listSessions = () => [];
+  const startPromise = channel.start(input as never);
+  await waitUntil(() => subscribed.length > 0, "event subscription");
+  const fireEvent = (event: unknown) => (subscribed[0] as (event: unknown) => void)(event);
+  const lastSync = () => (events.findLast((e) => e.type === MSG.instanceStateSync)!.payload as {
+    turns: Array<{ sessionAlias: string; conversation?: typeof CONVERSATION }>;
+  });
+
+  fireEvent({
+    type: "turn-started",
+    chatKey: "relay:acc",
+    sessionAlias: "brt_hidden",
+    prompt: "review this",
+    conversation: CONVERSATION,
+  });
+  events.length = 0;
+  flushes.length = 0;
+  capturedOptions.onReady!();
+  expect((input.control as { listSessions: () => unknown[] }).listSessions()).toEqual([]);
+  expect(lastSync().turns).toHaveLength(1);
+  expect(lastSync().turns[0]).toMatchObject({
+    sessionAlias: "brt_hidden",
+    conversation: CONVERSATION,
+  });
+  flushes.at(-1)!();
+  events.length = 0;
+  capturedOptions.onReady!();
+  expect(lastSync().turns).toHaveLength(1);
+  expect(lastSync().turns[0]!.conversation).toEqual(CONVERSATION);
+
+  controller.abort();
+  await startPromise;
+});
+
+test("reconnect finishedOffline carries Conversation correlation exactly once until hub ack", async () => {
+  const events: Array<{ type: string; payload: unknown; onFlush?: (error?: Error) => void }> = [];
+  let capturedOptions: { onReady?: () => void; onEvent?: (envelope: unknown) => void } = {};
+  const fakeClient = {
+    start: () => {},
+    stop: () => {},
+    sendEvent: (type: string, payload: unknown, onFlush?: (error?: Error) => void) => {
+      events.push({ type, payload, onFlush });
+    },
+    isReady: () => true,
+  };
+  const channel = new RelayChannel({ url: "ws://h:1", pairingToken: "t" }, {
+    credentialStore: new MemoryCredentialStore(),
+    createClient: (options) => { capturedOptions = options; return fakeClient as never; },
+  });
+  const controller = new AbortController();
+  const { input, subscribed } = makeStartInput({ abortSignal: controller.signal });
+  (input.control as Record<string, unknown>).listSessions = () => [];
+  const startPromise = channel.start(input as never);
+  await waitUntil(() => subscribed.length > 0, "event subscription");
+  const fireEvent = (event: unknown) => (subscribed[0] as (event: unknown) => void)(event);
+  const lastSync = () => (events.findLast((e) => e.type === MSG.instanceStateSync)!.payload as {
+    finishedOffline: Array<{ conversation?: typeof CONVERSATION; recoveryId?: string }>;
+  });
+  const lastForwardedEvent = () => (events.findLast((e) => e.type === MSG.instanceEvent)!.payload as { event: { recoveryId?: string } }).event;
+
+  fireEvent({
+    type: "turn-started",
+    chatKey: "relay:acc",
+    sessionAlias: "brt_hidden",
+    prompt: "review this",
+    conversation: CONVERSATION,
+  });
+  fireEvent({ type: "turn-output", chatKey: "relay:acc", sessionAlias: "brt_hidden", chunk: "done" });
+  fireEvent({ type: "turn-finished", chatKey: "relay:acc", sessionAlias: "brt_hidden", ok: true, text: "done" });
+  const recoveryId = lastForwardedEvent().recoveryId!;
+
+  capturedOptions.onReady!();
+  expect((input.control as { listSessions: () => unknown[] }).listSessions()).toEqual([]);
+  expect(lastSync().finishedOffline).toHaveLength(1);
+  expect(lastSync().finishedOffline[0]).toMatchObject({ conversation: CONVERSATION, recoveryId });
+  const syncFlush = events.findLast((e) => e.type === MSG.instanceStateSync)!.onFlush!;
+  syncFlush();
+  capturedOptions.onReady!();
+  expect(lastSync().finishedOffline).toHaveLength(1);
+  expect(lastSync().finishedOffline[0]!.conversation).toEqual(CONVERSATION);
+
+  capturedOptions.onEvent!({
+    protocolVersion: 1, kind: "event", type: MSG.instanceRecoveryAck, payload: { recoveryIds: [recoveryId] },
+  });
+  capturedOptions.onReady!();
+  expect(lastSync().finishedOffline).toEqual([]);
+
+  controller.abort();
+  await startPromise;
+});
+
 test("sendScheduledMessage runs the fired task as a control turn (not a side notice)", async () => {
   const calls: unknown[] = [];
   const fakeClient = { start: () => {}, stop: () => {}, sendEvent: () => {} };

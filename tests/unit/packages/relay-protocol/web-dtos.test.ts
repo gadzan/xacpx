@@ -164,6 +164,45 @@ test("validInstanceStateSync accepts turn parts with delete, move, and fetch too
   }
 });
 
+test("validInstanceStateSync keeps Conversation correlation on running and finishedOffline turns", () => {
+  const conversation = {
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    botId: "bot_1",
+    runId: "run_1",
+    memberTurnId: "mt_1",
+  };
+  expect(validInstanceStateSync({
+    turns: [{
+      sessionAlias: "brt_hidden",
+      startedAt: 1,
+      text: "partial",
+      reasoning: "",
+      steps: [],
+      conversation,
+    }],
+    usage: [],
+    commands: [],
+    finishedOffline: [{
+      sessionAlias: "brt_hidden",
+      ok: true,
+      text: "done",
+      recoveryId: "r1",
+      conversation,
+    }],
+  })).toBe(true);
+  expect(validInstanceStateSync({
+    turns: [],
+    usage: [],
+    commands: [],
+    finishedOffline: [{
+      sessionAlias: "brt_hidden",
+      ok: true,
+      conversation: { conversationId: "c" },
+    }],
+  })).toBe(false);
+});
+
 test("rejects turn-finished fields the hub persists when they are not strings/booleans", () => {
   // errorMessage / cancelled / text / recoveryId are read straight into SQLite by the
   // hub — a buggy connector sending numbers or objects must be rejected, not trigger
