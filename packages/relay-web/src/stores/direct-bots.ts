@@ -1,0 +1,901 @@
+import { defineStore } from "pinia";
+import { computed, markRaw, ref } from "vue";
+import {
+  MSG,
+  isErrorPayload,
+  type BotDetailDto,
+  type BotSummaryDto,
+  type ConversationDetailDto,
+  type ConversationHistoryResponseDto,
+  type ConversationMessageDto,
+  type ConversationPromptResponseDto,
+  type ConversationRunDetailDto,
+  type ConversationRunDto,
+  type ConversationRunStateDto,
+  type ConversationSummaryDto,
+  type LiveTurnSnapshotDto,
+  type MemberTurnSummaryDto,
+  type PlanEntryDto,
+  type ToolStepDto,
+  type TopicSummaryDto,
+  type TurnPartDto,
+  type WebServerEvent,
+} from "@ganglion/xacpx-relay-protocol";
+import { api } from "../api/client";
+
+export type DirectBotRunState = ConversationRunStateDto;
+
+export interface DirectBotLiveTurn {
+  parts: TurnPartDto[];
+  status: "working" | "streaming";
+  startedAt: number;
+}
+
+function unwrapRpc<T>(result: T | { error: { code: string; message: string } }): T {
+  if (isErrorPayload(result)) {
+    if (result.error.code === "unknown-type") {
+      throw new Error("This feature needs a newer connector — rebuild and reconnect the relay channel on that instance.");
+    }
+    throw new Error(result.error.message || result.error.code);
+  }
+  return result;
+}
+
+function appendText(parts: TurnPartDto[], chunk: string): void {
+  const last = parts[parts.length - 1];
+  if (last?.type === "text") last.text += chunk;
+  else parts.push({ type: "text", text: chunk });
+}
+
+function appendReasoning(parts: TurnPartDto[], chunk: string): void {
+  const last = parts[parts.length - 1];
+  if (last?.type === "reasoning") {
+    last.text += chunk;
+    return;
+  }
+  if (!chunk.trim()) return;
+  parts.push({ type: "reasoning", text: chunk });
+}
+
+function upsertTool(parts: TurnPartDto[], step: ToolStepDto): void {
+  const i = parts.findIndex((p) => p.type === "tool" && p.step.toolCallId === step.toolCallId);
+  if (i >= 0) parts[i] = { type: "tool", step };
+  else parts.push({ type: "tool", step });
+}
+
+function mintRequestId(): string {
+  return `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+const PERSISTED_BOT_SELECTION_KEY = "xrelay.selectedBot";
+
+export interface PersistedBotSelection {
+  instanceId: string;
+  botId: string;
+}
+
+export function loadPersistedBotSelection(): PersistedBotSelection | null {
+  try {
+    const raw = localStorage.getItem(PERSISTED_BOT_SELECTION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.instanceId === "string" && typeof parsed.botId === "string") {
+      return { instanceId: parsed.instanceId, botId: parsed.botId };
+    }
+  } catch {
+    // Ignore storage parse issues
+  }
+  return null;
+}
+
+function persistBotSelection(instanceId: string | null, botId: string | null): void {
+  try {
+    if (instanceId && botId) {
+      localStorage.setItem(PERSISTED_BOT_SELECTION_KEY, JSON.stringify({ instanceId, botId }));
+    } else {
+      localStorage.removeItem(PERSISTED_BOT_SELECTION_KEY);
+    }
+  } catch {
+    // Ignore storage issues
+  }
+}
+
+export const useDirectBotsStore = defineStore("directBots", () => {
+  // Navigation / Selection identity
+  const instanceId = ref<string | null>(null);
+  const selectedBotId = ref<string | null>(null);
+  const activeConversationId = ref<string | null>(null);
+  const activeTopicId = ref<string | null>(null);
+
+  // Bots state
+  const botsByInstance = ref<Record<string, BotSummaryDto[]>>({});
+  const botDetails = ref<Record<string, BotDetailDto>>({});
+  const loadingBots = ref<boolean>(false);
+  const botsLoaded = ref<Record<string, boolean>>({});
+
+  // Conversations state
+  const conversationsByInstance = ref<Record<string, ConversationSummaryDto[]>>({});
+  const conversationDetails = ref<Record<string, ConversationDetailDto>>({});
+
+  // Topics state (keyed by `${instanceId}:${conversationId}`)
+  const topicsByConversation = ref<Record<string, TopicSummaryDto[]>>({});
+
+  // Messages / History state for active conversation & topic
+  const messages = ref<ConversationMessageDto[]>([]);
+  const oldestSeq = ref<number | undefined>(undefined);
+  const newestSeq = ref<number | undefined>(undefined);
+  const hasMoreBefore = ref<boolean>(false);
+  const hasMoreAfter = ref<boolean>(false);
+  const loadingHistory = ref<boolean>(false);
+  const loadingOlder = ref<boolean>(false);
+  const historyError = ref<string | null>(null);
+
+  // Active Run / Live Turn state
+  const activeRun = ref<ConversationRunDto | null>(null);
+  const activeMemberTurn = ref<MemberTurnSummaryDto | null>(null);
+  const liveTurn = ref<DirectBotLiveTurn | null>(null);
+  const planEntries = ref<PlanEntryDto[]>([]);
+  const cancellingRunId = ref<string | null>(null);
+
+  // Accumulated trace parts retained per runId so completed assistant messages keep their rich cards
+  const runParts = ref<Record<string, TurnPartDto[]>>({});
+
+  // Prompt / Idempotency state
+  const currentDraftRequestId = ref<string | null>(null);
+  const lastPromptText = ref<string>("");
+  const promptInFlight = ref<boolean>(false);
+  const promptError = ref<string | null>(null);
+
+  // General error feedback
+  const generalError = ref<string | null>(null);
+
+  // Computed views
+  const isBotSelected = computed(() => !!instanceId.value && !!selectedBotId.value);
+  const currentBots = computed(() => (instanceId.value ? botsByInstance.value[instanceId.value] ?? [] : []));
+  const currentBot = computed(() => {
+    if (!instanceId.value || !selectedBotId.value) return undefined;
+    const detailKey = `${instanceId.value}:${selectedBotId.value}`;
+    return botDetails.value[detailKey] ?? currentBots.value.find((b) => b.id === selectedBotId.value);
+  });
+  const currentTopics = computed(() => {
+    if (!instanceId.value || !activeConversationId.value) return [];
+    return topicsByConversation.value[`${instanceId.value}:${activeConversationId.value}`] ?? [];
+  });
+  const currentTopic = computed(() => {
+    if (!activeTopicId.value) return undefined;
+    return currentTopics.value.find((t) => t.id === activeTopicId.value);
+  });
+  const isRunActive = computed(() => {
+    const s = activeRun.value?.state;
+    return s === "queued" || s === "running" || s === "waiting-human";
+  });
+
+  // RPC: Bot CRUD
+  async function loadBots(targetInstanceId: string): Promise<BotSummaryDto[]> {
+    loadingBots.value = true;
+    try {
+      const res = unwrapRpc(
+        await api.rpc<{ bots: BotSummaryDto[] }>(targetInstanceId, MSG.botsList, {}),
+      );
+      botsByInstance.value = {
+        ...botsByInstance.value,
+        [targetInstanceId]: res.bots,
+      };
+      botsLoaded.value = {
+        ...botsLoaded.value,
+        [targetInstanceId]: true,
+      };
+      return res.bots;
+    } finally {
+      loadingBots.value = false;
+    }
+  }
+
+  async function loadBotDetail(targetInstanceId: string, botId: string): Promise<BotDetailDto> {
+    const res = unwrapRpc(
+      await api.rpc<{ bot: BotDetailDto }>(targetInstanceId, MSG.botsGet, { id: botId }),
+    );
+    const detailKey = `${targetInstanceId}:${botId}`;
+    botDetails.value = {
+      ...botDetails.value,
+      [detailKey]: res.bot,
+    };
+    return res.bot;
+  }
+
+  async function createBot(
+    targetInstanceId: string,
+    payload: {
+      name: string;
+      agent: string;
+      workspace: string;
+      avatar?: string;
+      role?: string;
+      instructions?: string;
+      model?: string;
+      effort?: string;
+      enabled?: boolean;
+    },
+  ): Promise<BotDetailDto> {
+    const res = unwrapRpc(
+      await api.rpc<{ bot: BotDetailDto }>(targetInstanceId, MSG.botsCreate, payload),
+    );
+    const detailKey = `${targetInstanceId}:${res.bot.id}`;
+    botDetails.value = { ...botDetails.value, [detailKey]: res.bot };
+    await loadBots(targetInstanceId);
+    return res.bot;
+  }
+
+  async function updateBot(
+    targetInstanceId: string,
+    botId: string,
+    patch: {
+      name?: string;
+      avatar?: string | null;
+      role?: string | null;
+      instructions?: string | null;
+      agent?: string;
+      workspace?: string;
+      model?: string | null;
+      effort?: string | null;
+      enabled?: boolean | null;
+    },
+  ): Promise<BotDetailDto> {
+    const res = unwrapRpc(
+      await api.rpc<{ bot: BotDetailDto }>(targetInstanceId, MSG.botsUpdate, { id: botId, ...patch }),
+    );
+    const detailKey = `${targetInstanceId}:${botId}`;
+    botDetails.value = { ...botDetails.value, [detailKey]: res.bot };
+    await loadBots(targetInstanceId);
+    return res.bot;
+  }
+
+  async function deleteBot(targetInstanceId: string, botId: string): Promise<void> {
+    unwrapRpc(await api.rpc<{ ok: boolean }>(targetInstanceId, MSG.botsDelete, { id: botId }));
+    const detailKey = `${targetInstanceId}:${botId}`;
+    const nextDetails = { ...botDetails.value };
+    delete nextDetails[detailKey];
+    botDetails.value = nextDetails;
+
+    const list = botsByInstance.value[targetInstanceId] ?? [];
+    botsByInstance.value = {
+      ...botsByInstance.value,
+      [targetInstanceId]: list.filter((b) => b.id !== botId),
+    };
+
+    if (instanceId.value === targetInstanceId && selectedBotId.value === botId) {
+      clearSelection();
+    }
+  }
+
+  // RPC: Conversations & Topics
+  async function loadConversations(
+    targetInstanceId: string,
+    filter?: { botId?: string },
+  ): Promise<ConversationSummaryDto[]> {
+    const res = unwrapRpc(
+      await api.rpc<{ conversations: ConversationSummaryDto[] }>(
+        targetInstanceId,
+        MSG.conversationsList,
+        filter ?? {},
+      ),
+    );
+    conversationsByInstance.value = {
+      ...conversationsByInstance.value,
+      [targetInstanceId]: res.conversations,
+    };
+    return res.conversations;
+  }
+
+  async function loadTopics(targetInstanceId: string, conversationId: string): Promise<TopicSummaryDto[]> {
+    const res = unwrapRpc(
+      await api.rpc<{ topics: TopicSummaryDto[] }>(targetInstanceId, MSG.topicsList, { conversationId }),
+    );
+    const key = `${targetInstanceId}:${conversationId}`;
+    topicsByConversation.value = {
+      ...topicsByConversation.value,
+      [key]: res.topics,
+    };
+    return res.topics;
+  }
+
+  async function createTopic(
+    targetInstanceId: string,
+    conversationId: string,
+    title: string,
+  ): Promise<TopicSummaryDto> {
+    const res = unwrapRpc(
+      await api.rpc<{ topic: TopicSummaryDto }>(targetInstanceId, MSG.topicsCreate, {
+        conversationId,
+        title,
+      }),
+    );
+    const key = `${targetInstanceId}:${conversationId}`;
+    const currentList = topicsByConversation.value[key] ?? [];
+    topicsByConversation.value = {
+      ...topicsByConversation.value,
+      [key]: [...currentList, res.topic],
+    };
+    // Switch to new topic if in the same conversation
+    if (instanceId.value === targetInstanceId && activeConversationId.value === conversationId) {
+      await switchTopic(res.topic.id);
+    }
+    return res.topic;
+  }
+
+  // History loading and seq-based pagination
+  async function loadHistory(targetInstanceId?: string, convId?: string, topId?: string): Promise<void> {
+    const iId = targetInstanceId ?? instanceId.value;
+    const cId = convId ?? activeConversationId.value;
+    const tId = topId ?? activeTopicId.value;
+    if (!iId || !cId || !tId) return;
+
+    loadingHistory.value = true;
+    historyError.value = null;
+    try {
+      const res = unwrapRpc(
+        await api.rpc<ConversationHistoryResponseDto>(iId, MSG.conversationHistory, {
+          conversationId: cId,
+          topicId: tId,
+          limit: 50,
+        }),
+      );
+
+      // Verify that the view hasn't switched while loading
+      if (instanceId.value !== iId || activeConversationId.value !== cId || activeTopicId.value !== tId) {
+        return;
+      }
+
+      const deduplicated = new Map<string, ConversationMessageDto>();
+      for (const m of res.messages) {
+        deduplicated.set(m.id, m);
+      }
+      messages.value = [...deduplicated.values()].sort((a, b) => a.seq - b.seq);
+      oldestSeq.value = res.oldestSeq;
+      newestSeq.value = res.newestSeq;
+      hasMoreBefore.value = res.hasMoreBefore;
+      hasMoreAfter.value = res.hasMoreAfter;
+
+      // If any bot message in history corresponds to an active run, converge liveTurn
+      if (activeRun.value) {
+        const canonicalBotMsg = messages.value.find(
+          (m) => m.role === "bot" && m.runId === activeRun.value?.id,
+        );
+        if (canonicalBotMsg) {
+          liveTurn.value = null;
+        }
+      }
+    } catch (err: unknown) {
+      historyError.value = err instanceof Error ? err.message : String(err);
+    } finally {
+      loadingHistory.value = false;
+    }
+  }
+
+  async function loadOlder(): Promise<void> {
+    const iId = instanceId.value;
+    const cId = activeConversationId.value;
+    const tId = activeTopicId.value;
+    if (!iId || !cId || !tId || loadingOlder.value || !hasMoreBefore.value || oldestSeq.value === undefined) {
+      return;
+    }
+
+    loadingOlder.value = true;
+    try {
+      const res = unwrapRpc(
+        await api.rpc<ConversationHistoryResponseDto>(iId, MSG.conversationHistory, {
+          conversationId: cId,
+          topicId: tId,
+          beforeSeq: oldestSeq.value,
+          limit: 50,
+        }),
+      );
+
+      if (instanceId.value !== iId || activeConversationId.value !== cId || activeTopicId.value !== tId) {
+        return;
+      }
+
+      if (res.messages.length > 0) {
+        const existingMap = new Map<string, ConversationMessageDto>();
+        for (const m of messages.value) {
+          existingMap.set(m.id, m);
+        }
+        for (const m of res.messages) {
+          existingMap.set(m.id, m);
+        }
+        messages.value = [...existingMap.values()].sort((a, b) => a.seq - b.seq);
+        if (res.oldestSeq !== undefined) {
+          oldestSeq.value = res.oldestSeq;
+        }
+      }
+      hasMoreBefore.value = res.hasMoreBefore;
+    } catch (err: unknown) {
+      // Non-fatal pagination error
+      console.warn("loadOlder failed:", err);
+    } finally {
+      loadingOlder.value = false;
+    }
+  }
+
+  // Selection & Navigation
+  async function selectBot(targetInstanceId: string, botId: string): Promise<void> {
+    instanceId.value = targetInstanceId;
+    selectedBotId.value = botId;
+    persistBotSelection(targetInstanceId, botId);
+
+    // Reset topic, history, live state
+    activeConversationId.value = null;
+    activeTopicId.value = null;
+    messages.value = [];
+    oldestSeq.value = undefined;
+    newestSeq.value = undefined;
+    hasMoreBefore.value = false;
+    hasMoreAfter.value = false;
+    activeRun.value = null;
+    activeMemberTurn.value = null;
+    liveTurn.value = null;
+    planEntries.value = [];
+    promptError.value = null;
+
+    // Load bot detail in background
+    void loadBotDetail(targetInstanceId, botId).catch(() => {});
+
+    // Resolve or find Direct Conversation
+    try {
+      const convs = await loadConversations(targetInstanceId, { botId });
+      const conv = convs[0];
+      if (conv) {
+        activeConversationId.value = conv.id;
+        const topics = await loadTopics(targetInstanceId, conv.id);
+        const targetTopicId = conv.defaultTopicId ?? topics[0]?.id;
+        if (targetTopicId) {
+          activeTopicId.value = targetTopicId;
+          await loadHistory(targetInstanceId, conv.id, targetTopicId);
+        }
+      }
+    } catch (err: unknown) {
+      generalError.value = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async function switchTopic(topicId: string): Promise<void> {
+    if (activeTopicId.value === topicId) return;
+    activeTopicId.value = topicId;
+    messages.value = [];
+    oldestSeq.value = undefined;
+    newestSeq.value = undefined;
+    hasMoreBefore.value = false;
+    hasMoreAfter.value = false;
+    activeRun.value = null;
+    activeMemberTurn.value = null;
+    liveTurn.value = null;
+    planEntries.value = [];
+    promptError.value = null;
+
+    if (instanceId.value && activeConversationId.value) {
+      await loadHistory(instanceId.value, activeConversationId.value, topicId);
+    }
+  }
+
+  function clearSelection(): void {
+    instanceId.value = null;
+    selectedBotId.value = null;
+    activeConversationId.value = null;
+    activeTopicId.value = null;
+    messages.value = [];
+    oldestSeq.value = undefined;
+    newestSeq.value = undefined;
+    hasMoreBefore.value = false;
+    hasMoreAfter.value = false;
+    activeRun.value = null;
+    activeMemberTurn.value = null;
+    liveTurn.value = null;
+    planEntries.value = [];
+    promptInFlight.value = false;
+    promptError.value = null;
+    currentDraftRequestId.value = null;
+    lastPromptText.value = "";
+    persistBotSelection(null, null);
+  }
+
+  // Prompt sending with stable requestId idempotency
+  function preparePromptRequestId(text: string): string {
+    if (!currentDraftRequestId.value || text !== lastPromptText.value) {
+      currentDraftRequestId.value = mintRequestId();
+      lastPromptText.value = text;
+    }
+    return currentDraftRequestId.value;
+  }
+
+  async function sendPrompt(text: string): Promise<void> {
+    const trimmed = text.trim();
+    if (!trimmed || !instanceId.value || !selectedBotId.value || !activeConversationId.value || !activeTopicId.value) {
+      return;
+    }
+
+    const bot = currentBot.value;
+    if (bot && !bot.enabled) {
+      promptError.value = "Bot is disabled. Enable it before sending messages.";
+      return;
+    }
+
+    const reqId = preparePromptRequestId(trimmed);
+    promptInFlight.value = true;
+    promptError.value = null;
+
+    try {
+      const res = unwrapRpc(
+        await api.rpc<ConversationPromptResponseDto>(instanceId.value, MSG.conversationPrompt, {
+          conversationId: activeConversationId.value,
+          topicId: activeTopicId.value,
+          requestId: reqId,
+          text: trimmed,
+          target: { botId: selectedBotId.value },
+        }),
+      );
+
+      // On successful acceptance, reset current draft requestId so subsequent prompt gets a new id
+      currentDraftRequestId.value = null;
+      lastPromptText.value = "";
+
+      // Deduplicate human message into messages list
+      const existing = messages.value.find((m) => m.id === res.message.id);
+      if (!existing) {
+        messages.value = [...messages.value, res.message].sort((a, b) => a.seq - b.seq);
+        newestSeq.value = Math.max(newestSeq.value ?? 0, res.message.seq);
+      }
+
+      // Track active run and member turn
+      activeRun.value = res.run;
+      activeMemberTurn.value = res.memberTurn;
+      liveTurn.value = {
+        parts: [],
+        status: "working",
+        startedAt: res.memberTurn.startedAt ? new Date(res.memberTurn.startedAt).getTime() : Date.now(),
+      };
+      planEntries.value = [];
+    } catch (err: unknown) {
+      promptError.value = err instanceof Error ? err.message : String(err);
+      // Retain currentDraftRequestId so a retry uses the exact same requestId
+    } finally {
+      promptInFlight.value = false;
+    }
+  }
+
+  // Exact Run cancellation via runId
+  async function cancelCurrentRun(): Promise<void> {
+    if (!instanceId.value || !activeRun.value) return;
+    const runId = activeRun.value.id;
+    cancellingRunId.value = runId;
+
+    try {
+      const res = unwrapRpc(
+        await api.rpc<{ ok: boolean; run: ConversationRunDetailDto }>(
+          instanceId.value,
+          MSG.runsCancel,
+          { runId },
+        ),
+      );
+      activeRun.value = res.run;
+      if (res.run.state === "cancelled" || res.run.state === "indeterminate" || res.run.state === "completed") {
+        liveTurn.value = null;
+        if (instanceId.value && activeConversationId.value && activeTopicId.value) {
+          void loadHistory(instanceId.value, activeConversationId.value, activeTopicId.value);
+        }
+      }
+    } catch (err: unknown) {
+      console.warn("cancelCurrentRun error:", err);
+      // If error indicates indeterminate or timeout, mark indeterminate
+      if (activeRun.value && activeRun.value.id === runId) {
+        activeRun.value = {
+          ...activeRun.value,
+          state: "indeterminate",
+        };
+      }
+    } finally {
+      cancellingRunId.value = null;
+    }
+  }
+
+  // Reconcile on reconnect
+  async function reconcileOnReconnect(): Promise<void> {
+    const iId = instanceId.value;
+    if (!iId) return;
+
+    try {
+      await loadBots(iId);
+      if (selectedBotId.value) {
+        await loadBotDetail(iId, selectedBotId.value).catch(() => {});
+        if (activeConversationId.value) {
+          await loadTopics(iId, activeConversationId.value).catch(() => {});
+          if (activeTopicId.value) {
+            await loadHistory(iId, activeConversationId.value, activeTopicId.value);
+          }
+        }
+      }
+
+      // Check active run if we believed one was running
+      if (activeRun.value && (activeRun.value.state === "running" || activeRun.value.state === "queued")) {
+        try {
+          const res = unwrapRpc(
+            await api.rpc<{ run: ConversationRunDetailDto }>(iId, MSG.runsGet, {
+              runId: activeRun.value.id,
+            }),
+          );
+          activeRun.value = res.run;
+          if (res.run.state !== "running" && res.run.state !== "queued" && res.run.state !== "waiting-human") {
+            liveTurn.value = null;
+            if (activeConversationId.value && activeTopicId.value) {
+              await loadHistory(iId, activeConversationId.value, activeTopicId.value);
+            }
+          }
+        } catch {
+          // If run not found or error, reload history to converge
+          if (activeConversationId.value && activeTopicId.value) {
+            await loadHistory(iId, activeConversationId.value, activeTopicId.value);
+          }
+        }
+      }
+    } catch (err: unknown) {
+      console.warn("reconcileOnReconnect error:", err);
+    }
+  }
+
+  // Handle server WebSocket events
+  function applyEvent(event: WebServerEvent): void {
+    if (event.kind === "instance-status") {
+      if (event.instanceId === instanceId.value && !event.online) {
+        generalError.value = "Instance is offline";
+      }
+      return;
+    }
+
+    if (event.kind === "state-snapshot") {
+      if (event.instanceId !== instanceId.value) return;
+      // Recover active turn from snapshot if correlated to current conversation & topic
+      if (activeConversationId.value && activeTopicId.value) {
+        const matchingTurn = event.turns.find(
+          (t: LiveTurnSnapshotDto) =>
+            t.conversation &&
+            t.conversation.conversationId === activeConversationId.value &&
+            t.conversation.topicId === activeTopicId.value,
+        );
+
+        if (matchingTurn) {
+          liveTurn.value = {
+            parts: [...matchingTurn.parts],
+            status: matchingTurn.status,
+            startedAt: matchingTurn.startedAt,
+          };
+          if (matchingTurn.conversation?.runId && (!activeRun.value || activeRun.value.id === matchingTurn.conversation.runId)) {
+            // Retain run parts
+            runParts.value = {
+              ...runParts.value,
+              [matchingTurn.conversation.runId]: [...matchingTurn.parts],
+            };
+          }
+        } else if (activeRun.value && (activeRun.value.state === "running" || activeRun.value.state === "queued")) {
+          // Turn completed while offline -> refetch history and active run
+          liveTurn.value = null;
+          void loadHistory(event.instanceId, activeConversationId.value, activeTopicId.value);
+          void api
+            .rpc<{ run: ConversationRunDetailDto }>(event.instanceId, MSG.runsGet, {
+              runId: activeRun.value.id,
+            })
+            .then((res) => {
+              const run = unwrapRpc(res).run;
+              activeRun.value = run;
+            })
+            .catch(() => {});
+        }
+      }
+      return;
+    }
+
+    if (event.kind !== "control-event") return;
+    if (event.instanceId !== instanceId.value) return;
+    const e = event.event;
+
+    // Catalog invalidation events
+    if (e.type === "bots-changed") {
+      void loadBots(event.instanceId);
+      if (selectedBotId.value) {
+        void loadBotDetail(event.instanceId, selectedBotId.value).catch(() => {});
+      }
+      return;
+    }
+
+    if (e.type === "conversations-changed") {
+      void loadConversations(event.instanceId, selectedBotId.value ? { botId: selectedBotId.value } : undefined);
+      return;
+    }
+
+    if (e.type === "conversation-topic-changed") {
+      const topic = e.topic;
+      if (topic.conversationId === activeConversationId.value) {
+        const key = `${event.instanceId}:${topic.conversationId}`;
+        const currentList = topicsByConversation.value[key] ?? [];
+        const idx = currentList.findIndex((t) => t.id === topic.id);
+        if (idx >= 0) {
+          const next = [...currentList];
+          next[idx] = topic;
+          topicsByConversation.value = { ...topicsByConversation.value, [key]: next };
+        } else {
+          topicsByConversation.value = { ...topicsByConversation.value, [key]: [...currentList, topic] };
+        }
+      }
+      return;
+    }
+
+    if (e.type === "conversation-message") {
+      const msg = e.message;
+      if (msg.conversationId === activeConversationId.value && msg.topicId === activeTopicId.value) {
+        const existing = messages.value.find((m) => m.id === msg.id);
+        if (!existing) {
+          messages.value = [...messages.value, msg].sort((a, b) => a.seq - b.seq);
+          newestSeq.value = Math.max(newestSeq.value ?? 0, msg.seq);
+        }
+        // If this message belongs to the active run and is from the bot, converge liveTurn
+        if (msg.role === "bot" && activeRun.value && msg.runId === activeRun.value.id) {
+          liveTurn.value = null;
+        }
+      }
+      return;
+    }
+
+    if (e.type === "conversation-run-changed") {
+      const run = e.run;
+      if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
+        if (!activeRun.value || activeRun.value.id === run.id) {
+          activeRun.value = run;
+          if (run.state === "completed" || run.state === "failed" || run.state === "cancelled" || run.state === "indeterminate") {
+            liveTurn.value = null;
+            if (instanceId.value && activeConversationId.value && activeTopicId.value) {
+              void loadHistory(instanceId.value, activeConversationId.value, activeTopicId.value);
+            }
+          }
+        }
+      }
+      return;
+    }
+
+    if (e.type === "member-turn-started") {
+      const { run, memberTurn } = e;
+      if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
+        activeRun.value = run;
+        activeMemberTurn.value = memberTurn;
+        if (!liveTurn.value || activeRun.value?.id === run.id) {
+          liveTurn.value = {
+            parts: [],
+            status: "working",
+            startedAt: memberTurn.startedAt ? new Date(memberTurn.startedAt).getTime() : Date.now(),
+          };
+        }
+      }
+      return;
+    }
+
+    if (e.type === "member-turn-finished") {
+      const { run, memberTurn } = e;
+      if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
+        activeRun.value = run;
+        activeMemberTurn.value = memberTurn;
+        if (run.state !== "running" && run.state !== "queued" && run.state !== "waiting-human") {
+          liveTurn.value = null;
+          if (instanceId.value && activeConversationId.value && activeTopicId.value) {
+            void loadHistory(instanceId.value, activeConversationId.value, activeTopicId.value);
+          }
+        }
+      }
+      return;
+    }
+
+    // Correlation-driven turn events
+    if ("conversation" in e && e.conversation) {
+      const corr = e.conversation;
+      if (
+        corr.conversationId !== activeConversationId.value ||
+        corr.topicId !== activeTopicId.value ||
+        (activeRun.value && corr.runId !== activeRun.value.id)
+      ) {
+        return;
+      }
+
+      if (!liveTurn.value) {
+        liveTurn.value = {
+          parts: [],
+          status: "working",
+          startedAt: Date.now(),
+        };
+      }
+
+      const parts = liveTurn.value.parts;
+      if (e.type === "turn-started") {
+        liveTurn.value.startedAt = e.startedAt ?? Date.now();
+      } else if (e.type === "turn-output") {
+        appendText(parts, e.chunk);
+        liveTurn.value.status = "streaming";
+      } else if (e.type === "turn-thought") {
+        appendReasoning(parts, e.chunk);
+      } else if (e.type === "tool-event") {
+        upsertTool(parts, e.step);
+      } else if (e.type === "plan") {
+        planEntries.value = e.entries;
+      } else if (e.type === "turn-finished") {
+        liveTurn.value.status = "working";
+        // Retain parts under runId
+        if (corr.runId) {
+          runParts.value = {
+            ...runParts.value,
+            [corr.runId]: [...parts],
+          };
+        }
+      }
+
+      // Also update runParts copy
+      if (corr.runId) {
+        runParts.value = {
+          ...runParts.value,
+          [corr.runId]: [...parts],
+        };
+      }
+    }
+  }
+
+  return {
+    instanceId,
+    selectedBotId,
+    activeConversationId,
+    activeTopicId,
+    botsByInstance,
+    botDetails,
+    loadingBots,
+    botsLoaded,
+    conversationsByInstance,
+    conversationDetails,
+    topicsByConversation,
+    messages,
+    oldestSeq,
+    newestSeq,
+    hasMoreBefore,
+    hasMoreAfter,
+    loadingHistory,
+    loadingOlder,
+    historyError,
+    activeRun,
+    activeMemberTurn,
+    liveTurn,
+    planEntries,
+    cancellingRunId,
+    runParts,
+    currentDraftRequestId,
+    lastPromptText,
+    promptInFlight,
+    promptError,
+    generalError,
+    isBotSelected,
+    currentBots,
+    currentBot,
+    currentTopics,
+    currentTopic,
+    isRunActive,
+    loadBots,
+    loadBotDetail,
+    createBot,
+    updateBot,
+    deleteBot,
+    loadConversations,
+    loadTopics,
+    createTopic,
+    loadHistory,
+    loadOlder,
+    selectBot,
+    switchTopic,
+    clearSelection,
+    preparePromptRequestId,
+    sendPrompt,
+    cancelCurrentRun,
+    reconcileOnReconnect,
+    applyEvent,
+  };
+});
