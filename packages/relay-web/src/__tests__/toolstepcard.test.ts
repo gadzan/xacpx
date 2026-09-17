@@ -91,7 +91,7 @@ describe("ToolStepCard error banner de-duplication", () => {
           kind: "read",
           title: "a.ts",
           status: "success",
-          detail: { type: "read", path: "a.ts" },
+          detail: { type: "read", path: "a.ts", preview: "file body" },
         } as ToolStepDto,
         ensureFull,
       },
@@ -104,7 +104,23 @@ describe("ToolStepCard error banner de-duplication", () => {
     await nextTick();
     await nextTick();
     expect(w.find('[data-test="tool-step-hydrating"]').exists()).toBe(false);
-    expect(w.find('[data-test="read-path"]').text()).toContain("a.ts");
+    expect(w.find('[data-test="read-preview"]').text()).toContain("file body");
+    expect(w.find('[data-test="tool-step-header"]').text()).toContain("a.ts");
+  });
+
+  it("expands a truncated header title to its full text", async () => {
+    const w = card({
+      status: "success",
+      title: "a-very-long-command --with --many --flags --that --overflows",
+      detail: { type: "command", command: "a-very-long-command --with --many --flags --that --overflows", output: "ok", exitCode: 0 },
+    });
+    const header = w.find('[data-test="tool-step-header"]');
+    expect(header.find("span.min-w-0").classes()).toContain("truncate");
+    await header.trigger("click");
+    expect(header.attributes("aria-expanded")).toBe("true");
+    expect(header.find("span.min-w-0").classes()).not.toContain("truncate");
+    expect(header.find("span.min-w-0").attributes("title")).toContain("a-very-long-command");
+    expect(w.find('[data-test="tool-step-detail"]').exists()).toBe(true);
   });
 });
 

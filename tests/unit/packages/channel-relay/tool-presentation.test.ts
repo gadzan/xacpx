@@ -113,23 +113,22 @@ test("read derives path from file_path and a content array preview", () => {
   expect(step.detail).toMatchObject({ type: "read", path: "src/a.ts", preview: "file contents" });
 });
 
-test("search uses Codex parsed_cmd for the query", () => {
+test("search shows the parsed_cmd query in the header without a drawer until output lands", () => {
   const step = toolUseEventToStepDto({
     toolCallId: "t4", toolName: "Search", kind: "search", status: "success",
     rawInput: { parsed_cmd: [{ type: "search", cmd: "rg -n session src", name: "src" }] },
   });
-  expect(step.detail).toMatchObject({ type: "search", query: "rg -n session src" });
+  expect(step.title).toBe("rg -n session src");
+  expect(step.detail).toBeUndefined();
 });
 
-test("Cursor Glob shows its pattern and target directory in the search card", () => {
+test("Cursor Glob shows its pattern and target directory in the header without a drawer", () => {
   const step = toolUseEventToStepDto({
     toolCallId: "glob-1", toolName: "Glob", kind: "search", status: "running",
     rawInput: { glob_pattern: "**/*.vue", target_directory: "packages/relay-web" },
   });
-  expect(step).toMatchObject({
-    title: "**/*.vue in packages/relay-web",
-    detail: { type: "search", query: "**/*.vue in packages/relay-web" },
-  });
+  expect(step.title).toBe("**/*.vue in packages/relay-web");
+  expect(step.detail).toBeUndefined();
 });
 
 test("unknown tool falls back to primitive fields only (no nested JSON)", () => {
@@ -247,6 +246,29 @@ test("omits the detail entirely when the adapter sent nothing to show", () => {
   });
   expect(edit.detail).toBeUndefined();
   expect(edit.title).toBe("Edit");
+
+  // The header already shows path/command/query: a detail with nothing below
+  // it would echo the same line in the drawer.
+  const read = toolUseEventToStepDto({
+    toolCallId: "r0", toolName: "Read", kind: "read", status: "success",
+    rawInput: { file_path: "src/a.ts" },
+  });
+  expect(read.title).toBe("src/a.ts");
+  expect(read.detail).toBeUndefined();
+
+  const execute = toolUseEventToStepDto({
+    toolCallId: "x0", toolName: "Bash", kind: "execute", status: "success",
+    rawInput: { command: "git status --short" },
+  });
+  expect(execute.title).toBe("git status --short");
+  expect(execute.detail).toBeUndefined();
+
+  const search = toolUseEventToStepDto({
+    toolCallId: "s0", toolName: "Search", kind: "search", status: "success",
+    rawInput: { query: "session" },
+  });
+  expect(search.title).toBe("session");
+  expect(search.detail).toBeUndefined();
 });
 
 test("preserves subagent ownership metadata for Relay Web grouping", () => {
@@ -470,9 +492,9 @@ test("agentMessageId survives every detail-variant path via the base spread", ()
   const variants: Array<Partial<ToolUseEvent>> = [
     { kind: "other", rawInput: { to: "peer", message: "hi" } },
     { kind: "edit", rawInput: { file_path: "src/a.ts", old_string: "a", new_string: "b" } },
-    { kind: "read", rawInput: { file_path: "src/a.ts" } },
+    { kind: "read", rawInput: { file_path: "src/a.ts" }, rawOutput: { stdout: "body" } },
     { kind: "execute", rawInput: { command: "ls" } },
-    { kind: "search", rawInput: { query: "foo" } },
+    { kind: "search", rawInput: { query: "foo" }, rawOutput: { stdout: "a.ts:1" } },
     { kind: "think", rawInput: { explanation: "hmm" } },
   ];
   for (const variant of variants) {
@@ -484,7 +506,7 @@ test("agentMessageId survives every detail-variant path via the base spread", ()
   }
 });
 
-test("delete presents path as title and primitive fields in detail", () => {
+test("delete drops the title path from detail fields", () => {
   const step = toolUseEventToStepDto({
     toolCallId: "d1", toolName: "Delete", kind: "delete", status: "success",
     rawInput: { file_path: "temp/cache.json", recursive: true },
@@ -494,29 +516,35 @@ test("delete presents path as title and primitive fields in detail", () => {
   expect(step.detail).toMatchObject({
     type: "fields",
     fields: [
-      { label: "file_path", value: "temp/cache.json" },
       { label: "recursive", value: "true" },
     ],
   });
 });
 
-test("move presents 'source → destination' as title and fields in detail", () => {
+test("move omits the detail when only title paths were sent", () => {
   const step = toolUseEventToStepDto({
     toolCallId: "m1", toolName: "Move", kind: "move", status: "success",
     rawInput: { source: "src/old.ts", destination: "src/new.ts" },
   });
   expect(step.title).toBe("src/old.ts → src/new.ts");
   expect(step.kind).toBe("move");
+  expect(step.detail).toBeUndefined();
+});
+
+test("move keeps non-title fields alongside the output", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "m2", toolName: "Move", kind: "move", status: "success",
+    rawInput: { source: "src/old.ts", destination: "src/new.ts", overwrite: true },
+  });
   expect(step.detail).toMatchObject({
     type: "fields",
     fields: [
-      { label: "source", value: "src/old.ts" },
-      { label: "destination", value: "src/new.ts" },
+      { label: "overwrite", value: "true" },
     ],
   });
 });
 
-test("fetch presents url as title and fields in detail", () => {
+test("fetch drops the title url from detail fields", () => {
   const step = toolUseEventToStepDto({
     toolCallId: "f1", toolName: "Fetch", kind: "fetch", status: "success",
     rawInput: { url: "https://api.example.com/v1/health" },
@@ -526,7 +554,7 @@ test("fetch presents url as title and fields in detail", () => {
   expect(step.kind).toBe("fetch");
   expect(step.detail).toMatchObject({
     type: "fields",
-    fields: [{ label: "url", value: "https://api.example.com/v1/health" }],
+    fields: [],
     output: '{"status":"ok"}',
   });
 });
@@ -560,9 +588,10 @@ test("end-to-end: runtime sparse Read sequence results in rich Read step DTO", (
   expect(step.title).toBe("/tmp/a.ts");
   expect(step.status).toBe("success");
   expect(step.kind).toBe("read");
-  expect(step.detail).toMatchObject({ type: "read", path: "/tmp/a.ts" });
+  // A running read carries only its path until the terminal frame lands —
+  // the header owns it, so there is no detail drawer to echo it.
+  expect(step.detail).toBeUndefined();
 });
-
 test("end-to-end: runtime sparse Execute sequence results in rich Command step DTO", () => {
   const { normalizeRuntimeToolCallEvent } = require("../../../../src/bridge/engine/runtime/runtime-tool-call-merge");
   const { mapRuntimeToolEvent } = require("../../../../src/bridge/engine/runtime-engine");

@@ -121,8 +121,8 @@ function fmtDuration(ms?: number): string {
       <span class="shrink-0 font-medium text-[11.5px] text-fg-muted transition-colors"
             :class="hasDetail ? 'group-hover:text-fg' : ''">{{ kindLabel }}</span>
       <span v-if="fileExt" data-test="file-ext-badge" class="shrink-0 rounded bg-accent/10 px-1 py-0.5 text-[9px] font-semibold text-accent/80 font-mono leading-none">{{ fileExt }}</span>
-      <span class="min-w-0 truncate font-mono text-[11.5px] text-fg-muted/90"
-            :class="hasDetail ? 'group-hover:text-fg' : ''">{{ step.title }}</span>
+      <span class="min-w-0 font-mono text-[11.5px] text-fg-muted/90 break-all"
+            :class="[(hasDetail ? 'group-hover:text-fg' : ''), open ? '' : 'truncate']" :title="step.title">{{ step.title }}</span>
       <span class="ml-auto flex shrink-0 items-center gap-1.5">
         <span v-if="diffStats" data-test="step-diff-stats" class="flex items-center gap-1 font-mono text-[11px]">
           <span v-if="diffStats.add" class="text-run font-medium">+{{ diffStats.add }}</span>

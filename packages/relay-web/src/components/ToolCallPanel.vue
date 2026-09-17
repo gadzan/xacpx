@@ -90,8 +90,8 @@ function fmtDuration(ms?: number): string {
       <li v-for="s in steps" :key="s.toolCallId">
         <button type="button" data-test="tool-row" class="flex w-full items-center gap-1.5 py-0.5 text-left text-[11.5px] text-fg-muted hover:text-fg transition-colors" @click="toggleRow(s.toolCallId)">
           <component :is="KIND_ICON[s.kind]" :size="12" class="shrink-0 text-fg-muted" />
-          <span class="truncate font-mono text-[11px]">{{ s.title }}</span>
-          <span v-if="s.durationMs !== undefined" class="ml-auto font-mono text-[10px] text-fg-muted/70">{{ fmtDuration(s.durationMs) }}</span>
+          <span class="min-w-0 flex-1 font-mono text-[11px] break-all" :class="expanded.has(s.toolCallId) ? '' : 'truncate'" :title="s.title">{{ s.title }}</span>
+          <span v-if="s.durationMs !== undefined" class="ml-auto shrink-0 font-mono text-[10px] text-fg-muted/70">{{ fmtDuration(s.durationMs) }}</span>
           <Check v-if="s.status === 'success'" data-test="step-status-success" :size="11" class="text-run/70" />
           <Loader2 v-else-if="s.status === 'running'" data-test="step-status-running" :size="11" class="animate-spin motion-reduce:animate-none text-accent" />
           <AlertTriangle v-else data-test="step-status-error" :size="11" class="text-danger" />

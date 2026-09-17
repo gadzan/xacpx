@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { ToolDetailDto } from "@ganglion/xacpx-relay-protocol";
-import { File, Search } from "lucide-vue-next";
 import ExpandableBlock from "./ExpandableBlock.vue";
 import { diffLines } from "../lib/line-diff";
 
@@ -17,6 +16,12 @@ const searchCount = computed(() =>
     ? props.detail.output.split("\n").filter((l) => l.length > 0).length
     : 0,
 );
+const showSearchCount = computed(() => {
+  if (props.detail.type !== "search" || !props.detail.output) return false;
+  // Count-shaped outputs ("4 matches") already carry their own total —
+  // a line count beside them would contradict it (1 line vs 4 matches).
+  return !/^\d+ (matches|files)/.test(props.detail.output.trim());
+});
 </script>
 
 <template>
@@ -28,13 +33,6 @@ const searchCount = computed(() =>
         class="line-clamp-2 text-fg-muted"
         :title="detail.instruction"
       >{{ detail.instruction }}</p>
-      <div class="flex min-w-0 items-center gap-2 font-mono text-fg-muted">
-        <span class="inline-flex min-w-0 items-center gap-1"><File :size="14" class="shrink-0" /><span class="truncate">{{ detail.path }}</span></span>
-        <span data-test="diff-stats" class="ml-auto flex shrink-0 items-center gap-2 font-mono text-[10px]">
-          <span v-if="parsedDiff && parsedDiff.add" class="text-run">+{{ parsedDiff.add }}</span>
-          <span v-if="parsedDiff && parsedDiff.del" class="text-danger">−{{ parsedDiff.del }}</span>
-        </span>
-      </div>
       <ExpandableBlock v-if="parsedDiff && parsedDiff.rows.length">
         <div class="overflow-x-auto rounded bg-bg font-mono leading-relaxed">
           <div
@@ -54,7 +52,6 @@ const searchCount = computed(() =>
     </template>
 
     <template v-else-if="detail.type === 'command'">
-      <div data-test="cmd-command" class="break-all font-mono text-fg">$ {{ detail.command }}</div>
       <ExpandableBlock v-if="detail.output">
         <pre data-test="cmd-output" class="overflow-x-auto rounded bg-raised p-2 font-mono text-fg whitespace-pre-wrap">{{ detail.output }}</pre>
       </ExpandableBlock>
@@ -62,14 +59,14 @@ const searchCount = computed(() =>
     </template>
 
     <template v-else-if="detail.type === 'read'">
-      <div data-test="read-path" class="flex min-w-0 items-center gap-1 font-mono text-fg"><File :size="14" class="shrink-0" /><span class="truncate">{{ detail.path }}</span><span v-if="detail.lines" class="ml-2 shrink-0 text-fg-muted">{{ detail.lines }}</span></div>
+      <div v-if="detail.lines" data-test="read-lines" class="font-mono text-[11px] text-fg-muted">{{ detail.lines }}</div>
       <ExpandableBlock v-if="detail.preview">
-        <pre class="overflow-x-auto rounded bg-bg p-2 font-mono text-fg-muted whitespace-pre-wrap">{{ detail.preview }}</pre>
+        <pre data-test="read-preview" class="overflow-x-auto rounded bg-bg p-2 font-mono text-fg-muted whitespace-pre-wrap">{{ detail.preview }}</pre>
       </ExpandableBlock>
     </template>
 
     <template v-else-if="detail.type === 'search'">
-      <div data-test="search-query" class="flex min-w-0 items-center gap-1 font-mono text-fg"><Search :size="14" class="shrink-0" /><span class="truncate">{{ detail.query }}</span><span v-if="searchCount" data-test="search-count" class="ml-auto shrink-0 text-[10px] text-fg-muted">{{ searchCount }}</span></div>
+      <div v-if="showSearchCount" data-test="search-count" class="font-mono text-[11px] text-fg-muted">{{ searchCount }} lines</div>
       <ExpandableBlock v-if="detail.output">
         <pre data-test="search-output" class="overflow-x-auto rounded bg-bg p-2 font-mono text-fg-muted whitespace-pre-wrap">{{ detail.output }}</pre>
       </ExpandableBlock>

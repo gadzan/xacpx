@@ -1307,8 +1307,8 @@ test("subscribeControlEvents normalizes tool-event into a step DTO", () => {
     toolCallId: "t1",
     kind: "execute",
     title: "ls",
-    detail: { type: "command", command: "ls" },
   });
+  expect(tool.step.detail).toBeUndefined();
   // agent_send receipt correlation must survive the forwarding into the wire step.
   const agentSend = sent[2].payload.event;
   expect(agentSend.type).toBe("tool-event");
