@@ -440,3 +440,65 @@ test("same raw command and cwd occupy one catalog even when driver labels differ
   expect(right.selector).toEqual({ kind: "raw-command", command: "/opt/agent --acp" });
   expect(sameNativeCatalog(left, right)).toBe(true);
 });
+
+test("managed overlay without argv is unproven even when historical agentCommand is present", () => {
+  const identity = nativeCatalogIdentityForLaunch({
+    cwd: "/repo",
+    agentCommand: "/opt/agent --acp",
+    acpxAgent: "xacpx-managed-custom-deadbeef",
+  });
+  expect(identity.selector.kind).toBe("unproven");
+
+  const historicalOnly = nativeCatalogIdentityForLaunch({
+    cwd: "/repo",
+    agentCommand: "/opt/agent --acp",
+  });
+  expect(historicalOnly.selector).toEqual({ kind: "raw-command", command: "/opt/agent --acp" });
+
+  const explicitRaw = nativeCatalogIdentityForLaunch({
+    cwd: "/repo",
+    rawCommand: "/opt/agent --acp",
+    agentCommand: "/opt/agent --acp",
+    acpxAgent: "xacpx-managed-custom-deadbeef",
+  });
+  expect(explicitRaw.selector).toEqual({ kind: "raw-command", command: "/opt/agent --acp" });
+});
+
+test("lost-argv managed overlay fail-closes attach instead of guessing a different catalog", async () => {
+  const records = [record({ alias: "brt_hidden", owner: OWNER, agent_session_id: "N1" })];
+  const ctx = {
+    sessions: {
+      listLogicalSessionRecords: () => records,
+      getResolvedSessionByInternalAlias: () => ({
+        alias: "brt_hidden",
+        agent: "custom",
+        workspace: "backend",
+        cwd: "/repo",
+        driver: "custom",
+        agentCommand: "/opt/agent --acp",
+        acpxAgent: "xacpx-managed-custom-deadbeef",
+      } as ResolvedSession),
+    },
+    transport: {},
+  };
+  const picker = nativeCatalogIdentityForLaunch({
+    cwd: "/repo",
+    driver: "custom",
+    agentArgv: ["/opt/agent", "--acp"],
+  });
+  expect(picker.selector).toEqual({ kind: "argv", identity: "/opt/agent --acp" });
+
+  const inspected = await inspectProductOwnedNativeSessions(ctx, picker);
+  expect(inspected.ownedIds.size).toBe(0);
+  expect(inspected.unproven).toBe(true);
+  await expect(assertNativeSessionAddressable(ctx, picker, "N1"))
+    .rejects.toMatchObject({ code: "hidden_session" });
+  await expect(assertNativeSessionAddressable(ctx, picker, "N2"))
+    .rejects.toMatchObject({ code: "hidden_session" });
+
+  const listed = await filterAddressableNativeSessions(ctx, picker, [
+    { sessionId: "N1" },
+    { sessionId: "N2" },
+  ]);
+  expect(listed.map((session) => session.sessionId)).toEqual(["N1", "N2"]);
+});

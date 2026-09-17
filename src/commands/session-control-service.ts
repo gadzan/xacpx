@@ -340,11 +340,13 @@ export class SessionControlService {
 
   /**
    * Native attach is ownership of the agent-native catalog (cwd + physical
-   * selector: unwrapped argv, raw command, or bare positional agent). Config
-   * labels (`driver`, overlay alias, workspace/agent names) and ACP transport
-   * wrappers are not part of that identity. Product-owned LogicalSessions in
-   * that catalog occupy their persisted `agentSessionId` or the live identity
-   * from `getAgentSessionId`. Unproven product-owned candidates fail closed.
+   * selector: unwrapped argv, explicit raw command, or bare positional agent).
+   * Config labels (`driver`, overlay alias, workspace/agent names) and ACP
+   * transport wrappers are not part of that identity. A managed overlay
+   * without argv is unproven: historical `agentCommand` does not prove a raw
+   * `--agent` selector. Product-owned LogicalSessions in that catalog occupy
+   * their persisted `agentSessionId` or the live identity from
+   * `getAgentSessionId`. Unproven product-owned candidates fail closed.
    */
   async assertNativeSessionAddressable(
     agent: string,

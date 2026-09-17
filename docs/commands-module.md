@@ -67,7 +67,7 @@ Responsibilities:
   → ensure/resume → verify → bind → refresh, best-effort refresh). Native attach
   calls `assertNativeSessionAddressable` before resume: product-owned native IDs
   in the same native catalog (cwd + physical selector after ACP output-guard unwrap; not `driver` / overlay alias / workspace labels)
-  fail `hidden_session`; unproven product-owned candidates fail closed.
+  fail `hidden_session`; unproven product-owned candidates fail closed, including a managed overlay `acpxAgent` whose argv is missing (historical `agentCommand` is not enough to prove a raw `--agent` selector).
 - `removeSessionWithTransport` (orchestration blocking-task guard → logical remove →
   best-effort reference purge → transport delete only when no other alias shares it).
 - `archiveSessionWithTransport` (active-turn guard → cancel + free warm process when

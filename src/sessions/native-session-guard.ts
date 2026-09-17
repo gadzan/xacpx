@@ -72,9 +72,17 @@ export function nativeCatalogIdentity(input: NativeCatalogIdentity): NativeCatal
  * Canonical native-session catalog identity: cwd plus the physical agent
  * selector, never ACP spawn wrappers and never config-label aliases.
  *
- * Selection precedence matches how acpx actually chooses an agent:
- * argv (after unwrap) → rawCommand → historical agentCommand → bare positional.
- * `driver` / derived overlay `acpxAgent` are launch-registration metadata.
+ * Evidence precedence:
+ *   argv (after unwrap)
+ *   → explicit rawCommand
+ *   → managed overlay acpxAgent without argv (unproven)
+ *   → historical agentCommand (guard-shaped → unproven, else raw-command)
+ *   → ordinary bare acpxAgent
+ *
+ * Explicit `rawCommand` proves a raw `--agent` selector. Recorded
+ * `agentCommand` is only historical identity and cannot override a managed
+ * overlay alias that lost its argv. `driver` / overlay names are otherwise
+ * launch-registration metadata, not store identity.
  */
 export function nativeCatalogIdentityForLaunch(input: NativeCatalogLaunchInput): NativeCatalogIdentity {
   const cwd = canonicalizeNativeCatalogCwd(input.cwd);
@@ -101,6 +109,11 @@ export function nativeCatalogIdentityForLaunch(input: NativeCatalogLaunchInput):
     return { cwd, selector: { kind: "raw-command", command: rawCommand } };
   }
 
+  const acpxAgent = input.acpxAgent?.trim();
+  if (!argv && acpxAgent && looksLikeManagedOverlayAlias(acpxAgent)) {
+    return { cwd: "", selector: { kind: "unproven" } };
+  }
+
   const historical = input.agentCommand?.trim();
   if (historical && !argv) {
     if (looksLikeAcpOutputGuardCommand(historical)) {
@@ -109,12 +122,8 @@ export function nativeCatalogIdentityForLaunch(input: NativeCatalogLaunchInput):
     return { cwd, selector: { kind: "raw-command", command: historical } };
   }
 
-  const bare = input.acpxAgent?.trim();
-  if (bare) {
-    if (looksLikeManagedOverlayAlias(bare)) {
-      return { cwd: "", selector: { kind: "unproven" } };
-    }
-    return { cwd, selector: { kind: "bare-agent", agent: bare } };
+  if (acpxAgent) {
+    return { cwd, selector: { kind: "bare-agent", agent: acpxAgent } };
   }
 
   return { cwd: "", selector: { kind: "unproven" } };
