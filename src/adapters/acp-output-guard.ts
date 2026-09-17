@@ -244,6 +244,16 @@ export function isAcpOutputGuardArgv(argv: readonly string[]): boolean {
   );
 }
 
+/** Strip xacpx-owned ACP output-guard wrappers. Native-session identity uses the
+ * underlying agent argv; the wrapper is only an ACP transport filter. */
+export function unwrapAcpOutputGuardArgv(argv: readonly string[]): string[] {
+  let current = [...argv];
+  while (isAcpOutputGuardArgv(current)) {
+    current = current.slice(3);
+  }
+  return current;
+}
+
 type TextUpdateParts = {
   params: Record<string, unknown>;
   update: Record<string, unknown>;

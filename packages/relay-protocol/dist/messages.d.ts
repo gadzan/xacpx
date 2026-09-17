@@ -1,4 +1,4 @@
-import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto } from "./dtos.js";
+import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto, BotDetailDto, BotSummaryDto, ConversationDetailDto, ConversationHistoryResponseDto, ConversationPromptResponseDto, ConversationRunDetailDto, ConversationSummaryDto, ConversationTurnCorrelationDto, TopicSummaryDto } from "./dtos.js";
 export declare const MSG: {
     readonly instanceRegister: "instance.register";
     readonly instanceAuth: "instance.auth";
@@ -85,6 +85,19 @@ export declare const MSG: {
     readonly agentMessageCompletion: "instance.agent-message.completion";
     readonly agentDirectorySnapshot: "instance.agent-directory.snapshot";
     readonly agentDirectoryQuery: "instance.agent-directory.query";
+    readonly botsList: "control.bots.list";
+    readonly botsGet: "control.bots.get";
+    readonly botsCreate: "control.bots.create";
+    readonly botsUpdate: "control.bots.update";
+    readonly botsDelete: "control.bots.delete";
+    readonly conversationsList: "control.conversations.list";
+    readonly conversationsGet: "control.conversations.get";
+    readonly topicsList: "control.topics.list";
+    readonly topicsCreate: "control.topics.create";
+    readonly conversationPrompt: "control.conversation.prompt";
+    readonly conversationHistory: "control.conversation.history";
+    readonly runsGet: "control.runs.get";
+    readonly runsCancel: "control.runs.cancel";
 };
 export type MessageType = (typeof MSG)[keyof typeof MSG];
 export interface ErrorPayload {
@@ -148,6 +161,8 @@ export interface InstanceStateSyncPayload {
         startedAt: number;
         /** Connector-local per-session seq at the original turn-start (receive order). */
         startedAfterSeq?: number;
+        /** Exact Conversation/Run/MemberTurn join identity. Additive; old hubs ignore. */
+        conversation?: ConversationTurnCorrelationDto;
         text: string;
         reasoning: string;
         steps: ToolStepDto[];
@@ -315,6 +330,102 @@ export interface AgentsRemovePayload {
 }
 export interface WorkspacesRemovePayload {
     name: string;
+}
+export interface BotsListResult {
+    bots: BotSummaryDto[];
+}
+export interface BotsGetPayload {
+    id: string;
+}
+export interface BotsGetResult {
+    bot: BotDetailDto;
+}
+export interface BotsCreatePayload {
+    name: string;
+    avatar?: string;
+    role?: string;
+    instructions?: string;
+    agent: string;
+    workspace: string;
+    model?: string;
+    effort?: string;
+    enabled?: boolean;
+}
+export interface BotsCreateResult {
+    bot: BotDetailDto;
+}
+export interface BotsUpdatePayload {
+    id: string;
+    name?: string;
+    avatar?: string | null;
+    role?: string | null;
+    instructions?: string | null;
+    agent?: string;
+    workspace?: string;
+    model?: string | null;
+    effort?: string | null;
+    enabled?: boolean | null;
+}
+export interface BotsUpdateResult {
+    bot: BotDetailDto;
+}
+export interface BotsDeletePayload {
+    id: string;
+}
+export interface ConversationsListPayload {
+    botId?: string;
+}
+export interface ConversationsListResult {
+    conversations: ConversationSummaryDto[];
+}
+export interface ConversationsGetPayload {
+    conversationId: string;
+}
+export interface ConversationsGetResult {
+    conversation: ConversationDetailDto;
+}
+export interface TopicsListPayload {
+    conversationId: string;
+}
+export interface TopicsListResult {
+    topics: TopicSummaryDto[];
+}
+export interface TopicsCreatePayload {
+    conversationId: string;
+    title: string;
+}
+export interface TopicsCreateResult {
+    topic: TopicSummaryDto;
+}
+export interface ConversationPromptPayload {
+    conversationId: string;
+    topicId: string;
+    requestId: string;
+    text: string;
+    target?: {
+        botId: string;
+    };
+}
+export type ConversationPromptResult = ConversationPromptResponseDto;
+export interface ConversationHistoryPayload {
+    conversationId: string;
+    topicId: string;
+    afterSeq?: number;
+    beforeSeq?: number;
+    limit?: number;
+}
+export type ConversationHistoryResult = ConversationHistoryResponseDto;
+export interface RunsGetPayload {
+    runId: string;
+}
+export interface RunsGetResult {
+    run: ConversationRunDetailDto;
+}
+export interface RunsCancelPayload {
+    runId: string;
+}
+export interface RunsCancelResult {
+    run: ConversationRunDetailDto;
 }
 export interface OkResult {
     ok: true;

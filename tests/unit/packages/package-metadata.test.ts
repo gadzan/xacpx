@@ -49,3 +49,41 @@ test("deprecated weacpx compat shim forwards plugin-api to xacpx", () => {
     default: "./plugin-api.js",
   });
 });
+
+const RELAY_PROTOCOL = "@ganglion/xacpx-relay-protocol";
+const RELAY_PROTOCOL_CONSUMERS = [
+  "packages/channel-relay",
+  "packages/relay",
+  "packages/relay-web",
+] as const;
+
+function readJsonc(path: string) {
+  return Bun.JSONC.parse(readFileSync(path, "utf8"));
+}
+
+test("relay-protocol workspace version and consumer deps match across manifests and lockfiles", () => {
+  const protocol = readJson("packages/relay-protocol/package.json");
+  expect(protocol.name).toBe(RELAY_PROTOCOL);
+  expect(protocol.version).toMatch(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+  const version = protocol.version as string;
+  const range = `^${version}`;
+
+  for (const dir of RELAY_PROTOCOL_CONSUMERS) {
+    const pkg = readJson(`${dir}/package.json`);
+    expect(pkg.dependencies[RELAY_PROTOCOL]).toBe(range);
+  }
+
+  const npmLock = readJson("package-lock.json");
+  expect(npmLock.packages["packages/relay-protocol"].name).toBe(RELAY_PROTOCOL);
+  expect(npmLock.packages["packages/relay-protocol"].version).toBe(version);
+  for (const dir of RELAY_PROTOCOL_CONSUMERS) {
+    expect(npmLock.packages[dir].dependencies[RELAY_PROTOCOL]).toBe(range);
+  }
+
+  const bunLock = readJsonc("bun.lock");
+  expect(bunLock.workspaces["packages/relay-protocol"].name).toBe(RELAY_PROTOCOL);
+  expect(bunLock.workspaces["packages/relay-protocol"].version).toBe(version);
+  for (const dir of RELAY_PROTOCOL_CONSUMERS) {
+    expect(bunLock.workspaces[dir].dependencies[RELAY_PROTOCOL]).toBe(range);
+  }
+});

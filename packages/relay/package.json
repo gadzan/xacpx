@@ -29,7 +29,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@ganglion/xacpx-relay-protocol": "^0.5.3",
+    "@ganglion/xacpx-relay-protocol": "^0.6.0",
     "@hono/node-server": "^1.13.0",
     "hono": "^4.6.0",
     "web-push": "^3.6.7",

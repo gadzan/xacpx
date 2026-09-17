@@ -2,6 +2,7 @@
   "record": [
     "logger.debug(command.parsed)",
     "sessions.getCurrentSession(\"wx:user\")",
+    "sessions.getLogicalSessionRecord(\"demo\")",
     "transport.setModel(session(demo/backend:demo), \"gpt-5.2[high]\")",
     "logger.info(transport.set_model)",
     "sessions.setCurrentSessionModel(\"wx:user\", \"gpt-5.2[high]\")",

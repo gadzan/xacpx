@@ -1,6 +1,7 @@
 {
   "record": [
-    "transport.listAgentSessions({cwd:\"/tmp/backend\", filterCwd:\"/tmp/backend\"})"
+    "transport.listAgentSessions({cwd:\"/tmp/backend\", filterCwd:\"/tmp/backend\"})",
+    "sessions.listLogicalSessionRecords()"
   ],
   "outcome": {
     "ok": [

@@ -71,6 +71,7 @@ export interface SessionMessages {
 
   // handleSessionRemove
   sessionNotFound: (alias: string) => string;
+  sessionHiddenOwned: (alias: string) => string;
   sessionBlockedByTasks: (alias: string, count: number) => string;
   sessionBlockedByTasksHint: string;
   sessionRemoved: (alias: string) => string;

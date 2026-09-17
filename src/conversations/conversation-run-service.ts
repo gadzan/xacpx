@@ -1,9 +1,9 @@
-import { snapshotBotProfile } from "../bots/bot-types";
+import { snapshotBotProfile, type BotProfile } from "../bots/bot-types";
 import { BotError } from "../bots/bot-error";
 import type { BotRuntimeManager } from "../bots/bot-runtime-manager";
 import type { BotService } from "../bots/bot-service";
-import { planDirectConversation } from "./direct-conversation";
-import { createTopicId } from "../domain/ids";
+import { planDirectConversation, presentDefaultDirectTopic, presentDirectConversation } from "./direct-conversation";
+import { createDirectTopicId, createTopicId } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
 import type { ReleaseOwnedSession } from "../sessions/owned-session-release";
 import type { SessionService } from "../sessions/session-service";
@@ -12,8 +12,20 @@ import type { StateStore } from "../state/state-store";
 import type { AppState } from "../state/types";
 import { ConversationError } from "./conversation-error";
 import type { ConversationDispatcher } from "./conversation-dispatcher";
-import type { AcceptRequestResult, ConversationStore } from "./conversation-store";
-import type { ConversationTopic } from "./conversation-types";
+import { parseHumanIngress } from "./conversation-execution";
+import {
+  emitConversationProductEvent,
+  type ConversationProductEventSink,
+} from "./conversation-product-events";
+import type { AcceptRequestResult, ConversationStore, ListMessagesQuery } from "./conversation-store";
+import type {
+  ConversationMessage,
+  ConversationRecord,
+  ConversationRun,
+  ConversationTopic,
+  HumanIngressContext,
+  MemberTurnRecord,
+} from "./conversation-types";
 
 export interface ConversationRunServiceOptions {
   now?: () => Date;
@@ -25,6 +37,15 @@ export interface ConversationRunServiceOptions {
   autoKick?: boolean;
   /** Verified physical+logical release. Required; never LogicalSession-only. */
   releaseOwnedSession: ReleaseOwnedSession;
+  onProductEvent?: ConversationProductEventSink;
+}
+
+export interface ConversationHistoryPage {
+  messages: ConversationMessage[];
+  oldestSeq?: number;
+  newestSeq?: number;
+  hasMoreBefore: boolean;
+  hasMoreAfter: boolean;
 }
 
 type SessionWriter = Pick<StateStore, "save"> & { saveNow?: (state: AppState) => Promise<void> };
@@ -37,7 +58,12 @@ export class ConversationRunService {
   private readonly beforeTeardownFinalize?: () => Promise<void>;
   private readonly afterTeardownMarkedDeleting?: () => Promise<void>;
   private readonly autoKick: boolean;
+  /** `pending` until the first successful post-lock kick; `unavailable` is sticky
+   *  fail-closed after that kick throws so accept cannot pile up unconsumed work. */
+  private activation: "pending" | "activated" | "unavailable" = "pending";
   private readonly releaseOwnedSession: ReleaseOwnedSession;
+  private readonly onProductEvent?: ConversationProductEventSink;
+  private closed = false;
 
   constructor(
     private readonly store: ConversationStore,
@@ -57,7 +83,57 @@ export class ConversationRunService {
     this.afterTeardownMarkedDeleting = options.afterTeardownMarkedDeleting;
     this.autoKick = options.autoKick ?? true;
     this.releaseOwnedSession = options.releaseOwnedSession;
+    this.onProductEvent = options.onProductEvent;
     this.bots.setConversationWork(this.store);
+  }
+
+  private assertOpen(): void {
+    if (this.closed) {
+      throw new ConversationError("store_closed", "conversation store is closed");
+    }
+  }
+
+  stop(): void {
+    this.closed = true;
+    this.dispatcher.stop();
+  }
+
+  async shutdown(): Promise<void> {
+    this.closed = true;
+    await this.dispatcher.shutdown();
+    this.store.close();
+  }
+
+  /**
+   * Start durable Conversation consume after this process holds the daemon
+   * consumer lock. `buildApp` must not call this. Accept-time `autoKick`
+   * stays inert until this kick succeeds. A failed first drain leaves the
+   * consumer unavailable — not activated — so later accept cannot enqueue
+   * work the dispatcher cannot move.
+   */
+  async activateAfterConsumerLock(): Promise<void> {
+    this.assertOpen();
+    try {
+      await this.dispatcher.kick();
+    } catch (error) {
+      this.activation = "unavailable";
+      throw error;
+    }
+    this.activation = "activated";
+  }
+
+  isConsumerActivated(): boolean {
+    return this.activation === "activated";
+  }
+
+  private assertAccepting(): void {
+    this.assertOpen();
+    if (this.activation === "unavailable") {
+      throw new ConversationError(
+        "conversations_unavailable",
+        "Conversation consumer failed to activate; new work is not accepted",
+      );
+    }
   }
 
   async acceptDirectPrompt(input: {
@@ -66,15 +142,13 @@ export class ConversationRunService {
     content: string;
     conversationId?: string;
     topicId?: string;
+    humanIngress?: HumanIngressContext;
   }): Promise<AcceptRequestResult> {
+    this.assertAccepting();
     const accepted = await this.bots.runLifecycle(input.botId, async () => {
       const bot = this.bots.getBot(input.botId);
       const timestamp = this.now().toISOString();
-      const planned = planDirectConversation(this.state, {
-        botId: bot.id,
-        title: bot.name,
-        now: timestamp,
-      });
+      const planned = this.planDirect(bot);
       const conversationId = input.conversationId ?? planned.conversation.id;
       if (conversationId !== planned.conversation.id) {
         throw new BotError("conversation_mismatch", "direct Bot conversation does not match this Bot");
@@ -98,7 +172,8 @@ export class ConversationRunService {
       }
       const snapshot = snapshotBotProfile(bot, timestamp);
       await this.beforeAcceptPersist?.();
-      return this.store.acceptRequest({
+      const humanIngress = parseHumanIngress(input.humanIngress);
+      const created = this.store.acceptRequest({
         conversationId,
         topicId,
         requestId: input.requestId,
@@ -106,24 +181,154 @@ export class ConversationRunService {
         content: input.content,
         profileSnapshot: snapshot,
         now: timestamp,
-        authorityEpoch: this.dispatcher.authorityEpoch,
+        ...(humanIngress
+          ? { authorityEpoch: this.dispatcher.authorityEpoch, humanIngress }
+          : {}),
       });
+      return created;
     });
-    if (this.autoKick) {
+    if (!accepted.reused) {
+      this.emitAcceptProjection(accepted);
+    }
+    if (this.autoKick && this.activation === "activated") {
       void this.dispatcher.kick();
     }
     return accepted;
   }
 
+  async acceptConversationPrompt(input: {
+    conversationId: string;
+    topicId: string;
+    requestId: string;
+    text: string;
+    targetBotId?: string;
+    humanIngress?: HumanIngressContext;
+  }): Promise<AcceptRequestResult> {
+    this.assertOpen();
+    const botId = this.resolveDirectBotId(input.conversationId);
+    if (input.targetBotId && input.targetBotId !== botId) {
+      throw new ConversationError(
+        "conversation_target_mismatch",
+        "Direct conversation target must match the owning Bot",
+      );
+    }
+    return this.acceptDirectPrompt({
+      botId,
+      requestId: input.requestId,
+      content: input.text,
+      conversationId: input.conversationId,
+      topicId: input.topicId,
+      ...(input.humanIngress ? { humanIngress: input.humanIngress } : {}),
+    });
+  }
+
+  getConversation(conversationId: string): ConversationRecord {
+    this.assertOpen();
+    return this.presentDirect(this.requireConversation(conversationId));
+  }
+
+  listConversations(filter?: { botId?: string }): ConversationRecord[] {
+    this.assertOpen();
+    const byId = new Map<string, ConversationRecord>();
+    for (const conversation of Object.values(this.state.conversations)) {
+      if (conversation.kind !== "bot") {
+        continue;
+      }
+      if (filter?.botId && !conversation.botIds.includes(filter.botId)) {
+        continue;
+      }
+      byId.set(conversation.id, conversation);
+    }
+    for (const bot of this.bots.listBots()) {
+      if (filter?.botId && bot.id !== filter.botId) {
+        continue;
+      }
+      const planned = this.planDirect(bot);
+      if (!byId.has(planned.conversation.id)) {
+        byId.set(planned.conversation.id, planned.conversation);
+      }
+    }
+    return [...byId.values()]
+      .map((conversation) => this.presentDirect(conversation))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  listTopics(conversationId: string): ConversationTopic[] {
+    this.assertOpen();
+    const conversation = this.requireConversation(conversationId);
+    const topics = Object.values(this.state.conversation_topics)
+      .filter((topic) => topic.conversationId === conversationId)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .map((topic) => this.presentDefaultTopic(topic, conversation));
+    if (topics.length > 0) {
+      return topics;
+    }
+    const botId = this.resolveDirectBotId(conversationId);
+    const bot = this.bots.getBot(botId);
+    return [this.planDirect(bot).topic];
+  }
+
+  defaultTopicId(conversationId: string): string | undefined {
+    const conversation = this.requireConversation(conversationId);
+    const botId = conversation.botIds[0];
+    if (conversation.kind !== "bot" || !botId) {
+      return undefined;
+    }
+    return createDirectTopicId(botId);
+  }
+
+  getRun(runId: string): { run: ConversationRun; memberTurns: MemberTurnRecord[] } {
+    this.assertOpen();
+    const run = this.store.getRun(runId);
+    if (!run) {
+      throw new ConversationError("run_not_found", `run "${runId}" does not exist`);
+    }
+    return { run, memberTurns: this.store.listMemberTurns(runId) };
+  }
+
+  listHistory(query: ListMessagesQuery): ConversationHistoryPage {
+    this.assertOpen();
+    this.requireConversation(query.conversationId);
+    const topic = this.listTopics(query.conversationId).find((item) => item.id === query.topicId);
+    if (!topic) {
+      throw new BotError("topic_not_found", `topic "${query.topicId}" does not belong to this conversation`);
+    }
+    const messages = this.store.listMessages(query);
+    const oldestSeq = messages[0]?.seq;
+    const newestSeq = messages[messages.length - 1]?.seq;
+    const hasMoreBefore = oldestSeq !== undefined
+      && this.store.listMessages({
+        conversationId: query.conversationId,
+        topicId: query.topicId,
+        beforeSeq: oldestSeq,
+        limit: 1,
+      }).length > 0;
+    const hasMoreAfter = newestSeq !== undefined
+      && this.store.listMessages({
+        conversationId: query.conversationId,
+        topicId: query.topicId,
+        afterSeq: newestSeq,
+        limit: 1,
+      }).length > 0;
+    return {
+      messages,
+      hasMoreBefore,
+      hasMoreAfter,
+      ...(oldestSeq !== undefined ? { oldestSeq } : {}),
+      ...(newestSeq !== undefined ? { newestSeq } : {}),
+    };
+  }
+
   async createDirectTopic(botId: string, title: string): Promise<ConversationTopic> {
-    return await this.bots.runLifecycle(botId, async () => {
+    this.assertOpen();
+    const topic = await this.bots.runLifecycle(botId, async () => {
       const bot = this.bots.getBot(botId);
       const timestamp = this.now().toISOString();
-      const planned = planDirectConversation(this.state, { botId, title: bot.name, now: timestamp });
+      const planned = this.planDirect(bot);
       this.assertConversationNotDeleting(planned.conversation.id);
       return await this.stateMutex.run(async () => {
         this.assertConversationNotDeleting(planned.conversation.id);
-        const topic: ConversationTopic = {
+        const created: ConversationTopic = {
           id: this.nextTopicId(),
           conversationId: planned.conversation.id,
           title: title.trim() || "Topic",
@@ -134,21 +339,30 @@ export class ConversationRunService {
         const next = structuredClone(this.state);
         next.conversations[planned.conversation.id] = next.conversations[planned.conversation.id] ?? planned.conversation;
         next.conversation_topics[planned.topic.id] = next.conversation_topics[planned.topic.id] ?? planned.topic;
-        next.conversation_topics[topic.id] = topic;
+        next.conversation_topics[created.id] = created;
         await this.persist(next);
-        return topic;
+        return created;
       });
     });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversation-topic-changed", topic });
+    return topic;
+  }
+
+  async createTopic(conversationId: string, title: string): Promise<ConversationTopic> {
+    return this.createDirectTopic(this.resolveDirectBotId(conversationId), title);
   }
 
   async cancelRun(runId: string): Promise<void> {
+    this.assertOpen();
     await this.dispatcher.cancelRun(runId);
   }
 
   async teardownDirectConversation(botId: string): Promise<void> {
+    this.assertOpen();
     const bot = this.bots.getBot(botId);
     const timestamp = this.now().toISOString();
-    const planned = planDirectConversation(this.state, { botId: bot.id, title: bot.name, now: timestamp });
+    const planned = this.planDirect(bot);
     const conversationId = planned.conversation.id;
     await this.bots.runLifecycle(botId, async () => {
       this.store.markConversationDeleting(conversationId, timestamp);
@@ -201,6 +415,71 @@ export class ConversationRunService {
       });
       this.store.deleteConversationRows(conversationId);
     });
+  }
+
+  private emitAcceptProjection(accepted: AcceptRequestResult): void {
+    emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversation-message", message: accepted.message });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversation-run-changed", run: accepted.run });
+  }
+
+  private requireConversation(conversationId: string): ConversationRecord {
+    const existing = this.state.conversations[conversationId];
+    if (existing) {
+      return existing;
+    }
+    for (const bot of this.bots.listBots()) {
+      const planned = this.planDirect(bot);
+      if (planned.conversation.id === conversationId) {
+        return planned.conversation;
+      }
+    }
+    throw new ConversationError("conversation_not_found", `conversation "${conversationId}" does not exist`);
+  }
+
+  private presentDirect(conversation: ConversationRecord): ConversationRecord {
+    const botId = conversation.botIds[0];
+    if (conversation.kind !== "bot" || !botId) {
+      return conversation;
+    }
+    const bot = this.state.bots[botId];
+    if (!bot) {
+      return conversation;
+    }
+    return presentDirectConversation(conversation, bot);
+  }
+
+  private presentDefaultTopic(topic: ConversationTopic, conversation: ConversationRecord): ConversationTopic {
+    const botId = conversation.botIds[0];
+    if (conversation.kind !== "bot" || !botId) {
+      return topic;
+    }
+    const bot = this.state.bots[botId];
+    if (!bot) {
+      return topic;
+    }
+    return presentDefaultDirectTopic(topic, bot);
+  }
+
+  private planDirect(bot: Pick<BotProfile, "id" | "name" | "createdAt" | "updatedAt">) {
+    return planDirectConversation(this.state, {
+      botId: bot.id,
+      title: bot.name,
+      createdAt: bot.createdAt,
+      updatedAt: bot.updatedAt,
+    });
+  }
+
+  private resolveDirectBotId(conversationId: string): string {
+    const conversation = this.requireConversation(conversationId);
+    const botId = conversation.botIds[0];
+    if (conversation.kind !== "bot" || conversation.botIds.length !== 1 || !botId) {
+      throw new ConversationError(
+        "conversation_not_direct",
+        "conversation is not a Direct Bot conversation",
+      );
+    }
+    return botId;
   }
 
   private nextTopicId(): string {

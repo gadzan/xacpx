@@ -1,4 +1,11 @@
 import type { PeerTurnOrigin } from "./turn-support";
+import type { ConversationTurnCorrelation } from "./conversation-control-dtos";
+import type {
+  ConversationMessageDto,
+  ConversationRunDto,
+  MemberTurnSummaryDto,
+  TopicSummaryDto,
+} from "./conversation-control-dtos";
 import type { AppLogger } from "../logging/app-logger";
 import type { ToolUseEvent, PlanEntry } from "../channels/types";
 import type { AgentCommand, UsageBreakdown, UsageCost } from "../transport/types";
@@ -22,26 +29,26 @@ export interface QueuedItemInfo {
 }
 
 export type ControlEvent =
-  | { type: "turn-output"; chatKey: string; sessionAlias: string; chunk: string }
+  | { type: "turn-output"; chatKey: string; sessionAlias: string; chunk: string; conversation?: ConversationTurnCorrelation }
   // `prompt`/`scheduled` are populated only for turns started by a fired scheduled
   // task (relay channel), or a turn drained from the queue, letting the hub persist
   // the inbound prompt and the web badge it. A drained turn carries `queueItemId` so
   // the web can move its original optimistic bubble to the actual execution point.
-  | { type: "turn-started"; chatKey: string; sessionAlias: string; prompt?: string; scheduled?: ScheduledOrigin; queueItemId?: string; promptRequestId?: string; peerOrigin?: PeerTurnOrigin }
+  | { type: "turn-started"; chatKey: string; sessionAlias: string; prompt?: string; scheduled?: ScheduledOrigin; queueItemId?: string; promptRequestId?: string; peerOrigin?: PeerTurnOrigin; conversation?: ConversationTurnCorrelation }
   // Full ordered snapshot (replace-latest) of the pending prompt queue for a session,
   // emitted on every enqueue/drain/cancel.
   | { type: "queue-updated"; chatKey: string; sessionAlias: string; items: QueuedItemInfo[] }
-  | { type: "tool-event"; chatKey: string; sessionAlias: string; event: ToolUseEvent }
-  | { type: "turn-thought"; chatKey: string; sessionAlias: string; chunk: string }
-  | { type: "plan"; chatKey: string; sessionAlias: string; entries: PlanEntry[] }
+  | { type: "tool-event"; chatKey: string; sessionAlias: string; event: ToolUseEvent; conversation?: ConversationTurnCorrelation }
+  | { type: "turn-thought"; chatKey: string; sessionAlias: string; chunk: string; conversation?: ConversationTurnCorrelation }
+  | { type: "plan"; chatKey: string; sessionAlias: string; entries: PlanEntry[]; conversation?: ConversationTurnCorrelation }
   // Context-usage meter: `used` tokens in context, `size` total context window. Replace-latest.
-  | { type: "turn-usage"; chatKey: string; sessionAlias: string; used: number; size: number; cost?: UsageCost; breakdown?: UsageBreakdown }
+  | { type: "turn-usage"; chatKey: string; sessionAlias: string; used: number; size: number; cost?: UsageCost; breakdown?: UsageBreakdown; conversation?: ConversationTurnCorrelation }
   // Agent-advertised slash commands (e.g. /compact). Session-scoped, replace-latest.
-  | { type: "agent-commands"; chatKey: string; sessionAlias: string; commands: AgentCommand[] }
+  | { type: "agent-commands"; chatKey: string; sessionAlias: string; commands: AgentCommand[]; conversation?: ConversationTurnCorrelation }
   // `text` carries the final reply text on success so a relay hub that lost the turn's
   // streamed chunks (e.g. hub restart mid-turn) can still persist the answer. Omitted on
   // failure paths (`errorMessage` already covers them).
-  | { type: "turn-finished"; chatKey: string; sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean; text?: string; silent?: boolean; peerOrigin?: PeerTurnOrigin }
+  | { type: "turn-finished"; chatKey: string; sessionAlias: string; ok: boolean; errorMessage?: string; cancelled?: boolean; text?: string; silent?: boolean; peerOrigin?: PeerTurnOrigin; conversation?: ConversationTurnCorrelation }
   // Toast-only overflow tip for relay-web. Channel-relay maps this to
   // instance.notice kind "queue-overflow"; it is not forwarded as a control-event
   // and must never become a chat/history row.
@@ -66,7 +73,14 @@ export type ControlEvent =
   // only the correlation id and the new terminal status — never a rebuilt
   // PeerMessageHistoryEntry — so the durable row's content/peer/mode survive
   // daemon restarts and outbound-cache eviction.
-  | { type: "agent-message-completion"; sessionAlias: string; messageId: string; completionStatus: "completed" | "failed" | "cancelled" };
+  | { type: "agent-message-completion"; sessionAlias: string; messageId: string; completionStatus: "completed" | "failed" | "cancelled" }
+  | { type: "bots-changed" }
+  | { type: "conversations-changed" }
+  | { type: "conversation-topic-changed"; topic: TopicSummaryDto }
+  | { type: "conversation-message"; message: ConversationMessageDto }
+  | { type: "conversation-run-changed"; run: ConversationRunDto }
+  | { type: "member-turn-started"; run: ConversationRunDto; memberTurn: MemberTurnSummaryDto }
+  | { type: "member-turn-finished"; run: ConversationRunDto; memberTurn: MemberTurnSummaryDto };
 
 export type ControlEventListener = (event: ControlEvent) => void;
 

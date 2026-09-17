@@ -21,6 +21,14 @@
 - 安全：登录令牌（login token）以 sha256 哈希落盘（高熵随机令牌，无需 scrypt；scrypt 密码哈希已随密码登录一并移除）；所有 token/凭证哈希存储；登录限流按客户端 IP + 全局失败上限（有界，见阶段五）；
   凭证比较定时安全（`hashEquals`，见 src/auth.ts）；RPC 代理只放行
   control.* 且服务端覆写 chatKey(`relay:<accountId>`)/senderId/isOwner。
+  Bot / Conversation / Topic / Run RPCs（`control.bots.*`、`control.conversations.*`、
+  `control.topics.*`、`control.conversation.prompt|history`、`control.runs.get|cancel`）
+  是 **instance-scoped**，不得加入 Hub `CHAT_SCOPED_TYPES`：它们用 Bot/Conversation/Topic/Run
+  ID 路由，不接受客户端 `chatKey`，也不把 hidden session alias 当产品身份。
+  `control.conversation.prompt` 额外由 Hub 从已认证 account **覆写** `humanIngress`
+  `{ chatKey: relay:<accountId>, senderId, accountId, senderName, isOwner: true }`；
+  客户端不能选择该字段，connector 走 `trustedConversationPrompt` 而不是 public
+  `promptConversation`。
 - 账号模型：无密码、无角色；凭证为 CLI 铸造的登录令牌（`login_tokens` 表）。CLI 以令牌为中心：`add token` 建一个用户+令牌、`ls` 列出、`rm token <值或短id>` 删除该令牌背后的用户并级联删除其实例/会话/消息（底层 store 仍支持每账号多令牌）。
 - 邀请码：`add invite [--label] [--ttl <n>{m|h|d}，默认 7d] [--url <base>]` 铸造一次性邀请码（`invite_codes` 表，sha256 哈希落盘，明文只打印一次），生成 `/invite/<code>` 链接。受邀者打开页面**点击兑换**（绝不 on-mount 自动兑换，防链接预览烧码）调用 `POST /api/invites/redeem`（免登录，注册在鉴权网关之前；与 `/api/login` 共用限流桶；统一 401 `invalid-code` 不区分不存在/已用/过期），事务内创建新账号 + login token 并返回 `{token, username}`（不设 cookie，页面展示一次并提供"用此 token 登录"按钮）。`ls` 追加 invites 段（unused|used|expired），`rm invite <码或短id>` 删除，已用/过期由每小时 GC 清理（`pruneInviteCodes`）。
 - CSRF backstop：`/api/login`、RPC 以及 `POST /api/instances/pairing-token`
@@ -297,13 +305,23 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
   `pendingFinished`，上限 32，逐出最旧并 log warning）。每个回合在 `turn-started` 时生成一个
   稳定 `recoveryId`。注意 FIFO 里同时有断线期间完成的回合和**刚结束、正在等持久化 ack 的 live
   回合**——live 转发照常发生，条目只是等 ack 才删除。
-- `RelayChannel.start()` 接线了 `RelayClient` 的 `onReady`：`mirror.buildStateSync(liveAliases)` 返回
-  `{ snapshot, aliases }`（snapshot 是**纯拷贝**，只过滤不在 liveAliases 里的别名，不改动 mirror；
-  aliases 是构建时各 alias 的**代际 generation**）。破坏性 GC 是单独的
-  `pruneStateMirror(liveAliases, aliasesAtBuild)`，只在**确认 flush 成功之后**调用，且只对
-  generation **未变化** 且不在 liveAliases 里的 alias 做 compare-and-delete——snapshot 之后新到达的
+- `RelayChannel.start()` 接线了 `RelayClient` 的 `onReady`：`liveAliases` 只来自 ordinary
+  `listSessions()`（hidden bot-direct alias 故意不在其中）。`mirror.buildStateSync(liveAliases)`
+  返回 `{ snapshot, aliases }`（snapshot 是**纯拷贝**）：ordinary Session turn 仍按 liveAliases
+  过滤；**带 `conversation` correlation 的 running turn / finishedOffline 是产品 recovery
+  身份，不因 hidden alias 缺席而从 snapshot 丢掉或被 prune**。aliases 是构建时各 alias 的
+  **代际 generation**。破坏性 GC 是单独的 `pruneStateMirror(liveAliases, aliasesAtBuild)`，
+  只在**确认 flush 成功之后**调用，且只对 generation **未变化**、不在 liveAliases 里、且
+  **不是 Conversation-correlated** 的 alias 做 compare-and-delete——snapshot 之后新到达的
   session/turn（正被 live 转发）或**同 alias 换代**（新 turn / 新 pending 条目）都会被代际保护，
   绝不会被这个旧回调误删；send 失败/not-ready 时也绝不 prune。
+- 带 `conversation` 的 live Control event 仍携带 `sessionAlias`（旧客户端兼容）。那是
+  **legacy transport plumbing**，不得再用于产品 liveness / ownership / routing；产品身份是
+  `conversationId` / `topicId` / `botId` / `runId` / `memberTurnId`。
+- `PendingFinishedTurn` 优先从 running `MirrorTurn` 拷贝 `conversation`；若 mirror 没看到
+  `turn-started`（例如 connector 在 core turn 中途重启），则回退到 `turn-finished` 事件上的
+  `event.conversation`。finishedOffline 快照同样带上这五个 id，hub validator / accumulator /
+  `state-snapshot` 原样保留。没有 correlation 的 hidden-alias finish 仍按 ordinary liveAliases 过滤。
 - FIFO 条目**不做 flush 回调确认**：ws flush 只证明帧离开本地进程，不代表 hub 已持久化；条目
   只在收到 hub 的 `instance.recovery.ack`（对应 recoveryId）后由 `mirror.confirmFinished()` 清除。
   live `turn-finished` 转发同样打上 recoveryId，清 FIFO 同样等 ACK —— hub 在 send 之后、SQLite

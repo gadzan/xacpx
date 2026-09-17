@@ -291,6 +291,59 @@ test("instances: pairing token, list with online flag, account isolation, rpc st
   })).status).toBe(404);
 });
 
+test("conversation.prompt Hub-stamps humanIngress from the authenticated account and stays instance-scoped", async () => {
+  const { app, instances, loginToken, login, rpcCalls, admin } = await makeApp();
+  const { cookie } = await login(loginToken);
+  const tokenRes = await app.request("/api/instances/pairing-token", {
+    method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "pc" }),
+  });
+  const { token } = (await tokenRes.json()) as { token: string };
+  const redeemed = instances.redeemPairingToken(token)!;
+
+  const rpcRes = await app.request(`/api/instances/${redeemed.instanceId}/rpc`, {
+    method: "POST", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({
+      type: MSG.conversationPrompt,
+      payload: {
+        conversationId: "conversation_1",
+        topicId: "topic_1",
+        requestId: "req",
+        text: "hi",
+        chatKey: "forged",
+        senderId: "forged",
+        isOwner: false,
+        humanIngress: { chatKey: "bot:forged", senderId: "forged", isOwner: false },
+        executionOrigin: "human",
+      },
+    }),
+  });
+  expect(rpcRes.status).toBe(200);
+  const stamped = rpcCalls[0]?.payload as {
+    chatKey?: string;
+    senderId?: string;
+    isOwner?: boolean;
+    executionOrigin?: string;
+    humanIngress?: {
+      chatKey: string;
+      senderId: string;
+      accountId?: string;
+      senderName?: string;
+      isOwner?: boolean;
+    };
+  };
+  expect(stamped.chatKey).toBe("forged");
+  expect(stamped.senderId).toBe("forged");
+  expect(stamped.isOwner).toBe(false);
+  expect(stamped.executionOrigin).toBe("human");
+  expect(stamped.humanIngress).toEqual({
+    chatKey: `relay:${redeemed.accountId}`,
+    senderId: redeemed.accountId,
+    accountId: redeemed.accountId,
+    senderName: admin.username,
+    isOwner: true,
+  });
+});
+
 test("session archive/unarchive RPCs are chat-scoped (chatKey stamped, else the connector crashes)", async () => {
   const { app, instances, loginToken, login, rpcCalls } = await makeApp();
   const { cookie } = await login(loginToken);

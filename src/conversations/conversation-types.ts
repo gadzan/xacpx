@@ -109,6 +109,15 @@ export interface MemberTurnRecord {
   finishedAt?: string;
 }
 
+/** Server-derived authenticated human ingress. Clients cannot mint this. */
+export interface HumanIngressContext {
+  chatKey: string;
+  senderId: string;
+  accountId?: string;
+  senderName?: string;
+  isOwner?: boolean;
+}
+
 export interface PendingDispatch {
   id: string;
   runId: string;
@@ -120,6 +129,8 @@ export interface PendingDispatch {
   /** Live dispatcher epoch that accepted this work. Matching claim keeps human
    *  permission authority; mismatch or revoked epoch is recovery/orchestration. */
   authorityEpoch?: string;
+  /** Trusted permission return route bound to authorityEpoch. Discarded on recovery. */
+  humanIngress?: HumanIngressContext;
   createdAt: string;
   claimedAt?: string;
   completedAt?: string;

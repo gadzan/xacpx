@@ -9,13 +9,13 @@ import {
   type ScheduledTaskDto,
   type SessionHistoryRowDto,
 } from "@ganglion/xacpx-relay-protocol";
-import type { ControlService } from "xacpx/plugin-api";
+import type { PublicControlService } from "xacpx/plugin-api";
 import { toolUseEventToStepDto } from "./tool-presentation";
 
 // Wire mappers live here (not in relay-protocol) so the protocol package stays
 // free of xacpx imports. Field lists mirror the "Keep in sync" notes in dtos.ts.
 export function scheduledTaskToDto(
-  record: ReturnType<ControlService["listScheduledTasks"]>[number],
+  record: ReturnType<PublicControlService["listScheduledTasks"]>[number],
 ): ScheduledTaskDto {
   return {
     id: record.id,
@@ -31,7 +31,7 @@ export function scheduledTaskToDto(
 }
 
 export function orchestrationTaskToDto(
-  record: Awaited<ReturnType<ControlService["listOrchestrationTasks"]>>[number],
+  record: Awaited<ReturnType<PublicControlService["listOrchestrationTasks"]>>[number],
 ): OrchestrationTaskDto {
   return {
     taskId: record.taskId,
@@ -94,6 +94,26 @@ export interface ControlBridgeOptions {
   setTimeoutFn?: (fn: () => void, ms: number) => unknown;
   clearTimeoutFn?: (timer: unknown) => void;
   now?: () => number;
+  /**
+   * Hub-authenticated Direct Conversation accept. Ingress is overwritten by
+   * the Hub; public `control.promptConversation` never takes it.
+   */
+  trustedConversationPrompt?: (
+    input: {
+      conversationId: string;
+      topicId: string;
+      requestId: string;
+      text: string;
+      target?: { botId: string };
+    },
+    ingress: {
+      chatKey: string;
+      senderId: string;
+      accountId?: string;
+      senderName?: string;
+      isOwner?: boolean;
+    },
+  ) => Promise<unknown>;
 }
 
 function controlRpcTimeoutMs(
@@ -129,7 +149,7 @@ function modelSetDeadlineAt(
 }
 
 export function createControlBridge(
-  control: ControlService,
+  control: PublicControlService,
   options: ControlBridgeOptions = {},
 ): ControlBridge {
   const setTimeoutFn =
@@ -165,7 +185,7 @@ export function createControlBridge(
     }
 
     const deadlineAt = modelSetDeadlineAt(envelope, now);
-    void dispatchControlRequest(control, envelope, deadlineAt)
+    void dispatchControlRequest(control, envelope, deadlineAt, options.trustedConversationPrompt)
       .then(respondOnce)
       .catch((error: unknown) => {
         const code = (error as Error & { code?: string }).code ?? "internal";
@@ -179,10 +199,48 @@ export function createControlBridge(
   };
 }
 
+function readHubHumanIngress(payload: unknown): {
+  chatKey: string;
+  senderId: string;
+  accountId?: string;
+  senderName?: string;
+  isOwner?: boolean;
+} | undefined {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return undefined;
+  }
+  const raw = (payload as { humanIngress?: unknown }).humanIngress;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return undefined;
+  }
+  const ingress = raw as Record<string, unknown>;
+  if (typeof ingress.chatKey !== "string" || !ingress.chatKey.trim()) {
+    return undefined;
+  }
+  if (typeof ingress.senderId !== "string" || !ingress.senderId.trim()) {
+    return undefined;
+  }
+  if (ingress.chatKey.startsWith("bot:")) {
+    return undefined;
+  }
+  return {
+    chatKey: ingress.chatKey.trim(),
+    senderId: ingress.senderId.trim(),
+    ...(typeof ingress.accountId === "string" && ingress.accountId.trim()
+      ? { accountId: ingress.accountId.trim() }
+      : {}),
+    ...(typeof ingress.senderName === "string" && ingress.senderName.trim()
+      ? { senderName: ingress.senderName.trim() }
+      : {}),
+    ...(typeof ingress.isOwner === "boolean" ? { isOwner: ingress.isOwner } : {}),
+  };
+}
+
 async function dispatchControlRequest(
-  control: ControlService,
+  control: PublicControlService,
   envelope: RelayEnvelope,
   deadlineAt?: number,
+  trustedConversationPrompt?: ControlBridgeOptions["trustedConversationPrompt"],
 ): Promise<unknown> {
   const payload = envelope.payload;
   switch (envelope.type) {
@@ -930,6 +988,90 @@ async function dispatchControlRequest(
       }
       return await control.uploadFile(input);
     }
+    case MSG.botsList:
+      return { bots: control.listBots() };
+    case MSG.botsGet: {
+      const input = parseControlPayload(MSG.botsGet, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.botsGet}: malformed payload`);
+      return { bot: control.getBot(input.id) };
+    }
+    case MSG.botsCreate: {
+      const input = parseControlPayload(MSG.botsCreate, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.botsCreate}: malformed payload`);
+      return { bot: await control.createBot(input) };
+    }
+    case MSG.botsUpdate: {
+      const input = parseControlPayload(MSG.botsUpdate, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.botsUpdate}: malformed payload`);
+      const { id, ...patch } = input;
+      return { bot: await control.updateBot(id, patch) };
+    }
+    case MSG.botsDelete: {
+      const input = parseControlPayload(MSG.botsDelete, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.botsDelete}: malformed payload`);
+      return await control.deleteBot(input.id);
+    }
+    case MSG.conversationsList: {
+      const input = parseControlPayload(MSG.conversationsList, payload ?? {});
+      if (!input) return errorPayload("invalid-payload", `${MSG.conversationsList}: malformed payload`);
+      return {
+        conversations: control.listConversations(
+          input.botId ? { botId: input.botId } : undefined,
+        ),
+      };
+    }
+    case MSG.conversationsGet: {
+      const input = parseControlPayload(MSG.conversationsGet, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.conversationsGet}: malformed payload`);
+      return { conversation: control.getConversation(input.conversationId) };
+    }
+    case MSG.topicsList: {
+      const input = parseControlPayload(MSG.topicsList, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.topicsList}: malformed payload`);
+      return { topics: control.listTopics(input.conversationId) };
+    }
+    case MSG.topicsCreate: {
+      const input = parseControlPayload(MSG.topicsCreate, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.topicsCreate}: malformed payload`);
+      return { topic: await control.createTopic(input.conversationId, input.title) };
+    }
+    case MSG.conversationPrompt: {
+      const input = parseControlPayload(MSG.conversationPrompt, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.conversationPrompt}: malformed payload`);
+      const publicInput = {
+        conversationId: input.conversationId,
+        topicId: input.topicId,
+        requestId: input.requestId,
+        text: input.text,
+        ...(input.target ? { target: input.target } : {}),
+      };
+      const ingress = readHubHumanIngress(payload);
+      if (ingress && trustedConversationPrompt) {
+        return await trustedConversationPrompt(publicInput, ingress);
+      }
+      return await control.promptConversation(publicInput);
+    }
+    case MSG.conversationHistory: {
+      const input = parseControlPayload(MSG.conversationHistory, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.conversationHistory}: malformed payload`);
+      return control.conversationHistory({
+        conversationId: input.conversationId,
+        topicId: input.topicId,
+        ...(input.afterSeq !== undefined ? { afterSeq: input.afterSeq } : {}),
+        ...(input.beforeSeq !== undefined ? { beforeSeq: input.beforeSeq } : {}),
+        ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      });
+    }
+    case MSG.runsGet: {
+      const input = parseControlPayload(MSG.runsGet, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.runsGet}: malformed payload`);
+      return { run: control.getRun(input.runId) };
+    }
+    case MSG.runsCancel: {
+      const input = parseControlPayload(MSG.runsCancel, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.runsCancel}: malformed payload`);
+      return { run: await control.cancelRun(input.runId) };
+    }
     default:
       return errorPayload(
         "unknown-type",
@@ -943,7 +1085,7 @@ async function dispatchControlRequest(
 // tool) plus the flat fallbacks, reusing the same tool-step presentation as live turns.
 function historyMessagesToRows(
   messages: Extract<
-    Parameters<Parameters<ControlService["events"]["subscribe"]>[0]>[0],
+    Parameters<Parameters<PublicControlService["events"]["subscribe"]>[0]>[0],
     { type: "session-history" }
   >["messages"],
 ): SessionHistoryRowDto[] {
@@ -987,9 +1129,9 @@ function historyMessagesToRows(
   });
 }
 
-/** Routes hub→connector downward terminal event frames to the ControlService. Fire-and-forget. */
+/** Routes hub→connector downward terminal event frames to the PublicControlService. Fire-and-forget. */
 export function dispatchControlEvent(
-  control: ControlService,
+  control: PublicControlService,
   envelope: RelayEnvelope,
 ): void {
   const p = (envelope.payload ?? {}) as {
@@ -1022,7 +1164,7 @@ function toDisplaySessionAlias(internalAlias: string): string {
 }
 
 export function subscribeControlEvents(
-  control: ControlService,
+  control: PublicControlService,
   sendEvent: (type: string, payload: unknown) => void,
 ): () => void {
   return control.events.subscribe((event) => {
@@ -1041,6 +1183,7 @@ export function subscribeControlEvents(
           chatKey: event.chatKey,
           sessionAlias: toDisplaySessionAlias(event.sessionAlias),
           step: toolUseEventToStepDto(event.event),
+          ...(event.conversation ? { conversation: event.conversation } : {}),
         },
       });
       return;
@@ -1057,6 +1200,9 @@ export function subscribeControlEvents(
       return;
     }
     if ("sessionAlias" in event && typeof event.sessionAlias === "string") {
+      // sessionAlias on a conversation-correlated event is legacy transport
+      // plumbing for old clients. Product liveness / ownership / routing use
+      // event.conversation (runId / memberTurnId), never this display alias.
       sendEvent(MSG.instanceEvent, {
         event: {
           ...event,

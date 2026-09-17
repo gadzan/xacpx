@@ -2,6 +2,7 @@ import type { AppConfig } from "../config/types";
 import { createBotId, createDirectBindingId, createDirectConversationId } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
 import type { StateStore } from "../state/state-store";
+import { replaceRuntimeState } from "../state/replace-runtime-state";
 import type { AppState } from "../state/types";
 import { BotError } from "./bot-error";
 import { BotLifecycleGate } from "./bot-lifecycle-gate";
@@ -49,6 +50,8 @@ export interface BotServiceOptions {
   conversationWork?: BotConversationWork;
 }
 
+type SessionWriter = Pick<StateStore, "save"> & { saveNow?: (state: AppState) => Promise<void> };
+
 export class BotService {
   private readonly now: () => Date;
   private readonly createId: () => string;
@@ -56,11 +59,12 @@ export class BotService {
   private readonly lifecycleGate: BotLifecycleGate;
   private readonly beforeLifecycleMutation?: (input: { botId: string; op: BotLifecycleMutation }) => Promise<void>;
   private conversationWork?: BotConversationWork;
+  private closed = false;
 
   constructor(
     private readonly config: Pick<AppConfig, "agents" | "workspaces">,
     private readonly state: AppState,
-    private readonly stateStore: Pick<StateStore, "save">,
+    private readonly stateStore: SessionWriter,
     options?: BotServiceOptions,
   ) {
     this.now = options?.now ?? (() => new Date());
@@ -80,6 +84,17 @@ export class BotService {
     this.conversationWork = work;
   }
 
+  /** Composition shutdown: no new Bot mutations may start. Reads stay available for drain. */
+  close(): void {
+    this.closed = true;
+  }
+
+  private assertOpen(): void {
+    if (this.closed) {
+      throw new BotError("runtime_closed", "conversation runtime is closed");
+    }
+  }
+
   listBots(): BotProfile[] {
     return Object.values(this.state.bots).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
@@ -93,7 +108,9 @@ export class BotService {
   }
 
   async createBot(input: CreateBotInput): Promise<BotProfile> {
+    this.assertOpen();
     return await this.mutate(async () => {
+      this.assertOpen();
       this.rejectUnsupportedCwd(input);
       const id = this.nextId();
       const timestamp = this.now().toISOString();
@@ -106,16 +123,20 @@ export class BotService {
         createdAt: timestamp,
         updatedAt: timestamp,
       };
-      this.state.bots[id] = bot;
-      await this.stateStore.save(this.state);
+      const next = structuredClone(this.state);
+      next.bots[id] = bot;
+      await this.persist(next);
       return bot;
     });
   }
 
   async updateBot(id: string, patch: UpdateBotInput): Promise<BotProfile> {
+    this.assertOpen();
     return await this.runLifecycle(id, async () => {
+      this.assertOpen();
       await this.beforeLifecycleMutation?.({ botId: id, op: "update" });
       return await this.mutate(async () => {
+        this.assertOpen();
         this.rejectUnsupportedCwd(patch);
         const existing = this.getBot(id);
         if (patch.agent !== undefined && patch.agent !== existing.agent && this.hasLockedRuntime(id)) {
@@ -137,17 +158,21 @@ export class BotService {
           profileRevision: (existing.profileRevision ?? 1) + 1,
           updatedAt: this.now().toISOString(),
         };
-        this.state.bots[id] = next;
-        await this.stateStore.save(this.state);
+        const nextState = structuredClone(this.state);
+        nextState.bots[id] = next;
+        await this.persist(nextState);
         return next;
       });
     });
   }
 
   async deleteBot(id: string): Promise<void> {
+    this.assertOpen();
     await this.runLifecycle(id, async () => {
+      this.assertOpen();
       await this.beforeLifecycleMutation?.({ botId: id, op: "delete" });
       await this.mutate(async () => {
+        this.assertOpen();
         this.getBot(id);
         const groups = Object.values(this.state.conversations).filter(
           (conversation) => conversation.kind === "group" && conversation.botIds.includes(id),
@@ -166,8 +191,9 @@ export class BotService {
             conversationIds: [createDirectConversationId(id)],
           });
         }
-        delete this.state.bots[id];
-        await this.stateStore.save(this.state);
+        const next = structuredClone(this.state);
+        delete next.bots[id];
+        await this.persist(next);
       });
     });
   }
@@ -303,6 +329,15 @@ export class BotService {
       return true;
     }
     return !owner.botId && owner.bindingId === createDirectBindingId(botId);
+  }
+
+  private async persist(next: AppState): Promise<void> {
+    if (typeof this.stateStore.saveNow === "function") {
+      await this.stateStore.saveNow(next);
+    } else {
+      await this.stateStore.save(next);
+    }
+    replaceRuntimeState(this.state, next);
   }
 
   private async mutate<T>(fn: () => Promise<T>): Promise<T> {

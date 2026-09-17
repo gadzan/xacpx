@@ -33,6 +33,13 @@ export function createBotDirectOwner(input: {
   };
 }
 
+/** Owner kinds that must not appear on the ordinary product Sessions list. */
+export function isHiddenProductSessionOwner(owner?: LogicalSessionOwner): boolean {
+  return owner?.kind === "bot-direct"
+    || owner?.kind === "group-member"
+    || owner?.kind === "group-controller";
+}
+
 export interface NativeSessionCacheEntry {
   session_id: string;
   cwd?: string;

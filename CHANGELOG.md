@@ -1,4 +1,10 @@
 # Changelog
+## [Unreleased]
+
+### Added
+
+- Control / Relay Bot and Conversation public API: production daemon wiring of ConversationStore / Dispatcher / RunService / BotRuntimeManager, product DTOs, Control RPCs, additive Relay protocol 0.6.0 events and request types. Public callers use Bot / Conversation / Topic / Run IDs and Topic `seq`; hidden Bot runtime sessions are omitted from ordinary Sessions lists by `LogicalSession.owner` metadata. Production composition injects the daemon `stateMutex` into Bot/Conversation AppState writers. Ordinary Session APIs fail `hidden_session` for product-owned LogicalSessions. Native-session list/attach refuse product-owned agent-native rollouts (`assertNativeSessionAddressable` before `resumeAgentSession`; ownership is cwd + physical selector after ACP output-guard unwrap, not `driver` / overlay alias / workspace labels; list filtering is presentation only; a managed overlay without argv is an unproven selector that keeps its known cwd, so fail-closed is scoped to that cwd rather than every native attach). Synthetic Direct Conversation/Topic timestamps come from durable Bot metadata; default Topic presenter overlays both `createdAt` and `updatedAt`. Idempotent `requestId` retries do not re-emit acceptance product events. Relay StateMirror keeps Conversation correlation on finish-without-start recovery. Conversation durable recovery starts only after the daemon consumer lock (`activateAfterConsumerLock`); `buildApp` is passive composition. The first recovery `kick()` is the activation success gate: a failed drain leaves the consumer unavailable (`conversations_unavailable`) instead of activated+accepting. Relay StateMirror and Hub keep Conversation turns by correlation, but ordinary `usage` / `commands` snapshots require an ordinary live session alias and ignore Conversation-correlated meters. Bot CRUD is durability-gated `saveNow` COW before live AppState publish, so SQLite accept cannot snapshot a Bot that exists only in a pending debounce. Human Conversation permission authority requires server-derived `humanIngress` plus the live authority epoch; public `promptConversation` cannot mint it. Relay Hub overwrites `humanIngress` on `control.conversation.prompt` without adding that RPC to `CHAT_SCOPED_TYPES`. Permission broker uses a separate `permissionChatKey`, not the product `bot:<conversation>:<topic>` isolation key.
+
 ## [0.24.6-beta.0] - 2026-09-17
 
 ### Added
@@ -45,6 +51,20 @@
 - Runtime: stable MCP identity as transport-boundary invariant (PR #335); `TOOL_STEP_KINDS` validator allows `delete`/`move`/`fetch`.
 - Restore CLI summary semantics and base `rawOutput` fallback to legacy summarizer.
 
+## [relay 0.14.8] - 2026-09-16
+
+### Changed
+
+- Depend on `@ganglion/xacpx-relay-protocol` `^0.6.0` so Hub `validControlEvent` accepts additive Bot / Conversation product events and optional turn `conversation` join identity. Bot/Conversation RPCs stay instance-scoped (not `CHAT_SCOPED_TYPES`).
+
+## [relay-protocol 0.6.0] - 2026-09-16
+
+### Added
+
+- Bot / Conversation Control RPCs: `control.bots.*`, `control.conversations.*`, `control.topics.*`, `control.conversation.prompt|history`, `control.runs.get|cancel`.
+- Product events: `bots-changed`, `conversations-changed`, `conversation-topic-changed`, `conversation-message`, `conversation-run-changed`, `member-turn-started`, `member-turn-finished`.
+- Optional `conversation` join identity on existing turn events and `instance.state.sync` running turns (additive; old clients ignore unknown fields).
+
 ## [relay-protocol 0.5.3] - 2026-09-15
 
 ### Added
@@ -66,6 +86,12 @@
 ### Fixed
 
 - relay-web: render-markdown hardening; progress/tool interleaving; markdown anchors; block-level streaming cache; compositional `copyText`; queue-overflow toast; live turn slotting by Hub insert order; iOS IME 229 input; live model/effort refresh.
+
+## [channel-relay 0.7.4] - 2026-09-16
+
+### Added
+
+- Control bridge dispatch for Bot / Conversation / Topic / Run RPCs; live turn events forward optional `conversation` join identity; state-sync running turns preserve that correlation.
 
 ## [channel-relay 0.7.3] - 2026-09-15
 

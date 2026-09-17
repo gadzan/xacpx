@@ -150,7 +150,20 @@ var MSG = {
   agentMessageDeliver: "instance.agent-message.deliver",
   agentMessageCompletion: "instance.agent-message.completion",
   agentDirectorySnapshot: "instance.agent-directory.snapshot",
-  agentDirectoryQuery: "instance.agent-directory.query"
+  agentDirectoryQuery: "instance.agent-directory.query",
+  botsList: "control.bots.list",
+  botsGet: "control.bots.get",
+  botsCreate: "control.bots.create",
+  botsUpdate: "control.bots.update",
+  botsDelete: "control.bots.delete",
+  conversationsList: "control.conversations.list",
+  conversationsGet: "control.conversations.get",
+  topicsList: "control.topics.list",
+  topicsCreate: "control.topics.create",
+  conversationPrompt: "control.conversation.prompt",
+  conversationHistory: "control.conversation.history",
+  runsGet: "control.runs.get",
+  runsCancel: "control.runs.cancel"
 };
 function errorPayload(code, message) {
   return { error: { code, message } };
@@ -285,7 +298,14 @@ var CONTROL_EVENT_TYPE_MAP = {
   "terminal-output": true,
   "terminal-exit": true,
   "agent-message": true,
-  "agent-message-completion": true
+  "agent-message-completion": true,
+  "bots-changed": true,
+  "conversations-changed": true,
+  "conversation-topic-changed": true,
+  "conversation-message": true,
+  "conversation-run-changed": true,
+  "member-turn-started": true,
+  "member-turn-finished": true
 };
 var CONTROL_EVENT_TYPES = new Set(Object.keys(CONTROL_EVENT_TYPE_MAP));
 var TOOL_STEP_KIND_MAP = {
@@ -471,6 +491,38 @@ function validPeerTurnOrigin(o) {
   const origin = o;
   return typeof origin.requestMessageId === "string" && typeof origin.completion === "string" && ["none", "notify", "result"].includes(origin.completion) && validAgentAddress(origin.source) && validAgentAddress(origin.target);
 }
+function validConversationCorrelation(value) {
+  if (value === undefined)
+    return true;
+  if (typeof value !== "object" || value === null)
+    return false;
+  const c = value;
+  return typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && typeof c.runId === "string" && typeof c.memberTurnId === "string";
+}
+function validTopicSummary(value) {
+  if (typeof value !== "object" || value === null)
+    return false;
+  const c = value;
+  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.title === "string" && (c.status === "active" || c.status === "archived" || c.status === "deleting") && typeof c.createdAt === "string" && typeof c.updatedAt === "string";
+}
+function validConversationMessage(value) {
+  if (typeof value !== "object" || value === null)
+    return false;
+  const c = value;
+  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.seq === "number" && (c.role === "human" || c.role === "bot" || c.role === "system") && typeof c.content === "string" && typeof c.createdAt === "string" && optStr(c.senderBotId) && optStr(c.replyTo) && optStr(c.runId) && optStr(c.promptRequestId);
+}
+function validConversationRun(value) {
+  if (typeof value !== "object" || value === null)
+    return false;
+  const c = value;
+  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.requestMessageId === "string" && typeof c.requestId === "string" && c.mode === "explicit" && (c.state === "queued" || c.state === "running" || c.state === "waiting-human" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.profileRevision === "number" && typeof c.createdAt === "string" && optStr(c.completionReason) && optStr(c.startedAt) && optStr(c.finishedAt);
+}
+function validMemberTurnSummary(value) {
+  if (typeof value !== "object" || value === null)
+    return false;
+  const c = value;
+  return typeof c.id === "string" && typeof c.runId === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && typeof c.batch === "number" && typeof c.attempt === "number" && (c.origin === "human" || c.origin === "followup" || c.origin === "retry" || c.origin === "recovery") && (c.state === "queued" || c.state === "dispatched" || c.state === "running" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.createdAt === "string" && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt);
+}
 function validControlEvent(e) {
   if (typeof e !== "object" || e === null)
     return false;
@@ -480,27 +532,27 @@ function validControlEvent(e) {
   const type = c.type;
   switch (type) {
     case "turn-output":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string" && validConversationCorrelation(c.conversation);
     case "turn-finished":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean" && optStr(c.text) && optStr(c.recoveryId) && optStr(c.errorMessage) && optBool(c.cancelled) && optBool(c.silent) && validPeerTurnOrigin(c.peerOrigin) && optNonNegInt(c.startedAfterSeq) && (c.startedAt === undefined || finiteNonNegative(c.startedAt));
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.ok === "boolean" && optStr(c.text) && optStr(c.recoveryId) && optStr(c.errorMessage) && optBool(c.cancelled) && optBool(c.silent) && validPeerTurnOrigin(c.peerOrigin) && optNonNegInt(c.startedAfterSeq) && (c.startedAt === undefined || finiteNonNegative(c.startedAt)) && validConversationCorrelation(c.conversation);
     case "scheduled-changed":
       return typeof c.chatKey === "string";
     case "turn-started":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && optStr(c.prompt) && optStr(c.queueItemId) && optStr(c.promptRequestId) && optStr(c.recoveryId) && validScheduledOrigin(c.scheduled) && validPeerTurnOrigin(c.peerOrigin) && optNonNegInt(c.startedAfterSeq) && optNonNegInt(c.slotAfterId) && (c.startedAt === undefined || finiteNonNegative(c.startedAt));
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && optStr(c.prompt) && optStr(c.queueItemId) && optStr(c.promptRequestId) && optStr(c.recoveryId) && validScheduledOrigin(c.scheduled) && validPeerTurnOrigin(c.peerOrigin) && optNonNegInt(c.startedAfterSeq) && optNonNegInt(c.slotAfterId) && (c.startedAt === undefined || finiteNonNegative(c.startedAt)) && validConversationCorrelation(c.conversation);
     case "turn-thought":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string";
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.chunk === "string" && validConversationCorrelation(c.conversation);
     case "plan":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.entries);
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.entries) && validConversationCorrelation(c.conversation);
     case "turn-usage":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && finiteNonNegative(c.used) && finiteNonNegative(c.size) && validUsageCost(c.cost) && validUsageBreakdown(c.breakdown);
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && finiteNonNegative(c.used) && finiteNonNegative(c.size) && validUsageCost(c.cost) && validUsageBreakdown(c.breakdown) && validConversationCorrelation(c.conversation);
     case "agent-commands":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.commands) && c.commands.every(validAgentCommand);
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.commands) && c.commands.every(validAgentCommand) && validConversationCorrelation(c.conversation);
     case "queue-updated":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.items);
     case "session-history":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && Array.isArray(c.messages) && c.messages.every((m) => m !== null && typeof m === "object" && (m.direction === "in" || m.direction === "out") && typeof m.text === "string");
     case "tool-event":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && validToolStep(c.step);
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && validToolStep(c.step) && validConversationCorrelation(c.conversation);
     case "terminal-output":
       return typeof c.terminalId === "string" && typeof c.seq === "number" && typeof c.data === "string";
     case "terminal-exit":
@@ -512,7 +564,18 @@ function validControlEvent(e) {
     case "sessions-changed":
     case "workspaces-changed":
     case "orchestration-changed":
+    case "bots-changed":
+    case "conversations-changed":
       return true;
+    case "conversation-topic-changed":
+      return validTopicSummary(c.topic);
+    case "conversation-message":
+      return validConversationMessage(c.message);
+    case "conversation-run-changed":
+      return validConversationRun(c.run);
+    case "member-turn-started":
+    case "member-turn-finished":
+      return validConversationRun(c.run) && validMemberTurnSummary(c.memberTurn);
     default: {
       const _exhaustive = type;
       return _exhaustive;
@@ -528,7 +591,7 @@ function validInstanceStateSync(p) {
     if (typeof t !== "object" || t === null)
       return false;
     const turn = t;
-    return typeof turn.sessionAlias === "string" && optStr(turn.prompt) && optStr(turn.queueItemId) && optStr(turn.recoveryId) && optStr(turn.promptRequestId) && validScheduledOrigin(turn.scheduled) && finiteNonNegative(turn.startedAt) && optNonNegInt(turn.startedAfterSeq) && typeof turn.text === "string" && typeof turn.reasoning === "string" && Array.isArray(turn.steps) && turn.steps.every(validToolStep) && (turn.parts === undefined || Array.isArray(turn.parts) && validStateSyncParts(turn.parts)) && (turn.truncated === undefined || typeof turn.truncated === "boolean");
+    return typeof turn.sessionAlias === "string" && optStr(turn.prompt) && optStr(turn.queueItemId) && optStr(turn.recoveryId) && optStr(turn.promptRequestId) && validScheduledOrigin(turn.scheduled) && finiteNonNegative(turn.startedAt) && optNonNegInt(turn.startedAfterSeq) && typeof turn.text === "string" && typeof turn.reasoning === "string" && Array.isArray(turn.steps) && turn.steps.every(validToolStep) && (turn.parts === undefined || Array.isArray(turn.parts) && validStateSyncParts(turn.parts)) && (turn.truncated === undefined || typeof turn.truncated === "boolean") && validConversationCorrelation(turn.conversation);
   }))
     return false;
   if (!Array.isArray(c.usage) || !c.usage.every((u) => {
@@ -683,6 +746,8 @@ function parseWebClientMessage(envelope) {
 var fields = (p) => isObj(p) ? p : null;
 var optArr = (v) => v === undefined || Array.isArray(v);
 var isStrArr = (v) => Array.isArray(v) && v.every(isStr);
+var optStrOrNull = (v) => v === undefined || v === null || typeof v === "string";
+var optBoolOrNull = (v) => v === undefined || v === null || typeof v === "boolean";
 var validateSessionsList = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && optNum(o.offset) && optNum(o.limit) && optBool(o.includeArchived) && optBool(o.archivedOnly) && optStr(o.workspace) && optStr(o.agent) ? o : null;
@@ -885,6 +950,61 @@ var validateUpload = (p) => {
   const o = fields(p);
   return o && isStr(o.filename) && isStr(o.content) && isStr(o.mimeType) ? o : null;
 };
+var validateBotsGet = (p) => {
+  const o = fields(p);
+  return o && isStr(o.id) ? o : null;
+};
+var validateBotsCreate = (p) => {
+  const o = fields(p);
+  return o && isStr(o.name) && isStr(o.agent) && isStr(o.workspace) && optStr(o.avatar) && optStr(o.role) && optStr(o.instructions) && optStr(o.model) && optStr(o.effort) && optBool(o.enabled) ? o : null;
+};
+var validateBotsUpdate = (p) => {
+  const o = fields(p);
+  return o && isStr(o.id) && optStr(o.name) && optStrOrNull(o.avatar) && optStrOrNull(o.role) && optStrOrNull(o.instructions) && optStr(o.agent) && optStr(o.workspace) && optStrOrNull(o.model) && optStrOrNull(o.effort) && optBoolOrNull(o.enabled) ? o : null;
+};
+var validateBotsDelete = (p) => {
+  const o = fields(p);
+  return o && isStr(o.id) ? o : null;
+};
+var validateConversationsList = (p) => {
+  const o = fields(p);
+  return o && optStr(o.botId) ? o : null;
+};
+var validateConversationsGet = (p) => {
+  const o = fields(p);
+  return o && isStr(o.conversationId) ? o : null;
+};
+var validateTopicsList = (p) => {
+  const o = fields(p);
+  return o && isStr(o.conversationId) ? o : null;
+};
+var validateTopicsCreate = (p) => {
+  const o = fields(p);
+  return o && isStr(o.conversationId) && isStr(o.title) ? o : null;
+};
+var validateConversationPrompt = (p) => {
+  const o = fields(p);
+  if (!o || !isStr(o.conversationId) || !isStr(o.topicId) || !isStr(o.requestId) || !isStr(o.text)) {
+    return null;
+  }
+  if (o.target !== undefined) {
+    if (!isObj(o.target) || !isStr(o.target.botId))
+      return null;
+  }
+  return o;
+};
+var validateConversationHistory = (p) => {
+  const o = fields(p);
+  return o && isStr(o.conversationId) && isStr(o.topicId) && optNum(o.afterSeq) && optNum(o.beforeSeq) && optNum(o.limit) ? o : null;
+};
+var validateRunsGet = (p) => {
+  const o = fields(p);
+  return o && isStr(o.runId) ? o : null;
+};
+var validateRunsCancel = (p) => {
+  const o = fields(p);
+  return o && isStr(o.runId) ? o : null;
+};
 var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.sessionsList]: validateSessionsList,
   [MSG.sessionsCreate]: validateSessionsCreate,
@@ -938,7 +1058,19 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.terminalTakeControl]: validateTerminalTakeControl,
   [MSG.terminalResync]: validateTerminalResync,
   [MSG.terminalTerminate]: validateTerminalTerminate,
-  [MSG.upload]: validateUpload
+  [MSG.upload]: validateUpload,
+  [MSG.botsGet]: validateBotsGet,
+  [MSG.botsCreate]: validateBotsCreate,
+  [MSG.botsUpdate]: validateBotsUpdate,
+  [MSG.botsDelete]: validateBotsDelete,
+  [MSG.conversationsList]: validateConversationsList,
+  [MSG.conversationsGet]: validateConversationsGet,
+  [MSG.topicsList]: validateTopicsList,
+  [MSG.topicsCreate]: validateTopicsCreate,
+  [MSG.conversationPrompt]: validateConversationPrompt,
+  [MSG.conversationHistory]: validateConversationHistory,
+  [MSG.runsGet]: validateRunsGet,
+  [MSG.runsCancel]: validateRunsCancel
 };
 function parseControlPayload(type, payload) {
   const validate = CONTROL_PAYLOAD_VALIDATORS[type];
@@ -1011,62 +1143,62 @@ function parseTerminalEventPayload(type, payload) {
   return validate(payload);
 }
 export {
-  CONTROL_PAYLOAD_VALIDATORS,
-  MAX_CAPABILITIES,
-  MAX_CAPABILITY_LENGTH,
-  MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
-  MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES,
-  MAX_TERMINAL_COLS,
-  MAX_TERMINAL_ERROR_MESSAGE_LENGTH,
-  MAX_TERMINAL_GENERATION_LENGTH,
-  MAX_TERMINAL_ID_LENGTH,
-  MAX_TERMINAL_INPUT_BYTES,
-  MAX_TERMINAL_REBASE_TOTAL_BYTES,
-  MAX_TERMINAL_REQUEST_ID_LENGTH,
-  MAX_TERMINAL_ROWS,
-  MAX_TERMINAL_SESSION_ALIAS_LENGTH,
-  MAX_TERMINAL_VIEWER_ID_LENGTH,
-  MAX_TOOL_STEPS,
-  MAX_WEB_INSTANCE_ID_LENGTH,
-  MIN_TERMINAL_COLS,
-  MIN_TERMINAL_ROWS,
-  MSG,
-  REASONING_CAP,
-  RECOVERY_RETENTION_MS,
-  RELAY_CAPABILITIES,
-  RELAY_PROTOCOL_VERSION,
-  STATE_SYNC_PARTS_CAP,
-  STATE_SYNC_TEXT_CAP,
-  TERMINAL_ERROR_CODES,
-  TERMINAL_EVENT_PAYLOAD_VALIDATORS,
-  TERMINAL_HUB_REQUEST_TIMEOUT_MS,
-  TERMINAL_KILL_CONFIRM_TIMEOUT_MS,
-  TERMINAL_REBASE_CHUNK_BYTES,
-  TERMINAL_RPC_TIMEOUT_MS,
-  WEB_CLIENT_TYPE,
-  WEB_EVENT_TYPE,
-  decodeEnvelope,
-  encodeEnvelope,
-  errorPayload,
-  isBoundedStr,
-  isErrorPayload,
-  isIntInRange,
-  isNonNegInt,
-  isObj,
-  isStr,
-  maxBase64EncodedLength,
-  normalizeCapabilities,
-  optBool,
-  optNonNegInt,
-  optNum,
-  optStr,
-  parseCanonicalBase64,
-  parseControlPayload,
-  parseTerminalEventPayload,
-  parseWebClientMessage,
-  parseWebServerEvent,
-  validControlEvent,
-  validInstanceStateSync,
+  webEventEnvelope,
   webClientEnvelope,
-  webEventEnvelope
+  validInstanceStateSync,
+  validControlEvent,
+  parseWebServerEvent,
+  parseWebClientMessage,
+  parseTerminalEventPayload,
+  parseControlPayload,
+  parseCanonicalBase64,
+  optStr,
+  optNum,
+  optNonNegInt,
+  optBool,
+  normalizeCapabilities,
+  maxBase64EncodedLength,
+  isStr,
+  isObj,
+  isNonNegInt,
+  isIntInRange,
+  isErrorPayload,
+  isBoundedStr,
+  errorPayload,
+  encodeEnvelope,
+  decodeEnvelope,
+  WEB_EVENT_TYPE,
+  WEB_CLIENT_TYPE,
+  TERMINAL_RPC_TIMEOUT_MS,
+  TERMINAL_REBASE_CHUNK_BYTES,
+  TERMINAL_KILL_CONFIRM_TIMEOUT_MS,
+  TERMINAL_HUB_REQUEST_TIMEOUT_MS,
+  TERMINAL_EVENT_PAYLOAD_VALIDATORS,
+  TERMINAL_ERROR_CODES,
+  STATE_SYNC_TEXT_CAP,
+  STATE_SYNC_PARTS_CAP,
+  RELAY_PROTOCOL_VERSION,
+  RELAY_CAPABILITIES,
+  RECOVERY_RETENTION_MS,
+  REASONING_CAP,
+  MSG,
+  MIN_TERMINAL_ROWS,
+  MIN_TERMINAL_COLS,
+  MAX_WEB_INSTANCE_ID_LENGTH,
+  MAX_TOOL_STEPS,
+  MAX_TERMINAL_VIEWER_ID_LENGTH,
+  MAX_TERMINAL_SESSION_ALIAS_LENGTH,
+  MAX_TERMINAL_ROWS,
+  MAX_TERMINAL_REQUEST_ID_LENGTH,
+  MAX_TERMINAL_REBASE_TOTAL_BYTES,
+  MAX_TERMINAL_INPUT_BYTES,
+  MAX_TERMINAL_ID_LENGTH,
+  MAX_TERMINAL_GENERATION_LENGTH,
+  MAX_TERMINAL_ERROR_MESSAGE_LENGTH,
+  MAX_TERMINAL_COLS,
+  MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES,
+  MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
+  MAX_CAPABILITY_LENGTH,
+  MAX_CAPABILITIES,
+  CONTROL_PAYLOAD_VALIDATORS
 };

@@ -2,6 +2,7 @@
   "record": [
     "logger.debug(command.parsed)",
     "sessions.getCurrentSession(\"wx:user\")",
+    "sessions.getLogicalSessionRecord(\"demo\")",
     "logger.error(orchestration.coordinator_results.load_failed)",
     "logger.error(command.failed)"
   ],

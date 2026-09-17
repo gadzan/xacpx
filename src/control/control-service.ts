@@ -31,6 +31,10 @@ import {
 } from "../channels/channel-scope";
 import { AgentMessagingError } from "../orchestration/agent-messaging-error";
 import type { PermissionInteractionOrigin } from "../permissions/permission-types.js";
+import type {
+  ConversationExecutionPort,
+} from "../conversations/conversation-execution-port.js";
+import { sanitizePublicConversationPrompt, sanitizePublicPromptInput } from "./public-control.js";
 import type { ControlEventBus } from "./control-event-bus";
 import {
   readNativeSessionHistory,
@@ -76,6 +80,29 @@ import {
   isCommandTimeoutError,
 } from "../transport/command-timeouts";
 import type { AppLogger } from "../logging/app-logger";
+import type { ConversationRuntime } from "../conversations/conversation-composition";
+import { ConversationError } from "../conversations/conversation-error";
+import { parseHumanIngress } from "../conversations/conversation-execution";
+import type { ConversationProductEvent } from "../conversations/conversation-product-events";
+import type { HumanIngressContext } from "../conversations/conversation-types";
+import { assertOrdinarySessionAddressable } from "../sessions/ordinary-session-guard";
+import { isHiddenProductSessionOwner } from "../state/types";
+import {
+  toBotDetail,
+  toBotSummary,
+  toConversationMessage,
+  toConversationRun,
+  toConversationSummary,
+  toMemberTurnSummary,
+  toRunDetail,
+  toTopicSummary,
+  type BotCreateRequestDto,
+  type BotUpdateRequestDto,
+  type ConversationHistoryRequestDto,
+  type ConversationPromptRequestDto,
+  type ConversationPromptResponseDto,
+  type ConversationTurnCorrelation,
+} from "./conversation-control-dtos";
 
 const MODEL_SET_SETTLE_BUDGET_MS =
   2 * (DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS + BRIDGE_REQUEST_TIMEOUT_GRACE_MS);
@@ -162,6 +189,7 @@ export interface ControlServiceDeps {
     | "setSessionModel"
     | "setSessionEffort"
     | "setDisplayName"
+    | "getLogicalSessionRecord"
   >;
   // The active transport, for reading/switching a session's model and effort.
   // These controls are optional on the interface — absence is handled gracefully.
@@ -359,13 +387,6 @@ export interface ControlPromptInput {
   /** Conversation pre-admission cancel. Checked after any config-tail wait and
    *  immediately before TurnQueue.submit so a cancelled Run never starts. */
   abortSignal?: AbortSignal;
-  /**
-   * Conversation execution provenance, derived by ConversationStore at claim
-   * from the live authority epoch. `promptImmediate` fail-closes to
-   * orchestration unless this is exactly `"human"`. Interactive `prompt()`
-   * ignores it and is always human. Omitting it cannot mint human authority.
-   */
-  executionOrigin?: PermissionInteractionOrigin;
 }
 
 export interface ControlPromptResult {
@@ -380,6 +401,35 @@ export interface ControlPromptResult {
   /** Id of the queued item, present only when `queued` is true. Used to cancel it via
    *  `cancelQueuedItem` before it drains. */
   queueItemId?: string;
+}
+
+/**
+ * Core-private Conversation execution + wiring. Not a ControlService method set;
+ * channel plugins and plugin-api never receive this object.
+ */
+export interface ControlConversationKernel extends ConversationExecutionPort {
+  bindConversationRuntime(runtime: ConversationRuntime): void;
+  emitConversationProduct(event: ConversationProductEvent): void;
+  /**
+   * Trusted Direct Conversation accept. Ingress must already be overwritten by
+   * an authenticating channel (Relay Hub). Public `promptConversation` never
+   * takes this context.
+   */
+  promptConversationFromHumanIngress(
+    input: ConversationPromptRequestDto,
+    ingress: HumanIngressContext,
+  ): Promise<ConversationPromptResponseDto>;
+}
+
+const conversationKernels = new WeakMap<ControlService, ControlConversationKernel>();
+
+/** Core-private accessor. Not exported from `xacpx/plugin-api`. */
+export function conversationKernel(control: ControlService): ControlConversationKernel {
+  const kernel = conversationKernels.get(control);
+  if (!kernel) {
+    throw new Error("Conversation execution kernel is not bound to this ControlService");
+  }
+  return kernel;
 }
 
 /** A turn started by a fired scheduled task. Runs through the same agent + turn-event
@@ -412,6 +462,7 @@ export class ControlService {
   private readonly workspaceGit: WorkspaceGit;
   private readonly sessionConfigSetTails = new Map<string, Promise<void>>();
   private readonly worktreeRegistrationTails = new Map<string, Promise<void>>();
+  private conversationRuntime: ConversationRuntime | undefined;
 
   constructor(private readonly deps: ControlServiceDeps) {
     this.workspaceGit = new WorkspaceGit(
@@ -493,6 +544,29 @@ export class ControlService {
         } catch {
           /* best-effort: no refresh on detection failure */
         }
+      },
+    });
+    conversationKernels.set(this, {
+      promptImmediate: (input) => this.#submitHumanPrompt(input, false),
+      cancelTurnForPromptRequest: (chatKey, sessionAlias, promptRequestId) =>
+        this.#cancelTurnForPromptRequest(chatKey, sessionAlias, promptRequestId),
+      inspectPromptRequest: (chatKey, sessionAlias, promptRequestId) =>
+        this.#inspectPromptRequest(chatKey, sessionAlias, promptRequestId),
+      cancelQueuedConversationItem: (chatKey, sessionAlias, itemId) =>
+        this.#cancelQueuedAtAlias(chatKey, sessionAlias, itemId),
+      bindConversationRuntime: (runtime) => {
+        this.conversationRuntime = runtime;
+      },
+      emitConversationProduct: (event) => this.#publishConversationProduct(event),
+      promptConversationFromHumanIngress: async (input, ingress) => {
+        const parsed = parseHumanIngress(ingress);
+        if (!parsed) {
+          throw new ConversationError(
+            "human_ingress_invalid",
+            "trusted conversation prompt requires complete human ingress",
+          );
+        }
+        return this.#promptConversation(input, parsed);
       },
     });
   }
@@ -950,7 +1024,28 @@ export class ControlService {
       chatKey,
       alias,
     );
+    this.assertOrdinaryAddressedAlias(chatKey, alias);
+    this.assertOrdinaryAddressedAlias(chatKey, internalAlias);
     return await this.deps.sessions.getSession(internalAlias);
+  }
+
+  /**
+   * Ordinary Session APIs must not address product-owned LogicalSessions.
+   * Lookup is by owner metadata (exact alias + channel-scoped form), never
+   * `brt_` prefix. Missing records are not hidden — callers handle not-found.
+   */
+  private assertOrdinaryAddressedAlias(chatKey: string, alias: string): void {
+    const channelId = getChannelIdFromChatKey(chatKey);
+    const resolved =
+      this.deps.sessions.getResolvedSessionByInternalAlias?.(alias)?.alias
+      ?? this.deps.sessions.getResolvedSessionByInternalAlias?.(
+        toInternalSessionAlias(channelId, alias),
+      )?.alias;
+    const record =
+      this.deps.sessions.getLogicalSessionRecord?.(resolved ?? alias)
+      ?? this.deps.sessions.getLogicalSessionRecord?.(alias)
+      ?? this.deps.sessions.getLogicalSessionRecord?.(toInternalSessionAlias(channelId, alias));
+    assertOrdinarySessionAddressable(record?.owner);
   }
 
   get events(): ControlEventBus {
@@ -965,9 +1060,13 @@ export class ControlService {
     const channelId = getChannelIdFromChatKey(chatKey);
     return this.deps.sessions
       .listAllResolvedSessions()
-      .filter((session) =>
-        isSessionAliasVisibleInChannel(session.alias, channelId),
-      )
+      .filter((session) => {
+        if (!isSessionAliasVisibleInChannel(session.alias, channelId)) {
+          return false;
+        }
+        const record = this.deps.sessions.getLogicalSessionRecord?.(session.alias);
+        return !isHiddenProductSessionOwner(record?.owner);
+      })
       .map((session) => {
         const running = this.deps.activeTurns.isActiveAnywhere(session.alias);
         const warm = running ? true : this.deps.sessionWarmth?.isWarm(session);
@@ -1067,11 +1166,13 @@ export class ControlService {
     );
     // When an agentSessionId is supplied the user picked an existing native session to
     // resume; otherwise create a fresh transport session (the default `/session new`).
-    // Native attach: recover the agent-side rollout's prior conversation from acpx's own
-    // persisted record and seed it into history, so the dashboard isn't blank. This MUST
-    // happen BEFORE the attach — acpx's resume reuses the source record and overwrites its
-    // conversation with an empty one, so reading afterwards finds nothing. Best-effort: a
-    // read failure (no record, shape drift) must never fail the attach itself.
+    // Native attach is refused when that ID is already product-owned (hidden Bot/Group
+    // runtime). Resume reuses the source record and overwrites its conversation, so
+    // ownership is checked in SessionControlService before resumeAgentSession.
+    // Native history seed MUST happen BEFORE the attach — acpx's resume overwrites
+    // the source record's conversation with an empty one, so reading afterwards
+    // finds nothing. Best-effort: a read failure (no record, shape drift) must
+    // never fail the attach itself.
     let nativeHistory: NativeHistoryMessage[] = [];
     if (agentSessionId) {
       try {
@@ -1123,10 +1224,12 @@ export class ControlService {
     chatKey: string,
     alias: string,
   ): Promise<{ wasActive: boolean }> {
+    this.assertOrdinaryAddressedAlias(chatKey, alias);
     const internalAlias = await this.deps.sessions.resolveAliasForChat(
       chatKey,
       alias,
     );
+    this.assertOrdinaryAddressedAlias(chatKey, internalAlias);
     // Drop queued prompts and abort a running turn BEFORE tearing down the transport:
     // a drained turn starting mid-removal (or turn events landing after it) would write
     // history rows for a session that no longer exists. NOTE clearSession is destructive
@@ -1154,10 +1257,12 @@ export class ControlService {
   }
 
   async archiveSession(chatKey: string, alias: string): Promise<void> {
+    this.assertOrdinaryAddressedAlias(chatKey, alias);
     const internalAlias = await this.deps.sessions.resolveAliasForChat(
       chatKey,
       alias,
     );
+    this.assertOrdinaryAddressedAlias(chatKey, internalAlias);
     // Queued prompts must not drain onto the session the user just archived — a drained
     // turn would cold-start a fresh queue owner and effectively undo the archive.
     // clearSession is destructive even on `cleared: false` (turn aborted, queue dropped),
@@ -1184,10 +1289,12 @@ export class ControlService {
   }
 
   async unarchiveSession(chatKey: string, alias: string): Promise<void> {
+    this.assertOrdinaryAddressedAlias(chatKey, alias);
     const internalAlias = await this.deps.sessions.resolveAliasForChat(
       chatKey,
       alias,
     );
+    this.assertOrdinaryAddressedAlias(chatKey, internalAlias);
     await this.deps.unarchiveSession(internalAlias);
     this.deps.events.emit({ type: "sessions-changed" });
   }
@@ -1283,21 +1390,16 @@ export class ControlService {
   }
 
   async prompt(input: ControlPromptInput): Promise<ControlPromptResult> {
-    return this.submitHumanPrompt(input, true);
+    return this.#submitHumanPrompt(sanitizePublicPromptInput(input), true);
   }
 
-  /**
-   * Conversation execution seam: same TurnQueue / SessionTurnRunner path as
-   * `prompt()`, but never FIFO-enqueues when the session lane is busy.
-   * Turn origin is the store-derived `executionOrigin` (fail-closed to
-   * orchestration). ConversationStore already owns durable queuing.
-   */
-  async promptImmediate(input: ControlPromptInput): Promise<ControlPromptResult> {
-    return this.submitHumanPrompt(input, false);
-  }
-
-  private submitHumanPrompt(
-    input: ControlPromptInput,
+  #submitHumanPrompt(
+    input: ControlPromptInput & {
+      executionOrigin?: PermissionInteractionOrigin;
+      conversation?: ConversationTurnCorrelation;
+      permissionChatKey?: string;
+      senderName?: string;
+    },
     queueable: boolean,
   ): Promise<ControlPromptResult> {
     const channelId = getChannelIdFromChatKey(input.chatKey);
@@ -1323,6 +1425,13 @@ export class ControlService {
       if (input.abortSignal?.aborted) {
         return Promise.resolve({ ok: false, cancelled: true, errorMessage: "cancelled" });
       }
+      const owned =
+        this.deps.sessions.getLogicalSessionRecord?.(internalAlias)
+        ?? this.deps.sessions.getLogicalSessionRecord?.(input.sessionAlias);
+      const trustedConversationExecution = !queueable && input.conversation !== undefined;
+      if (!trustedConversationExecution) {
+        assertOrdinarySessionAddressable(owned?.owner);
+      }
       return this.turnQueue.submit({
         chatKey: input.chatKey,
         sessionAlias: input.sessionAlias,
@@ -1341,6 +1450,9 @@ export class ControlService {
           ? { promptRequestId: input.promptRequestId }
           : {}),
         ...(input.abortSignal !== undefined ? { abortSignal: input.abortSignal } : {}),
+        ...(input.conversation !== undefined ? { conversation: input.conversation } : {}),
+        ...(input.permissionChatKey !== undefined ? { permissionChatKey: input.permissionChatKey } : {}),
+        ...(input.senderName !== undefined ? { senderName: input.senderName } : {}),
       });
     };
     // Keep this helper non-async so `prompt()` still reaches TurnQueue.submit on
@@ -1358,6 +1470,7 @@ export class ControlService {
   async runScheduledTurn(
     input: ControlScheduledTurnInput,
   ): Promise<ControlPromptResult> {
+    this.assertOrdinaryAddressedAlias(input.chatKey, input.sessionAlias);
     const channelId = getChannelIdFromChatKey(input.chatKey);
     const internalAlias =
       this.deps.sessions.getResolvedSessionByInternalAlias?.(input.sessionAlias)?.alias ??
@@ -1407,6 +1520,7 @@ export class ControlService {
     return this.turnQueue.isBusy("", internalAlias, internalAlias);
   }
   cancelTurn(chatKey: string, sessionAlias: string): boolean {
+    this.assertOrdinaryAddressedAlias(chatKey, sessionAlias);
     const channelId = getChannelIdFromChatKey(chatKey);
     const internalAlias =
       this.deps.sessions.getResolvedSessionByInternalAlias?.(sessionAlias)?.alias ??
@@ -1417,7 +1531,7 @@ export class ControlService {
     return this.turnQueue.cancelTurn(chatKey, sessionAlias, internalAlias);
   }
 
-  cancelTurnForPromptRequest(chatKey: string, sessionAlias: string, promptRequestId: string): boolean {
+  #cancelTurnForPromptRequest(chatKey: string, sessionAlias: string, promptRequestId: string): boolean {
     const channelId = getChannelIdFromChatKey(chatKey);
     const internalAlias =
       this.deps.sessions.getResolvedSessionByInternalAlias?.(sessionAlias)?.alias ??
@@ -1428,7 +1542,7 @@ export class ControlService {
     return this.turnQueue.cancelTurnForPromptRequest(chatKey, sessionAlias, promptRequestId, internalAlias);
   }
 
-  inspectPromptRequest(
+  #inspectPromptRequest(
     chatKey: string,
     sessionAlias: string,
     promptRequestId: string,
@@ -1460,6 +1574,10 @@ export class ControlService {
     modeUsed: "prompt" | "queue" | "interrupt";
     targetState?: "idle" | "running";
   }> {
+    this.assertOrdinaryAddressedAlias(input.chatKey, input.sessionAlias);
+    if (input.boundSessionAlias) {
+      this.assertOrdinaryAddressedAlias(input.chatKey, input.boundSessionAlias);
+    }
     const channelId = getChannelIdFromChatKey(input.chatKey);
     const internalAlias =
       input.boundSessionAlias ??
@@ -1568,8 +1686,18 @@ export class ControlService {
   /** Remove a pending queued prompt (by id) before it drains. No-ops (returns
    *  `{ cancelled: false }`) when the queue or the id is absent/already drained —
    *  e.g. a race where the item drained into a running turn just before the cancel
-   *  arrived. Does NOT touch a turn that is already running (use `cancelTurn`). */
+   *  arrived. Does NOT touch a turn that is already running (use `cancelTurn`).
+   *  Ordinary Session API: product-owned hidden sessions fail `hidden_session`. */
   cancelQueuedItem(
+    chatKey: string,
+    sessionAlias: string,
+    itemId: string,
+  ): { cancelled: boolean } {
+    this.assertOrdinaryAddressedAlias(chatKey, sessionAlias);
+    return this.#cancelQueuedAtAlias(chatKey, sessionAlias, itemId);
+  }
+
+  #cancelQueuedAtAlias(
     chatKey: string,
     sessionAlias: string,
     itemId: string,
@@ -1583,6 +1711,7 @@ export class ControlService {
     chatKey: string,
     sessionAlias: string,
   ): Promise<{ cleared: boolean }> {
+    this.assertOrdinaryAddressedAlias(chatKey, sessionAlias);
     const channelId = getChannelIdFromChatKey(chatKey);
     const internalAlias = scopeDisplayAliasToInternal(channelId, sessionAlias);
     return this.turnQueue.clearSession(chatKey, sessionAlias, internalAlias);
@@ -1738,5 +1867,182 @@ export class ControlService {
 
   closeTerminal(terminalId: string): void {
     this.deps.terminal.close(terminalId);
+  }
+
+  private requireConversations(): ConversationRuntime {
+    if (!this.conversationRuntime) {
+      throw new ConversationError(
+        "conversations_unavailable",
+        "Conversation runtime is not wired in this process",
+      );
+    }
+    this.conversationRuntime.assertOpen();
+    return this.conversationRuntime;
+  }
+
+  private runConversationMutation<T>(fn: (runtime: ConversationRuntime) => Promise<T>): Promise<T> {
+    const runtime = this.requireConversations();
+    return runtime.withOperation(() => fn(runtime));
+  }
+
+  #publishConversationProduct(event: ConversationProductEvent): void {
+    switch (event.type) {
+      case "bots-changed":
+        this.deps.events.emit({ type: "bots-changed" });
+        return;
+      case "conversations-changed":
+        this.deps.events.emit({ type: "conversations-changed" });
+        return;
+      case "conversation-topic-changed":
+        this.deps.events.emit({ type: "conversation-topic-changed", topic: toTopicSummary(event.topic) });
+        return;
+      case "conversation-message":
+        this.deps.events.emit({ type: "conversation-message", message: toConversationMessage(event.message) });
+        return;
+      case "conversation-run-changed":
+        this.deps.events.emit({ type: "conversation-run-changed", run: toConversationRun(event.run) });
+        return;
+      case "member-turn-started":
+        this.deps.events.emit({
+          type: "member-turn-started",
+          run: toConversationRun(event.run),
+          memberTurn: toMemberTurnSummary(event.memberTurn),
+        });
+        return;
+      case "member-turn-finished":
+        this.deps.events.emit({
+          type: "member-turn-finished",
+          run: toConversationRun(event.run),
+          memberTurn: toMemberTurnSummary(event.memberTurn),
+        });
+        return;
+    }
+  }
+
+  listBots() {
+    return this.requireConversations().bots.listBots().map(toBotSummary);
+  }
+
+  getBot(id: string) {
+    return toBotDetail(this.requireConversations().bots.getBot(id));
+  }
+
+  async createBot(input: BotCreateRequestDto) {
+    return this.runConversationMutation(async (runtime) => {
+      const bot = await runtime.bots.createBot(input);
+      this.deps.events.emit({ type: "bots-changed" });
+      this.deps.events.emit({ type: "conversations-changed" });
+      return toBotDetail(bot);
+    });
+  }
+
+  async updateBot(id: string, patch: BotUpdateRequestDto) {
+    return this.runConversationMutation(async (runtime) => {
+      const bot = await runtime.bots.updateBot(id, patch);
+      this.deps.events.emit({ type: "bots-changed" });
+      this.deps.events.emit({ type: "conversations-changed" });
+      return toBotDetail(bot);
+    });
+  }
+
+  async deleteBot(id: string): Promise<{ ok: true }> {
+    return this.runConversationMutation(async (runtime) => {
+      await runtime.bots.deleteBot(id);
+      this.deps.events.emit({ type: "bots-changed" });
+      this.deps.events.emit({ type: "conversations-changed" });
+      return { ok: true };
+    });
+  }
+
+  listConversations(filter?: { botId?: string }) {
+    const runtime = this.requireConversations();
+    return runtime.runs.listConversations(filter).map((conversation) =>
+      toConversationSummary(conversation, runtime.runs.defaultTopicId(conversation.id)),
+    );
+  }
+
+  getConversation(conversationId: string) {
+    const runtime = this.requireConversations();
+    const conversation = runtime.runs.getConversation(conversationId);
+    const topics = runtime.runs.listTopics(conversationId).map(toTopicSummary);
+    return {
+      ...toConversationSummary(conversation, runtime.runs.defaultTopicId(conversation.id)),
+      ...(conversation.description ? { description: conversation.description } : {}),
+      topics,
+    };
+  }
+
+  listTopics(conversationId: string) {
+    return this.requireConversations().runs.listTopics(conversationId).map(toTopicSummary);
+  }
+
+  async createTopic(conversationId: string, title: string) {
+    return this.runConversationMutation(async (runtime) => {
+      const topic = await runtime.runs.createTopic(conversationId, title);
+      return toTopicSummary(topic);
+    });
+  }
+
+  async promptConversation(input: ConversationPromptRequestDto) {
+    return this.#promptConversation(sanitizePublicConversationPrompt(input));
+  }
+
+  #promptConversation(
+    input: ConversationPromptRequestDto,
+    ingress?: HumanIngressContext,
+  ): Promise<ConversationPromptResponseDto> {
+    return this.runConversationMutation(async (runtime) => {
+      const parsedIngress = parseHumanIngress(ingress);
+      const accepted = await runtime.runs.acceptConversationPrompt({
+        conversationId: input.conversationId,
+        topicId: input.topicId,
+        requestId: input.requestId,
+        text: input.text,
+        ...(input.target?.botId ? { targetBotId: input.target.botId } : {}),
+        ...(parsedIngress ? { humanIngress: parsedIngress } : {}),
+      });
+      return {
+        reused: accepted.reused,
+        conversationId: accepted.run.conversationId,
+        topicId: accepted.run.topicId,
+        requestId: accepted.run.requestId,
+        run: toConversationRun(accepted.run),
+        message: toConversationMessage(accepted.message),
+        memberTurn: toMemberTurnSummary(accepted.memberTurn),
+      };
+    });
+  }
+
+  conversationHistory(input: ConversationHistoryRequestDto) {
+    const limit = Math.min(200, Math.max(1, Math.floor(input.limit ?? 50)));
+    const page = this.requireConversations().runs.listHistory({
+      conversationId: input.conversationId,
+      topicId: input.topicId,
+      limit,
+      ...(input.afterSeq !== undefined ? { afterSeq: input.afterSeq } : {}),
+      ...(input.beforeSeq !== undefined ? { beforeSeq: input.beforeSeq } : {}),
+    });
+    return {
+      conversationId: input.conversationId,
+      topicId: input.topicId,
+      messages: page.messages.map(toConversationMessage),
+      hasMoreBefore: page.hasMoreBefore,
+      hasMoreAfter: page.hasMoreAfter,
+      ...(page.oldestSeq !== undefined ? { oldestSeq: page.oldestSeq } : {}),
+      ...(page.newestSeq !== undefined ? { newestSeq: page.newestSeq } : {}),
+    };
+  }
+
+  getRun(runId: string) {
+    const result = this.requireConversations().runs.getRun(runId);
+    return toRunDetail(result.run, result.memberTurns);
+  }
+
+  async cancelRun(runId: string) {
+    return this.runConversationMutation(async (runtime) => {
+      await runtime.runs.cancelRun(runId);
+      const result = runtime.runs.getRun(runId);
+      return toRunDetail(result.run, result.memberTurns);
+    });
   }
 }

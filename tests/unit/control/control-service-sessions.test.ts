@@ -123,6 +123,27 @@ test("listSessions maps resolved sessions with running flag", () => {
   ]);
 });
 
+test("listSessions hides bot-direct owners by metadata, not brt_ alias prefix", () => {
+  const { deps } = makeDeps();
+  const records: Record<string, { owner?: { kind: string } }> = {
+    "relay:backend": {},
+    "relay:brt_looks_open": {},
+    "relay:hidden": { owner: { kind: "bot-direct" } },
+  };
+  deps.sessions.listAllResolvedSessions = () => [
+    { alias: "relay:backend", agent: "claude", workspace: "/ws", transportSession: "t1" },
+    { alias: "relay:brt_looks_open", agent: "claude", workspace: "/ws", transportSession: "t2" },
+    { alias: "relay:hidden", agent: "codex", workspace: "/ws", transportSession: "t3" },
+  ];
+  deps.sessions.getLogicalSessionRecord = (alias: string) => records[alias] ?? null;
+  deps.activeTurns.isActiveAnywhere = () => false;
+  const control = new ControlService(deps as never);
+  expect(control.listSessions("relay:acct").map((session) => session.alias).sort()).toEqual([
+    "backend",
+    "brt_looks_open",
+  ]);
+});
+
 test("listSessionsPage filters sleeping sessions and returns a server cursor", () => {
   const { deps } = makeDeps();
   deps.sessions.listAllResolvedSessions = () =>

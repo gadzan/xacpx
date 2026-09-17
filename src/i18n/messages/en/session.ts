@@ -87,6 +87,8 @@ export const session: SessionMessages = {
 
   // handleSessionRemove
   sessionNotFound: (alias) => `Session "${alias}" does not exist.`,
+  sessionHiddenOwned: (alias) =>
+    `Session "${alias}" is owned by a Bot conversation and cannot be changed with ordinary session commands.`,
   sessionBlockedByTasks: (alias, count) =>
     `Session "${alias}" has ${count} unfinished task(s). Cancel or wait for them to complete first.`,
   sessionBlockedByTasksHint:

@@ -2,6 +2,7 @@
   "record": [
     "logger.debug(command.parsed)",
     "sessions.getCurrentSession(\"wx:user\")",
+    "sessions.getLogicalSessionRecord(\"demo\")",
     "transport.setMode(session(demo/backend:demo), \"plan\")",
     "logger.info(transport.set_mode)",
     "sessions.setCurrentSessionMode(\"wx:user\", \"plan\")",

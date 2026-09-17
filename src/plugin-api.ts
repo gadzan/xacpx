@@ -82,15 +82,38 @@ export { getLocale } from "./i18n/index.js";
 export type { Locale } from "./i18n/index.js";
 
 // Structured control facade — for relay connectors and other non-text consumers
-// that need programmatic access to sessions, prompt, scheduler, and orchestration.
+// that need programmatic access to sessions, prompt, scheduler, orchestration,
+// and Bot/Conversation product APIs. This is the *public* facade: Conversation
+// execution (hidden-session prompt / exact request cancel) is a core-private
+// port and is not a ControlService method.
 export type {
   ControlExecuteCommandInput,
   ControlPromptInput,
   ControlPromptResult,
-  ControlService,
   ControlSessionInfo,
-} from "./control/control-service.js";
+  PublicControlPromptInput,
+  PublicControlService,
+} from "./control/public-control.js";
+export type { PublicControlService as ControlService } from "./control/public-control.js";
 export type { ControlEvent, ControlEventBus, ControlEventListener } from "./control/control-event-bus.js";
+export type {
+  BotCreateRequestDto,
+  BotDetailDto,
+  BotSummaryDto,
+  BotUpdateRequestDto,
+  ConversationDetailDto,
+  ConversationHistoryRequestDto,
+  ConversationHistoryResponseDto,
+  ConversationMessageDto,
+  ConversationPromptRequestDto,
+  ConversationPromptResponseDto,
+  ConversationRunDetailDto,
+  ConversationRunDto,
+  ConversationSummaryDto,
+  ConversationTurnCorrelation,
+  MemberTurnSummaryDto,
+  TopicSummaryDto,
+} from "./control/conversation-control-dtos.js";
 
 // Generic session resource catalog — interface/types ONLY. The production
 // adapter (CoreSessionResourceCatalog) and SessionService internals stay

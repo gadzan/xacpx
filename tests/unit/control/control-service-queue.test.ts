@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { ControlService } from "../../../src/control/control-service";
+import { ControlService, conversationKernel } from "../../../src/control/control-service";
 import {
   createControlEventBus,
   type ControlEvent,
@@ -125,12 +125,19 @@ test("promptImmediate never FIFO-enqueues on a busy session lane and does not ru
     senderId: "u",
   });
   await tick();
-  const conversation = await service.promptImmediate({
+  const conversation = await conversationKernel(service).promptImmediate({
     chatKey: "c",
     sessionAlias: "s",
     text: "conversation-turn",
     senderId: "bot-conversation",
     promptRequestId: "sturn_conversation",
+    conversation: {
+      conversationId: "conversation_1",
+      topicId: "topic_1",
+      botId: "bot_1",
+      runId: "run_1",
+      memberTurnId: "mturn_1",
+    },
   });
   expect(conversation.ok).toBe(false);
   expect(conversation.queued).toBeFalsy();

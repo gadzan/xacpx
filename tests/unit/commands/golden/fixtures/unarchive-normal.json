@@ -1,5 +1,6 @@
 {
   "record": [
+    "sessions.getLogicalSessionRecord(\"relay:demo\")",
     "sessions.setArchived(\"relay:demo\", false)"
   ],
   "outcome": {}

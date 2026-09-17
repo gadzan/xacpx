@@ -2,6 +2,7 @@ import type { BotProfileSnapshot } from "../bots/bot-types";
 import type {
   ConversationMessage,
   ConversationRun,
+  HumanIngressContext,
   MemberTurnRecord,
   PendingDispatch,
 } from "./conversation-types";
@@ -26,6 +27,8 @@ export interface AcceptRequestInput {
   /** Live Conversation dispatcher epoch. Stamped on the dispatch row so a later
    *  process or recovered claim cannot inherit human permission authority. */
   authorityEpoch?: string;
+  /** Trusted human ingress bound to `authorityEpoch`. Absent ⇒ orchestration. */
+  humanIngress?: HumanIngressContext;
 }
 
 export interface AcceptRequestResult {

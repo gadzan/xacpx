@@ -13,7 +13,7 @@ import {
 } from "@ganglion/xacpx-relay-protocol";
 import type {
   ChannelStartInput,
-  ControlService,
+  PublicControlService,
   CoordinatorMessageInput,
   MessageChannelRuntime,
   ScheduledChannelMessageInput,
@@ -123,7 +123,7 @@ export class RelayChannel implements MessageChannelRuntime {
   private client: RelayClientLike | null = null;
   private unsubscribe: (() => void) | null = null;
   private catalogUnsub: (() => void) | null = null;
-  private control: ControlService | null = null;
+  private control: PublicControlService | null = null;
   private terminal: DefaultRelayTerminalRuntime | null = null;
   private terminalReady = false;
   private terminalSupervisor: RmuxSidecarSupervisor | null = null;
@@ -183,7 +183,11 @@ export class RelayChannel implements MessageChannelRuntime {
 
     const capabilities = await this.bootstrapTerminal(input);
 
-    const bridge = createControlBridge(control);
+    const bridge = createControlBridge(control, {
+      ...(input.trustedConversationPrompt
+        ? { trustedConversationPrompt: input.trustedConversationPrompt }
+        : {}),
+    });
     const onRequest = (
       envelope: RelayEnvelope,
       respond: (payload: unknown) => void,
@@ -256,6 +260,9 @@ export class RelayChannel implements MessageChannelRuntime {
       },
       logger: input.logger,
       onReady: () => {
+        // Ordinary Session liveness only. Hidden bot-direct aliases are
+        // intentionally absent from listSessions; Conversation-correlated
+        // turns stay in the snapshot via product correlation, not this set.
         const liveAliases = new Set<string>();
         for (const chatKey of mirror.chatKeys()) {
           try {

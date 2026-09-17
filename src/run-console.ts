@@ -8,6 +8,8 @@ import {
 import { listXacpxCommandHints } from "./commands/command-hints.js";
 import { XACPX_CORE_VERSION } from "./version.js";
 import { getLocale } from "./i18n/index.js";
+import { asPublicControl } from "./control/public-control.js";
+import { conversationKernel } from "./control/control-service.js";
 
 interface DaemonLifecycle {
   start: (input: { configPath: string; statePath: string }) => Promise<void>;
@@ -250,6 +252,20 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
     } catch (err) {
       await runtime.logger.warn("bridge.runtime_queue.prime_failed", "failed to prime runtime queues after lock+reap", { error: err instanceof Error ? err.message : String(err) }).catch(() => {});
     }
+    try {
+      if (typeof runtime.conversations?.activateAfterConsumerLock === "function") {
+        await runtime.conversations.activateAfterConsumerLock();
+      }
+    } catch (error) {
+      // Activation fail-closes the Conversation consumer (`conversations_unavailable`)
+      // rather than leaving `consumerActivated` true while channels serve. Ordinary
+      // session channels may still start; new Conversation accept must not.
+      await runtime.logger.error(
+        "conversations.recover_failed",
+        "failed to recover pending Conversation dispatch after consumer lock",
+        { error: error instanceof Error ? error.message : String(error) },
+      );
+    }
     if (runtime.reconcileOrphans && deps.daemonRuntime) {
       orphanTimer = setIntervalFn(() => runOrphanSweep(runtime!.reconcileOrphans!), 60_000);
       if (orphanTimer && typeof orphanTimer === "object" && "unref" in orphanTimer
@@ -258,6 +274,7 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
       }
     }
 
+    const controlService = runtime.control;
     const channelStartPromise = deps.channels.startAll({
       agent: runtime.agent,
       abortSignal: shutdownController.signal,
@@ -270,7 +287,11 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
       commandHints: listXacpxCommandHints(),
       coreVersion: XACPX_CORE_VERSION,
       locale: getLocale(),
-      control: runtime.control,
+      control: asPublicControl(controlService),
+      trustedConversationPrompt: controlService
+        ? (input, ingress) =>
+          conversationKernel(controlService).promptConversationFromHumanIngress(input, ingress)
+        : undefined,
     });
     // Observe rejections immediately so a channel failure cannot become an
     // unhandled rejection while the scheduler startup path is still running.

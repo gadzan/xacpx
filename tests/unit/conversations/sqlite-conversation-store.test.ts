@@ -46,7 +46,7 @@ test("acceptRequest atomically persists message, run, member turn, and pending d
   expect(accepted.run.state).toBe("queued");
   expect(accepted.run.mode).toBe("explicit");
   expect(accepted.run.profileRevision).toBe(1);
-  expect(accepted.memberTurn.origin).toBe("human");
+  expect(accepted.memberTurn.origin).toBe("recovery");
   expect(accepted.dispatch.state).toBe("pending");
   expect(store.listMessages({ conversationId: CONV, topicId: TOPIC, limit: 10 })).toHaveLength(1);
   store.close();
@@ -421,8 +421,9 @@ test("stale releaseClaimToPending and failClaimBeforeStart do not mutate a newer
   store.close();
 });
 
-test("matching authority epoch keeps human origin; mismatch and recovery revoke it", async () => {
+test("matching authority epoch keeps human origin only with trusted ingress; mismatch and recovery revoke it", async () => {
   const store = await SqliteConversationStore.open(":memory:");
+  const ingress = { chatKey: "relay:acct", senderId: "acct", accountId: "acct", isOwner: true as const };
   const accepted = store.acceptRequest({
     conversationId: CONV,
     topicId: TOPIC,
@@ -432,8 +433,10 @@ test("matching authority epoch keeps human origin; mismatch and recovery revoke 
     profileSnapshot: snapshot(),
     now: NOW,
     authorityEpoch: "boot-1",
+    humanIngress: ingress,
   });
   expect(accepted.dispatch.authorityEpoch).toBe("boot-1");
+  expect(accepted.dispatch.humanIngress).toEqual(ingress);
   expect(accepted.memberTurn.origin).toBe("human");
   const fresh = store.claimNextDispatch({
     authorityEpoch: "boot-1",
@@ -442,6 +445,7 @@ test("matching authority epoch keeps human origin; mismatch and recovery revoke 
     leaseExpiresAt: "2026-09-15T12:00:30.000Z",
   });
   expect(fresh?.memberTurn.origin).toBe("human");
+  expect(fresh?.dispatch.humanIngress).toEqual(ingress);
   expect(fresh?.dispatch.generation).toBe(1);
   store.releaseClaimToPending({
     dispatchId: fresh!.dispatch.id,
@@ -451,6 +455,7 @@ test("matching authority epoch keeps human origin; mismatch and recovery revoke 
   });
   expect(store.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("recovery");
   expect(store.getDispatchForRun(accepted.run.id)?.authorityEpoch).toBeUndefined();
+  expect(store.getDispatchForRun(accepted.run.id)?.humanIngress).toBeUndefined();
   const retried = store.claimNextDispatch({
     authorityEpoch: "boot-1",
     now: "2026-09-15T12:00:32.000Z",
@@ -458,6 +463,49 @@ test("matching authority epoch keeps human origin; mismatch and recovery revoke 
     leaseExpiresAt: "2026-09-15T12:01:32.000Z",
   });
   expect(retried?.memberTurn.origin).toBe("recovery");
+  store.close();
+});
+
+test("epoch without trusted human ingress is orchestration even on the same daemon", async () => {
+  const store = await SqliteConversationStore.open(":memory:");
+  const accepted = store.acceptRequest({
+    conversationId: CONV,
+    topicId: TOPIC,
+    requestId: "req-no-ingress",
+    botId: BOT_ID,
+    content: "hello",
+    profileSnapshot: snapshot(),
+    now: NOW,
+    authorityEpoch: "boot-1",
+  });
+  expect(accepted.dispatch.authorityEpoch).toBeUndefined();
+  expect(accepted.memberTurn.origin).toBe("recovery");
+  const claimed = store.claimNextDispatch({
+    authorityEpoch: "boot-1",
+    now: NOW,
+    owner: "owner-a",
+    leaseExpiresAt: "2026-09-15T12:00:30.000Z",
+  });
+  expect(claimed?.memberTurn.origin).toBe("recovery");
+  store.close();
+});
+
+test("bot: isolation keys cannot be stored as trusted human ingress", async () => {
+  const store = await SqliteConversationStore.open(":memory:");
+  const accepted = store.acceptRequest({
+    conversationId: CONV,
+    topicId: TOPIC,
+    requestId: "req-bot-key",
+    botId: BOT_ID,
+    content: "hello",
+    profileSnapshot: snapshot(),
+    now: NOW,
+    authorityEpoch: "boot-1",
+    humanIngress: { chatKey: `bot:${CONV}:${TOPIC}`, senderId: "acct" },
+  });
+  expect(accepted.dispatch.authorityEpoch).toBeUndefined();
+  expect(accepted.dispatch.humanIngress).toBeUndefined();
+  expect(accepted.memberTurn.origin).toBe("recovery");
   store.close();
 });
 
@@ -581,5 +629,12 @@ test("assertLiveDispatchForMaterialize refuses deleting or cancelled work", asyn
     topicId: TOPIC,
     now: NOW,
   })).toThrow(/deleting/);
+  store.close();
+});
+
+test("store methods fail closed after close", async () => {
+  const store = await SqliteConversationStore.open(":memory:");
+  store.close();
+  expect(() => store.listRuns("conversation_x")).toThrow(/closed/);
   store.close();
 });

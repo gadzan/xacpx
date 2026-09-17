@@ -1,6 +1,13 @@
 import type { ActiveTurnRegistry } from "../sessions/active-turn-registry.js";
 import type { AppConfig } from "../config/types";
 import type { AppLogger } from "../logging/app-logger";
+import {
+  assertNativeSessionAddressable as rejectOwnedNativeSession,
+  filterAddressableNativeSessions,
+  nativeCatalogIdentityForLaunch,
+  type NativeCatalogIdentity,
+} from "../sessions/native-session-guard";
+import { assertOrdinarySessionAddressable } from "../sessions/ordinary-session-guard";
 import type { SessionService } from "../sessions/session-service";
 import type { AgentSession, ResolvedSession, SessionTransport } from "../transport/types";
 import { resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
@@ -162,6 +169,7 @@ export class SessionControlService {
     transportTornDown: boolean;
     transportTeardownWarning?: string;
   }> {
+    assertOrdinarySessionAddressable(this.sessions.getLogicalSessionRecord?.(internalAlias)?.owner);
     const releaseAliasOperation = this.sessions.tryReserveSessionAliasOperation(internalAlias);
     if (!releaseAliasOperation) {
       throw new Error(`session "${internalAlias}" has another lifecycle operation in progress`);
@@ -243,6 +251,7 @@ export class SessionControlService {
    *  resumes the same conversation with full history; the first post-archive
    *  prompt cold-starts a fresh queue owner. */
   async archiveSessionWithTransport(internalAlias: string): Promise<void> {
+    assertOrdinarySessionAddressable(this.sessions.getLogicalSessionRecord?.(internalAlias)?.owner);
     const session = await this.sessions.getSession(internalAlias);
     if (!session) {
       throw new Error(`session "${internalAlias}" does not exist`);
@@ -287,6 +296,7 @@ export class SessionControlService {
   /** Explicit un-archive (web undo / manual). No process action — it resumes on the
    *  next message via useSession. */
   async unarchiveSession(internalAlias: string): Promise<void> {
+    assertOrdinarySessionAddressable(this.sessions.getLogicalSessionRecord?.(internalAlias)?.owner);
     await this.sessions.setArchived(internalAlias, false);
   }
 
@@ -305,6 +315,10 @@ export class SessionControlService {
       throw new Error(`unknown agent "${agent}" or workspace "${workspace}"`);
     }
     const launch = resolveConfiguredAgentLaunch(agentConfig, this.config?.transport);
+    const catalog = nativeCatalogIdentityForLaunch({
+      cwd: workspaceConfig.cwd,
+      ...launch,
+    });
     const result = await listAgentSessions({
       agent,
       ...(launch.agentCommand ? { agentCommand: launch.agentCommand } : {}),
@@ -315,7 +329,55 @@ export class SessionControlService {
       cwd: workspaceConfig.cwd,
       filterCwd: workspaceConfig.cwd,
     });
-    return result?.sessions ?? [];
+    const sessions = result?.sessions ?? [];
+    // Presentation only: attach re-checks ownership and fail-closes.
+    return await filterAddressableNativeSessions(
+      { sessions: this.sessions, transport: this.transport },
+      catalog,
+      sessions,
+    );
+  }
+
+  /**
+   * Native attach is ownership of the agent-native catalog (cwd + physical
+   * selector: unwrapped argv, explicit raw command, or bare positional agent).
+   * Config labels (`driver`, overlay alias, workspace/agent names) and ACP
+   * transport wrappers are not part of that identity. A managed overlay
+   * without argv is unproven: historical `agentCommand` does not prove a raw
+   * `--agent` selector. Known cwd is kept even when the selector is unproven,
+   * so fail-closed is scoped to that cwd rather than every native attach.
+   * Product-owned LogicalSessions in that catalog occupy their persisted
+   * `agentSessionId` or the live identity from `getAgentSessionId`. Unproven
+   * product-owned candidates in the requested catalog fail closed.
+   */
+  async assertNativeSessionAddressable(
+    agent: string,
+    workspace: string,
+    agentSessionId: string,
+  ): Promise<void> {
+    await rejectOwnedNativeSession(
+      { sessions: this.sessions, transport: this.transport },
+      this.requireNativeCatalog(agent, workspace),
+      agentSessionId,
+    );
+  }
+
+  /**
+   * Catalog identity used by native list/attach ownership: resolved cwd and
+   * physical agent selector, not workspace/agent config keys, not `driver`,
+   * and not the ACP spawn wrapper.
+   */
+  private requireNativeCatalog(agent: string, workspace: string): NativeCatalogIdentity {
+    const agentConfig = this.config?.agents[agent];
+    const workspaceConfig = this.config?.workspaces[workspace];
+    if (!agentConfig || !workspaceConfig) {
+      throw new Error(`unknown agent "${agent}" or workspace "${workspace}"`);
+    }
+    const launch = resolveConfiguredAgentLaunch(agentConfig, this.config?.transport);
+    return nativeCatalogIdentityForLaunch({
+      cwd: workspaceConfig.cwd,
+      ...launch,
+    });
   }
 
   /**
@@ -337,6 +399,10 @@ export class SessionControlService {
     if (!this.transport.resumeAgentSession) {
       throw new Error("the active transport does not support native sessions");
     }
+    // Ownership of the agent-native rollout is a correctness barrier: resume
+    // would remount a product-owned model context as an ordinary Session.
+    // Transport uniqueness stays advisory (below); this guard does not.
+    await this.assertNativeSessionAddressable(agent, workspace, agentSessionId);
     // Deliberately skip the transport-uniqueness derivation that the chat-side
     // /ssn handler performs before atomic reservation: the transport uniqueness
     // constraint is advisory for native attach and never a correctness barrier.

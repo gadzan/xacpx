@@ -7,7 +7,7 @@ import { BotRuntimeManager } from "../../../src/bots/bot-runtime-manager";
 import { BotService } from "../../../src/bots/bot-service";
 import type { BotProfile } from "../../../src/bots/bot-types";
 import type { AppConfig } from "../../../src/config/types";
-import { ControlService } from "../../../src/control/control-service";
+import { ControlService, conversationKernel } from "../../../src/control/control-service";
 import { createControlEventBus } from "../../../src/control/control-event-bus";
 import { ConversationError } from "../../../src/conversations/conversation-error";
 import { ConversationDispatcher, type ConversationDispatcherHooks } from "../../../src/conversations/conversation-dispatcher";
@@ -37,6 +37,12 @@ import type { ChatRequest, ChatResponse } from "../../../src/weixin/agent/interf
 
 const NOW = "2026-09-15T12:00:00.000Z";
 const BOT_ID = "bot_reviewer";
+const HUMAN_INGRESS = {
+  chatKey: "relay:acct",
+  senderId: "acct",
+  accountId: "acct",
+  isOwner: true as const,
+};
 
 class MemoryStateStore implements Pick<StateStore, "save" | "saveNow"> {
   public saved: AppState[] = [];
@@ -202,14 +208,14 @@ async function createLifecycle(options: {
   });
   const events = createControlEventBus();
   const runner = options.controlChat
-    ? new ControlConversationTurnRunner(new ControlService({
+    ? new ControlConversationTurnRunner(conversationKernel(new ControlService({
       agent: { chat: options.controlChat },
       sessions,
       activeTurns: { isActiveAnywhere: () => false },
       scheduled: {} as never,
       orchestration: {} as never,
       events,
-    } as never), options.runnerOptions)
+    } as never)), options.runnerOptions)
     : options.runner ?? new FakeRunner();
   let clock = Date.parse(NOW);
   const nowFn = () => {
@@ -956,7 +962,7 @@ test("cancel between durable start and runner registration never starts Control"
     cancelTurnForPromptRequest() {
       return true;
     },
-    cancelQueuedItem() {
+    cancelQueuedConversationItem() {
       return { cancelled: true };
     },
   };
@@ -987,6 +993,26 @@ test("cancel between durable start and runner registration never starts Control"
   expect(first.store.getRun(accepted.run.id)?.state).not.toBe("queued");
 });
 
+test("public prompt without trusted ingress is orchestration even on the same daemon", async () => {
+  const captured: ChatRequest[] = [];
+  const first = await createLifecycle({
+    controlChat: async (request) => {
+      captured.push(request);
+      return { text: "done" };
+    },
+  });
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-public-orchestration",
+    content: "hello",
+  });
+  await first.dispatcher.kick();
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
+  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("recovery");
+  expect(captured[0]?.metadata?.origin).toBe("orchestration");
+  expect(canMintHumanPermissionInteraction(captured[0]?.metadata?.origin)).toBe(false);
+});
+
 test("fresh same-daemon Conversation dispatch stays human and can mint permission", async () => {
   const captured: ChatRequest[] = [];
   const first = await createLifecycle({
@@ -999,11 +1025,15 @@ test("fresh same-daemon Conversation dispatch stays human and can mint permissio
     botId: BOT_ID,
     requestId: "req-fresh-human",
     content: "hello",
+    humanIngress: HUMAN_INGRESS,
   });
   await first.dispatcher.kick();
   expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
   expect(first.store.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("human");
   expect(captured[0]?.metadata?.origin).toBe("human");
+  expect(captured[0]?.metadata?.permissionChatKey).toBe(HUMAN_INGRESS.chatKey);
+  expect(captured[0]?.metadata?.senderId).toBe(HUMAN_INGRESS.senderId);
+  expect(captured[0]?.conversationId.startsWith("bot:")).toBe(true);
   expect(canMintHumanPermissionInteraction(captured[0]?.metadata?.origin)).toBe(true);
 });
 
@@ -1014,12 +1044,14 @@ test("startup redispatch after accept-before-claim is orchestration and cannot m
     botId: BOT_ID,
     requestId: "req-startup-recovery",
     content: "hello",
+    humanIngress: HUMAN_INGRESS,
   });
   expect(accepted.dispatch.generation).toBe(1);
+  expect(accepted.dispatch.humanIngress).toEqual(HUMAN_INGRESS);
   const restart = new ConversationDispatcher(
     first.store,
     first.runtime,
-    new ControlConversationTurnRunner(new ControlService({
+    new ControlConversationTurnRunner(conversationKernel(new ControlService({
       agent: {
         chat: async (request: ChatRequest) => {
           captured.push(request);
@@ -1031,13 +1063,14 @@ test("startup redispatch after accept-before-claim is orchestration and cannot m
       scheduled: {} as never,
       orchestration: {} as never,
       events: createControlEventBus(),
-    } as never)),
+    } as never))),
     first.sessions,
     { now: first.nowFn, ownerId: "dispatcher-restart" },
   );
   await restart.kick();
   expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
   expect(first.store.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("recovery");
+  expect(first.store.getDispatchForRun(accepted.run.id)?.humanIngress).toBeUndefined();
   expect(captured[0]?.metadata?.origin).toBe("orchestration");
   expect(canMintHumanPermissionInteraction(captured[0]?.metadata?.origin)).toBe(false);
 });
@@ -1063,6 +1096,7 @@ test("lease-expired pre-start redispatch is orchestration even on the same daemo
     botId: BOT_ID,
     requestId: "req-lease-recovery",
     content: "hello",
+    humanIngress: HUMAN_INGRESS,
   });
   const drain = first.dispatcher.kick();
   await paused.promise;
@@ -1193,6 +1227,7 @@ test("Conversation prompt uses the accepted snapshot, not a later live profile",
     botId: BOT_ID,
     requestId: "req-snapshot-prompt",
     content: "check it",
+    humanIngress: HUMAN_INGRESS,
   });
   await first.bots.updateBot(BOT_ID, { instructions: "Be terse." });
   await first.dispatcher.kick();
@@ -1211,6 +1246,7 @@ test("Conversation prompt leaves a whole-input runtime command unmodified", asyn
     botId: BOT_ID,
     requestId: "req-status-cmd",
     content: "/status",
+    humanIngress: HUMAN_INGRESS,
   });
   await first.dispatcher.kick();
   expect(fakeRunner(first.runner).runs[0]?.text).toBe("/status");

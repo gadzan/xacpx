@@ -178,6 +178,34 @@ test("deleteBot removes a Bot that has no conversations or runtime", async () =>
   expect(() => service.getBot("bot_fixed")).toThrow(BotError);
 });
 
+test("createBot uses saveNow before publishing live state", async () => {
+  const state = createEmptyState();
+  const store = {
+    saved: [] as AppState[],
+    durable: [] as AppState[],
+    async save(next: AppState) {
+      this.saved.push(structuredClone(next));
+    },
+    async saveNow(next: AppState) {
+      this.durable.push(structuredClone(next));
+    },
+  };
+  const service = new BotService(
+    {
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
+    },
+    state,
+    store,
+    { now: () => new Date(NOW), createId: () => "bot_fixed" },
+  );
+  await service.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  expect(store.durable).toHaveLength(1);
+  expect(store.saved).toHaveLength(0);
+  expect(store.durable[0]?.bots.bot_fixed?.name).toBe("Reviewer");
+  expect(state.bots.bot_fixed?.name).toBe("Reviewer");
+});
+
 test("deleteBot fails closed when ConversationStore still has durable work", async () => {
   const { service, state } = createService();
   await service.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });

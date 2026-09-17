@@ -2,6 +2,12 @@
 
 `ControlService` 是面向结构化消费者（首个是 relay 连接器，见
 [docs/superpowers/specs/2026-06-13-relay-hub-design.md](superpowers/specs/2026-06-13-relay-hub-design.md)）的核心控制门面。
+插件与频道拿到的是 **`PublicControlService`**（`ControlService` 类本身不含可信执行方法；
+`asPublicControl` 再做 prompt 字段消毒）。普通 Session API
+加上 Bot / Conversation / Topic / history / Run。可信 Conversation 执行
+只存在于 core-private `conversationKernel()` → `ConversationExecutionPort`，
+不是 `ControlService` 实例方法，也不出现在 `ChannelStartInput.control`
+或 `xacpx/plugin-api`。
 它聚合了 `SessionService` / `ActiveTurnRegistry` / `ScheduledTaskService` /
 `OrchestrationService` / `ConsoleAgent`（ChatAgent），自身无持久状态。每轮对话的
 并发闸门与执行体已从门面里拆出：并发生命周期（in-flight / 队列 / drain 三态）由
@@ -16,6 +22,13 @@
   `ControlSessionInfo`、`ControlPromptInput`、`ControlPromptResult`、
   `ControlExecuteCommandInput`。`prompt` / `runScheduledTurn` / `cancelTurn` /
   `cancelQueuedItem` 都转发给 `TurnQueue`；`prompt` 在转发前等待同会话已登记的配置操作。
+  公共 `ControlPromptInput` **不含** `executionOrigin` / writable `conversation`。
+  公共 `promptConversation` **不含** `humanIngress` / `executionOrigin`；可信人机 ingress
+  只存在于 `conversationKernel().promptConversationFromHumanIngress`。
+  Conversation 执行通过 `conversationKernel(control)` 取得 `ConversationExecutionPort`，
+  不作为 `ControlService` 的公开方法。
+- **`src/control/public-control.ts`** — `PublicControlService`、`asPublicControl()`。
+  `run-console` 注入 `ChannelStartInput.control` 时只传该投影。
 - **`src/control/turn-queue.ts`** — `TurnQueue`：三态并发闸门
   （`inFlight` / `queues` / `draining`）。构造时注入 `{ runTurn, emitQueueUpdated,
   detectSessionsChanged }`。**无会话依赖**——回合结束后的 `sessions-changed` 检测经
@@ -27,10 +40,15 @@
 - **`src/control/turn-support.ts`** — 中立值模块：`turnKey` / `toErrorMessage` /
   `buildControlMetadata` / `raceWithTimeout` 与相关常量、`QueuedPrompt` 接口。被
   `control-service` / `turn-queue` / `session-turn-runner` 以值导入，避免运行时环依赖。
+- **`src/control/conversation-control-dtos.ts`** — Bot / Conversation 公共 DTO 与
+  store-record 映射。产品身份是 Bot / Conversation / Topic / Run ID 与 Topic `seq`；
+  不暴露 hidden alias、`logicalSessionId`、lease/generation、`bindingId`。
 - **`src/control/control-event-bus.ts`** — `ControlEventBus` 接口与
-  `createControlEventBus` 工厂：支持 `turn-output` / `turn-finished` /
-  `sessions-changed` / `scheduled-changed` / `orchestration-changed` 五类事件；
-  监听器异常彼此隔离（经注入的 `logger.error` 记录，不外抛）。
+  `createControlEventBus` 工厂：turn 事件、`sessions-changed` / `scheduled-changed` /
+  `orchestration-changed`，以及 Bot/Conversation 产品事件（`bots-changed`、
+  `conversation-message`、`member-turn-*` 等）。既有 tool/thought/plan/usage 流仍走
+  原 turn 事件；Conversation 只附加精确 join identity。监听器异常彼此隔离
+  （经注入的 `logger.error` 记录，不外抛）。
 - **`src/control/session-warmth-tracker.ts`** — `SessionWarmthTracker`：常驻轮询器
   （默认 60s），经 `transport.isSessionWarm`（queue-owner lock 文件 pid 存活检查）
   观测每个 transport 会话的热/冷状态；任一会话温度翻转时发出 payload-free
@@ -47,8 +65,13 @@
 
 | 方法 | 说明 |
 |------|------|
-| `listSessions()` | 返回所有已解析逻辑会话的快照（`ControlSessionInfo[]`），含 `running` 字段（来自 `ActiveTurnRegistry`）与可选 `warm` 字段（running 时恒为 true，否则读 `SessionWarmthTracker` 最近观测；无 tracker 或未观测时省略）。 |
-| `createSession(alias, agent, workspace)` | 创建逻辑会话，发出 `sessions-changed` 事件。 |
+| `listSessions()` | 返回所有已解析逻辑会话的快照（`ControlSessionInfo[]`），含 `running` 字段（来自 `ActiveTurnRegistry`）与可选 `warm` 字段（running 时恒为 true，否则读 `SessionWarmthTracker` 最近观测；无 tracker 或未观测时省略）。`LogicalSession.owner.kind` 为 `bot-direct` / `group-member` / `group-controller` 的隐藏运行时不会出现在普通 Sessions 列表中（按 owner metadata，不是 `brt_` 前缀）。普通 alias 寻址的 Session 操作（prompt / remove / archive / rename / model / effort / cancel 等）对上述 owner 失败 `hidden_session`；Conversation 执行/释放只走 core-private `ConversationExecutionPort`。 |
+| `listBots()` / `getBot` / `createBot` / `updateBot` / `deleteBot` | Bot CRUD；DTO wrapper over `BotService`。delete 在 durable/runtime ownership 仍存在时 fail-closed。create / update / delete 在成功时同时发出 `bots-changed` 与 `conversations-changed`（Direct Conversation 是 Bot 的公共投影）。 |
+| `listConversations()` / `getConversation` / `listTopics` / `createTopic` | Direct Conversation / Topic 查询与创建。不暴露 hidden alias。Direct Conversation 的 `title` / `createdAt` / `updatedAt` 始终取当前 Bot 投影，不因首次 materialize 冻结。Default Topic 的 identity 不随 Bot rename 变化：`createdAt` 为 Bot 创建时间，`updatedAt` 为 Topic 自身最后一次 mutation（尚无 rename/archive API 时等于 `createdAt`，不跟 `Bot.updatedAt`）。Presenter 对 default Topic 同时 overlay `createdAt` 与 `updatedAt`，因此 PR3 已持久化的 materialize-now 时间戳在升级后与 PR4 新创建的 Topic 公开展示一致。Topic archive/delete 未接入公共 API。 |
+| `promptConversation(input)` | `{ conversationId, topicId, requestId, text, target? }` → `ConversationRunService.acceptConversationPrompt`。`requestId` 是 caller idempotency key。Direct `target.botId` 必须匹配 Conversation 所属 Bot。不含 `humanIngress` / `executionOrigin`；没有可信人机 ingress 的 accept 是 orchestration，不能 mint interactive permission。认证频道通过 `ChannelStartInput.trustedConversationPrompt` → `conversationKernel().promptConversationFromHumanIngress` 绑定 server-derived ingress。 |
+| `conversationHistory(input)` | Durable Topic `seq` 游标分页（`afterSeq` / `beforeSeq` / `limit`），返回 `oldestSeq` / `newestSeq` / `hasMoreBefore` / `hasMoreAfter`。 |
+| `getRun(runId)` / `cancelRun(runId)` | Exact Run 查询/取消。`indeterminate` 原样公开，不映射成 `failed`。 |
+| `createSession(alias, agent, workspace, agentSessionId?)` | 创建逻辑会话，发出 `sessions-changed` 事件。带 `agentSessionId` 时走 native attach（resume 已有 agent-native rollout）。`listNativeSessions` 会隐藏已被 product-owned LogicalSession 占用的 native ID（展示过滤）；attach 在 `resumeAgentSession` 前再次检查，直接提交 hidden native ID 失败 `hidden_session`。Ownership 按 native catalog（cwd + 去掉 ACP output-guard 后的物理 selector：argv identity / raw command / bare agent），不是 workspace/agent 配置名、`driver` 标签或 ACP spawn wrapper。同一 catalog 存在 product-owned candidate 但 transport 无法证明其 native identity 时 fail-closed。Managed overlay `acpxAgent` 丢失 argv 时 selector 为 unproven，但已知 cwd 会保留：只拒绝该 cwd 的 attach，不锁死其它目录。 |
 | `removeSession(alias)` | 删除逻辑会话，发出 `sessions-changed` 事件；返回 `{ wasActive: boolean }`。 |
 | `listScheduledTasks(chatKey)` | 返回指定 chatKey 下的待执行定时任务列表。 |
 | `createScheduledTask(input)` | 创建定时任务，发出 `scheduled-changed` 事件。 |
@@ -70,13 +93,21 @@
 
 `buildApp`（`src/main.ts`）在组装 `AppRuntime` 时构造 `ControlService`，挂在
 `AppRuntime.control`。`run-console.ts` 在调用 `channels.startAll()` 时，将
-`runtime.control` 作为 `ChannelStartInput.control`（`src/channels/types.ts` 中的
-可选字段）传给所有频道；纯文本频道可忽略该字段。
+`asPublicControl(runtime.control)` 作为 `ChannelStartInput.control`（`src/channels/types.ts` 中的
+可选字段）传给所有频道；纯文本频道可忽略该字段。Conversation 运行时经
+`createConversationRuntime({ control })` 只拿到 `ConversationExecutionPort`
+（生产路径传入 `conversationKernel(control)`）。
+`ConversationRuntime.shutdown()` 返回之后，所有公共 Bot/Conversation Control API（含 CRUD
+与只读 list/get/history）失败 `runtime_closed`。`shutdown()` 会先拒绝新调用，再等待已经进入
+的 public mutation 完成（operation lease），然后才 close BotService / dispatcher / SQLite。
+并发 `shutdown()` 共用同一个 promise。
 
 插件包经 `xacpx/plugin-api` 取得以下类型（仅类型，不含实例）：
-`ControlService`、`ControlSessionInfo`、`ControlPromptInput`、
+`PublicControlService`（亦以 `ControlService` 别名导出，等同公共 facade）、
+`ControlSessionInfo`、`ControlPromptInput`、
 `ControlPromptResult`、`ControlExecuteCommandInput`、`ControlEvent`、
-`ControlEventBus`、`ControlEventListener`。
+`ControlEventBus`、`ControlEventListener`、`ConversationTurnCorrelation`（**事件输出 DTO**，
+不能作为执行权威回填）。不导出可信执行方法名 / `ConversationExecutionPort` / `conversationKernel`。
 
 ## 语义要点
 

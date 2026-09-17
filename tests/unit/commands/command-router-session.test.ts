@@ -6,7 +6,15 @@ import { CommandRouter } from "../../../src/commands/command-router";
 import { getChannelIdFromChatKey, registerKnownChannelId } from "../../../src/channels/channel-scope";
 import { QuotaManager } from "../../../src/weixin/messaging/quota-manager";
 import { setLocale, t } from "../../../src/i18n";
-import { wrapAcpOutputGuardArgv } from "../../../src/adapters/acp-output-guard";
+import { wrapAcpOutputGuardArgv, isAcpOutputGuardArgv } from "../../../src/adapters/acp-output-guard";
+import { resolveConfiguredAgentLaunch } from "../../../src/config/resolve-agent-command";
+import { ConversationError } from "../../../src/conversations/conversation-error";
+import { createBotDirectOwner } from "../../../src/state/types";
+import {
+  nativeCatalogFromResolved,
+  nativeCatalogIdentityForLaunch,
+  sameNativeCatalog,
+} from "../../../src/sessions/native-session-guard";
 
 beforeAll(() => {
   registerKnownChannelId("feishu");
@@ -1829,6 +1837,485 @@ test("attachNativeSessionWithTransport auto-derives a free alias when the desire
   // A colliding alias should NOT fail — the backend derives `relay:dup-2`.
   const result = await router.attachNativeSessionWithTransport("relay:dup", "codex", "backend", "ses_2");
   expect(result.alias).toBe("relay:dup-2");
+});
+
+test("native list and attach refuse a product-owned hidden native ID without resume", async () => {
+  const { router, transport, sessions } = buildRouter();
+  await sessions.createSession("brt_bot", "codex", "backend", {
+    owner: createBotDirectOwner({
+      bindingId: "bind_bot",
+      botId: "bot_reviewer",
+      conversationId: "conversation_bot",
+      topicId: "topic_bot",
+    }),
+  });
+  await sessions.updateNativeAgentSessionId("brt_bot", "N1");
+  const before = structuredClone(sessions.getLogicalSessionRecord("brt_bot"));
+  (transport.listAgentSessions as ReturnType<typeof mock>).mockImplementationOnce(async () => ({
+    source: "agent" as const,
+    sessions: [
+      { sessionId: "N1", title: "Bot work" },
+      { sessionId: "N2", title: "Other work" },
+    ],
+  }));
+
+  const listed = await router.listNativeSessionsForControl("codex", "backend");
+  expect(listed.map((session) => session.sessionId)).toEqual(["N2"]);
+
+  (transport.resumeAgentSession as ReturnType<typeof mock>).mockClear();
+  await expect(
+    router.attachNativeSessionWithTransport("relay:stolen", "codex", "backend", "N1"),
+  ).rejects.toMatchObject({ code: "hidden_session" });
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  expect(sessions.getResolvedSessionByInternalAlias("relay:stolen")).toBeNull();
+  expect(sessions.getLogicalSessionRecord("brt_bot")).toEqual(before);
+
+  const attached = await router.attachNativeSessionWithTransport("relay:ok", "codex", "backend", "N2");
+  expect(attached.alias).toBe("relay:ok");
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.at(-1)?.[1]).toBe("N2");
+  expect(sessions.getLogicalSessionRecord("brt_bot")).toEqual(before);
+});
+
+test("native list and attach refuse a hidden native ID across workspaces that share cwd", async () => {
+  const { router, transport, sessions, config } = buildRouter();
+  config.workspaces.backend2 = { cwd: config.workspaces.backend.cwd };
+  await sessions.createSession("brt_bot", "codex", "backend", {
+    owner: createBotDirectOwner({
+      bindingId: "bind_bot",
+      botId: "bot_reviewer",
+      conversationId: "conversation_bot",
+      topicId: "topic_bot",
+    }),
+  });
+  await sessions.updateNativeAgentSessionId("brt_bot", "N1");
+  const before = structuredClone(sessions.getLogicalSessionRecord("brt_bot"));
+  (transport.listAgentSessions as ReturnType<typeof mock>).mockImplementationOnce(async () => ({
+    source: "agent" as const,
+    sessions: [
+      { sessionId: "N1", title: "Bot work" },
+      { sessionId: "N2", title: "Other work" },
+    ],
+  }));
+
+  const listed = await router.listNativeSessionsForControl("codex", "backend2");
+  expect(listed.map((session) => session.sessionId)).toEqual(["N2"]);
+
+  (transport.resumeAgentSession as ReturnType<typeof mock>).mockClear();
+  await expect(
+    router.attachNativeSessionWithTransport("relay:stolen", "codex", "backend2", "N1"),
+  ).rejects.toMatchObject({ code: "hidden_session" });
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  expect(sessions.getResolvedSessionByInternalAlias("relay:stolen")).toBeNull();
+  expect(sessions.getLogicalSessionRecord("brt_bot")).toEqual(before);
+
+  const attached = await router.attachNativeSessionWithTransport("relay:ok", "codex", "backend2", "N2");
+  expect(attached.alias).toBe("relay:ok");
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.at(-1)?.[1]).toBe("N2");
+  expect(sessions.getLogicalSessionRecord("brt_bot")).toEqual(before);
+});
+
+test("native list and attach refuse a hidden native ID across agent aliases that share launch identity", async () => {
+  const { router, transport, sessions, config } = buildRouter();
+  config.agents.codex2 = { driver: "codex" };
+  await sessions.createSession("brt_bot", "codex", "backend", {
+    owner: createBotDirectOwner({
+      bindingId: "bind_bot",
+      botId: "bot_reviewer",
+      conversationId: "conversation_bot",
+      topicId: "topic_bot",
+    }),
+  });
+  await sessions.updateNativeAgentSessionId("brt_bot", "N1");
+  const before = structuredClone(sessions.getLogicalSessionRecord("brt_bot"));
+  (transport.listAgentSessions as ReturnType<typeof mock>).mockImplementationOnce(async () => ({
+    source: "agent" as const,
+    sessions: [
+      { sessionId: "N1", title: "Bot work" },
+      { sessionId: "N2", title: "Other work" },
+    ],
+  }));
+
+  const listed = await router.listNativeSessionsForControl("codex2", "backend");
+  expect(listed.map((session) => session.sessionId)).toEqual(["N2"]);
+
+  (transport.resumeAgentSession as ReturnType<typeof mock>).mockClear();
+  await expect(
+    router.attachNativeSessionWithTransport("relay:stolen", "codex2", "backend", "N1"),
+  ).rejects.toMatchObject({ code: "hidden_session" });
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  expect(sessions.getResolvedSessionByInternalAlias("relay:stolen")).toBeNull();
+  expect(sessions.getLogicalSessionRecord("brt_bot")).toEqual(before);
+
+  const attached = await router.attachNativeSessionWithTransport("relay:ok", "codex2", "backend", "N2");
+  expect(attached.alias).toBe("relay:ok");
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.at(-1)?.[1]).toBe("N2");
+  expect(sessions.getLogicalSessionRecord("brt_bot")).toEqual(before);
+});
+
+test("native list and attach refuse a hidden native ID when Bot launch is output-guarded and the picker is not", async () => {
+  const { router, transport, sessions, config } = buildRouter();
+  config.agents.custom = { driver: "custom", argv: ["/opt/agent", "--acp"] };
+
+  await sessions.createSession("brt_bot", "custom", "backend", {
+    owner: createBotDirectOwner({
+      bindingId: "bind_bot",
+      botId: "bot_reviewer",
+      conversationId: "conversation_bot",
+      topicId: "topic_bot",
+    }),
+  });
+  const created = sessions.getLogicalSessionRecord("brt_bot")!;
+  const guarded = sessions.resolveSession(
+    created.alias,
+    created.agent,
+    created.workspace,
+    created.transport_session,
+  );
+  expect(isAcpOutputGuardArgv(guarded.agentArgv ?? [])).toBe(true);
+  expect(guarded.agentArgv?.slice(3)).toEqual(["/opt/agent", "--acp"]);
+
+  const unguarded = resolveConfiguredAgentLaunch(config.agents.custom, config.transport);
+  expect(unguarded.agentArgv).toEqual(["/opt/agent", "--acp"]);
+  expect(unguarded.agentArgv).not.toEqual(guarded.agentArgv);
+  expect(sameNativeCatalog(
+    nativeCatalogFromResolved(guarded),
+    nativeCatalogIdentityForLaunch({
+      cwd: config.workspaces.backend.cwd,
+      driver: "custom",
+      ...unguarded,
+    }),
+  )).toBe(true);
+
+  await sessions.setSessionTransportAgentCommand(
+    created.alias,
+    guarded.agentCommand,
+    guarded.acpxAgent,
+    guarded.agentArgv,
+  );
+  const persisted = sessions.getResolvedSessionByInternalAlias("brt_bot")!;
+  expect(persisted.agentArgv).toEqual(guarded.agentArgv);
+  expect(sameNativeCatalog(
+    nativeCatalogFromResolved(persisted),
+    nativeCatalogIdentityForLaunch({
+      cwd: config.workspaces.backend.cwd,
+      driver: "custom",
+      ...unguarded,
+    }),
+  )).toBe(true);
+
+  await sessions.updateNativeAgentSessionId("brt_bot", "N1");
+  const before = structuredClone(sessions.getLogicalSessionRecord("brt_bot"));
+  (transport.listAgentSessions as ReturnType<typeof mock>).mockImplementationOnce(async () => ({
+    source: "agent" as const,
+    sessions: [
+      { sessionId: "N1", title: "Bot work" },
+      { sessionId: "N2", title: "Other work" },
+    ],
+  }));
+
+  const listed = await router.listNativeSessionsForControl("custom", "backend");
+  expect(listed.map((session) => session.sessionId)).toEqual(["N2"]);
+
+  (transport.resumeAgentSession as ReturnType<typeof mock>).mockClear();
+  await expect(
+    router.attachNativeSessionWithTransport("relay:stolen", "custom", "backend", "N1"),
+  ).rejects.toMatchObject({ code: "hidden_session" });
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  expect(sessions.getResolvedSessionByInternalAlias("relay:stolen")).toBeNull();
+  expect(sessions.getLogicalSessionRecord("brt_bot")).toEqual(before);
+
+  const attached = await router.attachNativeSessionWithTransport("relay:ok", "custom", "backend", "N2");
+  expect(attached.alias).toBe("relay:ok");
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.at(-1)?.[1]).toBe("N2");
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  expect(sessions.getLogicalSessionRecord("brt_bot")).toEqual(before);
+});
+
+test("native list and attach refuse a hidden native ID across different drivers that share argv", async () => {
+  const { router, transport, sessions, config } = buildRouter();
+  config.agents.agentA = { driver: "custom-a", argv: ["/opt/agent", "--acp"] };
+  config.agents.agentB = { driver: "custom-b", argv: ["/opt/agent", "--acp"] };
+
+  await sessions.createSession("brt_bot", "agentA", "backend", {
+    owner: createBotDirectOwner({
+      bindingId: "bind_bot",
+      botId: "bot_reviewer",
+      conversationId: "conversation_bot",
+      topicId: "topic_bot",
+    }),
+  });
+  const created = sessions.getLogicalSessionRecord("brt_bot")!;
+  const guarded = sessions.resolveSession(
+    created.alias,
+    created.agent,
+    created.workspace,
+    created.transport_session,
+  );
+  expect(isAcpOutputGuardArgv(guarded.agentArgv ?? [])).toBe(true);
+  const unguardedB = resolveConfiguredAgentLaunch(config.agents.agentB, config.transport);
+  expect(unguardedB.agentArgv).toEqual(["/opt/agent", "--acp"]);
+  expect(unguardedB.acpxAgent).not.toBe(guarded.acpxAgent);
+  expect(sameNativeCatalog(
+    nativeCatalogFromResolved(guarded),
+    nativeCatalogIdentityForLaunch({
+      cwd: config.workspaces.backend.cwd,
+      driver: "custom-b",
+      ...unguardedB,
+    }),
+  )).toBe(true);
+
+  await sessions.setSessionTransportAgentCommand(
+    created.alias,
+    guarded.agentCommand,
+    guarded.acpxAgent,
+    guarded.agentArgv,
+  );
+  await sessions.updateNativeAgentSessionId("brt_bot", "N1");
+  const before = structuredClone(sessions.getLogicalSessionRecord("brt_bot"));
+  (transport.listAgentSessions as ReturnType<typeof mock>).mockImplementationOnce(async () => ({
+    source: "agent" as const,
+    sessions: [
+      { sessionId: "N1", title: "Bot work" },
+      { sessionId: "N2", title: "Other work" },
+    ],
+  }));
+
+  const listed = await router.listNativeSessionsForControl("agentB", "backend");
+  expect(listed.map((session) => session.sessionId)).toEqual(["N2"]);
+
+  (transport.resumeAgentSession as ReturnType<typeof mock>).mockClear();
+  await expect(
+    router.attachNativeSessionWithTransport("relay:stolen", "agentB", "backend", "N1"),
+  ).rejects.toMatchObject({ code: "hidden_session" });
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  expect(sessions.getResolvedSessionByInternalAlias("relay:stolen")).toBeNull();
+  expect(sessions.getLogicalSessionRecord("brt_bot")).toEqual(before);
+
+  const attached = await router.attachNativeSessionWithTransport("relay:ok", "agentB", "backend", "N2");
+  expect(attached.alias).toBe("relay:ok");
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.at(-1)?.[1]).toBe("N2");
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  expect(sessions.getLogicalSessionRecord("brt_bot")).toEqual(before);
+});
+
+test("native list and attach refuse a hidden native ID across different drivers that share a raw command", async () => {
+  const config = createConfig();
+  config.agents.agentA = { driver: "custom-a", command: "/opt/agent --acp" };
+  config.agents.agentB = { driver: "custom-b", command: "/opt/agent --acp" };
+  const sessions = new SessionService(config, new MemoryStateStore(), createEmptyState(), { platform: "linux" });
+  const transport = createTransport();
+  const router = new CommandRouter(sessions, transport, config, new MemoryConfigStore(config));
+
+  await sessions.createSession("brt_bot", "agentA", "backend", {
+    owner: createBotDirectOwner({
+      bindingId: "bind_bot",
+      botId: "bot_reviewer",
+      conversationId: "conversation_bot",
+      topicId: "topic_bot",
+    }),
+  });
+  const created = sessions.getLogicalSessionRecord("brt_bot")!;
+  const resolvedA = sessions.resolveSession(
+    created.alias,
+    created.agent,
+    created.workspace,
+    created.transport_session,
+  );
+  const launchB = resolveConfiguredAgentLaunch(config.agents.agentB, config.transport, { platform: "linux" });
+  expect(resolvedA.rawCommand).toBe("/opt/agent --acp");
+  expect(launchB.rawCommand).toBe("/opt/agent --acp");
+  expect(resolvedA.driver).toBe("custom-a");
+  expect(config.agents.agentB.driver).toBe("custom-b");
+  expect(sameNativeCatalog(
+    nativeCatalogFromResolved(resolvedA),
+    nativeCatalogIdentityForLaunch({
+      cwd: config.workspaces.backend.cwd,
+      driver: "custom-b",
+      ...launchB,
+    }),
+  )).toBe(true);
+
+  await sessions.updateNativeAgentSessionId("brt_bot", "N1");
+  const before = structuredClone(sessions.getLogicalSessionRecord("brt_bot"));
+  (transport.listAgentSessions as ReturnType<typeof mock>).mockImplementationOnce(async () => ({
+    source: "agent" as const,
+    sessions: [
+      { sessionId: "N1", title: "Bot work" },
+      { sessionId: "N2", title: "Other work" },
+    ],
+  }));
+
+  const listed = await router.listNativeSessionsForControl("agentB", "backend");
+  expect(listed.map((session) => session.sessionId)).toEqual(["N2"]);
+
+  (transport.resumeAgentSession as ReturnType<typeof mock>).mockClear();
+  await expect(
+    router.attachNativeSessionWithTransport("relay:stolen", "agentB", "backend", "N1"),
+  ).rejects.toMatchObject({ code: "hidden_session" });
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  expect(sessions.getResolvedSessionByInternalAlias("relay:stolen")).toBeNull();
+  expect(sessions.getLogicalSessionRecord("brt_bot")).toEqual(before);
+
+  const attached = await router.attachNativeSessionWithTransport("relay:ok", "agentB", "backend", "N2");
+  expect(attached.alias).toBe("relay:ok");
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.at(-1)?.[1]).toBe("N2");
+  expect(sessions.getLogicalSessionRecord("brt_bot")).toEqual(before);
+});
+
+test("native attach fail-closes when a hidden managed overlay lost argv and cannot prove its selector", async () => {
+  const { router, transport, sessions, config } = buildRouter();
+  config.agents.custom = { driver: "custom", argv: ["/opt/agent", "--acp"] };
+
+  await sessions.createSession("brt_bot", "custom", "backend", {
+    owner: createBotDirectOwner({
+      bindingId: "bind_bot",
+      botId: "bot_reviewer",
+      conversationId: "conversation_bot",
+      topicId: "topic_bot",
+    }),
+  });
+  await sessions.updateNativeAgentSessionId("brt_bot", "N1");
+  const before = structuredClone(sessions.getLogicalSessionRecord("brt_bot"));
+  const originalGet = sessions.getResolvedSessionByInternalAlias.bind(sessions);
+  sessions.getResolvedSessionByInternalAlias = (alias: string) => {
+    const resolved = originalGet(alias);
+    if (!resolved || alias !== "brt_bot") return resolved;
+    const { agentArgv: _agentArgv, rawCommand: _rawCommand, ...rest } = resolved;
+    return {
+      ...rest,
+      agentCommand: "/opt/agent --acp",
+      acpxAgent: "xacpx-managed-custom-deadbeef",
+    };
+  };
+
+  const picker = nativeCatalogIdentityForLaunch({
+    cwd: config.workspaces.backend.cwd,
+    driver: "custom",
+    ...resolveConfiguredAgentLaunch(config.agents.custom, config.transport),
+  });
+  expect(picker.selector.kind).toBe("argv");
+  expect(nativeCatalogFromResolved(sessions.getResolvedSessionByInternalAlias("brt_bot")!)).toEqual({
+    cwd: "/tmp/backend",
+    selector: { kind: "unproven" },
+  });
+
+  (transport.listAgentSessions as ReturnType<typeof mock>).mockImplementationOnce(async () => ({
+    source: "agent" as const,
+    sessions: [
+      { sessionId: "N1", title: "Bot work" },
+      { sessionId: "N2", title: "Other work" },
+    ],
+  }));
+  const listed = await router.listNativeSessionsForControl("custom", "backend");
+  expect(listed.map((session) => session.sessionId)).toEqual(["N1", "N2"]);
+
+  (transport.resumeAgentSession as ReturnType<typeof mock>).mockClear();
+  await expect(
+    router.attachNativeSessionWithTransport("relay:stolen", "custom", "backend", "N1"),
+  ).rejects.toMatchObject({ code: "hidden_session" });
+  await expect(
+    router.attachNativeSessionWithTransport("relay:guess", "custom", "backend", "N2"),
+  ).rejects.toMatchObject({ code: "hidden_session" });
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+  expect(sessions.getResolvedSessionByInternalAlias("relay:stolen")).toBeNull();
+  expect(sessions.getResolvedSessionByInternalAlias("relay:guess")).toBeNull();
+  expect(sessions.getLogicalSessionRecord("brt_bot")).toEqual(before);
+});
+
+test("native attach at another cwd is not blocked by a lost-argv overlay in this cwd", async () => {
+  const { router, transport, sessions, config } = buildRouter();
+  config.agents.custom = { driver: "custom", argv: ["/opt/agent", "--acp"] };
+  config.workspaces.other = { cwd: "/tmp/other" };
+
+  await sessions.createSession("brt_bot", "custom", "backend", {
+    owner: createBotDirectOwner({
+      bindingId: "bind_bot",
+      botId: "bot_reviewer",
+      conversationId: "conversation_bot",
+      topicId: "topic_bot",
+    }),
+  });
+  await sessions.updateNativeAgentSessionId("brt_bot", "N1");
+  const before = structuredClone(sessions.getLogicalSessionRecord("brt_bot"));
+  const originalGet = sessions.getResolvedSessionByInternalAlias.bind(sessions);
+  sessions.getResolvedSessionByInternalAlias = (alias: string) => {
+    const resolved = originalGet(alias);
+    if (!resolved || alias !== "brt_bot") return resolved;
+    const { agentArgv: _agentArgv, rawCommand: _rawCommand, ...rest } = resolved;
+    return {
+      ...rest,
+      cwd: config.workspaces.backend.cwd,
+      agentCommand: "/opt/agent --acp",
+      acpxAgent: "xacpx-managed-custom-deadbeef",
+    };
+  };
+
+  expect(nativeCatalogFromResolved(sessions.getResolvedSessionByInternalAlias("brt_bot")!)).toEqual({
+    cwd: "/tmp/backend",
+    selector: { kind: "unproven" },
+  });
+
+  (transport.listAgentSessions as ReturnType<typeof mock>).mockImplementationOnce(async () => ({
+    source: "agent" as const,
+    sessions: [
+      { sessionId: "N1", title: "Bot work" },
+      { sessionId: "N2", title: "Other work" },
+    ],
+  }));
+  const listed = await router.listNativeSessionsForControl("custom", "other");
+  expect(listed.map((session) => session.sessionId)).toEqual(["N1", "N2"]);
+
+  (transport.resumeAgentSession as ReturnType<typeof mock>).mockClear();
+  const attached = await router.attachNativeSessionWithTransport("relay:ok", "custom", "other", "N2");
+  expect(attached.alias).toBe("relay:ok");
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.at(-1)?.[1]).toBe("N2");
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  expect(sessions.getLogicalSessionRecord("brt_bot")).toEqual(before);
+
+  await expect(
+    router.attachNativeSessionWithTransport("relay:same", "custom", "backend", "N2"),
+  ).rejects.toMatchObject({ code: "hidden_session" });
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+});
+
+test("native attach fail-closes when a product-owned session cannot prove native identity", async () => {
+  const { router, transport, sessions } = buildRouter();
+  await sessions.createSession("brt_bot", "codex", "backend", {
+    owner: createBotDirectOwner({
+      bindingId: "bind_bot",
+      botId: "bot_reviewer",
+      conversationId: "conversation_bot",
+      topicId: "topic_bot",
+    }),
+  });
+  await expect(
+    router.attachNativeSessionWithTransport("relay:guess", "codex", "backend", "N2"),
+  ).rejects.toBeInstanceOf(ConversationError);
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+});
+
+test("native attach reverse-looks up a product-owned live identity when agent_session_id is missing", async () => {
+  const { router, transport, sessions } = buildRouter();
+  await sessions.createSession("brt_bot", "codex", "backend", {
+    owner: createBotDirectOwner({
+      bindingId: "bind_bot",
+      botId: "bot_reviewer",
+      conversationId: "conversation_bot",
+      topicId: "topic_bot",
+    }),
+  });
+  transport.getAgentSessionId = mock(async (session) => (
+    session.alias === "brt_bot" ? "N1" : undefined
+  ));
+  (transport.listAgentSessions as ReturnType<typeof mock>).mockImplementationOnce(async () => ({
+    source: "agent" as const,
+    sessions: [{ sessionId: "N1" }, { sessionId: "N2" }],
+  }));
+  expect((await router.listNativeSessionsForControl("codex", "backend")).map((s) => s.sessionId)).toEqual(["N2"]);
+  await expect(
+    router.attachNativeSessionWithTransport("relay:stolen", "codex", "backend", "N1"),
+  ).rejects.toMatchObject({ code: "hidden_session" });
+  expect((transport.resumeAgentSession as ReturnType<typeof mock>).mock.calls.length).toBe(0);
 });
 
 test("failed create converges the provisional physical session before dropping the row", async () => {

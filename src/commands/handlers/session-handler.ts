@@ -23,6 +23,8 @@ import { t } from "../../i18n";
 import { AcpxQueueOverflowError } from "../../transport/acpx-queue-overflow";
 import { queueOverflowTipText } from "./session-recovery-handler";
 import { PermissionInteractionBroker, getGlobalPermissionBroker } from "../../permissions/permission-interaction-broker.js";
+import { resolvePermissionTurnRoute } from "../../permissions/permission-turn-route.js";
+import { isHiddenProductSessionOwner } from "../../state/types";
 
 export interface SessionHandlerContext extends CommandRouterContext {
   lifecycle: SessionLifecycleOps;
@@ -176,6 +178,14 @@ export function cancelHelp(): HelpTopicMetadata {
     ],
     examples: ["/cancel", "/cancel backend"],
   };
+}
+
+function rejectHiddenOwnedSession(context: SessionHandlerContext, alias: string): RouterResponse | undefined {
+  const record = context.sessions.getLogicalSessionRecord?.(alias);
+  if (isHiddenProductSessionOwner(record?.owner)) {
+    return { text: t().session.sessionHiddenOwned(toDisplaySessionAlias(alias)) };
+  }
+  return undefined;
 }
 
 export async function handleSessions(context: SessionHandlerContext, chatKey: string): Promise<RouterResponse> {
@@ -505,6 +515,13 @@ export async function handleSessionUse(
     return { text: [t().session.ambiguousSession(input), ...lines].join("\n") };
   }
 
+  const internalForGuard = await context.sessions.resolveAliasForChat(chatKey, result.alias);
+  const hidden = rejectHiddenOwnedSession(context, internalForGuard)
+    ?? rejectHiddenOwnedSession(context, result.alias);
+  if (hidden) {
+    return hidden;
+  }
+
   const switched = await context.sessions.useSession(chatKey, result.alias);
   await context.logger.info("session.selected", "selected logical session", {
     alias: switched.alias,
@@ -557,6 +574,10 @@ export async function handleModeSet(
   if (!session) {
     return { text: t().session.noCurrent };
   }
+  const hiddenMode = rejectHiddenOwnedSession(context, session.alias);
+  if (hiddenMode) {
+    return hiddenMode;
+  }
 
   await context.interaction.setModeTransportSession(session, modeId);
   await context.sessions.setCurrentSessionMode(chatKey, modeId);
@@ -602,6 +623,10 @@ export async function handleModelSet(
   if (!session) {
     return { text: t().session.noCurrent };
   }
+  const hiddenModel = rejectHiddenOwnedSession(context, session.alias);
+  if (hiddenModel) {
+    return hiddenModel;
+  }
 
   try {
     await context.interaction.setModelTransportSession(session, modelId);
@@ -646,6 +671,10 @@ export async function handleReplyModeSet(
   if (!session) {
     return { text: t().session.noCurrent };
   }
+  const hiddenReply = rejectHiddenOwnedSession(context, session.alias);
+  if (hiddenReply) {
+    return hiddenReply;
+  }
 
   await context.sessions.setCurrentSessionReplyMode(chatKey, replyMode);
   return { text: t().session.replyModeSet(replyMode) };
@@ -655,6 +684,10 @@ export async function handleReplyModeReset(context: SessionHandlerContext, chatK
   const session = await context.sessions.getCurrentSession(chatKey);
   if (!session) {
     return { text: t().session.noCurrent };
+  }
+  const hiddenReplyReset = rejectHiddenOwnedSession(context, session.alias);
+  if (hiddenReplyReset) {
+    return hiddenReplyReset;
   }
 
   await context.sessions.setCurrentSessionReplyMode(chatKey, undefined);
@@ -706,6 +739,11 @@ export async function handleCancel(
     if (!target) {
       return { text: t().session.noMatchingSession(alias) };
     }
+    const hiddenCancel = rejectHiddenOwnedSession(context, internalAlias)
+      ?? rejectHiddenOwnedSession(context, target.alias);
+    if (hiddenCancel) {
+      return hiddenCancel;
+    }
 
     try {
       const cancelResult = await context.interaction.cancelTransportSession(target);
@@ -724,6 +762,10 @@ export async function handleCancel(
   if (!session) {
     return { text: t().session.noCurrent };
   }
+  const hiddenCancelCurrent = rejectHiddenOwnedSession(context, session.alias);
+  if (hiddenCancelCurrent) {
+    return hiddenCancelCurrent;
+  }
 
   try {
     const result = await context.interaction.cancelTransportSession(session);
@@ -739,6 +781,13 @@ export async function handleCancel(
 }
 
 export async function handleSessionReset(context: SessionHandlerContext, chatKey: string): Promise<RouterResponse> {
+  const session = await context.sessions.getCurrentSession(chatKey);
+  if (session) {
+    const hidden = rejectHiddenOwnedSession(context, session.alias);
+    if (hidden) {
+      return hidden;
+    }
+  }
   return await context.lifecycle.resetCurrentSession(chatKey);
 }
 
@@ -766,6 +815,11 @@ export async function handleSessionRemove(
   alias: string,
 ): Promise<RouterResponse> {
   const internalAlias = await context.sessions.resolveAliasForChat(chatKey, alias);
+  const hidden = rejectHiddenOwnedSession(context, internalAlias)
+    ?? rejectHiddenOwnedSession(context, alias);
+  if (hidden) {
+    return hidden;
+  }
   const session = await context.sessions.getSession(internalAlias);
   if (!session) {
     return { text: t().session.sessionNotFound(alias) };
@@ -887,6 +941,11 @@ export async function handleSessionArchive(
   archive: (internalAlias: string) => Promise<void>,
 ): Promise<RouterResponse> {
   const internalAlias = await context.sessions.resolveAliasForChat(chatKey, alias);
+  const hidden = rejectHiddenOwnedSession(context, internalAlias)
+    ?? rejectHiddenOwnedSession(context, alias);
+  if (hidden) {
+    return hidden;
+  }
   const session = await context.sessions.getSession(internalAlias);
   if (!session) {
     return { text: t().session.sessionNotFound(alias) };
@@ -996,21 +1055,27 @@ async function promptWithSession(
         : metadata?.preserveCoordinatorRoute
           ? "peer"
           : undefined);
-    const interactionId = resolvedOrigin === "human"
+    const permissionRoute = resolvePermissionTurnRoute({
+      isolationChatKey: chatKey,
+      origin: resolvedOrigin,
+      metadata,
+      ...(accountId !== undefined ? { accountId } : {}),
+    });
+    const interactionId = permissionRoute
       ? PermissionInteractionBroker.createInteractionId()
       : undefined;
     let disposeInteraction: (() => void) | undefined;
-    if (interactionId) {
+    if (interactionId && permissionRoute) {
       try {
         disposeInteraction = getGlobalPermissionBroker()?.bindTurn({
           interactionId,
-          chatKey,
-          ...(accountId !== undefined ? { accountId } : {}),
-          ...(replyContextToken !== undefined ? { replyContextToken } : {}),
-          ...(metadata?.senderId !== undefined ? { senderId: metadata.senderId } : {}),
-          ...(metadata?.senderName !== undefined ? { senderName: metadata.senderName } : {}),
-          ...(metadata?.isOwner !== undefined ? { isOwner: metadata.isOwner } : {}),
+          chatKey: permissionRoute.chatKey,
           origin: "human",
+          ...(permissionRoute.accountId !== undefined ? { accountId: permissionRoute.accountId } : {}),
+          ...(replyContextToken !== undefined ? { replyContextToken } : {}),
+          ...(permissionRoute.senderId !== undefined ? { senderId: permissionRoute.senderId } : {}),
+          ...(permissionRoute.senderName !== undefined ? { senderName: permissionRoute.senderName } : {}),
+          ...(permissionRoute.isOwner !== undefined ? { isOwner: permissionRoute.isOwner } : {}),
         }, abortSignal);
       } catch {
         disposeInteraction = undefined;
@@ -1084,6 +1149,10 @@ export async function handlePromptWithSession(
   onUsage?: (usage: PromptUsage) => void | Promise<void>,
   onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
 ): Promise<RouterResponse> {
+  const hidden = rejectHiddenOwnedSession(context, session.alias);
+  if (hidden) {
+    return hidden;
+  }
   try {
     return await promptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage, onCommands);
   } catch (error) {

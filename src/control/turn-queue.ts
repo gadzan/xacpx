@@ -15,6 +15,7 @@ import {
   type TurnIdleTimeoutDetail,
 } from "./turn-support";
 import type { PermissionInteractionOrigin } from "../permissions/permission-types.js";
+import type { ConversationTurnCorrelation } from "./conversation-control-dtos";
 
 export interface QueuedItemSnapshot {
   id: string;
@@ -101,6 +102,9 @@ export interface SubmitParams {
    * interaction id downstream — all other origins stay non-interactive.
    */
   turnOrigin: PermissionInteractionOrigin;
+  /** Trusted permission return route when it differs from isolation `chatKey`. */
+  permissionChatKey?: string;
+  senderName?: string;
   // External abort (e.g. the scheduler's per-dispatch timeout) linked to this turn.
   abortSignal?: AbortSignal;
   // Extra fields stamped onto turn-started for scheduled-origin turns. `queueItemId`
@@ -117,6 +121,7 @@ export interface SubmitParams {
    *  pre-written inbound row (see PromptPayload.promptRequestId). */
   promptRequestId?: string;
   peerOrigin?: PeerTurnOrigin;
+  conversation?: ConversationTurnCorrelation;
   /** v0.3 structured system completion — see QueuedPrompt.trustedPeerCompletion. */
   trustedPeerCompletion?: AgentMessageCompletion;
   // Only interactive prompt() sets this. When true and a turn is already running, the
@@ -287,6 +292,8 @@ export class TurnQueue {
         enqueuedAt: new Date().toISOString(),
         senderId: params.senderId,
         turnOrigin: params.turnOrigin,
+        ...(params.permissionChatKey !== undefined ? { permissionChatKey: params.permissionChatKey } : {}),
+        ...(params.senderName !== undefined ? { senderName: params.senderName } : {}),
         executionContext: {
           chatKey: params.chatKey,
           sessionAlias: params.sessionAlias,
@@ -408,6 +415,8 @@ export class TurnQueue {
       enqueuedAt: new Date().toISOString(),
       senderId: params.senderId,
       turnOrigin: params.turnOrigin,
+      ...(params.permissionChatKey !== undefined ? { permissionChatKey: params.permissionChatKey } : {}),
+      ...(params.senderName !== undefined ? { senderName: params.senderName } : {}),
       executionContext: {
         chatKey: params.chatKey,
         sessionAlias: params.sessionAlias,
@@ -586,6 +595,8 @@ export class TurnQueue {
             enqueuedAt: new Date().toISOString(),
             senderId: params.senderId,
             turnOrigin: params.turnOrigin,
+            ...(params.permissionChatKey !== undefined ? { permissionChatKey: params.permissionChatKey } : {}),
+            ...(params.senderName !== undefined ? { senderName: params.senderName } : {}),
             executionContext: {
               chatKey: params.chatKey,
               sessionAlias: params.sessionAlias,
@@ -702,6 +713,8 @@ export class TurnQueue {
           text: params.text,
           senderId: params.senderId,
           turnOrigin: params.turnOrigin,
+          ...(params.permissionChatKey !== undefined ? { permissionChatKey: params.permissionChatKey } : {}),
+          ...(params.senderName !== undefined ? { senderName: params.senderName } : {}),
           isOwner: params.isOwner,
           accountId: params.accountId,
           turnStarted,
@@ -711,6 +724,7 @@ export class TurnQueue {
           preserveCoordinatorRoute: params.preserveCoordinatorRoute,
           peerOrigin: params.peerOrigin,
           trustedPeerCompletion: params.trustedPeerCompletion,
+          ...(params.conversation !== undefined ? { conversation: params.conversation } : {}),
         },
         controller.signal,
         onActivity,
@@ -832,6 +846,8 @@ export class TurnQueue {
       text: next.text,
       senderId: next.senderId,
       turnOrigin: next.turnOrigin,
+      ...(next.permissionChatKey !== undefined ? { permissionChatKey: next.permissionChatKey } : {}),
+      ...(next.senderName !== undefined ? { senderName: next.senderName } : {}),
       queueable: true,
       drained: true,
       isPeerMessage: next.isPeerMessage,

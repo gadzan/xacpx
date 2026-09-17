@@ -2,6 +2,8 @@
   "record": [
     "logger.debug(command.parsed)",
     "sessions.getCurrentSession(\"wx:user\")",
+    "sessions.getLogicalSessionRecord(\"demo\")",
+    "sessions.getCurrentSession(\"wx:user\")",
     "sessions.tryReserveSessionAliasOperation(\"demo\")",
     "sessions.getLogicalSessionRecord(\"demo\")",
     "sessions.buildFreshTransportSession(\"backend:demo\")",

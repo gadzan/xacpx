@@ -1,12 +1,16 @@
-import type { ControlService } from "../control/control-service";
+import type { ControlPromptResult } from "../control/control-service";
 import { CANCEL_DRAIN_TIMEOUT_MS } from "../control/turn-support";
 import { directConversationChatKey } from "../domain/ids";
 import type { PermissionInteractionOrigin } from "../permissions/permission-types";
+import type { ConversationExecutionPort } from "./conversation-execution-port";
+import type { HumanIngressContext } from "./conversation-types";
 
 export interface ConversationTurnRunInput {
   conversationId: string;
   topicId: string;
   botId: string;
+  runId: string;
+  memberTurnId: string;
   sessionAlias: string;
   logicalSessionId: string;
   text: string;
@@ -15,6 +19,11 @@ export interface ConversationTurnRunInput {
    * The dispatcher copies this; callers must not invent human authority.
    */
   executionOrigin: PermissionInteractionOrigin;
+  /**
+   * Trusted permission return route for human MemberTurns. Isolation `chatKey`
+   * stays `bot:<conversation>:<topic>`; the broker must not use that product key.
+   */
+  permissionRoute?: HumanIngressContext;
   promptRequestId: string;
   abortSignal?: AbortSignal;
 }
@@ -47,8 +56,8 @@ export interface ConversationTurnRunner {
 }
 
 type ControlTurnSeam = Pick<
-  ControlService,
-  "promptImmediate" | "cancelQueuedItem" | "cancelTurnForPromptRequest"
+  ConversationExecutionPort,
+  "promptImmediate" | "cancelQueuedConversationItem" | "cancelTurnForPromptRequest"
 >;
 
 export interface ControlConversationTurnRunnerOptions {
@@ -82,9 +91,9 @@ function cancelResultFromRun(result: ConversationTurnRunResult): ConversationTur
 
 /**
  * Control/TurnQueue seam: `promptRequestId` is the durable execution identity
- * for this Run (minted at Conversation execution-start, then passed into
- * Control.promptImmediate). Cancel/inspect must match that id; aborting the lane alone
- * does not prove the turn produced no effects.
+ * for this Run (minted at Conversation execution-start, then passed into the
+ * core-private ConversationExecutionPort.promptImmediate). Cancel/inspect must
+ * match that id; aborting the lane alone does not prove the turn produced no effects.
  *
  * Pre-admission cancel uses the runner-owned AbortController. After TurnQueue
  * admission, cancel stays on the exact promptRequestId path. Abort is not assumed
@@ -119,14 +128,26 @@ export class ControlConversationTurnRunner implements ConversationTurnRunner {
     const tracked: TrackedExecution = { done, resolveDone, abort };
     this.executions.set(input.promptRequestId, tracked);
     const chatKey = directConversationChatKey(input.conversationId, input.topicId);
+    const permission = input.executionOrigin === "human" ? input.permissionRoute : undefined;
     const provider = this.control.promptImmediate({
       chatKey,
       sessionAlias: input.sessionAlias,
       text: input.text,
-      senderId: "bot-conversation",
+      senderId: permission?.senderId ?? "bot-conversation",
       promptRequestId: input.promptRequestId,
       abortSignal: abort.signal,
       executionOrigin: input.executionOrigin,
+      ...(permission?.accountId !== undefined ? { accountId: permission.accountId } : {}),
+      ...(permission?.isOwner !== undefined ? { isOwner: permission.isOwner } : {}),
+      ...(permission?.senderName !== undefined ? { senderName: permission.senderName } : {}),
+      ...(permission?.chatKey ? { permissionChatKey: permission.chatKey } : {}),
+      conversation: {
+        conversationId: input.conversationId,
+        topicId: input.topicId,
+        botId: input.botId,
+        runId: input.runId,
+        memberTurnId: input.memberTurnId,
+      },
     });
     void provider.then(
       (result) => this.finishTracked(tracked, this.mapPromptResult(result)),
@@ -144,7 +165,7 @@ export class ControlConversationTurnRunner implements ConversationTurnRunner {
     const tracked = this.executions.get(input.promptRequestId);
     if (!tracked) {
       if (input.queueItemId) {
-        this.control.cancelQueuedItem(chatKey, input.sessionAlias, input.queueItemId);
+        this.control.cancelQueuedConversationItem(chatKey, input.sessionAlias, input.queueItemId);
       }
       return { outcome: "unknown" };
     }
@@ -213,7 +234,7 @@ export class ControlConversationTurnRunner implements ConversationTurnRunner {
     }
   }
 
-  private mapPromptResult(result: Awaited<ReturnType<ControlService["promptImmediate"]>>): ConversationTurnRunResult {
+  private mapPromptResult(result: ControlPromptResult): ConversationTurnRunResult {
     if (result.queued) {
       return { status: "failed", error: "turn_queued_unexpectedly", queueItemId: result.queueItemId };
     }

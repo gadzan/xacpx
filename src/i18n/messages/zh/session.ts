@@ -81,6 +81,8 @@ export const session: SessionMessages = {
 
   // handleSessionRemove
   sessionNotFound: (alias) => `会话「${alias}」不存在。`,
+  sessionHiddenOwned: (alias) =>
+    `会话「${alias}」由 Bot 会话持有，不能通过普通会话命令操作。`,
   sessionBlockedByTasks: (alias, count) =>
     `会话「${alias}」下还有 ${count} 个未结束的任务，请先取消或等待完成。`,
   sessionBlockedByTasksHint: "使用 /tasks 查看任务列表，或 /task cancel <id> 取消任务。",
