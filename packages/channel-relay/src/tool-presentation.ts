@@ -302,7 +302,11 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
       };
       return { ...base, title: path, detail };
     }
-    const picked = firstPresent(input, ["file_path", "path"]);
+    // The title prefers the ACP location over the input aliases; only drop the
+    // input key when it actually supplied the title, so a location-won title
+    // keeps a possibly conflicting input path visible.
+    const locPath = locationPath(event);
+    const picked = locPath === undefined ? firstPresent(input, ["file_path", "path"]) : undefined;
     const fields = primitiveFields(input).filter((f) => f.label !== picked?.key);
     if (fields.length === 0) return { ...base, title: path };
     return { ...base, title: path, detail: { type: "fields", fields } };

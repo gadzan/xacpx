@@ -41,6 +41,22 @@ test("edit falls back to fields when neither diff block nor old/new text exist",
   expect(step.detail?.type).toBe("fields");
 });
 
+test("edit keeps the input path when the title came from locations", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "e6", toolName: "Edit", kind: "edit", status: "success",
+    locations: [{ path: "actual.ts" }],
+    rawInput: { file_path: "requested.ts", mode: "insert" },
+  });
+  expect(step.title).toBe("actual.ts");
+  expect(step.detail).toMatchObject({
+    type: "fields",
+    fields: [
+      { label: "file_path", value: "requested.ts" },
+      { label: "mode", value: "insert" },
+    ],
+  });
+});
+
 test("edit maps Write-style rawInput.content to the diff newText with empty oldText", () => {
   const step = toolUseEventToStepDto({
     toolCallId: "e4", toolName: "Write", kind: "edit", status: "success",
