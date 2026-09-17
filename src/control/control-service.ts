@@ -1852,6 +1852,11 @@ export class ControlService {
     return this.conversationRuntime;
   }
 
+  private runConversationMutation<T>(fn: (runtime: ConversationRuntime) => Promise<T>): Promise<T> {
+    const runtime = this.requireConversations();
+    return runtime.withOperation(() => fn(runtime));
+  }
+
   #publishConversationProduct(event: ConversationProductEvent): void {
     switch (event.type) {
       case "bots-changed":
@@ -1895,24 +1900,30 @@ export class ControlService {
   }
 
   async createBot(input: BotCreateRequestDto) {
-    const bot = await this.requireConversations().bots.createBot(input);
-    this.deps.events.emit({ type: "bots-changed" });
-    this.deps.events.emit({ type: "conversations-changed" });
-    return toBotDetail(bot);
+    return this.runConversationMutation(async (runtime) => {
+      const bot = await runtime.bots.createBot(input);
+      this.deps.events.emit({ type: "bots-changed" });
+      this.deps.events.emit({ type: "conversations-changed" });
+      return toBotDetail(bot);
+    });
   }
 
   async updateBot(id: string, patch: BotUpdateRequestDto) {
-    const bot = await this.requireConversations().bots.updateBot(id, patch);
-    this.deps.events.emit({ type: "bots-changed" });
-    this.deps.events.emit({ type: "conversations-changed" });
-    return toBotDetail(bot);
+    return this.runConversationMutation(async (runtime) => {
+      const bot = await runtime.bots.updateBot(id, patch);
+      this.deps.events.emit({ type: "bots-changed" });
+      this.deps.events.emit({ type: "conversations-changed" });
+      return toBotDetail(bot);
+    });
   }
 
   async deleteBot(id: string): Promise<{ ok: true }> {
-    await this.requireConversations().bots.deleteBot(id);
-    this.deps.events.emit({ type: "bots-changed" });
-    this.deps.events.emit({ type: "conversations-changed" });
-    return { ok: true };
+    return this.runConversationMutation(async (runtime) => {
+      await runtime.bots.deleteBot(id);
+      this.deps.events.emit({ type: "bots-changed" });
+      this.deps.events.emit({ type: "conversations-changed" });
+      return { ok: true };
+    });
   }
 
   listConversations(filter?: { botId?: string }) {
@@ -1938,27 +1949,31 @@ export class ControlService {
   }
 
   async createTopic(conversationId: string, title: string) {
-    const topic = await this.requireConversations().runs.createTopic(conversationId, title);
-    return toTopicSummary(topic);
+    return this.runConversationMutation(async (runtime) => {
+      const topic = await runtime.runs.createTopic(conversationId, title);
+      return toTopicSummary(topic);
+    });
   }
 
   async promptConversation(input: ConversationPromptRequestDto) {
-    const accepted = await this.requireConversations().runs.acceptConversationPrompt({
-      conversationId: input.conversationId,
-      topicId: input.topicId,
-      requestId: input.requestId,
-      text: input.text,
-      ...(input.target?.botId ? { targetBotId: input.target.botId } : {}),
+    return this.runConversationMutation(async (runtime) => {
+      const accepted = await runtime.runs.acceptConversationPrompt({
+        conversationId: input.conversationId,
+        topicId: input.topicId,
+        requestId: input.requestId,
+        text: input.text,
+        ...(input.target?.botId ? { targetBotId: input.target.botId } : {}),
+      });
+      return {
+        reused: accepted.reused,
+        conversationId: accepted.run.conversationId,
+        topicId: accepted.run.topicId,
+        requestId: accepted.run.requestId,
+        run: toConversationRun(accepted.run),
+        message: toConversationMessage(accepted.message),
+        memberTurn: toMemberTurnSummary(accepted.memberTurn),
+      };
     });
-    return {
-      reused: accepted.reused,
-      conversationId: accepted.run.conversationId,
-      topicId: accepted.run.topicId,
-      requestId: accepted.run.requestId,
-      run: toConversationRun(accepted.run),
-      message: toConversationMessage(accepted.message),
-      memberTurn: toMemberTurnSummary(accepted.memberTurn),
-    };
   }
 
   conversationHistory(input: ConversationHistoryRequestDto) {
@@ -1987,8 +2002,10 @@ export class ControlService {
   }
 
   async cancelRun(runId: string) {
-    const runtime = this.requireConversations();
-    await runtime.runs.cancelRun(runId);
-    return this.getRun(runId);
+    return this.runConversationMutation(async (runtime) => {
+      await runtime.runs.cancelRun(runId);
+      const result = runtime.runs.getRun(runId);
+      return toRunDetail(result.run, result.memberTurns);
+    });
   }
 }

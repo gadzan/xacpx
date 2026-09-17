@@ -33,6 +33,8 @@ export interface ConversationRuntime {
   kick(): Promise<void>;
   /** Fail-closed gate for all public Bot/Conversation Control mutations (and reads). */
   assertOpen(): void;
+  /** Lease one public Bot/Conversation mutation until it returns. Shutdown waits. */
+  withOperation<T>(fn: () => Promise<T>): Promise<T>;
   shutdown(): Promise<void>;
 }
 
@@ -98,10 +100,32 @@ export async function createConversationRuntime(
     },
   );
   let lifecycle: "open" | "stopping" | "closed" = "open";
+  let activeOps = 0;
+  const idleWaiters: Array<() => void> = [];
+  let shutdownWork: Promise<void> | undefined;
   const assertOpen = (): void => {
     if (lifecycle !== "open") {
       throw new ConversationError("runtime_closed", "conversation runtime is closed");
     }
+  };
+  const withOperation = async <T>(fn: () => Promise<T>): Promise<T> => {
+    assertOpen();
+    activeOps += 1;
+    try {
+      return await fn();
+    } finally {
+      activeOps -= 1;
+      if (activeOps === 0 && idleWaiters.length > 0) {
+        const waiters = idleWaiters.splice(0);
+        for (const resolve of waiters) resolve();
+      }
+    }
+  };
+  const waitIdle = (): Promise<void> => {
+    if (activeOps === 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      idleWaiters.push(resolve);
+    });
   };
   return {
     store,
@@ -112,14 +136,21 @@ export async function createConversationRuntime(
     authorityEpoch: dispatcher.authorityEpoch,
     kick: () => dispatcher.kick(),
     assertOpen,
-    shutdown: async () => {
-      if (lifecycle !== "open") {
-        return;
+    withOperation,
+    shutdown: () => {
+      if (!shutdownWork) {
+        shutdownWork = (async () => {
+          if (lifecycle === "closed") {
+            return;
+          }
+          lifecycle = "stopping";
+          await waitIdle();
+          bots.close();
+          await runs.shutdown();
+          lifecycle = "closed";
+        })();
       }
-      lifecycle = "stopping";
-      bots.close();
-      await runs.shutdown();
-      lifecycle = "closed";
+      return shutdownWork;
     },
   };
 }

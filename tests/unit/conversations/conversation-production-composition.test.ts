@@ -161,3 +161,36 @@ test("Session COW snapshot then Conversation publish keeps both domains", async 
   expect(state.conversation_topics[topic.id]?.conversationId).toBe(conversationId);
   expect(control.getConversation(conversationId).id).toBe(conversationId);
 });
+
+test("shutdown waits for in-flight createTopic persist and shares one promise", async () => {
+  const store = new BarrierStateStore();
+  const { state, control, runtime } = await compose(store);
+  const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const conversationId = createDirectConversationId(bot.id);
+  const writesAfterCreate = store.saved.length;
+
+  store.arm();
+  const topicP = control.createTopic(conversationId, "extra");
+  await store.entered;
+  let shutdownResolved = false;
+  const shutdownA = runtime.shutdown().then(() => {
+    shutdownResolved = true;
+  });
+  const shutdownB = runtime.shutdown();
+  expect(shutdownB).toBe(runtime.shutdown());
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  expect(shutdownResolved).toBe(false);
+  expect(Object.values(state.conversation_topics).some((topic) => topic.title === "extra")).toBe(false);
+
+  store.resume();
+  const topic = await topicP;
+  await shutdownA;
+  await shutdownB;
+  expect(shutdownResolved).toBe(true);
+  expect(state.conversation_topics[topic.id]?.conversationId).toBe(conversationId);
+  const writesAtShutdown = store.saved.length;
+  expect(writesAtShutdown).toBeGreaterThan(writesAfterCreate);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(store.saved.length).toBe(writesAtShutdown);
+  await expect(control.createTopic(conversationId, "later")).rejects.toMatchObject({ code: "runtime_closed" });
+});
