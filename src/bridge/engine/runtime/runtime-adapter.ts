@@ -267,8 +267,8 @@ export async function* mapEvents(events: AsyncIterable<AcpRuntimeEvent>): AsyncI
         };
       }
     } else if (event.type === "status") {
-      // Pinned acpx versions predate structured plan entries: the field is
-      // absent from their types, so read it structurally — present only.
+      // Structured plan entries ride on status events (acpx 0.16.0+);
+      // absent on older versions — normalize present-only, never fabricate.
       const planEntries = normalizeAdapterPlanEntries(
         (event as { entries?: unknown }).entries,
       );
