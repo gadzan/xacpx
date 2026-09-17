@@ -1,5 +1,5 @@
 /**
- * Unified acpx embedding-host policy (plan B5, acpx 0.15.1): the two host-side
+ * Unified acpx embedding-host policy (plan B5, acpx 0.15.1+): the two host-side
  * ceilings both engine lanes share — the CLI queue-owner lane and the Runtime
  * worker lane. Values land in the owner/worker HOST process environment (they
  * are read by the acpx embedding client / TerminalManager), never in

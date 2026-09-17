@@ -154,7 +154,7 @@ interface BridgeRuntimeOptions {
   /** Idle TTL (seconds) passed to acpx as `--ttl` on prompt; 0 = keep alive forever. */
   queueOwnerTtlSeconds?: number;
   /**
-   * Advanced acpx host ceilings (plan B5, acpx 0.15.1). `null`/absent follows
+   * Advanced acpx host ceilings (plan B5, acpx 0.15.1+). `null`/absent follows
    * upstream defaults. Baked into the queue-owner HOST base env.
    */
   acpxMaxIncomingMessageBytes?: number | null;

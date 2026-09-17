@@ -386,21 +386,22 @@ test("start waits for daemon status metadata before returning", async () => {
   const dir = await mkdtemp(join(tmpdir(), "weacpx-daemon-controller-"));
   const statusStore = new DaemonStatusStore(join(dir, "status.json"));
   let checks = 0;
-  // Deterministic status write: fire it after the 3rd poll rather than on a
-  // wall-clock timer. The production loop (waitForStartupMetadata) checks
-  // status BEFORE calling onStartupPoll, so the 4th poll sees the saved
-  // status and start() resolves. This removes the 20ms setTimeout + 200ms
-  // timeout race that flaked under parallel CI load.
-  let releaseStatus!: () => void;
-  const statusReady = new Promise<void>((resolve) => {
-    releaseStatus = resolve;
-  });
-
+  let now = 0;
+  // Drive a virtual clock and await the simulated daemon's status write on the
+  // third poll. The production loop checks status BEFORE onStartupPoll, so the
+  // fourth poll observes a fully durable status file without depending on host
+  // filesystem latency or a 200ms wall-clock race under parallel CI load.
   const controller = createController(dir, {
+    now: () => now,
     isProcessRunning: (pid) => pid === 44444,
-    spawnDetached: async () => {
-      void statusReady.then(() =>
-        statusStore.save({
+    spawnDetached: async () => 44444,
+    startupPollIntervalMs: 5,
+    startupTimeoutMs: 200,
+    onStartupPoll: async () => {
+      checks += 1;
+      now += 5;
+      if (checks === 3) {
+        await statusStore.save({
           pid: 44444,
           started_at: "2026-03-26T00:00:00.000Z",
           heartbeat_at: "2026-03-26T00:01:00.000Z",
@@ -409,15 +410,8 @@ test("start waits for daemon status metadata before returning", async () => {
           app_log: "/app",
           stdout_log: "/out",
           stderr_log: "/err",
-        }),
-      );
-      return 44444;
-    },
-    startupPollIntervalMs: 5,
-    startupTimeoutMs: 200,
-    onStartupPoll: async () => {
-      checks += 1;
-      if (checks === 3) releaseStatus();
+        });
+      }
     },
   });
 

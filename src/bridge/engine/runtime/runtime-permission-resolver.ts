@@ -121,8 +121,8 @@ function readTextFromToolContent(content: unknown): string | undefined {
 }
 
 /**
- * Tool-kind inference, rebased on acpx 0.15.1 observable behavior
- * (live-checkpoint-sB7dFOYR.js): canonical-kind needle table with substring
+ * Tool-kind inference, rebased on acpx 0.16.0 observable behavior
+ * (live-checkpoint-BEfxBKCh.js): canonical-kind needle table with substring
  * match plus an "other" fallback. Previously a minimal read/search/think table
  * from the 0.13.1 era, which misclassified e.g. "Cat"/"Find"/"Grep" titles as
  * non-reads. This is black-box behavior parity, not a private-internals copy:

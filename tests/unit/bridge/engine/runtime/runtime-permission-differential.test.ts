@@ -4,11 +4,11 @@ import { RuntimePermissionResolver } from "../../../../../src/bridge/engine/runt
 import type { RuntimePermissionConfig, RuntimePermissionRequest } from "../../../../../src/bridge/engine/runtime/runtime-permission-resolver";
 
 /**
- * Pinned-reference differential — acpx@0.15.1 (frozen copy, not black-box CLI execution)
- * Source: node_modules/acpx/dist/live-checkpoint-sB7dFOYR.js (acpx 0.15.1)
+ * Pinned-reference differential — acpx@0.16.0 (frozen copy, not black-box CLI execution)
+ * Source: node_modules/acpx/dist/live-checkpoint-BEfxBKCh.js (acpx 0.16.0)
  * Helpers pinned: normalizeMatcher, permissionMatchTokens, findPolicyRule, matchPermissionPolicy, isAutoApprovedReadKind.
  * This file is a frozen oracle for resolver parity. A true black-box differential would drive the real CLI/MCP and is deferred to activation.
- * Rebased 0.13.1 → 0.15.1: upstream inferToolKind is now the full canonical-kind
+ * Rebased 0.13.1 → 0.15.1 → 0.16.0: upstream inferToolKind is now the full canonical-kind
  * needle table (read/cat, search/find/grep, edit/write/patch, delete/remove,
  * move/rename, execute/run/bash, fetch/http/url, think) with an "other" fallback,
  * replacing the minimal read/search/think substring table.
@@ -22,7 +22,7 @@ function req(text: string, kind?: string): RuntimePermissionRequest {
   } as unknown as RuntimePermissionRequest;
 }
 
-// Reference implementation — pinned frozen copy from acpx@0.15.1 live-checkpoint-sB7dFOYR.js
+// Reference implementation — pinned frozen copy from acpx@0.16.0 live-checkpoint-BEfxBKCh.js
 function normalizeMatcherRef(value: string): string {
   return value.trim().toLowerCase();
 }
@@ -128,10 +128,10 @@ function expectParity(cfg: RuntimePermissionConfig, r: RuntimePermissionRequest)
   expect(ours.outcome).toBe(theirs.outcome);
 }
 
-test("acpx@0.15.1 pinned version still 0.15.1", () => {
+test("acpx@0.16.0 pinned version still 0.16.0", () => {
   const pkg = JSON.parse(readFileSync("node_modules/acpx/package.json", "utf8"));
-  expect(pkg.version).toBe("0.15.1");
-  const dist = readFileSync("node_modules/acpx/dist/live-checkpoint-sB7dFOYR.js", "utf8");
+  expect(pkg.version).toBe("0.16.0");
+  const dist = readFileSync("node_modules/acpx/dist/live-checkpoint-BEfxBKCh.js", "utf8");
   expect(dist).toContain("function findPolicyRule");
   expect(dist).toContain("permissionMatchTokens");
 });
@@ -155,11 +155,11 @@ test("escalate", () => {
 
 test("token matching not glob: pattern read matches via kind token (upstream substring)", () => {
   const cfg = { generation: 0, permissionMode: "deny-all" as const, nonInteractivePermissions: "deny" as const, permissionPolicy: { autoApprove: ["read"] } };
-  // Upstream inferToolKind for "bread" yields "read" (head.includes("read")), so token set includes "read" and rule "read" matches — this is upstream 0.15.1 behavior
+  // Upstream inferToolKind for "bread" yields "read" (head.includes("read")), so token set includes "read" and rule "read" matches — this is upstream 0.15.1/0.16.0 behavior
   expect(resolver.resolve(cfg, req("bread"))).toEqual({ outcome: "allow_once" });
 });
 
-test("0.15.1 needle table: cat/find/grep infer read/search (approve-reads allows)", () => {
+test("0.16.0 needle table: cat/find/grep infer read/search (approve-reads allows)", () => {
   const cfg = { generation: 0, permissionMode: "approve-reads" as const, nonInteractivePermissions: "deny" as const, permissionPolicy: {} };
   for (const title of ["Cat config", "Find files", "Grep pattern"]) {
     expectParity(cfg, req(title));
@@ -167,7 +167,7 @@ test("0.15.1 needle table: cat/find/grep infer read/search (approve-reads allows
   }
 });
 
-test("0.15.1 needle table: bash/run infer execute (approve-reads rejects, execute rule matches)", () => {
+test("0.16.0 needle table: bash/run infer execute (approve-reads rejects, execute rule matches)", () => {
   const reads = { generation: 0, permissionMode: "approve-reads" as const, nonInteractivePermissions: "deny" as const, permissionPolicy: {} };
   expectParity(reads, req("Bash"));
   expect(resolver.resolve(reads, req("Bash"))).toEqual({ outcome: "reject_once" });
@@ -176,7 +176,7 @@ test("0.15.1 needle table: bash/run infer execute (approve-reads rejects, execut
   expect(resolver.resolve(execRule, req("Bash"))).toEqual({ outcome: "allow_once" });
 });
 
-test("0.15.1 needle table: unmatched title falls back to other", () => {
+test("0.16.0 needle table: unmatched title falls back to other", () => {
   const cfg = { generation: 0, permissionMode: "deny-all" as const, nonInteractivePermissions: "deny" as const, permissionPolicy: { autoApprove: ["other"] } };
   expectParity(cfg, req("Foobar"));
   expect(resolver.resolve(cfg, req("Foobar"))).toEqual({ outcome: "allow_once" });

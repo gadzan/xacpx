@@ -21,7 +21,7 @@ const codexAlias = deriveAgentAlias("codex", [
   "-y",
   "--registry=https://registry.npmjs.org",
   "--@agentclientprotocol:registry=https://registry.npmjs.org",
-  "@agentclientprotocol/codex-acp@1.10.0",
+  "@agentclientprotocol/codex-acp@1.12.0",
 ]);
 const codexEntry = {
   alias: codexAlias,
@@ -30,7 +30,7 @@ const codexEntry = {
     "-y",
     "--registry=https://registry.npmjs.org",
     "--@agentclientprotocol:registry=https://registry.npmjs.org",
-    "@agentclientprotocol/codex-acp@1.10.0",
+    "@agentclientprotocol/codex-acp@1.12.0",
   ],
 };
 
@@ -213,7 +213,7 @@ test("concurrent writers serialize and both aliases survive", async () => {
       "-y",
       "--registry=https://registry.npmjs.org",
       "--@agentclientprotocol:registry=https://registry.npmjs.org",
-      "@agentclientprotocol/claude-agent-acp@0.75.1",
+      "@agentclientprotocol/claude-agent-acp@0.78.0",
     ]);
     const otherEntry = {
       alias: otherAlias,
@@ -222,7 +222,7 @@ test("concurrent writers serialize and both aliases survive", async () => {
         "-y",
         "--registry=https://registry.npmjs.org",
         "--@agentclientprotocol:registry=https://registry.npmjs.org",
-        "@agentclientprotocol/claude-agent-acp@0.75.1",
+        "@agentclientprotocol/claude-agent-acp@0.78.0",
       ],
     };
     await Promise.all([

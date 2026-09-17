@@ -75,7 +75,7 @@ export interface TransportConfig {
    */
   turnIdleTimeoutSeconds?: number;
   /**
-   * Advanced acpx embedding-host ceilings (acpx 0.15.1, plan B5).
+   * Advanced acpx embedding-host ceilings (acpx 0.15.1+, plan B5).
    * `acpxMaxIncomingMessageBytes` overrides the 64 MiB default ceiling on
    * agent → acpx inbound ACP messages (`0` = unlimited — avoid unless a real
    * workload needs it); `acpxTerminalMaxOutputBytes` caps retained
