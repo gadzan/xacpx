@@ -1,9 +1,28 @@
 # Changelog
-## [Unreleased]
+## [0.24.6-beta.0] - 2026-09-17
 
-### Changed
+### Added
 
-- `acpx` pinned `0.15.1` → `0.16.0` (exact pin kept; local `patches/acpx@0.15.1.patch` removed — plan entries now arrive natively). Managed adapter pins refreshed (ACP initialize probe passes on both): Codex `1.10.0` → `1.12.0`, Claude `0.75.1` → `0.78.0`. Permission differential oracle rebased to the 0.16.0 bundle (`live-checkpoint-BEfxBKCh.js`; needle table verified identical). Recorded managed-adapter commands refresh to the new defaults automatically; crash-recovery reaping covers the previous-pin identities.
+- Direct conversation persistence (#346): `Direct` runs persist via SQLite outbox store with `Topic` isolation, crash recovery, and store idempotency/seq coverage.
+- acpx Runtime plan panel routing (#339): runtime `plan` entries render in the plan panel; wholly-unusable plan lists are treated as absence (not a clear); npm-pack release boundary harness with new `test:release-boundary` script.
+- `acpx` pinned `0.15.1` → `0.16.0` (exact pin kept; local `patches/acpx@0.15.1.patch` removed — plan entries now arrive natively). Managed adapter pins refreshed (ACP initialize probe passes on both): Codex `1.10.0` → `1.12.0`, Claude `0.75.1` → `0.78.0`. Permission differential oracle rebased to the 0.16.0 bundle; recorded managed-adapter commands refresh to the new defaults automatically; crash-recovery reaping covers the previous-pin identities.
+
+### Fixed
+
+- Direct conversation lifecycle (#346): claim, snapshot, ownership, seq, cancel, and teardown holes closed; Bot delete bound to durable work; identity/accept/TurnQueue kept on one path; prompt admission on the first microtask; `promptImmediate` cancelled before TurnQueue admission; recovery without human authority with bound cancel; physical teardown and dispatcher liveness; same-Topic wakes with strict physical release; release boundary driven through packed bridge with owned lifecycle (timers/RPC sealed).
+
+## [relay 0.14.8-beta.0] - 2026-09-17
+
+### Fixed
+
+- relay-web: dedup tool-card title echo in the detail drawer — drawer keeps only complementary info (diff body, output/preview, exit code, line range, search line count); headers truncate when collapsed and wrap on expand (#349).
+
+## [channel-relay 0.7.4-beta.0] - 2026-09-17
+
+### Fixed
+
+- `tool-presentation`: omit header-only details (read/execute/search/diff with no body render as non-interactive title-only rows); title resolver drops only the key that actually won the title, so conflicting `url` vs `uri` aliases stay visible (#349).
+
 ## [0.24.5] - 2026-09-15
 
 ### Added
