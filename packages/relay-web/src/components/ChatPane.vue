@@ -288,7 +288,7 @@ const hudStatus = computed(() => hudQuip.value || `${t("chat.mentionActivity.wor
                      class="stack-layer stack-layer--plan relative z-20 mx-2 pb-[var(--stack-overlap)] shadow-e1 sm:mx-3"
                      :class="{ 'stack-layer--pull': chat.busy }" />
           <QueueStrip v-if="showQueue" key="queue-layer"
-                      class="stack-layer stack-layer--queue relative z-[25] mx-2 pb-[var(--stack-overlap)] shadow-e1 rounded-lg sm:mx-3"
+                      class="stack-layer stack-layer--queue relative z-[25] mx-2 pb-[var(--stack-overlap)] shadow-e1 sm:mx-3"
                       :class="{ 'stack-layer--pull': chat.busy || showPlan }" />
           <div key="composer-layer" class="stack-layer stack-layer--composer relative z-30"
                :class="{ 'stack-layer--pull': chat.busy || showPlan || showQueue }">
