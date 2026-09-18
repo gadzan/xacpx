@@ -438,8 +438,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     activeMemberTurn.value = null;
     liveTurn.value = null;
     planEntries.value = [];
+    promptInFlight.value = false;
     promptError.value = null;
-
+    currentDraftRequestId.value = null;
+    lastPromptText.value = "";
     // Load bot detail in background
     void loadBotDetail(targetInstanceId, botId).catch(() => {});
 
@@ -482,8 +484,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     activeMemberTurn.value = null;
     liveTurn.value = null;
     planEntries.value = [];
+    promptInFlight.value = false;
     promptError.value = null;
-
+    currentDraftRequestId.value = null;
+    lastPromptText.value = "";
     if (instanceId.value && activeConversationId.value) {
       await loadHistory(instanceId.value, activeConversationId.value, topicId);
       if (generation !== currentSelectionGeneration || activeTopicId.value !== topicId) {
@@ -534,6 +538,17 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       promptError.value = "Bot is disabled. Enable it before sending messages.";
       return;
     }
+    const targetInstId = instanceId.value;
+    const targetBotId = selectedBotId.value;
+    const targetConvId = activeConversationId.value;
+    const targetTopicId = activeTopicId.value;
+    const generation = currentSelectionGeneration;
+    const isCurrent = (): boolean =>
+      generation === currentSelectionGeneration &&
+      instanceId.value === targetInstId &&
+      selectedBotId.value === targetBotId &&
+      activeConversationId.value === targetConvId &&
+      activeTopicId.value === targetTopicId;
 
     const reqId = preparePromptRequestId(trimmed);
     promptInFlight.value = true;
@@ -541,14 +556,19 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
     try {
       const res = unwrapRpc(
-        await api.rpc<ConversationPromptResponseDto>(instanceId.value, MSG.conversationPrompt, {
-          conversationId: activeConversationId.value,
-          topicId: activeTopicId.value,
+        await api.rpc<ConversationPromptResponseDto>(targetInstId, MSG.conversationPrompt, {
+          conversationId: targetConvId,
+          topicId: targetTopicId,
           requestId: reqId,
           text: trimmed,
-          target: { botId: selectedBotId.value },
+          target: { botId: targetBotId },
         }),
       );
+
+      // Only project into UI if view context is still current
+      if (!isCurrent()) {
+        return;
+      }
 
       // On successful acceptance, reset current draft requestId so subsequent prompt gets a new id
       currentDraftRequestId.value = null;
@@ -571,45 +591,65 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       };
       planEntries.value = [];
     } catch (err: unknown) {
-      promptError.value = err instanceof Error ? err.message : String(err);
+      if (isCurrent()) {
+        promptError.value = err instanceof Error ? err.message : String(err);
+      }
       // Retain currentDraftRequestId so a retry uses the exact same requestId
     } finally {
-      promptInFlight.value = false;
+      if (isCurrent()) {
+        promptInFlight.value = false;
+      }
     }
   }
 
   // Exact Run cancellation via runId
   async function cancelCurrentRun(): Promise<void> {
     if (!instanceId.value || !activeRun.value) return;
+    const targetInstId = instanceId.value;
+    const targetConvId = activeConversationId.value;
+    const targetTopicId = activeTopicId.value;
     const runId = activeRun.value.id;
+    const generation = currentSelectionGeneration;
+    const isCurrent = (): boolean =>
+      generation === currentSelectionGeneration &&
+      instanceId.value === targetInstId &&
+      activeConversationId.value === targetConvId &&
+      activeTopicId.value === targetTopicId &&
+      activeRun.value?.id === runId;
+
     cancellingRunId.value = runId;
 
     try {
       const res = unwrapRpc(
         await api.rpc<{ ok: boolean; run: ConversationRunDetailDto }>(
-          instanceId.value,
+          targetInstId,
           MSG.runsCancel,
           { runId },
         ),
       );
+      if (!isCurrent()) {
+        return;
+      }
       activeRun.value = res.run;
       if (res.run.state === "cancelled" || res.run.state === "indeterminate" || res.run.state === "completed") {
         liveTurn.value = null;
-        if (instanceId.value && activeConversationId.value && activeTopicId.value) {
-          void loadHistory(instanceId.value, activeConversationId.value, activeTopicId.value);
+        if (targetInstId && targetConvId && targetTopicId) {
+          void loadHistory(targetInstId, targetConvId, targetTopicId);
         }
       }
     } catch (err: unknown) {
       console.warn("cancelCurrentRun error:", err);
       // If error indicates indeterminate or timeout, mark indeterminate
-      if (activeRun.value && activeRun.value.id === runId) {
+      if (isCurrent() && activeRun.value && activeRun.value.id === runId) {
         activeRun.value = {
           ...activeRun.value,
           state: "indeterminate",
         };
       }
     } finally {
-      cancellingRunId.value = null;
+      if (isCurrent()) {
+        cancellingRunId.value = null;
+      }
     }
   }
 
