@@ -1676,8 +1676,8 @@ test("conversation history direction and topic runs list dispatch with product I
       history.push(input);
       return { conversationId: "conversation_1", topicId: "topic_1", messages: [], hasMoreBefore: false, hasMoreAfter: false };
     },
-    listTopicRuns: (conversationId: string, topicId: string) => ({
-      runs: [{ id: "run_tail", conversationId, topicId, requestMessageId: "cmsg", requestId: "req", mode: "explicit", state: "completed", profileRevision: 1, createdAt: "t" }],
+    listTopicRuns: (conversationId: string, topicId: string, limit?: number) => ({
+      runs: [{ id: "run_tail", conversationId, topicId, requestMessageId: "cmsg", requestId: "req", mode: "explicit", state: "completed", profileRevision: 1, createdAt: "t", ...(limit === 1 ? { limited: true } : {}) }],
       activeRunId: "run_tail",
     }),
   });
@@ -1703,6 +1703,16 @@ test("conversation history direction and topic runs list dispatch with product I
     conversationId: "conversation_1",
     topicId: "other",
   }))).toMatchObject({ runs: [{ id: "run_tail" }] });
+  expect(await dispatch(bridge, req(MSG.runsList, {
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    limit: 1,
+  }))).toMatchObject({ runs: [{ id: "run_tail" }] });
+  expect(await dispatch(bridge, req(MSG.runsList, {
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    limit: "many",
+  }))).toMatchObject({ error: { code: "invalid-payload" } });
 });
 
 test("conversation.prompt with Hub-stamped ingress uses trusted accept, not public promptConversation", async () => {

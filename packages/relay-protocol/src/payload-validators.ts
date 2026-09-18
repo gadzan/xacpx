@@ -435,7 +435,8 @@ const validateRunsGet: Validator<RunsGetPayload> = (p) => {
 };
 const validateRunsList: Validator<RunsListPayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.conversationId) && isStr(o.topicId) ? (o as unknown as RunsListPayload) : null;
+  return o && isStr(o.conversationId) && isStr(o.topicId) && optNum(o.limit)
+    ? (o as unknown as RunsListPayload) : null;
 };
 const validateRunsCancel: Validator<RunsCancelPayload> = (p) => {
   const o = fields(p);

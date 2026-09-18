@@ -325,12 +325,21 @@ export class ConversationRunService {
     };
   }
 
-  listTopicRuns(conversationId: string, topicId: string): { runs: ConversationRun[]; activeRunId?: string } {
+  listTopicRuns(conversationId: string, topicId: string, options?: { limit?: number }): { runs: ConversationRun[]; activeRunId?: string } {
     this.assertOpen();
     this.requireConversation(conversationId);
-    const runs = this.store.listRuns(conversationId, topicId);
-    const active = [...runs].reverse().find((run) => run.state === "queued" || run.state === "running" || run.state === "waiting-human");
-    return { runs, ...(active ? { activeRunId: active.id } : {}) };
+    const limit = options?.limit ?? 50;
+    const all = this.store.listRuns(conversationId, topicId);
+    // Exactly one Run executes per Topic: a running/waiting-human Run owns the
+    // Topic and later accepts stay queued in durable seq order. Select from the
+    // full durable set so a bounded page cannot hide the true owner; the page
+    // itself stays the newest slice for transport bounding.
+    const executing = all.find((run) => run.state === "running" || run.state === "waiting-human");
+    const nextQueued = all.find((run) => run.state === "queued");
+    const active = executing ?? nextQueued;
+    const runs = all.slice(-limit);
+    const activeInPage = active && runs.some((run) => run.id === active.id) ? active : undefined;
+    return { runs, ...(activeInPage ? { activeRunId: activeInPage.id } : {}) };
   }
 
   async createDirectTopic(botId: string, title: string): Promise<ConversationTopic> {

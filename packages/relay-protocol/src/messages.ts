@@ -507,6 +507,7 @@ export interface RunsGetResult {
 export interface RunsListPayload {
   conversationId: string;
   topicId: string;
+  limit?: number;
 }
 export interface RunsListResult {
   conversationId: string;

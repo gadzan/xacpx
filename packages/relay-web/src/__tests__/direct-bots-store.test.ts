@@ -426,6 +426,56 @@ describe("useDirectBotsStore", () => {
       expect(store.promptError).toContain("already in progress");
     });
 
+    it("recovers the durable Run past a stale terminal activeRun (lost accept response)", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.activeRun = {
+        id: "run_old",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_old",
+        requestId: "req_old",
+        mode: "explicit",
+        state: "completed",
+        profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z",
+      };
+      const durableRun: ConversationRunDto = {
+        id: "run_new",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_new",
+        requestId: "req_new",
+        mode: "explicit",
+        state: "queued",
+        profileRevision: 1,
+        createdAt: "2026-09-18T00:01:00.000Z",
+      };
+      mockRpc.mockImplementation((instanceId: string, type: string) => {
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: [],
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({ conversationId: "conv_1", topicId: "top_1", runs: [durableRun], activeRunId: "run_new" });
+        }
+        if (type === "control.runs.get") {
+          return Promise.resolve({ run: { ...durableRun, memberTurns: [] } });
+        }
+        return Promise.reject(new Error(`unexpected rpc ${type}`));
+      });
+      await store.loadHistory("inst_1", "conv_1", "top_1");
+      expect(store.activeRun?.id).toBe("run_new");
+      expect(store.isRunActive).toBe(true);
+    });
+
     it("loads history sorted by seq and deduplicates messages", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
@@ -472,6 +522,69 @@ describe("useDirectBotsStore", () => {
       expect(store.messages.map((m) => m.seq)).toEqual([1, 2]);
       expect(store.oldestSeq).toBe(1);
       expect(store.newestSeq).toBe(2);
+      expect(store.hasMoreBefore).toBe(true);
+    });
+
+    it("drops a stale same-view history page when a newer reload started", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      let resolveFirst!: (value: unknown) => void;
+      const firstGate = new Promise<unknown>((resolve) => { resolveFirst = resolve; });
+      let calls = 0;
+      mockRpc.mockImplementation((instanceId: string, type: string) => {
+        if (type === "control.conversation.history") {
+          calls += 1;
+          if (calls === 1) return firstGate;
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: [
+              { id: "msg_new", conversationId: "conv_1", topicId: "top_1", seq: 9, role: "human", content: "new", createdAt: "now" },
+            ],
+            oldestSeq: 9,
+            newestSeq: 9,
+            hasMoreBefore: true,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({ conversationId: "conv_1", topicId: "top_1", runs: [] });
+        }
+        return Promise.reject(new Error(`unexpected rpc ${type}`));
+      });
+      const stale = store.loadHistory("inst_1", "conv_1", "top_1");
+      // A live message lands while the first page is in flight.
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "conversation-message",
+          message: { id: "msg_live", conversationId: "conv_1", topicId: "top_1", seq: 10, role: "human", content: "live", createdAt: "now" },
+        },
+      } as never);
+      // A second reload starts (convergent retry); the stale first page must lose.
+      void store.loadHistory("inst_1", "conv_1", "top_1");
+      resolveFirst({
+        conversationId: "conv_1",
+        topicId: "top_1",
+        messages: [
+          { id: "msg_stale", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "stale", createdAt: "now" },
+        ],
+        oldestSeq: 1,
+        newestSeq: 1,
+        hasMoreBefore: false,
+        hasMoreAfter: false,
+      });
+      await stale;
+      await flushPromises();
+      await flushPromises();
+      // The stale seq-1 page never clobbers the newer transcript. The live
+      // seq-10 row arrived while the first page was in flight, so the first
+      // request convergently retries; a later authoritative page re-merges it.
+      // Here the retry's seq-9 page wins over the stale seq-1 page.
+      expect(store.messages.map((m) => m.seq)).toEqual([9]);
       expect(store.hasMoreBefore).toBe(true);
     });
 
@@ -1100,6 +1213,70 @@ describe("useDirectBotsStore", () => {
   });
 
   describe("Streaming and Turn Events correlation", () => {
+    it("ignores member-turn-finished for a stale Run instead of stealing the active Run", () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.activeRun = {
+        id: "run_B",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_B",
+        requestId: "req_B",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      store.activeMemberTurn = {
+        id: "turn_B",
+        runId: "run_B",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        botId: "bot_1",
+        batch: 1,
+        attempt: 1,
+        origin: "human",
+        state: "running",
+        createdAt: "now",
+      };
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "member-turn-finished",
+          run: {
+            id: "run_A",
+            conversationId: "conv_1",
+            topicId: "top_1",
+            requestMessageId: "msg_A",
+            requestId: "req_A",
+            mode: "explicit",
+            state: "completed",
+            profileRevision: 1,
+            createdAt: "now",
+          },
+          memberTurn: {
+            id: "turn_A",
+            runId: "run_A",
+            conversationId: "conv_1",
+            topicId: "top_1",
+            botId: "bot_1",
+            batch: 1,
+            attempt: 1,
+            origin: "human",
+            state: "completed",
+            createdAt: "now",
+          },
+        },
+      } as never);
+      expect(store.activeRun?.id).toBe("run_B");
+      expect(store.activeRun?.state).toBe("running");
+      expect(store.activeMemberTurn?.id).toBe("turn_B");
+      expect(store.liveTurn).toBeNull();
+    });
+
     it("accumulates live output, thought, tool-step, and plan strictly matching conversation correlation", () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
@@ -1242,6 +1419,41 @@ describe("useDirectBotsStore", () => {
   });
 
   describe("Run Cancellation", () => {
+    it("ignores a second concurrent cancel dispatch while the first is in flight", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.activeRun = {
+        id: "run_target",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_1",
+        requestId: "req_1",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z",
+      };
+      let cancelCalls = 0;
+      let resolveCancel!: (value: unknown) => void;
+      const cancelGate = new Promise<unknown>((resolve) => { resolveCancel = resolve; });
+      mockRpc.mockImplementation((instanceId: string, type: string) => {
+        if (type === "control.runs.cancel") {
+          cancelCalls += 1;
+          return cancelGate;
+        }
+        return Promise.resolve({});
+      });
+      const first = store.cancelCurrentRun();
+      await flushPromises();
+      await store.cancelCurrentRun();
+      expect(cancelCalls).toBe(1);
+      resolveCancel({ ok: true, run: { ...store.activeRun, state: "cancelled", memberTurns: [] } });
+      await first;
+      expect(store.activeRun?.state).toBe("cancelled");
+    });
+
     it("cancels run with exact runId and updates state", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
