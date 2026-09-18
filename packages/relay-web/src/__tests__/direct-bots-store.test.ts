@@ -473,7 +473,6 @@ describe("useDirectBotsStore", () => {
       expect(store.activeRun?.state).toBe("running");
       expect(store.liveTurn).toBeTruthy();
     });
-
     it("refuses to send prompt when bot is disabled", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
@@ -494,6 +493,68 @@ describe("useDirectBotsStore", () => {
       await store.sendPrompt("Hello");
       expect(mockRpc).not.toHaveBeenCalled();
       expect(store.promptError).toContain("Bot is disabled");
+    });
+
+    it("does not pollute switched Bot/Topic when in-flight sendPrompt resolves late", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_A";
+      store.activeConversationId = "conv_A";
+      store.activeTopicId = "top_A";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_A", name: "Bot A", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        { id: "bot_B", name: "Bot B", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+
+      const { promise: promptPromise, resolve: resolvePrompt } = Promise.withResolvers<unknown>();
+      mockRpc.mockImplementation((instId: string, type: string, payload: unknown) => {
+        if (type === "control.conversation.prompt") return promptPromise;
+        if (type === "control.conversations.list") {
+          return Promise.resolve({ conversations: [{ id: "conv_B", botId: "bot_B", defaultTopicId: "top_B" }] });
+        }
+        if (type === "control.topics.list") {
+          return Promise.resolve({ topics: [{ id: "top_B", conversationId: "conv_B", title: "Topic B" }] });
+        }
+        if (type === "control.conversation.history") {
+          return Promise.resolve({ conversationId: "c", topicId: "t", messages: [], hasMoreBefore: false, hasMoreAfter: false });
+        }
+        return Promise.resolve({});
+      });
+
+      // 1. Bot A sends prompt (in flight)
+      const sendPromise = store.sendPrompt("Prompt for Bot A");
+
+      // 2. User switches to Bot B
+      await store.selectBot("inst_1", "bot_B");
+      expect(store.selectedBotId).toBe("bot_B");
+      expect(store.promptInFlight).toBe(false);
+
+      // User starts typing on Bot B and mints a draft request ID for Bot B
+      store.preparePromptRequestId("Prompt for Bot B");
+      const botBReqId = store.currentDraftRequestId;
+      expect(botBReqId).toBeTruthy();
+
+      // 3. Bot A prompt RPC resolves late
+      resolvePrompt({
+        reused: false,
+        conversationId: "conv_A",
+        topicId: "top_A",
+        requestId: "req_A",
+        message: { id: "msg_A", conversationId: "conv_A", topicId: "top_A", seq: 1, role: "human", content: "Prompt for Bot A", createdAt: "now" },
+        run: { id: "run_A", conversationId: "conv_A", topicId: "top_A", requestMessageId: "msg_A", requestId: "req_A", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" },
+        memberTurn: { id: "turn_A", runId: "run_A", conversationId: "conv_A", topicId: "top_A", botId: "bot_A", batch: 1, attempt: 1, origin: "human", state: "running", createdAt: "now" },
+      });
+      await sendPromise;
+      await flushPromises();
+
+      // Bot B must NOT be polluted!
+      expect(store.selectedBotId).toBe("bot_B");
+      expect(store.activeConversationId).toBe("conv_B");
+      expect(store.activeTopicId).toBe("top_B");
+      expect(store.messages).toEqual([]); // Bot A message not added to Bot B!
+      expect(store.activeRun).toBeNull(); // Bot A run not added to Bot B!
+      expect(store.liveTurn).toBeNull();
+      expect(store.currentDraftRequestId).toBe(botBReqId); // Bot B's draft request ID preserved!
     });
   });
 
@@ -706,6 +767,73 @@ describe("useDirectBotsStore", () => {
 
       await store.cancelCurrentRun();
       expect(store.activeRun?.state).toBe("indeterminate");
+    });
+    it("does not overwrite activeRun when stale cancelCurrentRun resolves after user switched bot and started a new run", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.activeRun = {
+        id: "run_old",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "m1",
+        requestId: "r1",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+
+      const { promise: cancelPromise, resolve: resolveCancel } = Promise.withResolvers<unknown>();
+      mockRpc.mockImplementation((instId: string, type: string, payload: unknown) => {
+        if (type === "control.runs.cancel") return cancelPromise;
+        if (type === "control.conversations.list") {
+          return Promise.resolve({ conversations: [{ id: "conv_2", botId: "bot_2", defaultTopicId: "top_2" }] });
+        }
+        if (type === "control.topics.list") {
+          return Promise.resolve({ topics: [{ id: "top_2", conversationId: "conv_2", title: "Topic 2" }] });
+        }
+        if (type === "control.conversation.history") {
+          return Promise.resolve({ conversationId: "c", topicId: "t", messages: [], hasMoreBefore: false, hasMoreAfter: false });
+        }
+        return Promise.resolve({});
+      });
+
+      // 1. Cancel run_old
+      const cancelCall = store.cancelCurrentRun();
+
+      // 2. User switches to Bot 2 and starts run_new
+      await store.selectBot("inst_1", "bot_2");
+      store.activeRun = {
+        id: "run_new",
+        conversationId: "conv_2",
+        topicId: "top_2",
+        requestMessageId: "m2",
+        requestId: "r2",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+
+      // 3. Stale cancel for run_old resolves
+      resolveCancel({
+        ok: true,
+        run: {
+          id: "run_old",
+          conversationId: "conv_1",
+          topicId: "top_1",
+          state: "cancelled",
+        },
+      });
+      await cancelCall;
+      await flushPromises();
+
+      // run_new must remain untouched!
+      expect(store.activeRun?.id).toBe("run_new");
+      expect(store.activeRun?.state).toBe("running");
     });
   });
 
