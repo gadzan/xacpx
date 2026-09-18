@@ -699,6 +699,163 @@ describe("useDirectBotsStore", () => {
       expect(store.liveTurn?.parts[1]).toEqual({ type: "text", text: "Early text" });
       expect(store.runParts["run_stream"]).toHaveLength(2);
     });
+    it("does not regress running or completed Run state when delayed fresh queued RPC response arrives", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+
+      const { promise: promptPromise, resolve: resolvePrompt } = Promise.withResolvers<unknown>();
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversation.prompt") return promptPromise;
+        return Promise.resolve({});
+      });
+
+      const sendCall = store.sendPrompt("Test prompt");
+
+      // Before prompt RPC resolves, WebSocket events advance the run to running
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "conversation-run-changed",
+          run: {
+            id: "run_1",
+            conversationId: "conv_1",
+            topicId: "top_1",
+            requestMessageId: "m1",
+            requestId: "r1",
+            mode: "explicit",
+            state: "running",
+            profileRevision: 1,
+            createdAt: "now",
+          },
+        } as never,
+      });
+
+      expect(store.activeRun?.state).toBe("running");
+
+      // Then delayed prompt RPC returns initial "queued" state
+      resolvePrompt({
+        reused: false,
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestId: store.currentDraftRequestId!,
+        message: { id: "m1", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "Test prompt", createdAt: "now" },
+        run: { id: "run_1", conversationId: "conv_1", topicId: "top_1", requestMessageId: "m1", requestId: "r1", mode: "explicit", state: "queued", profileRevision: 1, createdAt: "now" },
+        memberTurn: { id: "turn_1", runId: "run_1", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "queued", createdAt: "now" },
+      });
+      await sendCall;
+      await flushPromises();
+
+      // Active run state MUST NOT regress to "queued"!
+      expect(store.activeRun?.state).toBe("running");
+      expect(store.isRunActive).toBe(true);
+    });
+
+    it("directly converges to terminal state and loads history when prompt RPC returns reused completed run", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversation.prompt") {
+          return Promise.resolve({
+            reused: true,
+            conversationId: "conv_1",
+            topicId: "top_1",
+            requestId: "req_retry",
+            message: { id: "m1", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "Retry prompt", createdAt: "now" },
+            run: { id: "run_finished", conversationId: "conv_1", topicId: "top_1", requestMessageId: "m1", requestId: "req_retry", mode: "explicit", state: "completed", profileRevision: 1, createdAt: "now" },
+            memberTurn: { id: "turn_1", runId: "run_finished", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "completed", createdAt: "now" },
+          });
+        }
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: [
+              { id: "m1", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "Retry prompt", createdAt: "now" },
+              { id: "m2", conversationId: "conv_1", topicId: "top_1", seq: 2, role: "bot", content: "Already answered", createdAt: "now" },
+            ],
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      store.currentDraftRequestId = "req_retry";
+      await store.sendPrompt("Retry prompt");
+      await flushPromises();
+
+      // Must be terminal completed, no liveTurn spinner, and history loaded
+      expect(store.activeRun?.state).toBe("completed");
+      expect(store.isRunActive).toBe(false);
+      expect(store.liveTurn).toBeNull();
+      expect(store.messages).toHaveLength(2);
+      expect(store.messages[1]?.content).toBe("Already answered");
+    });
+
+    it("preserves pre-arrived plan entries when prompt RPC resolves", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+
+      const { promise: promptPromise, resolve: resolvePrompt } = Promise.withResolvers<unknown>();
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversation.prompt") return promptPromise;
+        return Promise.resolve({});
+      });
+
+      const sendCall = store.sendPrompt("Plan prompt");
+
+      // Plan event arrives over WebSocket before prompt RPC resolves
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "plan",
+          chatKey: "rk",
+          sessionAlias: "brt_1",
+          entries: [{ content: "Step 1: Check repo", priority: "high", status: "in_progress" }],
+          conversation: { conversationId: "conv_1", topicId: "top_1", botId: "bot_1", runId: "run_plan", memberTurnId: "m1" },
+        } as never,
+      });
+
+      expect(store.planEntries).toHaveLength(1);
+
+      // Prompt RPC resolves
+      resolvePrompt({
+        reused: false,
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestId: store.currentDraftRequestId!,
+        message: { id: "m1", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "Plan prompt", createdAt: "now" },
+        run: { id: "run_plan", conversationId: "conv_1", topicId: "top_1", requestMessageId: "m1", requestId: "r", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" },
+        memberTurn: { id: "m1", runId: "run_plan", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "running", createdAt: "now" },
+      });
+      await sendCall;
+      await flushPromises();
+
+      // Pre-arrived plan entries MUST be preserved!
+      expect(store.planEntries).toHaveLength(1);
+      expect(store.planEntries[0]?.content).toBe("Step 1: Check repo");
+    });
   });
 
   describe("Streaming and Turn Events correlation", () => {
@@ -1234,6 +1391,85 @@ describe("useDirectBotsStore", () => {
       // Stale runs.get response MUST NOT overwrite run_new!
       expect(store.activeRun?.id).toBe("run_new");
       expect(store.activeRun?.state).toBe("running");
+    });
+    it("does not regress completed Run state when stale runs.get active response arrives after terminal event", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.activeRun = {
+        id: "run_1",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "m1",
+        requestId: "r1",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+
+      const { promise: runsGetPromise, resolve: resolveRunsGet } = Promise.withResolvers<unknown>();
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.runs.get") return runsGetPromise;
+        if (type === "control.conversation.history") return Promise.resolve({ conversationId: "conv_1", topicId: "top_1", messages: [] });
+        return Promise.resolve({});
+      });
+
+      // Snapshot triggers runs.get for run_1
+      store.applyEvent({
+        kind: "state-snapshot",
+        instanceId: "inst_1",
+        turns: [],
+        usage: [],
+        commands: [],
+      });
+
+      // While runs.get is in flight, WebSocket receives conversation-run-changed(completed)
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "conversation-run-changed",
+          run: {
+            id: "run_1",
+            conversationId: "conv_1",
+            topicId: "top_1",
+            requestMessageId: "m1",
+            requestId: "r1",
+            mode: "explicit",
+            state: "completed",
+            profileRevision: 1,
+            createdAt: "now",
+          },
+        } as never,
+      });
+
+      expect(store.activeRun?.state).toBe("completed");
+      expect(store.isRunActive).toBe(false);
+
+      // Now the stale runs.get resolves returning "running"
+      resolveRunsGet({
+        run: {
+          id: "run_1",
+          conversationId: "conv_1",
+          topicId: "top_1",
+          requestMessageId: "m1",
+          requestId: "r1",
+          mode: "explicit",
+          state: "running",
+          profileRevision: 1,
+          createdAt: "now",
+          memberTurns: [],
+        },
+      });
+      await runsGetPromise;
+      await flushPromises();
+
+      // The completed run MUST NOT be regressed back to running!
+      expect(store.activeRun?.state).toBe("completed");
+      expect(store.isRunActive).toBe(false);
+      expect(store.liveTurn).toBeNull();
     });
   });
 

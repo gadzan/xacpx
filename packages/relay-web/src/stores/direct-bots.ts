@@ -66,6 +66,74 @@ function upsertTool(parts: TurnPartDto[], step: ToolStepDto): void {
 function mintRequestId(): string {
   return `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
 }
+const RUN_STATE_PRECEDENCE: Record<ConversationRunStateDto, number> = {
+  queued: 1,
+  "waiting-human": 2,
+  running: 2,
+  completed: 3,
+  failed: 3,
+  cancelled: 3,
+  indeterminate: 3,
+};
+
+function isTerminalRunState(state: ConversationRunStateDto | undefined): boolean {
+  return state === "completed" || state === "failed" || state === "cancelled" || state === "indeterminate";
+}
+
+function shouldUpdateRunState(current: ConversationRunStateDto | undefined, incoming: ConversationRunStateDto): boolean {
+  if (!current) return true;
+  if (isTerminalRunState(current)) return false;
+  return RUN_STATE_PRECEDENCE[incoming] >= RUN_STATE_PRECEDENCE[current];
+}
+
+function mergeRun(current: ConversationRunDto | null, incoming: ConversationRunDto): ConversationRunDto {
+  if (!current || current.id !== incoming.id) {
+    return incoming;
+  }
+  if (!shouldUpdateRunState(current.state, incoming.state)) {
+    return {
+      ...incoming,
+      state: current.state,
+      completionReason: current.completionReason ?? incoming.completionReason,
+      startedAt: current.startedAt ?? incoming.startedAt,
+      finishedAt: current.finishedAt ?? incoming.finishedAt,
+    };
+  }
+  return incoming;
+}
+
+const MEMBER_TURN_STATE_PRECEDENCE: Record<MemberTurnSummaryDto["state"], number> = {
+  queued: 1,
+  dispatched: 1,
+  running: 2,
+  completed: 3,
+  failed: 3,
+  cancelled: 3,
+  indeterminate: 3,
+};
+
+function shouldUpdateMemberTurnState(current: MemberTurnSummaryDto["state"] | undefined, incoming: MemberTurnSummaryDto["state"]): boolean {
+  if (!current) return true;
+  const isCurrentTerminal = current === "completed" || current === "failed" || current === "cancelled" || current === "indeterminate";
+  if (isCurrentTerminal) return false;
+  return MEMBER_TURN_STATE_PRECEDENCE[incoming] >= MEMBER_TURN_STATE_PRECEDENCE[current];
+}
+
+function mergeMemberTurn(current: MemberTurnSummaryDto | null, incoming: MemberTurnSummaryDto): MemberTurnSummaryDto {
+  if (!current || current.id !== incoming.id) {
+    return incoming;
+  }
+  if (!shouldUpdateMemberTurnState(current.state, incoming.state)) {
+    return {
+      ...incoming,
+      state: current.state,
+      startedAt: current.startedAt ?? incoming.startedAt,
+      finishedAt: current.finishedAt ?? incoming.finishedAt,
+    };
+  }
+  return incoming;
+}
+
 
 const PERSISTED_BOT_SELECTION_KEY = "xrelay.selectedBot";
 
@@ -595,28 +663,41 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         newestSeq.value = Math.max(newestSeq.value ?? 0, res.message.seq);
       }
 
-      // Track active run and member turn
-      activeRun.value = res.run;
-      activeMemberTurn.value = res.memberTurn;
-      const existingParts = liveTurn.value?.parts.length
-        ? liveTurn.value.parts
-        : runParts.value[res.run.id]?.length
-          ? runParts.value[res.run.id]
-          : [];
-      liveTurn.value = {
-        parts: existingParts,
-        status: liveTurn.value?.status ?? "working",
-        startedAt: res.memberTurn.startedAt
-          ? new Date(res.memberTurn.startedAt).getTime()
-          : (liveTurn.value?.startedAt ?? Date.now()),
-      };
-      if (existingParts.length && !runParts.value[res.run.id]) {
-        runParts.value = {
-          ...runParts.value,
-          [res.run.id]: [...existingParts],
+      // Track active run and member turn without regressing already-advanced state
+      const priorRunId = activeRun.value?.id;
+      activeRun.value = mergeRun(activeRun.value, res.run);
+      activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, res.memberTurn);
+
+      if (isTerminalRunState(activeRun.value.state)) {
+        liveTurn.value = null;
+        if (targetInstId && targetConvId && targetTopicId) {
+          void loadHistory(targetInstId, targetConvId, targetTopicId);
+        }
+      } else {
+        const existingParts = liveTurn.value?.parts.length
+          ? liveTurn.value.parts
+          : runParts.value[res.run.id]?.length
+            ? runParts.value[res.run.id]
+            : [];
+        liveTurn.value = {
+          parts: existingParts,
+          status: liveTurn.value?.status ?? "working",
+          startedAt: res.memberTurn.startedAt
+            ? new Date(res.memberTurn.startedAt).getTime()
+            : (liveTurn.value?.startedAt ?? Date.now()),
         };
+        if (existingParts.length && !runParts.value[res.run.id]) {
+          runParts.value = {
+            ...runParts.value,
+            [res.run.id]: [...existingParts],
+          };
+        }
       }
-      planEntries.value = [];
+
+      // Only clear plan entries if switching to a new run with no pre-existing plan
+      if (priorRunId !== res.run.id && (!planEntries.value || planEntries.value.length === 0)) {
+        planEntries.value = [];
+      }
     } catch (err: unknown) {
       if (isCurrent()) {
         promptError.value = err instanceof Error ? err.message : String(err);
@@ -657,8 +738,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       if (!isCurrent()) {
         return;
       }
-      activeRun.value = res.run;
-      if (res.run.state === "cancelled" || res.run.state === "indeterminate" || res.run.state === "completed") {
+      activeRun.value = mergeRun(activeRun.value, res.run);
+      if (isTerminalRunState(activeRun.value.state)) {
         liveTurn.value = null;
         if (targetInstId && targetConvId && targetTopicId) {
           void loadHistory(targetInstId, targetConvId, targetTopicId);
@@ -726,11 +807,18 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           ) {
             return;
           }
-          activeRun.value = res.run;
-          if (res.run.state !== "running" && res.run.state !== "queued" && res.run.state !== "waiting-human") {
+          const incomingRun = res.run;
+          activeRun.value = mergeRun(activeRun.value, incomingRun);
+          if (incomingRun.memberTurns?.length) {
+            const latestMember = incomingRun.memberTurns[incomingRun.memberTurns.length - 1];
+            if (latestMember) {
+              activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, latestMember);
+            }
+          }
+          if (isTerminalRunState(activeRun.value.state)) {
             liveTurn.value = null;
-            if (activeConversationId.value && activeTopicId.value) {
-              await loadHistory(iId, activeConversationId.value, activeTopicId.value);
+            if (cId && tId) {
+              await loadHistory(iId, cId, tId);
             }
           }
         } catch {
@@ -817,11 +905,14 @@ export const useDirectBotsStore = defineStore("directBots", () => {
                   return;
                 }
                 const run = unwrapRpc(res).run;
-                activeRun.value = run;
+                activeRun.value = mergeRun(activeRun.value, run);
                 if (run.memberTurns?.length) {
-                  activeMemberTurn.value = run.memberTurns[run.memberTurns.length - 1] ?? null;
+                  const latestMember = run.memberTurns[run.memberTurns.length - 1];
+                  if (latestMember) {
+                    activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, latestMember);
+                  }
                 }
-                if (run.state !== "running" && run.state !== "queued" && run.state !== "waiting-human") {
+                if (isTerminalRunState(activeRun.value.state)) {
                   liveTurn.value = null;
                   if (targetConvId && targetTopicId) {
                     void loadHistory(targetInstId, targetConvId, targetTopicId);
@@ -855,7 +946,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
                 return;
               }
               const run = unwrapRpc(res).run;
-              activeRun.value = run;
+              activeRun.value = mergeRun(activeRun.value, run);
+              if (isTerminalRunState(activeRun.value.state)) {
+                liveTurn.value = null;
+              }
             })
             .catch(() => {});
         }
@@ -918,8 +1012,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       const run = e.run;
       if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
         if (!activeRun.value || activeRun.value.id === run.id) {
-          activeRun.value = run;
-          if (run.state === "completed" || run.state === "failed" || run.state === "cancelled" || run.state === "indeterminate") {
+          activeRun.value = mergeRun(activeRun.value, run);
+          if (isTerminalRunState(activeRun.value.state)) {
             liveTurn.value = null;
             if (instanceId.value && activeConversationId.value && activeTopicId.value) {
               void loadHistory(instanceId.value, activeConversationId.value, activeTopicId.value);
@@ -933,8 +1027,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     if (e.type === "member-turn-started") {
       const { run, memberTurn } = e;
       if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
-        activeRun.value = run;
-        activeMemberTurn.value = memberTurn;
+        activeRun.value = mergeRun(activeRun.value, run);
+        activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, memberTurn);
         if (!liveTurn.value || activeRun.value?.id === run.id) {
           liveTurn.value = {
             parts: [],
@@ -949,9 +1043,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     if (e.type === "member-turn-finished") {
       const { run, memberTurn } = e;
       if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
-        activeRun.value = run;
-        activeMemberTurn.value = memberTurn;
-        if (run.state !== "running" && run.state !== "queued" && run.state !== "waiting-human") {
+        activeRun.value = mergeRun(activeRun.value, run);
+        activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, memberTurn);
+        if (isTerminalRunState(activeRun.value.state)) {
           liveTurn.value = null;
           if (instanceId.value && activeConversationId.value && activeTopicId.value) {
             void loadHistory(instanceId.value, activeConversationId.value, activeTopicId.value);
