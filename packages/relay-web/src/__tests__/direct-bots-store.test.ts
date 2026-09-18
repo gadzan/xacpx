@@ -516,6 +516,72 @@ describe("useDirectBotsStore", () => {
       expect(store.activeRun?.state).toBe("running");
       expect(store.liveTurn).toBeTruthy();
     });
+    it("adopts pending-prompt run when queued run-changed arrives but HTTP accept is lost", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      store.activeRun = {
+        id: "run_A",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_A",
+        requestId: "req_A",
+        mode: "explicit",
+        state: "completed",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+
+      const deferred = Promise.withResolvers<unknown>();
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversation.prompt") return deferred.promise;
+        return Promise.resolve({});
+      });
+
+      const sendCall = store.sendPrompt("Prompt B");
+      const pendingRequestId = store.currentDraftRequestId;
+      expect(pendingRequestId).toBeTruthy();
+
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "conversation-run-changed",
+          run: {
+            id: "run_B",
+            conversationId: "conv_1",
+            topicId: "top_1",
+            requestMessageId: "msg_B",
+            requestId: pendingRequestId,
+            mode: "explicit",
+            state: "queued",
+            profileRevision: 1,
+            createdAt: "now",
+          },
+        } as never,
+      });
+
+      expect(store.activeRun?.id).toBe("run_B");
+      expect(store.activeRun?.state).toBe("queued");
+      expect(store.isRunActive).toBe(true);
+      expect(store.promptInFlight).toBe(true);
+
+      await store.sendPrompt("Prompt C");
+      expect(store.promptError).toContain("already in progress");
+      expect(store.activeRun?.id).toBe("run_B");
+
+      // The HTTP prompt ultimately fails, but the durable Run B must survive.
+      deferred.reject(new Error("Network disconnect"));
+      await sendCall;
+      expect(store.activeRun?.id).toBe("run_B");
+      expect(store.activeRun?.state).toBe("queued");
+      expect(store.isRunActive).toBe(true);
+    });
     it("refuses to send prompt when bot is disabled", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
@@ -1149,14 +1215,15 @@ describe("useDirectBotsStore", () => {
       // User clicks Cancel, but cancel RPC encounters a network failure
       await store.cancelCurrentRun();
 
-      // Active run must NOT be fabricated as terminal indeterminate!
       expect(store.activeRun?.state).toBe("running");
       expect(store.isRunActive).toBe(true);
-      expect(store.promptError).toContain("Cancellation outcome unknown");
+      expect(store.cancelError).toContain("Cancellation outcome unknown");
+      expect(store.promptError).toBeNull();
 
       // Because isRunActive is still true, user CANNOT send a second prompt
       await store.sendPrompt("Second prompt while cancel pending");
       expect(store.promptError).toContain("already in progress");
+      expect(store.cancelError).toContain("Cancellation outcome unknown");
 
       // Now background runs.get resolves with server authoritative cancelled state
       resolveRunsGet({
@@ -1179,7 +1246,62 @@ describe("useDirectBotsStore", () => {
       expect(store.activeRun?.state).toBe("cancelled");
       expect(store.isRunActive).toBe(false);
       expect(store.liveTurn).toBeNull();
+      expect(store.cancelError).toBeNull();
     });
+
+    it("clears cancel uncertainty when authoritative WS terminal event arrives after runs.get failure", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.activeRun = {
+        id: "run_target",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_1",
+        requestId: "req_1",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z",
+      };
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.runs.cancel") return Promise.reject(new Error("Network disconnect"));
+        if (type === "control.runs.get") return Promise.reject(new Error("Network disconnect"));
+        return Promise.resolve({});
+      });
+
+      await store.cancelCurrentRun();
+      await flushPromises();
+
+      expect(store.activeRun?.state).toBe("running");
+      expect(store.cancelError).toContain("Cancellation outcome unknown");
+
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "conversation-run-changed",
+          run: {
+            id: "run_target",
+            conversationId: "conv_1",
+            topicId: "top_1",
+            requestMessageId: "msg_1",
+            requestId: "req_1",
+            mode: "explicit",
+            state: "cancelled",
+            profileRevision: 1,
+            createdAt: "2026-09-18T00:00:00.000Z",
+          },
+        } as never,
+      });
+
+      expect(store.activeRun?.state).toBe("cancelled");
+      expect(store.isRunActive).toBe(false);
+      expect(store.cancelError).toBeNull();
+    });
+
     it("does not overwrite activeRun when stale cancelCurrentRun resolves after user switched bot and started a new run", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
