@@ -1071,7 +1071,10 @@ async function dispatchControlRequest(
     case MSG.runsList: {
       const input = parseControlPayload(MSG.runsList, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.runsList}: malformed payload`);
-      const listed = control.listTopicRuns(input.conversationId, input.topicId) as { runs: unknown[]; activeRunId?: string };
+      const limit = input.limit === undefined
+        ? undefined
+        : Math.min(200, Math.max(1, Math.floor(input.limit)));
+      const listed = control.listTopicRuns(input.conversationId, input.topicId, limit) as { runs: unknown[]; activeRunId?: string };
       return {
         conversationId: input.conversationId,
         topicId: input.topicId,

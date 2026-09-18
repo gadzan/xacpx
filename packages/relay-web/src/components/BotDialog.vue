@@ -47,10 +47,12 @@ const enabled = ref(props.bot?.enabled ?? true);
 const submitting = ref(false);
 const errorMessage = ref<string | null>(null);
 
-// Available agents from instance
+// Available agents from instance: only configured agent NAMES are valid Bot
+// identities. The driver catalog lists installable drivers, but submitting an
+// unconfigured driver fails backend validation (agent_not_registered), so it
+// must never appear as a selectable Bot agent.
 const availableAgents = computed(() => {
   const list = inst.value?.agents ?? [];
-  const catalog = inst.value?.agentCatalog ?? [];
   const names = new Set<string>();
   const options: Array<{ name: string; driver?: string }> = [];
 
@@ -58,12 +60,6 @@ const availableAgents = computed(() => {
     if (!names.has(a.name)) {
       names.add(a.name);
       options.push({ name: a.name, driver: a.driver });
-    }
-  }
-  for (const c of catalog) {
-    if (!names.has(c.driver)) {
-      names.add(c.driver);
-      options.push({ name: c.driver, driver: c.driver });
     }
   }
   return options;
@@ -80,6 +76,9 @@ let dialogGeneration = 0;
 onUnmounted(() => { dialogGeneration++; });
 onMounted(async () => {
   const generation = ++dialogGeneration;
+  // Snapshot the user's pre-existing edits: a slow detail fetch must fill only
+  // untouched fields, never overwrite typing done while it was in flight.
+  const pristineInstructions = instructions.value;
   try {
     await instancesStore.loadFormOptions(props.instanceId);
   } catch {
@@ -90,7 +89,7 @@ onMounted(async () => {
     try {
       const detail = await directBotsStore.loadBotDetail(props.instanceId, props.bot.id);
       if (generation !== dialogGeneration) return;
-      if (detail.instructions) {
+      if (detail.instructions && instructions.value === pristineInstructions) {
         instructions.value = detail.instructions;
       }
     } catch {

@@ -342,6 +342,68 @@ test("topic runs list only that Topic and preserves newest run identity", async 
   expect(listedB.activeRunId).toBe(runB.run.id);
 });
 
+test("topic runs list prefers the executing Run and otherwise the oldest queued Run", async () => {
+  const { control, runtime } = await wire({ autoKick: false });
+  const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const conversationId = createDirectConversationId(bot.id);
+  const topicId = createDirectTopicId(bot.id);
+  const first = await control.promptConversation({ conversationId, topicId, requestId: "req-first", text: "first" });
+  const second = await control.promptConversation({ conversationId, topicId, requestId: "req-second", text: "second" });
+  const third = await control.promptConversation({ conversationId, topicId, requestId: "req-third", text: "third" });
+  // Simulate execution ownership: claim the oldest durable dispatch, then mark
+  // it started so the oldest Run is executing while later accepts stay queued.
+  const dispatch = runtime.store.getDispatchForRun(first.run.id)!;
+  const claimed = runtime.store.claimNextDispatch({
+    authorityEpoch: runtime.authorityEpoch,
+    now: NOW,
+    owner: "test-owner",
+    leaseExpiresAt: "2026-09-16T12:01:00.000Z",
+  });
+  expect(claimed?.run.id).toBe(first.run.id);
+  runtime.store.markExecutionStarted({
+    dispatchId: dispatch.id,
+    owner: "test-owner",
+    generation: claimed!.dispatch.generation,
+    runId: first.run.id,
+    memberTurnId: runtime.store.listMemberTurns(first.run.id)[0]!.id,
+    sessionAlias: "alias",
+    logicalSessionId: "logical",
+    sourceTurnId: "source",
+    now: NOW,
+  });
+  const listed = control.listTopicRuns(conversationId, topicId);
+  expect(listed.runs.map((run) => run.id)).toEqual([first.run.id, second.run.id, third.run.id]);
+  expect(listed.activeRunId).toBe(first.run.id);
+  // Complete (not cancel) the executing Run directly in durable state: a
+  // cancel would kick the dispatcher and drain the queued Runs in this test
+  // wire, hiding the oldest-queued-next assertion.
+  runtime.store.completeExecution({
+    runId: first.run.id,
+    memberTurnId: runtime.store.listMemberTurns(first.run.id)[0]!.id,
+    botId: bot.id,
+    content: "done",
+    sourceTurn: { sessionAlias: "alias" },
+    now: NOW,
+  });
+  const afterComplete = control.listTopicRuns(conversationId, topicId);
+  expect(afterComplete.activeRunId).toBe(second.run.id);
+});
+
+test("topic runs list bounds the returned page while keeping durable active selection", async () => {
+  const { control } = await wire({ autoKick: false });
+  const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const conversationId = createDirectConversationId(bot.id);
+  const topicId = createDirectTopicId(bot.id);
+  for (let index = 0; index < 5; index += 1) {
+    await control.promptConversation({ conversationId, topicId, requestId: `req-${index}`, text: `text ${index}` });
+  }
+  const page = control.listTopicRuns(conversationId, topicId, 2);
+  expect(page.runs).toHaveLength(2);
+  expect(page.runs.map((run) => run.requestId)).toEqual(["req-3", "req-4"]);
+  // The newest page omits the durable next-up Run, so no active id is claimed.
+  expect(page.activeRunId).toBeUndefined();
+});
+
 test("topic runs list reports no active run after completion and newest active after multiple prompts", async () => {
   const { control } = await wire({ autoKick: true, chat: async () => ({ text: "done" }) });
   const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });

@@ -2039,8 +2039,10 @@ export class ControlService {
     return toRunDetail(result.run, result.memberTurns);
   }
 
-  listTopicRuns(conversationId: string, topicId: string) {
-    const listed = this.requireConversations().runs.listTopicRuns(conversationId, topicId);
+  listTopicRuns(conversationId: string, topicId: string, limit?: number) {
+    const listed = this.requireConversations().runs.listTopicRuns(conversationId, topicId, {
+      ...(limit !== undefined ? { limit } : {}),
+    });
     return {
       runs: listed.runs.map(toConversationRun),
       ...(listed.activeRunId ? { activeRunId: listed.activeRunId } : {}),

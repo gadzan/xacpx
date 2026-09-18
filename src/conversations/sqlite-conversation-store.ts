@@ -403,13 +403,15 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   listRuns(conversationId: string, topicId?: string): ConversationRun[] {
+    // Tie-break by insertion order (rowid), not random UUID: accepts in the
+    // same millisecond must keep durable seq order so "oldest queued" is stable.
     const rows = topicId
       ? this.sqlite.all<RunRow>(
-        "SELECT * FROM runs WHERE conversation_id = ? AND topic_id = ? ORDER BY created_at ASC, id ASC",
+        "SELECT * FROM runs WHERE conversation_id = ? AND topic_id = ? ORDER BY created_at ASC, rowid ASC",
         [conversationId, topicId],
       )
       : this.sqlite.all<RunRow>(
-        "SELECT * FROM runs WHERE conversation_id = ? ORDER BY created_at ASC, id ASC",
+        "SELECT * FROM runs WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC",
         [conversationId],
       );
     return rows.map(mapRun);

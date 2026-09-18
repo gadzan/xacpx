@@ -189,6 +189,8 @@ test("Bot and Conversation control RPCs validate product IDs, not hidden aliases
   expect(parseControlPayload(MSG.runsGet, { runId: "run_1" })).not.toBeNull();
   expect(parseControlPayload(MSG.runsList, { conversationId: "conversation_1", topicId: "topic_1" })).not.toBeNull();
   expect(parseControlPayload(MSG.runsList, { conversationId: "conversation_1" })).toBeNull();
+  expect(parseControlPayload(MSG.runsList, { conversationId: "conversation_1", topicId: "topic_1", limit: 10 })).not.toBeNull();
+  expect(parseControlPayload(MSG.runsList, { conversationId: "conversation_1", topicId: "topic_1", limit: "many" })).toBeNull();
   expect(parseControlPayload(MSG.runsCancel, { runId: "run_1" })).not.toBeNull();
   expect(parseControlPayload(MSG.runsCancel, { alias: "brt_x" } as never)).toBeNull();
 });

@@ -66,6 +66,32 @@ describe("Direct Bot Components", () => {
       expect(wrapper.find('input[name="cwd"]').exists()).toBe(false);
     });
 
+    it("lists only configured agent names, never raw catalog drivers", async () => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "reviewer", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+          agentCatalog: [
+            { driver: "codex", configured: true, installed: "yes" },
+            { driver: "claude", configured: false, installed: "yes" },
+          ],
+        } as never,
+      ];
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local" },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      const options = wrapper.find("#bot-agent").findAll("option").map((o) => (o.element as HTMLOptionElement).value);
+      expect(options).toEqual(["reviewer"]);
+    });
+
     it("submits create bot with valid inputs", async () => {
       const instances = useInstancesStore();
       instances.instances = [
@@ -180,6 +206,53 @@ describe("Direct Bot Components", () => {
         name: "Updated Bot",
       }));
       expect(wrapper.emitted("saved")).toBeTruthy();
+    });
+
+    it("keeps user-typed instructions when the slow detail fetch resolves", async () => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "codex", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+          agentCatalog: [],
+        } as never,
+      ];
+      const directBots = useDirectBotsStore();
+      let resolveDetail!: (value: unknown) => void;
+      const detailGate = new Promise<unknown>((resolve) => { resolveDetail = resolve; });
+      vi.spyOn(directBots, "loadBotDetail").mockImplementation(() => detailGate as never);
+      const existingBot = {
+        id: "bot_1",
+        name: "Existing Bot",
+        agent: "codex",
+        workspace: "repo",
+        enabled: true,
+        updatedAt: "2026-09-18T00:00:00.000Z",
+      } as never;
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local", bot: existingBot },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      await wrapper.find("#bot-instructions").setValue("User typed instructions");
+      resolveDetail({
+        id: "bot_1",
+        name: "Existing Bot",
+        agent: "codex",
+        workspace: "repo",
+        instructions: "Server instructions",
+        enabled: true,
+        profileRevision: 2,
+        createdAt: "2026-09-18T00:00:00.000Z",
+        updatedAt: "2026-09-18T00:00:00.000Z",
+      });
+      await flushPromises();
+      expect((wrapper.find("#bot-instructions").element as HTMLTextAreaElement).value).toBe("User typed instructions");
     });
 
     it("loads form options then instructions without a stale race overwriting fields", async () => {

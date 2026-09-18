@@ -170,7 +170,11 @@ function persistBotSelection(instanceId: string | null, botId: string | null): v
 
 export const useDirectBotsStore = defineStore("directBots", () => {
   let currentSelectionGeneration = 0;
-
+  let historyRequestSequence = 0;
+  let transcriptRevision = 0;
+  function touchTranscript(): void {
+    transcriptRevision += 1;
+  }
   // Navigation / Selection identity
   const instanceId = ref<string | null>(null);
   const selectedBotId = ref<string | null>(null);
@@ -417,14 +421,14 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   }
 
   // History loading and seq-based pagination. Initial loads use the durable
-  // newest-first tail so refresh/reconnect sees the latest page (not seq 1..N)
-  // even when a Topic has more messages than one history page.
   async function loadHistory(targetInstanceId?: string, convId?: string, topId?: string): Promise<void> {
     const iId = targetInstanceId ?? instanceId.value;
     const cId = convId ?? activeConversationId.value;
     const tId = topId ?? activeTopicId.value;
     if (!iId || !cId || !tId) return;
 
+    const requestSequence = ++historyRequestSequence;
+    const revision = transcriptRevision;
     loadingHistory.value = true;
     historyError.value = null;
     try {
@@ -441,12 +445,25 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       if (instanceId.value !== iId || activeConversationId.value !== cId || activeTopicId.value !== tId) {
         return;
       }
+      // Same-view fence: a newer reload started after this request; the stale
+      // page must not clobber the newer transcript.
+      if (requestSequence !== historyRequestSequence) {
+        return;
+      }
+      // A live event mutated the transcript while this request was in flight
+      // (e.g. conversation-message arrived); retry against the same view so
+      // persisted history and live state converge instead of overwriting.
+      if (revision !== transcriptRevision) {
+        void loadHistory(iId, cId, tId);
+        return;
+      }
 
       const deduplicated = new Map<string, ConversationMessageDto>();
       for (const m of res.messages) {
         deduplicated.set(m.id, m);
       }
       messages.value = [...deduplicated.values()].sort((a, b) => a.seq - b.seq);
+      transcriptRevision += 1;
       oldestSeq.value = res.oldestSeq;
       newestSeq.value = res.newestSeq;
       hasMoreBefore.value = res.hasMoreBefore;
@@ -472,7 +489,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     }
   }
 
-  // Query durable topic Runs and adopt the newest non-terminal Run as active.
+  // Query durable topic Runs and adopt the authoritative active Run: the
+  // executing Run, else the oldest queued (next-up) Run.
   // Uses exact product IDs (conversationId/topicId/runId/memberTurnId) only;
   // never session aliases, timestamps, or latest-turn heuristics.
   async function recoverActiveRun(iId: string, cId: string, tId: string): Promise<void> {
@@ -492,10 +510,13 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       if (!candidate) {
         return;
       }
-      if (activeRun.value && activeRun.value.id !== candidate.id) {
+      // A stale terminal activeRun must not block authoritative topic discovery:
+      // the lost-response case is exactly activeRun=completed A while durable B
+      // is queued/running. Only an active (non-terminal) different Run fences.
+      if (activeRun.value && activeRun.value.id !== candidate.id && !isTerminalRunState(activeRun.value.state)) {
         return;
       }
-      activeRun.value = mergeRun(activeRun.value, candidate);
+      activeRun.value = mergeRun(activeRun.value?.id === candidate.id ? activeRun.value : null, candidate);
       if (isTerminalRunState(activeRun.value.state)) {
         liveTurn.value = null;
         return;
@@ -562,6 +583,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           existingMap.set(m.id, m);
         }
         messages.value = [...existingMap.values()].sort((a, b) => a.seq - b.seq);
+        touchTranscript();
         if (res.oldestSeq !== undefined) {
           oldestSeq.value = res.oldestSeq;
         }
@@ -578,6 +600,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // Selection & Navigation
   async function selectBot(targetInstanceId: string, botId: string): Promise<void> {
     const generation = ++currentSelectionGeneration;
+    historyRequestSequence += 1;
+    touchTranscript();
     instanceId.value = targetInstanceId;
     selectedBotId.value = botId;
     persistBotSelection(targetInstanceId, botId);
@@ -633,6 +657,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   async function switchTopic(topicId: string): Promise<void> {
     if (activeTopicId.value === topicId) return;
     const generation = ++currentSelectionGeneration;
+    historyRequestSequence += 1;
+    touchTranscript();
     activeTopicId.value = topicId;
     messages.value = [];
     oldestSeq.value = undefined;
@@ -660,6 +686,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
   function clearSelection(): void {
     currentSelectionGeneration++;
+    historyRequestSequence += 1;
+    touchTranscript();
     instanceId.value = null;
     selectedBotId.value = null;
     activeConversationId.value = null;
@@ -668,6 +696,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     oldestSeq.value = undefined;
     newestSeq.value = undefined;
     hasMoreBefore.value = false;
+    hasMoreAfter.value = false;
     activeMemberTurn.value = null;
     activeRun.value = null;
     liveTurn.value = null;
@@ -748,6 +777,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       const existing = messages.value.find((m) => m.id === res.message.id);
       if (!existing) {
         messages.value = [...messages.value, res.message].sort((a, b) => a.seq - b.seq);
+        touchTranscript();
         newestSeq.value = Math.max(newestSeq.value ?? 0, res.message.seq);
       }
 
@@ -802,6 +832,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // Exact Run cancellation via runId
   async function cancelCurrentRun(): Promise<void> {
     if (!instanceId.value || !activeRun.value) return;
+    // Store-level double-click fence: while a cancel RPC for this Run is in
+    // flight the HUD keeps emitting; a second dispatch would race the first
+    // and the late failure could re-mark uncertainty on a terminal Run.
+    if (cancellingRunId.value === activeRun.value.id) return;
     const targetInstId = instanceId.value;
     const targetConvId = activeConversationId.value;
     const targetTopicId = activeTopicId.value;
@@ -875,7 +909,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const rId = activeRun.value?.id;
     const generation = currentSelectionGeneration;
     if (!iId) return;
-
     try {
       await loadBots(iId);
       if (generation !== currentSelectionGeneration || instanceId.value !== iId || selectedBotId.value !== bId) return;
@@ -1103,6 +1136,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         const existing = messages.value.find((m) => m.id === msg.id);
         if (!existing) {
           messages.value = [...messages.value, msg].sort((a, b) => a.seq - b.seq);
+          touchTranscript();
           newestSeq.value = Math.max(newestSeq.value ?? 0, msg.seq);
         }
         // If this message belongs to the active run and is from the bot, converge liveTurn
@@ -1163,6 +1197,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     if (e.type === "member-turn-finished") {
       const { run, memberTurn } = e;
       if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
+        // Same ownership fence as member-turn-started: a stale finished event
+        // for another Run must not steal the active Run (mergeRun would return
+        // the incoming Run verbatim on id mismatch).
+        if (activeRun.value && activeRun.value.id !== run.id) {
+          return;
+        }
         activeRun.value = mergeRun(activeRun.value, run);
         activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, memberTurn);
         if (isTerminalRunState(activeRun.value.state)) {
