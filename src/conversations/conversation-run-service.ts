@@ -319,6 +319,14 @@ export class ConversationRunService {
     };
   }
 
+  listTopicRuns(conversationId: string, topicId: string): { runs: ConversationRun[]; activeRunId?: string } {
+    this.assertOpen();
+    this.requireConversation(conversationId);
+    const runs = this.store.listRuns(conversationId, topicId);
+    const active = [...runs].reverse().find((run) => run.state === "queued" || run.state === "running" || run.state === "waiting-human");
+    return { runs, ...(active ? { activeRunId: active.id } : {}) };
+  }
+
   async createDirectTopic(botId: string, title: string): Promise<ConversationTopic> {
     this.assertOpen();
     const topic = await this.bots.runLifecycle(botId, async () => {

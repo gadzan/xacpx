@@ -380,6 +380,13 @@ export interface ConversationHistoryResponseDto {
   hasMoreAfter: boolean;
 }
 
+export interface ConversationRunsListDto {
+  conversationId: string;
+  topicId: string;
+  runs: ConversationRunDto[];
+  activeRunId?: string;
+}
+
 /** Wire mirror of src/control ControlEvent (tool-event carries the NORMALIZED step). */
 export type ControlEventDto =
   | {

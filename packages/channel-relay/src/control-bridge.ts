@@ -1060,12 +1060,24 @@ async function dispatchControlRequest(
         ...(input.afterSeq !== undefined ? { afterSeq: input.afterSeq } : {}),
         ...(input.beforeSeq !== undefined ? { beforeSeq: input.beforeSeq } : {}),
         ...(input.limit !== undefined ? { limit: input.limit } : {}),
+        ...(input.direction !== undefined ? { direction: input.direction } : {}),
       });
     }
     case MSG.runsGet: {
       const input = parseControlPayload(MSG.runsGet, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.runsGet}: malformed payload`);
       return { run: control.getRun(input.runId) };
+    }
+    case MSG.runsList: {
+      const input = parseControlPayload(MSG.runsList, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.runsList}: malformed payload`);
+      const listed = control.listTopicRuns(input.conversationId, input.topicId) as { runs: unknown[]; activeRunId?: string };
+      return {
+        conversationId: input.conversationId,
+        topicId: input.topicId,
+        runs: listed.runs,
+        ...(typeof listed.activeRunId === "string" ? { activeRunId: listed.activeRunId } : {}),
+      };
     }
     case MSG.runsCancel: {
       const input = parseControlPayload(MSG.runsCancel, payload);
@@ -1077,8 +1089,8 @@ async function dispatchControlRequest(
         "unknown-type",
         `unsupported rpc type: ${envelope.type}`,
       );
+    }
   }
-}
 
 // Map recovered native-session history (neutral core shape) to wire rows. User turns
 // become plain `in` rows; agent turns carry the ordered transcript (text / reasoning /

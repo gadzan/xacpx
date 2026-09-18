@@ -421,13 +421,15 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   listMessages(query: ListMessagesQuery): ConversationMessage[] {
+    const newestFirst = query.direction === "newest-first";
     const backward = query.beforeSeq !== undefined && query.afterSeq === undefined;
+    const orderDescending = newestFirst ? !backward : backward;
     const rows = this.sqlite.all<MessageRow>(
       `SELECT * FROM messages
        WHERE conversation_id = ? AND topic_id = ?
          AND (? IS NULL OR seq > ?)
          AND (? IS NULL OR seq < ?)
-       ORDER BY seq ${backward ? "DESC" : "ASC"}
+       ORDER BY seq ${orderDescending ? "DESC" : "ASC"}
        LIMIT ?`,
       [
         query.conversationId,
@@ -440,7 +442,7 @@ export class SqliteConversationStore implements ConversationStore {
       ],
     );
     const messages = rows.map(mapMessage);
-    return backward ? messages.reverse() : messages;
+    return orderDescending ? messages.reverse() : messages;
   }
 
   getMemberTurn(memberTurnId: string): MemberTurnRecord | undefined {

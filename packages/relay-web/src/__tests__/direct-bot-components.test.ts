@@ -181,6 +181,69 @@ describe("Direct Bot Components", () => {
       }));
       expect(wrapper.emitted("saved")).toBeTruthy();
     });
+
+    it("loads form options then instructions without a stale race overwriting fields", async () => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [],
+          workspaces: [],
+          agentCatalog: [],
+        } as never,
+      ];
+      const directBots = useDirectBotsStore();
+      let resolveOptions!: () => void;
+      const optionsGate = new Promise<void>((resolve) => { resolveOptions = resolve; });
+      const optionsSpy = vi.spyOn(instances, "loadFormOptions").mockImplementation(async () => {
+        await optionsGate;
+        instances.instances = [
+          {
+            id: "i1",
+            name: "Local",
+            online: true,
+            lastSeenAt: null,
+            sessions: [],
+            agents: [{ name: "codex", driver: "codex" }],
+            workspaces: [{ name: "repo", cwd: "/repo" }],
+            agentCatalog: [],
+          } as never,
+        ];
+      });
+      const detailSpy = vi.spyOn(directBots, "loadBotDetail").mockResolvedValue({
+        id: "bot_1",
+        name: "Existing Bot",
+        agent: "codex",
+        workspace: "repo",
+        instructions: "Server instructions",
+        enabled: true,
+        profileRevision: 2,
+        createdAt: "2026-09-18T00:00:00.000Z",
+        updatedAt: "2026-09-18T00:00:00.000Z",
+      });
+      const existingBot: BotSummaryDto = {
+        id: "bot_1",
+        name: "Existing Bot",
+        agent: "codex",
+        workspace: "repo",
+        enabled: true,
+        updatedAt: "2026-09-18T00:00:00.000Z",
+      };
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local", bot: existingBot },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      wrapper.unmount();
+      resolveOptions();
+      await flushPromises();
+      expect(optionsSpy).toHaveBeenCalledWith("i1");
+      expect(detailSpy).not.toHaveBeenCalled();
+    });
   });
 
   describe("ConversationPromptInput.vue", () => {
@@ -189,7 +252,6 @@ describe("Direct Bot Components", () => {
       directBots.instanceId = "i1";
       directBots.selectedBotId = "b1";
       directBots.activeConversationId = "c1";
-      directBots.activeTopicId = "t1";
 
       const wrapper = mount(ConversationPromptInput, {
         global: {
@@ -343,6 +405,35 @@ describe("Direct Bot Components", () => {
       expect(stopBtn.exists()).toBe(true);
       await stopBtn.trigger("click");
       expect(wrapper.emitted("cancelRun")).toBeTruthy();
+    });
+
+    it("hides the HUD stop button for terminal runs so no second cancel fires", async () => {
+      const terminalRun: ConversationRunDto = {
+        id: "run_done",
+        conversationId: "c1",
+        topicId: "t1",
+        requestMessageId: "m1",
+        requestId: "r1",
+        mode: "explicit",
+        state: "cancelled",
+        createdAt: "2026-09-18T00:00:00.000Z",
+      };
+      const wrapper = mount(ConversationMessageList, {
+        props: {
+          messages: [],
+          liveTurn: null,
+          activeRun: terminalRun,
+          activeMemberTurn: null,
+          runParts: {},
+          bot: { id: "b1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        },
+        global: {
+          plugins: [i18n],
+        },
+      });
+      expect(wrapper.find('[data-test="live-turn-container"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="stop-turn-hud-button"]').exists()).toBe(false);
+      expect(wrapper.text()).toContain("Run cancelled");
     });
 
     it("renders load older messages button and emits event", async () => {
