@@ -2,6 +2,7 @@ import { mount } from "@vue/test-utils";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import PromptInput from "../components/PromptInput.vue";
+import { useComposerStore } from "../stores/composer";
 
 // PromptInput now uses the composer store, which needs an active pinia.
 beforeEach(() => setActivePinia(createPinia()));
@@ -32,5 +33,17 @@ describe("PromptInput non-blocking composer (message queue)", () => {
     const w = mount(PromptInput, { props: { busy: false } });
     expect(w.find('[data-test="cancel-turn"]').exists()).toBe(false);
     expect(w.find('[data-test="composer-send"]').exists()).toBe(true);
+  });
+
+  // Review #353 Medium: cancelling an in-flight turn is independent of attachment
+  // uploads (and `uploading` is shared composer state — it must never lock Stop).
+  it("keeps Stop enabled and cancellable while an attachment is uploading", async () => {
+    useComposerStore().uploading = true;
+    const w = mount(PromptInput, { props: { busy: true } });
+    const stop = w.find('[data-test="cancel-turn"]');
+    expect(stop.exists()).toBe(true);
+    expect((stop.element as HTMLButtonElement).disabled).toBe(false);
+    await stop.trigger("click");
+    expect(w.emitted("cancel")?.length).toBe(1);
   });
 });

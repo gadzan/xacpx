@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { PeerMessageHistoryEntry, ScheduledOriginDto, TurnPartDto } from "@ganglion/xacpx-relay-protocol";
 import type { ChatMessage, LiveTurn } from "../stores/chat";
 import StreamMarkdown from "./StreamMarkdown.vue";
@@ -43,10 +43,13 @@ function updateChip(): void {
   const sc = scroller.value;
   const root = sc?.parentElement as HTMLElement | null;
   if (!props.liveTurn || !sc || !root) { chipStyle.value = { opacity: "0" }; return; }
-  const top = sc.getBoundingClientRect().top;
+  const sr = sc.getBoundingClientRect();
   let active: HTMLElement | null = null;
   for (const el of sc.querySelectorAll<HTMLElement>("[data-avatar-key]")) {
-    if (el.getBoundingClientRect().bottom > top + 1) { active = el; break; }
+    const r = el.getBoundingClientRect();
+    // Full intersection, not just "past the top edge": an avatar still below the
+    // viewport must not anchor the chip, or it floats over body text with no icon.
+    if (r.bottom > sr.top + 1 && r.top < sr.bottom - 1) { active = el; break; }
   }
   if (!active) { chipStyle.value = { opacity: "0" }; return; }
   const ar = active.getBoundingClientRect();
@@ -66,6 +69,16 @@ function scheduleChip(): void {
   if (chipRaf) return;
   chipRaf = typeof requestAnimationFrame === "function" ? requestAnimationFrame(updateChip) : (updateChip(), 0);
 }
+
+// A sidebar/window resize shifts the avatar's x with no scroll event — re-measure
+// whenever the scroller's box changes. (jsdom has no ResizeObserver; the chip
+// tests drive updateChip directly.)
+let chipRo: ResizeObserver | null = null;
+onMounted(() => {
+  if (typeof ResizeObserver === "undefined" || !scroller.value) return;
+  chipRo = new ResizeObserver(() => scheduleChip());
+  chipRo.observe(scroller.value);
+});
 
 function ensureFullOf(m: ChatMessage): (() => Promise<void>) | undefined {
   const id = m.id;
@@ -293,6 +306,8 @@ onBeforeUnmount(() => {
   settleRaf = 0;
   if (chipRaf) cancelAnimationFrame(chipRaf);
   chipRaf = 0;
+  chipRo?.disconnect();
+  chipRo = null;
   clearEnterWaits();
 });
 
