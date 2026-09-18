@@ -26,6 +26,7 @@ export default {
         e1: "var(--shadow-e1)",
         e2: "var(--shadow-e2)",
         e3: "var(--shadow-e3)",
+        dock: "var(--shadow-dock)",
       },
     },
   },

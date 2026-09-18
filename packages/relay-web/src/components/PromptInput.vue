@@ -777,9 +777,12 @@ function onInput() {
     />
     <!-- COMPOSER — single elevated card: textarea on top, controls row below.
          `relative` so the slash-command menu can float above the card (bottom-full)
-         instead of pushing the textarea down. -->
+         instead of pushing the textarea down.
+         This card is the ONLY layer of the composer stack carrying real elevation
+         (`shadow-dock`, softer + downward-biased than e2); the status/plan/queue
+         strips above it stay at shadow-e1 so their shadows don't band on each other. -->
     <div
-      class="relative rounded-lg border border-border bg-surface shadow-e2 focus-within:border-accent/50 transition-colors"
+      class="relative rounded-lg border border-border bg-surface shadow-dock focus-within:border-accent/50 transition-colors"
     >
       <!-- Resize handle: thin grab strip on the card's top edge (desktop only). Anchored
            inside the card so status/plan stack layers baseline to the real message-box
