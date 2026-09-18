@@ -1,12 +1,10 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from "vue";
-import { useI18n } from "vue-i18n";
 import { useChatStore } from "../stores/chat";
 import { useInstancesStore } from "../stores/instances";
 import { useFilesStore } from "../stores/files";
 import { useComposerStore } from "../stores/composer";
 import { useVirtualKeyboardInset } from "../lib/use-virtual-keyboard";
-import { parseQuips, pickQuip } from "../lib/working-quips";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import MessageList from "./MessageList.vue";
 import PromptInput from "./PromptInput.vue";
@@ -16,7 +14,6 @@ import { AlertTriangle, Bot, Folder, GitBranch, Loader2, X } from "lucide-vue-ne
 
 const emit = defineEmits<{ (e: "show-files"): void }>();
 
-const { t } = useI18n();
 const chat = useChatStore();
 const instances = useInstancesStore();
 const files = useFilesStore();
@@ -108,69 +105,12 @@ watch(
   { immediate: true },
 );
 
-// Live elapsed clock for the active turn HUD.
+// Always-on 1 Hz clock. Feeds the booting "starting… Ns" readout above; the active
+// turn's rotating quip + elapsed now ride the sticky agent-icon (see MessageList /
+// useWorkingQuip), so the composer no longer carries a status HUD.
 const nowMs = ref(Date.now());
 const timer = setInterval(() => { nowMs.value = Date.now(); }, 1000);
-
-// Playful rotating status line in the turn HUD while a turn runs (à la Claude
-// Code / HAPI's "vibing messages"). Pool is locale-aware (chat.workingQuips);
-// pick randomly per turn, rotate every 20s without immediate repeats, fall back
-// to the short localized "Working" label when the pool is empty. Purely
-// cosmetic; the 1Hz elapsed clock stays on its own always-on interval.
-const hudQuip = ref("");
-let quipTimer: ReturnType<typeof setInterval> | null = null;
-const QUIP_ROTATE_MS = 20000;
-function rotateHudQuip(): void {
-  const quips = parseQuips(t("chat.workingQuips"));
-  if (quips.length > 0) hudQuip.value = pickQuip(quips, hudQuip.value || undefined);
-}
-// Identity of the turn the HUD is showing. Keying on the boolean `busy` alone
-// misses busy→busy session switches (the new session would inherit the old
-// quip and its remaining rotation deadline), so re-pick and restart the 20s
-// cadence whenever the turn itself changes; clear when no turn is live.
-const turnKey = computed(() =>
-  chat.liveTurn && chat.instanceId && chat.sessionAlias
-    ? `${chat.instanceId}\0${chat.sessionAlias}\0${chat.liveTurn.startedAt}`
-    : null,
-);
-watch(
-  turnKey,
-  (key) => {
-    if (quipTimer) {
-      clearInterval(quipTimer);
-      quipTimer = null;
-    }
-    if (key) {
-      rotateHudQuip();
-      quipTimer = setInterval(rotateHudQuip, QUIP_ROTATE_MS);
-    } else {
-      hudQuip.value = "";
-    }
-  },
-  { immediate: true },
-);
-// Re-pick on locale switch mid-turn so the HUD doesn't stick in the old
-// language until the next 20s rotation.
-watch(
-  () => t("chat.workingQuips"),
-  () => {
-    if (chat.busy) rotateHudQuip();
-  },
-);
-onUnmounted(() => {
-  clearInterval(timer);
-  if (quipTimer) clearInterval(quipTimer);
-});
-
-const elapsed = computed(() => {
-  if (!chat.liveTurn) return "";
-  const s = Math.max(0, Math.floor((nowMs.value - chat.liveTurn.startedAt) / 1000));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-});
-const runningTools = computed(() => chat.liveToolSteps.filter((t) => t.status === "running").length);
-// Quips are complete status sentences (some already end in "…" or "."), so
-// render them verbatim; only the short fallback label gets a trailing "…".
-const hudStatus = computed(() => hudQuip.value || `${t("chat.mentionActivity.working")}…`);
+onUnmounted(() => clearInterval(timer));
 </script>
 
 <template>
@@ -273,25 +213,13 @@ const hudStatus = computed(() => hudQuip.value || `${t("chat.mentionActivity.wor
           class="composer-stack flex flex-col"
           data-test="composer-stack"
         >
-          <div v-if="chat.busy" key="status-layer" data-test="turn-hud"
-               class="stack-layer stack-layer--status relative z-10 mx-4 flex items-center gap-2 rounded-xl border border-run/20 bg-surface/95 px-3 pt-1.5 pb-[calc(0.375rem+var(--stack-overlap))] shadow-e1 backdrop-blur-md sm:mx-6">
-            <span class="h-2 w-2 rounded-full bg-run pulse-dot" aria-hidden="true" />
-            <span data-test="hud-quip" class="text-[12px] font-semibold text-run">{{ hudStatus }}</span>
-            <span class="font-mono text-[12px] font-semibold tabular-nums text-run">{{ elapsed }}</span>
-            <span v-if="runningTools > 0" class="text-[11.5px] text-fg-muted">· {{ runningTools }} {{ runningTools === 1 ? $t("chat.tool") : $t("chat.tools") }}</span>
-            <span class="flex-1" />
-            <button data-test="cancel-turn"
-                    class="flex items-center gap-1.5 text-[11.5px] font-medium text-danger transition-opacity hover:opacity-80"
-                    @click="chat.cancel"><X :size="13" />{{ $t("common.cancel") }}</button>
-          </div>
           <PlanPanel v-if="showPlan" key="plan-layer" v-model:expanded="planExpanded" :entries="chat.sessionPlan!" :active="chat.busy" variant="stack"
-                     class="stack-layer stack-layer--plan relative z-20 mx-2 pb-[var(--stack-overlap)] shadow-e1 sm:mx-3"
-                     :class="{ 'stack-layer--pull': chat.busy }" />
+                     class="stack-layer stack-layer--plan relative z-20 mx-2 pb-[var(--stack-overlap)] shadow-e1 sm:mx-3" />
           <QueueStrip v-if="showQueue" key="queue-layer"
                       class="stack-layer stack-layer--queue relative z-[25] mx-2 pb-[var(--stack-overlap)] shadow-e1 sm:mx-3"
-                      :class="{ 'stack-layer--pull': chat.busy || showPlan }" />
+                      :class="{ 'stack-layer--pull': showPlan }" />
           <div key="composer-layer" class="stack-layer stack-layer--composer relative z-30"
-               :class="{ 'stack-layer--pull': chat.busy || showPlan || showQueue }">
+               :class="{ 'stack-layer--pull': showPlan || showQueue }">
             <PromptInput :busy="chat.busy" :draft-key="`${chat.instanceId}\0${chat.sessionAlias}`"
                          :instance-id="chat.instanceId" :session-alias="chat.sessionAlias"
                          @send="onSend" @cancel="chat.cancel" />

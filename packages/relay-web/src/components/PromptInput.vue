@@ -8,13 +8,14 @@ import {
   watch,
 } from "vue";
 import {
+  ArrowUp,
   Brain,
   Check,
   ChevronDown,
   Gauge,
   Paperclip,
-  Send,
   SlidersHorizontal,
+  Square,
   X,
 } from "lucide-vue-next";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
@@ -132,6 +133,14 @@ function toggleEffortMenu() {
   effortMenuOpen.value = !effortMenuOpen.value;
 }
 const text = ref(loadDraft(props.draftKey ?? ""));
+
+const hasSendable = computed(
+  () => !!text.value.trim() || composer.pending.some((p) => p.status === "ready"),
+);
+// While a turn is running the send button doubles as Stop: with an empty composer it
+// cancels the in-flight turn; once the user types (or readies an attachment) it reverts
+// to Send and the message queues server-side (chat.send's busy path). Esc still cancels.
+const showStop = computed(() => !!props.busy && !hasSendable.value);
 const textarea = ref<HTMLTextAreaElement | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
 
@@ -782,7 +791,7 @@ function onInput() {
          (`shadow-dock`, softer + downward-biased than e2); the status/plan/queue
          strips above it stay at shadow-e1 so their shadows don't band on each other. -->
     <div
-      class="relative rounded-lg border border-border bg-surface shadow-dock focus-within:border-accent/50 transition-colors"
+      class="relative rounded-2xl border border-border bg-surface shadow-dock focus-within:border-accent/50 transition-colors"
     >
       <!-- Resize handle: thin grab strip on the card's top edge (desktop only). Anchored
            inside the card so status/plan stack layers baseline to the real message-box
@@ -792,7 +801,7 @@ function onInput() {
         data-test="composer-resize"
         aria-hidden="true"
         :title="$t('chat.resizeComposer')"
-        class="absolute inset-x-0 top-0 z-10 hidden h-2 cursor-row-resize touch-none select-none rounded-t-lg transition-colors lg:block"
+        class="absolute inset-x-0 top-0 z-10 hidden h-2 cursor-row-resize touch-none select-none rounded-t-2xl transition-colors lg:block"
         :class="heightDragging ? 'bg-accent/50' : 'hover:bg-accent/30'"
         @pointerdown.prevent="heightResize.onPointerDown"
       />
@@ -918,7 +927,7 @@ function onInput() {
         ref="textarea"
         v-model="text"
         rows="2"
-        class="w-full resize-none bg-transparent px-3.5 pt-2.5 pb-1 text-[16px] lg:text-[14px] leading-relaxed text-fg placeholder:text-fg-muted focus:outline-none"
+        class="w-full resize-none bg-transparent px-3.5 pt-2.5 pb-1 text-[16px] lg:text-[14px] leading-relaxed text-fg placeholder:text-[14px] lg:placeholder:text-[12.5px] placeholder:text-fg-muted focus:outline-none"
         :style="isDesktop ? { height: composerHeight + 'px' } : undefined"
         :placeholder="busy ? $t('chat.working') : $t('chat.message')"
         @input="onInput"
@@ -1093,18 +1102,27 @@ function onInput() {
             <Paperclip :size="15" />
           </button>
           <button
+            v-if="showStop"
+            type="button"
+            data-test="cancel-turn"
+            :disabled="composer.uploading"
+            class="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-danger text-white shadow-e1 transition-all hover:opacity-90 hover:shadow-e2 disabled:bg-fg/10 disabled:text-fg-muted disabled:shadow-none"
+            :aria-label="$t('common.cancel')"
+            :title="$t('common.cancel')"
+            @click="emit('cancel')"
+          >
+            <Square :size="10" fill="currentColor" />
+          </button>
+          <button
+            v-else
             type="submit"
             data-test="composer-send"
-            :disabled="
-              composer.uploading ||
-              (!text.trim() &&
-                !composer.pending.filter((p) => p.status === 'ready').length)
-            "
-            class="flex items-center gap-1.5 whitespace-nowrap rounded-md bg-accent p-2 text-[12.5px] font-semibold text-white shadow-e1 transition-all hover:bg-accent-hover hover:shadow-e2 disabled:bg-fg/10 disabled:text-fg-muted disabled:shadow-none sm:pl-3 sm:pr-2.5"
+            :disabled="composer.uploading || !hasSendable"
+            class="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-accent text-white shadow-e1 transition-all hover:bg-accent-hover hover:shadow-e2 disabled:bg-fg/10 disabled:text-fg-muted disabled:shadow-none"
             :aria-label="$t('chat.send')"
+            :title="$t('chat.send')"
           >
-            <span class="hidden sm:inline">{{ $t("chat.send") }}</span>
-            <Send :size="14" />
+            <ArrowUp :size="13" :stroke-width="2.5" />
           </button>
         </div>
       </div>

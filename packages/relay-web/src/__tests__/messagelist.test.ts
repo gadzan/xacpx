@@ -1173,12 +1173,16 @@ it("re-pins to the bottom when the session changes (atBottom reset)", async () =
   expect(wrapper.find('[data-test="jump-latest"]').attributes("style") ?? "").toContain("display: none");
 });
 
-it("marks message rows as content-visibility virtualized (cv-row)", () => {
+it("virtualizes message rows and sticks the assistant agent-icon", () => {
   const wrapper = mount(MessageList, {
     props: { messages: [msg({ direction: "in", text: "a" }), msg({ direction: "out", text: "b" })], liveTurn: null },
   });
-  // Both the user and assistant row roots opt into off-screen render skipping.
-  expect(wrapper.findAll(".cv-row").length).toBe(2);
+  // User row virtualizes at the row (.cv-row); the assistant virtualizes at the bubble
+  // (.cv-bubble) so its sticky avatar + working chip can escape the row box.
+  expect(wrapper.findAll(".cv-row").length).toBe(1); // the user row
+  expect(wrapper.find('[data-test="msg-out"]').classes()).toContain("cv-bubble");
+  // The assistant avatar is the sticky element that hangs at the top of the scroller.
+  expect(wrapper.find(".agent-avatar").exists()).toBe(true);
 });
 
 it("shows a spinner while an older page is loading", () => {

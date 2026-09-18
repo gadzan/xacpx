@@ -7,10 +7,12 @@ import ToolCallPanel from "./ToolCallPanel.vue";
 import ReasoningPanel from "./ReasoningPanel.vue";
 import TurnParts from "./TurnParts.vue";
 import CopyButton from "./CopyButton.vue";
-import { AlertCircle, CircleStop, Clock, Loader2, RotateCcw, TriangleAlert } from "lucide-vue-next";
+import { AlertCircle, ArrowDown, CircleStop, Clock, Loader2, RotateCcw, TriangleAlert } from "lucide-vue-next";
 import AgentMessageCard from "./AgentMessageCard.vue";
 import AgentIcon from "./AgentIcon.vue";
+import WorkingQuip from "./WorkingQuip.vue";
 import MessageAttachments from "./MessageAttachments.vue";
+import { useWorkingQuip } from "../lib/use-working-quip";
 import { fmtTime, fmtDateTime } from "../lib/format";
 import {
   anchoredAgentMessageIds,
@@ -20,6 +22,50 @@ import {
 import { createTurnLayoutGeometryCache, type TurnLayoutGeometryCache } from "../lib/turn-layout";
 const props = defineProps<{ messages: ChatMessage[]; liveTurn: LiveTurn | null; driver?: string | null; hasMoreOlder?: boolean; loadingOlder?: boolean; loadingHistory?: boolean; sessionKey?: string; scrollToScheduled?: { taskId: string; nonce: number } | null; ensureFull?: (messageId: number) => Promise<void> }>();
 const emit = defineEmits<{ resend: [message: ChatMessage]; loadOlder: [] }>();
+
+// Rotating quip + elapsed clock that ride the sticky agent-icon as a speech bubble
+// while a turn is in progress (replaces the old composer-anchored turn HUD).
+const { status: quipStatus, elapsed: quipElapsed } = useWorkingQuip(
+  () => (props.liveTurn ? `${props.sessionKey ?? ""}\0${props.liveTurn.startedAt}` : null),
+  () => props.liveTurn?.startedAt ?? null,
+);
+
+// One working chip, absolutely positioned inside the transcript root. It floats just
+// above the head of the agent-icon currently at the top of the viewport (stuck icon while
+// reading a long reply, or the first assistant icon at the top of the list), but is
+// clamped so it never rides above the list container's top edge. Re-measured on scroll and
+// whenever the transcript/turn changes.
+const chipEl = ref<HTMLElement | null>(null);
+const chipStyle = ref<Record<string, string>>({ opacity: "0" });
+let chipRaf = 0;
+function updateChip(): void {
+  chipRaf = 0;
+  const sc = scroller.value;
+  const root = sc?.parentElement as HTMLElement | null;
+  if (!props.liveTurn || !sc || !root) { chipStyle.value = { opacity: "0" }; return; }
+  const top = sc.getBoundingClientRect().top;
+  let active: HTMLElement | null = null;
+  for (const el of sc.querySelectorAll<HTMLElement>("[data-avatar-key]")) {
+    if (el.getBoundingClientRect().bottom > top + 1) { active = el; break; }
+  }
+  if (!active) { chipStyle.value = { opacity: "0" }; return; }
+  const ar = active.getBoundingClientRect();
+  const rr = root.getBoundingClientRect();
+  const h = chipEl.value?.offsetHeight || 22;
+  // Prefer floating above the icon's head (clears both the icon and the first body
+  // line). When the icon is jammed at the container top there's no room above, so
+  // clamp to the top and shift right of the icon instead — never covering the icon.
+  const aboveTop = ar.top - rr.top - h - 4;
+  if (aboveTop >= 2) {
+    chipStyle.value = { opacity: "1", top: `${Math.round(aboveTop)}px`, left: `${Math.round(ar.left - rr.left)}px` };
+  } else {
+    chipStyle.value = { opacity: "1", top: "2px", left: `${Math.round(ar.right - rr.left + 6)}px` };
+  }
+}
+function scheduleChip(): void {
+  if (chipRaf) return;
+  chipRaf = typeof requestAnimationFrame === "function" ? requestAnimationFrame(updateChip) : (updateChip(), 0);
+}
 
 function ensureFullOf(m: ChatMessage): (() => Promise<void>) | undefined {
   const id = m.id;
@@ -245,8 +291,18 @@ onBeforeUnmount(() => {
   revealRaf = 0;
   if (settleRaf) cancelAnimationFrame(settleRaf);
   settleRaf = 0;
+  if (chipRaf) cancelAnimationFrame(chipRaf);
+  chipRaf = 0;
   clearEnterWaits();
 });
+
+// Recompute which icon carries the working chip when the transcript or turn changes
+// (rows land / reveal / a turn starts or ends) — scroll alone doesn't fire then.
+watch(
+  () => [props.messages.length, props.liveTurn?.startedAt, hiddenCount.value, props.sessionKey] as const,
+  () => { void nextTick(scheduleChip); },
+  { immediate: true },
+);
 
 // Arm progressive mounting when a freshly selected session's rows land. Two shapes:
 // the 0→many jump (select empties `messages` first, then history lands), and the
@@ -312,6 +368,7 @@ function onScroll(): void {
   const el = scroller.value;
   if (!el) return;
   atBottom.value = isPinnedToFollowTarget(el);
+  scheduleChip();
   // Near the top while older rows are still mounting locally → nothing to fetch yet;
   // the reveal loop is already draining hiddenCount.
   if (hiddenCount.value > 0) return;
@@ -570,8 +627,8 @@ watch(
             :class="enterRowClass"
             :style="enterStyle(0)"
           >
-            <div class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center overflow-hidden">
-              <AgentIcon :driver="driver" :size="15" fill />
+            <div class="agent-avatar mt-0.5 h-6 w-6 shrink-0 self-start" data-avatar-key="live">
+              <span class="grid h-6 w-6 place-items-center overflow-hidden"><AgentIcon :driver="driver" :size="15" fill /></span>
             </div>
             <div data-test="msg-streaming" class="min-w-0 flex-1">
               <TurnParts v-if="liveTurn.parts.length" :parts="liveTurn.parts" :streaming="true" :sent-agent-messages="sentAgentMessageById" />
@@ -624,11 +681,11 @@ watch(
             </div>
           </div>
           <!-- ASSISTANT row -->
-          <div v-else-if="!m.structured?.agentMessage" class="cv-row group flex gap-2.5" :class="enterRowClass" :style="enterStyle(i)">
-            <div class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center overflow-hidden">
-              <AgentIcon :driver="driver" :size="15" fill />
+          <div v-else-if="!m.structured?.agentMessage" class="group flex gap-2.5" :class="enterRowClass" :style="enterStyle(i)">
+            <div class="agent-avatar mt-0.5 h-6 w-6 shrink-0 self-start" :data-avatar-key="`h:${messageKey(m, hiddenCount + i)}`">
+              <span class="grid h-6 w-6 place-items-center overflow-hidden"><AgentIcon :driver="driver" :size="15" fill /></span>
             </div>
-            <div data-test="msg-out" class="min-w-0 flex-1 space-y-2.5"
+            <div data-test="msg-out" class="cv-bubble min-w-0 flex-1 space-y-2.5"
                  :class="m.failed ? 'rounded-lg ring-1 ring-danger/40' : ''">
               <!-- Structured transcript: activity cards interleave with the Markdown
                    narrative at wire-ordered slots. Tool cards own their collapsed state. -->
@@ -661,8 +718,8 @@ watch(
             :class="enterRowClass"
             :style="enterStyle(i + 1)"
           >
-            <div class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center overflow-hidden">
-              <AgentIcon :driver="driver" :size="15" fill />
+            <div class="agent-avatar mt-0.5 h-6 w-6 shrink-0 self-start" data-avatar-key="live">
+              <span class="grid h-6 w-6 place-items-center overflow-hidden"><AgentIcon :driver="driver" :size="15" fill /></span>
             </div>
             <div data-test="msg-streaming" class="min-w-0 flex-1">
               <TurnParts v-if="liveTurn.parts.length" :parts="liveTurn.parts" :streaming="true" :sent-agent-messages="sentAgentMessageById" />
@@ -676,8 +733,8 @@ watch(
         <!-- live streaming assistant row when the transcript is empty (working spinner occupies the slot even with no parts yet) -->
         <div v-if="liveTurn && visibleMessages.length === 0" class="flex gap-2.5" :class="enterRowClass"
              :style="enterStyle(0)">
-          <div class="mt-0.5 grid h-6 w-6 shrink-0 place-items-center overflow-hidden">
-            <AgentIcon :driver="driver" :size="15" fill />
+          <div class="agent-avatar mt-0.5 h-6 w-6 shrink-0 self-start" data-avatar-key="live">
+            <span class="grid h-6 w-6 place-items-center overflow-hidden"><AgentIcon :driver="driver" :size="15" fill /></span>
           </div>
           <div data-test="msg-streaming" class="min-w-0 flex-1">
             <TurnParts v-if="liveTurn.parts.length" :parts="liveTurn.parts" :streaming="true" :sent-agent-messages="sentAgentMessageById" />
@@ -689,14 +746,23 @@ watch(
       </div>
     </div>
 
+    <!-- Single working chip, JS-positioned above the top agent-icon's head, clamped to
+         the container top (see updateChip). Rendered once, never duplicated. -->
+    <WorkingQuip v-if="liveTurn" ref="chipEl" class="working-chip" :style="chipStyle" :status="quipStatus" :elapsed="quipElapsed" />
+
+    <!-- Bottom scrim (blur + fade to the page bg) lifts the jump-latest pill off the
+         transcript whenever the view is detached from the bottom. -->
+    <div v-show="!atBottom" aria-hidden="true" class="jump-scrim" />
     <button
       v-show="!atBottom"
       data-test="jump-latest"
       type="button"
-      class="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-border bg-raised px-3 py-1 text-xs text-fg-muted shadow hover:bg-fg/5"
+      :aria-label="$t('chat.jumpLatest')"
+      :title="$t('chat.jumpLatest')"
+      class="absolute bottom-3 left-1/2 z-10 grid h-7 w-7 -translate-x-1/2 place-items-center rounded-md border border-border/70 bg-surface/85 text-fg shadow-[0_1px_2px_rgba(0,0,0,0.05)] backdrop-blur-md transition-colors hover:bg-surface"
       @click="scrollToBottom(true)"
     >
-      {{ $t("chat.jumpLatest") }}
+      <ArrowDown :size="13" :stroke-width="2.5" />
     </button>
   </div>
 </template>
@@ -712,6 +778,44 @@ watch(
 .cv-row {
   content-visibility: auto;
   contain-intrinsic-size: auto 88px;
+}
+
+/* Assistant rows hang their avatar at the top of the scroller until the next
+   assistant avatar scrolls over it ("顶走"). `self-start` on the wrapper keeps the
+   avatar from stretching to full row height (which would leave sticky no room to
+   travel); the row's own content-visibility still virtualizes the body off-screen. */
+.agent-avatar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+/* Assistant body carries the virtualization instead of the row, so the sticky avatar and
+   its lifted working chip can escape the row box without paint containment clipping them. */
+.cv-bubble {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 88px;
+}
+/* Working chip: absolutely positioned inside the transcript root; top/left/opacity are
+   set by updateChip so it floats above the top agent-icon's head and clamps to the
+   container top. One instance only. */
+.working-chip {
+  position: absolute;
+  z-index: 40;
+  pointer-events: none;
+  transition: top 90ms linear;
+}
+
+/* Gradient + progressive blur under the jump-latest pill (mask fades the backdrop
+   blur itself, so content blurs out toward the bottom edge instead of a hard band). */
+.jump-scrim {
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 4.5rem;
+  pointer-events: none;
+  background: linear-gradient(to top, rgb(var(--c-bg) / 0.9), rgb(var(--c-bg) / 0));
+  -webkit-mask-image: linear-gradient(to top, #000 30%, transparent);
+  mask-image: linear-gradient(to top, #000 30%, transparent);
+  backdrop-filter: blur(3px);
 }
 
 /* Entrance choreography (see enterPhase): HOLD keeps the transcript laid out but
