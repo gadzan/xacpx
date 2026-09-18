@@ -525,6 +525,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     newestSeq.value = undefined;
     hasMoreBefore.value = false;
     hasMoreAfter.value = false;
+    activeRun.value = null;
     activeMemberTurn.value = null;
     liveTurn.value = null;
     latestPlanRunId.value = null;
@@ -573,6 +574,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     newestSeq.value = undefined;
     hasMoreBefore.value = false;
     hasMoreAfter.value = false;
+    activeRun.value = null;
     activeMemberTurn.value = null;
     liveTurn.value = null;
     latestPlanRunId.value = null;
@@ -601,8 +603,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     oldestSeq.value = undefined;
     newestSeq.value = undefined;
     hasMoreBefore.value = false;
-    hasMoreAfter.value = false;
     activeMemberTurn.value = null;
+    activeRun.value = null;
     liveTurn.value = null;
     latestPlanRunId.value = null;
     planByRunId.value = {};
@@ -1076,16 +1078,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         if (!activeRun.value || activeRun.value.id === run.id) {
           activeRun.value = mergeRun(activeRun.value, run);
           activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, memberTurn);
-        } else if (
-          !isTerminalRunState(run.state) &&
-          memberTurn.promptRequestId !== undefined &&
-          currentDraftRequestId.value !== null &&
-          memberTurn.promptRequestId === currentDraftRequestId.value
-        ) {
-          activeRun.value = mergeRun(null, run);
-          activeMemberTurn.value = mergeMemberTurn(null, memberTurn);
-          liveTurn.value = null;
-          latestPlanRunId.value = run.id;
         } else {
           return;
         }

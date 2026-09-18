@@ -1337,6 +1337,62 @@ describe("useDirectBotsStore", () => {
       expect(store.liveTurn).toBeNull();
     });
 
+    it("clears activeRun when switching Bot or Topic while a run is active", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_A";
+      store.activeConversationId = "conv_A";
+      store.activeTopicId = "top_A";
+      store.activeRun = {
+        id: "run_A",
+        conversationId: "conv_A",
+        topicId: "top_A",
+        requestMessageId: "mA",
+        requestId: "rA",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      store.liveTurn = { parts: [], status: "working", startedAt: Date.now() };
+
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversations.list") {
+          return Promise.resolve({ conversations: [{ id: "conv_B", botId: "bot_B", defaultTopicId: "top_B" }] });
+        }
+        if (type === "control.topics.list") {
+          return Promise.resolve({ topics: [{ id: "top_B", conversationId: "conv_B", title: "Topic B" }] });
+        }
+        if (type === "control.conversation.history") {
+          return Promise.resolve({ conversationId: "conv_B", topicId: "top_B", messages: [], hasMoreBefore: false, hasMoreAfter: false });
+        }
+        return Promise.resolve({});
+      });
+
+      await store.selectBot("inst_1", "bot_B");
+      expect(store.activeRun).toBeNull();
+      expect(store.activeMemberTurn).toBeNull();
+      expect(store.liveTurn).toBeNull();
+      expect(store.isRunActive).toBe(false);
+
+      store.activeConversationId = "conv_B";
+      store.activeTopicId = "top_A";
+      store.activeRun = {
+        id: "run_BA",
+        conversationId: "conv_B",
+        topicId: "top_A",
+        requestMessageId: "mBA",
+        requestId: "rBA",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      await store.switchTopic("top_B");
+      expect(store.activeRun).toBeNull();
+      expect(store.isRunActive).toBe(false);
+    });
+
     it("clears cancel uncertainty when authoritative WS terminal event arrives after runs.get failure", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
@@ -1365,7 +1421,6 @@ describe("useDirectBotsStore", () => {
 
       expect(store.activeRun?.state).toBe("running");
       expect(store.cancelError).toContain("Cancellation outcome unknown");
-
       store.applyEvent({
         kind: "control-event",
         instanceId: "inst_1",
