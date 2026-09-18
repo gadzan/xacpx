@@ -525,13 +525,14 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     newestSeq.value = undefined;
     hasMoreBefore.value = false;
     hasMoreAfter.value = false;
-    activeRun.value = null;
     activeMemberTurn.value = null;
     liveTurn.value = null;
+    latestPlanRunId.value = null;
     cancellingRunId.value = null;
     cancelUncertaintyRunId.value = null;
     cancelError.value = null;
     promptInFlight.value = false;
+    promptError.value = null;
     currentDraftRequestId.value = null;
     lastPromptText.value = "";
     // Load bot detail in background
@@ -572,13 +573,14 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     newestSeq.value = undefined;
     hasMoreBefore.value = false;
     hasMoreAfter.value = false;
-    activeRun.value = null;
     activeMemberTurn.value = null;
     liveTurn.value = null;
+    latestPlanRunId.value = null;
     cancellingRunId.value = null;
     cancelUncertaintyRunId.value = null;
     cancelError.value = null;
     promptInFlight.value = false;
+    promptError.value = null;
     currentDraftRequestId.value = null;
     lastPromptText.value = "";
     if (instanceId.value && activeConversationId.value) {
@@ -600,7 +602,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     newestSeq.value = undefined;
     hasMoreBefore.value = false;
     hasMoreAfter.value = false;
-    activeRun.value = null;
     activeMemberTurn.value = null;
     liveTurn.value = null;
     latestPlanRunId.value = null;
@@ -609,11 +610,11 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     cancelUncertaintyRunId.value = null;
     cancelError.value = null;
     promptInFlight.value = false;
+    promptError.value = null;
+    currentDraftRequestId.value = null;
     lastPromptText.value = "";
     persistBotSelection(null, null);
   }
-
-  // Prompt sending with stable requestId idempotency
   function preparePromptRequestId(text: string): string {
     if (!currentDraftRequestId.value || text !== lastPromptText.value) {
       currentDraftRequestId.value = mintRequestId();
@@ -648,27 +649,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       selectedBotId.value === targetBotId &&
       activeConversationId.value === targetConvId &&
       activeTopicId.value === targetTopicId;
-    // Adopt a queued/running run whose durable requestId matches our in-flight
-    // prompt, even when a stale terminal activeRun is still displayed.
-    function adoptPendingPromptRun(run: ConversationRunDto, memberTurn?: MemberTurnSummaryDto | null): void {
-      activeRun.value = mergeRun(activeRun.value, run);
-      if (memberTurn) {
-        activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, memberTurn);
-      }
-      if (!liveTurn.value) {
-        liveTurn.value = {
-          parts: [],
-          status: "working",
-          startedAt: run.startedAt ? new Date(run.startedAt).getTime() : Date.now(),
-        };
-      }
-      const parts = runParts.value[run.id];
-      if (parts?.length && !liveTurn.value.parts.length) {
-        liveTurn.value.parts = [...parts];
-      }
-      latestPlanRunId.value = run.id;
-      promptInFlight.value = false;
-    }
     latestPlanRunId.value = null;
     const reqId = preparePromptRequestId(trimmed);
     promptInFlight.value = true;
@@ -780,6 +760,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       activeRun.value = mergeRun(activeRun.value, res.run);
       if (isTerminalRunState(activeRun.value.state)) {
         liveTurn.value = null;
+        resolveCancelUncertainty(runId);
         if (targetInstId && targetConvId && targetTopicId) {
           void loadHistory(targetInstId, targetConvId, targetTopicId);
         }

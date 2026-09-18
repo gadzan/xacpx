@@ -1249,6 +1249,94 @@ describe("useDirectBotsStore", () => {
       expect(store.cancelError).toBeNull();
     });
 
+    it("clears stale prompt error when switching Bot or Topic after a failed prompt", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_A";
+      store.activeConversationId = "conv_A";
+      store.activeTopicId = "top_A";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_A", name: "Bot A", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+
+      mockRpc.mockRejectedValueOnce(new Error("Network timeout"));
+      await store.sendPrompt("Prompt on Bot A");
+      expect(store.promptError).toBe("Network timeout");
+      expect(store.lastPromptText).toBe("Prompt on Bot A");
+
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversations.list") {
+          return Promise.resolve({ conversations: [{ id: "conv_B", botId: "bot_B", defaultTopicId: "top_B" }] });
+        }
+        if (type === "control.topics.list") {
+          return Promise.resolve({ topics: [{ id: "top_B", conversationId: "conv_B", title: "Topic B" }] });
+        }
+        if (type === "control.conversation.history") {
+          return Promise.resolve({ conversationId: "conv_B", topicId: "top_B", messages: [], hasMoreBefore: false, hasMoreAfter: false });
+        }
+        return Promise.resolve({});
+      });
+
+      await store.selectBot("inst_1", "bot_B");
+      expect(store.promptError).toBeNull();
+      expect(store.lastPromptText).toBe("");
+      expect(store.currentDraftRequestId).toBeNull();
+    });
+
+    it("clears cancel uncertainty when a retried cancel RPC succeeds with a terminal run", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.activeRun = {
+        id: "run_target",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_1",
+        requestId: "req_1",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+
+      let cancelCalls = 0;
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.runs.cancel") {
+          cancelCalls += 1;
+          if (cancelCalls === 1) return Promise.reject(new Error("Network disconnect"));
+          return Promise.resolve({
+            ok: true,
+            run: {
+              id: "run_target",
+              conversationId: "conv_1",
+              topicId: "top_1",
+              requestMessageId: "msg_1",
+              requestId: "req_1",
+              mode: "explicit",
+              state: "cancelled",
+              profileRevision: 1,
+              createdAt: "now",
+            },
+          });
+        }
+        if (type === "control.runs.get") return Promise.reject(new Error("Network disconnect"));
+        return Promise.resolve({});
+      });
+
+      await store.cancelCurrentRun();
+      await flushPromises();
+      expect(store.cancelError).toContain("Cancellation outcome unknown");
+      expect(store.activeRun?.state).toBe("running");
+
+      await store.cancelCurrentRun();
+      expect(store.activeRun?.state).toBe("cancelled");
+      expect(store.isRunActive).toBe(false);
+      expect(store.cancelError).toBeNull();
+      expect(store.liveTurn).toBeNull();
+    });
+
     it("clears cancel uncertainty when authoritative WS terminal event arrives after runs.get failure", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
