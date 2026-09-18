@@ -114,7 +114,7 @@ export default {
     mermaidFullscreen: "全屏",
     mermaidSource: "查看图表源码",
     mermaidDownload: "下载为 PNG",
-    jumpLatest: "↓ 最新",
+    jumpLatest: "最新",
     queuedHeader: "排队中",
     queueCancelAria: "从队列移除",
     contextUsage: "上下文：{used} / {size} tokens",

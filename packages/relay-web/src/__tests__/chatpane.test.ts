@@ -7,6 +7,9 @@ vi.mock("../api/client", () => ({
   ApiError: class extends Error { constructor(public code: string, public status: number) { super(code); } },
   api: { get: vi.fn(), rpc: vi.fn() },
 }));
+// ChatPane mounts MessageList → AgentIcon → the brand-SVG bundle, which Node cannot
+// open on some Windows boxes (EPERM). Stub it like the other transcript tests do.
+vi.mock("../lib/agent-icons", () => ({ agentIconSvg: () => null }));
 
 import ChatPane from "../components/ChatPane.vue";
 import { api } from "../api/client";
@@ -67,21 +70,21 @@ it("renders a git summary chip and clicking it opens the Changes tab", async () 
   expect(w.emitted("show-files")).toBeTruthy();
 });
 
-it("shows a working HUD while a live turn is active", async () => {
+it("shows a working quip chip while a live turn is active (no more composer HUD)", async () => {
   const chat = useChatStore();
   chat.select("i1", "backend");
   chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "backend" } } as never);
   const w = mount(ChatPane);
   await w.vm.$nextTick();
-  expect(w.find('[data-test="turn-hud"]').exists()).toBe(true);
-  // Quips render verbatim in the HUD status line, not the composer placeholder.
+  // The status HUD was removed; the quip now rides the transcript as a chip (MessageList).
+  expect(w.find('[data-test="turn-hud"]').exists()).toBe(false);
   const quip = w.find('[data-test="hud-quip"]');
   expect(quip.exists()).toBe(true);
   expect(quip.text().length).toBeGreaterThan(0);
   expect(quip.text()).not.toMatch(/…{2,}|…\s*…$/);
 });
 
-it("stacks status, plan, and composer as document-flow layers (status → plan → input)", async () => {
+it("stacks plan and composer as document-flow layers (plan → input), no status HUD", async () => {
   seedInstance();
   const chat = useChatStore();
   chat.select("i1", "backend");
@@ -100,30 +103,23 @@ it("stacks status, plan, and composer as document-flow layers (status → plan �
   expect(stack.classes()).toContain("composer-stack");
   expect(stack.classes()).not.toContain("absolute");
 
-  const status = stack.find('[data-test="turn-hud"]');
+  // The status HUD layer is gone; the working quip now lives in the transcript.
+  expect(stack.find('[data-test="turn-hud"]').exists()).toBe(false);
   const plan = stack.find('[data-test="plan-panel"]');
-  expect(status.exists()).toBe(true);
   expect(plan.exists()).toBe(true);
-  expect(status.classes()).toContain("stack-layer--status");
   expect(plan.classes()).toContain("stack-layer--plan");
-  expect(plan.classes()).toContain("stack-layer--pull");
-  // Elevation lives on the composer card alone (shadow-dock); the overlapping strips
-  // stay at e1, otherwise each layer's shadow bands onto the one below it in light mode.
-  expect(status.classes()).toContain("shadow-e1");
-  expect(status.classes()).not.toContain("shadow-e2");
+  // Plan is now the topmost strip, so it no longer pulls up under a status layer.
+  expect(plan.classes()).not.toContain("stack-layer--pull");
   expect(plan.classes()).toContain("shadow-e1");
   expect(plan.classes()).not.toContain("shadow-e3");
-  expect(status.classes()).toContain("backdrop-blur-md");
 
-  // DOM order: status (bottom layer) → plan (middle) → composer (top).
+  // DOM order: plan (middle) → composer (top). Composer still pulls under the plan.
   const stackEl = stack.element as HTMLElement;
-  const statusEl = status.element as HTMLElement;
   const planEl = plan.element as HTMLElement;
   const composerEl = stackEl.querySelector(".stack-layer--composer") as HTMLElement | null;
   expect(composerEl).toBeTruthy();
   expect(composerEl!.classList.contains("stack-layer--pull")).toBe(true);
   const kids = [...stackEl.children] as HTMLElement[];
-  expect(kids.indexOf(statusEl)).toBeLessThan(kids.indexOf(planEl));
   expect(kids.indexOf(planEl)).toBeLessThan(kids.indexOf(composerEl!));
 });
 
@@ -313,11 +309,11 @@ it("localizes the empty-state prompt when locale is zh-CN", () => {
   expect(w.text()).toContain("选择一个会话");
 });
 
-it("hides the HUD when no turn is active", () => {
+it("hides the working quip when no turn is active", () => {
   const chat = useChatStore();
   chat.select("i1", "backend");
   const w = mount(ChatPane);
-  expect(w.find('[data-test="turn-hud"]').exists()).toBe(false);
+  expect(w.find('[data-test="hud-quip"]').exists()).toBe(false);
 });
 
 it("clears staged attachments when switching session so they don't leak to the next target", async () => {
@@ -414,7 +410,7 @@ it("rotates a HUD quip every 20s while the turn runs, clears the timer when idle
 
   chat.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "turn-finished", chatKey: "c", sessionAlias: "backend", ok: true } } as never);
   await w.vm.$nextTick();
-  expect(w.find('[data-test="turn-hud"]').exists()).toBe(false);
+  expect(w.find('[data-test="hud-quip"]').exists()).toBe(false); // chip unmounts when the turn ends
   w.unmount();
   expect(vi.getTimerCount()).toBe(0); // quip interval must not survive unmount
   vi.useRealTimers();

@@ -1173,12 +1173,16 @@ it("re-pins to the bottom when the session changes (atBottom reset)", async () =
   expect(wrapper.find('[data-test="jump-latest"]').attributes("style") ?? "").toContain("display: none");
 });
 
-it("marks message rows as content-visibility virtualized (cv-row)", () => {
+it("virtualizes message rows and sticks the assistant agent-icon", () => {
   const wrapper = mount(MessageList, {
     props: { messages: [msg({ direction: "in", text: "a" }), msg({ direction: "out", text: "b" })], liveTurn: null },
   });
-  // Both the user and assistant row roots opt into off-screen render skipping.
-  expect(wrapper.findAll(".cv-row").length).toBe(2);
+  // User row virtualizes at the row (.cv-row); the assistant virtualizes at the bubble
+  // (.cv-bubble) so its sticky avatar + working chip can escape the row box.
+  expect(wrapper.findAll(".cv-row").length).toBe(1); // the user row
+  expect(wrapper.find('[data-test="msg-out"]').classes()).toContain("cv-bubble");
+  // The assistant avatar is the sticky element that hangs at the top of the scroller.
+  expect(wrapper.find(".agent-avatar").exists()).toBe(true);
 });
 
 it("shows a spinner while an older page is loading", () => {
@@ -1440,5 +1444,64 @@ describe("entrance choreography", () => {
     expect(wrapper.find(".enter-hold").exists()).toBe(false);
     expect(wrapper.findAll(".enter-row").length).toBe(0);
     expect(wrapper.findAll(".cv-row").length).toBe(100);
+  });
+});
+
+// Working-chip geometry (review #353 Medium): the chip anchors ONLY to an avatar that
+// actually intersects the scroller viewport — one still below the bottom edge would
+// leave a floating chip over unseen body text.
+describe("working chip geometry", () => {
+  let rafQueue: FrameRequestCallback[];
+
+  beforeEach(() => {
+    rafQueue = [];
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+      rafQueue.push(cb);
+      return rafQueue.length;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  async function flushFrames(wrapper: ReturnType<typeof mount>): Promise<void> {
+    while (rafQueue.length) {
+      for (const cb of rafQueue.splice(0)) cb(0);
+      await wrapper.vm.$nextTick();
+    }
+  }
+
+  function setRect(el: Element, r: Partial<DOMRect>): void {
+    el.getBoundingClientRect = () =>
+      ({ top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}), ...r }) as DOMRect;
+  }
+
+  // Empty transcript + live turn renders exactly one [data-avatar-key] ("live").
+  function setup() {
+    const wrapper = mount(MessageList, {
+      props: { messages: [], liveTurn: live([{ type: "text", text: "working" }]) },
+    });
+    const sc = wrapper.find('[data-test="msg-scroller"]').element;
+    setRect(sc, { top: 100, bottom: 500 });
+    setRect(sc.parentElement as HTMLElement, { top: 100, left: 0 });
+    return { wrapper, avatar: sc.querySelector("[data-avatar-key]") as HTMLElement };
+  }
+
+  it("anchors the chip above an avatar that is inside the viewport", async () => {
+    const { wrapper, avatar } = setup();
+    setRect(avatar, { top: 200, bottom: 224, left: 16, right: 40 });
+    await wrapper.vm.$nextTick();
+    await flushFrames(wrapper);
+    const style = wrapper.find(".working-chip").attributes("style") ?? "";
+    expect(style).toContain("opacity: 1");
+    expect(style).toContain("top: 74px"); // 200 − 100 − 22 (fallback chip height) − 4
+    expect(style).toContain("left: 16px");
+  });
+
+  it("hides the chip when the only avatar is still below the viewport bottom", async () => {
+    const { wrapper, avatar } = setup();
+    setRect(avatar, { top: 560, bottom: 584, left: 16, right: 40 });
+    await wrapper.vm.$nextTick();
+    await flushFrames(wrapper);
+    expect(wrapper.find(".working-chip").attributes("style")).toContain("opacity: 0");
   });
 });

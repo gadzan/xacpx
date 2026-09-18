@@ -117,7 +117,7 @@ export default {
     mermaidFullscreen: "Fullscreen",
     mermaidSource: "Show diagram source",
     mermaidDownload: "Download as PNG",
-    jumpLatest: "↓ Latest",
+    jumpLatest: "Latest",
     queuedHeader: "Queued",
     queueCancelAria: "Remove from queue",
     contextUsage: "Context: {used} / {size} tokens",
