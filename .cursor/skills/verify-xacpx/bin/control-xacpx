@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Drive xacpx CLI / dry-run against the current HOME. Refuses a non-isolated home.
+set -euo pipefail
+
+find_repo_root() {
+  local dir="$1"
+  while [[ "$dir" != "/" ]]; do
+    if [[ -f "$dir/package.json" ]] && grep -q '"name": "@ganglion/xacpx"' "$dir/package.json"; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+    dir="$(dirname "$dir")"
+  done
+  return 1
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${VERIFY_REPO_ROOT:-$(find_repo_root "$SCRIPT_DIR")}"
+if [[ -z "${REPO_ROOT}" || ! -f "$REPO_ROOT/src/cli.ts" ]]; then
+  echo "control-xacpx: could not find the xacpx repo root" >&2
+  exit 2
+fi
+
+home_is_isolated() {
+  local home="${HOME:-}"
+  [[ "$home" == *xacpx-verify-* ]]
+}
+
+require_isolated_home() {
+  if home_is_isolated; then
+    return 0
+  fi
+  if [[ "${VERIFY_ALLOW_SHARED_HOME:-}" == "1" ]]; then
+    echo "control-xacpx: VERIFY_ALLOW_SHARED_HOME=1, driving HOME=$HOME" >&2
+    return 0
+  fi
+  echo "control-xacpx: refusing HOME=${HOME:-unset} (expected a /tmp/xacpx-verify-* directory)" >&2
+  echo "control-xacpx: export HOME to an isolated verify home, or set VERIFY_ALLOW_SHARED_HOME=1" >&2
+  exit 2
+}
+
+run_cli() {
+  require_isolated_home
+  bun "$REPO_ROOT/src/cli.ts" "$@"
+}
+
+run_dry_run() {
+  require_isolated_home
+  bun "$REPO_ROOT/src/dry-run.ts" "$@"
+}
+
+print_env() {
+  require_isolated_home
+  local config="$HOME/.xacpx/config.json"
+  local state="$HOME/.xacpx/state.json"
+  echo "repo=$REPO_ROOT"
+  echo "HOME=$HOME"
+  echo "config=$config"
+  echo "config_exists=$([[ -f "$config" ]] && echo yes || echo no)"
+  echo "state=$state"
+  echo "state_exists=$([[ -f "$state" ]] && echo yes || echo no)"
+  echo "evidence=${VERIFY_EVIDENCE:-unset}"
+  echo "LANG=${LANG:-unset}"
+}
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+  env)
+    print_env
+    ;;
+  doctor)
+    run_cli doctor "$@"
+    ;;
+  cli)
+    if [[ "${1:-}" == "--" ]]; then
+      shift
+    fi
+    run_cli "$@"
+    ;;
+  dry-run)
+    if [[ "${1:-}" == "--" ]]; then
+      shift
+    fi
+    run_dry_run "$@"
+    ;;
+  ""|-h|--help)
+    cat <<'EOF'
+Usage:
+  bash control-xacpx env
+  bash control-xacpx doctor [--verbose]
+  bash control-xacpx cli -- <xacpx args>
+  bash control-xacpx dry-run -- [--chat-key <id>] "<command>"...
+EOF
+    ;;
+  *)
+    echo "control-xacpx: unknown command $cmd" >&2
+    exit 2
+    ;;
+esac
