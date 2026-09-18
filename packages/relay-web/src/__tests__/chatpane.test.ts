@@ -107,7 +107,12 @@ it("stacks status, plan, and composer as document-flow layers (status → plan �
   expect(status.classes()).toContain("stack-layer--status");
   expect(plan.classes()).toContain("stack-layer--plan");
   expect(plan.classes()).toContain("stack-layer--pull");
-  expect(status.classes()).toContain("shadow-e2");
+  // Elevation lives on the composer card alone (shadow-dock); the overlapping strips
+  // stay at e1, otherwise each layer's shadow bands onto the one below it in light mode.
+  expect(status.classes()).toContain("shadow-e1");
+  expect(status.classes()).not.toContain("shadow-e2");
+  expect(plan.classes()).toContain("shadow-e1");
+  expect(plan.classes()).not.toContain("shadow-e3");
   expect(status.classes()).toContain("backdrop-blur-md");
 
   // DOM order: status (bottom layer) → plan (middle) → composer (top).

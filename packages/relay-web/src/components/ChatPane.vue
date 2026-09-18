@@ -261,7 +261,12 @@ const hudStatus = computed(() => hudQuip.value || `${t("chat.mentionActivity.wor
         <div class="mx-auto w-full max-w-3xl">
         <!-- Document-flow stack: status (bottom) → plan (middle) → input (top).
              Overlap is visual only — lower layers reserve padding-bottom equal to the
-             pull-up so content stays fully visible. -->
+             pull-up so content stays fully visible.
+             Elevation rule: the stack reads as ONE lifted card, so only the composer
+             carries a real shadow (`shadow-dock`, see PromptInput). These overlapping
+             strips keep shadow-e1 — each pulled-up layer's shadow otherwise lands on
+             the strip below it and bands visibly in the light theme (plan used to sit
+             on the dialog-grade shadow-e3, which is far too heavy for a docked panel). -->
         <TransitionGroup
           tag="div"
           name="composer-layer"
@@ -269,7 +274,7 @@ const hudStatus = computed(() => hudQuip.value || `${t("chat.mentionActivity.wor
           data-test="composer-stack"
         >
           <div v-if="chat.busy" key="status-layer" data-test="turn-hud"
-               class="stack-layer stack-layer--status relative z-10 mx-4 flex items-center gap-2 rounded-xl border border-run/20 bg-surface/95 px-3 pt-1.5 pb-[calc(0.375rem+var(--stack-overlap))] shadow-e2 backdrop-blur-md sm:mx-6">
+               class="stack-layer stack-layer--status relative z-10 mx-4 flex items-center gap-2 rounded-xl border border-run/20 bg-surface/95 px-3 pt-1.5 pb-[calc(0.375rem+var(--stack-overlap))] shadow-e1 backdrop-blur-md sm:mx-6">
             <span class="h-2 w-2 rounded-full bg-run pulse-dot" aria-hidden="true" />
             <span data-test="hud-quip" class="text-[12px] font-semibold text-run">{{ hudStatus }}</span>
             <span class="font-mono text-[12px] font-semibold tabular-nums text-run">{{ elapsed }}</span>
@@ -280,10 +285,10 @@ const hudStatus = computed(() => hudQuip.value || `${t("chat.mentionActivity.wor
                     @click="chat.cancel"><X :size="13" />{{ $t("common.cancel") }}</button>
           </div>
           <PlanPanel v-if="showPlan" key="plan-layer" v-model:expanded="planExpanded" :entries="chat.sessionPlan!" :active="chat.busy" variant="stack"
-                     class="stack-layer stack-layer--plan relative z-20 mx-2 pb-[var(--stack-overlap)] shadow-e3 sm:mx-3"
+                     class="stack-layer stack-layer--plan relative z-20 mx-2 pb-[var(--stack-overlap)] shadow-e1 sm:mx-3"
                      :class="{ 'stack-layer--pull': chat.busy }" />
           <QueueStrip v-if="showQueue" key="queue-layer"
-                      class="stack-layer stack-layer--queue relative z-[25] mx-2 pb-[var(--stack-overlap)] shadow-e2 rounded-lg sm:mx-3"
+                      class="stack-layer stack-layer--queue relative z-[25] mx-2 pb-[var(--stack-overlap)] shadow-e1 rounded-lg sm:mx-3"
                       :class="{ 'stack-layer--pull': chat.busy || showPlan }" />
           <div key="composer-layer" class="stack-layer stack-layer--composer relative z-30"
                :class="{ 'stack-layer--pull': chat.busy || showPlan || showQueue }">
