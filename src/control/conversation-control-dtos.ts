@@ -161,6 +161,7 @@ export interface ConversationHistoryRequestDto {
   afterSeq?: number;
   beforeSeq?: number;
   limit?: number;
+  direction?: "oldest-first" | "newest-first";
 }
 
 export interface ConversationHistoryResponseDto {

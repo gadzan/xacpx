@@ -416,7 +416,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     return res.topic;
   }
 
-  // History loading and seq-based pagination
+  // History loading and seq-based pagination. Initial loads use the durable
+  // newest-first tail so refresh/reconnect sees the latest page (not seq 1..N)
+  // even when a Topic has more messages than one history page.
   async function loadHistory(targetInstanceId?: string, convId?: string, topId?: string): Promise<void> {
     const iId = targetInstanceId ?? instanceId.value;
     const cId = convId ?? activeConversationId.value;
@@ -431,6 +433,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           conversationId: cId,
           topicId: tId,
           limit: 50,
+          direction: "newest-first",
         }),
       );
 
@@ -458,10 +461,72 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           liveTurn.value = null;
         }
       }
+      // Durable active-run recovery: after the authoritative tail is in place,
+      // query topic-scoped runs so refresh finds the newest non-terminal Run
+      // even when no live snapshot/event has arrived yet.
+      await recoverActiveRun(iId, cId, tId);
     } catch (err: unknown) {
       historyError.value = err instanceof Error ? err.message : String(err);
     } finally {
       loadingHistory.value = false;
+    }
+  }
+
+  // Query durable topic Runs and adopt the newest non-terminal Run as active.
+  // Uses exact product IDs (conversationId/topicId/runId/memberTurnId) only;
+  // never session aliases, timestamps, or latest-turn heuristics.
+  async function recoverActiveRun(iId: string, cId: string, tId: string): Promise<void> {
+    try {
+      const listed = unwrapRpc(
+        await api.rpc<{ runs: ConversationRunDto[]; activeRunId?: string }>(iId, MSG.runsList, {
+          conversationId: cId,
+          topicId: tId,
+        }),
+      );
+      if (instanceId.value !== iId || activeConversationId.value !== cId || activeTopicId.value !== tId) {
+        return;
+      }
+      const candidate = listed.activeRunId
+        ? listed.runs.find((run) => run.id === listed.activeRunId)
+        : undefined;
+      if (!candidate) {
+        return;
+      }
+      if (activeRun.value && activeRun.value.id !== candidate.id) {
+        return;
+      }
+      activeRun.value = mergeRun(activeRun.value, candidate);
+      if (isTerminalRunState(activeRun.value.state)) {
+        liveTurn.value = null;
+        return;
+      }
+      // Fetch authoritative Run detail (member turns) without touching live snapshots.
+      try {
+        const detail = unwrapRpc(
+          await api.rpc<{ run: ConversationRunDetailDto }>(iId, MSG.runsGet, { runId: candidate.id }),
+        );
+        if (instanceId.value !== iId || activeConversationId.value !== cId || activeTopicId.value !== tId) {
+          return;
+        }
+        if (activeRun.value && activeRun.value.id !== candidate.id) {
+          return;
+        }
+        activeRun.value = mergeRun(activeRun.value, detail.run);
+        const latestMember = detail.run.memberTurns?.length
+          ? detail.run.memberTurns[detail.run.memberTurns.length - 1]
+          : undefined;
+        if (latestMember && (!activeMemberTurn.value || activeMemberTurn.value.runId === candidate.id)) {
+          activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, latestMember);
+        }
+        if (isTerminalRunState(activeRun.value.state)) {
+          liveTurn.value = null;
+        }
+      } catch {
+        // Keep the adopted Run row; detail fetch is best-effort recovery.
+      }
+    } catch {
+      // Runs discovery is best-effort: older connectors answer unknown-type and
+      // history still renders. Never surface this as a history error.
     }
   }
 
@@ -636,6 +701,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       promptError.value = "Bot is disabled. Enable it before sending messages.";
       return;
     }
+    // Fence the slow accept RPC against a recovered durable Run: if recovery
+    // adopted an active Run while this prompt was being composed, refuse to
+    // send a second prompt into the same Topic.
     if (isRunActive.value) {
       promptError.value = "A run is already in progress. Wait for it to finish or cancel it.";
       return;

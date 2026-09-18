@@ -174,8 +174,11 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
       </button>
     </div>
 
-    <!-- Empty State / Bot Intro -->
-    <div v-if="!loadingHistory && messages.length === 0 && !liveTurn" class="my-auto flex flex-col items-center justify-center py-12 text-center">
+    <!-- Empty State / Bot Intro: only when no messages, no live turn, and no
+      terminal Run banner to show. A terminal Run without messages is a real
+      outcome state (e.g. cancelled before the first assistant row), not an
+      empty conversation. -->
+    <div v-if="!loadingHistory && messages.length === 0 && !liveTurn && !(activeRun && (activeRun.state === 'failed' || activeRun.state === 'cancelled' || activeRun.state === 'indeterminate'))" class="my-auto flex flex-col items-center justify-center py-12 text-center">
       <div class="mb-3 grid h-12 w-12 place-items-center rounded-2xl bg-accent/10 text-accent">
         <AgentIcon v-if="botDriver" :driver="botDriver" :title="bot?.name ?? 'Bot'" :size="24" />
         <Bot v-else :size="24" />
@@ -276,8 +279,10 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
               <span v-if="liveElapsedLabel" class="tabular-nums font-mono opacity-80">· {{ liveElapsedLabel }}</span>
             </div>
 
-            <!-- Stop Button -->
+            <!-- Stop Button: only while the Run is non-terminal; terminal Runs
+              keep their banner but must not offer another cancel RPC. -->
             <button
+              v-if="activeRun && (activeRun.state === 'queued' || activeRun.state === 'running' || activeRun.state === 'waiting-human')"
               type="button"
               data-test="stop-turn-hud-button"
               class="flex items-center gap-1 rounded border border-danger/40 bg-danger/10 px-2 py-0.5 text-[10.5px] font-medium text-danger hover:bg-danger/20 transition-colors"

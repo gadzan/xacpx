@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { X, Loader2, AlertCircle } from "lucide-vue-next";
 import type { BotDetailDto, BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
@@ -72,11 +72,24 @@ const availableAgents = computed(() => {
 // Available workspaces from instance
 const availableWorkspaces = computed(() => inst.value?.workspaces ?? []);
 
-// Prepopulate defaults if create mode
+// Prepopulate defaults if create mode. A generation counter fences the async
+// form-options + instructions loads: closing/reopening (or switching bots) must
+// not let a stale response overwrite the current dialog's fields. Unmount bumps
+// the generation so a late resolution after close is dropped.
+let dialogGeneration = 0;
+onUnmounted(() => { dialogGeneration++; });
 onMounted(async () => {
+  const generation = ++dialogGeneration;
+  try {
+    await instancesStore.loadFormOptions(props.instanceId);
+  } catch {
+    // Ignore options load error; validation surfaces missing agent/workspace.
+  }
+  if (generation !== dialogGeneration) return;
   if (props.bot && (!("instructions" in props.bot) || props.bot.instructions === undefined)) {
     try {
       const detail = await directBotsStore.loadBotDetail(props.instanceId, props.bot.id);
+      if (generation !== dialogGeneration) return;
       if (detail.instructions) {
         instructions.value = detail.instructions;
       }

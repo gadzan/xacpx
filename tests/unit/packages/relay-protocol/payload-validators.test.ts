@@ -180,9 +180,15 @@ test("Bot and Conversation control RPCs validate product IDs, not hidden aliases
   expect(parseControlPayload(MSG.conversationHistory, {
     conversationId: "conversation_1", topicId: "topic_1", afterSeq: 0, limit: 50,
   })).not.toBeNull();
+  expect(parseControlPayload(MSG.conversationHistory, {
+    conversationId: "conversation_1", topicId: "topic_1", limit: 20, direction: "newest-first",
+  })).not.toBeNull();
+  expect(parseControlPayload(MSG.conversationHistory, {
+    conversationId: "conversation_1", topicId: "topic_1", direction: "sideways",
+  })).toBeNull();
   expect(parseControlPayload(MSG.runsGet, { runId: "run_1" })).not.toBeNull();
+  expect(parseControlPayload(MSG.runsList, { conversationId: "conversation_1", topicId: "topic_1" })).not.toBeNull();
+  expect(parseControlPayload(MSG.runsList, { conversationId: "conversation_1" })).toBeNull();
   expect(parseControlPayload(MSG.runsCancel, { runId: "run_1" })).not.toBeNull();
   expect(parseControlPayload(MSG.runsCancel, { alias: "brt_x" } as never)).toBeNull();
 });
-
-// where tsc actually sees them — `tests/` is outside every tsconfig's `include`.

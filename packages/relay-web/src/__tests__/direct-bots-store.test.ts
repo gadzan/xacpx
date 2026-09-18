@@ -328,6 +328,104 @@ describe("useDirectBotsStore", () => {
   });
 
   describe("History and Pagination", () => {
+    it("loads newest-first tail history then recovers the durable active run", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+
+      const mockHistory: ConversationHistoryResponseDto = {
+        conversationId: "conv_1",
+        topicId: "top_1",
+        messages: [
+          {
+            id: "msg_2",
+            conversationId: "conv_1",
+            topicId: "top_1",
+            seq: 2,
+            role: "bot",
+            content: "Hello back",
+            createdAt: "2026-09-18T00:01:00.000Z",
+          },
+          {
+            id: "msg_1",
+            conversationId: "conv_1",
+            topicId: "top_1",
+            seq: 1,
+            role: "human",
+            content: "Hello",
+            createdAt: "2026-09-18T00:00:00.000Z",
+          },
+        ],
+        oldestSeq: 1,
+        newestSeq: 2,
+        hasMoreBefore: true,
+        hasMoreAfter: false,
+      };
+      const durableRun: ConversationRunDto = {
+        id: "run_tail",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_1",
+        requestId: "req_tail",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z",
+      };
+      const durableDetail: ConversationRunDetailDto = {
+        ...durableRun,
+        memberTurns: [
+          {
+            id: "turn_tail",
+            runId: "run_tail",
+            conversationId: "conv_1",
+            topicId: "top_1",
+            botId: "bot_1",
+            batch: 1,
+            attempt: 1,
+            origin: "human",
+            state: "running",
+            createdAt: "2026-09-18T00:00:00.000Z",
+          },
+        ],
+      };
+      mockRpc.mockImplementation((instanceId: string, type: string) => {
+        if (type === "control.conversation.history") return Promise.resolve(mockHistory);
+        if (type === "control.runs.list") {
+          return Promise.resolve({ conversationId: "conv_1", topicId: "top_1", runs: [durableRun], activeRunId: "run_tail" });
+        }
+        if (type === "control.runs.get") return Promise.resolve({ run: durableDetail });
+        return Promise.reject(new Error(`unexpected rpc ${type}`));
+      });
+
+      await store.loadHistory("inst_1", "conv_1", "top_1");
+      expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.conversation.history", {
+        conversationId: "conv_1",
+        topicId: "top_1",
+        limit: 50,
+        direction: "newest-first",
+      });
+      expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.runs.list", {
+        conversationId: "conv_1",
+        topicId: "top_1",
+      });
+      expect(store.messages.map((m) => m.seq)).toEqual([1, 2]);
+      expect(store.oldestSeq).toBe(1);
+      expect(store.newestSeq).toBe(2);
+      expect(store.hasMoreBefore).toBe(true);
+      expect(store.activeRun?.id).toBe("run_tail");
+      expect(store.activeMemberTurn?.id).toBe("turn_tail");
+      expect(store.isRunActive).toBe(true);
+      // A second prompt must fence against the recovered durable Run.
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      store.selectedBotId = "bot_1";
+      await store.sendPrompt("second prompt while recovered run active");
+      expect(store.promptError).toContain("already in progress");
+    });
+
     it("loads history sorted by seq and deduplicates messages", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
@@ -362,7 +460,13 @@ describe("useDirectBotsStore", () => {
         hasMoreBefore: true,
         hasMoreAfter: false,
       };
-      mockRpc.mockResolvedValueOnce(mockHistory);
+      mockRpc.mockImplementation((instanceId: string, type: string, payload?: unknown) => {
+        if (type === "control.conversation.history") return Promise.resolve(mockHistory);
+        if (type === "control.runs.list") {
+          return Promise.resolve({ conversationId: "conv_1", topicId: "top_1", runs: [], activeRunId: undefined });
+        }
+        return Promise.reject(new Error(`unexpected rpc ${type}: ${String(instanceId)} ${JSON.stringify(payload)}`));
+      });
 
       await store.loadHistory("inst_1", "conv_1", "top_1");
       expect(store.messages.map((m) => m.seq)).toEqual([1, 2]);
@@ -1881,13 +1985,20 @@ describe("useDirectBotsStore", () => {
       mockRpc.mockResolvedValueOnce({
         topics: [{ id: "top_1", conversationId: "conv_1", title: "Default", status: "active", createdAt: "now", updatedAt: "now" }],
       });
-      // 4. loadHistory
+      // 4. loadHistory tail (exercises newest-first direction) plus durable
+      // runs discovery: newest active run query returns no other Run, so the
+      // stale completed detail below is the authority for run_1.
       mockRpc.mockResolvedValueOnce({
         conversationId: "conv_1",
         topicId: "top_1",
         messages: [],
         hasMoreBefore: false,
         hasMoreAfter: false,
+      });
+      mockRpc.mockResolvedValueOnce({
+        conversationId: "conv_1",
+        topicId: "top_1",
+        runs: [],
       });
       // 5. runsGet (shows run completed offline)
       const finishedRun: ConversationRunDetailDto = {
@@ -1903,7 +2014,7 @@ describe("useDirectBotsStore", () => {
         memberTurns: [],
       };
       mockRpc.mockResolvedValueOnce({ run: finishedRun });
-      // 6. loadHistory to converge on completion
+      // 6. loadHistory tail to converge on completion, plus its runs discovery.
       mockRpc.mockResolvedValueOnce({
         conversationId: "conv_1",
         topicId: "top_1",
@@ -1921,6 +2032,11 @@ describe("useDirectBotsStore", () => {
         ],
         hasMoreBefore: false,
         hasMoreAfter: false,
+      });
+      mockRpc.mockResolvedValueOnce({
+        conversationId: "conv_1",
+        topicId: "top_1",
+        runs: [],
       });
 
       await store.reconcileOnReconnect();

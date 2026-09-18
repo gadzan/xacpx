@@ -46,6 +46,7 @@ import {
   type QueueCancelPayload,
   type RunsCancelPayload,
   type RunsGetPayload,
+  type RunsListPayload,
   type ScheduledCancelPayload,
   type ScheduledCreatePayload,
   type ScheduledListPayload,
@@ -425,11 +426,16 @@ const validateConversationHistory: Validator<ConversationHistoryPayload> = (p) =
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.topicId)
     && optNum(o.afterSeq) && optNum(o.beforeSeq) && optNum(o.limit)
+    && (o.direction === undefined || o.direction === "oldest-first" || o.direction === "newest-first")
     ? (o as unknown as ConversationHistoryPayload) : null;
 };
 const validateRunsGet: Validator<RunsGetPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.runId) ? (o as unknown as RunsGetPayload) : null;
+};
+const validateRunsList: Validator<RunsListPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.conversationId) && isStr(o.topicId) ? (o as unknown as RunsListPayload) : null;
 };
 const validateRunsCancel: Validator<RunsCancelPayload> = (p) => {
   const o = fields(p);
@@ -468,7 +474,7 @@ export type ControlRpcType =
   | typeof MSG.conversationsList | typeof MSG.conversationsGet
   | typeof MSG.topicsList | typeof MSG.topicsCreate
   | typeof MSG.conversationPrompt | typeof MSG.conversationHistory
-  | typeof MSG.runsGet | typeof MSG.runsCancel;
+  | typeof MSG.runsGet | typeof MSG.runsList | typeof MSG.runsCancel;
 
 /** Registry: control-RPC type → shape validator. `satisfies` locks both directions —
  *  a ControlRpcType with no validator, or a validator whose key isn't a ControlRpcType,
@@ -538,6 +544,7 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.conversationPrompt]: validateConversationPrompt,
   [MSG.conversationHistory]: validateConversationHistory,
   [MSG.runsGet]: validateRunsGet,
+  [MSG.runsList]: validateRunsList,
   [MSG.runsCancel]: validateRunsCancel,
 } satisfies Record<ControlRpcType, Validator<unknown>>;
 

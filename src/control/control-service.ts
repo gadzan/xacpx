@@ -2021,6 +2021,7 @@ export class ControlService {
       limit,
       ...(input.afterSeq !== undefined ? { afterSeq: input.afterSeq } : {}),
       ...(input.beforeSeq !== undefined ? { beforeSeq: input.beforeSeq } : {}),
+      ...(input.direction !== undefined ? { direction: input.direction } : {}),
     });
     return {
       conversationId: input.conversationId,
@@ -2036,6 +2037,14 @@ export class ControlService {
   getRun(runId: string) {
     const result = this.requireConversations().runs.getRun(runId);
     return toRunDetail(result.run, result.memberTurns);
+  }
+
+  listTopicRuns(conversationId: string, topicId: string) {
+    const listed = this.requireConversations().runs.listTopicRuns(conversationId, topicId);
+    return {
+      runs: listed.runs.map(toConversationRun),
+      ...(listed.activeRunId ? { activeRunId: listed.activeRunId } : {}),
+    };
   }
 
   async cancelRun(runId: string) {
