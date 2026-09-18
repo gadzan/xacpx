@@ -221,6 +221,16 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   const lastPromptText = ref<string>("");
   const promptInFlight = ref<boolean>(false);
   const promptError = ref<string | null>(null);
+  // Cancel-outcome uncertainty is tracked separately from prompt submission errors:
+  // a failed `runs.cancel` transport does not mean the durable Run terminated.
+  const cancelError = ref<string | null>(null);
+  const cancelUncertaintyRunId = ref<string | null>(null);
+  function resolveCancelUncertainty(runId: string): void {
+    if (cancelUncertaintyRunId.value === runId) {
+      cancelUncertaintyRunId.value = null;
+      cancelError.value = null;
+    }
+  }
 
   // General error feedback
   const generalError = ref<string | null>(null);
@@ -518,10 +528,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     activeRun.value = null;
     activeMemberTurn.value = null;
     liveTurn.value = null;
-    latestPlanRunId.value = null;
     cancellingRunId.value = null;
+    cancelUncertaintyRunId.value = null;
+    cancelError.value = null;
     promptInFlight.value = false;
-    promptError.value = null;
     currentDraftRequestId.value = null;
     lastPromptText.value = "";
     // Load bot detail in background
@@ -565,10 +575,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     activeRun.value = null;
     activeMemberTurn.value = null;
     liveTurn.value = null;
-    latestPlanRunId.value = null;
     cancellingRunId.value = null;
+    cancelUncertaintyRunId.value = null;
+    cancelError.value = null;
     promptInFlight.value = false;
-    promptError.value = null;
     currentDraftRequestId.value = null;
     lastPromptText.value = "";
     if (instanceId.value && activeConversationId.value) {
@@ -596,9 +606,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     latestPlanRunId.value = null;
     planByRunId.value = {};
     cancellingRunId.value = null;
+    cancelUncertaintyRunId.value = null;
+    cancelError.value = null;
     promptInFlight.value = false;
-    promptError.value = null;
-    currentDraftRequestId.value = null;
     lastPromptText.value = "";
     persistBotSelection(null, null);
   }
@@ -638,6 +648,27 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       selectedBotId.value === targetBotId &&
       activeConversationId.value === targetConvId &&
       activeTopicId.value === targetTopicId;
+    // Adopt a queued/running run whose durable requestId matches our in-flight
+    // prompt, even when a stale terminal activeRun is still displayed.
+    function adoptPendingPromptRun(run: ConversationRunDto, memberTurn?: MemberTurnSummaryDto | null): void {
+      activeRun.value = mergeRun(activeRun.value, run);
+      if (memberTurn) {
+        activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, memberTurn);
+      }
+      if (!liveTurn.value) {
+        liveTurn.value = {
+          parts: [],
+          status: "working",
+          startedAt: run.startedAt ? new Date(run.startedAt).getTime() : Date.now(),
+        };
+      }
+      const parts = runParts.value[run.id];
+      if (parts?.length && !liveTurn.value.parts.length) {
+        liveTurn.value.parts = [...parts];
+      }
+      latestPlanRunId.value = run.id;
+      promptInFlight.value = false;
+    }
     latestPlanRunId.value = null;
     const reqId = preparePromptRequestId(trimmed);
     promptInFlight.value = true;
@@ -756,9 +787,11 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     } catch (err: unknown) {
       console.warn("cancelCurrentRun error:", err);
       // Transport failure does NOT mean durable Run is terminal/indeterminate.
-      // Keep activeRun active, surface uncertainty feedback, and query instance state.
+      // Keep activeRun active, track uncertainty separately from prompt errors,
+      // and query instance state.
       if (isCurrent() && activeRun.value && activeRun.value.id === runId) {
-        promptError.value = "Cancellation outcome unknown. Waiting for instance state...";
+        cancelUncertaintyRunId.value = runId;
+        cancelError.value = "Cancellation outcome unknown. Waiting for instance state...";
         void api
           .rpc<{ run: ConversationRunDetailDto }>(targetInstId, MSG.runsGet, { runId })
           .then((getRes) => {
@@ -767,7 +800,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
             activeRun.value = mergeRun(activeRun.value, run);
             if (isTerminalRunState(activeRun.value.state)) {
               liveTurn.value = null;
-              promptError.value = null;
+              resolveCancelUncertainty(runId);
               if (targetInstId && targetConvId && targetTopicId) {
                 void loadHistory(targetInstId, targetConvId, targetTopicId);
               }
@@ -1036,10 +1069,21 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           activeRun.value = mergeRun(activeRun.value, run);
           if (isTerminalRunState(activeRun.value.state)) {
             liveTurn.value = null;
+            resolveCancelUncertainty(run.id);
             if (instanceId.value && activeConversationId.value && activeTopicId.value) {
               void loadHistory(instanceId.value, activeConversationId.value, activeTopicId.value);
             }
           }
+        } else if (
+          !isTerminalRunState(run.state) &&
+          run.requestId !== "" &&
+          currentDraftRequestId.value !== null &&
+          run.requestId === currentDraftRequestId.value
+        ) {
+          activeRun.value = mergeRun(null, run);
+          activeMemberTurn.value = null;
+          liveTurn.value = null;
+          latestPlanRunId.value = run.id;
         }
       }
       return;
@@ -1048,8 +1092,22 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     if (e.type === "member-turn-started") {
       const { run, memberTurn } = e;
       if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
-        activeRun.value = mergeRun(activeRun.value, run);
-        activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, memberTurn);
+        if (!activeRun.value || activeRun.value.id === run.id) {
+          activeRun.value = mergeRun(activeRun.value, run);
+          activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, memberTurn);
+        } else if (
+          !isTerminalRunState(run.state) &&
+          memberTurn.promptRequestId !== undefined &&
+          currentDraftRequestId.value !== null &&
+          memberTurn.promptRequestId === currentDraftRequestId.value
+        ) {
+          activeRun.value = mergeRun(null, run);
+          activeMemberTurn.value = mergeMemberTurn(null, memberTurn);
+          liveTurn.value = null;
+          latestPlanRunId.value = run.id;
+        } else {
+          return;
+        }
         if (!liveTurn.value || activeRun.value?.id === run.id) {
           liveTurn.value = {
             parts: [],
@@ -1068,6 +1126,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, memberTurn);
         if (isTerminalRunState(activeRun.value.state)) {
           liveTurn.value = null;
+          resolveCancelUncertainty(run.id);
           if (instanceId.value && activeConversationId.value && activeTopicId.value) {
             void loadHistory(instanceId.value, activeConversationId.value, activeTopicId.value);
           }
@@ -1159,11 +1218,13 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     liveTurn,
     planEntries,
     cancellingRunId,
+    cancelUncertaintyRunId,
     runParts,
     currentDraftRequestId,
     lastPromptText,
     promptInFlight,
     promptError,
+    cancelError,
     generalError,
     isBotSelected,
     currentBots,
