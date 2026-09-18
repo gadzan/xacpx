@@ -416,6 +416,7 @@ describe("Direct Bot Components", () => {
         requestId: "r1",
         mode: "explicit",
         state: "cancelled",
+        profileRevision: 1,
         createdAt: "2026-09-18T00:00:00.000Z",
       };
       const wrapper = mount(ConversationMessageList, {
