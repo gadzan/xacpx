@@ -856,6 +856,77 @@ describe("useDirectBotsStore", () => {
       expect(store.planEntries).toHaveLength(1);
       expect(store.planEntries[0]?.content).toBe("Step 1: Check repo");
     });
+    it("isolates plan entries between runs and does not leak Run A plan into Run B", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+
+      // Run A is active and receives Plan A
+      store.activeRun = {
+        id: "run_A",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "mA",
+        requestId: "rA",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "plan",
+          chatKey: "rk",
+          sessionAlias: "brt_1",
+          entries: [{ content: "Plan A task", priority: "high", status: "in_progress" }],
+          conversation: { conversationId: "conv_1", topicId: "top_1", botId: "bot_1", runId: "run_A", memberTurnId: "mA1" },
+        } as never,
+      });
+      expect(store.planEntries).toHaveLength(1);
+      expect(store.planEntries[0]?.content).toBe("Plan A task");
+
+      // Run A completes
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "conversation-run-changed",
+          run: { ...store.activeRun, state: "completed" },
+        } as never,
+      });
+      expect(store.isRunActive).toBe(false);
+
+      // User starts Run B (which does not emit any plan)
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversation.prompt") {
+          return Promise.resolve({
+            reused: false,
+            conversationId: "conv_1",
+            topicId: "top_1",
+            requestId: "rB",
+            message: { id: "mB", conversationId: "conv_1", topicId: "top_1", seq: 3, role: "human", content: "Prompt B", createdAt: "now" },
+            run: { id: "run_B", conversationId: "conv_1", topicId: "top_1", requestMessageId: "mB", requestId: "rB", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" },
+            memberTurn: { id: "mB1", runId: "run_B", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "running", createdAt: "now" },
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      await store.sendPrompt("Prompt B");
+      await flushPromises();
+
+      expect(store.activeRun?.id).toBe("run_B");
+      // Plan A MUST NOT leak into Run B!
+      expect(store.planEntries).toEqual([]);
+    });
   });
 
   describe("Streaming and Turn Events correlation", () => {
@@ -1046,9 +1117,10 @@ describe("useDirectBotsStore", () => {
       expect(store.liveTurn).toBeNull();
     });
 
-    it("marks run indeterminate on cancellation failure/timeout", async () => {
+    it("handles cancel transport failure: keeps activeRun active, blocks new prompt, and converges on background runs.get", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
       store.activeConversationId = "conv_1";
       store.activeTopicId = "top_1";
       store.activeRun = {
@@ -1062,11 +1134,51 @@ describe("useDirectBotsStore", () => {
         profileRevision: 1,
         createdAt: "2026-09-18T00:00:00.000Z",
       };
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
 
-      mockRpc.mockRejectedValueOnce(new Error("cancellation timeout"));
+      const { promise: runsGetPromise, resolve: resolveRunsGet } = Promise.withResolvers<unknown>();
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.runs.cancel") return Promise.reject(new Error("Network disconnect"));
+        if (type === "control.runs.get") return runsGetPromise;
+        if (type === "control.conversation.history") return Promise.resolve({ conversationId: "conv_1", topicId: "top_1", messages: [] });
+        return Promise.resolve({});
+      });
 
+      // User clicks Cancel, but cancel RPC encounters a network failure
       await store.cancelCurrentRun();
-      expect(store.activeRun?.state).toBe("indeterminate");
+
+      // Active run must NOT be fabricated as terminal indeterminate!
+      expect(store.activeRun?.state).toBe("running");
+      expect(store.isRunActive).toBe(true);
+      expect(store.promptError).toContain("Cancellation outcome unknown");
+
+      // Because isRunActive is still true, user CANNOT send a second prompt
+      await store.sendPrompt("Second prompt while cancel pending");
+      expect(store.promptError).toContain("already in progress");
+
+      // Now background runs.get resolves with server authoritative cancelled state
+      resolveRunsGet({
+        run: {
+          id: "run_target",
+          conversationId: "conv_1",
+          topicId: "top_1",
+          requestMessageId: "msg_1",
+          requestId: "req_1",
+          mode: "explicit",
+          state: "cancelled",
+          profileRevision: 1,
+          createdAt: "2026-09-18T00:00:00.000Z",
+        },
+      });
+      await runsGetPromise;
+      await flushPromises();
+
+      // Now it cleanly converges to the authoritative cancelled terminal state!
+      expect(store.activeRun?.state).toBe("cancelled");
+      expect(store.isRunActive).toBe(false);
+      expect(store.liveTurn).toBeNull();
     });
     it("does not overwrite activeRun when stale cancelCurrentRun resolves after user switched bot and started a new run", async () => {
       const store = useDirectBotsStore();

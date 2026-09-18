@@ -204,7 +204,13 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   const activeRun = ref<ConversationRunDto | null>(null);
   const activeMemberTurn = ref<MemberTurnSummaryDto | null>(null);
   const liveTurn = ref<DirectBotLiveTurn | null>(null);
-  const planEntries = ref<PlanEntryDto[]>([]);
+  const planByRunId = ref<Record<string, PlanEntryDto[]>>({});
+  const latestPlanRunId = ref<string | null>(null);
+  const planEntries = computed<PlanEntryDto[]>(() => {
+    const currentId = activeRun.value?.id ?? latestPlanRunId.value;
+    if (!currentId) return [];
+    return planByRunId.value[currentId] ?? [];
+  });
   const cancellingRunId = ref<string | null>(null);
 
   // Accumulated trace parts retained per runId so completed assistant messages keep their rich cards
@@ -512,7 +518,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     activeRun.value = null;
     activeMemberTurn.value = null;
     liveTurn.value = null;
-    planEntries.value = [];
+    latestPlanRunId.value = null;
     cancellingRunId.value = null;
     promptInFlight.value = false;
     promptError.value = null;
@@ -559,7 +565,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     activeRun.value = null;
     activeMemberTurn.value = null;
     liveTurn.value = null;
-    planEntries.value = [];
+    latestPlanRunId.value = null;
     cancellingRunId.value = null;
     promptInFlight.value = false;
     promptError.value = null;
@@ -587,7 +593,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     activeRun.value = null;
     activeMemberTurn.value = null;
     liveTurn.value = null;
-    planEntries.value = [];
+    latestPlanRunId.value = null;
+    planByRunId.value = {};
     cancellingRunId.value = null;
     promptInFlight.value = false;
     promptError.value = null;
@@ -631,7 +638,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       selectedBotId.value === targetBotId &&
       activeConversationId.value === targetConvId &&
       activeTopicId.value === targetTopicId;
-
+    latestPlanRunId.value = null;
     const reqId = preparePromptRequestId(trimmed);
     promptInFlight.value = true;
     promptError.value = null;
@@ -666,16 +673,20 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // Track active run and member turn without regressing already-advanced state
       const priorRunId = activeRun.value?.id;
       activeRun.value = mergeRun(activeRun.value, res.run);
-      activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, res.memberTurn);
-
+      if (res.run.id !== activeRun.value.id) {
+        activeMemberTurn.value = res.memberTurn;
+      } else {
+        activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, res.memberTurn);
+      }
       if (isTerminalRunState(activeRun.value.state)) {
         liveTurn.value = null;
         if (targetInstId && targetConvId && targetTopicId) {
           void loadHistory(targetInstId, targetConvId, targetTopicId);
         }
       } else {
-        const existingParts = liveTurn.value?.parts.length
-          ? liveTurn.value.parts
+        const isFreshRun = activeRun.value.id === res.run.id && activeRun.value.id !== priorRunId;
+        const existingParts = isFreshRun || (activeRun.value.id === priorRunId && liveTurn.value?.parts.length)
+          ? (liveTurn.value?.parts.length ? liveTurn.value.parts : [])
           : runParts.value[res.run.id]?.length
             ? runParts.value[res.run.id]
             : [];
@@ -694,10 +705,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         }
       }
 
-      // Only clear plan entries if switching to a new run with no pre-existing plan
-      if (priorRunId !== res.run.id && (!planEntries.value || planEntries.value.length === 0)) {
-        planEntries.value = [];
-      }
+      latestPlanRunId.value = res.run.id;
     } catch (err: unknown) {
       if (isCurrent()) {
         promptError.value = err instanceof Error ? err.message : String(err);
@@ -747,12 +755,25 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       }
     } catch (err: unknown) {
       console.warn("cancelCurrentRun error:", err);
-      // If error indicates indeterminate or timeout, mark indeterminate
+      // Transport failure does NOT mean durable Run is terminal/indeterminate.
+      // Keep activeRun active, surface uncertainty feedback, and query instance state.
       if (isCurrent() && activeRun.value && activeRun.value.id === runId) {
-        activeRun.value = {
-          ...activeRun.value,
-          state: "indeterminate",
-        };
+        promptError.value = "Cancellation outcome unknown. Waiting for instance state...";
+        void api
+          .rpc<{ run: ConversationRunDetailDto }>(targetInstId, MSG.runsGet, { runId })
+          .then((getRes) => {
+            if (!isCurrent()) return;
+            const run = unwrapRpc(getRes).run;
+            activeRun.value = mergeRun(activeRun.value, run);
+            if (isTerminalRunState(activeRun.value.state)) {
+              liveTurn.value = null;
+              promptError.value = null;
+              if (targetInstId && targetConvId && targetTopicId) {
+                void loadHistory(targetInstId, targetConvId, targetTopicId);
+              }
+            }
+          })
+          .catch(() => {});
       }
     } finally {
       if (cancellingRunId.value === runId) {
@@ -1085,7 +1106,13 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       } else if (e.type === "tool-event") {
         upsertTool(parts, e.step);
       } else if (e.type === "plan") {
-        planEntries.value = e.entries;
+        if (corr.runId) {
+          latestPlanRunId.value = corr.runId;
+          planByRunId.value = {
+            ...planByRunId.value,
+            [corr.runId]: e.entries,
+          };
+        }
       } else if (e.type === "turn-finished") {
         liveTurn.value.status = "working";
         // Retain parts under runId
