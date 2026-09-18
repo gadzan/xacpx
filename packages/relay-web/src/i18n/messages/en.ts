@@ -651,6 +651,7 @@ export default {
       retry: "Retry",
       botDisabledWarning: "This bot is disabled. Enable it in Bot Settings to send messages.",
       botDisabledPlaceholder: "Bot is disabled",
+      runActivePlaceholder: "Run in progress... (Stop to cancel)",
     },
     chat: {
       emptyHint: "Send a message to start a conversation with this bot.",

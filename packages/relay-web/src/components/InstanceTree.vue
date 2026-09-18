@@ -61,13 +61,11 @@ function setMode(instanceId: string, mode: "sessions" | "bots"): void {
   }
 }
 function onBotTap(instanceId: string, botId: string): void {
-  chat.clearSelection();
-  void directBotsStore.selectBot(instanceId, botId);
   emit("selectBot", instanceId, botId);
 }
 function onBotSaved(bot: BotDetailDto): void {
   if (botDialogFor.value) {
-    onBotTap(botDialogFor.value.instanceId, bot.id);
+    emit("selectBot", botDialogFor.value.instanceId, bot.id);
   }
   botDialogFor.value = null;
 }

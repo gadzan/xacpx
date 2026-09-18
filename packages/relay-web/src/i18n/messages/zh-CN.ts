@@ -648,6 +648,7 @@ export default {
       retry: "重试",
       botDisabledWarning: "该 Bot 已被禁用。请在 Bot 设置中启用后发送消息。",
       botDisabledPlaceholder: "Bot 已被禁用",
+      runActivePlaceholder: "运行中...（可点击停止取消）",
     },
     chat: {
       emptyHint: "发送一条消息开始与该 Bot 对话。",

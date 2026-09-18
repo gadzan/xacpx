@@ -33,7 +33,7 @@ function onKeydown(e: KeyboardEvent): void {
 }
 
 function handleSend(): void {
-  if (props.disabled || isBotDisabled.value || isPromptInFlight.value) return;
+  if (props.disabled || isBotDisabled.value || isPromptInFlight.value || isRunActive.value) return;
   const text = promptText.value.trim();
   if (!text) return;
   emit("send", text);
@@ -91,9 +91,8 @@ function onInput(): void {
       <textarea
         ref="textareaEl"
         v-model="promptText"
-        rows="1"
-        :disabled="disabled || isBotDisabled || isPromptInFlight"
-        :placeholder="isBotDisabled ? $t('bot.prompt.botDisabledPlaceholder') : $t('bot.prompt.placeholder')"
+        :disabled="disabled || isBotDisabled || isPromptInFlight || isRunActive"
+        :placeholder="isBotDisabled ? $t('bot.prompt.botDisabledPlaceholder') : isRunActive ? $t('bot.prompt.runActivePlaceholder') : $t('bot.prompt.placeholder')"
         class="min-h-[38px] max-h-[200px] w-full resize-none bg-transparent px-2.5 py-2 text-sm text-fg outline-none placeholder:text-fg-muted disabled:cursor-not-allowed disabled:opacity-50"
         @keydown="onKeydown"
         @input="onInput"
