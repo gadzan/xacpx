@@ -208,7 +208,7 @@ describe("Direct Bot Components", () => {
       expect(wrapper.emitted("send")?.[0]).toEqual(["Hello world"]);
     });
 
-    it("displays stop run button when a run is active", async () => {
+    it("displays stop run button, disables textarea, and blocks Enter when a run is active", async () => {
       const directBots = useDirectBotsStore();
       directBots.activeRun = {
         id: "run_1",
@@ -228,9 +228,17 @@ describe("Direct Bot Components", () => {
         },
       });
 
+      // Textarea is disabled during active run
+      const textarea = wrapper.find("textarea");
+      expect((textarea.element as HTMLTextAreaElement).disabled).toBe(true);
+
+      // Pressing Enter does NOT emit send
+      await textarea.trigger("keydown", { key: "Enter", shiftKey: false });
+      expect(wrapper.emitted("send")).toBeUndefined();
+
+      // Stop button is shown and emits cancel
       const stopBtn = wrapper.find('[data-test="stop-run-button"]');
       expect(stopBtn.exists()).toBe(true);
-
       await stopBtn.trigger("click");
       expect(wrapper.emitted("cancel")).toBeTruthy();
     });
@@ -491,7 +499,6 @@ describe("Direct Bot Components", () => {
           plugins: [i18n],
         },
       });
-
       await flushPromises();
 
       // Switch to Bots mode
@@ -506,8 +513,9 @@ describe("Direct Bot Components", () => {
 
       // Click bot row
       await botRow.find("button").trigger("click");
-      expect(selectBotSpy).toHaveBeenCalledWith("i1", "b1");
-      expect(chat.sessionAlias).toBeNull(); // ordinary session selection cleared!
+      // InstanceTree is pure presenter: emits selectBot and leaves selection coordination to parent DashboardView
+      expect(wrapper.emitted("selectBot")?.[0]).toEqual(["i1", "b1"]);
+      expect(selectBotSpy).not.toHaveBeenCalled();
     });
   });
 });

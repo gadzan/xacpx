@@ -232,6 +232,49 @@ describe("useDirectBotsStore", () => {
       expect(res).toEqual(newTopic);
       expect(store.topicsByConversation["inst_1:conv_1"]).toContainEqual(newTopic);
     });
+    it("deduplicates topic when conversation-topic-changed event arrives before createTopic RPC resolves", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.activeConversationId = "conv_1";
+
+      const newTopic: TopicSummaryDto = {
+        id: "top_dup",
+        conversationId: "conv_1",
+        title: "Sprint Review",
+        status: "active",
+        createdAt: "now",
+        updatedAt: "now",
+      };
+
+      const { promise: rpcPromise, resolve: resolveRpc } = Promise.withResolvers<unknown>();
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.topics.create") return rpcPromise;
+        if (type === "control.conversation.history") return Promise.resolve({ conversationId: "conv_1", topicId: "top_dup", messages: [] });
+        return Promise.resolve({});
+      });
+
+      const createCall = store.createTopic("inst_1", "conv_1", "Sprint Review");
+
+      // WS event arrives BEFORE the HTTP RPC resolves
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "conversation-topic-changed",
+          topic: newTopic,
+        } as never,
+      });
+      expect(store.topicsByConversation["inst_1:conv_1"]).toHaveLength(1);
+
+      // Now HTTP RPC resolves
+      resolveRpc({ topic: newTopic });
+      await createCall;
+      await flushPromises();
+
+      // Topic MUST NOT be duplicated!
+      expect(store.topicsByConversation["inst_1:conv_1"]).toHaveLength(1);
+      expect(store.topicsByConversation["inst_1:conv_1"]?.[0]?.id).toBe("top_dup");
+    });
     it("guards against race condition when two selectBot calls resolve in reverse order", async () => {
       const store = useDirectBotsStore();
 
@@ -556,6 +599,106 @@ describe("useDirectBotsStore", () => {
       expect(store.liveTurn).toBeNull();
       expect(store.currentDraftRequestId).toBe(botBReqId); // Bot B's draft request ID preserved!
     });
+    it("refuses to send prompt when a run is already in progress", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.activeRun = {
+        id: "run_active",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "m1",
+        requestId: "r1",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+
+      await store.sendPrompt("Second prompt while running");
+      expect(mockRpc).not.toHaveBeenCalled();
+      expect(store.promptError).toContain("already in progress");
+    });
+
+    it("preserves live stream parts that arrived before prompt RPC resolved", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+
+      const { promise: promptPromise, resolve: resolvePrompt } = Promise.withResolvers<unknown>();
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversation.prompt") return promptPromise;
+        return Promise.resolve({});
+      });
+
+      const sendCall = store.sendPrompt("Explain code");
+
+      // Before prompt RPC resolves, turn events stream in over WebSocket
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "turn-started",
+          chatKey: "rk",
+          sessionAlias: "brt_1",
+          startedAt: 1000,
+          conversation: { conversationId: "conv_1", topicId: "top_1", botId: "bot_1", runId: "run_stream", memberTurnId: "m1" },
+        } as never,
+      });
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "turn-thought",
+          chatKey: "rk",
+          sessionAlias: "brt_1",
+          chunk: "Early thought",
+          conversation: { conversationId: "conv_1", topicId: "top_1", botId: "bot_1", runId: "run_stream", memberTurnId: "m1" },
+        } as never,
+      });
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "turn-output",
+          chatKey: "rk",
+          sessionAlias: "brt_1",
+          chunk: "Early text",
+          conversation: { conversationId: "conv_1", topicId: "top_1", botId: "bot_1", runId: "run_stream", memberTurnId: "m1" },
+        } as never,
+      });
+
+      expect(store.liveTurn?.parts).toHaveLength(2);
+
+      // Now prompt RPC resolves
+      resolvePrompt({
+        reused: false,
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestId: store.currentDraftRequestId!,
+        message: { id: "msg_h", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "Explain code", createdAt: "now" },
+        run: { id: "run_stream", conversationId: "conv_1", topicId: "top_1", requestMessageId: "msg_h", requestId: "r", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" },
+        memberTurn: { id: "m1", runId: "run_stream", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "running", createdAt: "now" },
+      });
+      await sendCall;
+      await flushPromises();
+
+      // Pre-arrived streaming parts MUST be preserved, not wiped!
+      expect(store.liveTurn?.parts).toHaveLength(2);
+      expect(store.liveTurn?.parts[0]).toEqual({ type: "reasoning", text: "Early thought" });
+      expect(store.liveTurn?.parts[1]).toEqual({ type: "text", text: "Early text" });
+      expect(store.runParts["run_stream"]).toHaveLength(2);
+    });
   });
 
   describe("Streaming and Turn Events correlation", () => {
@@ -835,6 +978,55 @@ describe("useDirectBotsStore", () => {
       expect(store.activeRun?.id).toBe("run_new");
       expect(store.activeRun?.state).toBe("running");
     });
+    it("clears cancellingRunId and does not leave it stuck when view switches during cancel", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.activeRun = {
+        id: "run_old",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "m1",
+        requestId: "r1",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+
+      const { promise: cancelPromise, resolve: resolveCancel } = Promise.withResolvers<unknown>();
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.runs.cancel") return cancelPromise;
+        if (type === "control.conversations.list") {
+          return Promise.resolve({ conversations: [{ id: "conv_2", botId: "bot_2", defaultTopicId: "top_2" }] });
+        }
+        if (type === "control.topics.list") {
+          return Promise.resolve({ topics: [{ id: "top_2", conversationId: "conv_2", title: "Topic 2" }] });
+        }
+        return Promise.resolve({});
+      });
+
+      const cancelCall = store.cancelCurrentRun();
+      expect(store.cancellingRunId).toBe("run_old");
+
+      // User switches to Bot 2
+      await store.selectBot("inst_1", "bot_2");
+      // cancellingRunId is cleared on switch
+      expect(store.cancellingRunId).toBeNull();
+
+      // Old cancel resolves late
+      resolveCancel({
+        ok: true,
+        run: { id: "run_old", conversationId: "conv_1", topicId: "top_1", state: "cancelled" },
+      });
+      await cancelCall;
+      await flushPromises();
+
+      // cancellingRunId must NOT get stuck on run_old!
+      expect(store.cancellingRunId).toBeNull();
+    });
   });
 
   describe("Isolation & Ordinary Session Fencing", () => {
@@ -891,11 +1083,43 @@ describe("useDirectBotsStore", () => {
       expect(chatStore.runningSince("inst_1", "brt_hidden")).toBeNull();
     });
 
-    it("restores correlated live turn from state snapshot in directBotsStore", () => {
+    it("restores correlated live turn and activeRun from state snapshot in directBotsStore", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
       store.activeConversationId = "conv_1";
       store.activeTopicId = "top_1";
+
+      const runDetail: ConversationRunDetailDto = {
+        id: "run_1",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "req_msg_1",
+        requestId: "req_1",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z",
+        memberTurns: [
+          {
+            id: "m_1",
+            runId: "run_1",
+            conversationId: "conv_1",
+            topicId: "top_1",
+            botId: "bot_1",
+            batch: 1,
+            attempt: 1,
+            origin: "human",
+            state: "running",
+            createdAt: "2026-09-18T00:00:00.000Z",
+          },
+        ],
+      };
+      mockRpc.mockImplementation((instId: string, type: string, payload: unknown) => {
+        if (type === "control.runs.get") return Promise.resolve({ run: runDetail });
+        if (type === "control.runs.cancel") return Promise.resolve({ ok: true, run: { ...runDetail, state: "cancelled" } });
+        if (type === "control.conversation.history") return Promise.resolve({ conversationId: "conv_1", topicId: "top_1", messages: [] });
+        return Promise.resolve({});
+      });
 
       store.applyEvent({
         kind: "state-snapshot",
@@ -920,9 +1144,23 @@ describe("useDirectBotsStore", () => {
         commands: [],
       });
 
+      // Synchronously, activeRun is immediately restored and isRunActive is true
       expect(store.liveTurn).toBeTruthy();
       expect(store.liveTurn?.parts).toEqual([{ type: "text", text: "recovered stream" }]);
       expect(store.liveTurn?.status).toBe("streaming");
+      expect(store.activeRun?.id).toBe("run_1");
+      expect(store.isRunActive).toBe(true);
+
+      // Asynchronous runs.get resolves and populates member turns
+      await flushPromises();
+      expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.runs.get", { runId: "run_1" });
+      expect(store.activeMemberTurn?.id).toBe("m_1");
+
+      // Stop button calling cancelCurrentRun cancels the restored run
+      await store.cancelCurrentRun();
+      expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.runs.cancel", { runId: "run_1" });
+      expect(store.activeRun?.state).toBe("cancelled");
+      expect(store.isRunActive).toBe(false);
     });
     it("does not overwrite activeRun when stale snapshot runs.get resolves after user switched bot", async () => {
       const store = useDirectBotsStore();

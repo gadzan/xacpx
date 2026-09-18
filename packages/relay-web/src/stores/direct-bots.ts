@@ -314,10 +314,17 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     );
     const key = `${targetInstanceId}:${conversationId}`;
     const currentList = topicsByConversation.value[key] ?? [];
-    topicsByConversation.value = {
-      ...topicsByConversation.value,
-      [key]: [...currentList, res.topic],
-    };
+    const idx = currentList.findIndex((t) => t.id === res.topic.id);
+    if (idx >= 0) {
+      const next = [...currentList];
+      next[idx] = res.topic;
+      topicsByConversation.value = { ...topicsByConversation.value, [key]: next };
+    } else {
+      topicsByConversation.value = {
+        ...topicsByConversation.value,
+        [key]: [...currentList, res.topic],
+      };
+    }
     // Switch to new topic if in the same conversation
     if (instanceId.value === targetInstanceId && activeConversationId.value === conversationId) {
       await switchTopic(res.topic.id);
@@ -438,6 +445,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     activeMemberTurn.value = null;
     liveTurn.value = null;
     planEntries.value = [];
+    cancellingRunId.value = null;
     promptInFlight.value = false;
     promptError.value = null;
     currentDraftRequestId.value = null;
@@ -484,6 +492,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     activeMemberTurn.value = null;
     liveTurn.value = null;
     planEntries.value = [];
+    cancellingRunId.value = null;
     promptInFlight.value = false;
     promptError.value = null;
     currentDraftRequestId.value = null;
@@ -511,6 +520,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     activeMemberTurn.value = null;
     liveTurn.value = null;
     planEntries.value = [];
+    cancellingRunId.value = null;
     promptInFlight.value = false;
     promptError.value = null;
     currentDraftRequestId.value = null;
@@ -536,6 +546,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const bot = currentBot.value;
     if (bot && !bot.enabled) {
       promptError.value = "Bot is disabled. Enable it before sending messages.";
+      return;
+    }
+    if (isRunActive.value) {
+      promptError.value = "A run is already in progress. Wait for it to finish or cancel it.";
       return;
     }
     const targetInstId = instanceId.value;
@@ -584,11 +598,24 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // Track active run and member turn
       activeRun.value = res.run;
       activeMemberTurn.value = res.memberTurn;
+      const existingParts = liveTurn.value?.parts.length
+        ? liveTurn.value.parts
+        : runParts.value[res.run.id]?.length
+          ? runParts.value[res.run.id]
+          : [];
       liveTurn.value = {
-        parts: [],
-        status: "working",
-        startedAt: res.memberTurn.startedAt ? new Date(res.memberTurn.startedAt).getTime() : Date.now(),
+        parts: existingParts,
+        status: liveTurn.value?.status ?? "working",
+        startedAt: res.memberTurn.startedAt
+          ? new Date(res.memberTurn.startedAt).getTime()
+          : (liveTurn.value?.startedAt ?? Date.now()),
       };
+      if (existingParts.length && !runParts.value[res.run.id]) {
+        runParts.value = {
+          ...runParts.value,
+          [res.run.id]: [...existingParts],
+        };
+      }
       planEntries.value = [];
     } catch (err: unknown) {
       if (isCurrent()) {
@@ -647,7 +674,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         };
       }
     } finally {
-      if (isCurrent()) {
+      if (cancellingRunId.value === runId) {
         cancellingRunId.value = null;
       }
     }
@@ -748,12 +775,60 @@ export const useDirectBotsStore = defineStore("directBots", () => {
             status: matchingTurn.status,
             startedAt: matchingTurn.startedAt,
           };
-          if (matchingTurn.conversation?.runId && (!activeRun.value || activeRun.value.id === matchingTurn.conversation.runId)) {
-            // Retain run parts
+          const corr = matchingTurn.conversation;
+          if (corr?.runId) {
+            const matchingRunId = corr.runId;
+            if (!activeRun.value || activeRun.value.id !== matchingRunId) {
+              activeRun.value = {
+                id: matchingRunId,
+                conversationId: corr.conversationId,
+                topicId: corr.topicId,
+                requestMessageId: "",
+                requestId: "",
+                mode: "explicit",
+                state: "running",
+                profileRevision: 1,
+                createdAt: new Date(matchingTurn.startedAt).toISOString(),
+                startedAt: new Date(matchingTurn.startedAt).toISOString(),
+              };
+            }
             runParts.value = {
               ...runParts.value,
-              [matchingTurn.conversation.runId]: [...matchingTurn.parts],
+              [matchingRunId]: [...matchingTurn.parts],
             };
+
+            const targetInstId = event.instanceId;
+            const targetConvId = activeConversationId.value ?? undefined;
+            const targetTopicId = activeTopicId.value ?? undefined;
+            const targetGeneration = currentSelectionGeneration;
+
+            void api
+              .rpc<{ run: ConversationRunDetailDto }>(targetInstId, MSG.runsGet, {
+                runId: matchingRunId,
+              })
+              .then((res) => {
+                if (
+                  targetGeneration !== currentSelectionGeneration ||
+                  instanceId.value !== targetInstId ||
+                  activeConversationId.value !== targetConvId ||
+                  activeTopicId.value !== targetTopicId ||
+                  activeRun.value?.id !== matchingRunId
+                ) {
+                  return;
+                }
+                const run = unwrapRpc(res).run;
+                activeRun.value = run;
+                if (run.memberTurns?.length) {
+                  activeMemberTurn.value = run.memberTurns[run.memberTurns.length - 1] ?? null;
+                }
+                if (run.state !== "running" && run.state !== "queued" && run.state !== "waiting-human") {
+                  liveTurn.value = null;
+                  if (targetConvId && targetTopicId) {
+                    void loadHistory(targetInstId, targetConvId, targetTopicId);
+                  }
+                }
+              })
+              .catch(() => {});
           }
         } else if (activeRun.value && (activeRun.value.state === "running" || activeRun.value.state === "queued")) {
           // Turn completed while offline -> refetch history and active run
