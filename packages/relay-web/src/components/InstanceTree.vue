@@ -69,7 +69,17 @@ function onBotSaved(bot: BotDetailDto): void {
   }
   botDialogFor.value = null;
 }
+function botHasRuntime(bot: BotSummaryDto): boolean {
+  return ("hasRuntime" in bot && (bot as { hasRuntime?: unknown }).hasRuntime) === true;
+}
+
 async function deleteBotWithConfirm(instanceId: string, bot: BotSummaryDto): Promise<void> {
+  // Same fail-closed rule as the pane: a used Bot cannot be deleted until its
+  // conversation is reset (backend bot_in_use). Surface it, don't fail it.
+  if (botHasRuntime(bot)) {
+    pushToast("error", "bot.lifecycle.deleteBlocked");
+    return;
+  }
   const confirmed = await confirm({
     title: t("bot.delete.confirmTitle"),
     message: t("bot.delete.confirmMessage", { name: bot.name }),

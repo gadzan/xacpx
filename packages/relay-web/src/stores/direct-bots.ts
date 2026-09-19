@@ -208,7 +208,11 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   const loadingHistory = ref<boolean>(false);
   const loadingOlder = ref<boolean>(false);
   const historyError = ref<string | null>(null);
-
+  // Fail-closed admission gate: false from topic selection until durable run
+  // discovery (history + runs.list recovery) completes. Prevents sending a
+  // prompt — and wrongly owning a second Run — while the authoritative active
+  // Run is still unknown. History failure leaves it closed with historyError.
+  const topicReady = ref<boolean>(true);
   // Active Run / Live Turn state
   const activeRun = ref<ConversationRunDto | null>(null);
   const activeMemberTurn = ref<MemberTurnSummaryDto | null>(null);
@@ -489,13 +493,15 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // requestSequence is passed so a superseded load cannot let its slow
       // recovery overwrite a newer one.
       await recoverActiveRun(iId, cId, tId, requestSequence);
+      // Durable discovery settled for this load: open admission. A stale load
+      // that lost the sequence fence returns above without reaching here.
+      topicReady.value = true;
     } catch (err: unknown) {
       historyError.value = err instanceof Error ? err.message : String(err);
     } finally {
       loadingHistory.value = false;
     }
   }
-
   // Query durable topic Runs and adopt the authoritative active Run: the
   // executing Run, else the oldest queued (next-up) Run.
   // Uses exact product IDs (conversationId/topicId/runId/memberTurnId) only;
@@ -622,6 +628,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const generation = ++currentSelectionGeneration;
     historyRequestSequence += 1;
     touchTranscript();
+    topicReady.value = false;
     instanceId.value = targetInstanceId;
     selectedBotId.value = botId;
     persistBotSelection(targetInstanceId, botId);
@@ -645,8 +652,19 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     promptError.value = null;
     currentDraftRequestId.value = null;
     lastPromptText.value = "";
-    // Load bot detail in background
-    void loadBotDetail(targetInstanceId, botId).catch(() => {});
+    generalError.value = null;
+    try {
+      const bots = await loadBots(targetInstanceId);
+      if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedBotId.value !== botId) {
+        return;
+      }
+      if (!bots.some((b) => b.id === botId)) {
+        clearSelection();
+        return;
+      }
+    } catch {
+      // List refresh failed: keep the selection; history load below surfaces it.
+    }
 
     // Resolve or find Direct Conversation
     try {
@@ -679,6 +697,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const generation = ++currentSelectionGeneration;
     historyRequestSequence += 1;
     touchTranscript();
+    topicReady.value = false;
     activeTopicId.value = topicId;
     messages.value = [];
     oldestSeq.value = undefined;
@@ -696,6 +715,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     promptError.value = null;
     currentDraftRequestId.value = null;
     lastPromptText.value = "";
+    generalError.value = null;
     if (instanceId.value && activeConversationId.value) {
       await loadHistory(instanceId.value, activeConversationId.value, topicId);
       if (generation !== currentSelectionGeneration || activeTopicId.value !== topicId) {
@@ -708,6 +728,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     currentSelectionGeneration++;
     historyRequestSequence += 1;
     touchTranscript();
+    topicReady.value = true;
     instanceId.value = null;
     selectedBotId.value = null;
     activeConversationId.value = null;
@@ -729,6 +750,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     promptError.value = null;
     currentDraftRequestId.value = null;
     lastPromptText.value = "";
+    generalError.value = null;
     persistBotSelection(null, null);
   }
   function preparePromptRequestId(text: string): string {
@@ -745,6 +767,13 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       return;
     }
 
+    // Fail-closed admission: while durable run discovery for this Topic has
+    // not completed, the authoritative active Run is unknown. Sending now
+    // could queue behind an unseen Run and take wrong ownership of it.
+    if (!topicReady.value) {
+      promptError.value = "Topic is still recovering. Wait for history to finish loading before sending.";
+      return;
+    }
     const bot = currentBot.value;
     if (bot && !bot.enabled) {
       promptError.value = "Bot is disabled. Enable it before sending messages.";
@@ -838,8 +867,15 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
       latestPlanRunId.value = res.run.id;
     } catch (err: unknown) {
-      if (isCurrent()) {
+      // WS may already have proved durable accept for this requestId (the
+      // run-changed adoption branch converges to success and retires the
+      // retry identity). A late HTTP failure must not rewrite that success.
+      if (isCurrent() && currentDraftRequestId.value === reqId) {
         promptError.value = err instanceof Error ? err.message : String(err);
+      } else if (isCurrent() && promptError.value === "A run is already in progress. Wait for it to finish or cancel it.") {
+        // The blocked Prompt C was never sent and its Run is now durable:
+        // drop the transient gate error instead of pinning a stale banner.
+        promptError.value = null;
       }
       // Retain currentDraftRequestId so a retry uses the exact same requestId
     } finally {
@@ -1122,10 +1158,30 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
     // Catalog invalidation events
     if (e.type === "bots-changed") {
-      void loadBots(event.instanceId);
-      if (selectedBotId.value) {
-        void loadBotDetail(event.instanceId, selectedBotId.value).catch(() => {});
-      }
+      void (async () => {
+        let bots: BotSummaryDto[];
+        try {
+          bots = await loadBots(event.instanceId);
+        } catch {
+          // List refresh failed: keep the previous list and selection.
+          return;
+        }
+        // Remote delete of the selected Bot (possibly while this tab was
+        // closed): the authoritative list no longer contains it. Drop the
+        // ghost selection, its cached detail, and the persisted key instead
+        // of rendering a stale pane that can only fail backend calls.
+        if (
+          event.instanceId === instanceId.value
+          && selectedBotId.value
+          && !bots.some((b) => b.id === selectedBotId.value)
+        ) {
+          clearSelection();
+          return;
+        }
+        if (selectedBotId.value && event.instanceId === instanceId.value) {
+          void loadBotDetail(event.instanceId, selectedBotId.value).catch(() => {});
+        }
+      })();
       return;
     }
 
@@ -1190,6 +1246,13 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           activeMemberTurn.value = null;
           liveTurn.value = null;
           latestPlanRunId.value = run.id;
+          // The WS proved the submission is durably accepted, so retire the
+          // retry identity now: a late HTTP catch cannot rewrite failure and
+          // Retry cannot re-send the same requestId. promptInFlight stays true
+          // until the HTTP settles, still reflecting the open request.
+          promptError.value = null;
+          currentDraftRequestId.value = null;
+          lastPromptText.value = "";
         }
       }
       return;
@@ -1315,6 +1378,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     loadingHistory,
     loadingOlder,
     historyError,
+    topicReady,
     activeRun,
     activeMemberTurn,
     liveTurn,

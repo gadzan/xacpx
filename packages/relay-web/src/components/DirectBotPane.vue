@@ -38,8 +38,18 @@ const newTopicDialogOpen = ref(false);
 const newTopicTitle = ref("");
 const creatingTopic = ref(false);
 
+const botHasRuntime = computed(() =>
+  (bot.value && "hasRuntime" in bot.value && bot.value.hasRuntime) === true,
+);
+
 async function handleDeleteBot(): Promise<void> {
   if (!bot.value || !directBotsStore.instanceId) return;
+  // Fail-closed backends reject deleting a used Bot (bot_in_use) until its
+  // conversation is reset. Say so before confirming instead of failing after.
+  if (botHasRuntime.value) {
+    directBotsStore.generalError = t("bot.lifecycle.deleteBlocked");
+    return;
+  }
   const confirmed = await confirm({
     title: t("bot.delete.confirmTitle"),
     message: t("bot.delete.confirmMessage", { name: bot.value.name }),
@@ -130,9 +140,10 @@ async function handleCreateTopic(): Promise<void> {
         <button
           type="button"
           data-test="delete-bot-button"
-          :title="$t('bot.actions.delete')"
+          :title="botHasRuntime ? $t('bot.lifecycle.deleteBlocked') : $t('bot.actions.delete')"
           :aria-label="$t('bot.actions.delete')"
-          class="grid h-8 w-8 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
+          :disabled="botHasRuntime"
+          class="grid h-8 w-8 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger disabled:cursor-not-allowed disabled:opacity-40"
           @click="handleDeleteBot"
         >
           <Trash2 :size="14" />
@@ -204,11 +215,21 @@ async function handleCreateTopic(): Promise<void> {
 
     <!-- Prompt Composer -->
     <ConversationPromptInput
-      :disabled="!directBotsStore.activeTopicId"
+      :disabled="!directBotsStore.activeTopicId || !directBotsStore.topicReady"
       @send="(text) => directBotsStore.sendPrompt(text)"
       @cancel="directBotsStore.cancelCurrentRun"
     />
-
+    <!-- History failure: recovery never ran, so admission stays closed. Retry
+      reloads the topic (history + durable run discovery). -->
+    <div v-if="directBotsStore.historyError && directBotsStore.activeTopicId && !directBotsStore.topicReady"
+         class="flex items-center justify-between border-t border-danger/20 bg-danger/10 px-4 py-2 text-xs text-danger">
+      <span>{{ directBotsStore.historyError }}</span>
+      <button type="button"
+              class="rounded bg-danger/20 px-2 py-0.5 font-medium hover:bg-danger/30 transition-colors"
+              @click="directBotsStore.instanceId && directBotsStore.activeConversationId && directBotsStore.loadHistory(directBotsStore.instanceId, directBotsStore.activeConversationId, directBotsStore.activeTopicId)">
+        {{ $t("bot.prompt.retry") }}
+      </button>
+    </div>
     <!-- Edit Bot Dialog -->
     <BotDialog
       v-if="editDialogOpen && directBotsStore.instanceId && bot"

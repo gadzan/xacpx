@@ -174,7 +174,7 @@ export interface ConversationHistoryResponseDto {
   hasMoreAfter: boolean;
 }
 
-export function toBotSummary(bot: BotProfile): BotSummaryDto {
+export function toBotSummary(bot: BotProfile, hasRuntime?: boolean): BotSummaryDto {
   return {
     id: bot.id,
     name: bot.name,
@@ -186,12 +186,13 @@ export function toBotSummary(bot: BotProfile): BotSummaryDto {
     ...(bot.role ? { role: bot.role } : {}),
     ...(bot.model ? { model: bot.model } : {}),
     ...(bot.effort ? { effort: bot.effort } : {}),
+    ...(hasRuntime ? { hasRuntime: true as const } : {}),
   };
 }
 
-export function toBotDetail(bot: BotProfile): BotDetailDto {
+export function toBotDetail(bot: BotProfile, hasRuntime?: boolean): BotDetailDto {
   return {
-    ...toBotSummary(bot),
+    ...toBotSummary(bot, hasRuntime),
     profileRevision: bot.profileRevision,
     createdAt: bot.createdAt,
     ...(bot.instructions ? { instructions: bot.instructions } : {}),

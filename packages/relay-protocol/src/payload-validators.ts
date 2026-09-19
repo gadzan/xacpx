@@ -424,9 +424,16 @@ const validateConversationPrompt: Validator<ConversationPromptPayload> = (p) => 
 };
 const validateConversationHistory: Validator<ConversationHistoryPayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.conversationId) && isStr(o.topicId)
+  if (!o) return null;
+  // direction is initial-page-only: it selects which end of the topic the
+  // page starts from and has no defined interaction with seq cursors.
+  const directionOk = o.direction === undefined || o.direction === "oldest-first" || o.direction === "newest-first";
+  const cursorAndDirection = directionOk && o.direction !== undefined
+    && (o.afterSeq !== undefined || o.beforeSeq !== undefined);
+  if (cursorAndDirection) return null;
+  return isStr(o.conversationId) && isStr(o.topicId)
     && optNum(o.afterSeq) && optNum(o.beforeSeq) && optNum(o.limit)
-    && (o.direction === undefined || o.direction === "oldest-first" || o.direction === "newest-first")
+    && directionOk
     ? (o as unknown as ConversationHistoryPayload) : null;
 };
 const validateRunsGet: Validator<RunsGetPayload> = (p) => {
@@ -442,7 +449,6 @@ const validateRunsCancel: Validator<RunsCancelPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.runId) ? (o as unknown as RunsCancelPayload) : null;
 };
-
 /** The control-RPC message types that carry a client-supplied payload to validate.
  *  Excludes: handshake (instanceRegister/instanceAuth — validated in instance-gateway),
  *  event-direction (instanceEvent/instanceNotice — boundary B via validControlEvent),

@@ -20,6 +20,7 @@ const textareaEl = ref<HTMLTextAreaElement | null>(null);
 const promptText = ref("");
 
 const isRunActive = computed(() => directBotsStore.isRunActive);
+const isTopicRecovering = computed(() => !directBotsStore.topicReady);
 const isPromptInFlight = computed(() => directBotsStore.promptInFlight);
 const isCancelling = computed(() => !!directBotsStore.cancellingRunId);
 const bot = computed(() => directBotsStore.currentBot);
@@ -33,7 +34,7 @@ function onKeydown(e: KeyboardEvent): void {
 }
 
 function handleSend(): void {
-  if (props.disabled || isBotDisabled.value || isPromptInFlight.value || isRunActive.value) return;
+  if (props.disabled || isBotDisabled.value || isPromptInFlight.value || isRunActive.value || isTopicRecovering.value) return;
   const text = promptText.value.trim();
   if (!text) return;
   emit("send", text);
@@ -97,8 +98,8 @@ function onInput(): void {
       <textarea
         ref="textareaEl"
         v-model="promptText"
-        :disabled="disabled || isBotDisabled || isPromptInFlight || isRunActive"
-        :placeholder="isBotDisabled ? $t('bot.prompt.botDisabledPlaceholder') : isRunActive ? $t('bot.prompt.runActivePlaceholder') : $t('bot.prompt.placeholder')"
+        :disabled="disabled || isBotDisabled || isPromptInFlight || isRunActive || isTopicRecovering"
+        :placeholder="isBotDisabled ? $t('bot.prompt.botDisabledPlaceholder') : isTopicRecovering ? $t('bot.prompt.recoveringPlaceholder') : isRunActive ? $t('bot.prompt.runActivePlaceholder') : $t('bot.prompt.placeholder')"
         class="min-h-[38px] max-h-[200px] w-full resize-none bg-transparent px-2.5 py-2 text-sm text-fg outline-none placeholder:text-fg-muted disabled:cursor-not-allowed disabled:opacity-50"
         @keydown="onKeydown"
         @input="onInput"

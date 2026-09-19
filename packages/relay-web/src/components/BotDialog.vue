@@ -28,6 +28,11 @@ const dialogEl = ref<HTMLElement | null>(null);
 useModalA11y(dialogEl, () => emit("close"));
 
 const isEditing = computed(() => !!props.bot);
+// True once the Bot materialized a direct runtime: agent/workspace are
+// backend-locked (runtime_identity_locked) and delete is fail-closed
+// (bot_in_use) until the conversation is reset. The form tells this upfront
+// instead of letting edits fail at submit.
+const identityLocked = computed(() => (props.bot && "hasRuntime" in props.bot && props.bot.hasRuntime) === true);
 
 // Form fields
 const name = ref(props.bot?.name ?? "");
@@ -232,11 +237,15 @@ async function submit(): Promise<void> {
             <label for="bot-agent" class="block text-xs font-medium text-fg-muted mb-1.5">
               {{ $t("bot.fields.agent") }} <span class="text-danger">*</span>
             </label>
+            <p v-if="identityLocked" class="mb-1.5 text-[11px] text-fg-muted">
+              {{ $t("bot.lifecycle.identityLocked") }}
+            </p>
             <select
               id="bot-agent"
               v-model="agent"
               required
-              class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none transition-colors focus:border-accent"
+              :disabled="identityLocked"
+              class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none transition-colors focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
             >
               <option v-for="a in availableAgents" :key="a.name" :value="a.name">
                 {{ a.name }} {{ a.driver ? `(${a.driver})` : '' }}
@@ -253,7 +262,8 @@ async function submit(): Promise<void> {
               id="bot-workspace"
               v-model="workspace"
               required
-              class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none transition-colors focus:border-accent"
+              :disabled="identityLocked"
+              class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none transition-colors focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
             >
               <option v-for="w in availableWorkspaces" :key="w.name" :value="w.name">
                 {{ w.name }}

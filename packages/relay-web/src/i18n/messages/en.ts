@@ -623,6 +623,10 @@ export default {
       agentRequired: "Agent is required.",
       workspaceRequired: "Workspace is required.",
     },
+    lifecycle: {
+      identityLocked: "Agent and workspace are locked once this Bot has run. Other settings still apply to future turns.",
+      deleteBlocked: "This Bot has conversation history. Delete is unavailable until its conversation is reset.",
+    },
     topic: {
       label: "Topic",
       default: "Default",
@@ -640,6 +644,7 @@ export default {
       botDisabledWarning: "This bot is disabled. Enable it in Bot Settings to send messages.",
       botDisabledPlaceholder: "Bot is disabled",
       runActivePlaceholder: "Run in progress... (Stop to cancel)",
+      recoveringPlaceholder: "Recovering topic... (loading history)",
     },
     chat: {
       emptyHint: "Send a message to start a conversation with this bot.",
