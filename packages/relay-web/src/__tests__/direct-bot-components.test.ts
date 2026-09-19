@@ -107,6 +107,7 @@ describe("Direct Bot Components", () => {
         } as never,
       ];
 
+      vi.spyOn(instances, "loadFormOptions").mockResolvedValue(undefined);
       const directBots = useDirectBotsStore();
       const createSpy = vi.spyOn(directBots, "createBot").mockResolvedValue({
         id: "bot_1",
@@ -162,7 +163,7 @@ describe("Direct Bot Components", () => {
           agentCatalog: [],
         } as never,
       ];
-
+      vi.spyOn(instances, "loadFormOptions").mockResolvedValue(undefined);
       const directBots = useDirectBotsStore();
       const updateSpy = vi.spyOn(directBots, "updateBot").mockResolvedValue({
         id: "bot_1",
@@ -253,6 +254,56 @@ describe("Direct Bot Components", () => {
       });
       await flushPromises();
       expect((wrapper.find("#bot-instructions").element as HTMLTextAreaElement).value).toBe("User typed instructions");
+    });
+
+    it("keeps a user-cleared instructions field when the slow detail fetch resolves", async () => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "codex", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+          agentCatalog: [],
+        } as never,
+      ];
+      const directBots = useDirectBotsStore();
+      let resolveDetail!: (value: unknown) => void;
+      const detailGate = new Promise<unknown>((resolve) => { resolveDetail = resolve; });
+      vi.spyOn(directBots, "loadBotDetail").mockImplementation(() => detailGate as never);
+      const existingBot = {
+        id: "bot_1",
+        name: "Existing Bot",
+        agent: "codex",
+        workspace: "repo",
+        enabled: true,
+        updatedAt: "2026-09-18T00:00:00.000Z",
+      } as never;
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local", bot: existingBot },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      // Type then clear back to "": value comparison alone would call this
+      // pristine and let the server value overwrite the explicit clear.
+      await wrapper.find("#bot-instructions").setValue("draft");
+      await wrapper.find("#bot-instructions").setValue("");
+      resolveDetail({
+        id: "bot_1",
+        name: "Existing Bot",
+        agent: "codex",
+        workspace: "repo",
+        instructions: "Server instructions",
+        enabled: true,
+        profileRevision: 2,
+        createdAt: "2026-09-18T00:00:00.000Z",
+        updatedAt: "2026-09-18T00:00:00.000Z",
+      });
+      await flushPromises();
+      expect((wrapper.find("#bot-instructions").element as HTMLTextAreaElement).value).toBe("");
     });
 
     it("loads form options then instructions without a stale race overwriting fields", async () => {

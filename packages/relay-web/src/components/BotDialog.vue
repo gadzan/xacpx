@@ -38,12 +38,15 @@ const instructions = ref(
     ? props.bot.instructions
     : "",
 );
+// True once the user edits instructions: a slow detail fetch must fill only an
+// untouched field. Value comparison is insufficient — typing then clearing back
+// to "" would equal the pristine snapshot and get overwritten.
+const instructionsDirty = ref(false);
 const agent = ref(props.bot?.agent ?? "");
 const workspace = ref(props.bot?.workspace ?? "");
 const model = ref(props.bot?.model ?? "");
 const effort = ref(props.bot?.effort ?? "");
 const enabled = ref(props.bot?.enabled ?? true);
-
 const submitting = ref(false);
 const errorMessage = ref<string | null>(null);
 
@@ -76,9 +79,8 @@ let dialogGeneration = 0;
 onUnmounted(() => { dialogGeneration++; });
 onMounted(async () => {
   const generation = ++dialogGeneration;
-  // Snapshot the user's pre-existing edits: a slow detail fetch must fill only
-  // untouched fields, never overwrite typing done while it was in flight.
-  const pristineInstructions = instructions.value;
+  // instructionsDirty tracks real user edits (value comparison is
+  // insufficient: type-then-clear returns to the pristine value).
   try {
     await instancesStore.loadFormOptions(props.instanceId);
   } catch {
@@ -89,7 +91,7 @@ onMounted(async () => {
     try {
       const detail = await directBotsStore.loadBotDetail(props.instanceId, props.bot.id);
       if (generation !== dialogGeneration) return;
-      if (detail.instructions && instructions.value === pristineInstructions) {
+      if (detail.instructions && !instructionsDirty.value) {
         instructions.value = detail.instructions;
       }
     } catch {
@@ -271,6 +273,7 @@ async function submit(): Promise<void> {
             rows="4"
             :placeholder="$t('bot.fields.instructionsPlaceholder')"
             class="w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm outline-none transition-colors focus:border-accent resize-y"
+            @input="instructionsDirty = true"
           />
           <p class="mt-1 text-[11px] text-fg-muted">
             {{ $t("bot.fields.instructionsHint") }}

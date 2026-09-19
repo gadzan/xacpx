@@ -400,8 +400,10 @@ test("topic runs list bounds the returned page while keeping durable active sele
   const page = control.listTopicRuns(conversationId, topicId, 2);
   expect(page.runs).toHaveLength(2);
   expect(page.runs.map((run) => run.requestId)).toEqual(["req-3", "req-4"]);
-  // The newest page omits the durable next-up Run, so no active id is claimed.
-  expect(page.activeRunId).toBeUndefined();
+  // Paging bounds the transport payload, never the active identity: the
+  // oldest queued Run stays the durable owner even outside the newest page.
+  expect(page.activeRunId).toBe(page.activeRun?.id);
+  expect(page.activeRun).toMatchObject({ requestId: "req-0", state: "queued" });
 });
 
 test("topic runs list reports no active run after completion and newest active after multiple prompts", async () => {

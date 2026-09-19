@@ -80,6 +80,10 @@ function isTerminalRunState(state: ConversationRunStateDto | undefined): boolean
   return state === "completed" || state === "failed" || state === "cancelled" || state === "indeterminate";
 }
 
+function isActiveRunState(state: ConversationRunStateDto | undefined): boolean {
+  return state === "queued" || state === "running" || state === "waiting-human";
+}
+
 function shouldUpdateRunState(current: ConversationRunStateDto | undefined, incoming: ConversationRunStateDto): boolean {
   if (!current) return true;
   if (isTerminalRunState(current)) return false;
@@ -170,6 +174,7 @@ function persistBotSelection(instanceId: string | null, botId: string | null): v
 
 export const useDirectBotsStore = defineStore("directBots", () => {
   let currentSelectionGeneration = 0;
+  let recoveryGeneration = 0;
   let historyRequestSequence = 0;
   let transcriptRevision = 0;
   function touchTranscript(): void {
@@ -479,9 +484,11 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         }
       }
       // Durable active-run recovery: after the authoritative tail is in place,
-      // query topic-scoped runs so refresh finds the newest non-terminal Run
-      // even when no live snapshot/event has arrived yet.
-      await recoverActiveRun(iId, cId, tId);
+      // query topic-scoped runs so refresh finds the authoritative owner even
+      // when no live snapshot/event has arrived yet. The history
+      // requestSequence is passed so a superseded load cannot let its slow
+      // recovery overwrite a newer one.
+      await recoverActiveRun(iId, cId, tId, requestSequence);
     } catch (err: unknown) {
       historyError.value = err instanceof Error ? err.message : String(err);
     } finally {
@@ -493,21 +500,34 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // executing Run, else the oldest queued (next-up) Run.
   // Uses exact product IDs (conversationId/topicId/runId/memberTurnId) only;
   // never session aliases, timestamps, or latest-turn heuristics.
-  async function recoverActiveRun(iId: string, cId: string, tId: string): Promise<void> {
+  async function recoverActiveRun(iId: string, cId: string, tId: string, requestSequence?: number): Promise<void> {
+    const generation = ++recoveryGeneration;
+    const historySequence = requestSequence ?? historyRequestSequence;
+    const isCurrentRecovery = (): boolean =>
+      generation === recoveryGeneration
+      && historySequence === historyRequestSequence
+      && instanceId.value === iId
+      && activeConversationId.value === cId
+      && activeTopicId.value === tId;
     try {
       const listed = unwrapRpc(
-        await api.rpc<{ runs: ConversationRunDto[]; activeRunId?: string }>(iId, MSG.runsList, {
+        await api.rpc<{ runs: ConversationRunDto[]; activeRunId?: string; activeRun?: ConversationRunDto }>(iId, MSG.runsList, {
           conversationId: cId,
           topicId: tId,
         }),
       );
-      if (instanceId.value !== iId || activeConversationId.value !== cId || activeTopicId.value !== tId) {
+      if (!isCurrentRecovery()) {
         return;
       }
-      const candidate = listed.activeRunId
-        ? listed.runs.find((run) => run.id === listed.activeRunId)
-        : undefined;
+      // Discovery and paging are separate semantics: the owner can arrive as
+      // activeRun even when the bounded runs page omits it.
+      const candidate = listed.activeRun
+        ?? (listed.activeRunId ? listed.runs.find((run) => run.id === listed.activeRunId) : undefined);
       if (!candidate) {
+        // No authoritative active Run: leave local state alone. The
+        // reconcile rId branch (same active-state predicate) converges a
+        // stale local Run via runsGet; clearing here would destroy the id it
+        // needs and skip terminal convergence + history reload.
         return;
       }
       // A stale terminal activeRun must not block authoritative topic discovery:
@@ -526,7 +546,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         const detail = unwrapRpc(
           await api.rpc<{ run: ConversationRunDetailDto }>(iId, MSG.runsGet, { runId: candidate.id }),
         );
-        if (instanceId.value !== iId || activeConversationId.value !== cId || activeTopicId.value !== tId) {
+        if (!isCurrentRecovery()) {
           return;
         }
         if (activeRun.value && activeRun.value.id !== candidate.id) {
@@ -928,8 +948,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         }
       }
 
-      // Check active run if we believed one was running
-      if (rId && activeRun.value?.id === rId && (activeRun.value.state === "running" || activeRun.value.state === "queued")) {
+      // Check active run if we believed one was active (same predicate as
+      // isRunActive: queued/running/waiting-human).
+      if (rId && activeRun.value?.id === rId && isActiveRunState(activeRun.value.state)) {
         try {
           const res = unwrapRpc(
             await api.rpc<{ run: ConversationRunDetailDto }>(iId, MSG.runsGet, {
@@ -1059,7 +1080,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
               })
               .catch(() => {});
           }
-        } else if (activeRun.value && (activeRun.value.state === "running" || activeRun.value.state === "queued")) {
+        } else if (activeRun.value && isActiveRunState(activeRun.value.state)) {
           // Turn completed while offline -> refetch history and active run
           const targetInstId = event.instanceId;
           const targetConvId = activeConversationId.value ?? undefined;

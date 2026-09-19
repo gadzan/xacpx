@@ -514,6 +514,7 @@ export interface RunsListResult {
   topicId: string;
   runs: ConversationRunDto[];
   activeRunId?: string;
+  activeRun?: ConversationRunDto;
 }
 export interface RunsCancelPayload {
   runId: string;

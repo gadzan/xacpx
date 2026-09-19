@@ -385,6 +385,7 @@ export interface ConversationRunsListDto {
   topicId: string;
   runs: ConversationRunDto[];
   activeRunId?: string;
+  activeRun?: ConversationRunDto;
 }
 
 /** Wire mirror of src/control ControlEvent (tool-event carries the NORMALIZED step). */
