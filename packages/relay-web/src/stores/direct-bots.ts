@@ -176,6 +176,11 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   let currentSelectionGeneration = 0;
   let recoveryGeneration = 0;
   let historyRequestSequence = 0;
+  // Durable-owner discovery owns its own sequence, separate from transcript
+  // page freshness above: background transcript refreshes must never
+  // invalidate an in-flight foreground recovery (terminal WS event racing a
+  // deferred runs.get must not forge a discovery failure).
+  let discoverySequence = 0;
   let transcriptRevision = 0;
   function touchTranscript(): void {
     transcriptRevision += 1;
@@ -473,6 +478,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
     const background = opts?.background === true;
     const requestSequence = ++historyRequestSequence;
+    // Foreground loads own durable-owner discovery; background refreshes only
+    // own transcript page freshness and must never invalidate an in-flight
+    // foreground recovery.
+    const discoveryId = background ? null : ++discoverySequence;
     const revision = transcriptRevision;
     loadingHistory.value = true;
     historyError.value = null;
@@ -543,7 +552,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // discovery (active candidate or authoritative no-candidate): a
       // runs.list failure leaves the gate closed so a prompt cannot take
       // wrong ownership of an unseen Run.
-      const discovered = await recoverActiveRun(iId, cId, tId, requestSequence);
+      const discovered = await recoverActiveRun(iId, cId, tId, discoveryId);
       // A stale load that lost the sequence fence returns above without
       // reaching here.
       if (discovered) {
@@ -565,12 +574,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // executing Run, else the oldest queued (next-up) Run.
   // Uses exact product IDs (conversationId/topicId/runId/memberTurnId) only;
   // never session aliases, timestamps, or latest-turn heuristics.
-  async function recoverActiveRun(iId: string, cId: string, tId: string, requestSequence?: number): Promise<boolean> {
+  async function recoverActiveRun(iId: string, cId: string, tId: string, discoveryId?: number | null): Promise<boolean> {
     const generation = ++recoveryGeneration;
-    const historySequence = requestSequence ?? historyRequestSequence;
+    const ownedDiscoveryId = discoveryId ?? discoverySequence;
     const isCurrentRecovery = (): boolean =>
       generation === recoveryGeneration
-      && historySequence === historyRequestSequence
+      && ownedDiscoveryId === discoverySequence
       && instanceId.value === iId
       && activeConversationId.value === cId
       && activeTopicId.value === tId;
@@ -696,6 +705,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   async function selectBot(targetInstanceId: string, botId: string): Promise<void> {
     const generation = ++currentSelectionGeneration;
     historyRequestSequence += 1;
+    discoverySequence += 1;
     touchTranscript();
     topicReady.value = false;
     instanceId.value = targetInstanceId;
@@ -765,6 +775,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     if (activeTopicId.value === topicId) return;
     const generation = ++currentSelectionGeneration;
     historyRequestSequence += 1;
+    discoverySequence += 1;
     touchTranscript();
     topicReady.value = false;
     activeTopicId.value = topicId;
@@ -796,6 +807,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   function clearSelection(): void {
     currentSelectionGeneration++;
     historyRequestSequence += 1;
+    discoverySequence += 1;
     touchTranscript();
     topicReady.value = true;
     instanceId.value = null;

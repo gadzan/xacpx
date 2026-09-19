@@ -1068,6 +1068,100 @@ describe("useDirectBotsStore", () => {
       await sendCall;
       expect(store.currentBot?.hasRuntime).toBe(true);
     });
+    it("does not forge a discovery failure when a terminal event refreshes history during deferred runs.get", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      const durableRun = {
+        id: "run_A",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_A",
+        requestId: "req_A",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      const terminalRun = { ...durableRun, state: "completed" };
+      let resolveRunsGet!: (value: unknown) => void;
+      const runsGetGate = new Promise<unknown>((resolve) => { resolveRunsGet = resolve; });
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: [],
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            runs: [durableRun],
+            activeRunId: "run_A",
+            activeRun: durableRun,
+          });
+        }
+        if (type === "control.runs.get") {
+          return runsGetGate;
+        }
+        return Promise.resolve({});
+      });
+
+      // Foreground discovery adopts Run A, then defers on runs.get(A).
+      const loadCall = store.loadHistory("inst_1", "conv_1", "top_1");
+      await flushPromises();
+      expect(store.activeRun?.id).toBe("run_A");
+
+      // WS reports A terminal while runs.get(A) is still deferred. The
+      // terminal branch fires a background transcript refresh (proving the
+      // race from the review): it must not invalidate the foreground
+      // recovery or forge a discovery failure.
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: { type: "conversation-run-changed", run: terminalRun },
+      } as never);
+      await flushPromises();
+
+      resolveRunsGet({
+        run: {
+          ...terminalRun,
+          memberTurns: [
+            {
+              id: "turn_A",
+              runId: "run_A",
+              conversationId: "conv_1",
+              topicId: "top_1",
+              botId: "bot_1",
+              batch: 1,
+              attempt: 1,
+              origin: "human",
+              state: "completed",
+              createdAt: "now",
+            },
+          ],
+        },
+      });
+      await loadCall;
+      await flushPromises();
+
+      // Recovery converges on the terminal Run: no forged discovery failure,
+      // gate open, live turn cleared.
+      expect(store.activeRun?.id).toBe("run_A");
+      expect(store.activeRun?.state).toBe("completed");
+      expect(store.historyError).toBeNull();
+      expect(store.topicReady).toBe(true);
+      expect(store.liveTurn).toBeNull();
+    });
     it("clears a ghost bot selection when the authoritative list no longer contains it", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
