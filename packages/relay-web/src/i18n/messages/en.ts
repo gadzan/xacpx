@@ -637,7 +637,7 @@ export default {
     },
     lifecycle: {
       identityLocked: "Agent and workspace are locked once this Bot has run. Other settings still apply to future turns.",
-      deleteBlocked: "This Bot has conversation history. Delete is unavailable until its conversation is reset.",
+      deleteBlocked: "This Bot has conversation history and cannot be deleted. Create a new Bot for a fresh identity; history is retained by design.",
     },
     topic: {
       label: "Topic",

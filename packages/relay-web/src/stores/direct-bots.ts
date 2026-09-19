@@ -270,6 +270,15 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   });
 
   // RPC: Bot CRUD
+  function dropBotDetail(targetInstanceId: string, botId: string): void {
+    const detailKey = `${targetInstanceId}:${botId}`;
+    if (detailKey in botDetails.value) {
+      const nextDetails = { ...botDetails.value };
+      delete nextDetails[detailKey];
+      botDetails.value = nextDetails;
+    }
+  }
+
   async function loadBots(targetInstanceId: string): Promise<BotSummaryDto[]> {
     loadingBots.value = true;
     try {
@@ -351,10 +360,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
   async function deleteBot(targetInstanceId: string, botId: string): Promise<void> {
     unwrapRpc(await api.rpc<{ ok: boolean }>(targetInstanceId, MSG.botsDelete, { id: botId }));
-    const detailKey = `${targetInstanceId}:${botId}`;
-    const nextDetails = { ...botDetails.value };
-    delete nextDetails[detailKey];
-    botDetails.value = nextDetails;
+    dropBotDetail(targetInstanceId, botId);
 
     const list = botsByInstance.value[targetInstanceId] ?? [];
     botsByInstance.value = {
@@ -966,8 +972,16 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const generation = currentSelectionGeneration;
     if (!iId) return;
     try {
-      await loadBots(iId);
+      const bots = await loadBots(iId);
       if (generation !== currentSelectionGeneration || instanceId.value !== iId || selectedBotId.value !== bId) return;
+      // The selected Bot may have been deleted on another client while this
+      // page was offline/closed. Drop the ghost selection (plus cached detail
+      // and persisted key) instead of restoring a pane that can only fail.
+      if (bId && !bots.some((b) => b.id === bId)) {
+        dropBotDetail(iId, bId);
+        clearSelection();
+        return;
+      }
 
       if (bId) {
         await loadBotDetail(iId, bId).catch(() => {});
@@ -1175,6 +1189,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           && selectedBotId.value
           && !bots.some((b) => b.id === selectedBotId.value)
         ) {
+          dropBotDetail(event.instanceId, selectedBotId.value);
           clearSelection();
           return;
         }

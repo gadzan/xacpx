@@ -876,6 +876,148 @@ describe("useDirectBotsStore", () => {
       expect(store.currentDraftRequestId).toBeNull();
       expect(store.lastPromptText).toBe("");
     });
+    it("blocks prompt while topic recovery discovery is still in flight", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      store.topicReady = false;
+
+      await store.sendPrompt("too early");
+      expect(mockRpc).not.toHaveBeenCalledWith(
+        "inst_1",
+        "control.conversation.prompt",
+        expect.anything(),
+      );
+      expect(store.promptError).toContain("still recovering");
+
+      store.topicReady = true;
+      mockRpc.mockResolvedValueOnce({
+        message: {
+          id: "msg_1", conversationId: "conv_1", topicId: "top_1", seq: 1,
+          role: "human", content: "too early", createdAt: "now",
+        },
+        run: {
+          id: "run_1", conversationId: "conv_1", topicId: "top_1",
+          requestMessageId: "msg_1", requestId: "req_1", mode: "explicit",
+          state: "queued", profileRevision: 1, createdAt: "now",
+        },
+        memberTurn: {
+          id: "turn_1", runId: "run_1", conversationId: "conv_1", topicId: "top_1",
+          botId: "bot_1", batch: 1, attempt: 1, origin: "human",
+          state: "queued", createdAt: "now",
+        },
+      });
+      await store.sendPrompt("too early");
+      expect(mockRpc).toHaveBeenCalledWith(
+        "inst_1",
+        "control.conversation.prompt",
+        expect.objectContaining({ text: "too early" }),
+      );
+    });
+    it("keeps admission closed when history fails so no prompt owns an unknown run", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversation.history") {
+          return Promise.reject(new Error("history offline"));
+        }
+        return Promise.resolve({});
+      });
+
+      store.topicReady = false;
+      await store.loadHistory("inst_1", "conv_1", "top_1");
+      expect(store.historyError).toContain("history offline");
+      expect(store.topicReady).toBe(false);
+
+      await store.sendPrompt("must not send");
+      expect(mockRpc).not.toHaveBeenCalledWith(
+        "inst_1",
+        "control.conversation.prompt",
+        expect.anything(),
+      );
+      expect(store.promptError).toContain("still recovering");
+    });
+    it("clears a ghost bot selection when the authoritative list no longer contains it", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_gone";
+      store.activeConversationId = "conv_gone";
+      store.activeTopicId = "top_gone";
+      store.botDetails["inst_1:bot_gone"] = {
+        id: "bot_gone", name: "Gone", agent: "codex", workspace: "repo",
+        enabled: true, profileRevision: 1, createdAt: "now", updatedAt: "now",
+      };
+      try {
+        localStorage.setItem(
+          "xrelay.selectedBot",
+          JSON.stringify({ instanceId: "inst_1", botId: "bot_gone" }),
+        );
+      } catch { /* ignore */ }
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.bots.list") {
+          return Promise.resolve({
+            bots: [
+              { id: "bot_other", name: "Other", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+            ],
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: { type: "bots-changed" },
+      } as never);
+      await flushPromises();
+      await flushPromises();
+
+      expect(store.selectedBotId).toBeNull();
+      expect(store.activeConversationId).toBeNull();
+      expect(store.activeTopicId).toBeNull();
+      expect(store.botDetails["inst_1:bot_gone"]).toBeUndefined();
+      expect(localStorage.getItem("xrelay.selectedBot")).toBeNull();
+    });
+    it("reconnect drops a ghost bot instead of restoring its pane", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_gone";
+      store.activeConversationId = "conv_gone";
+      store.activeTopicId = "top_gone";
+      store.botDetails["inst_1:bot_gone"] = {
+        id: "bot_gone", name: "Gone", agent: "codex", workspace: "repo",
+        enabled: true, profileRevision: 1, createdAt: "now", updatedAt: "now",
+      };
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.bots.list") {
+          return Promise.resolve({
+            bots: [
+              { id: "bot_other", name: "Other", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+            ],
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      await store.reconcileOnReconnect();
+
+      expect(store.selectedBotId).toBeNull();
+      expect(store.activeConversationId).toBeNull();
+      expect(store.activeTopicId).toBeNull();
+      expect(store.botDetails["inst_1:bot_gone"]).toBeUndefined();
+      expect(mockRpc).not.toHaveBeenCalledWith("inst_1", "control.bots.get", expect.anything());
+    });
     it("refuses to send prompt when bot is disabled", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
