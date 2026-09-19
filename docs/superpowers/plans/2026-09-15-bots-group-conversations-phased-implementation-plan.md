@@ -529,6 +529,15 @@ effort
 
 Show a clear warning/behavior when execution-affecting changes require runtime rebind.
 
+> Scope note (PR5 / #350): Bot teardown/rebind is deferred to a dedicated
+> lifecycle follow-up PR. A used Bot (one that has materialized a direct
+> runtime) is identity-locked in PR5: agent/workspace are read-only and delete
+> is fail-closed (`runtime_identity_locked` / `bot_in_use`), because context
+> persists by design and no public teardown/rebind RPC exists yet. PR5
+> surfaces this honestly in the UI instead of failing at submit. The follow-up
+> owns the destructive surface (explicit history/context consequences) and the
+> verified rebind path for identity changes.
+
 ## 8.3 Direct chat
 
 Must support:
@@ -538,8 +547,9 @@ Must support:
 - existing TurnParts/tool/thought/plan UI;
 - Stop current Run;
 - reconnect by seq;
-- new Topic/reset context;
-- delete/teardown status.
+- new Topic (fresh context within the same Bot);
+- delete status (unused Bots deletable; used Bots fail-closed per the scope
+  note above — no teardown surface in PR5).
 
 > Scope note (PR5 / #350): Relay Web permission interaction is deferred to a
 > dedicated follow-up PR. It needs protocol + Hub request/downlink +
@@ -564,7 +574,8 @@ Instructions changed
 - live + durable history converge;
 - reconnect does not duplicate final message;
 - cancel targets current Run;
-- runtime-affecting Bot edit displays/applies the documented rebind behavior;
+- used Bot shows identity-locked agent/workspace and fail-closed delete
+  (teardown/rebind deferred per the scope note above);
 - ordinary Sessions navigation unchanged.
 
 Follow-up (deferred from PR5): permission request uses exact current human

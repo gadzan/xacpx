@@ -948,6 +948,126 @@ describe("useDirectBotsStore", () => {
       );
       expect(store.promptError).toContain("still recovering");
     });
+    it("keeps admission closed when runs.list discovery fails after history success", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: [],
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({ error: { code: "discovery-offline", message: "discovery offline" } });
+        }
+        return Promise.resolve({});
+      });
+
+      await store.loadHistory("inst_1", "conv_1", "top_1");
+      // History rendered, but the owner is unproven: admission stays closed
+      // with a discovery error, not a silent open gate.
+      expect(store.historyError).toContain("Run discovery failed");
+      expect(store.topicReady).toBe(false);
+
+      await store.sendPrompt("must not own an unseen run");
+      expect(mockRpc).not.toHaveBeenCalledWith(
+        "inst_1",
+        "control.conversation.prompt",
+        expect.anything(),
+      );
+      expect(store.promptError).toContain("still recovering");
+    });
+    it("marks the bot identity-locked immediately on first durable accept", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Fresh", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      expect(store.currentBot?.hasRuntime).toBeUndefined();
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversation.prompt") {
+          return Promise.resolve({
+            message: {
+              id: "msg_1", conversationId: "conv_1", topicId: "top_1", seq: 1,
+              role: "human", content: "first", createdAt: "now",
+            },
+            run: {
+              id: "run_1", conversationId: "conv_1", topicId: "top_1",
+              requestMessageId: "msg_1", requestId: "req_1", mode: "explicit",
+              state: "queued", profileRevision: 1, createdAt: "now",
+            },
+            memberTurn: {
+              id: "turn_1", runId: "run_1", conversationId: "conv_1", topicId: "top_1",
+              botId: "bot_1", batch: 1, attempt: 1, origin: "human",
+              state: "queued", createdAt: "now",
+            },
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      await store.sendPrompt("first");
+      // No list/detail refetch happened, yet the lifecycle UI converges.
+      expect(mockRpc).not.toHaveBeenCalledWith("inst_1", "control.bots.list", expect.anything());
+      expect(store.currentBot?.hasRuntime).toBe(true);
+      expect(store.botDetails["inst_1:bot_1"]?.hasRuntime).toBeUndefined();
+    });
+    it("marks the bot identity-locked on WS-proven accept when HTTP is lost", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Fresh", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      const deferred = Promise.withResolvers<unknown>();
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversation.prompt") return deferred.promise;
+        return Promise.resolve({});
+      });
+
+      const sendCall = store.sendPrompt("first");
+      const pendingRequestId = store.currentDraftRequestId;
+      expect(pendingRequestId).toBeTruthy();
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "conversation-run-changed",
+          run: {
+            id: "run_B",
+            conversationId: "conv_1",
+            topicId: "top_1",
+            requestMessageId: "msg_B",
+            requestId: pendingRequestId,
+            mode: "explicit",
+            state: "queued",
+            profileRevision: 1,
+            createdAt: "now",
+          },
+        },
+      } as never);
+      // WS proof converges lifecycle UI even though HTTP never resolves.
+      expect(store.currentBot?.hasRuntime).toBe(true);
+
+      deferred.reject(new Error("Network disconnect"));
+      await sendCall;
+      expect(store.currentBot?.hasRuntime).toBe(true);
+    });
     it("clears a ghost bot selection when the authoritative list no longer contains it", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";

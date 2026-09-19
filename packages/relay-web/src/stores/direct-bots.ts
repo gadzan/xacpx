@@ -279,6 +279,27 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     }
   }
 
+  // First durable accept proves the hidden direct runtime materialized, but
+  // runtime materialization emits no bots-changed. Flip the local projection
+  // to hasRuntime immediately so delete/identity UI converges without waiting
+  // for a later list/detail refetch.
+  function markBotHasRuntime(targetInstanceId: string, botId: string): void {
+    const list = botsByInstance.value[targetInstanceId];
+    if (list) {
+      const idx = list.findIndex((b) => b.id === botId);
+      if (idx >= 0 && !list[idx]?.hasRuntime) {
+        const next = [...list];
+        next[idx] = { ...next[idx]!, hasRuntime: true as const };
+        botsByInstance.value = { ...botsByInstance.value, [targetInstanceId]: next };
+      }
+    }
+    const detailKey = `${targetInstanceId}:${botId}`;
+    const detail = botDetails.value[detailKey];
+    if (detail && !detail.hasRuntime) {
+      botDetails.value = { ...botDetails.value, [detailKey]: { ...detail, hasRuntime: true as const } };
+    }
+  }
+
   async function loadBots(targetInstanceId: string): Promise<BotSummaryDto[]> {
     loadingBots.value = true;
     try {
@@ -435,17 +456,33 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     return res.topic;
   }
 
-  // History loading and seq-based pagination. Initial loads use the durable
-  async function loadHistory(targetInstanceId?: string, convId?: string, topId?: string): Promise<void> {
+  // History loading and seq-based pagination. Foreground loads run durable
+  // run discovery and own the admission gate; background refreshes (terminal
+  // convergence after the owner is already known) must not close the gate or
+  // re-run discovery. Initial loads use the durable
+  async function loadHistory(
+    targetInstanceId?: string,
+    convId?: string,
+    topId?: string,
+    opts?: { background?: boolean },
+  ): Promise<void> {
     const iId = targetInstanceId ?? instanceId.value;
     const cId = convId ?? activeConversationId.value;
     const tId = topId ?? activeTopicId.value;
     if (!iId || !cId || !tId) return;
 
+    const background = opts?.background === true;
     const requestSequence = ++historyRequestSequence;
     const revision = transcriptRevision;
     loadingHistory.value = true;
     historyError.value = null;
+    // (Re)discovery starts: close admission until the owner is proven again.
+    // selectBot/switchTopic already closed it; foreground reloads (retry
+    // button, reconnect) must close it too. Background terminal refreshes
+    // leave the gate alone — the owner is already known.
+    if (!background) {
+      topicReady.value = false;
+    }
     try {
       const res = unwrapRpc(
         await api.rpc<ConversationHistoryResponseDto>(iId, MSG.conversationHistory, {
@@ -469,7 +506,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // (e.g. conversation-message arrived); retry against the same view so
       // persisted history and live state converge instead of overwriting.
       if (revision !== transcriptRevision) {
-        void loadHistory(iId, cId, tId);
+        void loadHistory(iId, cId, tId, opts);
         return;
       }
 
@@ -493,15 +530,31 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           liveTurn.value = null;
         }
       }
+      if (background) {
+        // Owner already known (terminal convergence): no discovery re-run,
+        // no gate change.
+        return;
+      }
       // Durable active-run recovery: after the authoritative tail is in place,
       // query topic-scoped runs so refresh finds the authoritative owner even
       // when no live snapshot/event has arrived yet. The history
       // requestSequence is passed so a superseded load cannot let its slow
-      // recovery overwrite a newer one.
-      await recoverActiveRun(iId, cId, tId, requestSequence);
-      // Durable discovery settled for this load: open admission. A stale load
-      // that lost the sequence fence returns above without reaching here.
-      topicReady.value = true;
+      // recovery overwrite a newer one. Admission opens only on proven
+      // discovery (active candidate or authoritative no-candidate): a
+      // runs.list failure leaves the gate closed so a prompt cannot take
+      // wrong ownership of an unseen Run.
+      const discovered = await recoverActiveRun(iId, cId, tId, requestSequence);
+      // A stale load that lost the sequence fence returns above without
+      // reaching here.
+      if (discovered) {
+        topicReady.value = true;
+      } else if (
+        instanceId.value === iId &&
+        activeConversationId.value === cId &&
+        activeTopicId.value === tId
+      ) {
+        historyError.value = "Run discovery failed. History loaded, but the live Run owner is unknown — retry to confirm before sending.";
+      }
     } catch (err: unknown) {
       historyError.value = err instanceof Error ? err.message : String(err);
     } finally {
@@ -512,7 +565,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // executing Run, else the oldest queued (next-up) Run.
   // Uses exact product IDs (conversationId/topicId/runId/memberTurnId) only;
   // never session aliases, timestamps, or latest-turn heuristics.
-  async function recoverActiveRun(iId: string, cId: string, tId: string, requestSequence?: number): Promise<void> {
+  async function recoverActiveRun(iId: string, cId: string, tId: string, requestSequence?: number): Promise<boolean> {
     const generation = ++recoveryGeneration;
     const historySequence = requestSequence ?? historyRequestSequence;
     const isCurrentRecovery = (): boolean =>
@@ -529,7 +582,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         }),
       );
       if (!isCurrentRecovery()) {
-        return;
+        return false;
       }
       // Discovery and paging are separate semantics: the owner can arrive as
       // activeRun even when the bounded runs page omits it.
@@ -540,18 +593,22 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         // reconcile rId branch (same active-state predicate) converges a
         // stale local Run via runsGet; clearing here would destroy the id it
         // needs and skip terminal convergence + history reload.
-        return;
+        // Authoritative no-candidate IS proven discovery: admission may open.
+        return true;
       }
       // A stale terminal activeRun must not block authoritative topic discovery:
       // the lost-response case is exactly activeRun=completed A while durable B
       // is queued/running. Only an active (non-terminal) different Run fences.
       if (activeRun.value && activeRun.value.id !== candidate.id && !isTerminalRunState(activeRun.value.state)) {
-        return;
+        // A different local nonterminal Run exists: keep it fenced but still
+        // treat discovery as proven — the gate must not reopen admission for
+        // a second prompt into the same Topic.
+        return true;
       }
       activeRun.value = mergeRun(activeRun.value?.id === candidate.id ? activeRun.value : null, candidate);
       if (isTerminalRunState(activeRun.value.state)) {
         liveTurn.value = null;
-        return;
+        return true;
       }
       // Fetch authoritative Run detail (member turns) without touching live snapshots.
       try {
@@ -559,10 +616,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           await api.rpc<{ run: ConversationRunDetailDto }>(iId, MSG.runsGet, { runId: candidate.id }),
         );
         if (!isCurrentRecovery()) {
-          return;
+          return false;
         }
         if (activeRun.value && activeRun.value.id !== candidate.id) {
-          return;
+          return true;
         }
         activeRun.value = mergeRun(activeRun.value, detail.run);
         const latestMember = detail.run.memberTurns?.length
@@ -574,12 +631,18 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         if (isTerminalRunState(activeRun.value.state)) {
           liveTurn.value = null;
         }
+        return true;
       } catch {
         // Keep the adopted Run row; detail fetch is best-effort recovery.
+        // The owner row itself was proven above, so admission may open.
+        return true;
       }
     } catch {
-      // Runs discovery is best-effort: older connectors answer unknown-type and
-      // history still renders. Never surface this as a history error.
+      // Runs discovery failed (network or older connector answering
+      // unknown-type): the owner is unproven, so admission stays closed and
+      // loadHistory surfaces a discovery error with retry. Never treat this
+      // as proven no-candidate.
+      return false;
     }
   }
 
@@ -824,6 +887,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         return;
       }
 
+      // HTTP accept proves the hidden direct runtime materialized (no
+      // bots-changed is emitted for materialization). Flip the local
+      // projection now so delete/identity UI converges without a refetch.
+      markBotHasRuntime(targetInstId, targetBotId);
       // On successful acceptance, reset current draft requestId so subsequent prompt gets a new id
       currentDraftRequestId.value = null;
       lastPromptText.value = "";
@@ -847,7 +914,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       if (isTerminalRunState(activeRun.value.state)) {
         liveTurn.value = null;
         if (targetInstId && targetConvId && targetTopicId) {
-          void loadHistory(targetInstId, targetConvId, targetTopicId);
+          void loadHistory(targetInstId, targetConvId, targetTopicId, { background: true });
         }
       } else {
         const isFreshRun = activeRun.value.id === res.run.id && activeRun.value.id !== priorRunId;
@@ -928,7 +995,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         liveTurn.value = null;
         resolveCancelUncertainty(runId);
         if (targetInstId && targetConvId && targetTopicId) {
-          void loadHistory(targetInstId, targetConvId, targetTopicId);
+          void loadHistory(targetInstId, targetConvId, targetTopicId, { background: true });
         }
       }
     } catch (err: unknown) {
@@ -949,7 +1016,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
               liveTurn.value = null;
               resolveCancelUncertainty(runId);
               if (targetInstId && targetConvId && targetTopicId) {
-                void loadHistory(targetInstId, targetConvId, targetTopicId);
+                void loadHistory(targetInstId, targetConvId, targetTopicId, { background: true });
               }
             }
           })
@@ -1124,7 +1191,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
                 if (isTerminalRunState(activeRun.value.state)) {
                   liveTurn.value = null;
                   if (targetConvId && targetTopicId) {
-                    void loadHistory(targetInstId, targetConvId, targetTopicId);
+                    void loadHistory(targetInstId, targetConvId, targetTopicId, { background: true });
                   }
                 }
               })
@@ -1244,11 +1311,16 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
         if (!activeRun.value || activeRun.value.id === run.id) {
           activeRun.value = mergeRun(activeRun.value, run);
+          // Any Run for this Topic proves the hidden direct runtime
+          // materialized (no bots-changed covers it). Converge lifecycle now.
+          if (instanceId.value && selectedBotId.value) {
+            markBotHasRuntime(instanceId.value, selectedBotId.value);
+          }
           if (isTerminalRunState(activeRun.value.state)) {
             liveTurn.value = null;
             resolveCancelUncertainty(run.id);
             if (instanceId.value && activeConversationId.value && activeTopicId.value) {
-              void loadHistory(instanceId.value, activeConversationId.value, activeTopicId.value);
+              void loadHistory(instanceId.value, activeConversationId.value, activeTopicId.value, { background: true });
             }
           }
         } else if (
@@ -1279,6 +1351,11 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         if (!activeRun.value || activeRun.value.id === run.id) {
           activeRun.value = mergeRun(activeRun.value, run);
           activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, memberTurn);
+          // This Run exists, so the hidden direct runtime materialized (no
+          // bots-changed covers it). Converge the lifecycle projection now.
+          if (instanceId.value && selectedBotId.value) {
+            markBotHasRuntime(instanceId.value, selectedBotId.value);
+          }
         } else {
           return;
         }
@@ -1308,7 +1385,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           liveTurn.value = null;
           resolveCancelUncertainty(run.id);
           if (instanceId.value && activeConversationId.value && activeTopicId.value) {
-            void loadHistory(instanceId.value, activeConversationId.value, activeTopicId.value);
+            void loadHistory(instanceId.value, activeConversationId.value, activeTopicId.value, { background: true });
           }
         }
       }
