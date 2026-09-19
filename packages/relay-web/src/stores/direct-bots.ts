@@ -176,10 +176,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   let currentSelectionGeneration = 0;
   let recoveryGeneration = 0;
   let historyRequestSequence = 0;
-  // Durable-owner discovery owns its own sequence, separate from transcript
-  // page freshness above: background transcript refreshes must never
-  // invalidate an in-flight foreground recovery (terminal WS event racing a
-  // deferred runs.get must not forge a discovery failure).
+  // Durable-owner discovery generation: minted per loadHistory call so a
+  // superseded load cannot let its slow recovery overwrite a newer owner.
+  // Transcript page freshness uses historyRequestSequence above; discovery
+  // uses this counter so the two fences never conflate.
   let discoverySequence = 0;
   let transcriptRevision = 0;
   function touchTranscript(): void {
@@ -461,37 +461,35 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     return res.topic;
   }
 
-  // History loading and seq-based pagination. Foreground loads run durable
-  // run discovery and own the admission gate; background refreshes (terminal
-  // convergence after the owner is already known) must not close the gate or
-  // re-run discovery. Initial loads use the durable
+  // History loading and transcript convergence. Every load closes the
+  // admission gate at (re)discovery start and reopens it only on proven
+  // discovery (active candidate or authoritative no-candidate): the terminal
+  // owner handoff below re-runs discovery instead of trusting a background
+  // transcript refresh, so a queued next Run can never hide behind an open
+  // gate. Transcript paging stays seq-cursor driven.
   async function loadHistory(
     targetInstanceId?: string,
     convId?: string,
     topId?: string,
-    opts?: { background?: boolean },
+    opts?: { harvestTerminalHandoff?: { runId: string }; reuseDiscoveryId?: number },
   ): Promise<void> {
     const iId = targetInstanceId ?? instanceId.value;
     const cId = convId ?? activeConversationId.value;
     const tId = topId ?? activeTopicId.value;
     if (!iId || !cId || !tId) return;
 
-    const background = opts?.background === true;
     const requestSequence = ++historyRequestSequence;
-    // Foreground loads own durable-owner discovery; background refreshes only
-    // own transcript page freshness and must never invalidate an in-flight
-    // foreground recovery.
-    const discoveryId = background ? null : ++discoverySequence;
+    // Every load owns durable-owner discovery: the id minted here fences
+    // the recovery below, so concurrent loads cannot interleave owners. A
+    // terminal handoff may share one pre-minted id across its retries so
+    // concurrent terminal events for the same Run do not stack redundant
+    // discovery round trips.
+    const discoveryId = opts?.reuseDiscoveryId ?? ++discoverySequence;
     const revision = transcriptRevision;
     loadingHistory.value = true;
     historyError.value = null;
     // (Re)discovery starts: close admission until the owner is proven again.
-    // selectBot/switchTopic already closed it; foreground reloads (retry
-    // button, reconnect) must close it too. Background terminal refreshes
-    // leave the gate alone — the owner is already known.
-    if (!background) {
-      topicReady.value = false;
-    }
+    topicReady.value = false;
     try {
       const res = unwrapRpc(
         await api.rpc<ConversationHistoryResponseDto>(iId, MSG.conversationHistory, {
@@ -513,9 +511,15 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       }
       // A live event mutated the transcript while this request was in flight
       // (e.g. conversation-message arrived); retry against the same view so
-      // persisted history and live state converge instead of overwriting.
+      // persisted history and live state converge instead of overwriting. The
+      // retry reuses the same discovery id AND harvest context: it is the
+      // same logical discovery, not a newer one, so it must not invalidate
+      // its own recovery or drop the handoff harvest.
       if (revision !== transcriptRevision) {
-        void loadHistory(iId, cId, tId, opts);
+        void loadHistory(iId, cId, tId, {
+          reuseDiscoveryId: discoveryId,
+          ...(opts?.harvestTerminalHandoff ? { harvestTerminalHandoff: opts.harvestTerminalHandoff } : {}),
+        });
         return;
       }
 
@@ -539,25 +543,29 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           liveTurn.value = null;
         }
       }
-      if (background) {
-        // Owner already known (terminal convergence): no discovery re-run,
-        // no gate change.
-        return;
-      }
       // Durable active-run recovery: after the authoritative tail is in place,
       // query topic-scoped runs so refresh finds the authoritative owner even
-      // when no live snapshot/event has arrived yet. The history
-      // requestSequence is passed so a superseded load cannot let its slow
-      // recovery overwrite a newer one. Admission opens only on proven
-      // discovery (active candidate or authoritative no-candidate): a
-      // runs.list failure leaves the gate closed so a prompt cannot take
-      // wrong ownership of an unseen Run.
-      const discovered = await recoverActiveRun(iId, cId, tId, discoveryId);
+      // when no live snapshot/event has arrived yet. The discovery id is
+      // passed so a superseded load cannot let its slow recovery overwrite a
+      // newer one. Admission opens only on proven discovery (active candidate
+      // or authoritative no-candidate): a runs.list failure leaves the gate
+      // closed so a prompt cannot take wrong ownership of an unseen Run.
+      const discovered = await recoverActiveRun(
+        iId,
+        cId,
+        tId,
+        discoveryId,
+        opts?.harvestTerminalHandoff,
+      );
       // A stale load that lost the sequence fence returns above without
       // reaching here.
       if (discovered) {
         topicReady.value = true;
       } else if (
+        // A superseded load (a newer discovery started, e.g. a terminal
+        // handoff racing a deferred runs.get) must not pin a stale failure
+        // over the newer recovery's outcome.
+        discoveryId === discoverySequence &&
         instanceId.value === iId &&
         activeConversationId.value === cId &&
         activeTopicId.value === tId
@@ -565,7 +573,16 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         historyError.value = "Run discovery failed. History loaded, but the live Run owner is unknown — retry to confirm before sending.";
       }
     } catch (err: unknown) {
-      historyError.value = err instanceof Error ? err.message : String(err);
+      // Same supersede rule as above: a stale history failure must not
+      // overwrite a newer load's converged state.
+      if (
+        requestSequence === historyRequestSequence &&
+        instanceId.value === iId &&
+        activeConversationId.value === cId &&
+        activeTopicId.value === tId
+      ) {
+        historyError.value = err instanceof Error ? err.message : String(err);
+      }
     } finally {
       loadingHistory.value = false;
     }
@@ -574,7 +591,13 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // executing Run, else the oldest queued (next-up) Run.
   // Uses exact product IDs (conversationId/topicId/runId/memberTurnId) only;
   // never session aliases, timestamps, or latest-turn heuristics.
-  async function recoverActiveRun(iId: string, cId: string, tId: string, discoveryId?: number | null): Promise<boolean> {
+  async function recoverActiveRun(
+    iId: string,
+    cId: string,
+    tId: string,
+    discoveryId?: number | null,
+    harvestTerminalHandoff?: { runId: string },
+  ): Promise<boolean> {
     const generation = ++recoveryGeneration;
     const ownedDiscoveryId = discoveryId ?? discoverySequence;
     const isCurrentRecovery = (): boolean =>
@@ -615,6 +638,19 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         return true;
       }
       activeRun.value = mergeRun(activeRun.value?.id === candidate.id ? activeRun.value : null, candidate);
+      // A terminal handoff that already applied the WS terminal row must not
+      // be regressed: if the handoff named this exact Run and it is terminal
+      // locally, converge without re-fetching detail (the detail response is
+      // older than the event and mergeRun would keep the terminal state, but
+      // the member-turn merge below could still clobber fresher turn state).
+      if (
+        harvestTerminalHandoff &&
+        activeRun.value.id === harvestTerminalHandoff.runId &&
+        isTerminalRunState(activeRun.value.state)
+      ) {
+        liveTurn.value = null;
+        return true;
+      }
       if (isTerminalRunState(activeRun.value.state)) {
         liveTurn.value = null;
         return true;
@@ -627,7 +663,24 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         if (!isCurrentRecovery()) {
           return false;
         }
+        // Defense in depth: the detail must describe the requested candidate.
+        // A mismatched detail row must never silently swap the adopted owner
+        // (mergeRun returns a different id verbatim); keep the proven owner
+        // row and treat discovery as proven.
+        if (detail.run.id !== candidate.id) {
+          return true;
+        }
         if (activeRun.value && activeRun.value.id !== candidate.id) {
+          return true;
+        }
+        // Same handoff guard after the detail fetch: the WS terminal row is
+        // newer than any in-flight detail response for the same Run.
+        if (
+          harvestTerminalHandoff &&
+          activeRun.value.id === harvestTerminalHandoff.runId &&
+          isTerminalRunState(activeRun.value.state)
+        ) {
+          liveTurn.value = null;
           return true;
         }
         activeRun.value = mergeRun(activeRun.value, detail.run);
@@ -653,6 +706,106 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // as proven no-candidate.
       return false;
     }
+  }
+
+  // Transcript-only convergence: reload the canonical history page without
+  // touching the admission gate or durable-owner discovery. For callers whose
+  // owner row is already authoritative (prompt accept reusing a completed
+  // Run). Never use on a terminal handoff where a queued next Run may exist.
+  function refreshTranscriptOnly(
+    targetInstanceId: string | null,
+    convId: string | null,
+    topId: string | null,
+  ): void {
+    if (!targetInstanceId || !convId || !topId) return;
+    void (async () => {
+      const generation = currentSelectionGeneration;
+      const requestSequence = ++historyRequestSequence;
+      const revision = transcriptRevision;
+      loadingHistory.value = true;
+      try {
+        const res = unwrapRpc(
+          await api.rpc<ConversationHistoryResponseDto>(targetInstanceId, MSG.conversationHistory, {
+            conversationId: convId,
+            topicId: topId,
+            limit: 50,
+            direction: "newest-first",
+          }),
+        );
+        if (
+          generation !== currentSelectionGeneration ||
+          instanceId.value !== targetInstanceId ||
+          activeConversationId.value !== convId ||
+          activeTopicId.value !== topId ||
+          requestSequence !== historyRequestSequence
+        ) {
+          return;
+        }
+        if (revision !== transcriptRevision) {
+          void refreshTranscriptOnly(targetInstanceId, convId, topId);
+          return;
+        }
+        const deduplicated = new Map<string, ConversationMessageDto>();
+        for (const m of res.messages) {
+          deduplicated.set(m.id, m);
+        }
+        messages.value = [...deduplicated.values()].sort((a, b) => a.seq - b.seq);
+        transcriptRevision += 1;
+        oldestSeq.value = res.oldestSeq;
+        newestSeq.value = res.newestSeq;
+        hasMoreBefore.value = res.hasMoreBefore;
+        hasMoreAfter.value = res.hasMoreAfter;
+        if (activeRun.value) {
+          const canonicalBotMsg = messages.value.find(
+            (m) => m.role === "bot" && m.runId === activeRun.value?.id,
+          );
+          if (canonicalBotMsg) {
+            liveTurn.value = null;
+          }
+        }
+      } catch (err: unknown) {
+        if (
+          requestSequence === historyRequestSequence &&
+          instanceId.value === targetInstanceId &&
+          activeConversationId.value === convId &&
+          activeTopicId.value === topId
+        ) {
+          historyError.value = err instanceof Error ? err.message : String(err);
+        }
+      } finally {
+        loadingHistory.value = false;
+      }
+    })();
+  }
+
+  // Terminal owner handoff: a Run just reached a terminal state, so the next
+  // queued Run (if any) is now the authoritative owner. Close the admission
+  // gate, refresh the canonical transcript, then re-run durable discovery:
+  // adopt queued B and keep the composer blocked, or open the gate only on
+  // authoritative no-candidate. Pre-terminal B stream events stay fenced on
+  // the old Run id, so discovery completing first cannot lose ownership.
+  function rediscoverAfterTerminal(
+    targetInstanceId: string | null,
+    convId: string | null,
+    topId: string | null,
+    harvestRunId?: string,
+  ): void {
+    if (!targetInstanceId || !convId || !topId) return;
+    const runId = harvestRunId;
+    // Capture the discovery generation synchronously: concurrent terminal
+    // events for the same Run share one handoff instead of stacking
+    // redundant history+discovery round trips.
+    const handoffDiscoveryId = ++discoverySequence;
+    void (async () => {
+      const generation = currentSelectionGeneration;
+      await loadHistory(
+        targetInstanceId,
+        convId,
+        topId,
+        runId ? { harvestTerminalHandoff: { runId }, reuseDiscoveryId: handoffDiscoveryId } : undefined,
+      );
+      if (generation !== currentSelectionGeneration) return;
+    })();
   }
 
   async function loadOlder(): Promise<void> {
@@ -917,16 +1070,26 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
       // Track active run and member turn without regressing already-advanced state
       const priorRunId = activeRun.value?.id;
+      const priorRunActive = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
       activeRun.value = mergeRun(activeRun.value, res.run);
       if (res.run.id !== activeRun.value.id) {
         activeMemberTurn.value = res.memberTurn;
       } else {
         activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, res.memberTurn);
       }
+      // Reused-completed-run accept: the accepted Run row is authoritative
+      // for the accepted Run, but a queued next Run may still own the Topic
+      // (the accept response carries no topic-wide ownership). Converge the
+      // transcript, then re-discover the owner exactly like a terminal event:
+      // adopt queued B blocked, or open the gate on no-candidate.
       if (isTerminalRunState(activeRun.value.state)) {
         liveTurn.value = null;
         if (targetInstId && targetConvId && targetTopicId) {
-          void loadHistory(targetInstId, targetConvId, targetTopicId, { background: true });
+          if (priorRunActive) {
+            void rediscoverAfterTerminal(targetInstId, targetConvId, targetTopicId, activeRun.value.id);
+          } else {
+            void refreshTranscriptOnly(targetInstId, targetConvId, targetTopicId);
+          }
         }
       } else {
         const isFreshRun = activeRun.value.id === res.run.id && activeRun.value.id !== priorRunId;
@@ -1002,12 +1165,16 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       if (!isCurrent()) {
         return;
       }
+      // Retirement rule: only hand off when this response retires the
+      // locally-tracked nonterminal Run (not when it merely confirms an
+      // already-terminal Run).
+      const retiringActiveRun = !isTerminalRunState(activeRun.value.state);
       activeRun.value = mergeRun(activeRun.value, res.run);
       if (isTerminalRunState(activeRun.value.state)) {
         liveTurn.value = null;
         resolveCancelUncertainty(runId);
-        if (targetInstId && targetConvId && targetTopicId) {
-          void loadHistory(targetInstId, targetConvId, targetTopicId, { background: true });
+        if (retiringActiveRun && targetInstId && targetConvId && targetTopicId) {
+          void rediscoverAfterTerminal(targetInstId, targetConvId, targetTopicId, activeRun.value.id);
         }
       }
     } catch (err: unknown) {
@@ -1023,12 +1190,13 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           .then((getRes) => {
             if (!isCurrent()) return;
             const run = unwrapRpc(getRes).run;
+            const retiringActiveRun = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
             activeRun.value = mergeRun(activeRun.value, run);
             if (isTerminalRunState(activeRun.value.state)) {
               liveTurn.value = null;
               resolveCancelUncertainty(runId);
-              if (targetInstId && targetConvId && targetTopicId) {
-                void loadHistory(targetInstId, targetConvId, targetTopicId, { background: true });
+              if (retiringActiveRun && targetInstId && targetConvId && targetTopicId) {
+                void rediscoverAfterTerminal(targetInstId, targetConvId, targetTopicId, activeRun.value.id);
               }
             }
           })
@@ -1193,6 +1361,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
                   return;
                 }
                 const run = unwrapRpc(res).run;
+                // Retirement rule: only hand off when this detail retires a
+                // locally-tracked nonterminal Run.
+                const retiringActiveRun = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
                 activeRun.value = mergeRun(activeRun.value, run);
                 if (run.memberTurns?.length) {
                   const latestMember = run.memberTurns[run.memberTurns.length - 1];
@@ -1202,8 +1373,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
                 }
                 if (isTerminalRunState(activeRun.value.state)) {
                   liveTurn.value = null;
-                  if (targetConvId && targetTopicId) {
-                    void loadHistory(targetInstId, targetConvId, targetTopicId, { background: true });
+                  if (retiringActiveRun && targetConvId && targetTopicId) {
+                    void rediscoverAfterTerminal(targetInstId, targetConvId, targetTopicId, activeRun.value.id);
                   }
                 }
               })
@@ -1322,6 +1493,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       const run = e.run;
       if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
         if (!activeRun.value || activeRun.value.id === run.id) {
+          // Only a locally-tracked nonterminal Run retiring on THIS event is
+          // a terminal handoff: it closes admission and re-discovers the next
+          // owner. A repeated/confirmatory terminal row for an already-terminal
+          // Run (e.g. discovery echoing the owner back) must not churn the
+          // gate or spawn redundant re-discovery.
+          const retiringActiveRun = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
           activeRun.value = mergeRun(activeRun.value, run);
           // Any Run for this Topic proves the hidden direct runtime
           // materialized (no bots-changed covers it). Converge lifecycle now.
@@ -1331,8 +1508,11 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           if (isTerminalRunState(activeRun.value.state)) {
             liveTurn.value = null;
             resolveCancelUncertainty(run.id);
-            if (instanceId.value && activeConversationId.value && activeTopicId.value) {
-              void loadHistory(instanceId.value, activeConversationId.value, activeTopicId.value, { background: true });
+            if (
+              retiringActiveRun &&
+              instanceId.value && activeConversationId.value && activeTopicId.value
+            ) {
+              rediscoverAfterTerminal(instanceId.value, activeConversationId.value, activeTopicId.value, activeRun.value.id);
             }
           }
         } else if (
@@ -1391,13 +1571,19 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         if (activeRun.value && activeRun.value.id !== run.id) {
           return;
         }
+        // Same retirement rule as run-changed: only a locally-tracked
+        // nonterminal Run retiring on this event hands off.
+        const retiringActiveRun = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
         activeRun.value = mergeRun(activeRun.value, run);
         activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, memberTurn);
         if (isTerminalRunState(activeRun.value.state)) {
           liveTurn.value = null;
           resolveCancelUncertainty(run.id);
-          if (instanceId.value && activeConversationId.value && activeTopicId.value) {
-            void loadHistory(instanceId.value, activeConversationId.value, activeTopicId.value, { background: true });
+          if (
+            retiringActiveRun &&
+            instanceId.value && activeConversationId.value && activeTopicId.value
+          ) {
+            rediscoverAfterTerminal(instanceId.value, activeConversationId.value, activeTopicId.value, activeRun.value.id);
           }
         }
       }
