@@ -1272,6 +1272,119 @@ describe("useDirectBotsStore", () => {
         expect.anything(),
       );
     });
+    it("rediscovers when a foreign queued Run arrives after a no-candidate handoff", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      const runA = {
+        id: "run_A",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_A",
+        requestId: "req_A",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      const terminalA = { ...runA, state: "completed" };
+      const runBQueued = {
+        id: "run_B",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_B",
+        requestId: "req_foreign_B",
+        mode: "explicit",
+        state: "queued",
+        createdAt: "now",
+      };
+      // Discovery first tracks A, then the terminal handoff proves an
+      // authoritative no-candidate. A foreign B queued afterwards must not
+      // stay invisible behind the reopened gate.
+      let phase: "running-A" | "no-candidate" | "foreign-B" = "running-A";
+      mockRpc.mockImplementation((instId: string, type: string, payload?: unknown) => {
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: [],
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          if (phase === "running-A") {
+            return Promise.resolve({
+              conversationId: "conv_1",
+              topicId: "top_1",
+              runs: [runA],
+              activeRunId: "run_A",
+              activeRun: runA,
+            });
+          }
+          if (phase === "no-candidate") {
+            return Promise.resolve({ conversationId: "conv_1", topicId: "top_1", runs: [] });
+          }
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            runs: [runBQueued],
+            activeRunId: "run_B",
+            activeRun: runBQueued,
+          });
+        }
+        if (type === "control.runs.get") {
+          const requestedId = (payload as { runId?: string } | undefined)?.runId;
+          const row = requestedId === "run_B" ? runBQueued : runA;
+          return Promise.resolve({ run: { ...row, memberTurns: [] } });
+        }
+        return Promise.resolve({});
+      });
+
+      await store.loadHistory("inst_1", "conv_1", "top_1");
+      expect(store.activeRun?.id).toBe("run_A");
+
+      phase = "no-candidate";
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: { type: "conversation-run-changed", run: terminalA },
+      } as never);
+      await flushPromises();
+      await flushPromises();
+      expect(store.activeRun?.id).toBe("run_A");
+      expect(store.activeRun?.state).toBe("completed");
+      expect(store.topicReady).toBe(true);
+
+      // Another client queues B after the handoff completed. The foreign
+      // nonterminal event must synchronously close admission and elect B via
+      // authoritative discovery — never adopt blindly, never stay open.
+      phase = "foreign-B";
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: { type: "conversation-run-changed", run: runBQueued },
+      } as never);
+      expect(store.topicReady).toBe(false);
+      await flushPromises();
+      await flushPromises();
+      expect(store.activeRun?.id).toBe("run_B");
+      expect(store.isRunActive).toBe(true);
+      expect(store.topicReady).toBe(true);
+      await store.sendPrompt("prompt C while foreign B queued");
+      expect(store.promptError).toContain("already in progress");
+      expect(store.activeRun?.id).toBe("run_B");
+      expect(mockRpc).not.toHaveBeenCalledWith(
+        "inst_1",
+        "control.conversation.prompt",
+        expect.anything(),
+      );
+    });
     it("does not let pre-terminal B stream events steal ownership before handoff discovery", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";

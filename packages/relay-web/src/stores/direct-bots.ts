@@ -1515,28 +1515,48 @@ export const useDirectBotsStore = defineStore("directBots", () => {
               rediscoverAfterTerminal(instanceId.value, activeConversationId.value, activeTopicId.value, activeRun.value.id);
             }
           }
-        } else if (
-          !isTerminalRunState(run.state) &&
-          run.requestId !== "" &&
-          currentDraftRequestId.value !== null &&
-          run.requestId === currentDraftRequestId.value
-        ) {
-          activeRun.value = mergeRun(null, run);
-          activeMemberTurn.value = null;
-          liveTurn.value = null;
-          latestPlanRunId.value = run.id;
-          // The WS proved the submission is durably accepted, so retire the
-          // retry identity now: a late HTTP catch cannot rewrite failure and
-          // Retry cannot re-send the same requestId. promptInFlight stays true
-          // until the HTTP settles, still reflecting the open request.
-          promptError.value = null;
-          currentDraftRequestId.value = null;
-          lastPromptText.value = "";
+        } else if (!isTerminalRunState(run.state)) {
+          // A nonterminal Run this tab does not own appeared for the current
+          // Topic. While a live owner is tracked, stay fenced: the owner may
+          // still be executing ahead of it, and its terminal event hands off
+          // via authoritative discovery. But with no live local owner (absent
+          // or already terminal, e.g. a no-candidate handoff completed and a
+          // foreign Run queued afterwards), the event evidences an unseen
+          // owner: close admission synchronously and re-run authoritative
+          // topic-wide discovery to elect the true owner instead of adopting
+          // blindly (an older queued Run may sort ahead).
+          const isOwnDraft =
+            run.requestId !== "" &&
+            currentDraftRequestId.value !== null &&
+            run.requestId === currentDraftRequestId.value;
+          if (
+            !isOwnDraft &&
+            (!activeRun.value || isTerminalRunState(activeRun.value.state)) &&
+            instanceId.value && activeConversationId.value && activeTopicId.value
+          ) {
+            void rediscoverAfterTerminal(
+              instanceId.value,
+              activeConversationId.value,
+              activeTopicId.value,
+            );
+          }
+          if (isOwnDraft) {
+            activeRun.value = mergeRun(null, run);
+            activeMemberTurn.value = null;
+            liveTurn.value = null;
+            latestPlanRunId.value = run.id;
+            // The WS proved the submission is durably accepted, so retire the
+            // retry identity now: a late HTTP catch cannot rewrite failure and
+            // Retry cannot re-send the same requestId. promptInFlight stays true
+            // until the HTTP settles, still reflecting the open request.
+            promptError.value = null;
+            currentDraftRequestId.value = null;
+            lastPromptText.value = "";
+          }
         }
       }
       return;
     }
-
     if (e.type === "member-turn-started") {
       const { run, memberTurn } = e;
       if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
