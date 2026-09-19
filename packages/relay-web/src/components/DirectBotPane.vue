@@ -44,8 +44,9 @@ const botHasRuntime = computed(() =>
 
 async function handleDeleteBot(): Promise<void> {
   if (!bot.value || !directBotsStore.instanceId) return;
-  // Fail-closed backends reject deleting a used Bot (bot_in_use) until its
-  // conversation is reset. Say so before confirming instead of failing after.
+  // Fail-closed backends reject deleting a used Bot (bot_in_use).
+  // Teardown/rebind is a later lifecycle surface, so say so before confirming
+  // instead of failing after.
   if (botHasRuntime.value) {
     directBotsStore.generalError = t("bot.lifecycle.deleteBlocked");
     return;

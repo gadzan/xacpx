@@ -74,8 +74,9 @@ function botHasRuntime(bot: BotSummaryDto): boolean {
 }
 
 async function deleteBotWithConfirm(instanceId: string, bot: BotSummaryDto): Promise<void> {
-  // Same fail-closed rule as the pane: a used Bot cannot be deleted until its
-  // conversation is reset (backend bot_in_use). Surface it, don't fail it.
+  // Same fail-closed rule as the pane: a used Bot cannot be deleted
+  // (backend bot_in_use); teardown/rebind is a later lifecycle surface.
+  // Surface it, don't fail it.
   if (botHasRuntime(bot)) {
     pushToast("error", "bot.lifecycle.deleteBlocked");
     return;
