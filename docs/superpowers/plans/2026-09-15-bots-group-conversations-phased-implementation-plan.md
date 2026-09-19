@@ -536,11 +536,16 @@ Must support:
 - durable history;
 - streaming live response;
 - existing TurnParts/tool/thought/plan UI;
-- exact permission interaction;
 - Stop current Run;
 - reconnect by seq;
 - new Topic/reset context;
 - delete/teardown status.
+
+> Scope note (PR5 / #350): Relay Web permission interaction is deferred to a
+> dedicated follow-up PR. It needs protocol + Hub request/downlink +
+> RelayChannel `requestPermission()` + Web approval UI/response flow — an
+> independent feature surface. Until then RelayChannel has no permission
+> round-trip and the broker retains fail-closed `reject_once` semantics.
 
 ## 8.4 Profile-edit semantics in UI
 
@@ -555,14 +560,15 @@ Instructions changed
 “New topic” is the primary clean-context action.
 
 ## Tests
-
 - Bot rename preserves selected ID;
 - live + durable history converge;
 - reconnect does not duplicate final message;
 - cancel targets current Run;
-- permission request uses exact current human turn;
 - runtime-affecting Bot edit displays/applies the documented rebind behavior;
 - ordinary Sessions navigation unchanged.
+
+Follow-up (deferred from PR5): permission request uses exact current human
+turn — tracked with the Relay permission interaction milestone/PR above.
 
 ---
 

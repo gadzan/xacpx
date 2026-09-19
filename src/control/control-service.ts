@@ -2040,12 +2040,17 @@ export class ControlService {
   }
 
   listTopicRuns(conversationId: string, topicId: string, limit?: number) {
+    // Clamp at the service boundary (not only the relay bridge): the public
+    // facade is callable by any plugin/channel, and slice(-0) would return the
+    // full set instead of an empty page.
+    const clampedLimit = limit === undefined ? undefined : Math.min(200, Math.max(1, Math.floor(limit)));
     const listed = this.requireConversations().runs.listTopicRuns(conversationId, topicId, {
-      ...(limit !== undefined ? { limit } : {}),
+      ...(clampedLimit !== undefined ? { limit: clampedLimit } : {}),
     });
     return {
       runs: listed.runs.map(toConversationRun),
       ...(listed.activeRunId ? { activeRunId: listed.activeRunId } : {}),
+      ...(listed.activeRun ? { activeRun: toConversationRun(listed.activeRun) } : {}),
     };
   }
 

@@ -426,6 +426,76 @@ describe("useDirectBotsStore", () => {
       expect(store.promptError).toContain("already in progress");
     });
 
+    it("drops a stale recovery when a newer recovery supersedes it", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      const runA: ConversationRunDto = {
+        id: "run_A",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_A",
+        requestId: "req_A",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z",
+      };
+      const runB: ConversationRunDto = {
+        id: "run_B",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_B",
+        requestId: "req_B",
+        mode: "explicit",
+        state: "queued",
+        profileRevision: 1,
+        createdAt: "2026-09-18T00:01:00.000Z",
+      };
+      let resolveListA!: (value: unknown) => void;
+      const listGateA = new Promise<unknown>((resolve) => { resolveListA = resolve; });
+      let listCalls = 0;
+      mockRpc.mockImplementation((instanceId: string, type: string) => {
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: [],
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          listCalls += 1;
+          if (listCalls === 1) return listGateA;
+          return Promise.resolve({ conversationId: "conv_1", topicId: "top_1", runs: [runA, runB], activeRun: runB, activeRunId: "run_B" });
+        }
+        if (type === "control.runs.get") {
+          return Promise.resolve({ run: { ...runB, memberTurns: [] } });
+        }
+        return Promise.reject(new Error(`unexpected rpc ${type}`));
+      });
+      // H1 starts recovery; H2 supersedes it before H1's runs.list resolves.
+      // History resolves immediately so both recoveries race at runs.list.
+      // H2 runs fully (history + runs.list + runs.get) before H1's slow
+      // discovery resolves, so H1 must lose on the recovery generation.
+      const stale = store.loadHistory("inst_1", "conv_1", "top_1");
+      await flushPromises();
+      await store.loadHistory("inst_1", "conv_1", "top_1");
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      // H1's slow discovery (stale A running) resolves last and must lose.
+      resolveListA({ conversationId: "conv_1", topicId: "top_1", runs: [runA], activeRun: runA, activeRunId: "run_A" });
+      await stale;
+      await flushPromises();
+      await flushPromises();
+      await flushPromises();
+      expect(store.activeRun?.id).toBe("run_B");
+      expect(store.isRunActive).toBe(true);
+    });
+
     it("recovers the durable Run past a stale terminal activeRun (lost accept response)", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";

@@ -1074,12 +1074,13 @@ async function dispatchControlRequest(
       const limit = input.limit === undefined
         ? undefined
         : Math.min(200, Math.max(1, Math.floor(input.limit)));
-      const listed = control.listTopicRuns(input.conversationId, input.topicId, limit) as { runs: unknown[]; activeRunId?: string };
+      const listed = control.listTopicRuns(input.conversationId, input.topicId, limit) as { runs: unknown[]; activeRunId?: string; activeRun?: unknown };
       return {
         conversationId: input.conversationId,
         topicId: input.topicId,
         runs: listed.runs,
         ...(typeof listed.activeRunId === "string" ? { activeRunId: listed.activeRunId } : {}),
+        ...(listed.activeRun && typeof listed.activeRun === "object" ? { activeRun: listed.activeRun } : {}),
       };
     }
     case MSG.runsCancel: {
