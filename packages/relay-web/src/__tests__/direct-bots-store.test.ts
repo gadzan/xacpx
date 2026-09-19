@@ -1154,13 +1154,242 @@ describe("useDirectBotsStore", () => {
       await loadCall;
       await flushPromises();
 
-      // Recovery converges on the terminal Run: no forged discovery failure,
-      // gate open, live turn cleared.
+      // Recovery converges on the terminal Run: the terminal event retires
+      // A, and the handoff re-discovery confirms no next owner, so the gate
+      // opens with no discovery failure and the live turn clears.
       expect(store.activeRun?.id).toBe("run_A");
       expect(store.activeRun?.state).toBe("completed");
       expect(store.historyError).toBeNull();
       expect(store.topicReady).toBe(true);
       expect(store.liveTurn).toBeNull();
+    });
+    it("hands ownership to queued B after A terminal and keeps the composer blocked", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      const runA = {
+        id: "run_A",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_A",
+        requestId: "req_A",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      const runBQueued = {
+        id: "run_B",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_B",
+        requestId: "req_B",
+        mode: "explicit",
+        state: "queued",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      const terminalA = { ...runA, state: "completed" };
+      let handoffArmed = false;
+      mockRpc.mockImplementation((instId: string, type: string, payload?: unknown) => {
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: [],
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          // Before the terminal handoff, discovery sees A running; the
+          // terminal handoff re-discovery sees B as the authoritative next
+          // owner.
+          if (!handoffArmed) {
+            return Promise.resolve({
+              conversationId: "conv_1",
+              topicId: "top_1",
+              runs: [runA],
+              activeRunId: "run_A",
+              activeRun: runA,
+            });
+          }
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            runs: [runBQueued],
+            activeRunId: "run_B",
+            activeRun: runBQueued,
+          });
+        }
+        if (type === "control.runs.get") {
+          const requestedId = (payload as { runId?: string } | undefined)?.runId;
+          const row = requestedId === "run_B" ? runBQueued : runA;
+          return Promise.resolve({ run: { ...row, memberTurns: [] } });
+        }
+        return Promise.resolve({});
+      });
+
+      // Initial load adopts A; the composer stays blocked while A runs.
+      await store.loadHistory("inst_1", "conv_1", "top_1");
+      expect(store.activeRun?.id).toBe("run_A");
+      expect(store.isRunActive).toBe(true);
+
+      // A completes on the wire. The handoff must close admission and
+      // re-discover before any new prompt can take ownership.
+      handoffArmed = true;
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: { type: "conversation-run-changed", run: terminalA },
+      } as never);
+      expect(store.topicReady).toBe(false);
+      expect(store.promptError).toBeNull();
+
+      await flushPromises();
+      await flushPromises();
+
+      // Queued B is now the authoritative owner; the composer stays blocked
+      // and a new prompt is fenced against the recovered Run.
+      expect(store.activeRun?.id).toBe("run_B");
+      expect(store.isRunActive).toBe(true);
+      expect(store.topicReady).toBe(true);
+      expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.runs.list", {
+        conversationId: "conv_1",
+        topicId: "top_1",
+      });
+      await store.sendPrompt("prompt C while B queued");
+      expect(store.promptError).toContain("already in progress");
+      expect(store.activeRun?.id).toBe("run_B");
+      expect(mockRpc).not.toHaveBeenCalledWith(
+        "inst_1",
+        "control.conversation.prompt",
+        expect.anything(),
+      );
+    });
+    it("does not let pre-terminal B stream events steal ownership before handoff discovery", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      const runA = {
+        id: "run_A",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_A",
+        requestId: "req_A",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      const terminalA = { ...runA, state: "completed" };
+      const runBQueued = {
+        id: "run_B",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_B",
+        requestId: "req_B",
+        mode: "explicit",
+        state: "queued",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      const memberBStarted = {
+        id: "turn_B",
+        runId: "run_B",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        botId: "bot_1",
+        batch: 1,
+        attempt: 1,
+        origin: "human",
+        state: "running",
+        createdAt: "now",
+      };
+      let handoffArmed = false;
+      mockRpc.mockImplementation((instId: string, type: string, payload?: unknown) => {
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: [],
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          if (!handoffArmed) {
+            return Promise.resolve({
+              conversationId: "conv_1",
+              topicId: "top_1",
+              runs: [runA],
+              activeRunId: "run_A",
+              activeRun: runA,
+            });
+          }
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            runs: [runBQueued],
+            activeRunId: "run_B",
+            activeRun: runBQueued,
+          });
+        }
+        if (type === "control.runs.get") {
+          const requestedId = (payload as { runId?: string } | undefined)?.runId;
+          const row = requestedId === "run_B" ? runBQueued : runA;
+          return Promise.resolve({ run: { ...row, memberTurns: [] } });
+        }
+        return Promise.resolve({});
+      });
+
+      await store.loadHistory("inst_1", "conv_1", "top_1");
+      expect(store.activeRun?.id).toBe("run_A");
+
+      // B starts streaming before the terminal handoff for A is processed:
+      // all pre-terminal B events stay fenced on the old owner id.
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "member-turn-started",
+          run: runBQueued,
+          memberTurn: memberBStarted,
+        },
+      } as never);
+      expect(store.activeRun?.id).toBe("run_A");
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "conversation-run-changed",
+          run: { ...runBQueued, state: "running" },
+        } as never,
+      });
+      expect(store.activeRun?.id).toBe("run_A");
+
+      // A's terminal event hands off: discovery adopts B exactly once.
+      handoffArmed = true;
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: { type: "conversation-run-changed", run: terminalA },
+      } as never);
+      await flushPromises();
+      await flushPromises();
+      expect(store.activeRun?.id).toBe("run_B");
+      expect(store.isRunActive).toBe(true);
+      expect(store.topicReady).toBe(true);
     });
     it("clears a ghost bot selection when the authoritative list no longer contains it", async () => {
       const store = useDirectBotsStore();
@@ -1609,7 +1838,28 @@ describe("useDirectBotsStore", () => {
       expect(store.planEntries).toHaveLength(1);
       expect(store.planEntries[0]?.content).toBe("Plan A task");
 
-      // Run A completes
+      // Run A completes. No queued next Run exists in this scenario, so the
+      // terminal handoff re-discovers an authoritative no-candidate and
+      // reopens admission.
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: [],
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            runs: [],
+          });
+        }
+        return Promise.resolve({});
+      });
       store.applyEvent({
         kind: "control-event",
         instanceId: "inst_1",
@@ -1619,6 +1869,9 @@ describe("useDirectBotsStore", () => {
         } as never,
       });
       expect(store.isRunActive).toBe(false);
+      await flushPromises();
+      await flushPromises();
+      expect(store.topicReady).toBe(true);
 
       // User starts Run B (which does not emit any plan)
       mockRpc.mockImplementation((instId: string, type: string) => {
