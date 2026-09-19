@@ -622,7 +622,7 @@ export default {
     },
     lifecycle: {
       identityLocked: "该 Bot 已运行过，Agent 与工作区已锁定。其他设置仍会对后续轮次生效。",
-      deleteBlocked: "该 Bot 已有会话历史，需先重置会话后才能删除。",
+      deleteBlocked: "该 Bot 已有会话历史，无法删除。如需全新身份请创建新 Bot；历史按设计保留。",
     },
     topic: {
       label: "话题",

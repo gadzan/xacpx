@@ -429,6 +429,30 @@ describe("Direct Bot Components", () => {
       expect(wrapper.emitted("cancel")).toBeTruthy();
     });
 
+    it("disables the composer while topic recovery is still in flight", async () => {
+      const directBots = useDirectBotsStore();
+      directBots.instanceId = "i1";
+      directBots.selectedBotId = "b1";
+      directBots.activeConversationId = "c1";
+      directBots.activeTopicId = "t1";
+      directBots.botsByInstance["i1"] = [
+        { id: "b1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      directBots.topicReady = false;
+
+      const wrapper = mount(ConversationPromptInput, {
+        global: {
+          plugins: [i18n],
+        },
+      });
+
+      const textarea = wrapper.find("textarea");
+      expect((textarea.element as HTMLTextAreaElement).disabled).toBe(true);
+      expect((textarea.element as HTMLTextAreaElement).placeholder).toContain("Recovering");
+      await textarea.setValue("too early");
+      await textarea.trigger("keydown", { key: "Enter", shiftKey: false });
+      expect(wrapper.emitted("send")).toBeUndefined();
+    });
     it("shows warning when bot is disabled", async () => {
       const directBots = useDirectBotsStore();
       directBots.instanceId = "i1";
