@@ -260,8 +260,11 @@ export interface BotSummaryDto {
   effort?: string;
   enabled: boolean;
   updatedAt: string;
+  /** True once the Bot materialized a direct runtime. Agent/workspace edits and
+   *  delete are then backend fail-closed; teardown/rebind is a later lifecycle
+   *  surface, so PR5 treats used Bots as identity-locked, not rebindable. */
+  hasRuntime?: boolean;
 }
-
 export interface BotDetailDto extends BotSummaryDto {
   instructions?: string;
   profileRevision: number;
@@ -378,6 +381,14 @@ export interface ConversationHistoryResponseDto {
   newestSeq?: number;
   hasMoreBefore: boolean;
   hasMoreAfter: boolean;
+}
+
+export interface ConversationRunsListDto {
+  conversationId: string;
+  topicId: string;
+  runs: ConversationRunDto[];
+  activeRunId?: string;
+  activeRun?: ConversationRunDto;
 }
 
 /** Wire mirror of src/control ControlEvent (tool-event carries the NORMALIZED step). */

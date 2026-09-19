@@ -27,6 +27,10 @@ export interface BotSummaryDto {
   effort?: string;
   enabled: boolean;
   updatedAt: string;
+  /** True once the Bot materialized a direct runtime. Agent/workspace edits and
+   *  delete are then backend fail-closed; teardown/rebind is a later lifecycle
+   *  surface, so PR5 treats used Bots as identity-locked, not rebindable. */
+  hasRuntime?: boolean;
 }
 
 export interface BotDetailDto extends BotSummaryDto {
@@ -161,6 +165,7 @@ export interface ConversationHistoryRequestDto {
   afterSeq?: number;
   beforeSeq?: number;
   limit?: number;
+  direction?: "oldest-first" | "newest-first";
 }
 
 export interface ConversationHistoryResponseDto {
@@ -173,7 +178,7 @@ export interface ConversationHistoryResponseDto {
   hasMoreAfter: boolean;
 }
 
-export function toBotSummary(bot: BotProfile): BotSummaryDto {
+export function toBotSummary(bot: BotProfile, hasRuntime?: boolean): BotSummaryDto {
   return {
     id: bot.id,
     name: bot.name,
@@ -185,12 +190,13 @@ export function toBotSummary(bot: BotProfile): BotSummaryDto {
     ...(bot.role ? { role: bot.role } : {}),
     ...(bot.model ? { model: bot.model } : {}),
     ...(bot.effort ? { effort: bot.effort } : {}),
+    ...(hasRuntime ? { hasRuntime: true as const } : {}),
   };
 }
 
-export function toBotDetail(bot: BotProfile): BotDetailDto {
+export function toBotDetail(bot: BotProfile, hasRuntime?: boolean): BotDetailDto {
   return {
-    ...toBotSummary(bot),
+    ...toBotSummary(bot, hasRuntime),
     profileRevision: bot.profileRevision,
     createdAt: bot.createdAt,
     ...(bot.instructions ? { instructions: bot.instructions } : {}),

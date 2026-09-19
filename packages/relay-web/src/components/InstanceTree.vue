@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { ArchiveRestore, ChevronDown, ChevronRight, Folder, Link2, Loader2, Moon, MoreHorizontal, Pencil, Plus, Settings2, SquareTerminal, Trash2, Unplug } from "lucide-vue-next";
+import { ArchiveRestore, Bot, ChevronDown, ChevronRight, Folder, Link2, Loader2, MessageSquare, Moon, MoreHorizontal, Pencil, Plus, Settings2, SquareTerminal, Trash2, Unplug } from "lucide-vue-next";
 import { useInstancesStore, groupArchivedKey, parseGroupArchivedKey } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useTerminalStore } from "../stores/terminal";
+import { useDirectBotsStore } from "../stores/direct-bots";
 import { detachSessionTerminal } from "../lib/session-terminal";
 import { confirm } from "../lib/use-confirm";
 import { showActionToast } from "../lib/use-action-toast";
@@ -15,7 +16,9 @@ import { groupSessions, dedupedSessionName, sessionPresentationName, archivedLas
 import NewSessionDialog from "./NewSessionDialog.vue";
 import ManageInstanceDialog from "./ManageInstanceDialog.vue";
 import AgentIcon from "./AgentIcon.vue";
+import BotDialog from "./BotDialog.vue";
 import type { GroupArchivedMode, GroupArchivedState, InstanceView } from "../stores/instances";
+import type { BotDetailDto, BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
 
 // Local directive: focus + select an element on mount (the rename input).
 const vFocus = {
@@ -26,6 +29,7 @@ const store = useInstancesStore();
 const chat = useChatStore();
 const centerTabs = useCenterTabsStore();
 const terminals = useTerminalStore();
+const directBotsStore = useDirectBotsStore();
 const { t } = useI18n();
 
 // A session row carries the agent NAME; the brand glyph keys on its driver. Prefer the
@@ -38,9 +42,58 @@ function driverFor(inst: InstanceView, s: Pick<InstanceView["sessions"][number],
 function driverForAgentName(inst: InstanceView, agentName: string): string | undefined {
   return inst.agents.find((a) => a.name === agentName)?.driver;
 }
-const emit = defineEmits<{ select: [instanceId: string, alias: string] }>();
+const emit = defineEmits<{
+  select: [instanceId: string, alias: string];
+  selectBot: [instanceId: string, botId: string];
+}>();
 const dialogFor = ref<{ id: string; name: string; presetAgent?: string; presetWorkspace?: string } | null>(null);
 const manageFor = ref<{ id: string; name: string } | null>(null);
+const botDialogFor = ref<{ instanceId: string; instanceName: string; bot?: BotDetailDto | BotSummaryDto } | null>(null);
+
+const instanceNavMode = ref<Record<string, "sessions" | "bots">>({});
+function modeFor(instanceId: string): "sessions" | "bots" {
+  return instanceNavMode.value[instanceId] ?? "sessions";
+}
+function setMode(instanceId: string, mode: "sessions" | "bots"): void {
+  instanceNavMode.value = { ...instanceNavMode.value, [instanceId]: mode };
+  if (mode === "bots" && !directBotsStore.botsLoaded[instanceId]) {
+    void directBotsStore.loadBots(instanceId).catch(() => {});
+  }
+}
+function onBotTap(instanceId: string, botId: string): void {
+  emit("selectBot", instanceId, botId);
+}
+function onBotSaved(bot: BotDetailDto): void {
+  if (botDialogFor.value) {
+    emit("selectBot", botDialogFor.value.instanceId, bot.id);
+  }
+  botDialogFor.value = null;
+}
+function botHasRuntime(bot: BotSummaryDto): boolean {
+  return ("hasRuntime" in bot && (bot as { hasRuntime?: unknown }).hasRuntime) === true;
+}
+
+async function deleteBotWithConfirm(instanceId: string, bot: BotSummaryDto): Promise<void> {
+  // Same fail-closed rule as the pane: a used Bot cannot be deleted
+  // (backend bot_in_use); teardown/rebind is a later lifecycle surface.
+  // Surface it, don't fail it.
+  if (botHasRuntime(bot)) {
+    pushToast("error", "bot.lifecycle.deleteBlocked");
+    return;
+  }
+  const confirmed = await confirm({
+    title: t("bot.delete.confirmTitle"),
+    message: t("bot.delete.confirmMessage", { name: bot.name }),
+    confirmLabel: t("common.delete"),
+    tone: "danger",
+  });
+  if (!confirmed) return;
+  try {
+    await directBotsStore.deleteBot(instanceId, bot.id);
+  } catch {
+    pushToast("error", "bot.delete.failedTitle");
+  }
+}
 
 // 1Hz clock so working-session elapsed badges tick.
 const nowMs = ref(Date.now());
@@ -441,6 +494,121 @@ const rowSwipes = computed(() => {
            Instead of a border-l indent rail, hierarchy reads from background tint +
            a very small indent — grouped rows keep almost the full row width. -->
       <div v-show="isExpanded(inst.id)" class="mt-px space-y-1 px-0.5 pb-0.5">
+        <!-- Mode switcher: Sessions | Bots -->
+        <div v-if="inst.online" class="flex items-center gap-1 border-b border-border/40 pb-1 mb-1 px-1">
+          <button
+            type="button"
+            data-test="instance-nav-sessions"
+            class="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium transition-colors"
+            :class="modeFor(inst.id) === 'sessions' ? 'bg-accent/15 text-accent font-semibold' : 'text-fg-muted hover:bg-raised hover:text-fg'"
+            @click="setMode(inst.id, 'sessions')"
+          >
+            <MessageSquare :size="11" />
+            <span>{{ $t("nav.sessions") }}</span>
+          </button>
+          <button
+            type="button"
+            data-test="instance-nav-bots"
+            class="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium transition-colors"
+            :class="modeFor(inst.id) === 'bots' ? 'bg-accent/15 text-accent font-semibold' : 'text-fg-muted hover:bg-raised hover:text-fg'"
+            @click="setMode(inst.id, 'bots')"
+          >
+            <Bot :size="11" />
+            <span>{{ $t("nav.bots") }}</span>
+            <span v-if="directBotsStore.botsByInstance[inst.id]?.length" class="ml-0.5 font-mono text-[9.5px] tabular-nums opacity-80">
+              {{ directBotsStore.botsByInstance[inst.id].length }}
+            </span>
+          </button>
+        </div>
+
+        <!-- BOTS MODE -->
+        <div v-if="inst.online && modeFor(inst.id) === 'bots'" class="space-y-px">
+          <div v-if="directBotsStore.loadingBots && !directBotsStore.botsLoaded[inst.id]"
+               data-test="bots-loading"
+               class="py-1 pl-2.5 text-[11px] text-fg-muted">
+            {{ $t("instance.loading") }}
+          </div>
+          <div v-else-if="!(directBotsStore.botsByInstance[inst.id] ?? []).length"
+               data-test="no-bots"
+               class="py-1 pl-2.5 text-[11px] text-fg-muted">
+            {{ $t("bot.list.empty") }}
+          </div>
+          <div v-for="b in (directBotsStore.botsByInstance[inst.id] ?? [])"
+               :key="b.id"
+               data-test="bot-row"
+               class="group relative flex items-center rounded-md transition-colors"
+               :class="directBotsStore.selectedBotId === b.id && directBotsStore.instanceId === inst.id ? 'bg-accent/10' : 'hover:bg-raised'">
+            <!-- Selected accent bar -->
+            <span v-if="directBotsStore.selectedBotId === b.id && directBotsStore.instanceId === inst.id"
+                  class="absolute bottom-1 left-0 top-1 w-[3px] rounded-full bg-accent" />
+            <button
+              class="relative flex min-w-0 flex-1 items-center gap-2 py-2 pl-2.5 pr-1.5 text-left"
+              @click="onBotTap(inst.id, b.id)"
+            >
+              <span class="relative shrink-0">
+                <AgentIcon :driver="driverForAgentName(inst, b.agent)" :title="b.agent" :size="14"
+                           :class="!b.enabled ? 'opacity-50' : ''" />
+              </span>
+              <div class="flex flex-col min-w-0 flex-1">
+                <span data-test="bot-name" class="min-w-0 truncate text-[12.5px] font-medium"
+                      :class="!b.enabled ? 'text-fg-muted' : (directBotsStore.selectedBotId === b.id && directBotsStore.instanceId === inst.id ? 'font-semibold text-accent' : 'text-fg')">
+                  {{ b.name }}
+                </span>
+                <span v-if="b.role" class="truncate text-[10.5px] text-fg-muted">{{ b.role }}</span>
+              </div>
+              <span class="h-1.5 w-1.5 rounded-full shrink-0"
+                    :class="b.enabled ? 'bg-run' : 'bg-fg-muted'"
+                    :title="b.enabled ? $t('bot.status.enabled') : $t('bot.status.disabled')" />
+            </button>
+            <div class="flex items-center gap-0.5 pr-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              <button
+                type="button"
+                data-test="edit-bot-tree-button"
+                :title="$t('bot.actions.edit')"
+                :aria-label="$t('bot.actions.edit')"
+                class="grid h-5 w-5 place-items-center rounded text-fg-muted hover:bg-raised hover:text-fg"
+                @click.stop="botDialogFor = { instanceId: inst.id, instanceName: inst.name, bot: b }"
+              >
+                <Pencil :size="11" />
+              </button>
+              <button
+                type="button"
+                data-test="delete-bot-tree-button"
+                :title="$t('bot.actions.delete')"
+                :aria-label="$t('bot.actions.delete')"
+                class="grid h-5 w-5 place-items-center rounded text-fg-muted hover:bg-danger/10 hover:text-danger"
+                @click.stop="deleteBotWithConfirm(inst.id, b)"
+              >
+                <Trash2 :size="11" />
+              </button>
+            </div>
+          </div>
+
+          <!-- Bots footer -->
+          <div class="flex items-center justify-between pb-px pl-2 pt-1">
+            <button
+              type="button"
+              data-test="new-bot-button"
+              class="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-accent hover:bg-accent/10 transition-colors"
+              @click="botDialogFor = { instanceId: inst.id, instanceName: inst.name }"
+            >
+              <Plus :size="12" />
+              <span>{{ $t("bot.actions.newBot") }}</span>
+            </button>
+            <button
+              data-test="manage-instance-from-bots"
+              :title="$t('instance.manage')"
+              :aria-label="$t('instance.manage')"
+              class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+              @click="manageFor = { id: inst.id, name: inst.name }"
+            >
+              <Settings2 :size="13" />
+            </button>
+          </div>
+        </div>
+
+        <!-- SESSIONS MODE -->
+        <template v-else>
         <button v-if="inst.online && !inst.sessionsLoaded && !inst.sessionsLoading" data-test="load-sessions"
                 class="flex w-full items-center gap-1.5 rounded px-2.5 py-1 text-left text-[11px] font-medium text-accent hover:bg-accent/10"
                 @click.stop="store.loadSessions(inst.id).catch(() => {})">
@@ -646,6 +814,7 @@ const rowSwipes = computed(() => {
                   class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-fg"
                   @click="manageFor = { id: inst.id, name: inst.name }"><Settings2 :size="13" /></button>
         </div>
+        </template>
       </div>
     </div>
 
@@ -654,5 +823,7 @@ const rowSwipes = computed(() => {
                       @close="dialogFor = null" @created="onSessionCreated" />
     <ManageInstanceDialog v-if="manageFor" :instance-id="manageFor.id" :instance-name="manageFor.name"
                           @close="manageFor = null" />
+    <BotDialog v-if="botDialogFor" :instance-id="botDialogFor.instanceId" :instance-name="botDialogFor.instanceName"
+               :bot="botDialogFor.bot" @close="botDialogFor = null" @saved="onBotSaved" />
   </nav>
 </template>

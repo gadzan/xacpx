@@ -46,6 +46,7 @@ import {
   type QueueCancelPayload,
   type RunsCancelPayload,
   type RunsGetPayload,
+  type RunsListPayload,
   type ScheduledCancelPayload,
   type ScheduledCreatePayload,
   type ScheduledListPayload,
@@ -423,19 +424,31 @@ const validateConversationPrompt: Validator<ConversationPromptPayload> = (p) => 
 };
 const validateConversationHistory: Validator<ConversationHistoryPayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.conversationId) && isStr(o.topicId)
+  if (!o) return null;
+  // direction is initial-page-only: it selects which end of the topic the
+  // page starts from and has no defined interaction with seq cursors.
+  const directionOk = o.direction === undefined || o.direction === "oldest-first" || o.direction === "newest-first";
+  const cursorAndDirection = directionOk && o.direction !== undefined
+    && (o.afterSeq !== undefined || o.beforeSeq !== undefined);
+  if (cursorAndDirection) return null;
+  return isStr(o.conversationId) && isStr(o.topicId)
     && optNum(o.afterSeq) && optNum(o.beforeSeq) && optNum(o.limit)
+    && directionOk
     ? (o as unknown as ConversationHistoryPayload) : null;
 };
 const validateRunsGet: Validator<RunsGetPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.runId) ? (o as unknown as RunsGetPayload) : null;
 };
+const validateRunsList: Validator<RunsListPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.conversationId) && isStr(o.topicId) && optNum(o.limit)
+    ? (o as unknown as RunsListPayload) : null;
+};
 const validateRunsCancel: Validator<RunsCancelPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.runId) ? (o as unknown as RunsCancelPayload) : null;
 };
-
 /** The control-RPC message types that carry a client-supplied payload to validate.
  *  Excludes: handshake (instanceRegister/instanceAuth — validated in instance-gateway),
  *  event-direction (instanceEvent/instanceNotice — boundary B via validControlEvent),
@@ -468,7 +481,7 @@ export type ControlRpcType =
   | typeof MSG.conversationsList | typeof MSG.conversationsGet
   | typeof MSG.topicsList | typeof MSG.topicsCreate
   | typeof MSG.conversationPrompt | typeof MSG.conversationHistory
-  | typeof MSG.runsGet | typeof MSG.runsCancel;
+  | typeof MSG.runsGet | typeof MSG.runsList | typeof MSG.runsCancel;
 
 /** Registry: control-RPC type → shape validator. `satisfies` locks both directions —
  *  a ControlRpcType with no validator, or a validator whose key isn't a ControlRpcType,
@@ -538,6 +551,7 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.conversationPrompt]: validateConversationPrompt,
   [MSG.conversationHistory]: validateConversationHistory,
   [MSG.runsGet]: validateRunsGet,
+  [MSG.runsList]: validateRunsList,
   [MSG.runsCancel]: validateRunsCancel,
 } satisfies Record<ControlRpcType, Validator<unknown>>;
 

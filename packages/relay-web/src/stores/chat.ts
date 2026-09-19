@@ -581,6 +581,7 @@ export const useChatStore = defineStore("chat", () => {
    *  (turn-output / tool-event / turn-finished) continue and finalize each turn. */
   function seedActiveTurns(turns: LiveTurnSnapshotDto[]): void {
     for (const t of turns) {
+      if (t.conversation) continue;
       const k = bufKey(t.instanceId, t.sessionAlias);
       // Don't overwrite a live turn already tracked from the ws stream (it's fresher),
       // and don't resurrect one that finished in the snapshot→seed gap (see finishedTurns).
@@ -613,6 +614,7 @@ export const useChatStore = defineStore("chat", () => {
     const nextTurns = { ...liveTurns.value };
     for (const k of Object.keys(nextTurns)) if (k.startsWith(prefix)) delete nextTurns[k];
     for (const turn of turns) {
+      if (turn.conversation) continue;
       const k = bufKey(instId, turn.sessionAlias);
       nextTurns[k] = {
         parts: turn.parts as TurnPart[],
@@ -678,6 +680,7 @@ export const useChatStore = defineStore("chat", () => {
       return;
     }
     if (event.kind === "turn-completion") {
+      if ("conversation" in event && event.conversation) return;
       const alias = event.sessionAlias;
       const selected = event.instanceId === instanceId.value && alias === sessionAlias.value;
       const isActiveInAnyTab = isSessionActiveInAnyTab(event.instanceId, alias, selected);
@@ -697,6 +700,7 @@ export const useChatStore = defineStore("chat", () => {
     }
     if (event.kind !== "control-event") return;
     const e = event.event;
+    if ("conversation" in e && e.conversation) return;
     if (e.type === "turn-started") {
       const k = bufKey(event.instanceId, e.sessionAlias);
       finishedTurns.delete(k); // a fresh turn supersedes any prior finish on this key
