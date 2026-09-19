@@ -290,6 +290,18 @@ test("history uses Topic seq cursors and does not duplicate the final assistant 
   expect(replay.hasMoreBefore).toBe(true);
 });
 
+test("history direction cannot be combined with seq cursors", async () => {
+  const { control } = await wire({ autoKick: false });
+  const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const conversationId = createDirectConversationId(bot.id);
+  const topicId = createDirectTopicId(bot.id);
+  await control.promptConversation({ conversationId, topicId, requestId: "req-page", text: "hello" });
+  expect(() => control.conversationHistory({ conversationId, topicId, beforeSeq: 5, limit: 2, direction: "newest-first" }))
+    .toThrow(/direction/);
+  expect(() => control.conversationHistory({ conversationId, topicId, afterSeq: 1, limit: 2, direction: "oldest-first" }))
+    .toThrow(/direction/);
+});
+
 test("history newest-first tail reaches messages beyond the first page", async () => {
   const { control } = await wire({ autoKick: false });
   const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });

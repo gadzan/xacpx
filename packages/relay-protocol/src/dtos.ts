@@ -274,8 +274,10 @@ export interface BotSummaryDto {
   effort?: string;
   enabled: boolean;
   updatedAt: string;
+  /** True once the Bot materialized a direct runtime. Agent/workspace edits and
+   *  delete are then backend fail-closed until the conversation is reset. */
+  hasRuntime?: boolean;
 }
-
 export interface BotDetailDto extends BotSummaryDto {
   instructions?: string;
   profileRevision: number;

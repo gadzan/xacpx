@@ -1920,11 +1920,13 @@ export class ControlService {
   }
 
   listBots() {
-    return this.requireConversations().bots.listBots().map(toBotSummary);
+    const bots = this.requireConversations().bots;
+    return bots.listBots().map((bot) => toBotSummary(bot, bots.hasRuntime(bot.id)));
   }
 
   getBot(id: string) {
-    return toBotDetail(this.requireConversations().bots.getBot(id));
+    const bots = this.requireConversations().bots;
+    return toBotDetail(bots.getBot(id), bots.hasRuntime(id));
   }
 
   async createBot(input: BotCreateRequestDto) {
@@ -1932,7 +1934,7 @@ export class ControlService {
       const bot = await runtime.bots.createBot(input);
       this.deps.events.emit({ type: "bots-changed" });
       this.deps.events.emit({ type: "conversations-changed" });
-      return toBotDetail(bot);
+      return toBotDetail(bot, runtime.bots.hasRuntime(bot.id));
     });
   }
 
@@ -1941,7 +1943,7 @@ export class ControlService {
       const bot = await runtime.bots.updateBot(id, patch);
       this.deps.events.emit({ type: "bots-changed" });
       this.deps.events.emit({ type: "conversations-changed" });
-      return toBotDetail(bot);
+      return toBotDetail(bot, runtime.bots.hasRuntime(bot.id));
     });
   }
 
@@ -2014,6 +2016,12 @@ export class ControlService {
   }
 
   conversationHistory(input: ConversationHistoryRequestDto) {
+    // direction is initial-page-only (which end the page starts from) and has
+    // no defined interaction with seq cursors. Reject the combination here as
+    // well as the wire validator so direct facade callers get the same rule.
+    if (input.direction !== undefined && (input.afterSeq !== undefined || input.beforeSeq !== undefined)) {
+      throw new ConversationError("invalid-history-page", "direction cannot be combined with afterSeq/beforeSeq");
+    }
     const limit = Math.min(200, Math.max(1, Math.floor(input.limit ?? 50)));
     const page = this.requireConversations().runs.listHistory({
       conversationId: input.conversationId,

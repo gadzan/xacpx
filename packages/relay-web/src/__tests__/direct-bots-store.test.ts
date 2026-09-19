@@ -863,11 +863,18 @@ describe("useDirectBotsStore", () => {
       expect(store.activeRun?.id).toBe("run_B");
 
       // The HTTP prompt ultimately fails, but the durable Run B must survive.
+      // WS already proved durable accept, so submission state converges to
+      // success: no transport error, no retry identity.
       deferred.reject(new Error("Network disconnect"));
       await sendCall;
       expect(store.activeRun?.id).toBe("run_B");
       expect(store.activeRun?.state).toBe("queued");
       expect(store.isRunActive).toBe(true);
+      // The transient "already in progress" gate error from Prompt C must not
+      // survive the durable outcome; Prompt C never sent, so no retry exists.
+      expect(store.promptError).toBeNull();
+      expect(store.currentDraftRequestId).toBeNull();
+      expect(store.lastPromptText).toBe("");
     });
     it("refuses to send prompt when bot is disabled", async () => {
       const store = useDirectBotsStore();

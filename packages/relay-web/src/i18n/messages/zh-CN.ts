@@ -632,6 +632,10 @@ export default {
       agentRequired: "Agent 为必填项。",
       workspaceRequired: "工作区为必填项。",
     },
+    lifecycle: {
+      identityLocked: "该 Bot 已运行过，Agent 与工作区已锁定。其他设置仍会对后续轮次生效。",
+      deleteBlocked: "该 Bot 已有会话历史，需先重置会话后才能删除。",
+    },
     topic: {
       label: "话题",
       default: "默认话题",
@@ -649,6 +653,7 @@ export default {
       botDisabledWarning: "该 Bot 已被禁用。请在 Bot 设置中启用后发送消息。",
       botDisabledPlaceholder: "Bot 已被禁用",
       runActivePlaceholder: "运行中...（可点击停止取消）",
+      recoveringPlaceholder: "话题恢复中...（正在加载历史）",
     },
     chat: {
       emptyHint: "发送一条消息开始与该 Bot 对话。",

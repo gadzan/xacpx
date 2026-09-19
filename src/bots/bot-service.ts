@@ -219,6 +219,12 @@ export class BotService {
     return bot;
   }
 
+  /** True once the Bot materialized a direct runtime (context persists by design). */
+  hasRuntime(id: string): boolean {
+    this.getBot(id);
+    return this.hasLockedRuntime(id);
+  }
+
   async createBot(input: CreateBotInput): Promise<BotProfile> {
     this.assertOpen();
     return await this.mutate(async () => {
