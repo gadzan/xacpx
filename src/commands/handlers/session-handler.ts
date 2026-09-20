@@ -24,6 +24,7 @@ import { AcpxQueueOverflowError } from "../../transport/acpx-queue-overflow";
 import { queueOverflowTipText } from "./session-recovery-handler";
 import { PermissionInteractionBroker, getGlobalPermissionBroker } from "../../permissions/permission-interaction-broker.js";
 import { resolvePermissionTurnRoute } from "../../permissions/permission-turn-route.js";
+import { getGlobalElicitationBroker } from "../../interactions/elicitation-interaction-broker.js";
 import { isHiddenProductSessionOwner } from "../../state/types";
 
 export interface SessionHandlerContext extends CommandRouterContext {
@@ -1066,20 +1067,42 @@ async function promptWithSession(
       : undefined;
     let disposeInteraction: (() => void) | undefined;
     if (interactionId && permissionRoute) {
+      // One exact-turn binding serves BOTH brokers: they share the route
+      // registry (turn identity/abort) but never share terminal semantics.
+      const turnContext = {
+        interactionId,
+        chatKey: permissionRoute.chatKey,
+        origin: "human" as const,
+        ...(permissionRoute.accountId !== undefined ? { accountId: permissionRoute.accountId } : {}),
+        ...(replyContextToken !== undefined ? { replyContextToken } : {}),
+        ...(permissionRoute.senderId !== undefined ? { senderId: permissionRoute.senderId } : {}),
+        ...(permissionRoute.senderName !== undefined ? { senderName: permissionRoute.senderName } : {}),
+        ...(permissionRoute.isOwner !== undefined ? { isOwner: permissionRoute.isOwner } : {}),
+      };
+      let disposePermission: (() => void) | undefined;
+      let disposeElicitation: (() => void) | undefined;
       try {
-        disposeInteraction = getGlobalPermissionBroker()?.bindTurn({
-          interactionId,
-          chatKey: permissionRoute.chatKey,
-          origin: "human",
-          ...(permissionRoute.accountId !== undefined ? { accountId: permissionRoute.accountId } : {}),
-          ...(replyContextToken !== undefined ? { replyContextToken } : {}),
-          ...(permissionRoute.senderId !== undefined ? { senderId: permissionRoute.senderId } : {}),
-          ...(permissionRoute.senderName !== undefined ? { senderName: permissionRoute.senderName } : {}),
-          ...(permissionRoute.isOwner !== undefined ? { isOwner: permissionRoute.isOwner } : {}),
-        }, abortSignal);
+        disposePermission = getGlobalPermissionBroker()?.bindTurn(turnContext, abortSignal);
       } catch {
-        disposeInteraction = undefined;
+        disposePermission = undefined;
       }
+      try {
+        // Independent binding: each broker may be constructed with its own
+        // registry in tests. A duplicate-id bind (shared registry in
+        // production) throws and is simply skipped — the route already
+        // exists for both.
+        disposeElicitation = getGlobalElicitationBroker()?.bindTurn(turnContext, abortSignal);
+      } catch {
+        disposeElicitation = undefined;
+      }
+      disposeInteraction = () => {
+        try {
+          disposeElicitation?.();
+        } catch {}
+        try {
+          disposePermission?.();
+        } catch {}
+      };
     }
     try {
       const result = await context.interaction.promptTransportSession(

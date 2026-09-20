@@ -200,6 +200,10 @@ export async function runBridgeMain(): Promise<void> {
         // unsupported channels; this flag only means escalation MAY be
         // Runtime-routed somewhere.
         permissionInteractionCapable: coreEnv("BRIDGE_PERMISSION_INTERACTION_CAPABLE") === "1",
+        // M1/G9: separate, truthful Elicitation capability derived from the
+        // same daemon-side registry probe the permission flag uses. Never
+        // inferred from permission support.
+        elicitationInteractionCapable: coreEnv("BRIDGE_ELICITATION_FORM_CAPABLE") === "1",
         onPermissionRequest: async (payload) => {
           try {
             const result = await server.requestDaemon("resolvePermissionRequest", payload as unknown as import("../transport/acpx-bridge/acpx-bridge-protocol").ResolvePermissionRequestParams, { timeoutMs: 125_000 });
@@ -214,9 +218,17 @@ export async function runBridgeMain(): Promise<void> {
         },
         onElicitationRequest: async (payload) => {
           try {
-            const result = await server.requestDaemon("resolveElicitationRequest", payload as unknown as import("../transport/acpx-bridge/acpx-bridge-protocol").ResolveElicitationRequestParams, { timeoutMs: 30000 });
-            const action = (result as { action?: unknown })?.action;
-            if (action === "submit") return { action: "submit", data: (result as { data?: unknown }).data };
+            // RPC watchdog mirrors the daemon broker's 120s business
+            // deadline: only a wedged daemon can trip it, and then the turn
+            // fails closed with cancel.
+            const decision = await server.requestDaemon<{ action?: unknown }, "resolveElicitationRequest">("resolveElicitationRequest", payload as unknown as import("../transport/acpx-bridge/acpx-bridge-protocol").ResolveElicitationRequestParams, { timeoutMs: 125_000 });
+            if (
+              decision
+              && typeof decision === "object"
+              && (decision.action === "accept" || decision.action === "decline" || decision.action === "cancel")
+            ) {
+              return decision as { action: "accept" | "decline" | "cancel" };
+            }
             return { action: "cancel" };
           } catch {
             return { action: "cancel" };

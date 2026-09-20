@@ -116,3 +116,83 @@ describe("decodeBridgeEngineCapabilities", () => {
     ).toThrow(/reason/);
   });
 });
+
+describe("bridge protocol resolveElicitationRequest decoding", () => {
+  const valid = {
+    direction: "bridge-to-daemon",
+    rpcId: "rpc-elicit-1",
+    method: "resolveElicitationRequest",
+    params: {
+      logicalSessionId: "s1",
+      sessionKey: "s1",
+      promptRequestId: "p1",
+      elicitationRequestId: "e1",
+      interactionId: "ix-1",
+      acpRequestId: 42,
+      request: {
+        sessionId: "acp-1",
+        mode: "form",
+        message: "pick",
+        requestedSchema: { type: "object", properties: { answer: { type: "string" } } },
+      },
+      workerGeneration: "w1",
+    },
+  };
+
+  test("decodes a well-formed request", () => {
+    expect(decodeBridgeOriginatedRequest(valid)).toEqual(valid);
+  });
+
+  test("accepts a null ACP JSON-RPC id and a missing interactionId", () => {
+    const withoutInteraction = { ...valid, params: { ...valid.params, interactionId: undefined, acpRequestId: null } };
+    expect(decodeBridgeOriginatedRequest(withoutInteraction)).toEqual(withoutInteraction);
+  });
+
+  test("accepts a string ACP JSON-RPC id", () => {
+    const stringId = { ...valid, params: { ...valid.params, acpRequestId: "req-9" } };
+    expect(decodeBridgeOriginatedRequest(stringId)).toEqual(stringId);
+  });
+
+  test("rejects a missing promptRequestId", () => {
+    const { promptRequestId: _dropped, ...rest } = valid.params;
+    expect(decodeBridgeOriginatedRequest({ ...valid, params: rest })).toBeNull();
+  });
+
+  test("rejects a missing elicitationRequestId", () => {
+    const { elicitationRequestId: _dropped, ...rest } = valid.params;
+    expect(decodeBridgeOriginatedRequest({ ...valid, params: rest })).toBeNull();
+  });
+
+  test("rejects a missing workerGeneration", () => {
+    const { workerGeneration: _dropped, ...rest } = valid.params;
+    expect(decodeBridgeOriginatedRequest({ ...valid, params: rest })).toBeNull();
+  });
+
+  test("rejects a non-string interactionId", () => {
+    expect(decodeBridgeOriginatedRequest({ ...valid, params: { ...valid.params, interactionId: 7 } })).toBeNull();
+  });
+
+  test("rejects an acpRequestId that is not string/number/null", () => {
+    expect(decodeBridgeOriginatedRequest({ ...valid, params: { ...valid.params, acpRequestId: {} } })).toBeNull();
+    expect(decodeBridgeOriginatedRequest({ ...valid, params: { ...valid.params, acpRequestId: undefined } })).toBeNull();
+  });
+
+  test("rejects the legacy submit-era payload shape", () => {
+    // policyGeneration / elicitationId / mode must no longer decode: the
+    // old protocol conflated permission policy with elicitation routing.
+    const legacy = {
+      ...valid,
+      params: {
+        logicalSessionId: "s1",
+        sessionKey: "s1",
+        requestId: "r1",
+        elicitationId: "e1",
+        mode: "form",
+        message: { question: "which file?" },
+        policyGeneration: 1,
+        workerGeneration: "w1",
+      },
+    };
+    expect(decodeBridgeOriginatedRequest(legacy)).toBeNull();
+  });
+});

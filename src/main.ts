@@ -98,6 +98,12 @@ import {
   setGlobalPermissionBroker,
 } from "./permissions/permission-interaction-broker.js";
 import type { RuntimePermissionInteractionRequest } from "./permissions/permission-types.js";
+import {
+  ElicitationInteractionBroker,
+  type RuntimeElicitationRequest,
+  setGlobalElicitationBroker,
+  getGlobalElicitationBroker,
+} from "./interactions/elicitation-interaction-broker.js";
 import { RuntimeMediaStore } from "./channels/media-store.js";
 import { isQuotaDeferredError } from "./weixin/messaging/quota-errors";
 import { normalizeWeixinUserIdFromChatKey } from "./weixin/messaging/inbound.js";
@@ -329,6 +335,7 @@ interface RuntimeDeps {
     nativeSessionListFormat?: (chatKey: string) => "cards" | "table";
     getByChatKey?: (chatKey: string) => MessageChannelRuntime | null;
     hasPermissionInteractionCapability?: () => boolean;
+    hasElicitationInteractionCapability?: () => boolean;
   };
   sendOrchestrationNotice?: (task: OrchestrationTaskRecord) => Promise<void>;
   sendCoordinatorMessage?: (input: CoordinatorMessageInput) => Promise<void>;
@@ -602,6 +609,31 @@ export async function buildApp(
     logger,
   });
   setGlobalPermissionBroker(permissionBroker);
+  // ACP form Elicitation broker (M1). Owns the same exact-turn registry as
+  // the permission broker — an interaction route is bound once per human
+  // prompt and consumed by either broker through the opaque interactionId,
+  // with independent terminal semantics. Replace the old unconditional
+  // cancel with real dispatch; every failure path still cancels.
+  let elicitationInteractionCapable = false;
+  try {
+    elicitationInteractionCapable =
+      typeof channelRegistryLike?.hasElicitationInteractionCapability === "function" &&
+      channelRegistryLike.hasElicitationInteractionCapability() === true;
+  } catch {
+    elicitationInteractionCapable = false;
+  }
+  const elicitationBroker = new ElicitationInteractionBroker({
+    registry: permissionBroker.turnRegistry,
+    getChannelByChatKey: (chatKey) => {
+      try {
+        return channelRegistryLike?.getByChatKey?.(chatKey) ?? null;
+      } catch {
+        return null;
+      }
+    },
+    logger,
+  });
+  setGlobalElicitationBroker(elicitationBroker);
   const sessions = new SessionService(config, debouncedStateStore, state, {
     stateMutex,
     runtimeRoot,
@@ -709,6 +741,7 @@ export async function buildApp(
                 bridgeEntryPath: resolveBridgeEntryPath(),
                 agentOverlays: computeAgentOverlayEntries(config),
                 permissionInteractionCapable,
+                elicitationFormCapable: elicitationInteractionCapable,
                 permissionMode: config.transport.permissionMode,
                 nonInteractivePermissions:
                   config.transport.nonInteractivePermissions,
@@ -765,7 +798,21 @@ export async function buildApp(
                     }
                   }
                   if (method === "resolveElicitationRequest") {
-                    return { action: "cancel" };
+                    const broker = elicitationBroker;
+                    if (!broker) return { action: "cancel" };
+                    try {
+                      const request: RuntimeElicitationRequest = {
+                        promptRequestId: (params as { promptRequestId?: unknown }).promptRequestId as string,
+                        elicitationRequestId: (params as { elicitationRequestId?: unknown }).elicitationRequestId as string,
+                        ...(typeof (params as { interactionId?: unknown }).interactionId === "string"
+                          ? { interactionId: (params as { interactionId: string }).interactionId }
+                          : {}),
+                        request: (params as { request?: unknown }).request,
+                      };
+                      return await broker.resolveElicitation(request);
+                    } catch {
+                      return { action: "cancel" };
+                    }
                   }
                   return await launchIntentCoordinator.handle(method as never, params as never, context);
                 },
@@ -2293,6 +2340,14 @@ export async function buildApp(
       try {
         permissionBroker.shutdown();
       } catch {}
+      // Same for Elicitation: pending form state is ephemeral (G8) and must
+      // cancel, never survive or persist across restart.
+      try {
+        elicitationBroker.shutdown();
+      } catch {}
+      if (getGlobalElicitationBroker() === elicitationBroker) {
+        setGlobalElicitationBroker(null);
+      }
       if (getGlobalPermissionBroker() === permissionBroker) {
         setGlobalPermissionBroker(null);
       }

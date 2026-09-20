@@ -468,6 +468,12 @@ interface SpawnedBridgeClientOptions {
    * source as the daemon instead of hardcoding it.
    */
   permissionInteractionCapable?: boolean;
+  /**
+   * True Elicitation form capability, independent of permission support:
+   * some registered channel implements `requestElicitation()`. Always
+   * emitted explicitly so a stale inherited value cannot turn support on.
+   */
+  elicitationFormCapable?: boolean;
   agentOverlays?: AcpxAgentOverlayEntry[];
   /** Forwarded to AcpxBridgeClient: observability for undecodable bridge output lines. */
   onMalformedLine?: (line: string) => void;
@@ -511,6 +517,11 @@ export function buildBridgeSpawnEnv(
     // flip bridge eligibility away from the authoritative capability.
     XACPX_BRIDGE_PERMISSION_INTERACTION_CAPABLE:
       options.permissionInteractionCapable === true ? "1" : "0",
+    // Always explicit, same reasoning as the permission flag: the spawn env
+    // is layered over process.env, so omitting the key would let a stale
+    // parent value advertise ACP form Elicitation the bridge cannot render.
+    XACPX_BRIDGE_ELICITATION_FORM_CAPABLE:
+      options.elicitationFormCapable === true ? "1" : "0",
     ...(options.agentOverlays && options.agentOverlays.length > 0
       ? { XACPX_BRIDGE_AGENT_OVERLAYS: JSON.stringify(options.agentOverlays) }
       : {}),

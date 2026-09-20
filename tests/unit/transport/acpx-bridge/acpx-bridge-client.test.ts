@@ -674,35 +674,33 @@ test("handles bridge-originated resolveElicitationRequest and returns response t
     },
   });
 
+  const params = {
+    logicalSessionId: "s1",
+    sessionKey: "s1",
+    promptRequestId: "r1",
+    elicitationRequestId: "e1",
+    interactionId: "ix-1",
+    acpRequestId: 42,
+    request: {
+      sessionId: "acp-1",
+      mode: "form",
+      message: "which file?",
+      requestedSchema: { type: "object", properties: { file: { type: "string" } }, required: ["file"] },
+    },
+    workerGeneration: "w1",
+  };
+
   client.handleLine(JSON.stringify({
     direction: "bridge-to-daemon",
     rpcId: "rpc-elicit-1",
     method: "resolveElicitationRequest",
-    params: {
-      logicalSessionId: "s1",
-      sessionKey: "s1",
-      requestId: "r1",
-      elicitationId: "e1",
-      mode: "form",
-      message: { question: "which file?" },
-      policyGeneration: 1,
-      workerGeneration: "w1",
-    },
+    params,
   }));
 
   await new Promise((r) => setTimeout(r, 10));
 
   expect(receivedMethod).toBe("resolveElicitationRequest");
-  expect(receivedParams).toEqual({
-    logicalSessionId: "s1",
-    sessionKey: "s1",
-    requestId: "r1",
-    elicitationId: "e1",
-    mode: "form",
-    message: { question: "which file?" },
-    policyGeneration: 1,
-    workerGeneration: "w1",
-  });
+  expect(receivedParams).toEqual(params);
   expect(writes).toEqual([
     '{"direction":"daemon-to-bridge","rpcId":"rpc-elicit-1","ok":true,"result":{"action":"cancel"}}\n',
   ]);
@@ -715,4 +713,20 @@ test("always sets the permission interaction capability explicitly so stale pare
   expect(buildBridgeSpawnEnv({}).XACPX_BRIDGE_PERMISSION_INTERACTION_CAPABLE).toBe("0");
   expect(buildBridgeSpawnEnv({ permissionInteractionCapable: false }).XACPX_BRIDGE_PERMISSION_INTERACTION_CAPABLE).toBe("0");
   expect(buildBridgeSpawnEnv({ permissionInteractionCapable: true }).XACPX_BRIDGE_PERMISSION_INTERACTION_CAPABLE).toBe("1");
+});
+
+describe("bridge spawn env elicitation capability", () => {
+  test("form capability is always explicit, never inherited", () => {
+    // Unset => "0". Omitting the key would let a stale parent-process value
+    // turn form Elicitation on for a bridge that cannot render it.
+    expect(buildBridgeSpawnEnv({}).XACPX_BRIDGE_ELICITATION_FORM_CAPABLE).toBe("0");
+    expect(buildBridgeSpawnEnv({ elicitationFormCapable: false }).XACPX_BRIDGE_ELICITATION_FORM_CAPABLE).toBe("0");
+    expect(buildBridgeSpawnEnv({ elicitationFormCapable: true }).XACPX_BRIDGE_ELICITATION_FORM_CAPABLE).toBe("1");
+  });
+
+  test("elicitation capability is independent of permission capability", () => {
+    const env = buildBridgeSpawnEnv({ permissionInteractionCapable: true });
+    expect(env.XACPX_BRIDGE_PERMISSION_INTERACTION_CAPABLE).toBe("1");
+    expect(env.XACPX_BRIDGE_ELICITATION_FORM_CAPABLE).toBe("0");
+  });
 });

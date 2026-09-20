@@ -30,6 +30,10 @@ import { isEligibleForRuntime, parseXacpxPermissionPolicy } from "./runtime/runt
 import { RuntimePermissionResolver, type RuntimePermissionRequest } from "./runtime/runtime-permission-resolver";
 import { narrowToAgentProcessEnvOverlay, resolveClaudeAgentProcessEnv, type ClaudeExecutionSettings } from "../../adapters/claude-settings-policy";
 import { agentProcessEnvIdentityKey } from "./runtime/runtime-worker-protocol";
+import type {
+  RuntimeWorkerElicitationRequestPayload,
+  RuntimeElicitationDecision,
+} from "./runtime/runtime-worker-protocol";
 import { resolveAcpxHostPolicyEnv } from "../../transport/acpx-host-policy";
 
 function sleep(ms: number): Promise<void> {
@@ -422,10 +426,20 @@ export interface RuntimeEngineOptions {
    */
   permissionInteractionCapable?: boolean;
   /**
-   * PR9-C: Host-side handler for elicitation requests (acpx/runtime onElicitation).
-   * If not provided, elicitation fails closed (cancel).
+   * PR9-C/M1: Host-side handler for ACP elicitation requests forwarded from
+   * the worker (exact turn identity + raw ACP request). Must return one of
+   * the three ACP actions; every failure path here is `cancel`.
    */
-  onElicitationRequest?: (payload: { logicalSessionId: string; sessionKey: string; requestId: string; elicitationId: string; mode: string; message: unknown; policyGeneration: number; workerGeneration: string }) => Promise<{ action: "submit" | "cancel"; data?: unknown }>;
+  onElicitationRequest?: (payload: RuntimeWorkerElicitationRequestPayload) => Promise<RuntimeElicitationDecision>;
+  /**
+   * True only if a real channel/human UI can render an ACP form elicitation.
+   * This is the ONLY input to the runtime's capability advertisement: when
+   * false the adapter advertises no elicitation modes at all, so the agent
+   * never sends an elicitation the daemon would just cancel.
+   */
+  elicitationInteractionCapable?: boolean;
+  /** Host-side elicitation watchdog in ms. Defaults to 125_000. */
+  elicitationRequestTimeoutMs?: number;
 }
 export function defaultWorkerEntryCandidates(fromUrl = import.meta.url): string[] {
   const here = dirname(fileURLToPath(fromUrl));
@@ -1127,27 +1141,33 @@ export class RuntimeEngine implements BridgeEngine {
     }
   }
 
-  private async handleElicitationRequest(payload: { logicalSessionId: string; sessionKey: string; requestId: string; elicitationId: string; mode: string; message: unknown; policyGeneration: number; workerGeneration: string }): Promise<{ action: "submit" | "cancel"; data?: unknown }> {
+  private async handleElicitationRequest(payload: RuntimeWorkerElicitationRequestPayload): Promise<RuntimeElicitationDecision> {
     const key = payload.logicalSessionId;
     if (this.deleting.has(key) || this.shuttingDown) return { action: "cancel" };
-    if (payload.policyGeneration !== this.permissionGeneration) return { action: "cancel" };
     const worker = this.manager?.get(key);
     if (!worker || !worker.alive) return { action: "cancel" };
+    // Worker-generation fencing: a decision for a recycled worker must never
+    // reach the live prompt.
     if (payload.workerGeneration !== worker.ref.generation) return { action: "cancel" };
     if (this.options.onElicitationRequest) {
       try {
-        const res = await Promise.race([
+        const timeoutMs = this.options.elicitationRequestTimeoutMs ?? 125_000;
+        const decision = await raceWithTimeout(
           this.options.onElicitationRequest(payload),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("elicitation UI timeout")), 30_000).unref?.()),
-        ]);
+          timeoutMs,
+          () => new Error("elicitation UI timeout"),
+        );
+        // Re-check fencing after the await (worker/generation/shutdown race).
         if (this.deleting.has(key) || this.shuttingDown) return { action: "cancel" };
-        if (payload.policyGeneration !== this.permissionGeneration) return { action: "cancel" };
         const curWorker = this.manager?.get(key);
         if (!curWorker || curWorker.ref.generation !== payload.workerGeneration) return { action: "cancel" };
-        const action = (res as { action?: unknown })?.action;
-        if (action !== "submit" && action !== "cancel") return { action: "cancel" };
-        if (action === "submit") return { action: "submit", data: (res as { data?: unknown }).data };
-        return { action: "cancel" };
+        if (
+          !decision
+          || (decision.action !== "accept" && decision.action !== "decline" && decision.action !== "cancel")
+        ) {
+          return { action: "cancel" };
+        }
+        return decision;
       } catch {
         return { action: "cancel" };
       }
@@ -1600,6 +1620,10 @@ export class RuntimeEngine implements BridgeEngine {
       ...(this.permissionGeneration > 0 ? { permissionGeneration: this.permissionGeneration } : {}),
       ...(input.mcpCoordinatorSession ? { mcpCoordinatorSession: input.mcpCoordinatorSession } : {}),
       ...(input.mcpSourceHandle ? { mcpSourceHandle: input.mcpSourceHandle } : {}),
+      // G9 truthful capability: the worker advertises ACP form elicitation
+      // ONLY when the daemon has a real form-capable channel. Otherwise the
+      // worker advertises nothing and the agent is never told it can ask.
+      ...(this.options.elicitationInteractionCapable === true ? { elicitationModes: ["form"] as const } : { elicitationModes: [] as const }),
       // B1: child-only overlay, resolved once above so params and the
       // identity mirror observe the same snapshot.
       ...(agentProcessEnv ? { agentProcessEnv } : {}),
