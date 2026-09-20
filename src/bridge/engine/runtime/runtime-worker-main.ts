@@ -33,6 +33,7 @@ import {
   type RuntimeWorkerElicitationRequestPayload,
   type RuntimeWorkerPermissionDecisionParams,
   type RuntimeWorkerElicitationDecisionParams,
+  type RuntimeElicitationDecision,
   type RuntimeWorkerPromptResult,
 } from "./runtime-worker-protocol";
 import { mapRuntimeError } from "./runtime-contract";
@@ -56,7 +57,7 @@ interface WorkerState {
   permissionSnapshot?: RuntimePermissionConfig;
   permissionGeneration: number;
   pendingPermissions: Map<string, { resolve: (d: { outcome: string }) => void; reject: (e: Error) => void; generation: number; workerGeneration: string }>;
-  pendingElicitations: Map<string, { resolve: (d: { action: string; data?: unknown }) => void; reject: (e: Error) => void; requestId: string; generation: number; workerGeneration: string }>;
+  pendingElicitations: Map<string, { resolve: (d: RuntimeElicitationDecision) => void; reject: (e: Error) => void; promptRequestId: string; workerGeneration: string }>;
   workerGeneration: string;
   activeInteractionId?: string;
   /** Single-flight first initialization: identical-identity concurrent ensures join this; it is cleared on settle. */
@@ -261,6 +262,9 @@ async function initializeRuntime(params: RuntimeWorkerEnsureParams): Promise<voi
       // B1: child-only overlay, snapshotted by upstream at construction and
       // never persisted. Identity-bound above: a changed overlay recycles.
       ...(params.agentProcessEnv ? { agentProcessEnv: params.agentProcessEnv } : {}),
+      // G9: advertise exactly what the daemon-capability plumbing allowed —
+      // an empty list means the ACP agent never learns elicitation exists.
+      ...(params.elicitationModes ? { elicitationModes: params.elicitationModes } : {}),
       ...(mcpServers ? { mcpServers } : {}),
       onPermissionRequest: async (req, ctx) => {
         const snap = state.permissionSnapshot;
@@ -380,68 +384,52 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
   if (!state.adapter || !state.handle) {
     throw new Error("worker not ensured");
   }
-  const onElicitation = async (req: unknown, signal: AbortSignal): Promise<unknown> => {
-    if (signal.aborted) throw new Error("elicitation cancelled");
-    const elicitationId = `elicit-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  // M1: the adapter passes the exact upstream request plus its real JSON-RPC
+  // id and abort signal. The worker forwards that identity verbatim to the
+  // host; it never invents an id, drops the signal, or guesses a route.
+  const onElicitation = async (
+    req: unknown,
+    context: { requestId: string | number | null; signal: AbortSignal },
+  ): Promise<{ action: "accept"; content?: Record<string, string | number | boolean | string[]> | null } | { action: "decline" } | { action: "cancel" }> => {
+    if (context.signal.aborted) throw new Error("elicitation cancelled");
+    const elicitationRequestId = randomUUID();
     const payload: RuntimeWorkerElicitationRequestPayload = {
       logicalSessionId: state.ensureParams?.logicalSessionId ?? state.ensureParams?.sessionKey ?? "unknown",
       sessionKey: state.ensureParams?.sessionKey ?? "unknown",
-      requestId,
-      elicitationId,
-      mode: "form",
-      message: req,
-      policyGeneration: state.permissionGeneration,
+      promptRequestId: requestId,
+      elicitationRequestId,
+      acpRequestId: context.requestId,
+      request: req,
+      // Exact-turn identity only when the owning prompt carried one. Never
+      // synthesize a route: the daemon fails closed without it.
+      ...(state.activeInteractionId ? { interactionId: state.activeInteractionId } : {}),
       workerGeneration: state.workerGeneration,
     };
-    const pending = new Promise<{ action: string; data?: unknown }>((resolve, reject) => {
-      state.pendingElicitations.set(elicitationId, { resolve: resolve as (d: { action: string; data?: unknown }) => void, reject, requestId, generation: state.permissionGeneration, workerGeneration: state.workerGeneration });
+    const pending = new Promise<RuntimeElicitationDecision>((resolve, reject) => {
+      state.pendingElicitations.set(elicitationRequestId, { resolve, reject, promptRequestId: requestId, workerGeneration: state.workerGeneration });
       const onAbort = () => {
-        state.pendingElicitations.delete(elicitationId);
-        signal.removeEventListener("abort", onAbort);
+        state.pendingElicitations.delete(elicitationRequestId);
         reject(new Error("elicitation cancelled"));
       };
-      if (signal.aborted) {
+      if (context.signal.aborted) {
         onAbort();
         return;
       }
-      signal.addEventListener("abort", onAbort, { once: true });
+      context.signal.addEventListener("abort", onAbort, { once: true });
     });
-    process.stdout.write(encodeWorkerMessage({ id: elicitationId, event: "elicitation.request", payload } satisfies RuntimeWorkerEvent));
+    process.stdout.write(encodeWorkerMessage({ id: elicitationRequestId, event: "elicitation.request", payload } satisfies RuntimeWorkerEvent));
     try {
+      // Business deadline (120s) sits inside the daemon broker; this worker
+      // watchdog (125s) only protects against a wedged host transport and
+      // fails closed exactly like the broker's cancel path.
       const decision = await Promise.race([
         pending,
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("host elicitation timeout")), 30_000).unref?.()),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("host elicitation timeout")), 125_000).unref?.()),
       ]);
-      if (decision.action === "submit") return toUpstreamElicitationAccept(decision.data);
-      throw new Error("elicitation cancelled");
+      return decision;
     } finally {
-      state.pendingElicitations.delete(elicitationId);
+      state.pendingElicitations.delete(elicitationRequestId);
     }
-  };
-  /**
-   * Explicit mapping from the xacpx elicitation decision to the pinned
-   * acpx/upstream AcpElicitationResponse. submit carries opaque daemon form
-   * data and MUST become { action: "accept", content } — never a cast
-   * passthrough. Malformed content fails closed (cancel) rather than
-   * sending the agent data it did not ask for.
-   */
-  function toUpstreamElicitationAccept(data: unknown): { action: "accept"; content: Record<string, string | number | boolean | string[]> | null } {
-    if (data === undefined || data === null) return { action: "accept", content: null };
-    if (typeof data !== "object" || Array.isArray(data)) throw new Error("elicitation cancelled");
-    const content: Record<string, string | number | boolean | string[]> = {};
-    for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
-      if (
-        typeof value === "string" ||
-        typeof value === "number" ||
-        typeof value === "boolean" ||
-        (Array.isArray(value) && value.every((item): item is string => typeof item === "string"))
-      ) {
-        content[key] = value;
-      } else {
-        throw new Error("elicitation cancelled");
-      }
-    }
-    return { action: "accept", content };
   };
   const turn = state.adapter.startTurn({
     handle: state.handle,
@@ -618,30 +606,35 @@ async function dispatch(request: RuntimeWorkerRequest): Promise<void> {
       }
       case "elicitation.decision": {
         const p = (request.params ?? {}) as RuntimeWorkerElicitationDecisionParams;
-        const entry = state.pendingElicitations.get(p.elicitationId);
+        const entry = state.pendingElicitations.get(p.elicitationRequestId);
         if (!entry) {
           respond({ id, ok: true, result: {} });
           break;
         }
-        // Generation + identity fencing, mirroring permission.decision: a
-        // stale or cross-talk response must never resolve the live prompt's
-        // elicitation. Unknown elicitationId is benign (already settled).
+        // Identity + worker-generation fencing, mirroring
+        // permission.decision: a stale or cross-talk response must never
+        // resolve the live prompt's elicitation. Unknown
+        // elicitationRequestId is benign (already settled).
         if (
-          p.requestId !== entry.requestId ||
-          p.policyGeneration !== entry.generation ||
-          p.policyGeneration !== state.permissionGeneration
+          p.promptRequestId !== entry.promptRequestId ||
+          entry.workerGeneration !== state.workerGeneration
         ) {
-          entry.reject(new Error("stale generation"));
-          state.pendingElicitations.delete(p.elicitationId);
+          entry.reject(new Error("stale elicitation decision"));
+          state.pendingElicitations.delete(p.elicitationRequestId);
           respond({ id, ok: true, result: { stale: true } });
           break;
         }
-        if (p.decision && (p.decision.action === "submit" || p.decision.action === "cancel")) {
-          entry.resolve({ action: p.decision.action, ...(p.decision.data !== undefined ? { data: p.decision.data } : {}) });
+        if (
+          p.decision
+          && (p.decision.action === "accept"
+            || p.decision.action === "decline"
+            || p.decision.action === "cancel")
+        ) {
+          entry.resolve(p.decision);
         } else {
           entry.reject(new Error("malformed decision"));
         }
-        state.pendingElicitations.delete(p.elicitationId);
+        state.pendingElicitations.delete(p.elicitationRequestId);
         respond({ id, ok: true, result: {} });
         break;
       }

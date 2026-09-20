@@ -445,15 +445,19 @@ import { createInterface } from "node:readline";
 const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
 function respond(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\\n"); }
 function update(sessionId, upd) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: upd } }) + "\\n"); }
-function elicit(id, sid, req) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, method: "session/request_permission", params: { sessionId: sid, toolCall: { toolCallId: "e1", title: "need info", kind: "other" }, options: [{ optionId: "allow_once", name: "allow_once" }] } }) + "\\n"); }
+let promptSid = "mock-sess";
+let promptId = null;
 rl.on("line", (line) => {
   let msg; try { msg = JSON.parse(line); } catch { return; }
   if (msg.method === "initialize") respond(msg.id, { protocolVersion: 1, authMethods: [], agentCapabilities: { loadSession: true, promptCapabilities: {}, sessionCapabilities: { new:{}, load:{}, resume:{}, close:{}, list:{}, cancel:{} } } });
   else if (msg.method === "session/new" || msg.method === "session/load" || msg.method === "session/resume") respond(msg.id, { sessionId: "mock-sess" });
   else if (msg.method === "session/prompt") {
-    const sid = msg.params?.sessionId ?? "mock-sess";
-    update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "elicit-completed-turn" } });
-    respond(msg.id, { sessionId: sid });
+    promptId = msg.id; promptSid = msg.params?.sessionId ?? "mock-sess";
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: 201, method: "elicitation/create", params: { sessionId: promptSid, mode: "form", message: "need input", requestedSchema: { type: "object", properties: { answer: { type: "string" } }, required: ["answer"] } } }) + "\\n");
+  } else if (msg.id === 201) {
+    update(promptSid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "elicit-completed-turn" } });
+    respond(msg.id, msg.result);
+    respond(promptId, { sessionId: promptSid });
   } else respond(msg.id, {});
 });
 `,
@@ -468,9 +472,10 @@ rl.on("line", (line) => {
     queueDir,
     fenceDir,
     permissionMode: "approve-all",
+    elicitationInteractionCapable: true,
     onElicitationRequest: async (payload) => {
       elicitSeen = payload as unknown as Record<string, unknown>;
-      return { action: "submit", data: { answer: "yes" } };
+      return { action: "accept", content: { answer: "yes" } };
     },
   });
 
@@ -661,7 +666,7 @@ rl.on("line", (line) => {
     await rm(dir, { recursive: true, force: true });
   }
 }, 30_000);
-test("elicitation submit maps to upstream accept/content end to end", async () => {
+test("elicitation accept maps to upstream accept/content end to end", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rt-elicit-submit-"));
   const stateDir = join(dir, "state", "sessions");
   const queueDir = join(dir, "queue");
@@ -701,14 +706,16 @@ rl.on("line", (line) => {
     queueDir,
     fenceDir,
     permissionMode: "approve-all",
-    onElicitationRequest: async () => ({ action: "submit", data: { answer: "yes" } }),
+    elicitationInteractionCapable: true,
+    onElicitationRequest: async () => ({ action: "accept", content: { answer: "yes" } }),
   });
   try {
     const res = await engine.prompt({ ...base, text: "run elicit" }, async () => {});
     expect(res.text).toContain("elicit-submitted-turn");
-    // The daemon's opaque submit data must reach the agent as the pinned
-    // upstream shape { action: "accept", content }, never raw passthrough.
+    // The daemon's decision must reach the agent as the pinned upstream
+    // shape { action: "accept", content }, never raw passthrough.
     const seen = JSON.parse(await readFile(elicitRespFile, "utf8"));
+    expect(seen.result).toEqual({ action: "accept", content: { answer: "yes" } });
   } finally {
     await engine.shutdown().catch(() => {});
     await rm(dir, { recursive: true, force: true });

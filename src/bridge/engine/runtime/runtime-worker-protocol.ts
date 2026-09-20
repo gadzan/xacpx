@@ -15,7 +15,6 @@ export type RuntimeWorkerRequestMethod =
   | "permission.update"
   | "permission.decision"
   | "elicitation.decision"
-  | "elicitation.cancel"
   | "shutdown";
 export interface RuntimeWorkerRequest {
   id: string;
@@ -55,6 +54,11 @@ export interface RuntimeWorkerEnsureParams {
   agentProcessEnv?: Record<string, string>;
   /** Host-assigned worker generation identity. */
   workerGeneration?: string;
+  /**
+   * ACP elicitation modes the worker may advertise to the agent. Empty means
+   * no capability at all (daemon has no form-capable channel).
+   */
+  elicitationModes?: readonly ("form" | "url")[];
 }
 
 /**
@@ -117,19 +121,41 @@ export interface RuntimeWorkerPermissionDecisionParams {
 export interface RuntimeWorkerElicitationRequestPayload {
   logicalSessionId: string;
   sessionKey: string;
-  requestId: string;
-  elicitationId: string;
-  mode: "form" | "url";
-  message: unknown;
-  policyGeneration: number;
+
+  /** Owning Runtime prompt request (the outer turn). */
+  promptRequestId: string;
+
+  /** xacpx broker correlation id (randomUUID). */
+  elicitationRequestId: string;
+
+  /**
+   * Exact originating human turn, when present. Absent ⇒ the daemon has no
+   * trusted route and MUST answer cancel without showing any UI.
+   */
+  interactionId?: string;
+
+  /** ACP outer `elicitation/create` JSON-RPC id, preserved verbatim. */
+  acpRequestId: string | number | null;
+
+  /** Original ACP CreateElicitationRequest at the core boundary. */
+  request: unknown;
+
   workerGeneration: string;
 }
 
+export type RuntimeElicitationDecision =
+  | {
+      action: "accept";
+      content?: Record<string, string | number | boolean | string[]> | null;
+    }
+  | { action: "decline" }
+  | { action: "cancel" };
+
 export interface RuntimeWorkerElicitationDecisionParams {
-  requestId: string;
-  elicitationId: string;
-  policyGeneration: number;
-  decision: { action: "submit" | "cancel"; data?: unknown };
+  /** Owning Runtime prompt request this decision belongs to. */
+  promptRequestId: string;
+  elicitationRequestId: string;
+  decision: RuntimeElicitationDecision;
 }
 
 export type RuntimeWorkerEvent = {
