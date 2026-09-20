@@ -1088,23 +1088,30 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, res.memberTurn);
         }
       }
+      // Null from here on means the accept did not overwrite: a different-id
+      // nonterminal owner stayed tracked. Its HUD/discovery branches below
+      // only run on the adopted owner — never on the unowned accept row.
+      const adoptedRun = activeRun.value;
+      if (!adoptedRun) {
+        return;
+      }
       // Reused-completed-run accept: the accepted Run row is authoritative
       // for the accepted Run, but a queued next Run may still own the Topic
       // (the accept response carries no topic-wide ownership). Converge the
       // transcript, then re-discover the owner exactly like a terminal event:
       // adopt queued B blocked, or open the gate on no-candidate.
-      if (isTerminalRunState(activeRun.value.state)) {
+      if (isTerminalRunState(adoptedRun.state)) {
         liveTurn.value = null;
         if (targetInstId && targetConvId && targetTopicId) {
           if (priorRunActive) {
-            void rediscoverAfterTerminal(targetInstId, targetConvId, targetTopicId, activeRun.value.id);
+            void rediscoverAfterTerminal(targetInstId, targetConvId, targetTopicId, adoptedRun.id);
           } else {
             void refreshTranscriptOnly(targetInstId, targetConvId, targetTopicId);
           }
         }
       } else if (acceptOverwritesOwner) {
-        const isFreshRun = activeRun.value.id === res.run.id && activeRun.value.id !== priorRunId;
-        const existingParts = isFreshRun || (activeRun.value.id === priorRunId && liveTurn.value?.parts.length)
+        const isFreshRun = adoptedRun.id === res.run.id && adoptedRun.id !== priorRunId;
+        const existingParts = isFreshRun || (adoptedRun.id === priorRunId && liveTurn.value?.parts.length)
           ? (liveTurn.value?.parts.length ? liveTurn.value.parts : [])
           : runParts.value[res.run.id]?.length
             ? runParts.value[res.run.id]
