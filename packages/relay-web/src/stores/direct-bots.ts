@@ -249,6 +249,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       cancelError.value = null;
     }
   }
+  // Ownership uncertainty: when a foreign non-terminal run arrives while a local
+  // non-terminal activeRun is tracked, ownership is unconfirmed until discovery
+  // queries the authority (runs.list). While uncertain, cancelCurrentRun() fails
+  // closed (will not cancel the old/unconfirmed owner) and triggers discovery.
+  const ownershipUncertain = ref<boolean>(false);
+  const ownerUnconfirmed = computed<boolean>(() => ownershipUncertain.value);
 
   // General error feedback
   const generalError = ref<string | null>(null);
@@ -561,6 +567,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // reaching here.
       if (discovered) {
         topicReady.value = true;
+        ownershipUncertain.value = false;
+        cancelError.value = null;
       } else if (
         // A superseded load (a newer discovery started, e.g. a terminal
         // handoff racing a deferred runs.get) must not pin a stale failure
@@ -571,6 +579,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         activeTopicId.value === tId
       ) {
         historyError.value = "Run discovery failed. History loaded, but the live Run owner is unknown — retry to confirm before sending.";
+        if (activeRun.value && !isTerminalRunState(activeRun.value.state)) {
+          ownershipUncertain.value = true;
+          cancelError.value = "Ownership unconfirmed due to discovery failure. Retry discovery to confirm active run.";
+        }
       }
     } catch (err: unknown) {
       // Same supersede rule as above: a stale history failure must not
@@ -628,16 +640,16 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         // Authoritative no-candidate IS proven discovery: admission may open.
         return true;
       }
-      // A stale terminal activeRun must not block authoritative topic discovery:
-      // the lost-response case is exactly activeRun=completed A while durable B
-      // is queued/running. Only an active (non-terminal) different Run fences.
+      // When an authoritative candidate differs from local non-terminal activeRun,
+      // adopt the authoritative candidate (durable owner replaces optimistic local owner).
       if (activeRun.value && activeRun.value.id !== candidate.id && !isTerminalRunState(activeRun.value.state)) {
-        // A different local nonterminal Run exists: keep it fenced but still
-        // treat discovery as proven — the gate must not reopen admission for
-        // a second prompt into the same Topic.
-        return true;
+        activeRun.value = mergeRun(null, candidate);
+        activeMemberTurn.value = null;
+        liveTurn.value = null;
+        latestPlanRunId.value = candidate.id;
+      } else {
+        activeRun.value = mergeRun(activeRun.value?.id === candidate.id ? activeRun.value : null, candidate);
       }
-      activeRun.value = mergeRun(activeRun.value?.id === candidate.id ? activeRun.value : null, candidate);
       // A terminal handoff that already applied the WS terminal row must not
       // be regressed: if the handoff named this exact Run and it is terminal
       // locally, converge without re-fetching detail (the detail response is
@@ -880,6 +892,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     cancellingRunId.value = null;
     cancelUncertaintyRunId.value = null;
     cancelError.value = null;
+    ownershipUncertain.value = false;
     promptInFlight.value = false;
     promptError.value = null;
     currentDraftRequestId.value = null;
@@ -944,6 +957,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     cancellingRunId.value = null;
     cancelUncertaintyRunId.value = null;
     cancelError.value = null;
+    ownershipUncertain.value = false;
     promptInFlight.value = false;
     promptError.value = null;
     currentDraftRequestId.value = null;
@@ -980,6 +994,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     cancellingRunId.value = null;
     cancelUncertaintyRunId.value = null;
     cancelError.value = null;
+    ownershipUncertain.value = false;
     promptInFlight.value = false;
     promptError.value = null;
     currentDraftRequestId.value = null;
@@ -1088,6 +1103,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, res.memberTurn);
         }
       }
+      ownershipUncertain.value = false;
       // Null from here on means the accept did not overwrite: a different-id
       // nonterminal owner stayed tracked. Its HUD/discovery branches below
       // only run on the adopted owner — never on the unowned accept row.
@@ -1155,6 +1171,86 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     }
   }
 
+  // Explicitly retry authoritative run discovery when ownership is uncertain.
+  // Returns true if discovery succeeded and confirmed/adopted the authoritative owner.
+  async function retryDiscovery(): Promise<boolean> {
+    const targetInstId = instanceId.value;
+    const targetConvId = activeConversationId.value;
+    const targetTopicId = activeTopicId.value;
+    if (!targetInstId || !targetConvId || !targetTopicId) return false;
+
+    const checkGeneration = currentSelectionGeneration;
+    const checkDiscoveryId = ++discoverySequence;
+    try {
+      const listed = unwrapRpc(
+        await api.rpc<{ runs: ConversationRunDto[]; activeRunId?: string; activeRun?: ConversationRunDto }>(
+          targetInstId,
+          MSG.runsList,
+          {
+            conversationId: targetConvId,
+            topicId: targetTopicId,
+          },
+        ),
+      );
+      if (
+        checkGeneration !== currentSelectionGeneration ||
+        checkDiscoveryId !== discoverySequence ||
+        instanceId.value !== targetInstId ||
+        activeConversationId.value !== targetConvId ||
+        activeTopicId.value !== targetTopicId
+      ) {
+        return false;
+      }
+
+      const authoritativeId = listed.activeRun?.id
+        ?? (listed.activeRunId && listed.runs.some((r) => r.id === listed.activeRunId)
+          ? listed.activeRunId
+          : undefined);
+
+      if (authoritativeId) {
+        const authoritativeRow = listed.activeRun
+          ?? listed.runs.find((r) => r.id === authoritativeId);
+        if (authoritativeRow && !isTerminalRunState(authoritativeRow.state)) {
+          if (!activeRun.value || activeRun.value.id !== authoritativeId || isTerminalRunState(activeRun.value.state)) {
+            activeRun.value = mergeRun(null, authoritativeRow);
+            activeMemberTurn.value = null;
+            liveTurn.value = null;
+            latestPlanRunId.value = authoritativeId;
+          } else {
+            activeRun.value = mergeRun(activeRun.value, authoritativeRow);
+          }
+          if (instanceId.value && selectedBotId.value) {
+            markBotHasRuntime(instanceId.value, selectedBotId.value);
+          }
+        }
+      } else {
+        // No active run on backend: if local activeRun was non-terminal, check if listed as terminal
+        if (activeRun.value && !isTerminalRunState(activeRun.value.state)) {
+          const matchInList = listed.runs.find((r) => r.id === activeRun.value?.id);
+          if (matchInList && isTerminalRunState(matchInList.state)) {
+            activeRun.value = mergeRun(activeRun.value, matchInList);
+            liveTurn.value = null;
+          }
+        }
+      }
+      ownershipUncertain.value = false;
+      cancelError.value = null;
+      return true;
+    } catch (err: unknown) {
+      if (
+        checkGeneration === currentSelectionGeneration &&
+        checkDiscoveryId === discoverySequence &&
+        instanceId.value === targetInstId &&
+        activeConversationId.value === targetConvId &&
+        activeTopicId.value === targetTopicId
+      ) {
+        ownershipUncertain.value = true;
+        cancelError.value = "Ownership unconfirmed due to discovery failure. Retry discovery to confirm active run.";
+      }
+      return false;
+    }
+  }
+
   // Exact Run cancellation via runId
   async function cancelCurrentRun(): Promise<void> {
     if (!instanceId.value || !activeRun.value) return;
@@ -1162,6 +1258,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     // flight the HUD keeps emitting; a second dispatch would race the first
     // and the late failure could re-mark uncertainty on a terminal Run.
     if (cancellingRunId.value === activeRun.value.id) return;
+    // Fail closed if ownership is unconfirmed: do NOT issue cancel RPC
+    // for an unconfirmed local owner!
+    if (ownershipUncertain.value) {
+      void retryDiscovery();
+      return;
+    }
     const targetInstId = instanceId.value;
     const targetConvId = activeConversationId.value;
     const targetTopicId = activeTopicId.value;
@@ -1539,6 +1641,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           if (isTerminalRunState(activeRun.value.state)) {
             liveTurn.value = null;
             resolveCancelUncertainty(run.id);
+            ownershipUncertain.value = false;
             if (
               retiringActiveRun &&
               instanceId.value && activeConversationId.value && activeTopicId.value
@@ -1583,66 +1686,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
             !isTerminalRunState(activeRun.value.state) &&
             instanceId.value && activeConversationId.value && activeTopicId.value
           ) {
-            // Live owner tracked AND a foreign nonterminal row arrived: ask
-            // the authority whether the newcomer already owns the Topic
-            // (C-before-B: our optimistic C is tracked, durable B sorts
-            // ahead). The gate stays as-is until discovery answers — no
-            // synchronous close, no blind adopt.
-            const checkInstId = instanceId.value;
-            const checkConvId = activeConversationId.value;
-            const checkTopicId = activeTopicId.value;
-            const checkGeneration = currentSelectionGeneration;
-            const checkDiscoveryId = ++discoverySequence;
-            void (async () => {
-              let listed: { runs: ConversationRunDto[]; activeRunId?: string; activeRun?: ConversationRunDto };
-              try {
-                listed = unwrapRpc(
-                  await api.rpc<{ runs: ConversationRunDto[]; activeRunId?: string; activeRun?: ConversationRunDto }>(checkInstId, MSG.runsList, {
-                    conversationId: checkConvId,
-                    topicId: checkTopicId,
-                  }),
-                );
-              } catch {
-                return;
-              }
-              if (
-                checkGeneration !== currentSelectionGeneration ||
-                checkDiscoveryId !== discoverySequence ||
-                instanceId.value !== checkInstId ||
-                activeConversationId.value !== checkConvId ||
-                activeTopicId.value !== checkTopicId
-              ) {
-                return;
-              }
-              const authoritativeId = listed.activeRun?.id
-                ?? (listed.activeRunId && listed.runs.some((r) => r.id === listed.activeRunId)
-                  ? listed.activeRunId
-                  : undefined);
-              // Discovery decides, event does not: when the latest valid check
-              // reports an authoritative nonterminal owner that differs from
-              // our local activeRun, adopt it. Do NOT bind adoption to the
-              // event's seenRunId — an earlier queued Run (e.g. B) must still be
-              // adopted even if a later foreign event (e.g. D) was the one that
-              // completed discovery.
-              if (
-                authoritativeId &&
-                activeRun.value &&
-                activeRun.value.id !== authoritativeId &&
-                !isTerminalRunState(activeRun.value.state)
-              ) {
-                const authoritativeRow = listed.activeRun
-                  ?? listed.runs.find((r) => r.id === authoritativeId);
-                if (authoritativeRow && !isTerminalRunState(authoritativeRow.state)) {
-                  activeRun.value = mergeRun(null, authoritativeRow);
-                  activeMemberTurn.value = null;
-                  liveTurn.value = null;
-                  latestPlanRunId.value = authoritativeId;
-                  if (instanceId.value && selectedBotId.value) {
-                    markBotHasRuntime(instanceId.value, selectedBotId.value);
-                  }
-                }
-              }
-            })();
+            // Live owner tracked AND a foreign nonterminal row arrived: mark
+            // ownership as uncertain until authority resolves, closing the
+            // cancellation door on the old local owner.
+            ownershipUncertain.value = true;
+            cancelError.value = "Ownership unconfirmed. Checking active run...";
+            void retryDiscovery();
           }
           if (isOwnDraft) {
             activeRun.value = mergeRun(null, run);
@@ -1844,6 +1893,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     promptError,
     cancelError,
     generalError,
+    ownershipUncertain,
+    ownerUnconfirmed,
+    retryDiscovery,
     isBotSelected,
     currentBots,
     currentBot,

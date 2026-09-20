@@ -2043,6 +2043,136 @@ describe("useDirectBotsStore", () => {
       expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.runs.cancel", { runId: "run_B" });
       expect(store.activeRun?.state).toBe("cancelled");
     });
+    it("fails closed on cancelCurrentRun when newcomer discovery fails, keeping ownership uncertain until retry succeeds", async () => {
+      // activeRun=C queued
+      // foreign B running
+      // -> runs.list reject
+      // -> member-turn-started(B)
+      // -> Stop
+      // -> control.runs.cancel(C) MUST NOT be called
+      // -> owner remains explicitly unconfirmed / retry discovery
+      // When subsequently retry runs.list returns B, Stop succeeds targeting B.
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+
+      const runCQueued = {
+        id: "run_C",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_C",
+        requestId: "req_C",
+        mode: "explicit" as const,
+        state: "queued" as const,
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      const runBRunning = {
+        id: "run_B",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_B",
+        requestId: "req_foreign_B",
+        mode: "explicit" as const,
+        state: "running" as const,
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      const memberBStarted = {
+        id: "turn_B",
+        runId: "run_B",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        botId: "bot_1",
+        batch: 1,
+        attempt: 1,
+        origin: "human" as const,
+        state: "running" as const,
+        createdAt: "now",
+      };
+
+      store.activeRun = runCQueued;
+      expect(store.ownershipUncertain).toBe(false);
+
+      let listShouldFail = true;
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.runs.list") {
+          if (listShouldFail) {
+            return Promise.reject(new Error("Discovery network failure"));
+          }
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            runs: [runBRunning],
+            activeRunId: "run_B",
+            activeRun: runBRunning,
+          });
+        }
+        if (type === "control.runs.cancel") {
+          return Promise.resolve({ ok: true, run: { ...runBRunning, state: "cancelled", memberTurns: [] } });
+        }
+        return Promise.resolve({});
+      });
+
+      // 1. Foreign B (running) arrives -> newcomer discovery fails
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: { type: "conversation-run-changed", run: runBRunning },
+      } as never);
+      await flushPromises();
+
+      // Owner is uncertain; C remains local activeRun but unconfirmed
+      expect(store.ownershipUncertain).toBe(true);
+      expect(store.ownerUnconfirmed).toBe(true);
+      expect(store.activeRun?.id).toBe("run_C");
+      expect(store.cancelError).toContain("Ownership unconfirmed");
+
+      // 2. member-turn-started(B) arrives while local owner is C
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "member-turn-started",
+          run: runBRunning,
+          memberTurn: memberBStarted,
+        },
+      } as never);
+      // Fenced on C, does not stream
+      expect(store.activeRun?.id).toBe("run_C");
+      expect(store.activeMemberTurn).toBeNull();
+      expect(store.liveTurn).toBeNull();
+
+      // 3. User clicks Stop: control.runs.cancel(C) MUST NOT be called!
+      await store.cancelCurrentRun();
+      expect(mockRpc).not.toHaveBeenCalledWith(expect.anything(), "control.runs.cancel", expect.anything());
+      expect(store.activeRun?.id).toBe("run_C");
+      expect(store.activeRun?.state).toBe("queued");
+      expect(store.ownershipUncertain).toBe(true);
+      expect(store.ownerUnconfirmed).toBe(true);
+
+      // 4. Retry discovery succeeds and returns B
+      listShouldFail = false;
+      const discovered = await store.retryDiscovery();
+      expect(discovered).toBe(true);
+
+      // Uncertainty cleared, activeRun adopted B
+      expect(store.ownershipUncertain).toBe(false);
+      expect(store.ownerUnconfirmed).toBe(false);
+      expect(store.activeRun?.id).toBe("run_B");
+      expect(store.activeRun?.state).toBe("running");
+      expect(store.cancelError).toBeNull();
+
+      // 5. User clicks Stop now: cancel targeting B succeeds!
+      await store.cancelCurrentRun();
+      expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.runs.cancel", { runId: "run_B" });
+      expect(store.activeRun?.state).toBe("cancelled");
+    });
     it("clears a ghost bot selection when the authoritative list no longer contains it", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
