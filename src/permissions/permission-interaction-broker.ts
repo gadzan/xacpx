@@ -6,6 +6,10 @@ import type {
   MessageChannelRuntime,
 } from "../channels/types.js";
 import type { AppLogger } from "../logging/app-logger.js";
+import {
+  createTurnInteractionRegistry,
+  type TurnInteractionRegistry,
+} from "../interactions/turn-interaction-registry.js";
 import { summarizePermissionRequest } from "./permission-summary.js";
 import {
   isPermissionOutcome,
@@ -15,6 +19,11 @@ import {
 } from "./permission-types.js";
 
 export type { TurnInteractionContext } from "./permission-types.js";
+export {
+  createTurnInteractionRegistry,
+  type HumanInteractionOrigin,
+  type TurnInteractionRegistry,
+} from "../interactions/turn-interaction-registry.js";
 
 /** Business deadline for a human decision. Core constant, not a config knob (plan §15.5). */
 export const PERMISSION_INTERACTION_TIMEOUT_MS = 120_000;
@@ -28,6 +37,8 @@ export interface PermissionInteractionBrokerOptions {
   getChannelByChatKey: PermissionChannelResolver;
   logger?: AppLogger;
   timeoutMs?: number;
+  /** Shared exact-turn registry; defaults to a private one. */
+  registry?: TurnInteractionRegistry;
 }
 
 interface PendingPermission {
@@ -54,7 +65,7 @@ function validOutcomes(input: unknown): PermissionOutcome[] {
  * - Pending state is memory-only; shutdown invalidates everything.
  */
 export class PermissionInteractionBroker {
-  private readonly turns = new Map<string, TurnInteractionContext>();
+  private readonly turns: TurnInteractionRegistry;
   private readonly pending = new Map<string, PendingPermission>();
   private readonly getChannelByChatKey: PermissionChannelResolver;
   private readonly logger?: AppLogger;
@@ -62,9 +73,15 @@ export class PermissionInteractionBroker {
   private shutDown = false;
 
   constructor(options: PermissionInteractionBrokerOptions) {
+    this.turns = options.registry ?? createTurnInteractionRegistry();
     this.getChannelByChatKey = options.getChannelByChatKey;
     if (options.logger) this.logger = options.logger;
     this.timeoutMs = options.timeoutMs ?? PERMISSION_INTERACTION_TIMEOUT_MS;
+  }
+
+  /** Shared exact-turn registry (read-only use by other brokers/tests). */
+  get turnRegistry(): TurnInteractionRegistry {
+    return this.turns;
   }
 
   /**
@@ -77,40 +94,26 @@ export class PermissionInteractionBroker {
    * already fail-closed on its own abort (it drops its pending entry and
    * returns reject_once), so no extra worker→host cancel event is needed —
    * both ends fail closed independently off the same turn abort.
+   *
+   * Route liveness itself lives in the shared TurnInteractionRegistry; the
+   * permission broker only subscribes its pending requests to it.
    */
   bindTurn(context: TurnInteractionContext, abortSignal?: AbortSignal): () => void {
-    if (this.turns.has(context.interactionId)) {
-      throw new Error(`duplicate permission interaction binding: ${context.interactionId}`);
+    const interactionId = context.interactionId;
+    const unsubscribeAbort = this.turns.subscribeAbort(interactionId, () => {
+      this.abortInteraction(interactionId, "turn_aborted");
+    });
+    let dispose: () => void;
+    try {
+      dispose = this.turns.bindTurn(context, abortSignal);
+    } catch (error) {
+      unsubscribeAbort();
+      throw error;
     }
-    this.turns.set(context.interactionId, context);
-    let disposed = false;
-    // Shared terminal path: identity-check, then delete the route AND abort
-    // pending. Abort MUST go through here too — otherwise a cancelled turn
-    // whose transport settles slowly could mint NEW approval UI for a later
-    // permission request on the same interaction id.
-    const terminate = (reason: string): void => {
-      const current = this.turns.get(context.interactionId);
-      if (current !== context) return;
-      this.turns.delete(context.interactionId);
-      this.abortInteraction(context.interactionId, reason);
+    return () => {
+      dispose();
+      unsubscribeAbort();
     };
-    const dispose = (): void => {
-      if (disposed) return;
-      disposed = true;
-      abortSignal?.removeEventListener("abort", onAbort);
-      terminate("turn_disposed");
-    };
-    const onAbort = (): void => {
-      terminate("turn_aborted");
-    };
-    if (abortSignal) {
-      if (abortSignal.aborted) {
-        onAbort();
-      } else {
-        abortSignal.addEventListener("abort", onAbort, { once: true });
-      }
-    }
-    return dispose;
   }
 
   /** Create a fresh opaque interaction id for one human prompt dispatch. */
@@ -119,7 +122,7 @@ export class PermissionInteractionBroker {
   }
 
   get boundTurnCount(): number {
-    return this.turns.size;
+    return this.turns.boundTurnCount;
   }
 
   get pendingCount(): number {
@@ -140,7 +143,7 @@ export class PermissionInteractionBroker {
       return { outcome: "reject_once" };
     }
     const interactionId = input.interactionId;
-    const route = typeof interactionId === "string" ? this.turns.get(interactionId) : undefined;
+    const route = typeof interactionId === "string" ? this.turns.resolve(interactionId) : undefined;
     if (!interactionId || !route) {
       await this.log("permission.interaction.rejected_unavailable", "missing interaction route", {
         requestId,
@@ -244,10 +247,10 @@ export class PermissionInteractionBroker {
       this.pending.get(requestId) !== pending ||
       controller.signal.aborted ||
       Date.now() >= expiresAt ||
-      !this.turns.has(interactionId) ||
+      !this.turns.resolve(interactionId) ||
       this.shutDown
     ) {
-      const reason = !this.turns.has(interactionId) || this.shutDown ? "stale" : "expired";
+      const reason = !this.turns.resolve(interactionId) || this.shutDown ? "stale" : "expired";
       await this.log(
         reason === "expired" ? "permission.interaction.expired" : "permission.interaction.stale",
         reason === "expired" ? "permission interaction expired before dispatch" : "permission interaction went stale before dispatch",
@@ -283,10 +286,10 @@ export class PermissionInteractionBroker {
         this.pending.get(requestId) !== pending ||
         controller.signal.aborted ||
         Date.now() >= expiresAt ||
-        !this.turns.has(interactionId) ||
+        !this.turns.resolve(interactionId) ||
         this.shutDown
       ) {
-        const reason = !this.turns.has(interactionId) || this.shutDown ? "stale" : "expired";
+        const reason = !this.turns.resolve(interactionId) || this.shutDown ? "stale" : "expired";
         await this.log(
           reason === "expired" ? "permission.interaction.expired" : "permission.interaction.stale",
           reason === "expired" ? "permission interaction expired before decision" : "permission interaction went stale before decision",
@@ -324,7 +327,7 @@ export class PermissionInteractionBroker {
       return result;
     } catch (error) {
       if (controller.signal.aborted) {
-        const reason = !this.turns.has(interactionId)
+        const reason = !this.turns.resolve(interactionId)
           ? "aborted"
           : this.shutDown
             ? "aborted"
