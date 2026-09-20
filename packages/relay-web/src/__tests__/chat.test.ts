@@ -1275,6 +1275,58 @@ test("flushTurn inserts the out row into the live slot, not at the end", () => {
   expect(store.messages[1]).toMatchObject({ direction: "out", text: "reply", startedAt });
 });
 
+test("switching to a running background session restores the live reply after its persisted prompt", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+    messages: [
+      {
+        id: 1,
+        instanceId: "i1",
+        sessionAlias: "backend",
+        direction: "in",
+        text: "background prompt",
+        createdAt: new Date(1_000).toISOString(),
+      },
+    ],
+    hasMore: false,
+  }), { status: 200 })));
+
+  const store = useChatStore();
+  store.select("i1", "frontend");
+
+  // The backend turn starts while another conversation is selected. Its prompt is
+  // already persisted by the Hub, so the web only pre-buffers the live turn/output.
+  store.applyEvent({
+    kind: "control-event",
+    instanceId: "i1",
+    event: {
+      type: "turn-started",
+      chatKey: "c",
+      sessionAlias: "backend",
+      prompt: "background prompt",
+      slotAfterId: 1,
+      startedAt: 2_000,
+    },
+  } as never);
+  store.applyEvent({
+    kind: "control-event",
+    instanceId: "i1",
+    event: { type: "turn-output", chatKey: "c", sessionAlias: "backend", chunk: "partial reply" },
+  } as never);
+
+  expect(store.sessionAttention("i1", "backend")).toBe("working");
+
+  store.select("i1", "backend");
+  await store.loadHistory();
+
+  expect(store.messages.map((m) => m.text)).toEqual(["background prompt"]);
+  expect(store.streaming).toBe("partial reply");
+  expect(store.liveTurn).toMatchObject({
+    slotAfterId: 1,
+    slotAfterIndex: 0,
+    startedAt: 2_000,
+  });
+});
+
 test("busy send then turn-finished then history (before queued drain) keeps queued prompt after out", async () => {
   let resolveHistory!: (value: Response) => void;
   const history = new Promise<Response>((resolve) => { resolveHistory = resolve; });

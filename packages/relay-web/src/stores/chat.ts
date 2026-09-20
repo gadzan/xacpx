@@ -700,7 +700,11 @@ export const useChatStore = defineStore("chat", () => {
     if (e.type === "turn-started") {
       const k = bufKey(event.instanceId, e.sessionAlias);
       finishedTurns.delete(k); // a fresh turn supersedes any prior finish on this key
-      ensureTurn(k, e.startedAt);
+      const live = ensureTurn(k, e.startedAt);
+      // slotAfterId is durable turn identity, not view-local presentation state.
+      // A background turn must retain it so selecting that session later can place
+      // the pre-buffered live reply back after its triggering persisted prompt.
+      if (typeof e.slotAfterId === "number") live.slotAfterId = e.slotAfterId;
       // Scheduled turns have no optimistic bubble; drained queue turns use queueItemId
       // to move their existing bubble. Other clients can add the carried prompt here.
       const selected = event.instanceId === instanceId.value && e.sessionAlias === sessionAlias.value;
@@ -738,11 +742,7 @@ export const useChatStore = defineStore("chat", () => {
       // the prompt just appended, or the drained queued bubble). Later mid-turn
       // rows append below this slot. Insert order — never infer from startedAt.
       if (selected) {
-        const live = liveTurns.value[k];
-        if (live) {
-          live.slotAfterIndex = messages.value.length - 1;
-          if (typeof e.slotAfterId === "number") live.slotAfterId = e.slotAfterId;
-        }
+        live.slotAfterIndex = messages.value.length - 1;
       }
     } else if (e.type === "turn-output") {
       const t = ensureTurn(bufKey(event.instanceId, e.sessionAlias));
