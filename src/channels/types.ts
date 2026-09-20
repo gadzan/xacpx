@@ -14,8 +14,23 @@ import type {
   ConversationPromptResponseDto,
 } from "../control/conversation-control-dtos.js";
 import type { HumanIngressContext } from "../conversations/conversation-types.js";
+import type {
+  ChannelElicitationDecision,
+  ChannelElicitationMode,
+  ChannelElicitationRequest,
+} from "../interactions/elicitation-types.js";
 
 export type { ChatAgent };
+export type {
+  ChannelElicitationDecision,
+  ChannelElicitationMode,
+  ChannelElicitationRequest,
+} from "../interactions/elicitation-types.js";
+export type {
+  ChannelElicitationField,
+  ChannelElicitationOption,
+  ChannelElicitationValue,
+} from "../interactions/elicitation-types.js";
 export type PermissionOutcome =
   | "allow_once"
   | "allow_always"
@@ -249,6 +264,30 @@ export interface MessageChannelRuntime {
    * and MUST settle exactly once (first terminal decision wins).
    */
   requestPermission?(request: ChannelPermissionRequest): Promise<ChannelPermissionDecision>;
+
+  /**
+   * Interactive ACP form Elicitation UI (roadmap G1/G4/G7).
+   * Optional so already-published plugins stay compatible; absent means
+   * Elicitation is unavailable for this channel and the broker fails closed.
+   * Implementations MUST:
+   *   - render the form only for `request.requester.senderId`;
+   *   - return the platform-authenticated responder id, never a self-reported
+   *     payload id (roadmap §5.7);
+   *   - keep pending form state in server-side memory only, never encode
+   *     answer values into control ids/URLs, and never persist answers;
+   *   - settle exactly once: the first terminal decision wins, and
+   *     timeout/`signal` abort/sharded UI returns `{ action: "cancel" }`.
+   */
+  requestElicitation?(
+    request: ChannelElicitationRequest,
+  ): Promise<ChannelElicitationDecision>;
+
+  /**
+   * Elicitation modes this channel can actually render. Only listed modes
+   * backed by a real `requestElicitation` implementation are advertised by
+   * the core capability probe; absence never implies form support.
+   */
+  readonly elicitationModes?: readonly ChannelElicitationMode[];
 
   /**
    * Preferred render format for `/ssn` native session lists. weixin renders

@@ -100,6 +100,38 @@ export class MessageChannelRegistry {
     return false;
   }
 
+  /**
+   * True Elicitation capability: at least one registered runtime actually
+   * implements `requestElicitation()`. Deliberately independent of the
+   * permission probe (G9): a channel may support approvals but cannot render
+   * a form Elicitation, and v1 forbids inferring one from the other.
+   */
+  hasElicitationInteractionCapability(): boolean {
+    for (const channel of this.channels.values()) {
+      if (typeof channel.requestElicitation === "function") return true;
+    }
+    return false;
+  }
+
+  /**
+   * Modes this registry can truthfully advertise. A mode counts only when a
+   * channel declares it AND implements `requestElicitation()`. Without a
+   * form-capable channel the result is empty, and the daemon advertises no
+   * ACP elicitation capability at all.
+   */
+  supportedElicitationModes(): Array<"form" | "url"> {
+    const modes: Array<"form" | "url"> = [];
+    for (const channel of this.channels.values()) {
+      if (typeof channel.requestElicitation !== "function") continue;
+      for (const mode of channel.elicitationModes ?? []) {
+        if (mode === "form" || mode === "url") {
+          if (!modes.includes(mode)) modes.push(mode);
+        }
+      }
+    }
+    return modes;
+  }
+
   async notifyTaskCompletion(task: OrchestrationTaskRecord): Promise<void> {
     if (!task.chatKey) return;
     await this.requireByChatKey(task.chatKey).notifyTaskCompletion(task);
