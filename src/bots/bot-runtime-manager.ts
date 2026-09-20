@@ -170,7 +170,8 @@ export class BotRuntimeManager {
     if (existing && this.bindingSessionIsLive(existing)) {
       const session = this.sessions.getLogicalSessionRecord(existing.sessionAlias)
         ?? this.sessions.getLogicalSessionById(existing.logicalSessionId);
-      const targetEffort = input.execution?.effort ?? bot.effort;
+      const target = input.execution ?? bot;
+      const targetEffort = target.effort;
       if (session && session.effort && !targetEffort) {
         await this.releaseDirectBindingInternal(existing, existing.id);
       } else {
@@ -182,7 +183,8 @@ export class BotRuntimeManager {
     if (adopted && this.bindingSessionIsLive(adopted)) {
       const session = this.sessions.getLogicalSessionById(adopted.logicalSessionId)
         ?? this.findOwnedSession(adopted.id);
-      const targetEffort = input.execution?.effort ?? bot.effort;
+      const target = input.execution ?? bot;
+      const targetEffort = target.effort;
       if (session && session.effort && !targetEffort) {
         await this.releaseDirectBindingInternal(adopted, adopted.id);
       } else {
@@ -314,10 +316,11 @@ export class BotRuntimeManager {
         throw this.ownershipConflict(bot.id, alias, { bindingId, conversationId: scope.conversationId }, occupant);
       }
     }
-    const agent = execution?.agent ?? bot.agent;
-    const workspace = execution?.workspace ?? bot.workspace;
-    const model = execution?.model ?? bot.model;
-    const effort = execution?.effort ?? bot.effort;
+    const target = execution ?? bot;
+    const agent = target.agent;
+    const workspace = target.workspace;
+    const model = target.model;
+    const effort = target.effort;
     if (!occupant) {
       await this.sessions.createSession(alias, agent, workspace, {
         owner: createBotDirectOwner({

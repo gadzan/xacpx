@@ -1608,3 +1608,49 @@ test("a worker paused before materialize cannot resurrect runtime after teardown
   expect(first.state.conversation_topics).toEqual({});
   expect(fakeRunner(first.runner).runs).toHaveLength(0);
 });
+
+test("materialize high -> bot edit to default -> accept run A (snapshot effort=undefined) -> bot edit back to high -> dispatch A releases old high runtime and executes with default effort", async () => {
+  const first = await createLifecycle();
+
+  // 1. Update bot to effort: "high"
+  await first.bots.updateBot(BOT_ID, { effort: "high" });
+
+  // 2. Materialize high runtime
+  const initialBinding = await first.runtime.getOrCreateDirectSession({ botId: BOT_ID });
+  const initialSession = first.sessions.getLogicalSessionById(initialBinding.logicalSessionId);
+  expect(initialSession?.effort).toBe("high");
+
+  // 3. Edit Bot: effort = Default (cleared)
+  await first.bots.updateBot(BOT_ID, { effort: null });
+  expect(first.bots.getBot(BOT_ID).effort).toBeUndefined();
+
+  // 4. Accept Run A with Bot effort = Default -> snapshot execution.effort is undefined
+  const acceptedA = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req_run_a",
+    content: "Run A",
+  });
+  expect(acceptedA.run.profileSnapshot.execution.effort).toBeUndefined();
+
+  // 5. Edit Bot back to "high" BEFORE Run A is dispatched
+  await first.bots.updateBot(BOT_ID, { effort: "high" });
+  expect(first.bots.getBot(BOT_ID).effort).toBe("high");
+
+  // 6. Dispatch Run A: must tear down old high runtime because accepted snapshot effort is undefined (Default)
+  await first.dispatcher.kick();
+
+  // Verify: old high session was physically deleted/released
+  expect(first.physical.deleteCalls).toBeGreaterThanOrEqual(1);
+  // Binding was recreated/rebound, session effort is undefined (clean Default)
+  const activeBinding = Object.values(first.state.bot_runtime_bindings).find(
+    (b) => b.botId === BOT_ID && b.scope === "bot-direct",
+  );
+  expect(activeBinding).toBeDefined();
+  expect(activeBinding!.logicalSessionId).not.toBe(initialBinding.logicalSessionId);
+  const activeSession = first.sessions.getLogicalSessionById(activeBinding!.logicalSessionId);
+  expect(activeSession?.effort).toBeUndefined();
+
+  // Run A completed successfully
+  expect(fakeRunner(first.runner).runs).toHaveLength(1);
+  expect(first.store.getRun(acceptedA.run.id)?.state).toBe("completed");
+});
