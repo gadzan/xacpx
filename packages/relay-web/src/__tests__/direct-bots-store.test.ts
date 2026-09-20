@@ -831,6 +831,8 @@ describe("useDirectBotsStore", () => {
       });
 
       const sendCall = store.sendPrompt("Prompt B");
+      // Yield so the synchronous draft-id mint lands before the WS event.
+      await Promise.resolve();
       const pendingRequestId = store.currentDraftRequestId;
       expect(pendingRequestId).toBeTruthy();
 
@@ -1737,6 +1739,165 @@ describe("useDirectBotsStore", () => {
         expect.anything(),
       );
     });
+    it("keeps an earlier-queued foreign owner when this tab accepts later", async () => {
+      // B-before-C: foreign B queued first, this tab's C accepted second.
+      // HTTP order must not decide ownership — runs.list elects B.
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      const runBQueued = {
+        id: "run_B",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_B",
+        requestId: "req_foreign_B",
+        mode: "explicit",
+        state: "queued",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      const { promise: promptPromise, resolve: resolvePrompt } = Promise.withResolvers<unknown>();
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversation.prompt") return promptPromise;
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: [],
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            runs: [runBQueued],
+            activeRunId: "run_B",
+            activeRun: runBQueued,
+          });
+        }
+        if (type === "control.runs.get") {
+          return Promise.resolve({ run: { ...runBQueued, memberTurns: [] } });
+        }
+        return Promise.resolve({});
+      });
+
+      const sendCall = store.sendPrompt("prompt C after foreign B");
+      // B's WS event arrives while C's HTTP accept is still deferred: exact
+      // requestId mismatch means foreign, never own — the draft survives and
+      // the gate closes for authoritative election.
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: { type: "conversation-run-changed", run: runBQueued },
+      } as never);
+      expect(store.currentDraftRequestId).not.toBeNull();
+      expect(store.topicReady).toBe(false);
+      await flushPromises();
+      await flushPromises();
+      expect(store.activeRun?.id).toBe("run_B");
+
+      // C's HTTP accept arrives late: it must NOT overwrite the
+      // discovery-elected owner B.
+      resolvePrompt({
+        reused: false,
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestId: store.currentDraftRequestId!,
+        message: { id: "msg_C", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "prompt C after foreign B", createdAt: "now" },
+        run: { id: "run_C", conversationId: "conv_1", topicId: "top_1", requestMessageId: "msg_C", requestId: "req_C", mode: "explicit", state: "queued", profileRevision: 1, createdAt: "now" },
+        memberTurn: { id: "turn_C", runId: "run_C", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "queued", createdAt: "now" },
+      });
+      await sendCall;
+      await flushPromises();
+      await flushPromises();
+      expect(store.activeRun?.id).toBe("run_B");
+      expect(store.isRunActive).toBe(true);
+      expect(store.topicReady).toBe(true);
+    });
+    it("elects the earlier-queued foreign owner when its event arrives after our accept", async () => {
+      // C-before-B: this tab's C accepted first, foreign B's event arrives
+      // second, but B queued earlier durably. Ownership still goes to B.
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      const runBQueued = {
+        id: "run_B",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_B",
+        requestId: "req_foreign_B",
+        mode: "explicit",
+        state: "queued",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      const { promise: promptPromise, resolve: resolvePrompt } = Promise.withResolvers<unknown>();
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversation.prompt") return promptPromise;
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: [],
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            runs: [runBQueued],
+            activeRunId: "run_B",
+            activeRun: runBQueued,
+          });
+        }
+        if (type === "control.runs.get") {
+          return Promise.resolve({ run: { ...runBQueued, memberTurns: [] } });
+        }
+        return Promise.resolve({});
+      });
+
+      const sendCall = store.sendPrompt("prompt C before foreign B");
+      resolvePrompt({
+        reused: false,
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestId: store.currentDraftRequestId!,
+        message: { id: "msg_C", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "prompt C before foreign B", createdAt: "now" },
+        run: { id: "run_C", conversationId: "conv_1", topicId: "top_1", requestMessageId: "msg_C", requestId: "req_C", mode: "explicit", state: "queued", profileRevision: 1, createdAt: "now" },
+        memberTurn: { id: "turn_C", runId: "run_C", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "queued", createdAt: "now" },
+      });
+      await sendCall;
+      // This tab's accept adopted C first (no owner was tracked). B's WS
+      // event then arrives: the gate stays open while the
+      // authoritative-newcomer check asks runs.list whether B already owns
+      // the Topic — no synchronous close, no blind adopt.
+      expect(store.activeRun?.id).toBe("run_C");
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: { type: "conversation-run-changed", run: runBQueued },
+      } as never);
+      expect(store.activeRun?.id).toBe("run_C");
+      await flushPromises();
+      await flushPromises();
+      expect(store.activeRun?.id).toBe("run_B");
+      expect(store.isRunActive).toBe(true);
+      expect(store.topicReady).toBe(true);
+    });
     it("clears a ghost bot selection when the authoritative list no longer contains it", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
@@ -2007,6 +2168,12 @@ describe("useDirectBotsStore", () => {
       });
 
       const sendCall = store.sendPrompt("Test prompt");
+      // Let the synchronous mint run, then carry this tab's exact draft id on
+      // the WS event: identity is requestId-equality only, so the fixture must
+      // use the minted id (a hardcoded mismatch would be foreign by design).
+      await Promise.resolve();
+      const ownDraftId = store.currentDraftRequestId;
+      expect(ownDraftId).toBeTruthy();
 
       // Before prompt RPC resolves, WebSocket events advance the run to running
       store.applyEvent({
@@ -2019,7 +2186,7 @@ describe("useDirectBotsStore", () => {
             conversationId: "conv_1",
             topicId: "top_1",
             requestMessageId: "m1",
-            requestId: "r1",
+            requestId: ownDraftId,
             mode: "explicit",
             state: "running",
             profileRevision: 1,

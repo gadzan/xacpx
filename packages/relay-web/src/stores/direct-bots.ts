@@ -1068,14 +1068,25 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         newestSeq.value = Math.max(newestSeq.value ?? 0, res.message.seq);
       }
 
+      // An HTTP accept proves the accepted Run is durable — never that it is
+      // the topic-wide owner. A different-id nonterminal Run tracked locally
+      // (adopted via authoritative discovery or an earlier accept) stays the
+      // owner; the accept response only converges transcript + lifecycle, and
+      // ownership is re-confirmed below via authoritative discovery.
+      const acceptOverwritesOwner =
+        !activeRun.value ||
+        activeRun.value.id === res.run.id ||
+        isTerminalRunState(activeRun.value.state);
       // Track active run and member turn without regressing already-advanced state
       const priorRunId = activeRun.value?.id;
       const priorRunActive = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
-      activeRun.value = mergeRun(activeRun.value, res.run);
-      if (res.run.id !== activeRun.value.id) {
-        activeMemberTurn.value = res.memberTurn;
-      } else {
-        activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, res.memberTurn);
+      if (acceptOverwritesOwner) {
+        activeRun.value = mergeRun(activeRun.value, res.run);
+        if (res.run.id !== activeRun.value.id) {
+          activeMemberTurn.value = res.memberTurn;
+        } else {
+          activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, res.memberTurn);
+        }
       }
       // Reused-completed-run accept: the accepted Run row is authoritative
       // for the accepted Run, but a queued next Run may still own the Topic
@@ -1091,7 +1102,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
             void refreshTranscriptOnly(targetInstId, targetConvId, targetTopicId);
           }
         }
-      } else {
+      } else if (acceptOverwritesOwner) {
         const isFreshRun = activeRun.value.id === res.run.id && activeRun.value.id !== priorRunId;
         const existingParts = isFreshRun || (activeRun.value.id === priorRunId && liveTurn.value?.parts.length)
           ? (liveTurn.value?.parts.length ? liveTurn.value.parts : [])
@@ -1112,8 +1123,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           };
         }
       }
-
-      latestPlanRunId.value = res.run.id;
+      // latestPlanRunId follows the tracked owner only: when the accept did
+      // not overwrite (a different-id nonterminal owner stayed), keep the
+      // owner's plan context instead of pointing at the unowned accept row.
+      if (acceptOverwritesOwner) {
+        latestPlanRunId.value = res.run.id;
+      }
     } catch (err: unknown) {
       // WS may already have proved durable accept for this requestId (the
       // run-changed adoption branch converges to success and retires the
@@ -1526,25 +1541,25 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           }
         } else if (!isTerminalRunState(run.state)) {
           // A nonterminal Run this tab does not own appeared for the current
-          // Topic. While a live owner is tracked, stay fenced: the owner may
-          // still be executing ahead of it, and its terminal event hands off
-          // via authoritative discovery. But with no live local owner (absent
-          // or already terminal, e.g. a no-candidate handoff completed and a
-          // foreign Run queued afterwards), the event evidences an unseen
-          // owner: close admission synchronously and re-run authoritative
-          // topic-wide discovery to elect the true owner instead of adopting
-          // blindly (an older queued Run may sort ahead).
+          // Topic. With no live local owner (absent or already terminal, e.g.
+          // a no-candidate handoff completed and a foreign Run queued
+          // afterwards), the event evidences an unseen owner: close admission
+          // synchronously and re-run authoritative topic-wide discovery to
+          // elect the true owner instead of adopting blindly (an older queued
+          // Run may sort ahead). With a live local owner tracked, the owner
+          // may still be executing ahead of it — EXCEPT when the incoming row
+          // is itself the authoritative owner: then fencing would strand B
+          // invisibly behind an optimistic C that HTTP order (not durability)
+          // elected. That check costs one runs.list and runs only in this
+          // narrow window.
+          // WS own identity is the exact draft requestId only. sendPrompt
+          // mints the draft id synchronously before the RPC goes in flight,
+          // so there is no legitimate "in flight but idless" window — a
+          // mismatched requestId is foreign, never own.
           const isOwnDraft =
-            (run.requestId !== "" &&
-              currentDraftRequestId.value !== null &&
-              run.requestId === currentDraftRequestId.value) ||
-            // Pre-accept window: this tab's prompt RPC is in flight but no
-            // draft id exists yet. A nonterminal row for the current Topic is
-            // then plausibly this tab's own Run arriving ahead of its HTTP
-            // accept; adopting it keeps the WS-advanced state the delayed
-            // accept path depends on. (A foreign older-queued Run sorting
-            // ahead is still corrected by discovery on its terminal handoff.)
-            (activeRun.value === null && promptInFlight.value);
+            run.requestId !== "" &&
+            currentDraftRequestId.value !== null &&
+            run.requestId === currentDraftRequestId.value;
           if (
             !isOwnDraft &&
             (!activeRun.value || isTerminalRunState(activeRun.value.state)) &&
@@ -1555,6 +1570,66 @@ export const useDirectBotsStore = defineStore("directBots", () => {
               activeConversationId.value,
               activeTopicId.value,
             );
+          } else if (
+            !isOwnDraft &&
+            activeRun.value &&
+            !isTerminalRunState(activeRun.value.state) &&
+            instanceId.value && activeConversationId.value && activeTopicId.value
+          ) {
+            // Live owner tracked AND a foreign nonterminal row arrived: ask
+            // the authority whether the newcomer already owns the Topic
+            // (C-before-B: our optimistic C is tracked, durable B sorts
+            // ahead). The gate stays as-is until discovery answers — no
+            // synchronous close, no blind adopt.
+            const checkInstId = instanceId.value;
+            const checkConvId = activeConversationId.value;
+            const checkTopicId = activeTopicId.value;
+            const seenRunId = run.id;
+            const checkGeneration = currentSelectionGeneration;
+            const checkDiscoveryId = ++discoverySequence;
+            void (async () => {
+              let listed: { runs: ConversationRunDto[]; activeRunId?: string; activeRun?: ConversationRunDto };
+              try {
+                listed = unwrapRpc(
+                  await api.rpc<{ runs: ConversationRunDto[]; activeRunId?: string; activeRun?: ConversationRunDto }>(checkInstId, MSG.runsList, {
+                    conversationId: checkConvId,
+                    topicId: checkTopicId,
+                  }),
+                );
+              } catch {
+                return;
+              }
+              if (
+                checkGeneration !== currentSelectionGeneration ||
+                checkDiscoveryId !== discoverySequence ||
+                instanceId.value !== checkInstId ||
+                activeConversationId.value !== checkConvId ||
+                activeTopicId.value !== checkTopicId
+              ) {
+                return;
+              }
+              const authoritativeId = listed.activeRun?.id
+                ?? (listed.activeRunId && listed.runs.some((r) => r.id === listed.activeRunId)
+                  ? listed.activeRunId
+                  : undefined);
+              // Adopt only when the authority names THIS event's Run: the
+              // optimistic local owner yields to the durable owner, and any
+              // other outcome leaves fencing (and the gate) untouched.
+              if (
+                authoritativeId === seenRunId &&
+                activeRun.value && activeRun.value.id !== seenRunId &&
+                !isTerminalRunState(activeRun.value.state)
+              ) {
+                const authoritativeRow = listed.activeRun
+                  ?? listed.runs.find((r) => r.id === seenRunId);
+                if (authoritativeRow) {
+                  activeRun.value = mergeRun(null, authoritativeRow);
+                  activeMemberTurn.value = null;
+                  liveTurn.value = null;
+                  latestPlanRunId.value = seenRunId;
+                }
+              }
+            })();
           }
           if (isOwnDraft) {
             activeRun.value = mergeRun(null, run);
