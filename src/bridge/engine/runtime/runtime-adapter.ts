@@ -47,6 +47,50 @@ export type XacpxMcpServers = AcpRuntimeOptions["mcpServers"];
 export type XacpxPermissionRequest = AcpPermissionRequest;
 export type XacpxPermissionDecision = AcpPermissionDecision;
 
+/**
+ * ACP elicitation mode as advertised by upstream. The adapter forwards only
+ * what the daemon truthfully supports; upstream builds client capabilities
+ * from this list (empty ⇒ no `elicitation` capability advertised).
+ */
+export type XacpxElicitationMode = "form" | "url";
+
+/**
+ * Upstream JSON-RPC id of the outer `elicitation/create` request, preserved
+ * exactly (string | number | null per ACP JsonRpcId) — never stringified and
+ * never regenerated.
+ */
+export type XacpxElicitationRequestId = string | number | null;
+
+/** Exact upstream context handed to the elicitation handler. */
+export interface XacpxElicitationContext {
+  requestId: XacpxElicitationRequestId;
+  /** Aborts with the elicitation request itself or its owning prompt turn. */
+  signal: AbortSignal;
+}
+
+/** Raw ACP form-mode `CreateElicitationRequest` — normalized above the adapter. */
+export type XacpxElicitationRequest = unknown;
+
+/**
+ * xacpx-owned elicitation decision. Mirrors the three ACP actions exactly:
+ * `decline` is a user choice, `cancel` is everything else (timeout, abort,
+ * unsupported surface, malformed schema, plugin failure).
+ */
+export type XacpxElicitationResponse =
+  | {
+      action: "accept";
+      content?: Record<string, string | number | boolean | string[]> | null;
+    }
+  | { action: "decline" }
+  | { action: "cancel" };
+
+export interface XacpxElicitationHandler {
+  (
+    request: XacpxElicitationRequest,
+    context: XacpxElicitationContext,
+  ): Promise<XacpxElicitationResponse>;
+}
+
 export interface CreateXacpxRuntimeAdapterOptions {
   /** acpx session store directory — must match xacpx's CLI acpx stateDir. */
   stateDir: string;
@@ -74,6 +118,14 @@ export interface CreateXacpxRuntimeAdapterOptions {
    */
   processLifecycle?: AcpRuntimeOptions["processLifecycle"];
   onPermissionRequest?: (req: import("acpx/runtime").AcpPermissionRequest, ctx: { signal: AbortSignal }) => Promise<import("acpx/runtime").AcpPermissionDecision | undefined>;
+  /**
+   * ACP elicitation modes to advertise to the agent. Empty/undefined means
+   * NO elicitation capability at all — upstream then answers every
+   * `elicitation/create` as unsupported instead of routing to a
+   * `cancel`-only pipeline. Callers pass only what the daemon truthfully
+   * supports (M1: `form`, and only when a real form-capable channel exists).
+   */
+  elicitationModes?: readonly XacpxElicitationMode[];
   mcpServers?: import("acpx/runtime").AcpRuntimeOptions["mcpServers"];
 }
 
@@ -94,7 +146,13 @@ export interface XacpxStartTurnInput {
   handle: XacpxRuntimeSessionHandle;
   text: string;
   attachments?: XacpxTurnAttachment[];
-  onElicitation?: (req: unknown, signal: AbortSignal) => Promise<unknown>;
+  /**
+   * Elicitation handler for this turn. Wrapping is explicit (below): the
+   * upstream handler receives the real ACP request plus its exact
+   * requestId/signal, and the xacpx response maps explicitly onto the ACP
+   * action — never an unchecked cast in either direction.
+   */
+  onElicitation?: XacpxElicitationHandler;
 }
 
 export interface XacpxRuntimeAdapter {
@@ -114,6 +172,36 @@ export interface XacpxRuntimeAdapter {
   raw(): AcpRuntime;
 }
 
+/**
+ * Preserve the upstream JSON-RPC id exactly. ACP JsonRpcId is
+ * string | number | null; anything else at runtime is coerced to null
+ * (an id-less correlation is safer than a fabricated one) and stays visible
+ * downstream instead of being silently replaced.
+ */
+function toXacpxRequestId(requestId: unknown): XacpxElicitationRequestId {
+  if (typeof requestId === "string") return requestId;
+  if (typeof requestId === "number" && Number.isFinite(requestId)) return requestId;
+  if (requestId === null) return null;
+  return null;
+}
+
+/** Map the xacpx decision onto the pinned ACP response shape. */
+function toUpstreamElicitationResponse(
+  response: XacpxElicitationResponse,
+): import("acpx/runtime").AcpElicitationResponse {
+  switch (response.action) {
+    case "accept":
+      return {
+        action: "accept",
+        ...(response.content === undefined ? {} : { content: response.content }),
+      };
+    case "decline":
+      return { action: "decline" };
+    default:
+      return { action: "cancel" };
+  }
+}
+
 export function createXacpxRuntimeAdapter(options: CreateXacpxRuntimeAdapterOptions): XacpxRuntimeAdapter {
   const runtime = createAcpRuntime({
     cwd: process.cwd(),
@@ -127,11 +215,11 @@ export function createXacpxRuntimeAdapter(options: CreateXacpxRuntimeAdapterOpti
     permissionMode: options.permissionMode,
     // B1: child-only overlay for every agent child this Runtime owns.
     ...(options.agentProcessEnv ? { agentProcessEnv: options.agentProcessEnv } : {}),
-    // Without this, upstream answers every agent elicitation with
-    // "unsupported" and the worker/host elicitation pipeline (decision
-    // dispatch, accept mapping) is dead code. Only "form" is enabled: it
-    // is the single mode the daemon elicitation UI can render.
-    elicitationModes: ["form"] as const,
+    // Truthful capability only: the daemon decides which ACP elicitation
+    // modes xacpx can actually render. Empty ⇒ no capability is advertised
+    // and upstream refuses elicitation locally instead of routing to a
+    // pipeline that can only cancel.
+    elicitationModes: [...(options.elicitationModes ?? [])],
     ...(options.nonInteractivePermissions ? { nonInteractivePermissions: options.nonInteractivePermissions } : {}),
     ...(options.onPermissionRequest
       ? { onPermissionRequest: options.onPermissionRequest }
@@ -162,7 +250,26 @@ export function createXacpxRuntimeAdapter(options: CreateXacpxRuntimeAdapterOpti
         ...(attachments && attachments.length > 0 ? { attachments } : {}),
         mode: "prompt",
         requestId: `xacpx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        ...(onElicitation ? { onElicitation: onElicitation as unknown as import("acpx/runtime").AcpElicitationHandler } : {}),
+        // Explicit adapter boundary: upstream ACP handler ← xacpx handler.
+        // Upstream owns the real JSON-RPC id (`context.requestId`) and the
+        // merged abort signal (`context.signal`); xacpx only maps the
+        // incoming request identity and the outgoing action. No
+        // `as unknown as AcpElicitationHandler` cast, so neither side can
+        // silently drift in shape.
+        ...(onElicitation
+          ? {
+              onElicitation: async (
+                req: import("acpx/runtime").AcpElicitationRequest,
+                context: { requestId: import("acpx/runtime").AcpElicitationContext["requestId"]; signal: AbortSignal },
+              ): Promise<import("acpx/runtime").AcpElicitationResponse> => {
+                const response = await onElicitation(req, {
+                  requestId: toXacpxRequestId(context.requestId),
+                  signal: context.signal,
+                });
+                return toUpstreamElicitationResponse(response);
+              },
+            }
+          : {}),
       });
       return {
         requestId: turn.requestId,
