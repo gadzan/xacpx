@@ -1543,7 +1543,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     }
 
     if (event.kind !== "control-event") return;
-    if (event.instanceId !== instanceId.value) return;
     const e = event.event;
 
     // Catalog invalidation events
@@ -1575,6 +1574,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       })();
       return;
     }
+
+    // Instance-scoped conversation/turn events: only for the currently selected instance
+    if (event.instanceId !== instanceId.value) return;
 
     if (e.type === "conversations-changed") {
       void loadConversations(event.instanceId, selectedBotId.value ? { botId: selectedBotId.value } : undefined);

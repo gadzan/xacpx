@@ -66,6 +66,79 @@ describe("Direct Bot Components", () => {
       expect(wrapper.find('input[name="cwd"]').exists()).toBe(false);
     });
 
+    it("renders adapter-advertised effort choices (including xhigh) and omits unadvertised low/max", async () => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "reviewer", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+        } as never,
+      ];
+
+      // Mount with advertised efforts: ["medium", "high", "xhigh"]
+      const wrapper = mount(BotDialog, {
+        props: {
+          instanceId: "i1",
+          instanceName: "Local",
+          advertisedEfforts: ["medium", "high", "xhigh"],
+        },
+        global: {
+          plugins: [i18n],
+        },
+      });
+
+      await flushPromises();
+
+      const effortSelect = wrapper.find("select#bot-effort");
+      expect(effortSelect.exists()).toBe(true);
+      const options = effortSelect.findAll("option").map((o) => o.attributes("value"));
+      // Must include Default, medium, high, and xhigh
+      expect(options).toEqual(["", "medium", "high", "xhigh"]);
+      // Unadvertised low and max must NOT be present
+      expect(options).not.toContain("low");
+      expect(options).not.toContain("max");
+    });
+
+    it("renders open effort input with datalist when no advertised efforts are provided", async () => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "reviewer", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+        } as never,
+      ];
+
+      const wrapper = mount(BotDialog, {
+        props: {
+          instanceId: "i1",
+          instanceName: "Local",
+        },
+        global: {
+          plugins: [i18n],
+        },
+      });
+
+      await flushPromises();
+
+      const effortInput = wrapper.find("input#bot-effort");
+      expect(effortInput.exists()).toBe(true);
+      expect(effortInput.attributes("list")).toBe("bot-effort-options");
+      const datalist = wrapper.find("datalist#bot-effort-options");
+      expect(datalist.exists()).toBe(true);
+      // Not a rigid select locking the user to 4 values
+      expect(wrapper.find("select#bot-effort").exists()).toBe(false);
+    });
+
     it("lists only configured agent names, never raw catalog drivers", async () => {
       const instances = useInstancesStore();
       instances.instances = [

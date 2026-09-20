@@ -11,6 +11,7 @@ const props = defineProps<{
   instanceId: string;
   instanceName: string;
   bot?: BotDetailDto | BotSummaryDto;
+  advertisedEfforts?: string[];
 }>();
 
 const emit = defineEmits<{
@@ -56,6 +57,19 @@ const enabled = ref(props.bot?.enabled ?? true);
 const submitting = ref(false);
 const errorMessage = ref<string | null>(null);
 
+
+// Effort options: when advertised by the adapter capability source, present only
+// the advertised options (preserving any pre-existing custom effort on the Bot).
+// If no advertised choices are available (e.g. before runtime exists), provide
+// an open text input with datalist suggestions rather than an inaccurate closed enum.
+const hasAdvertisedEfforts = computed(() => Array.isArray(props.advertisedEfforts) && props.advertisedEfforts.length > 0);
+const availableEffortOptions = computed(() => {
+  const list = [...(props.advertisedEfforts ?? [])];
+  if (effort.value && !list.includes(effort.value)) {
+    list.push(effort.value);
+  }
+  return list;
+});
 // Available agents from instance: only configured agent NAMES are valid Bot
 // identities. The driver catalog lists installable drivers, but submitting an
 // unconfigured driver fails backend validation (agent_not_registered), so it
@@ -313,19 +327,33 @@ async function submit(): Promise<void> {
               {{ $t("bot.fields.effort") }}
             </label>
             <select
+              v-if="hasAdvertisedEfforts"
               id="bot-effort"
               v-model="effort"
               class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none transition-colors focus:border-accent"
             >
               <option value="">{{ $t("bot.fields.effortDefault") }}</option>
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
-              <option value="max">max</option>
+              <option v-for="opt in availableEffortOptions" :key="opt" :value="opt">{{ opt }}</option>
             </select>
+            <template v-else>
+              <input
+                id="bot-effort"
+                v-model="effort"
+                list="bot-effort-options"
+                type="text"
+                :placeholder="$t('bot.fields.effortDefault')"
+                class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none transition-colors focus:border-accent"
+              />
+              <datalist id="bot-effort-options">
+                <option value="low" />
+                <option value="medium" />
+                <option value="high" />
+                <option value="xhigh" />
+                <option value="max" />
+              </datalist>
+            </template>
           </div>
         </div>
-
         <!-- Avatar & Status -->
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 items-center">
           <div>

@@ -2488,6 +2488,45 @@ describe("useDirectBotsStore", () => {
       expect(store.botDetails["inst_1:bot_gone"]).toBeUndefined();
       expect(localStorage.getItem("xrelay.selectedBot")).toBeNull();
     });
+    it("updates background instance bots on bots-changed even when another instance is selected in the store", async () => {
+      const store = useDirectBotsStore();
+      // Store currently has inst_1 selected
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_2"] = [
+        { id: "bot_old", name: "Old", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      store.botsLoaded["inst_2"] = true;
+
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (instId === "inst_2" && type === "control.bots.list") {
+          return Promise.resolve({
+            bots: [
+              { id: "bot_old", name: "Old", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+              { id: "bot_new", name: "New", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+            ],
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      // bots-changed arrives for background instance inst_2
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_2",
+        event: { type: "bots-changed" },
+      } as never);
+      await flushPromises();
+
+      // inst_2 bots list is refreshed
+      expect(store.botsByInstance["inst_2"]).toHaveLength(2);
+      expect(store.botsByInstance["inst_2"].map((b) => b.id)).toEqual(["bot_old", "bot_new"]);
+      // inst_1 selection is unaffected
+      expect(store.instanceId).toBe("inst_1");
+      expect(store.selectedBotId).toBe("bot_1");
+    });
     it("reconnect drops a ghost bot instead of restoring its pane", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";

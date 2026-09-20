@@ -93,60 +93,64 @@ export class BotRuntimeManager {
     }
     this.assertBindingIdentity(snapshot);
     await this.bots.runLifecycle(snapshot.botId, async () => {
-      const live = this.state.bot_runtime_bindings[bindingId];
-      if (!live || live.scope !== "bot-direct") {
-        return;
-      }
-      this.assertBindingIdentity(live);
+      await this.releaseDirectBindingInternal(snapshot, bindingId);
+    });
+  }
+
+  private async releaseDirectBindingInternal(snapshot: BotRuntimeBinding, bindingId: string): Promise<void> {
+    const live = this.state.bot_runtime_bindings[bindingId];
+    if (!live || live.scope !== "bot-direct") {
+      return;
+    }
+    this.assertBindingIdentity(live);
+    if (
+      live.botId !== snapshot.botId
+      || live.conversationId !== snapshot.conversationId
+      || live.topicId !== snapshot.topicId
+      || live.sessionAlias !== snapshot.sessionAlias
+      || live.logicalSessionId !== snapshot.logicalSessionId
+    ) {
+      throw this.bindingConflict(live.botId, live);
+    }
+    const byAlias = this.sessions.getLogicalSessionRecord(live.sessionAlias);
+    const byId = this.sessions.getLogicalSessionById(live.logicalSessionId);
+    if (byAlias || byId) {
       if (
-        live.botId !== snapshot.botId
-        || live.conversationId !== snapshot.conversationId
-        || live.topicId !== snapshot.topicId
-        || live.sessionAlias !== snapshot.sessionAlias
-        || live.logicalSessionId !== snapshot.logicalSessionId
+        !byAlias
+        || !byId
+        || byAlias.logical_session_id !== byId.logical_session_id
+        || byAlias.alias !== byId.alias
       ) {
         throw this.bindingConflict(live.botId, live);
       }
-      const byAlias = this.sessions.getLogicalSessionRecord(live.sessionAlias);
-      const byId = this.sessions.getLogicalSessionById(live.logicalSessionId);
-      if (byAlias || byId) {
-        if (
-          !byAlias
-          || !byId
-          || byAlias.logical_session_id !== byId.logical_session_id
-          || byAlias.alias !== byId.alias
-        ) {
-          throw this.bindingConflict(live.botId, live);
-        }
-        this.assertBindingOwnsSession(live, byAlias);
-        await this.releaseOwnedSession(live.sessionAlias);
-      }
-      const remaining = this.state.bot_runtime_bindings[bindingId];
+      this.assertBindingOwnsSession(live, byAlias);
+      await this.releaseOwnedSession(live.sessionAlias);
+    }
+    const remaining = this.state.bot_runtime_bindings[bindingId];
+    if (
+      !remaining
+      || remaining.sessionAlias !== live.sessionAlias
+      || remaining.logicalSessionId !== live.logicalSessionId
+    ) {
+      return;
+    }
+    await this.stateMutex.run(async () => {
+      const current = this.state.bot_runtime_bindings[bindingId];
       if (
-        !remaining
-        || remaining.sessionAlias !== live.sessionAlias
-        || remaining.logicalSessionId !== live.logicalSessionId
+        !current
+        || current.sessionAlias !== live.sessionAlias
+        || current.logicalSessionId !== live.logicalSessionId
       ) {
         return;
       }
-      await this.stateMutex.run(async () => {
-        const current = this.state.bot_runtime_bindings[bindingId];
-        if (
-          !current
-          || current.sessionAlias !== live.sessionAlias
-          || current.logicalSessionId !== live.logicalSessionId
-        ) {
-          return;
-        }
-        const next = structuredClone(this.state);
-        delete next.bot_runtime_bindings[bindingId];
-        if (typeof this.stateStore.saveNow === "function") {
-          await this.stateStore.saveNow(next);
-        } else {
-          await this.stateStore.save(next);
-        }
-        replaceRuntimeState(this.state, next);
-      });
+      const next = structuredClone(this.state);
+      delete next.bot_runtime_bindings[bindingId];
+      if (typeof this.stateStore.saveNow === "function") {
+        await this.stateStore.saveNow(next);
+      } else {
+        await this.stateStore.save(next);
+      }
+      replaceRuntimeState(this.state, next);
     });
   }
 
@@ -164,14 +168,28 @@ export class BotRuntimeManager {
     const scopedId = createScopedDirectBindingId(scope.conversationId, scope.topicId, bot.id);
     const existing = this.findScopedBinding(scope.conversationId, scope.topicId, bot.id);
     if (existing && this.bindingSessionIsLive(existing)) {
-      await this.alignSessionRuntime(existing, input.execution ?? bot);
-      return existing;
+      const session = this.sessions.getLogicalSessionRecord(existing.sessionAlias)
+        ?? this.sessions.getLogicalSessionById(existing.logicalSessionId);
+      const targetEffort = input.execution?.effort ?? bot.effort;
+      if (session && session.effort && !targetEffort) {
+        await this.releaseDirectBindingInternal(existing, existing.id);
+      } else {
+        await this.alignSessionRuntime(existing, input.execution ?? bot);
+        return existing;
+      }
     }
     const adopted = this.findAdoptableLegacyBinding(bot.id, scope);
     if (adopted && this.bindingSessionIsLive(adopted)) {
-      await this.alignSessionRuntime(adopted, input.execution ?? bot);
-      await this.afterDirectSnapshot?.(bot);
-      return await this.publishAdoptedBinding(bot, adopted, scopedId, scope);
+      const session = this.sessions.getLogicalSessionById(adopted.logicalSessionId)
+        ?? this.findOwnedSession(adopted.id);
+      const targetEffort = input.execution?.effort ?? bot.effort;
+      if (session && session.effort && !targetEffort) {
+        await this.releaseDirectBindingInternal(adopted, adopted.id);
+      } else {
+        await this.alignSessionRuntime(adopted, input.execution ?? bot);
+        await this.afterDirectSnapshot?.(bot);
+        return await this.publishAdoptedBinding(bot, adopted, scopedId, scope);
+      }
     }
     await this.afterDirectSnapshot?.(bot);
     const session = await this.ensureOwnedSession(bot, scopedId, scope, input.execution);
