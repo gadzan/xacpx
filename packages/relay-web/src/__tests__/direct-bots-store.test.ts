@@ -1385,6 +1385,123 @@ describe("useDirectBotsStore", () => {
         expect.anything(),
       );
     });
+    it("rediscovers instead of blind-adopting a foreign Run when the local owner is null", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      // Reconnect gap: durable B queued offline, then C queued while the tab
+      // was still reconciling. The C event must NOT blind-adopt: the older
+      // queued B sorts ahead, so only authoritative discovery elects.
+      const runBQueued = {
+        id: "run_B",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_B",
+        requestId: "req_foreign_B",
+        mode: "explicit",
+        state: "queued",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      const runCQueued = {
+        id: "run_C",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_C",
+        requestId: "req_foreign_C",
+        mode: "explicit",
+        state: "queued",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      mockRpc.mockImplementation((instId: string, type: string, payload?: unknown) => {
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: [],
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            runs: [runBQueued, runCQueued],
+            activeRunId: "run_B",
+            activeRun: runBQueued,
+          });
+        }
+        if (type === "control.runs.get") {
+          return Promise.resolve({ run: { ...runBQueued, memberTurns: [] } });
+        }
+        return Promise.resolve({});
+      });
+
+      expect(store.activeRun).toBeNull();
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: { type: "conversation-run-changed", run: runCQueued },
+      } as never);
+      // No blind adopt: the gate closes synchronously while discovery elects.
+      expect(store.activeRun).toBeNull();
+      expect(store.topicReady).toBe(false);
+      await flushPromises();
+      await flushPromises();
+      // Authoritative discovery elects the older queued B, not the C row the
+      // event carried — and the composer stays blocked behind B.
+      expect(store.activeRun?.id).toBe("run_B");
+      expect(store.isRunActive).toBe(true);
+      expect(store.topicReady).toBe(true);
+      await store.sendPrompt("prompt D while B owns the topic");
+      expect(store.promptError).toContain("already in progress");
+      expect(mockRpc).not.toHaveBeenCalledWith(
+        "inst_1",
+        "control.conversation.prompt",
+        expect.anything(),
+      );
+    });
+    it("retires the draft identity when the own prompt arrives with a null owner", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      store.currentDraftRequestId = "req_mine";
+      store.lastPromptText = "my prompt";
+      store.promptInFlight = true;
+      const ownRun = {
+        id: "run_mine",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_mine",
+        requestId: "req_mine",
+        mode: "explicit",
+        state: "queued",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      // No RPC needed: the WS durable-accept path adopts synchronously.
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: { type: "conversation-run-changed", run: ownRun },
+      } as never);
+      expect(store.activeRun?.id).toBe("run_mine");
+      expect(store.currentDraftRequestId).toBeNull();
+      expect(store.lastPromptText).toBe("");
+      expect(store.promptError).toBeNull();
+    });
     it("does not let pre-terminal B stream events steal ownership before handoff discovery", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
@@ -1503,6 +1620,122 @@ describe("useDirectBotsStore", () => {
       expect(store.activeRun?.id).toBe("run_B");
       expect(store.isRunActive).toBe(true);
       expect(store.topicReady).toBe(true);
+    });
+    it("rediscovers on reconnect when a null owner meets a foreign Run before discovery", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      // Reconnect gap: B queued offline (unseen), then C queued while the tab
+      // was still inside reconcile (loadBots/loadBotDetail/loadTopics). The C
+      // event must NOT blind-adopt: older queued B sorts ahead, so only
+      // authoritative discovery elects.
+      const runBQueued = {
+        id: "run_B",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_B",
+        requestId: "req_foreign_B",
+        mode: "explicit",
+        state: "queued",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      const runCQueued = {
+        id: "run_C",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_C",
+        requestId: "req_foreign_C",
+        mode: "explicit",
+        state: "queued",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      let resolveBots!: (value: unknown) => void;
+      const botsGate = new Promise<unknown>((resolve) => { resolveBots = resolve; });
+      let resolveDetail!: (value: unknown) => void;
+      const detailGate = new Promise<unknown>((resolve) => { resolveDetail = resolve; });
+      let resolveTopics!: (value: unknown) => void;
+      const topicsGate = new Promise<unknown>((resolve) => { resolveTopics = resolve; });
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.bots.list") return botsGate;
+        if (type === "control.bots.get") return detailGate;
+        if (type === "control.topics.list") return topicsGate;
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: [],
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            runs: [runBQueued, runCQueued],
+            activeRunId: "run_B",
+            activeRun: runBQueued,
+          });
+        }
+        if (type === "control.runs.get") {
+          return Promise.resolve({ run: { ...runBQueued, memberTurns: [] } });
+        }
+        return Promise.resolve({});
+      });
+
+      expect(store.activeRun).toBeNull();
+      expect(store.topicReady).toBe(true);
+      const reconcileCall = store.reconcileOnReconnect();
+      await flushPromises();
+      // Reconcile is parked inside loadBots; the foreign C event arrives
+      // before any discovery ran. It must close the gate without adopting C.
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: { type: "conversation-run-changed", run: runCQueued },
+      } as never);
+      expect(store.activeRun).toBeNull();
+      expect(store.topicReady).toBe(false);
+      resolveBots({
+        bots: [
+          { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        ],
+      });
+      await flushPromises();
+      resolveDetail({
+        bot: {
+          id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo",
+          enabled: true, profileRevision: 1, createdAt: "now", updatedAt: "now",
+        },
+      });
+      await flushPromises();
+      resolveTopics({
+        topics: [
+          { id: "top_1", conversationId: "conv_1", title: "Default", status: "active", createdAt: "now", updatedAt: "now" },
+        ],
+      });
+      await reconcileCall;
+      await flushPromises();
+      await flushPromises();
+      // Authoritative discovery elects the older queued B — never the C row
+      // the event carried — and the composer stays blocked behind B.
+      expect(store.activeRun?.id).toBe("run_B");
+      expect(store.isRunActive).toBe(true);
+      expect(store.topicReady).toBe(true);
+      await store.sendPrompt("prompt D while B owns the topic");
+      expect(store.promptError).toContain("already in progress");
+      expect(mockRpc).not.toHaveBeenCalledWith(
+        "inst_1",
+        "control.conversation.prompt",
+        expect.anything(),
+      );
     });
     it("clears a ghost bot selection when the authoritative list no longer contains it", async () => {
       const store = useDirectBotsStore();

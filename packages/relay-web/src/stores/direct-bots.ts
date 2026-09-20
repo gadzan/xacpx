@@ -1492,7 +1492,16 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     if (e.type === "conversation-run-changed") {
       const run = e.run;
       if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
-        if (!activeRun.value || activeRun.value.id === run.id) {
+        // Same-owner merge, plus null-owner terminal rows (they carry no
+        // ownership claim). A null owner with a *nonterminal* row must NOT
+        // blind-adopt here: an older queued Run may sort ahead, and the later
+        // authoritative discovery could no longer correct it past the
+        // live-owner fence. Those rows fall through to the draft / foreign
+        // branches below instead.
+        if (
+          (activeRun.value && activeRun.value.id === run.id) ||
+          (!activeRun.value && isTerminalRunState(run.state))
+        ) {
           // Only a locally-tracked nonterminal Run retiring on THIS event is
           // a terminal handoff: it closes admission and re-discovers the next
           // owner. A repeated/confirmatory terminal row for an already-terminal
@@ -1526,6 +1535,69 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           // topic-wide discovery to elect the true owner instead of adopting
           // blindly (an older queued Run may sort ahead).
           const isOwnDraft =
+            (run.requestId !== "" &&
+              currentDraftRequestId.value !== null &&
+              run.requestId === currentDraftRequestId.value) ||
+            // Pre-accept window: this tab's prompt RPC is in flight but no
+            // draft id exists yet. A nonterminal row for the current Topic is
+            // then plausibly this tab's own Run arriving ahead of its HTTP
+            // accept; adopting it keeps the WS-advanced state the delayed
+            // accept path depends on. (A foreign older-queued Run sorting
+            // ahead is still corrected by discovery on its terminal handoff.)
+            (activeRun.value === null && promptInFlight.value);
+          if (
+            !isOwnDraft &&
+            (!activeRun.value || isTerminalRunState(activeRun.value.state)) &&
+            instanceId.value && activeConversationId.value && activeTopicId.value
+          ) {
+            void rediscoverAfterTerminal(
+              instanceId.value,
+              activeConversationId.value,
+              activeTopicId.value,
+            );
+          }
+          if (isOwnDraft) {
+            activeRun.value = mergeRun(null, run);
+            activeMemberTurn.value = null;
+            liveTurn.value = null;
+            // This Run exists, so the hidden direct runtime materialized (no
+            // bots-changed covers it). Converge the lifecycle projection now.
+            if (instanceId.value && selectedBotId.value) {
+              markBotHasRuntime(instanceId.value, selectedBotId.value);
+            }
+            // The WS proved the submission is durably accepted, so retire the
+            // retry identity now: a late HTTP catch cannot rewrite failure and
+            // Retry cannot re-send the same requestId. promptInFlight stays true
+            // until the HTTP settles, still reflecting the open request.
+            promptError.value = null;
+            currentDraftRequestId.value = null;
+            lastPromptText.value = "";
+          }
+        }
+      }
+      return;
+    }
+    if (e.type === "member-turn-started") {
+      const { run, memberTurn } = e;
+      if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
+        // Same split as run-changed: same-owner merge, plus null-owner
+        // terminal rows (no ownership claim). A null owner with a nonterminal
+        // row falls through: own drafts adopt immediately, foreign rows
+        // re-run authoritative discovery instead of blind-adopting ahead of
+        // an older queued Run.
+        if (
+          (activeRun.value && activeRun.value.id === run.id) ||
+          (!activeRun.value && isTerminalRunState(run.state))
+        ) {
+          activeRun.value = mergeRun(activeRun.value, run);
+          activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, memberTurn);
+          // This Run exists, so the hidden direct runtime materialized (no
+          // bots-changed covers it). Converge the lifecycle projection now.
+          if (instanceId.value && selectedBotId.value) {
+            markBotHasRuntime(instanceId.value, selectedBotId.value);
+          }
+        } else if (!isTerminalRunState(run.state)) {
+          const isOwnDraft =
             run.requestId !== "" &&
             currentDraftRequestId.value !== null &&
             run.requestId === currentDraftRequestId.value;
@@ -1542,34 +1614,16 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           }
           if (isOwnDraft) {
             activeRun.value = mergeRun(null, run);
-            activeMemberTurn.value = null;
-            liveTurn.value = null;
-            latestPlanRunId.value = run.id;
-            // The WS proved the submission is durably accepted, so retire the
-            // retry identity now: a late HTTP catch cannot rewrite failure and
-            // Retry cannot re-send the same requestId. promptInFlight stays true
-            // until the HTTP settles, still reflecting the open request.
+            activeMemberTurn.value = mergeMemberTurn(null, memberTurn);
+            if (instanceId.value && selectedBotId.value) {
+              markBotHasRuntime(instanceId.value, selectedBotId.value);
+            }
             promptError.value = null;
             currentDraftRequestId.value = null;
             lastPromptText.value = "";
+          } else {
+            return;
           }
-        }
-      }
-      return;
-    }
-    if (e.type === "member-turn-started") {
-      const { run, memberTurn } = e;
-      if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
-        if (!activeRun.value || activeRun.value.id === run.id) {
-          activeRun.value = mergeRun(activeRun.value, run);
-          activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, memberTurn);
-          // This Run exists, so the hidden direct runtime materialized (no
-          // bots-changed covers it). Converge the lifecycle projection now.
-          if (instanceId.value && selectedBotId.value) {
-            markBotHasRuntime(instanceId.value, selectedBotId.value);
-          }
-        } else {
-          return;
         }
         if (!liveTurn.value || activeRun.value?.id === run.id) {
           liveTurn.value = {
