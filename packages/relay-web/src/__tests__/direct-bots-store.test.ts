@@ -2173,6 +2173,154 @@ describe("useDirectBotsStore", () => {
       expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.runs.cancel", { runId: "run_B" });
       expect(store.activeRun?.state).toBe("cancelled");
     });
+    it("preserves ownership uncertainty across HTTP accept when foreign event made ownership uncertain", async () => {
+      // sendPrompt(C), HTTP deferred
+      // -> own run-changed(C) adopts C
+      // -> foreign B(running) arrives
+      // -> runs.list deferred
+      // -> ownershipUncertain=true
+      // resolve HTTP C
+      // -> ownershipUncertain MUST still be true
+      // cancelCurrentRun()
+      // -> MUST NOT call runs.cancel(C)
+      // resolve runs.list => B
+      // -> ownershipUncertain=false
+      // -> activeRun=B
+      // cancelCurrentRun()
+      // -> runs.cancel({ runId: "run_B" })
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+
+      const runBRunning = {
+        id: "run_B",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_B",
+        requestId: "req_foreign_B",
+        mode: "explicit" as const,
+        state: "running" as const,
+        profileRevision: 1,
+        createdAt: "now",
+      };
+
+      const { promise: promptPromise, resolve: resolvePrompt } = Promise.withResolvers<unknown>();
+      const { promise: runsListPromise, resolve: resolveRunsList } = Promise.withResolvers<unknown>();
+
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversation.prompt") {
+          return promptPromise;
+        }
+        if (type === "control.runs.list") {
+          return runsListPromise;
+        }
+        if (type === "control.runs.cancel") {
+          return Promise.resolve({ ok: true, run: { ...runBRunning, state: "cancelled", memberTurns: [] } });
+        }
+        return Promise.resolve({});
+      });
+
+      // 1. sendPrompt(C) starts, HTTP is deferred
+      const sendPromise = store.sendPrompt("Help me debug");
+      const reqId = store.currentDraftRequestId;
+      expect(reqId).toBeTruthy();
+
+      const runCQueued = {
+        id: "run_C",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_C",
+        requestId: reqId!,
+        mode: "explicit" as const,
+        state: "queued" as const,
+        profileRevision: 1,
+        createdAt: "now",
+      };
+
+      // 2. Own WS run-changed(C) arrives before HTTP response
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: { type: "conversation-run-changed", run: runCQueued },
+      } as never);
+      expect(store.activeRun?.id).toBe("run_C");
+      expect(store.ownershipUncertain).toBe(false);
+
+      // 3. Foreign B(running) arrives while C is local owner
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: { type: "conversation-run-changed", run: runBRunning },
+      } as never);
+
+      // Discovery is now pending, ownership is uncertain!
+      expect(store.ownershipUncertain).toBe(true);
+      expect(store.ownerUnconfirmed).toBe(true);
+
+      // 4. HTTP accept for C resolves
+      resolvePrompt({
+        reused: false,
+        message: {
+          id: "msg_C",
+          conversationId: "conv_1",
+          topicId: "top_1",
+          seq: 1,
+          role: "human",
+          content: "Help me debug",
+          createdAt: "now",
+        },
+        run: runCQueued,
+        memberTurn: {
+          id: "turn_C",
+          runId: "run_C",
+          conversationId: "conv_1",
+          topicId: "top_1",
+          botId: "bot_1",
+          batch: 1,
+          attempt: 1,
+          origin: "human",
+          state: "queued",
+          createdAt: "now",
+        },
+      });
+      await sendPromise;
+      await flushPromises();
+
+      // HTTP accept MUST NOT have cleared ownershipUncertain!
+      expect(store.ownershipUncertain).toBe(true);
+      expect(store.ownerUnconfirmed).toBe(true);
+
+      // 5. User clicks Stop while uncertain: MUST NOT cancel C!
+      await store.cancelCurrentRun();
+      expect(mockRpc).not.toHaveBeenCalledWith(expect.anything(), "control.runs.cancel", expect.anything());
+      expect(store.activeRun?.id).toBe("run_C");
+
+      // 6. Now runs.list resolves with authoritative owner B
+      resolveRunsList({
+        conversationId: "conv_1",
+        topicId: "top_1",
+        runs: [runBRunning, runCQueued],
+        activeRunId: "run_B",
+        activeRun: runBRunning,
+      });
+      await flushPromises();
+
+      // Discovery settled: uncertainty cleared, adopted B!
+      expect(store.ownershipUncertain).toBe(false);
+      expect(store.ownerUnconfirmed).toBe(false);
+      expect(store.activeRun?.id).toBe("run_B");
+      expect(store.activeRun?.state).toBe("running");
+
+      // 7. Stop now cancels B!
+      await store.cancelCurrentRun();
+      expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.runs.cancel", { runId: "run_B" });
+      expect(store.activeRun?.state).toBe("cancelled");
+    });
     it("clears a ghost bot selection when the authoritative list no longer contains it", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";

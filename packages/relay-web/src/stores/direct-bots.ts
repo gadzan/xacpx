@@ -1103,7 +1103,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, res.memberTurn);
         }
       }
-      ownershipUncertain.value = false;
       // Null from here on means the accept did not overwrite: a different-id
       // nonterminal owner stayed tracked. Its HUD/discovery branches below
       // only run on the adopted owner — never on the unowned accept row.
