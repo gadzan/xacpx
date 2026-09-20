@@ -1898,6 +1898,151 @@ describe("useDirectBotsStore", () => {
       expect(store.isRunActive).toBe(true);
       expect(store.topicReady).toBe(true);
     });
+    it("adopts authoritative owner B when successive foreign events arrive and B is not the trigger", async () => {
+      // Successive foreign newcomers:
+      // Local optimistic owner = C.
+      // Foreign event B (running) arrives -> runs.list #1 deferred.
+      // Foreign event D (queued) arrives -> runs.list #2 deferred.
+      // Both runs.list calls return B as the authoritative activeRun.
+      // Resolving #2 adopts B (discovery decides, event trigger does not).
+      // Stale #1 resolving later has no effect.
+      // Subsequent member-turn-started(B) streams normally, and Stop targets B.
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+
+      const runC = {
+        id: "run_C",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_C",
+        requestId: "req_C",
+        mode: "explicit" as const,
+        state: "running" as const,
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      const runBRunning = {
+        id: "run_B",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_B",
+        requestId: "req_foreign_B",
+        mode: "explicit" as const,
+        state: "running" as const,
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      const runDQueued = {
+        id: "run_D",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_D",
+        requestId: "req_foreign_D",
+        mode: "explicit" as const,
+        state: "queued" as const,
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      const memberBStarted = {
+        id: "turn_B",
+        runId: "run_B",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        botId: "bot_1",
+        batch: 1,
+        attempt: 1,
+        origin: "human" as const,
+        state: "running" as const,
+        createdAt: "now",
+      };
+
+      store.activeRun = runC;
+
+      const { promise: runsList1Promise, resolve: resolveList1 } = Promise.withResolvers<unknown>();
+      const { promise: runsList2Promise, resolve: resolveList2 } = Promise.withResolvers<unknown>();
+      let listCallCount = 0;
+
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.runs.list") {
+          listCallCount += 1;
+          if (listCallCount === 1) return runsList1Promise;
+          return runsList2Promise;
+        }
+        if (type === "control.runs.cancel") {
+          return Promise.resolve({ ok: true, run: { ...runBRunning, state: "cancelled", memberTurns: [] } });
+        }
+        return Promise.resolve({});
+      });
+
+      // 1. Event B (running) arrives -> runs.list #1 deferred
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: { type: "conversation-run-changed", run: runBRunning },
+      } as never);
+      expect(store.activeRun?.id).toBe("run_C");
+      expect(listCallCount).toBe(1);
+
+      // 2. Event D (queued) arrives -> runs.list #2 deferred
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: { type: "conversation-run-changed", run: runDQueued },
+      } as never);
+      expect(store.activeRun?.id).toBe("run_C");
+      expect(listCallCount).toBe(2);
+
+      // 3. Resolve runs.list #2 first: authoritative owner on backend is B
+      resolveList2({
+        conversationId: "conv_1",
+        topicId: "top_1",
+        runs: [runBRunning, runDQueued],
+        activeRunId: "run_B",
+        activeRun: runBRunning,
+      });
+      await flushPromises();
+      await flushPromises();
+
+      // Must adopt B! Event trigger was D, but discovery says owner is B.
+      expect(store.activeRun?.id).toBe("run_B");
+      expect(store.activeRun?.state).toBe("running");
+
+      // 4. Resolve runs.list #1 later: stale, has no effect
+      resolveList1({
+        conversationId: "conv_1",
+        topicId: "top_1",
+        runs: [runBRunning, runDQueued],
+        activeRunId: "run_B",
+        activeRun: runBRunning,
+      });
+      await flushPromises();
+      expect(store.activeRun?.id).toBe("run_B");
+
+      // 5. Subsequent member-turn-started(B) streams normally
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "member-turn-started",
+          run: runBRunning,
+          memberTurn: memberBStarted,
+        },
+      } as never);
+      expect(store.activeRun?.id).toBe("run_B");
+      expect(store.activeMemberTurn?.id).toBe("turn_B");
+      expect(store.liveTurn?.status).toBe("working");
+
+      // 6. Stop targets B with exact runId
+      await store.cancelCurrentRun();
+      expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.runs.cancel", { runId: "run_B" });
+      expect(store.activeRun?.state).toBe("cancelled");
+    });
     it("clears a ghost bot selection when the authoritative list no longer contains it", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";

@@ -1591,7 +1591,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
             const checkInstId = instanceId.value;
             const checkConvId = activeConversationId.value;
             const checkTopicId = activeTopicId.value;
-            const seenRunId = run.id;
             const checkGeneration = currentSelectionGeneration;
             const checkDiscoveryId = ++discoverySequence;
             void (async () => {
@@ -1619,21 +1618,28 @@ export const useDirectBotsStore = defineStore("directBots", () => {
                 ?? (listed.activeRunId && listed.runs.some((r) => r.id === listed.activeRunId)
                   ? listed.activeRunId
                   : undefined);
-              // Adopt only when the authority names THIS event's Run: the
-              // optimistic local owner yields to the durable owner, and any
-              // other outcome leaves fencing (and the gate) untouched.
+              // Discovery decides, event does not: when the latest valid check
+              // reports an authoritative nonterminal owner that differs from
+              // our local activeRun, adopt it. Do NOT bind adoption to the
+              // event's seenRunId — an earlier queued Run (e.g. B) must still be
+              // adopted even if a later foreign event (e.g. D) was the one that
+              // completed discovery.
               if (
-                authoritativeId === seenRunId &&
-                activeRun.value && activeRun.value.id !== seenRunId &&
+                authoritativeId &&
+                activeRun.value &&
+                activeRun.value.id !== authoritativeId &&
                 !isTerminalRunState(activeRun.value.state)
               ) {
                 const authoritativeRow = listed.activeRun
-                  ?? listed.runs.find((r) => r.id === seenRunId);
-                if (authoritativeRow) {
+                  ?? listed.runs.find((r) => r.id === authoritativeId);
+                if (authoritativeRow && !isTerminalRunState(authoritativeRow.state)) {
                   activeRun.value = mergeRun(null, authoritativeRow);
                   activeMemberTurn.value = null;
                   liveTurn.value = null;
-                  latestPlanRunId.value = seenRunId;
+                  latestPlanRunId.value = authoritativeId;
+                  if (instanceId.value && selectedBotId.value) {
+                    markBotHasRuntime(instanceId.value, selectedBotId.value);
+                  }
                 }
               }
             })();
