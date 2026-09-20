@@ -679,7 +679,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         // A mismatched detail row must never silently swap the adopted owner
         // (mergeRun returns a different id verbatim); keep the proven owner
         // row and treat discovery as proven.
-        if (detail.run.id !== candidate.id) {
+        if (detail?.run && detail.run.id !== candidate.id) {
           return true;
         }
         if (activeRun.value && activeRun.value.id !== candidate.id) {
@@ -695,12 +695,14 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           liveTurn.value = null;
           return true;
         }
-        activeRun.value = mergeRun(activeRun.value, detail.run);
-        const latestMember = detail.run.memberTurns?.length
-          ? detail.run.memberTurns[detail.run.memberTurns.length - 1]
-          : undefined;
-        if (latestMember && (!activeMemberTurn.value || activeMemberTurn.value.runId === candidate.id)) {
-          activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, latestMember);
+        if (detail?.run) {
+          activeRun.value = mergeRun(activeRun.value, detail.run);
+          const latestMember = detail.run.memberTurns?.length
+            ? detail.run.memberTurns[detail.run.memberTurns.length - 1]
+            : undefined;
+          if (latestMember && (!activeMemberTurn.value || activeMemberTurn.value.runId === candidate.id)) {
+            activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, latestMember);
+          }
         }
         if (isTerminalRunState(activeRun.value.state)) {
           liveTurn.value = null;
@@ -814,7 +816,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         targetInstanceId,
         convId,
         topId,
-        runId ? { harvestTerminalHandoff: { runId }, reuseDiscoveryId: handoffDiscoveryId } : undefined,
+        { harvestTerminalHandoff: runId ? { runId } : undefined, reuseDiscoveryId: handoffDiscoveryId },
       );
       if (generation !== currentSelectionGeneration) return;
     })();
@@ -1232,6 +1234,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           }
         }
       }
+      topicReady.value = true;
       ownershipUncertain.value = false;
       cancelError.value = null;
       return true;
@@ -1257,9 +1260,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     // flight the HUD keeps emitting; a second dispatch would race the first
     // and the late failure could re-mark uncertainty on a terminal Run.
     if (cancellingRunId.value === activeRun.value.id) return;
-    // Fail closed if ownership is unconfirmed: do NOT issue cancel RPC
-    // for an unconfirmed local owner!
-    if (ownershipUncertain.value) {
+    // Fail closed if ownership is unconfirmed or topic discovery is in flight:
+    // do NOT issue cancel RPC for an unconfirmed local owner!
+    if (ownershipUncertain.value || !topicReady.value) {
       void retryDiscovery();
       return;
     }
@@ -1674,6 +1677,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
             (!activeRun.value || isTerminalRunState(activeRun.value.state)) &&
             instanceId.value && activeConversationId.value && activeTopicId.value
           ) {
+            ownershipUncertain.value = true;
             void rediscoverAfterTerminal(
               instanceId.value,
               activeConversationId.value,
@@ -1742,6 +1746,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
             (!activeRun.value || isTerminalRunState(activeRun.value.state)) &&
             instanceId.value && activeConversationId.value && activeTopicId.value
           ) {
+            ownershipUncertain.value = true;
             void rediscoverAfterTerminal(
               instanceId.value,
               activeConversationId.value,

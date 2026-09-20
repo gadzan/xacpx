@@ -2321,6 +2321,132 @@ describe("useDirectBotsStore", () => {
       expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.runs.cancel", { runId: "run_B" });
       expect(store.activeRun?.state).toBe("cancelled");
     });
+    it("fails closed on cancelCurrentRun when local run C is projected while null-owner foreign discovery is pending", async () => {
+      // sendPrompt(C), HTTP deferred
+      // -> foreign B arrives while activeRun=null
+      // -> runs.list deferred
+      // -> topicReady=false, ownershipUncertain=true
+      // -> own run-changed(C) arrives -> activeRun=C
+      // cancelCurrentRun()
+      // -> MUST NOT call runs.cancel(C)
+      // resolve runs.list => B
+      // -> activeRun=B
+      // -> topicReady=true / ownership confirmed
+      // cancelCurrentRun()
+      // -> runs.cancel({ runId: "run_B" })
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+
+      const runBRunning = {
+        id: "run_B",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_B",
+        requestId: "req_foreign_B",
+        mode: "explicit" as const,
+        state: "running" as const,
+        profileRevision: 1,
+        createdAt: "now",
+      };
+
+      const { promise: promptPromise } = Promise.withResolvers<unknown>();
+      const { promise: runsListPromise, resolve: resolveRunsList } = Promise.withResolvers<unknown>();
+
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversation.prompt") {
+          return promptPromise;
+        }
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: [],
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return runsListPromise;
+        }
+        if (type === "control.runs.get") {
+          return Promise.resolve({ run: runBRunning });
+        }
+        if (type === "control.runs.cancel") {
+          return Promise.resolve({ ok: true, run: { ...runBRunning, state: "cancelled", memberTurns: [] } });
+        }
+        return Promise.resolve({});
+      });
+
+      // 1. sendPrompt(C) starts, HTTP is deferred
+      void store.sendPrompt("Help me debug");
+      const reqId = store.currentDraftRequestId;
+      expect(reqId).toBeTruthy();
+      expect(store.activeRun).toBeNull();
+      expect(store.topicReady).toBe(true);
+
+      // 2. Foreign B arrives while activeRun=null
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: { type: "conversation-run-changed", run: runBRunning },
+      } as never);
+
+      // Rediscovery was triggered: topicReady is false and ownership is uncertain
+      expect(store.topicReady).toBe(false);
+      expect(store.ownershipUncertain).toBe(true);
+
+      const runCQueued = {
+        id: "run_C",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_C",
+        requestId: reqId!,
+        mode: "explicit" as const,
+        state: "queued" as const,
+        profileRevision: 1,
+        createdAt: "now",
+      };
+
+      // 3. Own WS run-changed(C) arrives while discovery is pending
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: { type: "conversation-run-changed", run: runCQueued },
+      } as never);
+      expect(store.activeRun?.id).toBe("run_C");
+
+      // 4. User clicks Stop: MUST NOT call runs.cancel(C) because discovery is in flight!
+      await store.cancelCurrentRun();
+      expect(mockRpc).not.toHaveBeenCalledWith(expect.anything(), "control.runs.cancel", expect.anything());
+      expect(store.activeRun?.id).toBe("run_C");
+
+      // 5. Now runs.list resolves with authoritative owner B
+      resolveRunsList({
+        conversationId: "conv_1",
+        topicId: "top_1",
+        runs: [runBRunning, runCQueued],
+        activeRunId: "run_B",
+        activeRun: runBRunning,
+      });
+      await flushPromises();
+
+      // Discovery settled: topicReady is true, uncertainty cleared, adopted B!
+      expect(store.topicReady).toBe(true);
+      expect(store.ownershipUncertain).toBe(false);
+      expect(store.activeRun?.id).toBe("run_B");
+      expect(store.activeRun?.state).toBe("running");
+
+      // 6. Stop now cancels B!
+      await store.cancelCurrentRun();
+      expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.runs.cancel", { runId: "run_B" });
+      expect(store.activeRun?.state).toBe("cancelled");
+    });
     it("clears a ghost bot selection when the authoritative list no longer contains it", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
