@@ -82,10 +82,14 @@ PR:        —
   are never upgraded.
 - G6/G7 — no Relay/Conversation contract touched; `permissionChatKey`
   untouched; generalization happens only after route resolution.
-- G8 — sentinel-answer test proves answers never reach logs, channel
-  metadata, or pending snapshots; broker logs field count/kinds/duration only.
-- G9 — capability advertised only when a channel both declares a mode and
-  implements `requestElicitation`; bridge env always explicit.
+- G8 — sentinel-answer tests prove answers never reach logs on either the
+  accept path or the rejection paths (invalid answer, throwing renderer,
+  unexpected key). Broker logs field count/kinds/duration only; validator
+  reasons carry field keys and stable codes, never values; channel errors are
+  logged by `errorType`, never by message.
+- G9 — capability advertised only when the SAME channel both declares `form`
+  and implements `requestElicitation` (`hasElicitationFormCapability()`);
+  bridge env always explicit.
 - G10 — `url` never advertised (mode list is `["form"]` only).
 - G11 — runtime engine only; no CLI stdout parsing.
 - G12 — unsupported channels cancel; no "next message wins".
@@ -95,9 +99,12 @@ PR:        —
 New (all green):
 
 - `tests/unit/interactions/turn-interaction-registry.test.ts` — 13 tests
-- `tests/unit/interactions/elicitation-schema.test.ts` — 40 tests
-- `tests/unit/interactions/elicitation-interaction-broker.test.ts` — 28 tests
-- `tests/unit/channels/channel-elicitation-capability.test.ts` — 6 tests
+- `tests/unit/interactions/elicitation-schema.test.ts` — 55 tests
+  (40 original + 7 string-resource-bound + 8 calendar/RFC3339)
+- `tests/unit/interactions/elicitation-interaction-broker.test.ts` — 31 tests
+  (28 original + 3 negative-privacy regressions)
+- `tests/unit/channels/channel-elicitation-capability.test.ts` — 9 tests
+  (6 original + 3 mode-aware capability regressions)
 - `tests/unit/bridge/engine/runtime/runtime-adapter-elicitation.test.ts` —
   4 tests, real acpx runtime + mock ACP agent (`elicitation/create`,
   requestId/signal preservation, three-action mapping, no-mode advertisement)
@@ -118,6 +125,37 @@ Regression evidence (all numbers with the corrected acpx 0.16.0 install):
   (clean `src/`, same acpx) **479 pass / 58 fail**. A set-diff of the failing
   files shows **zero new failures**; the only delta is my 5 new test files,
   which pass.
+
+## Review round 1 (PR #355)
+
+Four findings from review of head `5e606f7d`, all fixed:
+
+1. **[Blocking, G9]** `hasElicitationInteractionCapability()` was an
+   existential method probe, so a channel implementing `requestElicitation`
+   without declaring `form` (or declaring only `url`) still made ACP advertise
+   form support — then the broker cancelled on its own mode check. Replaced
+   with `hasElicitationFormCapability() =
+   supportedElicitationModes().includes("form")`. 3 regression tests added.
+2. **[Blocking, G8]** Answer values leaked on error paths: the validator
+   echoed the rejected value in its reason and the broker logged it verbatim;
+   the broker also logged `error.message`, which a renderer could fill with
+   submitted form values. Validator reasons now carry field keys and stable
+   codes only (unexpected keys by index), and the broker logs `errorType`
+   instead of the message. 3 negative-privacy regression tests added.
+3. **[Medium]** String resource bounds were incomplete: array element length,
+   text `default` length and `required[]` size were unbounded. Added
+   `maxOptionValueLength`, `maxDefaultValueLength`, `maxRequiredNames` and a
+   total `maxNormalizedFormChars` budget (49k, just above the measured ~48.5k
+   worst case). 7 tests added.
+4. **[Medium]** `date` / `date-time` accepted impossible values because
+   `Date.parse` normalizes 2026-02-31 into 2026-03-03, and the date-time regex
+   accepted incomplete RFC3339. Replaced with a strict per-month calendar
+   check (leap-year aware) and a full RFC3339 pattern requiring seconds plus a
+   `Z`/±HH:MM offset, with clock/offset range checks. 8 tests added.
+
+Note: finding 2 corrected an overstated G8 claim in the first version of this
+report — the original privacy test only covered the legal-accept path, which is
+why it did not catch the leak.
 
 ## Deferred
 
