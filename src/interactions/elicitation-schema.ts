@@ -27,12 +27,20 @@ export const ELICITATION_SCHEMA_LIMITS = {
   maxDefaultValueLength: 256,
   maxRequiredNames: 20,
   /**
-   * Total character budget across every string in the normalized form.
-   * Measured worst case is 20 fields × (256 title + 1000 description + 256
-   * default + 256 pattern) + 8000 message ≈ 48.5k, so this sits just above a
-   * fully-legal form and rejects anything that aggregates past it.
+   * Aggregate policy cap over every string in the normalized form.
+   *
+   * This is deliberately NOT sized to admit every individually-legal form.
+   * The per-field limits compose multiplicatively: 20 fields × 100 titled
+   * options × (256 value + 256 label + 1000 description) is ~3.3M chars, all
+   * of it individually legal. Admitting that would defeat the purpose, so this
+   * is an independent product policy — xacpx will not ask a human to fill in a
+   * 3MB form on a chat channel.
+   *
+   * 256k is chosen so any realistic form (a handful of fields with ordinary
+   * option lists) passes, while pathological aggregates cancel. Forms that
+   * exceed it are cancelled with `resource_exceeded`, never truncated.
    */
-  maxNormalizedFormChars: 49_000,
+  maxNormalizedFormChars: 256_000,
   maxMessageLength: 8000,
   maxPatternLength: 512,
 } as const;
@@ -208,6 +216,15 @@ function normalizeField(
             required: false,
             options,
             ...(typeof defaultValue === "string" ? { defaultValue } : {}),
+            // Carry the agent's own string constraints through instead of
+            // silently dropping them: an enum does not imply the value is
+            // unconstrained, and core must not accept an answer the agent's
+            // schema would reject.
+            ...(minLength.value !== undefined ? { minLength: minLength.value } : {}),
+            ...(maxLength.value !== undefined ? { maxLength: maxLength.value } : {}),
+            ...(format === "email" || format === "uri" || format === "date" || format === "date-time"
+              ? { format }
+              : {}),
           },
         };
       }
@@ -290,11 +307,21 @@ function normalizeField(
       }
       const items = asPlain(property.items);
       if (!items) return { ok: false, detail: `field "${key}" has no items schema` };
-      if (typeof items.type !== "string") {
-        return { ok: false, detail: `field "${key}" items have no type` };
+      // ACP defines multi-select items as a union:
+      //   untitled: { type: "string", enum: [...] }
+      //   titled:   { anyOf: [...] }          ← no `type` field at all
+      // Decode by which member is present, and reject mixing them. Requiring
+      // `type` unconditionally rejects every legal titled multi-select.
+      const hasEnum = items.enum !== undefined && items.enum !== null;
+      const hasAnyOf = items.anyOf !== undefined && items.anyOf !== null;
+      if (hasEnum && hasAnyOf) {
+        return { ok: false, detail: `field "${key}" items mix enum and anyOf` };
       }
-      if (items.type !== "string") {
+      if (hasEnum && items.type !== "string") {
         return { ok: false, detail: `field "${key}" is not a string multi-select` };
+      }
+      if (!hasEnum && !hasAnyOf) {
+        return { ok: false, detail: `field "${key}" items have neither enum nor anyOf` };
       }
       const enumItems = readOptionalStringArray(items, "enum", ELICITATION_SCHEMA_LIMITS.maxOptionsPerField);
       if (!enumItems.ok) return { ok: false, detail: `field "${key}" has invalid item enum` };
@@ -368,7 +395,9 @@ function readTitledOptions(
     const option = asPlain(entry);
     if (!option) return undefined;
     const optionValue = readString(option, "const");
-    if (optionValue === undefined || optionValue.length > ELICITATION_SCHEMA_LIMITS.maxFieldKeyLength) return undefined;
+    // Same bound as untitled enum values: titled and untitled options must not
+    // have different size ceilings for the same slot in the normalized form.
+    if (optionValue === undefined || optionValue.length > ELICITATION_SCHEMA_LIMITS.maxOptionValueLength) return undefined;
     const label = readOptionalNonEmptyString(option, "title", ELICITATION_SCHEMA_LIMITS.maxOptionLabelLength);
     const description = readOptionalNonEmptyString(option, "description", ELICITATION_SCHEMA_LIMITS.maxFieldDescriptionLength);
     if (!label.ok || !description.ok) return undefined;
@@ -637,6 +666,27 @@ function validateFieldValue(
       if (typeof value !== "string") return { ok: false, reason: `field "${field.key}" must be a string` };
       if (!field.options.some((option) => option.value === value)) {
         return { ok: false, reason: `field "${field.key}" value is not an offered option` };
+      }
+      // The agent's own string constraints apply to the chosen option too.
+      // `pattern` is deliberately NOT executed here (agent regex is a
+      // resource-exhaustion vector) — every other constraint is deterministic.
+      if (field.minLength !== undefined && value.length < field.minLength) {
+        return { ok: false, reason: `field "${field.key}" is shorter than ${field.minLength}` };
+      }
+      if (field.maxLength !== undefined && value.length > field.maxLength) {
+        return { ok: false, reason: `field "${field.key}" exceeds ${field.maxLength} chars` };
+      }
+      if (field.format === "email" && !isEmail(value)) {
+        return { ok: false, reason: `field "${field.key}" is not an email` };
+      }
+      if (field.format === "uri" && !isUri(value)) {
+        return { ok: false, reason: `field "${field.key}" is not a uri` };
+      }
+      if (field.format === "date" && !isDate(value)) {
+        return { ok: false, reason: `field "${field.key}" is not a date` };
+      }
+      if (field.format === "date-time" && !isDateTime(value)) {
+        return { ok: false, reason: `field "${field.key}" is not a date-time` };
       }
       return { ok: true, value };
     }

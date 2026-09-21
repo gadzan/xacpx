@@ -141,15 +141,92 @@ describe("normalizeAcpElicitationForm supported shapes", () => {
       ],
     });
 
+    // ACP native titled multi-select: `items` is `{ anyOf: [...] }` with NO
+    // `type` field (TitledMultiSelectItems). The non-standard
+    // `{ type: "string", anyOf: [...] }` form is accepted too, but the real
+    // agent shape must work.
     const titled = normalizeOk(formRequest({
       requestedSchema: {
         type: "object",
         properties: {
-          picks: { type: "array", items: { type: "string", anyOf: [{ const: "x", title: "Ex" }] } },
+          picks: { type: "array", items: { anyOf: [{ const: "x", title: "Ex" }, { const: "y", title: "Why", description: "second" }] } },
         },
       },
     }));
-    expect(titled[0]).toMatchObject({ kind: "multi-select", options: [{ value: "x", label: "Ex" }] });
+    expect(titled[0]).toMatchObject({
+      kind: "multi-select",
+      options: [
+        { value: "x", label: "Ex" },
+        { value: "y", label: "Why", description: "second" },
+      ],
+    });
+  });
+
+  test("ACP native titled multi-select without a type field is accepted", () => {
+    const fields = normalizeOk(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: {
+          picks: { type: "array", minItems: 1, items: { anyOf: [{ const: "a", title: "Ay" }] } },
+        },
+        required: ["picks"],
+      },
+    }));
+    expect(fields[0]).toMatchObject({ kind: "multi-select", required: true, options: [{ value: "a", label: "Ay" }] });
+  });
+
+  test("string enum becomes single-select carrying its string constraints", () => {
+    // Regression: the conversion used to drop minLength/maxLength/format, so
+    // an enum value violating the agent's own schema was accepted.
+    const fields = normalizeOk(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { color: { type: "string", enum: ["red", "blue"], minLength: 4 } },
+        required: ["color"],
+      },
+    }));
+    expect(fields[0]).toMatchObject({ kind: "single-select", minLength: 4 });
+  });
+
+  test("a single-select value violating minLength is rejected", () => {
+    const field = normalizeOk(formRequest({
+      requestedSchema: { type: "object", properties: { c: { type: "string", enum: ["red", "blue", "x"], minLength: 3 } } },
+    }))[0];
+    expect(validateElicitationAnswer([field], { c: "red" }).ok).toBe(true);
+    expect(validateElicitationAnswer([field], { c: "blue" }).ok).toBe(true);
+    // Offered but shorter than the agent's own minLength.
+    expect(validateElicitationAnswer([field], { c: "x" }).ok).toBe(false);
+  });
+
+  test("a single-select value violating maxLength is rejected", () => {
+    const field = normalizeOk(formRequest({
+      requestedSchema: { type: "object", properties: { c: { type: "string", enum: ["abcde"], maxLength: 4 } } },
+    }))[0];
+    expect(validateElicitationAnswer([field], { c: "abcde" }).ok).toBe(false);
+  });
+
+  test("a single-select value violating format is rejected", () => {
+    const field = normalizeOk(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { c: { type: "string", enum: ["a@b.co", "nope"], format: "email" } },
+      },
+    }))[0];
+    expect(validateElicitationAnswer([field], { c: "a@b.co" }).ok).toBe(true);
+    expect(validateElicitationAnswer([field], { c: "nope" }).ok).toBe(false);
+  });
+
+  test("a titled single-select keeps its constraints too", () => {
+    const field = normalizeOk(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: {
+          c: { type: "string", oneOf: [{ const: "ab", title: "AB" }, { const: "abcd", title: "ABCD" }], minLength: 3 },
+        },
+      },
+    }))[0];
+    expect(validateElicitationAnswer([field], { c: "abcd" }).ok).toBe(true);
+    expect(validateElicitationAnswer([field], { c: "ab" }).ok).toBe(false);
   });
 
   test("empty properties yields an empty form instead of failing", () => {
@@ -206,6 +283,42 @@ describe("normalizeAcpElicitationForm rejections", () => {
   test("multi-select with non-string items is rejected", () => {
     const result = normalizeAcpElicitationForm(formRequest({
       requestedSchema: { type: "object", properties: { nums: { type: "array", items: { type: "number" } } } },
+    }));
+    expect(result.ok).toBe(false);
+  });
+
+  test("multi-select items mixing enum and anyOf are rejected", () => {
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: {
+          picks: {
+            type: "array",
+            items: { type: "string", enum: ["a"], anyOf: [{ const: "a", title: "Ay" }] },
+          },
+        },
+      },
+    }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("mix enum and anyOf");
+  });
+
+  test("multi-select items with neither enum nor anyOf are rejected", () => {
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { type: "object", properties: { picks: { type: "array", items: { type: "string" } } } },
+    }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("neither enum nor anyOf");
+  });
+
+  test("titled multi-select option values share the untitled length bound", () => {
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: {
+          picks: { type: "array", items: { anyOf: [{ const: "v".repeat(ELICITATION_SCHEMA_LIMITS.maxOptionValueLength + 1), title: "Big" }] } },
+        },
+      },
     }));
     expect(result.ok).toBe(false);
   });
@@ -382,22 +495,20 @@ describe("normalizeAcpElicitationForm string resource bounds", () => {
     if (!result.ok) expect(result.reason).toContain("required exceeds");
   });
 
-  test("total normalized form character budget is enforced", () => {
-    // Each field is individually legal (key 128 + title 256 + description
-    // 1000 + default 256 + pattern 256) but the aggregate must still be
-    // bounded: the renderer holds the whole normalized form and the daemon
-    // keeps it in pending state.
+  test("aggregate policy cap rejects a pathological form", () => {
+    // Not a "just above worst case" bound: the per-field limits compose
+    // multiplicatively (20 fields × 100 titled options × 1512 chars ≈ 3.3M),
+    // all individually legal. The cap is an independent product policy — a
+    // human cannot fill in a 3MB form on a chat channel.
     const properties: Record<string, unknown> = {};
     for (let i = 0; i < ELICITATION_SCHEMA_LIMITS.maxFields; i += 1) {
-      const prefix = `f${i}-`;
-      const longKey = prefix + "k".repeat(ELICITATION_SCHEMA_LIMITS.maxFieldKeyLength - prefix.length);
-      properties[longKey] = {
+      properties[`f${i}`] = {
         type: "string",
-        title: "t".repeat(ELICITATION_SCHEMA_LIMITS.maxFieldTitleLength),
-        description: "d".repeat(ELICITATION_SCHEMA_LIMITS.maxFieldDescriptionLength),
-        default: "v".repeat(ELICITATION_SCHEMA_LIMITS.maxDefaultValueLength),
-        maxLength: ELICITATION_SCHEMA_LIMITS.maxDefaultValueLength,
-        pattern: "p".repeat(ELICITATION_SCHEMA_LIMITS.maxPatternLength),
+        oneOf: Array.from({ length: ELICITATION_SCHEMA_LIMITS.maxOptionsPerField }, (_, n) => ({
+          const: `c${n}`,
+          title: "t".repeat(ELICITATION_SCHEMA_LIMITS.maxOptionLabelLength),
+          description: "d".repeat(ELICITATION_SCHEMA_LIMITS.maxFieldDescriptionLength),
+        })),
       };
     }
     const result = normalizeAcpElicitationForm(formRequest({
@@ -406,6 +517,24 @@ describe("normalizeAcpElicitationForm string resource bounds", () => {
     }));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toContain("normalized form exceeds");
+  });
+
+  test("a realistic multi-option form passes the aggregate cap", () => {
+    // The cap must not reject ordinary forms: 5 fields × 10 titled options is
+    // ~75k chars, comfortably inside 256k.
+    const properties: Record<string, unknown> = {};
+    for (let i = 0; i < 5; i += 1) {
+      properties[`f${i}`] = {
+        type: "string",
+        oneOf: Array.from({ length: 10 }, (_, n) => ({
+          const: `c${n}`,
+          title: `Option ${n}`,
+          description: "d".repeat(200),
+        })),
+      };
+    }
+    const result = normalizeAcpElicitationForm(formRequest({ requestedSchema: { type: "object", properties } }));
+    expect(result.ok).toBe(true);
   });
 
   test("a form inside every per-field limit and the total budget still normalizes", () => {
