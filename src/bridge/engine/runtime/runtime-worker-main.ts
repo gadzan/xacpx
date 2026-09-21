@@ -61,6 +61,13 @@ interface WorkerState {
   pendingElicitations: Map<string, { resolve: (d: RuntimeElicitationDecision) => void; reject: (e: Error) => void; promptRequestId: string; workerGeneration: string }>;
   workerGeneration: string;
   activeInteractionId?: string;
+  /**
+   * User-facing Agent alias for the turn currently in flight, taken from the
+   * prompt params. Distinct from `ensureParams.agent`, which is the transport
+   * selector (possibly an internal overlay alias) used for worker
+   * construction.
+   */
+  activeRequestingAgentName?: string;
   /** Single-flight first initialization: identical-identity concurrent ensures join this; it is cleared on settle. */
   ensureInFlight?: { identityKey: string; promise: Promise<void> };
   /**
@@ -405,26 +412,35 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
       // synthesize a route: the daemon fails closed without it.
       ...(state.activeInteractionId ? { interactionId: state.activeInteractionId } : {}),
       // ACP User Interaction Requirements: the client MUST clearly identify
-      // the Agent requesting information. The agent name is pinned to this
-      // worker's ensure identity, so it is the exact agent driving THIS turn —
-      // not a session-alias lookup that a concurrent or later turn could
-      // change under the renderer.
-      ...(state.ensureParams?.agent ? { agentName: state.ensureParams.agent } : {}),
+      // the Agent requesting information — in terms the USER recognises. The
+      // turn's own alias is authoritative here, NOT `ensureParams.agent`,
+      // which is the transport selector and may be an internal overlay alias
+      // like `xacpx-managed-codex-9d1628a76ca9`.
+      ...(state.activeRequestingAgentName ? { agentName: state.activeRequestingAgentName } : {}),
       workerGeneration: state.workerGeneration,
     };
-    const pending = new Promise<RuntimeElicitationDecision>((resolve, reject) => {
-      state.pendingElicitations.set(elicitationRequestId, { resolve, reject, promptRequestId: requestId, workerGeneration: state.workerGeneration });
-      const onAbort = () => {
-        state.pendingElicitations.delete(elicitationRequestId);
-        context.signal.removeEventListener("abort", onAbort);
-        reject(new Error("elicitation cancelled"));
-      };
-      if (context.signal.aborted) {
-        onAbort();
-        return;
-      }
-      context.signal.addEventListener("abort", onAbort, { once: true });
+    // Hoisted outside the Promise executor so the SUCCESS path can remove it
+    // too. Defined here, only the listener registration lives in the executor.
+    // Without this, every successful elicitation leaves a `{ once: true }`
+    // listener on the merged AbortSignal until the whole signal aborts, so a
+    // long turn with several elicitations accumulates them.
+    const onAbort = (): void => {
+      state.pendingElicitations.delete(elicitationRequestId);
+      rejectElicitation(new Error("elicitation cancelled"));
+    };
+    const { promise: pending, reject: rejectElicitation, resolve: resolveElicitation } =
+      Promise.withResolvers<RuntimeElicitationDecision>();
+    state.pendingElicitations.set(elicitationRequestId, {
+      resolve: resolveElicitation,
+      reject: rejectElicitation,
+      promptRequestId: requestId,
+      workerGeneration: state.workerGeneration,
     });
+    if (context.signal.aborted) {
+      onAbort();
+    } else {
+      context.signal.addEventListener("abort", onAbort, { once: true });
+    }
     process.stdout.write(encodeWorkerMessage({ id: elicitationRequestId, event: "elicitation.request", payload } satisfies RuntimeWorkerEvent));
     // Watchdog handle kept so the SUCCESS path can clear it. Without this a
     // two-second elicitation still holds a 125s timer and an abort listener
@@ -445,6 +461,9 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
       return decision;
     } finally {
       clearTimeout(watchdog);
+      // Unconditional: the happy path must release the listener too, not only
+      // the abort path. Safe when it was never added.
+      context.signal.removeEventListener("abort", onAbort);
       state.pendingElicitations.delete(elicitationRequestId);
     }
   };
@@ -459,6 +478,11 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
   state.activeTurn = turn;
   const promptInteractionId = params.interactionId;
   if (promptInteractionId) state.activeInteractionId = promptInteractionId;
+  // The user-facing Agent alias travels with the exact turn, so it is set and
+  // cleared on the same lifecycle as the interaction id. A worker is reused
+  // across sessions, so this must not be part of the construction identity.
+  const promptRequestingAgentName = params.requestingAgentName;
+  if (promptRequestingAgentName) state.activeRequestingAgentName = promptRequestingAgentName;
   try {
     await turn.promptStarted;
     let finalText = "";
@@ -487,6 +511,9 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
     if (state.activeTurn === turn) state.activeTurn = undefined;
     if (promptInteractionId && state.activeInteractionId === promptInteractionId) {
       state.activeInteractionId = undefined;
+    }
+    if (promptRequestingAgentName && state.activeRequestingAgentName === promptRequestingAgentName) {
+      state.activeRequestingAgentName = undefined;
     }
   }
 }

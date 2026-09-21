@@ -848,9 +848,19 @@ export class RuntimeEngine implements BridgeEngine {
       await this.ensureSessionHandle(input, client, agentProcessEnv);
       try {
         const attachments = await buildRuntimeAttachments(options.media);
+        // The user-facing Agent alias (input.agent), NOT the transport
+        // selector (input.acpxAgent ?? input.agent) that buildEnsureParams
+        // uses for worker construction. ACP requires the client to identify
+        // the requesting Agent in terms the user recognises.
+        const requestingAgentName = input.agent;
         const outcome = await client.request<{ result: XacpxTurnResult; finalText: string }>(
           "prompt",
-          { text, ...(attachments.length > 0 ? { attachments } : {}), ...(options.interactionId ? { interactionId: options.interactionId } : {}) },
+          {
+            text,
+            ...(attachments.length > 0 ? { attachments } : {}),
+            ...(options.interactionId ? { interactionId: options.interactionId } : {}),
+            ...(requestingAgentName ? { requestingAgentName } : {}),
+          },
           {
             onEvent: (payload) => {
               const event = payload as XacpxRuntimeEvent;

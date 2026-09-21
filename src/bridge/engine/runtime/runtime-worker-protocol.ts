@@ -87,6 +87,19 @@ export interface RuntimeWorkerPromptParams {
   /** Binary prompt attachments (image/audio) forwarded to ACP content blocks. */
   attachments?: Array<{ mediaType: string; data: string }>;
   interactionId?: string;
+  /**
+   * The user-facing xacpx Agent alias that caused this turn (the session's
+   * configured `agent`, NOT the transport selector).
+   *
+   * ACP's User Interaction Requirements oblige the client to identify the
+   * requesting Agent in terms the user recognises. `ensureParams.agent` is
+   * `acpxAgent ?? agent` — a transport selector that may be an internal
+   * overlay alias like `xacpx-managed-codex-9d1628a76ca9` — so it is the wrong
+   * value to show a human. This belongs to the exact turn, not the worker
+   * construction identity, because the same worker can be reused across
+   * sessions configured with different aliases.
+   */
+  requestingAgentName?: string;
 }
 export interface RuntimeWorkerPermissionUpdate {
   generation: number;
