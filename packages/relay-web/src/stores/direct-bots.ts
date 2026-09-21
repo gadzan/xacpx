@@ -1478,14 +1478,19 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   async function reconcileOnReconnect(): Promise<void> {
     // WS events are lost while disconnected: every previously loaded Bot
     // catalog may be stale (create/update/delete, hasRuntime). Mark all
-    // loaded instances dirty AND invalidate their list generations so a
+    // known instances dirty AND invalidate their list generations so a
     // pre-reconnect in-flight response cannot re-validate the dirty barrier
     // when it lands late; then reconcile the selected instance in depth.
-    for (const loadedId of Object.keys(botsLoaded.value)) {
-      if (botsLoaded.value[loadedId]) {
-        botsLoaded.value = { ...botsLoaded.value, [loadedId]: false };
-        botsListSeq[loadedId] = (botsListSeq[loadedId] ?? 0) + 1;
-      }
+    // tracked generations: an instance with botsLoaded=false/undefined can
+    // still have a list request in flight (first load or retry), and that
+    // stale S1 must also lose to the barrier.
+    const barrierIds: Record<string, true> = {};
+    for (const id of Object.keys(botsLoaded.value)) barrierIds[id] = true;
+    for (const id of Object.keys(botsByInstance.value)) barrierIds[id] = true;
+    for (const id of Object.keys(botsListSeq)) barrierIds[id] = true;
+    for (const loadedId of Object.keys(barrierIds)) {
+      botsLoaded.value = { ...botsLoaded.value, [loadedId]: false };
+      botsListSeq[loadedId] = (botsListSeq[loadedId] ?? 0) + 1;
     }
     const iId = instanceId.value;
     const bId = selectedBotId.value;

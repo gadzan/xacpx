@@ -1623,7 +1623,8 @@ describe("useDirectBotsStore", () => {
       // background one waits for its next tab entry.
       expect(store.botsLoaded["inst_1"]).toBe(true);
       expect(store.botsLoaded["inst_2"]).toBe(false);
-    });    it("drops a pre-reconnect in-flight list response after the reconnect dirty barrier", async () => {
+    });
+    it("drops a pre-reconnect in-flight list response after the reconnect dirty barrier", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
       store.selectedBotId = "bot_A";
@@ -1681,6 +1682,67 @@ describe("useDirectBotsStore", () => {
       expect(store.botsByInstance["inst_2"]?.[0]?.updatedAt).not.toBe("stale-overwrite");
 
       // Next Bots-tab entry for inst_2 issues the authoritative request.
+      await store.loadBots("inst_2");
+      expect(inst2ListCalls).toBe(2);
+      expect(store.botsLoaded["inst_2"]).toBe(true);
+      expect(store.botsByInstance["inst_2"]?.[0]?.updatedAt).toBe("s2");
+    });
+    it("drops a pre-reconnect first load when loaded is false and the stale S1 resolves after reconnect", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_A";
+      store.activeConversationId = "conv_A";
+      store.activeTopicId = "top_A";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_A", name: "A", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now", profileRevision: 1 },
+      ];
+      store.botsLoaded["inst_1"] = true;
+      // inst_2 has never finished a first load: no cache, not loaded, but a
+      // list request is in flight (or a failed retry is pending).
+      expect(store.botsLoaded["inst_2"]).toBeFalsy();
+      const staleList = Promise.withResolvers<{ bots: BotSummaryDto[] }>();
+      let inst2ListCalls = 0;
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (instId === "inst_2" && type === "control.bots.list") {
+          inst2ListCalls += 1;
+          if (inst2ListCalls === 1) return staleList.promise;
+          return Promise.resolve({
+            bots: [
+              { id: "bot_B", name: "B", agent: "codex", workspace: "repo", enabled: true, updatedAt: "s2", profileRevision: 2 },
+            ],
+          });
+        }
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_A", topicId: "top_A", messages: [],
+            hasMoreBefore: false, hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({ conversationId: "conv_A", topicId: "top_A", runs: [] });
+        }
+        return Promise.resolve({});
+      });
+
+      // T1: first load for inst_2 starts while botsLoaded is false.
+      const pendingList = store.loadBots("inst_2");
+      // Reconnect before T1 resolves: the union barrier must invalidate the
+      // in-flight generation even though loaded was already false.
+      await store.reconcileOnReconnect();
+      expect(store.botsLoaded["inst_2"]).toBe(false);
+
+      // Stale pre-reconnect S1 resolves late: it must not write S1 nor flip
+      // loaded back to true.
+      staleList.resolve({
+        bots: [
+          { id: "bot_B", name: "B", agent: "codex", workspace: "repo", enabled: true, updatedAt: "s1", profileRevision: 1 },
+        ],
+      });
+      await pendingList;
+      expect(store.botsLoaded["inst_2"]).toBe(false);
+      expect(store.botsByInstance["inst_2"] ?? []).toHaveLength(0);
+
+      // Next Bots-tab entry issues the authoritative S2 request.
       await store.loadBots("inst_2");
       expect(inst2ListCalls).toBe(2);
       expect(store.botsLoaded["inst_2"]).toBe(true);
