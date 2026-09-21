@@ -42,6 +42,7 @@ import { parseXacpxPermissionPolicy } from "./runtime-permission-policy";
 import { RuntimeAgentLeaseStore, createAgentLifecycleHooks } from "./runtime-agent-lease";
 import { RuntimePermissionResolver, readToolInputFromReq, type RuntimePermissionConfig, type RuntimePermissionRequest } from "./runtime-permission-resolver";
 import { ELICITATION_RPC_TIMEOUT_MS } from "../../../interactions/elicitation-interaction-broker.js";
+import { bindElicitationAbort } from "./elicitation-abort-binding";
 
 class RuntimeError extends Error {
   constructor(readonly code: string, message: string) {
@@ -419,15 +420,6 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
       ...(state.activeRequestingAgentName ? { agentName: state.activeRequestingAgentName } : {}),
       workerGeneration: state.workerGeneration,
     };
-    // Hoisted outside the Promise executor so the SUCCESS path can remove it
-    // too. Defined here, only the listener registration lives in the executor.
-    // Without this, every successful elicitation leaves a `{ once: true }`
-    // listener on the merged AbortSignal until the whole signal aborts, so a
-    // long turn with several elicitations accumulates them.
-    const onAbort = (): void => {
-      state.pendingElicitations.delete(elicitationRequestId);
-      rejectElicitation(new Error("elicitation cancelled"));
-    };
     const { promise: pending, reject: rejectElicitation, resolve: resolveElicitation } =
       Promise.withResolvers<RuntimeElicitationDecision>();
     state.pendingElicitations.set(elicitationRequestId, {
@@ -436,11 +428,15 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
       promptRequestId: requestId,
       workerGeneration: state.workerGeneration,
     });
-    if (context.signal.aborted) {
-      onAbort();
-    } else {
-      context.signal.addEventListener("abort", onAbort, { once: true });
-    }
+    // Listener lifecycle lives in a testable helper so the release path can be
+    // verified directly instead of inferred from a passing E2E. Registered
+    // here, released unconditionally in the `finally` below — the success path
+    // must release it too, otherwise a long turn with several elicitations
+    // accumulates listeners on the merged signal.
+    const abort = bindElicitationAbort(context.signal, () => {
+      state.pendingElicitations.delete(elicitationRequestId);
+      rejectElicitation(new Error("elicitation cancelled"));
+    });
     process.stdout.write(encodeWorkerMessage({ id: elicitationRequestId, event: "elicitation.request", payload } satisfies RuntimeWorkerEvent));
     // Watchdog handle kept so the SUCCESS path can clear it. Without this a
     // two-second elicitation still holds a 125s timer and an abort listener
@@ -462,8 +458,9 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
     } finally {
       clearTimeout(watchdog);
       // Unconditional: the happy path must release the listener too, not only
-      // the abort path. Safe when it was never added.
-      context.signal.removeEventListener("abort", onAbort);
+      // the abort path. Idempotent, so it is safe when registration never
+      // happened.
+      abort.release();
       state.pendingElicitations.delete(elicitationRequestId);
     }
   };
