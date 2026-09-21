@@ -1544,6 +1544,78 @@ describe("useDirectBotsStore", () => {
       expect(store.botDetails["inst_1:bot_B"]?.profileRevision).toBe(2);
       expect(store.botDetails["inst_1:bot_B"]?.instructions).toBe("New instructions");
     });
+    it("never hands a stale uncached detail to the caller: rev1 D1 raced by rev2 summary refetches", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_A";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_A", name: "A", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now", profileRevision: 1 },
+        { id: "bot_B", name: "B", agent: "codex", workspace: "repo", enabled: true, updatedAt: "old", profileRevision: 1 },
+      ];
+      // No cached detail for B: sidebar Edit starts D1 (snapshot rev1).
+      expect(store.botDetails["inst_1:bot_B"]).toBeUndefined();
+      const staleDetail = Promise.withResolvers<{ bot: BotDetailDto }>();
+      const freshDetail = Promise.withResolvers<{ bot: BotDetailDto }>();
+      let detailCalls = 0;
+      mockRpc.mockImplementation((instId: string, type: string, payload?: unknown) => {
+        const wantB = (payload as { id?: string } | undefined)?.id === "bot_B";
+        if (type === "control.bots.get" && wantB) {
+          detailCalls += 1;
+          return detailCalls === 1 ? staleDetail.promise : freshDetail.promise;
+        }
+        if (type === "control.bots.get") {
+          // Selected-A refresh fired by the bots-changed handler: unrelated.
+          return Promise.resolve({
+            bot: {
+              id: "bot_A", name: "A", agent: "codex", workspace: "repo", enabled: true,
+              profileRevision: 1, createdAt: "now", updatedAt: "now",
+            },
+          });
+        }
+        if (type === "control.bots.list") {
+          return Promise.resolve({
+            bots: [
+              { id: "bot_A", name: "A", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now", profileRevision: 1 },
+              { id: "bot_B", name: "B", agent: "codex", workspace: "repo", enabled: true, updatedAt: "new", profileRevision: 2 },
+            ],
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      // D1 starts (rev1 snapshot in flight), then a rev2 summary lands via
+      // bots-changed and bumps the detail generation with no cache to drop.
+      const pendingDetail = store.loadBotDetail("inst_1", "bot_B");
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: { type: "bots-changed" },
+      } as never);
+      await flushPromises();
+      await flushPromises();
+
+      // Stale rev1 D1 resolves late: it must never reach the caller.
+      staleDetail.resolve({
+        bot: {
+          id: "bot_B", name: "B", agent: "codex", workspace: "repo",
+          instructions: "Old instructions", enabled: true,
+          profileRevision: 1, createdAt: "now", updatedAt: "old",
+        },
+      });
+      freshDetail.resolve({
+        bot: {
+          id: "bot_B", name: "B", agent: "codex", workspace: "repo",
+          instructions: "New instructions", enabled: true,
+          profileRevision: 2, createdAt: "now", updatedAt: "new",
+        },
+      });
+      const result = await pendingDetail;
+      // The caller receives the authoritative rev2 detail, never rev1.
+      expect(result.profileRevision).toBe(2);
+      expect(result.instructions).toBe("New instructions");
+      expect(store.botDetails["inst_1:bot_B"]?.instructions).toBe("New instructions");
+      expect(detailCalls).toBe(2);
+    });
 
     it("converges background Bot lifecycle on member-turn-started without touching the selection", async () => {
       const store = useDirectBotsStore();

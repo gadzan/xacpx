@@ -252,6 +252,49 @@ test("activateAfterConsumerLock does not mark the consumer activated when kick t
   await failing.runtime.shutdown();
 });
 
+test("Bot re-enable never wakes an unavailable consumer", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "xacpx-reenable-gate-"));
+  const sqlitePath = join(dir, "conversations.sqlite");
+  const stateStore = new MemoryStateStore();
+  const seeder = await compose({ sqlitePath, state: createEmptyState(), stateStore });
+  const bot = await seeder.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const conversationId = createDirectConversationId(bot.id);
+  const topicId = createDirectTopicId(bot.id);
+  await seeder.runtime.shutdown();
+
+  const restored = structuredClone(stateStore.saved.at(-1)!);
+  const failing = await compose({ sqlitePath, state: restored, stateStore: new MemoryStateStore() });
+  // Initial recovery kick fails: the consumer stays unavailable.
+  failing.runtime.dispatcher.kick = async () => {
+    throw new Error("injected recovery failure");
+  };
+  await expect(failing.runtime.activateAfterConsumerLock()).rejects.toMatchObject({
+    message: "injected recovery failure",
+  });
+  expect(failing.runtime.runs.isConsumerActivated()).toBe(false);
+  // Restore a kick that would drain if called, then flip the Bot
+  // disabled -> enabled: the re-enable hook must still respect the
+  // unavailable gate and never invoke it.
+  failing.runtime.dispatcher.kick = async () => {
+    throw new Error("kick must not run while unavailable");
+  };
+  await failing.control.updateBot(bot.id, { enabled: false });
+  await failing.control.updateBot(bot.id, { enabled: true });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(failing.runtime.runs.isConsumerActivated()).toBe(false);
+  expect(failing.runnerCalls()).toBe(0);
+  const store = await SqliteConversationStore.open(sqlitePath);
+  expect(store.listRuns(conversationId)).toEqual([]);
+  store.close();
+  await expect(failing.control.promptConversation({
+    conversationId,
+    topicId,
+    requestId: "req-still-unavailable",
+    text: "hello",
+  })).rejects.toMatchObject({ code: "conversations_unavailable" });
+  await failing.runtime.shutdown();
+});
+
 test("initial recovery kick failure leaves Conversation unavailable and does not accept new work", async () => {
   const dir = mkdtempSync(join(tmpdir(), "xacpx-activate-fail-"));
   const sqlitePath = join(dir, "conversations.sqlite");

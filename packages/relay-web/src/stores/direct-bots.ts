@@ -454,10 +454,14 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     );
     // A stale (superseded) detail response must not clobber the newer cache,
     // nor may it pose as an authoritative answer for callers with side
-    // effects (e.g. BotDialog instructions fill): return the current cache
-    // so a late D1 cannot roll a newer D2 back in the form.
+    // effects (e.g. BotDialog instructions fill). When a newer cache row
+    // exists, return it; when the cache is still empty (e.g. a rev1 D1 raced
+    // by a rev2 summary that bumped the generation), the stale rev1 payload
+    // must never reach the caller — refetch authoritatively instead.
     if (botDetailSeq[detailKey] !== seq) {
-      return botDetails.value[detailKey] ?? res.bot;
+      const current = botDetails.value[detailKey];
+      if (current) return current;
+      return await loadBotDetail(targetInstanceId, botId);
     }
     const prevDetail = botDetails.value[detailKey];
     botDetails.value = {

@@ -132,6 +132,14 @@ export class ConversationRunService {
     return this.activation === "activated";
   }
 
+  /** Wake pending durable work (e.g. after a Bot re-enables). Activation-
+   *  aware: when the consumer never activated (initial recovery failure),
+   *  Conversation work must stay parked — a Bot lifecycle event must not
+   *  bypass the fail-closed unavailable gate via a direct dispatcher kick. */
+  wakePendingWork(): void {
+    if (this.activation !== "activated" || this.closed) return;
+    void this.dispatcher.kick().catch(() => {});
+  }
   private assertAccepting(): void {
     this.assertOpen();
     if (this.activation === "unavailable") {

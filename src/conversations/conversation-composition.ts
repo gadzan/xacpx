@@ -84,19 +84,19 @@ export async function createConversationRuntime(
     cancelQueuedConversationItem: (...args) => input.control.cancelQueuedConversationItem(...args),
   };
   const runner = new ControlConversationTurnRunner(execution);
-  let dispatcherRef: ConversationDispatcher | undefined;
+  let runsRef: ConversationRunService | undefined;
   bots.setReenabledHook(() => {
     // A Bot that flips back to enabled may have durable pending work that a
-    // disabled-period drain released back to pending: wake the dispatcher so
-    // the accepted Run resumes without requiring a second prompt.
-    void dispatcherRef?.kick().catch(() => {});
+    // disabled-period drain released back to pending. Wake via the
+    // activation-aware seam so an unavailable consumer (initial recovery
+    // failure) stays parked instead of draining through a direct kick.
+    runsRef?.wakePendingWork();
   });
   const dispatcher = new ConversationDispatcher(store, botRuntime, runner, input.sessions, {
     authorityEpoch: input.authorityEpoch ?? randomUUID(),
     ...(input.ownerId ? { ownerId: input.ownerId } : {}),
     ...(input.onProductEvent ? { onProductEvent: input.onProductEvent } : {}),
   });
-  dispatcherRef = dispatcher;
   const runs = new ConversationRunService(
     store,
     bots,
@@ -112,6 +112,7 @@ export async function createConversationRuntime(
       ...shared,
     },
   );
+  runsRef = runs;
   let lifecycle: "open" | "stopping" | "closed" = "open";
   let activeOps = 0;
   const idleWaiters: Array<() => void> = [];
