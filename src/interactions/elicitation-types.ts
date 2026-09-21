@@ -45,6 +45,14 @@ export type ChannelElicitationField =
       required: boolean;
       options: ChannelElicitationOption[];
       defaultValue?: string;
+      /**
+       * String constraints the agent attached alongside the enum. ACP allows
+       * them to coexist, and dropping them would let an answer the agent's
+       * own schema rejects reach it as accepted. Core re-validates them.
+       */
+      minLength?: number;
+      maxLength?: number;
+      format?: "email" | "uri" | "date" | "date-time";
     }
   | {
       kind: "number";
@@ -111,7 +119,14 @@ export type ChannelElicitationDecision =
   | {
       action: "accept";
       responderId: string;
-      content: Record<string, ChannelElicitationValue>;
+      /**
+       * Matches the internal broker result and the runtime decision:
+       * `null` is a valid ACP accept for an all-optional form, and `undefined`
+       * means the channel submitted nothing at all (core then validates the
+       * empty set). A channel that cannot express "no answers" has no way to
+       * render a zero-field form correctly.
+       */
+      content?: Record<string, ChannelElicitationValue> | null;
     }
   | {
       action: "decline" | "cancel";
