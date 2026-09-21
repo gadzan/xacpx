@@ -929,21 +929,42 @@ export function validateElicitationAnswer(
     // round 3/5 decision-object findings, nested one level deeper.
     //
     // Each index is read exactly once into a core-owned plain array; the
-    // renderer's array is never touched again. `options` is capped at 100, so
-    // the fixed length bounds the work.
+    // renderer's array is never touched again.
+    //
+    // ORDER IS LOAD-BEARING, and round 9 got it wrong: canonicalising before
+    // any length check deleted round 8's O(1) admission gate. A sparse
+    // `new Array(100_000_000)` on a 3-option multi-select forced a 100M-entry
+    // snapshot before the option-count check could reject it. So:
+    //
+    //   1. read `length` ONCE — no index access, no allocation;
+    //   2. reject on a fixed core bound (`maxOptionsPerField`, and for a
+    //      multi-select the field's own option count) BEFORE `new Array()`;
+    //   3. only then canonicalise, bailing the moment the character budget is
+    //      exceeded.
     let value: unknown = rawValue;
     if (Array.isArray(rawValue)) {
-      const snapshot: unknown[] = new Array(rawValue.length);
+      const length = rawValue.length;
+      // Step 2: admission on length alone. A longer array can never be a legal
+      // multi-select answer, and no field kind accepts an unbounded array, so
+      // this rejects without touching a single index.
+      if (length > ELICITATION_SCHEMA_LIMITS.maxOptionsPerField) {
+        return { ok: false, reason: "accepted answer exceeds the core size limit" };
+      }
+      if (field.kind === "multi-select" && length > field.options.length) {
+        return { ok: false, reason: "accepted answer exceeds the core size limit" };
+      }
+      // Step 3: canonicalise within the admitted bound, one read per index.
+      const snapshot: unknown[] = new Array(length);
       let snapshotChars = 0;
-      for (let index = 0; index < rawValue.length; index += 1) {
+      for (let index = 0; index < length; index += 1) {
         const item = rawValue[index];
         snapshot[index] = item;
         snapshotChars += typeof item === "string" ? item.length : 1;
+        if (snapshotChars > ELICITATION_SCHEMA_LIMITS.maxAcceptedAnswerChars) {
+          return { ok: false, reason: "accepted answer exceeds the core size limit" };
+        }
       }
       value = snapshot;
-      if (snapshotChars > ELICITATION_SCHEMA_LIMITS.maxAcceptedAnswerChars) {
-        return { ok: false, reason: "accepted answer exceeds the core size limit" };
-      }
     }
 
     // CHEAP RAW PREFLIGHT, before any format/collection work.
@@ -975,23 +996,18 @@ export function validateElicitationAnswer(
 }
 
 /**
- * Bounded character estimate over the RAW submitted value, computed without
- * running any format or collection validation.
+ * Bounded character estimate over an already length-admitted value.
  *
- * Arrays are the interesting case: `options` is capped at 100 entries, so any
- * array longer than that cannot possibly be a legal multi-select answer. Using
- * the option count as the array-length bound therefore rejects an impossible
- * input with a single comparison instead of traversing it.
+ * Arrays reach here only after the admission gate in
+ * `validateElicitationAnswer` has rejected anything over `maxOptionsPerField`
+ * (and, for a multi-select, over the field's own option count), so this loop
+ * runs at most ~100 iterations. It exists as a second line of defence rather
+ * than as the primary gate.
  */
 function rawAnswerChars(field: ChannelElicitationField, value: unknown): number {
   if (typeof value === "string") return value.length;
   if (typeof value === "number" || typeof value === "boolean") return 1;
   if (!Array.isArray(value)) return 0;
-  if (field.kind === "multi-select" && value.length > field.options.length) {
-    // More selections than offered options can never validate; report the
-    // whole remaining budget so the caller cancels immediately.
-    return ELICITATION_SCHEMA_LIMITS.maxAcceptedAnswerChars + 1;
-  }
   let chars = 0;
   for (const item of value) {
     if (typeof item === "string") chars += item.length;

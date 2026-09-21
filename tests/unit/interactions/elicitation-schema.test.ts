@@ -1048,6 +1048,73 @@ describe("validateElicitationAnswer", () => {
     expect(result.reason).not.toContain("is not a uri");
   });
 
+  test("a sparse oversized array is rejected on length alone, with zero index reads", () => {
+    // Regression: round 9's canonicalisation ran before any length check, which
+    // deleted round 8's O(1) admission gate. A sparse `new Array(N)` forced a
+    // full N-entry snapshot before the option-count check could reject it —
+    // no getters or Proxy needed, just a big `length`.
+    const multi = normalizeOk(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { tags: { type: "array", items: { type: "string", enum: ["a", "b", "c"] } } },
+        required: ["tags"],
+      },
+    }))[0];
+
+    let indexReads = 0;
+    const sparse: string[] = new Array(10_000);
+    Object.defineProperty(sparse, "0", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        indexReads += 1;
+        return "a";
+      },
+    });
+
+    const result = validateElicitationAnswer([multi], { tags: sparse });
+    expect(result).toMatchObject({ ok: false });
+    if (result.ok) return;
+    expect(result.reason).toContain("core size limit");
+    // The proof that matters: the length guard fired BEFORE any traversal.
+    expect(indexReads).toBe(0);
+  });
+
+  test("an oversized array on a non-multi-select field is rejected on length alone", () => {
+    // Same gate protects text/boolean/number fields: an array submitted there is
+    // always wrong, so the type check must not have to traverse it first.
+    const text = normalizeOk(formRequest({
+      requestedSchema: { type: "object", properties: { note: { type: "string" } }, required: ["note"] },
+    }))[0];
+
+    let indexReads = 0;
+    const sparse: string[] = new Array(5_000);
+    Object.defineProperty(sparse, "0", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        indexReads += 1;
+        return "a";
+      },
+    });
+
+    const result = validateElicitationAnswer([text], { note: sparse });
+    expect(result).toMatchObject({ ok: false });
+    expect(indexReads).toBe(0);
+  });
+
+  test("an in-bounds array is still canonicalised with one read per index", () => {
+    // The admission gate must not over-reject: a legal multi-select still works.
+    const multi = normalizeOk(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { tags: { type: "array", items: { type: "string", enum: ["a", "b", "c"] } } },
+        required: ["tags"],
+      },
+    }))[0];
+    expect(validateElicitationAnswer([multi], { tags: ["a", "b"] }).ok).toBe(true);
+  });
+
   test("an oversized multi-select array is rejected without traversal", () => {
     // `options` is capped at 100 entries, so any longer array cannot possibly be
     // legal. The preflight uses that bound to reject with one comparison
