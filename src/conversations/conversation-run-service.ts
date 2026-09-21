@@ -532,7 +532,11 @@ export class ConversationRunService {
     for (const session of Object.values(this.state.sessions)) {
       if (
         sessionOwnedByDirectBot(session, botId, ownedBindingIds)
-        || (session.owner?.kind === "bot-direct" && session.owner.conversationId === conversationId)
+        || (
+          session.owner?.kind === "bot-direct"
+          && session.owner.botId === undefined
+          && session.owner.conversationId === conversationId
+        )
       ) {
         aliases.add(session.alias);
       }

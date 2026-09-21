@@ -38,7 +38,8 @@ export interface UpdateBotInput {
 export type BotLifecycleMutation = "update" | "delete";
 
 /** True when a LogicalSession is owned by this Direct Bot, including PR2
- *  bindingId-only records that predate `owner.botId`. */
+ *  bindingId-only records that predate `owner.botId`. An explicit botId is
+ *  authoritative: legacy metadata must never override a conflicting owner. */
 export function sessionOwnedByDirectBot(
   session: Pick<LogicalSession, "owner">,
   botId: string,
@@ -48,13 +49,13 @@ export function sessionOwnedByDirectBot(
   if (owner?.kind !== "bot-direct") {
     return false;
   }
-  if (owner.botId === botId) {
-    return true;
+  if (owner.botId !== undefined) {
+    return owner.botId === botId;
   }
   if (ownedBindingIds.has(owner.bindingId)) {
     return true;
   }
-  return !owner.botId && owner.bindingId === createDirectBindingId(botId);
+  return owner.bindingId === createDirectBindingId(botId);
 }
 
 export interface BotConversationWork {

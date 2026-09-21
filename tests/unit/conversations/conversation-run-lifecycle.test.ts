@@ -865,6 +865,34 @@ test("teardown releases PR2 bindingId-only owned sessions so deleteBot can proce
   expect(first.state.bots[BOT_ID]).toBeUndefined();
 });
 
+test("teardown does not release a session whose explicit botId conflicts with legacy ownership metadata", async () => {
+  const first = await createLifecycle();
+  const bindingId = createDirectBindingId(BOT_ID);
+  const conversationId = createDirectConversationId(BOT_ID);
+  const alias = `brt_${bindingId}`;
+  await first.sessions.createSession(alias, "codex", "backend", {
+    owner: {
+      kind: "bot-direct",
+      bindingId,
+      botId: "bot_other",
+      conversationId,
+    },
+  });
+
+  // Explicit owner.botId is authoritative. A conflicting deterministic bindingId
+  // and legacy conversationId must not let teardown claim another Bot's session.
+  await first.service.teardownDirectConversation(BOT_ID);
+
+  expect(first.state.sessions[alias]?.owner).toEqual({
+    kind: "bot-direct",
+    bindingId,
+    botId: "bot_other",
+    conversationId,
+  });
+  expect(first.physical.deleteCalls).toBe(0);
+  expect(first.physical.releaseCalls).toBe(0);
+});
+
 test("deleteBot fails closed on accepted durable work before runtime materialization", async () => {
   const first = await createLifecycle();
   const accepted = await first.service.acceptDirectPrompt({
