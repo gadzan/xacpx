@@ -23,6 +23,16 @@ export const ELICITATION_SCHEMA_LIMITS = {
   maxFieldDescriptionLength: 1000,
   maxOptionsPerField: 100,
   maxOptionLabelLength: 256,
+  maxOptionValueLength: 256,
+  maxDefaultValueLength: 256,
+  maxRequiredNames: 20,
+  /**
+   * Total character budget across every string in the normalized form.
+   * Measured worst case is 20 fields × (256 title + 1000 description + 256
+   * default + 256 pattern) + 8000 message ≈ 48.5k, so this sits just above a
+   * fully-legal form and rejects anything that aggregates past it.
+   */
+  maxNormalizedFormChars: 49_000,
   maxMessageLength: 8000,
   maxPatternLength: 512,
 } as const;
@@ -81,11 +91,16 @@ function readOptionalStringArray(
   holder: Plain,
   key: string,
   max: number,
+  maxItemLength = ELICITATION_SCHEMA_LIMITS.maxOptionValueLength,
 ): { ok: true; value?: string[] } | { ok: false } {
   const value = holder[key];
   if (value === undefined || value === null) return { ok: true };
   if (!Array.isArray(value) || value.length > max) return { ok: false };
-  if (!value.every((item) => typeof item === "string")) return { ok: false };
+  for (const item of value) {
+    // Count alone is not a bound: 100 unbounded option strings are still an
+    // unbounded payload handed to the renderer and held in pending state.
+    if (typeof item !== "string" || item.length > maxItemLength) return { ok: false };
+  }
   return { ok: true, value: value as string[] };
 }
 
@@ -161,6 +176,9 @@ function normalizeField(
       const defaultValue = property.default;
       if (defaultValue !== undefined && defaultValue !== null && typeof defaultValue !== "string") {
         return { ok: false, detail: `field "${key}" default is not a string` };
+      }
+      if (typeof defaultValue === "string" && defaultValue.length > ELICITATION_SCHEMA_LIMITS.maxDefaultValueLength) {
+        return { ok: false, detail: `field "${key}" default exceeds ${ELICITATION_SCHEMA_LIMITS.maxDefaultValueLength} chars` };
       }
 
       const enumValues = readOptionalStringArray(property, "enum", ELICITATION_SCHEMA_LIMITS.maxOptionsPerField);
@@ -418,6 +436,11 @@ export function normalizeAcpElicitationForm(request: unknown): ElicitationNormal
     if (!Array.isArray(required) || !required.every((name) => typeof name === "string")) {
       return fail("malformed_schema", "requestedSchema.required is not a string array");
     }
+    // Bound the list BEFORE dedup/traversal: an unbounded array is an
+    // unbounded scan even when every entry is valid.
+    if (required.length > ELICITATION_SCHEMA_LIMITS.maxRequiredNames) {
+      return fail("resource_exceeded", `required exceeds ${ELICITATION_SCHEMA_LIMITS.maxRequiredNames} names`);
+    }
     if (hasDuplicateValues(required)) {
       return fail("malformed_schema", "requestedSchema.required repeats a name");
     }
@@ -448,7 +471,31 @@ export function normalizeAcpElicitationForm(request: unknown): ElicitationNormal
     const requiredField = requiredSet.has(key);
     fields.push({ ...normalized.field, required: requiredField } as ChannelElicitationField);
   }
+  // Last-resort total budget. Per-field limits bound one field; this bounds
+  // the whole normalized form the renderer will hold and the daemon keeps in
+  // pending state, so 20 maxed-out fields cannot still be unbounded.
+  const totalChars = message.length + fields.reduce((sum, field) => sum + measureFieldChars(field), 0);
+  if (totalChars > ELICITATION_SCHEMA_LIMITS.maxNormalizedFormChars) {
+    return fail("resource_exceeded", `normalized form exceeds ${ELICITATION_SCHEMA_LIMITS.maxNormalizedFormChars} chars`);
+  }
   return { ok: true, form: { message, fields } };
+}
+
+/** Characters the normalized field will carry into the renderer. */
+function measureFieldChars(field: ChannelElicitationField): number {
+  let chars = field.key.length + field.title.length + (field.description?.length ?? 0);
+  if (field.kind === "text") {
+    chars += (field.defaultValue?.length ?? 0) + (field.pattern?.length ?? 0);
+  } else if (field.kind === "single-select" || field.kind === "multi-select") {
+    for (const option of field.options) {
+      chars += option.value.length + option.label.length + (option.description?.length ?? 0);
+    }
+    if (field.kind === "single-select") chars += field.defaultValue?.length ?? 0;
+    else for (const value of field.defaultValue ?? []) chars += value.length;
+  } else if (field.kind === "boolean") {
+    chars += 1;
+  }
+  return chars;
 }
 
 export type ElicitationAnswerValidationResult =
@@ -468,12 +515,52 @@ function isUri(value: string): boolean {
   }
 }
 
-function isDate(value: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value));
+/** Full RFC3339 date-time: date, "T", time with mandatory seconds and offset. */
+const RFC3339_DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+const CALENDAR_DAYS: readonly number[] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
 }
 
+function daysInMonth(year: number, month: number): number {
+  if (month === 2 && isLeapYear(year)) return 29;
+  return CALENDAR_DAYS[month - 1] ?? 0;
+}
+
+/**
+ * Strict calendar check. `Date.parse` normalizes 2026-02-31 into 2026-03-03,
+ * so it cannot be used to reject dates that do not exist — the day must be
+ * range-checked against the actual month, including leap years.
+ */
+function isDate(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12) return false;
+  return day >= 1 && day <= daysInMonth(year, month);
+}
+
+/** Strict RFC3339 date-time: real calendar date, seconds and offset required. */
 function isDateTime(value: string): boolean {
-  return !Number.isNaN(Date.parse(value)) && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value);
+  if (!RFC3339_DATE_TIME.test(value)) return false;
+  const separator = value.indexOf("T");
+  const datePart = value.slice(0, separator);
+  const timePart = value.slice(separator + 1);
+  if (!isDate(datePart)) return false;
+  const clock = /^(\d{2}):(\d{2}):(\d{2})/.exec(timePart);
+  if (!clock) return false;
+  const hours = Number(clock[1]);
+  const minutes = Number(clock[2]);
+  const seconds = Number(clock[3]);
+  if (hours > 23 || minutes > 59 || seconds > 60) return false;
+  // Offset must be a real UTC offset: HH <= 23 and MM <= 59.
+  const offset = /([+-])(\d{2}):(\d{2})$/.exec(value);
+  if (offset && (Number(offset[2]) > 23 || Number(offset[3]) > 59)) return false;
+  return true;
 }
 
 /**
@@ -494,7 +581,12 @@ export function validateElicitationAnswer(
   }
   const byKey = new Map(fields.map((field) => [field.key, field]));
   for (const key of Object.keys(source)) {
-    if (!byKey.has(key)) return { ok: false, reason: `unexpected answer key "${key}"` };
+    // The key itself is agent-controlled metadata, but a renderer that echoes
+    // answer keys into its error text makes this a leak vector. Report the
+    // count and a stable code instead.
+    if (!byKey.has(key)) {
+      return { ok: false, reason: `unexpected answer key at index ${Object.keys(source).indexOf(key)}` };
+    }
   }
   const out: Record<string, ChannelElicitationValue> = {};
   for (const field of fields) {
@@ -576,7 +668,10 @@ function validateFieldValue(
       }
       for (const item of value) {
         if (!field.options.some((option) => option.value === item)) {
-          return { ok: false, reason: `field "${field.key}" value "${item}" is not an offered option` };
+          // Never echo the rejected value: it is user input and may be
+          // sensitive. The field key plus a stable code is enough to act on
+          // and safe to log.
+          return { ok: false, reason: `field "${field.key}" value is not an offered option` };
         }
       }
       if (field.minItems !== undefined && value.length < field.minItems) {

@@ -593,6 +593,94 @@ describe("ElicitationInteractionBroker privacy", () => {
     }
   });
 
+  test("an INVALID sentinel answer never reaches logs on the rejection path", async () => {
+    // Regression: the validator used to echo the rejected value in its reason
+    // and the broker logged that reason verbatim, so a sensitive answer the
+    // user typed into an unoffered option landed straight in the log.
+    const { broker, logs } = harness({
+      channel: formChannel(async () => ({
+        action: "accept",
+        responderId: "user-A",
+        // Valid key, invalid value: enum violation carrying the sentinel.
+        content: { note: SENTINEL_ANSWER },
+      })),
+    });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    try {
+      // Enum-restricted schema so the sentinel is an enum violation.
+      const result = await broker.resolveElicitation(request({
+        interactionId: route.interactionId,
+        request: {
+          sessionId: "acp-1",
+          mode: "form",
+          message: "Pick one",
+          requestedSchema: {
+            type: "object",
+            properties: { note: { type: "string", enum: ["red", "blue"] } },
+            required: ["note"],
+          },
+        },
+      }));
+      expect(result).toEqual({ action: "cancel" });
+      await Promise.resolve();
+      await Promise.resolve();
+      const serializedLogs = JSON.stringify(logs.map((entry) => ({ event: entry.event, fields: entry.fields })));
+      expect(serializedLogs).not.toContain(SENTINEL_ANSWER);
+      // The stable reason is still recorded so the failure is diagnosable.
+      expect(serializedLogs).toContain("not an offered option");
+    } finally {
+      dispose();
+    }
+  });
+
+  test("a throwing renderer's message never reaches logs", async () => {
+    // Regression: the broker logged `error.message` verbatim, and a renderer
+    // that echoes submitted values into its exception text would leak them.
+    const { broker, logs } = harness({
+      channel: formChannel(async () => {
+        throw new Error(`renderer failed while rendering ${SENTINEL_ANSWER}`);
+      }),
+    });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    try {
+      const result = await broker.resolveElicitation(request({ interactionId: route.interactionId }));
+      expect(result).toEqual({ action: "cancel" });
+      await Promise.resolve();
+      await Promise.resolve();
+      const serializedLogs = JSON.stringify(logs.map((entry) => ({ event: entry.event, fields: entry.fields })));
+      expect(serializedLogs).not.toContain(SENTINEL_ANSWER);
+      // The error TYPE is still recorded so the failure is diagnosable.
+      expect(serializedLogs).toContain("errorType");
+    } finally {
+      dispose();
+    }
+  });
+
+  test("an unexpected answer key is logged by index, never by key", async () => {
+    const { broker, logs } = harness({
+      channel: formChannel(async () => ({
+        action: "accept",
+        responderId: "user-A",
+        content: { note: "fine", SENTINEL_ANSWER: "extra" },
+      })) as never,
+    });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    try {
+      const result = await broker.resolveElicitation(request({ interactionId: route.interactionId }));
+      expect(result).toEqual({ action: "cancel" });
+      await Promise.resolve();
+      await Promise.resolve();
+      const serializedLogs = JSON.stringify(logs.map((entry) => ({ event: entry.event, fields: entry.fields })));
+      expect(serializedLogs).not.toContain(SENTINEL_ANSWER);
+      expect(serializedLogs).toContain("unexpected answer key at index");
+    } finally {
+      dispose();
+    }
+  });
+
   test("global broker accessors round-trip and reset cleanly", () => {
     const { broker } = harness();
     setGlobalElicitationBroker(broker);

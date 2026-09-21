@@ -177,9 +177,11 @@ export class ElicitationInteractionBroker {
     try {
       channel = this.getChannelByChatKey(route.chatKey);
     } catch (error) {
+      // Type only: a resolver throwing an agent-supplied chatKey into its
+      // message must not become a log line.
       await this.log("elicitation.interaction.channel_failed", "channel lookup threw", {
         requestId,
-        message: error instanceof Error ? error.message : String(error),
+        errorType: error instanceof Error ? error.constructor.name : typeof error,
         fieldCount: 0,
         fieldKinds: "",
       });
@@ -344,10 +346,10 @@ export class ElicitationInteractionBroker {
       unsubscribeTurnAbort();
       return this.commit(requestId, { action: "accept", content }, fields, startedAt);
     } catch (error) {
-      // Plugin throw, explicit cancel, abort, timeout: all cancel. The
-      // rejection reason identifies the symptom — a non-abort rejection
-      // means the channel itself threw, which is worth one log line; the
-      // abort path is already recorded by the turn subscription/expiry.
+      // Plugin throw, explicit cancel, abort, timeout: all cancel. Only the
+      // ERROR TYPE is recorded, never `error.message`: a channel renderer
+      // that echoes submitted form values into its exception text would
+      // otherwise write user answers straight into the log (G8).
       if (controller.signal.aborted) {
         await this.log("elicitation.interaction.aborted", "elicitation interaction aborted before decision", {
           requestId,
@@ -355,7 +357,7 @@ export class ElicitationInteractionBroker {
       } else {
         await this.log("elicitation.interaction.channel_failed", "channel request failed", {
           requestId,
-          message: error instanceof Error ? error.message : String(error),
+          errorType: error instanceof Error ? error.constructor.name : typeof error,
         });
       }
       unsubscribeTurnAbort();

@@ -309,6 +309,121 @@ describe("normalizeAcpElicitationForm rejections", () => {
   });
 });
 
+describe("normalizeAcpElicitationForm string resource bounds", () => {
+  test("oversized enum value is rejected even with few options", () => {
+    // Count bounds alone let one unbounded option string through into the
+    // renderer and pending state.
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { a: { type: "string", enum: ["x".repeat(ELICITATION_SCHEMA_LIMITS.maxOptionValueLength + 1)] } },
+      },
+    }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("malformed_schema");
+  });
+
+  test("oversized titled option value is rejected", () => {
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: {
+          a: { type: "string", oneOf: [{ const: "y".repeat(ELICITATION_SCHEMA_LIMITS.maxOptionValueLength + 1), title: "Big" }] },
+        },
+      },
+    }));
+    expect(result.ok).toBe(false);
+  });
+
+  test("oversized text default is rejected", () => {
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { a: { type: "string", default: "d".repeat(ELICITATION_SCHEMA_LIMITS.maxDefaultValueLength + 1) } },
+      },
+    }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("default exceeds");
+  });
+
+  test("oversized multi-select default item is rejected", () => {
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: {
+          a: {
+            type: "array",
+            items: { type: "string", enum: ["a".repeat(ELICITATION_SCHEMA_LIMITS.maxOptionValueLength + 1)] },
+          },
+        },
+      },
+    }));
+    expect(result.ok).toBe(false);
+  });
+
+  test("oversized required list is rejected before traversal", () => {
+    // Fewer fields than names: the field-count check passes, so the required
+    // bound is what must reject it.
+    const properties: Record<string, unknown> = {};
+    for (let i = 0; i < ELICITATION_SCHEMA_LIMITS.maxFields; i += 1) {
+      properties[`f${i}`] = { type: "string" };
+    }
+    const names = [
+      ...Object.keys(properties),
+      ...Array.from(
+        { length: ELICITATION_SCHEMA_LIMITS.maxRequiredNames + 1 - Object.keys(properties).length },
+        (_, i) => `ghost${i}`,
+      ),
+    ];
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { type: "object", properties, required: names },
+    }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("required exceeds");
+  });
+
+  test("total normalized form character budget is enforced", () => {
+    // Each field is individually legal (key 128 + title 256 + description
+    // 1000 + default 256 + pattern 256) but the aggregate must still be
+    // bounded: the renderer holds the whole normalized form and the daemon
+    // keeps it in pending state.
+    const properties: Record<string, unknown> = {};
+    for (let i = 0; i < ELICITATION_SCHEMA_LIMITS.maxFields; i += 1) {
+      const prefix = `f${i}-`;
+      const longKey = prefix + "k".repeat(ELICITATION_SCHEMA_LIMITS.maxFieldKeyLength - prefix.length);
+      properties[longKey] = {
+        type: "string",
+        title: "t".repeat(ELICITATION_SCHEMA_LIMITS.maxFieldTitleLength),
+        description: "d".repeat(ELICITATION_SCHEMA_LIMITS.maxFieldDescriptionLength),
+        default: "v".repeat(ELICITATION_SCHEMA_LIMITS.maxDefaultValueLength),
+        maxLength: ELICITATION_SCHEMA_LIMITS.maxDefaultValueLength,
+        pattern: "p".repeat(ELICITATION_SCHEMA_LIMITS.maxPatternLength),
+      };
+    }
+    const result = normalizeAcpElicitationForm(formRequest({
+      message: "m".repeat(ELICITATION_SCHEMA_LIMITS.maxMessageLength),
+      requestedSchema: { type: "object", properties },
+    }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("normalized form exceeds");
+  });
+
+  test("a form inside every per-field limit and the total budget still normalizes", () => {
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: {
+          a: { type: "string", title: "A", maxLength: 10 },
+          b: { type: "string", enum: ["x", "y"], default: "y" },
+          c: { type: "array", items: { type: "string", enum: ["p", "q"] } },
+        },
+        required: ["a", "b"],
+      },
+    }));
+    expect(result.ok).toBe(true);
+  });
+});
+
 describe("validateElicitationAnswer", () => {
   const text = normalizeOk(formRequest())[0];
   const single = normalizeOk(formRequest({
@@ -423,5 +538,71 @@ describe("validateElicitationAnswer", () => {
     expect(validated.content.summary).toBe(secret);
     const serialized = JSON.stringify(summarizeElicitationSchema([text]));
     expect(serialized).not.toContain(secret);
+  });
+});
+
+describe("validateElicitationAnswer calendar and RFC3339 strictness", () => {
+  function fieldOf(format: "date" | "date-time") {
+    return normalizeOk(formRequest({
+      requestedSchema: { type: "object", properties: { when: { type: "string", format } }, required: ["when"] },
+    }))[0];
+  }
+
+  const date = fieldOf("date");
+  const dateTime = fieldOf("date-time");
+
+  test("valid dates and leap day pass", () => {
+    expect(validateElicitationAnswer([date], { when: "2026-09-20" }).ok).toBe(true);
+    expect(validateElicitationAnswer([date], { when: "2024-02-29" }).ok).toBe(true);
+    expect(validateElicitationAnswer([date], { when: "2000-02-29" }).ok).toBe(true);
+  });
+
+  test("non-existent calendar dates are rejected", () => {
+    // Date.parse normalizes these into the following month, so a lenient
+    // check accepts them.
+    expect(validateElicitationAnswer([date], { when: "2026-02-31" }).ok).toBe(false);
+    expect(validateElicitationAnswer([date], { when: "2026-02-30" }).ok).toBe(false);
+    expect(validateElicitationAnswer([date], { when: "2026-04-31" }).ok).toBe(false);
+    expect(validateElicitationAnswer([date], { when: "2026-06-31" }).ok).toBe(false);
+    expect(validateElicitationAnswer([date], { when: "2026-13-01" }).ok).toBe(false);
+    expect(validateElicitationAnswer([date], { when: "2026-00-10" }).ok).toBe(false);
+    expect(validateElicitationAnswer([date], { when: "2026-01-00" }).ok).toBe(false);
+  });
+
+  test("Feb 29 is rejected in non-leap years", () => {
+    expect(validateElicitationAnswer([date], { when: "2026-02-29" }).ok).toBe(false);
+    expect(validateElicitationAnswer([date], { when: "2100-02-29" }).ok).toBe(false);
+  });
+
+  test("malformed date shapes are rejected", () => {
+    expect(validateElicitationAnswer([date], { when: "2026-9-20" }).ok).toBe(false);
+    expect(validateElicitationAnswer([date], { when: "20/09/2026" }).ok).toBe(false);
+    expect(validateElicitationAnswer([date], { when: "2026-09-20T00:00:00Z" }).ok).toBe(false);
+  });
+
+  test("full RFC3339 date-times pass", () => {
+    expect(validateElicitationAnswer([dateTime], { when: "2026-09-20T10:00:00Z" }).ok).toBe(true);
+    expect(validateElicitationAnswer([dateTime], { when: "2026-09-20T10:00:00.123Z" }).ok).toBe(true);
+    expect(validateElicitationAnswer([dateTime], { when: "2026-09-20T10:00:00+08:00" }).ok).toBe(true);
+    expect(validateElicitationAnswer([dateTime], { when: "2026-09-20T10:00:00-05:30" }).ok).toBe(true);
+  });
+
+  test("incomplete RFC3339 date-times are rejected", () => {
+    // Missing seconds and missing timezone offset were both accepted before.
+    expect(validateElicitationAnswer([dateTime], { when: "2026-09-20T10:00" }).ok).toBe(false);
+    expect(validateElicitationAnswer([dateTime], { when: "2026-09-20T10:00:00" }).ok).toBe(false);
+    expect(validateElicitationAnswer([dateTime], { when: "2026-09-20 10:00:00Z" }).ok).toBe(false);
+  });
+
+  test("out-of-range clock and offset components are rejected", () => {
+    expect(validateElicitationAnswer([dateTime], { when: "2026-09-20T24:00:00Z" }).ok).toBe(false);
+    expect(validateElicitationAnswer([dateTime], { when: "2026-09-20T10:60:00Z" }).ok).toBe(false);
+    expect(validateElicitationAnswer([dateTime], { when: "2026-09-20T10:00:00+25:00" }).ok).toBe(false);
+    expect(validateElicitationAnswer([dateTime], { when: "2026-09-20T10:00:00+08:75" }).ok).toBe(false);
+  });
+
+  test("a date-time with a non-existent calendar date is rejected", () => {
+    expect(validateElicitationAnswer([dateTime], { when: "2026-02-31T10:00:00Z" }).ok).toBe(false);
+    expect(validateElicitationAnswer([dateTime], { when: "2026-13-01T10:00:00Z" }).ok).toBe(false);
   });
 });
