@@ -951,7 +951,7 @@ it("cancel sends control.prompt.cancel for the selected session", async () => {
   expect(rpc).toHaveBeenCalledWith("inst", "control.prompt.cancel", { sessionAlias: "A" });
 });
 
-it("cancelled:false drops the speculative cancelled row and converges authoritative history", async () => {
+it("cancelled:false keeps an identity tombstone so a late same-turn snapshot cannot resurrect busy", async () => {
   rpc.mockResolvedValueOnce({ cancelled: false });
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
     messages: [
@@ -970,9 +970,28 @@ it("cancelled:false drops the speculative cancelled row and converges authoritat
   await vi.waitFor(() => {
     expect(chat.messages.map((message) => message.text)).toEqual(["prompt", "done"]);
   });
-
   expect(chat.busy).toBe(false);
   expect(chat.messages.some((message) => message.status === "cancelled")).toBe(false);
+
+  // The HTTP response and WebSocket have no shared ordering boundary. This snapshot
+  // can have been captured before cancelTurn() returned false and arrive afterwards.
+  chat.applyEvent({
+    kind: "state-snapshot",
+    instanceId: "inst",
+    turns: [{ instanceId: "inst", sessionAlias: "A", parts: [{ type: "text", text: "stale partial" }], status: "streaming", startedAt: 1, slotAfterId: 1 }],
+    usage: [],
+    commands: [],
+  } as never);
+  expect(chat.busy).toBe(false);
+  expect(chat.streaming).toBe("");
+
+  // Once the ordered snapshot actually omits that identity, the tombstone settles
+  // into the ordinary finished guard and stale best-effort HTTP state stays blocked.
+  chat.applyEvent({ kind: "state-snapshot", instanceId: "inst", turns: [], usage: [], commands: [] } as never);
+  chat.seedActiveTurns([
+    { instanceId: "inst", sessionAlias: "A", parts: [{ type: "text", text: "older HTTP seed" }], status: "streaming", startedAt: 1, slotAfterId: 1 },
+  ] as never);
+  expect(chat.busy).toBe(false);
 });
 
 it("cancel surfaces an error code on failure", async () => {
@@ -999,6 +1018,45 @@ it("cancel optimistically releases busy and preserves streamed content; the late
   const before = chat.messages.length;
   chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-finished", chatKey: "c", sessionAlias: "A", ok: false, cancelled: true } } as never);
   expect(chat.messages.length).toBe(before);
+});
+
+it("fresh turn-started removes the previous speculative cancel row before exposing the replacement turn", async () => {
+  let rejectCancel!: (error: unknown) => void;
+  rpc.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectCancel = reject; }));
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+    messages: [
+      { id: 1, instanceId: "inst", sessionAlias: "A", direction: "in", text: "old prompt", createdAt: new Date(1).toISOString() },
+      { id: 2, instanceId: "inst", sessionAlias: "A", direction: "out", text: "old authoritative result", createdAt: new Date(2).toISOString() },
+    ],
+    hasMore: false,
+  }), { status: 200 })));
+
+  const chat = useChatStore();
+  chat.select("inst", "A");
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-started", chatKey: "c", sessionAlias: "A", startedAt: 1, slotAfterId: 1 } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: "old partial" } } as never);
+
+  const cancelling = chat.cancel();
+  expect(chat.messages.some((message) => message.status === "cancelled")).toBe(true);
+
+  // The replacement start is an ordered proof that the old turn is over, but not
+  // proof that its real terminal status was cancelled.
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-started", chatKey: "c", sessionAlias: "A", startedAt: 2, slotAfterId: 2 } } as never);
+  expect(chat.busy).toBe(true);
+  expect(chat.liveTurn).toMatchObject({ startedAt: 2, slotAfterId: 2 });
+  expect(chat.messages.some((message) => message.status === "cancelled")).toBe(false);
+
+  // A transport failure for the superseded Stop is stale and must not restore turn 1.
+  rejectCancel(new ApiError("instance-offline", 503));
+  await cancelling;
+  await vi.waitFor(() => {
+    expect(chat.messages.map((message) => message.text)).toEqual(["old prompt", "old authoritative result"]);
+  });
+
+  expect(chat.error).toBe("");
+  expect(chat.busy).toBe(true);
+  expect(chat.liveTurn).toMatchObject({ startedAt: 2, slotAfterId: 2 });
+  expect(chat.messages.some((message) => message.status === "cancelled")).toBe(false);
 });
 
 it("late turn-output after optimistic cancel does not resurrect busy", async () => {

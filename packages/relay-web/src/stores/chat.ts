@@ -838,9 +838,15 @@ export const useChatStore = defineStore("chat", () => {
     const e = event.event;
     if (e.type === "turn-started") {
       const k = bufKey(event.instanceId, e.sessionAlias);
-      // A genuinely fresh turn supersedes both an old finish and any completed local
-      // cancel attempt for the previous turn on this session.
-      pendingCancels.delete(k);
+      // A fresh ordered start supersedes any pending Stop for the previous turn. Do
+      // not merely drop the guard: its optimistic "cancelled" row may be wrong if the
+      // old finish was missed or the cancel RPC later fails. Remove that speculative
+      // row and converge persisted history before exposing the replacement turn.
+      const pending = pendingCancels.get(k);
+      if (pending) {
+        pendingCancels.delete(k);
+        convergePendingCancelHistory(event.instanceId, e.sessionAlias, k, pending);
+      }
       finishedTurns.delete(k);
       const live = ensureTurn(k, e.startedAt);
       // slotAfterId is durable turn identity, not view-local presentation state.
@@ -1161,11 +1167,13 @@ export const useChatStore = defineStore("chat", () => {
     pending.optimisticRow = flushTurn(id, alias, "cancelled");
     try {
       const result = await api.rpc<{ cancelled: boolean }>(id, "control.prompt.cancel", { sessionAlias: alias });
-      // cancelled:false means the server had no in-flight turn. Our visible live state
-      // was stale, so do not preserve a speculative "cancelled" row; converge history
-      // and keep a finish guard until the next ordered snapshot.
+      // cancelled:false means the server had no in-flight turn at RPC time, but an
+      // older active state-snapshot may still arrive over the independent WebSocket.
+      // Remove the speculative "cancelled" row and converge history, but KEEP this
+      // identity-bearing pending entry as a tombstone. A same-turn snapshot stays
+      // hidden until an ordered snapshot omits it, a different turn replaces it, or a
+      // fresh turn-started establishes the next identity.
       if (result?.cancelled === false && pendingCancels.get(k) === pending) {
-        pendingCancels.delete(k);
         finishedTurns.add(k);
         convergePendingCancelHistory(id, alias, k, pending);
         return;
