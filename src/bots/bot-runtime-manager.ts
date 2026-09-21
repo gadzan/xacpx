@@ -319,8 +319,41 @@ export class BotRuntimeManager {
     }
     return await this.stateMutex.run(async () => {
       const live = this.findScopedBinding(scope.conversationId, scope.topicId, bot.id);
-      if (live && this.bindingSessionIsLive(live)) {
-        return live;
+      if (live) {
+        const oldById = this.sessions.getLogicalSessionById(live.logicalSessionId);
+        const currentAlias = this.sessions.getLogicalSessionRecord(live.sessionAlias);
+        const repairingFullyMissingOldSession = (
+          !oldById
+          && currentAlias?.logical_session_id === session.logical_session_id
+          && currentAlias.alias === session.alias
+        );
+        if (repairingFullyMissingOldSession) {
+          const owner = session.owner;
+          const ownership = classifyDirectBotSessionOwnership(
+            session,
+            bot.id,
+            this.ownedBindingIdsFor(bot.id, bindingId),
+            scope.conversationId,
+          );
+          if (
+            ownership !== "owned"
+            || owner?.kind !== "bot-direct"
+            || owner.bindingId !== bindingId
+            || (owner.topicId !== undefined && owner.topicId !== scope.topicId)
+          ) {
+            throw this.ownershipConflict(
+              bot.id,
+              session.alias,
+              { bindingId, conversationId: scope.conversationId },
+              session,
+            );
+          }
+          // Safe stale-binding repair: the old logical id no longer resolves
+          // anywhere, while this exact alias is now the newly-created owned
+          // candidate for the same deterministic binding.
+        } else if (this.bindingSessionIsLive(live)) {
+          return live;
+        }
       }
       const timestamp = this.now().toISOString();
       const { conversation } = planDirectConversation(this.state, {
