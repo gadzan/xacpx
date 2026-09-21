@@ -27,6 +27,12 @@ export const ELICITATION_SCHEMA_LIMITS = {
   maxDefaultValueLength: 256,
   maxRequiredNames: 20,
   /**
+   * Max characters of an agent-controlled string echoed into a diagnostic
+   * reason. Property names and item types are agent-controlled and can be
+   * arbitrarily long, and the reason reaches the logger verbatim.
+   */
+  maxDiagnosticKeyChars: 64,
+  /**
    * Aggregate policy cap over every string in the normalized form.
    *
    * This is deliberately NOT sized to admit every individually-legal form.
@@ -90,12 +96,31 @@ function asPlain(value: unknown): Plain | undefined {
     : undefined;
 }
 
+/**
+ * Bounded rendering of a field key for diagnostics. ACP property names are
+ * agent-controlled and can be arbitrarily long (the protocol's message ceiling
+ * is 64 MiB), so echoing one into a reason that reaches the logger would
+ * produce an unbounded log line. Report a stable prefix plus the length.
+ */
+function boundedKeyLabel(key: string): string {
+  const max = ELICITATION_SCHEMA_LIMITS.maxDiagnosticKeyChars;
+  return key.length <= max ? key : `${key.slice(0, max)}...(${key.length} chars)`;
+}
+
 function readString(holder: Plain, key: string): string | undefined {
   const value = holder[key];
   return typeof value === "string" ? value : undefined;
 }
 
-function readOptionalNonEmptyString(
+/**
+ * An OPTIONAL bounded string. Absent/null means "not provided"; a present
+ * empty string is LEGAL — the pinned ACP SDK models these as plain
+ * `z.string()` with no `.min(1)`, so `title: ""`, `pattern: ""` and
+ * `description: ""` are protocol-valid and must not be treated as malformed.
+ * Presentation policy (hide an empty title) is the renderer's call, not
+ * core's.
+ */
+function readOptionalBoundedString(
   holder: Plain,
   key: string,
   max: number,
@@ -103,15 +128,14 @@ function readOptionalNonEmptyString(
   const value = holder[key];
   if (value === undefined || value === null) return { ok: true };
   if (typeof value !== "string" || value.length > max) return { ok: false };
-  // Only genuinely empty text is rejected; a whitespace-only title is a
-  // display concern, not a protocol violation.
-  if (value.length === 0) return { ok: false };
   return { ok: true, value };
 }
 
 /**
- * A REQUIRED bounded non-empty string. Unlike `readOptionalNonEmptyString`,
- * absence is a failure — used where ACP marks the member mandatory.
+ * A REQUIRED bounded string. Unlike the optional reader, ABSENCE is a failure
+ * — used where ACP marks the member mandatory (EnumOption.title). A present
+ * empty string is still legal: missing and empty are different things, and
+ * conflating them rejects protocol-valid input.
  */
 function readRequiredBoundedString(
   holder: Plain,
@@ -119,7 +143,7 @@ function readRequiredBoundedString(
   max: number,
 ): { ok: true; value: string } | { ok: false } {
   const value = holder[key];
-  if (typeof value !== "string" || value.length === 0 || value.length > max) return { ok: false };
+  if (typeof value !== "string" || value.length > max) return { ok: false };
   return { ok: true, value };
 }
 
@@ -172,14 +196,14 @@ function normalizeField(
   if (key.length > ELICITATION_SCHEMA_LIMITS.maxFieldKeyLength) {
     return { ok: false, detail: `field key too long: ${key.length}` };
   }
-  const title = readOptionalNonEmptyString(property, "title", ELICITATION_SCHEMA_LIMITS.maxFieldTitleLength);
-  if (!title.ok) return { ok: false, detail: `field "${key}" has an invalid title` };
-  const description = readOptionalNonEmptyString(
+  const title = readOptionalBoundedString(property, "title", ELICITATION_SCHEMA_LIMITS.maxFieldTitleLength);
+  if (!title.ok) return { ok: false, detail: `field "${boundedKeyLabel(key)}" has an invalid title` };
+  const description = readOptionalBoundedString(
     property,
     "description",
     ELICITATION_SCHEMA_LIMITS.maxFieldDescriptionLength,
   );
-  if (!description.ok) return { ok: false, detail: `field "${key}" has an invalid description` };
+  if (!description.ok) return { ok: false, detail: `field "${boundedKeyLabel(key)}" has an invalid description` };
   const fieldTitle = title.value ?? key;
   const common = {
     key,
@@ -189,52 +213,52 @@ function normalizeField(
 
   const rawType = property.type;
   if (typeof rawType !== "string") {
-    return { ok: false, detail: `field "${key}" has no type` };
+    return { ok: false, detail: `field "${boundedKeyLabel(key)}" has no type` };
   }
 
   switch (rawType) {
     case "string": {
       const minLength = readOptionalPositiveInteger(property, "minLength");
-      if (!minLength.ok) return { ok: false, detail: `field "${key}" has an invalid minLength` };
+      if (!minLength.ok) return { ok: false, detail: `field "${boundedKeyLabel(key)}" has an invalid minLength` };
       const maxLength = readOptionalPositiveInteger(property, "maxLength");
-      if (!maxLength.ok) return { ok: false, detail: `field "${key}" has an invalid maxLength` };
+      if (!maxLength.ok) return { ok: false, detail: `field "${boundedKeyLabel(key)}" has an invalid maxLength` };
       if (minLength.value !== undefined
         && maxLength.value !== undefined
         && minLength.value > maxLength.value) {
-        return { ok: false, detail: `field "${key}" has minLength > maxLength` };
+        return { ok: false, detail: `field "${boundedKeyLabel(key)}" has minLength > maxLength` };
       }
-      const pattern = readOptionalNonEmptyString(property, "pattern", ELICITATION_SCHEMA_LIMITS.maxPatternLength);
-      if (!pattern.ok) return { ok: false, detail: `field "${key}" has an invalid pattern` };
+      const pattern = readOptionalBoundedString(property, "pattern", ELICITATION_SCHEMA_LIMITS.maxPatternLength);
+      if (!pattern.ok) return { ok: false, detail: `field "${boundedKeyLabel(key)}" has an invalid pattern` };
       const format = property.format;
       if (format !== undefined && format !== null && format !== "email" && format !== "uri" && format !== "date" && format !== "date-time") {
-        return { ok: false, detail: `field "${key}" has an unsupported format` };
+        return { ok: false, detail: `field "${boundedKeyLabel(key)}" has an unsupported format` };
       }
       const defaultValue = property.default;
       if (defaultValue !== undefined && defaultValue !== null && typeof defaultValue !== "string") {
-        return { ok: false, detail: `field "${key}" default is not a string` };
+        return { ok: false, detail: `field "${boundedKeyLabel(key)}" default is not a string` };
       }
       if (typeof defaultValue === "string" && defaultValue.length > ELICITATION_SCHEMA_LIMITS.maxDefaultValueLength) {
-        return { ok: false, detail: `field "${key}" default exceeds ${ELICITATION_SCHEMA_LIMITS.maxDefaultValueLength} chars` };
+        return { ok: false, detail: `field "${boundedKeyLabel(key)}" default exceeds ${ELICITATION_SCHEMA_LIMITS.maxDefaultValueLength} chars` };
       }
 
       const enumValues = readOptionalStringArray(property, "enum", ELICITATION_SCHEMA_LIMITS.maxOptionsPerField);
-      if (!enumValues.ok) return { ok: false, detail: `field "${key}" has an invalid enum` };
+      if (!enumValues.ok) return { ok: false, detail: `field "${boundedKeyLabel(key)}" has an invalid enum` };
       if (enumValues.value !== undefined && Array.isArray(property.oneOf)) {
-        return { ok: false, detail: `field "${key}" mixes enum and oneOf` };
+        return { ok: false, detail: `field "${boundedKeyLabel(key)}" mixes enum and oneOf` };
       }
       const titled = readTitledOptions(property.oneOf);
-      if (!titled.ok) return { ok: false, detail: titled.detail ?? `field "${key}" has an invalid oneOf` };
+      if (!titled.ok) return { ok: false, detail: titled.detail ?? `field "${boundedKeyLabel(key)}" has an invalid oneOf` };
       const options = titled.options ?? enumValues.value?.map((value) => ({ value, label: value }));
       if (options && options.length > ELICITATION_SCHEMA_LIMITS.maxOptionsPerField) {
-        return { ok: false, detail: `field "${key}" exceeds ${ELICITATION_SCHEMA_LIMITS.maxOptionsPerField} options` };
+        return { ok: false, detail: `field "${boundedKeyLabel(key)}" exceeds ${ELICITATION_SCHEMA_LIMITS.maxOptionsPerField} options` };
       }
       if (options) {
         if (hasDuplicateOptions(options)) {
-          return { ok: false, detail: `field "${key}" has ambiguous option values` };
+          return { ok: false, detail: `field "${boundedKeyLabel(key)}" has ambiguous option values` };
         }
         if (defaultValue !== undefined && defaultValue !== null
           && !options.some((option) => option.value === defaultValue)) {
-          return { ok: false, detail: `field "${key}" default is not an offered option` };
+          return { ok: false, detail: `field "${boundedKeyLabel(key)}" default is not an offered option` };
         }
         return {
           ok: true,
@@ -285,21 +309,21 @@ function normalizeField(
         && (typeof defaultValue !== "number"
           || !Number.isFinite(defaultValue)
           || (isInteger && !Number.isInteger(defaultValue)))) {
-        return { ok: false, detail: `field "${key}" default is not a valid ${rawType}` };
+        return { ok: false, detail: `field "${boundedKeyLabel(key)}" default is not a valid ${rawType}` };
       }
       const minimum = readOptionalNumber(property, "minimum");
-      if (!minimum.ok) return { ok: false, detail: `field "${key}" has an invalid minimum` };
+      if (!minimum.ok) return { ok: false, detail: `field "${boundedKeyLabel(key)}" has an invalid minimum` };
       const maximum = readOptionalNumber(property, "maximum");
-      if (!maximum.ok) return { ok: false, detail: `field "${key}" has an invalid maximum` };
+      if (!maximum.ok) return { ok: false, detail: `field "${boundedKeyLabel(key)}" has an invalid maximum` };
       if (minimum.value !== undefined
         && maximum.value !== undefined
         && minimum.value > maximum.value) {
-        return { ok: false, detail: `field "${key}" has minimum > maximum` };
+        return { ok: false, detail: `field "${boundedKeyLabel(key)}" has minimum > maximum` };
       }
       if (typeof defaultValue === "number"
         && ((minimum.value !== undefined && defaultValue < minimum.value)
           || (maximum.value !== undefined && defaultValue > maximum.value))) {
-        return { ok: false, detail: `field "${key}" default is out of range` };
+        return { ok: false, detail: `field "${boundedKeyLabel(key)}" default is out of range` };
       }
       return {
         ok: true,
@@ -316,7 +340,7 @@ function normalizeField(
     }
     case "boolean": {
       const defaultValue = readOptionalBoolean(property, "default");
-      if (!defaultValue.ok) return { ok: false, detail: `field "${key}" default is not a boolean` };
+      if (!defaultValue.ok) return { ok: false, detail: `field "${boundedKeyLabel(key)}" default is not a boolean` };
       return {
         ok: true,
         field: {
@@ -329,16 +353,16 @@ function normalizeField(
     }
     case "array": {
       const minItems = readOptionalPositiveInteger(property, "minItems");
-      if (!minItems.ok) return { ok: false, detail: `field "${key}" has an invalid minItems` };
+      if (!minItems.ok) return { ok: false, detail: `field "${boundedKeyLabel(key)}" has an invalid minItems` };
       const maxItems = readOptionalPositiveInteger(property, "maxItems");
-      if (!maxItems.ok) return { ok: false, detail: `field "${key}" has an invalid maxItems` };
+      if (!maxItems.ok) return { ok: false, detail: `field "${boundedKeyLabel(key)}" has an invalid maxItems` };
       if (minItems.value !== undefined
         && maxItems.value !== undefined
         && minItems.value > maxItems.value) {
-        return { ok: false, detail: `field "${key}" has minItems > maxItems` };
+        return { ok: false, detail: `field "${boundedKeyLabel(key)}" has minItems > maxItems` };
       }
       const items = asPlain(property.items);
-      if (!items) return { ok: false, detail: `field "${key}" has no items schema` };
+      if (!items) return { ok: false, detail: `field "${boundedKeyLabel(key)}" has no items schema` };
       // ACP defines multi-select items as a tagged union with three members:
       //
       //   { type: "string", enum: [...] }        → untitled string multi-select
@@ -358,49 +382,49 @@ function normalizeField(
       if (itemTypePresent) {
         // Typed variant: only "string" + enum is supported in v1.
         if (rawItemType !== "string") {
-          return { ok: false, detail: `field "${key}" has unsupported multi-select item type "${String(rawItemType)}"` };
+          return { ok: false, detail: `field "${boundedKeyLabel(key)}" has unsupported multi-select item type "${boundedKeyLabel(String(rawItemType))}"` };
         }
         if (!hasEnum) {
-          return { ok: false, detail: `field "${key}" string items have no enum` };
+          return { ok: false, detail: `field "${boundedKeyLabel(key)}" string items have no enum` };
         }
         if (hasAnyOf) {
-          return { ok: false, detail: `field "${key}" items mix enum and anyOf` };
+          return { ok: false, detail: `field "${boundedKeyLabel(key)}" items mix enum and anyOf` };
         }
       } else {
         // Typeless member: titled only.
         if (!hasAnyOf) {
-          return { ok: false, detail: `field "${key}" items have neither enum nor anyOf` };
+          return { ok: false, detail: `field "${boundedKeyLabel(key)}" items have neither enum nor anyOf` };
         }
         if (hasEnum) {
-          return { ok: false, detail: `field "${key}" items mix enum and anyOf` };
+          return { ok: false, detail: `field "${boundedKeyLabel(key)}" items mix enum and anyOf` };
         }
       }
       const enumItems = readOptionalStringArray(items, "enum", ELICITATION_SCHEMA_LIMITS.maxOptionsPerField);
-      if (!enumItems.ok) return { ok: false, detail: `field "${key}" has invalid item enum` };
+      if (!enumItems.ok) return { ok: false, detail: `field "${boundedKeyLabel(key)}" has invalid item enum` };
       const titled = readTitledOptions(items.anyOf);
-      if (!titled.ok) return { ok: false, detail: titled.detail ?? `field "${key}" has invalid item anyOf` };
+      if (!titled.ok) return { ok: false, detail: titled.detail ?? `field "${boundedKeyLabel(key)}" has invalid item anyOf` };
       const options = titled.options ?? enumItems.value?.map((value) => ({ value, label: value }));
       if (!options || options.length === 0) {
-        return { ok: false, detail: `field "${key}" multi-select has no options` };
+        return { ok: false, detail: `field "${boundedKeyLabel(key)}" multi-select has no options` };
       }
       if (options.length > ELICITATION_SCHEMA_LIMITS.maxOptionsPerField) {
-        return { ok: false, detail: `field "${key}" exceeds ${ELICITATION_SCHEMA_LIMITS.maxOptionsPerField} options` };
+        return { ok: false, detail: `field "${boundedKeyLabel(key)}" exceeds ${ELICITATION_SCHEMA_LIMITS.maxOptionsPerField} options` };
       }
       if (hasDuplicateOptions(options)) {
-        return { ok: false, detail: `field "${key}" has ambiguous option values` };
+        return { ok: false, detail: `field "${boundedKeyLabel(key)}" has ambiguous option values` };
       }
       const defaultValue = readOptionalStringArray(
         property,
         "default",
         ELICITATION_SCHEMA_LIMITS.maxOptionsPerField,
       );
-      if (!defaultValue.ok) return { ok: false, detail: `field "${key}" has an invalid default` };
+      if (!defaultValue.ok) return { ok: false, detail: `field "${boundedKeyLabel(key)}" has an invalid default` };
       if (defaultValue.value !== undefined) {
         if (hasDuplicateValues(defaultValue.value)) {
-          return { ok: false, detail: `field "${key}" default repeats values` };
+          return { ok: false, detail: `field "${boundedKeyLabel(key)}" default repeats values` };
         }
         if (!defaultValue.value.every((value) => options.some((option) => option.value === value))) {
-          return { ok: false, detail: `field "${key}" default is not an offered option` };
+          return { ok: false, detail: `field "${boundedKeyLabel(key)}" default is not an offered option` };
         }
       }
       return {
@@ -417,7 +441,7 @@ function normalizeField(
       };
     }
     default:
-      return { ok: false, detail: `field "${key}" has unsupported type "${rawType}"` };
+      return { ok: false, detail: `field "${boundedKeyLabel(key)}" has unsupported type "${boundedKeyLabel(rawType)}"` };
   }
 }
 
@@ -460,7 +484,7 @@ function readTitledOptions(
       "title",
       ELICITATION_SCHEMA_LIMITS.maxOptionLabelLength,
     );
-    const description = readOptionalNonEmptyString(option, "description", ELICITATION_SCHEMA_LIMITS.maxFieldDescriptionLength);
+    const description = readOptionalBoundedString(option, "description", ELICITATION_SCHEMA_LIMITS.maxFieldDescriptionLength);
     if (!label.ok || !description.ok) return undefined;
     return {
       value: optionValue,
@@ -497,7 +521,9 @@ export function normalizeAcpElicitationForm(request: unknown): ElicitationNormal
   if (!record) return fail("malformed_request", "request is not an object");
   const mode = record.mode;
   if (mode !== "form") {
-    return fail("unsupported_mode", `mode "${typeof mode === "string" ? mode : "unknown"}" is not form`);
+    // Bound the echoed mode string: it is agent-controlled and reaches the
+    // logger verbatim through the rejection reason.
+    return fail("unsupported_mode", `mode "${typeof mode === "string" ? boundedKeyLabel(mode) : "unknown"}" is not form`);
   }
   const message = record.message;
   if (typeof message !== "string") return fail("malformed_request", "message is not a string");
@@ -511,13 +537,13 @@ export function normalizeAcpElicitationForm(request: unknown): ElicitationNormal
   }
   // ACP schema-level presentation metadata. Bounded like every other string,
   // and carried through because plugins never see the raw ACP object.
-  const schemaTitle = readOptionalNonEmptyString(
+  const schemaTitle = readOptionalBoundedString(
     schema,
     "title",
     ELICITATION_SCHEMA_LIMITS.maxFieldTitleLength,
   );
   if (!schemaTitle.ok) return fail("malformed_schema", "requestedSchema.title is invalid");
-  const schemaDescription = readOptionalNonEmptyString(
+  const schemaDescription = readOptionalBoundedString(
     schema,
     "description",
     ELICITATION_SCHEMA_LIMITS.maxFieldDescriptionLength,
@@ -553,11 +579,16 @@ export function normalizeAcpElicitationForm(request: unknown): ElicitationNormal
       return fail("malformed_schema", "requestedSchema.required repeats a name");
     }
     for (const name of required) {
+      // Bound each name BEFORE the lookup: an unbounded name would be echoed
+      // into the reason below and reach the logger verbatim.
+      if (name.length > ELICITATION_SCHEMA_LIMITS.maxFieldKeyLength) {
+        return fail("resource_exceeded", "required name exceeds the field key bound");
+      }
       // Object.hasOwn, not `in`: `required: ["toString"]` must not pass merely
       // because Object.prototype has a toString. ACP property names are not
       // restricted away from JS special keys.
       if (!Object.hasOwn(propertiesRecord, name)) {
-        return fail("malformed_schema", `required "${name}" is not a form field`);
+        return fail("malformed_schema", `required "${boundedKeyLabel(name)}" is not a form field`);
       }
     }
     requiredNames = required;
@@ -567,14 +598,14 @@ export function normalizeAcpElicitationForm(request: unknown): ElicitationNormal
   const fields: ChannelElicitationField[] = [];
   for (const [key, rawProperty] of entries) {
     const property = asPlain(rawProperty);
-    if (!property) return fail("malformed_schema", `field "${key}" is not an object`);
+    if (!property) return fail("malformed_schema", `field "${boundedKeyLabel(key)}" is not an object`);
     // Nested objects are outside the restricted flat form ACP supports;
     // "array" is handled below as multi-select.
     if (property.type === "object") {
-      return fail("malformed_schema", `field "${key}" is a nested object`);
+      return fail("malformed_schema", `field "${boundedKeyLabel(key)}" is a nested object`);
     }
     if (property.properties !== undefined || property.requestedSchema !== undefined) {
-      return fail("malformed_schema", `field "${key}" declares nested schema members`);
+      return fail("malformed_schema", `field "${boundedKeyLabel(key)}" declares nested schema members`);
     }
     const normalized = normalizeField(key, property);
     if (!normalized.ok) return fail("malformed_schema", normalized.detail);
@@ -619,6 +650,17 @@ function measureFieldChars(field: ChannelElicitationField): number {
 export type ElicitationAnswerValidationResult =
   | { ok: true; content: Record<string, ChannelElicitationValue> }
   | { ok: false; reason: string };
+
+/**
+ * JSON Schema string length is measured in Unicode CODE POINTS, not JS UTF-16
+ * code units. `"😀".length === 2` in JavaScript but is one character per the
+ * spec, so `minLength: 2` must reject it and `maxLength: 1` must accept it.
+ */
+function codePointLength(value: string): number {
+  let count = 0;
+  for (const _char of value) count += 1;
+  return count;
+}
 
 function isEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
@@ -762,10 +804,10 @@ function validateFieldValue(
   switch (field.kind) {
     case "text": {
       if (typeof value !== "string") return { ok: false, reason: `field "${field.key}" must be a string` };
-      if (field.minLength !== undefined && value.length < field.minLength) {
+      if (field.minLength !== undefined && codePointLength(value) < field.minLength) {
         return { ok: false, reason: `field "${field.key}" is shorter than ${field.minLength}` };
       }
-      if (field.maxLength !== undefined && value.length > field.maxLength) {
+      if (field.maxLength !== undefined && codePointLength(value) > field.maxLength) {
         return { ok: false, reason: `field "${field.key}" exceeds ${field.maxLength} chars` };
       }
       if (field.format === "email" && !isEmail(value)) {
@@ -790,10 +832,10 @@ function validateFieldValue(
       // The agent's own string constraints apply to the chosen option too.
       // `pattern` is deliberately NOT executed here (agent regex is a
       // resource-exhaustion vector) — every other constraint is deterministic.
-      if (field.minLength !== undefined && value.length < field.minLength) {
+      if (field.minLength !== undefined && codePointLength(value) < field.minLength) {
         return { ok: false, reason: `field "${field.key}" is shorter than ${field.minLength}` };
       }
-      if (field.maxLength !== undefined && value.length > field.maxLength) {
+      if (field.maxLength !== undefined && codePointLength(value) > field.maxLength) {
         return { ok: false, reason: `field "${field.key}" exceeds ${field.maxLength} chars` };
       }
       if (field.format === "email" && !isEmail(value)) {

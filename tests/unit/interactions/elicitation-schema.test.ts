@@ -811,11 +811,73 @@ describe("normalizeAcpElicitationForm presentation metadata", () => {
     expect(anyOf.ok).toBe(false);
   });
 
-  test("an empty-string titled option title is rejected", () => {
+  test("a present-but-EMPTY titled option title is legal, not malformed", () => {
+    // The pinned SDK models EnumOption.title as a plain z.string() with no
+    // .min(1), so `title: ""` is protocol-valid. Missing fails closed; empty
+    // must not be conflated with missing.
+    const fields = normalizeOk(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { c: { type: "string", oneOf: [{ const: "x", title: "" }] } },
+      },
+    }));
+    expect(fields[0]).toMatchObject({ kind: "single-select", options: [{ value: "x", label: "" }] });
+  });
+
+  test("empty pattern, field title and description are legal", () => {
+    const fields = normalizeOk(formRequest({
+      requestedSchema: {
+        type: "object",
+        title: "",
+        description: "",
+        properties: { c: { type: "string", title: "", description: "", pattern: "" } },
+      },
+    }));
+    expect(fields[0]).toMatchObject({ kind: "text", title: "", pattern: "" });
     const result = normalizeAcpElicitationForm(formRequest({
-      requestedSchema: { type: "object", properties: { c: { type: "string", oneOf: [{ const: "x", title: "" }] } } },
+      requestedSchema: { type: "object", title: "", properties: { c: { type: "string" } } },
+    }));
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe("normalizeAcpElicitationForm diagnostic bounds", () => {
+  test("malformed schemas produce bounded diagnostics, never raw agent strings", () => {
+    // Property names, types and modes are agent-controlled and can be
+    // arbitrarily long; the rejection reason reaches the logger verbatim.
+    const longKey = "k".repeat(ELICITATION_SCHEMA_LIMITS.maxFieldKeyLength + 500);
+    const cases: unknown[] = [
+      // Long key with a non-object property: this path fires BEFORE the
+      // key-length guard inside normalizeField.
+      { type: "object", properties: { [longKey]: "not-an-object" } },
+      // Long unknown type.
+      { type: "object", properties: { a: { type: "t".repeat(ELICITATION_SCHEMA_LIMITS.maxDiagnosticKeyChars + 500) } } },
+      // Long unknown required name.
+      { type: "object", properties: { a: { type: "string" } }, required: [longKey] },
+    ];
+    for (const requestedSchema of cases) {
+      const result = normalizeAcpElicitationForm(formRequest({ requestedSchema }));
+      expect(result.ok).toBe(false);
+      if (result.ok) continue;
+      expect(result.reason.length).toBeLessThan(400);
+      expect(result.reason).not.toContain("k".repeat(200));
+    }
+  });
+
+  test("a long unknown mode is bounded too", () => {
+    const result = normalizeAcpElicitationForm(formRequest({ mode: "m".repeat(5000) }));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason.length).toBeLessThan(400);
+  });
+
+  test("required names are bounded before lookup", () => {
+    const longName = "n".repeat(ELICITATION_SCHEMA_LIMITS.maxFieldKeyLength + 100);
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { type: "object", properties: { a: { type: "string" } }, required: [longName] },
     }));
     expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("resource_exceeded");
   });
 });
 
@@ -900,6 +962,36 @@ describe("validateElicitationAnswer", () => {
     expect(validateElicitationAnswer([bounded], { s: "ab" }).ok).toBe(false);
     expect(validateElicitationAnswer([bounded], { s: "abcde" }).ok).toBe(false);
     expect(validateElicitationAnswer([bounded], { s: "abcd" }).ok).toBe(true);
+  });
+
+  test("text length bounds count Unicode code points, not UTF-16 units", () => {
+    // JSON Schema's string data model is code points; `"😀".length === 2` in JS.
+    const bounded = normalizeOk(formRequest({
+      requestedSchema: { type: "object", properties: { s: { type: "string", minLength: 2, maxLength: 2 } }, required: ["s"] },
+    }))[0];
+    // One astral character is ONE code point: minLength 2 must reject it.
+    expect(validateElicitationAnswer([bounded], { s: "😀" }).ok).toBe(false);
+    // Two code points is legal even though it is 4 UTF-16 units.
+    expect(validateElicitationAnswer([bounded], { s: "😀😀" }).ok).toBe(true);
+  });
+
+  test("maxLength 1 accepts a single astral character", () => {
+    const bounded = normalizeOk(formRequest({
+      requestedSchema: { type: "object", properties: { s: { type: "string", maxLength: 1 } }, required: ["s"] },
+    }))[0];
+    expect(validateElicitationAnswer([bounded], { s: "😀" }).ok).toBe(true);
+  });
+
+  test("single-select length bounds count code points too", () => {
+    const field = normalizeOk(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { c: { type: "string", enum: ["😀", "ab"], minLength: 2 } },
+        required: ["c"],
+      },
+    }))[0];
+    expect(validateElicitationAnswer([field], { c: "😀" }).ok).toBe(false);
+    expect(validateElicitationAnswer([field], { c: "ab" }).ok).toBe(true);
   });
 
   test("known safe formats are validated deterministically", () => {
