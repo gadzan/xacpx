@@ -479,6 +479,7 @@ export default {
     noRecordedActivity: "暂无执行记录",
     viewFullTrace: "查看完整过程",
     loadingDetails: "正在加载详情…",
+    terminalOutputNotReported: "该命令在 agent 侧终端中执行，输出未回传到面板。",
     kinds: {
       read: "查阅",
       search: "搜索",
@@ -500,8 +501,18 @@ export default {
   turnTrace: {
     worked: "已工作",
     tools: "{count} 步工具",
+    files: "{count} 个文件",
     thoughts: "{count} 段思考",
     toggleTrace: "展开/收起中间过程",
+    verbs: {
+      edited: "编辑 {count} 处",
+      ran: "运行 {count} 条命令",
+      searched: "搜索 {count} 次",
+      read: "查阅 {count} 个文件",
+      fetched: "抓取 {count} 个链接",
+      thought: "规划 {count} 次",
+      other: "其他工具 {count} 次",
+    },
   },
   taskPanel: {
     noSession: "未选择会话。",

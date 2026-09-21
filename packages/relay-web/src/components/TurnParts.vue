@@ -10,6 +10,8 @@ import SubagentStepCard from "./SubagentStepCard.vue";
 import AgentMessageCard from "./AgentMessageCard.vue";
 import {
   deriveTurnPresentation,
+  tallyTrace,
+  type TraceTally,
   type TurnPresentationPlan,
 } from "../lib/turn-presentation";
 import { createTurnLayoutGeometryCache } from "../lib/turn-layout";
@@ -30,6 +32,9 @@ const props = defineProps<{
   traceKey?: string;
   /** Display-only turn duration (finished rows). Absent/non-positive → counts only. */
   traceElapsedMs?: number | null;
+  /** What the collapsed trace did (verb counts, files touched, failures). Absent on
+   *  live rows and legacy callers — the header then falls back to raw counts. */
+  tally?: TraceTally;
   presentation?: TurnPresentationPlan;
 }>();
 
@@ -124,8 +129,15 @@ const elapsedText = computed(() => {
 const headerLabel = computed(() => {
   const parts: string[] = [];
   if (elapsedText.value) parts.push(`${t("turnTrace.worked")} ${elapsedText.value}`);
-  if (toolCount.value > 0) parts.push(t("turnTrace.tools", toolCount.value));
+  // Prefer the caller's tally (precomputed once per row); fall back to deriving it
+  // from the presentation so standalone/live mounts render the same header.
+  const tally = props.tally ?? tallyTrace(presentation.value.nodes);
+  for (const { verb, count } of tally.byVerb) {
+    parts.push(t(`turnTrace.verbs.${verb}`, count));
+  }
+  if (tally.files > 0) parts.push(t("turnTrace.files", tally.files));
   if (thoughtCount.value > 0) parts.push(t("turnTrace.thoughts", thoughtCount.value));
+  if (parts.length === 0 && toolCount.value > 0) parts.push(t("turnTrace.tools", toolCount.value));
   return parts.join(" · ");
 });
 

@@ -39,10 +39,16 @@ export interface DiffStats {
 /** Line add/del counts for a diff detail (e.g. +4, −1). Null when the count
  *  would be misleading: naive fallback on huge inputs (exact === false) or
  *  connector-capped inputs carrying a "…(truncated)" marker. */
+/** Truncation markers the connector can emit: `cap` appends a suffix, `capTail`
+ *  prepends a prefix (execute/read/search output is tail-capped so the newest
+ *  content — a test's failure summary, an error stack — is what the user reads).
+ *  Both must be recognised wherever a capped string is compared or measured. */
+const TRUNCATION_MARKS = ["…(truncated)", "(truncated)…"];
+
 export function diffStatsOf(detail: { type: string; oldText?: string; newText?: string } | undefined): DiffStats | null {
   if (!detail || detail.type !== "diff") return null;
   const { oldText = "", newText = "" } = detail;
-  if (oldText.includes("…(truncated)") || newText.includes("…(truncated)")) return null;
+  if (TRUNCATION_MARKS.some((mark) => oldText.includes(mark) || newText.includes(mark))) return null;
   const d = diffLines(oldText, newText);
   if (!d.exact) return null;
   if (d.add === 0 && d.del === 0) return null;

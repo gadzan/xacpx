@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import type { ToolStepDto } from "@ganglion/xacpx-relay-protocol";
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Loader2 } from "lucide-vue-next";
@@ -10,12 +10,45 @@ const props = defineProps<{ step: ToolStepDto; ensureFull?: () => Promise<void> 
 
 const { t } = useI18n();
 
+// Live elapsed for a running step: `startedAt` is the connector's first-frame stamp
+// (step-level, distinct from the turn's startedAt). Terminal steps show the
+// connector-measured `durationMs` instead, so the local clock never renders a
+// finished step's time and there is nothing to drift after the turn ends.
+const nowMs = ref(Date.now());
+let clockTimer: ReturnType<typeof setInterval> | undefined;
+watch(
+  () => props.step.status === "running",
+  (running) => {
+    if (clockTimer !== undefined) {
+      clearInterval(clockTimer);
+      clockTimer = undefined;
+    }
+    if (running) clockTimer = setInterval(() => { nowMs.value = Date.now(); }, 1000);
+  },
+  { immediate: true },
+);
+onBeforeUnmount(() => {
+  if (clockTimer !== undefined) clearInterval(clockTimer);
+});
+
+// Truncation markers emitted by the connector: `cap` appends a suffix, `capTail`
+// prepends a prefix. Both must be recognised wherever a capped string is compared
+// against an uncapped one.
+const TRUNCATED_MARKS = ["…(truncated)", "(truncated)…"];
+/** Strip any truncation marker so two capped/uncapped renderings of the same text
+ *  can be compared for equality. */
+function stripTruncationMarks(s: string): string {
+  let out = s;
+  for (const mark of TRUNCATED_MARKS) out = out.split(mark).join("");
+  return out.trim();
+}
+
 // Keep the tool's one-line summary visible without letting command output, diffs, and
 // file previews dominate the message list. Users can expand the detail on demand.
 const open = ref(false);
 const hydrating = ref(false);
 const hasDetail = computed(() => {
-  return props.step.detail !== undefined || props.step.error !== undefined || props.ensureFull !== undefined;
+  return props.step.detail !== undefined || props.step.error !== undefined || props.step.terminalId !== undefined || props.ensureFull !== undefined;
 });
 
 async function onHeaderClick(): Promise<void> {
@@ -85,8 +118,9 @@ const showErrorBanner = computed(() => {
   if (props.step.status !== "error") return false;
   const err = props.step.error?.trim();
   if (!err) return false;
-  const mark = err.indexOf("…(truncated)");
-  const needle = (mark >= 0 ? err.slice(0, mark) : err).trim();
+  // Strip any truncation marker (suffix or prefix) before comparing — the error is
+  // capped and the detail body may be capped differently.
+  const needle = stripTruncationMarks(err);
   if (!needle) return true;
   return !detailOutput.value.includes(needle);
 });
@@ -95,6 +129,13 @@ function fmtDuration(ms?: number): string {
   if (ms === undefined) return "";
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
 }
+
+// Running steps have no connector duration yet — count up locally from the stamp.
+// A missing stamp (older connector) falls back to the old "no time shown" behaviour.
+const runningElapsed = computed(() => {
+  if (props.step.status !== "running" || props.step.startedAt === undefined) return "";
+  return fmtDuration(Math.max(0, nowMs.value - props.step.startedAt));
+});
 </script>
 
 <template>
@@ -119,6 +160,7 @@ function fmtDuration(ms?: number): string {
           <span v-if="diffStats.del" class="text-danger font-medium">−{{ diffStats.del }}</span>
         </span>
         <span v-if="step.durationMs !== undefined" class="font-mono text-[10.5px] text-fg-muted/70">{{ fmtDuration(step.durationMs) }}</span>
+        <span v-else-if="runningElapsed" data-test="step-elapsed" class="font-mono text-[10.5px] text-fg-muted/70">{{ runningElapsed }}</span>
         <Check v-if="step.status === 'success'" data-test="step-status-success" :size="12" class="text-run/70" />
         <Loader2 v-else-if="step.status === 'running'" data-test="step-status-running" :size="12" class="animate-spin motion-reduce:animate-none text-accent" />
         <AlertTriangle v-else data-test="step-status-error" :size="12" class="text-danger" />
@@ -137,6 +179,8 @@ function fmtDuration(ms?: number): string {
           <AlertTriangle :size="13" class="mt-0.5 shrink-0" />
           <span class="whitespace-pre-wrap break-words leading-relaxed">{{ step.error }}</span>
         </div>
+        <p v-else-if="step.terminalId && !detailOutput" data-test="tool-step-terminal-only"
+           class="py-1 text-fg-muted">{{ $t("tools.terminalOutputNotReported") }}</p>
         <ToolDetail v-if="step.detail" :detail="step.detail" />
       </template>
     </div>

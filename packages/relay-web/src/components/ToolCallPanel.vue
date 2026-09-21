@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import type { ToolStepDto } from "@ganglion/xacpx-relay-protocol";
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Loader2, Wrench } from "lucide-vue-next";
 import ToolDetail from "./ToolDetail.vue";
@@ -59,6 +59,33 @@ function fmtDuration(ms?: number): string {
   if (ms === undefined) return "";
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
 }
+
+// Legacy aggregate panel: same live-elapsed contract as ToolStepCard — a running
+// row with a first-seen stamp counts up locally; terminal rows keep the
+// connector-measured duration.
+const nowMs = ref(Date.now());
+const hasRunning = computed(() => props.steps.some((s) => s.status === "running" && s.startedAt !== undefined));
+let clockTimer: ReturnType<typeof setInterval> | undefined;
+watch(
+  hasRunning,
+  (on) => {
+    if (clockTimer !== undefined) {
+      clearInterval(clockTimer);
+      clockTimer = undefined;
+    }
+    if (on) clockTimer = setInterval(() => { nowMs.value = Date.now(); }, 1000);
+  },
+  { immediate: true },
+);
+onBeforeUnmount(() => {
+  if (clockTimer !== undefined) clearInterval(clockTimer);
+});
+function rowElapsed(s: ToolStepDto): string {
+  if (s.status === "running" && s.startedAt !== undefined) {
+    return fmtDuration(Math.max(0, nowMs.value - s.startedAt));
+  }
+  return fmtDuration(s.durationMs);
+}
 </script>
 
 <template>
@@ -104,7 +131,7 @@ function fmtDuration(ms?: number): string {
             <span v-if="diffStatsById.get(s.toolCallId)!.add" class="text-run font-medium">+{{ diffStatsById.get(s.toolCallId)!.add }}</span>
             <span v-if="diffStatsById.get(s.toolCallId)!.del" class="text-danger font-medium">−{{ diffStatsById.get(s.toolCallId)!.del }}</span>
           </span>
-          <span v-if="s.durationMs !== undefined" class="ml-auto shrink-0 font-mono text-[10px] text-fg-muted/70">{{ fmtDuration(s.durationMs) }}</span>
+          <span v-if="rowElapsed(s)" class="ml-auto shrink-0 font-mono text-[10px] text-fg-muted/70">{{ rowElapsed(s) }}</span>
           <Check v-if="s.status === 'success'" data-test="step-status-success" :size="11" class="text-run/70" />
           <Loader2 v-else-if="s.status === 'running'" data-test="step-status-running" :size="11" class="animate-spin motion-reduce:animate-none text-accent" />
           <AlertTriangle v-else data-test="step-status-error" :size="11" class="text-danger" />

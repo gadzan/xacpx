@@ -52,7 +52,7 @@ describe("TurnParts trace collapse", () => {
     expect(header.exists()).toBe(true);
     expect(header.attributes("aria-expanded")).toBe("false");
     expect(header.text()).toContain("Worked 4m 32s");
-    expect(header.text()).toContain("2 tool steps");
+    expect(header.text()).toContain("read 2");
     expect(header.text()).toContain("2 thoughts");
     // Process text interleaved before/between activity folds with the trace;
     // only the trailing text after the last process item is the final reply.
@@ -97,7 +97,7 @@ describe("TurnParts trace collapse", () => {
     });
     const header = w.find('[data-test="trace-toggle"]');
     expect(header.text()).not.toContain("Worked");
-    expect(header.text()).toContain("2 tool steps");
+    expect(header.text()).toContain("read 2");
   });
 
   it("renders the header in Chinese under the zh-CN locale", async () => {
@@ -109,7 +109,7 @@ describe("TurnParts trace collapse", () => {
     });
     const header = w.find('[data-test="trace-toggle"]');
     expect(header.text()).toContain("已工作 1分5秒");
-    expect(header.text()).toContain("2 步工具");
+    expect(header.text()).toContain("查阅 2 个文件");
     expect(header.text()).toContain("2 段思考");
   });
 

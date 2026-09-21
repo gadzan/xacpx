@@ -707,6 +707,7 @@ watch(
               <div data-test="msg-content" class="space-y-2.5">
                 <TurnParts v-if="m.structured?.parts?.length" :parts="m.structured.parts" :ensure-full="ensureFullOf(m)" :sent-agent-messages="sentAgentMessageById"
                            :collapse-trace="!isFailedTurn(m) && hasTraceParts(m)" :trace-key="traceKeyOf(m)" :trace-elapsed-ms="traceElapsedOf(m)"
+                           :tally="!isFailedTurn(m) && hasTraceParts(m) ? traceSummaryOf(m).tally : undefined"
                            :presentation="!isFailedTurn(m) && hasTraceParts(m) ? traceSummaryOf(m).presentation : undefined" />
                 <template v-else>
                   <ToolCallPanel v-if="m.structured?.toolSteps?.length" :steps="m.structured.toolSteps" :ensure-full="ensureFullOf(m)" />

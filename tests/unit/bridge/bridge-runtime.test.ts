@@ -248,19 +248,21 @@ test("runStreamingPrompt emits structured tool events when toolEventMode is 'str
   closeHandler?.(0);
 
   await resultPromise;
-  expect(events).toEqual([
-    {
-      type: "prompt.tool_event",
-      event: {
-        toolCallId: "t1",
-        toolName: "Bash",
-        kind: "execute",
-        summary: "npm test",
-        rawInput: { command: "npm", args: ["test"] },
-        status: "running",
-      },
-    },
-  ]);
+  expect(events.length).toBe(1);
+  const emitted = events[0] as { type: string; event: Record<string, unknown> };
+  expect(emitted.type).toBe("prompt.tool_event");
+  expect(emitted.event).toMatchObject({
+    toolCallId: "t1",
+    toolName: "Bash",
+    kind: "execute",
+    summary: "npm test",
+    rawInput: { command: "npm", args: ["test"] },
+    status: "running",
+  });
+  // A running call carries the first-seen stamp (so the UI can count up) and no
+  // duration yet.
+  expect(typeof emitted.event.startedAt).toBe("number");
+  expect(emitted.event.durationMs).toBeUndefined();
 });
 
 test("runStreamingPrompt preserves text → tool → text order in raw bridge events", async () => {
