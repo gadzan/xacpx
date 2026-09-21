@@ -180,11 +180,12 @@ export class ElicitationInteractionBroker {
     try {
       channel = this.getChannelByChatKey(route.chatKey);
     } catch (error) {
-      // Type only: a resolver throwing an agent-supplied chatKey into its
-      // message must not become a log line.
+      // Type only, and a FIXED classification: a resolver throwing an
+      // agent-supplied chatKey into its message must not become a log line,
+      // and `error.constructor.name` is itself renderer-controlled (G8).
       await this.log("elicitation.interaction.channel_failed", "channel lookup threw", {
         requestId,
-        errorType: error instanceof Error ? error.constructor.name : typeof error,
+        errorType: error instanceof Error ? "Error" : typeof error,
         fieldCount: 0,
         fieldKinds: "",
       });
@@ -365,10 +366,11 @@ export class ElicitationInteractionBroker {
       unsubscribeTurnAbort();
       return this.commit(requestId, { action: "accept", content }, fields, startedAt);
     } catch (error) {
-      // Plugin throw, explicit cancel, abort, timeout: all cancel. Only the
-      // ERROR TYPE is recorded, never `error.message`: a channel renderer
-      // that echoes submitted form values into its exception text would
-      // otherwise write user answers straight into the log (G8).
+      // Plugin throw, explicit cancel, abort, timeout: all cancel. Only a
+      // FIXED classification is recorded — `error.constructor.name` is
+      // renderer-controlled (an overriding `constructor` property, or a
+      // throwing getter, both attacker-reachable), so reading it would let a
+      // renderer put submitted form values into the log (G8).
       if (controller.signal.aborted) {
         await this.log("elicitation.interaction.aborted", "elicitation interaction aborted before decision", {
           requestId,
@@ -376,7 +378,7 @@ export class ElicitationInteractionBroker {
       } else {
         await this.log("elicitation.interaction.channel_failed", "channel request failed", {
           requestId,
-          errorType: error instanceof Error ? error.constructor.name : typeof error,
+          errorType: error instanceof Error ? "Error" : typeof error,
         });
       }
       unsubscribeTurnAbort();

@@ -654,10 +654,10 @@ describe("ElicitationInteractionBroker deadlines and races", () => {
     }
   });
 
-  test("a multi-select answer array is cloned, not aliased to the plugin's", async () => {
-    // Regression: the validator returned the plugin's own string[] reference,
-    // so a post-validation mutation could still reach the agent.
-    const submitted: string[] = ["a"];
+test("a multi-select answer array is cloned, not aliased to the plugin's", async () => {
+  // Regression: the validator returned the plugin's own string[] reference,
+  // so a post-validation mutation could still reach the agent.
+  const submitted: string[] = ["a"];
     const { broker, registry } = harness({
       channel: formChannel(async () => ({
         action: "accept",
@@ -783,6 +783,64 @@ describe("ElicitationInteractionBroker privacy", () => {
       expect(serializedLogs).not.toContain(SENTINEL_ANSWER);
       // The error TYPE is still recorded so the failure is diagnosable.
       expect(serializedLogs).toContain("errorType");
+    } finally {
+      dispose();
+    }
+  });
+
+  test("a renderer that hides its answer in constructor.name cannot leak it", async () => {
+    // Regression: `error.constructor.name` is renderer-controlled. A real Error
+    // instance with an overriding `constructor` property passes `instanceof`
+    // while its name is an arbitrary string — including the submitted answer.
+    const { broker, logs } = harness({
+      channel: formChannel(async () => {
+        const error = new Error("boom");
+        Object.defineProperty(error, "constructor", {
+          value: { name: SENTINEL_ANSWER },
+          configurable: true,
+        });
+        throw error;
+      }),
+    });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    try {
+      const result = await broker.resolveElicitation(request({ interactionId: route.interactionId }));
+      expect(result).toEqual({ action: "cancel" });
+      await Promise.resolve();
+      await Promise.resolve();
+      const serializedLogs = JSON.stringify(logs.map((entry) => ({ event: entry.event, fields: entry.fields })));
+      expect(serializedLogs).not.toContain(SENTINEL_ANSWER);
+      // The classification is the fixed literal, not the renderer's name.
+      expect(serializedLogs).toContain('"errorType":"Error"');
+    } finally {
+      dispose();
+    }
+  });
+
+  test("a renderer whose constructor getter throws does not break the broker", async () => {
+    // A throwing getter used to make the broker's own catch handler throw.
+    const { broker, logs } = harness({
+      channel: formChannel(async () => {
+        const error = new Error("boom");
+        Object.defineProperty(error, "constructor", {
+          get() {
+            throw new Error("constructor getter exploded");
+          },
+          configurable: true,
+        });
+        throw error;
+      }),
+    });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    try {
+      const result = await broker.resolveElicitation(request({ interactionId: route.interactionId }));
+      expect(result).toEqual({ action: "cancel" });
+      await Promise.resolve();
+      await Promise.resolve();
+      const serializedLogs = JSON.stringify(logs.map((entry) => ({ event: entry.event, fields: entry.fields })));
+      expect(serializedLogs).toContain('"errorType":"Error"');
     } finally {
       dispose();
     }
