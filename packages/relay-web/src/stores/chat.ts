@@ -100,6 +100,15 @@ interface PendingCancel {
   /** Exact optimistic row inserted by this Stop. Holding the object identity avoids
    *  guessing by startedAt, which is only millisecond telemetry and can collide. */
   optimisticRow?: ChatMessage;
+  /** The connector went offline while this Stop was unresolved. Transport failure
+   *  after this point is ambiguous, so rollback waits for an ordered reconnect snapshot. */
+  offline?: boolean;
+  /** The cancel RPC failed while offline; the next authoritative snapshot decides
+   *  whether the old turn is still live or has already disappeared. */
+  rpcFailedOffline?: boolean;
+  /** A same-turn authoritative snapshot arrived after the offline boundary while the
+   *  RPC was still unresolved. If the RPC then fails, that snapshot can restore live. */
+  activeSnapshotAfterOffline?: boolean;
 }
 
 // History rows are immutable once loaded (updates arrive as whole-row replacements), so
@@ -326,6 +335,26 @@ export const useChatStore = defineStore("chat", () => {
       return live.slotAfterId === snapshot.slotAfterId && live.startedAt === snapshot.startedAt;
     }
     return live.startedAt === snapshot.startedAt;
+  }
+
+  function removePendingCancelRow(id: string, alias: string, k: string, pending: PendingCancel): void {
+    const cancelledIndex = pending.optimisticRow
+      ? messages.value.indexOf(pending.optimisticRow)
+      : -1;
+    if (cancelledIndex >= 0) {
+      messages.value.splice(cancelledIndex, 1);
+      touchTranscript();
+      cacheWrite.schedule();
+    } else if (selectedKey.value !== k) {
+      // select() may already have cached the optimistic row before switching away.
+      const user = useAuthStore().account?.username;
+      if (user) void tailCache.drop(user, id, alias);
+    }
+  }
+
+  function convergePendingCancelHistory(id: string, alias: string, k: string, pending: PendingCancel): void {
+    removePendingCancelRow(id, alias, k, pending);
+    if (selectedKey.value === k) void loadHistory().catch(() => {});
   }
 
   /** Place the live bubble after the Hub insert-order anchor (history/seed/snapshot). */
@@ -677,36 +706,55 @@ export const useChatStore = defineStore("chat", () => {
       const k = bufKey(instId, turn.sessionAlias);
       activeSnapshotKeys.add(k);
       const pending = pendingCancels.get(k);
+      const samePendingTurn = !!pending?.turn && sameLiveTurnIdentity(pending.turn, turn);
+
+      // A different authoritative turn supersedes the optimistic Stop. Its transcript
+      // position belongs to ITS slotAfterId, never to the old hidden turn's view-local
+      // slot. Drop the speculative cancelled row and converge history for the old turn.
+      if (pending && !samePendingTurn) {
+        pendingCancels.delete(k);
+        finishedTurns.delete(k);
+        convergePendingCancelHistory(instId, turn.sessionAlias, k, pending);
+      }
+
+      const matchingPending = samePendingTurn ? pending : undefined;
       const snapshotTurn: LiveTurn = {
         parts: turn.parts as TurnPart[],
         status: turn.status,
         startedAt: turn.startedAt,
         ...(typeof turn.slotAfterId === "number" ? { slotAfterId: turn.slotAfterId } : {}),
-        slotAfterIndex: pending?.turn?.slotAfterIndex
-          ?? (selectedKey.value === k && typeof turn.slotAfterId === "number"
-            ? slotAfterIndexFromAnchor(messages.value, turn.slotAfterId)
-            : selectedKey.value === k ? messages.value.length - 1 : -1),
+        slotAfterIndex: selectedKey.value === k && typeof turn.slotAfterId === "number"
+          ? slotAfterIndexFromAnchor(messages.value, turn.slotAfterId)
+          : matchingPending?.turn?.slotAfterIndex
+            ?? (selectedKey.value === k ? messages.value.length - 1 : -1),
       };
-      if (pending) {
-        // Reconnect can land after the cancelled turn ended and a genuinely new turn
-        // already started while this tab was offline. Use the Hub slot anchor together
-        // with startedAt; startedAt alone is millisecond telemetry and can collide.
-        if (!pending.turn || !sameLiveTurnIdentity(pending.turn, turn)) {
+
+      if (matchingPending) {
+        matchingPending.turn = snapshotTurn;
+        if (matchingPending.offline) matchingPending.activeSnapshotAfterOffline = true;
+        if (matchingPending.rpcFailedOffline) {
+          // The cancel transport failed, and reconnect now proves the same turn is
+          // still active. Roll back the speculative Stop to this authoritative state.
           pendingCancels.delete(k);
+          finishedTurns.delete(k);
+          removePendingCancelRow(instId, turn.sessionAlias, k, matchingPending);
+          nextTurns[k] = snapshotTurn;
         } else {
-          pending.turn = snapshotTurn;
           continue;
         }
+      } else {
+        nextTurns[k] = snapshotTurn;
       }
-      nextTurns[k] = snapshotTurn;
     }
     // An ordered snapshot that omits a locally-cancelled turn is authoritative proof
-    // that it is no longer active. Convert the local cancel guard into the ordinary
-    // finished guard so an older HTTP active-turns seed still cannot revive it.
-    for (const [k] of [...pendingCancels]) {
+    // that it is no longer active. The optimistic status is no longer needed: history
+    // now owns the terminal truth (done/cancelled/error), so converge instead of
+    // leaving a speculative cancelled row behind.
+    for (const [k, pending] of [...pendingCancels]) {
       if (k.startsWith(prefix) && !activeSnapshotKeys.has(k)) {
         pendingCancels.delete(k);
         finishedTurns.add(k);
+        convergePendingCancelHistory(instId, k.slice(prefix.length), k, pending);
       }
     }
     liveTurns.value = nextTurns;
@@ -750,13 +798,13 @@ export const useChatStore = defineStore("chat", () => {
     if (event.kind === "instance-status" && !event.online) {
       const prefix = `${event.instanceId}\0`;
       for (const k of Object.keys(liveTurns.value)) if (k.startsWith(prefix)) delete liveTurns.value[k];
-      // Offline is an authoritative boundary for optimistic Stop rollback: once the
-      // instance is gone, a later failing HTTP cancel response must not resurrect the
-      // private pre-offline turn. Keep a finish guard so an older active-turns seed
-      // cannot re-create it before the next ordered reconnect snapshot.
-      for (const k of [...pendingCancels.keys()]) {
+      // Offline clears visible live state, but it does NOT prove the daemon turn ended:
+      // channel-relay may recover the same running turn on reconnect. Freeze pending
+      // Stop state so a transport-level cancel failure cannot resurrect stale live
+      // immediately, while retaining enough identity to reconcile the next snapshot.
+      for (const [k, pending] of pendingCancels) {
         if (k.startsWith(prefix)) {
-          pendingCancels.delete(k);
+          pending.offline = true;
           finishedTurns.add(k);
         }
       }
@@ -1112,7 +1160,16 @@ export const useChatStore = defineStore("chat", () => {
     finishedTurns.add(k);
     pending.optimisticRow = flushTurn(id, alias, "cancelled");
     try {
-      await api.rpc(id, "control.prompt.cancel", { sessionAlias: alias });
+      const result = await api.rpc<{ cancelled: boolean }>(id, "control.prompt.cancel", { sessionAlias: alias });
+      // cancelled:false means the server had no in-flight turn. Our visible live state
+      // was stale, so do not preserve a speculative "cancelled" row; converge history
+      // and keep a finish guard until the next ordered snapshot.
+      if (result?.cancelled === false && pendingCancels.get(k) === pending) {
+        pendingCancels.delete(k);
+        finishedTurns.add(k);
+        convergePendingCancelHistory(id, alias, k, pending);
+        return;
+      }
       // Keep pendingCancels until turn-finished, an authoritative snapshot with no
       // active turn, or a fresh turn-started. A successful RPC can return while the
       // server is still draining old stream frames.
@@ -1121,29 +1178,35 @@ export const useChatStore = defineStore("chat", () => {
       // a replacement turn. In that case this transport-level failure is stale.
       if (pendingCancels.get(k) !== pending) return;
 
+      error.value = e instanceof ApiError ? e.code : "cancel-failed";
+
+      if (pending.offline) {
+        // The request failed across an offline boundary, so delivery is ambiguous.
+        // Remove the speculative cancelled row now, but don't restore pre-offline live
+        // state unless an ordered reconnect snapshot has already proved it is active.
+        removePendingCancelRow(id, alias, k, pending);
+        if (pending.activeSnapshotAfterOffline && pending.turn) {
+          pendingCancels.delete(k);
+          finishedTurns.delete(k);
+          liveTurns.value[k] = pending.turn;
+          syncLiveSlot(k);
+        } else {
+          pending.rpcFailedOffline = true;
+        }
+        return;
+      }
+
       pendingCancels.delete(k);
       finishedTurns.delete(k);
 
-      // Roll back exactly the row created by this Stop. Do not search by startedAt:
-      // distinct turns can share the same millisecond stamp.
+      // A normal online failure is definitive enough to restore the private buffered
+      // turn immediately; no disconnect boundary made that copy stale.
       const restored = pending.turn;
       if (restored) {
-        const cancelledIndex = pending.optimisticRow
-          ? messages.value.indexOf(pending.optimisticRow)
-          : -1;
-        if (cancelledIndex >= 0) {
-          messages.value.splice(cancelledIndex, 1);
-          touchTranscript();
-          cacheWrite.schedule();
-        } else if (selectedKey.value !== k) {
-          // select() may already have cached the optimistic row before switching away.
-          const user = useAuthStore().account?.username;
-          if (user) void tailCache.drop(user, id, alias);
-        }
+        removePendingCancelRow(id, alias, k, pending);
         liveTurns.value[k] = restored;
         syncLiveSlot(k);
       }
-      error.value = e instanceof ApiError ? e.code : "cancel-failed";
     }
   }
 

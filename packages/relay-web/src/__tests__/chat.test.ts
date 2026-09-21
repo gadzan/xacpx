@@ -951,6 +951,30 @@ it("cancel sends control.prompt.cancel for the selected session", async () => {
   expect(rpc).toHaveBeenCalledWith("inst", "control.prompt.cancel", { sessionAlias: "A" });
 });
 
+it("cancelled:false drops the speculative cancelled row and converges authoritative history", async () => {
+  rpc.mockResolvedValueOnce({ cancelled: false });
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+    messages: [
+      { id: 1, instanceId: "inst", sessionAlias: "A", direction: "in", text: "prompt", createdAt: new Date(1).toISOString() },
+      { id: 2, instanceId: "inst", sessionAlias: "A", direction: "out", text: "done", createdAt: new Date(2).toISOString() },
+    ],
+    hasMore: false,
+  }), { status: 200 })));
+
+  const chat = useChatStore();
+  chat.select("inst", "A");
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-started", chatKey: "c", sessionAlias: "A", startedAt: 1, slotAfterId: 1 } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: "stale partial" } } as never);
+
+  await chat.cancel();
+  await vi.waitFor(() => {
+    expect(chat.messages.map((message) => message.text)).toEqual(["prompt", "done"]);
+  });
+
+  expect(chat.busy).toBe(false);
+  expect(chat.messages.some((message) => message.status === "cancelled")).toBe(false);
+});
+
 it("cancel surfaces an error code on failure", async () => {
   rpc.mockRejectedValueOnce(new ApiError("instance-offline", 503));
   const chat = useChatStore();
@@ -1039,13 +1063,19 @@ it("active reconnect snapshot after successful cancel stays hidden until the old
   expect(chat.busy).toBe(false);
 });
 
-it("reconnect snapshot for a same-millisecond newer turn supersedes the completed cancel guard by slot identity", async () => {
+it("reconnect snapshot for a same-millisecond newer turn uses the new slot identity and position", async () => {
   rpc.mockResolvedValueOnce({ cancelled: true });
   const chat = useChatStore();
   chat.select("inst", "A");
+  chat.messages.push({
+    id: 10, instanceId: "inst", sessionAlias: "A", direction: "in", text: "old prompt", createdAt: new Date(1).toISOString(),
+  });
   chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-started", chatKey: "c", sessionAlias: "A", startedAt: 1, slotAfterId: 10 } } as never);
   chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: "old" } } as never);
   await chat.cancel();
+  chat.messages.push({
+    id: 11, instanceId: "inst", sessionAlias: "A", direction: "in", text: "new prompt", createdAt: new Date(2).toISOString(),
+  });
 
   chat.applyEvent({
     kind: "state-snapshot",
@@ -1056,10 +1086,10 @@ it("reconnect snapshot for a same-millisecond newer turn supersedes the complete
   } as never);
   expect(chat.busy).toBe(true);
   expect(chat.streaming).toBe("new turn");
-  expect(chat.liveTurn).toMatchObject({ startedAt: 1, slotAfterId: 11 });
+  expect(chat.liveTurn).toMatchObject({ startedAt: 1, slotAfterId: 11, slotAfterIndex: 1 });
 });
 
-it("instance offline settles a pending cancel so the later RPC rejection cannot resurrect a ghost turn", async () => {
+it("offline cancel failure waits for reconnect truth, then restores the same active turn without a fake cancelled row", async () => {
   let rejectCancel!: (error: unknown) => void;
   rpc.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectCancel = reject; }));
   const chat = useChatStore();
@@ -1074,15 +1104,28 @@ it("instance offline settles a pending cancel so the later RPC rejection cannot 
   rejectCancel(new ApiError("instance-offline", 503));
   await cancelling;
 
+  expect(chat.error).toBe("instance-offline");
   expect(chat.busy).toBe(false);
-  expect(chat.streaming).toBe("");
-  expect(chat.messages.at(-1)).toMatchObject({ text: "half", status: "cancelled" });
+  expect(chat.messages.some((message) => message.status === "cancelled")).toBe(false);
 
-  // A stale HTTP seed served before the offline boundary must stay suppressed too.
+  // Best-effort HTTP state from before reconnect is still suppressed while the
+  // ambiguous Stop waits for the ordered connector snapshot.
   chat.seedActiveTurns([
     { instanceId: "inst", sessionAlias: "A", parts: [{ type: "text", text: "stale" }], status: "streaming", startedAt: 1, slotAfterId: 10 },
   ] as never);
   expect(chat.busy).toBe(false);
+
+  chat.applyEvent({
+    kind: "state-snapshot",
+    instanceId: "inst",
+    turns: [{ instanceId: "inst", sessionAlias: "A", parts: [{ type: "text", text: "authoritative" }], status: "streaming", startedAt: 1, slotAfterId: 10 }],
+    usage: [],
+    commands: [],
+  } as never);
+
+  expect(chat.busy).toBe(true);
+  expect(chat.streaming).toBe("authoritative");
+  expect(chat.messages.some((message) => message.status === "cancelled")).toBe(false);
 });
 
 it("cancel failure restores the authoritative reconnect snapshot without exposing it early", async () => {
