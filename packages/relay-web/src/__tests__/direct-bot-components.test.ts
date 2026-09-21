@@ -282,6 +282,123 @@ describe("Direct Bot Components", () => {
       expect(wrapper.emitted("saved")).toBeTruthy();
     });
 
+    it("locks agent/workspace once authoritative detail resolves hasRuntime=true", async () => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "codex", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+          agentCatalog: [],
+        } as never,
+      ];
+      const directBots = useDirectBotsStore();
+      directBots.botsByInstance["i1"] = [
+        {
+          id: "bot_1", name: "Existing Bot", agent: "codex", workspace: "repo",
+          enabled: true, updatedAt: "2026-09-18T00:00:00.000Z",
+        },
+      ];
+      const detailGate = Promise.withResolvers<{ bot: BotDetailDto }>();
+      const loadDetailSpy = vi.spyOn(directBots, "loadBotDetail").mockImplementation(async () => {
+        const res = await detailGate.promise;
+        directBots.botDetails["i1:bot_1"] = res.bot;
+        return res.bot;
+      });
+      const existingBot: BotSummaryDto = {
+        id: "bot_1",
+        name: "Existing Bot",
+        agent: "codex",
+        workspace: "repo",
+        enabled: true,
+        updatedAt: "2026-09-18T00:00:00.000Z",
+      };
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local", bot: existingBot },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      // Unlocked before the authoritative detail arrives.
+      expect((wrapper.find("#bot-agent").element as HTMLSelectElement).disabled).toBe(false);
+      expect((wrapper.find("#bot-workspace").element as HTMLSelectElement).disabled).toBe(false);
+
+      detailGate.resolve({
+        bot: {
+          id: "bot_1", name: "Existing Bot", agent: "codex", workspace: "repo",
+          enabled: true, profileRevision: 2,
+          createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "2026-09-18T00:01:00.000Z",
+          hasRuntime: true,
+        },
+      });
+      await flushPromises();
+      await flushPromises();
+
+      expect(loadDetailSpy).toHaveBeenCalledWith("i1", "bot_1");
+      expect((wrapper.find("#bot-agent").element as HTMLSelectElement).disabled).toBe(true);
+      expect((wrapper.find("#bot-workspace").element as HTMLSelectElement).disabled).toBe(true);
+    });
+
+    it("locks an open dialog when the store later converges hasRuntime=true", async () => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "codex", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+          agentCatalog: [],
+        } as never,
+      ];
+      const directBots = useDirectBotsStore();
+      directBots.botsByInstance["i1"] = [
+        {
+          id: "bot_1", name: "Existing Bot", agent: "codex", workspace: "repo",
+          enabled: true, updatedAt: "2026-09-18T00:00:00.000Z",
+        },
+      ];
+      vi.spyOn(directBots, "loadBotDetail").mockResolvedValue({
+        id: "bot_1", name: "Existing Bot", agent: "codex", workspace: "repo",
+        enabled: true, profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "2026-09-18T00:00:00.000Z",
+      });
+      const existingBot: BotSummaryDto = {
+        id: "bot_1",
+        name: "Existing Bot",
+        agent: "codex",
+        workspace: "repo",
+        enabled: true,
+        updatedAt: "2026-09-18T00:00:00.000Z",
+      };
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local", bot: existingBot },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      expect((wrapper.find("#bot-agent").element as HTMLSelectElement).disabled).toBe(false);
+
+      // Later catalog lifecycle convergence (e.g. remote topic creation for
+      // this Bot) flips the store row to hasRuntime=true; the open dialog
+      // must lock without close/reopen.
+      directBots.botsByInstance["i1"] = [
+        {
+          id: "bot_1", name: "Existing Bot", agent: "codex", workspace: "repo",
+          enabled: true, updatedAt: "2026-09-18T00:00:00.000Z", hasRuntime: true,
+        },
+      ];
+      await flushPromises();
+      await wrapper.vm.$nextTick();
+
+      expect((wrapper.find("#bot-agent").element as HTMLSelectElement).disabled).toBe(true);
+      expect((wrapper.find("#bot-workspace").element as HTMLSelectElement).disabled).toBe(true);
+    });
+
     it("keeps user-typed instructions when the slow detail fetch resolves", async () => {
       const instances = useInstancesStore();
       instances.instances = [
