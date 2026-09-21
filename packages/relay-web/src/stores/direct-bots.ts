@@ -354,9 +354,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       const res = unwrapRpc(
         await api.rpc<{ bots: BotSummaryDto[] }>(targetInstanceId, MSG.botsList, {}),
       );
-      // A stale (superseded) list response must not clobber the newer cache.
+      // A stale (superseded) list response must not clobber the newer cache,
+      // nor may it pose as an authoritative answer for side effects (e.g. the
+      // bots-changed ghost-selection check): return the current cache so a
+      // late S1 cannot clear a selection made after S2 converged.
       if (botsListSeq[targetInstanceId] !== seq) {
-        return res.bots;
+        return botsByInstance.value[targetInstanceId] ?? res.bots;
       }
       // hasRuntime is monotonic (no public teardown/rebind): an older
       // snapshot that predates materialization evidence must not roll a
@@ -1668,6 +1671,16 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           void loadBotDetail(event.instanceId, selectedBotId.value).catch(() => {});
         }
       })();
+      return;
+    }
+    // A persisted Direct Topic for a background instance proves that Bot's
+    // backend Direct Conversation row exists (Direct Conversation ownership
+    // alone locks agent/workspace and fail-closed delete). The transcript
+    // fence below must not drop this lifecycle evidence: converge via an
+    // authoritative catalog refresh, which also carries hasRuntime when the
+    // backend reports it.
+    if (e.type === "conversation-topic-changed" && event.instanceId !== instanceId.value) {
+      void loadBots(event.instanceId).catch(() => {});
       return;
     }
 

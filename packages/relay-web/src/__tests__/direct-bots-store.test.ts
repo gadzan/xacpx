@@ -2896,6 +2896,107 @@ describe("useDirectBotsStore", () => {
       expect(store.instanceId).toBe("inst_1");
       expect(store.selectedBotId).toBe("bot_1");
     });
+    it("keeps a newly selected Bot when a stale bots-changed list resolves after a newer one", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_old";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      const withoutB = Promise.withResolvers<{ bots: BotSummaryDto[] }>();
+      const withB = Promise.withResolvers<{ bots: BotSummaryDto[] }>();
+      let listCalls = 0;
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (instId === "inst_1" && type === "control.bots.list") {
+          listCalls += 1;
+          return listCalls === 1 ? withoutB.promise : withB.promise;
+        }
+        return Promise.resolve({});
+      });
+
+      // E1: bots-changed whose S1 snapshot predates Bot B; response deferred.
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: { type: "bots-changed" },
+      } as never);
+      expect(listCalls).toBe(1);
+
+      // B is created; E2 converges the cache on S2 which contains B.
+      withB.resolve({
+        bots: [
+          { id: "bot_old", name: "Old", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+          { id: "bot_B", name: "B", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        ],
+      });
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: { type: "bots-changed" },
+      } as never);
+      await flushPromises();
+      await flushPromises();
+      expect(listCalls).toBe(2);
+      expect(store.botsByInstance["inst_1"]?.map((b) => b.id)).toEqual(["bot_old", "bot_B"]);
+
+      // User selects B while E1 is still in flight.
+      store.selectedBotId = "bot_B";
+
+      // Stale E1/S1 resolves late: cache must stay on S2 and the fresh
+      // selection must survive (S1 must not clear it as a ghost).
+      withoutB.resolve({
+        bots: [
+          { id: "bot_old", name: "Old", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        ],
+      });
+      await flushPromises();
+      await flushPromises();
+
+      expect(store.botsByInstance["inst_1"]?.map((b) => b.id)).toEqual(["bot_old", "bot_B"]);
+      expect(store.selectedBotId).toBe("bot_B");
+      expect(store.activeConversationId).toBe("conv_1");
+    });
+    it("refreshes the background instance catalog on conversation-topic-changed without touching the selection", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_2"] = [
+        { id: "bot_B", name: "B", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      store.botsLoaded["inst_2"] = true;
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (instId === "inst_2" && type === "control.bots.list") {
+          return Promise.resolve({
+            bots: [
+              { id: "bot_B", name: "B", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now", hasRuntime: true },
+            ],
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      // Remote/other-tab Topic create on inst_2 arrives while inst_1 is selected.
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_2",
+        event: {
+          type: "conversation-topic-changed",
+          topic: {
+            id: "top_remote", conversationId: "conv_B", title: "Remote",
+            status: "active", createdAt: "now", updatedAt: "now",
+          },
+        },
+      } as never);
+      await flushPromises();
+      await flushPromises();
+
+      // Background catalog converges authoritatively; selection untouched.
+      expect(mockRpc).toHaveBeenCalledWith("inst_2", "control.bots.list", {});
+      expect(store.botsByInstance["inst_2"]?.[0]?.hasRuntime).toBe(true);
+      expect(store.instanceId).toBe("inst_1");
+      expect(store.selectedBotId).toBe("bot_1");
+    });
     it("reconnect drops a ghost bot instead of restoring its pane", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
