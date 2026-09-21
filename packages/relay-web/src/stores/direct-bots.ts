@@ -304,6 +304,13 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // bots-changed. Converge immediately so delete/identity UI does not wait
   // for a later authoritative list/detail refetch.
   function markBotHasRuntime(targetInstanceId: string, botId: string): void {
+    // PR5 has no public teardown/rebind: once a Bot has materialized a direct
+    // runtime, hasRuntime is monotonic. Bump both catalog generations so an
+    // older in-flight bots-list/detail response (whose snapshot predates the
+    // materialization evidence) can never write back hasRuntime-unset rows.
+    botsListSeq[targetInstanceId] = (botsListSeq[targetInstanceId] ?? 0) + 1;
+    const detailKey = `${targetInstanceId}:${botId}`;
+    botDetailSeq[detailKey] = (botDetailSeq[detailKey] ?? 0) + 1;
     const list = botsByInstance.value[targetInstanceId];
     if (list) {
       const idx = list.findIndex((b) => b.id === botId);
@@ -313,10 +320,28 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         botsByInstance.value = { ...botsByInstance.value, [targetInstanceId]: next };
       }
     }
-    const detailKey = `${targetInstanceId}:${botId}`;
     const detail = botDetails.value[detailKey];
-    if (detail && !detail.hasRuntime) {
-      botDetails.value = { ...botDetails.value, [detailKey]: { ...detail, hasRuntime: true as const } };
+    if (detail) {
+      if (!detail.hasRuntime) {
+        botDetails.value = { ...botDetails.value, [detailKey]: { ...detail, hasRuntime: true as const } };
+      }
+    } else if (selectedBotId.value === botId && instanceId.value === targetInstanceId) {
+      // No cached detail row yet (e.g. list-only selection): seed a minimal
+      // lifecycle entry from the list row so currentBot (detail-first) still
+      // converges hasRuntime. Full fields arrive on the next detail load,
+      // which preserves true via the monotonic merge below.
+      const listed = botsByInstance.value[targetInstanceId]?.find((b) => b.id === botId);
+      if (listed) {
+        botDetails.value = {
+          ...botDetails.value,
+          [detailKey]: {
+            ...listed,
+            hasRuntime: true as const,
+            profileRevision: 1,
+            createdAt: listed.updatedAt,
+          },
+        };
+      }
     }
   }
 
@@ -333,9 +358,19 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       if (botsListSeq[targetInstanceId] !== seq) {
         return res.bots;
       }
+      // hasRuntime is monotonic (no public teardown/rebind): an older
+      // snapshot that predates materialization evidence must not roll a
+      // locally-converged true back to unset.
+      const prevList = botsByInstance.value[targetInstanceId] ?? [];
+      const prevRuntime: Record<string, true> = {};
+      for (const b of prevList) {
+        if (b.hasRuntime) prevRuntime[b.id] = true;
+      }
       botsByInstance.value = {
         ...botsByInstance.value,
-        [targetInstanceId]: res.bots,
+        [targetInstanceId]: res.bots.map((b) =>
+          prevRuntime[b.id] && !b.hasRuntime ? { ...b, hasRuntime: true as const } : b,
+        ),
       };
       botsLoaded.value = {
         ...botsLoaded.value,
@@ -367,12 +402,15 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       await api.rpc<{ bot: BotDetailDto }>(targetInstanceId, MSG.botsGet, { id: botId }),
     );
     // A stale (superseded) detail response must not clobber the newer cache.
-    if (botDetailSeq[detailKey] === seq) {
-      botDetails.value = {
-        ...botDetails.value,
-        [detailKey]: res.bot,
-      };
+    if (botDetailSeq[detailKey] !== seq) {
+      return res.bot;
     }
+    const prevDetail = botDetails.value[detailKey];
+    botDetails.value = {
+      ...botDetails.value,
+      [detailKey]:
+        prevDetail?.hasRuntime && !res.bot.hasRuntime ? { ...res.bot, hasRuntime: true as const } : res.bot,
+    };
     return res.bot;
   }
 
@@ -495,6 +533,21 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         [key]: [...currentList, res.topic],
       };
     }
+    // Any persisted Direct Topic for this Bot's conversation proves the
+    // backend Direct Conversation row exists, which is sufficient for
+    // BotService.hasRuntime() to lock agent/workspace and fail-closed
+    // delete. A topics.create success (local or a remote tab's create that
+    // arrives as conversation-topic-changed) is therefore lifecycle evidence
+    // for the owning Bot of that conversation.
+    if (instanceId.value === targetInstanceId && selectedBotId.value) {
+      const owner =
+        conversationDetails.value[`${targetInstanceId}:${conversationId}`]?.botId
+        ?? conversationsByInstance.value[targetInstanceId]?.find((c) => c.id === conversationId)?.botId
+        ?? (activeConversationId.value === conversationId ? selectedBotId.value : undefined);
+      if (owner) {
+        markBotHasRuntime(targetInstanceId, owner);
+      }
+    }
     // Switch to new topic if in the same conversation
     if (instanceId.value === targetInstanceId && activeConversationId.value === conversationId) {
       await switchTopic(res.topic.id);
@@ -518,7 +571,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const cId = convId ?? activeConversationId.value;
     const tId = topId ?? activeTopicId.value;
     if (!iId || !cId || !tId) return;
-
     const requestSequence = ++historyRequestSequence;
     // Every load owns durable-owner discovery: the id minted here fences
     // the recovery below, so concurrent loads cannot interleave owners. A
@@ -1640,6 +1692,18 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         } else {
           topicsByConversation.value = { ...topicsByConversation.value, [key]: [...currentList, topic] };
         }
+      }
+      // A persisted Direct Topic proves the backend Direct Conversation row
+      // exists for its owning Bot (remote/other-tab create arrives here as
+      // conversation-topic-changed). Converge that Bot's lifecycle bit.
+      const owner =
+        conversationDetails.value[`${event.instanceId}:${topic.conversationId}`]?.botId
+        ?? conversationsByInstance.value[event.instanceId]?.find((c) => c.id === topic.conversationId)?.botId
+        ?? (activeConversationId.value === topic.conversationId && selectedBotId.value
+          ? selectedBotId.value
+          : undefined);
+      if (owner) {
+        markBotHasRuntime(event.instanceId, owner);
       }
       return;
     }

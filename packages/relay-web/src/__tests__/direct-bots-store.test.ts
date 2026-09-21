@@ -1260,6 +1260,185 @@ describe("useDirectBotsStore", () => {
       expect(store.botDetails["inst_1:bot_1"]?.name).toBe("New");
       expect(store.botDetails["inst_1:bot_1"]?.enabled).toBe(true);
     });
+    it("keeps hasRuntime=true when a stale detail response predating execution evidence arrives late", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Fresh", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      const staleDetail = Promise.withResolvers<{ bot: BotDetailDto }>();
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.bots.get") return staleDetail.promise;
+        return Promise.resolve({});
+      });
+      // Detail request issued before any execution evidence; its snapshot has
+      // hasRuntime unset.
+      const pendingDetail = store.loadBotDetail("inst_1", "bot_1");
+      // Track run_1 locally first so the execution-started event merges on the
+      // same-owner branch (the dispatcher always starts the accepted Run).
+      store.activeRun = {
+        id: "run_1", conversationId: "conv_1", topicId: "top_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit",
+        state: "queued", profileRevision: 1, createdAt: "now",
+      };
+      // Execution evidence arrives first: hidden runtime materialized.
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "member-turn-started",
+          run: {
+            id: "run_1", conversationId: "conv_1", topicId: "top_1",
+            requestMessageId: "msg_1", requestId: "req_1", mode: "explicit",
+            state: "running", profileRevision: 1, createdAt: "now",
+          },
+          memberTurn: {
+            id: "turn_1", runId: "run_1", conversationId: "conv_1", topicId: "top_1",
+            botId: "bot_1", batch: 1, attempt: 1, origin: "human",
+            state: "running", createdAt: "now",
+          },
+        },
+      } as never);
+      expect(store.currentBot?.hasRuntime).toBe(true);
+      expect(store.botDetails["inst_1:bot_1"]?.hasRuntime).toBe(true);
+
+      // Stale detail response resolves late with hasRuntime unset.
+      staleDetail.resolve({
+        bot: {
+          id: "bot_1", name: "Fresh", agent: "codex", workspace: "repo", enabled: true,
+          profileRevision: 1, createdAt: "now", updatedAt: "now",
+        },
+      });
+      await pendingDetail;
+      // Monotonic: true must never roll back to unset.
+      expect(store.currentBot?.hasRuntime).toBe(true);
+      expect(store.botDetails["inst_1:bot_1"]?.hasRuntime).toBe(true);
+    });
+    it("keeps hasRuntime=true when a stale list response predating execution evidence arrives late", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Fresh", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      const staleList = Promise.withResolvers<{ bots: BotSummaryDto[] }>();
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.bots.list") return staleList.promise;
+        return Promise.resolve({});
+      });
+
+      const pendingList = store.loadBots("inst_1");
+      store.activeRun = {
+        id: "run_1", conversationId: "conv_1", topicId: "top_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit",
+        state: "queued", profileRevision: 1, createdAt: "now",
+      };
+      // Execution evidence arrives first: hidden runtime materialized.
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "member-turn-started",
+          run: {
+            id: "run_1", conversationId: "conv_1", topicId: "top_1",
+            requestMessageId: "msg_1", requestId: "req_1", mode: "explicit",
+            state: "running", profileRevision: 1, createdAt: "now",
+          },
+          memberTurn: {
+            id: "turn_1", runId: "run_1", conversationId: "conv_1", topicId: "top_1",
+            botId: "bot_1", batch: 1, attempt: 1, origin: "human",
+            state: "running", createdAt: "now",
+          },
+        },
+      } as never);
+      expect(store.currentBot?.hasRuntime).toBe(true);
+
+      staleList.resolve({
+        bots: [
+          { id: "bot_1", name: "Fresh", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        ],
+      });
+      await pendingList;
+      expect(store.currentBot?.hasRuntime).toBe(true);
+      expect(store.botsByInstance["inst_1"]?.[0]?.hasRuntime).toBe(true);
+    });
+    it("converges hasRuntime on local createTopic success", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Fresh", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      store.conversationsByInstance["inst_1"] = [
+        {
+          id: "conv_1", kind: "bot", title: "Fresh", botId: "bot_1",
+          defaultTopicId: "top_1", createdAt: "now", updatedAt: "now",
+        },
+      ];
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.topics.create") {
+          return Promise.resolve({
+            topic: {
+              id: "top_2", conversationId: "conv_1", title: "Second",
+              status: "active", createdAt: "now", updatedAt: "now",
+            },
+          });
+        }
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_1", topicId: "top_2", messages: [],
+            hasMoreBefore: false, hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({ conversationId: "conv_1", topicId: "top_2", runs: [] });
+        }
+        return Promise.resolve({});
+      });
+      expect(store.currentBot?.hasRuntime).toBeUndefined();
+
+      await store.createTopic("inst_1", "conv_1", "Second");
+      // Persisted Direct Topic proves the backend Direct Conversation row
+      // exists, which locks the owning Bot: converge before submit.
+      expect(store.currentBot?.hasRuntime).toBe(true);
+    });
+    it("converges hasRuntime on a remote conversation-topic-changed event", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Fresh", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      store.conversationsByInstance["inst_1"] = [
+        {
+          id: "conv_1", kind: "bot", title: "Fresh", botId: "bot_1",
+          defaultTopicId: "top_1", createdAt: "now", updatedAt: "now",
+        },
+      ];
+      expect(store.currentBot?.hasRuntime).toBeUndefined();
+
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "conversation-topic-changed",
+          topic: {
+            id: "top_remote", conversationId: "conv_1", title: "Remote",
+            status: "active", createdAt: "now", updatedAt: "now",
+          },
+        },
+      } as never);
+      expect(store.currentBot?.hasRuntime).toBe(true);
+    });
     it("does not forge a discovery failure when a terminal event refreshes history during deferred runs.get", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
