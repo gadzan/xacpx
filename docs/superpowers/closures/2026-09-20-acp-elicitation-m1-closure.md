@@ -191,6 +191,48 @@ Four further findings, all fixed:
    `elicitation-plugin-contract.test.ts` compiles its fake channel against the
    published `src/plugin-api.js` surface so future divergence fails typecheck.
 
+## Review round 3 (PR #355, head `b2b1d799`)
+
+Four further findings, all fixed:
+
+1. **[Blocking, trust boundary]** The broker handed the renderer the same
+   mutable object graph it validated answers against. A renderer pushing an
+   option, clearing `required`, or relaxing `minLength` silently changed core's
+   validation truth — no malice required, only in-place UI tidying. The broker
+   now keeps a private validation snapshot and hands out a separately cloned,
+   recursively frozen presentation copy; the validator clones multi-select
+   arrays. 5 tamper regressions.
+2. **[Blocking, prototype keys]** `name in propertiesRecord` let
+   `required: ["toString"]` pass with no such property; `source[field.key]`
+   made an optional `toString` field read the inherited function as a
+   submitted value; `out["__proto__"] = v` is a prototype setter, so a legal
+   answer could vanish. ACP property names are not restricted away from JS
+   special keys, so this is protocol correctness. `Object.hasOwn` for presence,
+   `defineProperty` on a null-prototype dictionary for output. 7 tests.
+3. **[Medium, fidelity]** ACP schema-level `title`/`description` were dropped,
+   and `pattern` was dropped by the enum→single-select conversion — both
+   permanently unrenderable because plugins never see the raw ACP object. Both
+   are now bounded and carried through. 4 tests.
+4. **[Medium, fail-closed]** ACP `EnumOption` requires `const` AND `title`, but
+   the reader treated `title` as optional and fell back to `label: value`,
+   auto-repairing a malformed option into a label the agent never chose.
+   `title` is now required and bounded; missing/empty fails closed. 2 tests.
+
+## Final test totals
+
+| Suite | Tests |
+|---|---|
+| `turn-interaction-registry.test.ts` | 13 |
+| `elicitation-schema.test.ts` | 77 |
+| `elicitation-interaction-broker.test.ts` | 36 |
+| `elicitation-plugin-contract.test.ts` | 5 |
+| `channel-elicitation-capability.test.ts` | 9 |
+| `runtime-adapter-elicitation.test.ts` (real acpx) | 4 |
+
+Total new: **144**. M1 unit suites 277/277 green; real-acpx E2E 15/16 (the one
+failure is the pre-existing `PR9-A E2E`, reproduced on clean `src/`);
+`npx tsc --noEmit` 0 errors.
+
 ## Deferred
 
 - No production channel renderer (M2 Discord, M4 Feishu).
