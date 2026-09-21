@@ -1014,19 +1014,84 @@ it("seedActiveTurns after optimistic cancel does not resurrect working state", a
   expect(chat.busy).toBe(false);
 });
 
-it("cancel RPC failure clears the finish guard so a still-running turn can reappear", async () => {
-  rpc.mockRejectedValueOnce(new ApiError("instance-offline", 503));
+it("active reconnect snapshot after successful cancel stays hidden until the old turn is authoritatively gone", async () => {
+  rpc.mockResolvedValueOnce({ cancelled: true });
   const chat = useChatStore();
   chat.select("inst", "A");
   chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-started", chatKey: "c", sessionAlias: "A", startedAt: 1 } } as never);
   chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: "half" } } as never);
   await chat.cancel();
-  expect(chat.error).toBe("instance-offline");
+
+  chat.applyEvent({
+    kind: "state-snapshot",
+    instanceId: "inst",
+    turns: [{ instanceId: "inst", sessionAlias: "A", parts: [{ type: "text", text: "half late" }], status: "streaming", startedAt: 1 }],
+    usage: [],
+    commands: [],
+  } as never);
   expect(chat.busy).toBe(false);
-  // Guard dropped: a late chunk (or active-turns seed) may rebuild the live turn.
-  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: " more" } } as never);
+  expect(chat.streaming).toBe("");
+
+  chat.applyEvent({ kind: "state-snapshot", instanceId: "inst", turns: [], usage: [], commands: [] } as never);
+  chat.seedActiveTurns([
+    { instanceId: "inst", sessionAlias: "A", parts: [{ type: "text", text: "stale" }], status: "streaming", startedAt: 1 },
+  ] as never);
+  expect(chat.busy).toBe(false);
+});
+
+it("cancel failure restores the authoritative reconnect snapshot without exposing it early", async () => {
+  let rejectCancel!: (error: unknown) => void;
+  rpc.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectCancel = reject; }));
+  const chat = useChatStore();
+  chat.select("inst", "A");
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-started", chatKey: "c", sessionAlias: "A", startedAt: 1 } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: "half" } } as never);
+
+  const cancelling = chat.cancel();
+  chat.applyEvent({
+    kind: "state-snapshot",
+    instanceId: "inst",
+    turns: [{ instanceId: "inst", sessionAlias: "A", parts: [{ type: "text", text: "authoritative" }], status: "streaming", startedAt: 1 }],
+    usage: [],
+    commands: [],
+  } as never);
+  expect(chat.busy).toBe(false);
+
+  rejectCancel(new ApiError("instance-offline", 503));
+  await cancelling;
   expect(chat.busy).toBe(true);
-  expect(chat.streaming).toBe(" more");
+  expect(chat.streaming).toBe("authoritative");
+  expect(chat.messages.some((message) => message.status === "cancelled")).toBe(false);
+});
+
+it("cancel RPC failure rolls back the optimistic row and restores buffered late stream state", async () => {
+  let rejectCancel!: (error: unknown) => void;
+  rpc.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectCancel = reject; }));
+  const chat = useChatStore();
+  chat.select("inst", "A");
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-started", chatKey: "c", sessionAlias: "A", startedAt: 1 } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: "half" } } as never);
+
+  const cancelling = chat.cancel();
+  expect(chat.busy).toBe(false);
+  expect(chat.messages.at(-1)).toMatchObject({ text: "half", status: "cancelled" });
+
+  // These frames raced with the failing cancel RPC. They stay hidden while Stop is
+  // pending, but must be preserved so rollback restores the whole turn, not a suffix.
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: " more" } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "tool-event", chatKey: "c", sessionAlias: "A", step: { toolCallId: "t1", title: "Read", status: "completed", kind: "read" } } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-thought", chatKey: "c", sessionAlias: "A", chunk: "hmm" } } as never);
+  expect(chat.busy).toBe(false);
+
+  rejectCancel(new ApiError("instance-offline", 503));
+  await cancelling;
+
+  expect(chat.error).toBe("instance-offline");
+  expect(chat.busy).toBe(true);
+  expect(chat.streaming).toBe("half more");
+  expect(chat.liveToolSteps).toHaveLength(1);
+  expect(chat.liveTurn?.parts).toContainEqual({ type: "reasoning", text: "hmm" });
+  expect(chat.messages.some((message) => message.status === "cancelled")).toBe(false);
 });
 
 it("cancel is a no-op with no session selected", async () => {

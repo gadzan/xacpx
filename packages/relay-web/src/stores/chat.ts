@@ -184,6 +184,11 @@ export const useChatStore = defineStore("chat", () => {
   // would resurrect the finished turn and wedge the session "working" forever. Cleared
   // when a fresh `turn-started` supersedes the finish. Non-reactive: a plain guard set.
   const finishedTurns = new Set<string>();
+  // A local Stop is stronger than an old-socket finish guard: until the cancel attempt
+  // is authoritatively settled, reconnect snapshots and late deltas must stay hidden.
+  // Keep a private copy of the turn updated while hidden so an RPC failure can roll
+  // back to the complete still-running state instead of rebuilding from a suffix.
+  const pendingCancels = new Map<string, { turn?: LiveTurn }>();
   const bufKey = (instanceId: string, alias: string) => `${instanceId}\0${alias}`;
 
   /** Which attention signal a session should show in the list. `working` (a live turn)
@@ -275,6 +280,32 @@ export const useChatStore = defineStore("chat", () => {
         slotAfterIndex: selected ? messages.value.length - 1 : -1,
       };
       liveTurns.value[k] = t;
+    }
+    return t;
+  }
+
+  function cloneLiveTurn(t: LiveTurn): LiveTurn {
+    return {
+      ...t,
+      parts: t.parts.map((part) => (
+        part.type === "tool"
+          ? { ...part, step: { ...part.step } }
+          : { ...part }
+      )) as TurnPart[],
+    };
+  }
+
+  function ensurePendingCancelTurn(k: string, pending: { turn?: LiveTurn }): LiveTurn {
+    let t = pending.turn;
+    if (!t) {
+      const selected = selectedKey.value === k;
+      t = {
+        parts: [],
+        status: "working",
+        startedAt: Date.now(),
+        slotAfterIndex: selected ? messages.value.length - 1 : -1,
+      };
+      pending.turn = t;
     }
     return t;
   }
@@ -583,8 +614,8 @@ export const useChatStore = defineStore("chat", () => {
     for (const t of turns) {
       const k = bufKey(t.instanceId, t.sessionAlias);
       // Don't overwrite a live turn already tracked from the ws stream (it's fresher),
-      // and don't resurrect one that finished in the snapshot→seed gap (see finishedTurns).
-      if (liveTurns.value[k] || finishedTurns.has(k)) continue;
+      // and don't resurrect one that finished or is hidden by an optimistic cancel.
+      if (liveTurns.value[k] || finishedTurns.has(k) || pendingCancels.has(k)) continue;
       liveTurns.value[k] = {
         parts: t.parts as TurnPart[],
         status: t.status,
@@ -610,25 +641,45 @@ export const useChatStore = defineStore("chat", () => {
   ): void {
     const prefix = `${instId}\0`;
 
+    // A snapshot is a newer ordering boundary than any finish guard retained from
+    // the old socket. Local optimistic cancels are different: an active row may just
+    // mean the server is still draining the cancel RPC, so keep it hidden and refresh
+    // the private rollback copy instead of resurrecting busy.
+    for (const k of [...finishedTurns]) if (k.startsWith(prefix)) finishedTurns.delete(k);
+
+    const activeSnapshotKeys = new Set<string>();
     const nextTurns = { ...liveTurns.value };
     for (const k of Object.keys(nextTurns)) if (k.startsWith(prefix)) delete nextTurns[k];
     for (const turn of turns) {
       const k = bufKey(instId, turn.sessionAlias);
-      nextTurns[k] = {
+      activeSnapshotKeys.add(k);
+      const pending = pendingCancels.get(k);
+      const snapshotTurn: LiveTurn = {
         parts: turn.parts as TurnPart[],
         status: turn.status,
         startedAt: turn.startedAt,
         ...(typeof turn.slotAfterId === "number" ? { slotAfterId: turn.slotAfterId } : {}),
-        slotAfterIndex: selectedKey.value === k && typeof turn.slotAfterId === "number"
-          ? slotAfterIndexFromAnchor(messages.value, turn.slotAfterId)
-          : selectedKey.value === k ? messages.value.length - 1 : -1,
+        slotAfterIndex: pending?.turn?.slotAfterIndex
+          ?? (selectedKey.value === k && typeof turn.slotAfterId === "number"
+            ? slotAfterIndexFromAnchor(messages.value, turn.slotAfterId)
+            : selectedKey.value === k ? messages.value.length - 1 : -1),
       };
+      if (pending) {
+        pending.turn = snapshotTurn;
+        continue;
+      }
+      nextTurns[k] = snapshotTurn;
+    }
+    // An ordered snapshot that omits a locally-cancelled turn is authoritative proof
+    // that it is no longer active. Convert the local cancel guard into the ordinary
+    // finished guard so an older HTTP active-turns seed still cannot revive it.
+    for (const [k] of [...pendingCancels]) {
+      if (k.startsWith(prefix) && !activeSnapshotKeys.has(k)) {
+        pendingCancels.delete(k);
+        finishedTurns.add(k);
+      }
     }
     liveTurns.value = nextTurns;
-
-    // A snapshot is a newer ordering boundary than any finish guard retained from
-    // the old socket. Active rows in it are real new/current turns, not stale seeds.
-    for (const k of [...finishedTurns]) if (k.startsWith(prefix)) finishedTurns.delete(k);
 
     const nextUsage = { ...usage.value };
     for (const k of Object.keys(nextUsage)) if (k.startsWith(prefix)) delete nextUsage[k];
@@ -699,7 +750,10 @@ export const useChatStore = defineStore("chat", () => {
     const e = event.event;
     if (e.type === "turn-started") {
       const k = bufKey(event.instanceId, e.sessionAlias);
-      finishedTurns.delete(k); // a fresh turn supersedes any prior finish on this key
+      // A genuinely fresh turn supersedes both an old finish and any completed local
+      // cancel attempt for the previous turn on this session.
+      pendingCancels.delete(k);
+      finishedTurns.delete(k);
       const live = ensureTurn(k, e.startedAt);
       // slotAfterId is durable turn identity, not view-local presentation state.
       // A background turn must retain it so selecting that session later can place
@@ -745,23 +799,32 @@ export const useChatStore = defineStore("chat", () => {
         live.slotAfterIndex = messages.value.length - 1;
       }
     } else if (e.type === "turn-output") {
-      // Ignore late stream chunks after an optimistic cancel / turn-finished.
-      // ensureTurn would otherwise resurrect a cleared live turn and wedge busy.
       const k = bufKey(event.instanceId, e.sessionAlias);
-      if (!finishedTurns.has(k)) {
+      const pending = pendingCancels.get(k);
+      if (pending) {
+        const t = ensurePendingCancelTurn(k, pending);
+        appendText(t.parts, e.chunk);
+        t.status = "streaming";
+      } else if (!finishedTurns.has(k)) {
         const t = ensureTurn(k);
         appendText(t.parts, e.chunk);
         t.status = "streaming";
       }
     } else if (e.type === "tool-event") {
       const k = bufKey(event.instanceId, e.sessionAlias);
-      if (!finishedTurns.has(k)) {
+      const pending = pendingCancels.get(k);
+      if (pending) {
+        upsertTool(ensurePendingCancelTurn(k, pending).parts, e.step);
+      } else if (!finishedTurns.has(k)) {
         const t = ensureTurn(k);
         upsertTool(t.parts, e.step);
       }
     } else if (e.type === "turn-thought") {
       const k = bufKey(event.instanceId, e.sessionAlias);
-      if (!finishedTurns.has(k)) {
+      const pending = pendingCancels.get(k);
+      if (pending) {
+        appendReasoning(ensurePendingCancelTurn(k, pending).parts, e.chunk);
+      } else if (!finishedTurns.has(k)) {
         appendReasoning(ensureTurn(k).parts, e.chunk);
       }
     } else if (e.type === "plan") {
@@ -839,9 +902,11 @@ export const useChatStore = defineStore("chat", () => {
     } else if (e.type === "turn-finished") {
       const status: TurnStatus = e.cancelled ? "cancelled" : e.ok ? "done" : "error";
       const selected = event.instanceId === instanceId.value && e.sessionAlias === sessionAlias.value;
-      // Mark finished so a late active-turns snapshot can't resurrect this turn, even if
-      // the finish raced ahead of seedActiveTurns (no live turn existed to flush yet).
-      finishedTurns.add(bufKey(event.instanceId, e.sessionAlias));
+      const k = bufKey(event.instanceId, e.sessionAlias);
+      // The server finish settles any local cancel attempt. Mark finished so a late
+      // active-turns HTTP seed cannot resurrect the turn after this ordered event.
+      pendingCancels.delete(k);
+      finishedTurns.add(k);
       flushTurn(event.instanceId, e.sessionAlias, status, e.errorMessage);
       // Keep the immediate live flush for responsiveness, then converge on the
       // persisted rows. Starting this request invalidates any older history read,
@@ -995,23 +1060,55 @@ export const useChatStore = defineStore("chat", () => {
     const id = instanceId.value;
     const alias = sessionAlias.value;
     const k = bufKey(id, alias);
+    if (pendingCancels.has(k)) return;
+
     // Optimistically finalize locally so the input/HUD release immediately instead of
     // waiting for the server's turn-finished echo (which may be lost if the agent dies).
-    // Streamed content is preserved as a "cancelled" message; the later echo finds no
-    // live turn and is a no-op, so there is no double-render.
-    // Mark finished BEFORE flush so in-flight turn-output / tool-event / thought
-    // chunks (and a racing active-turns HTTP seed) cannot ensureTurn-resurrect busy.
+    // Keep a private copy of the live turn: late deltas and ordered reconnect snapshots
+    // update that hidden copy while the visible UI remains cancelled.
+    const live = liveTurns.value[k];
+    const pending: { turn?: LiveTurn } = live ? { turn: cloneLiveTurn(live) } : {};
+    pendingCancels.set(k, pending);
     finishedTurns.add(k);
     flushTurn(id, alias, "cancelled");
     try {
       await api.rpc(id, "control.prompt.cancel", { sessionAlias: alias });
+      // Keep pendingCancels until turn-finished, an authoritative snapshot with no
+      // active turn, or a fresh turn-started. A successful RPC can return while the
+      // server is still draining old stream frames.
     } catch (e) {
-      // Cancel RPC failed: the server turn may still be running. Drop the finish
-      // guard and re-seed from the hub so late stream events can rebuild the live
-      // turn instead of being silently dropped for the rest of the turn.
+      // A newer ordered event may already have proven the old turn finished or started
+      // a replacement turn. In that case this transport-level failure is stale.
+      if (pendingCancels.get(k) !== pending) return;
+
+      pendingCancels.delete(k);
       finishedTurns.delete(k);
+
+      // Roll back the optimistic cancelled row before restoring the hidden turn. Match
+      // by the turn's stable start stamp so this remains correct if other rows arrived
+      // while the cancel RPC was in flight.
+      const restored = pending.turn;
+      if (restored) {
+        const cancelledIndex = messages.value.findIndex((message) => (
+          message.id === undefined
+          && message.instanceId === id
+          && message.sessionAlias === alias
+          && message.status === "cancelled"
+          && message.startedAt === restored.startedAt
+        ));
+        if (cancelledIndex >= 0) {
+          messages.value.splice(cancelledIndex, 1);
+          touchTranscript();
+          cacheWrite.schedule();
+        } else if (selectedKey.value !== k) {
+          // select() may already have cached the optimistic row before switching away.
+          const user = useAuthStore().account?.username;
+          if (user) void tailCache.drop(user, id, alias);
+        }
+        liveTurns.value[k] = restored;
+        syncLiveSlot(k);
+      }
       error.value = e instanceof ApiError ? e.code : "cancel-failed";
-      void loadActiveTurns().catch(() => {});
     }
   }
 
