@@ -37,25 +37,50 @@ export interface UpdateBotInput {
 
 export type BotLifecycleMutation = "update" | "delete";
 
-/** True when a LogicalSession is owned by this Direct Bot, including PR2
- *  bindingId-only records that predate `owner.botId`. An explicit botId is
- *  authoritative: legacy metadata must never override a conflicting owner. */
+export type DirectBotSessionOwnership = "owned" | "foreign" | "conflict";
+
+/**
+ * Classify Direct Bot ownership without letting legacy metadata override explicit
+ * identity. PR2 records may omit botId and infer ownership from the deterministic
+ * bindingId; if they also carry conversationId, both legacy signals must agree.
+ */
+export function classifyDirectBotSessionOwnership(
+  session: Pick<LogicalSession, "owner">,
+  botId: string,
+  ownedBindingIds: ReadonlySet<string>,
+  conversationId = createDirectConversationId(botId),
+): DirectBotSessionOwnership {
+  const owner = session.owner;
+  if (owner?.kind !== "bot-direct") {
+    return "foreign";
+  }
+  const bindingMatches = ownedBindingIds.has(owner.bindingId)
+    || owner.bindingId === createDirectBindingId(botId);
+  const hasConversation = owner.conversationId !== undefined;
+  const conversationMatches = owner.conversationId === conversationId;
+
+  if (owner.botId !== undefined) {
+    if (owner.botId === botId) {
+      return hasConversation && !conversationMatches ? "conflict" : "owned";
+    }
+    return bindingMatches || conversationMatches ? "conflict" : "foreign";
+  }
+
+  if (hasConversation) {
+    if (bindingMatches !== conversationMatches) {
+      return "conflict";
+    }
+    return bindingMatches ? "owned" : "foreign";
+  }
+  return bindingMatches ? "owned" : "foreign";
+}
+
 export function sessionOwnedByDirectBot(
   session: Pick<LogicalSession, "owner">,
   botId: string,
   ownedBindingIds: ReadonlySet<string>,
 ): boolean {
-  const owner = session.owner;
-  if (owner?.kind !== "bot-direct") {
-    return false;
-  }
-  if (owner.botId !== undefined) {
-    return owner.botId === botId;
-  }
-  if (ownedBindingIds.has(owner.bindingId)) {
-    return true;
-  }
-  return owner.bindingId === createDirectBindingId(botId);
+  return classifyDirectBotSessionOwnership(session, botId, ownedBindingIds) === "owned";
 }
 
 export interface BotConversationWork {
@@ -329,7 +354,16 @@ export class BotService {
     const ownedBindingIds = new Set(bindingIds);
     ownedBindingIds.add(createDirectBindingId(botId));
     const sessionAliases = Object.values(this.state.sessions)
-      .filter((session) => sessionOwnedByDirectBot(session, botId, ownedBindingIds))
+      // Conflicting ownership is still a runtime lock: never let delete/update
+      // make the contradiction harder to recover from.
+      .filter((session) => (
+        classifyDirectBotSessionOwnership(
+          session,
+          botId,
+          ownedBindingIds,
+          createDirectConversationId(botId),
+        ) !== "foreign"
+      ))
       .map((session) => session.alias);
     return { conversationIds, bindingIds, sessionAliases };
   }

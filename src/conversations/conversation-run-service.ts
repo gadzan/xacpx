@@ -1,7 +1,7 @@
 import { snapshotBotProfile, type BotProfile } from "../bots/bot-types";
 import { BotError } from "../bots/bot-error";
 import type { BotRuntimeManager } from "../bots/bot-runtime-manager";
-import { sessionOwnedByDirectBot, type BotService } from "../bots/bot-service";
+import { classifyDirectBotSessionOwnership, type BotService } from "../bots/bot-service";
 import { planDirectConversation, presentDefaultDirectTopic, presentDirectConversation } from "./direct-conversation";
 import { createDirectBindingId, createDirectTopicId, createTopicId } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
@@ -365,6 +365,9 @@ export class ConversationRunService {
     const planned = this.planDirect(bot);
     const conversationId = planned.conversation.id;
     await this.bots.runLifecycle(botId, async () => {
+      // Validate every ownership signal before making teardown externally visible.
+      // A contradiction must leave the Conversation active and all physical state intact.
+      this.ownedAliases(botId, conversationId);
       this.store.markConversationDeleting(conversationId, timestamp);
       await this.markAppStateDeleting(conversationId);
     });
@@ -523,25 +526,43 @@ export class ConversationRunService {
 
   private ownedAliases(botId: string, conversationId: string): string[] {
     const aliases = new Set<string>();
-    const ownedBindingIds = new Set<string>([createDirectBindingId(botId)]);
+    const legacyBindingId = createDirectBindingId(botId);
+    const ownedBindingIds = new Set<string>([legacyBindingId]);
     for (const binding of Object.values(this.state.bot_runtime_bindings)) {
-      if (binding.scope !== "bot-direct" || binding.botId !== botId) {
+      if (binding.scope !== "bot-direct") {
+        continue;
+      }
+      const botMatches = binding.botId === botId;
+      const conversationMatches = binding.conversationId === conversationId;
+      const legacyIdMatches = binding.id === legacyBindingId;
+      if ((botMatches && !conversationMatches) || (!botMatches && (conversationMatches || legacyIdMatches))) {
+        throw new ConversationError(
+          "runtime_ownership_conflict",
+          "direct runtime binding ownership metadata is contradictory",
+          { botId, bindingId: binding.id, bindingBotId: binding.botId, conversationId: binding.conversationId },
+        );
+      }
+      if (!botMatches) {
         continue;
       }
       ownedBindingIds.add(binding.id);
-      if (binding.conversationId === conversationId) {
-        aliases.add(binding.sessionAlias);
-      }
+      aliases.add(binding.sessionAlias);
     }
     for (const session of Object.values(this.state.sessions)) {
-      if (
-        sessionOwnedByDirectBot(session, botId, ownedBindingIds)
-        || (
-          session.owner?.kind === "bot-direct"
-          && session.owner.botId === undefined
-          && session.owner.conversationId === conversationId
-        )
-      ) {
+      const ownership = classifyDirectBotSessionOwnership(
+        session,
+        botId,
+        ownedBindingIds,
+        conversationId,
+      );
+      if (ownership === "conflict") {
+        throw new ConversationError(
+          "runtime_ownership_conflict",
+          "direct session ownership metadata is contradictory",
+          { botId, alias: session.alias, owner: session.owner },
+        );
+      }
+      if (ownership === "owned") {
         aliases.add(session.alias);
       }
     }

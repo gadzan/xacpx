@@ -691,6 +691,48 @@ test("a delete that wins the lifecycle gate leaves no Conversation, binding, or 
   expect(ownedSessions(state)).toHaveLength(0);
 });
 
+test("materialization refuses a target bindingId owned explicitly by another Bot", async () => {
+  const { bots, runtime, sessions, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const legacyId = createDirectBindingId(BOT_ID);
+  const alias = `brt_${legacyId}`;
+  await sessions.createSession(alias, "codex", "backend", {
+    owner: {
+      kind: "bot-direct",
+      bindingId: legacyId,
+      botId: "bot_other",
+      conversationId: createDirectConversationId(BOT_ID),
+    },
+  });
+
+  await expect(runtime.getOrCreateDirectSession({ botId: BOT_ID })).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+  expect(state.sessions[alias]?.owner).toMatchObject({ botId: "bot_other", bindingId: legacyId });
+  expect(state.bot_runtime_bindings).toEqual({});
+  expect(state.conversations).toEqual({});
+});
+
+test("releaseDirectBinding refuses to physically release a session whose explicit owner changed", async () => {
+  const { bots, runtime, sessions, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const binding = await runtime.getOrCreateDirectSession({ botId: BOT_ID });
+  const session = state.sessions[binding.sessionAlias]!;
+  session.owner = {
+    kind: "bot-direct",
+    bindingId: binding.id,
+    botId: "bot_other",
+    conversationId: binding.conversationId,
+    topicId: binding.topicId,
+  };
+
+  await expect(runtime.releaseDirectBinding(binding.id)).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+  expect(sessions.getLogicalSessionRecord(binding.sessionAlias)?.logical_session_id).toBe(binding.logicalSessionId);
+  expect(state.bot_runtime_bindings[binding.id]).toBeDefined();
+});
+
 test("PR2 default binding is adopted onto the scoped key without orphaning the owned session", async () => {
   const { bots, runtime, sessions, state } = createHarness();
   await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });

@@ -865,7 +865,7 @@ test("teardown releases PR2 bindingId-only owned sessions so deleteBot can proce
   expect(first.state.bots[BOT_ID]).toBeUndefined();
 });
 
-test("teardown does not release a session whose explicit botId conflicts with legacy ownership metadata", async () => {
+test("teardown fails before deleting when explicit Bot ownership conflicts with target metadata", async () => {
   const first = await createLifecycle();
   const bindingId = createDirectBindingId(BOT_ID);
   const conversationId = createDirectConversationId(BOT_ID);
@@ -890,21 +890,32 @@ test("teardown does not release a session whose explicit botId conflicts with le
     updatedAt: NOW,
   };
 
-  // Explicit botId is authoritative on both the session owner and binding. Conflicting
-  // deterministic ids / conversation metadata must not let teardown claim another Bot.
-  await first.service.teardownDirectConversation(BOT_ID);
+  await expect(first.service.teardownDirectConversation(BOT_ID)).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
 
-  expect(first.state.sessions[alias]?.owner).toEqual({
-    kind: "bot-direct",
-    bindingId,
-    botId: "bot_other",
-    conversationId,
+  expect(first.state.sessions[alias]?.owner).toMatchObject({ botId: "bot_other", bindingId });
+  expect(first.state.bot_runtime_bindings[bindingId]).toBeDefined();
+  expect(first.store.isConversationDeleting(conversationId)).toBe(false);
+  expect(first.physical.deleteCalls).toBe(0);
+  expect(first.physical.releaseCalls).toBe(0);
+});
+
+test("teardown fails closed when PR2 bindingId and conversationId disagree", async () => {
+  const first = await createLifecycle();
+  const conversationId = createDirectConversationId(BOT_ID);
+  const bindingId = createDirectBindingId("bot_other");
+  const alias = `brt_${bindingId}`;
+  await first.sessions.createSession(alias, "codex", "backend", {
+    owner: { kind: "bot-direct", bindingId, conversationId },
   });
-  expect(first.state.bot_runtime_bindings[bindingId]).toMatchObject({
-    botId: "bot_other",
-    conversationId,
-    sessionAlias: alias,
+
+  await expect(first.service.teardownDirectConversation(BOT_ID)).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
   });
+
+  expect(first.state.sessions[alias]?.owner).toEqual({ kind: "bot-direct", bindingId, conversationId });
+  expect(first.store.isConversationDeleting(conversationId)).toBe(false);
   expect(first.physical.deleteCalls).toBe(0);
   expect(first.physical.releaseCalls).toBe(0);
 });
