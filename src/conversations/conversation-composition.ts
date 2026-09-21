@@ -84,11 +84,19 @@ export async function createConversationRuntime(
     cancelQueuedConversationItem: (...args) => input.control.cancelQueuedConversationItem(...args),
   };
   const runner = new ControlConversationTurnRunner(execution);
+  let dispatcherRef: ConversationDispatcher | undefined;
+  bots.setReenabledHook(() => {
+    // A Bot that flips back to enabled may have durable pending work that a
+    // disabled-period drain released back to pending: wake the dispatcher so
+    // the accepted Run resumes without requiring a second prompt.
+    void dispatcherRef?.kick().catch(() => {});
+  });
   const dispatcher = new ConversationDispatcher(store, botRuntime, runner, input.sessions, {
     authorityEpoch: input.authorityEpoch ?? randomUUID(),
     ...(input.ownerId ? { ownerId: input.ownerId } : {}),
     ...(input.onProductEvent ? { onProductEvent: input.onProductEvent } : {}),
   });
+  dispatcherRef = dispatcher;
   const runs = new ConversationRunService(
     store,
     bots,

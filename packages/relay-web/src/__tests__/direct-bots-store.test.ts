@@ -3265,6 +3265,62 @@ describe("useDirectBotsStore", () => {
       expect(store.selectedBotId).toBe("bot_B");
       expect(store.activeConversationId).toBe("conv_1");
     });
+    it("keeps a selection made while a stale reconcile is in flight", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_A";
+      store.activeConversationId = "conv_A";
+      store.activeTopicId = "top_A";
+      const deferredList = Promise.withResolvers<{ bots: BotSummaryDto[] }>();
+      let listCalls = 0;
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.bots.list") {
+          listCalls += 1;
+          if (listCalls === 1) return deferredList.promise;
+          return Promise.resolve({
+            bots: [
+              { id: "bot_B", name: "B", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now", profileRevision: 1 },
+            ],
+          });
+        }
+        if (type === "control.bots.get") {
+          return Promise.resolve({
+            bot: {
+              id: "bot_B", name: "B", agent: "codex", workspace: "repo", enabled: true,
+              profileRevision: 1, createdAt: "now", updatedAt: "now",
+            },
+          });
+        }
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_A", topicId: "top_A", messages: [],
+            hasMoreBefore: false, hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({ conversationId: "conv_A", topicId: "top_A", runs: [] });
+        }
+        return Promise.resolve({});
+      });
+
+      // R1: stale reconcile captures bId=A while its list is deferred.
+      const reconciling = store.reconcileOnReconnect();
+      // User selects B while R1 is in flight; R2 converges authoritatively.
+      store.selectedBotId = "bot_B";
+      await store.loadBots("inst_1");
+      expect(store.selectedBotId).toBe("bot_B");
+
+      // Stale R1 resolves with a list missing the captured A: it must keep
+      // its catalog refresh but never clear the newer B selection.
+      deferredList.resolve({
+        bots: [
+          { id: "bot_B", name: "B", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now", profileRevision: 1 },
+        ],
+      });
+      await reconciling;
+      expect(store.selectedBotId).toBe("bot_B");
+      expect(store.activeConversationId).toBe("conv_A");
+    });
     it("reconnect drops a ghost bot instead of restoring its pane", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";

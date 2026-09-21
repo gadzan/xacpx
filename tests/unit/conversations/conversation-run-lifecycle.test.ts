@@ -230,12 +230,17 @@ async function createLifecycle(options: {
   const jump = (ms: number) => {
     clock += ms;
   };
+  const dispatcherHolder: { current?: ConversationDispatcher } = {};
+  bots.setReenabledHook(() => {
+    void dispatcherHolder.current?.kick().catch(() => {});
+  });
   const dispatcher = new ConversationDispatcher(store, runtime, runner, sessions, {
     now: nowFn,
     ownerId: options.ownerId ?? "dispatcher-a",
     hooks: options.hooks,
     ...(options.leaseMs !== undefined ? { leaseMs: options.leaseMs } : {}),
   });
+  dispatcherHolder.current = dispatcher;
   const service = new ConversationRunService(store, bots, runtime, dispatcher, sessions, state, stateStore, {
     now: nowFn,
     stateMutex,
@@ -821,6 +826,30 @@ test("retrying an accepted request after disable reuses the durable Run", async 
     requestId: "req-disable-new",
     content: "fresh",
   })).rejects.toMatchObject({ code: "bot_disabled" });
+});
+
+test("disable before materialize parks the Run pending; re-enable resumes it exactly once", async () => {
+  const first = await createLifecycle();
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-disable-resume",
+    content: "hello",
+  });
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("queued");
+  // Disable before any materialization: the next drain parks the claim back
+  // to pending instead of executing.
+  await first.bots.updateBot(BOT_ID, { enabled: false });
+  await first.dispatcher.kick();
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("queued");
+  expect(fakeRunner(first.runner).runs).toHaveLength(0);
+  // Re-enable must wake the dispatcher via the hook: the same durable Run
+  // resumes without a second prompt, and executes exactly once. No manual
+  // kick: the updateBot(false->true) transition fires it.
+  await first.bots.updateBot(BOT_ID, { enabled: true });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(fakeRunner(first.runner).runs).toHaveLength(1);
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
+  expect(fakeRunner(first.runner).runs.filter((r) => r.runId === accepted.run.id)).toHaveLength(1);
 });
 
 test("retrying an accepted extra-Topic request after deleting reuses the durable Run", async () => {

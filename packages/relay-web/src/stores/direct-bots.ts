@@ -379,8 +379,23 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // updates (instructions never appear on the summary); the monotonic
       // profileRevision covers those. Either signal invalidates.
       const nextDetails = { ...botDetails.value };
+      const prevSummaries: Record<string, BotSummaryDto | undefined> = {};
+      for (const b of prevList) prevSummaries[b.id] = b;
       for (const b of res.bots) {
         const detailKey = `${targetInstanceId}:${b.id}`;
+        const prev = prevSummaries[b.id];
+        // A newer summary revision proves any in-flight detail for an older
+        // revision stale — even when no detail is cached yet (sidebar Edit on
+        // an unselected Bot starts D1 while bots-changed lands rev2). Bump
+        // the generation unconditionally so the late rev1 D1 can neither
+        // write the cache nor hand stale instructions to BotDialog.
+        if (
+          typeof prev?.profileRevision === "number"
+          && typeof b.profileRevision === "number"
+          && b.profileRevision > prev.profileRevision
+        ) {
+          botDetailSeq[detailKey] = (botDetailSeq[detailKey] ?? 0) + 1;
+        }
         const cached = nextDetails[detailKey];
         if (!cached) continue;
         const revisionStale =
@@ -1501,6 +1516,16 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     if (!iId) return;
     try {
       const bots = await loadBots(iId);
+      // The reconcile started before this await: the user may have selected
+      // a different Bot while it was in flight. A stale reconcile must keep
+      // its catalog refresh but never clear a selection it no longer owns.
+      if (
+        generation !== currentSelectionGeneration ||
+        instanceId.value !== iId ||
+        selectedBotId.value !== bId
+      ) {
+        return;
+      }
       // The selected Bot may have been deleted on another client while this
       // page was offline/closed. Drop the ghost selection (plus cached detail
       // and persisted key) instead of restoring a pane that can only fail.

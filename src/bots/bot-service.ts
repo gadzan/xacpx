@@ -160,6 +160,9 @@ export interface BotServiceOptions {
   lifecycleGate?: BotLifecycleGate;
   beforeLifecycleMutation?: (input: { botId: string; op: BotLifecycleMutation }) => Promise<void>;
   conversationWork?: BotConversationWork;
+  /** Called after a Bot transitions false -> true. Used to wake pending
+   *  durable work (e.g. Runs deferred while disabled) without a new prompt. */
+  onBotReenabled?: (botId: string) => void;
 }
 
 type SessionWriter = Pick<StateStore, "save"> & { saveNow?: (state: AppState) => Promise<void> };
@@ -170,6 +173,7 @@ export class BotService {
   private readonly stateMutex: AsyncMutex;
   private readonly lifecycleGate: BotLifecycleGate;
   private readonly beforeLifecycleMutation?: (input: { botId: string; op: BotLifecycleMutation }) => Promise<void>;
+  private _onBotReenabled?: (botId: string) => void;
   private conversationWork?: BotConversationWork;
   private closed = false;
 
@@ -184,12 +188,18 @@ export class BotService {
     this.stateMutex = options?.stateMutex ?? new AsyncMutex();
     this.lifecycleGate = options?.lifecycleGate ?? new BotLifecycleGate();
     this.beforeLifecycleMutation = options?.beforeLifecycleMutation;
+    this._onBotReenabled = options?.onBotReenabled;
     this.conversationWork = options?.conversationWork;
   }
 
   /** Shared with BotRuntimeManager: one botId, one exclusive lifecycle. */
   runLifecycle<T>(botId: string, critical: () => Promise<T>): Promise<T> {
     return this.lifecycleGate.run(botId, critical);
+  }
+
+  /** Composition hook: wake pending durable work when a Bot re-enables. */
+  setReenabledHook(hook: ((botId: string) => void) | undefined): void {
+    this._onBotReenabled = hook;
   }
 
   setConversationWork(work: BotConversationWork | undefined): void {
@@ -282,6 +292,9 @@ export class BotService {
         const nextState = structuredClone(this.state);
         nextState.bots[id] = next;
         await this.persist(nextState);
+        if (!existing.enabled && next.enabled) {
+          this._onBotReenabled?.(id);
+        }
         return next;
       });
     });
