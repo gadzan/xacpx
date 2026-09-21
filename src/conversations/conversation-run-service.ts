@@ -401,7 +401,11 @@ export class ConversationRunService {
       await this.stateMutex.run(async () => {
         const next = structuredClone(this.state);
         for (const [id, binding] of Object.entries(next.bot_runtime_bindings)) {
-          if (binding.conversationId === conversationId) {
+          if (
+            binding.scope === "bot-direct"
+            && binding.botId === botId
+            && binding.conversationId === conversationId
+          ) {
             delete next.bot_runtime_bindings[id];
           }
         }
@@ -521,12 +525,12 @@ export class ConversationRunService {
     const aliases = new Set<string>();
     const ownedBindingIds = new Set<string>([createDirectBindingId(botId)]);
     for (const binding of Object.values(this.state.bot_runtime_bindings)) {
-      if (binding.scope === "bot-direct" && binding.botId === botId) {
-        ownedBindingIds.add(binding.id);
+      if (binding.scope !== "bot-direct" || binding.botId !== botId) {
+        continue;
       }
-      if (binding.scope === "bot-direct" && binding.conversationId === conversationId) {
+      ownedBindingIds.add(binding.id);
+      if (binding.conversationId === conversationId) {
         aliases.add(binding.sessionAlias);
-        ownedBindingIds.add(binding.id);
       }
     }
     for (const session of Object.values(this.state.sessions)) {

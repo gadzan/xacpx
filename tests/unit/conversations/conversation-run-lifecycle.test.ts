@@ -878,9 +878,20 @@ test("teardown does not release a session whose explicit botId conflicts with le
       conversationId,
     },
   });
+  first.state.bot_runtime_bindings[bindingId] = {
+    id: bindingId,
+    scope: "bot-direct",
+    conversationId,
+    topicId: "topic_other",
+    botId: "bot_other",
+    logicalSessionId: first.state.sessions[alias]!.logical_session_id,
+    sessionAlias: alias,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
 
-  // Explicit owner.botId is authoritative. A conflicting deterministic bindingId
-  // and legacy conversationId must not let teardown claim another Bot's session.
+  // Explicit botId is authoritative on both the session owner and binding. Conflicting
+  // deterministic ids / conversation metadata must not let teardown claim another Bot.
   await first.service.teardownDirectConversation(BOT_ID);
 
   expect(first.state.sessions[alias]?.owner).toEqual({
@@ -888,6 +899,11 @@ test("teardown does not release a session whose explicit botId conflicts with le
     bindingId,
     botId: "bot_other",
     conversationId,
+  });
+  expect(first.state.bot_runtime_bindings[bindingId]).toMatchObject({
+    botId: "bot_other",
+    conversationId,
+    sessionAlias: alias,
   });
   expect(first.physical.deleteCalls).toBe(0);
   expect(first.physical.releaseCalls).toBe(0);
