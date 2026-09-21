@@ -977,6 +977,58 @@ it("cancel optimistically releases busy and preserves streamed content; the late
   expect(chat.messages.length).toBe(before);
 });
 
+it("late turn-output after optimistic cancel does not resurrect busy", async () => {
+  rpc.mockResolvedValueOnce({ cancelled: true });
+  const chat = useChatStore();
+  chat.select("inst", "A");
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-started", chatKey: "c", sessionAlias: "A" } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: "half" } } as never);
+  await chat.cancel();
+  expect(chat.busy).toBe(false);
+  const before = chat.messages.length;
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: " more" } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "tool-event", chatKey: "c", sessionAlias: "A", step: { toolCallId: "t1", title: "Read", status: "completed", kind: "read" } } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-thought", chatKey: "c", sessionAlias: "A", chunk: "hmm" } } as never);
+  expect(chat.busy).toBe(false);
+  expect(chat.streaming).toBe("");
+  expect(chat.messages.length).toBe(before);
+});
+
+it("seedActiveTurns after optimistic cancel does not resurrect working state", async () => {
+  rpc.mockResolvedValueOnce({ cancelled: true });
+  const chat = useChatStore();
+  chat.select("inst", "A");
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-started", chatKey: "c", sessionAlias: "A", startedAt: 1 } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: "half" } } as never);
+  await chat.cancel();
+  expect(chat.busy).toBe(false);
+  chat.seedActiveTurns([
+    {
+      instanceId: "inst",
+      sessionAlias: "A",
+      parts: [{ type: "text", text: "half" }],
+      status: "streaming",
+      startedAt: 1,
+    },
+  ] as never);
+  expect(chat.busy).toBe(false);
+});
+
+it("cancel RPC failure clears the finish guard so a still-running turn can reappear", async () => {
+  rpc.mockRejectedValueOnce(new ApiError("instance-offline", 503));
+  const chat = useChatStore();
+  chat.select("inst", "A");
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-started", chatKey: "c", sessionAlias: "A", startedAt: 1 } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: "half" } } as never);
+  await chat.cancel();
+  expect(chat.error).toBe("instance-offline");
+  expect(chat.busy).toBe(false);
+  // Guard dropped: a late chunk (or active-turns seed) may rebuild the live turn.
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: " more" } } as never);
+  expect(chat.busy).toBe(true);
+  expect(chat.streaming).toBe(" more");
+});
+
 it("cancel is a no-op with no session selected", async () => {
   const chat = useChatStore();
   await chat.cancel();

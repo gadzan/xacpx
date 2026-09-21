@@ -745,14 +745,25 @@ export const useChatStore = defineStore("chat", () => {
         live.slotAfterIndex = messages.value.length - 1;
       }
     } else if (e.type === "turn-output") {
-      const t = ensureTurn(bufKey(event.instanceId, e.sessionAlias));
-      appendText(t.parts, e.chunk);
-      t.status = "streaming";
+      // Ignore late stream chunks after an optimistic cancel / turn-finished.
+      // ensureTurn would otherwise resurrect a cleared live turn and wedge busy.
+      const k = bufKey(event.instanceId, e.sessionAlias);
+      if (!finishedTurns.has(k)) {
+        const t = ensureTurn(k);
+        appendText(t.parts, e.chunk);
+        t.status = "streaming";
+      }
     } else if (e.type === "tool-event") {
-      const t = ensureTurn(bufKey(event.instanceId, e.sessionAlias));
-      upsertTool(t.parts, e.step);
+      const k = bufKey(event.instanceId, e.sessionAlias);
+      if (!finishedTurns.has(k)) {
+        const t = ensureTurn(k);
+        upsertTool(t.parts, e.step);
+      }
     } else if (e.type === "turn-thought") {
-      appendReasoning(ensureTurn(bufKey(event.instanceId, e.sessionAlias)).parts, e.chunk);
+      const k = bufKey(event.instanceId, e.sessionAlias);
+      if (!finishedTurns.has(k)) {
+        appendReasoning(ensureTurn(k).parts, e.chunk);
+      }
     } else if (e.type === "plan") {
       // Lifetime decoupled from the live turn: persists past turn-finished, replaced only
       // by a newer plan for this session. Keyed per session.
@@ -983,15 +994,24 @@ export const useChatStore = defineStore("chat", () => {
     if (!instanceId.value || !sessionAlias.value) return;
     const id = instanceId.value;
     const alias = sessionAlias.value;
+    const k = bufKey(id, alias);
     // Optimistically finalize locally so the input/HUD release immediately instead of
     // waiting for the server's turn-finished echo (which may be lost if the agent dies).
     // Streamed content is preserved as a "cancelled" message; the later echo finds no
     // live turn and is a no-op, so there is no double-render.
+    // Mark finished BEFORE flush so in-flight turn-output / tool-event / thought
+    // chunks (and a racing active-turns HTTP seed) cannot ensureTurn-resurrect busy.
+    finishedTurns.add(k);
     flushTurn(id, alias, "cancelled");
     try {
       await api.rpc(id, "control.prompt.cancel", { sessionAlias: alias });
     } catch (e) {
+      // Cancel RPC failed: the server turn may still be running. Drop the finish
+      // guard and re-seed from the hub so late stream events can rebuild the live
+      // turn instead of being silently dropped for the rest of the turn.
+      finishedTurns.delete(k);
       error.value = e instanceof ApiError ? e.code : "cancel-failed";
+      void loadActiveTurns().catch(() => {});
     }
   }
 
