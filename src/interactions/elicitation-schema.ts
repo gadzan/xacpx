@@ -41,6 +41,13 @@ export const ELICITATION_SCHEMA_LIMITS = {
    * exceed it are cancelled with `resource_exceeded`, never truncated.
    */
   maxNormalizedFormChars: 256_000,
+  /**
+   * Aggregate cap over the ACCEPTED answer, enforced by core independently of
+   * the schema. `maxLength` on a text field is agent-supplied and optional, so
+   * without this a channel could return an arbitrarily large answer that core
+   * would accept and then copy through daemon → bridge → worker → ACP.
+   */
+  maxAcceptedAnswerChars: 65_536,
   maxMessageLength: 8000,
   maxPatternLength: 512,
 } as const;
@@ -332,21 +339,41 @@ function normalizeField(
       }
       const items = asPlain(property.items);
       if (!items) return { ok: false, detail: `field "${key}" has no items schema` };
-      // ACP defines multi-select items as a union:
-      //   untitled: { type: "string", enum: [...] }
-      //   titled:   { anyOf: [...] }          ← no `type` field at all
-      // Decode by which member is present, and reject mixing them. Requiring
-      // `type` unconditionally rejects every legal titled multi-select.
+      // ACP defines multi-select items as a tagged union with three members:
+      //
+      //   { type: "string", enum: [...] }        → untitled string multi-select
+      //   { anyOf: [...] }          (NO type)    → titled multi-select
+      //   { type: <anything else>, ... }         → unknown/future variant
+      //
+      // A present `type` makes it a TYPED variant: "string" requires `enum`,
+      // and any other value is a future protocol variant that a client MUST
+      // NOT render as a string multi-select. Only the typeless `{ anyOf }`
+      // member is titled. Decoding `anyOf` whenever it happens to be present
+      // would silently reinterpret a future variant as titled options.
+      const rawItemType = items.type;
+      const itemTypePresent = rawItemType !== undefined && rawItemType !== null;
       const hasEnum = items.enum !== undefined && items.enum !== null;
       const hasAnyOf = items.anyOf !== undefined && items.anyOf !== null;
-      if (hasEnum && hasAnyOf) {
-        return { ok: false, detail: `field "${key}" items mix enum and anyOf` };
-      }
-      if (hasEnum && items.type !== "string") {
-        return { ok: false, detail: `field "${key}" is not a string multi-select` };
-      }
-      if (!hasEnum && !hasAnyOf) {
-        return { ok: false, detail: `field "${key}" items have neither enum nor anyOf` };
+
+      if (itemTypePresent) {
+        // Typed variant: only "string" + enum is supported in v1.
+        if (rawItemType !== "string") {
+          return { ok: false, detail: `field "${key}" has unsupported multi-select item type "${String(rawItemType)}"` };
+        }
+        if (!hasEnum) {
+          return { ok: false, detail: `field "${key}" string items have no enum` };
+        }
+        if (hasAnyOf) {
+          return { ok: false, detail: `field "${key}" items mix enum and anyOf` };
+        }
+      } else {
+        // Typeless member: titled only.
+        if (!hasAnyOf) {
+          return { ok: false, detail: `field "${key}" items have neither enum nor anyOf` };
+        }
+        if (hasEnum) {
+          return { ok: false, detail: `field "${key}" items mix enum and anyOf` };
+        }
       }
       const enumItems = readOptionalStringArray(items, "enum", ELICITATION_SCHEMA_LIMITS.maxOptionsPerField);
       if (!enumItems.ok) return { ok: false, detail: `field "${key}" has invalid item enum` };
@@ -557,7 +584,12 @@ export function normalizeAcpElicitationForm(request: unknown): ElicitationNormal
   // Last-resort total budget. Per-field limits bound one field; this bounds
   // the whole normalized form the renderer will hold and the daemon keeps in
   // pending state, so 20 maxed-out fields cannot still be unbounded.
-  const totalChars = message.length + fields.reduce((sum, field) => sum + measureFieldChars(field), 0);
+  // Aggregate policy cap over EVERY string the normalized form carries —
+  // including the schema-level metadata added in round 3. Omitting any member
+  // would make the comment's "every string" claim false again.
+  const metaChars = (schemaTitle.value?.length ?? 0) + (schemaDescription.value?.length ?? 0);
+  const totalChars = message.length + metaChars
+    + fields.reduce((sum, field) => sum + measureFieldChars(field), 0);
   if (totalChars > ELICITATION_SCHEMA_LIMITS.maxNormalizedFormChars) {
     return fail("resource_exceeded", `normalized form exceeds ${ELICITATION_SCHEMA_LIMITS.maxNormalizedFormChars} chars`);
   }
@@ -573,8 +605,11 @@ function measureFieldChars(field: ChannelElicitationField): number {
     for (const option of field.options) {
       chars += option.value.length + option.label.length + (option.description?.length ?? 0);
     }
-    if (field.kind === "single-select") chars += field.defaultValue?.length ?? 0;
-    else for (const value of field.defaultValue ?? []) chars += value.length;
+    if (field.kind === "single-select") {
+      chars += (field.defaultValue?.length ?? 0) + (field.pattern?.length ?? 0);
+    } else {
+      for (const value of field.defaultValue ?? []) chars += value.length;
+    }
   } else if (field.kind === "boolean") {
     chars += 1;
   }
@@ -678,6 +713,7 @@ export function validateElicitationAnswer(
   // vanish. defineProperty on a null-prototype dictionary always creates an
   // own data property.
   const out: Record<string, ChannelElicitationValue> = Object.create(null);
+  let totalChars = 0;
   for (const field of fields) {
     // Presence by own property, not by read: an optional `toString` field must
     // not see the inherited function and be treated as a submitted value.
@@ -689,6 +725,14 @@ export function validateElicitationAnswer(
     const value = Object.getOwnPropertyDescriptor(source, field.key)!.value;
     const validated = validateFieldValue(field, value);
     if (!validated.ok) return { ok: false, reason: validated.reason };
+    // Core-owned size bound on the answer itself. `maxLength` is optional and
+    // agent-supplied, so it cannot be the only ceiling: a channel returning an
+    // unbounded free-text answer would otherwise be accepted and copied all
+    // the way to the agent.
+    totalChars += field.key.length + measureAnswerChars(validated.value);
+    if (totalChars > ELICITATION_SCHEMA_LIMITS.maxAcceptedAnswerChars) {
+      return { ok: false, reason: "accepted answer exceeds the core size limit" };
+    }
     // Clone arrays: the plugin still holds its own reference, and returning it
     // would let a post-validation mutation reach the agent as accepted content.
     Object.defineProperty(out, field.key, {
@@ -699,6 +743,12 @@ export function validateElicitationAnswer(
     });
   }
   return { ok: true, content: out };
+}
+
+function measureAnswerChars(value: ChannelElicitationValue): number {
+  if (typeof value === "string") return value.length;
+  if (typeof value === "number" || typeof value === "boolean") return 1;
+  return value.reduce((sum, item) => sum + item.length, 0);
 }
 
 type FieldValueResult =

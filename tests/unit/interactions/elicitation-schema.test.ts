@@ -142,9 +142,9 @@ describe("normalizeAcpElicitationForm supported shapes", () => {
     });
 
     // ACP native titled multi-select: `items` is `{ anyOf: [...] }` with NO
-    // `type` field (TitledMultiSelectItems). The non-standard
-    // `{ type: "string", anyOf: [...] }` form is accepted too, but the real
-    // agent shape must work.
+    // `type` field (TitledMultiSelectItems). A present `type` would make it a
+    // TYPED variant, and only "string" + `enum` is supported in v1 — see the
+    // forward-compatibility tests below.
     const titled = normalizeOk(formRequest({
       requestedSchema: {
         type: "object",
@@ -308,7 +308,66 @@ describe("normalizeAcpElicitationForm rejections", () => {
       requestedSchema: { type: "object", properties: { picks: { type: "array", items: { type: "string" } } } },
     }));
     expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("string items have no enum");
+  });
+
+  test("typeless items with neither enum nor anyOf are rejected", () => {
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { type: "object", properties: { picks: { type: "array", items: {} } } },
+    }));
+    expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toContain("neither enum nor anyOf");
+  });
+
+  test("a future multi-select item type with anyOf is not rendered as titled", () => {
+    // ACP: a present `type` makes it a TYPED variant. Anything other than
+    // "string" is a future protocol variant a client MUST NOT render as a
+    // string multi-select — only the typeless `{ anyOf }` member is titled.
+    for (const type of ["_future", "future", "object", "number"]) {
+      const result = normalizeAcpElicitationForm(formRequest({
+        requestedSchema: {
+          type: "object",
+          properties: { picks: { type: "array", items: { type, anyOf: [{ const: "x", title: "Ex" }] } } },
+        },
+      }));
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toContain("unsupported multi-select item type");
+    }
+  });
+
+  test('a non-standard "string + anyOf" without enum is rejected', () => {
+    // Round 2 had accidentally blessed this shape. Per ACP, the typed string
+    // variant REQUIRES `enum`; `anyOf` belongs to the typeless titled member.
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { picks: { type: "array", items: { type: "string", anyOf: [{ const: "x", title: "Ex" }] } } },
+      },
+    }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain("string items have no enum");
+  });
+
+  test("a typed string variant mixing enum and anyOf is rejected", () => {
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: {
+          picks: { type: "array", items: { type: "string", enum: ["a"], anyOf: [{ const: "a", title: "Ay" }] } },
+        },
+      },
+    }));
+    expect(result.ok).toBe(false);
+  });
+
+  test("a typeless member mixing enum and anyOf is rejected", () => {
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { picks: { type: "array", items: { enum: ["a"], anyOf: [{ const: "a", title: "Ay" }] } } },
+      },
+    }));
+    expect(result.ok).toBe(false);
   });
 
   test("titled multi-select option values share the untitled length bound", () => {
@@ -537,6 +596,57 @@ describe("normalizeAcpElicitationForm string resource bounds", () => {
     expect(result.ok).toBe(true);
   });
 
+  test("schema metadata counts toward the aggregate cap", () => {
+    // Regression: round 3 added schemaTitle/schemaDescription and single-select
+    // pattern without adding them to the total, so the "every string" claim in
+    // the cap's comment was false again.
+    const properties: Record<string, unknown> = {};
+    for (let i = 0; i < ELICITATION_SCHEMA_LIMITS.maxFields; i += 1) {
+      properties[`f${i}`] = {
+        type: "string",
+        oneOf: Array.from({ length: ELICITATION_SCHEMA_LIMITS.maxOptionsPerField }, (_, n) => ({
+          const: `c${n}`,
+          title: "t".repeat(ELICITATION_SCHEMA_LIMITS.maxOptionLabelLength),
+          description: "d".repeat(ELICITATION_SCHEMA_LIMITS.maxFieldDescriptionLength),
+        })),
+        pattern: "p".repeat(ELICITATION_SCHEMA_LIMITS.maxPatternLength),
+      };
+    }
+    // Without metadata this is already over the cap; adding maxed-out
+    // schemaTitle/schemaDescription must still be rejected, not silently
+    // absorbed by an undercounted total.
+    const base = normalizeAcpElicitationForm(formRequest({ requestedSchema: { type: "object", properties } }));
+    expect(base.ok).toBe(false);
+
+    const withMeta = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        title: "t".repeat(ELICITATION_SCHEMA_LIMITS.maxFieldTitleLength),
+        description: "d".repeat(ELICITATION_SCHEMA_LIMITS.maxFieldDescriptionLength),
+        properties,
+      },
+    }));
+    expect(withMeta.ok).toBe(false);
+  });
+
+  test("a near-threshold legal form with metadata still passes", () => {
+    // The cap must not over-reject once metadata is counted.
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        title: "Deploy",
+        description: "Pick options",
+        properties: {
+          a: { type: "string", title: "A", maxLength: 10 },
+          b: { type: "string", enum: ["x", "y"], default: "y" },
+        },
+      },
+    }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.form.schemaTitle).toBe("Deploy");
+  });
+
   test("a form inside every per-field limit and the total budget still normalizes", () => {
     const result = normalizeAcpElicitationForm(formRequest({
       requestedSchema: {
@@ -596,9 +706,10 @@ describe("validateElicitationAnswer prototype-key safety", () => {
   const optionalToString = normalizeOk(formRequest({
     requestedSchema: { type: "object", properties: { toString: { type: "string" } } },
   }))[0];
-  // `{ __proto__: ... }` in a JS literal AND `JSON.parse` both treat the key
-  // as a prototype setter, so build the request with defineProperty to get a
-  // real own property.
+  // NOTE: an object LITERAL `{ __proto__: ... }` and `JSON.stringify` of one
+  // both treat the key as a prototype setter and drop it, but `JSON.parse`
+  // DOES create a real own property. Build with defineProperty so the key is
+  // an own data property either way.
   const protoRequest = formRequest({
     requestedSchema: { type: "object", properties: {}, required: ["__proto__"] },
   }) as { requestedSchema: { properties: Record<string, unknown> } };
@@ -814,6 +925,64 @@ describe("validateElicitationAnswer", () => {
     expect(validateElicitationAnswer([dateTime], { t: "not a timestamp" }).ok).toBe(false);
   });
 
+  test("an oversized free-text answer is rejected even with no maxLength", () => {
+    // Regression: `maxLength` is optional and agent-supplied, so it was the
+    // only bound on accepted content. A channel returning an unbounded answer
+    // would have been accepted and copied daemon → bridge → worker → ACP.
+    const optional = normalizeOk(formRequest({
+      requestedSchema: { type: "object", properties: { summary: { type: "string" } } },
+    }))[0];
+    const huge = "x".repeat(ELICITATION_SCHEMA_LIMITS.maxAcceptedAnswerChars + 1);
+    const result = validateElicitationAnswer([optional], { summary: huge });
+    expect(result).toMatchObject({ ok: false });
+    if (result.ok) return;
+    expect(result.reason).toContain("core size limit");
+  });
+
+  test("an answer at the size limit is accepted", () => {
+    const optional = normalizeOk(formRequest({
+      requestedSchema: { type: "object", properties: { summary: { type: "string" } } },
+    }))[0];
+    // The cap counts key + value, so stay strictly inside the budget.
+    const atLimit = "x".repeat(ELICITATION_SCHEMA_LIMITS.maxAcceptedAnswerChars - 20);
+    expect(validateElicitationAnswer([optional], { summary: atLimit }).ok).toBe(true);
+  });
+
+  test("the answer cap aggregates across fields", () => {
+    const optional = normalizeOk(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { a: { type: "string" }, b: { type: "string" } },
+      },
+    }));
+    // Each is individually under the cap; together they exceed it.
+    const half = "y".repeat(ELICITATION_SCHEMA_LIMITS.maxAcceptedAnswerChars / 2 + 1);
+    expect(validateElicitationAnswer(optional, { a: half, b: half }).ok).toBe(false);
+  });
+
+  test("the answer cap counts multi-select item lengths", () => {
+    // Options are individually bounded (256) and capped at 100 per field, so a
+    // single multi-select cannot exceed the answer cap on its own — but many
+    // selected items across fields must still be counted, not just strings.
+    const itemLength = ELICITATION_SCHEMA_LIMITS.maxOptionValueLength;
+    const enumValues = Array.from({ length: 10 }, (_, n) => `v${n}-${"a".repeat(itemLength - 8)}`);
+    const fields = normalizeOk(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: {
+          t0: { type: "array", items: { type: "string", enum: enumValues } },
+          t1: { type: "array", items: { type: "string", enum: enumValues } },
+          t2: { type: "array", items: { type: "string", enum: enumValues } },
+        },
+      },
+    }));
+    const all = enumValues;
+    // 3 fields × 10 items × 256 chars ≈ 7.7k — under the cap.
+    expect(validateElicitationAnswer(fields, { t0: all, t1: all, t2: all }).ok).toBe(true);
+    // Numbers and booleans count too (each as 1 char), and a single selected
+    // item is accepted.
+    expect(validateElicitationAnswer(fields, { t0: [enumValues[0]] }).ok).toBe(true);
+  });
   test("sentinel answer value round-trips and never appears in summaries", () => {
     const secret = "SENTINEL-ELICITATION-ANSWER-9f3c2a";
     const validated = validateElicitationAnswer([text], { summary: secret });
