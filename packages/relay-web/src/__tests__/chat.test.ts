@@ -1065,6 +1065,50 @@ it("cancel optimistically releases busy and preserves streamed content; the late
   expect(chat.messages.length).toBe(before);
 });
 
+it("authoritative done replaces the speculative cancelled row without waiting for history", async () => {
+  rpc.mockResolvedValueOnce({ cancelled: true });
+  vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+  const chat = useChatStore();
+  chat.select("inst", "A");
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-started", chatKey: "c", sessionAlias: "A" } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: "half" } } as never);
+
+  await chat.cancel();
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: " done" } } as never);
+  expect(chat.messages.at(-1)).toMatchObject({ text: "half", status: "cancelled" });
+
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-finished", chatKey: "c", sessionAlias: "A", ok: true } } as never);
+
+  expect(chat.busy).toBe(false);
+  expect(chat.messages.filter((message) => message.direction === "out")).toHaveLength(1);
+  expect(chat.messages.at(-1)).toMatchObject({
+    text: "half done",
+    status: "done",
+    failed: false,
+  });
+});
+
+it("authoritative error replaces the speculative cancelled row without waiting for history", async () => {
+  rpc.mockResolvedValueOnce({ cancelled: true });
+  vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+  const chat = useChatStore();
+  chat.select("inst", "A");
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-started", chatKey: "c", sessionAlias: "A" } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: "partial" } } as never);
+
+  await chat.cancel();
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-finished", chatKey: "c", sessionAlias: "A", ok: false, errorMessage: "boom" } } as never);
+
+  expect(chat.busy).toBe(false);
+  expect(chat.error).toBe("boom");
+  expect(chat.messages.filter((message) => message.direction === "out")).toHaveLength(1);
+  expect(chat.messages.at(-1)).toMatchObject({
+    text: "partial",
+    status: "error",
+    failed: true,
+  });
+});
+
 it("fresh turn-started removes the previous speculative cancel row before exposing the replacement turn", async () => {
   let rejectCancel!: (error: unknown) => void;
   rpc.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectCancel = reject; }));

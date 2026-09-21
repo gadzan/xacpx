@@ -996,9 +996,20 @@ export const useChatStore = defineStore("chat", () => {
       const status: TurnStatus = e.cancelled ? "cancelled" : e.ok ? "done" : "error";
       const selected = event.instanceId === instanceId.value && e.sessionAlias === sessionAlias.value;
       const k = bufKey(event.instanceId, e.sessionAlias);
-      // The server finish settles any local cancel attempt. Mark finished so a late
-      // active-turns HTTP seed cannot resurrect the turn after this ordered event.
-      pendingCancels.delete(k);
+      // The server finish is authoritative terminal truth. If Stop already flushed a
+      // speculative cancelled row, remove exactly that row and restore the private
+      // buffered turn (including late hidden deltas) before flushing the real status.
+      // This converges immediately even if the follow-up history request fails.
+      const pending = pendingCancels.get(k);
+      if (pending) {
+        pendingCancels.delete(k);
+        removePendingCancelRow(event.instanceId, e.sessionAlias, k, pending);
+        if (!liveTurns.value[k] && pending.turn) {
+          liveTurns.value[k] = pending.turn;
+        }
+      }
+      // Mark finished so a late active-turns HTTP seed cannot resurrect the turn after
+      // this ordered event.
       finishedTurns.add(k);
       flushTurn(event.instanceId, e.sessionAlias, status, e.errorMessage);
       // Keep the immediate live flush for responsiveness, then converge on the

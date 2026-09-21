@@ -265,6 +265,18 @@ export class BotRuntimeManager {
     const alias = ownedDirectSessionAlias(bindingId);
     const current = this.findOwnedSession(bindingId, bot.id, scope.conversationId);
     if (current) {
+      const owner = current.owner;
+      if (
+        owner?.kind !== "bot-direct"
+        || (owner.topicId !== undefined && owner.topicId !== scope.topicId)
+      ) {
+        throw this.ownershipConflict(
+          bot.id,
+          current.alias,
+          { bindingId, conversationId: scope.conversationId },
+          current,
+        );
+      }
       return current;
     }
     const occupant = this.sessions.getLogicalSessionRecord(alias);
@@ -279,6 +291,7 @@ export class BotRuntimeManager {
         ownership !== "owned"
         || occupant.owner?.kind !== "bot-direct"
         || occupant.owner.bindingId !== bindingId
+        || (occupant.owner.topicId !== undefined && occupant.owner.topicId !== scope.topicId)
       ) {
         throw this.ownershipConflict(bot.id, alias, { bindingId, conversationId: scope.conversationId }, occupant);
       }

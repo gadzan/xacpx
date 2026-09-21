@@ -342,6 +342,38 @@ test("non-default Topic scoped orphan is attributable without a binding", async 
   expect(ownedSessions(reloaded)).toHaveLength(1);
 });
 
+test("scoped orphan with an explicit mismatched topic fails closed before binding publish", async () => {
+  const { bots, runtime, sessions, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const requestedTopicId = insertExtraDirectTopic(state, BOT_ID, "topic_requested");
+  const foreignTopicId = insertExtraDirectTopic(state, BOT_ID, "topic_foreign");
+  const bindingId = extraBindingId(requestedTopicId);
+  const alias = `brt_${bindingId}`;
+  await sessions.createSession(alias, "codex", "backend", {
+    owner: createBotDirectOwner({
+      bindingId,
+      botId: BOT_ID,
+      conversationId: createDirectConversationId(BOT_ID),
+      topicId: foreignTopicId,
+    }),
+  });
+
+  await expect(runtime.getOrCreateDirectSession({
+    botId: BOT_ID,
+    topicId: requestedTopicId,
+  })).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+
+  expect(state.bot_runtime_bindings).toEqual({});
+  expect(state.sessions[alias]?.owner).toMatchObject({
+    bindingId,
+    botId: BOT_ID,
+    conversationId: createDirectConversationId(BOT_ID),
+    topicId: foreignTopicId,
+  });
+});
+
 test("releaseDirectBinding uses verified physical release and keeps ownership on failure", async () => {
   let failPhysical = true;
   const physicalReleased: string[] = [];
