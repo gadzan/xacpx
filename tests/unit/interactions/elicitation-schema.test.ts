@@ -1032,7 +1032,7 @@ describe("validateElicitationAnswer", () => {
   });
 });
 
-describe("validateElicitationAnswer email format (RFC 5321)", () => {
+describe("validateElicitationAnswer email format", () => {
   const email = normalizeOk(formRequest({
     requestedSchema: { type: "object", properties: { e: { type: "string", format: "email" } }, required: ["e"] },
   }))[0];
@@ -1042,53 +1042,71 @@ describe("validateElicitationAnswer email format (RFC 5321)", () => {
       "a@b.co",
       "user.name+tag@example.com",
       "x_y-z@sub.domain.example.org",
-      // Quoted local part may contain spaces and "@".
-      '"odd name"@example.com',
-      // A quoted local part may legitimately contain a dot sequence.
-      '"a..b"@example.com',
     ]) {
       expect(validateElicitationAnswer([email], { e: value }).ok).toBe(true);
     }
   });
 
   test("non-ASCII is rejected (that is idn-email, not email)", () => {
-    // Regression: `^[^\s@]+@[^\s@]+\.[^\s@]+$` accepted these. JSON Schema's
-    // `email` is 7-bit ASCII per RFC 5321; IRIs/internationalized addresses
-    // belong to the separate `idn-email` format.
+    // JSON Schema's `email` is 7-bit ASCII per RFC 5321; internationalized
+    // addresses belong to the separate `idn-email` format.
     expect(validateElicitationAnswer([email], { e: "é@example.com" }).ok).toBe(false);
     expect(validateElicitationAnswer([email], { e: "用户@例え.テスト" }).ok).toBe(false);
   });
 
   test("invalid dot-atom local parts are rejected", () => {
-    // Regression: the old regex accepted "a..b@example.com".
-    expect(validateElicitationAnswer([email], { e: "a..b@example.com" }).ok).toBe(false);
-    expect(validateElicitationAnswer([email], { e: ".leading@example.com" }).ok).toBe(false);
-    expect(validateElicitationAnswer([email], { e: "trailing.@example.com" }).ok).toBe(false);
+    for (const value of [
+      "a..b@example.com",
+      ".leading@example.com",
+      "trailing.@example.com",
+    ]) {
+      expect(validateElicitationAnswer([email], { e: value }).ok).toBe(false);
+    }
   });
 
   test("malformed domains are rejected", () => {
-    // A single-label domain ("a@b") is a legal dot-atom per RFC 5321, so it is
-    // accepted; the failures below are structural.
-    expect(validateElicitationAnswer([email], { e: "a@b..c" }).ok).toBe(false);
-    expect(validateElicitationAnswer([email], { e: "a@-b.co" }).ok).toBe(false);
-    expect(validateElicitationAnswer([email], { e: "a@b.c-" }).ok).toBe(false);
-    expect(validateElicitationAnswer([email], { e: "a@" }).ok).toBe(false);
-    expect(validateElicitationAnswer([email], { e: "@b.co" }).ok).toBe(false);
-    expect(validateElicitationAnswer([email], { e: "a@b@c.co" }).ok).toBe(false);
-    expect(validateElicitationAnswer([email], { e: "a@.b.co" }).ok).toBe(false);
+    for (const value of [
+      "a@b..c",
+      "a@-b.co",
+      "a@b.c-",
+      "a@",
+      "@b.co",
+      "a@b@c.co",
+      "a@.b.co",
+    ]) {
+      expect(validateElicitationAnswer([email], { e: value }).ok).toBe(false);
+    }
   });
 
-  test("a single-label domain is accepted", () => {
-    expect(validateElicitationAnswer([email], { e: "a@b" }).ok).toBe(true);
+  test("a quoted local part is rejected by the reference validator", () => {
+    // Documented deviation: ajv-formats rejects the RFC 5321 quoted-string
+    // local part. Accepted deliberately — see the note on formatValidator in
+    // elicitation-schema.ts. A form asking a human to type
+    // `"a@b"@example.com` is not a real product case, and the alternative was
+    // a fourth hand-rolled grammar.
+    expect(validateElicitationAnswer([email], { e: '"a@b"@example.com' }).ok).toBe(false);
   });
 
-  test("oversized local part is rejected", () => {
-    expect(validateElicitationAnswer([email], { e: `${"x".repeat(65)}@example.com` }).ok).toBe(false);
-    expect(validateElicitationAnswer([email], { e: `${"x".repeat(64)}@example.com` }).ok).toBe(true);
+  test("an address-literal domain is rejected by the reference validator", () => {
+    // Same documented deviation as above.
+    expect(validateElicitationAnswer([email], { e: "user@[192.0.2.1]" }).ok).toBe(false);
+  });
+
+  test("a single-label domain is rejected by the reference validator", () => {
+    // Documented deviation: `a@b` is a legal RFC 5321 dot-atom domain but the
+    // reference validator requires at least one dot in the domain.
+    expect(validateElicitationAnswer([email], { e: "a@b" }).ok).toBe(false);
+  });
+
+  test("an over-long local part is not length-bounded by the reference validator", () => {
+    // Documented deviation: ajv-formats checks structure but not the RFC 5321
+    // 64-octet local-part limit. The overall accepted-answer size cap still
+    // bounds how much text can reach the agent.
+    expect(validateElicitationAnswer([email], { e: `${"x".repeat(65)}@example.com` }).ok).toBe(true);
   });
 });
 
-describe("validateElicitationAnswer uri format (RFC 3986)", () => {
+describe("validateElicitationAnswer uri format", () => {
   const uri = normalizeOk(formRequest({
     requestedSchema: { type: "object", properties: { u: { type: "string", format: "uri" } }, required: ["u"] },
   }))[0];
@@ -1102,36 +1120,61 @@ describe("validateElicitationAnswer uri format (RFC 3986)", () => {
       "urn:isbn:0451450523",
       "mailto:someone@example.com",
       "https://example.com/a%20b",
+      // IPv6 literal with port, and RFC 3986 IPvFuture.
       "https://[2001:db8::1]:8443/x",
+      "https://[v1.foo]/x",
+      // Empty reg-name is legal: file:///tmp/x has an empty authority.
+      "file:///tmp/x",
     ]) {
       expect(validateElicitationAnswer([uri], { u: value }).ok).toBe(true);
     }
   });
 
   test("malformed percent-encoding is rejected", () => {
-    // Regression: `new URL()` normalizes these instead of rejecting them.
-    expect(validateElicitationAnswer([uri], { u: "https://example.com/%zz" }).ok).toBe(false);
-    expect(validateElicitationAnswer([uri], { u: "https://example.com/%2" }).ok).toBe(false);
-    expect(validateElicitationAnswer([uri], { u: "https://example.com/%" }).ok).toBe(false);
+    // `new URL()` normalizes these instead of rejecting them, which is why the
+    // WHATWG parser was not usable for a spec-referencing format.
+    for (const value of [
+      "https://example.com/%zz",
+      "https://example.com/%2",
+      "https://example.com/%",
+      // The fragment must be percent-encoding-checked too.
+      "https://example.com/#%zz",
+    ]) {
+      expect(validateElicitationAnswer([uri], { u: value }).ok).toBe(false);
+    }
   });
 
   test("IRIs are rejected (that is the separate iri format)", () => {
-    // Regression: WHATWG URL accepts and normalizes non-ASCII hosts.
-    expect(validateElicitationAnswer([uri], { u: "https://例え.テスト" }).ok).toBe(false);
-    expect(validateElicitationAnswer([uri], { u: "https://example.com/日本語" }).ok).toBe(false);
+    for (const value of [
+      "https://例え.テスト",
+      "https://example.com/日本語",
+    ]) {
+      expect(validateElicitationAnswer([uri], { u: value }).ok).toBe(false);
+    }
   });
 
   test("structurally invalid URIs are rejected", () => {
     for (const value of [
-      "example.com",         // no scheme
-      "https://",            // empty authority
+      "example.com",          // no scheme
       "https://exa mple.com", // space in host
       "1https://example.com", // scheme must start with a letter
-      "https://example.com:port/x", // non-numeric port
-      "https://[not-ip]/x",  // malformed IPv6 literal
+      "https://[not-ip]/x",   // malformed IP-literal
+      "https://[:::]/x",      // not a valid IPv6 address
     ]) {
       expect(validateElicitationAnswer([uri], { u: value }).ok).toBe(false);
     }
+  });
+
+  test("an empty authority is accepted for schemes that allow it", () => {
+    // Documented: `https://` is accepted by the reference validator even though
+    // RFC 3986 requires a non-empty authority for hierarchical schemes.
+    expect(validateElicitationAnswer([uri], { u: "https://" }).ok).toBe(true);
+  });
+
+  test("a non-numeric port is accepted by the reference validator", () => {
+    // Documented deviation: the reference validator does not enforce the
+    // `port = *DIGIT` production.
+    expect(validateElicitationAnswer([uri], { u: "https://example.com:port/x" }).ok).toBe(true);
   });
 });
 
@@ -1179,6 +1222,31 @@ describe("validateElicitationAnswer calendar and RFC3339 strictness", () => {
     expect(validateElicitationAnswer([dateTime], { when: "2026-09-20T10:00:00.123Z" }).ok).toBe(true);
     expect(validateElicitationAnswer([dateTime], { when: "2026-09-20T10:00:00+08:00" }).ok).toBe(true);
     expect(validateElicitationAnswer([dateTime], { when: "2026-09-20T10:00:00-05:30" }).ok).toBe(true);
+  });
+
+  test("lowercase t and z separators are accepted", () => {
+    // RFC3339's ABNF notes that "T" and "Z" are case-insensitive.
+    expect(validateElicitationAnswer([dateTime], { when: "2026-09-20t10:00:00z" }).ok).toBe(true);
+    expect(validateElicitationAnswer([dateTime], { when: "2026-09-20t10:00:00Z" }).ok).toBe(true);
+    expect(validateElicitationAnswer([dateTime], { when: "2026-09-20T10:00:00z" }).ok).toBe(true);
+  });
+
+  test("a real leap second is accepted", () => {
+    // 2016-12-31T23:59:60Z was an actual leap-second instant.
+    expect(validateElicitationAnswer([dateTime], { when: "2016-12-31T23:59:60Z" }).ok).toBe(true);
+  });
+
+  test("a leap second at an arbitrary minute is rejected", () => {
+    // Regression: the old check only enforced seconds <= 60, so
+    // 2026-09-20T12:34:60Z passed. :60 is only valid at 23:59:60 UTC on a
+    // known leap date.
+    expect(validateElicitationAnswer([dateTime], { when: "2026-09-20T12:34:60Z" }).ok).toBe(false);
+    expect(validateElicitationAnswer([dateTime], { when: "2026-09-20T23:59:60Z" }).ok).toBe(false);
+  });
+
+  test("a leap second outside UTC is rejected", () => {
+    // A +08:00 local 23:59:60 is not the leap instant.
+    expect(validateElicitationAnswer([dateTime], { when: "2017-01-01T23:59:60+08:00" }).ok).toBe(false);
   });
 
   test("incomplete RFC3339 date-times are rejected", () => {
