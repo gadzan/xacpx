@@ -692,6 +692,60 @@ test("a multi-select answer array is cloned, not aliased to the plugin's", async
     }
   });
 
+  test("a content getter cannot turn a validated answer into accept + null", async () => {
+    // Regression: the broker validated `decision.content` and then READ IT
+    // AGAIN to decide the shape. A getter returning a valid required answer on
+    // the first read and `null` on the second produced
+    // `{ action: "accept", content: null }` after core had already approved the
+    // content — bypassing the private validation snapshot.
+    let reads = 0;
+    const { broker, registry } = harness({
+      channel: formChannel(async () => ({
+        action: "accept",
+        responderId: "user-A",
+        get content() {
+          reads += 1;
+          return reads === 1 ? { note: "valid" } : null;
+        },
+      } as never)),
+    });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    try {
+      const result = await broker.resolveElicitation(request({ interactionId: route.interactionId }));
+      // The accessor is rejected outright: a plain object is all a renderer
+      // needs, so this must never reach accept.
+      expect(result).toEqual({ action: "cancel" });
+      expect(reads).toBe(0);
+      expect(broker.pendingCount).toBe(0);
+    } finally {
+      dispose();
+    }
+  });
+
+  test("a decision with accessor action or responderId is rejected", async () => {
+    for (const key of ["action", "responderId"]) {
+      const { broker, registry } = harness({
+        channel: formChannel(async () => ({
+          action: "accept",
+          responderId: "user-A",
+          content: { note: "valid" },
+          get [key]() {
+            return key === "action" ? "accept" : "user-A";
+          },
+        } as never)),
+      });
+      const route = turn();
+      const dispose = broker.bindTurn(route);
+      try {
+        const result = await broker.resolveElicitation(request({ interactionId: route.interactionId }));
+        expect(result).toEqual({ action: "cancel" });
+      } finally {
+        dispose();
+      }
+    }
+  });
+
   test("watched timings keep the inner deadline strictly below the outer watchdog", () => {
     expect(ELICITATION_INTERACTION_TIMEOUT_MS).toBeLessThan(ELICITATION_RPC_TIMEOUT_MS);
   });
@@ -811,8 +865,9 @@ describe("ElicitationInteractionBroker privacy", () => {
       await Promise.resolve();
       const serializedLogs = JSON.stringify(logs.map((entry) => ({ event: entry.event, fields: entry.fields })));
       expect(serializedLogs).not.toContain(SENTINEL_ANSWER);
-      // The classification is the fixed literal, not the renderer's name.
-      expect(serializedLogs).toContain('"errorType":"Error"');
+      // The classification is the fixed literal, not anything the thrown value
+      // provides.
+      expect(serializedLogs).toContain('"errorType":"thrown"');
     } finally {
       dispose();
     }
@@ -837,10 +892,37 @@ describe("ElicitationInteractionBroker privacy", () => {
     try {
       const result = await broker.resolveElicitation(request({ interactionId: route.interactionId }));
       expect(result).toEqual({ action: "cancel" });
+      expect(broker.pendingCount).toBe(0);
       await Promise.resolve();
       await Promise.resolve();
       const serializedLogs = JSON.stringify(logs.map((entry) => ({ event: entry.event, fields: entry.fields })));
-      expect(serializedLogs).toContain('"errorType":"Error"');
+      expect(serializedLogs).toContain('"errorType":"thrown"');
+    } finally {
+      dispose();
+    }
+  });
+
+  test("a throwing getPrototypeOf trap does not leak the pending entry", async () => {
+    // Regression: `error instanceof Error` invokes a Proxy's
+    // [[GetPrototypeOf]], so a throwing trap escaped the catch handler, skipped
+    // unsubscribeTurnAbort()/settleStale(), and left the pending map entry
+    // behind forever (turn dispose only marks settled, it never deletes).
+    const { broker } = harness({
+      channel: formChannel(async () => {
+        throw new Proxy({}, {
+          getPrototypeOf() {
+            throw new Error("getPrototypeOf trap exploded");
+          },
+        });
+      }),
+    });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    try {
+      const result = await broker.resolveElicitation(request({ interactionId: route.interactionId }));
+      expect(result).toEqual({ action: "cancel" });
+      // The pending entry must be gone, not just marked settled.
+      expect(broker.pendingCount).toBe(0);
     } finally {
       dispose();
     }

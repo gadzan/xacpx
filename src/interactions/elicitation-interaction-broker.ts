@@ -37,6 +37,7 @@ import {
 } from "./elicitation-schema.js";
 import type {
   ChannelElicitationField,
+  ChannelElicitationValue,
   MessageChannelElicitationRuntime,
 } from "./elicitation-types.js";
 import {
@@ -89,6 +90,30 @@ interface PendingElicitation {
   controller: AbortController;
   timer?: ReturnType<typeof setTimeout>;
   startedAt: number;
+}
+
+/**
+ * True when `value` is a plain object whose `action`, `responderId` and
+ * `content` are all own DATA properties. Accessors are rejected: a getter can
+ * return a valid answer on the first read and something else afterwards, which
+ * is exactly the TOCTOU this guard exists to prevent.
+ */
+function isPlainDecision(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  for (const key of ["action", "responderId", "content"]) {
+    if (!Object.hasOwn(value, key)) continue;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor) return false;
+    // `get`/`set` present means an accessor, not a data property.
+    if ("get" in descriptor || "set" in descriptor) return false;
+  }
+  return true;
+}
+
+/** Read one own data property, or `undefined` when it is absent. */
+function readOwnDataProperty(holder: Record<string, unknown>, key: string): unknown {
+  if (!Object.hasOwn(holder, key)) return undefined;
+  return Object.getOwnPropertyDescriptor(holder, key)?.value;
 }
 
 /** Metadata-only log projection: never titles, never answers. */
@@ -180,12 +205,15 @@ export class ElicitationInteractionBroker {
     try {
       channel = this.getChannelByChatKey(route.chatKey);
     } catch (error) {
-      // Type only, and a FIXED classification: a resolver throwing an
-      // agent-supplied chatKey into its message must not become a log line,
-      // and `error.constructor.name` is itself renderer-controlled (G8).
+      // Nothing the thrown value provides is read at all. Not `message`
+      // (renderer text), not `constructor.name` (renderer-controlled), and not
+      // even `instanceof Error` — a Proxy with a throwing `getPrototypeOf`
+      // trap makes `instanceof` itself throw, which would escape this catch
+      // handler and leak the pending entry.
+      void error;
       await this.log("elicitation.interaction.channel_failed", "channel lookup threw", {
         requestId,
-        errorType: error instanceof Error ? "Error" : typeof error,
+        errorType: "thrown",
         fieldCount: 0,
         fieldKinds: "",
       });
@@ -332,7 +360,24 @@ export class ElicitationInteractionBroker {
 
       // Platform-authenticated identity: a wrong responder is never
       // accepted, and never becomes `decline` either (fail closed cancel).
-      if (!decision || typeof decision.responderId !== "string" || decision.responderId !== route.senderId) {
+      // SNAPSHOT every field exactly once, before any validation. Reading
+      // `decision.content` again after validation would let a getter return a
+      // valid answer on the first read and `null` on the second, turning a
+      // required form into `accept + null` after core had already approved it.
+      // Accessors are rejected outright: a plain object is the only thing a
+      // renderer needs to return.
+      if (!decision || !isPlainDecision(decision)) {
+        await this.log("elicitation.interaction.channel_failed", "malformed channel decision", {
+          requestId,
+          ...this.describe(fields),
+        });
+        unsubscribeTurnAbort();
+        return this.settleStale(requestId, fields, startedAt);
+      }
+      const decisionAction = readOwnDataProperty(decision, "action");
+      const decisionResponderId = readOwnDataProperty(decision, "responderId");
+      const decisionContent = readOwnDataProperty(decision, "content");
+      if (typeof decisionResponderId !== "string" || decisionResponderId !== route.senderId) {
         await this.log("elicitation.interaction.channel_failed", "responder is not the turn initiator", {
           requestId,
           ...this.describe(fields),
@@ -341,18 +386,28 @@ export class ElicitationInteractionBroker {
         return this.settleStale(requestId, fields, startedAt);
       }
 
-      if (decision.action !== "accept") {
+      if (decisionAction !== "accept" && decisionAction !== "decline" && decisionAction !== "cancel") {
+        await this.log("elicitation.interaction.channel_failed", "malformed channel decision", {
+          requestId,
+          ...this.describe(fields),
+        });
+        unsubscribeTurnAbort();
+        return this.settleStale(requestId, fields, startedAt);
+      }
+
+      if (decisionAction !== "accept") {
         // decline and cancel are both terminal; only decline is a user
         // refusal. Every failure path reaches here as cancel.
-        const result: ElicitationResult = decision.action === "decline"
+        const result: ElicitationResult = decisionAction === "decline"
           ? { action: "decline" }
           : { action: "cancel" };
         unsubscribeTurnAbort();
         return this.commit(requestId, result, fields, startedAt);
       }
 
-      // accept: core re-validates the content against the normalized schema.
-      const validated = validateElicitationAnswer(fields, decision.content);
+      // accept: core re-validates the snapshot against the normalized schema.
+      const submitted = decisionContent === undefined ? undefined : decisionContent;
+      const validated = validateElicitationAnswer(fields, submitted as Record<string, ChannelElicitationValue> | null | undefined);
       if (!validated.ok) {
         await this.log("elicitation.interaction.invalid_answer", "accepted elicitation answer failed validation", {
           requestId,
@@ -362,15 +417,20 @@ export class ElicitationInteractionBroker {
         unsubscribeTurnAbort();
         return this.settleStale(requestId, fields, startedAt);
       }
-      const content = decision.content === null ? null : validated.content;
+      // Only the SNAPSHOT decides the shape — never a second read.
+      const content = decisionContent === null ? null : validated.content;
       unsubscribeTurnAbort();
       return this.commit(requestId, { action: "accept", content }, fields, startedAt);
     } catch (error) {
-      // Plugin throw, explicit cancel, abort, timeout: all cancel. Only a
-      // FIXED classification is recorded — `error.constructor.name` is
-      // renderer-controlled (an overriding `constructor` property, or a
-      // throwing getter, both attacker-reachable), so reading it would let a
-      // renderer put submitted form values into the log (G8).
+      // Plugin throw, explicit cancel, abort, timeout: all cancel. NOTHING the
+      // thrown value provides is read: not `message` (renderer text), not
+      // `constructor.name` (renderer-controlled), and not even `instanceof
+      // Error` — a Proxy with a throwing `getPrototypeOf` trap makes
+      // `instanceof` itself throw, which would escape this handler, skip
+      // `unsubscribeTurnAbort()`/`settleStale()`, and leak the pending entry
+      // forever (turn dispose only marks settled, it never deletes the map
+      // entry).
+      void error;
       if (controller.signal.aborted) {
         await this.log("elicitation.interaction.aborted", "elicitation interaction aborted before decision", {
           requestId,
@@ -378,7 +438,7 @@ export class ElicitationInteractionBroker {
       } else {
         await this.log("elicitation.interaction.channel_failed", "channel request failed", {
           requestId,
-          errorType: error instanceof Error ? "Error" : typeof error,
+          errorType: "thrown",
         });
       }
       unsubscribeTurnAbort();
