@@ -1039,6 +1039,26 @@ it("active reconnect snapshot after successful cancel stays hidden until the old
   expect(chat.busy).toBe(false);
 });
 
+it("reconnect snapshot for a newer turn supersedes the completed cancel guard", async () => {
+  rpc.mockResolvedValueOnce({ cancelled: true });
+  const chat = useChatStore();
+  chat.select("inst", "A");
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-started", chatKey: "c", sessionAlias: "A", startedAt: 1 } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: "old" } } as never);
+  await chat.cancel();
+
+  chat.applyEvent({
+    kind: "state-snapshot",
+    instanceId: "inst",
+    turns: [{ instanceId: "inst", sessionAlias: "A", parts: [{ type: "text", text: "new turn" }], status: "streaming", startedAt: 2 }],
+    usage: [],
+    commands: [],
+  } as never);
+  expect(chat.busy).toBe(true);
+  expect(chat.streaming).toBe("new turn");
+  expect(chat.liveTurn?.startedAt).toBe(2);
+});
+
 it("cancel failure restores the authoritative reconnect snapshot without exposing it early", async () => {
   let rejectCancel!: (error: unknown) => void;
   rpc.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectCancel = reject; }));

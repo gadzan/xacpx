@@ -665,8 +665,15 @@ export const useChatStore = defineStore("chat", () => {
             : selectedKey.value === k ? messages.value.length - 1 : -1),
       };
       if (pending) {
-        pending.turn = snapshotTurn;
-        continue;
+        // Reconnect can also land after the cancelled turn ended and a genuinely new
+        // turn already started while this tab was offline. startedAt is the durable
+        // live-turn identity used by the web; a different stamp supersedes the guard.
+        if (pending.turn && pending.turn.startedAt !== turn.startedAt) {
+          pendingCancels.delete(k);
+        } else {
+          pending.turn = snapshotTurn;
+          continue;
+        }
       }
       nextTurns[k] = snapshotTurn;
     }
