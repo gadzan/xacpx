@@ -196,6 +196,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   const botDetails = ref<Record<string, BotDetailDto>>({});
   const loadingBots = ref<boolean>(false);
   const botsLoaded = ref<Record<string, boolean>>({});
+  // Freshness fences for the Bot catalog: overlapping bots-list/detail
+  // refreshes (e.g. back-to-back bots-changed events) must converge on the
+  // latest response. Only the newest request per instance/bot may write the
+  // cache or invalidate botsLoaded; stale responses are dropped.
+  const botsListSeq: Record<string, number> = {};
+  const botDetailSeq: Record<string, number> = {};
 
   // Conversations state
   const conversationsByInstance = ref<Record<string, ConversationSummaryDto[]>>({});
@@ -283,17 +289,20 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // RPC: Bot CRUD
   function dropBotDetail(targetInstanceId: string, botId: string): void {
     const detailKey = `${targetInstanceId}:${botId}`;
+    // Invalidate any in-flight detail load so a stale response cannot
+    // resurrect the dropped entry after a remote delete.
+    botDetailSeq[detailKey] = (botDetailSeq[detailKey] ?? 0) + 1;
     if (detailKey in botDetails.value) {
       const nextDetails = { ...botDetails.value };
       delete nextDetails[detailKey];
       botDetails.value = nextDetails;
     }
   }
-
-  // First durable accept proves the hidden direct runtime materialized, but
-  // runtime materialization emits no bots-changed. Flip the local projection
-  // to hasRuntime immediately so delete/identity UI converges without waiting
-  // for a later list/detail refetch.
+  // Execution evidence flips the local lifecycle projection: dispatcher
+  // execution-start (member-turn-started / running/waiting-human rows) proves
+  // the hidden direct runtime actually materialized, but emits no
+  // bots-changed. Converge immediately so delete/identity UI does not wait
+  // for a later authoritative list/detail refetch.
   function markBotHasRuntime(targetInstanceId: string, botId: string): void {
     const list = botsByInstance.value[targetInstanceId];
     if (list) {
@@ -311,12 +320,19 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     }
   }
 
+
   async function loadBots(targetInstanceId: string): Promise<BotSummaryDto[]> {
+    const seq = (botsListSeq[targetInstanceId] ?? 0) + 1;
+    botsListSeq[targetInstanceId] = seq;
     loadingBots.value = true;
     try {
       const res = unwrapRpc(
         await api.rpc<{ bots: BotSummaryDto[] }>(targetInstanceId, MSG.botsList, {}),
       );
+      // A stale (superseded) list response must not clobber the newer cache.
+      if (botsListSeq[targetInstanceId] !== seq) {
+        return res.bots;
+      }
       botsByInstance.value = {
         ...botsByInstance.value,
         [targetInstanceId]: res.bots,
@@ -326,20 +342,37 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         [targetInstanceId]: true,
       };
       return res.bots;
+    } catch (err: unknown) {
+      // A failed refresh leaves no fresh cache: invalidate so the next Bots
+      // tab entry retries instead of serving the stale list forever. Only the
+      // latest request may invalidate; a stale failure must not clear a newer
+      // success.
+      if (botsListSeq[targetInstanceId] === seq) {
+        botsLoaded.value = {
+          ...botsLoaded.value,
+          [targetInstanceId]: false,
+        };
+      }
+      throw err;
     } finally {
       loadingBots.value = false;
     }
   }
 
   async function loadBotDetail(targetInstanceId: string, botId: string): Promise<BotDetailDto> {
+    const detailKey = `${targetInstanceId}:${botId}`;
+    const seq = (botDetailSeq[detailKey] ?? 0) + 1;
+    botDetailSeq[detailKey] = seq;
     const res = unwrapRpc(
       await api.rpc<{ bot: BotDetailDto }>(targetInstanceId, MSG.botsGet, { id: botId }),
     );
-    const detailKey = `${targetInstanceId}:${botId}`;
-    botDetails.value = {
-      ...botDetails.value,
-      [detailKey]: res.bot,
-    };
+    // A stale (superseded) detail response must not clobber the newer cache.
+    if (botDetailSeq[detailKey] === seq) {
+      botDetails.value = {
+        ...botDetails.value,
+        [detailKey]: res.bot,
+      };
+    }
     return res.bot;
   }
 
@@ -361,6 +394,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       await api.rpc<{ bot: BotDetailDto }>(targetInstanceId, MSG.botsCreate, payload),
     );
     const detailKey = `${targetInstanceId}:${res.bot.id}`;
+    botDetailSeq[detailKey] = (botDetailSeq[detailKey] ?? 0) + 1;
     botDetails.value = { ...botDetails.value, [detailKey]: res.bot };
     await loadBots(targetInstanceId);
     return res.bot;
@@ -385,6 +419,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       await api.rpc<{ bot: BotDetailDto }>(targetInstanceId, MSG.botsUpdate, { id: botId, ...patch }),
     );
     const detailKey = `${targetInstanceId}:${botId}`;
+    botDetailSeq[detailKey] = (botDetailSeq[detailKey] ?? 0) + 1;
     botDetails.value = { ...botDetails.value, [detailKey]: res.bot };
     await loadBots(targetInstanceId);
     return res.bot;
@@ -1069,10 +1104,13 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         return;
       }
 
-      // HTTP accept proves the hidden direct runtime materialized (no
-      // bots-changed is emitted for materialization). Flip the local
-      // projection now so delete/identity UI converges without a refetch.
-      markBotHasRuntime(targetInstId, targetBotId);
+      // Lifecycle projection converges only on evidence that can prove a
+      // direct runtime actually materialized: a correlated execution event
+      // (dispatcher materialize -> execution-start -> member-turn-started /
+      // correlated turn stream) or an authoritative bots list/detail row that
+      // already carries hasRuntime=true. HTTP accept only proves the Run is
+      // durable (accept transaction + pending dispatch); a queued Run
+      // cancelled before execution never creates a binding/session.
       // On successful acceptance, reset current draft requestId so subsequent prompt gets a new id
       currentDraftRequestId.value = null;
       lastPromptText.value = "";
@@ -1220,7 +1258,13 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           } else {
             activeRun.value = mergeRun(activeRun.value, authoritativeRow);
           }
-          if (instanceId.value && selectedBotId.value) {
+          // Only an execution-started row proves the hidden direct runtime
+          // materialized: queued accept echoes prove durability only, and a
+          // queued Run cancelled before execution never creates a binding.
+          if (
+            (authoritativeRow.state === "running" || authoritativeRow.state === "waiting-human") &&
+            instanceId.value && selectedBotId.value
+          ) {
             markBotHasRuntime(instanceId.value, selectedBotId.value);
           }
         }
@@ -1637,9 +1681,15 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           // gate or spawn redundant re-discovery.
           const retiringActiveRun = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
           activeRun.value = mergeRun(activeRun.value, run);
-          // Any Run for this Topic proves the hidden direct runtime
-          // materialized (no bots-changed covers it). Converge lifecycle now.
-          if (instanceId.value && selectedBotId.value) {
+          // Only an execution-started row proves the hidden direct runtime
+          // materialized: the dispatcher emits running/waiting-human after
+          // materialize + the execution-start fence. Queued accept echoes and
+          // terminal rows for runs cancelled/failed before execution prove
+          // nothing (no binding/session may ever exist).
+          if (
+            (run.state === "running" || run.state === "waiting-human") &&
+            instanceId.value && selectedBotId.value
+          ) {
             markBotHasRuntime(instanceId.value, selectedBotId.value);
           }
           if (isTerminalRunState(activeRun.value.state)) {
@@ -1702,15 +1752,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
             activeRun.value = mergeRun(null, run);
             activeMemberTurn.value = null;
             liveTurn.value = null;
-            // This Run exists, so the hidden direct runtime materialized (no
-            // bots-changed covers it). Converge the lifecycle projection now.
-            if (instanceId.value && selectedBotId.value) {
-              markBotHasRuntime(instanceId.value, selectedBotId.value);
-            }
-            // The WS proved the submission is durably accepted, so retire the
-            // retry identity now: a late HTTP catch cannot rewrite failure and
-            // Retry cannot re-send the same requestId. promptInFlight stays true
-            // until the HTTP settles, still reflecting the open request.
+            // The WS proves the accepted Run is durable, but a queued accept
+            // row does not prove the hidden runtime materialized: execution
+            // evidence below converges hasRuntime.
             promptError.value = null;
             currentDraftRequestId.value = null;
             lastPromptText.value = "";
@@ -1733,8 +1777,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         ) {
           activeRun.value = mergeRun(activeRun.value, run);
           activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, memberTurn);
-          // This Run exists, so the hidden direct runtime materialized (no
-          // bots-changed covers it). Converge the lifecycle projection now.
+          // member-turn-started is emitted by the dispatcher only after
+          // materialize + the execution-start fence, so it proves the hidden
+          // direct runtime actually exists.
           if (instanceId.value && selectedBotId.value) {
             markBotHasRuntime(instanceId.value, selectedBotId.value);
           }

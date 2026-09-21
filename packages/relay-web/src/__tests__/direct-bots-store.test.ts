@@ -989,7 +989,7 @@ describe("useDirectBotsStore", () => {
       );
       expect(store.promptError).toContain("still recovering");
     });
-    it("marks the bot identity-locked immediately on first durable accept", async () => {
+    it("does NOT mark the bot identity-locked on queued HTTP accept; execution-started row converges it", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
       store.selectedBotId = "bot_1";
@@ -1022,12 +1022,88 @@ describe("useDirectBotsStore", () => {
       });
 
       await store.sendPrompt("first");
-      // No list/detail refetch happened, yet the lifecycle UI converges.
+      // HTTP accept proves durability only: a queued Run cancelled before
+      // execution never materializes a binding/session, so hasRuntime must
+      // stay unset.
       expect(mockRpc).not.toHaveBeenCalledWith("inst_1", "control.bots.list", expect.anything());
-      expect(store.currentBot?.hasRuntime).toBe(true);
+      expect(store.currentBot?.hasRuntime).toBeUndefined();
       expect(store.botDetails["inst_1:bot_1"]?.hasRuntime).toBeUndefined();
+
+      // Execution-started row (dispatcher materialize + execution-start
+      // fence) proves the hidden runtime actually materialized.
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "member-turn-started",
+          run: {
+            id: "run_1", conversationId: "conv_1", topicId: "top_1",
+            requestMessageId: "msg_1", requestId: "req_1", mode: "explicit",
+            state: "running", profileRevision: 1, createdAt: "now",
+          },
+          memberTurn: {
+            id: "turn_1", runId: "run_1", conversationId: "conv_1", topicId: "top_1",
+            botId: "bot_1", batch: 1, attempt: 1, origin: "human",
+            state: "running", createdAt: "now",
+          },
+        },
+      } as never);
+      expect(store.currentBot?.hasRuntime).toBe(true);
     });
-    it("marks the bot identity-locked on WS-proven accept when HTTP is lost", async () => {
+    it("keeps hasRuntime false when a queued Run is cancelled before execution (no runtime ever materialized)", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.topicReady = true;
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Fresh", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversation.prompt") {
+          return Promise.resolve({
+            message: {
+              id: "msg_1", conversationId: "conv_1", topicId: "top_1", seq: 1,
+              role: "human", content: "first", createdAt: "now",
+            },
+            run: {
+              id: "run_1", conversationId: "conv_1", topicId: "top_1",
+              requestMessageId: "msg_1", requestId: "req_1", mode: "explicit",
+              state: "queued", profileRevision: 1, createdAt: "now",
+            },
+            memberTurn: {
+              id: "turn_1", runId: "run_1", conversationId: "conv_1", topicId: "top_1",
+              botId: "bot_1", batch: 1, attempt: 1, origin: "human",
+              state: "queued", createdAt: "now",
+            },
+          });
+        }
+        if (type === "control.runs.cancel") {
+          return Promise.resolve({
+            ok: true,
+            run: {
+              id: "run_1", conversationId: "conv_1", topicId: "top_1",
+              requestMessageId: "msg_1", requestId: "req_1", mode: "explicit",
+              state: "cancelled", profileRevision: 1, createdAt: "now",
+              memberTurns: [],
+            },
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      await store.sendPrompt("first");
+      expect(store.currentBot?.hasRuntime).toBeUndefined();
+
+      // Stop the queued Run before any execution-start event arrives.
+      await store.cancelCurrentRun();
+      expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.runs.cancel", { runId: "run_1" });
+      expect(store.activeRun?.state).toBe("cancelled");
+      // No execution evidence ever arrived: the Bot must NOT be identity-locked.
+      expect(store.currentBot?.hasRuntime).toBeUndefined();
+    });
+    it("does NOT mark the bot identity-locked on a queued WS accept row; execution-started event converges it", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
       store.selectedBotId = "bot_1";
@@ -1063,12 +1139,126 @@ describe("useDirectBotsStore", () => {
           },
         },
       } as never);
-      // WS proof converges lifecycle UI even though HTTP never resolves.
-      expect(store.currentBot?.hasRuntime).toBe(true);
+      // Queued WS accept row proves durable accept only, not materialization.
+      expect(store.currentBot?.hasRuntime).toBeUndefined();
 
       deferred.reject(new Error("Network disconnect"));
       await sendCall;
-      expect(store.currentBot?.hasRuntime).toBe(true);
+      expect(store.currentBot?.hasRuntime).toBeUndefined();
+    });
+    it("keeps the newer Bot list when overlapping bots-changed refreshes resolve out of order", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.botsByInstance["inst_2"] = [
+        { id: "bot_s1", name: "S1", agent: "codex", workspace: "repo", enabled: true, updatedAt: "s1" },
+      ];
+      const first = Promise.withResolvers<{ bots: BotSummaryDto[] }>();
+      const second = Promise.withResolvers<{ bots: BotSummaryDto[] }>();
+      let listCalls = 0;
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (instId === "inst_2" && type === "control.bots.list") {
+          listCalls += 1;
+          return listCalls === 1 ? first.promise : second.promise;
+        }
+        return Promise.resolve({});
+      });
+
+      // Two back-to-back bots-changed events for the background instance.
+      store.applyEvent({ kind: "control-event", instanceId: "inst_2", event: { type: "bots-changed" } } as never);
+      store.applyEvent({ kind: "control-event", instanceId: "inst_2", event: { type: "bots-changed" } } as never);
+      expect(listCalls).toBe(2);
+
+      // Newer response settles first (S2), stale response settles later (S1).
+      second.resolve({
+        bots: [
+          { id: "bot_s1", name: "S1", agent: "codex", workspace: "repo", enabled: true, updatedAt: "s1" },
+          { id: "bot_s2", name: "S2", agent: "codex", workspace: "repo", enabled: true, updatedAt: "s2" },
+        ],
+      });
+      await flushPromises();
+      expect(store.botsByInstance["inst_2"]).toHaveLength(2);
+
+      first.resolve({
+        bots: [
+          { id: "bot_s1", name: "S1", agent: "codex", workspace: "repo", enabled: true, updatedAt: "s1" },
+        ],
+      });
+      await flushPromises();
+      await flushPromises();
+
+      // Stale S1 must not clobber the newer S2 cache.
+      expect(store.botsByInstance["inst_2"]).toHaveLength(2);
+      expect(store.botsByInstance["inst_2"].map((b) => b.id)).toEqual(["bot_s1", "bot_s2"]);
+      expect(store.botsLoaded["inst_2"]).toBe(true);
+    });
+    it("invalidates botsLoaded when a background bots-changed refresh fails so the next tab entry retries", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.botsByInstance["inst_2"] = [
+        { id: "bot_old", name: "Old", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      store.botsLoaded["inst_2"] = true;
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (instId === "inst_2" && type === "control.bots.list") {
+          return Promise.reject(new Error("transient network failure"));
+        }
+        return Promise.resolve({});
+      });
+
+      store.applyEvent({ kind: "control-event", instanceId: "inst_2", event: { type: "bots-changed" } } as never);
+      await flushPromises();
+      await flushPromises();
+
+      // Stale cache entry stays (nothing fresher arrived) but the loaded flag
+      // drops so the next Bots-tab entry retries instead of serving stale.
+      expect(store.botsByInstance["inst_2"]).toHaveLength(1);
+      expect(store.botsLoaded["inst_2"]).toBe(false);
+    });
+    it("keeps the newer Bot detail when overlapping detail refreshes resolve out of order", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botDetails["inst_1:bot_1"] = {
+        id: "bot_1", name: "Old", agent: "codex", workspace: "repo", enabled: false,
+        profileRevision: 1, createdAt: "now", updatedAt: "old",
+      };
+      const older = Promise.withResolvers<{ bot: BotDetailDto }>();
+      const newer = Promise.withResolvers<{ bot: BotDetailDto }>();
+      let detailCalls = 0;
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (instId === "inst_1" && type === "control.bots.get") {
+          detailCalls += 1;
+          return detailCalls === 1 ? older.promise : newer.promise;
+        }
+        return Promise.resolve({});
+      });
+
+      const first = store.loadBotDetail("inst_1", "bot_1");
+      const second = store.loadBotDetail("inst_1", "bot_1");
+      newer.resolve({
+        bot: {
+          id: "bot_1", name: "New", agent: "codex", workspace: "repo", enabled: true,
+          profileRevision: 2, createdAt: "now", updatedAt: "new",
+        },
+      });
+      await second;
+      expect(store.botDetails["inst_1:bot_1"]?.name).toBe("New");
+
+      older.resolve({
+        bot: {
+          id: "bot_1", name: "Old", agent: "codex", workspace: "repo", enabled: false,
+          profileRevision: 1, createdAt: "now", updatedAt: "old",
+        },
+      });
+      await first;
+      // Stale detail must not clobber the newer cache (enabled=false would
+      // otherwise keep blocking prompt).
+      expect(store.botDetails["inst_1:bot_1"]?.name).toBe("New");
+      expect(store.botDetails["inst_1:bot_1"]?.enabled).toBe(true);
     });
     it("does not forge a discovery failure when a terminal event refreshes history during deferred runs.get", async () => {
       const store = useDirectBotsStore();
