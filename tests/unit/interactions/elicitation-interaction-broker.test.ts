@@ -562,6 +562,136 @@ describe("ElicitationInteractionBroker deadlines and races", () => {
     }
   });
 
+  test("a renderer that widens options cannot authorize a value the agent never offered", async () => {
+    // Regression: the renderer received the same mutable object graph core
+    // validated against, so pushing an option made an unauthorized value pass.
+    const { broker, registry } = harness({
+      channel: formChannel(async (request) => {
+        // Innocent UI tidying that changes core's validation truth.
+        (request.fields[0] as { options: unknown[] }).options.push({ value: "green", label: "Green" });
+        return { action: "accept", responderId: "user-A", content: { note: "green" } };
+      }),
+    });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    try {
+      const result = await broker.resolveElicitation(request({
+        interactionId: route.interactionId,
+        request: acpFormRequest({
+          requestedSchema: {
+            type: "object",
+            properties: { note: { type: "string", enum: ["red", "blue"] } },
+            required: ["note"],
+          },
+        }),
+      }));
+      expect(result).toEqual({ action: "cancel" });
+    } finally {
+      dispose();
+    }
+  });
+
+  test("a renderer that clears required cannot make a missing answer pass", async () => {
+    const { broker, registry } = harness({
+      channel: formChannel(async (request) => {
+        (request.fields[0] as { required: boolean }).required = false;
+        return { action: "accept", responderId: "user-A", content: {} };
+      }),
+    });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    try {
+      const result = await broker.resolveElicitation(request({ interactionId: route.interactionId }));
+      expect(result).toEqual({ action: "cancel" });
+    } finally {
+      dispose();
+    }
+  });
+
+  test("a renderer that relaxes minLength cannot authorize a short answer", async () => {
+    const { broker, registry } = harness({
+      channel: formChannel(async (request) => {
+        (request.fields[0] as { minLength?: number }).minLength = 1;
+        return { action: "accept", responderId: "user-A", content: { note: "x" } };
+      }),
+    });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    try {
+      const result = await broker.resolveElicitation(request({
+        interactionId: route.interactionId,
+        request: acpFormRequest({
+          requestedSchema: {
+            type: "object",
+            properties: { note: { type: "string", minLength: 5 } },
+            required: ["note"],
+          },
+        }),
+      }));
+      expect(result).toEqual({ action: "cancel" });
+    } finally {
+      dispose();
+    }
+  });
+
+  test("the renderer receives a frozen presentation copy", async () => {
+    // Freezing turns silent validation drift into a loud throw, which the
+    // broker maps to cancel.
+    let frozen = false;
+    const { broker, registry } = harness({
+      channel: formChannel(async (request) => {
+        frozen = Object.isFrozen(request.fields) && Object.isFrozen(request.fields[0]);
+        return { action: "decline", responderId: "user-A" };
+      }),
+    });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    try {
+      await broker.resolveElicitation(request({ interactionId: route.interactionId }));
+      expect(frozen).toBe(true);
+    } finally {
+      dispose();
+    }
+  });
+
+  test("a multi-select answer array is cloned, not aliased to the plugin's", async () => {
+    // Regression: the validator returned the plugin's own string[] reference,
+    // so a post-validation mutation could still reach the agent.
+    const submitted: string[] = ["a"];
+    const { broker, registry } = harness({
+      channel: formChannel(async () => ({
+        action: "accept",
+        responderId: "user-A",
+        content: { tags: submitted },
+      })),
+    });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    try {
+      const result = await broker.resolveElicitation(request({
+        interactionId: route.interactionId,
+        request: {
+          sessionId: "acp-1",
+          mode: "form",
+          message: "Pick tags",
+          requestedSchema: {
+            type: "object",
+            properties: { tags: { type: "array", items: { type: "string", enum: ["a", "b"] } } },
+            required: ["tags"],
+          },
+        },
+      }));
+      expect(result).toEqual({ action: "accept", content: { tags: ["a"] } });
+      if (result.action !== "accept" || result.content === null) throw new Error("unreachable");
+      // Mutating the plugin's array afterwards must not change what core
+      // already returned.
+      submitted.push("b");
+      expect(result.content.tags).toEqual(["a"]);
+    } finally {
+      dispose();
+    }
+  });
+
   test("watched timings keep the inner deadline strictly below the outer watchdog", () => {
     expect(ELICITATION_INTERACTION_TIMEOUT_MS).toBeLessThan(ELICITATION_RPC_TIMEOUT_MS);
   });

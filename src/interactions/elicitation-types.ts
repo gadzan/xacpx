@@ -53,6 +53,8 @@ export type ChannelElicitationField =
       minLength?: number;
       maxLength?: number;
       format?: "email" | "uri" | "date" | "date-time";
+      /** Display metadata only: core never executes agent-provided patterns. */
+      pattern?: string;
     }
   | {
       kind: "number";
@@ -105,6 +107,9 @@ export interface ChannelElicitationRequest {
   message: string;
   mode: "form";
   fields: ChannelElicitationField[];
+  /** ACP schema-level presentation metadata, bounded by core. */
+  schemaTitle?: string;
+  schemaDescription?: string;
   expiresAt: number;
   /** Aborts on timeout, turn disposal, or shutdown. */
   signal: AbortSignal;

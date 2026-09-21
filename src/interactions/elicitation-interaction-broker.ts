@@ -35,7 +35,10 @@ import {
   validateElicitationAnswer,
   type NormalizedElicitationForm,
 } from "./elicitation-schema.js";
-import type { MessageChannelElicitationRuntime } from "./elicitation-types.js";
+import type {
+  ChannelElicitationField,
+  MessageChannelElicitationRuntime,
+} from "./elicitation-types.js";
 import {
   createTurnInteractionRegistry,
   type TurnInteractionContext,
@@ -208,7 +211,21 @@ export class ElicitationInteractionBroker {
       });
       return { action: "cancel" };
     }
-    const fields = normalized.form.fields;
+    // TWO copies of the same normalized form, deliberately:
+    //
+    //   validationSnapshot — private to core, never handed to a plugin. This
+    //     is the ONLY truth used by validateElicitationAnswer below.
+    //   presentation      — deep-cloned and deep-frozen, given to the renderer
+    //     via channelRequest.fields.
+    //
+    // The public contract exposes `fields` as mutable arrays/objects, so a
+    // renderer that reorganizes them for its UI would otherwise mutate core's
+    // validation truth: pushing an extra option, clearing `required`, or
+    // relaxing `minLength` would make an answer the agent never authorized
+    // validate as legal. Freezing makes that fail loudly instead of silently.
+    const validationSnapshot = cloneFormForValidation(normalized.form);
+    const presentation = deepFreezeForm(cloneFormForValidation(normalized.form));
+    const fields = validationSnapshot.fields;
 
     const controller = new AbortController();
     const startedAt = Date.now();
@@ -228,11 +245,13 @@ export class ElicitationInteractionBroker {
         },
         message: normalized.form.message,
         mode: "form",
-        fields,
+        fields: presentation.fields,
+        ...(normalized.form.schemaTitle !== undefined ? { schemaTitle: normalized.form.schemaTitle } : {}),
+        ...(normalized.form.schemaDescription !== undefined ? { schemaDescription: normalized.form.schemaDescription } : {}),
         expiresAt,
         signal: controller.signal,
       },
-      form: normalized.form,
+      form: validationSnapshot,
       settled: false,
       controller,
       startedAt,
@@ -474,6 +493,53 @@ export class ElicitationInteractionBroker {
       await this.logger?.info(event, message, fields);
     } catch {}
   }
+}
+
+/**
+ * Deep clone of the normalized form. Core keeps one private copy as its
+ * validation truth and hands a separate clone to the renderer, so nothing a
+ * plugin does to `request.fields` can change what core validates against.
+ */
+function cloneFormForValidation(form: NormalizedElicitationForm): NormalizedElicitationForm {
+  return {
+    ...(form.schemaTitle !== undefined ? { schemaTitle: form.schemaTitle } : {}),
+    ...(form.schemaDescription !== undefined ? { schemaDescription: form.schemaDescription } : {}),
+    message: form.message,
+    fields: form.fields.map((field): ChannelElicitationField => {
+      switch (field.kind) {
+        case "single-select":
+          return {
+            ...field,
+            options: field.options.map((option) => ({ ...option })),
+            ...(field.defaultValue !== undefined ? { defaultValue: field.defaultValue } : {}),
+          };
+        case "multi-select":
+          return {
+            ...field,
+            options: field.options.map((option) => ({ ...option })),
+            ...(field.defaultValue !== undefined ? { defaultValue: [...field.defaultValue] } : {}),
+          };
+        default:
+          return { ...field };
+      }
+    }),
+  };
+}
+
+/** Recursively freeze the presentation copy so mutation throws in strict mode. */
+function deepFreezeForm(form: NormalizedElicitationForm): NormalizedElicitationForm {
+  for (const field of form.fields) {
+    Object.freeze(field);
+    if (field.kind === "single-select" || field.kind === "multi-select") {
+      for (const option of field.options) Object.freeze(option);
+      Object.freeze(field.options);
+      if (field.defaultValue !== undefined && Array.isArray(field.defaultValue)) {
+        Object.freeze(field.defaultValue);
+      }
+    }
+  }
+  Object.freeze(form.fields);
+  return Object.freeze(form);
 }
 
 let globalBroker: ElicitationInteractionBroker | null = null;
