@@ -26,6 +26,7 @@ export interface BotRuntimeManagerOptions {
 }
 
 type SessionWriter = Pick<StateStore, "save"> & { saveNow?: (state: AppState) => Promise<void> };
+type DirectBotRuntimeBinding = Extract<BotRuntimeBinding, { scope: "bot-direct" }>;
 
 export class BotRuntimeManager {
   private readonly now: () => Date;
@@ -204,7 +205,7 @@ export class BotRuntimeManager {
   private findAdoptableLegacyBinding(
     botId: string,
     scope: { conversationId: string; topicId: string },
-  ): BotRuntimeBinding | undefined {
+  ): DirectBotRuntimeBinding | undefined {
     if (scope.conversationId !== createDirectConversationId(botId) || scope.topicId !== createDirectTopicId(botId)) {
       return undefined;
     }
@@ -282,7 +283,7 @@ export class BotRuntimeManager {
 
   private async publishAdoptedBinding(
     bot: BotProfile,
-    legacy: BotRuntimeBinding,
+    legacy: DirectBotRuntimeBinding,
     scopedId: string,
     scope: { conversationId: string; topicId: string; topic: ConversationTopic },
   ): Promise<BotRuntimeBinding> {
@@ -414,7 +415,7 @@ export class BotRuntimeManager {
   private ownershipConflict(
     botId: string,
     alias: string,
-    binding: Pick<BotRuntimeBinding, "id" | "conversationId"> | { bindingId: string; conversationId: string },
+    binding: Pick<DirectBotRuntimeBinding, "id" | "conversationId"> | { bindingId: string; conversationId: string },
     session: LogicalSession,
   ): BotError {
     return new BotError(
@@ -424,7 +425,7 @@ export class BotRuntimeManager {
     );
   }
 
-  private assertBindingOwnsSession(binding: BotRuntimeBinding, session: LogicalSession): void {
+  private assertBindingOwnsSession(binding: DirectBotRuntimeBinding, session: LogicalSession): void {
     const ownership = classifyDirectBotSessionOwnership(
       session,
       binding.botId,
@@ -463,7 +464,7 @@ export class BotRuntimeManager {
     return undefined;
   }
 
-  private bindingSessionIsLive(binding: BotRuntimeBinding): boolean {
+  private bindingSessionIsLive(binding: DirectBotRuntimeBinding): boolean {
     const session = this.sessions.getLogicalSessionById(binding.logicalSessionId);
     if (!session) {
       return false;
