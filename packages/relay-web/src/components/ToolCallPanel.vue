@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, ref } from "vue";
 import type { ToolStepDto } from "@ganglion/xacpx-relay-protocol";
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Loader2, Wrench } from "lucide-vue-next";
 import ToolDetail from "./ToolDetail.vue";
@@ -8,6 +8,7 @@ import FueCallout from "./FueCallout.vue";
 import { useFue } from "../lib/use-fue";
 import type { Rect } from "../lib/fue-placement";
 import { GROUP_COLLAPSE_FUE_THRESHOLD, KIND_ICON, diffStatsOf, summarizeSteps, type DiffStats } from "../lib/tool-summary";
+import { formatStepDuration, useLiveElapsedClock } from "../lib/use-live-elapsed";
 
 const props = defineProps<{ steps: ToolStepDto[]; ensureFull?: () => Promise<void> }>();
 
@@ -55,36 +56,17 @@ async function toggleRow(id: string) {
   expanded.value = new Set(expanded.value);
 }
 
-function fmtDuration(ms?: number): string {
-  if (ms === undefined) return "";
-  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
-}
-
 // Legacy aggregate panel: same live-elapsed contract as ToolStepCard — a running
 // row with a first-seen stamp counts up locally; terminal rows keep the
-// connector-measured duration.
-const nowMs = ref(Date.now());
-const hasRunning = computed(() => props.steps.some((s) => s.status === "running" && s.startedAt !== undefined));
-let clockTimer: ReturnType<typeof setInterval> | undefined;
-watch(
-  hasRunning,
-  (on) => {
-    if (clockTimer !== undefined) {
-      clearInterval(clockTimer);
-      clockTimer = undefined;
-    }
-    if (on) clockTimer = setInterval(() => { nowMs.value = Date.now(); }, 1000);
-  },
-  { immediate: true },
+// connector-measured duration. One clock for the whole list.
+const { nowMs } = useLiveElapsedClock(() =>
+  props.steps.some((s) => s.status === "running" && s.startedAt !== undefined),
 );
-onBeforeUnmount(() => {
-  if (clockTimer !== undefined) clearInterval(clockTimer);
-});
 function rowElapsed(s: ToolStepDto): string {
   if (s.status === "running" && s.startedAt !== undefined) {
-    return fmtDuration(Math.max(0, nowMs.value - s.startedAt));
+    return formatStepDuration(Math.max(0, nowMs.value - s.startedAt));
   }
-  return fmtDuration(s.durationMs);
+  return formatStepDuration(s.durationMs);
 }
 </script>
 

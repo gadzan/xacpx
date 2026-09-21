@@ -88,15 +88,15 @@ OpenCode（ses_04759）的 `content` 中 **没有任何 diff block**（其 edit 
 
 **现象**：read 卡展开后第一行是 path，标题栏也是 path；command 卡展开后 `$ npm test` 与标题完全一致。
 
-**方案**：`ToolDetail.vue` 各变体增加主字段去重——当 detail 主字段与 `step.title` 相同（或为其规范化等价物）时不渲染该主字段行，仅渲染输出区。
+**方案（已按落地修正）**：在**连接器侧**丢弃只会复述标题的 detail，而不是在 `ToolDetail.vue` 里做展示层去重。
 
-**[BLOCKER-修正] `ToolDetail.vue` 目前只收 `detail` 一个 prop，看不到 title。** 需要：
+原设计写的是给 `ToolDetail.vue` 加 `title?: string` prop 并由三个调用方传入。落地时发现 `origin/main` 已独立实现了同一目标且机制更彻底：连接器在派生 title 时就知道它会与 detail 主字段重复，因此**直接不产生该 detail**，连空抽屉一起去掉。两套机制做同一件事必然互相打架（实测保留 UI 侧去重会打挂对方的 4 个既有测试），故采纳连接器方案作为唯一实现：
 
-- `ToolDetail.vue` 新增 `title?: string` prop（可选，缺省时行为不变，向后兼容）。
-- 三个调用方传入：`ToolStepCard.vue`（`<ToolDetail :detail :title="step.title">`）、`ToolCallPanel.vue`、`SubagentTraceDialog.vue`。
-- 去重规则逐变体明确：diff/read 比 `path`，command 比 `command`，search 比 `query`，**text 变体不参与**（text 常是 summary/描述，与 title 不同源），fields 变体比「首个非空 field.value」。
+- `toolUseEventToStepDto` 在 read/edit/execute/search 四个分支判断「detail 除主字段外是否还有内容」，没有则整体省略 detail（`SubagentTraceDialog` 因此无需改动）。
+- `ToolDetail.vue` 保持**纯渲染器**，不引入 title prop，不感知标题——单一机制让所有消费方受益，而不是只有接了 prop 的三处。
+- 已知残余：`think` / `fields` 变体不参与去重（其主字段是自由文本/多字段，与 title 不同源，强行去重会误删）。
 
-**边界**：`title` 是绝对路径而 detail 是相对路径（或反之）时视为不同，仍渲染——宁多一行不漏信息。diff 变体的 `instruction` 独立于 path，不受影响。
+**边界**：search 分支的 echo guard 放行「无 output 文本但 driver 报告了 `count`/`truncated`」的情况——那是元数据不是回显，随 detail 一起丢掉会让命中数丢失（rebase 时发现的真 bug，已修）。
 
 ### P0-2 中途帧把参数 JSON 当输出流式刷出 **[BLOCKER-修正]**
 
@@ -143,8 +143,10 @@ OpenCode（ses_04759）的 `content` 中 **没有任何 diff block**（其 edit 
 - **first-seen 记录位置**：`buildToolUseEvent`（`:435`）是纯函数，无 state 无时钟，不能在那里记时间。修正为：在**合并层**（`mergeToolCallUpdate` / `normalizeRuntimeToolCallEvent`）首次见到某 `toolCallId` 时写入一个 side map（`toolFirstSeen: Map<string, number>`，与 `toolCalls` 同生命周期，随 prompt 结束销毁），再把 first-seen 值作为参数传给两个 `ToolUseEvent` 构造点（CLI 的 `buildToolUseEvent` 与 Runtime 的 `mapRuntimeToolEvent`）。
 - **durationMs 生产**：仅当 status 由 running 迁移到终态时计算 `now - firstSeen`；已经是终态的首帧（罕见）记 0。
 - **协议**：`ToolStepDto` 新增 `startedAt?: number`（hub/connector 时钟 epoch ms），供 web 侧对 running 状态显示递增 elapsed。注意 `MessageRecordDto` 已有同名 `startedAt`（回合级），`ToolStepDto.startedAt` 是**步骤级**，命名冲突需在 DTO 注释中明确区分，避免误读为回合开始时间。
-- **web**：`ToolStepCard.vue` 在 `status === "running"` 时用本地 1s 时钟显示 elapsed，终态显示服务端 `durationMs`。legacy 聚合面板 `ToolCallPanel.vue` 同样补 running elapsed（它的行没有 running 态渲染分支，需新增）。
+- **web**：`ToolStepCard.vue` 在 `status === "running"` 时用本地 1s 时钟显示 elapsed，终态显示服务端 `durationMs`。legacy 聚合面板 `ToolCallPanel.vue` 同样补 running elapsed（它的行没有 running 态渲染分支，需新增）。两处时钟抽到 `lib/use-live-elapsed.ts`：`useLiveElapsed`（单卡）与 `useLiveElapsedClock`（面板级，一个列表一个 interval），并共享 `formatStepDuration`。
 - **不替换** `SubagentStepCard.vue` 自建的时钟逻辑（它还需要 heartbeat，且无 wire 时间戳可依）。
+
+**Runtime 链的落地陷阱（PR #357 审查发现，已修）**：`firstSeen` 必须在**类型契约**里显式存在。`XacpxRuntimeEvent` 的 `tool_call` 变体原本没有 `firstSeen` 字段——合并层返回的 snapshot 对象运行时带着它，但结构类型不含，任何一处重新塑形该事件的地方都会静默丢掉它，导致 Runtime 链路 `durationMs` 永不生产而 CLI 链路正常（极难发现的单边失效）。修复是把 `firstSeen?: number` 加进 `runtime-contract.ts` 的 `tool_call` 变体，让丢失它成为类型错误。同理，Runtime 侧「终态但无 firstSeen」最初返回 `undefined`，与 CLI 的 `0` 不一致，已对齐为 `0`。
 
 **校验**：`web-dtos.ts` 的 `validToolStep` 补 `startedAt` 的 `finiteNonNegative` 检查；`validStateSyncParts` 路径同样覆盖（state-sync 的 parts 会带 step）。
 
@@ -294,3 +296,22 @@ locations[0].path
 5. **P2-4 漏持久化 + 成本口径错误** → `structured` 无 usage 字段，且 `cost.amount` 是 session 累计非单回合。
 
 另修正若干数据口径：8745 是「tool_call + tool_call_update」总量（update 单项 8438）；2468 帧的那个工具是 Edit 不是 Bash；`errMsg` 回退顺序；`{...prev}` 附带收益表述；Kimi `done` 状态需映射；rich-frame 百分位的分母口径。
+
+---
+
+## 第二轮审查记录（PR #357，2026-09-21）
+
+双轴审查（Standards + Spec）结论：0 硬违反，Spec 4 项偏离（2 partial + 2 wrong）。全部已修：
+
+| # | 级别 | 发现 | 修复 |
+|---|---|---|---|
+| 1 | Spec-Wrong | **Runtime 链 `durationMs` 永不生产。** `XacpxRuntimeEvent` 的 `tool_call` 变体没有 `firstSeen` 字段，合并层返回的对象运行时带着它但类型不含，重新塑形事件的地方静默丢失 → `mapRuntimeToolEvent` 永远收到 `undefined`。CLI 链正常，形成极难发现的单边失效。 | `runtime-contract.ts` 的 `tool_call` 变体显式加入 `firstSeen?: number`，丢失它现在是类型错误。 |
+| 2 | Spec-Wrong | **Runtime 终态无 stamp 返回 `undefined`，CLI 返回 `0`**，两引擎契约不一致。 | 统一为 `0`，并在注释中说明「running=未知时长」与「terminal+无 stamp=瞬时」的区分。 |
+| 3 | Spec-Wrong | **kind 表漏 `updatingtodolist`。** Kimi 的 plan 工具有两个 title；表中只有 `todolist`，反而混进了 Cursor 专属的 `updatetodos`。`Updating todo list` 帧在无 `onPlan` 的回退路径下 kind 会在 think↔other 间跳变。 | 补 `updatingtodolist: "think"`，移除不属于 kimi 的 `updatetodos`。 |
+| 4 | Spec-Partial | **`tally.failed` 计了但从未渲染。** 折叠头只消费 `byVerb`/`files`/`thoughts`，spec 承诺的「失败步数（红色小标）」不显示。 | `TurnParts.vue` 新增 `trace-failed` 段（`text-danger`），i18n 补 `turnTrace.failedSteps`（en/zh）。 |
+| 5 | Spec-Partial | **P0-1 与 spec 文本偏离**：spec 写 `ToolDetail.vue` 加 `title?: string` prop，落地改为连接器侧丢弃 echo-only detail（采纳 origin 方案），`SubagentTraceDialog` 未动、think/fields 无去重。 | 见上文 P0-1 节的「已按落地修正」。 |
+| 6 | Standards-judgement | **截断标记三处镜像**（connector 导出常量 / ToolStepCard 本地 / tool-summary 本地），仅靠注释约束易漂移。 | `stripTruncationMarks()` 与标记列表统一收敛到 `relay-web/src/lib/tool-summary.ts`（`diffStatsOf` 同源），connector 侧常量保留为该语言的来源。跨包单源需新建共享包，成本高于收益，故以「同文件内唯一列表 + 注释指向」收敛。 |
+| 7 | Standards-judgement | **1s live-elapsed 时钟在 ToolStepCard 与 ToolCallPanel 整块重复。** | 抽 `lib/use-live-elapsed.ts`：`useLiveElapsed`（单卡）+ `useLiveElapsedClock`（面板级，一个列表一个 interval）+ 共享 `formatStepDuration`。 |
+| 8 | Standards-perf | **`MessageList.vue` 同一行调 `traceSummaryOf(m)` 两次**（tally + presentation），每行双倍 derive。 | 改为 `traceSummaryEligible(m)` 单一谓词 + 两次取值（走既有 WeakMap 缓存，命中即同对象），并让 `collapse-trace`/`tally`/`presentation` 三个绑定不可能互相矛盾。 |
+
+未修（接受）：`ToolEventBatcher<T>` 泛型 + 3 函数注入仅一个调用方、`DRIVER_TOOL_KIND_TABLES` 仅 kimi 一表——均为有意的扩展点，成本小。

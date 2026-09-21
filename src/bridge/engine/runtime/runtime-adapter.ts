@@ -290,6 +290,11 @@ export async function* mapEvents(events: AsyncIterable<AcpRuntimeEvent>): AsyncI
       if (isInitialToolEvent) {
         markTranscriptActivity(textBoundary);
       }
+      // `normalizeRuntimeToolCallEvent` stamps `firstSeen` on the snapshot it
+      // returns (and on the one it caches), and `XacpxRuntimeEvent`'s tool_call
+      // variant carries it — so the yielded event already has what the host needs
+      // to derive `durationMs`. Anything that re-shapes this event must preserve
+      // the field: dropping it silently disables tool timing on the Runtime path.
       yield normalizeRuntimeToolCallEvent(toolCalls, {
         type: "tool_call",
         text: event.text,

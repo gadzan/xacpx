@@ -65,6 +65,10 @@ export type XacpxRuntimeEvent =
       rawInput?: unknown;
       rawOutput?: unknown;
       content?: unknown;
+      /** First-frame epoch ms, stamped by the merge layer so the host can derive
+       *  `durationMs` on the running -> terminal transition. Present on every
+       *  frame for a known toolCallId. */
+      firstSeen?: number;
     };
 export interface UsageBreakdownLike {
   inputTokens?: number;

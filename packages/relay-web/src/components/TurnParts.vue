@@ -140,6 +140,12 @@ const headerLabel = computed(() => {
   if (parts.length === 0 && toolCount.value > 0) parts.push(t("turnTrace.tools", toolCount.value));
   return parts.join(" · ");
 });
+// Failed steps get their own segment so a mostly-successful turn that hit one
+// error still says so after the trace collapses. Styled danger by the caller.
+const failedLabel = computed(() => {
+  const tally = props.tally ?? tallyTrace(presentation.value.nodes);
+  return tally.failed > 0 ? t("turnTrace.failedSteps", tally.failed) : "";
+});
 
 function toggleTrace(): void {
   if (props.traceKey) {
@@ -163,6 +169,7 @@ function toggleTrace(): void {
       <ChevronDown v-if="expanded" :size="12" class="shrink-0 opacity-70 group-hover:opacity-100 transition-opacity" />
       <ChevronRight v-else :size="12" class="shrink-0 opacity-70 group-hover:opacity-100 transition-opacity" />
       <span data-test="trace-label">{{ headerLabel }}</span>
+      <span v-if="failedLabel" data-test="trace-failed" class="font-medium text-danger">{{ failedLabel }}</span>
     </button>
     <template v-for="item in visibleItems" :key="item.key">
       <StreamMarkdown v-if="item.type === 'markdown'" data-test="turn-narrative"

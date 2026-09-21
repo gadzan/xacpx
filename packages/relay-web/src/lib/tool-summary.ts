@@ -45,6 +45,16 @@ export interface DiffStats {
  *  Both must be recognised wherever a capped string is compared or measured. */
 const TRUNCATION_MARKS = ["…(truncated)", "(truncated)…"];
 
+/** Strip every truncation marker so a capped and an uncapped rendering of the same
+ *  text can be compared for equality. Single home for the marker list: the
+ *  connector emits both spellings (`cap` suffix, `capTail` prefix) and any consumer
+ *  that compares capped strings must agree with `diffStatsOf` on what they are. */
+export function stripTruncationMarks(value: string): string {
+  let out = value;
+  for (const mark of TRUNCATION_MARKS) out = out.split(mark).join("");
+  return out.trim();
+}
+
 export function diffStatsOf(detail: { type: string; oldText?: string; newText?: string } | undefined): DiffStats | null {
   if (!detail || detail.type !== "diff") return null;
   const { oldText = "", newText = "" } = detail;

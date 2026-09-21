@@ -3091,10 +3091,14 @@ export function mapRuntimeToolEvent(event: {
       ? (event.kind.toLowerCase() as ToolUseKind)
       : "other";
   // Same contract as the CLI builder: duration exists only once the call leaves
-  // "running"; a terminal-only frame with no first-seen stamp reports 0.
-  const durationMs = status === "running" || event.firstSeen === undefined
+  // "running". A terminal frame with no first-seen stamp reports 0 rather than
+  // undefined, so both engines agree and a consumer can distinguish "unknown
+  // duration" (running) from "instant" (terminal, unstamped).
+  const durationMs = status === "running"
     ? undefined
-    : Math.max(0, Date.now() - event.firstSeen);
+    : event.firstSeen === undefined
+      ? 0
+      : Math.max(0, Date.now() - event.firstSeen);
   const startedAt = status === "running" ? event.firstSeen : undefined;
 
   return {

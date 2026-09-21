@@ -777,7 +777,7 @@ const DRIVER_TOOL_KIND_TABLES: Record<string, Record<string, ToolUseKind>> = {
     bash: "execute",
     shell: "execute",
     todolist: "think",
-    updatetodos: "think",
+    updatingtodolist: "think",
     fetchurl: "fetch",
     webfetch: "fetch",
   },

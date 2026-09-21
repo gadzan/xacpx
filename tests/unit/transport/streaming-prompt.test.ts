@@ -1155,6 +1155,24 @@ test("Kimi todo and Cursor todo accumulators stay isolated", () => {
 
 // --- P1-2: driver kind tables override an adapter-stamped kind ---
 
+test("both Kimi plan-tool titles map to think so the kind never flaps", () => {
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, {
+    driver: "kimi",
+    onToolEvent: (event) => events.push(event),
+  });
+  const send = (update: Record<string, unknown>) =>
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+
+  // Kimi labels the same tool two ways across its frame sequence. Without both
+  // names in the table, the fallback path (no onPlan consumer) renders the first
+  // frame as `other` and the second as `think`.
+  send({ sessionUpdate: "tool_call", toolCallId: "p1", title: "TodoList", kind: "other", status: "pending" });
+  send({ sessionUpdate: "tool_call_update", toolCallId: "p1", title: "Updating todo list", status: "in_progress" });
+
+  expect(events.map((e) => e.kind)).toEqual(["think", "think"]);
+});
+
 test("driver kind tables override an adapter-stamped wrong kind", () => {
   const events: ToolUseEvent[] = [];
   const state = createStreamingPromptState(false, {

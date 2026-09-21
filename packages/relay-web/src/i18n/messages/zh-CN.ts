@@ -502,6 +502,7 @@ export default {
     worked: "已工作",
     tools: "{count} 步工具",
     files: "{count} 个文件",
+    failedSteps: "{count} 步失败",
     thoughts: "{count} 段思考",
     toggleTrace: "展开/收起中间过程",
     verbs: {

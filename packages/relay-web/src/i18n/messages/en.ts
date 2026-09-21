@@ -505,6 +505,7 @@ export default {
     worked: "Worked",
     tools: "{count} tool step | {count} tool steps",
     files: "{count} file | {count} files",
+    failedSteps: "{count} failed | {count} failed",
     thoughts: "{count} thought | {count} thoughts",
     toggleTrace: "Toggle intermediate steps",
     verbs: {

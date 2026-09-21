@@ -664,3 +664,47 @@ describe("MessageList collapse policy", () => {
     expect(w.findAll('[data-test="tool-step-card"]').length).toBe(1);
   });
 });
+
+describe("TurnParts collapsed-header failure count", () => {
+  const turnWithFailure = (): TurnPartDto[] => [
+    { type: "tool", step: { toolCallId: "ok-1", toolName: "Read", kind: "read", status: "success", title: "a.ts" } },
+    { type: "tool", step: { toolCallId: "bad-1", toolName: "Bash", kind: "execute", status: "error", title: "npm test" } },
+    { type: "text", text: "done" },
+  ];
+
+  it("reports failed steps beside the verb summary", () => {
+    const w = mount(TurnParts, {
+      props: { parts: turnWithFailure(), collapseTrace: true, traceKey: "t:fail-1", traceElapsedMs: 5000 },
+    });
+    const header = w.find('[data-test="trace-toggle"]');
+    expect(header.find('[data-test="trace-failed"]').text()).toContain("1");
+    expect(header.text()).toContain("ran 1");
+  });
+
+  it("omits the failure segment when every step succeeded", () => {
+    const w = mount(TurnParts, {
+      props: { parts: finishedTurn(), collapseTrace: true, traceKey: "t:ok-1", traceElapsedMs: 5000 },
+    });
+    expect(w.find('[data-test="trace-failed"]').exists()).toBe(false);
+  });
+
+  it("counts failures inside a subagent trace too", () => {
+    const w = mount(TurnParts, {
+      props: {
+        parts: [
+          {
+            type: "tool",
+            step: {
+              toolCallId: "sa-1", toolName: "Task", kind: "think", status: "running", title: "delegate",
+              isSubagent: true,
+            },
+          },
+          { type: "tool", step: { toolCallId: "c-1", toolName: "Bash", kind: "execute", status: "error", title: "boom", parentToolCallId: "sa-1" } },
+          { type: "text", text: "done" },
+        ] as TurnPartDto[],
+        collapseTrace: true, traceKey: "t:sub-fail", traceElapsedMs: 5000,
+      },
+    });
+    expect(w.find('[data-test="trace-failed"]').text()).toContain("1");
+  });
+});

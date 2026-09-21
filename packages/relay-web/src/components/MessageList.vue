@@ -110,6 +110,12 @@ function hasTraceParts(m: ChatMessage): boolean {
 function isFailedTurn(m: ChatMessage): boolean {
   return m.failed === true || m.structured?.turnStatus === "error";
 }
+/** A row may collapse its trace only when it finished successfully and actually has
+ *  activity parts. Kept as one predicate so the template cannot disagree with itself
+ *  between the `collapse-trace`, `tally`, and `presentation` bindings. */
+function traceSummaryEligible(m: ChatMessage): boolean {
+  return !isFailedTurn(m) && hasTraceParts(m);
+}
 // `startedAt` is the STABLE key: the hub persists it (survives convergence and
 // compact history) and the optimistic flush row carries the same connector-stamped
 // value, so the optimistic → persisted transition keeps one key and a manual
@@ -706,9 +712,8 @@ watch(
                    narrative at wire-ordered slots. Tool cards own their collapsed state. -->
               <div data-test="msg-content" class="space-y-2.5">
                 <TurnParts v-if="m.structured?.parts?.length" :parts="m.structured.parts" :ensure-full="ensureFullOf(m)" :sent-agent-messages="sentAgentMessageById"
-                           :collapse-trace="!isFailedTurn(m) && hasTraceParts(m)" :trace-key="traceKeyOf(m)" :trace-elapsed-ms="traceElapsedOf(m)"
-                           :tally="!isFailedTurn(m) && hasTraceParts(m) ? traceSummaryOf(m).tally : undefined"
-                           :presentation="!isFailedTurn(m) && hasTraceParts(m) ? traceSummaryOf(m).presentation : undefined" />
+                           :collapse-trace="traceSummaryEligible(m)" :trace-key="traceKeyOf(m)" :trace-elapsed-ms="traceElapsedOf(m)"
+                           :tally="traceSummaryOf(m).tally" :presentation="traceSummaryOf(m).presentation" />
                 <template v-else>
                   <ToolCallPanel v-if="m.structured?.toolSteps?.length" :steps="m.structured.toolSteps" :ensure-full="ensureFullOf(m)" />
                   <ReasoningPanel v-if="m.structured?.reasoning?.trim()" :reasoning="m.structured.reasoning" :default-open="false" />

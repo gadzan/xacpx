@@ -1,47 +1,23 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import type { ToolStepDto } from "@ganglion/xacpx-relay-protocol";
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Loader2 } from "lucide-vue-next";
 import ToolDetail from "./ToolDetail.vue";
-import { KIND_ICON, diffStatsOf } from "../lib/tool-summary";
+import { KIND_ICON, diffStatsOf, stripTruncationMarks } from "../lib/tool-summary";
+import { formatStepDuration, useLiveElapsed } from "../lib/use-live-elapsed";
 
 const props = defineProps<{ step: ToolStepDto; ensureFull?: () => Promise<void> }>();
 
 const { t } = useI18n();
 
-// Live elapsed for a running step: `startedAt` is the connector's first-frame stamp
-// (step-level, distinct from the turn's startedAt). Terminal steps show the
-// connector-measured `durationMs` instead, so the local clock never renders a
-// finished step's time and there is nothing to drift after the turn ends.
-const nowMs = ref(Date.now());
-let clockTimer: ReturnType<typeof setInterval> | undefined;
-watch(
+// Running steps count up locally from the connector's first-frame stamp (shared
+// clock with the legacy ToolCallPanel); terminal steps show the connector's own
+// durationMs instead, so nothing drifts after the turn ends.
+const liveElapsed = useLiveElapsed(
+  () => props.step.startedAt,
   () => props.step.status === "running",
-  (running) => {
-    if (clockTimer !== undefined) {
-      clearInterval(clockTimer);
-      clockTimer = undefined;
-    }
-    if (running) clockTimer = setInterval(() => { nowMs.value = Date.now(); }, 1000);
-  },
-  { immediate: true },
 );
-onBeforeUnmount(() => {
-  if (clockTimer !== undefined) clearInterval(clockTimer);
-});
-
-// Truncation markers emitted by the connector: `cap` appends a suffix, `capTail`
-// prepends a prefix. Both must be recognised wherever a capped string is compared
-// against an uncapped one.
-const TRUNCATED_MARKS = ["…(truncated)", "(truncated)…"];
-/** Strip any truncation marker so two capped/uncapped renderings of the same text
- *  can be compared for equality. */
-function stripTruncationMarks(s: string): string {
-  let out = s;
-  for (const mark of TRUNCATED_MARKS) out = out.split(mark).join("");
-  return out.trim();
-}
 
 // Keep the tool's one-line summary visible without letting command output, diffs, and
 // file previews dominate the message list. Users can expand the detail on demand.
@@ -125,17 +101,8 @@ const showErrorBanner = computed(() => {
   return !detailOutput.value.includes(needle);
 });
 
-function fmtDuration(ms?: number): string {
-  if (ms === undefined) return "";
-  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
-}
-
-// Running steps have no connector duration yet — count up locally from the stamp.
 // A missing stamp (older connector) falls back to the old "no time shown" behaviour.
-const runningElapsed = computed(() => {
-  if (props.step.status !== "running" || props.step.startedAt === undefined) return "";
-  return fmtDuration(Math.max(0, nowMs.value - props.step.startedAt));
-});
+const runningElapsed = computed(() => formatStepDuration(liveElapsed.elapsedMs()));
 </script>
 
 <template>
@@ -159,7 +126,7 @@ const runningElapsed = computed(() => {
           <span v-if="diffStats.add" class="text-run font-medium">+{{ diffStats.add }}</span>
           <span v-if="diffStats.del" class="text-danger font-medium">−{{ diffStats.del }}</span>
         </span>
-        <span v-if="step.durationMs !== undefined" class="font-mono text-[10.5px] text-fg-muted/70">{{ fmtDuration(step.durationMs) }}</span>
+        <span v-if="step.durationMs !== undefined" class="font-mono text-[10.5px] text-fg-muted/70">{{ formatStepDuration(step.durationMs) }}</span>
         <span v-else-if="runningElapsed" data-test="step-elapsed" class="font-mono text-[10.5px] text-fg-muted/70">{{ runningElapsed }}</span>
         <Check v-if="step.status === 'success'" data-test="step-status-success" :size="12" class="text-run/70" />
         <Loader2 v-else-if="step.status === 'running'" data-test="step-status-running" :size="12" class="animate-spin motion-reduce:animate-none text-accent" />

@@ -302,3 +302,25 @@ describe("Runtime Tool Call Snapshot Normalization (spec §5-§7, §12)", () => 
     expect(toolCalls.size).toBe(0);
   });
 });
+
+describe("Runtime tool-call merge first-seen plumbing (P1-1)", () => {
+  test("firstSeen is stamped once and carried on every yielded frame", () => {
+    const toolCalls = new Map<string, RuntimeToolCallSnapshot>();
+    const first = normalizeRuntimeToolCallEvent(toolCalls, {
+      type: "tool_call", text: "Bash", toolCallId: "tc-1", title: "Bash", status: "pending",
+    });
+    const second = normalizeRuntimeToolCallEvent(toolCalls, {
+      type: "tool_call", text: "Bash", toolCallId: "tc-1", title: "Bash", status: "completed",
+    });
+    const third = normalizeRuntimeToolCallEvent(toolCalls, {
+      type: "tool_call", text: "Bash", toolCallId: "tc-1", title: "Bash", status: "completed",
+    });
+
+    // Same stamp across the whole call — re-stamping would inflate durationMs.
+    expect(first.firstSeen).toBeDefined();
+    expect(second.firstSeen).toBe(first.firstSeen);
+    expect(third.firstSeen).toBe(first.firstSeen);
+    // And it survives on the cached snapshot the next frame merges into.
+    expect(toolCalls.get("tc-1")!.firstSeen).toBe(first.firstSeen);
+  });
+});
