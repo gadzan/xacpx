@@ -134,6 +134,14 @@ export interface RuntimeWorkerElicitationRequestPayload {
    */
   interactionId?: string;
 
+  /**
+   * Agent driving the owning turn, pinned to the worker's ensure identity.
+   * ACP User Interaction Requirements oblige the client to identify the
+   * requesting Agent, so this must be the real runtime identity rather than a
+   * session-alias lookup that a concurrent turn could change.
+   */
+  agentName?: string;
+
   /** ACP outer `elicitation/create` JSON-RPC id, preserved verbatim. */
   acpRequestId: string | number | null;
 

@@ -41,6 +41,7 @@ import { parseSessionEffortRecord } from "../../../transport/session-effort";
 import { parseXacpxPermissionPolicy } from "./runtime-permission-policy";
 import { RuntimeAgentLeaseStore, createAgentLifecycleHooks } from "./runtime-agent-lease";
 import { RuntimePermissionResolver, readToolInputFromReq, type RuntimePermissionConfig, type RuntimePermissionRequest } from "./runtime-permission-resolver";
+import { ELICITATION_RPC_TIMEOUT_MS } from "../../../interactions/elicitation-interaction-broker.js";
 
 class RuntimeError extends Error {
   constructor(readonly code: string, message: string) {
@@ -403,12 +404,19 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
       // Exact-turn identity only when the owning prompt carried one. Never
       // synthesize a route: the daemon fails closed without it.
       ...(state.activeInteractionId ? { interactionId: state.activeInteractionId } : {}),
+      // ACP User Interaction Requirements: the client MUST clearly identify
+      // the Agent requesting information. The agent name is pinned to this
+      // worker's ensure identity, so it is the exact agent driving THIS turn —
+      // not a session-alias lookup that a concurrent or later turn could
+      // change under the renderer.
+      ...(state.ensureParams?.agent ? { agentName: state.ensureParams.agent } : {}),
       workerGeneration: state.workerGeneration,
     };
     const pending = new Promise<RuntimeElicitationDecision>((resolve, reject) => {
       state.pendingElicitations.set(elicitationRequestId, { resolve, reject, promptRequestId: requestId, workerGeneration: state.workerGeneration });
       const onAbort = () => {
         state.pendingElicitations.delete(elicitationRequestId);
+        context.signal.removeEventListener("abort", onAbort);
         reject(new Error("elicitation cancelled"));
       };
       if (context.signal.aborted) {
@@ -418,16 +426,25 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
       context.signal.addEventListener("abort", onAbort, { once: true });
     });
     process.stdout.write(encodeWorkerMessage({ id: elicitationRequestId, event: "elicitation.request", payload } satisfies RuntimeWorkerEvent));
+    // Watchdog handle kept so the SUCCESS path can clear it. Without this a
+    // two-second elicitation still holds a 125s timer and an abort listener
+    // for the rest of the turn — unref'd so it cannot block exit, but it is a
+    // deterministic short-term leak on the happy path.
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
     try {
       // Business deadline (120s) sits inside the daemon broker; this worker
-      // watchdog (125s) only protects against a wedged host transport and
-      // fails closed exactly like the broker's cancel path.
+      // watchdog (ELICITATION_RPC_TIMEOUT_MS) only protects against a wedged
+      // host transport and fails closed exactly like the broker's cancel path.
       const decision = await Promise.race([
         pending,
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("host elicitation timeout")), 125_000).unref?.()),
+        new Promise<never>((_, reject) => {
+          watchdog = setTimeout(() => reject(new Error("host elicitation timeout")), ELICITATION_RPC_TIMEOUT_MS);
+          watchdog.unref?.();
+        }),
       ]);
       return decision;
     } finally {
+      clearTimeout(watchdog);
       state.pendingElicitations.delete(elicitationRequestId);
     }
   };

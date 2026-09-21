@@ -136,6 +136,11 @@ export interface ResolveElicitationRequestParams {
   elicitationRequestId: string;
   /** Exact originating human turn, when the daemon has a trusted route. */
   interactionId?: string;
+  /**
+   * Agent driving the owning turn, pinned to the runtime worker's ensure
+   * identity. ACP requires the client to identify the requesting Agent.
+   */
+  agentName?: string;
   /** ACP outer `elicitation/create` JSON-RPC id. */
   acpRequestId: string | number | null;
   /** Original ACP CreateElicitationRequest. */
@@ -201,6 +206,7 @@ export function decodeBridgeOriginatedRequest(value: unknown): BridgeOriginatedR
         typeof params.promptRequestId !== "string" || !params.promptRequestId ||
         typeof params.elicitationRequestId !== "string" || !params.elicitationRequestId ||
         (params.interactionId !== undefined && typeof params.interactionId !== "string") ||
+        (params.agentName !== undefined && typeof params.agentName !== "string") ||
         // ACP JsonRpcId is string | number | null; anything else is a
         // correlation we cannot answer faithfully.
         (typeof params.acpRequestId !== "string" && typeof params.acpRequestId !== "number" && params.acpRequestId !== null) ||

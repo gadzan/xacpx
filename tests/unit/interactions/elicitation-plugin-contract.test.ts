@@ -97,6 +97,7 @@ test("a typed plugin channel can answer accept + null and core preserves it", as
     const result = await broker.resolveElicitation({
       promptRequestId: "p1",
       elicitationRequestId: "e1",
+      agentName: "codex",
       interactionId: "ix-1",
       request: formRequest(),
     });
@@ -121,6 +122,7 @@ test("a typed plugin channel can omit content entirely", async () => {
     const result = await broker.resolveElicitation({
       promptRequestId: "p1",
       elicitationRequestId: "e2",
+      agentName: "codex",
       interactionId: "ix-2",
       request: formRequest(),
     });
@@ -149,6 +151,7 @@ test("a typed plugin channel can answer accept with a record", async () => {
     const result = await broker.resolveElicitation({
       promptRequestId: "p1",
       elicitationRequestId: "e3",
+      agentName: "codex",
       interactionId: "ix-3",
       request: allRequiredFormRequest(),
     });
@@ -172,6 +175,7 @@ test("a typed plugin channel can decline and cancel", async () => {
       const result = await broker.resolveElicitation({
         promptRequestId: "p1",
         elicitationRequestId: `e-dc-${index}`,
+        agentName: "codex",
         interactionId: `ix-dc-${index}`,
         request: formRequest(),
       });
@@ -219,6 +223,7 @@ test("the presentation copy is deeply readonly at compile time", async () => {
     await broker.resolveElicitation({
       promptRequestId: "p1",
       elicitationRequestId: "e-ro",
+      agentName: "codex",
       interactionId: "ix-ro",
       request: {
         sessionId: "acp-1",

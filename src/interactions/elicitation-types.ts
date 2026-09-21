@@ -105,9 +105,18 @@ export interface ChannelElicitationRequest {
     readonly senderName?: string;
     readonly isOwner?: boolean;
   };
-  /** Additive presentation metadata; never authoritative. */
-  readonly agent?: {
-    readonly name?: string;
+  /**
+   * The Agent requesting information, pinned to the exact turn that caused
+   * this elicitation.
+   *
+   * ACP User Interaction Requirements oblige the client to clearly identify
+   * the requesting Agent, so `name` is REQUIRED and core fails closed when it
+   * cannot establish it. Renderers MUST display it and MUST NOT substitute
+   * `message`/`title`/`description` text for identity — that text is
+   * agent-controlled.
+   */
+  readonly agent: {
+    readonly name: string;
     readonly sessionAlias?: string;
   };
   readonly message: string;

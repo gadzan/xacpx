@@ -59,6 +59,13 @@ export type RuntimeElicitationRequest = {
   elicitationRequestId: string;
   /** Exact originating human turn, when the prompt carried one. */
   interactionId?: string;
+  /**
+   * Agent driving the owning turn, from the runtime worker's ensure identity.
+   * ACP User Interaction Requirements oblige the client to identify the
+   * requesting Agent, so this must come from the real turn and never from a
+   * session-alias lookup that a concurrent or later turn could change.
+   */
+  agentName?: string;
   /** Raw ACP `elicitation/create` request at the core boundary. */
   request: unknown;
 };
@@ -256,6 +263,21 @@ export class ElicitationInteractionBroker {
     const presentation = deepFreezeForm(cloneFormForValidation(normalized.form));
     const fields = validationSnapshot.fields;
 
+    // ACP User Interaction Requirements: the client MUST clearly identify the
+    // Agent requesting information. Without a trusted agent name the renderer
+    // would have to guess from the chat route, which is exactly the
+    // "latest session" pattern this project forbids — and the agent controls
+    // its own message/title text, so those cannot substitute for identity.
+    // Fail closed rather than render an unattributable prompt.
+    if (!input.agentName || input.agentName.length === 0) {
+      await this.log("elicitation.interaction.rejected_unavailable", "missing requesting agent identity", {
+        requestId,
+        fieldCount: 0,
+        fieldKinds: "",
+      });
+      return { action: "cancel" };
+    }
+
     const controller = new AbortController();
     const startedAt = Date.now();
     const expiresAt = startedAt + this.timeoutMs;
@@ -272,6 +294,7 @@ export class ElicitationInteractionBroker {
           ...(route.senderName !== undefined ? { senderName: route.senderName } : {}),
           ...(route.isOwner !== undefined ? { isOwner: route.isOwner } : {}),
         },
+        agent: { name: input.agentName },
         message: normalized.form.message,
         mode: "form",
         fields: presentation.fields,

@@ -811,6 +811,13 @@ export async function buildApp(
                         ...(typeof (params as { interactionId?: unknown }).interactionId === "string"
                           ? { interactionId: (params as { interactionId: string }).interactionId }
                           : {}),
+                        // Trusted agent identity for the ACP "identify the
+                        // requesting Agent" requirement. Carried from the
+                        // runtime worker's ensure identity, never derived from
+                        // a session-alias lookup.
+                        ...(typeof (params as { agentName?: unknown }).agentName === "string"
+                          ? { agentName: (params as { agentName: string }).agentName }
+                          : {}),
                         request: (params as { request?: unknown }).request,
                       };
                       return await broker.resolveElicitation(request);

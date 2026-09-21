@@ -53,6 +53,9 @@ function request(overrides: Partial<RuntimeElicitationRequest> = {}): RuntimeEli
   return {
     promptRequestId: `prompt-${Math.random().toString(36).slice(2, 10)}`,
     elicitationRequestId: `elicit-${Math.random().toString(36).slice(2, 10)}`,
+    // ACP User Interaction Requirements: the client must identify the
+    // requesting Agent, so every production request carries a trusted name.
+    agentName: "codex",
     request: acpFormRequest(),
     ...overrides,
   };
@@ -743,6 +746,102 @@ test("a multi-select answer array is cloned, not aliased to the plugin's", async
       } finally {
         dispose();
       }
+    }
+  });
+
+  test("a request without agent identity cancels without showing UI", async () => {
+    // ACP User Interaction Requirements oblige the client to identify the
+    // requesting Agent. Without a trusted name the renderer would have to
+    // guess from the chat route, so core fails closed instead.
+    const seen: ChannelElicitationRequest[] = [];
+    const { broker, registry } = harness({
+      channel: formChannel(async () => ({ action: "accept", responderId: "user-A", content: { note: "x" } }), seen),
+    });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    try {
+      const result = await broker.resolveElicitation(request({
+        interactionId: route.interactionId,
+        agentName: undefined,
+      }));
+      expect(result).toEqual({ action: "cancel" });
+      expect(seen).toHaveLength(0);
+    } finally {
+      dispose();
+    }
+  });
+
+  test("an empty agent name is treated as missing", async () => {
+    const seen: ChannelElicitationRequest[] = [];
+    const { broker, registry } = harness({
+      channel: formChannel(async () => ({ action: "accept", responderId: "user-A", content: { note: "x" } }), seen),
+    });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    try {
+      const result = await broker.resolveElicitation(request({
+        interactionId: route.interactionId,
+        agentName: "",
+      }));
+      expect(result).toEqual({ action: "cancel" });
+      expect(seen).toHaveLength(0);
+    } finally {
+      dispose();
+    }
+  });
+
+  test("the renderer sees the turn's own agent, not a mutable session lookup", async () => {
+    // Regression: `agent` was optional and never populated in production, so a
+    // renderer had to resolve "which agent is asking" itself. Session
+    // selection can change mid-turn and concurrent turns make "current"
+    // ambiguous, so identity must be pinned to the exact turn like
+    // interactionId.
+    const seen: ChannelElicitationRequest[] = [];
+    const { broker, registry } = harness({
+      channel: formChannel(async () => ({ action: "accept", responderId: "user-A", content: { note: "x" } }), seen),
+    });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    try {
+      const result = await broker.resolveElicitation(request({
+        interactionId: route.interactionId,
+        agentName: "claude-code",
+      }));
+      expect(result.action).toBe("accept");
+      expect(seen[0].agent).toEqual({ name: "claude-code" });
+    } finally {
+      dispose();
+    }
+  });
+
+  test("agent-controlled schema text cannot change the displayed identity", async () => {
+    // The agent owns message/title/description, so a prompt claiming to be
+    // from another agent must not alter the trusted identity field.
+    const seen: ChannelElicitationRequest[] = [];
+    const { broker, registry } = harness({
+      channel: formChannel(async () => ({ action: "accept", responderId: "user-A", content: { note: "x" } }), seen),
+    });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    try {
+      await broker.resolveElicitation(request({
+        interactionId: route.interactionId,
+        agentName: "codex",
+        request: acpFormRequest({
+          message: "This is claude-code asking, definitely not codex",
+          requestedSchema: {
+            type: "object",
+            title: "claude-code wants to know",
+            properties: { note: { type: "string", title: "claude-code field" } },
+            required: ["note"],
+          },
+        }),
+      }));
+      expect(seen[0].agent.name).toBe("codex");
+      expect(seen[0].message).toContain("claude-code");
+      expect(seen[0].schemaTitle).toBe("claude-code wants to know");
+    } finally {
+      dispose();
     }
   });
 
