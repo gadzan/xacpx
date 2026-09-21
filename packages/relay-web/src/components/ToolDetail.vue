@@ -22,6 +22,24 @@ const showSearchCount = computed(() => {
   // a line count beside them would contradict it (1 line vs 4 matches).
   return !/^\d+ (matches|files)/.test(props.detail.output.trim());
 });
+// Prefer the driver's machine count when the connector carried one; fall back to
+// counting rendered lines. Suppressed entirely for count-shaped outputs.
+const effectiveCount = computed(() => {
+  if (props.detail.type !== "search") return undefined;
+  if (props.detail.count !== undefined) return props.detail.count;
+  if (!showSearchCount.value) return undefined;
+  // A machine count is authoritative at any value; a line-count fallback only
+  // earns a badge when it says something (a lone "1" is noise).
+  return searchCount.value > 1 ? searchCount.value : undefined;
+});
+// "19 matches · truncated" — only when there is something structured to say.
+const outputMeta = computed(() => {
+  const parts: string[] = [];
+  if (effectiveCount.value !== undefined) parts.push(String(effectiveCount.value));
+  const d = props.detail;
+  if ((d.type === "command" || d.type === "search") && d.truncated === true) parts.push("truncated");
+  return parts.join(" · ");
+});
 </script>
 
 <template>
@@ -52,9 +70,12 @@ const showSearchCount = computed(() => {
     </template>
 
     <template v-else-if="detail.type === 'command'">
-      <ExpandableBlock v-if="detail.output">
-        <pre data-test="cmd-output" class="overflow-x-auto rounded bg-raised p-2 font-mono text-fg whitespace-pre-wrap">{{ detail.output }}</pre>
-      </ExpandableBlock>
+      <div v-if="detail.output" class="flex items-start gap-2">
+        <ExpandableBlock class="min-w-0 flex-1">
+          <pre data-test="cmd-output" class="overflow-x-auto rounded bg-raised p-2 font-mono text-fg whitespace-pre-wrap">{{ detail.output }}</pre>
+        </ExpandableBlock>
+        <span v-if="outputMeta" data-test="output-meta" class="shrink-0 font-mono text-[10px] text-fg-muted">{{ outputMeta }}</span>
+      </div>
       <div v-if="detail.exitCode !== undefined" :class="detail.exitCode !== 0 ? 'text-danger' : 'text-fg-muted'">exit {{ detail.exitCode }}</div>
     </template>
 
@@ -66,10 +87,13 @@ const showSearchCount = computed(() => {
     </template>
 
     <template v-else-if="detail.type === 'search'">
-      <div v-if="showSearchCount" data-test="search-count" class="font-mono text-[11px] text-fg-muted">{{ searchCount }} lines</div>
-      <ExpandableBlock v-if="detail.output">
-        <pre data-test="search-output" class="overflow-x-auto rounded bg-bg p-2 font-mono text-fg-muted whitespace-pre-wrap">{{ detail.output }}</pre>
-      </ExpandableBlock>
+      <div v-if="effectiveCount !== undefined" data-test="search-count" class="font-mono text-[11px] text-fg-muted">{{ effectiveCount }} lines</div>
+      <div v-if="detail.output" class="flex items-start gap-2">
+        <ExpandableBlock class="min-w-0 flex-1">
+          <pre data-test="search-output" class="overflow-x-auto rounded bg-bg p-2 font-mono text-fg-muted whitespace-pre-wrap">{{ detail.output }}</pre>
+        </ExpandableBlock>
+        <span v-if="outputMeta" data-test="output-meta" class="shrink-0 font-mono text-[10px] text-fg-muted">{{ outputMeta }}</span>
+      </div>
     </template>
 
     <template v-else-if="detail.type === 'fields'">

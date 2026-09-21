@@ -7,6 +7,7 @@ import { TOOL_KIND_EMOJI, DEFAULT_TOOL_EMOJI } from "./tool-kind-emoji.js";
 import {
   isRecord,
   isEmptyToolField,
+  isToolArgumentEchoContent,
   summarizeToolInput,
   summarizeTaskInput,
   cursorToolInput,
@@ -33,8 +34,15 @@ export interface StreamingPromptState extends TranscriptTextBoundaryState {
   // accumulate the merged state per toolCallId so the structured event always
   // reflects the full call (rich title + diff), not just the last sparse frame.
   toolCalls: Map<string, MergedToolUpdate>;
-  /** Cursor's TodoWrite updates are incremental when `merge` is true. */
+  /** Cursor's TodoWrite updates are incremental when `merge` is true. Kimi's are
+   *  always full-list replacements — kept in a separate accumulator so the two
+   *  drivers' semantics can never leak into each other. */
   cursorPlanEntries: Map<string, PlanEntry>;
+  kimiPlanEntries: Map<string, PlanEntry>;
+  /** First-frame epoch ms per toolCallId, stamped by the merge layer so the pure
+   *  `buildToolUseEvent` can derive `durationMs` on the running→terminal
+   *  transition. Same lifetime as `toolCalls` (one prompt turn). */
+  toolFirstSeen: Map<string, number>;
   toolEventMode: ToolEventMode;
   /** Resolved ACP driver used for provider-gated event normalization. */
   driver?: string;
@@ -160,6 +168,8 @@ export function createStreamingPromptState(
     positionedToolCallIds: new Set(),
     toolCalls: new Map(),
     cursorPlanEntries: new Map(),
+    kimiPlanEntries: new Map(),
+    toolFirstSeen: new Map(),
     toolEventMode,
     driver,
     rawStream,
@@ -237,19 +247,19 @@ export function parseStreamingChunks(state: StreamingPromptState, line: string):
     const merged = update.toolCallId && (state.onToolEvent || state.onPlan)
       ? mergeToolCallUpdate(state, update.toolCallId, update)
       : update;
-    const cursorPlan = normalizeCursorPlanUpdate(state, merged);
+    const cursorPlan = normalizePlanToolUpdate(state, merged);
     const consumedAsPlan = cursorPlan !== undefined && state.onPlan !== undefined;
     if (consumedAsPlan) {
-      // Cursor exposes its todo list as a tool call rather than an ACP `plan`
-      // notification. It is already represented by PlanPanel, so don't create
-      // a duplicate generic tool card for the same event.
+      // Cursor and Kimi expose their todo lists as tool calls rather than an ACP
+      // `plan` notification. It is already represented by PlanPanel, so don't
+      // create a duplicate generic tool card for the same event.
       void state.onPlan?.(cursorPlan);
     } else if (wantsStructured && state.onToolEvent) {
       // Defense-in-depth: if a transport set mode='structured' without wiring
       // onToolEvent, drop the event silently rather than throwing or leaking
       // it into text. The transport-level resolveToolEventMode normally prevents
       // this state.
-      const toolEvent = buildToolUseEvent(merged, state.driver);
+      const toolEvent = buildToolUseEvent(merged, state.driver, state.toolFirstSeen.get(merged.toolCallId ?? ""));
       if (toolEvent) void state.onToolEvent(toolEvent);
     }
 
@@ -400,7 +410,14 @@ function mergeToolCallUpdate(
   const merged: MergedToolUpdate = { ...prev };
   for (const key of ["kind", "title", "toolCallId", "parentToolCallId", "rawInput", "content", "rawOutput", "locations", "status"] as const) {
     const next = (update as Record<string, unknown>)[key];
-    if (!isEmptyToolField(next)) (merged as Record<string, unknown>)[key] = next;
+    if (isEmptyToolField(next)) continue;
+    // P0-2: skip a content block that only echoes the tool's own arguments (some
+    // drivers stream rawInput incrementally through content text). The check runs
+    // AFTER rawInput has been merged for this frame, so a frame carrying both the
+    // new arguments and their echo drops the echo and keeps the arguments. Diff
+    // blocks and real results are never classified as echoes (see the predicate).
+    if (key === "content" && isToolArgumentEchoContent(next, merged.rawInput)) continue;
+    (merged as Record<string, unknown>)[key] = next;
   }
   const nextMeta = update._meta;
   if (nextMeta) {
@@ -429,12 +446,26 @@ function mergeToolCallUpdate(
   }
   merged.toolCallId = toolCallId;
   state.toolCalls.set(toolCallId, merged);
+  if (!state.toolFirstSeen.has(toolCallId)) state.toolFirstSeen.set(toolCallId, Date.now());
   return merged;
+}
+
+/** Duration of a tool call measured from the first frame seen for its toolCallId.
+ *  Only defined once the status leaves "running" — a still-running call has no
+ *  duration yet. `firstSeen` comes from the merge layer's side map; a missing
+ *  entry (a terminal-only frame) yields 0 rather than a fabricated value. */
+function toolCallDurationMs(
+  firstSeen: number | undefined,
+  status: ToolUseStatus,
+): number | undefined {
+  if (status === "running") return undefined;
+  return firstSeen === undefined ? 0 : Math.max(0, Date.now() - firstSeen);
 }
 
 function buildToolUseEvent(
   update: NonNullable<StreamEvent["params"]>["update"],
   driver?: string,
+  firstSeen?: number,
 ): ToolUseEvent | null {
   if (!update) return null;
   const toolCallId = update.toolCallId;
@@ -496,6 +527,10 @@ function buildToolUseEvent(
     || (driver === "kimi" && isKimiSubagentInput(rawInput))
     || (driver === "codex" && isCodexSubagentMeta(update._meta?.codex?.subagent))
     || (driver === "cursor" && isCursorSubagentInput(rawInput, title));
+  const durationMs = toolCallDurationMs(firstSeen, status);
+  // While running there is no duration yet, but the UI can count up from the
+  // first-seen stamp; once terminal the duration alone is authoritative.
+  const startedAt = status === "running" ? firstSeen : undefined;
   return {
     toolCallId,
     ...(parentToolCallId ? { parentToolCallId } : {}),
@@ -509,6 +544,8 @@ function buildToolUseEvent(
     ...(rawOutput !== undefined ? { rawOutput } : {}),
     ...(locations !== undefined ? { locations } : {}),
     status,
+    ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(startedAt !== undefined ? { startedAt } : {}),
   };
 }
 
@@ -570,50 +607,71 @@ const CURSOR_PLAN_TOOL_NAMES = new Set([
   "todowrite", "createplan", "updateplan", "plan", "updatetodos", "todoread",
 ]);
 
-/** Convert Cursor's TodoWrite tool protocol into the provider-neutral ACP plan shape. */
-function normalizeCursorPlanUpdate(
+/** Kimi exposes its todo list through the `TodoList` / `Updating todo list` tool
+ *  (neither name matches Cursor's set). Its payload is `{todos:[{title,status}]}`
+ *  and every update carries the COMPLETE list — replace semantics, no `merge` flag. */
+const KIMI_PLAN_TOOL_NAMES = new Set(["todolist", "updatingtodolist"]);
+
+/** Convert a driver's todo-tool protocol into the provider-neutral ACP plan shape. */
+function normalizePlanToolUpdate(
   state: StreamingPromptState,
   update: MergedToolUpdate,
 ): PlanEntry[] | undefined {
-  if (state.driver !== "cursor") return undefined;
-  if (!CURSOR_PLAN_TOOL_NAMES.has(cursorToolIdentity(update))) return undefined;
+  if (state.driver === "cursor") {
+    return CURSOR_PLAN_TOOL_NAMES.has(cursorToolIdentity(update))
+      ? accumulatePlanTodos(state.cursorPlanEntries, cursorToolInput(update.rawInput), cursorToolInput(update.rawOutput))
+      : undefined;
+  }
+  if (state.driver === "kimi") {
+    if (!KIMI_PLAN_TOOL_NAMES.has(kimiToolIdentity(update))) return undefined;
+    const input = isRecord(update.rawInput) ? update.rawInput : undefined;
+    const output = isRecord(update.rawOutput) ? update.rawOutput : undefined;
+    // Replace semantics: Kimi ships the whole list each time, so the accumulator
+    // is cleared before applying and the `merge` flag never applies.
+    return accumulatePlanTodos(state.kimiPlanEntries, input, output, { replace: true });
+  }
+  return undefined;
+}
 
-  const input = cursorToolInput(update.rawInput);
-  const output = cursorToolInput(update.rawOutput);
-  // cursor-agent ≥2026.08 announces the todo tool but ships no entries with it
-  // (`rawInput` is just `{_toolName:"updateTodos"}`), so there is nothing to feed
-  // the plan panel. Leave it to the tool card rather than clearing a good plan.
-  // `todoRead` may also put the list only on `rawOutput`.
+/** Apply one todo payload onto an accumulator and return the full entry list.
+ *  Returns undefined when the frame carries no list (announcement-only) or the
+ *  payload is entirely malformed — in both cases the existing plan is preserved. */
+function accumulatePlanTodos(
+  accumulator: Map<string, PlanEntry>,
+  input: Record<string, unknown> | undefined,
+  output: Record<string, unknown> | undefined,
+  options: { replace?: boolean } = {},
+): PlanEntry[] | undefined {
   const todos = readCursorTodoList(input) ?? readCursorTodoList(output);
   if (todos === undefined) return undefined;
 
-  const merge = input?.merge === true || output?.merge === true;
+  const merge = options.replace !== true && (input?.merge === true || output?.merge === true);
   if (todos.length === 0) {
-    state.cursorPlanEntries.clear();
+    accumulator.clear();
     return [];
   }
 
   const patches = todos
     .map((todo, index) => parseCursorPlanTodo(todo, index))
-    .filter((todo): todo is CursorPlanTodo => todo !== undefined);
+    .filter((todo): todo is CursorPlanTodo => undefined !== todo);
   // A non-empty but entirely malformed payload should not erase a good plan.
   if (patches.length === 0) return undefined;
-  if (!merge) state.cursorPlanEntries.clear();
+  if (!merge) accumulator.clear();
 
   for (const patch of patches) {
-    const previous = state.cursorPlanEntries.get(patch.key);
+    const previous = accumulator.get(patch.key);
     const content = patch.content ?? previous?.content;
     if (!content) continue;
     const status = patch.status ?? previous?.status ?? "pending";
     const priority = patch.priority ?? previous?.priority;
-    state.cursorPlanEntries.set(patch.key, {
+    accumulator.set(patch.key, {
       content,
       status,
       ...(priority ? { priority } : {}),
     });
   }
 
-  return [...state.cursorPlanEntries.values()];
+  return [...accumulator.values()];
 }
 
 /** The todo array under the keys cursor-agent has used, or undefined when the
@@ -694,13 +752,52 @@ function cursorToolIdentity(update: { title?: string; rawInput?: unknown }): str
   return normalizeCursorToolName(declared ?? update.title);
 }
 
+/** Kimi's todo tool is identified by its display title alone (`TodoList`,
+ *  `Updating todo list`) — it has no `_toolName` marker, and the merged title
+ *  changes over the frame sequence, so both spellings must be recognized. */
+function kimiToolIdentity(update: { title?: string }): string {
+  return normalizeCursorToolName(update.title);
+}
+
 const CURSOR_SUBAGENT_TOOL_NAMES = new Set(["task", "delegate", "runsubagent", "subagent"]);
+
+/** Driver-specific tool-name → ToolUseKind tables, consulted BEFORE the adapter's
+ *  own `kind` field. Needed because some drivers stamp a wrong-but-valid ACP kind
+ *  on the initial frame (Kimi reports `Grep` as `kind:"read"`), and a valid kind
+ *  short-circuits any later correction. Only a table hit overrides; an unknown
+ *  tool name falls through to the adapter's own kind. */
+const DRIVER_TOOL_KIND_TABLES: Record<string, Record<string, ToolUseKind>> = {
+  kimi: {
+    grep: "search",
+    glob: "search",
+    search: "search",
+    read: "read",
+    edit: "edit",
+    write: "edit",
+    bash: "execute",
+    shell: "execute",
+    todolist: "think",
+    updatingtodolist: "think",
+    fetchurl: "fetch",
+    webfetch: "fetch",
+  },
+};
 
 function normalizeToolKind(
   update: NonNullable<StreamEvent["params"]>["update"],
   driver?: string,
 ): ToolUseKind {
   const kindRaw = update?.kind?.trim().toLowerCase() ?? "";
+  // Driver table first: an adapter-stamped kind is authoritative only when no
+  // driver table recognizes the tool name (see DRIVER_TOOL_KIND_TABLES).
+  if (driver !== undefined) {
+    const table = DRIVER_TOOL_KIND_TABLES[driver];
+    if (table !== undefined) {
+      const identity = cursorToolIdentity(update ?? {}).toLowerCase();
+      const mapped = table[identity];
+      if (mapped !== undefined) return mapped;
+    }
+  }
   switch (kindRaw) {
     case "read": case "search": case "execute": case "edit": case "delete": case "move": case "fetch": case "think": return kindRaw;
   }

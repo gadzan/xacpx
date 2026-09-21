@@ -52,7 +52,7 @@ describe("TurnParts trace collapse", () => {
     expect(header.exists()).toBe(true);
     expect(header.attributes("aria-expanded")).toBe("false");
     expect(header.text()).toContain("Worked 4m 32s");
-    expect(header.text()).toContain("2 tool steps");
+    expect(header.text()).toContain("read 2");
     expect(header.text()).toContain("2 thoughts");
     // Process text interleaved before/between activity folds with the trace;
     // only the trailing text after the last process item is the final reply.
@@ -97,7 +97,7 @@ describe("TurnParts trace collapse", () => {
     });
     const header = w.find('[data-test="trace-toggle"]');
     expect(header.text()).not.toContain("Worked");
-    expect(header.text()).toContain("2 tool steps");
+    expect(header.text()).toContain("read 2");
   });
 
   it("renders the header in Chinese under the zh-CN locale", async () => {
@@ -109,7 +109,7 @@ describe("TurnParts trace collapse", () => {
     });
     const header = w.find('[data-test="trace-toggle"]');
     expect(header.text()).toContain("已工作 1分5秒");
-    expect(header.text()).toContain("2 步工具");
+    expect(header.text()).toContain("查阅 2 个文件");
     expect(header.text()).toContain("2 段思考");
   });
 
@@ -662,5 +662,49 @@ describe("MessageList collapse policy", () => {
     expect(headers[0]!.text()).toContain("Worked 30s");
     // The failed row renders its trace inline (error must stay unmissable).
     expect(w.findAll('[data-test="tool-step-card"]').length).toBe(1);
+  });
+});
+
+describe("TurnParts collapsed-header failure count", () => {
+  const turnWithFailure = (): TurnPartDto[] => [
+    { type: "tool", step: { toolCallId: "ok-1", toolName: "Read", kind: "read", status: "success", title: "a.ts" } },
+    { type: "tool", step: { toolCallId: "bad-1", toolName: "Bash", kind: "execute", status: "error", title: "npm test" } },
+    { type: "text", text: "done" },
+  ];
+
+  it("reports failed steps beside the verb summary", () => {
+    const w = mount(TurnParts, {
+      props: { parts: turnWithFailure(), collapseTrace: true, traceKey: "t:fail-1", traceElapsedMs: 5000 },
+    });
+    const header = w.find('[data-test="trace-toggle"]');
+    expect(header.find('[data-test="trace-failed"]').text()).toContain("1");
+    expect(header.text()).toContain("ran 1");
+  });
+
+  it("omits the failure segment when every step succeeded", () => {
+    const w = mount(TurnParts, {
+      props: { parts: finishedTurn(), collapseTrace: true, traceKey: "t:ok-1", traceElapsedMs: 5000 },
+    });
+    expect(w.find('[data-test="trace-failed"]').exists()).toBe(false);
+  });
+
+  it("counts failures inside a subagent trace too", () => {
+    const w = mount(TurnParts, {
+      props: {
+        parts: [
+          {
+            type: "tool",
+            step: {
+              toolCallId: "sa-1", toolName: "Task", kind: "think", status: "running", title: "delegate",
+              isSubagent: true,
+            },
+          },
+          { type: "tool", step: { toolCallId: "c-1", toolName: "Bash", kind: "execute", status: "error", title: "boom", parentToolCallId: "sa-1" } },
+          { type: "text", text: "done" },
+        ] as TurnPartDto[],
+        collapseTrace: true, traceKey: "t:sub-fail", traceElapsedMs: 5000,
+      },
+    });
+    expect(w.find('[data-test="trace-failed"]').text()).toContain("1");
   });
 });

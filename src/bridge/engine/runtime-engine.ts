@@ -3066,6 +3066,8 @@ export function mapRuntimeToolEvent(event: {
   rawOutput?: unknown;
   content?: unknown;
   summary?: string;
+  /** First-frame epoch ms for this toolCallId, stamped by the merge layer. */
+  firstSeen?: number;
 }): ToolUseEvent {
   const toolCallId = event.toolCallId || `tc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const title = (event.title ?? "").trim();
@@ -3088,12 +3090,24 @@ export function mapRuntimeToolEvent(event: {
     typeof event.kind === "string" && validKinds.has(event.kind.toLowerCase())
       ? (event.kind.toLowerCase() as ToolUseKind)
       : "other";
+  // Same contract as the CLI builder: duration exists only once the call leaves
+  // "running". A terminal frame with no first-seen stamp reports 0 rather than
+  // undefined, so both engines agree and a consumer can distinguish "unknown
+  // duration" (running) from "instant" (terminal, unstamped).
+  const durationMs = status === "running"
+    ? undefined
+    : event.firstSeen === undefined
+      ? 0
+      : Math.max(0, Date.now() - event.firstSeen);
+  const startedAt = status === "running" ? event.firstSeen : undefined;
 
   return {
     toolCallId,
     toolName,
     kind,
     status,
+    ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(startedAt !== undefined ? { startedAt } : {}),
     ...(summary ? { summary } : {}),
     ...(event.rawInput !== undefined ? { rawInput: event.rawInput } : {}),
     ...(event.rawOutput !== undefined ? { rawOutput: event.rawOutput } : {}),

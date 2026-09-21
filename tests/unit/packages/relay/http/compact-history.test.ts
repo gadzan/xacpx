@@ -148,3 +148,30 @@ test("does not mark compact when parts exist but there is no heavy detail", () =
   expect(compact.structured?.toolSteps).toBeUndefined();
   expect(compact.structured?.parts).toEqual([{ type: "tool", step: light }]);
 });
+
+test("compact history retains the structured output metadata", () => {
+  const row = {
+    id: 7, instanceId: "i1", sessionAlias: "s", direction: "out" as const, text: "done", createdAt: "2026-09-20T00:00:00Z",
+    structured: {
+      parts: [
+        { type: "tool" as const, step: {
+          toolCallId: "t1", toolName: "Bash", kind: "execute" as const, status: "success" as const, title: "npm test",
+          detail: { type: "command" as const, command: "npm test", output: "x".repeat(50), exitCode: 0, truncated: true },
+        } },
+        { type: "tool" as const, step: {
+          toolCallId: "t2", toolName: "Grep", kind: "search" as const, status: "success" as const, title: "rg foo",
+          detail: { type: "search" as const, query: "rg foo", output: "a".repeat(50), count: 19, truncated: false },
+        } },
+      ],
+    },
+  };
+
+  const compacted = compactHistoryMessage(row);
+  expect(compacted.structured?.compact).toBe(true);
+  const steps = compacted.structured!.parts!.map((p) => (p as { step: { detail: Record<string, unknown> } }).step.detail);
+  // Cheap metadata survives compaction; bulky bodies are dropped.
+  expect(steps[0]).toMatchObject({ command: "npm test", exitCode: 0, truncated: true });
+  expect(steps[0]!.output).toBeUndefined();
+  expect(steps[1]).toMatchObject({ query: "rg foo", count: 19, truncated: false });
+  expect(steps[1]!.output).toBeUndefined();
+});

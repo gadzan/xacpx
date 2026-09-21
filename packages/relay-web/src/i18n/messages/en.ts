@@ -482,6 +482,7 @@ export default {
     noRecordedActivity: "No recorded activity",
     viewFullTrace: "View full trace",
     loadingDetails: "Loading details…",
+    terminalOutputNotReported: "This command ran in the agent's terminal; its output is not reported to the dashboard.",
     kinds: {
       read: "Read",
       search: "Search",
@@ -503,8 +504,19 @@ export default {
   turnTrace: {
     worked: "Worked",
     tools: "{count} tool step | {count} tool steps",
+    files: "{count} file | {count} files",
+    failedSteps: "{count} failed | {count} failed",
     thoughts: "{count} thought | {count} thoughts",
     toggleTrace: "Toggle intermediate steps",
+    verbs: {
+      edited: "edited {count} | edited {count}",
+      ran: "ran {count} | ran {count}",
+      searched: "searched {count} | searched {count}",
+      read: "read {count} | read {count}",
+      fetched: "fetched {count} | fetched {count}",
+      thought: "planned {count} | planned {count}",
+      other: "used {count} other tool | used {count} other tools",
+    },
   },
   taskPanel: {
     noSession: "No session selected.",

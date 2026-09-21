@@ -344,6 +344,9 @@ export interface ToolUseEvent {
   status: ToolUseStatus;
   /** Set when status transitions out of "running". */
   durationMs?: number;
+  /** First-frame epoch ms for this toolCallId (connector clock), set while the
+   *  call is still running so a UI can render a live elapsed timer. */
+  startedAt?: number;
 }
 
 export type PlanEntryStatus = "pending" | "in_progress" | "completed";

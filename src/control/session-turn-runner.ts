@@ -3,6 +3,8 @@ import type { ControlServiceDeps } from "./control-service";
 import type { ConversationTurnCorrelation } from "./conversation-control-dtos";
 import type { ScheduledOrigin } from "./control-event-bus";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
+import type { ToolUseEvent } from "../channels/types";
+import { ToolEventBatcher } from "./tool-event-batcher";
 import type { AgentMessageCompletion } from "../orchestration/agent-messaging-types";
 import type { PermissionInteractionOrigin } from "../permissions/permission-types.js";
 import { buildPeerCompletionPrompt } from "../orchestration/agent-message-completion";
@@ -128,6 +130,18 @@ function escapeXmlAttribute(value: string): string {
     .replace(/"/g, "&quot;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+/** Approximate displayable size of a tool event, for the batcher's growth check.
+ *  Deliberately cheap and total: the batcher only needs to know whether the payload
+ *  grew enough to be worth a publish, not its exact byte count. Never throws on a
+ *  malformed event — a bad frame must not abort the turn. */
+function toolEventPayloadSize(event: ToolUseEvent): number {
+  let size = event.toolName?.length ?? 0;
+  size += event.summary?.length ?? 0;
+  if (typeof event.rawOutput === "string") size += event.rawOutput.length;
+  if (Array.isArray(event.content)) size += event.content.length;
+  return size;
 }
 
 export class SessionTurnRunner {
@@ -314,6 +328,20 @@ export class SessionTurnRunner {
       const envelope = buildPeerCompletionPrompt(req.trustedPeerCompletion);
       chatText = chatText ? `${chatText}\n\n${envelope}` : envelope;
     }
+    // P2-1: coalesce high-frequency tool frames at the turn boundary. The batcher
+    // preserves arrival order and flushes before turn-finished on every exit path,
+    // so no step is lost or reordered relative to the unbatched stream.
+    const toolBatcher = new ToolEventBatcher<ToolUseEvent>({
+      emit: (event) => {
+        this.deps.events.emit({
+          type: "tool-event",
+          chatKey: req.chatKey,
+          sessionAlias: req.sessionAlias,
+          event,
+          ...(req.conversation ? { conversation: req.conversation } : {}),
+        });
+      },
+    }, (event) => event.toolCallId, (event) => event.status, (event) => toolEventPayloadSize(event));
     try {
       const response = await this.deps.agent.chat({
         accountId: req.accountId ?? "control",
@@ -338,13 +366,7 @@ export class SessionTurnRunner {
         },
         onToolEvent: (event) => {
           onActivity?.();
-          this.deps.events.emit({
-            type: "tool-event",
-            chatKey: req.chatKey,
-            sessionAlias: req.sessionAlias,
-            event,
-            ...(req.conversation ? { conversation: req.conversation } : {}),
-          });
+          toolBatcher.offer(event);
         },
         onThought: (chunk) => {
           onActivity?.();
@@ -393,6 +415,9 @@ export class SessionTurnRunner {
       if (response.text && !response.silent) {
         emitChunk(response.text);
       }
+      // Flush any held tool frames BEFORE turn-finished so the hub's persisted row
+      // and the web's live transcript end with the complete, ordered step list.
+      toolBatcher.flush();
       this.deps.events.emit({
         type: "turn-finished",
         chatKey: req.chatKey,
@@ -422,6 +447,7 @@ export class SessionTurnRunner {
       // it distinct from a user Stop (which aborts with no reason → cancelled:true).
       const timedOut = signal.reason === TURN_IDLE_TIMEOUT_REASON;
       const errorMessage = timedOut ? "Turn timed out due to inactivity" : toErrorMessage(error);
+      toolBatcher.flush();
       this.deps.events.emit({
         type: "turn-finished",
         chatKey: req.chatKey,

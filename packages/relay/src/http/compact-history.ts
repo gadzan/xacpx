@@ -70,11 +70,19 @@ function compactDetail(detail: ToolDetailDto, isSubagent: boolean): ToolDetailDt
         type: "command",
         command: detail.command,
         ...(detail.exitCode !== undefined ? { exitCode: detail.exitCode } : {}),
+        // Cheap structured metadata must survive compaction or the history view
+        // loses the truncation flag the live view showed.
+        ...(detail.truncated !== undefined ? { truncated: detail.truncated } : {}),
       };
     case "read":
       return { type: "read", path: detail.path, ...(detail.lines ? { lines: detail.lines } : {}) };
     case "search":
-      return { type: "search", query: detail.query };
+      return {
+        type: "search",
+        query: detail.query,
+        ...(detail.count !== undefined ? { count: detail.count } : {}),
+        ...(detail.truncated !== undefined ? { truncated: detail.truncated } : {}),
+      };
     case "text":
       return { type: "text", text: clip(detail.text, COMPACT_DETAIL_PREVIEW) };
     case "fields":

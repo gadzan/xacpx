@@ -405,3 +405,61 @@ describe("ToolStepCard de-cardified activity stream", () => {
     expect(w.find('[data-test="step-diff-stats"]').exists()).toBe(false);
   });
 });
+
+describe("ToolStepCard live elapsed and terminal-only notice", () => {
+  it("counts up locally for a running step with a first-seen stamp", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-20T00:00:10Z"));
+    const w = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t-run", kind: "execute", title: "sleep 30", status: "running",
+          startedAt: Date.parse("2026-09-20T00:00:00Z"),
+        } as ToolStepDto,
+      },
+    });
+    expect(w.find('[data-test="step-elapsed"]').text()).toBe("10.0s");
+    vi.advanceTimersByTime(5000);
+    await nextTick();
+    expect(w.find('[data-test="step-elapsed"]').text()).toBe("15.0s");
+    vi.useRealTimers();
+  });
+
+  it("shows the connector duration once the step is terminal", () => {
+    const w = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t-done", kind: "execute", title: "npm test", status: "success",
+          durationMs: 400,
+        } as ToolStepDto,
+      },
+    });
+    expect(w.find('[data-test="step-elapsed"]').exists()).toBe(false);
+    expect(w.text()).toContain("400ms");
+  });
+
+  it("explains a terminal-routed step whose output was never reported", async () => {
+    const w = mount(ToolStepCard, {
+      props: {
+        step: {
+          toolCallId: "t-term", kind: "execute", title: "cargo build", status: "error",
+          terminalId: "77f1f365",
+        } as ToolStepDto,
+      },
+    });
+    await w.find('[data-test="tool-step-header"]').trigger("click");
+    expect(w.find('[data-test="tool-step-terminal-only"]').exists()).toBe(true);
+    expect(w.find('[data-test="tool-step-terminal-only"]').text()).not.toBe("");
+  });
+
+  it("recognizes both truncation markers when de-duplicating the error banner", async () => {
+    const FATAL = "fatal: unable to access";
+    // capTail's prefix marker must not defeat the banner suppression.
+    const w = card({
+      error: `(truncated)…\n${FATAL}`,
+      detail: { type: "command", command: "git fetch", output: `(truncated)…\n${FATAL}`, exitCode: 1 },
+    });
+    await expand(w);
+    expect(w.find('[data-test="tool-step-error"]').exists()).toBe(false);
+  });
+});

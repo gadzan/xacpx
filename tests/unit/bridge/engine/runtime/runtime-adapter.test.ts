@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 import { createXacpxRuntimeAdapter, mapEvents } from "../../../../../src/bridge/engine/runtime/runtime-adapter";
+import { mapRuntimeToolEvent } from "../../../../../src/bridge/engine/runtime-engine";
 // Plan Task 1 / PR0 gate: prove the packaged acpx 0.16.0 Runtime public contract
 // works end-to-end from xacpx — import → createRuntime → ensureSession →
 // startTurn → completed result — against tests/fixtures/mock-acp-agent.mjs,
@@ -174,4 +175,31 @@ test("mapEvents passes normalized plan entries through, preserving explicit empt
   expect(events[2]).toEqual({ type: "status", text: "plan: legacy", tag: "plan" });
   // Non-empty but wholly unusable → absence, never a clearing replacement.
   expect(events[3]).toEqual({ type: "status", text: "plan: junk", tag: "plan" });
+});
+test("mapEvents carries firstSeen on yielded tool_call events (P1-1 regression)", async () => {
+  // The exact defect a PR review caught: the merge layer stamped firstSeen on its
+  // cached snapshot, but the event handed to the host dropped it, so the Runtime
+  // engine never produced durationMs while the CLI engine did. The field must
+  // survive the adapter boundary on EVERY frame, not just the first.
+  async function* upstream(): AsyncIterable<never> {
+    yield { type: "tool_call", text: "Bash", tag: "tool_call", toolCallId: "tc-1", title: "Bash", status: "pending", kind: "execute" } as never;
+    yield { type: "tool_call", text: "Bash", tag: "tool_call_update", toolCallId: "tc-1", title: "Bash", status: "in_progress" } as never;
+    yield { type: "tool_call", text: "Bash", tag: "tool_call_update", toolCallId: "tc-1", status: "completed" } as never;
+  }
+  const events: Array<Record<string, unknown>> = [];
+  for await (const event of mapEvents(upstream())) events.push(event as unknown as Record<string, unknown>);
+
+  expect(events).toHaveLength(3);
+  for (const event of events) {
+    expect(event.type).toBe("tool_call");
+    expect(typeof event.firstSeen).toBe("number");
+  }
+  // One stamp for the whole call: re-stamping per frame would inflate durationMs.
+  expect(events[1]!.firstSeen).toBe(events[0]!.firstSeen);
+  expect(events[2]!.firstSeen).toBe(events[0]!.firstSeen);
+
+  // And the host can actually derive a duration from what it receives.
+  const toolEvent = mapRuntimeToolEvent(events[2] as never);
+  expect(toolEvent.durationMs).toBeGreaterThanOrEqual(0);
+  expect(toolEvent.startedAt).toBeUndefined();
 });

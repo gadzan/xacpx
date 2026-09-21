@@ -4,7 +4,7 @@
  */
 
 import type { XacpxRuntimeEvent } from "./runtime-contract.js";
-import { isEmptyToolField } from "../../../transport/tool-summary.js";
+import { isEmptyToolField, isToolArgumentEchoContent } from "../../../transport/tool-summary.js";
 
 export interface RuntimeToolCallSnapshot {
   type: "tool_call";
@@ -18,6 +18,9 @@ export interface RuntimeToolCallSnapshot {
   rawInput?: unknown;
   rawOutput?: unknown;
   content?: unknown;
+  /** First-frame epoch ms, stamped by the merge layer so the host can derive
+   *  `durationMs` on the running→terminal transition. */
+  firstSeen?: number;
 }
 
 export interface RuntimeToolCallInputEvent {
@@ -32,6 +35,7 @@ export interface RuntimeToolCallInputEvent {
   rawInput?: unknown;
   rawOutput?: unknown;
   content?: unknown;
+  firstSeen?: number;
 }
 
 export function isMeaningfulTitle(title: unknown): title is string {
@@ -93,7 +97,13 @@ export function normalizeRuntimeToolCallEvent(
   const status = !isEmptyToolField(event.status) ? event.status : prev?.status;
   const rawInput = !isEmptyToolField(event.rawInput) ? event.rawInput : prev?.rawInput;
   const rawOutput = !isEmptyToolField(event.rawOutput) ? event.rawOutput : prev?.rawOutput;
-  const content = !isEmptyToolField(event.content) ? event.content : prev?.content;
+  // P0-2: same argument-echo suppression as the CLI merge (streaming-prompt.ts).
+  // Checked against the rawInput this frame contributes so a frame carrying both
+  // new arguments and their echo drops the echo only. Diff blocks and real
+  // results are never echoes.
+  const content = !isEmptyToolField(event.content) && !isToolArgumentEchoContent(event.content, rawInput)
+    ? event.content
+    : prev?.content;
   const locations = !isEmptyToolField(event.locations) ? event.locations : prev?.locations;
 
   const snapshot: RuntimeToolCallSnapshot = {
@@ -108,6 +118,7 @@ export function normalizeRuntimeToolCallEvent(
     ...(rawOutput !== undefined ? { rawOutput } : {}),
     ...(content !== undefined ? { content } : {}),
     ...(locations !== undefined ? { locations } : {}),
+    firstSeen: event.firstSeen ?? prev?.firstSeen ?? Date.now(),
   };
 
   toolCalls.set(toolCallId, snapshot);

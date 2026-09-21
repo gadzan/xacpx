@@ -10,6 +10,8 @@ import SubagentStepCard from "./SubagentStepCard.vue";
 import AgentMessageCard from "./AgentMessageCard.vue";
 import {
   deriveTurnPresentation,
+  tallyTrace,
+  type TraceTally,
   type TurnPresentationPlan,
 } from "../lib/turn-presentation";
 import { createTurnLayoutGeometryCache } from "../lib/turn-layout";
@@ -30,6 +32,9 @@ const props = defineProps<{
   traceKey?: string;
   /** Display-only turn duration (finished rows). Absent/non-positive → counts only. */
   traceElapsedMs?: number | null;
+  /** What the collapsed trace did (verb counts, files touched, failures). Absent on
+   *  live rows and legacy callers — the header then falls back to raw counts. */
+  tally?: TraceTally;
   presentation?: TurnPresentationPlan;
 }>();
 
@@ -124,9 +129,22 @@ const elapsedText = computed(() => {
 const headerLabel = computed(() => {
   const parts: string[] = [];
   if (elapsedText.value) parts.push(`${t("turnTrace.worked")} ${elapsedText.value}`);
-  if (toolCount.value > 0) parts.push(t("turnTrace.tools", toolCount.value));
+  // Prefer the caller's tally (precomputed once per row); fall back to deriving it
+  // from the presentation so standalone/live mounts render the same header.
+  const tally = props.tally ?? tallyTrace(presentation.value.nodes);
+  for (const { verb, count } of tally.byVerb) {
+    parts.push(t(`turnTrace.verbs.${verb}`, count));
+  }
+  if (tally.files > 0) parts.push(t("turnTrace.files", tally.files));
   if (thoughtCount.value > 0) parts.push(t("turnTrace.thoughts", thoughtCount.value));
+  if (parts.length === 0 && toolCount.value > 0) parts.push(t("turnTrace.tools", toolCount.value));
   return parts.join(" · ");
+});
+// Failed steps get their own segment so a mostly-successful turn that hit one
+// error still says so after the trace collapses. Styled danger by the caller.
+const failedLabel = computed(() => {
+  const tally = props.tally ?? tallyTrace(presentation.value.nodes);
+  return tally.failed > 0 ? t("turnTrace.failedSteps", tally.failed) : "";
 });
 
 function toggleTrace(): void {
@@ -151,6 +169,7 @@ function toggleTrace(): void {
       <ChevronDown v-if="expanded" :size="12" class="shrink-0 opacity-70 group-hover:opacity-100 transition-opacity" />
       <ChevronRight v-else :size="12" class="shrink-0 opacity-70 group-hover:opacity-100 transition-opacity" />
       <span data-test="trace-label">{{ headerLabel }}</span>
+      <span v-if="failedLabel" data-test="trace-failed" class="font-medium text-danger">{{ failedLabel }}</span>
     </button>
     <template v-for="item in visibleItems" :key="item.key">
       <StreamMarkdown v-if="item.type === 'markdown'" data-test="turn-narrative"

@@ -200,9 +200,14 @@ test("caps long output with a truncated marker", () => {
     toolCallId: "t6", toolName: "Bash", kind: "execute", status: "success",
     rawInput: { command: "cat big" }, rawOutput: { stdout: big },
   });
-  const out = (step.detail as { output: string }).output;
+  const detail = step.detail;
+  if (detail === undefined || detail.type !== "command") throw new Error("expected a command detail");
+  const out = detail.output ?? "";
   expect(out.length).toBeLessThan(9000);
-  expect(out.endsWith("…(truncated)")).toBe(true);
+  // Tail cap: the newest content (a test's failure summary, an error stack) is what
+  // the user reads, so the marker leads and the head is dropped.
+  expect(out.startsWith("(truncated)…")).toBe(true);
+  expect(out.endsWith("x".repeat(100))).toBe(true);
 });
 
 test("read derives preview from a resource content block", () => {
@@ -718,4 +723,67 @@ test("end-to-end: runtime sparse Execute sequence results in rich Command step D
     output: "42 pass",
     exitCode: 0,
   });
+});
+
+test("a degraded adapter title falls back to the specific argument", () => {
+  // OpenCode's terminal grep frame replaces the title with the bare regex.
+  const step = toolUseEventToStepDto({
+    toolCallId: "t-search", toolName: "grep", kind: "search", status: "success",
+    summary: "display_name|displayName",
+    rawInput: { pattern: "display_name|displayName", path: "packages/relay-web/src" },
+  });
+  // The bare regex is noise; the derived query names the pattern AND its scope.
+  expect(step.title).toBe("display_name|displayName in packages/relay-web/src");
+  // No output text and no driver metadata: the detail would only echo the header,
+  // so the connector drops it entirely rather than repeating the query.
+  expect(step.detail).toBeUndefined();
+});
+
+test("a search with driver metadata keeps its detail even without output text", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "t-meta-only", toolName: "grep", kind: "search", status: "success",
+    summary: "display_name|displayName",
+    rawInput: { pattern: "display_name|displayName", path: "packages/relay-web/src" },
+    rawOutput: { metadata: { matches: 100, truncated: true } },
+  });
+  expect(step.detail).toMatchObject({ type: "search", count: 100, truncated: true });
+});
+
+test("a progress-describing adapter title is kept (it is not degraded)", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "t-exec", toolName: "bash", kind: "execute", status: "running",
+    summary: "Running: ls packages/relay-web/src",
+    rawInput: { command: "ls packages/relay-web/src" },
+  });
+  expect(step.title).toBe("Running: ls packages/relay-web/src");
+});
+
+test("a search carries the driver's machine count and truncation flag", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "t-meta", toolName: "grep", kind: "search", status: "success",
+    summary: "rg foo",
+    rawInput: { pattern: "foo", path: "src" },
+    rawOutput: { output: "a.ts:1", metadata: { matches: 100, truncated: true } },
+  });
+  expect(step.detail).toMatchObject({ type: "search", count: 100, truncated: true });
+});
+
+test("a terminal-routed step exposes its terminal id", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "t-term", toolName: "bash", kind: "execute", status: "error",
+    summary: "cargo build",
+    rawInput: { command: "cargo build" },
+    content: [{ type: "terminal", terminalId: "77f1f365" }],
+  });
+  expect(step.terminalId).toBe("77f1f365");
+});
+
+test("a running step carries the first-seen stamp", () => {
+  const startedAt = Date.parse("2026-09-20T00:00:00Z");
+  const step = toolUseEventToStepDto({
+    toolCallId: "t-run", toolName: "bash", kind: "execute", status: "running",
+    summary: "sleep 30", rawInput: { command: "sleep 30" }, startedAt,
+  });
+  expect(step.startedAt).toBe(startedAt);
+  expect(step.durationMs).toBeUndefined();
 });

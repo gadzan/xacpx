@@ -8,6 +8,7 @@ import FueCallout from "./FueCallout.vue";
 import { useFue } from "../lib/use-fue";
 import type { Rect } from "../lib/fue-placement";
 import { GROUP_COLLAPSE_FUE_THRESHOLD, KIND_ICON, diffStatsOf, summarizeSteps, type DiffStats } from "../lib/tool-summary";
+import { formatStepDuration, useLiveElapsedClock } from "../lib/use-live-elapsed";
 
 const props = defineProps<{ steps: ToolStepDto[]; ensureFull?: () => Promise<void> }>();
 
@@ -55,9 +56,17 @@ async function toggleRow(id: string) {
   expanded.value = new Set(expanded.value);
 }
 
-function fmtDuration(ms?: number): string {
-  if (ms === undefined) return "";
-  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+// Legacy aggregate panel: same live-elapsed contract as ToolStepCard — a running
+// row with a first-seen stamp counts up locally; terminal rows keep the
+// connector-measured duration. One clock for the whole list.
+const { nowMs } = useLiveElapsedClock(() =>
+  props.steps.some((s) => s.status === "running" && s.startedAt !== undefined),
+);
+function rowElapsed(s: ToolStepDto): string {
+  if (s.status === "running" && s.startedAt !== undefined) {
+    return formatStepDuration(Math.max(0, nowMs.value - s.startedAt));
+  }
+  return formatStepDuration(s.durationMs);
 }
 </script>
 
@@ -104,7 +113,7 @@ function fmtDuration(ms?: number): string {
             <span v-if="diffStatsById.get(s.toolCallId)!.add" class="text-run font-medium">+{{ diffStatsById.get(s.toolCallId)!.add }}</span>
             <span v-if="diffStatsById.get(s.toolCallId)!.del" class="text-danger font-medium">−{{ diffStatsById.get(s.toolCallId)!.del }}</span>
           </span>
-          <span v-if="s.durationMs !== undefined" class="ml-auto shrink-0 font-mono text-[10px] text-fg-muted/70">{{ fmtDuration(s.durationMs) }}</span>
+          <span v-if="rowElapsed(s)" class="ml-auto shrink-0 font-mono text-[10px] text-fg-muted/70">{{ rowElapsed(s) }}</span>
           <Check v-if="s.status === 'success'" data-test="step-status-success" :size="11" class="text-run/70" />
           <Loader2 v-else-if="s.status === 'running'" data-test="step-status-running" :size="11" class="animate-spin motion-reduce:animate-none text-accent" />
           <AlertTriangle v-else data-test="step-status-error" :size="11" class="text-danger" />

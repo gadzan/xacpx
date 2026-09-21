@@ -288,7 +288,72 @@ export interface CollapsedTraceSummary {
   finalReplyText: string;
   toolCount: number;
   thoughtCount: number;
+  /** What the collapsed trace actually did, for the header's verb summary: tool
+   *  counts grouped by verb (edited/ran/searched/…), the distinct files touched,
+   *  and how many steps failed. Zero-valued buckets are dropped by the caller. */
+  tally: TraceTally;
   presentation: TurnPresentationPlan;
+}
+
+export interface TraceTally {
+  /** Tool-call count per verb bucket, in a fixed display order. */
+  byVerb: Array<{ verb: TraceVerb; count: number }>;
+  /** Distinct file paths touched by read/edit/delete/move steps. */
+  files: number;
+  /** Steps (including subagent children) whose status is "error". */
+  failed: number;
+}
+
+/** Coarse verb buckets a tool kind maps to for the collapsed-trace header. */
+export type TraceVerb = "edited" | "ran" | "searched" | "read" | "fetched" | "thought" | "other";
+
+const VERB_BY_KIND: Record<ToolStepDto["kind"], TraceVerb> = {
+  edit: "edited",
+  execute: "ran",
+  search: "searched",
+  read: "read",
+  fetch: "fetched",
+  think: "thought",
+  delete: "edited",
+  move: "edited",
+  other: "other",
+};
+
+/** Fixed display order so the header's segments never shuffle between turns. */
+const VERB_ORDER: TraceVerb[] = ["edited", "ran", "searched", "read", "fetched", "thought", "other"];
+
+/** File paths a step names, for the "N files" segment. Only path-bearing kinds
+ *  contribute, so a long run of searches does not inflate the file count. */
+function stepFilePaths(step: ToolStepDto): string[] {
+  if (step.kind !== "read" && step.kind !== "edit" && step.kind !== "delete" && step.kind !== "move") return [];
+  const detail = step.detail;
+  const path = detail !== undefined && (detail.type === "diff" || detail.type === "read")
+    ? detail.path
+    : step.title;
+  return path.trim().length > 0 ? [path] : [];
+}
+
+export function tallyTrace(nodes: TurnPresentationItem[]): TraceTally {
+  const verbCounts = new Map<TraceVerb, number>();
+  const files = new Set<string>();
+  let failed = 0;
+  for (const node of nodes) {
+    if (node.type !== "tool" && node.type !== "subagent") continue;
+    const steps = node.type === "tool" ? [node.step] : [node.step, ...node.children];
+    for (const step of steps) {
+      const verb = VERB_BY_KIND[step.kind];
+      verbCounts.set(verb, (verbCounts.get(verb) ?? 0) + 1);
+      for (const path of stepFilePaths(step)) files.add(path);
+      if (step.status === "error") failed += 1;
+    }
+  }
+  return {
+    byVerb: VERB_ORDER
+      .filter((verb) => verbCounts.has(verb))
+      .map((verb) => ({ verb, count: verbCounts.get(verb)! })),
+    files: files.size,
+    failed,
+  };
 }
 
 export function extractCollapsedTraceSummary(
@@ -303,6 +368,7 @@ export function extractCollapsedTraceSummary(
     finalReplyText: presentation.finalReplyNodes.map((node) => node.copyText).join("").trimEnd(),
     toolCount: presentation.toolCount,
     thoughtCount: presentation.thoughtCount,
+    tally: tallyTrace(presentation.nodes),
     presentation,
   };
 }

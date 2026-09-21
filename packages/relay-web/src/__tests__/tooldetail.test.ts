@@ -69,3 +69,26 @@ describe("ToolDetail", () => {
     expect(w.find('[data-test="tool-text"]').text()).toContain("exploring the code");
   });
 });
+
+describe("ToolDetail structured output metadata", () => {
+  it("shows the driver's machine count and truncation flag on command output", () => {
+    const w = render({ type: "command", command: "npm test", output: "x", truncated: true });
+    expect(w.find('[data-test="output-meta"]').text()).toContain("truncated");
+  });
+
+  it("prefers the driver's machine count over the rendered-line count", () => {
+    const w = render({ type: "search", query: "rg foo", output: "a.ts:1\nb.ts:2", count: 19 });
+    expect(w.find('[data-test="output-meta"]').text()).toContain("19");
+    expect(w.find('[data-test="search-count"]').text()).toContain("19");
+  });
+
+  it("falls back to counting rendered lines when no machine count exists", () => {
+    const w = render({ type: "search", query: "rg foo", output: "a.ts:1\nb.ts:2" });
+    expect(w.find('[data-test="search-count"]').text()).toContain("2");
+  });
+
+  it("omits the badge when the driver reported no count and nothing was truncated", () => {
+    const w = render({ type: "search", query: "rg foo", output: "a.ts:1" });
+    expect(w.find('[data-test="output-meta"]').exists()).toBe(false);
+  });
+});

@@ -97,3 +97,42 @@ describe("RuntimeEngine mapRuntimeToolEvent (spec §9-§10, §13B)", () => {
     expect(fetchEvent.kind).toBe("fetch");
   });
 });
+
+describe("RuntimeEngine tool timing (P1-1)", () => {
+  test("a terminal frame with a first-seen stamp produces durationMs and no startedAt", () => {
+    const firstSeen = Date.now() - 1500;
+    const event = mapRuntimeToolEvent({
+      toolCallId: "tc-timed",
+      title: "Bash",
+      kind: "execute",
+      status: "completed",
+      firstSeen,
+    });
+    expect(event.durationMs).toBeGreaterThanOrEqual(1500);
+    expect(event.startedAt).toBeUndefined();
+  });
+
+  test("a running frame produces startedAt and no durationMs", () => {
+    const firstSeen = Date.now() - 500;
+    const event = mapRuntimeToolEvent({
+      toolCallId: "tc-running",
+      title: "Bash",
+      kind: "execute",
+      status: "in_progress",
+      firstSeen,
+    });
+    expect(event.startedAt).toBe(firstSeen);
+    expect(event.durationMs).toBeUndefined();
+  });
+
+  test("a terminal frame without a stamp reports 0, matching the CLI builder", () => {
+    const event = mapRuntimeToolEvent({
+      toolCallId: "tc-unstamped",
+      title: "Bash",
+      kind: "execute",
+      status: "completed",
+    });
+    expect(event.durationMs).toBe(0);
+    expect(event.startedAt).toBeUndefined();
+  });
+});

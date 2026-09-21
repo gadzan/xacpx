@@ -907,3 +907,41 @@ test("validControlEvent accepts Conversation product events and optional turn co
     },
   })).toBe(true);
 });
+
+test("accepts the new optional tool-step and tool-detail fields", () => {
+  const step = {
+    toolCallId: "t1", toolName: "Bash", kind: "execute", status: "running", title: "npm test",
+    startedAt: 1789912832776, terminalId: "term-1",
+    detail: { type: "command", command: "npm test", output: "x", truncated: true },
+  };
+  expect(roundtrip({
+    kind: "control-event", instanceId: "i1",
+    event: { type: "tool-event", chatKey: "c", sessionAlias: "s", step },
+  })).not.toBeNull();
+  expect(roundtrip({
+    kind: "control-event", instanceId: "i1",
+    event: {
+      type: "tool-event", chatKey: "c", sessionAlias: "s",
+      step: { ...step, detail: { type: "search", query: "rg foo", output: "a", count: 19, truncated: false } },
+    },
+  })).not.toBeNull();
+});
+
+test("rejects malformed values for the new tool-step and tool-detail fields", () => {
+  const base = { toolCallId: "t1", toolName: "Bash", kind: "execute", status: "running", title: "npm test" };
+  for (const bad of [{ startedAt: -1 }, { startedAt: "1789912832776" }, { terminalId: 7 }]) {
+    expect(roundtrip({
+      kind: "control-event", instanceId: "i1",
+      event: { type: "tool-event", chatKey: "c", sessionAlias: "s", step: { ...base, ...bad } },
+    })).toBeNull();
+  }
+  for (const badDetail of [
+    { type: "command", command: "npm test", truncated: "yes" },
+    { type: "search", query: "rg foo", count: -3 },
+  ]) {
+    expect(roundtrip({
+      kind: "control-event", instanceId: "i1",
+      event: { type: "tool-event", chatKey: "c", sessionAlias: "s", step: { ...base, detail: badDetail } },
+    })).toBeNull();
+  }
+});
