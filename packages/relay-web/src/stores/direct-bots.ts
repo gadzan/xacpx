@@ -209,7 +209,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
   // Topics state (keyed by `${instanceId}:${conversationId}`)
   const topicsByConversation = ref<Record<string, TopicSummaryDto[]>>({});
-
+  // Freshness fence for the Topic strip: topics.list HTTP and
+  // conversation-topic-changed WS share no transport ordering, so every
+  // write (list snapshot, create merge, WS merge) mints a per-conversation
+  // revision. A late list snapshot must merge into — never replace — newer
+  // WS-merged rows.
+  const topicsSeq: Record<string, number> = {};
   // Messages / History state for active conversation & topic
   const messages = ref<ConversationMessageDto[]>([]);
   const oldestSeq = ref<number | undefined>(undefined);
@@ -404,9 +409,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const res = unwrapRpc(
       await api.rpc<{ bot: BotDetailDto }>(targetInstanceId, MSG.botsGet, { id: botId }),
     );
-    // A stale (superseded) detail response must not clobber the newer cache.
+    // A stale (superseded) detail response must not clobber the newer cache,
+    // nor may it pose as an authoritative answer for callers with side
+    // effects (e.g. BotDialog instructions fill): return the current cache
+    // so a late D1 cannot roll a newer D2 back in the form.
     if (botDetailSeq[detailKey] !== seq) {
-      return res.bot;
+      return botDetails.value[detailKey] ?? res.bot;
     }
     const prevDetail = botDetails.value[detailKey];
     botDetails.value = {
@@ -501,10 +509,25 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   }
 
   async function loadTopics(targetInstanceId: string, conversationId: string): Promise<TopicSummaryDto[]> {
+    const key = `${targetInstanceId}:${conversationId}`;
+    const seq = (topicsSeq[key] ?? 0) + 1;
+    topicsSeq[key] = seq;
     const res = unwrapRpc(
       await api.rpc<{ topics: TopicSummaryDto[] }>(targetInstanceId, MSG.topicsList, { conversationId }),
     );
-    const key = `${targetInstanceId}:${conversationId}`;
+    if (topicsSeq[key] !== seq) {
+      // A newer write (create merge or WS event) landed while this snapshot
+      // was in flight: merge the snapshot into the newer rows by id instead
+      // of replacing them, so a late T1 cannot delete Topic B. Newer rows win
+      // on id conflict.
+      const currentList = topicsByConversation.value[key] ?? [];
+      const merged: Record<string, TopicSummaryDto> = {};
+      for (const t of res.topics) merged[t.id] = t;
+      for (const t of currentList) merged[t.id] = t;
+      const next = Object.values(merged);
+      topicsByConversation.value = { ...topicsByConversation.value, [key]: next };
+      return next;
+    }
     topicsByConversation.value = {
       ...topicsByConversation.value,
       [key]: res.topics,
@@ -524,6 +547,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       }),
     );
     const key = `${targetInstanceId}:${conversationId}`;
+    topicsSeq[key] = (topicsSeq[key] ?? 0) + 1;
     const currentList = topicsByConversation.value[key] ?? [];
     const idx = currentList.findIndex((t) => t.id === res.topic.id);
     if (idx >= 0) {
@@ -536,21 +560,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         [key]: [...currentList, res.topic],
       };
     }
-    // Any persisted Direct Topic for this Bot's conversation proves the
-    // backend Direct Conversation row exists, which is sufficient for
-    // BotService.hasRuntime() to lock agent/workspace and fail-closed
-    // delete. A topics.create success (local or a remote tab's create that
-    // arrives as conversation-topic-changed) is therefore lifecycle evidence
-    // for the owning Bot of that conversation.
-    if (instanceId.value === targetInstanceId && selectedBotId.value) {
-      const owner =
-        conversationDetails.value[`${targetInstanceId}:${conversationId}`]?.botId
-        ?? conversationsByInstance.value[targetInstanceId]?.find((c) => c.id === conversationId)?.botId
-        ?? (activeConversationId.value === conversationId ? selectedBotId.value : undefined);
-      if (owner) {
-        markBotHasRuntime(targetInstanceId, owner);
-      }
-    }
+    // A persisted Direct Conversation row alone does not lock identity:
+    // only an actual binding/session (execution evidence) converges
+    // hasRuntime. Delete stays fail-closed backend-side via bot_in_use.
     // Switch to new topic if in the same conversation
     if (instanceId.value === targetInstanceId && activeConversationId.value === conversationId) {
       await switchTopic(res.topic.id);
@@ -1673,17 +1685,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       })();
       return;
     }
-    // A persisted Direct Topic for a background instance proves that Bot's
-    // backend Direct Conversation row exists (Direct Conversation ownership
-    // alone locks agent/workspace and fail-closed delete). The transcript
-    // fence below must not drop this lifecycle evidence: converge via an
-    // authoritative catalog refresh, which also carries hasRuntime when the
-    // backend reports it.
-    if (e.type === "conversation-topic-changed" && event.instanceId !== instanceId.value) {
-      void loadBots(event.instanceId).catch(() => {});
-      return;
-    }
-
     // Instance-scoped conversation/turn events: only for the currently selected instance
     if (event.instanceId !== instanceId.value) return;
 
@@ -1696,6 +1697,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       const topic = e.topic;
       if (topic.conversationId === activeConversationId.value) {
         const key = `${event.instanceId}:${topic.conversationId}`;
+        topicsSeq[key] = (topicsSeq[key] ?? 0) + 1;
         const currentList = topicsByConversation.value[key] ?? [];
         const idx = currentList.findIndex((t) => t.id === topic.id);
         if (idx >= 0) {
@@ -1705,18 +1707,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         } else {
           topicsByConversation.value = { ...topicsByConversation.value, [key]: [...currentList, topic] };
         }
-      }
-      // A persisted Direct Topic proves the backend Direct Conversation row
-      // exists for its owning Bot (remote/other-tab create arrives here as
-      // conversation-topic-changed). Converge that Bot's lifecycle bit.
-      const owner =
-        conversationDetails.value[`${event.instanceId}:${topic.conversationId}`]?.botId
-        ?? conversationsByInstance.value[event.instanceId]?.find((c) => c.id === topic.conversationId)?.botId
-        ?? (activeConversationId.value === topic.conversationId && selectedBotId.value
-          ? selectedBotId.value
-          : undefined);
-      if (owner) {
-        markBotHasRuntime(event.instanceId, owner);
       }
       return;
     }

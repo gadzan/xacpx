@@ -134,6 +134,31 @@ test("updateBot can change agent and workspace before any runtime exists", async
   expect(updated.workspace).toBe("frontend");
 });
 
+test("createTopic-only conversation does not lock identity but keeps delete fail-closed", async () => {
+  const { service, state } = createService();
+  await service.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  // A persisted Direct Conversation row with no binding and no owned session
+  // (exactly what createDirectTopic persists before any execution).
+  state.conversations.direct = {
+    id: "direct",
+    kind: "bot",
+    title: "Reviewer",
+    botIds: ["bot_fixed"],
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  expect(service.hasRuntime("bot_fixed")).toBe(false);
+  // agent/workspace stay editable: no actual runtime materialized.
+  const updated = await service.updateBot("bot_fixed", { agent: "claude", workspace: "frontend" });
+  expect(updated.agent).toBe("claude");
+  expect(updated.workspace).toBe("frontend");
+  // delete stays fail-closed via bot_in_use while the Conversation row exists.
+  await expect(service.deleteBot("bot_fixed")).rejects.toMatchObject({
+    code: "bot_in_use",
+  });
+  expect(service.getBot("bot_fixed").name).toBe("Reviewer");
+});
+
 test("deleteBot fails closed when a direct conversation still references the Bot", async () => {
   const { service, state } = createService();
   await service.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });

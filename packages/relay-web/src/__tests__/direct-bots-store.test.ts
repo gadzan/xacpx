@@ -1367,7 +1367,7 @@ describe("useDirectBotsStore", () => {
       expect(store.currentBot?.hasRuntime).toBe(true);
       expect(store.botsByInstance["inst_1"]?.[0]?.hasRuntime).toBe(true);
     });
-    it("converges hasRuntime on local createTopic success", async () => {
+    it("does NOT lock identity on topic creation alone; a persisted Conversation row is not a materialized runtime", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
       store.selectedBotId = "bot_1";
@@ -1405,11 +1405,15 @@ describe("useDirectBotsStore", () => {
       expect(store.currentBot?.hasRuntime).toBeUndefined();
 
       await store.createTopic("inst_1", "conv_1", "Second");
-      // Persisted Direct Topic proves the backend Direct Conversation row
-      // exists, which locks the owning Bot: converge before submit.
-      expect(store.currentBot?.hasRuntime).toBe(true);
+      // A persisted Direct Conversation row alone (no binding/session, no
+      // execution) must NOT lock agent/workspace: identity follows the
+      // materialized runtime only. Delete stays fail-closed backend-side.
+      expect(store.currentBot?.hasRuntime).toBeUndefined();
+      // The new topic itself is still merged and selected.
+      expect(store.activeTopicId).toBe("top_2");
+      expect(store.topicsByConversation["inst_1:conv_1"]?.map((t) => t.id)).toContain("top_2");
     });
-    it("converges hasRuntime on a remote conversation-topic-changed event", async () => {
+    it("does NOT lock identity on a remote conversation-topic-changed event alone", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
       store.selectedBotId = "bot_1";
@@ -1437,7 +1441,53 @@ describe("useDirectBotsStore", () => {
           },
         },
       } as never);
-      expect(store.currentBot?.hasRuntime).toBe(true);
+      // The remote topic merges into the strip, but identity stays unlocked
+      // until execution evidence arrives.
+      expect(store.topicsByConversation["inst_1:conv_1"]?.map((t) => t.id)).toContain("top_remote");
+      expect(store.currentBot?.hasRuntime).toBeUndefined();
+    });
+    it("keeps a WS-merged Topic when a stale topics.list snapshot resolves late", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.topicsByConversation["inst_1:conv_1"] = [
+        { id: "top_1", conversationId: "conv_1", title: "Default", status: "active", createdAt: "now", updatedAt: "now" },
+      ];
+      const staleList = Promise.withResolvers<{ topics: TopicSummaryDto[] }>();
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.topics.list") return staleList.promise;
+        return Promise.resolve({});
+      });
+
+      // T1 starts while the backend snapshot holds only the Default topic.
+      const pendingList = store.loadTopics("inst_1", "conv_1");
+      // Another tab creates Topic B; its WS event merges first.
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "conversation-topic-changed",
+          topic: {
+            id: "top_B", conversationId: "conv_1", title: "B",
+            status: "active", createdAt: "now", updatedAt: "now",
+          },
+        },
+      } as never);
+      expect(store.topicsByConversation["inst_1:conv_1"]?.map((t) => t.id)).toContain("top_B");
+
+      // The stale T1 snapshot (Default only) resolves late: it must merge,
+      // never replace, so B survives.
+      staleList.resolve({
+        topics: [
+          { id: "top_1", conversationId: "conv_1", title: "Default", status: "active", createdAt: "now", updatedAt: "now" },
+        ],
+      });
+      await pendingList;
+      expect(store.topicsByConversation["inst_1:conv_1"]?.map((t) => t.id)).toEqual(
+        expect.arrayContaining(["top_1", "top_B"]),
+      );
     });
     it("does not forge a discovery failure when a terminal event refreshes history during deferred runs.get", async () => {
       const store = useDirectBotsStore();
@@ -2954,48 +3004,6 @@ describe("useDirectBotsStore", () => {
       expect(store.botsByInstance["inst_1"]?.map((b) => b.id)).toEqual(["bot_old", "bot_B"]);
       expect(store.selectedBotId).toBe("bot_B");
       expect(store.activeConversationId).toBe("conv_1");
-    });
-    it("refreshes the background instance catalog on conversation-topic-changed without touching the selection", async () => {
-      const store = useDirectBotsStore();
-      store.instanceId = "inst_1";
-      store.selectedBotId = "bot_1";
-      store.activeConversationId = "conv_1";
-      store.activeTopicId = "top_1";
-      store.botsByInstance["inst_2"] = [
-        { id: "bot_B", name: "B", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
-      ];
-      store.botsLoaded["inst_2"] = true;
-      mockRpc.mockImplementation((instId: string, type: string) => {
-        if (instId === "inst_2" && type === "control.bots.list") {
-          return Promise.resolve({
-            bots: [
-              { id: "bot_B", name: "B", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now", hasRuntime: true },
-            ],
-          });
-        }
-        return Promise.resolve({});
-      });
-
-      // Remote/other-tab Topic create on inst_2 arrives while inst_1 is selected.
-      store.applyEvent({
-        kind: "control-event",
-        instanceId: "inst_2",
-        event: {
-          type: "conversation-topic-changed",
-          topic: {
-            id: "top_remote", conversationId: "conv_B", title: "Remote",
-            status: "active", createdAt: "now", updatedAt: "now",
-          },
-        },
-      } as never);
-      await flushPromises();
-      await flushPromises();
-
-      // Background catalog converges authoritatively; selection untouched.
-      expect(mockRpc).toHaveBeenCalledWith("inst_2", "control.bots.list", {});
-      expect(store.botsByInstance["inst_2"]?.[0]?.hasRuntime).toBe(true);
-      expect(store.instanceId).toBe("inst_1");
-      expect(store.selectedBotId).toBe("bot_1");
     });
     it("reconnect drops a ghost bot instead of restoring its pane", async () => {
       const store = useDirectBotsStore();

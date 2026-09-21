@@ -29,11 +29,12 @@ const dialogEl = ref<HTMLElement | null>(null);
 useModalA11y(dialogEl, () => emit("close"));
 
 const isEditing = computed(() => !!props.bot);
-// True once the Bot materialized a direct runtime: agent/workspace are
-// backend-locked (runtime_identity_locked) and delete is fail-closed
-// (bot_in_use). Teardown/rebind is a later lifecycle surface, so PR5 treats
-// a used Bot as identity-locked. The form tells this upfront instead of
-// letting edits fail at submit.
+// True once the Bot materialized an actual direct runtime binding/session:
+// agent/workspace are then backend-locked (runtime_identity_locked). A
+// persisted Direct Conversation alone keeps delete fail-closed (bot_in_use)
+// but does not lock identity. Teardown/rebind is a later lifecycle surface,
+// so PR5 treats a materialized Bot as identity-locked. The form tells this
+// upfront instead of letting edits fail at submit.
 const identityLocked = computed(() => {
   if (!props.bot) return false;
   const detailKey = `${props.instanceId}:${props.bot.id}`;

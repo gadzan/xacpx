@@ -407,6 +407,69 @@ describe("Direct Bot Components", () => {
       expect((wrapper.find("#bot-workspace").element as HTMLSelectElement).disabled).toBe(true);
     });
 
+    it("keeps newer instructions when a stale detail response resolves after a newer one", async () => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "codex", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+          agentCatalog: [],
+        } as never,
+      ];
+      const directBots = useDirectBotsStore();
+      const older = Promise.withResolvers<{ bot: BotDetailDto }>();
+      const newer = Promise.withResolvers<{ bot: BotDetailDto }>();
+      let calls = 0;
+      vi.spyOn(directBots, "loadBotDetail").mockImplementation(async (iid: string, bid: string) => {
+        calls += 1;
+        if (calls === 1) {
+          const res = await older.promise;
+          // Faithful stale path: the store drops the write but returns the
+          // current (newer) cache instead of the stale payload.
+          const key = `${iid}:${bid}`;
+          return directBots.botDetails[key] ?? res.bot;
+        }
+        const res = await newer.promise;
+        directBots.botDetails[`${iid}:${bid}`] = res.bot;
+        return res.bot;
+      });
+      const existingBot = {
+        id: "bot_1", name: "Bot", agent: "codex", workspace: "repo",
+      } as never;
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local", bot: existingBot },
+        global: { plugins: [i18n] },
+      });
+      const first = directBots.loadBotDetail("i1", "bot_1");
+      const second = directBots.loadBotDetail("i1", "bot_1");
+      newer.resolve({
+        bot: {
+          id: "bot_1", name: "Bot", agent: "codex", workspace: "repo",
+          instructions: "New", enabled: true, profileRevision: 2,
+          createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "new",
+        },
+      });
+      await second;
+      older.resolve({
+        bot: {
+          id: "bot_1", name: "Bot", agent: "codex", workspace: "repo",
+          instructions: "Old", enabled: true, profileRevision: 1,
+          createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "old",
+        },
+      });
+      const staleResult = await first;
+      // Stale D1 must return the newer cache, so a Dialog filling from it
+      // keeps New instead of rolling back to Old.
+      expect(staleResult.instructions).toBe("New");
+      expect(directBots.botDetails["i1:bot_1"]?.instructions).toBe("New");
+      expect(wrapper.vm).toBeTruthy();
+    });
+
     it("keeps user-typed instructions when the slow detail fetch resolves", async () => {
       const instances = useInstancesStore();
       instances.instances = [

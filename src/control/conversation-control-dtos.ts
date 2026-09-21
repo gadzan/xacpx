@@ -27,9 +27,9 @@ export interface BotSummaryDto {
   effort?: string;
   enabled: boolean;
   updatedAt: string;
-  /** True once the Bot materialized a direct runtime. Agent/workspace edits and
-   *  delete are then backend fail-closed; teardown/rebind is a later lifecycle
-   *  surface, so PR5 treats used Bots as identity-locked, not rebindable. */
+  /** True once the Bot materialized an actual direct runtime binding/session.
+   *  Identity lock follows this only; a persisted Direct Conversation alone
+   *  keeps delete fail-closed via bot_in_use but does not lock identity. */
   hasRuntime?: boolean;
 }
 

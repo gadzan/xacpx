@@ -219,10 +219,13 @@ export class BotService {
     return bot;
   }
 
-  /** True once the Bot materialized a direct runtime (context persists by design). */
+  /** True once the Bot materialized an actual direct runtime binding/session.
+   *  Identity lock (agent/workspace) follows this only: a persisted Direct
+   *  Conversation row alone (e.g. after createTopic with no execution) keeps
+   *  delete fail-closed via bot_in_use but must NOT permanently lock identity. */
   hasRuntime(id: string): boolean {
     this.getBot(id);
-    return this.hasLockedRuntime(id);
+    return this.hasMaterializedRuntime(id);
   }
 
   async createBot(input: CreateBotInput): Promise<BotProfile> {
@@ -257,10 +260,10 @@ export class BotService {
         this.assertOpen();
         this.rejectUnsupportedCwd(patch);
         const existing = this.getBot(id);
-        if (patch.agent !== undefined && patch.agent !== existing.agent && this.hasLockedRuntime(id)) {
+        if (patch.agent !== undefined && patch.agent !== existing.agent && this.hasMaterializedRuntime(id)) {
           throw new BotError("runtime_identity_locked", `bot "${id}" agent cannot change while a runtime exists`);
         }
-        if (patch.workspace !== undefined && patch.workspace !== existing.workspace && this.hasLockedRuntime(id)) {
+        if (patch.workspace !== undefined && patch.workspace !== existing.workspace && this.hasMaterializedRuntime(id)) {
           throw new BotError("runtime_identity_locked", `bot "${id}" workspace cannot change while a runtime exists`);
         }
         const identity = this.requireIdentity({
@@ -403,6 +406,11 @@ export class BotService {
     if ("cwd" in input && (input as { cwd?: unknown }).cwd !== undefined) {
       throw new BotError("cwd_unsupported", "bot cwd is not supported until runtime migration exists");
     }
+  }
+
+  private hasMaterializedRuntime(botId: string): boolean {
+    const refs = this.directRuntimeRefs(botId);
+    return refs.bindingIds.length > 0 || refs.sessionAliases.length > 0;
   }
 
   private hasLockedRuntime(botId: string): boolean {
