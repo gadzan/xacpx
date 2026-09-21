@@ -99,10 +99,13 @@ PR:        —
 New (all green):
 
 - `tests/unit/interactions/turn-interaction-registry.test.ts` — 13 tests
-- `tests/unit/interactions/elicitation-schema.test.ts` — 55 tests
-  (40 original + 7 string-resource-bound + 8 calendar/RFC3339)
+- `tests/unit/interactions/elicitation-schema.test.ts` — 65 tests
+  (40 original + 7 string-resource-bound + 8 calendar/RFC3339 + 10 ACP-shape
+  and constraint-preservation regressions)
 - `tests/unit/interactions/elicitation-interaction-broker.test.ts` — 31 tests
   (28 original + 3 negative-privacy regressions)
+- `tests/unit/interactions/elicitation-plugin-contract.test.ts` — 5 tests,
+  typed against the published `plugin-api` surface
 - `tests/unit/channels/channel-elicitation-capability.test.ts` — 9 tests
   (6 original + 3 mode-aware capability regressions)
 - `tests/unit/bridge/engine/runtime/runtime-adapter-elicitation.test.ts` —
@@ -145,17 +148,48 @@ Four findings from review of head `5e606f7d`, all fixed:
 3. **[Medium]** String resource bounds were incomplete: array element length,
    text `default` length and `required[]` size were unbounded. Added
    `maxOptionValueLength`, `maxDefaultValueLength`, `maxRequiredNames` and a
-   total `maxNormalizedFormChars` budget (49k, just above the measured ~48.5k
-   worst case). 7 tests added.
+   total `maxNormalizedFormChars` budget. 7 tests.
 4. **[Medium]** `date` / `date-time` accepted impossible values because
    `Date.parse` normalizes 2026-02-31 into 2026-03-03, and the date-time regex
    accepted incomplete RFC3339. Replaced with a strict per-month calendar
    check (leap-year aware) and a full RFC3339 pattern requiring seconds plus a
-   `Z`/±HH:MM offset, with clock/offset range checks. 8 tests added.
+   `Z`/±HH:MM offset, with clock/offset range checks. 8 tests.
 
 Note: finding 2 corrected an overstated G8 claim in the first version of this
 report — the original privacy test only covered the legal-accept path, which is
 why it did not catch the leak.
+
+## Review round 2 (PR #355, head `d7b26cac`)
+
+Four further findings, all fixed:
+
+1. **[Blocking, ACP protocol]** The normalizer required `items.type` before
+   reading `items.anyOf`, but ACP defines multi-select items as a union whose
+   titled member has **no `type` field** (`TitledMultiSelectItems` is
+   `{ anyOf: [...] }`). Every legal titled multi-select was therefore
+   cancelled. Decoding is now by union member: `anyOf` needs no `type`, `enum`
+   requires `type === "string"`, mixing is rejected, neither is rejected. The
+   prior test used the non-standard `{ type: "string", anyOf: [...] }` shape,
+   which hid the defect.
+2. **[Blocking, validation correctness]** Converting a string field with
+   `enum`/`oneOf` to `single-select` dropped `minLength`/`maxLength`/`format`,
+   so an offered value violating the agent's own schema was accepted. The
+   field model now carries them and `validateFieldValue` re-validates. Unlike
+   `pattern` (never executed, by design), these are deterministic.
+3. **[Medium, budget claim retracted]** The `maxNormalizedFormChars: 49_000`
+   "just above every individually-legal form" claim was **wrong** — it omitted
+   options. Per-field limits compose multiplicatively: 20 fields × 100 titled
+   options × (256 value + 256 label + 1000 description) ≈ **3.3M chars**, all
+   individually legal. The cap is therefore documented and tested as an
+   independent aggregate policy cap (256k), not a worst-case bound; a
+   pathological aggregate cancels and a realistic multi-option form passes.
+   The titled/untitled option value bound was also unified at 256
+   (`readTitledOptions` had been using `maxFieldKeyLength` = 128).
+4. **[Medium, plugin contract]** The exported accept arm required a non-null
+   `content`, while core's own broker and runtime decision permit `null`.
+   `content` is now `Record<...> | null` and optional, and
+   `elicitation-plugin-contract.test.ts` compiles its fake channel against the
+   published `src/plugin-api.js` surface so future divergence fails typecheck.
 
 ## Deferred
 
