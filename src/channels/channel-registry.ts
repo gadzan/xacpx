@@ -101,16 +101,16 @@ export class MessageChannelRegistry {
   }
 
   /**
-   * True Elicitation capability: at least one registered runtime actually
-   * implements `requestElicitation()`. Deliberately independent of the
-   * permission probe (G9): a channel may support approvals but cannot render
-   * a form Elicitation, and v1 forbids inferring one from the other.
+   * True form-Elicitation capability: at least one registered runtime both
+   * implements `requestElicitation()` AND declares the `form` mode. Deliberately
+   * independent of the permission probe (G9): a channel may support approvals
+   * but cannot render a form Elicitation, and v1 forbids inferring one from the
+   * other. Implementing the method without declaring a mode is NOT support —
+   * the broker would accept the request and then fail closed on the mode check,
+   * so advertising it would be a lie the agent pays for.
    */
-  hasElicitationInteractionCapability(): boolean {
-    for (const channel of this.channels.values()) {
-      if (typeof channel.requestElicitation === "function") return true;
-    }
-    return false;
+  hasElicitationFormCapability(): boolean {
+    return this.supportedElicitationModes().includes("form");
   }
 
   /**

@@ -335,7 +335,7 @@ interface RuntimeDeps {
     nativeSessionListFormat?: (chatKey: string) => "cards" | "table";
     getByChatKey?: (chatKey: string) => MessageChannelRuntime | null;
     hasPermissionInteractionCapability?: () => boolean;
-    hasElicitationInteractionCapability?: () => boolean;
+    hasElicitationFormCapability?: () => boolean;
   };
   sendOrchestrationNotice?: (task: OrchestrationTaskRecord) => Promise<void>;
   sendCoordinatorMessage?: (input: CoordinatorMessageInput) => Promise<void>;
@@ -616,9 +616,13 @@ export async function buildApp(
   // cancel with real dispatch; every failure path still cancels.
   let elicitationInteractionCapable = false;
   try {
+    // G9: form capability requires BOTH an implementation and a declared
+    // `form` mode. An implementation without the declaration would let the
+    // broker accept the request and then fail closed on the mode check, so
+    // advertising it would be a lie the agent pays for.
     elicitationInteractionCapable =
-      typeof channelRegistryLike?.hasElicitationInteractionCapability === "function" &&
-      channelRegistryLike.hasElicitationInteractionCapability() === true;
+      typeof channelRegistryLike?.hasElicitationFormCapability === "function" &&
+      channelRegistryLike.hasElicitationFormCapability() === true;
   } catch {
     elicitationInteractionCapable = false;
   }
