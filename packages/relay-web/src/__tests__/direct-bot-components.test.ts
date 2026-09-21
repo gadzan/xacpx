@@ -663,6 +663,67 @@ describe("Direct Bot Components", () => {
       }));
     });
 
+    it("keeps a touched-then-reverted agent when the authoritative detail resolves", async () => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "codex", driver: "codex" }, { name: "claude", driver: "claude" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+          agentCatalog: [],
+        } as never,
+      ];
+      const directBots = useDirectBotsStore();
+      const detailGate = Promise.withResolvers<{ bot: BotDetailDto }>();
+      const updateSpy = vi.spyOn(directBots, "updateBot").mockResolvedValue({
+        id: "bot_1", name: "Bot", agent: "codex", workspace: "repo",
+        enabled: true, profileRevision: 3,
+        createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "2026-09-18T00:00:00.000Z",
+      });
+      vi.spyOn(directBots, "loadBotDetail").mockImplementation(async () => {
+        const res = await detailGate.promise;
+        directBots.botDetails["i1:bot_1"] = res.bot;
+        return res.bot;
+      });
+      // Open-time summary: agent codex (bot never materialized, so the
+      // select stays editable and backend permits the change).
+      const existingBot: BotSummaryDto = {
+        id: "bot_1", name: "Bot", agent: "codex", workspace: "repo",
+        enabled: true, updatedAt: "2026-09-18T00:00:00.000Z",
+      };
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local", bot: existingBot },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      // User edits codex -> claude, then deliberately reverts claude ->
+      // codex while the detail request is still in flight.
+      await wrapper.find("#bot-agent").setValue("claude");
+      await wrapper.find("#bot-agent").setValue("codex");
+      // Authoritative rev2 detail arrives with agent claude.
+      detailGate.resolve({
+        bot: {
+          id: "bot_1", name: "Bot", agent: "claude", workspace: "repo",
+          enabled: true, profileRevision: 2,
+          createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "new",
+        },
+      });
+      await flushPromises();
+      await flushPromises();
+      // The explicit user choice (codex) survives hydration, not rev2 claude.
+      expect((wrapper.find("#bot-agent").element as HTMLSelectElement).value).toBe("codex");
+
+      await wrapper.find("form").trigger("submit.prevent");
+      await flushPromises();
+      expect(updateSpy).toHaveBeenCalledWith("i1", "bot_1", expect.objectContaining({
+        agent: "codex",
+      }));
+    });
+
     it("keeps user-typed instructions when the slow detail fetch resolves", async () => {
       const instances = useInstancesStore();
       instances.instances = [

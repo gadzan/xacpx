@@ -66,6 +66,8 @@ const instructionsDirty = ref(false);
 const nameDirty = ref(false);
 const avatarDirty = ref(false);
 const roleDirty = ref(false);
+const agentDirty = ref(false);
+const workspaceDirty = ref(false);
 const agent = ref(props.bot?.agent ?? "");
 const workspace = ref(props.bot?.workspace ?? "");
 const model = ref(props.bot?.model ?? "");
@@ -153,8 +155,8 @@ onMounted(async () => {
       if (!nameDirty.value) name.value = detail.name;
       if (!avatarDirty.value) avatar.value = detail.avatar ?? "";
       if (!roleDirty.value) role.value = detail.role ?? "";
-      if (agent.value === (props.bot.agent ?? "")) agent.value = detail.agent;
-      if (workspace.value === (props.bot.workspace ?? "")) workspace.value = detail.workspace;
+      if (!agentDirty.value) agent.value = detail.agent;
+      if (!workspaceDirty.value) workspace.value = detail.workspace;
       if (!modelDirty.value) model.value = detail.model ?? "";
       if (!effortDirty.value) effort.value = detail.effort ?? "";
       if (!enabledDirty.value) enabled.value = detail.enabled;
@@ -313,7 +315,7 @@ async function submit(): Promise<void> {
             <select
               id="bot-agent"
               v-model="agent"
-              required
+              @change="agentDirty = true"
               :disabled="identityLocked"
               class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none transition-colors focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -333,6 +335,7 @@ async function submit(): Promise<void> {
               v-model="workspace"
               required
               :disabled="identityLocked"
+              @change="workspaceDirty = true"
               class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none transition-colors focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
             >
               <option v-for="w in availableWorkspaces" :key="w.name" :value="w.name">
