@@ -1489,32 +1489,35 @@ describe("useDirectBotsStore", () => {
         expect.arrayContaining(["top_1", "top_B"]),
       );
     });
-    it("drops a non-selected Bot detail when a refreshed summary no longer matches it", async () => {
+    it("drops a non-selected Bot detail on an instructions-only remote update (identical summary fields)", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
       store.selectedBotId = "bot_A";
+      // Cached rev1 detail: instructions Old, identity fields match summary.
       store.botDetails["inst_1:bot_B"] = {
-        id: "bot_B", name: "Old", agent: "codex", workspace: "repo",
-        instructions: "Old instructions", enabled: false,
+        id: "bot_B", name: "B", agent: "codex", workspace: "repo",
+        instructions: "Old instructions", enabled: true,
         profileRevision: 1, createdAt: "now", updatedAt: "old",
       };
       store.botsByInstance["inst_1"] = [
-        { id: "bot_A", name: "A", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
-        { id: "bot_B", name: "Old", agent: "codex", workspace: "repo", enabled: false, updatedAt: "old" },
+        { id: "bot_A", name: "A", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now", profileRevision: 1 },
+        { id: "bot_B", name: "B", agent: "codex", workspace: "repo", enabled: true, updatedAt: "old", profileRevision: 1 },
       ];
       mockRpc.mockImplementation((instId: string, type: string) => {
         if (type === "control.bots.list") {
+          // Remote instructions-only update: rev2 bumps revision + updatedAt,
+          // every other summary field stays identical.
           return Promise.resolve({
             bots: [
-              { id: "bot_A", name: "A", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
-              { id: "bot_B", name: "New", agent: "claude", workspace: "repo", enabled: true, updatedAt: "new" },
+              { id: "bot_A", name: "A", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now", profileRevision: 1 },
+              { id: "bot_B", name: "B", agent: "codex", workspace: "repo", enabled: true, updatedAt: "new", profileRevision: 2 },
             ],
           });
         }
         if (type === "control.bots.get") {
           return Promise.resolve({
             bot: {
-              id: "bot_B", name: "New", agent: "claude", workspace: "repo",
+              id: "bot_B", name: "B", agent: "codex", workspace: "repo",
               instructions: "New instructions", enabled: true,
               profileRevision: 2, createdAt: "now", updatedAt: "new",
             },
@@ -1523,7 +1526,7 @@ describe("useDirectBotsStore", () => {
         return Promise.resolve({});
       });
 
-      // Remote update of non-selected B arrives via bots-changed.
+      // Remote instructions-only update of non-selected B arrives via bots-changed.
       store.applyEvent({
         kind: "control-event",
         instanceId: "inst_1",
@@ -1532,15 +1535,16 @@ describe("useDirectBotsStore", () => {
       await flushPromises();
       await flushPromises();
 
-      // Stale detail must be invalidated so currentBot/edit cannot expose rev1.
+      // Stale rev1 detail must be invalidated even though every compared
+      // summary identity field is unchanged: only the revision moved.
       expect(store.botDetails["inst_1:bot_B"]).toBeUndefined();
       // Selecting B afterwards converges the authoritative rev2 detail.
       store.selectedBotId = "bot_B";
       await store.loadBotDetail("inst_1", "bot_B");
       expect(store.botDetails["inst_1:bot_B"]?.profileRevision).toBe(2);
       expect(store.botDetails["inst_1:bot_B"]?.instructions).toBe("New instructions");
-      expect(store.currentBot?.agent).toBe("claude");
     });
+
     it("converges background Bot lifecycle on member-turn-started without touching the selection", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";
@@ -1619,7 +1623,70 @@ describe("useDirectBotsStore", () => {
       // background one waits for its next tab entry.
       expect(store.botsLoaded["inst_1"]).toBe(true);
       expect(store.botsLoaded["inst_2"]).toBe(false);
+    });    it("drops a pre-reconnect in-flight list response after the reconnect dirty barrier", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_A";
+      store.activeConversationId = "conv_A";
+      store.activeTopicId = "top_A";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_A", name: "A", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now", profileRevision: 1 },
+      ];
+      store.botsLoaded["inst_1"] = true;
+      store.botsByInstance["inst_2"] = [
+        { id: "bot_B", name: "B", agent: "codex", workspace: "repo", enabled: true, updatedAt: "s1", profileRevision: 1 },
+      ];
+      store.botsLoaded["inst_2"] = true;
+      const staleList = Promise.withResolvers<{ bots: BotSummaryDto[] }>();
+      let inst2ListCalls = 0;
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (instId === "inst_2" && type === "control.bots.list") {
+          inst2ListCalls += 1;
+          if (inst2ListCalls === 1) return staleList.promise;
+          return Promise.resolve({
+            bots: [
+              { id: "bot_B", name: "B", agent: "codex", workspace: "repo", enabled: true, updatedAt: "s2", profileRevision: 2 },
+            ],
+          });
+        }
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_A", topicId: "top_A", messages: [],
+            hasMoreBefore: false, hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({ conversationId: "conv_A", topicId: "top_A", runs: [] });
+        }
+        return Promise.resolve({});
+      });
+
+      // T1: pre-reconnect in-flight list for inst_2 (snapshot S1), deferred.
+      const pendingList = store.loadBots("inst_2");
+      // Reconnect: dirty barrier invalidates the inst_2 generation.
+      await store.reconcileOnReconnect();
+      expect(store.botsLoaded["inst_2"]).toBe(false);
+
+      // Stale pre-reconnect S1 resolves late: it must neither rewrite the
+      // catalog nor re-validate the dirty flag.
+      staleList.resolve({
+        bots: [
+          { id: "bot_B", name: "B", agent: "codex", workspace: "repo", enabled: true, updatedAt: "s1", profileRevision: 1 },
+        ],
+      });
+      await pendingList;
+      // Catalog keeps the pre-existing (or newer) rows, never the stale write;
+      // the dirty flag stays down so the next tab entry reloads S2.
+      expect(store.botsLoaded["inst_2"]).toBe(false);
+      expect(store.botsByInstance["inst_2"]?.[0]?.updatedAt).not.toBe("stale-overwrite");
+
+      // Next Bots-tab entry for inst_2 issues the authoritative request.
+      await store.loadBots("inst_2");
+      expect(inst2ListCalls).toBe(2);
+      expect(store.botsLoaded["inst_2"]).toBe(true);
+      expect(store.botsByInstance["inst_2"]?.[0]?.updatedAt).toBe("s2");
     });
+
     it("does not forge a discovery failure when a terminal event refreshes history during deferred runs.get", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";

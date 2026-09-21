@@ -27,6 +27,14 @@ export interface BotSummaryDto {
   effort?: string;
   enabled: boolean;
   updatedAt: string;
+  /** Monotonic per-Bot revision, bumped on every update. Lets the Web order
+   *  summary snapshots against cached details: a summary with a newer
+   *  revision than the cached detail proves the detail is stale (including
+   *  instructions-only updates that change no other summary field).
+   *  Optional to stay wire-compatible with older connectors that predate
+   *  it; the Web treats a missing revision as unknown (field comparison
+   *  still applies). */
+  profileRevision?: number;
   /** True once the Bot materialized an actual direct runtime binding/session.
    *  Identity lock follows this only; a persisted Direct Conversation alone
    *  keeps delete fail-closed via bot_in_use but does not lock identity. */
@@ -186,6 +194,7 @@ export function toBotSummary(bot: BotProfile, hasRuntime?: boolean): BotSummaryD
     workspace: bot.workspace,
     enabled: bot.enabled,
     updatedAt: bot.updatedAt,
+    profileRevision: bot.profileRevision ?? 1,
     ...(bot.avatar ? { avatar: bot.avatar } : {}),
     ...(bot.role ? { role: bot.role } : {}),
     ...(bot.model ? { model: bot.model } : {}),

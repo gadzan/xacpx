@@ -374,25 +374,29 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       for (const b of prevList) {
         if (b.hasRuntime) prevRuntime[b.id] = true;
       }
-      // A refreshed summary is authoritative for the identity fields it
-      // carries: drop cached details that no longer match it, so a stale
-      // detail (old name/enabled/instructions/model) cannot keep shadowing
-      // the newer summary via the detail-first currentBot lookup.
+      // A refreshed summary is authoritative: drop cached details that are
+      // older than it. Field comparison alone cannot catch instructions-only
+      // updates (instructions never appear on the summary); the monotonic
+      // profileRevision covers those. Either signal invalidates.
       const nextDetails = { ...botDetails.value };
       for (const b of res.bots) {
         const detailKey = `${targetInstanceId}:${b.id}`;
         const cached = nextDetails[detailKey];
-        if (
-          cached
-          && (cached.name !== b.name
-            || cached.agent !== b.agent
-            || cached.workspace !== b.workspace
-            || (cached.model ?? undefined) !== (b.model ?? undefined)
-            || (cached.effort ?? undefined) !== (b.effort ?? undefined)
-            || cached.enabled !== b.enabled
-            || (cached.avatar ?? undefined) !== (b.avatar ?? undefined)
-            || (cached.role ?? undefined) !== (b.role ?? undefined))
-        ) {
+        if (!cached) continue;
+        const revisionStale =
+          typeof cached.profileRevision === "number"
+          && typeof b.profileRevision === "number"
+          && b.profileRevision > cached.profileRevision;
+        const fieldsDiffer =
+          cached.name !== b.name
+          || cached.agent !== b.agent
+          || cached.workspace !== b.workspace
+          || (cached.model ?? undefined) !== (b.model ?? undefined)
+          || (cached.effort ?? undefined) !== (b.effort ?? undefined)
+          || cached.enabled !== b.enabled
+          || (cached.avatar ?? undefined) !== (b.avatar ?? undefined)
+          || (cached.role ?? undefined) !== (b.role ?? undefined);
+        if (revisionStale || fieldsDiffer) {
           delete nextDetails[detailKey];
           botDetailSeq[detailKey] = (botDetailSeq[detailKey] ?? 0) + 1;
         }
@@ -1474,12 +1478,13 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   async function reconcileOnReconnect(): Promise<void> {
     // WS events are lost while disconnected: every previously loaded Bot
     // catalog may be stale (create/update/delete, hasRuntime). Mark all
-    // loaded instances dirty so the next Bots-tab entry reloads
-    // authoritatively even if the selected-instance reconcile below returns
-    // early; then reconcile the selected instance in depth.
+    // loaded instances dirty AND invalidate their list generations so a
+    // pre-reconnect in-flight response cannot re-validate the dirty barrier
+    // when it lands late; then reconcile the selected instance in depth.
     for (const loadedId of Object.keys(botsLoaded.value)) {
       if (botsLoaded.value[loadedId]) {
         botsLoaded.value = { ...botsLoaded.value, [loadedId]: false };
+        botsListSeq[loadedId] = (botsListSeq[loadedId] ?? 0) + 1;
       }
     }
     const iId = instanceId.value;
