@@ -359,9 +359,9 @@ function validToolDetail(d) {
     case "read":
       return isStr(d.path) && optStr(d.lines) && optStr(d.preview);
     case "command":
-      return isStr(d.command) && optStr(d.output) && optNum(d.exitCode);
+      return isStr(d.command) && optStr(d.output) && optNum(d.exitCode) && optBool(d.truncated);
     case "search":
-      return isStr(d.query) && optStr(d.output);
+      return isStr(d.query) && optStr(d.output) && optNonNegInt(d.count) && optBool(d.truncated);
     case "text":
       return isStr(d.text) && optStr(d.output);
     case "fields":
@@ -384,7 +384,11 @@ function validToolStep(s) {
     return false;
   if (c.durationMs !== undefined && !finiteNonNegative(c.durationMs))
     return false;
+  if (c.startedAt !== undefined && !finiteNonNegative(c.startedAt))
+    return false;
   if (!optStr(c.error))
+    return false;
+  if (!optStr(c.terminalId))
     return false;
   if (!optStr(c.agentMessageId))
     return false;

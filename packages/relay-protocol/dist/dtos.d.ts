@@ -123,10 +123,13 @@ export type ToolDetailDto = {
     command: string;
     output?: string;
     exitCode?: number;
+    truncated?: boolean;
 } | {
     type: "search";
     query: string;
     output?: string;
+    count?: number;
+    truncated?: boolean;
 } | {
     type: "text";
     text: string;
@@ -151,6 +154,11 @@ export interface ToolStepDto {
     status: ToolStepStatus;
     title: string;
     durationMs?: number;
+    /** First-frame epoch ms for this step (connector clock), so a still-running step
+     *  can render a live elapsed timer. STEP-level — unrelated to
+     *  `MessageRecordDto.startedAt`, which is the TURN's start. Present only while
+     *  running; absent on finished/history rows (they carry `durationMs` instead). */
+    startedAt?: number;
     detail?: ToolDetailDto;
     /** Failure message, present only when status === "error". */
     error?: string;
@@ -158,6 +166,10 @@ export interface ToolStepDto {
      * tool when the connector extracted a valid structured receipt (messageId).
      * Enables anchoring the sent peer-message card to this exact step. */
     agentMessageId?: string;
+    /** Terminal id when the driver routed the call through an agent-side terminal
+     * and reports only `{type:"terminal",terminalId}` (Kimi). The output is not on
+     * the wire, so the UI can say so instead of showing an empty result. */
+    terminalId?: string;
 }
 /** One entry in a turn's canonical ordered wire transcript, retained for transport,
  *  persistence, and presentation timeline construction. Consecutive text may be

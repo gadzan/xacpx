@@ -5,13 +5,19 @@ const TEXT_CAP = 8000;
 const DIFF_CAP = 4000;
 const INSTRUCTION_CAP = 300;
 
+/** Truncation markers. `cap` appends a suffix marker and `capTail` a prefix one;
+ *  the web's error-banner de-duplication and diff-stat guards must recognise BOTH,
+ *  so both strings live here and are mirrored in the web's ToolStepCard. */
+export const TRUNCATED_SUFFIX_MARK = "\n…(truncated)";
+export const TRUNCATED_PREFIX_MARK = "(truncated)…\n";
+
 function cap(s: string, n = TEXT_CAP): string {
-  return s.length > n ? s.slice(0, n) + "\n…(truncated)" : s;
+  return s.length > n ? s.slice(0, n) + TRUNCATED_SUFFIX_MARK : s;
 }
 /** Keep the tail instead of the head — for streams that append over time (subagent
- * output), so the newest content keeps changing after the cap is hit. */
+ *  output), so the newest content keeps changing after the cap is hit. */
 function capTail(s: string, n = TEXT_CAP): string {
-  return s.length > n ? "(truncated)…\n" + s.slice(s.length - n) : s;
+  return s.length > n ? TRUNCATED_PREFIX_MARK + s.slice(s.length - n) : s;
 }
 function asString(v: unknown): string | undefined {
   if (typeof v === "string") return v;
@@ -45,6 +51,14 @@ function textFromContentBlock(cb: Record<string, unknown>): string | undefined {
       const uri = asString(r.uri);
       return uri ? `[resource] ${uri}` : undefined;
     }
+    case "terminal": {
+      // Some drivers (Kimi) route a command through a terminal and report only
+      // `{type:"terminal",terminalId}` on both the in-progress and terminal frames,
+      // with the actual output held agent-side. Returning undefined here made a
+      // failed call render as a bare red triangle with no explanation at all.
+      const terminalId = asString(cb.terminalId) ?? asString(cb.id);
+      return terminalId ? `[terminal ${terminalId}]` : "[terminal]";
+    }
     default:
       return undefined; // image/audio/unknown — nothing useful to show as text
   }
@@ -61,6 +75,13 @@ function textFromBlocks(blocks: Record<string, unknown>[]): string | undefined {
 }
 function diffBlock(blocks: Record<string, unknown>[]): Record<string, unknown> | undefined {
   return blocks.find((b) => b.type === "diff");
+}
+/** Id of the agent-side terminal a call was routed through, when the driver reports
+ *  the call as a bare `{type:"terminal",terminalId}` block with no output text. */
+function terminalBlockId(blocks: Record<string, unknown>[]): string | undefined {
+  const block = blocks.find((b) => b.type === "terminal");
+  if (!block) return undefined;
+  return asString(block.terminalId) ?? asString(block.id);
 }
 function parsedCmd0(input: Record<string, unknown>): Record<string, unknown> | undefined {
   const pc = input.parsed_cmd;
@@ -80,6 +101,22 @@ function readLines(input: Record<string, unknown>): string | undefined {
   if (typeof offset === "number" && typeof limit === "number") return `${offset}–${offset + limit}`;
   if (typeof limit === "number") return `first ${limit}`;
   return undefined;
+}
+
+/** True when an adapter-supplied title tells the user nothing the card header's
+ *  verb + a `rawInput`-derived title would not: empty, the bare tool name, or a
+ *  bare regex/glob (some drivers put the search pattern itself in the terminal
+ *  frame's title, e.g. `display_name|displayName|clear`). In those cases the
+ *  connector substitutes a specific field from the tool's own arguments.
+ *  A title that merely describes progress ("Running: ls …") is NOT degraded — it
+ *  carries information the arguments do not. */
+function isDegradedTitle(title: string | undefined, toolName: string): boolean {
+  const trimmed = (title ?? "").trim();
+  if (trimmed.length === 0) return true;
+  if (trimmed.toLowerCase() === toolName.trim().toLowerCase()) return true;
+  // A bare alternation/regex with no surrounding context reads as noise.
+  if (/^[^\s]*\|[^\s]*$/.test(trimmed)) return true;
+  return false;
 }
 /** Adapter bookkeeping that names the tool rather than describing the call
  *  (cursor-agent stamps every rawInput with `_toolName`). Keep in sync with
@@ -240,6 +277,20 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
   const terminalOut = asString(output.formatted_output);
   const pc = parsedCmd0(input);
   const fallbackTitle = event.summary ?? event.toolName;
+  const terminalId = terminalBlockId(blocks);
+  // Structured output metadata (OpenCode's `rawOutput.metadata`): whether the
+  // output was truncated, and a machine count of matches/files when the driver
+  // reports one. Preferred over counting rendered lines, which undercounts when
+  // the output was capped.
+  const meta = rec(output.metadata);
+  const metaTruncated = typeof meta.truncated === "boolean" ? meta.truncated : undefined;
+  const metaCount = typeof meta.count === "number"
+    ? meta.count
+    : typeof meta.matches === "number"
+      ? meta.matches
+      : typeof meta.totalMatches === "number"
+        ? meta.totalMatches
+        : undefined;
   // On failure, surface the agent/tool error message so the web can show it in red.
   // Agents put it in different places: rawOutput.error (opencode), a content text
   // block, or the generic output field.
@@ -267,7 +318,9 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
     kind: event.kind,
     status: event.status,
     ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
+    ...(event.startedAt !== undefined ? { startedAt: event.startedAt } : {}),
     ...(errMsg ? { error: cap(errMsg, 2000) } : {}),
+    ...(terminalId ? { terminalId } : {}),
     ...(agentMessageId ? { agentMessageId } : {}),
   };
 
@@ -289,6 +342,8 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
     const diff = diffBlock(blocks);
     const path =
       asString(diff?.path) ?? locationPath(event) ?? asString(input.file_path) ?? asString(input.path) ?? fallbackTitle;
+    // A degraded adapter title must not mask the file the edit touched.
+    const title = isDegradedTitle(fallbackTitle, event.toolName) ? path : fallbackTitle;
     const oldText = asString(diff?.oldText) ?? asString(input.old_string) ?? asString(input.oldText);
     const newText = asString(diff?.newText) ?? asString(input.new_string) ?? asString(input.newText) ?? asString(input.content);
     const instruction = asString(input.instruction) ?? asString(input.description);
@@ -308,7 +363,7 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
         newText: cap(newText ?? "", DIFF_CAP),
         ...(instruction ? { instruction: cap(instruction, INSTRUCTION_CAP) } : {}),
       };
-      return { ...base, title: path, detail };
+      return { ...base, title, detail };
     }
     // The title prefers the ACP location over the input aliases; only drop the
     // input key when it actually supplied the title, so a location-won title
@@ -316,43 +371,66 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
     const locPath = locationPath(event);
     const picked = locPath === undefined ? firstPresent(input, ["file_path", "path"]) : undefined;
     const fields = primitiveFields(input).filter((f) => f.label !== picked?.key);
-    if (fields.length === 0) return { ...base, title: path };
-    return { ...base, title: path, detail: { type: "fields", fields } };
+    if (fields.length === 0) return { ...base, title };
+    return { ...base, title, detail: { type: "fields", fields } };
   }
 
   if (event.kind === "read") {
     const path = asString(input.file_path) ?? asString(input.path) ?? asString(pc?.name) ?? locationPath(event) ?? fallbackTitle;
+    // Same guard as edit: a degraded adapter title must not mask the file read.
+    const title = isDegradedTitle(fallbackTitle, event.toolName) ? path : fallbackTitle;
     const lines = readLines(input);
     // `output.content` is cursor-agent's file body — without it a Cursor read card
     // has no preview at all, since it sends neither content blocks nor stdout.
     const preview = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? asString(output.content) ?? rawOutputText;
     // The header already shows the path: a detail carrying only the path echoes it.
-    if (!lines && !preview) return { ...base, title: path };
-    const detail: ToolDetailDto = { type: "read", path, ...(lines ? { lines } : {}), ...(preview ? { preview: cap(preview) } : {}) };
-    return { ...base, title: path, detail };
+    if (!lines && !preview) return { ...base, title };
+    const detail: ToolDetailDto = { type: "read", path, ...(lines ? { lines } : {}), ...(preview ? { preview: capTail(preview) } : {}) };
+    return { ...base, title, detail };
   }
 
   if (event.kind === "execute") {
     const command = asString(input.command) ?? asString(input.cmd) ?? asString(pc?.cmd) ?? fallbackTitle;
+    const title = isDegradedTitle(fallbackTitle, event.toolName) ? command : fallbackTitle;
     const out = asString(output.stdout) ?? terminalOut ?? textFromBlocks(blocks) ?? asString(output.text) ?? rawOutputText;
     const exitCode = typeof output.exitCode === "number" ? output.exitCode : typeof output.exit_code === "number" ? output.exit_code : undefined;
     // The header already shows the command: skip the drawer when there is nothing below it.
-    if (!out && exitCode === undefined) return { ...base, title: command };
-    const detail: ToolDetailDto = { type: "command", command, ...(out ? { output: cap(out) } : {}), ...(exitCode !== undefined ? { exitCode } : {}) };
-    return { ...base, title: command, detail };
+    if (!out && exitCode === undefined) return { ...base, title };
+    const detail: ToolDetailDto = {
+      type: "command",
+      command,
+      ...(out ? { output: capTail(out) } : {}),
+      ...(exitCode !== undefined ? { exitCode } : {}),
+      ...(metaTruncated !== undefined ? { truncated: metaTruncated } : {}),
+    };
+    return { ...base, title, detail };
   }
 
   if (event.kind === "search") {
     const globPattern = asString(input.glob_pattern);
     const targetDirectory = asString(input.target_directory);
+    const scope = targetDirectory ?? asString(input.path);
+    const pattern = asString(input.query) ?? asString(input.pattern) ?? asString(input.search) ?? asString(input.command) ?? asString(pc?.cmd);
     const query = globPattern
-      ? (targetDirectory ? `${globPattern} in ${targetDirectory}` : globPattern)
-      : asString(input.query) ?? asString(input.pattern) ?? asString(input.search) ?? asString(input.command) ?? asString(pc?.cmd) ?? fallbackTitle;
+      ? (scope ? `${globPattern} in ${scope}` : globPattern)
+      : pattern
+        ? (scope ? `${pattern} in ${scope}` : pattern)
+        : fallbackTitle;
+    // A bare regex in the adapter title is noise; the derived query is specific.
+    const title = isDegradedTitle(fallbackTitle, event.toolName) ? query : fallbackTitle;
     const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText ?? countSummary(output);
     // The header already shows the query: a detail carrying only the query echoes it.
-    if (!out) return { ...base, title: query };
-    const detail: ToolDetailDto = { type: "search", query, ...(out ? { output: cap(out) } : {}) };
-    return { ...base, title: query, detail };
+    if (!out) return { ...base, title };
+    const detail: ToolDetailDto = {
+      type: "search",
+      query,
+      ...(out ? { output: capTail(out) } : {}),
+      // Prefer the driver's machine count; the UI falls back to counting rendered
+      // lines only when the driver reported none.
+      ...(metaCount !== undefined ? { count: metaCount } : {}),
+      ...(metaTruncated !== undefined ? { truncated: metaTruncated } : {}),
+    };
+    return { ...base, title, detail };
   }
 
   if (event.kind === "think") {

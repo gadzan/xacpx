@@ -377,9 +377,9 @@ function validToolDetail(d: Record<string, unknown>): boolean {
     case "read":
       return isStr(d.path) && optStr(d.lines) && optStr(d.preview);
     case "command":
-      return isStr(d.command) && optStr(d.output) && optNum(d.exitCode);
+      return isStr(d.command) && optStr(d.output) && optNum(d.exitCode) && optBool(d.truncated);
     case "search":
-      return isStr(d.query) && optStr(d.output);
+      return isStr(d.query) && optStr(d.output) && optNonNegInt(d.count) && optBool(d.truncated);
     case "text":
       return isStr(d.text) && optStr(d.output);
     case "fields":
@@ -401,7 +401,9 @@ function validToolStep(s: unknown): boolean {
   if (typeof c.status !== "string" || !TOOL_STEP_STATUSES.has(c.status)) return false;
   if (!optStr(c.parentToolCallId) || (c.isSubagent !== undefined && typeof c.isSubagent !== "boolean")) return false;
   if (c.durationMs !== undefined && !finiteNonNegative(c.durationMs)) return false;
+  if (c.startedAt !== undefined && !finiteNonNegative(c.startedAt)) return false;
   if (!optStr(c.error)) return false;
+  if (!optStr(c.terminalId)) return false;
   if (!optStr(c.agentMessageId)) return false;
   if (c.detail !== undefined) {
     if (typeof c.detail !== "object" || c.detail === null) return false;
