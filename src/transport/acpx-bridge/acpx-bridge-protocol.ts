@@ -137,8 +137,12 @@ export interface ResolveElicitationRequestParams {
   /** Exact originating human turn, when the daemon has a trusted route. */
   interactionId?: string;
   /**
-   * Agent driving the owning turn, pinned to the runtime worker's ensure
-   * identity. ACP requires the client to identify the requesting Agent.
+   * Agent driving the owning turn, from that turn's prompt params
+   * (`input.agent`). ACP requires the client to identify the requesting Agent.
+   *
+   * Do NOT source this from the runtime worker's ensure identity. That was the
+   * round 7 Blocking finding: ensure identity describes a pooled worker, not
+   * the agent the user chose for this prompt.
    */
   agentName?: string;
   /** ACP outer `elicitation/create` JSON-RPC id. */

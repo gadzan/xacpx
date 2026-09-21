@@ -706,6 +706,96 @@ test("handles bridge-originated resolveElicitationRequest and returns response t
   ]);
 });
 
+const ANSWER_SENTINEL = "user-secret-answer-9f3a1c";
+
+test("a resolved elicitation answer is never retained as a replay payload", async () => {
+  // Regression: the generic `completedBridgeResponses` cache stored the full
+  // encoded response for every bridge RPC, and a successful elicitation
+  // response is the user's answer:
+  //   {"action":"accept","content":{"note":"<user input>"}}
+  // The broker drops its pending entry when the decision lands, so caching the
+  // response kept the answer bytes alive in this long-lived daemon Map until
+  // 256 later RPCs or a bridge disconnect evicted them.
+  const writes: string[] = [];
+  const client = new AcpxBridgeClient((line) => {
+    writes.push(line);
+  }, {
+    onBridgeRequest: async () => ({ action: "accept", content: { note: ANSWER_SENTINEL } }),
+  });
+
+  const elicit = () => JSON.stringify({
+    direction: "bridge-to-daemon",
+    rpcId: "rpc-elicit-answer",
+    method: "resolveElicitationRequest",
+    params: {
+      logicalSessionId: "s1",
+      sessionKey: "s1",
+      promptRequestId: "r1",
+      elicitationRequestId: "e1",
+      interactionId: "ix-1",
+      acpRequestId: 42,
+      request: {
+        sessionId: "acp-1",
+        mode: "form",
+        message: "which file?",
+        requestedSchema: { type: "object", properties: { file: { type: "string" } }, required: ["file"] },
+      },
+      workerGeneration: "w1",
+    },
+  });
+
+  client.handleLine(elicit());
+  await new Promise((r) => setTimeout(r, 10));
+  // The bridge did get the real answer, once.
+  expect(writes.join("")).toContain(ANSWER_SENTINEL);
+
+  // The answer must not survive in the replay cache. Re-delivering the same
+  // rpcId must suppress the duplicate WITHOUT echoing the stored answer back.
+  writes.length = 0;
+  client.handleLine(elicit());
+  await new Promise((r) => setTimeout(r, 10));
+
+  const replay = writes.join("");
+  expect(replay).not.toContain(ANSWER_SENTINEL);
+  expect(replay).toContain("BRIDGE_RPC_CANCELED");
+});
+
+test("a non-sensitive bridge RPC still replays its encoded response for idempotence", async () => {
+  // Splitting duplicate suppression from response replay must not break the
+  // ordinary case: an idempotent re-request still gets the exact response.
+  const writes: string[] = [];
+  const client = new AcpxBridgeClient((line) => {
+    writes.push(line);
+  }, {
+    onBridgeRequest: async () => ({ outcome: "allow_once" }),
+  });
+
+  const line = JSON.stringify({
+    direction: "bridge-to-daemon",
+    rpcId: "rpc-plain-1",
+    method: "resolvePermissionRequest",
+    params: {
+      logicalSessionId: "s1",
+      sessionKey: "s1",
+      requestId: "r1",
+      toolCallId: "t1",
+      policyGeneration: 1,
+      workerGeneration: "w1",
+    },
+  });
+
+  client.handleLine(line);
+  await new Promise((r) => setTimeout(r, 10));
+  writes.length = 0;
+  client.handleLine(line);
+  await new Promise((r) => setTimeout(r, 10));
+
+  // Duplicate suppressed, but the original response is replayed verbatim.
+  expect(writes).toEqual([
+    '{"direction":"daemon-to-bridge","rpcId":"rpc-plain-1","ok":true,"result":{"outcome":"allow_once"}}\n',
+  ]);
+});
+
 test("always sets the permission interaction capability explicitly so stale parent env cannot leak in", () => {
   // The spawn env layers over process.env: omitting the key would let an
   // inherited XACPX_BRIDGE_PERMISSION_INTERACTION_CAPABLE=1 flip bridge

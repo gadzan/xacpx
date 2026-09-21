@@ -60,10 +60,15 @@ export type RuntimeElicitationRequest = {
   /** Exact originating human turn, when the prompt carried one. */
   interactionId?: string;
   /**
-   * Agent driving the owning turn, from the runtime worker's ensure identity.
-   * ACP User Interaction Requirements oblige the client to identify the
-   * requesting Agent, so this must come from the real turn and never from a
-   * session-alias lookup that a concurrent or later turn could change.
+   * Agent driving the owning turn, taken from the turn's own prompt params
+   * (`input.agent`). ACP User Interaction Requirements oblige the client to
+   * identify the requesting Agent, so this must come from the real turn and
+   * never from a session-alias lookup that a concurrent or later turn could
+   * change.
+   *
+   * Do NOT source this from the worker's ensure identity. That was the round 7
+   * Blocking finding: ensure identity describes a pooled worker, not the agent
+   * the user chose for this prompt.
    */
   agentName?: string;
   /** Raw ACP `elicitation/create` request at the core boundary. */

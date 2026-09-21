@@ -574,8 +574,99 @@ and confirming a test fails:
 | R9 | preflight moved after validation | oversized-URI ordering test |
 | R10 | length guard moved after canonicalisation | 3 array-admission tests |
 
+## Review round 11 / full re-sweep (head `879ef13b`, merge commit `ed4c51f6`)
+
+One Blocking and one Medium, both fixed and mutation-verified.
+
+### 1. [Blocking] A Proxy `length` defeated the round 10 admission gate
+
+Reading the property once is not the same as snapshotting its semantics.
+`Array.isArray` accepts a Proxy, and a Proxy `get("length")` trap can return an
+object whose `valueOf()` re-runs on every numeric coercion — and `length` is
+coerced by the two `>` admission checks, by `new Array(length)` and by the loop
+condition. Returning `1` for admission and `100_000_000` afterwards rebuilt
+exactly the traversal rounds 9 and 10 removed.
+
+`length` is now reduced to a canonical primitive before any coercion:
+
+```ts
+if (typeof length !== "number" || !Number.isSafeInteger(length) || length < 0) {
+  return { ok: false, reason: "accepted answer exceeds the core size limit" };
+}
+```
+
+and only that primitive is used afterwards. Regressions use Proxy-wrapped
+arrays with a counting `valueOf()` and assert `valueOfCalls === 0` **and**
+`indexReads === 0`, so removing the `typeof length === "number"` guard kills the
+test rather than merely changing the error reason.
+
+### 2. [Medium] The bridge replay cache retained elicitation answers
+
+The generic `completedBridgeResponses` Map stored the full encoded response for
+every bridge-originated RPC. A successful `resolveElicitationRequest` response
+is the user's answer, so the answer bytes stayed alive in a long-lived daemon
+Map until 256 later RPCs or a bridge disconnect evicted them — a retention path
+outside the broker's privacy contract.
+
+Duplicate suppression and response replay are now separate. Sensitive methods
+keep an rpcId **tombstone** (`replayable: false`) and fail closed on a repeat
+with `BRIDGE_RPC_CANCELED`, rather than replaying the answer or re-running the
+renderer (which would re-prompt the user). Non-sensitive methods replay their
+exact encoded response, preserving idempotence. Verified by mutation: removing
+the tombstone split fails the retention regression.
+
+### Non-blocking items from the same sweep
+
+- **Unknown string `format`**: see Deferred — ACP RFD says unknown `format` is
+  an annotation, but pinned SDK 1.4.0 narrows to the four known formats upstream,
+  so no failing input is reachable today. Recorded as SDK-upgrade debt with the
+  required test shape.
+- **`package-lock.json`**: root direct-dependency metadata now includes `ajv` /
+  `ajv-formats`. `npm ci` was unaffected (both present transitively). Done as a
+  surgical edit because `npm install --package-lock-only` on the local npm
+  10.9.3 rewrote unrelated `peer: true` markers relative to CI's npm 11.19.0.
+- **Three stale security comments**: `elicitation-interaction-broker.ts`,
+  `runtime-worker-protocol.ts` and `acpx-bridge-protocol.ts` still claimed
+  `agentName` came from the worker's **ensure identity**. Code was already
+  correct (per-turn prompt `input.agent`); the comments are now correct too, and
+  each states explicitly that ensure identity was the round 7 Blocking finding,
+  so a future reader cannot "helpfully" reintroduce it.
+- **PR body test count** ("91 new tests") was stale; updated.
+
+## Final totals after round 11
+
+| Suite | Tests |
+|---|---|
+| `turn-interaction-registry.test.ts` | 13 |
+| `elicitation-schema.test.ts` | 126 |
+| `elicitation-interaction-broker.test.ts` | 41 |
+| `elicitation-plugin-contract.test.ts` | 6 |
+| `channel-elicitation-capability.test.ts` | 9 |
+| `acpx-bridge-client.test.ts` | 47 |
+| `runtime-adapter-elicitation.test.ts` (real acpx) | 4 |
+| `runtime-elicitation-agent-identity.test.ts` (real worker) | 3 |
+| `runtime-elicitation-listener-balance.test.ts` | 6 |
+
+Total new: **207**. M1 unit suites 334/334 green; real-acpx E2E 24/25 (the one
+failure is the pre-existing `PR9-A E2E`); `npx tsc --noEmit` 0 errors.
+
 ## Deferred
 
+- **Unknown string `format` rejection is forward-compat debt, not a merge
+  blocker.** ACP RFD says unknown string `format` is an annotation and a client
+  must not reject solely for it, but `normalizeFormRequest` currently rejects
+  anything outside `email | uri | date | date-time` (`elicitation-schema.ts`
+  string branch). The pinned `@agentclientprotocol/sdk` **1.4.0** already
+  narrows `zStringFormat` to exactly those four, so such input is normally
+  rejected upstream of xacpx today — which is also why no failing behaviour can
+  be produced against the current dependency stack. **Must be revisited when
+  the SDK is upgraded**: widen xacpx to accept-and-ignore unknown formats, and
+  keep only the four known ones as validated. Tests to add at that point:
+  unknown format accepted as a plain string, and a known format still
+  validated.
+- `package-lock.json` now records `ajv` / `ajv-formats` as direct dependencies
+  (previously missing from the lock's root metadata; `npm ci` was unaffected
+  because both were already present transitively).
 - No production channel renderer (M2 Discord, M4 Feishu).
 - M3 Relay Web + Conversation integration — **blocked on PR #350** (still
   open, not merged).

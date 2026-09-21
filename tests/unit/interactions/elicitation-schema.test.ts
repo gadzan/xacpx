@@ -1048,6 +1048,94 @@ describe("validateElicitationAnswer", () => {
     expect(result.reason).not.toContain("is not a uri");
   });
 
+  test("a proxied array cannot bypass the length admission with a valueOf trap", () => {
+    // Regression: reading `length` once is not the same as snapshotting its
+    // semantics. `Array.isArray` accepts a Proxy, and a Proxy `get("length")`
+    // trap can return an object whose `valueOf()` re-runs on every numeric
+    // coercion — `length` is coerced by the two `>` checks, by `new Array()`
+    // and by the loop condition. Returning 1 for admission and 1000 afterwards
+    // rebuilt exactly the traversal rounds 9 and 10 removed.
+    const multi = normalizeOk(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { tags: { type: "array", items: { type: "string", enum: ["a", "b", "c"] } } },
+        required: ["tags"],
+      },
+    }))[0];
+
+    let valueOfCalls = 0;
+    let indexReads = 0;
+    const target: string[] = new Array(100_000_000);
+    const hostile = new Proxy(target, {
+      get(trapTarget, prop, receiver) {
+        if (prop === "length") {
+          // Small while the admission checks run, enormous afterwards.
+          return {
+            valueOf() {
+              valueOfCalls += 1;
+              return valueOfCalls <= 2 ? 1 : 100_000_000;
+            },
+          };
+        }
+        if (typeof prop === "string" && /^\d+$/.test(prop)) indexReads += 1;
+        return Reflect.get(trapTarget, prop, receiver);
+      },
+    });
+
+    const result = validateElicitationAnswer([multi], { tags: hostile });
+    expect(result).toMatchObject({ ok: false });
+    if (result.ok) return;
+    expect(result.reason).toContain("core size limit");
+    // The proof that matters: the length was reduced to a primitive before any
+    // coercion, so the trap's changing value never reached the admission
+    // checks, the allocation, or the loop.
+    expect(valueOfCalls).toBe(0);
+    expect(indexReads).toBe(0);
+  });
+
+  test("a non-integer or negative length is rejected without coercion", () => {
+    const multi = normalizeOk(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { tags: { type: "array", items: { type: "string", enum: ["a", "b", "c"] } } },
+        required: ["tags"],
+      },
+    }))[0];
+
+    let valueOfCalls = 0;
+    const fractional = new Proxy(["a"] as unknown[], {
+      get(trapTarget, prop, receiver) {
+        if (prop === "length") {
+          return {
+            valueOf() {
+              valueOfCalls += 1;
+              return 1.5;
+            },
+          };
+        }
+        return Reflect.get(trapTarget, prop, receiver);
+      },
+    });
+
+    const fractionalResult = validateElicitationAnswer([multi], { tags: fractional });
+    expect(fractionalResult).toMatchObject({ ok: false });
+    expect(valueOfCalls).toBe(0);
+
+    const negative = new Proxy(["a"] as unknown[], {
+      get(trapTarget, prop, receiver) {
+        if (prop === "length") {
+          return {
+            valueOf() {
+              return -1;
+            },
+          };
+        }
+        return Reflect.get(trapTarget, prop, receiver);
+      },
+    });
+    expect(validateElicitationAnswer([multi], { tags: negative })).toMatchObject({ ok: false });
+  });
+
   test("a sparse oversized array is rejected on length alone, with zero index reads", () => {
     // Regression: round 9's canonicalisation ran before any length check, which
     // deleted round 8's O(1) admission gate. A sparse `new Array(N)` forced a

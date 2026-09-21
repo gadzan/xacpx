@@ -936,17 +936,30 @@ export function validateElicitationAnswer(
     // `new Array(100_000_000)` on a 3-option multi-select forced a 100M-entry
     // snapshot before the option-count check could reject it. So:
     //
-    //   1. read `length` ONCE — no index access, no allocation;
+    //   1. read `length` ONCE and reduce it to a canonical primitive;
     //   2. reject on a fixed core bound (`maxOptionsPerField`, and for a
     //      multi-select the field's own option count) BEFORE `new Array()`;
     //   3. only then canonicalise, bailing the moment the character budget is
     //      exceeded.
     let value: unknown = rawValue;
     if (Array.isArray(rawValue)) {
+      // Step 1: canonicalise the length BEFORE any coercion uses it.
+      //
+      // Reading the property once is not the same as snapshotting its
+      // semantics: `Array.isArray` accepts a Proxy, and a Proxy `get("length")`
+      // trap can return an object whose `valueOf()` re-runs on every numeric
+      // coercion. `length` therefore participates in `>` twice, in
+      // `new Array(length)` and in the loop condition — four re-coercions.
+      // Returning 1 for the admission checks and 1000 afterwards rebuilt the
+      // exact traversal rounds 9 and 10 removed. Only a primitive number is
+      // accepted, and only that primitive is used afterwards.
       const length = rawValue.length;
-      // Step 2: admission on length alone. A longer array can never be a legal
-      // multi-select answer, and no field kind accepts an unbounded array, so
-      // this rejects without touching a single index.
+      if (typeof length !== "number" || !Number.isSafeInteger(length) || length < 0) {
+        return { ok: false, reason: "accepted answer exceeds the core size limit" };
+      }
+      // Step 2: admission on the canonical length alone. A longer array can
+      // never be a legal multi-select answer, and no field kind accepts an
+      // unbounded array, so this rejects without touching a single index.
       if (length > ELICITATION_SCHEMA_LIMITS.maxOptionsPerField) {
         return { ok: false, reason: "accepted answer exceeds the core size limit" };
       }
