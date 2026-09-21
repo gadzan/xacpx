@@ -238,6 +238,11 @@ describe("Direct Bot Components", () => {
       ];
       vi.spyOn(instances, "loadFormOptions").mockResolvedValue(undefined);
       const directBots = useDirectBotsStore();
+      vi.spyOn(directBots, "loadBotDetail").mockResolvedValue({
+        id: "bot_1", name: "Existing Bot", agent: "codex", workspace: "repo",
+        enabled: true, profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "2026-09-18T00:00:00.000Z",
+      });
       const updateSpy = vi.spyOn(directBots, "updateBot").mockResolvedValue({
         id: "bot_1",
         name: "Updated Bot",
@@ -270,6 +275,8 @@ describe("Direct Bot Components", () => {
       });
 
       await flushPromises();
+      await flushPromises();
+      expect((wrapper.findAll("button").find((b) => b.text().includes("Save"))!.element as HTMLButtonElement).disabled).toBe(false);
       expect((wrapper.find("#bot-name").element as HTMLInputElement).value).toBe("Existing Bot");
 
       await wrapper.find("#bot-name").setValue("Updated Bot");
@@ -468,6 +475,75 @@ describe("Direct Bot Components", () => {
       expect(staleResult.instructions).toBe("New");
       expect(directBots.botDetails["i1:bot_1"]?.instructions).toBe("New");
       expect(wrapper.vm).toBeTruthy();
+    });
+
+    it("blocks Save until summary-backed detail hydration completes", async () => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "codex", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+          agentCatalog: [],
+        } as never,
+      ];
+      const directBots = useDirectBotsStore();
+      const detailGate = Promise.withResolvers<{ bot: BotDetailDto }>();
+      const updateSpy = vi.spyOn(directBots, "updateBot").mockResolvedValue({
+        id: "bot_1", name: "Renamed", agent: "codex", workspace: "repo",
+        enabled: true, profileRevision: 2,
+        createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "2026-09-18T00:00:00.000Z",
+      });
+      vi.spyOn(directBots, "loadBotDetail").mockImplementation(async () => {
+        const res = await detailGate.promise;
+        directBots.botDetails["i1:bot_1"] = res.bot;
+        return res.bot;
+      });
+      // Summary-backed edit: no instructions field, so hydration is required.
+      const existingBot: BotSummaryDto = {
+        id: "bot_1", name: "Bot", agent: "codex", workspace: "repo",
+        enabled: true, updatedAt: "2026-09-18T00:00:00.000Z",
+      };
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local", bot: existingBot },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      await wrapper.find("#bot-name").setValue("Renamed");
+
+      // Detail still deferred: Save is disabled and submit is gated.
+      const saveBtn = wrapper.findAll("button").find((b) => b.text().includes("Save"));
+      expect(saveBtn).toBeTruthy();
+      expect((saveBtn!.element as HTMLButtonElement).disabled).toBe(true);
+      await wrapper.find("form").trigger("submit.prevent");
+      await flushPromises();
+      expect(updateSpy).not.toHaveBeenCalled();
+      expect(directBots.botDetails["i1:bot_1"]).toBeUndefined();
+
+      // Authoritative detail arrives with backend instructions.
+      detailGate.resolve({
+        bot: {
+          id: "bot_1", name: "Bot", agent: "codex", workspace: "repo",
+          instructions: "Review races", enabled: true, profileRevision: 1,
+          createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "2026-09-18T00:00:00.000Z",
+        },
+      });
+      await flushPromises();
+      await flushPromises();
+
+      // Hydrated: Save is enabled and preserves the backend instructions.
+      expect((saveBtn!.element as HTMLButtonElement).disabled).toBe(false);
+      expect((wrapper.find("#bot-instructions").element as HTMLTextAreaElement).value).toBe("Review races");
+      await wrapper.find("form").trigger("submit.prevent");
+      await flushPromises();
+      expect(updateSpy).toHaveBeenCalledWith("i1", "bot_1", expect.objectContaining({
+        name: "Renamed",
+        instructions: "Review races",
+      }));
     });
 
     it("keeps user-typed instructions when the slow detail fetch resolves", async () => {

@@ -1489,6 +1489,137 @@ describe("useDirectBotsStore", () => {
         expect.arrayContaining(["top_1", "top_B"]),
       );
     });
+    it("drops a non-selected Bot detail when a refreshed summary no longer matches it", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_A";
+      store.botDetails["inst_1:bot_B"] = {
+        id: "bot_B", name: "Old", agent: "codex", workspace: "repo",
+        instructions: "Old instructions", enabled: false,
+        profileRevision: 1, createdAt: "now", updatedAt: "old",
+      };
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_A", name: "A", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        { id: "bot_B", name: "Old", agent: "codex", workspace: "repo", enabled: false, updatedAt: "old" },
+      ];
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.bots.list") {
+          return Promise.resolve({
+            bots: [
+              { id: "bot_A", name: "A", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+              { id: "bot_B", name: "New", agent: "claude", workspace: "repo", enabled: true, updatedAt: "new" },
+            ],
+          });
+        }
+        if (type === "control.bots.get") {
+          return Promise.resolve({
+            bot: {
+              id: "bot_B", name: "New", agent: "claude", workspace: "repo",
+              instructions: "New instructions", enabled: true,
+              profileRevision: 2, createdAt: "now", updatedAt: "new",
+            },
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      // Remote update of non-selected B arrives via bots-changed.
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: { type: "bots-changed" },
+      } as never);
+      await flushPromises();
+      await flushPromises();
+
+      // Stale detail must be invalidated so currentBot/edit cannot expose rev1.
+      expect(store.botDetails["inst_1:bot_B"]).toBeUndefined();
+      // Selecting B afterwards converges the authoritative rev2 detail.
+      store.selectedBotId = "bot_B";
+      await store.loadBotDetail("inst_1", "bot_B");
+      expect(store.botDetails["inst_1:bot_B"]?.profileRevision).toBe(2);
+      expect(store.botDetails["inst_1:bot_B"]?.instructions).toBe("New instructions");
+      expect(store.currentBot?.agent).toBe("claude");
+    });
+    it("converges background Bot lifecycle on member-turn-started without touching the selection", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_A";
+      store.activeConversationId = "conv_A";
+      store.activeTopicId = "top_A";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_A", name: "A", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      store.botsByInstance["inst_2"] = [
+        { id: "bot_B", name: "B", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      store.botsLoaded["inst_2"] = true;
+
+      // Another client executes B on inst_2 while A is selected here.
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_2",
+        event: {
+          type: "member-turn-started",
+          run: {
+            id: "run_B", conversationId: "conv_B", topicId: "top_B",
+            requestMessageId: "msg_B", requestId: "req_B", mode: "explicit",
+            state: "running", profileRevision: 1, createdAt: "now",
+          },
+          memberTurn: {
+            id: "turn_B", runId: "run_B", conversationId: "conv_B", topicId: "top_B",
+            botId: "bot_B", batch: 1, attempt: 1, origin: "human",
+            state: "running", createdAt: "now",
+          },
+        },
+      } as never);
+      await flushPromises();
+
+      expect(store.botsByInstance["inst_2"]?.[0]?.hasRuntime).toBe(true);
+      expect(store.instanceId).toBe("inst_1");
+      expect(store.selectedBotId).toBe("bot_A");
+      expect(store.activeConversationId).toBe("conv_A");
+    });
+    it("marks all loaded catalogs dirty on reconnect so the next tab entry reloads", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_A";
+      store.activeConversationId = "conv_A";
+      store.activeTopicId = "top_A";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_A", name: "A", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      store.botsLoaded["inst_1"] = true;
+      store.botsByInstance["inst_2"] = [
+        { id: "bot_B", name: "B", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      store.botsLoaded["inst_2"] = true;
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (instId === "inst_1" && type === "control.bots.list") {
+          return Promise.resolve({
+            bots: [
+              { id: "bot_A", name: "A", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+            ],
+          });
+        }
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_A", topicId: "top_A", messages: [],
+            hasMoreBefore: false, hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({ conversationId: "conv_A", topicId: "top_A", runs: [] });
+        }
+        return Promise.resolve({});
+      });
+
+      await store.reconcileOnReconnect();
+      // Both catalogs are dirty; the selected one reloads in depth while the
+      // background one waits for its next tab entry.
+      expect(store.botsLoaded["inst_1"]).toBe(true);
+      expect(store.botsLoaded["inst_2"]).toBe(false);
+    });
     it("does not forge a discovery failure when a terminal event refreshes history during deferred runs.get", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";

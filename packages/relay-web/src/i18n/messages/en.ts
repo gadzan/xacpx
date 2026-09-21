@@ -634,6 +634,7 @@ export default {
       nameRequired: "Bot name is required.",
       agentRequired: "Agent is required.",
       workspaceRequired: "Workspace is required.",
+      detailLoading: "Bot details are still loading. Wait a moment before saving.",
     },
     lifecycle: {
       identityLocked: "Agent and workspace are locked once this Bot has run. Other settings still apply to future turns.",

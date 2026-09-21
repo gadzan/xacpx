@@ -103,6 +103,14 @@ const availableAgents = computed(() => {
 
 // Available workspaces from instance
 const availableWorkspaces = computed(() => inst.value?.workspaces ?? []);
+// Detail hydration for summary-backed edits: a summary row carries no
+// instructions, so the form must not submit until the authoritative detail
+// arrives. Otherwise an early Save would send instructions=null and silently
+// wipe backend instructions the user never saw.
+const detailHydrated = ref(
+  !props.bot || "instructions" in props.bot || (props.bot as BotDetailDto).instructions !== undefined,
+);
+const detailLoading = ref(false);
 
 // Prepopulate defaults if create mode. A generation counter fences the async
 // form-options + instructions loads: closing/reopening (or switching bots) must
@@ -121,6 +129,7 @@ onMounted(async () => {
   }
   if (generation !== dialogGeneration) return;
   if (props.bot && (!("instructions" in props.bot) || props.bot.instructions === undefined)) {
+    detailLoading.value = true;
     try {
       const detail = await directBotsStore.loadBotDetail(props.instanceId, props.bot.id);
       if (generation !== dialogGeneration) return;
@@ -129,8 +138,12 @@ onMounted(async () => {
       }
       // detail load also converges authoritative lifecycle (hasRuntime);
       // identityLocked reads the store, so no local copy is needed.
+      detailHydrated.value = true;
     } catch {
-      // Ignore background load error
+      // Ignore background load error: the form stays gated until a later
+      // retry hydrates, so Save cannot wipe unseen instructions.
+    } finally {
+      if (generation === dialogGeneration) detailLoading.value = false;
     }
   }
 
@@ -154,6 +167,10 @@ async function submit(): Promise<void> {
   }
   if (!workspace.value) {
     errorMessage.value = t("bot.validation.workspaceRequired");
+    return;
+  }
+  if (isEditing.value && props.bot && !detailHydrated.value) {
+    errorMessage.value = t("bot.validation.detailLoading");
     return;
   }
 
@@ -408,7 +425,7 @@ async function submit(): Promise<void> {
         </button>
         <button
           type="button"
-          :disabled="submitting || !name.trim()"
+          :disabled="submitting || !name.trim() || (isEditing && !!props.bot && !detailHydrated)"
           class="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-1.5 text-xs font-medium text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-50"
           @click="submit"
         >

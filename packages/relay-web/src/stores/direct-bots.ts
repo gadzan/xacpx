@@ -374,6 +374,30 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       for (const b of prevList) {
         if (b.hasRuntime) prevRuntime[b.id] = true;
       }
+      // A refreshed summary is authoritative for the identity fields it
+      // carries: drop cached details that no longer match it, so a stale
+      // detail (old name/enabled/instructions/model) cannot keep shadowing
+      // the newer summary via the detail-first currentBot lookup.
+      const nextDetails = { ...botDetails.value };
+      for (const b of res.bots) {
+        const detailKey = `${targetInstanceId}:${b.id}`;
+        const cached = nextDetails[detailKey];
+        if (
+          cached
+          && (cached.name !== b.name
+            || cached.agent !== b.agent
+            || cached.workspace !== b.workspace
+            || (cached.model ?? undefined) !== (b.model ?? undefined)
+            || (cached.effort ?? undefined) !== (b.effort ?? undefined)
+            || cached.enabled !== b.enabled
+            || (cached.avatar ?? undefined) !== (b.avatar ?? undefined)
+            || (cached.role ?? undefined) !== (b.role ?? undefined))
+        ) {
+          delete nextDetails[detailKey];
+          botDetailSeq[detailKey] = (botDetailSeq[detailKey] ?? 0) + 1;
+        }
+      }
+      botDetails.value = nextDetails;
       botsByInstance.value = {
         ...botsByInstance.value,
         [targetInstanceId]: res.bots.map((b) =>
@@ -1448,6 +1472,16 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
   // Reconcile on reconnect
   async function reconcileOnReconnect(): Promise<void> {
+    // WS events are lost while disconnected: every previously loaded Bot
+    // catalog may be stale (create/update/delete, hasRuntime). Mark all
+    // loaded instances dirty so the next Bots-tab entry reloads
+    // authoritatively even if the selected-instance reconcile below returns
+    // early; then reconcile the selected instance in depth.
+    for (const loadedId of Object.keys(botsLoaded.value)) {
+      if (botsLoaded.value[loadedId]) {
+        botsLoaded.value = { ...botsLoaded.value, [loadedId]: false };
+      }
+    }
     const iId = instanceId.value;
     const bId = selectedBotId.value;
     const cId = activeConversationId.value;
@@ -1457,7 +1491,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     if (!iId) return;
     try {
       const bots = await loadBots(iId);
-      if (generation !== currentSelectionGeneration || instanceId.value !== iId || selectedBotId.value !== bId) return;
       // The selected Bot may have been deleted on another client while this
       // page was offline/closed. Drop the ghost selection (plus cached detail
       // and persisted key) instead of restoring a pane that can only fail.
@@ -1655,6 +1688,20 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
     if (event.kind !== "control-event") return;
     const e = event.event;
+
+    // Global Bot-lifecycle projection: member-turn-started proves the hidden
+    // direct runtime materialized for memberTurn.botId on this instance, but
+    // emits no bots-changed. Converge hasRuntime for every subscribed
+    // instance BEFORE the selected-instance transcript fence below: the
+    // transcript/HUD branches must stay selection-scoped, but the lifecycle
+    // bit (sidebar rows, open BotDialog lock) must not depend on which Bot is
+    // currently selected.
+    if (e.type === "member-turn-started") {
+      const startedBotId = e.memberTurn.botId;
+      if (startedBotId) {
+        markBotHasRuntime(event.instanceId, startedBotId);
+      }
+    }
 
     // Catalog invalidation events
     if (e.type === "bots-changed") {
