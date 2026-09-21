@@ -553,6 +553,161 @@ describe("normalizeAcpElicitationForm string resource bounds", () => {
   });
 });
 
+describe("normalizeAcpElicitationForm prototype-key safety", () => {
+  test('required: ["toString"] without a real property is rejected', () => {
+    // `"toString" in propertiesRecord` is true via Object.prototype, so an `in`
+    // check would let a required name that no field defines pass.
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { type: "object", properties: { real: { type: "string" } }, required: ["toString"] },
+    }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain('required "toString" is not a form field');
+  });
+
+  test('required: ["constructor"] and ["__proto__"] are rejected the same way', () => {
+    for (const name of ["constructor", "__proto__"]) {
+      const result = normalizeAcpElicitationForm(formRequest({
+        requestedSchema: { type: "object", properties: { real: { type: "string" } }, required: [name] },
+      }));
+      expect(result.ok).toBe(false);
+    }
+  });
+
+  test("a real own property named toString is a legal field", () => {
+    const fields = normalizeOk(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { toString: { type: "string", title: "Name" } },
+        required: ["toString"],
+      },
+    }));
+    expect(fields[0]).toMatchObject({ key: "toString", kind: "text", required: true });
+  });
+});
+
+describe("validateElicitationAnswer prototype-key safety", () => {
+  const toStringField = normalizeOk(formRequest({
+    requestedSchema: {
+      type: "object",
+      properties: { toString: { type: "string" } },
+      required: ["toString"],
+    },
+  }))[0];
+  const optionalToString = normalizeOk(formRequest({
+    requestedSchema: { type: "object", properties: { toString: { type: "string" } } },
+  }))[0];
+  // `{ __proto__: ... }` in a JS literal AND `JSON.parse` both treat the key
+  // as a prototype setter, so build the request with defineProperty to get a
+  // real own property.
+  const protoRequest = formRequest({
+    requestedSchema: { type: "object", properties: {}, required: ["__proto__"] },
+  }) as { requestedSchema: { properties: Record<string, unknown> } };
+  Object.defineProperty(protoRequest.requestedSchema.properties, "__proto__", {
+    value: { type: "string" },
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+  const protoField = normalizeOk(protoRequest)[0];
+
+  test("an optional toString field is not satisfied by the inherited function", () => {
+    // Reading `source.toString` would return Object.prototype's function, which
+    // looks like a submitted non-string value instead of an omitted answer.
+    const result = validateElicitationAnswer([optionalToString], {});
+    expect(result).toMatchObject({ ok: true });
+    if (!result.ok) return;
+    expect(Object.keys(result.content)).toEqual([]);
+  });
+
+  test("a required toString field still requires a real answer", () => {
+    expect(validateElicitationAnswer([toStringField], {}).ok).toBe(false);
+    expect(validateElicitationAnswer([toStringField], { toString: "Ada" }).ok).toBe(true);
+  });
+
+  test("a __proto__ answer survives as an own data property", () => {
+    // `out["__proto__"] = value` on a plain object is a prototype setter, so a
+    // legal answer would silently vanish.
+    const result = validateElicitationAnswer([protoField], JSON.parse('{"__proto__":"Ada"}'));
+    expect(result).toMatchObject({ ok: true });
+    if (!result.ok) return;
+    expect(result.content.__proto__).toBe("Ada");
+    expect(Object.keys(result.content)).toEqual(["__proto__"]);
+    expect(Object.getPrototypeOf(result.content)).toBeNull();
+  });
+
+  test("a constructor answer survives the same way", () => {
+    const field = normalizeOk(formRequest({
+      requestedSchema: { type: "object", properties: { constructor: { type: "string" } }, required: ["constructor"] },
+    }))[0];
+    const result = validateElicitationAnswer([field], { constructor: "Ada" });
+    expect(result).toMatchObject({ ok: true });
+    if (!result.ok) return;
+    expect(result.content.constructor).toBe("Ada");
+  });
+});
+
+describe("normalizeAcpElicitationForm presentation metadata", () => {
+  test("schema-level title and description are carried through", () => {
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        title: "Deploy settings",
+        description: "Choose how to ship",
+        properties: { env: { type: "string" } },
+      },
+    }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.form.schemaTitle).toBe("Deploy settings");
+    expect(result.form.schemaDescription).toBe("Choose how to ship");
+  });
+
+  test("oversized schema-level title is rejected, not truncated", () => {
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        title: "t".repeat(ELICITATION_SCHEMA_LIMITS.maxFieldTitleLength + 1),
+        properties: { env: { type: "string" } },
+      },
+    }));
+    expect(result.ok).toBe(false);
+  });
+
+  test("single-select keeps the agent pattern as display metadata", () => {
+    const fields = normalizeOk(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { code: { type: "string", enum: ["a1", "b2"], pattern: "^[a-z][0-9]$" } },
+      },
+    }));
+    expect(fields[0]).toMatchObject({ kind: "single-select", pattern: "^[a-z][0-9]$" });
+  });
+
+  test("a titled option missing its title is rejected, not auto-labeled", () => {
+    // ACP EnumOption requires const AND title. Reusing the value as the label
+    // would show the user a label the agent never chose.
+    const oneOf = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { type: "object", properties: { c: { type: "string", oneOf: [{ const: "x" }] } } },
+    }));
+    expect(oneOf.ok).toBe(false);
+
+    const anyOf = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { m: { type: "array", items: { anyOf: [{ const: "x" }] } } },
+      },
+    }));
+    expect(anyOf.ok).toBe(false);
+  });
+
+  test("an empty-string titled option title is rejected", () => {
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { type: "object", properties: { c: { type: "string", oneOf: [{ const: "x", title: "" }] } } },
+    }));
+    expect(result.ok).toBe(false);
+  });
+});
+
 describe("validateElicitationAnswer", () => {
   const text = normalizeOk(formRequest())[0];
   const single = normalizeOk(formRequest({

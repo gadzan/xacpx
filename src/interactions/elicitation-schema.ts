@@ -45,10 +45,17 @@ export const ELICITATION_SCHEMA_LIMITS = {
   maxPatternLength: 512,
 } as const;
 
-export type NormalizedElicitationForm = {
+export interface NormalizedElicitationForm {
   message: string;
+  /**
+   * Schema-level `title` / `description` from `requestedSchema`. ACP defines
+   * them as part of the restricted schema, and plugins cannot see the raw ACP
+   * object, so dropping them here would make them unrenderable downstream.
+   */
+  schemaTitle?: string;
+  schemaDescription?: string;
   fields: ChannelElicitationField[];
-};
+}
 
 export type ElicitationNormalizationResult =
   | { ok: true; form: NormalizedElicitationForm }
@@ -92,6 +99,20 @@ function readOptionalNonEmptyString(
   // Only genuinely empty text is rejected; a whitespace-only title is a
   // display concern, not a protocol violation.
   if (value.length === 0) return { ok: false };
+  return { ok: true, value };
+}
+
+/**
+ * A REQUIRED bounded non-empty string. Unlike `readOptionalNonEmptyString`,
+ * absence is a failure — used where ACP marks the member mandatory.
+ */
+function readRequiredBoundedString(
+  holder: Plain,
+  key: string,
+  max: number,
+): { ok: true; value: string } | { ok: false } {
+  const value = holder[key];
+  if (typeof value !== "string" || value.length === 0 || value.length > max) return { ok: false };
   return { ok: true, value };
 }
 
@@ -225,6 +246,10 @@ function normalizeField(
             ...(format === "email" || format === "uri" || format === "date" || format === "date-time"
               ? { format }
               : {}),
+            // Keep the agent's pattern as display metadata. Dropping it would
+            // silently discard a constraint the agent stated, and a renderer
+            // cannot recover it from the raw ACP object (it never sees one).
+            ...(pattern.value !== undefined ? { pattern: pattern.value } : {}),
           },
         };
       }
@@ -385,6 +410,11 @@ function hasDuplicateOptions(options: readonly ChannelElicitationOption[]): bool
 /**
  * Parse ACP titled option lists (`oneOf` for single-select, `anyOf` for
  * multi-select items). Absent is fine; malformed is a rejection.
+ *
+ * ACP `EnumOption` requires BOTH `const` and `title`. An option missing its
+ * title is malformed, not something core may paper over by reusing the value
+ * as the label — the renderer would show the user a label the agent never
+ * chose.
  */
 function readTitledOptions(
   value: unknown,
@@ -398,12 +428,16 @@ function readTitledOptions(
     // Same bound as untitled enum values: titled and untitled options must not
     // have different size ceilings for the same slot in the normalized form.
     if (optionValue === undefined || optionValue.length > ELICITATION_SCHEMA_LIMITS.maxOptionValueLength) return undefined;
-    const label = readOptionalNonEmptyString(option, "title", ELICITATION_SCHEMA_LIMITS.maxOptionLabelLength);
+    const label = readRequiredBoundedString(
+      option,
+      "title",
+      ELICITATION_SCHEMA_LIMITS.maxOptionLabelLength,
+    );
     const description = readOptionalNonEmptyString(option, "description", ELICITATION_SCHEMA_LIMITS.maxFieldDescriptionLength);
     if (!label.ok || !description.ok) return undefined;
     return {
       value: optionValue,
-      label: label.value ?? optionValue,
+      label: label.value,
       ...(description.value !== undefined ? { description: description.value } : {}),
     } satisfies ChannelElicitationOption;
   });
@@ -448,9 +482,27 @@ export function normalizeAcpElicitationForm(request: unknown): ElicitationNormal
   if (schema.type !== undefined && schema.type !== "object") {
     return fail("malformed_schema", 'requestedSchema.type must be "object"');
   }
+  // ACP schema-level presentation metadata. Bounded like every other string,
+  // and carried through because plugins never see the raw ACP object.
+  const schemaTitle = readOptionalNonEmptyString(
+    schema,
+    "title",
+    ELICITATION_SCHEMA_LIMITS.maxFieldTitleLength,
+  );
+  if (!schemaTitle.ok) return fail("malformed_schema", "requestedSchema.title is invalid");
+  const schemaDescription = readOptionalNonEmptyString(
+    schema,
+    "description",
+    ELICITATION_SCHEMA_LIMITS.maxFieldDescriptionLength,
+  );
+  if (!schemaDescription.ok) return fail("malformed_schema", "requestedSchema.description is invalid");
+  const schemaMeta = {
+    ...(schemaTitle.value !== undefined ? { schemaTitle: schemaTitle.value } : {}),
+    ...(schemaDescription.value !== undefined ? { schemaDescription: schemaDescription.value } : {}),
+  };
   const properties = schema.properties;
   if (properties === undefined || properties === null) {
-    return { ok: true, form: { message, fields: [] } };
+    return { ok: true, form: { message, ...schemaMeta, fields: [] } };
   }
   const propertiesRecord = asPlain(properties);
   if (!propertiesRecord) return fail("malformed_schema", "requestedSchema.properties is not an object");
@@ -474,8 +526,10 @@ export function normalizeAcpElicitationForm(request: unknown): ElicitationNormal
       return fail("malformed_schema", "requestedSchema.required repeats a name");
     }
     for (const name of required) {
-      // A required name that is not a real property cannot be answered.
-      if (!(name in propertiesRecord)) {
+      // Object.hasOwn, not `in`: `required: ["toString"]` must not pass merely
+      // because Object.prototype has a toString. ACP property names are not
+      // restricted away from JS special keys.
+      if (!Object.hasOwn(propertiesRecord, name)) {
         return fail("malformed_schema", `required "${name}" is not a form field`);
       }
     }
@@ -507,7 +561,7 @@ export function normalizeAcpElicitationForm(request: unknown): ElicitationNormal
   if (totalChars > ELICITATION_SCHEMA_LIMITS.maxNormalizedFormChars) {
     return fail("resource_exceeded", `normalized form exceeds ${ELICITATION_SCHEMA_LIMITS.maxNormalizedFormChars} chars`);
   }
-  return { ok: true, form: { message, fields } };
+  return { ok: true, form: { message, ...schemaMeta, fields } };
 }
 
 /** Characters the normalized field will carry into the renderer. */
@@ -609,24 +663,40 @@ export function validateElicitationAnswer(
     return { ok: false, reason: "answer is not an object" };
   }
   const byKey = new Map(fields.map((field) => [field.key, field]));
-  for (const key of Object.keys(source)) {
-    // The key itself is agent-controlled metadata, but a renderer that echoes
-    // answer keys into its error text makes this a leak vector. Report the
-    // count and a stable code instead.
+  const answerKeys = Object.keys(source);
+  for (const [index, key] of answerKeys.entries()) {
+    // Object.keys already returns own enumerable keys only, so an inherited
+    // `toString` never masquerades as a submitted answer. Report position, not
+    // the key: a renderer that echoes answer keys into its error text would
+    // otherwise make this a leak vector.
     if (!byKey.has(key)) {
-      return { ok: false, reason: `unexpected answer key at index ${Object.keys(source).indexOf(key)}` };
+      return { ok: false, reason: `unexpected answer key at index ${index}` };
     }
   }
-  const out: Record<string, ChannelElicitationValue> = {};
+  // Null-prototype output: `out["__proto__"] = value` on a plain object is a
+  // prototype setter, not a data property, so a legal answer could silently
+  // vanish. defineProperty on a null-prototype dictionary always creates an
+  // own data property.
+  const out: Record<string, ChannelElicitationValue> = Object.create(null);
   for (const field of fields) {
-    const value = source[field.key];
-    if (value === undefined) {
+    // Presence by own property, not by read: an optional `toString` field must
+    // not see the inherited function and be treated as a submitted value.
+    const present = Object.hasOwn(source, field.key);
+    if (!present) {
       if (field.required) return { ok: false, reason: `missing required field "${field.key}"` };
       continue;
     }
+    const value = Object.getOwnPropertyDescriptor(source, field.key)!.value;
     const validated = validateFieldValue(field, value);
     if (!validated.ok) return { ok: false, reason: validated.reason };
-    out[field.key] = validated.value;
+    // Clone arrays: the plugin still holds its own reference, and returning it
+    // would let a post-validation mutation reach the agent as accepted content.
+    Object.defineProperty(out, field.key, {
+      value: Array.isArray(validated.value) ? [...validated.value] : validated.value,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
   }
   return { ok: true, content: out };
 }
