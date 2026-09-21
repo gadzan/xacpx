@@ -27,7 +27,7 @@ import {
   type ControlConversationTurnRunnerOptions,
 } from "../../../src/conversations/conversation-turn-runner";
 import { SqliteConversationStore } from "../../../src/conversations/sqlite-conversation-store";
-import { createDirectConversationId } from "../../../src/domain/ids";
+import { createDirectBindingId, createDirectConversationId } from "../../../src/domain/ids";
 import { AsyncMutex } from "../../../src/orchestration/async-mutex";
 import { SessionService } from "../../../src/sessions/session-service";
 import { createStrictOwnedSessionRelease } from "../../../src/sessions/owned-session-release";
@@ -845,6 +845,24 @@ test("retrying an accepted extra-Topic request after deleting reuses the durable
     content: "fresh",
     topicId: extra.id,
   })).rejects.toMatchObject({ code: "conversation_deleting" });
+});
+
+test("teardown releases PR2 bindingId-only owned sessions so deleteBot can proceed", async () => {
+  const first = await createLifecycle();
+  const bindingId = createDirectBindingId(BOT_ID);
+  const alias = `brt_${bindingId}`;
+  await first.sessions.createSession(alias, "codex", "backend", {
+    owner: { kind: "bot-direct", bindingId },
+  });
+  expect(first.state.sessions[alias]?.owner).toEqual({ kind: "bot-direct", bindingId });
+  expect(first.state.bot_runtime_bindings).toEqual({});
+  await expect(first.bots.deleteBot(BOT_ID)).rejects.toMatchObject({ code: "bot_in_use" });
+
+  await first.service.teardownDirectConversation(BOT_ID);
+
+  expect(first.state.sessions[alias]).toBeUndefined();
+  await first.bots.deleteBot(BOT_ID);
+  expect(first.state.bots[BOT_ID]).toBeUndefined();
 });
 
 test("deleteBot fails closed on accepted durable work before runtime materialization", async () => {

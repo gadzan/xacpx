@@ -1,9 +1,9 @@
 import { snapshotBotProfile, type BotProfile } from "../bots/bot-types";
 import { BotError } from "../bots/bot-error";
 import type { BotRuntimeManager } from "../bots/bot-runtime-manager";
-import type { BotService } from "../bots/bot-service";
+import { sessionOwnedByDirectBot, type BotService } from "../bots/bot-service";
 import { planDirectConversation, presentDefaultDirectTopic, presentDirectConversation } from "./direct-conversation";
-import { createDirectTopicId, createTopicId } from "../domain/ids";
+import { createDirectBindingId, createDirectTopicId, createTopicId } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
 import type { ReleaseOwnedSession } from "../sessions/owned-session-release";
 import type { SessionService } from "../sessions/session-service";
@@ -519,15 +519,20 @@ export class ConversationRunService {
 
   private ownedAliases(botId: string, conversationId: string): string[] {
     const aliases = new Set<string>();
+    const ownedBindingIds = new Set<string>([createDirectBindingId(botId)]);
     for (const binding of Object.values(this.state.bot_runtime_bindings)) {
+      if (binding.scope === "bot-direct" && binding.botId === botId) {
+        ownedBindingIds.add(binding.id);
+      }
       if (binding.scope === "bot-direct" && binding.conversationId === conversationId) {
         aliases.add(binding.sessionAlias);
+        ownedBindingIds.add(binding.id);
       }
     }
     for (const session of Object.values(this.state.sessions)) {
       if (
-        session.owner?.kind === "bot-direct"
-        && (session.owner.botId === botId || session.owner.conversationId === conversationId)
+        sessionOwnedByDirectBot(session, botId, ownedBindingIds)
+        || (session.owner?.kind === "bot-direct" && session.owner.conversationId === conversationId)
       ) {
         aliases.add(session.alias);
       }

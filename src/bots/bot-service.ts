@@ -3,7 +3,7 @@ import { createBotId, createDirectBindingId, createDirectConversationId } from "
 import { AsyncMutex } from "../orchestration/async-mutex";
 import type { StateStore } from "../state/state-store";
 import { replaceRuntimeState } from "../state/replace-runtime-state";
-import type { AppState } from "../state/types";
+import type { AppState, LogicalSession } from "../state/types";
 import { BotError } from "./bot-error";
 import { BotLifecycleGate } from "./bot-lifecycle-gate";
 import type { BotProfile } from "./bot-types";
@@ -36,6 +36,26 @@ export interface UpdateBotInput {
 }
 
 export type BotLifecycleMutation = "update" | "delete";
+
+/** True when a LogicalSession is owned by this Direct Bot, including PR2
+ *  bindingId-only records that predate `owner.botId`. */
+export function sessionOwnedByDirectBot(
+  session: Pick<LogicalSession, "owner">,
+  botId: string,
+  ownedBindingIds: ReadonlySet<string>,
+): boolean {
+  const owner = session.owner;
+  if (owner?.kind !== "bot-direct") {
+    return false;
+  }
+  if (owner.botId === botId) {
+    return true;
+  }
+  if (ownedBindingIds.has(owner.bindingId)) {
+    return true;
+  }
+  return !owner.botId && owner.bindingId === createDirectBindingId(botId);
+}
 
 export interface BotConversationWork {
   hasDurableBotWork(botId: string): boolean;
@@ -308,27 +328,9 @@ export class BotService {
     const ownedBindingIds = new Set(bindingIds);
     ownedBindingIds.add(createDirectBindingId(botId));
     const sessionAliases = Object.values(this.state.sessions)
-      .filter((session) => this.sessionOwnedByDirectBot(session, botId, ownedBindingIds))
+      .filter((session) => sessionOwnedByDirectBot(session, botId, ownedBindingIds))
       .map((session) => session.alias);
     return { conversationIds, bindingIds, sessionAliases };
-  }
-
-  private sessionOwnedByDirectBot(
-    session: AppState["sessions"][string],
-    botId: string,
-    ownedBindingIds: Set<string>,
-  ): boolean {
-    const owner = session.owner;
-    if (owner?.kind !== "bot-direct") {
-      return false;
-    }
-    if (owner.botId === botId) {
-      return true;
-    }
-    if (ownedBindingIds.has(owner.bindingId)) {
-      return true;
-    }
-    return !owner.botId && owner.bindingId === createDirectBindingId(botId);
   }
 
   private async persist(next: AppState): Promise<void> {
