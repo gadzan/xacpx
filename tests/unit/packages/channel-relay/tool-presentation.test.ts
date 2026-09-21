@@ -734,7 +734,19 @@ test("a degraded adapter title falls back to the specific argument", () => {
   });
   // The bare regex is noise; the derived query names the pattern AND its scope.
   expect(step.title).toBe("display_name|displayName in packages/relay-web/src");
-  expect((step.detail as { query: string }).query).toBe("display_name|displayName in packages/relay-web/src");
+  // No output text and no driver metadata: the detail would only echo the header,
+  // so the connector drops it entirely rather than repeating the query.
+  expect(step.detail).toBeUndefined();
+});
+
+test("a search with driver metadata keeps its detail even without output text", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "t-meta-only", toolName: "grep", kind: "search", status: "success",
+    summary: "display_name|displayName",
+    rawInput: { pattern: "display_name|displayName", path: "packages/relay-web/src" },
+    rawOutput: { metadata: { matches: 100, truncated: true } },
+  });
+  expect(step.detail).toMatchObject({ type: "search", count: 100, truncated: true });
 });
 
 test("a progress-describing adapter title is kept (it is not degraded)", () => {

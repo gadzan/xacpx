@@ -420,7 +420,9 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
     const title = isDegradedTitle(fallbackTitle, event.toolName) ? query : fallbackTitle;
     const out = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? rawOutputText ?? countSummary(output);
     // The header already shows the query: a detail carrying only the query echoes it.
-    if (!out) return { ...base, title };
+    // A driver-reported count or truncation flag is metadata, not an echo, so it
+    // still earns a detail even when the driver shipped no output text.
+    if (!out && metaCount === undefined && metaTruncated === undefined) return { ...base, title };
     const detail: ToolDetailDto = {
       type: "search",
       query,
