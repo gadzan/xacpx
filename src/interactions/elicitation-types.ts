@@ -8,6 +8,12 @@
  * Every member is additive and optional — a plugin that does not implement
  * `requestElicitation` declares no capability and core fails closed with
  * `cancel`, never a crash and never a guessed answer.
+ *
+ * Everything a plugin RECEIVES is deeply readonly, and that is a security
+ * contract rather than a style choice: core validates answers against a
+ * private snapshot, and the presentation copy handed to the renderer is
+ * recursively frozen at runtime. A renderer that sorts or filters in place
+ * would throw in production, so the types refuse it at compile time.
  */
 
 /** Values the ACP form protocol can carry for a single field. */
@@ -18,107 +24,111 @@ export type ChannelElicitationValue =
   | string[];
 
 export interface ChannelElicitationOption {
-  value: string;
-  label: string;
-  description?: string;
+  readonly value: string;
+  readonly label: string;
+  readonly description?: string;
 }
 
 export type ChannelElicitationField =
   | {
-      kind: "text";
-      key: string;
-      title: string;
-      description?: string;
-      required: boolean;
-      defaultValue?: string;
-      minLength?: number;
-      maxLength?: number;
+      readonly kind: "text";
+      readonly key: string;
+      readonly title: string;
+      readonly description?: string;
+      readonly required: boolean;
+      readonly defaultValue?: string;
+      readonly minLength?: number;
+      readonly maxLength?: number;
       /** Display metadata only: core never executes agent-provided patterns. */
-      pattern?: string;
-      format?: "email" | "uri" | "date" | "date-time";
+      readonly pattern?: string;
+      readonly format?: "email" | "uri" | "date" | "date-time";
     }
   | {
-      kind: "single-select";
-      key: string;
-      title: string;
-      description?: string;
-      required: boolean;
-      options: ChannelElicitationOption[];
-      defaultValue?: string;
+      readonly kind: "single-select";
+      readonly key: string;
+      readonly title: string;
+      readonly description?: string;
+      readonly required: boolean;
+      readonly options: readonly ChannelElicitationOption[];
+      readonly defaultValue?: string;
       /**
        * String constraints the agent attached alongside the enum. ACP allows
        * them to coexist, and dropping them would let an answer the agent's
        * own schema rejects reach it as accepted. Core re-validates them.
        */
-      minLength?: number;
-      maxLength?: number;
-      format?: "email" | "uri" | "date" | "date-time";
+      readonly minLength?: number;
+      readonly maxLength?: number;
+      readonly format?: "email" | "uri" | "date" | "date-time";
       /** Display metadata only: core never executes agent-provided patterns. */
-      pattern?: string;
+      readonly pattern?: string;
     }
   | {
-      kind: "number";
-      key: string;
-      title: string;
-      description?: string;
-      required: boolean;
-      integer: boolean;
-      minimum?: number;
-      maximum?: number;
-      defaultValue?: number;
+      readonly kind: "number";
+      readonly key: string;
+      readonly title: string;
+      readonly description?: string;
+      readonly required: boolean;
+      readonly integer: boolean;
+      readonly minimum?: number;
+      readonly maximum?: number;
+      readonly defaultValue?: number;
     }
   | {
-      kind: "boolean";
-      key: string;
-      title: string;
-      description?: string;
-      required: boolean;
-      defaultValue?: boolean;
+      readonly kind: "boolean";
+      readonly key: string;
+      readonly title: string;
+      readonly description?: string;
+      readonly required: boolean;
+      readonly defaultValue?: boolean;
     }
   | {
-      kind: "multi-select";
-      key: string;
-      title: string;
-      description?: string;
-      required: boolean;
-      options: ChannelElicitationOption[];
-      minItems?: number;
-      maxItems?: number;
-      defaultValue?: string[];
+      readonly kind: "multi-select";
+      readonly key: string;
+      readonly title: string;
+      readonly description?: string;
+      readonly required: boolean;
+      readonly options: readonly ChannelElicitationOption[];
+      readonly minItems?: number;
+      readonly maxItems?: number;
+      readonly defaultValue?: readonly string[];
     };
 
 export interface ChannelElicitationRequest {
   /** xacpx broker correlation id (ephemeral; never persisted). */
-  requestId: string;
-  chatKey: string;
-  accountId?: string;
-  replyContextToken?: string;
+  readonly requestId: string;
+  readonly chatKey: string;
+  readonly accountId?: string;
+  readonly replyContextToken?: string;
   /** The authenticated initiator of the exact prompt turn. */
-  requester: {
-    senderId: string;
-    senderName?: string;
-    isOwner?: boolean;
+  readonly requester: {
+    readonly senderId: string;
+    readonly senderName?: string;
+    readonly isOwner?: boolean;
   };
   /** Additive presentation metadata; never authoritative. */
-  agent?: {
-    name?: string;
-    sessionAlias?: string;
+  readonly agent?: {
+    readonly name?: string;
+    readonly sessionAlias?: string;
   };
-  message: string;
-  mode: "form";
-  fields: ChannelElicitationField[];
+  readonly message: string;
+  readonly mode: "form";
+  readonly fields: readonly ChannelElicitationField[];
   /** ACP schema-level presentation metadata, bounded by core. */
-  schemaTitle?: string;
-  schemaDescription?: string;
-  expiresAt: number;
+  readonly schemaTitle?: string;
+  readonly schemaDescription?: string;
+  readonly expiresAt: number;
   /** Aborts on timeout, turn disposal, or shutdown. */
-  signal: AbortSignal;
+  readonly signal: AbortSignal;
 }
 
 /**
  * Terminal decision. `responderId` MUST be the platform-authenticated
  * identity of whoever activated the control; core re-verifies it against
  * the exact turn initiator and never trusts self-reported payload ids.
+ *
+ * `content` is a fresh object the plugin owns: core deep-copies every value
+ * (including arrays) into its own null-prototype dictionary, so a retained
+ * reference cannot be mutated after validation.
  */
 export type ChannelElicitationDecision =
   | {
@@ -148,7 +158,8 @@ export type ChannelElicitationMode = "form" | "url";
 export interface MessageChannelElicitationRuntime {
   /**
    * Modes this channel can actually render. Only modes listed here AND
-   * backed by a real `requestElicitation` implementation are advertised.
+   * backed by a real `requestElicitation` implementation are advertised by
+   * the core capability probe; absence never implies form support.
    */
   readonly elicitationModes?: readonly ChannelElicitationMode[];
 
@@ -156,9 +167,12 @@ export interface MessageChannelElicitationRuntime {
    * Render a form Elicitation for the authenticated turn initiator and
    * settle exactly once (first terminal decision wins). Implementations
    * MUST:
-   *   - keep pending form state in server-side memory only;
-   *   - never encode answer values into control ids or URLs;
-   *   - return the platform-authenticated responder id;
+   *   - render the form only for `request.requester.senderId`;
+   *   - return the platform-authenticated responder id, never a self-reported
+   *     payload id (roadmap §5.7);
+   *   - keep pending form state in server-side memory only, never encode
+   *     answer values into control ids/URLs, and never persist answers;
+   *   - treat `request.fields` as read-only — it is frozen at runtime;
    *   - settle within `expiresAt` / on `signal` abort by returning
    *     `{ action: "cancel", responderId }`.
    */

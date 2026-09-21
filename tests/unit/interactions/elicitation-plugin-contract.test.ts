@@ -182,6 +182,87 @@ test("a typed plugin channel can decline and cancel", async () => {
   }
 });
 
+test("the presentation copy is deeply readonly at compile time", async () => {
+  // Compile-time half of the frozen-copy contract: the renderer receives a
+  // recursively frozen object graph at runtime, so mutating it must also be a
+  // type error. Without these assertions a renderer writing
+  // `request.fields.sort()` would pass tsc and throw in production, cancelling
+  // the elicitation.
+  let captured: ChannelElicitationRequest | undefined;
+  const registry = createTurnInteractionRegistry();
+  const logger = {
+    info: async () => {},
+    warn: async () => {},
+    error: async () => {},
+    debug: async () => {},
+  } as unknown as AppLogger;
+  const broker = new ElicitationInteractionBroker({
+    registry,
+    getChannelByChatKey: () =>
+      ({
+        id: "contract",
+        elicitationModes: ["form"],
+        requestElicitation: async (request: ChannelElicitationRequest) => {
+          captured = request;
+          return { action: "decline", responderId: "user-A" };
+        },
+      }) as never,
+    logger,
+  });
+  const dispose = registry.bindTurn({
+    interactionId: "ix-ro",
+    chatKey: "contract:g:c",
+    senderId: "user-A",
+    origin: "human",
+  });
+  try {
+    await broker.resolveElicitation({
+      promptRequestId: "p1",
+      elicitationRequestId: "e-ro",
+      interactionId: "ix-ro",
+      request: {
+        sessionId: "acp-1",
+        mode: "form",
+        message: "Readonly check",
+        requestedSchema: {
+          type: "object",
+          properties: {
+            pick: { type: "string", enum: ["a", "b"] },
+            tags: { type: "array", items: { type: "string", enum: ["x", "y"] }, default: ["x"] },
+          },
+        },
+      },
+    });
+    expect(captured).toBeDefined();
+    if (!captured) return;
+    const request = captured;
+    // The lines below are compile errors (each `@ts-expect-error` proves the
+    // published type forbids the mutation). They also throw at runtime because
+    // the copy is frozen — which is exactly the contract being pinned, so wrap
+    // each one and assert it failed.
+    const attempt = (mutate: () => void): boolean => {
+      try {
+        mutate();
+        return false;
+      } catch {
+        return true;
+      }
+    };
+    // @ts-expect-error fields is a readonly array.
+    expect(attempt(() => request.fields.sort())).toBe(true);
+    const first = request.fields[0];
+    // @ts-expect-error options is a readonly array.
+    expect(attempt(() => first.options?.sort())).toBe(true);
+    const multi = request.fields.find((field) => field.kind === "multi-select");
+    // @ts-expect-error defaultValue is a readonly array.
+    expect(attempt(() => multi?.defaultValue?.push("z"))).toBe(true);
+    // @ts-expect-error field members are readonly.
+    expect(attempt(() => { first.required = false; })).toBe(true);
+  } finally {
+    dispose();
+  }
+});
+
 test("the exported field model and validator agree on a full round trip", () => {
   const normalized = normalizeAcpElicitationForm({
     sessionId: "acp-1",
