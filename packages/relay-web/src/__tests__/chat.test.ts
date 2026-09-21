@@ -1274,7 +1274,7 @@ it("cancel failure removes only its own optimistic row when another cancelled tu
   const cancelling = chat.cancel();
   expect(chat.messages.filter((message) => message.status === "cancelled").map((message) => message.text)).toEqual(["older", "current"]);
 
-  rejectCancel(new ApiError("instance-offline", 503));
+  rejectCancel(new ApiError("cancel-rejected", 400));
   await cancelling;
 
   expect(chat.busy).toBe(true);
@@ -1301,10 +1301,10 @@ it("cancel RPC failure rolls back the optimistic row and restores buffered late 
   chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-thought", chatKey: "c", sessionAlias: "A", chunk: "hmm" } } as never);
   expect(chat.busy).toBe(false);
 
-  rejectCancel(new ApiError("instance-offline", 503));
+  rejectCancel(new ApiError("cancel-rejected", 400));
   await cancelling;
 
-  expect(chat.error).toBe("instance-offline");
+  expect(chat.error).toBe("cancel-rejected");
   expect(chat.busy).toBe(true);
   expect(chat.streaming).toBe("half more");
   expect(chat.liveToolSteps).toHaveLength(1);
