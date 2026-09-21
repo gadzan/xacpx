@@ -233,6 +233,54 @@ Total new: **144**. M1 unit suites 277/277 green; real-acpx E2E 15/16 (the one
 failure is the pre-existing `PR9-A E2E`, reproduced on clean `src/`);
 `npx tsc --noEmit` 0 errors.
 
+## Review round 4 (PR #355, head `4083a2b7`)
+
+Five further findings, all fixed:
+
+1. **[Blocking, G8]** Round 1 replaced `error.message` with
+   `error.constructor.name`, which is itself renderer-controlled: an overriding
+   `constructor` property keeps `instanceof Error` true while the name is an
+   arbitrary string (the submitted answer), and a throwing getter made the
+   broker's own catch handler throw. Both sites now record the fixed literal
+   `"Error"`. 2 regressions.
+2. **[Blocking, ACP forward compatibility]** Multi-select decoding branched on
+   `enum`/`anyOf` presence and only checked `items.type` on the enum path, so
+   `{ type: "_future", anyOf: [...] }` and even `{ type: "string", anyOf: [...] }`
+   took the titled path. ACP defines `MultiSelectItems` as a tagged union where
+   a present `type` means a typed variant: `"string"` requires `enum`, any
+   other value is a future variant a client must not render as string
+   multi-select, and only the typeless `{ anyOf }` member is titled. Decoding
+   is now by tag. 5 regressions, and the round 2 test that blessed the
+   non-standard shape is corrected.
+3. **[Medium, resource cap]** Round 3's `schemaTitle`/`schemaDescription` and
+   single-select `pattern` were not counted in the aggregate cap, making its
+   "every string" claim false a second time (~11.5k of undercount). Both are
+   now measured. 2 regressions.
+4. **[Medium, plugin API]** `ChannelElicitationRequest` advertised a mutable
+   graph while the broker delivers a recursively frozen one, so
+   `request.fields.sort()` would pass tsc and throw in production. The
+   published contract is now deeply readonly, and the contract test pins both
+   halves — each mutation is a `@ts-expect-error` AND asserted to throw.
+5. **[Medium, resource boundary]** Accepted answers had no core-owned size
+   bound: `maxLength` is optional and agent-supplied, so a channel could
+   return unbounded free text that core accepted and copied daemon → bridge →
+   worker → ACP. Added `maxAcceptedAnswerChars` (64k) enforced on the aggregate
+   of key + value lengths. 4 regressions.
+
+## Final totals after round 4
+
+| Suite | Tests |
+|---|---|
+| `turn-interaction-registry.test.ts` | 13 |
+| `elicitation-schema.test.ts` | 88 |
+| `elicitation-interaction-broker.test.ts` | 38 |
+| `elicitation-plugin-contract.test.ts` | 6 |
+| `channel-elicitation-capability.test.ts` | 9 |
+| `runtime-adapter-elicitation.test.ts` (real acpx) | 4 |
+
+Total new: **158**. M1 unit suites 291/291 green; real-acpx E2E 15/16 (the one
+failure is the pre-existing `PR9-A E2E`); `npx tsc --noEmit` 0 errors.
+
 ## Deferred
 
 - No production channel renderer (M2 Discord, M4 Feishu).
