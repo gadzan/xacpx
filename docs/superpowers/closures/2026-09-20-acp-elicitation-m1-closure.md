@@ -425,6 +425,56 @@ Three further findings, all fixed:
 Total new: **188**. M1 unit suites 319/319 green; real-acpx E2E 18/19 (the one
 failure is the pre-existing `PR9-A E2E`); `npx tsc --noEmit` 0 errors.
 
+## Review round 8 (PR #355, head `a9146440`)
+
+Three further findings, all fixed:
+
+1. **[Blocking, resource trust boundary]** The 64k answer cap ran *after*
+   `validateFieldValue`, so a renderer could return a multi-megabyte
+   `email`/`uri` string and core would hand it to the Ajv format validator
+   first — Ajv documents ReDoS/unsafe-regex as a risk on untrusted input — and
+   an oversized multi-select array was fully traversed, hashed and
+   membership-checked before the cap rejected it. A cheap raw preflight now
+   runs first, using the 100-entry `options` cap to reject impossible arrays
+   with one comparison. 4 regressions, including one asserting the rejection
+   reason is the size limit rather than a format error.
+2. **[Blocking, RFC3339 correctness]** The leap-second table wrongly listed
+   1973-06-30 .. 1979-06-30 (RFC 3339 Appendix D puts those on December 31), so
+   `1973-06-30T23:59:60Z` — an instant that never existed — was accepted. The
+   code also required a `Z` offset, rejecting the RFC's own example
+   `1990-12-31T15:59:60-08:00`. The local wall clock is now normalised to UTC
+   before the date lookup. 6 regressions covering both directions.
+3. **[Medium, regression evidence]** The listener-balance suite created its own
+   signal and called add/remove itself, so it proved the Web API balances
+   rather than that the worker cleans up. Verified by mutation: deleting the
+   worker's cleanup left it green. `bindElicitationAbort()` is now a seam both
+   sides share, and the suite drives it directly plus a structural guard.
+   Re-verified by mutation in both directions (no-op `release()` fails 2
+   tests; removing the worker's `abort.release()` fails the guard).
+
+## Final totals after round 8
+
+| Suite | Tests |
+|---|---|
+| `turn-interaction-registry.test.ts` | 13 |
+| `elicitation-schema.test.ts` | 115 |
+| `elicitation-interaction-broker.test.ts` | 41 |
+| `elicitation-plugin-contract.test.ts` | 6 |
+| `channel-elicitation-capability.test.ts` | 9 |
+| `runtime-adapter-elicitation.test.ts` (real acpx) | 4 |
+| `runtime-elicitation-agent-identity.test.ts` (real worker) | 3 |
+| `runtime-elicitation-listener-balance.test.ts` | 6 |
+
+Total new: **197**. M1 unit suites 325/325 green; real-acpx E2E 24/25 (the one
+failure is the pre-existing `PR9-A E2E`); `npx tsc --noEmit` 0 errors.
+
+### Regression-quality note
+
+Round 8 finding 3 was the first finding about the *evidence* rather than the
+code, and it was correct: a test that re-implements the behaviour it claims to
+verify is not a regression test. Where a suite now makes a claim, that claim
+has been checked by mutating the code it covers and confirming the suite fails.
+
 ## Deferred
 
 - No production channel renderer (M2 Discord, M4 Feishu).
