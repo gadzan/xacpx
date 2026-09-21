@@ -691,6 +691,72 @@ test("a delete that wins the lifecycle gate leaves no Conversation, binding, or 
   expect(ownedSessions(state)).toHaveLength(0);
 });
 
+test("materialization rejects a scoped binding whose stored conversation disagrees with its deterministic id", async () => {
+  const { bots, runtime, sessions, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const bindingId = defaultBindingId();
+  const alias = `brt_${bindingId}`;
+  const foreignConversationId = createDirectConversationId("bot_other");
+  await sessions.createSession(alias, "codex", "backend", {
+    owner: createBotDirectOwner({
+      bindingId,
+      botId: BOT_ID,
+      conversationId: foreignConversationId,
+      topicId: createDirectTopicId(BOT_ID),
+    }),
+  });
+  state.bot_runtime_bindings[bindingId] = {
+    id: bindingId,
+    scope: "bot-direct",
+    conversationId: foreignConversationId,
+    topicId: createDirectTopicId(BOT_ID),
+    botId: BOT_ID,
+    logicalSessionId: state.sessions[alias]!.logical_session_id,
+    sessionAlias: alias,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+
+  await expect(runtime.getOrCreateDirectSession({ botId: BOT_ID })).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+  expect(state.sessions[alias]).toBeDefined();
+  expect(state.bot_runtime_bindings[bindingId]).toBeDefined();
+});
+
+test("releaseDirectBinding rejects a self-inconsistent binding even when its session mirrors the bad metadata", async () => {
+  const { bots, runtime, sessions, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const bindingId = defaultBindingId();
+  const alias = `brt_${bindingId}`;
+  const foreignConversationId = createDirectConversationId("bot_other");
+  await sessions.createSession(alias, "codex", "backend", {
+    owner: createBotDirectOwner({
+      bindingId,
+      botId: BOT_ID,
+      conversationId: foreignConversationId,
+      topicId: createDirectTopicId(BOT_ID),
+    }),
+  });
+  state.bot_runtime_bindings[bindingId] = {
+    id: bindingId,
+    scope: "bot-direct",
+    conversationId: foreignConversationId,
+    topicId: createDirectTopicId(BOT_ID),
+    botId: BOT_ID,
+    logicalSessionId: state.sessions[alias]!.logical_session_id,
+    sessionAlias: alias,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+
+  await expect(runtime.releaseDirectBinding(bindingId)).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+  expect(sessions.getLogicalSessionRecord(alias)).toBeDefined();
+  expect(state.bot_runtime_bindings[bindingId]).toBeDefined();
+});
+
 test("materialization refuses a target bindingId owned explicitly by another Bot", async () => {
   const { bots, runtime, sessions, state } = createHarness();
   await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });

@@ -1002,6 +1002,51 @@ it("cancel surfaces an error code on failure", async () => {
   expect(chat.error).toBe("instance-offline");
 });
 
+it("instance-offline RPC failure arriving before the WebSocket offline event stays hidden", async () => {
+  rpc.mockRejectedValueOnce(new ApiError("instance-offline", 503));
+  const chat = useChatStore();
+  chat.select("inst", "A");
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-started", chatKey: "c", sessionAlias: "A", startedAt: 1, slotAfterId: 10 } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: "half" } } as never);
+
+  await chat.cancel();
+
+  expect(chat.error).toBe("instance-offline");
+  expect(chat.busy).toBe(false);
+  expect(chat.messages.some((message) => message.status === "cancelled")).toBe(false);
+
+  // A later ordered snapshot, not the transport error, decides whether the turn lives.
+  chat.applyEvent({
+    kind: "state-snapshot",
+    instanceId: "inst",
+    turns: [{ instanceId: "inst", sessionAlias: "A", parts: [{ type: "text", text: "authoritative" }], status: "streaming", startedAt: 1, slotAfterId: 10 }],
+    usage: [],
+    commands: [],
+  } as never);
+  expect(chat.busy).toBe(true);
+  expect(chat.streaming).toBe("authoritative");
+});
+
+it("cancel timeout is ambiguous and cannot immediately restore the pre-cancel live turn", async () => {
+  rpc.mockRejectedValueOnce(new ApiError("timeout", 504));
+  const chat = useChatStore();
+  chat.select("inst", "A");
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-started", chatKey: "c", sessionAlias: "A", startedAt: 1, slotAfterId: 10 } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: "half" } } as never);
+
+  await chat.cancel();
+
+  expect(chat.error).toBe("timeout");
+  expect(chat.busy).toBe(false);
+  chat.seedActiveTurns([
+    { instanceId: "inst", sessionAlias: "A", parts: [{ type: "text", text: "stale http" }], status: "streaming", startedAt: 1, slotAfterId: 10 },
+  ] as never);
+  expect(chat.busy).toBe(false);
+
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-finished", chatKey: "c", sessionAlias: "A", ok: true } } as never);
+  expect(chat.busy).toBe(false);
+});
+
 it("cancel optimistically releases busy and preserves streamed content; the late echo is a no-op", async () => {
   rpc.mockResolvedValueOnce({ cancelled: true });
   const chat = useChatStore();
@@ -1195,6 +1240,7 @@ it("cancel failure restores the authoritative reconnect snapshot without exposin
   chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: "half" } } as never);
 
   const cancelling = chat.cancel();
+  chat.applyEvent({ kind: "instance-status", instanceId: "inst", online: false } as never);
   chat.applyEvent({
     kind: "state-snapshot",
     instanceId: "inst",

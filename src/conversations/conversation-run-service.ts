@@ -1,7 +1,13 @@
 import { snapshotBotProfile, type BotProfile } from "../bots/bot-types";
 import { BotError } from "../bots/bot-error";
 import type { BotRuntimeManager } from "../bots/bot-runtime-manager";
-import { classifyDirectBotSessionOwnership, type BotService } from "../bots/bot-service";
+import {
+  classifyDirectBotBindingSessionLink,
+  classifyDirectBotRuntimeBindingOwnership,
+  classifyDirectBotSessionOwnership,
+  type BotService,
+  type DirectBotRuntimeBinding,
+} from "../bots/bot-service";
 import { planDirectConversation, presentDefaultDirectTopic, presentDirectConversation } from "./direct-conversation";
 import { createDirectBindingId, createDirectTopicId, createTopicId } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
@@ -526,29 +532,54 @@ export class ConversationRunService {
 
   private ownedAliases(botId: string, conversationId: string): string[] {
     const aliases = new Set<string>();
-    const legacyBindingId = createDirectBindingId(botId);
-    const ownedBindingIds = new Set<string>([legacyBindingId]);
+    const ownedBindingIds = new Set<string>([createDirectBindingId(botId)]);
+    const ownedBindings: DirectBotRuntimeBinding[] = [];
+
     for (const binding of Object.values(this.state.bot_runtime_bindings)) {
-      if (binding.scope !== "bot-direct") {
-        continue;
-      }
-      const botMatches = binding.botId === botId;
-      const conversationMatches = binding.conversationId === conversationId;
-      const legacyIdMatches = binding.id === legacyBindingId;
-      if ((botMatches && !conversationMatches) || (!botMatches && (conversationMatches || legacyIdMatches))) {
+      const ownership = classifyDirectBotRuntimeBindingOwnership(binding, botId, conversationId);
+      if (ownership === "conflict") {
         throw new ConversationError(
           "runtime_ownership_conflict",
           "direct runtime binding ownership metadata is contradictory",
-          { botId, bindingId: binding.id, bindingBotId: binding.botId, conversationId: binding.conversationId },
+          { botId, binding },
         );
       }
-      if (!botMatches) {
+      if (ownership === "owned" && binding.scope === "bot-direct") {
+        ownedBindingIds.add(binding.id);
+        ownedBindings.push(binding);
+      }
+    }
+
+    // A binding is only destructive authority when alias and logical id resolve to
+    // one exact owned session. Missing on both axes is a harmless stale binding that
+    // final cleanup may remove; any partial/mismatched link fails closed.
+    const allSessions = Object.values(this.state.sessions);
+    for (const binding of ownedBindings) {
+      const byAlias = this.state.sessions[binding.sessionAlias];
+      const byIdMatches = allSessions.filter(
+        (session) => session.logical_session_id === binding.logicalSessionId,
+      );
+      if (!byAlias && byIdMatches.length === 0) {
         continue;
       }
-      ownedBindingIds.add(binding.id);
-      aliases.add(binding.sessionAlias);
+      if (
+        !byAlias
+        || byIdMatches.length !== 1
+        || byIdMatches[0]?.alias !== byAlias.alias
+        || classifyDirectBotBindingSessionLink(binding, byAlias, ownedBindingIds) !== "owned"
+      ) {
+        throw new ConversationError(
+          "runtime_ownership_conflict",
+          "direct runtime binding/session link is contradictory",
+          { botId, binding, sessionAlias: byAlias?.alias },
+        );
+      }
+      aliases.add(byAlias.alias);
     }
-    for (const session of Object.values(this.state.sessions)) {
+
+    // Binding-less PR2 owners are still recoverable, but every ownership signal
+    // must agree with the same target Bot/conversation.
+    for (const session of allSessions) {
       const ownership = classifyDirectBotSessionOwnership(
         session,
         botId,

@@ -100,15 +100,14 @@ interface PendingCancel {
   /** Exact optimistic row inserted by this Stop. Holding the object identity avoids
    *  guessing by startedAt, which is only millisecond telemetry and can collide. */
   optimisticRow?: ChatMessage;
-  /** The connector went offline while this Stop was unresolved. Transport failure
-   *  after this point is ambiguous, so rollback waits for an ordered reconnect snapshot. */
-  offline?: boolean;
-  /** The cancel RPC failed while offline; the next authoritative snapshot decides
-   *  whether the old turn is still live or has already disappeared. */
-  rpcFailedOffline?: boolean;
-  /** A same-turn authoritative snapshot arrived after the offline boundary while the
-   *  RPC was still unresolved. If the RPC then fails, that snapshot can restore live. */
-  activeSnapshotAfterOffline?: boolean;
+  /** An offline status or ambiguous RPC failure occurred while Stop was unresolved.
+   *  Rollback must now wait for a newer ordered snapshot/finish/start. */
+  ambiguousBoundary?: boolean;
+  /** The cancel RPC failed ambiguously; the next ordered event decides the truth. */
+  rpcFailedAmbiguous?: boolean;
+  /** A same-turn authoritative snapshot arrived after the ambiguity boundary while
+   *  the RPC was unresolved. If the RPC then fails, that snapshot can restore live. */
+  activeSnapshotAfterAmbiguousBoundary?: boolean;
 }
 
 // History rows are immutable once loaded (updates arrive as whole-row replacements), so
@@ -731,8 +730,8 @@ export const useChatStore = defineStore("chat", () => {
 
       if (matchingPending) {
         matchingPending.turn = snapshotTurn;
-        if (matchingPending.offline) matchingPending.activeSnapshotAfterOffline = true;
-        if (matchingPending.rpcFailedOffline) {
+        if (matchingPending.ambiguousBoundary) matchingPending.activeSnapshotAfterAmbiguousBoundary = true;
+        if (matchingPending.rpcFailedAmbiguous) {
           // The cancel transport failed, and reconnect now proves the same turn is
           // still active. Roll back the speculative Stop to this authoritative state.
           pendingCancels.delete(k);
@@ -804,7 +803,7 @@ export const useChatStore = defineStore("chat", () => {
       // immediately, while retaining enough identity to reconcile the next snapshot.
       for (const [k, pending] of pendingCancels) {
         if (k.startsWith(prefix)) {
-          pending.offline = true;
+          pending.ambiguousBoundary = true;
           finishedTurns.add(k);
         }
       }
@@ -1187,19 +1186,27 @@ export const useChatStore = defineStore("chat", () => {
       if (pendingCancels.get(k) !== pending) return;
 
       error.value = e instanceof ApiError ? e.code : "cancel-failed";
+      const ambiguousFailure = e instanceof TypeError
+        || (e instanceof ApiError && (
+          e.status === 504
+          || e.code === "timeout"
+          || e.code === "instance-offline"
+          || e.code === "instance-reconnected"
+        ));
 
-      if (pending.offline) {
-        // The request failed across an offline boundary, so delivery is ambiguous.
-        // Remove the speculative cancelled row now, but don't restore pre-offline live
-        // state unless an ordered reconnect snapshot has already proved it is active.
+      if (pending.ambiguousBoundary || ambiguousFailure) {
+        // HTTP/RPC and WebSocket status frames have no shared browser ordering.
+        // Treat the error itself as an ambiguity boundary so a 503/504 arriving
+        // before instance-status(false) can never restore a stale turn.
+        pending.ambiguousBoundary = true;
         removePendingCancelRow(id, alias, k, pending);
-        if (pending.activeSnapshotAfterOffline && pending.turn) {
+        if (pending.activeSnapshotAfterAmbiguousBoundary && pending.turn) {
           pendingCancels.delete(k);
           finishedTurns.delete(k);
           liveTurns.value[k] = pending.turn;
           syncLiveSlot(k);
         } else {
-          pending.rpcFailedOffline = true;
+          pending.rpcFailedAmbiguous = true;
         }
         return;
       }

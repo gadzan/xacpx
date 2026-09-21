@@ -27,7 +27,12 @@ import {
   type ControlConversationTurnRunnerOptions,
 } from "../../../src/conversations/conversation-turn-runner";
 import { SqliteConversationStore } from "../../../src/conversations/sqlite-conversation-store";
-import { createDirectBindingId, createDirectConversationId } from "../../../src/domain/ids";
+import {
+  createDirectBindingId,
+  createDirectConversationId,
+  createDirectTopicId,
+  createScopedDirectBindingId,
+} from "../../../src/domain/ids";
 import { AsyncMutex } from "../../../src/orchestration/async-mutex";
 import { SessionService } from "../../../src/sessions/session-service";
 import { createStrictOwnedSessionRelease } from "../../../src/sessions/owned-session-release";
@@ -863,6 +868,36 @@ test("teardown releases PR2 bindingId-only owned sessions so deleteBot can proce
   expect(first.state.sessions[alias]).toBeUndefined();
   await first.bots.deleteBot(BOT_ID);
   expect(first.state.bots[BOT_ID]).toBeUndefined();
+});
+
+test("teardown never treats a binding alias as authority to delete an ordinary session", async () => {
+  const first = await createLifecycle();
+  const conversationId = createDirectConversationId(BOT_ID);
+  const topicId = createDirectTopicId(BOT_ID);
+  const bindingId = createScopedDirectBindingId(conversationId, topicId, BOT_ID);
+  const alias = "ordinary-user-session";
+  await first.sessions.createSession(alias, "codex", "backend");
+  first.state.bot_runtime_bindings[bindingId] = {
+    id: bindingId,
+    scope: "bot-direct",
+    conversationId,
+    topicId,
+    botId: BOT_ID,
+    logicalSessionId: first.state.sessions[alias]!.logical_session_id,
+    sessionAlias: alias,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+
+  await expect(first.service.teardownDirectConversation(BOT_ID)).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+
+  expect(first.state.sessions[alias]?.owner).toBeUndefined();
+  expect(first.state.bot_runtime_bindings[bindingId]).toBeDefined();
+  expect(first.store.isConversationDeleting(conversationId)).toBe(false);
+  expect(first.physical.deleteCalls).toBe(0);
+  expect(first.physical.releaseCalls).toBe(0);
 });
 
 test("teardown fails before deleting when explicit Bot ownership conflicts with target metadata", async () => {
