@@ -390,7 +390,7 @@ export class BotRuntimeManager {
     });
   }
 
-  private findScopedBinding(conversationId: string, topicId: string, botId: string): BotRuntimeBinding | undefined {
+  private findScopedBinding(conversationId: string, topicId: string, botId: string): DirectBotRuntimeBinding | undefined {
     const scopedId = createScopedDirectBindingId(conversationId, topicId, botId);
     const scoped = this.state.bot_runtime_bindings[scopedId];
     if (scoped && scoped.scope === "bot-direct" && scoped.botId === botId && scoped.topicId === topicId) {
