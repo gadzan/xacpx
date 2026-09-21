@@ -88,8 +88,8 @@ const detailOutput = computed(() => {
 
 // Show the red error banner only when the failure isn't ALREADY visible in the detail
 // body. A failed command echoes its stderr in its output (plus a nonzero exit and a red
-// border), so a banner there just prints the same text twice. The error is capped with a
-// "…(truncated)" marker the output won't carry, so compare against the pre-marker prefix.
+// border), so a banner there just prints the same text twice. The error and the output
+// may be capped by different rules, so strip any truncation marker before comparing.
 const showErrorBanner = computed(() => {
   if (props.step.status !== "error") return false;
   const err = props.step.error?.trim();
