@@ -202,7 +202,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // cache or invalidate botsLoaded; stale responses are dropped.
   const botsListSeq: Record<string, number> = {};
   const botDetailSeq: Record<string, number> = {};
-
+  // Monotonic lifecycle clock per instance: execution evidence
+  // (member-turn-started / running / waiting-human rows) advances this, and
+  // loadBots() merges locally-converged hasRuntime=true rows into whatever
+  // snapshot lands. It never invalidates list snapshots: catalog freshness
+  // stays owned by botsListSeq alone.
+  const botLifecycleSeq: Record<string, number> = {};
   // Conversations state
   const conversationsByInstance = ref<Record<string, ConversationSummaryDto[]>>({});
   const conversationDetails = ref<Record<string, ConversationDetailDto>>({});
@@ -310,10 +315,13 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // for a later authoritative list/detail refetch.
   function markBotHasRuntime(targetInstanceId: string, botId: string): void {
     // PR5 has no public teardown/rebind: once a Bot has materialized a direct
-    // runtime, hasRuntime is monotonic. Bump both catalog generations so an
-    // older in-flight bots-list/detail response (whose snapshot predates the
-    // materialization evidence) can never write back hasRuntime-unset rows.
-    botsListSeq[targetInstanceId] = (botsListSeq[targetInstanceId] ?? 0) + 1;
+    // runtime, hasRuntime is monotonic. Lifecycle evidence bumps a dedicated
+    // lifecycle clock AND the detail generation (so a stale detail response
+    // can never write back hasRuntime-unset rows), but it must NOT bump the
+    // catalog request generation: that clock orders bots.list HTTP snapshots
+    // only, and a member-turn-started for Bot A must never invalidate an
+    // in-flight snapshot that also carries Bot C create/delete/update rows.
+    botLifecycleSeq[targetInstanceId] = (botLifecycleSeq[targetInstanceId] ?? 0) + 1;
     const detailKey = `${targetInstanceId}:${botId}`;
     botDetailSeq[detailKey] = (botDetailSeq[detailKey] ?? 0) + 1;
     const list = botsByInstance.value[targetInstanceId];

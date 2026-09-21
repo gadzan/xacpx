@@ -133,9 +133,23 @@ onMounted(async () => {
     try {
       const detail = await directBotsStore.loadBotDetail(props.instanceId, props.bot.id);
       if (generation !== dialogGeneration) return;
-      if (detail.instructions && !instructionsDirty.value) {
-        instructions.value = detail.instructions;
+      // Full hydration from the authoritative detail: the open-time summary
+      // may predate a remote update (rev2 landed after the sidebar rendered
+      // rev1). Overwrite only fields the user has not touched since open;
+      // instructions uses the explicit dirty flag because type-then-clear
+      // looks pristine, other fields compare against the open-time prop.
+      if (!instructionsDirty.value) {
+        if (detail.instructions) instructions.value = detail.instructions;
+        else if (detail.profileRevision !== props.bot.profileRevision) instructions.value = "";
       }
+      if (name.value === (props.bot.name ?? "")) name.value = detail.name;
+      if (avatar.value === (props.bot.avatar ?? "")) avatar.value = detail.avatar ?? "";
+      if (role.value === ((props.bot as BotSummaryDto).role ?? "")) role.value = detail.role ?? "";
+      if (agent.value === (props.bot.agent ?? "")) agent.value = detail.agent;
+      if (workspace.value === (props.bot.workspace ?? "")) workspace.value = detail.workspace;
+      if (model.value === (props.bot.model ?? "")) model.value = detail.model ?? "";
+      if (effort.value === (props.bot.effort ?? "")) effort.value = detail.effort ?? "";
+      if (enabled.value === (props.bot.enabled ?? true)) enabled.value = detail.enabled;
       // detail load also converges authoritative lifecycle (hasRuntime);
       // identityLocked reads the store, so no local copy is needed.
       detailHydrated.value = true;
@@ -146,7 +160,6 @@ onMounted(async () => {
       if (generation === dialogGeneration) detailLoading.value = false;
     }
   }
-
   if (!agent.value && availableAgents.value.length > 0) {
     agent.value = availableAgents.value[0]?.name ?? "";
   }

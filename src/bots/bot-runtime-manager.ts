@@ -29,6 +29,12 @@ export interface BotRuntimeManagerOptions {
   afterDirectSnapshot?: (bot: BotProfile) => Promise<void>;
   /** Verified physical+logical release. Required; never LogicalSession-only. */
   releaseOwnedSession: ReleaseOwnedSession;
+  /** Fired after a direct binding is durably published (fresh or adopted).
+   *  Composition routes this to a bots-changed product event so Web clients
+   *  converge Bot lifecycle even when execution-start never follows (e.g.
+   *  cancel in the materialize/start window). Must never throw: product
+   *  projection must not affect dispatch fencing. */
+  onRuntimeMaterialized?: (botId: string) => void;
 }
 
 type SessionWriter = Pick<StateStore, "save"> & { saveNow?: (state: AppState) => Promise<void> };
@@ -38,6 +44,7 @@ export class BotRuntimeManager {
   private readonly stateMutex: AsyncMutex;
   private readonly afterDirectSnapshot?: (bot: BotProfile) => Promise<void>;
   private readonly releaseOwnedSession: ReleaseOwnedSession;
+  private readonly onRuntimeMaterialized?: (botId: string) => void;
 
   constructor(
     private readonly bots: BotService,
@@ -53,6 +60,7 @@ export class BotRuntimeManager {
     this.stateMutex = options.stateMutex ?? new AsyncMutex();
     this.afterDirectSnapshot = options.afterDirectSnapshot;
     this.releaseOwnedSession = options.releaseOwnedSession;
+    this.onRuntimeMaterialized = options.onRuntimeMaterialized;
   }
 
   getBot(botId: string): BotProfile {
@@ -399,7 +407,13 @@ export class BotRuntimeManager {
         await this.stateStore.save(next);
       }
       replaceRuntimeState(this.state, next);
-      return this.state.bot_runtime_bindings[scopedId]!;
+      const published = this.state.bot_runtime_bindings[scopedId]!;
+      try {
+        this.onRuntimeMaterialized?.(bot.id);
+      } catch {
+        // Product projection must not affect dispatch fencing.
+      }
+      return published;
     });
   }
 
@@ -478,7 +492,13 @@ export class BotRuntimeManager {
         await this.stateStore.save(next);
       }
       replaceRuntimeState(this.state, next);
-      return this.state.bot_runtime_bindings[bindingId]!;
+      const published = this.state.bot_runtime_bindings[bindingId]!;
+      try {
+        this.onRuntimeMaterialized?.(bot.id);
+      } catch {
+        // Product projection must not affect dispatch fencing.
+      }
+      return published;
     });
   }
 

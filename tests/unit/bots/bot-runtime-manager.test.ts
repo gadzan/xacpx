@@ -934,6 +934,33 @@ test("PR2 adoption aligns stale legacy model/effort to the accepted snapshot", a
   expect(binding.sessionAlias).toBe(alias);
 });
 
+test("publishing a direct binding fires onRuntimeMaterialized exactly once per publish", async () => {
+  const materialized: string[] = [];
+  const store = new MemoryStateStore();
+  const state = createEmptyState();
+  const config = createConfig();
+  const stateMutex = new AsyncMutex();
+  const sessions = new SessionService(config, store, state, { now: () => Date.parse(NOW), stateMutex });
+  const bots = new BotService(config, state, store, {
+    now: () => new Date(NOW),
+    createId: () => BOT_ID,
+    stateMutex,
+  });
+  const runtime = new BotRuntimeManager(bots, sessions, state, store, {
+    now: () => new Date(NOW),
+    stateMutex,
+    releaseOwnedSession: async (alias) => {
+      await sessions.removeSession(alias);
+    },
+    onRuntimeMaterialized: (botId) => {
+      materialized.push(botId);
+    },
+  });
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  await runtime.getOrCreateDirectSession({ botId: BOT_ID });
+  expect(materialized).toEqual([BOT_ID]);
+});
+
 test("recreates and rebinds direct runtime when bot effort is cleared from high to default", async () => {
   const releasedAliases: string[] = [];
   const { bots, runtime, sessions, state } = createHarness(undefined, undefined, {

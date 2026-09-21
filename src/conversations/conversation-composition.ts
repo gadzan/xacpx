@@ -6,6 +6,7 @@ import { BotService } from "../bots/bot-service";
 import type { AppConfig } from "../config/types";
 import { ConversationError } from "./conversation-error";
 import type { ConversationExecutionPort } from "./conversation-execution-port";
+import type { ConversationProductEventSink } from "./conversation-product-events";
 import { resolveRuntimeDirFromConfigPath } from "../daemon/daemon-files";
 import type { AsyncMutex } from "../orchestration/async-mutex";
 import { createStrictOwnedSessionRelease, type ReleaseOwnedSession } from "../sessions/owned-session-release";
@@ -14,7 +15,6 @@ import type { StateStore } from "../state/state-store";
 import type { AppState } from "../state/types";
 import type { SessionTransport } from "../transport/types";
 import { ConversationDispatcher } from "./conversation-dispatcher";
-import type { ConversationProductEventSink } from "./conversation-product-events";
 import { ConversationRunService } from "./conversation-run-service";
 import { ControlConversationTurnRunner } from "./conversation-turn-runner";
 import { SqliteConversationStore } from "./sqlite-conversation-store";
@@ -73,8 +73,20 @@ export async function createConversationRuntime(
     ...(input.now ? { now: input.now } : {}),
   };
   const bots = new BotService(input.config, input.state, input.stateStore, shared);
+  const productSinkRef: ConversationProductEventSink | undefined = input.onProductEvent;
   const botRuntime = new BotRuntimeManager(bots, input.sessions, input.state, input.stateStore, {
     releaseOwnedSession: input.releaseOwnedSession,
+    onRuntimeMaterialized: () => {
+      // Actual binding/session publish is the ground truth for Bot
+      // lifecycle: execution-start may never follow (cancel in the
+      // materialize/start window), so converge Web clients immediately via
+      // the catalog channel instead of waiting for member-turn-started.
+      try {
+        productSinkRef?.({ type: "bots-changed" });
+      } catch {
+        // Product projection must not affect dispatch fencing.
+      }
+    },
     ...shared,
   });
   const execution: ConversationExecutionPort = {

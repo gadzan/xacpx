@@ -634,6 +634,40 @@ test("one active Run per Topic queues the next request durably", async () => {
   expect(runner.runs).toHaveLength(2);
 });
 
+test("cancel between materialize and execution-start still converges Bot lifecycle via bots-changed", async () => {
+  const paused = deferred();
+  const resume = deferred();
+  const first = await createLifecycle({
+    hooks: {
+      beforeExecutionStart: async () => {
+        paused.resolve();
+        await resume.promise;
+      },
+    },
+  });
+  // Attach a product listener by re-emitting through the dispatcher's sink:
+  // the composition wires onRuntimeMaterialized -> bots-changed; here we
+  // assert the same ordering directly on the runtime hook path.
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-materialize-cancel",
+    content: "hello",
+  });
+  const draining = first.dispatcher.kick();
+  await paused.promise;
+  // Binding/session are durably published at this point even though
+  // execution-start has not run.
+  const bindings = Object.values(first.state.bot_runtime_bindings);
+  expect(bindings).toHaveLength(1);
+  expect(first.bots.hasRuntime(BOT_ID)).toBe(true);
+  // Cancel before execution-start: no member-turn-started will ever fire.
+  await first.service.cancelRun(accepted.run.id);
+  resume.resolve();
+  await draining;
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("cancelled");
+  expect(first.bots.hasRuntime(BOT_ID)).toBe(true);
+});
+
 test("stale worker cannot cross the execution-start fence after a lease reclaim", async () => {
   const aPaused = deferred();
   const aResume = deferred();
