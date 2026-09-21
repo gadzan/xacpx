@@ -1696,6 +1696,62 @@ describe("useDirectBotsStore", () => {
       expect(store.botsLoaded["inst_1"]).toBe(true);
       expect(store.botsLoaded["inst_2"]).toBe(false);
     });
+    it("lands an in-flight list carrying a new Bot plus locally-converged hasRuntime", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_A";
+      store.activeConversationId = "conv_A";
+      store.activeTopicId = "top_A";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_A", name: "A", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now", profileRevision: 1 },
+        { id: "bot_B", name: "B", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now", profileRevision: 1 },
+      ];
+      const deferredList = Promise.withResolvers<{ bots: BotSummaryDto[] }>();
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.bots.list") {
+          return deferredList.promise;
+        }
+        return Promise.resolve({});
+      });
+
+      // L1 starts (snapshot will contain new Bot C, but predates A's
+      // execution evidence, so its A row lacks hasRuntime).
+      const pendingList = store.loadBots("inst_1");
+      // A materializes while L1 is in flight: local lifecycle converges.
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "member-turn-started",
+          run: {
+            id: "run_A", conversationId: "conv_A", topicId: "top_A",
+            requestMessageId: "msg_A", requestId: "req_A", mode: "explicit",
+            state: "running", profileRevision: 1, createdAt: "now",
+          },
+          memberTurn: {
+            id: "turn_A", runId: "run_A", conversationId: "conv_A", topicId: "top_A",
+            botId: "bot_A", batch: 1, attempt: 1, origin: "human",
+            state: "running", createdAt: "now",
+          },
+        },
+      } as never);
+      expect(store.botsByInstance["inst_1"]?.find((b) => b.id === "bot_A")?.hasRuntime).toBe(true);
+
+      // L1 lands late with [A, B, C] but stale hasRuntime-unset A: the
+      // snapshot must land (C visible) with the monotonic bit merged back.
+      deferredList.resolve({
+        bots: [
+          { id: "bot_A", name: "A", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now", profileRevision: 1 },
+          { id: "bot_B", name: "B", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now", profileRevision: 1 },
+          { id: "bot_C", name: "C", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now", profileRevision: 1 },
+        ],
+      });
+      await pendingList;
+      const ids = store.botsByInstance["inst_1"]?.map((b) => b.id);
+      expect(ids).toEqual(expect.arrayContaining(["bot_A", "bot_B", "bot_C"]));
+      expect(store.botsByInstance["inst_1"]?.find((b) => b.id === "bot_A")?.hasRuntime).toBe(true);
+      expect(store.botsByInstance["inst_1"]?.find((b) => b.id === "bot_C")).toBeTruthy();
+    });
     it("drops a pre-reconnect in-flight list response after the reconnect dirty barrier", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";

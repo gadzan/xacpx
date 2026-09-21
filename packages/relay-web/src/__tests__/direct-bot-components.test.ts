@@ -546,6 +546,63 @@ describe("Direct Bot Components", () => {
       }));
     });
 
+    it("hydrates every untouched field from the authoritative rev2 detail", async () => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "codex", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+          agentCatalog: [],
+        } as never,
+      ];
+      const directBots = useDirectBotsStore();
+      // Sidebar rendered rev1 (model old, enabled true); the authoritative
+      // detail is rev2 (model new, enabled false). Only the name is touched.
+      vi.spyOn(directBots, "loadBotDetail").mockImplementation(async () => {
+        const detail: BotDetailDto = {
+          id: "bot_1", name: "Bot", agent: "codex", workspace: "repo",
+          model: "new", enabled: false, profileRevision: 2,
+          createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "new",
+        };
+        directBots.botDetails["i1:bot_1"] = detail;
+        return detail;
+      });
+      const updateSpy = vi.spyOn(directBots, "updateBot").mockResolvedValue({
+        id: "bot_1", name: "Renamed", agent: "codex", workspace: "repo",
+        enabled: false, profileRevision: 3,
+        createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "2026-09-18T00:00:00.000Z",
+      });
+      const existingBot: BotSummaryDto = {
+        id: "bot_1", name: "Bot", agent: "codex", workspace: "repo",
+        model: "old", enabled: true, updatedAt: "2026-09-18T00:00:00.000Z",
+      };
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local", bot: existingBot },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      await flushPromises();
+      // Untouched fields converge to rev2; the open-time rev1 values are gone.
+      expect((wrapper.find("#bot-model").element as HTMLInputElement).value).toBe("new");
+      const enabledCheckbox = wrapper.find('input[type="checkbox"]');
+      expect((enabledCheckbox.element as HTMLInputElement).checked).toBe(false);
+
+      await wrapper.find("#bot-name").setValue("Renamed");
+      await wrapper.find("form").trigger("submit.prevent");
+      await flushPromises();
+      // Save keeps rev2 model/enabled instead of rolling back to rev1.
+      expect(updateSpy).toHaveBeenCalledWith("i1", "bot_1", expect.objectContaining({
+        name: "Renamed",
+        model: "new",
+        enabled: false,
+      }));
+    });
+
     it("keeps user-typed instructions when the slow detail fetch resolves", async () => {
       const instances = useInstancesStore();
       instances.instances = [
