@@ -329,6 +329,55 @@ Five further findings, all fixed:
 Total new: **176**. M1 unit suites 301/301 green; real-acpx E2E 15/16 (the one
 failure is the pre-existing `PR9-A E2E`); `npx tsc --noEmit` 0 errors.
 
+## Review round 6 (PR #355, head `635e2031`)
+
+Three further findings, all fixed:
+
+1. **[Blocking, ACP user safety]** The renderer had no trusted "which Agent is
+   asking" identity. ACP's User Interaction Requirements oblige the client to
+   clearly identify the requesting Agent, and the public `agent` field was
+   optional and never populated in production — so an M2 renderer would have
+   had to resolve it from `chatKey`, which is the forbidden latest-session
+   pattern (session selection changes mid-turn; concurrent turns make
+   "current" ambiguous), or from agent-controlled `message`/`title` text, which
+   is not identity. The agent name is now pinned to the runtime worker's ensure
+   identity and carried worker → bridge → broker → `ChannelElicitationRequest`,
+   where `agent.name` is REQUIRED. Absent ⇒ cancel with no UI. 4 regressions.
+2. **[Blocking, format semantics]** `email` was
+   `^[^\s@]+@[^\s@]+\.[^\s@]+$` (accepts `é@example.com`, `a..b@example.com`)
+   and `uri` was `new URL()` (WHATWG, accepts IRIs and normalizes `%zz`). Since
+   this PR chose to execute `format`, it must match the referenced semantics:
+   RFC 5321 for `email`, RFC 3986 for `uri`. Replaced with structural parsers,
+   plus strict percent-encoding validation. 9 regressions.
+3. **[Medium, worker lifecycle]** A successful elicitation left its 125s
+   watchdog timer and abort listener alive until expiry — unref'd, so it could
+   not block exit, but a deterministic short-term leak that accumulates across
+   elicitations in one long turn. The `finally` now clears the timeout, and the
+   hardcoded `125_000` is replaced by the shared `ELICITATION_RPC_TIMEOUT_MS`.
+
+### CI status for round 6
+
+Workflow run `35565795747` (head `635e2031`) failed `terminal-windows` at
+`windows-process-tree.test.ts:177` (`query-failed` vs `killed`). The 4 failing
+tests reproduce **identically on clean `src/`**, so they are pre-existing
+Windows real-process environment failures, not a regression from this branch.
+Rerun requested; the diff from `512e9f36 → 635e2031` touches only elicitation
+code.
+
+## Final totals after round 6
+
+| Suite | Tests |
+|---|---|
+| `turn-interaction-registry.test.ts` | 13 |
+| `elicitation-schema.test.ts` | 101 |
+| `elicitation-interaction-broker.test.ts` | 41 |
+| `elicitation-plugin-contract.test.ts` | 6 |
+| `channel-elicitation-capability.test.ts` | 9 |
+| `runtime-adapter-elicitation.test.ts` (real acpx) | 4 |
+
+Total new: **174**. M1 unit suites 311/311 green; real-acpx E2E 15/16 (the one
+failure is the pre-existing `PR9-A E2E`); `npx tsc --noEmit` 0 errors.
+
 ## Deferred
 
 - No production channel renderer (M2 Discord, M4 Feishu).
