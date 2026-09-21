@@ -662,17 +662,136 @@ function codePointLength(value: string): number {
   return count;
 }
 
+/**
+ * RFC 5321/5322 `Mailbox` for the JSON Schema `email` format.
+ *
+ * The previous `^[^\s@]+@[^\s@]+\.[^\s@]+$` accepted `é@example.com` and
+ * `a..b@example.com`. JSON Schema's `email` references RFC 5321 and the spec
+ * calls out non-7-bit-ASCII in plain `email` as clearly invalid (that is
+ * `idn-email`'s job). Structure below follows the RFC 5322 `addr-spec`
+ * grammar the spec points implementations at.
+ */
+const EMAIL_ATEXT = /^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+$/;
+/** dot-atom: atext sequences separated by single dots, no leading/trailing dot. */
+const EMAIL_DOT_ATOM = /^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*$/;
+/** Quoted-string local part: `"..."` with escaped `\"` and `\\`. */
+const EMAIL_QUOTED_LOCAL = /^"(?:[^"\\]|\\.)*"$/;
+const EMAIL_DOMAIN_LABEL = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
+
 function isEmail(value: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  // Exactly one unquoted "@" separator.
+  const at = value.lastIndexOf("@");
+  if (at <= 0 || at !== value.indexOf("@")) return false;
+  const local = value.slice(0, at);
+  const domain = value.slice(at + 1);
+  if (domain.length === 0 || domain.length > 253) return false;
+  if (EMAIL_QUOTED_LOCAL.test(local)) {
+    // A quoted local part may contain "@", which lastIndexOf already handled.
+  } else if (local.length > 64 || !EMAIL_DOT_ATOM.test(local)) {
+    return false;
+  }
+  // Domain is a dot-separated sequence of labels (no leading/trailing dot,
+  // no empty label, so "a..b" is rejected).
+  if (domain.includes("..")) return false;
+  const labels = domain.split(".");
+  if (labels.some((label) => label.length === 0 || label.length > 63 || !EMAIL_DOMAIN_LABEL.test(label))) {
+    return false;
+  }
+  // Non-ASCII is not valid in plain `email` (JSON Schema: idn-email is separate).
+  // eslint-disable-next-line no-control-regex
+  if (/[^\x00-\x7F]/.test(value)) return false;
+  return true;
+}
+
+/**
+ * RFC 3986 URI for the JSON Schema `uri` format.
+ *
+ * `new URL()` implements the WHATWG URL spec, which is a different (and more
+ * permissive) grammar: it accepts IRIs like `https://例え.テスト` and tolerates
+ * malformed percent-encoding such as `https://example.com/%zz`. JSON Schema's
+ * `uri` is RFC 3986 and `iri` is the separate reference for IRIs.
+ */
+const URI_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*$/;
+/** unreserved / pct-encoded / sub-delims, plus ":", "@", and the path set. */
+const URI_USERINFO = /^[A-Za-z0-9\-._~%!$&'()*+,;=:]*$/;
+const URI_REG_NAME = /^[A-Za-z0-9\-._~%!$&'()*+,;=]*$/;
+const URI_PATH = /^[A-Za-z0-9\-._~%!$&'()*+,;=:@/]*$/;
+const URI_QUERY = /^[A-Za-z0-9\-._~%!$&'()*+,;=:@/?]*$/;
+const URI_FRAGMENT = /^[A-Za-z0-9\-._~%!$&'()*+,;=:@/?]*$/;
+
+/** Every `%` must introduce exactly two uppercase-or-lowercase hex digits. */
+function hasValidPercentEncoding(value: string): boolean {
+  for (let i = 0; i < value.length; i += 1) {
+    if (value[i] !== "%") continue;
+    const hex = value.slice(i + 1, i + 3);
+    if (!/^[0-9A-Fa-f]{2}$/.test(hex)) return false;
+    i += 2;
+  }
+  return true;
 }
 
 function isUri(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.protocol.length > 1;
-  } catch {
-    return false;
+  if (value.length === 0) return false;
+  if (/[^\x00-\x7F]/.test(value)) return false;
+  const schemeEnd = value.indexOf(":");
+  if (schemeEnd <= 0) return false;
+  const scheme = value.slice(0, schemeEnd);
+  if (!URI_SCHEME.test(scheme)) return false;
+  const rest = value.slice(schemeEnd + 1);
+
+  let authorityAndRest = rest;
+  if (rest.startsWith("//")) {
+    const afterSlashes = rest.slice(2);
+    const pathStart = afterSlashes.search(/[/?#]/);
+    const authority = pathStart === -1 ? afterSlashes : afterSlashes.slice(0, pathStart);
+    if (authority.length === 0) return false;
+    const at = authority.lastIndexOf("@");
+    const hostPart = at === -1 ? authority : authority.slice(at + 1);
+    const userinfo = at === -1 ? undefined : authority.slice(0, at);
+    if (userinfo !== undefined && !URI_USERINFO.test(userinfo)) return false;
+    if (hostPart.startsWith("[")) {
+      // IPv6 / IPvFuture literal, optionally followed by :port.
+      const close = hostPart.indexOf("]");
+      if (close === -1) return false;
+      const literal = hostPart.slice(0, close + 1);
+      const afterLiteral = hostPart.slice(close + 1);
+      if (!/^\[[0-9A-Fa-f:.]+\]$/.test(literal)) return false;
+      if (afterLiteral.length === 0) {
+        // bare literal, authority ends here
+      } else if (afterLiteral.startsWith(":")) {
+        if (!/^\d*$/.test(afterLiteral.slice(1))) return false;
+      } else {
+        return false;
+      }
+    } else if (hostPart.includes(":")) {
+      const idx = hostPart.lastIndexOf(":");
+      const host = hostPart.slice(0, idx);
+      const port = hostPart.slice(idx + 1);
+      if (!URI_REG_NAME.test(host) || !/^\d*$/.test(port)) return false;
+    } else if (!URI_REG_NAME.test(hostPart)) {
+      return false;
+    }
+    if (!hasValidPercentEncoding(authority)) return false;
+    // The path/query/fragment remainder starts AFTER the authority. Keeping
+    // the authority in would run "[2001:db8::1]:8443" through the path
+    // grammar, which does not allow brackets.
+    authorityAndRest = pathStart === -1 ? "" : afterSlashes.slice(pathStart);
+    if (authorityAndRest.length === 0) return true;
   }
+
+  // Split the remainder into path / query / fragment on the first "?" then "#".
+  const hashIndex = authorityAndRest.indexOf("#");
+  const beforeFragment = hashIndex === -1 ? authorityAndRest : authorityAndRest.slice(0, hashIndex);
+  const fragment = hashIndex === -1 ? undefined : authorityAndRest.slice(hashIndex + 1);
+  if (fragment !== undefined && !URI_FRAGMENT.test(fragment)) return false;
+
+  const queryIndex = beforeFragment.indexOf("?");
+  const path = queryIndex === -1 ? beforeFragment : beforeFragment.slice(0, queryIndex);
+  const query = queryIndex === -1 ? undefined : beforeFragment.slice(queryIndex + 1);
+  if (query !== undefined && !URI_QUERY.test(query)) return false;
+  if (!URI_PATH.test(path)) return false;
+  if (!hasValidPercentEncoding(path) || (query !== undefined && !hasValidPercentEncoding(query))) return false;
+  return true;
 }
 
 /** Full RFC3339 date-time: date, "T", time with mandatory seconds and offset. */

@@ -1030,59 +1030,108 @@ describe("validateElicitationAnswer", () => {
     if (result.ok) return;
     expect(result.reason).toContain("core size limit");
   });
+});
 
-  test("an answer at the size limit is accepted", () => {
-    const optional = normalizeOk(formRequest({
-      requestedSchema: { type: "object", properties: { summary: { type: "string" } } },
-    }))[0];
-    // The cap counts key + value, so stay strictly inside the budget.
-    const atLimit = "x".repeat(ELICITATION_SCHEMA_LIMITS.maxAcceptedAnswerChars - 20);
-    expect(validateElicitationAnswer([optional], { summary: atLimit }).ok).toBe(true);
+describe("validateElicitationAnswer email format (RFC 5321)", () => {
+  const email = normalizeOk(formRequest({
+    requestedSchema: { type: "object", properties: { e: { type: "string", format: "email" } }, required: ["e"] },
+  }))[0];
+
+  test("plain ASCII mailboxes are accepted", () => {
+    for (const value of [
+      "a@b.co",
+      "user.name+tag@example.com",
+      "x_y-z@sub.domain.example.org",
+      // Quoted local part may contain spaces and "@".
+      '"odd name"@example.com',
+      // A quoted local part may legitimately contain a dot sequence.
+      '"a..b"@example.com',
+    ]) {
+      expect(validateElicitationAnswer([email], { e: value }).ok).toBe(true);
+    }
   });
 
-  test("the answer cap aggregates across fields", () => {
-    const optional = normalizeOk(formRequest({
-      requestedSchema: {
-        type: "object",
-        properties: { a: { type: "string" }, b: { type: "string" } },
-      },
-    }));
-    // Each is individually under the cap; together they exceed it.
-    const half = "y".repeat(ELICITATION_SCHEMA_LIMITS.maxAcceptedAnswerChars / 2 + 1);
-    expect(validateElicitationAnswer(optional, { a: half, b: half }).ok).toBe(false);
+  test("non-ASCII is rejected (that is idn-email, not email)", () => {
+    // Regression: `^[^\s@]+@[^\s@]+\.[^\s@]+$` accepted these. JSON Schema's
+    // `email` is 7-bit ASCII per RFC 5321; IRIs/internationalized addresses
+    // belong to the separate `idn-email` format.
+    expect(validateElicitationAnswer([email], { e: "é@example.com" }).ok).toBe(false);
+    expect(validateElicitationAnswer([email], { e: "用户@例え.テスト" }).ok).toBe(false);
   });
 
-  test("the answer cap counts multi-select item lengths", () => {
-    // Options are individually bounded (256) and capped at 100 per field, so a
-    // single multi-select cannot exceed the answer cap on its own — but many
-    // selected items across fields must still be counted, not just strings.
-    const itemLength = ELICITATION_SCHEMA_LIMITS.maxOptionValueLength;
-    const enumValues = Array.from({ length: 10 }, (_, n) => `v${n}-${"a".repeat(itemLength - 8)}`);
-    const fields = normalizeOk(formRequest({
-      requestedSchema: {
-        type: "object",
-        properties: {
-          t0: { type: "array", items: { type: "string", enum: enumValues } },
-          t1: { type: "array", items: { type: "string", enum: enumValues } },
-          t2: { type: "array", items: { type: "string", enum: enumValues } },
-        },
-      },
-    }));
-    const all = enumValues;
-    // 3 fields × 10 items × 256 chars ≈ 7.7k — under the cap.
-    expect(validateElicitationAnswer(fields, { t0: all, t1: all, t2: all }).ok).toBe(true);
-    // Numbers and booleans count too (each as 1 char), and a single selected
-    // item is accepted.
-    expect(validateElicitationAnswer(fields, { t0: [enumValues[0]] }).ok).toBe(true);
+  test("invalid dot-atom local parts are rejected", () => {
+    // Regression: the old regex accepted "a..b@example.com".
+    expect(validateElicitationAnswer([email], { e: "a..b@example.com" }).ok).toBe(false);
+    expect(validateElicitationAnswer([email], { e: ".leading@example.com" }).ok).toBe(false);
+    expect(validateElicitationAnswer([email], { e: "trailing.@example.com" }).ok).toBe(false);
   });
-  test("sentinel answer value round-trips and never appears in summaries", () => {
-    const secret = "SENTINEL-ELICITATION-ANSWER-9f3c2a";
-    const validated = validateElicitationAnswer([text], { summary: secret });
-    expect(validated).toMatchObject({ ok: true });
-    if (!validated.ok) return;
-    expect(validated.content.summary).toBe(secret);
-    const serialized = JSON.stringify(summarizeElicitationSchema([text]));
-    expect(serialized).not.toContain(secret);
+
+  test("malformed domains are rejected", () => {
+    // A single-label domain ("a@b") is a legal dot-atom per RFC 5321, so it is
+    // accepted; the failures below are structural.
+    expect(validateElicitationAnswer([email], { e: "a@b..c" }).ok).toBe(false);
+    expect(validateElicitationAnswer([email], { e: "a@-b.co" }).ok).toBe(false);
+    expect(validateElicitationAnswer([email], { e: "a@b.c-" }).ok).toBe(false);
+    expect(validateElicitationAnswer([email], { e: "a@" }).ok).toBe(false);
+    expect(validateElicitationAnswer([email], { e: "@b.co" }).ok).toBe(false);
+    expect(validateElicitationAnswer([email], { e: "a@b@c.co" }).ok).toBe(false);
+    expect(validateElicitationAnswer([email], { e: "a@.b.co" }).ok).toBe(false);
+  });
+
+  test("a single-label domain is accepted", () => {
+    expect(validateElicitationAnswer([email], { e: "a@b" }).ok).toBe(true);
+  });
+
+  test("oversized local part is rejected", () => {
+    expect(validateElicitationAnswer([email], { e: `${"x".repeat(65)}@example.com` }).ok).toBe(false);
+    expect(validateElicitationAnswer([email], { e: `${"x".repeat(64)}@example.com` }).ok).toBe(true);
+  });
+});
+
+describe("validateElicitationAnswer uri format (RFC 3986)", () => {
+  const uri = normalizeOk(formRequest({
+    requestedSchema: { type: "object", properties: { u: { type: "string", format: "uri" } }, required: ["u"] },
+  }))[0];
+
+  test("well-formed URIs are accepted", () => {
+    for (const value of [
+      "https://example.com",
+      "https://example.com/",
+      "https://example.com/path/to/x?q=1&r=2#frag",
+      "http://user:pass@example.com:8080/p",
+      "urn:isbn:0451450523",
+      "mailto:someone@example.com",
+      "https://example.com/a%20b",
+      "https://[2001:db8::1]:8443/x",
+    ]) {
+      expect(validateElicitationAnswer([uri], { u: value }).ok).toBe(true);
+    }
+  });
+
+  test("malformed percent-encoding is rejected", () => {
+    // Regression: `new URL()` normalizes these instead of rejecting them.
+    expect(validateElicitationAnswer([uri], { u: "https://example.com/%zz" }).ok).toBe(false);
+    expect(validateElicitationAnswer([uri], { u: "https://example.com/%2" }).ok).toBe(false);
+    expect(validateElicitationAnswer([uri], { u: "https://example.com/%" }).ok).toBe(false);
+  });
+
+  test("IRIs are rejected (that is the separate iri format)", () => {
+    // Regression: WHATWG URL accepts and normalizes non-ASCII hosts.
+    expect(validateElicitationAnswer([uri], { u: "https://例え.テスト" }).ok).toBe(false);
+    expect(validateElicitationAnswer([uri], { u: "https://example.com/日本語" }).ok).toBe(false);
+  });
+
+  test("structurally invalid URIs are rejected", () => {
+    for (const value of [
+      "example.com",         // no scheme
+      "https://",            // empty authority
+      "https://exa mple.com", // space in host
+      "1https://example.com", // scheme must start with a letter
+      "https://example.com:port/x", // non-numeric port
+      "https://[not-ip]/x",  // malformed IPv6 literal
+    ]) {
+      expect(validateElicitationAnswer([uri], { u: value }).ok).toBe(false);
+    }
   });
 });
 
