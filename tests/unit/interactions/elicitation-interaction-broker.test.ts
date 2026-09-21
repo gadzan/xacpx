@@ -1027,24 +1027,37 @@ describe("ElicitationInteractionBroker privacy", () => {
     }
   });
 
-  test("an unexpected answer key is logged by index, never by key", async () => {
+  test("an unexpected answer key is never logged by key", async () => {
     const { broker, logs } = harness({
       channel: formChannel(async () => ({
         action: "accept",
         responderId: "user-A",
-        content: { note: "fine", SENTINEL_ANSWER: "extra" },
+        content: { a: "1", b: "2", c: "3", d: "4", SENTINEL_ANSWER: "extra" },
       })) as never,
     });
     const route = turn();
     const dispose = broker.bindTurn(route);
     try {
-      const result = await broker.resolveElicitation(request({ interactionId: route.interactionId }));
+      const result = await broker.resolveElicitation(request({
+        interactionId: route.interactionId,
+        request: {
+          sessionId: "acp-1",
+          mode: "form",
+          message: "Four fields",
+          requestedSchema: {
+            type: "object",
+            properties: { a: { type: "string" }, b: { type: "string" }, c: { type: "string" }, d: { type: "string" } },
+          },
+        },
+      }));
       expect(result).toEqual({ action: "cancel" });
       await Promise.resolve();
       await Promise.resolve();
       const serializedLogs = JSON.stringify(logs.map((entry) => ({ event: entry.event, fields: entry.fields })));
+      // The key itself must never appear — neither the index form nor the
+      // count-bound form may echo it.
       expect(serializedLogs).not.toContain(SENTINEL_ANSWER);
-      expect(serializedLogs).toContain("unexpected answer key at index");
+      expect(serializedLogs).toMatch(/unexpected answer key/);
     } finally {
       dispose();
     }

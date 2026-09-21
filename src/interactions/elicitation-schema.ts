@@ -472,6 +472,11 @@ function readTitledOptions(
 ): { ok: true; options?: ChannelElicitationOption[] } | { ok: false; detail: string } {
   if (value === undefined || value === null) return { ok: true };
   if (!Array.isArray(value)) return { ok: false, detail: "titled options must be an array" };
+  // Length BEFORE mapping: `value.map(...)` on an unbounded array allocates a
+  // full copy before the caller's `options.length > 100` check ever runs.
+  if (value.length > ELICITATION_SCHEMA_LIMITS.maxOptionsPerField) {
+    return { ok: false, detail: `titled options exceed ${ELICITATION_SCHEMA_LIMITS.maxOptionsPerField}` };
+  }
   const options = value.map((entry) => {
     const option = asPlain(entry);
     if (!option) return undefined;
@@ -559,21 +564,33 @@ export function normalizeAcpElicitationForm(request: unknown): ElicitationNormal
   }
   const propertiesRecord = asPlain(properties);
   if (!propertiesRecord) return fail("malformed_schema", "requestedSchema.properties is not an object");
-  const entries = Object.entries(propertiesRecord);
-  if (entries.length > ELICITATION_SCHEMA_LIMITS.maxFields) {
-    return fail("resource_exceeded", `form exceeds ${ELICITATION_SCHEMA_LIMITS.maxFields} fields`);
+  // Bounded enumeration: collect keys and stop at maxFields + 1 instead of
+  // materialising every entry first. A schema near the upstream 64 MiB message
+  // ceiling must not force core to enumerate and allocate a collection that is
+  // going to be rejected on count anyway.
+  const propertyKeys: string[] = [];
+  for (const key in propertiesRecord) {
+    if (!Object.hasOwn(propertiesRecord, key)) continue;
+    propertyKeys.push(key);
+    if (propertyKeys.length > ELICITATION_SCHEMA_LIMITS.maxFields) {
+      return fail("resource_exceeded", `form exceeds ${ELICITATION_SCHEMA_LIMITS.maxFields} fields`);
+    }
   }
+  const entries: Array<[string, unknown]> = propertyKeys.map((key) => [key, propertiesRecord[key]]);
 
   const required = schema.required;
   let requiredNames: string[] = [];
   if (required !== undefined && required !== null) {
-    if (!Array.isArray(required) || !required.every((name) => typeof name === "string")) {
+    // Length BEFORE element type: `required.every(...)` on an unbounded array
+    // is an unbounded scan even when every entry is a valid string.
+    if (!Array.isArray(required)) {
       return fail("malformed_schema", "requestedSchema.required is not a string array");
     }
-    // Bound the list BEFORE dedup/traversal: an unbounded array is an
-    // unbounded scan even when every entry is valid.
     if (required.length > ELICITATION_SCHEMA_LIMITS.maxRequiredNames) {
       return fail("resource_exceeded", `required exceeds ${ELICITATION_SCHEMA_LIMITS.maxRequiredNames} names`);
+    }
+    if (!required.every((name) => typeof name === "string")) {
+      return fail("malformed_schema", "requestedSchema.required is not a string array");
     }
     if (hasDuplicateValues(required)) {
       return fail("malformed_schema", "requestedSchema.required repeats a name");
@@ -707,6 +724,9 @@ const formatValidator = ((): {
  * express the same instant, so the local wall clock is converted to UTC
  * before the date lookup — `1990-12-31T15:59:60-08:00` is the same leap
  * second as `1990-12-31T23:59:60Z`, which is the RFC's own example.
+ *
+ * `offsetMinutes` is the signed UTC offset, already range-validated by the
+ * caller (`HH <= 23`, `MM <= 59`) so this function never re-parses it.
  */
 function toUtcLeapInstant(
   year: string,
@@ -714,29 +734,20 @@ function toUtcLeapInstant(
   day: string,
   hours: number,
   minutes: number,
-  offset: string | undefined,
+  offsetMinutes: number,
 ): string | undefined {
   const y = Number(year);
   const m = Number(month);
   const d = Number(day);
   if (m < 1 || m > 12) return undefined;
   if (d < 1 || d > daysInMonth(y, m)) return undefined;
-  if (offset === undefined) return undefined;
-  if (offset === "Z" || offset === "z") {
-    // UTC: the local clock IS the UTC clock, so it must read 23:59:60.
-    return hours === 23 && minutes === 59 ? `${year}-${month}-${day}` : undefined;
-  }
 
-  const parsed = /^([+-])(\d{2}):(\d{2})$/.exec(offset);
-  if (!parsed) return undefined;
-  const sign = parsed[1] === "-" ? -1 : 1;
-  const offsetMinutes = sign * (Number(parsed[2]) * 60 + Number(parsed[3]));
-
-  // Convert local minute-of-day to UTC. The instant must land exactly on the
+  // UTC minute-of-day = local - offset. The instant must land exactly on the
   // UTC leap minute (23:59) for it to be a leap second.
-  const utcMinuteOfDay = ((hours * 60 + minutes - offsetMinutes) % (24 * 60) + 24 * 60) % (24 * 60);
-  const dayShift = Math.floor((hours * 60 + minutes - offsetMinutes) / (24 * 60));
-  if (utcMinuteOfDay !== 23 * 60 + 59) return undefined;
+  const utcMinuteOfDay = hours * 60 + minutes - offsetMinutes;
+  const normalized = ((utcMinuteOfDay % (24 * 60)) + 24 * 60) % (24 * 60);
+  const dayShift = Math.floor(utcMinuteOfDay / (24 * 60));
+  if (normalized !== 23 * 60 + 59) return undefined;
 
   const shifted = new Date(Date.UTC(y, m - 1, d + dayShift));
   return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, "0")}-${String(shifted.getUTCDate()).padStart(2, "0")}`;
@@ -821,6 +832,23 @@ function isDateTime(value: string): boolean {
   const minutes = Number(minutesRaw);
   const seconds = Number(secondsRaw);
   if (hours > 23 || minutes > 59) return false;
+
+  // Offset range validation BEFORE the leap-second branch. RFC 3339's
+  // `time-numoffset` uses `time-hour` 00-23 and `time-minute` 00-59, so
+  // `+24:00` and `+23:60` are malformed regardless of the time they carry.
+  // Validating after the branch let `1973-01-01T23:59:60+24:00` through: the
+  // bogus offset shifted the instant onto 1972-12-31 23:59 UTC, which IS a
+  // real leap-second date, and the early return skipped the range check.
+  let offsetMinutes = 0;
+  if (offset !== "Z" && offset !== "z") {
+    const parsed = /^([+-])(\d{2}):(\d{2})$/.exec(offset);
+    if (!parsed) return false;
+    const offsetHours = Number(parsed[2]);
+    const offsetMins = Number(parsed[3]);
+    if (offsetHours > 23 || offsetMins > 59) return false;
+    offsetMinutes = (parsed[1] === "-" ? -1 : 1) * (offsetHours * 60 + offsetMins);
+  }
+
   if (seconds === 60) {
     // A leap second is only valid at a real leap-second instant. RFC 3339
     // fixes the instant in UTC and lets other offsets express it, so the
@@ -828,16 +856,11 @@ function isDateTime(value: string): boolean {
     // `1990-12-31T15:59:60-08:00` is the same leap second as
     // `1990-12-31T23:59:60Z`, so the local hour/minute must NOT be constrained
     // to 23:59 here.
-    const utcInstant = toUtcLeapInstant(year, month, day, hours, minutes, offset);
+    const utcInstant = toUtcLeapInstant(year, month, day, hours, minutes, offsetMinutes);
     if (utcInstant === undefined) return false;
     return LEAP_SECOND_DATES.has(utcInstant);
   } else if (seconds > 60) {
     return false;
-  }
-  // Offset must be a real UTC offset: HH <= 23 and MM <= 59.
-  if (offset !== "Z" && offset !== "z") {
-    const parsed = /([+-])(\d{2}):(\d{2})$/.exec(offset);
-    if (parsed && (Number(parsed[2]) > 23 || Number(parsed[3]) > 59)) return false;
   }
   return true;
 }
@@ -859,12 +882,23 @@ export function validateElicitationAnswer(
     return { ok: false, reason: "answer is not an object" };
   }
   const byKey = new Map(fields.map((field) => [field.key, field]));
-  const answerKeys = Object.keys(source);
+  // A valid answer carries at most one key per schema field, so anything past
+  // that is already invalid — enumerate with that bound instead of copying
+  // every key of an arbitrarily large renderer record first.
+  const maxAnswerKeys = fields.length;
+  const answerKeys: string[] = [];
+  for (const key in source) {
+    if (!Object.hasOwn(source, key)) continue;
+    answerKeys.push(key);
+    if (answerKeys.length > maxAnswerKeys) {
+      return { ok: false, reason: "unexpected answer key beyond the form field count" };
+    }
+  }
   for (const [index, key] of answerKeys.entries()) {
-    // Object.keys already returns own enumerable keys only, so an inherited
-    // `toString` never masquerades as a submitted answer. Report position, not
-    // the key: a renderer that echoes answer keys into its error text would
-    // otherwise make this a leak vector.
+    // Object.keys/`for..in` with hasOwn already excludes inherited properties,
+    // so an inherited `toString` never masquerades as a submitted answer.
+    // Report position, not the key: a renderer that echoes answer keys into its
+    // error text would otherwise make this a leak vector.
     if (!byKey.has(key)) {
       return { ok: false, reason: `unexpected answer key at index ${index}` };
     }
@@ -883,7 +917,34 @@ export function validateElicitationAnswer(
       if (field.required) return { ok: false, reason: `missing required field "${field.key}"` };
       continue;
     }
-    const value = Object.getOwnPropertyDescriptor(source, field.key)!.value;
+    const rawValue = Object.getOwnPropertyDescriptor(source, field.key)!.value;
+
+    // CANONICALISE ARRAYS ONCE, before any validation.
+    //
+    // A plain Array with index getters is enough to defeat validation→clone:
+    // `every`, the Set, and the membership checks all read `arr[0]` and see a
+    // legal option, then `[...validated.value]` reads it a fifth time and gets
+    // whatever the getter returns then — an unvalidated value, or a multi-MB
+    // string that also bypasses the answer cap. Same boundary class as the
+    // round 3/5 decision-object findings, nested one level deeper.
+    //
+    // Each index is read exactly once into a core-owned plain array; the
+    // renderer's array is never touched again. `options` is capped at 100, so
+    // the fixed length bounds the work.
+    let value: unknown = rawValue;
+    if (Array.isArray(rawValue)) {
+      const snapshot: unknown[] = new Array(rawValue.length);
+      let snapshotChars = 0;
+      for (let index = 0; index < rawValue.length; index += 1) {
+        const item = rawValue[index];
+        snapshot[index] = item;
+        snapshotChars += typeof item === "string" ? item.length : 1;
+      }
+      value = snapshot;
+      if (snapshotChars > ELICITATION_SCHEMA_LIMITS.maxAcceptedAnswerChars) {
+        return { ok: false, reason: "accepted answer exceeds the core size limit" };
+      }
+    }
 
     // CHEAP RAW PREFLIGHT, before any format/collection work.
     //
@@ -891,9 +952,9 @@ export function validateElicitationAnswer(
     // untrusted renderer output, so core must bound the WORK it does on it,
     // not just the data it finally accepts. Without this, a multi-megabyte
     // `email`/`uri` string reaches the Ajv format validator first — Ajv
-    // documents ReDoS/unsafe-regex as a risk when validating untrusted input
-    // — and an oversized multi-select array is fully traversed, hashed into a
-    // Set and membership-checked before the size cap rejects it.
+    // documents ReDoS/unsafe-regex as a risk on untrusted input — and an
+    // oversized multi-select array is fully traversed, hashed into a Set and
+    // membership-checked before the size cap rejects it.
     totalChars += field.key.length + rawAnswerChars(field, value);
     if (totalChars > ELICITATION_SCHEMA_LIMITS.maxAcceptedAnswerChars) {
       return { ok: false, reason: "accepted answer exceeds the core size limit" };
@@ -901,8 +962,8 @@ export function validateElicitationAnswer(
 
     const validated = validateFieldValue(field, value);
     if (!validated.ok) return { ok: false, reason: validated.reason };
-    // Clone arrays: the plugin still holds its own reference, and returning it
-    // would let a post-validation mutation reach the agent as accepted content.
+    // The value here is already the core-owned snapshot, so spreading it is a
+    // plain copy rather than a fresh read of the renderer's array.
     Object.defineProperty(out, field.key, {
       value: Array.isArray(validated.value) ? [...validated.value] : validated.value,
       enumerable: true,

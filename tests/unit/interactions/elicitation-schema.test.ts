@@ -1031,15 +1031,16 @@ describe("validateElicitationAnswer", () => {
     expect(result.reason).toContain("core size limit");
   });
 
-  test("an oversized uri answer is rejected before the format validator runs", async () => {
-    // Regression: the size cap ran AFTER validateFieldValue, so a multi-MB
-    // `uri` string reached the Ajv format validator first. Ajv documents
-    // ReDoS/unsafe-regex as a risk on untrusted input, so core must bound the
-    // WORK it does on an answer, not merely the data it accepts.
+  test("an oversized AND format-invalid uri is rejected by the size preflight", async () => {
+    // Ordering proof, not just a false result: the input is BOTH oversized and
+    // format-invalid (`%zz` is malformed percent-encoding). With the correct
+    // order the size preflight rejects first and the reason is the size limit;
+    // with the preflight moved back after validateFieldValue, Ajv would reject
+    // first and the reason would be "is not a uri". Verified by mutation.
     const uriField = normalizeOk(formRequest({
       requestedSchema: { type: "object", properties: { u: { type: "string", format: "uri" } }, required: ["u"] },
     }))[0];
-    const huge = `https://example.com/${"a".repeat(ELICITATION_SCHEMA_LIMITS.maxAcceptedAnswerChars + 1)}`;
+    const huge = `https://example.com/${"a".repeat(ELICITATION_SCHEMA_LIMITS.maxAcceptedAnswerChars + 1)}%zz`;
     const result = validateElicitationAnswer([uriField], { u: huge });
     expect(result).toMatchObject({ ok: false });
     if (result.ok) return;
@@ -1047,7 +1048,7 @@ describe("validateElicitationAnswer", () => {
     expect(result.reason).not.toContain("is not a uri");
   });
 
-  test("an impossible-length multi-select array is rejected without traversal", () => {
+  test("an oversized multi-select array is rejected without traversal", () => {
     // `options` is capped at 100 entries, so any longer array cannot possibly be
     // legal. The preflight uses that bound to reject with one comparison
     // instead of running `every`, a Set, and per-item membership first.
@@ -1063,6 +1064,68 @@ describe("validateElicitationAnswer", () => {
     expect(result).toMatchObject({ ok: false });
     if (result.ok) return;
     expect(result.reason).toContain("core size limit");
+  });
+
+  test("an accessor array cannot substitute an unvalidated value at clone time", () => {
+    // Regression: validation and the final clone both read the renderer's
+    // array, so index getters could return a legal option during `every`/Set/
+    // membership and something else during `[...validated.value]` — an
+    // unvalidated value, or a multi-MB string that also bypasses the size cap.
+    const multi = normalizeOk(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { tags: { type: "array", items: { type: "string", enum: ["a", "b"] } } },
+        required: ["tags"],
+      },
+    }))[0];
+
+    let reads = 0;
+    const accessor: string[] = ["a"];
+    Object.defineProperty(accessor, "0", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        reads += 1;
+        // Valid for the validation reads, unvalidated for any later read.
+        return reads <= 4 ? "a" : "not-offered";
+      },
+    });
+
+    const result = validateElicitationAnswer([multi], { tags: accessor });
+    expect(result).toMatchObject({ ok: true });
+    if (!result.ok) return;
+    // The accepted content is the SNAPSHOT taken during canonicalisation, not a
+    // later getter read.
+    expect(result.content.tags).toEqual(["a"]);
+    expect(result.content.tags).not.toContain("not-offered");
+  });
+
+  test("an accessor array cannot bypass the answer cap at clone time", () => {
+    const multi = normalizeOk(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { tags: { type: "array", items: { type: "string", enum: ["a"] } } },
+        required: ["tags"],
+      },
+    }))[0];
+
+    let reads = 0;
+    const accessor: string[] = ["a"];
+    Object.defineProperty(accessor, "0", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        reads += 1;
+        // Small during canonicalisation/validation, enormous afterwards.
+        return reads <= 4 ? "a" : "x".repeat(ELICITATION_SCHEMA_LIMITS.maxAcceptedAnswerChars + 1);
+      },
+    });
+
+    const result = validateElicitationAnswer([multi], { tags: accessor });
+    expect(result).toMatchObject({ ok: true });
+    if (!result.ok) return;
+    const tags = result.content.tags;
+    expect(Array.isArray(tags) ? tags[0] : undefined).toBe("a");
   });
 
   test("a multi-select array within the option count still validates normally", () => {
@@ -1322,6 +1385,22 @@ describe("validateElicitationAnswer calendar and RFC3339 strictness", () => {
     // 2026-09-20T12:34:60Z passed. :60 is only valid at the leap minute.
     expect(validateElicitationAnswer([dateTime], { when: "2026-09-20T12:34:60Z" }).ok).toBe(false);
     expect(validateElicitationAnswer([dateTime], { when: "2026-09-20T23:59:60Z" }).ok).toBe(false);
+  });
+
+  test("an out-of-range offset is rejected even on a leap second", () => {
+    // Regression: the leap-second branch returned before the offset range
+    // check, so `+24:00` shifted the instant onto a real leap date and passed.
+    // RFC 3339's time-numoffset uses time-hour 00-23 / time-minute 00-59.
+    expect(validateElicitationAnswer([dateTime], { when: "1973-01-01T23:59:60+24:00" }).ok).toBe(false);
+    expect(validateElicitationAnswer([dateTime], { when: "1973-01-01T23:59:60+23:60" }).ok).toBe(false);
+    expect(validateElicitationAnswer([dateTime], { when: "1973-01-01T23:59:60-24:00" }).ok).toBe(false);
+  });
+
+  test("a leap second with an in-range offset still resolves", () => {
+    // The fix must not over-correct: a legal offset expressing the real instant
+    // keeps working.
+    expect(validateElicitationAnswer([dateTime], { when: "1990-12-31T15:59:60-08:00" }).ok).toBe(true);
+    expect(validateElicitationAnswer([dateTime], { when: "1991-01-01T07:59:60+08:00" }).ok).toBe(true);
   });
 
   test("incomplete RFC3339 date-times are rejected", () => {
