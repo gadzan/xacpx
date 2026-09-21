@@ -58,15 +58,22 @@ const instructions = ref(
     ? props.bot.instructions
     : "",
 );
-// True once the user edits instructions: a slow detail fetch must fill only an
-// untouched field. Value comparison is insufficient — typing then clearing back
-// to "" would equal the pristine snapshot and get overwritten.
+// True once the user edits a field: a slow detail fetch must fill only
+// untouched fields. Value comparison is insufficient — typing then clearing
+// back to the open-time value would equal the pristine snapshot and get
+// overwritten (e.g. model old -> tmp -> old must survive a rev2 new).
 const instructionsDirty = ref(false);
+const nameDirty = ref(false);
+const avatarDirty = ref(false);
+const roleDirty = ref(false);
 const agent = ref(props.bot?.agent ?? "");
 const workspace = ref(props.bot?.workspace ?? "");
 const model = ref(props.bot?.model ?? "");
 const effort = ref(props.bot?.effort ?? "");
+const modelDirty = ref(false);
+const effortDirty = ref(false);
 const enabled = ref(props.bot?.enabled ?? true);
+const enabledDirty = ref(false);
 const submitting = ref(false);
 const errorMessage = ref<string | null>(null);
 
@@ -136,20 +143,21 @@ onMounted(async () => {
       // Full hydration from the authoritative detail: the open-time summary
       // may predate a remote update (rev2 landed after the sidebar rendered
       // rev1). Overwrite only fields the user has not touched since open;
-      // instructions uses the explicit dirty flag because type-then-clear
-      // looks pristine, other fields compare against the open-time prop.
+      // every field uses an explicit dirty flag because type-then-revert
+      // (old -> tmp -> old) looks pristine under value comparison but is a
+      // real user choice that must survive hydration.
       if (!instructionsDirty.value) {
         if (detail.instructions) instructions.value = detail.instructions;
         else if (detail.profileRevision !== props.bot.profileRevision) instructions.value = "";
       }
-      if (name.value === (props.bot.name ?? "")) name.value = detail.name;
-      if (avatar.value === (props.bot.avatar ?? "")) avatar.value = detail.avatar ?? "";
-      if (role.value === ((props.bot as BotSummaryDto).role ?? "")) role.value = detail.role ?? "";
+      if (!nameDirty.value) name.value = detail.name;
+      if (!avatarDirty.value) avatar.value = detail.avatar ?? "";
+      if (!roleDirty.value) role.value = detail.role ?? "";
       if (agent.value === (props.bot.agent ?? "")) agent.value = detail.agent;
       if (workspace.value === (props.bot.workspace ?? "")) workspace.value = detail.workspace;
-      if (model.value === (props.bot.model ?? "")) model.value = detail.model ?? "";
-      if (effort.value === (props.bot.effort ?? "")) effort.value = detail.effort ?? "";
-      if (enabled.value === (props.bot.enabled ?? true)) enabled.value = detail.enabled;
+      if (!modelDirty.value) model.value = detail.model ?? "";
+      if (!effortDirty.value) effort.value = detail.effort ?? "";
+      if (!enabledDirty.value) enabled.value = detail.enabled;
       // detail load also converges authoritative lifecycle (hasRuntime);
       // identityLocked reads the store, so no local copy is needed.
       detailHydrated.value = true;
@@ -267,6 +275,7 @@ async function submit(): Promise<void> {
           <input
             id="bot-name"
             v-model="name"
+            @input="nameDirty = true"
             type="text"
             required
             maxlength="60"
@@ -283,6 +292,7 @@ async function submit(): Promise<void> {
           <input
             id="bot-role"
             v-model="role"
+            @input="roleDirty = true"
             type="text"
             maxlength="100"
             :placeholder="$t('bot.fields.rolePlaceholder')"
@@ -360,6 +370,7 @@ async function submit(): Promise<void> {
             <input
               id="bot-model"
               v-model="model"
+              @input="modelDirty = true"
               type="text"
               :placeholder="$t('bot.fields.modelPlaceholder')"
               class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none transition-colors focus:border-accent"
@@ -375,6 +386,8 @@ async function submit(): Promise<void> {
               v-if="hasAdvertisedEfforts"
               id="bot-effort"
               v-model="effort"
+              @change="effortDirty = true"
+              @input="effortDirty = true"
               class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none transition-colors focus:border-accent"
             >
               <option value="">{{ $t("bot.fields.effortDefault") }}</option>
@@ -384,6 +397,8 @@ async function submit(): Promise<void> {
               <input
                 id="bot-effort"
                 v-model="effort"
+                @change="effortDirty = true"
+                @input="effortDirty = true"
                 list="bot-effort-options"
                 type="text"
                 :placeholder="$t('bot.fields.effortDefault')"
@@ -408,6 +423,7 @@ async function submit(): Promise<void> {
             <input
               id="bot-avatar"
               v-model="avatar"
+              @input="avatarDirty = true"
               type="text"
               :placeholder="$t('bot.fields.avatarPlaceholder')"
               class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none transition-colors focus:border-accent"
@@ -418,6 +434,7 @@ async function submit(): Promise<void> {
             <label class="flex items-center gap-2 cursor-pointer text-sm">
               <input
                 v-model="enabled"
+                @change="enabledDirty = true"
                 type="checkbox"
                 class="rounded border-border text-accent focus:ring-accent"
               />
