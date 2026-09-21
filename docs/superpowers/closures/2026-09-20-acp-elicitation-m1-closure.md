@@ -525,6 +525,55 @@ Four further findings, all fixed and mutation-verified:
 Total new: **201**. M1 unit suites 329/329 green; real-acpx E2E 24/25 (the one
 failure is the pre-existing `PR9-A E2E`); `npx tsc --noEmit` 0 errors.
 
+## Review round 10 / merge-decision check (head `50b9bfc1`)
+
+One Blocking finding: round 9's canonicalisation traversed the renderer array
+*before* any length check, silently deleting round 8's O(1) admission gate. A
+sparse `new Array(100_000_000)` on a 3-option multi-select forced a 100M-entry
+snapshot before the option-count check could reject it. Order is now:
+read `length` once → reject on a fixed core bound (`maxOptionsPerField`, plus
+the field's own option count for multi-select) **before** `new Array()` →
+canonicalise within the admitted bound with one read per index, bailing as soon
+as the character budget is exceeded. The character-budget check moved inside the
+loop so a single oversized element aborts immediately.
+
+Regressions use sparse arrays with a counting getter on index 0 and assert
+`indexReads === 0` — proof the length guard fired before traversal, which the
+previous `Array.from({ length: 10_000 })` test could not show because it only
+asserted the final reason. Verified by mutation: moving the length guard after
+canonicalisation fails 3 tests.
+
+## Final totals after round 10
+
+| Suite | Tests |
+|---|---|
+| `turn-interaction-registry.test.ts` | 13 |
+| `elicitation-schema.test.ts` | 122 |
+| `elicitation-interaction-broker.test.ts` | 41 |
+| `elicitation-plugin-contract.test.ts` | 6 |
+| `channel-elicitation-capability.test.ts` | 9 |
+| `runtime-adapter-elicitation.test.ts` (real acpx) | 4 |
+| `runtime-elicitation-agent-identity.test.ts` (real worker) | 3 |
+| `runtime-elicitation-listener-balance.test.ts` | 6 |
+
+Total new: **204**. M1 unit suites 332/332 green; real-acpx E2E 24/25 (the one
+failure is the pre-existing `PR9-A E2E`); `npx tsc --noEmit` 0 errors.
+
+### Cumulative mutation-verification table
+
+Every core-side boundary this PR touches has been checked by breaking the code
+and confirming a test fails:
+
+| Round | Mutation | Caught by |
+|---|---|---|
+| R7 | decision accessor / double read | 3 decision tests |
+| R8 | no-op `abort.release()` in helper | 2 listener tests |
+| R8 | worker's `abort.release()` removed | structural guard |
+| R9 | array canonicalisation disabled | 2 accessor tests |
+| R9 | offset range check removed | 2 offset tests |
+| R9 | preflight moved after validation | oversized-URI ordering test |
+| R10 | length guard moved after canonicalisation | 3 array-admission tests |
+
 ## Deferred
 
 - No production channel renderer (M2 Discord, M4 Feishu).
