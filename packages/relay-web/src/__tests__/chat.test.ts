@@ -1039,24 +1039,50 @@ it("active reconnect snapshot after successful cancel stays hidden until the old
   expect(chat.busy).toBe(false);
 });
 
-it("reconnect snapshot for a newer turn supersedes the completed cancel guard", async () => {
+it("reconnect snapshot for a same-millisecond newer turn supersedes the completed cancel guard by slot identity", async () => {
   rpc.mockResolvedValueOnce({ cancelled: true });
   const chat = useChatStore();
   chat.select("inst", "A");
-  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-started", chatKey: "c", sessionAlias: "A", startedAt: 1 } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-started", chatKey: "c", sessionAlias: "A", startedAt: 1, slotAfterId: 10 } } as never);
   chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: "old" } } as never);
   await chat.cancel();
 
   chat.applyEvent({
     kind: "state-snapshot",
     instanceId: "inst",
-    turns: [{ instanceId: "inst", sessionAlias: "A", parts: [{ type: "text", text: "new turn" }], status: "streaming", startedAt: 2 }],
+    turns: [{ instanceId: "inst", sessionAlias: "A", parts: [{ type: "text", text: "new turn" }], status: "streaming", startedAt: 1, slotAfterId: 11 }],
     usage: [],
     commands: [],
   } as never);
   expect(chat.busy).toBe(true);
   expect(chat.streaming).toBe("new turn");
-  expect(chat.liveTurn?.startedAt).toBe(2);
+  expect(chat.liveTurn).toMatchObject({ startedAt: 1, slotAfterId: 11 });
+});
+
+it("instance offline settles a pending cancel so the later RPC rejection cannot resurrect a ghost turn", async () => {
+  let rejectCancel!: (error: unknown) => void;
+  rpc.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectCancel = reject; }));
+  const chat = useChatStore();
+  chat.select("inst", "A");
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-started", chatKey: "c", sessionAlias: "A", startedAt: 1, slotAfterId: 10 } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: "half" } } as never);
+
+  const cancelling = chat.cancel();
+  expect(chat.busy).toBe(false);
+  chat.applyEvent({ kind: "instance-status", instanceId: "inst", online: false } as never);
+
+  rejectCancel(new ApiError("instance-offline", 503));
+  await cancelling;
+
+  expect(chat.busy).toBe(false);
+  expect(chat.streaming).toBe("");
+  expect(chat.messages.at(-1)).toMatchObject({ text: "half", status: "cancelled" });
+
+  // A stale HTTP seed served before the offline boundary must stay suppressed too.
+  chat.seedActiveTurns([
+    { instanceId: "inst", sessionAlias: "A", parts: [{ type: "text", text: "stale" }], status: "streaming", startedAt: 1, slotAfterId: 10 },
+  ] as never);
+  expect(chat.busy).toBe(false);
 });
 
 it("cancel failure restores the authoritative reconnect snapshot without exposing it early", async () => {
@@ -1082,6 +1108,31 @@ it("cancel failure restores the authoritative reconnect snapshot without exposin
   expect(chat.busy).toBe(true);
   expect(chat.streaming).toBe("authoritative");
   expect(chat.messages.some((message) => message.status === "cancelled")).toBe(false);
+});
+
+it("cancel failure removes only its own optimistic row when another cancelled turn shares startedAt", async () => {
+  const chat = useChatStore();
+  chat.select("inst", "A");
+
+  // Older completed turn intentionally shares the same millisecond stamp as the next.
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-started", chatKey: "c", sessionAlias: "A", startedAt: 1, slotAfterId: 10 } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: "older" } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-finished", chatKey: "c", sessionAlias: "A", ok: false, cancelled: true } } as never);
+
+  let rejectCancel!: (error: unknown) => void;
+  rpc.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectCancel = reject; }));
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-started", chatKey: "c", sessionAlias: "A", startedAt: 1, slotAfterId: 11 } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: "current" } } as never);
+
+  const cancelling = chat.cancel();
+  expect(chat.messages.filter((message) => message.status === "cancelled").map((message) => message.text)).toEqual(["older", "current"]);
+
+  rejectCancel(new ApiError("instance-offline", 503));
+  await cancelling;
+
+  expect(chat.busy).toBe(true);
+  expect(chat.streaming).toBe("current");
+  expect(chat.messages.filter((message) => message.status === "cancelled").map((message) => message.text)).toEqual(["older"]);
 });
 
 it("cancel RPC failure rolls back the optimistic row and restores buffered late stream state", async () => {

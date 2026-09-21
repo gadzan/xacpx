@@ -95,6 +95,13 @@ export interface ChatMessage extends MessageRecordDto {
   scheduled?: ScheduledOriginDto;
 }
 
+interface PendingCancel {
+  turn?: LiveTurn;
+  /** Exact optimistic row inserted by this Stop. Holding the object identity avoids
+   *  guessing by startedAt, which is only millisecond telemetry and can collide. */
+  optimisticRow?: ChatMessage;
+}
+
 // History rows are immutable once loaded (updates arrive as whole-row replacements), so
 // deep-proxying their potentially huge `structured` payload (full tool diffs, command
 // output, ordered parts) is pure overhead — markRaw keeps it out of Vue's reactivity.
@@ -188,7 +195,7 @@ export const useChatStore = defineStore("chat", () => {
   // is authoritatively settled, reconnect snapshots and late deltas must stay hidden.
   // Keep a private copy of the turn updated while hidden so an RPC failure can roll
   // back to the complete still-running state instead of rebuilding from a suffix.
-  const pendingCancels = new Map<string, { turn?: LiveTurn }>();
+  const pendingCancels = new Map<string, PendingCancel>();
   const bufKey = (instanceId: string, alias: string) => `${instanceId}\0${alias}`;
 
   /** Which attention signal a session should show in the list. `working` (a live turn)
@@ -295,7 +302,7 @@ export const useChatStore = defineStore("chat", () => {
     };
   }
 
-  function ensurePendingCancelTurn(k: string, pending: { turn?: LiveTurn }): LiveTurn {
+  function ensurePendingCancelTurn(k: string, pending: PendingCancel): LiveTurn {
     let t = pending.turn;
     if (!t) {
       const selected = selectedKey.value === k;
@@ -308,6 +315,17 @@ export const useChatStore = defineStore("chat", () => {
       pending.turn = t;
     }
     return t;
+  }
+
+  /** True when an authoritative snapshot still describes the turn hidden by Stop.
+   *  slotAfterId is the Hub's durable insert-order anchor; pair it with startedAt to
+   *  distinguish even same-millisecond follow-up turns. Legacy snapshots without an
+   *  anchor fall back to the old startedAt comparison for compatibility. */
+  function sameLiveTurnIdentity(live: LiveTurn, snapshot: LiveTurnSnapshotDto): boolean {
+    if (typeof live.slotAfterId === "number" && typeof snapshot.slotAfterId === "number") {
+      return live.slotAfterId === snapshot.slotAfterId && live.startedAt === snapshot.startedAt;
+    }
+    return live.startedAt === snapshot.startedAt;
   }
 
   /** Place the live bubble after the Hub insert-order anchor (history/seed/snapshot). */
@@ -408,13 +426,13 @@ export const useChatStore = defineStore("chat", () => {
    *  content into the selected session, flush it into a persisted-shaped message.
    *  Used by both turn-finished and the optimistic local cancel. Idempotent — a
    *  second call for an already-cleared turn is a no-op. */
-  function flushTurn(instId: string, alias: string, status: TurnStatus, errorMessage?: string): void {
+  function flushTurn(instId: string, alias: string, status: TurnStatus, errorMessage?: string): ChatMessage | undefined {
     const k = bufKey(instId, alias);
     const t = liveTurns.value[k];
     delete liveTurns.value[k];
     const selected = instId === instanceId.value && alias === sessionAlias.value;
     if (status === "error" && selected) error.value = errorMessage ?? "turn-failed";
-    if (!t) return;
+    if (!t) return undefined;
     const text = textOf(t.parts);
     const toolSteps = toolStepsOf(t.parts);
     const reasoning = reasoningOf(t.parts);
@@ -425,7 +443,7 @@ export const useChatStore = defineStore("chat", () => {
         ? markRaw({ toolSteps, ...(reasoning ? { reasoning } : {}), parts: t.parts })
         : undefined;
       const insertAt = Math.min(Math.max((t.slotAfterIndex ?? messages.value.length - 1) + 1, 0), messages.value.length);
-      messages.value.splice(insertAt, 0, {
+      const row: ChatMessage = {
         instanceId: instId,
         sessionAlias: alias,
         direction: "out",
@@ -436,11 +454,16 @@ export const useChatStore = defineStore("chat", () => {
         failed: status === "error",
         status,
         ...(structured ? { structured } : {}),
-      });
+      };
+      messages.value.splice(insertAt, 0, row);
       touchTranscript();
       seededFromCache = false;
       cacheWrite.schedule();
+      // Read it back from the reactive array so rollback holds the same proxy identity
+      // that future messages.value.indexOf() sees.
+      return messages.value[insertAt];
     }
+    return undefined;
   }
 
   function select(id: string, alias: string): void {
@@ -665,10 +688,10 @@ export const useChatStore = defineStore("chat", () => {
             : selectedKey.value === k ? messages.value.length - 1 : -1),
       };
       if (pending) {
-        // Reconnect can also land after the cancelled turn ended and a genuinely new
-        // turn already started while this tab was offline. startedAt is the durable
-        // live-turn identity used by the web; a different stamp supersedes the guard.
-        if (pending.turn && pending.turn.startedAt !== turn.startedAt) {
+        // Reconnect can land after the cancelled turn ended and a genuinely new turn
+        // already started while this tab was offline. Use the Hub slot anchor together
+        // with startedAt; startedAt alone is millisecond telemetry and can collide.
+        if (!pending.turn || !sameLiveTurnIdentity(pending.turn, turn)) {
           pendingCancels.delete(k);
         } else {
           pending.turn = snapshotTurn;
@@ -727,6 +750,16 @@ export const useChatStore = defineStore("chat", () => {
     if (event.kind === "instance-status" && !event.online) {
       const prefix = `${event.instanceId}\0`;
       for (const k of Object.keys(liveTurns.value)) if (k.startsWith(prefix)) delete liveTurns.value[k];
+      // Offline is an authoritative boundary for optimistic Stop rollback: once the
+      // instance is gone, a later failing HTTP cancel response must not resurrect the
+      // private pre-offline turn. Keep a finish guard so an older active-turns seed
+      // cannot re-create it before the next ordered reconnect snapshot.
+      for (const k of [...pendingCancels.keys()]) {
+        if (k.startsWith(prefix)) {
+          pendingCancels.delete(k);
+          finishedTurns.add(k);
+        }
+      }
       const next = new Set([...unread.value].filter((k) => !k.startsWith(prefix)));
       if (next.size !== unread.value.size) unread.value = next;
       return;
@@ -1074,10 +1107,10 @@ export const useChatStore = defineStore("chat", () => {
     // Keep a private copy of the live turn: late deltas and ordered reconnect snapshots
     // update that hidden copy while the visible UI remains cancelled.
     const live = liveTurns.value[k];
-    const pending: { turn?: LiveTurn } = live ? { turn: cloneLiveTurn(live) } : {};
+    const pending: PendingCancel = live ? { turn: cloneLiveTurn(live) } : {};
     pendingCancels.set(k, pending);
     finishedTurns.add(k);
-    flushTurn(id, alias, "cancelled");
+    pending.optimisticRow = flushTurn(id, alias, "cancelled");
     try {
       await api.rpc(id, "control.prompt.cancel", { sessionAlias: alias });
       // Keep pendingCancels until turn-finished, an authoritative snapshot with no
@@ -1091,18 +1124,13 @@ export const useChatStore = defineStore("chat", () => {
       pendingCancels.delete(k);
       finishedTurns.delete(k);
 
-      // Roll back the optimistic cancelled row before restoring the hidden turn. Match
-      // by the turn's stable start stamp so this remains correct if other rows arrived
-      // while the cancel RPC was in flight.
+      // Roll back exactly the row created by this Stop. Do not search by startedAt:
+      // distinct turns can share the same millisecond stamp.
       const restored = pending.turn;
       if (restored) {
-        const cancelledIndex = messages.value.findIndex((message) => (
-          message.id === undefined
-          && message.instanceId === id
-          && message.sessionAlias === alias
-          && message.status === "cancelled"
-          && message.startedAt === restored.startedAt
-        ));
+        const cancelledIndex = pending.optimisticRow
+          ? messages.value.indexOf(pending.optimisticRow)
+          : -1;
         if (cancelledIndex >= 0) {
           messages.value.splice(cancelledIndex, 1);
           touchTranscript();
