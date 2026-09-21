@@ -281,6 +281,54 @@ Five further findings, all fixed:
 Total new: **158**. M1 unit suites 291/291 green; real-acpx E2E 15/16 (the one
 failure is the pre-existing `PR9-A E2E`); `npx tsc --noEmit` 0 errors.
 
+## Review round 5 (PR #355, head `512e9f36`)
+
+Five further findings, all fixed:
+
+1. **[Blocking, validation bypass]** `decision.content` was read twice — once to
+   validate, once to decide the accept shape. A getter returning a valid
+   required answer then `null` produced `{ action: "accept", content: null }`
+   for a form core had just approved. `action`/`responderId`/`content` are now
+   each snapshotted exactly once into locals, and `isPlainDecision()` rejects
+   accessors outright. 3 regressions.
+2. **[Blocking, JSON Schema semantics]** `minLength`/`maxLength` compared JS
+   UTF-16 code units, so `{ minLength: 2 }` accepted `"😀"` (2 units, 1 code
+   point) and `{ maxLength: 1 }` rejected it — core accepting answers the
+   agent's own schema rejects. Now measured in code points for text and
+   single-select. 3 regressions.
+3. **[Medium, pending leak]** `error instanceof Error` invokes a Proxy's
+   `[[GetPrototypeOf]]`, so a throwing trap escaped the catch handler, skipped
+   `unsubscribeTurnAbort()`/`settleStale()`, and leaked the pending map entry
+   forever (turn dispose marks settled but never deletes). Both sites now read
+   nothing from the thrown value and log the fixed literal `"thrown"`.
+   Regression asserts cancel **and** `pendingCount === 0`.
+4. **[Medium, SDK divergence]** "required string" was implemented as "required
+   non-empty string". The pinned SDK models these as plain `z.string()` with no
+   `.min(1)`, so `title: ""`, `pattern: ""` and `description: ""` are
+   protocol-valid and were being cancelled — and a round 3 test had pinned the
+   deviation. Missing still fails closed; present-but-empty is accepted. 3
+   regressions.
+5. **[Medium, log amplification]** Several failure branches interpolated
+   agent-controlled strings (property keys, item types, modes, required names)
+   into reasons that reach the logger verbatim through a bare
+   `JSON.stringify`. Upstream's ACP message ceiling is 64 MiB. All such
+   interpolations now go through `boundedKeyLabel()` (64-char prefix + length),
+   and required names are bounded before lookup. 3 regressions.
+
+## Final totals after round 5
+
+| Suite | Tests |
+|---|---|
+| `turn-interaction-registry.test.ts` | 13 |
+| `elicitation-schema.test.ts` | 103 |
+| `elicitation-interaction-broker.test.ts` | 41 |
+| `elicitation-plugin-contract.test.ts` | 6 |
+| `channel-elicitation-capability.test.ts` | 9 |
+| `runtime-adapter-elicitation.test.ts` (real acpx) | 4 |
+
+Total new: **176**. M1 unit suites 301/301 green; real-acpx E2E 15/16 (the one
+failure is the pre-existing `PR9-A E2E`); `npx tsc --noEmit` 0 errors.
+
 ## Deferred
 
 - No production channel renderer (M2 Discord, M4 Feishu).
