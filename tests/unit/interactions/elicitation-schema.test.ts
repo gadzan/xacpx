@@ -1030,6 +1030,53 @@ describe("validateElicitationAnswer", () => {
     if (result.ok) return;
     expect(result.reason).toContain("core size limit");
   });
+
+  test("an oversized uri answer is rejected before the format validator runs", async () => {
+    // Regression: the size cap ran AFTER validateFieldValue, so a multi-MB
+    // `uri` string reached the Ajv format validator first. Ajv documents
+    // ReDoS/unsafe-regex as a risk on untrusted input, so core must bound the
+    // WORK it does on an answer, not merely the data it accepts.
+    const uriField = normalizeOk(formRequest({
+      requestedSchema: { type: "object", properties: { u: { type: "string", format: "uri" } }, required: ["u"] },
+    }))[0];
+    const huge = `https://example.com/${"a".repeat(ELICITATION_SCHEMA_LIMITS.maxAcceptedAnswerChars + 1)}`;
+    const result = validateElicitationAnswer([uriField], { u: huge });
+    expect(result).toMatchObject({ ok: false });
+    if (result.ok) return;
+    expect(result.reason).toContain("core size limit");
+    expect(result.reason).not.toContain("is not a uri");
+  });
+
+  test("an impossible-length multi-select array is rejected without traversal", () => {
+    // `options` is capped at 100 entries, so any longer array cannot possibly be
+    // legal. The preflight uses that bound to reject with one comparison
+    // instead of running `every`, a Set, and per-item membership first.
+    const multi = normalizeOk(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { tags: { type: "array", items: { type: "string", enum: ["a", "b", "c"] } } },
+        required: ["tags"],
+      },
+    }))[0];
+    const impossible = Array.from({ length: 10_000 }, () => "a");
+    const result = validateElicitationAnswer([multi], { tags: impossible });
+    expect(result).toMatchObject({ ok: false });
+    if (result.ok) return;
+    expect(result.reason).toContain("core size limit");
+  });
+
+  test("a multi-select array within the option count still validates normally", () => {
+    const multi = normalizeOk(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { tags: { type: "array", items: { type: "string", enum: ["a", "b", "c"] } } },
+        required: ["tags"],
+      },
+    }))[0];
+    expect(validateElicitationAnswer([multi], { tags: ["a", "b"] }).ok).toBe(true);
+    expect(validateElicitationAnswer([multi], { tags: ["z"] }).ok).toBe(false);
+    expect(validateElicitationAnswer([multi], { tags: ["a", "a"] }).ok).toBe(false);
+  });
 });
 
 describe("validateElicitationAnswer email format", () => {
@@ -1236,17 +1283,45 @@ describe("validateElicitationAnswer calendar and RFC3339 strictness", () => {
     expect(validateElicitationAnswer([dateTime], { when: "2016-12-31T23:59:60Z" }).ok).toBe(true);
   });
 
-  test("a leap second at an arbitrary minute is rejected", () => {
-    // Regression: the old check only enforced seconds <= 60, so
-    // 2026-09-20T12:34:60Z passed. :60 is only valid at 23:59:60 UTC on a
-    // known leap date.
-    expect(validateElicitationAnswer([dateTime], { when: "2026-09-20T12:34:60Z" }).ok).toBe(false);
-    expect(validateElicitationAnswer([dateTime], { when: "2026-09-20T23:59:60Z" }).ok).toBe(false);
+  test("a leap second on a June date that never had one is rejected", () => {
+    // Regression: the table wrongly listed 1973-06-30 .. 1979-06-30. RFC 3339
+    // Appendix D puts those leap seconds on December 31, so accepting
+    // 1973-06-30T23:59:60Z would validate a timestamp that never existed.
+    for (const bogus of ["1973-06-30", "1974-06-30", "1975-06-30", "1976-06-30", "1977-06-30", "1978-06-30", "1979-06-30"]) {
+      expect(validateElicitationAnswer([dateTime], { when: `${bogus}T23:59:60Z` }).ok).toBe(false);
+    }
   });
 
-  test("a leap second outside UTC is rejected", () => {
-    // A +08:00 local 23:59:60 is not the leap instant.
-    expect(validateElicitationAnswer([dateTime], { when: "2017-01-01T23:59:60+08:00" }).ok).toBe(false);
+  test("the matching December leap seconds are accepted", () => {
+    for (const real of ["1972-12-31", "1973-12-31", "1974-12-31", "1979-12-31"]) {
+      expect(validateElicitationAnswer([dateTime], { when: `${real}T23:59:60Z` }).ok).toBe(true);
+    }
+    // 1972-06-30 IS a real June leap second (the first one).
+    expect(validateElicitationAnswer([dateTime], { when: "1972-06-30T23:59:60Z" }).ok).toBe(true);
+  });
+
+  test("a non-UTC offset may express the same leap second (RFC's own example)", () => {
+    // RFC 3339 §5.7 gives exactly this example: 1990-12-31T15:59:60-08:00 is
+    // the same instant as 1990-12-31T23:59:60Z.
+    expect(validateElicitationAnswer([dateTime], { when: "1990-12-31T15:59:60-08:00" }).ok).toBe(true);
+    expect(validateElicitationAnswer([dateTime], { when: "1990-12-31T23:59:60Z" }).ok).toBe(true);
+  });
+
+  test("an offset that does not land on the leap minute is rejected", () => {
+    // 1990-12-31T15:59:60+08:00 is UTC 07:59:60, not the leap instant.
+    expect(validateElicitationAnswer([dateTime], { when: "1990-12-31T15:59:60+08:00" }).ok).toBe(false);
+    // An offset that lands on the leap minute from a DIFFERENT local date is
+    // still the same real leap second, so it is valid.
+    expect(validateElicitationAnswer([dateTime], { when: "1991-01-01T07:59:60+08:00" }).ok).toBe(true);
+    // ...but an offset landing on a non-leap date's 23:59 UTC is not.
+    expect(validateElicitationAnswer([dateTime], { when: "1990-12-30T15:59:60-08:00" }).ok).toBe(false);
+  });
+
+  test("a leap second at an arbitrary minute is rejected", () => {
+    // Regression: the old check only enforced seconds <= 60, so
+    // 2026-09-20T12:34:60Z passed. :60 is only valid at the leap minute.
+    expect(validateElicitationAnswer([dateTime], { when: "2026-09-20T12:34:60Z" }).ok).toBe(false);
+    expect(validateElicitationAnswer([dateTime], { when: "2026-09-20T23:59:60Z" }).ok).toBe(false);
   });
 
   test("incomplete RFC3339 date-times are rejected", () => {

@@ -699,6 +699,49 @@ const formatValidator = ((): {
   };
 })();
 
+/**
+ * Resolve a leap-second timestamp to the UTC date of its instant, or
+ * `undefined` when it cannot be one.
+ *
+ * RFC 3339 fixes each leap second at 23:59:60 UTC and lets other offsets
+ * express the same instant, so the local wall clock is converted to UTC
+ * before the date lookup — `1990-12-31T15:59:60-08:00` is the same leap
+ * second as `1990-12-31T23:59:60Z`, which is the RFC's own example.
+ */
+function toUtcLeapInstant(
+  year: string,
+  month: string,
+  day: string,
+  hours: number,
+  minutes: number,
+  offset: string | undefined,
+): string | undefined {
+  const y = Number(year);
+  const m = Number(month);
+  const d = Number(day);
+  if (m < 1 || m > 12) return undefined;
+  if (d < 1 || d > daysInMonth(y, m)) return undefined;
+  if (offset === undefined) return undefined;
+  if (offset === "Z" || offset === "z") {
+    // UTC: the local clock IS the UTC clock, so it must read 23:59:60.
+    return hours === 23 && minutes === 59 ? `${year}-${month}-${day}` : undefined;
+  }
+
+  const parsed = /^([+-])(\d{2}):(\d{2})$/.exec(offset);
+  if (!parsed) return undefined;
+  const sign = parsed[1] === "-" ? -1 : 1;
+  const offsetMinutes = sign * (Number(parsed[2]) * 60 + Number(parsed[3]));
+
+  // Convert local minute-of-day to UTC. The instant must land exactly on the
+  // UTC leap minute (23:59) for it to be a leap second.
+  const utcMinuteOfDay = ((hours * 60 + minutes - offsetMinutes) % (24 * 60) + 24 * 60) % (24 * 60);
+  const dayShift = Math.floor((hours * 60 + minutes - offsetMinutes) / (24 * 60));
+  if (utcMinuteOfDay !== 23 * 60 + 59) return undefined;
+
+  const shifted = new Date(Date.UTC(y, m - 1, d + dayShift));
+  return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, "0")}-${String(shifted.getUTCDate()).padStart(2, "0")}`;
+}
+
 function isEmail(value: string): boolean {
   return formatValidator.email(value);
 }
@@ -717,12 +760,17 @@ function isUri(value: string): boolean {
  */
 const RFC3339_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/;
 
-/** Known leap-second dates (UTC) through 2016; the list is append-only. */
+/**
+ * Known leap-second dates per RFC 3339 Appendix D, through the last one
+ * announced (2016-12-31). Append-only.
+ *
+ * The 1973-1979 leap seconds all fall on **December 31**, not June 30 —
+ * getting that backwards accepts timestamps that never existed.
+ */
 const LEAP_SECOND_DATES: ReadonlySet<string> = new Set([
-  "1972-06-30", "1972-12-31", "1973-06-30", "1973-12-31",
-  "1974-06-30", "1974-12-31", "1975-06-30", "1975-12-31",
-  "1976-06-30", "1976-12-31", "1977-06-30", "1977-12-31",
-  "1978-06-30", "1978-12-31", "1979-06-30", "1979-12-31",
+  "1972-06-30",
+  "1972-12-31", "1973-12-31", "1974-12-31", "1975-12-31",
+  "1976-12-31", "1977-12-31", "1978-12-31", "1979-12-31",
   "1981-06-30", "1982-06-30", "1983-06-30", "1985-06-30",
   "1987-12-31", "1989-12-31", "1990-12-31", "1992-06-30",
   "1993-06-30", "1994-06-30", "1995-12-31", "1997-06-30",
@@ -761,23 +809,33 @@ function isDateTime(value: string): boolean {
   const match = RFC3339_DATE_TIME.exec(value);
   if (!match) return false;
   const [, year, month, day, hoursRaw, minutesRaw, secondsRaw, , offset] = match;
+  // The regex makes every group mandatory; narrow once so downstream calls are
+  // type-safe without per-use guards.
+  if (year === undefined || month === undefined || day === undefined
+    || hoursRaw === undefined || minutesRaw === undefined || secondsRaw === undefined
+    || offset === undefined) {
+    return false;
+  }
   if (!isDate(`${year}-${month}-${day}`)) return false;
   const hours = Number(hoursRaw);
   const minutes = Number(minutesRaw);
   const seconds = Number(secondsRaw);
   if (hours > 23 || minutes > 59) return false;
   if (seconds === 60) {
-    // A leap second is only valid at 23:59:60 UTC on a known leap date. Any
-    // other minute with :60 is not a real instant.
-    const isUtc = offset === "Z" || offset === "z";
-    if (!isUtc || hours !== 23 || minutes !== 59 || !LEAP_SECOND_DATES.has(`${year}-${month}-${day}`)) {
-      return false;
-    }
+    // A leap second is only valid at a real leap-second instant. RFC 3339
+    // fixes the instant in UTC and lets other offsets express it, so the
+    // local wall clock is normalised to UTC before the date check —
+    // `1990-12-31T15:59:60-08:00` is the same leap second as
+    // `1990-12-31T23:59:60Z`, so the local hour/minute must NOT be constrained
+    // to 23:59 here.
+    const utcInstant = toUtcLeapInstant(year, month, day, hours, minutes, offset);
+    if (utcInstant === undefined) return false;
+    return LEAP_SECOND_DATES.has(utcInstant);
   } else if (seconds > 60) {
     return false;
   }
   // Offset must be a real UTC offset: HH <= 23 and MM <= 59.
-  if (offset !== undefined && offset !== "Z" && offset !== "z") {
+  if (offset !== "Z" && offset !== "z") {
     const parsed = /([+-])(\d{2}):(\d{2})$/.exec(offset);
     if (parsed && (Number(parsed[2]) > 23 || Number(parsed[3]) > 59)) return false;
   }
@@ -826,16 +884,23 @@ export function validateElicitationAnswer(
       continue;
     }
     const value = Object.getOwnPropertyDescriptor(source, field.key)!.value;
-    const validated = validateFieldValue(field, value);
-    if (!validated.ok) return { ok: false, reason: validated.reason };
-    // Core-owned size bound on the answer itself. `maxLength` is optional and
-    // agent-supplied, so it cannot be the only ceiling: a channel returning an
-    // unbounded free-text answer would otherwise be accepted and copied all
-    // the way to the agent.
-    totalChars += field.key.length + measureAnswerChars(validated.value);
+
+    // CHEAP RAW PREFLIGHT, before any format/collection work.
+    //
+    // Order matters for the same reason the schema cap exists: the answer is
+    // untrusted renderer output, so core must bound the WORK it does on it,
+    // not just the data it finally accepts. Without this, a multi-megabyte
+    // `email`/`uri` string reaches the Ajv format validator first — Ajv
+    // documents ReDoS/unsafe-regex as a risk when validating untrusted input
+    // — and an oversized multi-select array is fully traversed, hashed into a
+    // Set and membership-checked before the size cap rejects it.
+    totalChars += field.key.length + rawAnswerChars(field, value);
     if (totalChars > ELICITATION_SCHEMA_LIMITS.maxAcceptedAnswerChars) {
       return { ok: false, reason: "accepted answer exceeds the core size limit" };
     }
+
+    const validated = validateFieldValue(field, value);
+    if (!validated.ok) return { ok: false, reason: validated.reason };
     // Clone arrays: the plugin still holds its own reference, and returning it
     // would let a post-validation mutation reach the agent as accepted content.
     Object.defineProperty(out, field.key, {
@@ -848,10 +913,31 @@ export function validateElicitationAnswer(
   return { ok: true, content: out };
 }
 
-function measureAnswerChars(value: ChannelElicitationValue): number {
+/**
+ * Bounded character estimate over the RAW submitted value, computed without
+ * running any format or collection validation.
+ *
+ * Arrays are the interesting case: `options` is capped at 100 entries, so any
+ * array longer than that cannot possibly be a legal multi-select answer. Using
+ * the option count as the array-length bound therefore rejects an impossible
+ * input with a single comparison instead of traversing it.
+ */
+function rawAnswerChars(field: ChannelElicitationField, value: unknown): number {
   if (typeof value === "string") return value.length;
   if (typeof value === "number" || typeof value === "boolean") return 1;
-  return value.reduce((sum, item) => sum + item.length, 0);
+  if (!Array.isArray(value)) return 0;
+  if (field.kind === "multi-select" && value.length > field.options.length) {
+    // More selections than offered options can never validate; report the
+    // whole remaining budget so the caller cancels immediately.
+    return ELICITATION_SCHEMA_LIMITS.maxAcceptedAnswerChars + 1;
+  }
+  let chars = 0;
+  for (const item of value) {
+    if (typeof item === "string") chars += item.length;
+    else chars += 1;
+    if (chars > ELICITATION_SCHEMA_LIMITS.maxAcceptedAnswerChars) break;
+  }
+  return chars;
 }
 
 type FieldValueResult =
