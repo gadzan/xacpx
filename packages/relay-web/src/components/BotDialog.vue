@@ -34,17 +34,19 @@ const isEditing = computed(() => !!props.bot);
 // (bot_in_use). Teardown/rebind is a later lifecycle surface, so PR5 treats
 // a used Bot as identity-locked. The form tells this upfront instead of
 // letting edits fail at submit.
-const authoritativeBot = computed(() => {
-  if (!props.bot) return undefined;
+const identityLocked = computed(() => {
+  if (!props.bot) return false;
   const detailKey = `${props.instanceId}:${props.bot.id}`;
-  // Detail-first: the store detail cache carries authoritative lifecycle
-  // (hasRuntime) once loaded; fall back to the list row, then the frozen prop.
-  const fromStore =
-    directBotsStore.botDetails[detailKey]
-    ?? directBotsStore.botsByInstance[props.instanceId]?.find((b) => b.id === (props.bot as BotSummaryDto).id);
-  return fromStore ?? props.bot;
+  const detail = directBotsStore.botDetails[detailKey];
+  const listed = directBotsStore.botsByInstance[props.instanceId]
+    ?.find((b) => b.id === (props.bot as BotSummaryDto).id);
+  // hasRuntime is monotonic (no public teardown/rebind): a stale detail row
+  // must never shadow a newer list row that already converged true, so merge
+  // all three sources instead of detail-first fallthrough.
+  return detail?.hasRuntime === true
+    || listed?.hasRuntime === true
+    || ("hasRuntime" in props.bot && props.bot.hasRuntime === true);
 });
-const identityLocked = computed(() => (authoritativeBot.value && "hasRuntime" in authoritativeBot.value && authoritativeBot.value.hasRuntime) === true);
 
 // Form fields
 const name = ref(props.bot?.name ?? "");

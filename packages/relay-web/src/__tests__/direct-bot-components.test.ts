@@ -342,7 +342,7 @@ describe("Direct Bot Components", () => {
       expect((wrapper.find("#bot-workspace").element as HTMLSelectElement).disabled).toBe(true);
     });
 
-    it("locks an open dialog when the store later converges hasRuntime=true", async () => {
+    it("locks an open dialog when the list row converges hasRuntime=true despite a stale detail row", async () => {
       const instances = useInstancesStore();
       instances.instances = [
         {
@@ -363,10 +363,17 @@ describe("Direct Bot Components", () => {
           enabled: true, updatedAt: "2026-09-18T00:00:00.000Z",
         },
       ];
-      vi.spyOn(directBots, "loadBotDetail").mockResolvedValue({
-        id: "bot_1", name: "Existing Bot", agent: "codex", workspace: "repo",
-        enabled: true, profileRevision: 1,
-        createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "2026-09-18T00:00:00.000Z",
+      // Faithful store semantics: the mount-time detail load writes a
+      // hasRuntime-unset row into botDetails (production loadBotDetail does
+      // this; a mockResolvedValue return alone would skip the cache write).
+      vi.spyOn(directBots, "loadBotDetail").mockImplementation(async () => {
+        const detail: BotDetailDto = {
+          id: "bot_1", name: "Existing Bot", agent: "codex", workspace: "repo",
+          enabled: true, profileRevision: 1,
+          createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "2026-09-18T00:00:00.000Z",
+        };
+        directBots.botDetails["i1:bot_1"] = detail;
+        return detail;
       });
       const existingBot: BotSummaryDto = {
         id: "bot_1",
@@ -384,8 +391,9 @@ describe("Direct Bot Components", () => {
       expect((wrapper.find("#bot-agent").element as HTMLSelectElement).disabled).toBe(false);
 
       // Later catalog lifecycle convergence (e.g. remote topic creation for
-      // this Bot) flips the store row to hasRuntime=true; the open dialog
-      // must lock without close/reopen.
+      // this Bot) flips only the list row to hasRuntime=true while the stale
+      // detail row stays unset; the open dialog must still lock without
+      // close/reopen.
       directBots.botsByInstance["i1"] = [
         {
           id: "bot_1", name: "Existing Bot", agent: "codex", workspace: "repo",
