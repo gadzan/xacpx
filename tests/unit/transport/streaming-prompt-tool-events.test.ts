@@ -41,24 +41,28 @@ test("when onToolEvent is provided, tool_call events do NOT enter state.segments
     }),
   );
   expect(state.segments).toEqual([]);
-  expect(events).toEqual([
-    {
-      toolCallId: "t1",
-      toolName: "Read File",
-      kind: "read",
-      summary: "foo.ts",
-      rawInput: { path: "foo.ts" },
-      status: "running",
-    },
-    {
-      toolCallId: "t1",
-      toolName: "Read File",
-      kind: "read",
-      summary: "foo.ts",
-      rawInput: { path: "foo.ts" },
-      status: "success",
-    },
-  ]);
+  // running frame carries startedAt (UI counts up); terminal frame carries the
+  // connector-measured duration instead.
+  expect(events.length).toBe(2);
+  expect(events[0]).toMatchObject({
+    toolCallId: "t1",
+    toolName: "Read File",
+    kind: "read",
+    summary: "foo.ts",
+    rawInput: { path: "foo.ts" },
+    status: "running",
+  });
+  expect(events[1]).toMatchObject({
+    toolCallId: "t1",
+    toolName: "Read File",
+    kind: "read",
+    summary: "foo.ts",
+    rawInput: { path: "foo.ts" },
+    status: "success",
+  });
+  expect((events[0] as { startedAt?: number }).startedAt).toBeTypeOf("number");
+  expect((events[1] as { startedAt?: number }).startedAt).toBeUndefined();
+  expect((events[1] as { durationMs?: number }).durationMs).toBeGreaterThanOrEqual(0);
 });
 
 test("structured tool events fire even when formatToolCalls is false (non-verbose channels)", () => {
@@ -86,16 +90,19 @@ test("structured tool events fire even when formatToolCalls is false (non-verbos
   );
   // Structured event still emitted; nothing leaks into the text segments.
   expect(state.segments).toEqual([]);
-  expect(events).toEqual([
-    {
-      toolCallId: "t1",
-      toolName: "bash",
-      kind: "execute",
-      summary: "ls",
-      rawInput: { command: "ls" },
-      status: "running",
-    },
-  ]);
+  // A running call carries the first-seen stamp so the UI can count up; it has no
+  // duration yet.
+  expect(events.length).toBe(1);
+  expect(events[0]).toMatchObject({
+    toolCallId: "t1",
+    toolName: "bash",
+    kind: "execute",
+    summary: "ls",
+    rawInput: { command: "ls" },
+    status: "running",
+  });
+  expect((events[0] as { durationMs?: number }).durationMs).toBeUndefined();
+  expect(typeof (events[0] as { startedAt?: number }).startedAt).toBe("number");
 });
 
 test("inline-text tool rendering stays gated behind formatToolCalls (text mode, non-verbose)", () => {
@@ -657,7 +664,7 @@ test("Qoder Agent metadata produces a subagent event across a sparse terminal up
     _meta: { qoder: {} },
   });
 
-  expect(events.at(-1)).toEqual({
+  expect(events.at(-1)).toMatchObject({
     toolCallId: "qoder-agent-1",
     isSubagent: true,
     toolName: "Agent",
@@ -673,6 +680,9 @@ test("Qoder Agent metadata produces a subagent event across a sparse terminal up
     rawOutput: "47",
     status: "success",
   });
+  // Terminal frames carry the measured duration; running frames carry startedAt.
+  expect((events.at(-1) as { startedAt?: number }).startedAt).toBeUndefined();
+  expect((events.at(-1) as { durationMs?: number }).durationMs).toBeGreaterThanOrEqual(0);
 });
 
 test("a qoder async Agent launch stays running until its background continuation ends", () => {
@@ -824,7 +834,7 @@ test("Codex subagent metadata survives a sparse terminal namespace update", () =
     },
   }));
 
-  expect(events.at(-1)).toEqual({
+  expect(events.at(-1)).toMatchObject({
     toolCallId: "codex-agent-1",
     isSubagent: true,
     toolName: "Start subagent random_number",
@@ -836,6 +846,8 @@ test("Codex subagent metadata survives a sparse terminal namespace update", () =
     },
     status: "success",
   });
+  expect((events.at(-1) as { startedAt?: number }).startedAt).toBeUndefined();
+  expect((events.at(-1) as { durationMs?: number }).durationMs).toBeGreaterThanOrEqual(0);
 });
 
 test("provider subagent signals are driver-gated and malformed metadata fails open", () => {
@@ -901,12 +913,19 @@ test("wrong-driver Claude metadata does not alter an ordinary tool event", () =>
     },
   }));
 
-  expect(events).toEqual([{
+  expect(events.length).toBe(1);
+  expect(events[0]).toMatchObject({
     toolCallId: "ordinary-1",
     toolName: "Agent",
     kind: "other",
     status: "success",
-  }]);
+  });
+  // Non-Claude drivers must not pick up the Claude subagent/parent linkage, and a
+  // terminal frame reports duration (not the running stamp).
+  expect(events[0]!.isSubagent).toBeUndefined();
+  expect(events[0]!.parentToolCallId).toBeUndefined();
+  expect((events[0] as { startedAt?: number }).startedAt).toBeUndefined();
+  expect((events[0] as { durationMs?: number }).durationMs).toBeGreaterThanOrEqual(0);
 });
 
 test("tool_call_update falls back to rawOutput with input-like fields (path, command/query) for structured summary", () => {

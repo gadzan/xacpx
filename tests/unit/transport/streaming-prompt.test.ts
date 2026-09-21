@@ -1032,3 +1032,205 @@ test("onPlan filters malformed plan entries", () => {
     { content: "another valid", status: "in_progress" },
   ]]);
 });
+
+// --- P1-2: Kimi todo/plan normalization ---
+
+test("adapts Kimi TodoList calls into plan updates instead of tool cards", () => {
+  const plans: unknown[] = [];
+  const toolEvents: unknown[] = [];
+  const state = createStreamingPromptState(false, {
+    mode: "structured",
+    driver: "kimi",
+    onPlan: (entries) => plans.push(entries),
+    onToolEvent: (event) => toolEvents.push(event),
+  });
+  const send = (update: Record<string, unknown>) =>
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+
+  send({
+    sessionUpdate: "tool_call",
+    toolCallId: "11:call_todo",
+    title: "TodoList",
+    kind: "other",
+    status: "pending",
+  });
+  send({
+    sessionUpdate: "tool_call_update",
+    toolCallId: "11:call_todo",
+    title: "Updating todo list",
+    status: "in_progress",
+    rawInput: {
+      todos: [
+        { title: "Add driver tables", status: "in_progress" },
+        { title: "Update agent templates", status: "pending" },
+      ],
+    },
+  });
+
+  expect(plans).toEqual([[
+    { content: "Add driver tables", status: "in_progress" },
+    { content: "Update agent templates", status: "pending" },
+  ]]);
+  // The announcement-only first frame carries no list yet, so it falls back to a
+  // think card (same contract as Cursor's announcement-only todo call) — but the
+  // frame that DOES carry the list never emits a card.
+  expect(toolEvents).toHaveLength(1);
+  expect(toolEvents[0]).toMatchObject({ toolCallId: "11:call_todo", kind: "think" });
+});
+
+test("Kimi todo updates REPLACE the plan and map `done` to completed", () => {
+  const plans: unknown[] = [];
+  const state = createStreamingPromptState(false, {
+    mode: "structured",
+    driver: "kimi",
+    onPlan: (entries) => plans.push(entries),
+    onToolEvent: () => {},
+  });
+  const send = (update: Record<string, unknown>) =>
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+
+  send({
+    sessionUpdate: "tool_call_update",
+    toolCallId: "11:call_a",
+    title: "Updating todo list",
+    status: "in_progress",
+    rawInput: {
+      todos: [
+        { title: "First", status: "done" },
+        { title: "Second", status: "pending" },
+      ],
+    },
+  });
+  send({
+    sessionUpdate: "tool_call_update",
+    toolCallId: "11:call_b",
+    title: "Updating todo list",
+    status: "in_progress",
+    rawInput: {
+      todos: [
+        { title: "First", status: "done" },
+        { title: "Second", status: "done" },
+      ],
+    },
+  });
+  send({
+    sessionUpdate: "tool_call_update",
+    toolCallId: "11:call_c",
+    title: "Updating todo list",
+    status: "in_progress",
+    rawInput: { todos: [] },
+  });
+
+  expect(plans).toEqual([
+    [{ content: "First", status: "completed" }, { content: "Second", status: "pending" }],
+    [{ content: "First", status: "completed" }, { content: "Second", status: "completed" }],
+    [],
+  ]);
+});
+
+test("Kimi todo and Cursor todo accumulators stay isolated", () => {
+  const plans: unknown[] = [];
+  const kimiState = createStreamingPromptState(false, {
+    driver: "kimi", onPlan: (e) => plans.push(e), onToolEvent: () => {},
+  });
+  parseStreamingChunks(kimiState, JSON.stringify({ method: "session/update", params: { update: {
+    sessionUpdate: "tool_call_update", toolCallId: "k1", title: "Updating todo list",
+    status: "in_progress", rawInput: { todos: [{ title: "Kimi item", status: "pending" }] },
+  } } }));
+
+  const cursorState = createStreamingPromptState(false, {
+    driver: "cursor", onPlan: (e) => plans.push(e), onToolEvent: () => {},
+  });
+  parseStreamingChunks(cursorState, JSON.stringify({ method: "session/update", params: { update: {
+    sessionUpdate: "tool_call", toolCallId: "c1", title: "TodoWrite", kind: "other",
+    rawInput: { todos: [{ id: "c", content: "Cursor item", status: "pending" }] },
+  } } }));
+
+  // Neither driver's list leaks into the other's accumulator.
+  expect(plans).toEqual([
+    [{ content: "Kimi item", status: "pending" }],
+    [{ content: "Cursor item", status: "pending" }],
+  ]);
+});
+
+// --- P1-2: driver kind tables override an adapter-stamped kind ---
+
+test("driver kind tables override an adapter-stamped wrong kind", () => {
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, {
+    driver: "kimi",
+    onToolEvent: (event) => events.push(event),
+  });
+  const send = (update: Record<string, unknown>) =>
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+
+  // Kimi stamps Grep as kind:"read" — the driver table must win.
+  send({ sessionUpdate: "tool_call", toolCallId: "g1", title: "Grep", kind: "read", status: "pending" });
+  // An unmapped tool keeps the adapter's own kind.
+  send({ sessionUpdate: "tool_call", toolCallId: "a1", title: "AskUserQuestion", kind: "other", status: "pending" });
+
+  expect(events.map((e) => [e.toolCallId, e.kind])).toEqual([
+    ["g1", "search"],
+    ["a1", "other"],
+  ]);
+});
+
+// --- P0-2: argument-echo content suppression ---
+
+test("mid-frame argument echo in content is dropped but diff blocks survive", () => {
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, {
+    driver: "kimi",
+    onToolEvent: (event) => events.push(event),
+  });
+  const send = (update: Record<string, unknown>) =>
+    parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update } }));
+
+  send({ sessionUpdate: "tool_call", toolCallId: "0:Edit_1", title: "Edit", kind: "edit", status: "pending" });
+  // Partial argument JSON echoed through content (no rawInput yet).
+  send({
+    sessionUpdate: "tool_call_update", toolCallId: "0:Edit_1", status: "in_progress",
+    content: [{ type: "content", content: { type: "text", text: '{"path":"packages' } }],
+  });
+  // Frame carrying the full arguments AND their echo: keep arguments, drop echo.
+  send({
+    sessionUpdate: "tool_call_update", toolCallId: "0:Edit_1", status: "in_progress",
+    rawInput: { path: "packages/relay-web/x.ts", old_string: "a", new_string: "b" },
+    content: [{ type: "content", content: { type: "text", text: '{"path":"packages/relay-web/x.ts","old_string":"a","new_string":"b"}' } }],
+  });
+  // Penultimate in_progress frame carrying the diff block — must NOT be dropped.
+  send({
+    sessionUpdate: "tool_call_update", toolCallId: "0:Edit_1", status: "in_progress",
+    title: "Editing packages/relay-web/x.ts",
+    content: [{ type: "diff", path: "/ws/packages/relay-web/x.ts", oldText: "a", newText: "b" }],
+  });
+  send({
+    sessionUpdate: "tool_call_update", toolCallId: "0:Edit_1", status: "completed",
+    rawOutput: "Replaced 1 occurrence in packages/relay-web/x.ts",
+  });
+
+  expect(events.length).toBe(5);
+  expect(events[1]!.content).toBeUndefined();
+  expect(events[2]!.rawInput).toMatchObject({ path: "packages/relay-web/x.ts" });
+  expect(events[2]!.content).toBeUndefined();
+  expect(events[3]!.content).toEqual([{ type: "diff", path: "/ws/packages/relay-web/x.ts", oldText: "a", newText: "b" }]);
+});
+
+test("a JSON text block that is NOT an argument echo is kept", () => {
+  const events: ToolUseEvent[] = [];
+  const state = createStreamingPromptState(false, {
+    onToolEvent: (event) => events.push(event),
+  });
+  parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update: {
+    sessionUpdate: "tool_call", toolCallId: "t1", title: "Task", kind: "think", status: "pending",
+  } } }));
+  parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update: {
+    sessionUpdate: "tool_call_update", toolCallId: "t1", status: "completed",
+    rawInput: { prompt: "go", subagent_type: "Explore" },
+    rawOutput: { result: "found 3 files" },
+    content: [{ type: "content", content: { type: "text", text: '{"result":"found 3 files"}' } }],
+  } } }));
+
+  // `result` is not an argument key, so this is a real result, not an echo.
+  expect(events[1]!.content).toEqual([{ type: "content", content: { type: "text", text: '{"result":"found 3 files"}' } }]);
+});

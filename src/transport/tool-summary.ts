@@ -127,6 +127,42 @@ export function summarizeToolInput(rawInput: unknown, title = ""): string | unde
 
 export const TOOL_OUTPUT_SUMMARY_MAX_CHARS = 500;
 
+/** True when a frame's `content` is just the tool's own arguments echoed back as
+ *  text — some drivers (Kimi) stream `rawInput` incrementally through
+ *  `content[].content.text` (`{"path":"packages` → `{"path":"packages/…`), which
+ *  the presentation layer would render as a growing wall of partial JSON.
+ *
+ *  Two independent signals, either of which is sufficient:
+ *  1. the text is a prefix of (or equal to) the serialized `rawInput` already
+ *     merged for this call — the complete echo case; or
+ *  2. the text opens a JSON object but never closes it — an in-flight echo, which
+ *     is how the driver reports arguments before `rawInput` itself arrives.
+ *
+ *  Blocks that are complete JSON but NOT an argument echo (real results, agent_send
+ *  receipts) have a closing brace and unknown keys, so they are kept. Diff blocks
+ *  and any non-text block are never echoes. */
+export function isToolArgumentEchoContent(content: unknown, rawInput: unknown): boolean {
+  if (!Array.isArray(content) || content.length === 0) return false;
+  const serializedInput = isRecord(rawInput) ? JSON.stringify(rawInput) : undefined;
+  let sawText = false;
+  for (const entry of content) {
+    const block = isRecord(entry) ? entry : undefined;
+    if (!block) return false;
+    if (block.type === "diff") return false;
+    const inner = isRecord(block.content) ? block.content : block;
+    if (inner.type !== "text") return false;
+    sawText = true;
+    const text = typeof inner.text === "string" ? inner.text.trim() : "";
+    if (!text.startsWith("{")) return false;
+    if (serializedInput !== undefined && serializedInput.startsWith(text)) continue;
+    // An object that never closes is an in-flight argument echo: a tool RESULT is
+    // always complete by the time it is reported.
+    if (!text.includes("}")) continue;
+    return false;
+  }
+  return sawText;
+}
+
 export function summarizeToolOutput(rawOutput: unknown): string | undefined {
   if (rawOutput == null) return undefined;
   if (typeof rawOutput === "string" || typeof rawOutput === "number" || typeof rawOutput === "boolean") {
