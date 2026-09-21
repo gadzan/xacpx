@@ -378,6 +378,53 @@ code.
 Total new: **174**. M1 unit suites 311/311 green; real-acpx E2E 15/16 (the one
 failure is the pre-existing `PR9-A E2E`); `npx tsc --noEmit` 0 errors.
 
+## Review round 7 (PR #355, head `8a4be1e7`)
+
+Three further findings, all fixed:
+
+1. **[Blocking, identity semantics]** Round 6 made `agent.name` trusted but
+   carried `ensureParams.agent`, which is `input.acpxAgent ?? input.agent` —
+   the *transport selector*, not the user's Agent. `acpxAgent` is documented as
+   the acpx positional agent / managed overlay alias, and structured launches
+   generate `xacpx-managed-codex-9d1628a76ca9`. Displaying that prominently
+   would show a user an internal selector and hash, failing the actual purpose
+   of ACP's "clearly identify the Agent" requirement. The user-facing alias now
+   travels on `RuntimeWorkerPromptParams.requestingAgentName` (deliberately NOT
+   the construction identity, since a worker is reused across sessions with
+   different aliases and a config change would show a stale name). Regression
+   is a RuntimeEngine + real-worker test with
+   `agent: "user-alias", acpxAgent: "xacpx-managed-..."`.
+2. **[Blocking, format semantics]** Rounds 5-7 hand-rolled `email`/`uri` three
+   times, each fixing one direction and breaking another. The JSON Schema spec
+   recommends a well-known library over an ad-hoc approximation, so
+   `ajv-formats` is now a direct dependency and the reference validator. Its
+   deviations from the strictest RFC reading (quoted local part,
+   address-literal domain, single-label domain, email length limit, empty URI
+   authority, non-numeric port) are documented at the validator and pinned by
+   tests. RFC3339 `date-time` also fixed: `T`/`Z` are case-insensitive, and
+   `:60` is only valid as a real leap-second instant.
+3. **[Medium, round 6 incomplete]** The abort listener was defined inside the
+   Promise executor, so only the abort path removed it — round 6 cleared the
+   timer but not the listener. Hoisted out and removed unconditionally in
+   `finally`; a counting-signal harness asserts add/remove balance across
+   repeated successful elicitations.
+
+## Final totals after round 7
+
+| Suite | Tests |
+|---|---|
+| `turn-interaction-registry.test.ts` | 13 |
+| `elicitation-schema.test.ts` | 109 |
+| `elicitation-interaction-broker.test.ts` | 41 |
+| `elicitation-plugin-contract.test.ts` | 6 |
+| `channel-elicitation-capability.test.ts` | 9 |
+| `runtime-adapter-elicitation.test.ts` (real acpx) | 4 |
+| `runtime-elicitation-agent-identity.test.ts` (real worker) | 3 |
+| `runtime-elicitation-listener-balance.test.ts` | 3 |
+
+Total new: **188**. M1 unit suites 319/319 green; real-acpx E2E 18/19 (the one
+failure is the pre-existing `PR9-A E2E`); `npx tsc --noEmit` 0 errors.
+
 ## Deferred
 
 - No production channel renderer (M2 Discord, M4 Feishu).
