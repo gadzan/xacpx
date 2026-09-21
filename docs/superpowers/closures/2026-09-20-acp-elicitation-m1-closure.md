@@ -475,6 +475,56 @@ code, and it was correct: a test that re-implements the behaviour it claims to
 verify is not a regression test. Where a suite now makes a claim, that claim
 has been checked by mutating the code it covers and confirming the suite fails.
 
+## Review round 9 / final adversarial pass (head `8c39d7c7`)
+
+Four further findings, all fixed and mutation-verified:
+
+1. **[Blocking, schema-validation bypass]** multi-select still had a
+   validation→clone TOCTOU: `validateFieldValue` reads the renderer's array
+   several times, then `[...validated.value]` reads it again for output. Index
+   getters could return a legal option during validation and an unvalidated
+   value — or a multi-MB string that also bypasses the answer cap — at clone
+   time. Arrays are now canonicalised into a core-owned snapshot before any
+   validation, each index read exactly once. 2 accessor regressions.
+2. **[Blocking, RFC3339]** The leap-second branch returned before the offset
+   range check, so `1973-01-01T23:59:60+24:00` — an invalid `time-numoffset` —
+   shifted onto a real leap date and passed. Offset parsing/range validation now
+   precedes the branch. 2 regressions.
+3. **[Medium, bound-after-traversal]** Three inversions in the normalizer:
+   `Object.entries(properties)` before the field-count check,
+   `required.every` before the length check, `readTitledOptions().map` before
+   the option-count check. All bound first, and the answer entry bounds key
+   enumeration by the form field count.
+4. **[Medium, regression evidence]** The "oversized URI proves the format
+   validator was never called" test used a *syntactically valid* URI, so it
+   passed even with the preflight moved back. The input is now oversized AND
+   format-invalid (`%zz`), so correct order yields `core size limit` and the old
+   order yields `is not a uri`.
+
+### Mutation verification for round 9
+
+| Mutation | Result |
+|---|---|
+| array canonicalisation disabled | 2 accessor tests fail |
+| offset range check removed | 2 offset tests fail |
+| preflight moved back after validation | oversized-URI ordering test fails |
+
+## Final totals
+
+| Suite | Tests |
+|---|---|
+| `turn-interaction-registry.test.ts` | 13 |
+| `elicitation-schema.test.ts` | 119 |
+| `elicitation-interaction-broker.test.ts` | 41 |
+| `elicitation-plugin-contract.test.ts` | 6 |
+| `channel-elicitation-capability.test.ts` | 9 |
+| `runtime-adapter-elicitation.test.ts` (real acpx) | 4 |
+| `runtime-elicitation-agent-identity.test.ts` (real worker) | 3 |
+| `runtime-elicitation-listener-balance.test.ts` | 6 |
+
+Total new: **201**. M1 unit suites 329/329 green; real-acpx E2E 24/25 (the one
+failure is the pre-existing `PR9-A E2E`); `npx tsc --noEmit` 0 errors.
+
 ## Deferred
 
 - No production channel renderer (M2 Discord, M4 Feishu).
