@@ -438,7 +438,7 @@ function validStateSnapshot(candidate) {
     if (typeof turn !== "object" || turn === null)
       return false;
     const c = turn;
-    return c.instanceId === instanceId && typeof c.sessionAlias === "string" && Array.isArray(c.parts) && c.parts.every(validTurnPart) && (c.status === "working" || c.status === "streaming") && finiteNonNegative(c.startedAt) && optNonNegInt(c.slotAfterId);
+    return c.instanceId === instanceId && typeof c.sessionAlias === "string" && Array.isArray(c.parts) && c.parts.every(validTurnPart) && (c.status === "working" || c.status === "streaming") && finiteNonNegative(c.startedAt) && optNonNegInt(c.slotAfterId) && (c.truncated === undefined || typeof c.truncated === "boolean");
   }))
     return false;
   if (!Array.isArray(candidate.usage) || !candidate.usage.every((usage) => {
