@@ -207,6 +207,55 @@ function readOptionalStringArray(
   return { ok: true, value: value as string[] };
 }
 
+/**
+ * Multi-select `default` with the ACP reader's PER-ITEM salvage semantics.
+ *
+ * The pinned `@agentclientprotocol/sdk` 1.4.0 declares it as
+ *
+ *     default: defaultOnError(vecSkipError(z.string()).nullish(), () => undefined)
+ *
+ * and `vecSkipError` is
+ *
+ *     z.array(itemSchema.catch(skippedItem)).transform(items => items.filter(i => i !== skippedItem))
+ *
+ * — i.e. each element is salvaged independently. Verified empirically:
+ * `["a", 7, "b"]` arrives as `["a", "b"]`, `[null, "a"]` as `["a"]`, a non-array
+ * `7` as `undefined`, and `["a", "a"]` is preserved with duplicates (the reader
+ * does NOT dedupe — xacpx's own dedupe is an additional local policy).
+ *
+ * So a single malformed element must not discard the whole hint, which is the
+ * same reader-parity class as rounds 16/18/19. Order of operations matters:
+ *   1. O(1) admission on the RAW array length before any allocation;
+ *   2. per-item salvage of non-strings;
+ *   3. xacpx's own policy — offered-option filter, dedupe, `minItems`/`maxItems`
+ *      and the item length bound.
+ *
+ * Deliberately NOT used for `enum` / `required`: the SDK declares those as plain
+ * `z.array(z.string())` with no salvage, and `enum: ["a", 7]` genuinely throws
+ * upstream (verified). Those keep the strict reader.
+ */
+function readSalvagedStringArray(
+  holder: Plain,
+  key: string,
+  max: number,
+): { ok: true; value?: string[] } | { ok: false } {
+  const value = holder[key];
+  if (value === undefined || value === null) return { ok: true };
+  // A non-array is salvaged to absent, exactly like `defaultOnError`'s catch.
+  if (!Array.isArray(value)) return { ok: true };
+  // Admission on the RAW length, before allocating the filtered copy.
+  if (value.length > max) return { ok: false };
+  const kept: string[] = [];
+  for (const item of value) {
+    // Per-item salvage: a non-string is skipped, not fatal.
+    if (typeof item !== "string") continue;
+    // A present-but-oversized string is still xacpx's own resource policy.
+    if (item.length > ELICITATION_SCHEMA_LIMITS.maxOptionValueLength) return { ok: false };
+    kept.push(item);
+  }
+  return { ok: true, value: kept };
+}
+
 function readOptionalPositiveInteger(
   holder: Plain,
   key: string,
@@ -495,12 +544,14 @@ function normalizeField(
       if (hasDuplicateOptions(options)) {
         return { ok: false, detail: `field "${boundedKeyLabel(key)}" has ambiguous option values` };
       }
-      // `default` is an annotation. Duplicate entries and options the form does
-      // not offer cannot be pre-filled safely, so they are filtered down to the
-      // legal offered subset. `minItems`/`maxItems` must ALSO be honoured —
-      // otherwise `{minItems: 2, default: ["a"]}` would pre-fill a value core
-      // is guaranteed to reject when submitted unchanged.
-      const defaultRaw = readOptionalStringArray(
+      // `default` is an annotation. The ACP reader salvages the array PER ITEM
+      // (`vecSkipError`), so a single malformed element skips rather than
+      // discarding the hint. On top of that, xacpx's own policy applies:
+      // duplicates and options the form does not offer cannot be pre-filled
+      // safely, and `minItems`/`maxItems` must hold — otherwise
+      // `{minItems: 2, default: ["a"]}` would pre-fill a value core is
+      // guaranteed to reject when submitted unchanged.
+      const defaultRaw = readSalvagedStringArray(
         property,
         "default",
         ELICITATION_SCHEMA_LIMITS.maxOptionsPerField,

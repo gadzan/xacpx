@@ -529,6 +529,93 @@ describe("normalizeAcpElicitationForm rejections", () => {
     }
   });
 
+  test("a multi-select default salvages malformed items instead of dropping the hint", () => {
+    // Regression: the pinned ACP reader declares a multi-select `default` as
+    //
+    //     defaultOnError(vecSkipError(z.string()).nullish(), () => undefined)
+    //
+    // and `vecSkipError` is `z.array(item.catch(skipped)).transform(i => i.filter(x => x !== skipped))`
+    // — PER-ITEM salvage. Verified empirically: `["a", 7, "b"]` arrives as
+    // `["a", "b"]`, `[null, "a"]` as `["a"]`, a non-array `7` as `undefined`, and
+    // `["a", "a"]` keeps its duplicates (the reader does NOT dedupe; xacpx's
+    // dedupe is additional local policy).
+    //
+    // xacpx dropped the whole hint when any element was malformed, which is the
+    // same reader-parity class as rounds 16/18/19.
+    const salvaged = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: {
+          tags: { type: "array", items: { type: "string", enum: ["a", "b"] }, default: ["a", 7, "b"] },
+        },
+      },
+    }));
+    expect(salvaged.ok).toBe(true);
+    if (salvaged.ok) expect(salvaged.form.fields[0]).toMatchObject({ defaultValue: ["a", "b"] });
+
+    const nullItem = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: {
+          tags: { type: "array", items: { type: "string", enum: ["a", "b"] }, default: [null, "a"] },
+        },
+      },
+    }));
+    expect(nullItem.ok).toBe(true);
+    if (nullItem.ok) expect(nullItem.form.fields[0]).toMatchObject({ defaultValue: ["a"] });
+
+    // A non-array default is salvaged to absent, like `defaultOnError`'s catch.
+    const notArray = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { tags: { type: "array", items: { type: "string", enum: ["a", "b"] }, default: 7 } },
+      },
+    }));
+    expect(notArray.ok).toBe(true);
+    if (notArray.ok) expect("defaultValue" in (notArray.form.fields[0] as object)).toBe(false);
+  });
+
+  test("a malformed element in enum is still rejected, because the reader does not salvage it", () => {
+    // The per-item salvage is NOT a general relaxation. The pinned SDK declares
+    // `enum` as a plain `z.array(z.string())` with no `vecSkipError`, so a
+    // malformed element genuinely throws upstream — and must keep failing here.
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { tags: { type: "array", items: { type: "string", enum: ["a", 7] } } },
+      },
+    }));
+    expect(result.ok).toBe(false);
+  });
+
+  test("local multi-select policy still applies after salvage", () => {
+    // Salvage must not bypass xacpx's own pre-fill policy: duplicates and
+    // non-offered entries are still filtered, and `minItems`/`maxItems` still
+    // bind. Otherwise `{minItems: 2, default: ["a", "nope", 7]}` would pre-fill
+    // a single value core rejects on submit.
+    const deduped = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: {
+          tags: { type: "array", items: { type: "string", enum: ["a", "b"] }, default: ["a", "a", "nope"] },
+        },
+      },
+    }));
+    expect(deduped.ok).toBe(true);
+    if (deduped.ok) expect(deduped.form.fields[0]).toMatchObject({ defaultValue: ["a"] });
+
+    const tooFew = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: {
+          tags: { type: "array", minItems: 2, items: { type: "string", enum: ["a", "b"] }, default: ["a", 7] },
+        },
+      },
+    }));
+    expect(tooFew.ok).toBe(true);
+    if (tooFew.ok) expect("defaultValue" in (tooFew.form.fields[0] as object)).toBe(false);
+  });
+
   test("malformed presentation metadata is salvaged, not rejected", () => {
     // Regression: the pinned ACP SDK declares every OPTIONAL presentation
     // string (`requestedSchema.title`, `.description`, each property's
@@ -541,10 +628,18 @@ describe("normalizeAcpElicitationForm rejections", () => {
     // Rejecting the form here rejects input the ACP reader already salvaged —
     // the same failure mode as rounds 16/18.
     for (const bad of [7, false, {}, [], true]) {
-      const root = normalizeAcpElicitationForm(formRequest({
+      const rootTitle = normalizeAcpElicitationForm(formRequest({
         requestedSchema: { type: "object", title: bad, properties: { a: { type: "string" } } },
       }));
-      expect(root.ok).toBe(true);
+      expect(rootTitle.ok).toBe(true);
+
+      // The root-level DESCRIPTION is the same salvage member and needs its own
+      // coverage: round 19 only pinned `title` at the schema root, leaving a
+      // second copy of the same rule untested.
+      const rootDescription = normalizeAcpElicitationForm(formRequest({
+        requestedSchema: { type: "object", description: bad, properties: { a: { type: "string" } } },
+      }));
+      expect(rootDescription.ok).toBe(true);
 
       const fieldTitle = normalizeAcpElicitationForm(formRequest({
         requestedSchema: { type: "object", properties: { a: { type: "string", title: bad } } },

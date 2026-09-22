@@ -3,7 +3,7 @@
 ```text
 Milestone: M1 Core Foundation
 Base:      e98cb68e (main, "feat(relay-web): sticky agent avatar with working quip chip and unified send/cancel (#353)")
-Head:      447ecdf74ddac124f97464659965862501141a92 + round-19 fixes (post-review)
+Head:      5fe0e832f8900bffa171b72b11adcc0d2bb7c2d3 + round-20 fixes (post-review)
 PR:        #355 "feat(elicitation): ACP Elicitation M1 core foundation" (OPEN, mergeable)
 ```
 
@@ -1335,8 +1335,8 @@ suites 360/360 green; real-acpx E2E 25/26 (pre-existing `PR9-A`);
 | R17 | strict root-type check restored | root-tolerance regression |
 | R18 | wrong root `type` rejected again | 2 root-tolerance regressions |
 
-
 ## Review round 19 (head `447ecdf7`) — presentation-metadata salvage
+
 
 1 Medium, no Blocking.
 
@@ -1389,3 +1389,82 @@ Total new: **228**. M1 unit suites 364/364 green; real-acpx E2E 25/26
 | R18 | wrong root `type` rejected again | 2 root-tolerance regressions |
 | R19 | metadata salvage removed | metadata-salvage regression |
 | R19 | `pattern` wrongly salvaged | pattern-strictness regression |
+
+## Review round 20 (head `5fe0e832`) — multi-select item-level salvage
+
+1 Medium, no Blocking. **Round 19's "nothing left" claim was inaccurate and is
+corrected here.**
+
+### [Medium] Multi-select `default` lacked the reader's per-item salvage
+
+The pinned SDK declares it as
+
+```ts
+default: defaultOnError(vecSkipError(z.string()).nullish(), () => undefined)
+```
+
+and `vecSkipError` is
+
+```js
+z.array(itemSchema.catch(skippedItem)).transform((items) => items.filter((item) => item !== skippedItem))
+```
+
+— **per-item** salvage. Verified empirically against the installed package:
+
+| Input | Reader result |
+|---|---|
+| `default: ["a", 7, "b"]` | `["a", "b"]` |
+| `default: [null, "a"]` | `["a"]` |
+| `default: 7` (non-array) | `undefined` |
+| `default: ["a", "a"]` | `["a", "a"]` — **dupes preserved** |
+| `items.enum: ["a", 7]` | **THROW** (no salvage) |
+
+xacpx dropped the entire hint when any element was malformed. Same reader-parity
+class as rounds 16/18/19 — and round 19's closure claimed a full SDK salvage
+audit with "nothing left", which was wrong: the audit listed `default` as
+salvaged for the array variant but did not check that the salvage was per-item
+rather than whole-value. The claim is retracted.
+
+`readSalvagedStringArray()` implements it in the required order:
+
+1. O(1) admission on the RAW array length, before any allocation;
+2. per-item salvage of non-strings;
+3. xacpx's own policy — offered-option filter, dedupe, `minItems`/`maxItems`,
+   item length bound.
+
+Not a general relaxation: `enum` and `required` keep the strict reader, pinned by
+a mutation in both directions.
+
+Also fixed the round-19 Low: the malformed-metadata regression now covers the
+root `requestedSchema.description` as well as `title`.
+
+| Mutation | Caught by |
+|---|---|
+| per-item salvage removed | item-salvage regression |
+| per-item salvage introduced into `enum` | enum-strictness regression |
+
+## Final totals after round 20
+
+| Suite | Tests |
+|---|---|
+| `elicitation-schema.test.ts` | 147 |
+
+Total new: **232**. M1 unit suites 367/367 green; real-acpx E2E 25/26
+(pre-existing `PR9-A`); `npx tsc --noEmit` 0 errors.
+
+### Cumulative mutation-verification table (round 20 addition)
+
+| Round | Mutation | Caught by |
+|---|---|---|
+| R19 | metadata salvage removed | metadata-salvage regression |
+| R19 | `pattern` wrongly salvaged | pattern-strictness regression |
+| R20 | multi-select per-item salvage removed | item-salvage regression |
+| R20 | per-item salvage introduced into `enum` | enum-strictness regression |
+
+### Corrections to earlier claims in this report
+
+- **Round 19's "full SDK salvage audit / nothing left" was inaccurate.** It
+  audited which MEMBERS salvage but not how, so it missed that the array
+  variant's salvage is per-element. Corrected by this round. The audit method
+  is now: for every salvaged member, also record the salvage GRANULARITY
+  (whole value vs per item) before claiming coverage.
