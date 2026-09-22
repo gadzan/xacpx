@@ -79,7 +79,7 @@ const fileExt = computed(() => {
 
 // Path titles ellipsis at the head (…tail) so the filename stays visible in
 // the one-line preview; the full path remains in the tooltip and the detail.
-const pathTitle = computed(() => isPathTitle(props.step.kind, props.step.title));
+const pathTitle = computed(() => isPathTitle(props.step));
 // The text the detail body already prints below (so we don't repeat it in the banner).
 const detailOutput = computed(() => {
   const d = props.step.detail;

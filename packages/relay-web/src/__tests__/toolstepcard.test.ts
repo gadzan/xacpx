@@ -147,6 +147,33 @@ describe("ToolStepCard error banner de-duplication", () => {
     expect(cmd.find('[data-test="tool-step-header"] span.min-w-0').attributes("dir")).toBeUndefined();
   });
 
+  it("head-truncates spaced file paths on POSIX and Windows", () => {
+    // Real paths may contain spaces; whitespace must not disqualify them —
+    // otherwise the filename is truncated away again.
+    const posix = card({
+      kind: "read",
+      status: "success",
+      title: "/Users/me/My Project/src/ToolStepCard.vue",
+      detail: { type: "read", path: "/Users/me/My Project/src/ToolStepCard.vue", preview: "body" },
+    });
+    expect(posix.find('[data-test="tool-step-header"] span.min-w-0').attributes("dir")).toBe("rtl");
+    const win = card({
+      kind: "edit",
+      status: "success",
+      title: "C:\\Work Files\\src\\foo.ts",
+      detail: { type: "diff", path: "C:\\Work Files\\src\\foo.ts", oldText: "a", newText: "b" },
+    });
+    expect(win.find('[data-test="tool-step-header"] span.min-w-0').attributes("dir")).toBe("rtl");
+    // A search query mentioning a spaced path is still prose: tail ellipsis.
+    const query = card({
+      kind: "search",
+      status: "success",
+      title: "session in /Users/me/My Project",
+      detail: { type: "search", query: "session in /Users/me/My Project", output: "a" },
+    });
+    expect(query.find('[data-test="tool-step-header"] span.min-w-0').attributes("dir")).toBeUndefined();
+  });
+
   it("wraps a header-only long title without an expandable drawer", () => {
     // Title-only steps (detail omitted upstream) are non-interactive divs:
     // open can never flip, so the title must not stay truncated.

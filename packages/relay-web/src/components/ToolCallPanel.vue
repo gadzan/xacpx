@@ -108,7 +108,7 @@ function rowElapsed(s: ToolStepDto): string {
       <li v-for="s in steps" :key="s.toolCallId">
         <button type="button" data-test="tool-row" class="flex w-full items-center gap-1.5 py-0.5 text-left text-[11.5px] text-fg-muted hover:text-fg transition-colors" @click="toggleRow(s.toolCallId)">
           <component :is="KIND_ICON[s.kind]" :size="12" class="shrink-0 text-fg-muted" />
-          <span class="min-w-0 flex-1 font-mono text-[11px] break-all truncate" :title="s.title" :dir="isPathTitle(s.kind, s.title) ? 'rtl' : undefined">{{ s.title }}</span>
+          <span class="min-w-0 flex-1 font-mono text-[11px] break-all truncate" :title="s.title" :dir="isPathTitle(s) ? 'rtl' : undefined">{{ s.title }}</span>
           <span v-if="diffStatsById.get(s.toolCallId)" data-test="tool-row-diff-stats" class="flex shrink-0 items-center gap-1 font-mono text-[10px]">
             <span v-if="diffStatsById.get(s.toolCallId)!.add" class="text-run font-medium">+{{ diffStatsById.get(s.toolCallId)!.add }}</span>
             <span v-if="diffStatsById.get(s.toolCallId)!.del" class="text-danger font-medium">−{{ diffStatsById.get(s.toolCallId)!.del }}</span>
