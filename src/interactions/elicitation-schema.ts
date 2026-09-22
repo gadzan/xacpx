@@ -233,13 +233,16 @@ function normalizeField(
       if (format !== undefined && format !== null && format !== "email" && format !== "uri" && format !== "date" && format !== "date-time") {
         return { ok: false, detail: `field "${boundedKeyLabel(key)}" has an unsupported format` };
       }
-      const defaultValue = property.default;
-      if (defaultValue !== undefined && defaultValue !== null && typeof defaultValue !== "string") {
-        return { ok: false, detail: `field "${boundedKeyLabel(key)}" default is not a string` };
-      }
-      if (typeof defaultValue === "string" && defaultValue.length > ELICITATION_SCHEMA_LIMITS.maxDefaultValueLength) {
-        return { ok: false, detail: `field "${boundedKeyLabel(key)}" default exceeds ${ELICITATION_SCHEMA_LIMITS.maxDefaultValueLength} chars` };
-      }
+      // `default` is an ANNOTATION (JSON Schema vocabulary + ACP pre-fill
+      // hint), not a validity constraint. A value that cannot be safely
+      // pre-filled is dropped, never turned into `malformed_schema`: the form
+      // still renders, the human answers for real, and that answer is
+      // validated against `enum`/`pattern`/`minLength` etc. exactly as before.
+      const defaultRaw = property.default;
+      const defaultValue = typeof defaultRaw === "string"
+        && defaultRaw.length <= ELICITATION_SCHEMA_LIMITS.maxDefaultValueLength
+        ? defaultRaw
+        : undefined;
 
       const enumValues = readOptionalStringArray(property, "enum", ELICITATION_SCHEMA_LIMITS.maxOptionsPerField);
       if (!enumValues.ok) return { ok: false, detail: `field "${boundedKeyLabel(key)}" has an invalid enum` };
@@ -256,10 +259,14 @@ function normalizeField(
         if (hasDuplicateOptions(options)) {
           return { ok: false, detail: `field "${boundedKeyLabel(key)}" has ambiguous option values` };
         }
-        if (defaultValue !== undefined && defaultValue !== null
-          && !options.some((option) => option.value === defaultValue)) {
-          return { ok: false, detail: `field "${boundedKeyLabel(key)}" default is not an offered option` };
-        }
+        // `default` is an annotation, not a constraint. A default naming an
+        // option the form does not offer cannot be pre-filled safely, so it is
+        // dropped rather than rejecting the whole form.
+        const safeDefault = typeof defaultValue === "string"
+          && defaultValue.length <= ELICITATION_SCHEMA_LIMITS.maxDefaultValueLength
+          && options.some((option) => option.value === defaultValue)
+          ? defaultValue
+          : undefined;
         return {
           ok: true,
           field: {
@@ -267,7 +274,7 @@ function normalizeField(
             kind: "single-select",
             required: false,
             options,
-            ...(typeof defaultValue === "string" ? { defaultValue } : {}),
+            ...(safeDefault !== undefined ? { defaultValue: safeDefault } : {}),
             // Carry the agent's own string constraints through instead of
             // silently dropping them: an enum does not imply the value is
             // unconstrained, and core must not accept an answer the agent's
@@ -303,14 +310,6 @@ function normalizeField(
     case "number":
     case "integer": {
       const isInteger = rawType === "integer";
-      const defaultValue = property.default;
-      if (defaultValue !== undefined
-        && defaultValue !== null
-        && (typeof defaultValue !== "number"
-          || !Number.isFinite(defaultValue)
-          || (isInteger && !Number.isInteger(defaultValue)))) {
-        return { ok: false, detail: `field "${boundedKeyLabel(key)}" default is not a valid ${rawType}` };
-      }
       const minimum = readOptionalNumber(property, "minimum");
       if (!minimum.ok) return { ok: false, detail: `field "${boundedKeyLabel(key)}" has an invalid minimum` };
       const maximum = readOptionalNumber(property, "maximum");
@@ -320,11 +319,17 @@ function normalizeField(
         && minimum.value > maximum.value) {
         return { ok: false, detail: `field "${boundedKeyLabel(key)}" has minimum > maximum` };
       }
-      if (typeof defaultValue === "number"
-        && ((minimum.value !== undefined && defaultValue < minimum.value)
-          || (maximum.value !== undefined && defaultValue > maximum.value))) {
-        return { ok: false, detail: `field "${boundedKeyLabel(key)}" default is out of range` };
-      }
+      // `default` is an annotation: a value that is not a finite number of the
+      // field's type, or that falls outside the field's own range, cannot be
+      // pre-filled safely and is dropped instead of rejecting the form.
+      const defaultRaw = property.default;
+      const defaultValue = typeof defaultRaw === "number"
+        && Number.isFinite(defaultRaw)
+        && (!isInteger || Number.isInteger(defaultRaw))
+        && !((minimum.value !== undefined && defaultRaw < minimum.value)
+          || (maximum.value !== undefined && defaultRaw > maximum.value))
+        ? defaultRaw
+        : undefined;
       return {
         ok: true,
         field: {
@@ -334,20 +339,20 @@ function normalizeField(
           integer: isInteger,
           ...(minimum.value !== undefined ? { minimum: minimum.value } : {}),
           ...(maximum.value !== undefined ? { maximum: maximum.value } : {}),
-          ...(typeof defaultValue === "number" ? { defaultValue } : {}),
+          ...(defaultValue !== undefined ? { defaultValue } : {}),
         },
       };
     }
     case "boolean": {
+      // `default` is an annotation: a non-boolean value is simply dropped.
       const defaultValue = readOptionalBoolean(property, "default");
-      if (!defaultValue.ok) return { ok: false, detail: `field "${boundedKeyLabel(key)}" default is not a boolean` };
       return {
         ok: true,
         field: {
           ...common,
           kind: "boolean",
           required: false,
-          ...(defaultValue.value !== undefined ? { defaultValue: defaultValue.value } : {}),
+          ...(defaultValue.ok && defaultValue.value !== undefined ? { defaultValue: defaultValue.value } : {}),
         },
       };
     }
@@ -413,20 +418,20 @@ function normalizeField(
       if (hasDuplicateOptions(options)) {
         return { ok: false, detail: `field "${boundedKeyLabel(key)}" has ambiguous option values` };
       }
-      const defaultValue = readOptionalStringArray(
+      // `default` is an annotation. A default array that repeats values, or
+      // names an option the form does not offer, cannot be pre-filled safely:
+      // it is filtered down to the legal offered subset, or dropped when
+      // nothing legal remains.
+      const defaultRaw = readOptionalStringArray(
         property,
         "default",
         ELICITATION_SCHEMA_LIMITS.maxOptionsPerField,
       );
-      if (!defaultValue.ok) return { ok: false, detail: `field "${boundedKeyLabel(key)}" has an invalid default` };
-      if (defaultValue.value !== undefined) {
-        if (hasDuplicateValues(defaultValue.value)) {
-          return { ok: false, detail: `field "${boundedKeyLabel(key)}" default repeats values` };
-        }
-        if (!defaultValue.value.every((value) => options.some((option) => option.value === value))) {
-          return { ok: false, detail: `field "${boundedKeyLabel(key)}" default is not an offered option` };
-        }
-      }
+      const defaultValues = defaultRaw.ok && defaultRaw.value !== undefined
+        ? defaultRaw.value.filter((value, index, all) =>
+            all.indexOf(value) === index
+            && options.some((option) => option.value === value))
+        : undefined;
       return {
         ok: true,
         field: {
@@ -436,7 +441,7 @@ function normalizeField(
           options,
           ...(minItems.value !== undefined ? { minItems: minItems.value } : {}),
           ...(maxItems.value !== undefined ? { maxItems: maxItems.value } : {}),
-          ...(defaultValue.value !== undefined ? { defaultValue: defaultValue.value } : {}),
+          ...(defaultValues !== undefined && defaultValues.length > 0 ? { defaultValue: defaultValues } : {}),
         },
       };
     }
@@ -746,11 +751,47 @@ function toUtcLeapInstant(
   // UTC leap minute (23:59) for it to be a leap second.
   const utcMinuteOfDay = hours * 60 + minutes - offsetMinutes;
   const normalized = ((utcMinuteOfDay % (24 * 60)) + 24 * 60) % (24 * 60);
-  const dayShift = Math.floor(utcMinuteOfDay / (24 * 60));
   if (normalized !== 23 * 60 + 59) return undefined;
+  const dayShift = Math.floor(utcMinuteOfDay / (24 * 60));
 
-  const shifted = new Date(Date.UTC(y, m - 1, d + dayShift));
-  return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, "0")}-${String(shifted.getUTCDate()).padStart(2, "0")}`;
+  // Shift the calendar date by `dayShift` days using pure arithmetic.
+  //
+  // MUST NOT use `Date.UTC(y, m - 1, d + dayShift)`: for two-digit years
+  // 0..99 that constructor applies the legacy 1900+ mapping, so year `72`
+  // becomes 1972. A zero-padded RFC3339 date like `0072-06-30T23:59:60Z` then
+  // lands on the real 1972-06-30 leap date and is wrongly accepted. Leap dates
+  // only exist from 1972 onward, so a year below that is rejected outright.
+  if (y < 1972) return undefined;
+
+  // Days since a fixed epoch in the proleptic Gregorian calendar.
+  const ordinal = daysFromCivil(y, m, d);
+  const shifted = civilFromDays(ordinal + dayShift);
+  return `${String(shifted[0]).padStart(4, "0")}-${String(shifted[1]).padStart(2, "0")}-${String(shifted[2]).padStart(2, "0")}`;
+}
+
+/** Proleptic Gregorian day number for a civil date (Howard Hinnant's algorithm). */
+function daysFromCivil(y: number, m: number, d: number): number {
+  const yy = m <= 2 ? y - 1 : y;
+  const era = Math.floor(yy / 400);
+  const yoe = yy - era * 400; // [0, 399]
+  const doy = Math.floor((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5) + d - 1; // [0, 365]
+  const doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy; // [0, 146096]
+  return era * 146097 + doe - 719468;
+}
+
+/** Inverse of `daysFromCivil`; returns `[year, month, day]`. */
+function civilFromDays(z: number): [number, number, number] {
+  const shifted = z + 719468;
+  const era = Math.floor(shifted / 146097);
+  const doe = shifted - era * 146097; // [0, 146096]
+  const yoe = Math.floor((doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365); // [0, 399]
+  const yy = yoe + era * 400;
+  const doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100)); // [0, 365]
+  const mp = Math.floor((5 * doy + 2) / 153); // [0, 11]
+  const dd = doy - Math.floor((153 * mp + 2) / 5) + 1; // [1, 31]
+  const mm = mp + (mp < 10 ? 3 : -9); // [1, 12]
+  const year = yy + (mm <= 2 ? 1 : 0);
+  return [year, mm, dd];
 }
 
 function isEmail(value: string): boolean {

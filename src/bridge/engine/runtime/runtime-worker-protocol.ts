@@ -15,6 +15,7 @@ export type RuntimeWorkerRequestMethod =
   | "permission.update"
   | "permission.decision"
   | "elicitation.decision"
+  | "elicitation.cancel"
   | "shutdown";
 export interface RuntimeWorkerRequest {
   id: string;
@@ -183,10 +184,37 @@ export interface RuntimeWorkerElicitationDecisionParams {
   decision: RuntimeElicitationDecision;
 }
 
+/**
+ * Request-scoped cancellation of ONE pending elicitation.
+ *
+ * Distinct from `cancel` (whole turn) and from turn disposal: the agent
+ * withdrew this single `elicitation/create` while its prompt turn continues.
+ * The worker must abort the handler's own signal so the daemon/bridge/broker
+ * chain unwinds immediately instead of waiting out the 120s deadline.
+ */
+export interface RuntimeWorkerElicitationCancelParams {
+  /** Owning Runtime prompt request, verified against the pending entry. */
+  promptRequestId: string;
+  elicitationRequestId: string;
+}
+
 export type RuntimeWorkerEvent = {
   id: string;
-  event: "text_delta" | "thought" | "tool" | "plan" | "usage" | "commands" | "permission.request" | "elicitation.request";
-  payload: XacpxRuntimeEvent | RuntimeWorkerPermissionRequestPayload | RuntimeWorkerElicitationRequestPayload | unknown;
+  event:
+    | "text_delta"
+    | "thought"
+    | "tool"
+    | "plan"
+    | "usage"
+    | "commands"
+    | "permission.request"
+    | "elicitation.request"
+    | "elicitation.cancel";
+  payload: XacpxRuntimeEvent
+    | RuntimeWorkerPermissionRequestPayload
+    | RuntimeWorkerElicitationRequestPayload
+    | RuntimeWorkerElicitationCancelParams
+    | unknown;
 };
 export interface RuntimeWorkerSuccess<T = unknown> {
   id: string;

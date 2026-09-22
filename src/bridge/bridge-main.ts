@@ -216,12 +216,15 @@ export async function runBridgeMain(): Promise<void> {
             return { outcome: "reject_once" };
           }
         },
-        onElicitationRequest: async (payload) => {
+        onElicitationRequest: async (payload, signal?: AbortSignal) => {
+          // Request-scoped cancellation end-to-end: the worker tells us the
+          // agent withdrew this elicitation/create, we carry the abort into
+          // `requestDaemon`, which sends the bridge `cancelRpcId` frame, which
+          // makes the daemon drop its pending bridge RPC. The broker then sees
+          // its own cancel and unwinds instead of sitting out the 120s
+          // deadline with the renderer still live.
           try {
-            // RPC watchdog mirrors the daemon broker's 120s business
-            // deadline: only a wedged daemon can trip it, and then the turn
-            // fails closed with cancel.
-            const decision = await server.requestDaemon<{ action?: unknown }, "resolveElicitationRequest">("resolveElicitationRequest", payload as unknown as import("../transport/acpx-bridge/acpx-bridge-protocol").ResolveElicitationRequestParams, { timeoutMs: 125_000 });
+            const decision = await server.requestDaemon<{ action?: unknown }, "resolveElicitationRequest">("resolveElicitationRequest", payload as unknown as import("../transport/acpx-bridge/acpx-bridge-protocol").ResolveElicitationRequestParams, { timeoutMs: 125_000, ...(signal ? { signal } : {}) });
             if (
               decision
               && typeof decision === "object"

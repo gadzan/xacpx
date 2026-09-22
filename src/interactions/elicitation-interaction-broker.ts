@@ -182,7 +182,10 @@ export class ElicitationInteractionBroker {
    * Every failure path maps to `cancel`; only an explicit platform-
    * authenticated refusal maps to `decline`.
    */
-  async resolveElicitation(input: RuntimeElicitationRequest): Promise<ElicitationResult> {
+  async resolveElicitation(
+    input: RuntimeElicitationRequest,
+    abortSignal?: AbortSignal,
+  ): Promise<ElicitationResult> {
     const requestId = input.elicitationRequestId;
     if (!requestId || this.shutDown) {
       await this.log("elicitation.interaction.rejected_unavailable", "broker unavailable", { requestId, fieldCount: 0, fieldKinds: "" });
@@ -284,6 +287,25 @@ export class ElicitationInteractionBroker {
     }
 
     const controller = new AbortController();
+    // Request-scoped external cancellation: the agent withdrew this single
+    // elicitation/create. The upstream caller (daemon bridge RPC) aborts its
+    // `context.signal`, which must abort THIS request's controller — not the
+    // turn's — so the renderer stops and other pending elicitations on the
+    // same turn keep running.
+    let unsubscribeExternalSignal: (() => void) | undefined;
+    if (abortSignal) {
+      if (abortSignal.aborted) {
+        controller.abort(abortSignal.reason);
+      } else {
+        const onAbort = (): void => {
+          try {
+            controller.abort(abortSignal.reason);
+          } catch {}
+        };
+        abortSignal.addEventListener("abort", onAbort, { once: true });
+        unsubscribeExternalSignal = () => abortSignal.removeEventListener("abort", onAbort);
+      }
+    }
     const startedAt = Date.now();
     const expiresAt = startedAt + this.timeoutMs;
     const pending: PendingElicitation = {
@@ -351,6 +373,10 @@ export class ElicitationInteractionBroker {
       || routeGone()
       || this.shutDown) {
       unsubscribeTurnAbort();
+      // Aborting the external signal unwinds the upstream bridge RPC through
+      // its own abort path; the listener is released here so an agent that
+      // cancels before dispatch does not leave a dangling subscription.
+      unsubscribeExternalSignal?.();
       return this.settleStale(requestId, fields, startedAt);
     }
 
@@ -476,6 +502,10 @@ export class ElicitationInteractionBroker {
         clearTimeout(pending.timer);
         pending.timer = undefined;
       }
+      // The request-scoped listener MUST be released like the turn listener,
+      // otherwise a long-lived session accumulates one listener per settled
+      // elicitation on the upstream bridge signal.
+      unsubscribeExternalSignal?.();
     }
   }
 
@@ -497,6 +527,38 @@ export class ElicitationInteractionBroker {
         ...this.describe(pending.form.fields),
       });
     }
+  }
+
+  /**
+   * Cancel ONE pending elicitation by request id.
+   *
+   * This is request-scoped cancellation, distinct from turn disposal: an agent
+   * can withdraw a single `elicitation/create` with `$/cancel_request` while
+   * its prompt turn keeps running. Without this the renderer keeps collecting
+   * input until the 120s deadline even though nobody will read the answer.
+   *
+   * Idempotent and safe for unknown ids: a cancel racing an already-settled
+   * request is a no-op, and a cancel for a request this broker never saw (or
+   * one whose pending entry was already dropped) simply returns false.
+   */
+  cancelElicitationRequest(requestId: string, options?: { reason?: string }): boolean {
+    const pending = this.pending.get(requestId);
+    if (!pending || pending.settled) return false;
+    pending.settled = true;
+    try {
+      pending.controller.abort(options?.reason);
+    } catch {}
+    if (pending.timer !== undefined) {
+      clearTimeout(pending.timer);
+      pending.timer = undefined;
+    }
+    // Metadata only — no titles, no answers.
+    void this.log("elicitation.interaction.aborted", "elicitation aborted by agent request", {
+      requestId,
+      reason: options?.reason ?? "agent_cancel_request",
+      ...this.describe(pending.form.fields),
+    });
+    return true;
   }
 
   shutdown(): void {

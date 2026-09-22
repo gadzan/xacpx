@@ -33,6 +33,7 @@ import {
   type RuntimeWorkerElicitationRequestPayload,
   type RuntimeWorkerPermissionDecisionParams,
   type RuntimeWorkerElicitationDecisionParams,
+  type RuntimeWorkerElicitationCancelParams,
   type RuntimeElicitationDecision,
   type RuntimeWorkerPromptResult,
 } from "./runtime-worker-protocol";
@@ -59,7 +60,7 @@ interface WorkerState {
   permissionSnapshot?: RuntimePermissionConfig;
   permissionGeneration: number;
   pendingPermissions: Map<string, { resolve: (d: { outcome: string }) => void; reject: (e: Error) => void; generation: number; workerGeneration: string }>;
-  pendingElicitations: Map<string, { resolve: (d: RuntimeElicitationDecision) => void; reject: (e: Error) => void; promptRequestId: string; workerGeneration: string }>;
+  pendingElicitations: Map<string, { resolve: (d: RuntimeElicitationDecision) => void; reject: (e: Error) => void; promptRequestId: string; workerGeneration: string; abort: AbortController }>;
   workerGeneration: string;
   activeInteractionId?: string;
   /**
@@ -422,20 +423,37 @@ async function runPrompt(requestId: string, params: RuntimeWorkerPromptParams): 
     };
     const { promise: pending, reject: rejectElicitation, resolve: resolveElicitation } =
       Promise.withResolvers<RuntimeElicitationDecision>();
+    // Request-scoped cancellation: the upstream signal aborts when the
+    // elicitation/create itself, its prompt turn, or the session goes away.
+    // This second controller exists because the cancel FRAME must also reach
+    // the daemon/bridge/broker chain — aborting only the local signal would
+    // let the renderer keep collecting input until the 120s deadline while
+    // the agent had already withdrawn the request.
+    const requestCancel = new AbortController();
+    const handlerSignal = AbortSignal.any([context.signal, requestCancel.signal]);
     state.pendingElicitations.set(elicitationRequestId, {
       resolve: resolveElicitation,
       reject: rejectElicitation,
       promptRequestId: requestId,
       workerGeneration: state.workerGeneration,
+      abort: requestCancel,
     });
     // Listener lifecycle lives in a testable helper so the release path can be
     // verified directly instead of inferred from a passing E2E. Registered
     // here, released unconditionally in the `finally` below — the success path
     // must release it too, otherwise a long turn with several elicitations
     // accumulates listeners on the merged signal.
-    const abort = bindElicitationAbort(context.signal, () => {
+    const abort = bindElicitationAbort(handlerSignal, () => {
       state.pendingElicitations.delete(elicitationRequestId);
       rejectElicitation(new Error("elicitation cancelled"));
+      // Tell the host to abort its outbound daemon/broker call. Without this
+      // the renderer keeps collecting input until the 120s deadline even
+      // though nobody will read the answer.
+      process.stdout.write(encodeWorkerMessage({
+        id: elicitationRequestId,
+        event: "elicitation.cancel",
+        payload: { promptRequestId: requestId, elicitationRequestId },
+      } satisfies RuntimeWorkerEvent));
     });
     process.stdout.write(encodeWorkerMessage({ id: elicitationRequestId, event: "elicitation.request", payload } satisfies RuntimeWorkerEvent));
     // Watchdog handle kept so the SUCCESS path can clear it. Without this a
@@ -677,6 +695,39 @@ async function dispatch(request: RuntimeWorkerRequest): Promise<void> {
         }
         state.pendingElicitations.delete(p.elicitationRequestId);
         respond({ id, ok: true, result: {} });
+        break;
+      }
+      case "elicitation.cancel": {
+        // Request-scoped cancellation. The agent withdrew this single
+        // elicitation/create (ACP `$/cancel_request`) while the prompt turn
+        // continues. Aborting only the local pending promise is NOT enough:
+        // the renderer is sitting in the daemon broker with a live 120s
+        // deadline, so the abort has to propagate outbound — through
+        // RuntimeEngine -> bridge -> daemon -> broker -> channel — which the
+        // decision path already does when it settles cancel.
+        const p = (request.params ?? {}) as RuntimeWorkerElicitationCancelParams;
+        const entry = state.pendingElicitations.get(p.elicitationRequestId);
+        if (!entry) {
+          // Unknown id: already settled, or never dispatched. Benign; the
+          // caller treats a miss as "nothing left to cancel".
+          respond({ id, ok: true, result: { cancelled: false } });
+          break;
+        }
+        const samePrompt = p.promptRequestId === entry.promptRequestId;
+        const sameGeneration = entry.workerGeneration === state.workerGeneration;
+        if (!samePrompt || !sameGeneration) {
+          // Fenced exactly like a decision: cross-talk or a recycled worker
+          // must never abort a live request it does not own.
+          state.pendingElicitations.delete(p.elicitationRequestId);
+          respond({ id, ok: true, result: { cancelled: false, stale: true } });
+          break;
+        }
+        state.pendingElicitations.delete(p.elicitationRequestId);
+        // Aborting the controller is what emits the `elicitation.cancel`
+        // event: the handler-signal listener in `onElicitation` owns that
+        // write, so there is exactly one place that tells the host.
+        entry.abort.abort(new Error("elicitation cancelled by agent request"));
+        respond({ id, ok: true, result: { cancelled: true } });
         break;
       }
       default:

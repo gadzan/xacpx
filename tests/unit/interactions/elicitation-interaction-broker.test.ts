@@ -478,6 +478,101 @@ describe("ElicitationInteractionBroker deadlines and races", () => {
     dispose();
   });
 
+  test("request-scoped cancellation stops the renderer without ending the turn", async () => {
+    // Regression: the abort path was turn-disposal only. An agent withdrawing a
+    // single `elicitation/create` (ACP `$/cancel_request`) left the renderer
+    // collecting input until the 120s deadline, because nothing propagated the
+    // cancellation out of the worker into the broker.
+    const seen: ChannelElicitationRequest[] = [];
+    const firstReceived = Promise.withResolvers<ChannelElicitationRequest>();
+    const firstPending = pendingDecision();
+    let calls = 0;
+    const channel = formChannel((request) => {
+      seen.push(request);
+      calls += 1;
+      // First request never settles (models a live renderer); the next request
+      // on the same turn settles at once, proving the route survived.
+      if (calls === 1) {
+        firstReceived.resolve(request);
+        return firstPending.promise;
+      }
+      return Promise.resolve({ action: "accept", responderId: "user-A", content: { note: SENTINEL_ANSWER } });
+    }, seen);
+    const { broker } = harness({ channel, timeoutMs: 60_000 });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    const inflight = request({ interactionId: route.interactionId });
+    const result = broker.resolveElicitation(inflight);
+    await firstReceived.promise;
+
+    // Cancel by request id ONLY. The turn route must stay bound: the agent's
+    // prompt continues and could legitimately ask another question on the
+    // same turn.
+    expect(broker.cancelElicitationRequest(inflight.elicitationRequestId, { reason: "agent_cancel_request" })).toBe(true);
+    expect(await result).toEqual({ action: "cancel" });
+    expect(seen[0].signal.aborted).toBe(true);
+
+    // Turn route still live: a later elicitation on the SAME turn is served
+    // instead of failing closed, which is what proves this was request-scoped
+    // cancellation and not turn disposal.
+    const second = await broker.resolveElicitation(request({ interactionId: route.interactionId }));
+    expect(second).toEqual({ action: "accept", content: { note: SENTINEL_ANSWER } });
+    dispose();
+  });
+
+  test("request-scoped cancellation is idempotent and fails closed for unknown ids", () => {
+    const { broker } = harness();
+    // Unknown id: nothing to cancel, no throw. A cancel for a request this
+    // broker never saw must not fabricate a cancellation.
+    expect(broker.cancelElicitationRequest("does-not-exist")).toBe(false);
+    expect(broker.pendingCount).toBe(0);
+  });
+
+  test("a late answer after request-scoped cancellation is ignored", async () => {
+    // Same first-terminal-wins discipline as the timeout/turn paths: the
+    // channel resolving afterwards must not change the terminal action.
+    const seen: ChannelElicitationRequest[] = [];
+    const received = Promise.withResolvers<ChannelElicitationRequest>();
+    const pending = pendingDecision();
+    const channel = formChannel((request) => {
+      seen.push(request);
+      received.resolve(request);
+      return pending.promise;
+    }, seen);
+    const { broker } = harness({ channel, timeoutMs: 60_000 });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    const inflight = request({ interactionId: route.interactionId });
+    const result = broker.resolveElicitation(inflight);
+    await received.promise;
+    broker.cancelElicitationRequest(inflight.elicitationRequestId);
+    expect(await result).toEqual({ action: "cancel" });
+    pending.settle({ action: "accept", responderId: "user-A", content: { note: SENTINEL_ANSWER } });
+    await Promise.resolve();
+    expect(broker.pendingCount).toBe(0);
+    dispose();
+  });
+
+  test("an already-aborted external signal cancels before any UI is shown", async () => {
+    // The upstream caller (daemon bridge RPC) may already be aborted by the
+    // time the broker runs. Rejecting here must not leave a dispatched UI.
+    const controller = new AbortController();
+    controller.abort();
+    const seen: ChannelElicitationRequest[] = [];
+    const channel = formChannel(async () => ({ action: "accept", responderId: "user-A", content: { note: "x" } }), seen);
+    const { broker } = harness({ channel, timeoutMs: 60_000 });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    const result = await broker.resolveElicitation(
+      request({ interactionId: route.interactionId }),
+      controller.signal,
+    );
+    expect(result).toEqual({ action: "cancel" });
+    // No renderer was ever invoked for a request cancelled before dispatch.
+    expect(seen.length).toBe(0);
+    dispose();
+  });
+
   test("turn disposal (prompt settled) cancels the pending request", async () => {
     const seen: ChannelElicitationRequest[] = [];
     const received = Promise.withResolvers<ChannelElicitationRequest>();

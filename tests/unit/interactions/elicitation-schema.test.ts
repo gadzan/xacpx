@@ -414,25 +414,88 @@ describe("normalizeAcpElicitationForm rejections", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("default that is not an offered option is rejected", () => {
+  test("a default that is not an offered option is dropped, not rejected", () => {
+    // Per JSON Schema vocabulary and ACP's pre-fill semantics, `default` is an
+    // ANNOTATION. A value naming an option the form does not offer cannot be
+    // pre-filled safely, so it is dropped and the form still renders — the
+    // human's answer is what gets validated, not the agent's hint.
     const result = normalizeAcpElicitationForm(formRequest({
-      requestedSchema: { type: "object", properties: { a: { type: "string", enum: ["x"], default: "y" } } },
+      requestedSchema: { type: "object", properties: { a: { type: "string", oneOf: [{ const: "x", title: "X" }], default: "y" } } },
     }));
-    expect(result.ok).toBe(false);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.form.fields[0]).toMatchObject({ kind: "single-select" });
+    expect("defaultValue" in (result.form.fields[0] as object)).toBe(false);
   });
 
-  test("out-of-range numeric default is rejected", () => {
+  test("an out-of-range numeric default is dropped, not rejected", () => {
     const result = normalizeAcpElicitationForm(formRequest({
       requestedSchema: { type: "object", properties: { a: { type: "integer", minimum: 1, default: 0 } } },
     }));
-    expect(result.ok).toBe(false);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The bound itself stays — only the unusable pre-fill hint is gone.
+    expect(result.form.fields[0]).toMatchObject({ kind: "number", minimum: 1 });
+    expect("defaultValue" in (result.form.fields[0] as object)).toBe(false);
   });
 
-  test("non-string default for a text field is rejected", () => {
+  test("a non-string default for a text field is dropped, not rejected", () => {
     const result = normalizeAcpElicitationForm(formRequest({
       requestedSchema: { type: "object", properties: { a: { type: "string", default: 7 } } },
     }));
-    expect(result.ok).toBe(false);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect("defaultValue" in (result.form.fields[0] as object)).toBe(false);
+  });
+
+  test("a legal default is still carried through", () => {
+    // Dropping must not become dropping-everything: a usable pre-fill hint is
+    // what a renderer needs to pre-populate the control.
+    const text = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { type: "object", properties: { a: { type: "string", default: "seed" } } },
+    }));
+    expect(text.ok).toBe(true);
+    if (text.ok) expect(text.form.fields[0]).toMatchObject({ defaultValue: "seed" });
+
+    const number = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { type: "object", properties: { a: { type: "integer", minimum: 1, maximum: 5, default: 3 } } },
+    }));
+    expect(number.ok).toBe(true);
+    if (number.ok) expect(number.form.fields[0]).toMatchObject({ defaultValue: 3 });
+
+    const flag = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { type: "object", properties: { a: { type: "boolean", default: true } } },
+    }));
+    expect(flag.ok).toBe(true);
+    if (flag.ok) expect(flag.form.fields[0]).toMatchObject({ defaultValue: true });
+
+    const multi = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: {
+          a: { type: "array", items: { type: "string", enum: ["x", "y", "z"] }, default: ["x", "y"] },
+        },
+      },
+    }));
+    expect(multi.ok).toBe(true);
+    if (multi.ok) expect(multi.form.fields[0]).toMatchObject({ defaultValue: ["x", "y"] });
+  });
+
+  test("a multi-select default keeps only its legal, deduplicated subset", () => {
+    // Duplicates and non-offered entries in the pre-fill hint both prevent
+    // safe pre-filling, so they are filtered out rather than rejecting the
+    // whole form.
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: {
+          a: { type: "array", items: { type: "string", enum: ["x", "y"] }, default: ["x", "x", "nope"] },
+        },
+      },
+    }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.form.fields[0]).toMatchObject({ defaultValue: ["x"] });
   });
 
   test("minLength greater than maxLength is rejected", () => {
@@ -507,15 +570,19 @@ describe("normalizeAcpElicitationForm string resource bounds", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("oversized text default is rejected", () => {
+  test("an oversized text default is dropped, not rejected", () => {
+    // Annotations must not be able to fail a form: a pre-fill hint longer than
+    // the size limit simply cannot be pre-filled, so it is discarded and the
+    // field renders empty. The FORM, not the hint, is what must validate.
     const result = normalizeAcpElicitationForm(formRequest({
       requestedSchema: {
         type: "object",
         properties: { a: { type: "string", default: "d".repeat(ELICITATION_SCHEMA_LIMITS.maxDefaultValueLength + 1) } },
       },
     }));
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toContain("default exceeds");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect("defaultValue" in (result.form.fields[0] as object)).toBe(false);
   });
 
   test("oversized multi-select default item is rejected", () => {
@@ -1556,6 +1623,36 @@ describe("validateElicitationAnswer calendar and RFC3339 strictness", () => {
     // keeps working.
     expect(validateElicitationAnswer([dateTime], { when: "1990-12-31T15:59:60-08:00" }).ok).toBe(true);
     expect(validateElicitationAnswer([dateTime], { when: "1991-01-01T07:59:60+08:00" }).ok).toBe(true);
+  });
+
+  test("a two-digit year cannot borrow a real leap date", () => {
+    // Regression: `toUtcLeapInstant` used `Date.UTC(y, m-1, d)`, and that
+    // constructor maps years 0..99 to 1900+. So `0072-06-30T23:59:60Z` was
+    // evaluated as 1972-06-30 — a real leap date — and passed. No leap second
+    // exists below 1972, and a zero-padded year must be read literally.
+    expect(validateElicitationAnswer([dateTime], { when: "0072-06-30T23:59:60Z" }).ok).toBe(false);
+    expect(validateElicitationAnswer([dateTime], { when: "0072-12-31T23:59:60Z" }).ok).toBe(false);
+    // Year 1971 is a real calendar year one step before the first leap second.
+    expect(validateElicitationAnswer([dateTime], { when: "1971-12-31T23:59:60Z" }).ok).toBe(false);
+    // ...and the real 1972 leap date still validates, proving the guard did not
+    // simply reject everything old.
+    expect(validateElicitationAnswer([dateTime], { when: "1972-06-30T23:59:60Z" }).ok).toBe(true);
+  });
+
+  test("a two-digit year cannot borrow a leap date through an offset", () => {
+    // Same trap via the offset path: the local wall clock of year 0072 shifts
+    // onto 1971-12-31/1972-01-01 UTC. Both are non-leap instants for year 72,
+    // but the legacy mapping made the shifted date 1972's.
+    expect(validateElicitationAnswer([dateTime], { when: "0073-01-01T07:59:60+08:00" }).ok).toBe(false);
+    expect(validateElicitationAnswer([dateTime], { when: "0072-12-31T15:59:60-08:00" }).ok).toBe(false);
+  });
+
+  test("a leap second still resolves when the offset crosses a month boundary", () => {
+    // Guards the pure-arithmetic date shift: 1990-12-31 15:59:60 -08:00 is
+    // 1990-12-31 23:59:60 UTC, and shifting beyond +23:59 must not desynchronise
+    // the calendar.
+    expect(validateElicitationAnswer([dateTime], { when: "1991-01-01T00:59:60+01:00" }).ok).toBe(true);
+    expect(validateElicitationAnswer([dateTime], { when: "1990-12-31T14:59:60-09:00" }).ok).toBe(true);
   });
 
   test("incomplete RFC3339 date-times are rejected", () => {

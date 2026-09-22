@@ -812,15 +812,18 @@ export async function buildApp(
                           ? { interactionId: (params as { interactionId: string }).interactionId }
                           : {}),
                         // Trusted agent identity for the ACP "identify the
-                        // requesting Agent" requirement. Carried from the
-                        // runtime worker's ensure identity, never derived from
-                        // a session-alias lookup.
+                        // requesting Agent" requirement, carried from the
+                        // EXACT prompt turn's own params (`input.agent`).
+                        // Never from the worker's ensure identity (round 7
+                        // Blocking: that is a pooled worker, not the agent
+                        // this user chose) and never from a session-alias
+                        // lookup a concurrent turn could change.
                         ...(typeof (params as { agentName?: unknown }).agentName === "string"
                           ? { agentName: (params as { agentName: string }).agentName }
                           : {}),
                         request: (params as { request?: unknown }).request,
                       };
-                      return await broker.resolveElicitation(request);
+                      return await broker.resolveElicitation(request, context.signal);
                     } catch {
                       return { action: "cancel" };
                     }

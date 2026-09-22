@@ -430,7 +430,10 @@ export interface RuntimeEngineOptions {
    * the worker (exact turn identity + raw ACP request). Must return one of
    * the three ACP actions; every failure path here is `cancel`.
    */
-  onElicitationRequest?: (payload: RuntimeWorkerElicitationRequestPayload) => Promise<RuntimeElicitationDecision>;
+  onElicitationRequest?: (
+    payload: RuntimeWorkerElicitationRequestPayload,
+    signal?: AbortSignal,
+  ) => Promise<RuntimeElicitationDecision>;
   /**
    * True only if a real channel/human UI can render an ACP form elicitation.
    * This is the ONLY input to the runtime's capability advertisement: when
@@ -741,7 +744,7 @@ export class RuntimeEngine implements BridgeEngine {
           ...(options.workerClientDeps?.spawnEnv ?? {}),
         },
         resolvePermissionRequest: (payload) => this.handlePermissionRequest(payload),
-        resolveElicitationRequest: (payload) => this.handleElicitationRequest(payload),
+        resolveElicitationRequest: (payload, signal) => this.handleElicitationRequest(payload, signal),
       };
       this.manager = new RuntimeWorkerManager({
         entryPath: entry,
@@ -1151,7 +1154,7 @@ export class RuntimeEngine implements BridgeEngine {
     }
   }
 
-  private async handleElicitationRequest(payload: RuntimeWorkerElicitationRequestPayload): Promise<RuntimeElicitationDecision> {
+  private async handleElicitationRequest(payload: RuntimeWorkerElicitationRequestPayload, signal?: AbortSignal): Promise<RuntimeElicitationDecision> {
     const key = payload.logicalSessionId;
     if (this.deleting.has(key) || this.shuttingDown) return { action: "cancel" };
     const worker = this.manager?.get(key);
@@ -1160,10 +1163,20 @@ export class RuntimeEngine implements BridgeEngine {
     // reach the live prompt.
     if (payload.workerGeneration !== worker.ref.generation) return { action: "cancel" };
     if (this.options.onElicitationRequest) {
+      // The outbound call is cancellable by request id: when the agent
+      // withdraws this single elicitation/create the bridge aborts the
+      // daemon RPC and the broker unwinds instead of waiting out its
+      // 120s deadline with a live renderer.
+      const cancelled = new AbortController();
+      const onAbort = (): void => {
+        if (!cancelled.signal.aborted) cancelled.abort(signal?.reason ?? new Error("elicitation cancelled by agent request"));
+      };
+      if (signal?.aborted) onAbort();
+      else signal?.addEventListener("abort", onAbort, { once: true });
       try {
         const timeoutMs = this.options.elicitationRequestTimeoutMs ?? 125_000;
         const decision = await raceWithTimeout(
-          this.options.onElicitationRequest(payload),
+          this.options.onElicitationRequest(payload, cancelled.signal),
           timeoutMs,
           () => new Error("elicitation UI timeout"),
         );
@@ -1180,6 +1193,8 @@ export class RuntimeEngine implements BridgeEngine {
         return decision;
       } catch {
         return { action: "cancel" };
+      } finally {
+        signal?.removeEventListener("abort", onAbort);
       }
     }
     return { action: "cancel" };
