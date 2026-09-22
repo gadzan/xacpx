@@ -15,7 +15,6 @@ export type RuntimeWorkerRequestMethod =
   | "permission.update"
   | "permission.decision"
   | "elicitation.decision"
-  | "elicitation.cancel"
   | "shutdown";
 export interface RuntimeWorkerRequest {
   id: string;
@@ -55,6 +54,11 @@ export interface RuntimeWorkerEnsureParams {
   agentProcessEnv?: Record<string, string>;
   /** Host-assigned worker generation identity. */
   workerGeneration?: string;
+  /**
+   * ACP elicitation modes the worker may advertise to the agent. Empty means
+   * no capability at all (daemon has no form-capable channel).
+   */
+  elicitationModes?: readonly ("form" | "url")[];
 }
 
 /**
@@ -83,6 +87,19 @@ export interface RuntimeWorkerPromptParams {
   /** Binary prompt attachments (image/audio) forwarded to ACP content blocks. */
   attachments?: Array<{ mediaType: string; data: string }>;
   interactionId?: string;
+  /**
+   * The user-facing xacpx Agent alias that caused this turn (the session's
+   * configured `agent`, NOT the transport selector).
+   *
+   * ACP's User Interaction Requirements oblige the client to identify the
+   * requesting Agent in terms the user recognises. `ensureParams.agent` is
+   * `acpxAgent ?? agent` — a transport selector that may be an internal
+   * overlay alias like `xacpx-managed-codex-9d1628a76ca9` — so it is the wrong
+   * value to show a human. This belongs to the exact turn, not the worker
+   * construction identity, because the same worker can be reused across
+   * sessions configured with different aliases.
+   */
+  requestingAgentName?: string;
 }
 export interface RuntimeWorkerPermissionUpdate {
   generation: number;
@@ -117,25 +134,72 @@ export interface RuntimeWorkerPermissionDecisionParams {
 export interface RuntimeWorkerElicitationRequestPayload {
   logicalSessionId: string;
   sessionKey: string;
-  requestId: string;
-  elicitationId: string;
-  mode: "form" | "url";
-  message: unknown;
-  policyGeneration: number;
+
+  /** Owning Runtime prompt request (the outer turn). */
+  promptRequestId: string;
+
+  /** xacpx broker correlation id (randomUUID). */
+  elicitationRequestId: string;
+
+  /**
+   * Exact originating human turn, when present. Absent ⇒ the daemon has no
+   * trusted route and MUST answer cancel without showing any UI.
+   */
+  interactionId?: string;
+
+  /**
+   * Agent driving the owning turn, taken from the turn's own prompt params
+   * (`input.agent`). ACP User Interaction Requirements oblige the client to
+   * identify the requesting Agent, so this must be the real runtime identity
+   * rather than a session-alias lookup that a concurrent turn could change.
+   *
+   * Do NOT source this from the worker's ensure identity. That was the round 7
+   * Blocking finding: ensure identity describes a pooled worker, not the agent
+   * the user chose for this prompt.
+   */
+  agentName?: string;
+
+  /** ACP outer `elicitation/create` JSON-RPC id, preserved verbatim. */
+  acpRequestId: string | number | null;
+
+  /** Original ACP CreateElicitationRequest at the core boundary. */
+  request: unknown;
+
   workerGeneration: string;
 }
 
+export type RuntimeElicitationDecision =
+  | {
+      action: "accept";
+      content?: Record<string, string | number | boolean | string[]> | null;
+    }
+  | { action: "decline" }
+  | { action: "cancel" };
+
 export interface RuntimeWorkerElicitationDecisionParams {
-  requestId: string;
-  elicitationId: string;
-  policyGeneration: number;
-  decision: { action: "submit" | "cancel"; data?: unknown };
+  /** Owning Runtime prompt request this decision belongs to. */
+  promptRequestId: string;
+  elicitationRequestId: string;
+  decision: RuntimeElicitationDecision;
 }
 
 export type RuntimeWorkerEvent = {
   id: string;
-  event: "text_delta" | "thought" | "tool" | "plan" | "usage" | "commands" | "permission.request" | "elicitation.request";
-  payload: XacpxRuntimeEvent | RuntimeWorkerPermissionRequestPayload | RuntimeWorkerElicitationRequestPayload | unknown;
+  event:
+    | "text_delta"
+    | "thought"
+    | "tool"
+    | "plan"
+    | "usage"
+    | "commands"
+    | "permission.request"
+    | "elicitation.request"
+    | "elicitation.cancel";
+  payload: XacpxRuntimeEvent
+    | RuntimeWorkerPermissionRequestPayload
+    | RuntimeWorkerElicitationRequestPayload
+    | { promptRequestId: string; elicitationRequestId: string }
+    | unknown;
 };
 export interface RuntimeWorkerSuccess<T = unknown> {
   id: string;

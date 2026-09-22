@@ -119,12 +119,32 @@ const defaultSetTimeoutFn = (fn: () => void, ms: number): unknown => {
   return timer;
 };
 
+/**
+ * A completed bridge-originated RPC.
+ *
+ * `replayable: false` is a tombstone: the rpcId is remembered so a duplicate is
+ * suppressed, but the encoded response is deliberately dropped because it
+ * carries a user answer. See `rememberCompletedRequest`.
+ */
+type CompletedBridgeResponse =
+  | { replayable: true; encoded: string }
+  | { replayable: false };
+
+/**
+ * Bridge-originated methods whose success payload contains a user's Elicitation
+ * answer. These are recorded as tombstones instead of full responses so the
+ * answer bytes are not retained in a long-lived daemon Map.
+ */
+function isSensitiveReplayMethod(method: string): boolean {
+  return method === "resolveElicitationRequest";
+}
+
 export class AcpxBridgeClient {
   private nextId = 1;
   private readonly pending = new Map<string, PendingRequest>();
   private terminalError: Error | null = null;
   private readonly activeBridgeRequests = new Map<string, AbortController>();
-  private readonly completedBridgeResponses = new Map<string, string>();
+  private readonly completedBridgeResponses = new Map<string, CompletedBridgeResponse>();
 
   constructor(
     private readonly writeLine: WriteLine,
@@ -375,7 +395,20 @@ export class AcpxBridgeClient {
   private handleBridgeOriginatedRequest(request: BridgeOriginatedRequest): void {
     const completed = this.completedBridgeResponses.get(request.rpcId);
     if (completed) {
-      this.writeLine(completed);
+      // Fail closed rather than replay: for a sensitive method the answer bytes
+      // were deliberately not retained, so re-running the renderer is the only
+      // alternative and that would re-prompt the user. Cancel is the honest
+      // terminal action — the turn continues without an answer.
+      if (!completed.replayable) {
+        this.writeLine(encodeBridgeOriginatedMessage({
+          direction: "daemon-to-bridge",
+          rpcId: request.rpcId,
+          ok: false,
+          error: { code: "BRIDGE_RPC_CANCELED", message: "elicitation already resolved" },
+        }));
+        return;
+      }
+      this.writeLine(completed.encoded);
       return;
     }
     if (this.activeBridgeRequests.has(request.rpcId)) return;
@@ -407,14 +440,39 @@ export class AcpxBridgeClient {
       }
       if (this.terminalError) return;
       const encoded = encodeBridgeOriginatedMessage(response);
-      this.completedBridgeResponses.set(request.rpcId, encoded);
-      // Bound replay memory for a long-lived bridge connection.
-      if (this.completedBridgeResponses.size > 256) {
-        this.completedBridgeResponses.delete(this.completedBridgeResponses.keys().next().value!);
-      }
+      this.rememberCompletedRequest(request.rpcId, encoded, request.method);
       try { this.writeLine(encoded); }
       catch { /* child stream failure is handled by handleExit */ }
     })();
+  }
+
+  /**
+   * Record a completed bridge-originated RPC.
+   *
+   * Duplicate suppression and response replay are deliberately separate
+   * concerns, because an Elicitation decision carries the user's answer:
+   *
+   *   `{ "action": "accept", "content": { "note": "<user input>" } }`
+   *
+   * The broker has already dropped its pending entry by the time this runs, so
+   * caching the full response would keep the answer bytes alive in a
+   * long-lived daemon Map until 256 later RPCs or a bridge disconnect evicted
+   * them. That is a new retention path outside the broker's privacy contract,
+   * so sensitive methods keep only an rpcId tombstone and fail closed on a
+   * repeat instead of replaying the answer.
+   *
+   * Everything else still replays the exact encoded response, which is what
+   * keeps a bridge re-request idempotent.
+   */
+  private rememberCompletedRequest(rpcId: string, encoded: string, method: string): void {
+    const entry: CompletedBridgeResponse = isSensitiveReplayMethod(method)
+      ? { replayable: false }
+      : { replayable: true, encoded };
+    this.completedBridgeResponses.set(rpcId, entry);
+    // Bound replay memory for a long-lived bridge connection.
+    if (this.completedBridgeResponses.size > 256) {
+      this.completedBridgeResponses.delete(this.completedBridgeResponses.keys().next().value!);
+    }
   }
 }
 
@@ -468,6 +526,12 @@ interface SpawnedBridgeClientOptions {
    * source as the daemon instead of hardcoding it.
    */
   permissionInteractionCapable?: boolean;
+  /**
+   * True Elicitation form capability, independent of permission support:
+   * some registered channel implements `requestElicitation()`. Always
+   * emitted explicitly so a stale inherited value cannot turn support on.
+   */
+  elicitationFormCapable?: boolean;
   agentOverlays?: AcpxAgentOverlayEntry[];
   /** Forwarded to AcpxBridgeClient: observability for undecodable bridge output lines. */
   onMalformedLine?: (line: string) => void;
@@ -511,6 +575,11 @@ export function buildBridgeSpawnEnv(
     // flip bridge eligibility away from the authoritative capability.
     XACPX_BRIDGE_PERMISSION_INTERACTION_CAPABLE:
       options.permissionInteractionCapable === true ? "1" : "0",
+    // Always explicit, same reasoning as the permission flag: the spawn env
+    // is layered over process.env, so omitting the key would let a stale
+    // parent value advertise ACP form Elicitation the bridge cannot render.
+    XACPX_BRIDGE_ELICITATION_FORM_CAPABLE:
+      options.elicitationFormCapable === true ? "1" : "0",
     ...(options.agentOverlays && options.agentOverlays.length > 0
       ? { XACPX_BRIDGE_AGENT_OVERLAYS: JSON.stringify(options.agentOverlays) }
       : {}),

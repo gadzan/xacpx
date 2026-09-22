@@ -11,6 +11,7 @@ import {
   type RuntimeWorkerPermissionDecisionParams,
   type RuntimeWorkerElicitationRequestPayload,
   type RuntimeWorkerElicitationDecisionParams,
+  type RuntimeElicitationDecision,
 } from "./runtime-worker-protocol";
 import { mapRuntimeError } from "./runtime-contract";
 import { terminateProcessTree } from "../../../process/terminate-process-tree";
@@ -31,6 +32,31 @@ export interface RuntimeWorkerRef {
   generation: string;
   /** Windows creation date for verified tree termination (prevent PID reuse). */
   creationDate?: string | null;
+}
+
+/**
+ * Fail-closed decision check. Accepts only the three ACP actions with the
+ * exact content shape each carries; anything else (missing handler response,
+ * legacy `submit` payload, malformed content) cancels.
+ */
+function isRuntimeElicitationDecision(value: unknown): value is RuntimeElicitationDecision {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const decision = value as { action?: unknown; content?: unknown };
+  if (decision.action !== "accept" && decision.action !== "decline" && decision.action !== "cancel") {
+    return false;
+  }
+  if (decision.action !== "accept") return true;
+  const content = decision.content;
+  if (content === undefined || content === null) return true;
+  if (typeof content !== "object" || Array.isArray(content)) return false;
+  return Object.values(content as Record<string, unknown>).every(isElicitationContentValue);
+}
+
+function isElicitationContentValue(value: unknown): boolean {
+  return typeof value === "string"
+    || typeof value === "number"
+    || typeof value === "boolean"
+    || (Array.isArray(value) && value.every((item): item is string => typeof item === "string"));
 }
 
 export interface RuntimeWorkerClientDeps {
@@ -67,15 +93,33 @@ export interface RuntimeWorkerClientDeps {
    */
   permissionTimeoutMs?: number;
   /**
+   * Host-side elicitation watchdog in ms. Sits just above the daemon
+   * broker's 120s business deadline so only a wedged transport fails the
+   * turn here. Defaults to 125_000.
+   */
+  elicitationTimeoutMs?: number;
+  /**
    * PR9-A: Host-side resolver for interactive permission requests.
    * Called when the worker emits `permission.request`. Must return an explicit
    * PermissionDecision union; any throw/timeout/malformed is mapped to `reject_once`/`cancel` fail-closed.
    */
   resolvePermissionRequest?: (payload: RuntimeWorkerPermissionRequestPayload) => Promise<RuntimeWorkerPermissionDecisionParams["decision"]>;
   /**
-   * PR9-C: Host-side handler for elicitation requests.
+   * Host-side handler for elicitation requests. Receives the new exact-
+   * identity payload (promptRequestId, elicitationRequestId, interactionId,
+   * acpRequestId, raw ACP request) and must return an ACP-faithful decision.
    */
-  resolveElicitationRequest?: (payload: RuntimeWorkerElicitationRequestPayload) => Promise<{ action: "submit" | "cancel"; data?: unknown }>;
+  resolveElicitationRequest?: (
+    payload: RuntimeWorkerElicitationRequestPayload,
+    signal?: AbortSignal,
+  ) => Promise<RuntimeElicitationDecision>;
+  /**
+   * Request-scoped cancellation of one pending elicitation. Invoked when the
+   * worker reports that a specific `elicitation.create` is still awaiting a
+   * host decision but its ACP request has been withdrawn. The host cancels its
+   * outbound broker call so the renderer stops immediately.
+   */
+  onElicitationCancelRequested?: (payload: RuntimeWorkerElicitationRequestPayload) => void;
 }
 export type WorkerLifecycle = "starting" | "ready" | "busy" | "idle" | "cooling" | "stopped" | "failed";
 
@@ -101,6 +145,16 @@ export class RuntimeWorkerClient {
   private bootstrapPromise?: Promise<void>;
   private _bootstrapVerified = false;
   private inFlightLeases = 0;
+  /**
+   * In-flight elicitation propagations, keyed by the worker's
+   * `elicitationRequestId`. Exists so request-scoped cancellation can abort the
+   * outbound daemon/broker wait instead of letting it ride to the watchdog.
+   */
+  private readonly inflightElicitations = new Map<string, {
+    controller: AbortController;
+    promptRequestId: string;
+    payload: RuntimeWorkerElicitationRequestPayload;
+  }>();
   private exitPromise?: Promise<number | null>;
   private resolveExit?: (code: number | null) => void;
   private shutdownAckPromise?: Promise<unknown>;
@@ -235,6 +289,16 @@ export class RuntimeWorkerClient {
         void this.handleElicitationRequest(payload).catch(() => {});
         return;
       }
+      if (raw && typeof raw === "object" && "event" in raw && (raw as { event: unknown }).event === "elicitation.cancel") {
+        // The agent withdrew this single elicitation/create. Abort the
+        // outbound daemon/broker wait for THIS request only — the turn keeps
+        // running, and other pending elicitations are untouched.
+        const payload = (raw as { payload?: unknown }).payload as { promptRequestId?: unknown; elicitationRequestId?: unknown } | undefined;
+        if (payload && typeof payload.elicitationRequestId === "string") {
+          this.cancelElicitation(payload.elicitationRequestId, typeof payload.promptRequestId === "string" ? payload.promptRequestId : "");
+        }
+        return;
+      }
       // Real-time push: forward to the still-pending request's sink while the
       // RPC itself stays open — this is what keeps prompt streaming live.
       const id = typeof (raw as { id?: unknown }).id === "string" ? (raw as { id: string }).id : null;
@@ -287,40 +351,76 @@ export class RuntimeWorkerClient {
   }
 
   private async handleElicitationRequest(payload: RuntimeWorkerElicitationRequestPayload | undefined): Promise<void> {
-    const requestId = typeof payload?.requestId === "string" ? payload.requestId : "";
-    const elicitationId = typeof payload?.elicitationId === "string" ? payload.elicitationId : requestId;
-    const policyGeneration = typeof payload?.policyGeneration === "number" ? payload.policyGeneration : 0;
-    if (!payload || !elicitationId) {
+    const promptRequestId = typeof payload?.promptRequestId === "string" ? payload.promptRequestId : "";
+    const elicitationRequestId = typeof payload?.elicitationRequestId === "string" ? payload.elicitationRequestId : "";
+    if (!payload || !promptRequestId || !elicitationRequestId) {
+      // Malformed → fail closed: send cancel to avoid hanging the turn.
       try {
-        await this.request("elicitation.decision", { requestId, elicitationId, policyGeneration, decision: { action: "cancel" } });
+        await this.request("elicitation.decision", {
+          promptRequestId,
+          elicitationRequestId: elicitationRequestId || promptRequestId,
+          decision: { action: "cancel" },
+        });
       } catch {}
       return;
     }
-    let decision: RuntimeWorkerElicitationDecisionParams["decision"];
+    // Track the outbound in-flight call so a request-scoped cancel can abort
+    // the daemon/broker wait. Without this the handler would sit until the
+    // 125s watchdog even after the agent withdrew the request.
+    const inflight = new AbortController();
+    this.inflightElicitations.set(elicitationRequestId, { controller: inflight, promptRequestId, payload });
+    let decision: RuntimeElicitationDecision;
     try {
       const handler = this.deps?.resolveElicitationRequest;
       if (!handler) {
         decision = { action: "cancel" };
       } else {
-        const withTimeout = await Promise.race([
-          handler(payload),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("elicitation UI timeout")), 30_000).unref?.()),
-        ]);
-        const action = (withTimeout as { action?: unknown })?.action;
-        if (action !== "submit" && action !== "cancel") {
-          decision = { action: "cancel" };
-        } else if (action === "submit") {
-          decision = { action: "submit", data: (withTimeout as { data?: unknown }).data };
-        } else {
-          decision = { action: "cancel" };
-        }
+        // Watchdog sits just above the broker's 120s business deadline.
+        const timeoutMs = this.deps?.elicitationTimeoutMs ?? 125_000;
+        const settled = await raceWithTimeout(
+          (async () => handler(payload, inflight.signal))(),
+          timeoutMs,
+          () => new Error("elicitation UI timeout"),
+        );
+        decision = isRuntimeElicitationDecision(settled)
+          ? settled
+          : { action: "cancel" };
       }
     } catch {
       decision = { action: "cancel" };
+    } finally {
+      this.inflightElicitations.delete(elicitationRequestId);
     }
     try {
-      await this.request("elicitation.decision", { requestId, elicitationId, policyGeneration, decision });
+      await this.request("elicitation.decision", {
+        promptRequestId,
+        elicitationRequestId,
+        decision,
+      });
     } catch {}
+  }
+
+  /**
+   * Cancel one in-flight elicitation propagation by worker request id.
+   *
+   * Returns true when a live propagation was aborted. A false return means the
+   * request already settled (or never existed), which is benign — the caller
+   * has nothing left to stop.
+   */
+  cancelElicitation(elicitationRequestId: string, promptRequestId: string): boolean {
+    const inflight = this.inflightElicitations.get(elicitationRequestId);
+    if (!inflight) return false;
+    // Identity fencing: a stale or cross-talk cancel must never abort an
+    // in-flight elicitation belonging to a different prompt.
+    if (promptRequestId && inflight.promptRequestId !== promptRequestId) return false;
+    this.inflightElicitations.delete(elicitationRequestId);
+    inflight.controller.abort(new Error("elicitation cancelled by agent request"));
+    // The handler's abort path settles cancel; if the host handler ignores the
+    // signal, tell it explicitly so it can unwind the broker call.
+    try {
+      this.deps?.onElicitationCancelRequested?.(inflight.payload);
+    } catch {}
+    return true;
   }
 
   async request<T>(method: RuntimeWorkerRequestMethod, params?: unknown, options?: { onEvent?: (payload: unknown) => void }): Promise<T> {

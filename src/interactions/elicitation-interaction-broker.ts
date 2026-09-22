@@ -1,0 +1,723 @@
+/**
+ * Core-owned ACP form-Elicitation broker (M1).
+ *
+ * Owns the interaction AFTER the trusted turn route is already resolved: it
+ * consumes the exact opaque `interactionId` (never a session/chat/alias
+ * lookup), renders through a channel plugin, re-verifies the authenticated
+ * responder, validates the answer, and maps the result back to the three ACP
+ * actions. Semantics are deliberately NOT shared with the permission broker
+ * (roadmap G3): outcomes, deadlines and validation are Elicitation-specific.
+ *
+ * Fail-closed table (M1 plan §10):
+ *
+ *   accept            → explicit user accept (validated content)
+ *   decline           → explicit user refusal ONLY
+ *   cancel            → timeout / turn abort / shutdown / unsupported
+ *                       channel / invalid schema / invalid answer /
+ *                       plugin throw / stale race
+ *
+ * Privacy (G8): the broker logs metadata only — request id, field count,
+ * field kinds, terminal action, duration. Form answers never reach logs,
+ * state, diagnostics or traces.
+ */
+
+import { randomUUID } from "node:crypto";
+
+import type {
+  ChannelElicitationDecision,
+  ChannelElicitationRequest,
+  MessageChannelRuntime,
+} from "../channels/types.js";
+import type { AppLogger } from "../logging/app-logger.js";
+import {
+  normalizeAcpElicitationForm,
+  summarizeElicitationSchema,
+  validateElicitationAnswer,
+  type NormalizedElicitationForm,
+} from "./elicitation-schema.js";
+import type {
+  ChannelElicitationField,
+  ChannelElicitationValue,
+  MessageChannelElicitationRuntime,
+} from "./elicitation-types.js";
+import {
+  createTurnInteractionRegistry,
+  type TurnInteractionContext,
+  type TurnInteractionRegistry,
+} from "./turn-interaction-registry.js";
+
+/** Business deadline for a human answer. Core constant, not a config knob. */
+export const ELICITATION_INTERACTION_TIMEOUT_MS = 120_000;
+
+/** Transport watchdog must exceed the broker deadline. */
+export const ELICITATION_RPC_TIMEOUT_MS = 125_000;
+
+export type RuntimeElicitationRequest = {
+  /** Owning Runtime prompt request (outer turn identity). */
+  promptRequestId: string;
+  /** Worker-assigned correlation id (randomUUID). */
+  elicitationRequestId: string;
+  /** Exact originating human turn, when the prompt carried one. */
+  interactionId?: string;
+  /**
+   * Agent driving the owning turn, taken from the turn's own prompt params
+   * (`input.agent`). ACP User Interaction Requirements oblige the client to
+   * identify the requesting Agent, so this must come from the real turn and
+   * never from a session-alias lookup that a concurrent or later turn could
+   * change.
+   *
+   * Do NOT source this from the worker's ensure identity. That was the round 7
+   * Blocking finding: ensure identity describes a pooled worker, not the agent
+   * the user chose for this prompt.
+   */
+  agentName?: string;
+  /** Raw ACP `elicitation/create` request at the core boundary. */
+  request: unknown;
+};
+
+export type ElicitationResult =
+  | {
+      action: "accept";
+      content: Record<string, string | number | boolean | string[]> | null;
+    }
+  | { action: "decline" }
+  | { action: "cancel" };
+
+export type ElicitationChannelResolver = (chatKey: string) => MessageChannelRuntime | null;
+
+export interface ElicitationInteractionBrokerOptions {
+  getChannelByChatKey: ElicitationChannelResolver;
+  logger?: AppLogger;
+  timeoutMs?: number;
+  /** Shared exact-turn registry (permission + elicitation, independent semantics). */
+  registry?: TurnInteractionRegistry;
+}
+
+interface PendingElicitation {
+  interactionId: string;
+  route: TurnInteractionContext;
+  channelRequest: ChannelElicitationRequest;
+  form: NormalizedElicitationForm;
+  settled: boolean;
+  controller: AbortController;
+  timer?: ReturnType<typeof setTimeout>;
+  startedAt: number;
+}
+
+/**
+ * True when `value` is a plain object whose `action`, `responderId` and
+ * `content` are all own DATA properties. Accessors are rejected: a getter can
+ * return a valid answer on the first read and something else afterwards, which
+ * is exactly the TOCTOU this guard exists to prevent.
+ */
+function isPlainDecision(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  for (const key of ["action", "responderId", "content"]) {
+    if (!Object.hasOwn(value, key)) continue;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor) return false;
+    // `get`/`set` present means an accessor, not a data property.
+    if ("get" in descriptor || "set" in descriptor) return false;
+  }
+  return true;
+}
+
+/** Read one own data property, or `undefined` when it is absent. */
+function readOwnDataProperty(holder: Record<string, unknown>, key: string): unknown {
+  if (!Object.hasOwn(holder, key)) return undefined;
+  return Object.getOwnPropertyDescriptor(holder, key)?.value;
+}
+
+/** Metadata-only log projection: never titles, never answers. */
+interface ElicitationLogFields {
+  fieldCount: number;
+  fieldKinds: string;
+  durationMs?: number;
+  action?: string;
+}
+
+export class ElicitationInteractionBroker {
+  private readonly turns: TurnInteractionRegistry;
+  private readonly pending = new Map<string, PendingElicitation>();
+  private readonly getChannelByChatKey: ElicitationChannelResolver;
+  private readonly logger?: AppLogger;
+  private readonly timeoutMs: number;
+  private shutDown = false;
+
+  constructor(options: ElicitationInteractionBrokerOptions) {
+    this.turns = options.registry ?? createTurnInteractionRegistry();
+    this.getChannelByChatKey = options.getChannelByChatKey;
+    if (options.logger) this.logger = options.logger;
+    this.timeoutMs = options.timeoutMs ?? ELICITATION_INTERACTION_TIMEOUT_MS;
+  }
+
+  /** Shared exact-turn registry (test/diagnostic use). */
+  get turnRegistry(): TurnInteractionRegistry {
+    return this.turns;
+  }
+
+  /**
+   * Bind one exact human turn route. Called by the prompt dispatcher with
+   * the SAME context the permission broker receives; the two brokers keep
+   * separate pending sets and separate terminal semantics.
+   */
+  bindTurn(
+    context: TurnInteractionContext,
+    abortSignal?: AbortSignal,
+  ): () => void {
+    return this.turns.bindTurn(context, abortSignal);
+  }
+
+  get pendingCount(): number {
+    return this.pending.size;
+  }
+
+  /** Create a fresh opaque interaction id for one human prompt dispatch. */
+  static createInteractionId(): string {
+    return randomUUID();
+  }
+
+  /**
+   * Resolve one ACP form Elicitation for the exact turn that caused it.
+   * Every failure path maps to `cancel`; only an explicit platform-
+   * authenticated refusal maps to `decline`.
+   */
+  async resolveElicitation(
+    input: RuntimeElicitationRequest,
+    abortSignal?: AbortSignal,
+  ): Promise<ElicitationResult> {
+    const requestId = input.elicitationRequestId;
+    if (!requestId || this.shutDown) {
+      await this.log("elicitation.interaction.rejected_unavailable", "broker unavailable", { requestId, fieldCount: 0, fieldKinds: "" });
+      return { action: "cancel" };
+    }
+    if (this.pending.has(requestId)) {
+      await this.log("elicitation.interaction.stale", "duplicate elicitation request id", { requestId, fieldCount: 0, fieldKinds: "" });
+      return { action: "cancel" };
+    }
+    const interactionId = input.interactionId;
+    const route = typeof interactionId === "string" ? this.turns.resolve(interactionId) : undefined;
+    if (!interactionId || !route) {
+      // Exact-turn ownership: no trusted route means no UI anywhere. Never
+      // fall back to latest session / latest chat / latest user (G2).
+      await this.log("elicitation.interaction.rejected_unavailable", "missing interaction route", { requestId, fieldCount: 0, fieldKinds: "" });
+      return { action: "cancel" };
+    }
+    if (route.origin !== "human") {
+      await this.log("elicitation.interaction.rejected_unavailable", "non-human origin is non-interactive", {
+        requestId,
+        origin: route.origin,
+        fieldCount: 0,
+        fieldKinds: "",
+      });
+      return { action: "cancel" };
+    }
+    if (!route.senderId) {
+      await this.log("elicitation.interaction.rejected_unavailable", "missing initiator identity", { requestId, fieldCount: 0, fieldKinds: "" });
+      return { action: "cancel" };
+    }
+    let channel: MessageChannelRuntime | null = null;
+    try {
+      channel = this.getChannelByChatKey(route.chatKey);
+    } catch (error) {
+      // Nothing the thrown value provides is read at all. Not `message`
+      // (renderer text), not `constructor.name` (renderer-controlled), and not
+      // even `instanceof Error` — a Proxy with a throwing `getPrototypeOf`
+      // trap makes `instanceof` itself throw, which would escape this catch
+      // handler and leak the pending entry.
+      void error;
+      await this.log("elicitation.interaction.channel_failed", "channel lookup threw", {
+        requestId,
+        errorType: "thrown",
+        fieldCount: 0,
+        fieldKinds: "",
+      });
+      return { action: "cancel" };
+    }
+    const runtime = channel as MessageChannelElicitationRuntime | null;
+    const declared = Array.isArray(runtime?.elicitationModes) ? runtime!.elicitationModes! : [];
+    // G9 truthful capability: declare AND implement. A mode named without a
+    // real handler is not support.
+    const canRenderForm = declared.includes("form") && typeof runtime?.requestElicitation === "function";
+    if (!runtime || !canRenderForm) {
+      // G12: unsupported channels cancel — never consume the next arbitrary
+      // human message as the answer.
+      await this.log("elicitation.interaction.rejected_unavailable", "channel cannot render form elicitation", { requestId, fieldCount: 0, fieldKinds: "" });
+      return { action: "cancel" };
+    }
+    const normalized = normalizeAcpElicitationForm(input.request);
+    if (!normalized.ok) {
+      await this.log("elicitation.interaction.invalid_schema", "acp form schema rejected", {
+        requestId,
+        reason: normalized.reason,
+        fieldCount: 0,
+        fieldKinds: "",
+      });
+      return { action: "cancel" };
+    }
+    // TWO copies of the same normalized form, deliberately:
+    //
+    //   validationSnapshot — private to core, never handed to a plugin. This
+    //     is the ONLY truth used by validateElicitationAnswer below.
+    //   presentation      — deep-cloned and deep-frozen, given to the renderer
+    //     via channelRequest.fields.
+    //
+    // The public contract exposes `fields` as mutable arrays/objects, so a
+    // renderer that reorganizes them for its UI would otherwise mutate core's
+    // validation truth: pushing an extra option, clearing `required`, or
+    // relaxing `minLength` would make an answer the agent never authorized
+    // validate as legal. Freezing makes that fail loudly instead of silently.
+    const validationSnapshot = cloneFormForValidation(normalized.form);
+    const presentation = deepFreezeForm(cloneFormForValidation(normalized.form));
+    const fields = validationSnapshot.fields;
+
+    // ACP User Interaction Requirements: the client MUST clearly identify the
+    // Agent requesting information. Without a trusted agent name the renderer
+    // would have to guess from the chat route, which is exactly the
+    // "latest session" pattern this project forbids — and the agent controls
+    // its own message/title text, so those cannot substitute for identity.
+    // Fail closed rather than render an unattributable prompt.
+    if (!input.agentName || input.agentName.length === 0) {
+      await this.log("elicitation.interaction.rejected_unavailable", "missing requesting agent identity", {
+        requestId,
+        fieldCount: 0,
+        fieldKinds: "",
+      });
+      return { action: "cancel" };
+    }
+
+    const controller = new AbortController();
+    // Request-scoped external cancellation: the agent withdrew this single
+    // elicitation/create. The upstream caller (daemon bridge RPC) aborts its
+    // `context.signal`, which must abort THIS request's controller — not the
+    // turn's — so the renderer stops and other pending elicitations on the
+    // same turn keep running.
+    let unsubscribeExternalSignal: (() => void) | undefined;
+    if (abortSignal) {
+      if (abortSignal.aborted) {
+        controller.abort(abortSignal.reason);
+      } else {
+        const onAbort = (): void => {
+          try {
+            controller.abort(abortSignal.reason);
+          } catch {}
+        };
+        abortSignal.addEventListener("abort", onAbort, { once: true });
+        unsubscribeExternalSignal = () => abortSignal.removeEventListener("abort", onAbort);
+      }
+    }
+    const startedAt = Date.now();
+    const expiresAt = startedAt + this.timeoutMs;
+    const pending: PendingElicitation = {
+      interactionId,
+      route,
+      channelRequest: {
+        requestId,
+        chatKey: route.chatKey,
+        ...(route.accountId !== undefined ? { accountId: route.accountId } : {}),
+        ...(route.replyContextToken !== undefined ? { replyContextToken: route.replyContextToken } : {}),
+        requester: {
+          senderId: route.senderId,
+          ...(route.senderName !== undefined ? { senderName: route.senderName } : {}),
+          ...(route.isOwner !== undefined ? { isOwner: route.isOwner } : {}),
+        },
+        agent: { name: input.agentName },
+        message: normalized.form.message,
+        mode: "form",
+        fields: presentation.fields,
+        ...(normalized.form.schemaTitle !== undefined ? { schemaTitle: normalized.form.schemaTitle } : {}),
+        ...(normalized.form.schemaDescription !== undefined ? { schemaDescription: normalized.form.schemaDescription } : {}),
+        expiresAt,
+        signal: controller.signal,
+      },
+      form: validationSnapshot,
+      settled: false,
+      controller,
+      startedAt,
+    };
+    this.pending.set(requestId, pending);
+    pending.timer = setTimeout(() => {
+      // Terminal FIRST, then abort: a channel decision already resolving
+      // must never win over the deadline in the race below (stale-race
+      // fencing, same discipline as the permission broker).
+      pending.settled = true;
+      controller.abort();
+    }, this.timeoutMs);
+    if (typeof pending.timer.unref === "function") pending.timer.unref();
+
+    // Subscribe to the shared registry: turn disposal or abort cancels this
+    // request immediately, independent of the channel's own signal handling.
+    const unsubscribeTurnAbort = this.turns.subscribeAbort(interactionId, () => {
+      const current = this.pending.get(requestId);
+      if (current !== pending || current.settled) return;
+      current.settled = true;
+      try {
+        controller.abort();
+      } catch {}
+      if (current.timer !== undefined) {
+        clearTimeout(current.timer);
+        current.timer = undefined;
+      }
+    });
+
+    await this.log("elicitation.interaction.dispatched", "elicitation interaction dispatched", {
+      requestId,
+      ...this.describe(fields),
+    });
+
+    const routeGone = (): boolean => this.turns.resolve(interactionId) !== route;
+    if (pending.settled
+      || this.pending.get(requestId) !== pending
+      || controller.signal.aborted
+      || Date.now() >= expiresAt
+      || routeGone()
+      || this.shutDown) {
+      unsubscribeTurnAbort();
+      // Aborting the external signal unwinds the upstream bridge RPC through
+      // its own abort path; the listener is released here so an agent that
+      // cancels before dispatch does not leave a dangling subscription.
+      unsubscribeExternalSignal?.();
+      return this.settleStale(requestId, fields, startedAt);
+    }
+
+    try {
+      const aborted = new Promise<never>((_, reject) => {
+        if (controller.signal.aborted) {
+          reject(new Error("elicitation interaction aborted"));
+          return;
+        }
+        controller.signal.addEventListener(
+          "abort",
+          () => reject(new Error("elicitation interaction aborted")),
+          { once: true },
+        );
+      });
+      // Race so a channel that ignores AbortSignal still settles on
+      // timeout/turn-dispose/shutdown instead of leaking pending state.
+      const decision = (await Promise.race([
+        runtime.requestElicitation!(pending.channelRequest),
+        aborted,
+      ])) as ChannelElicitationDecision | undefined;
+
+      // Post-decision re-verification: the settled flag, wall clock and
+      // route liveness win over whatever the channel returned — a stale
+      // answer must never survive the race.
+      if (pending.settled
+        || this.pending.get(requestId) !== pending
+        || controller.signal.aborted
+        || Date.now() >= expiresAt
+        || routeGone()
+        || this.shutDown) {
+        unsubscribeTurnAbort();
+        return this.settleStale(requestId, fields, startedAt);
+      }
+
+      // Platform-authenticated identity: a wrong responder is never
+      // accepted, and never becomes `decline` either (fail closed cancel).
+      // SNAPSHOT every field exactly once, before any validation. Reading
+      // `decision.content` again after validation would let a getter return a
+      // valid answer on the first read and `null` on the second, turning a
+      // required form into `accept + null` after core had already approved it.
+      // Accessors are rejected outright: a plain object is the only thing a
+      // renderer needs to return.
+      if (!decision || !isPlainDecision(decision)) {
+        await this.log("elicitation.interaction.channel_failed", "malformed channel decision", {
+          requestId,
+          ...this.describe(fields),
+        });
+        unsubscribeTurnAbort();
+        return this.settleStale(requestId, fields, startedAt);
+      }
+      const decisionAction = readOwnDataProperty(decision, "action");
+      const decisionResponderId = readOwnDataProperty(decision, "responderId");
+      const decisionContent = readOwnDataProperty(decision, "content");
+
+      // Platform-authenticated identity for every decision this broker accepts.
+      //
+      // There is deliberately NO responder-free path. A real external abort
+      // never reaches here: the `aborted` race rejects first, and if the
+      // renderer's decision somehow wins that race the post-decision
+      // `controller.signal.aborted` check above sends it to `settleStale`.
+      // So by the time we get past those guards, this decision was produced on
+      // a live request by a user action — and a user action must name the
+      // platform-authenticated actor. A missing or wrong responder is
+      // therefore fail-closed cancel, never a downgrade to an anonymous one.
+      if (typeof decisionResponderId !== "string" || decisionResponderId !== route.senderId) {
+        await this.log("elicitation.interaction.channel_failed", "responder is not the turn initiator", {
+          requestId,
+          ...this.describe(fields),
+        });
+        unsubscribeTurnAbort();
+        return this.settleStale(requestId, fields, startedAt);
+      }
+
+      if (decisionAction !== "accept" && decisionAction !== "decline" && decisionAction !== "cancel") {
+        await this.log("elicitation.interaction.channel_failed", "malformed channel decision", {
+          requestId,
+          ...this.describe(fields),
+        });
+        unsubscribeTurnAbort();
+        return this.settleStale(requestId, fields, startedAt);
+      }
+
+      if (decisionAction !== "accept") {
+        // decline and cancel are both terminal; only decline is a user
+        // refusal. Every failure path reaches here as cancel.
+        const result: ElicitationResult = decisionAction === "decline"
+          ? { action: "decline" }
+          : { action: "cancel" };
+        unsubscribeTurnAbort();
+        return this.commit(requestId, result, fields, startedAt);
+      }
+
+      // accept: core re-validates the snapshot against the normalized schema.
+      const submitted = decisionContent === undefined ? undefined : decisionContent;
+      const validated = validateElicitationAnswer(fields, submitted as Record<string, ChannelElicitationValue> | null | undefined);
+      if (!validated.ok) {
+        await this.log("elicitation.interaction.invalid_answer", "accepted elicitation answer failed validation", {
+          requestId,
+          reason: validated.reason,
+          ...this.describe(fields),
+        });
+        unsubscribeTurnAbort();
+        return this.settleStale(requestId, fields, startedAt);
+      }
+      // Only the SNAPSHOT decides the shape — never a second read.
+      const content = decisionContent === null ? null : validated.content;
+      unsubscribeTurnAbort();
+      return this.commit(requestId, { action: "accept", content }, fields, startedAt);
+    } catch (error) {
+      // Plugin throw, explicit cancel, abort, timeout: all cancel. NOTHING the
+      // thrown value provides is read: not `message` (renderer text), not
+      // `constructor.name` (renderer-controlled), and not even `instanceof
+      // Error` — a Proxy with a throwing `getPrototypeOf` trap makes
+      // `instanceof` itself throw, which would escape this handler, skip
+      // `unsubscribeTurnAbort()`/`settleStale()`, and leak the pending entry
+      // forever (turn dispose only marks settled, it never deletes the map
+      // entry).
+      void error;
+      if (controller.signal.aborted) {
+        await this.log("elicitation.interaction.aborted", "elicitation interaction aborted before decision", {
+          requestId,
+        });
+      } else {
+        await this.log("elicitation.interaction.channel_failed", "channel request failed", {
+          requestId,
+          errorType: "thrown",
+        });
+      }
+      unsubscribeTurnAbort();
+      return this.settleStale(requestId, fields, startedAt);
+    } finally {
+      if (pending.timer !== undefined) {
+        clearTimeout(pending.timer);
+        pending.timer = undefined;
+      }
+      // The request-scoped listener MUST be released like the turn listener,
+      // otherwise a long-lived session accumulates one listener per settled
+      // elicitation on the upstream bridge signal.
+      unsubscribeExternalSignal?.();
+    }
+  }
+
+  /** Abort every pending request of one interaction (turn completion/cancel). */
+  abortInteraction(interactionId: string, reason = "turn_disposed"): void {
+    for (const [requestId, pending] of [...this.pending]) {
+      if (pending.interactionId !== interactionId || pending.settled) continue;
+      pending.settled = true;
+      try {
+        pending.controller.abort();
+      } catch {}
+      if (pending.timer !== undefined) {
+        clearTimeout(pending.timer);
+        pending.timer = undefined;
+      }
+      void this.log("elicitation.interaction.aborted", "elicitation interaction aborted", {
+        requestId,
+        reason,
+        ...this.describe(pending.form.fields),
+      });
+    }
+  }
+
+  /**
+   * Cancel ONE pending elicitation by request id.
+   *
+   * This is request-scoped cancellation, distinct from turn disposal: an agent
+   * can withdraw a single `elicitation/create` with `$/cancel_request` while
+   * its prompt turn keeps running. Without this the renderer keeps collecting
+   * input until the 120s deadline even though nobody will read the answer.
+   *
+   * Idempotent and safe for unknown ids: a cancel racing an already-settled
+   * request is a no-op, and a cancel for a request this broker never saw (or
+   * one whose pending entry was already dropped) simply returns false.
+   */
+  cancelElicitationRequest(requestId: string, options?: { reason?: string }): boolean {
+    const pending = this.pending.get(requestId);
+    if (!pending || pending.settled) return false;
+    pending.settled = true;
+    try {
+      pending.controller.abort(options?.reason);
+    } catch {}
+    if (pending.timer !== undefined) {
+      clearTimeout(pending.timer);
+      pending.timer = undefined;
+    }
+    // Metadata only — no titles, no answers.
+    void this.log("elicitation.interaction.aborted", "elicitation aborted by agent request", {
+      requestId,
+      reason: options?.reason ?? "agent_cancel_request",
+      ...this.describe(pending.form.fields),
+    });
+    return true;
+  }
+
+  shutdown(): void {
+    if (this.shutDown) return;
+    this.shutDown = true;
+    for (const pending of this.pending.values()) {
+      if (pending.settled) continue;
+      pending.settled = true;
+      try {
+        pending.controller.abort();
+      } catch {}
+      if (pending.timer !== undefined) {
+        clearTimeout(pending.timer);
+        pending.timer = undefined;
+      }
+    }
+    this.turns.clear();
+    // Pending entries stay until their races settle so a late channel answer
+    // fails closed; new requests fail closed via the shutDown flag.
+  }
+
+  /**
+   * A stale/expired/aborted entry resolves to cancel. First-terminal-wins is
+   * enforced by `settled` + the pending-map identity check inside commit().
+   */
+  private async settleStale(
+    requestId: string,
+    fields: NormalizedElicitationForm["fields"],
+    startedAt: number,
+  ): Promise<ElicitationResult> {
+    await this.log("elicitation.interaction.expired", "elicitation interaction settled as cancel", {
+      requestId,
+      ...this.describe(fields),
+      durationMs: Date.now() - startedAt,
+    });
+    return this.commit(requestId, { action: "cancel" }, fields, startedAt, true);
+  }
+
+  /** Commit the terminal decision (idempotent, first terminal wins). */
+  private commit(
+    requestId: string,
+    result: ElicitationResult,
+    fields: NormalizedElicitationForm["fields"],
+    startedAt: number,
+    alreadyLogged = false,
+  ): ElicitationResult {
+    const pending = this.pending.get(requestId);
+    if (pending) {
+      if (pending.settled && result.action !== "cancel") {
+        // A fail-closed terminal already committed; keep it.
+        this.pending.delete(requestId);
+        return { action: "cancel" };
+      }
+      pending.settled = true;
+      if (pending.timer !== undefined) {
+        clearTimeout(pending.timer);
+        pending.timer = undefined;
+      }
+      this.pending.delete(requestId);
+    }
+    if (!alreadyLogged) {
+      // Metadata only — never answers (G8).
+      void this.log("elicitation.interaction.resolved", "elicitation interaction resolved", {
+        requestId,
+        action: result.action,
+        ...this.describe(fields),
+        durationMs: Date.now() - startedAt,
+      });
+    }
+    return result;
+  }
+
+  private describe(fields: NormalizedElicitationForm["fields"]): Omit<ElicitationLogFields, "action"> {
+    const summary = summarizeElicitationSchema(fields);
+    return { fieldCount: summary.fieldCount, fieldKinds: summary.kinds.join(",") };
+  }
+
+  private async log(
+    event: string,
+    message: string,
+    fields: Record<string, string | number | boolean | undefined>,
+  ): Promise<void> {
+    try {
+      await this.logger?.info(event, message, fields);
+    } catch {}
+  }
+}
+
+/**
+ * Deep clone of the normalized form. Core keeps one private copy as its
+ * validation truth and hands a separate clone to the renderer, so nothing a
+ * plugin does to `request.fields` can change what core validates against.
+ */
+function cloneFormForValidation(form: NormalizedElicitationForm): NormalizedElicitationForm {
+  return {
+    ...(form.schemaTitle !== undefined ? { schemaTitle: form.schemaTitle } : {}),
+    ...(form.schemaDescription !== undefined ? { schemaDescription: form.schemaDescription } : {}),
+    message: form.message,
+    fields: form.fields.map((field): ChannelElicitationField => {
+      switch (field.kind) {
+        case "single-select":
+          return {
+            ...field,
+            options: field.options.map((option) => ({ ...option })),
+            ...(field.defaultValue !== undefined ? { defaultValue: field.defaultValue } : {}),
+          };
+        case "multi-select":
+          return {
+            ...field,
+            options: field.options.map((option) => ({ ...option })),
+            ...(field.defaultValue !== undefined ? { defaultValue: [...field.defaultValue] } : {}),
+          };
+        default:
+          return { ...field };
+      }
+    }),
+  };
+}
+
+/** Recursively freeze the presentation copy so mutation throws in strict mode. */
+function deepFreezeForm(form: NormalizedElicitationForm): NormalizedElicitationForm {
+  for (const field of form.fields) {
+    Object.freeze(field);
+    if (field.kind === "single-select" || field.kind === "multi-select") {
+      for (const option of field.options) Object.freeze(option);
+      Object.freeze(field.options);
+      if (field.defaultValue !== undefined && Array.isArray(field.defaultValue)) {
+        Object.freeze(field.defaultValue);
+      }
+    }
+  }
+  Object.freeze(form.fields);
+  return Object.freeze(form);
+}
+
+let globalBroker: ElicitationInteractionBroker | null = null;
+
+export function setGlobalElicitationBroker(broker: ElicitationInteractionBroker | null): void {
+  globalBroker = broker;
+}
+
+export function getGlobalElicitationBroker(): ElicitationInteractionBroker | null {
+  return globalBroker;
+}
+
+export function resetGlobalElicitationBrokerForTests(): void {
+  try {
+    globalBroker?.shutdown();
+  } catch {}
+  globalBroker = null;
+}

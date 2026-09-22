@@ -6,6 +6,18 @@ export type {
   ChannelRetireHook,
 } from "./channels/plugin.js";
 export type { ChannelFactory, CreateChannelDeps } from "./channels/create-channel.js";
+// ACP form Elicitation: core-owned normalized field model + terminal decision.
+// Channel plugins consume these instead of raw ACP SDK types (plugin contract
+// principle §7); declaring `elicitationModes` without implementing
+// `requestElicitation` advertises nothing.
+export type {
+  ChannelElicitationDecision,
+  ChannelElicitationField,
+  ChannelElicitationMode,
+  ChannelElicitationOption,
+  ChannelElicitationRequest,
+  ChannelElicitationValue,
+} from "./interactions/elicitation-types.js";
 export type {
   ChannelStartInput,
   ChannelPermissionDecision,

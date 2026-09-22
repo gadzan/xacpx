@@ -130,11 +130,25 @@ export interface ResolvePermissionRequestParams {
 export interface ResolveElicitationRequestParams {
   logicalSessionId: string;
   sessionKey: string;
-  requestId: string;
-  elicitationId: string;
-  mode: string;
-  message: unknown;
-  policyGeneration: number;
+  /** Owning Runtime prompt request. */
+  promptRequestId: string;
+  /** xacpx broker correlation id (randomUUID). */
+  elicitationRequestId: string;
+  /** Exact originating human turn, when the daemon has a trusted route. */
+  interactionId?: string;
+  /**
+   * Agent driving the owning turn, from that turn's prompt params
+   * (`input.agent`). ACP requires the client to identify the requesting Agent.
+   *
+   * Do NOT source this from the runtime worker's ensure identity. That was the
+   * round 7 Blocking finding: ensure identity describes a pooled worker, not
+   * the agent the user chose for this prompt.
+   */
+  agentName?: string;
+  /** ACP outer `elicitation/create` JSON-RPC id. */
+  acpRequestId: string | number | null;
+  /** Original ACP CreateElicitationRequest. */
+  request: unknown;
   workerGeneration: string;
 }
 
@@ -193,10 +207,13 @@ export function decodeBridgeOriginatedRequest(value: unknown): BridgeOriginatedR
       if (
         typeof params.logicalSessionId !== "string" || !params.logicalSessionId ||
         typeof params.sessionKey !== "string" || !params.sessionKey ||
-        typeof params.requestId !== "string" || !params.requestId ||
-        typeof params.elicitationId !== "string" || !params.elicitationId ||
-        typeof params.mode !== "string" || !params.mode ||
-        typeof params.policyGeneration !== "number" ||
+        typeof params.promptRequestId !== "string" || !params.promptRequestId ||
+        typeof params.elicitationRequestId !== "string" || !params.elicitationRequestId ||
+        (params.interactionId !== undefined && typeof params.interactionId !== "string") ||
+        (params.agentName !== undefined && typeof params.agentName !== "string") ||
+        // ACP JsonRpcId is string | number | null; anything else is a
+        // correlation we cannot answer faithfully.
+        (typeof params.acpRequestId !== "string" && typeof params.acpRequestId !== "number" && params.acpRequestId !== null) ||
         typeof params.workerGeneration !== "string" || !params.workerGeneration
       ) return null;
       break;

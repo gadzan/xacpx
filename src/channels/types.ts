@@ -14,8 +14,23 @@ import type {
   ConversationPromptResponseDto,
 } from "../control/conversation-control-dtos.js";
 import type { HumanIngressContext } from "../conversations/conversation-types.js";
+import type {
+  ChannelElicitationDecision,
+  ChannelElicitationMode,
+  ChannelElicitationRequest,
+} from "../interactions/elicitation-types.js";
 
 export type { ChatAgent };
+export type {
+  ChannelElicitationDecision,
+  ChannelElicitationMode,
+  ChannelElicitationRequest,
+} from "../interactions/elicitation-types.js";
+export type {
+  ChannelElicitationField,
+  ChannelElicitationOption,
+  ChannelElicitationValue,
+} from "../interactions/elicitation-types.js";
 export type PermissionOutcome =
   | "allow_once"
   | "allow_always"
@@ -249,6 +264,47 @@ export interface MessageChannelRuntime {
    * and MUST settle exactly once (first terminal decision wins).
    */
   requestPermission?(request: ChannelPermissionRequest): Promise<ChannelPermissionDecision>;
+
+  /**
+   * Interactive ACP form Elicitation UI (roadmap G1/G4/G7).
+   * Optional so already-published plugins stay compatible; absent means
+   * Elicitation is unavailable for this channel and the broker fails closed.
+   *
+   * The AUTHORITATIVE contract is `MessageChannelElicitationRuntime` in
+   * `src/interactions/elicitation-types.ts`. Do NOT restate the rules here —
+   * a second copy of a security contract is a second copy that can drift (it
+   * already did once, in review round 15). These are the essentials only:
+   *
+   *   - render only for `request.requester.senderId`, and return the
+   *     platform-authenticated responder id (never a self-reported id);
+   *   - display `request.agent.name`; MUST NOT substitute agent-controlled
+   *     `message`/`title`/`description` text for identity;
+   *   - present `request.message` (ACP SHOULD);
+   *   - expose clear, SEPARATE Decline and Cancel controls (ACP MUST);
+   *   - let the user review and modify responses before Accept (ACP MUST);
+   *   - keep pending form state in server-side memory only, never encode
+   *     answer values into control ids/URLs, and never persist answers;
+   *   - settle exactly once: the first terminal decision wins. EVERY member of
+   *     `ChannelElicitationDecision` is a USER action and REQUIRES an
+   *     authenticated `responderId` — there is no responder-free variant.
+   *
+   *   External cancellation (timeout, turn disposal, agent
+   *   `$/cancel_request`, shutdown) is NOT a user decision, so it is not part
+   *   of the decision union at all: withdraw/disable your UI IMMEDIATELY and
+   *   stop collecting input, then reject/throw the promise (or never settle
+   *   it). Core owns that terminal cancellation and settles it as `cancel`
+   *   itself. Do not fabricate a `responderId` for it.
+   */
+  requestElicitation?(
+    request: ChannelElicitationRequest,
+  ): Promise<ChannelElicitationDecision>;
+
+  /**
+   * Elicitation modes this channel can actually render. Only listed modes
+   * backed by a real `requestElicitation` implementation are advertised by
+   * the core capability probe; absence never implies form support.
+   */
+  readonly elicitationModes?: readonly ChannelElicitationMode[];
 
   /**
    * Preferred render format for `/ssn` native session lists. weixin renders

@@ -200,6 +200,10 @@ export async function runBridgeMain(): Promise<void> {
         // unsupported channels; this flag only means escalation MAY be
         // Runtime-routed somewhere.
         permissionInteractionCapable: coreEnv("BRIDGE_PERMISSION_INTERACTION_CAPABLE") === "1",
+        // M1/G9: separate, truthful Elicitation capability derived from the
+        // same daemon-side registry probe the permission flag uses. Never
+        // inferred from permission support.
+        elicitationInteractionCapable: coreEnv("BRIDGE_ELICITATION_FORM_CAPABLE") === "1",
         onPermissionRequest: async (payload) => {
           try {
             const result = await server.requestDaemon("resolvePermissionRequest", payload as unknown as import("../transport/acpx-bridge/acpx-bridge-protocol").ResolvePermissionRequestParams, { timeoutMs: 125_000 });
@@ -212,11 +216,22 @@ export async function runBridgeMain(): Promise<void> {
             return { outcome: "reject_once" };
           }
         },
-        onElicitationRequest: async (payload) => {
+        onElicitationRequest: async (payload, signal?: AbortSignal) => {
+          // Request-scoped cancellation end-to-end: the worker tells us the
+          // agent withdrew this elicitation/create, we carry the abort into
+          // `requestDaemon`, which sends the bridge `cancelRpcId` frame, which
+          // makes the daemon drop its pending bridge RPC. The broker then sees
+          // its own cancel and unwinds instead of sitting out the 120s
+          // deadline with the renderer still live.
           try {
-            const result = await server.requestDaemon("resolveElicitationRequest", payload as unknown as import("../transport/acpx-bridge/acpx-bridge-protocol").ResolveElicitationRequestParams, { timeoutMs: 30000 });
-            const action = (result as { action?: unknown })?.action;
-            if (action === "submit") return { action: "submit", data: (result as { data?: unknown }).data };
+            const decision = await server.requestDaemon<{ action?: unknown }, "resolveElicitationRequest">("resolveElicitationRequest", payload as unknown as import("../transport/acpx-bridge/acpx-bridge-protocol").ResolveElicitationRequestParams, { timeoutMs: 125_000, ...(signal ? { signal } : {}) });
+            if (
+              decision
+              && typeof decision === "object"
+              && (decision.action === "accept" || decision.action === "decline" || decision.action === "cancel")
+            ) {
+              return decision as { action: "accept" | "decline" | "cancel" };
+            }
             return { action: "cancel" };
           } catch {
             return { action: "cancel" };

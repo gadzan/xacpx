@@ -98,6 +98,12 @@ import {
   setGlobalPermissionBroker,
 } from "./permissions/permission-interaction-broker.js";
 import type { RuntimePermissionInteractionRequest } from "./permissions/permission-types.js";
+import {
+  ElicitationInteractionBroker,
+  type RuntimeElicitationRequest,
+  setGlobalElicitationBroker,
+  getGlobalElicitationBroker,
+} from "./interactions/elicitation-interaction-broker.js";
 import { RuntimeMediaStore } from "./channels/media-store.js";
 import { isQuotaDeferredError } from "./weixin/messaging/quota-errors";
 import { normalizeWeixinUserIdFromChatKey } from "./weixin/messaging/inbound.js";
@@ -329,6 +335,7 @@ interface RuntimeDeps {
     nativeSessionListFormat?: (chatKey: string) => "cards" | "table";
     getByChatKey?: (chatKey: string) => MessageChannelRuntime | null;
     hasPermissionInteractionCapability?: () => boolean;
+    hasElicitationFormCapability?: () => boolean;
   };
   sendOrchestrationNotice?: (task: OrchestrationTaskRecord) => Promise<void>;
   sendCoordinatorMessage?: (input: CoordinatorMessageInput) => Promise<void>;
@@ -602,6 +609,35 @@ export async function buildApp(
     logger,
   });
   setGlobalPermissionBroker(permissionBroker);
+  // ACP form Elicitation broker (M1). Owns the same exact-turn registry as
+  // the permission broker — an interaction route is bound once per human
+  // prompt and consumed by either broker through the opaque interactionId,
+  // with independent terminal semantics. Replace the old unconditional
+  // cancel with real dispatch; every failure path still cancels.
+  let elicitationInteractionCapable = false;
+  try {
+    // G9: form capability requires BOTH an implementation and a declared
+    // `form` mode. An implementation without the declaration would let the
+    // broker accept the request and then fail closed on the mode check, so
+    // advertising it would be a lie the agent pays for.
+    elicitationInteractionCapable =
+      typeof channelRegistryLike?.hasElicitationFormCapability === "function" &&
+      channelRegistryLike.hasElicitationFormCapability() === true;
+  } catch {
+    elicitationInteractionCapable = false;
+  }
+  const elicitationBroker = new ElicitationInteractionBroker({
+    registry: permissionBroker.turnRegistry,
+    getChannelByChatKey: (chatKey) => {
+      try {
+        return channelRegistryLike?.getByChatKey?.(chatKey) ?? null;
+      } catch {
+        return null;
+      }
+    },
+    logger,
+  });
+  setGlobalElicitationBroker(elicitationBroker);
   const sessions = new SessionService(config, debouncedStateStore, state, {
     stateMutex,
     runtimeRoot,
@@ -709,6 +745,7 @@ export async function buildApp(
                 bridgeEntryPath: resolveBridgeEntryPath(),
                 agentOverlays: computeAgentOverlayEntries(config),
                 permissionInteractionCapable,
+                elicitationFormCapable: elicitationInteractionCapable,
                 permissionMode: config.transport.permissionMode,
                 nonInteractivePermissions:
                   config.transport.nonInteractivePermissions,
@@ -765,7 +802,31 @@ export async function buildApp(
                     }
                   }
                   if (method === "resolveElicitationRequest") {
-                    return { action: "cancel" };
+                    const broker = elicitationBroker;
+                    if (!broker) return { action: "cancel" };
+                    try {
+                      const request: RuntimeElicitationRequest = {
+                        promptRequestId: (params as { promptRequestId?: unknown }).promptRequestId as string,
+                        elicitationRequestId: (params as { elicitationRequestId?: unknown }).elicitationRequestId as string,
+                        ...(typeof (params as { interactionId?: unknown }).interactionId === "string"
+                          ? { interactionId: (params as { interactionId: string }).interactionId }
+                          : {}),
+                        // Trusted agent identity for the ACP "identify the
+                        // requesting Agent" requirement, carried from the
+                        // EXACT prompt turn's own params (`input.agent`).
+                        // Never from the worker's ensure identity (round 7
+                        // Blocking: that is a pooled worker, not the agent
+                        // this user chose) and never from a session-alias
+                        // lookup a concurrent turn could change.
+                        ...(typeof (params as { agentName?: unknown }).agentName === "string"
+                          ? { agentName: (params as { agentName: string }).agentName }
+                          : {}),
+                        request: (params as { request?: unknown }).request,
+                      };
+                      return await broker.resolveElicitation(request, context.signal);
+                    } catch {
+                      return { action: "cancel" };
+                    }
                   }
                   return await launchIntentCoordinator.handle(method as never, params as never, context);
                 },
@@ -2293,6 +2354,14 @@ export async function buildApp(
       try {
         permissionBroker.shutdown();
       } catch {}
+      // Same for Elicitation: pending form state is ephemeral (G8) and must
+      // cancel, never survive or persist across restart.
+      try {
+        elicitationBroker.shutdown();
+      } catch {}
+      if (getGlobalElicitationBroker() === elicitationBroker) {
+        setGlobalElicitationBroker(null);
+      }
       if (getGlobalPermissionBroker() === permissionBroker) {
         setGlobalPermissionBroker(null);
       }

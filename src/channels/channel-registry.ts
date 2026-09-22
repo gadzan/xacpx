@@ -100,6 +100,47 @@ export class MessageChannelRegistry {
     return false;
   }
 
+  /**
+   * True form-Elicitation capability: at least one registered runtime both
+   * implements `requestElicitation()` AND declares the `form` mode. Deliberately
+   * independent of the permission probe (G9): a channel may support approvals
+   * but cannot render a form Elicitation, and v1 forbids inferring one from the
+   * other. Implementing the method without declaring a mode is NOT support —
+   * the broker would accept the request and then fail closed on the mode check,
+   * so advertising it would be a lie the agent pays for.
+   */
+  hasElicitationFormCapability(): boolean {
+    return this.supportedElicitationModes().includes("form");
+  }
+
+  /**
+   * Modes this registry can truthfully advertise.
+   *
+   * M1's plugin contract is FORM ONLY, and that is a deliberate narrowing of
+   * the ACP mode union rather than an oversight: `ChannelElicitationRequest`
+   * carries form data only, there is no URL dispatch, and the RFD's URL-mode
+   * rules (target-host display, consent before navigating, `elicitationId`,
+   * `elicitation/complete`) are unimplemented. A channel declaring `"url"`
+   * would therefore be reported as supporting a mode core cannot deliver —
+   * a capability lie in the published plugin API.
+   *
+   * A mode counts only when a channel declares it AND implements
+   * `requestElicitation()`. Without a form-capable channel the result is empty,
+   * and the daemon advertises no ACP elicitation capability at all.
+   *
+   * When M2 adds URL rendering, this is the single place that widens.
+   */
+  supportedElicitationModes(): Array<"form"> {
+    const modes: Array<"form"> = [];
+    for (const channel of this.channels.values()) {
+      if (typeof channel.requestElicitation !== "function") continue;
+      for (const mode of channel.elicitationModes ?? []) {
+        if (mode === "form" && !modes.includes(mode)) modes.push(mode);
+      }
+    }
+    return modes;
+  }
+
   async notifyTaskCompletion(task: OrchestrationTaskRecord): Promise<void> {
     if (!task.chatKey) return;
     await this.requireByChatKey(task.chatKey).notifyTaskCompletion(task);
