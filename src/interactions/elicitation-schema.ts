@@ -32,6 +32,17 @@ export const ELICITATION_SCHEMA_LIMITS = {
    * needs a bound like every other string field.
    */
   maxFormatLength: 64,
+  /**
+   * ACP uint32 ceiling. `minLength`/`maxLength` are declared uint32 and the
+   * pinned SDK enforces `z.int().gte(0).max(4294967295)`, so a larger value is
+   * rejected upstream of xacpx and must be rejected here too — otherwise core
+   * publishes a constraint the ACP reader refuses.
+   *
+   * Deliberately NOT applied to `minItems`/`maxItems`, which ACP declares as
+   * bare numbers on the uint64 side. Each ceiling is passed by the caller that
+   * matches ACP's declaration, never inherited from a shared helper.
+   */
+  maxUint32: 0xffffffff,
   maxRequiredNames: 20,
   /**
    * Max characters of an agent-controlled string echoed into a diagnostic
@@ -256,13 +267,33 @@ function readSalvagedStringArray(
   return { ok: true, value: kept };
 }
 
+/**
+ * An optional non-negative integer, optionally bounded above.
+ *
+ * The optional `max` exists because ACP gives different integer members
+ * DIFFERENT ranges and the choice is observable:
+ *
+ *   - `minLength` / `maxLength` are **uint32** — the pinned SDK validates
+ *     `z.int().gte(0).max(4294967295)`, so `4294967296` is rejected upstream of
+ *     xacpx and must be rejected here too. Accepting it would let core publish
+ *     a constraint the ACP reader refuses.
+ *   - `minItems` / `maxItems` are bare `z.number().nullish()` — NOT even
+ *     integer-checked — so they must NOT borrow the uint32 ceiling.
+ *
+ * Callers pass the ceiling that matches ACP's declaration instead of inheriting
+ * one from a shared helper, which is how the original bug happened: a single
+ * "non-negative integer" check that was simultaneously too loose for uint32
+ * fields and (if widened naively) too strict for the uint64 ones.
+ */
 function readOptionalPositiveInteger(
   holder: Plain,
   key: string,
+  max?: number,
 ): { ok: true; value?: number } | { ok: false } {
   const value = holder[key];
   if (value === undefined || value === null) return { ok: true };
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0) return { ok: false };
+  if (max !== undefined && value > max) return { ok: false };
   return { ok: true, value };
 }
 
@@ -310,9 +341,14 @@ function normalizeField(
 
   switch (rawType) {
     case "string": {
-      const minLength = readOptionalPositiveInteger(property, "minLength");
+      // ACP declares `minLength`/`maxLength` as uint32 and the pinned SDK
+      // enforces `z.int().gte(0).max(4294967295)`. Passing the ceiling here
+      // (and NOT for `minItems`/`maxItems`, which are uint64 / bare numbers in
+      // ACP) is what keeps the bounds member-specific rather than inherited
+      // from the shared helper.
+      const minLength = readOptionalPositiveInteger(property, "minLength", ELICITATION_SCHEMA_LIMITS.maxUint32);
       if (!minLength.ok) return { ok: false, detail: `field "${boundedKeyLabel(key)}" has an invalid minLength` };
-      const maxLength = readOptionalPositiveInteger(property, "maxLength");
+      const maxLength = readOptionalPositiveInteger(property, "maxLength", ELICITATION_SCHEMA_LIMITS.maxUint32);
       if (!maxLength.ok) return { ok: false, detail: `field "${boundedKeyLabel(key)}" has an invalid maxLength` };
       if (minLength.value !== undefined
         && maxLength.value !== undefined

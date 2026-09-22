@@ -3,7 +3,7 @@
 ```text
 Milestone: M1 Core Foundation
 Base:      e98cb68e (main, "feat(relay-web): sticky agent avatar with working quip chip and unified send/cancel (#353)")
-Head:      5fe0e832f8900bffa171b72b11adcc0d2bb7c2d3 + round-20 fixes (post-review)
+Head:      956b31a8dd481f9e03e3ee12d86e680fd5164caf + round-21 fixes (post-review)
 PR:        #355 "feat(elicitation): ACP Elicitation M1 core foundation" (OPEN, mergeable)
 ```
 
@@ -1389,7 +1389,6 @@ Total new: **228**. M1 unit suites 364/364 green; real-acpx E2E 25/26
 | R18 | wrong root `type` rejected again | 2 root-tolerance regressions |
 | R19 | metadata salvage removed | metadata-salvage regression |
 | R19 | `pattern` wrongly salvaged | pattern-strictness regression |
-
 ## Review round 20 (head `5fe0e832`) — multi-select item-level salvage
 
 1 Medium, no Blocking. **Round 19's "nothing left" claim was inaccurate and is
@@ -1468,3 +1467,55 @@ Total new: **232**. M1 unit suites 367/367 green; real-acpx E2E 25/26
   variant's salvage is per-element. Corrected by this round. The audit method
   is now: for every salvaged member, also record the salvage GRANULARITY
   (whole value vs per item) before claiming coverage.
+
+## Review round 21 (head `956b31a8`) — uint32 range for string length bounds
+
+1 Medium, no Blocking.
+
+### [Medium] `minLength`/`maxLength` accepted values ACP's reader rejects
+
+The shared `readOptionalPositiveInteger()` only checked "non-negative integer",
+so `{ "type": "string", "minLength": 4294967296 }` was accepted and published as
+a constraint. ACP declares these fields **uint32**, and the pinned SDK enforces
+`z.int().gte(0).max(4294967295)` — so that value is rejected upstream of xacpx.
+
+Fixed with an optional `max` parameter on the helper, passed only by the callers
+whose ACP declaration matches:
+
+| Member | ACP range | Ceiling passed |
+|---|---|---|
+| `minLength` / `maxLength` | uint32 | `maxUint32` = `0xffffffff` |
+| `minItems` / `maxItems` | uint64 / bare number | **none** |
+
+Verified from the SDK source that the member-specific choice is correct, not a
+guess: `minItems`/`maxItems` are `z.number().nullish()` with no `.max()` at all,
+so a helper-wide uint32 ceiling would have been a regression in the opposite
+direction — exactly the trade the reviewer flagged.
+
+The review's point about not widening the shared helper applies to the *default*,
+not the capability; the capability is now explicit at each call site instead of
+implicit in the helper, and both misuse directions are mutation-guarded.
+
+| Mutation | Caught by |
+|---|---|
+| `minLength` uint32 ceiling removed | uint32-boundary regression |
+| ceiling made helper-wide (breaks `minItems`) | minItems-not-uint32 regression |
+
+## Final totals after round 21
+
+| Suite | Tests |
+|---|---|
+| `elicitation-schema.test.ts` | 149 |
+
+Total new: **234**. M1 unit suites 369/369 green; real-acpx E2E 25/26
+(pre-existing `PR9-A`); `npx tsc --noEmit` 0 errors.
+
+### Cumulative mutation-verification table (round 21 addition)
+
+| Round | Mutation | Caught by |
+|---|---|---|
+| R20 | multi-select per-item salvage removed | item-salvage regression |
+| R20 | per-item salvage introduced into `enum` | enum-strictness regression |
+| R21 | `minLength` uint32 ceiling removed | uint32-boundary regression |
+| R21 | ceiling made helper-wide (breaks `minItems`) | minItems-not-uint32 regression |
+

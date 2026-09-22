@@ -2040,6 +2040,44 @@ describe("validateElicitationAnswer calendar and RFC3339 strictness", () => {
     expect(validateElicitationAnswer([dateTime], { when: "2026-09-20T23:59:60Z" }).ok).toBe(false);
   });
 
+  test("minLength and maxLength are bounded by the ACP uint32 range", () => {
+    // ACP declares these uint32; the pinned SDK enforces
+    // `z.int().gte(0).max(4294967295)`, so `4294967296` is rejected upstream of
+    // xacpx and must be rejected here too — accepting it would let core publish
+    // a constraint the ACP reader refuses.
+    //
+    // Both boundaries are pinned in both directions, for both fields: the
+    // in-range maximum must still be ACCEPTED, otherwise the ceiling could
+    // silently reject legal schemas while fixing the overflow.
+    for (const key of ["minLength", "maxLength"] as const) {
+      const accepted = normalizeAcpElicitationForm(formRequest({
+        requestedSchema: { type: "object", properties: { a: { type: "string", [key]: ELICITATION_SCHEMA_LIMITS.maxUint32 } } },
+      }));
+      expect(accepted.ok).toBe(true);
+
+      const rejected = normalizeAcpElicitationForm(formRequest({
+        requestedSchema: { type: "object", properties: { a: { type: "string", [key]: ELICITATION_SCHEMA_LIMITS.maxUint32 + 1 } } },
+      }));
+      expect(rejected.ok).toBe(false);
+    }
+  });
+
+  test("minItems and maxItems do NOT inherit the uint32 ceiling", () => {
+    // The ceiling must be member-specific, not helper-wide: ACP declares
+    // `minItems`/`maxItems` as bare numbers on the uint64 side (the pinned SDK
+    // uses `z.number().nullish()`, not even integer-checked). A naive widening
+    // of the shared helper would reject values ACP accepts.
+    for (const key of ["minItems", "maxItems"] as const) {
+      const overUint32 = normalizeAcpElicitationForm(formRequest({
+        requestedSchema: {
+          type: "object",
+          properties: { a: { type: "array", items: { type: "string", enum: ["x"] }, [key]: ELICITATION_SCHEMA_LIMITS.maxUint32 + 1 } },
+        },
+      }));
+      expect(overUint32.ok).toBe(true);
+    }
+  });
+
   test("an out-of-range offset is rejected even on a leap second", () => {
     // Regression: the leap-second branch returned before the offset range
     // check, so `+24:00` shifted the instant onto a real leap date and passed.
