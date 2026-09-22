@@ -20,6 +20,11 @@ import { buildFeishuQueueKey, clearFeishuQueueForAccount } from "./chat-queue.js
 import { buildFeishuCompletionNotice } from "./completion-notice.js";
 import { buildFeishuConversationId, buildFeishuRouteMetadata, evaluateFeishuAccessPolicy, parseFeishuConversationId, shouldHandleFeishuMessage } from "./inbound.js";
 import { isMessageExpired } from "./message-dedup.js";
+import {
+  startFeishuCardActionHost,
+  type FeishuCardActionCallback,
+  type FeishuCardActionRuntime,
+} from "./card-action-host.js";
 import { sendTextFeishu, sendMediaFeishu } from "./send.js";
 import { addTypingIndicator, removeTypingIndicator, type FeishuReactionClient, type TypingIndicatorState } from "./typing.js";
 import { extractRawTextFromFeishuEvent, isLikelyAbortText } from "./abort-detect.js";
@@ -46,12 +51,26 @@ type OrchestrationTaskRecord = Parameters<MessageChannelRuntime["notifyTaskCompl
 
 interface FeishuChannelDeps extends CreateChannelDeps {
   createClient?: (account: FeishuResolvedAccountConfig) => FeishuLarkClient;
+  /**
+   * Test seam: replaces the card-callback listener so no socket is opened.
+   * Mirrors `createClient`, which does the same for the WS path.
+   */
+  createCardHost?: (options: {
+    config: Extract<FeishuResolvedAccountConfig["cardActions"], object>;
+    onAction: (callback: FeishuCardActionCallback) => Promise<{ ok: true } | { ok: false; reason: "unauthorized" | "malformed" | "unsupported" | "internal" }>;
+    log?: (event: string, message: string, fields?: Record<string, string | number | boolean | undefined>) => void;
+  }) => Promise<FeishuCardActionRuntime>;
 }
 
 interface AccountRuntime {
   account: FeishuResolvedAccountConfig;
   client: FeishuLarkClient;
   botOpenId?: string;
+  /**
+   * Card-callback listener, present only when the account configures
+   * `cardActions`. Stopped on logout alongside the WS client.
+   */
+  cardHost?: FeishuCardActionRuntime;
 }
 
 interface ActiveTask {
@@ -127,6 +146,12 @@ export class FeishuChannel implements MessageChannelRuntime {
   }
   logout(): void {
     for (const [accountId, runtime] of this.accounts) {
+      // Stop the card listener first: a live endpoint after logout would still
+      // authenticate and dispatch card actions into a torn-down channel.
+      if (runtime.cardHost) {
+        void runtime.cardHost.stop().catch(() => {});
+        runtime.cardHost = undefined;
+      }
       runtime.client.stop();
       clearMessageUnavailableForAccount(accountId);
       clearFeishuQueueForAccount(accountId);
@@ -142,6 +167,61 @@ export class FeishuChannel implements MessageChannelRuntime {
     this.chatOwnerLookups.clear();
     this.permissionNotifier.reset();
     this.dedup.dispose();
+  }
+
+  /**
+   * Start the card-callback listener for one account.
+   *
+   * A startup failure is logged and swallowed rather than aborting `start()`:
+   * the WS message channel is independent, and losing it would take down the
+   * channel's primary function. The consequence — card interactions
+   * unavailable for this account — is exactly what the operator asked for by
+   * configuring `cardActions`, so a failed bind must not silently look like a
+   * working card channel.
+   */
+  private async startCardActions(account: FeishuResolvedAccountConfig): Promise<FeishuCardActionRuntime | undefined> {
+    const cardActions = account.cardActions;
+    if (!cardActions) return undefined;
+    const createHost = this.deps.createCardHost ?? startFeishuCardActionHost;
+    try {
+      return await createHost({
+        config: cardActions,
+        onAction: (callback) => this.handleCardAction(account.accountId, callback),
+        log: (event, message, fields) => {
+          void this.logger?.warn(event, message, fields);
+        },
+      });
+    } catch (error) {
+      await this.logger?.error("feishu.card_actions_failed", "failed to start feishu card callback channel", {
+        accountId: account.accountId,
+        port: cardActions.port,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  }
+
+  /**
+   * Dispatch a verified card action.
+   *
+   * Stage 1 (this commit) deliberately returns `unsupported`: the endpoint
+   * authenticates and routes, but no form renderer exists yet, so an action
+   * that reaches here has no consumer. Reporting that honestly (HTTP 404 to
+   * Feishu, a logged reason to the operator) keeps the trust boundary intact
+   * while the renderer is built — an endpoint that pretended to handle actions
+   * would be the lie this milestone is meant to avoid.
+   */
+  private async handleCardAction(
+    _accountId: string,
+    callback: FeishuCardActionCallback,
+  ): Promise<{ ok: true } | { ok: false; reason: "unauthorized" | "malformed" | "unsupported" | "internal" }> {
+    await this.logger?.info("feishu.card.action", "received feishu card action", {
+      operatorPrefix: callback.openId.slice(0, 8),
+    });
+    // The operator id is logged truncated, and no answer value is logged at
+    // all: `callback.formValues` may contain exactly the data the elicitation
+    // asked for.
+    return { ok: false, reason: "unsupported" };
   }
 
   configureOrchestration(callbacks: OrchestrationDeliveryCallbacks): void {
@@ -181,6 +261,18 @@ export class FeishuChannel implements MessageChannelRuntime {
       });
       const runtime: AccountRuntime = { account, client, ...(probe.botOpenId ? { botOpenId: probe.botOpenId } : {}) };
       this.accounts.set(account.accountId, runtime);
+      // Card-callback listener, only when the account opted in. Without
+      // `cardActions` the account simply never receives card interactions.
+      if (account.cardActions) {
+        runtime.cardHost = await this.startCardActions(account);
+        if (runtime.cardHost) {
+          await input.logger.info("feishu.card_actions", "feishu card callback channel listening", {
+            accountId: account.accountId,
+            port: runtime.cardHost.port(),
+            path: account.cardActions.path,
+          });
+        }
+      }
       await client.startWS({
         handlers: {
           "im.message.receive_v1": (data) => this.handleMessageEvent(account.accountId, data),

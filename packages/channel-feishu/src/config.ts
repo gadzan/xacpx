@@ -39,6 +39,33 @@ export interface FeishuResolvedAccountConfig {
   allowFrom: string[];
   replyMode: FeishuReplyMode;
   trustGroupOwner: boolean;
+  /**
+   * Card-action callback channel. Feishu delivers interactive-card events
+   * (button clicks, form submits) as CALLBACKS, which the WebSocket long
+   * connection cannot carry — it subscribes to events only. So this is a
+   * separate, opt-in HTTP surface.
+   *
+   * `encryptKey` and `verificationToken` are what make the callback
+   * authenticated: they verify that a request really came from Feishu's open
+   * platform, which is the trust anchor the plugin's identity check needs.
+   * Without them the channel stays unsupported rather than trusting payload
+   * text. The port is a required companion: an unauthenticated listener on a
+   * shared host is worse than no listener at all.
+   */
+  cardActions?: FeishuCardActionConfig;
+}
+
+/** Opt-in card-callback (webhook) listener for one account. */
+export interface FeishuCardActionConfig {
+  /** Decryption key for encrypted pushes; also the trust anchor for authenticity. */
+  encryptKey: string;
+  /** Token Feishu echoes on every callback; rejected when it does not match. */
+  verificationToken: string;
+  /** Loopback interface to bind. Defaults to 127.0.0.1 — a private surface. */
+  host: string;
+  port: number;
+  /** Route path Feishu POSTs to, e.g. `/webhook/card`. */
+  path: string;
 }
 
 export interface FeishuChannelConfig extends FeishuAccountConfig {
@@ -63,6 +90,9 @@ const BASE_RESERVED_KEYS = new Set([
   "dedupTtlMs",
   "dedupMaxEntries",
   "tuning",
+  // Per-account by nature: each account owns its own listener port, so a shared
+  // value would make multiple accounts fight over one socket.
+  "cardActions",
 ]);
 
 function parseTuning(raw: unknown): FeishuTuning {
@@ -139,6 +169,7 @@ function resolveAccount(
     throw new Error(`${path}.allowFrom must list at least one open_id (or "*") when dmPolicy/groupPolicy is "allowlist"`);
   }
   const replyMode = enumValue<FeishuReplyMode>(merged.replyMode, `${path}.replyMode`, ["static", "streaming", "auto"], "auto");
+  const cardActions = parseCardActions(merged.cardActions, `${path}.cardActions`);
   return {
     accountId,
     ...(stringOptional(merged.name, `${path}.name`) ? { name: stringOptional(merged.name, `${path}.name`)! } : {}),
@@ -153,6 +184,45 @@ function resolveAccount(
     allowFrom,
     replyMode,
     trustGroupOwner: booleanOptional(merged.trustGroupOwner, `${path}.trustGroupOwner`) ?? false,
+    ...(cardActions ? { cardActions } : {}),
+  };
+}
+
+const DEFAULT_CARD_ACTION_HOST = "127.0.0.1";
+const DEFAULT_CARD_ACTION_PATH = "/webhook/card";
+
+/**
+ * Parse the opt-in card-callback listener.
+ *
+ * Absent config means "no card channel", which is the default and the safe
+ * state: without it the Feishu plugin never receives card interactions and
+ * never claims to support form Elicitation.
+ *
+ * A misconfigured listener is a hard error rather than a silently disabled one.
+ * An operator who wrote `cardActions` clearly intends the channel to exist, and
+ * an endpoint that never comes up (because, say, the port was a string) would
+ * look exactly like "the feature does not work" at runtime.
+ */
+function parseCardActions(raw: unknown, path: string): FeishuCardActionConfig | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === false) return undefined;
+  if (!isRecord(raw)) throw new Error(`${path} must be an object`);
+  const encryptKey = stringOptional(raw.encryptKey, `${path}.encryptKey`);
+  const verificationToken = stringOptional(raw.verificationToken, `${path}.verificationToken`);
+  if (!encryptKey && !verificationToken) {
+    throw new Error(`${path} requires encryptKey and/or verificationToken: an unauthenticated card endpoint cannot verify that a callback came from Feishu`);
+  }
+  const port = raw.port;
+  if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`${path}.port must be an integer between 1 and 65535`);
+  }
+  const host = stringOptional(raw.host, `${path}.host`) ?? DEFAULT_CARD_ACTION_HOST;
+  return {
+    encryptKey: encryptKey ?? "",
+    verificationToken: verificationToken ?? "",
+    host,
+    port,
+    path: stringOptional(raw.path, `${path}.path`) ?? DEFAULT_CARD_ACTION_PATH,
   };
 }
 
