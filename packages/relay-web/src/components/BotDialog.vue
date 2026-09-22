@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { X, Loader2, AlertCircle } from "lucide-vue-next";
 import type { BotDetailDto, BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
@@ -216,6 +216,27 @@ function retryHydrate(): void {
   // fence stays valid; a close/reopen bumps it and drops late resolutions.
   void hydrateDetail(dialogGeneration);
 }
+// Reactive bridge for background authority convergence: bots-changed (or any
+// other path) may hydrate the store while this dialog sits in the failed
+// state. The plain botDetailHydrated map is non-reactive, so watch the
+// reactive sources that always change alongside it — the cached detail row
+// and the summary revision. syncHydratedFromStore() is sync and generation
+// fenced by mount/unmount disposal, so late store writes cannot leak into a
+// closed dialog.
+watch(
+  () => {
+    const botId = props.bot?.id;
+    if (!botId) return null;
+    const key = `${props.instanceId}:${botId}`;
+    return [
+      directBotsStore.botDetails[key],
+      directBotsStore.botsByInstance[props.instanceId]?.find((b) => b.id === botId)?.profileRevision,
+    ] as const;
+  },
+  () => {
+    syncHydratedFromStore();
+  },
+);
 async function submit(): Promise<void> {
   const trimmedName = name.value.trim();
   if (!trimmedName) {

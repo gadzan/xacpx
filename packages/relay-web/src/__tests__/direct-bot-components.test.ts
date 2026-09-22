@@ -730,6 +730,64 @@ describe("Direct Bot Components", () => {
       await flushPromises();
       expect(updateSpy).toHaveBeenCalled();
     });
+    it("auto-releases the gate when background authority converges without manual retry", async () => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "codex", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+          agentCatalog: [],
+        } as never,
+      ];
+      const directBots = useDirectBotsStore();
+      const authoritative = {
+        id: "bot_1", name: "Server Name", agent: "codex", workspace: "repo",
+        instructions: "Server instructions", enabled: true, profileRevision: 2,
+        createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "2026-09-18T00:00:00.000Z",
+      } as BotDetailDto;
+      // Fail the dialog's own hydrate through the real store path (so no
+      // authority is recorded), then let a background loadBotDetail succeed.
+      const { api } = await import("../api/client");
+      let getCalls = 0;
+      const apiSpy = vi.spyOn(api, "rpc").mockImplementation(async (iid: string, type: string) => {
+        if (type === "control.bots.get") {
+          getCalls += 1;
+          if (getCalls === 1) throw new Error("transient bots.get drop");
+          return { bot: authoritative } as never;
+        }
+        return {} as never;
+      });
+      const existingBot: BotSummaryDto = {
+        id: "bot_1", name: "Bot", agent: "codex", workspace: "repo",
+        enabled: true, updatedAt: "2026-09-18T00:00:00.000Z",
+      };
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local", bot: existingBot },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      expect(wrapper.find('[data-test="bot-detail-retry"]').exists()).toBe(true);
+      const saveBtn = wrapper.findAll("button").find((b) => b.text().includes("Save"));
+      expect(saveBtn).toBeTruthy();
+      expect((saveBtn!.element as HTMLButtonElement).disabled).toBe(true);
+      // User edits while failed; then a background path (bots-changed)
+      // hydrates the store through the real path — no manual retry click.
+      await wrapper.find("#bot-name").setValue("User Name");
+      await directBots.loadBotDetail("i1", "bot_1");
+      await flushPromises();
+      await wrapper.vm.$nextTick();
+      expect(getCalls).toBe(2);
+      expect(wrapper.find('[data-test="bot-detail-retry"]').exists()).toBe(false);
+      expect((wrapper.find("#bot-name").element as HTMLInputElement).value).toBe("User Name");
+      expect((wrapper.find("#bot-instructions").element as HTMLTextAreaElement).value).toBe("Server instructions");
+      expect((saveBtn!.element as HTMLButtonElement).disabled).toBe(false);
+      apiSpy.mockRestore();
+    });
     it("blocks Save until summary-backed detail hydration completes", async () => {
       const instances = useInstancesStore();
       instances.instances = [
