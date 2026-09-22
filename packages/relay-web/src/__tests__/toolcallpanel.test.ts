@@ -46,6 +46,23 @@ describe("ToolCallPanel", () => {
     expect(rows[1].find("span.min-w-0").attributes("dir")).toBeUndefined();
   });
 
+  it("shows the full title for a title-only row with no detail", async () => {
+    // Header-only steps carry no detail; expanding must still surface the
+    // full title as rendered text — previously it unwrapped the header.
+    const long = "packages/relay-web/src/very/deeply/nested/title-only-file-that-overflows.ts";
+    const w = mount(ToolCallPanel, {
+      props: {
+        steps: [
+          { toolCallId: "h1", toolName: "Read", kind: "read", status: "success", title: long },
+        ],
+      },
+    });
+    await w.find("button").trigger("click");
+    await w.findAll('[data-test="tool-row"]')[0].trigger("click");
+    expect(w.find('[data-test="detail-headline"]').text()).toBe(long);
+    expect(w.find('[data-test="copy-button"]').exists()).toBe(true);
+  });
+
   it("marks a running step distinctly from a successful one", async () => {
     const w = mount(ToolCallPanel, { props: { steps } });
     await w.find("button").trigger("click");

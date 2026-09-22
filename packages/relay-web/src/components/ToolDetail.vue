@@ -2,10 +2,9 @@
 import { computed } from "vue";
 import type { ToolDetailDto } from "@ganglion/xacpx-relay-protocol";
 import ExpandableBlock from "./ExpandableBlock.vue";
-import CopyButton from "./CopyButton.vue";
 import { diffLines } from "../lib/line-diff";
 
-const props = defineProps<{ detail: ToolDetailDto; headline?: string }>();
+const props = defineProps<{ detail: ToolDetailDto }>();
 
 // Line-level diff of the two blobs, with old/new line numbers and true +/− counts.
 const parsedDiff = computed(() =>
@@ -45,10 +44,6 @@ const outputMeta = computed(() => {
 
 <template>
   <div class="mt-1 space-y-1 text-xs">
-    <div v-if="headline" class="flex min-w-0 items-start gap-2" data-test="detail-headline">
-      <p class="min-w-0 flex-1 font-mono text-[11px] text-fg break-all whitespace-pre-wrap select-text">{{ headline }}</p>
-      <CopyButton :text="headline ?? ''" />
-    </div>
     <template v-if="detail.type === 'diff'">
       <p
         v-if="detail.instruction"

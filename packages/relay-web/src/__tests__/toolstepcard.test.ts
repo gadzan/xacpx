@@ -140,6 +140,18 @@ describe("ToolStepCard error banner de-duplication", () => {
     expect(w.find('[data-test="detail-headline"]').text()).toBe(summary);
   });
 
+  it("shows the full title for an error step with no detail", async () => {
+    // Failed edits can carry error + title with detail === undefined; the
+    // drawer must still surface the full title — ToolDetail never mounts.
+    const title = "packages/relay-web/src/very/deeply/nested/empty-file-that-overflows.ts";
+    const w = card({ kind: "edit", status: "error", title, error: "disk full" });
+    expect(w.find('[data-test="tool-step-header"]').attributes("aria-expanded")).toBe("false");
+    await w.find('[data-test="tool-step-header"]').trigger("click");
+    expect(w.find('[data-test="tool-step-detail"]').exists()).toBe(true);
+    expect(w.find('[data-test="detail-headline"]').text()).toBe(title);
+    expect(w.find('[data-test="copy-button"]').exists()).toBe(true);
+  });
+
   it("head-truncates stamped path titles so the filename stays visible", () => {
     // dir=rtl moves the ellipsis to the head (…tail): the filename — the part
     // users scan for — survives truncation. Full path stays in the tooltip.

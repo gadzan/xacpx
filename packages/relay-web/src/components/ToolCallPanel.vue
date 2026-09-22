@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import type { ToolStepDto } from "@ganglion/xacpx-relay-protocol";
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Loader2, Wrench } from "lucide-vue-next";
 import ToolDetail from "./ToolDetail.vue";
+import DetailHeadline from "./DetailHeadline.vue";
 import FueDot from "./FueDot.vue";
 import FueCallout from "./FueCallout.vue";
 import { useFue } from "../lib/use-fue";
@@ -118,8 +119,9 @@ function rowElapsed(s: ToolStepDto): string {
           <Loader2 v-else-if="s.status === 'running'" data-test="step-status-running" :size="11" class="animate-spin motion-reduce:animate-none text-accent" />
           <AlertTriangle v-else data-test="step-status-error" :size="11" class="text-danger" />
         </button>
-        <div v-if="expanded.has(s.toolCallId) && s.detail" class="pl-3 py-1">
-          <ToolDetail :detail="s.detail" :headline="s.title" />
+        <div v-if="expanded.has(s.toolCallId)" class="pl-3 py-1 space-y-1">
+          <DetailHeadline :text="s.title" />
+          <ToolDetail v-if="s.detail" :detail="s.detail" />
         </div>
       </li>
     </ul>

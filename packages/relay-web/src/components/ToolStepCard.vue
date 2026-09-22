@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import type { ToolStepDto } from "@ganglion/xacpx-relay-protocol";
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Loader2 } from "lucide-vue-next";
 import ToolDetail from "./ToolDetail.vue";
+import DetailHeadline from "./DetailHeadline.vue";
 import { KIND_ICON, diffStatsOf, isPathTitle, stripTruncationMarks } from "../lib/tool-summary";
 import { formatStepDuration, useLiveElapsed } from "../lib/use-live-elapsed";
 
@@ -140,6 +141,7 @@ const runningElapsed = computed(() => formatStepDuration(liveElapsed.elapsedMs()
       </span>
     </component>
     <div v-if="hasDetail && open" data-test="tool-step-detail" class="ml-2.5 my-1.5 border-l-2 border-border/50 pl-3 space-y-1">
+      <DetailHeadline :text="step.title" />
       <div v-if="hydrating" data-test="tool-step-hydrating" class="flex items-center gap-1.5 py-1 text-fg-muted">
         <Loader2 :size="13" class="animate-spin motion-reduce:animate-none" />
         <span>{{ $t("tools.loadingDetails") }}</span>
@@ -152,7 +154,7 @@ const runningElapsed = computed(() => formatStepDuration(liveElapsed.elapsedMs()
         </div>
         <p v-else-if="step.terminalId && !detailOutput" data-test="tool-step-terminal-only"
            class="py-1 text-fg-muted">{{ $t("tools.terminalOutputNotReported") }}</p>
-        <ToolDetail v-if="step.detail" :detail="step.detail" :headline="step.title" />
+        <ToolDetail v-if="step.detail" :detail="step.detail" />
       </template>
     </div>
   </div>
