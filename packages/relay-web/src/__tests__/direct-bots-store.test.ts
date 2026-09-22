@@ -382,6 +382,42 @@ describe("useDirectBotsStore", () => {
       expect(store.botsByInstance["inst_1"]).toEqual([rev3]);
       expect(store.botDetails["inst_1:bot_1"]).toEqual(rev3);
     });
+    it("keeps a deleted bot absent when a pre-delete list snapshot lands late", async () => {
+      const store = useDirectBotsStore();
+      const seeded = {
+        id: "bot_1",
+        name: "Doomed",
+        agent: "codex",
+        workspace: "repo",
+        enabled: true,
+        profileRevision: 2,
+        updatedAt: "2026-09-18T00:01:00.000Z",
+      };
+      store.botsByInstance["inst_1"] = [seeded as never];
+      const { promise: listGate, resolve: resolveList } = Promise.withResolvers<unknown>();
+      const { promise: deleteGate, resolve: resolveDelete } = Promise.withResolvers<unknown>();
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        // L1 starts first and hangs with a snapshot that still contains bot_1.
+        if (type === "control.bots.list") return listGate;
+        if (type === "control.bots.delete") return deleteGate;
+        return Promise.resolve({});
+      });
+      const listCall = store.loadBots("inst_1");
+      const deleteCall = store.deleteBot("inst_1", "bot_1");
+      resolveDelete({ ok: true });
+      await deleteCall;
+      expect(store.botsByInstance["inst_1"]).toEqual([]);
+      // The pre-delete snapshot lands last: retired generation → stale
+      // branch, so it must neither clear the tombstone nor reinsert the row.
+      resolveList({ bots: [seeded] });
+      await listCall;
+      expect(store.botsByInstance["inst_1"]).toEqual([]);
+      expect(store.botDetails["inst_1:bot_1"]).toBeUndefined();
+      for (let i = 0; i < 5; i += 1) {
+        await flushPromises();
+      }
+      expect(store.botsByInstance["inst_1"]).toEqual([]);
+    });
     it("deletes a bot and removes it from state", async () => {
       const store = useDirectBotsStore();
       store.botsByInstance["inst_1"] = [

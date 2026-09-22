@@ -246,6 +246,15 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // cache or invalidate botsLoaded; stale responses are dropped.
   const botsListSeq: Record<string, number> = {};
   const botDetailSeq: Record<string, number> = {};
+  // Retire in-flight catalog snapshots for one instance: any bots.list that
+  // started before this point proves nothing about current state — its
+  // snapshot membership predates the local write, so it must take the
+  // stale-list branch instead of clearing tombstones or reinserting rows.
+  // Deletion has no higher profileRevision to compare, so generation retire
+  // is the only fence against a pre-delete snapshot resurrecting the row.
+  function retireBotCatalogRequests(targetInstanceId: string): void {
+    botsListSeq[targetInstanceId] = (botsListSeq[targetInstanceId] ?? 0) + 1;
+  }
   // Authoritative detail hydration: a detailKey lands here only when a full
   // BotDetailDto arrived from bots.get/create/update (never from a list-row
   // synthesis like markBotHasRuntime's minimal seed). BotDialog gates Save on
@@ -797,6 +806,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
   async function deleteBot(targetInstanceId: string, botId: string): Promise<void> {
     unwrapRpc(await api.rpc<{ ok: boolean }>(targetInstanceId, MSG.botsDelete, { id: botId }));
+    // Retire first: a deferred pre-delete list snapshot must land on the
+    // stale branch — otherwise its membership would clear the tombstone
+    // below and reinsert the just-deleted row.
+    retireBotCatalogRequests(targetInstanceId);
     dropBotDetail(targetInstanceId, botId);
 
     const list = botsByInstance.value[targetInstanceId] ?? [];
