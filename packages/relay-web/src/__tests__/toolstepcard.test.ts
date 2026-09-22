@@ -174,6 +174,18 @@ describe("ToolStepCard error banner de-duplication", () => {
     expect(query.find('[data-test="tool-step-header"] span.min-w-0').attributes("dir")).toBeUndefined();
   });
 
+  it("keeps a descriptive read summary as prose even with a structured path", () => {
+    // The detail carries its own path, so title equality is decisive: a
+    // summary that merely mentions the path is prose (tail ellipsis).
+    const w = card({
+      kind: "read",
+      status: "success",
+      title: "Reading /Users/me/My Project/a.ts",
+      detail: { type: "read", path: "/Users/me/My Project/a.ts", preview: "body" },
+    });
+    expect(w.find('[data-test="tool-step-header"] span.min-w-0').attributes("dir")).toBeUndefined();
+  });
+
   it("wraps a header-only long title without an expandable drawer", () => {
     // Title-only steps (detail omitted upstream) are non-interactive divs:
     // open can never flip, so the title must not stay truncated.

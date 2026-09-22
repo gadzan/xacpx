@@ -59,15 +59,16 @@ export function stripTruncationMarks(value: string): string {
  *  Path previews ellipsis at the head (…tail) so the filename — the part the
  *  user scans for — stays visible; commands, queries, and prose keep the
  *  default tail ellipsis. Only read/edit/delete titles are connector-derived
- *  paths. Structured match first: when the title equals the detail's own path,
- *  it is a path even with spaces (`/Users/me/My Project/a.ts`). The separator
- *  heuristic covers title-only steps; whitespace no longer disqualifies since
- *  real file paths allow spaces. */
+ *  paths. When the detail carries its own structured path (read/diff), title
+ *  equality is decisive: a descriptive adapter summary that merely mentions
+ *  a path (`Reading /Users/me/My Project/a.ts`) is prose, not a path. The
+ *  separator heuristic covers only title-only steps, which carry no
+ *  structured path. Spaces never disqualify since real paths allow them. */
 export function isPathTitle(step: ToolStepDto): boolean {
   const { kind, title } = step;
   if (kind !== "read" && kind !== "edit" && kind !== "delete") return false;
   const d = step.detail;
-  if (d && (d.type === "diff" || d.type === "read") && d.path === title) return true;
+  if (d && (d.type === "diff" || d.type === "read")) return d.path === title;
   return /[/\\]/.test(title);
 }
 
