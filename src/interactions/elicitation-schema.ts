@@ -25,6 +25,13 @@ export const ELICITATION_SCHEMA_LIMITS = {
   maxOptionLabelLength: 256,
   maxOptionValueLength: 256,
   maxDefaultValueLength: 256,
+  /**
+   * Max chars of a string `format` value. ACP treats formats other than
+   * `email | uri | date | date-time` as annotations the client must preserve,
+   * so an arbitrary agent-controlled string reaches the renderer — which still
+   * needs a bound like every other string field.
+   */
+  maxFormatLength: 64,
   maxRequiredNames: 20,
   /**
    * Max characters of an agent-controlled string echoed into a diagnostic
@@ -229,9 +236,27 @@ function normalizeField(
       }
       const pattern = readOptionalBoundedString(property, "pattern", ELICITATION_SCHEMA_LIMITS.maxPatternLength);
       if (!pattern.ok) return { ok: false, detail: `field "${boundedKeyLabel(key)}" has an invalid pattern` };
-      const format = property.format;
-      if (format !== undefined && format !== null && format !== "email" && format !== "uri" && format !== "date" && format !== "date-time") {
-        return { ok: false, detail: `field "${boundedKeyLabel(key)}" has an unsupported format` };
+      // ACP elicitation RFD: "Known formats include email, uri, date and
+      // date-time. Other string format values are annotations. Implementations
+      // MUST preserve unknown formats..." So an unknown format is NOT a reason
+      // to reject the schema — rejecting here would cancel a form the agent
+      // legitimately described. Only the four KNOWN formats are validated by
+      // core; every other value is carried through unchanged for the renderer,
+      // which is what "preserve" means.
+      //
+      // Still bounded: an unbounded agent-controlled string is a
+      // resource-exhaustion vector even as an annotation, so the value must be a
+      // string within the same limit the other string metadata uses.
+      const formatClaim = property.format;
+      if (formatClaim !== undefined && formatClaim !== null && typeof formatClaim !== "string") {
+        return { ok: false, detail: `field "${boundedKeyLabel(key)}" format is not a string` };
+      }
+      const format: string | undefined = typeof formatClaim === "string"
+        && formatClaim.length <= ELICITATION_SCHEMA_LIMITS.maxFormatLength
+        ? formatClaim
+        : undefined;
+      if (formatClaim !== undefined && formatClaim !== null && format === undefined) {
+        return { ok: false, detail: `field "${boundedKeyLabel(key)}" format exceeds ${ELICITATION_SCHEMA_LIMITS.maxFormatLength} chars` };
       }
       // `default` is an ANNOTATION (JSON Schema vocabulary + ACP pre-fill
       // hint), not a validity constraint: a value that cannot be safely
@@ -239,10 +264,16 @@ function normalizeField(
       //
       // PREFILL POLICY (core-safe, uniform across all field kinds): core only
       // hands a renderer a default it would itself ACCEPT as a submitted
-      // answer. A default violating `minLength`/`maxLength`/`format` is
-      // therefore dropped rather than passed through — otherwise the renderer
-      // would show a value core is guaranteed to reject if the user submits it
-      // unmodified, which traps the user.
+      // answer, judged by the SAME rules the answer validator uses. A default
+      // violating `minLength`/`maxLength`/`format` is therefore dropped rather
+      // than passed through — otherwise the renderer would show a value core is
+      // guaranteed to reject if the user submits it unmodified, which traps the
+      // user.
+      //
+      // The length checks MUST use code-point length, not JS `.length`: the
+      // answer validator uses `codePointLength`, so using `.length` here would
+      // pre-fill `"😀"` for `{minLength: 2}` (2 UTF-16 units, 1 code point) and
+      // drop a legal `"😀"` for `{maxLength: 1}`.
       //
       // `pattern` is deliberately NOT enforced here. Core never executes
       // agent-supplied regex anywhere (unbounded evaluation on agent-controlled
@@ -252,10 +283,10 @@ function normalizeField(
       // own final validation.
       const defaultRaw = property.default;
       const defaultUsable = typeof defaultRaw === "string"
-        && defaultRaw.length <= ELICITATION_SCHEMA_LIMITS.maxDefaultValueLength
-        && !(minLength.value !== undefined && defaultRaw.length < minLength.value)
-        && !(maxLength.value !== undefined && defaultRaw.length > maxLength.value)
-        && formatMatches(format === null ? undefined : format, defaultRaw);
+        && codePointLength(defaultRaw) <= ELICITATION_SCHEMA_LIMITS.maxDefaultValueLength
+        && !(minLength.value !== undefined && codePointLength(defaultRaw) < minLength.value)
+        && !(maxLength.value !== undefined && codePointLength(defaultRaw) > maxLength.value)
+        && formatMatches(format, defaultRaw);
       const defaultValue = defaultUsable ? defaultRaw : undefined;
 
       const enumValues = readOptionalStringArray(property, "enum", ELICITATION_SCHEMA_LIMITS.maxOptionsPerField);
@@ -295,9 +326,7 @@ function normalizeField(
             // schema would reject.
             ...(minLength.value !== undefined ? { minLength: minLength.value } : {}),
             ...(maxLength.value !== undefined ? { maxLength: maxLength.value } : {}),
-            ...(format === "email" || format === "uri" || format === "date" || format === "date-time"
-              ? { format }
-              : {}),
+            ...(format !== undefined ? { format } : {}),
             // Keep the agent's pattern as display metadata. Dropping it would
             // silently discard a constraint the agent stated, and a renderer
             // cannot recover it from the raw ACP object (it never sees one).
@@ -314,9 +343,7 @@ function normalizeField(
           ...(minLength.value !== undefined ? { minLength: minLength.value } : {}),
           ...(maxLength.value !== undefined ? { maxLength: maxLength.value } : {}),
           ...(pattern.value !== undefined ? { pattern: pattern.value } : {}),
-          ...(format === "email" || format === "uri" || format === "date" || format === "date-time"
-            ? { format }
-            : {}),
+          ...(format !== undefined ? { format } : {}),
           ...(typeof defaultValue === "string" ? { defaultValue } : {}),
         },
       };
@@ -432,20 +459,25 @@ function normalizeField(
       if (hasDuplicateOptions(options)) {
         return { ok: false, detail: `field "${boundedKeyLabel(key)}" has ambiguous option values` };
       }
-      // `default` is an annotation. A default array that repeats values, or
-      // names an option the form does not offer, cannot be pre-filled safely:
-      // it is filtered down to the legal offered subset, or dropped when
-      // nothing legal remains.
+      // `default` is an annotation. Duplicate entries and options the form does
+      // not offer cannot be pre-filled safely, so they are filtered down to the
+      // legal offered subset. `minItems`/`maxItems` must ALSO be honoured —
+      // otherwise `{minItems: 2, default: ["a"]}` would pre-fill a value core
+      // is guaranteed to reject when submitted unchanged.
       const defaultRaw = readOptionalStringArray(
         property,
         "default",
         ELICITATION_SCHEMA_LIMITS.maxOptionsPerField,
       );
-      const defaultValues = defaultRaw.ok && defaultRaw.value !== undefined
+      const filtered = defaultRaw.ok && defaultRaw.value !== undefined
         ? defaultRaw.value.filter((value, index, all) =>
             all.indexOf(value) === index
             && options.some((option) => option.value === value))
         : undefined;
+      const withinItems = filtered !== undefined
+        && !(minItems.value !== undefined && filtered.length < minItems.value)
+        && !(maxItems.value !== undefined && filtered.length > maxItems.value);
+      const defaultValues = withinItems ? filtered : undefined;
       return {
         ok: true,
         field: {
@@ -537,8 +569,15 @@ function readOptionalNumber(
  *
  * Rejects (⇒ `cancel`) any request that cannot be rendered faithfully:
  * non-form mode, non-object schema, nested objects, unknown property types,
- * unknown root keys, duplicate required entries, required names that do not
- * resolve to a property, out-of-bounds resources, malformed defaults.
+ * duplicate required entries, required names that do not resolve to a property,
+ * out-of-bounds resources, malformed defaults, and unsupported schemas for a
+ * field's declared type.
+ *
+ * Deliberately NOT rejected: unknown ROOT keys. ACP `elicitation/create` is a
+ * versioned protocol — an agent may send meta/extension keys that this version
+ * does not understand, and refusing the whole form for that would break forward
+ * compatibility the same way refusing an unknown `format` would. Unread keys
+ * are ignored; the same reasoning applies to unknown keys inside each property.
  */
 export function normalizeAcpElicitationForm(request: unknown): ElicitationNormalizationResult {
   const record = asPlain(request);

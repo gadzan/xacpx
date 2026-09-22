@@ -3,7 +3,7 @@
 ```text
 Milestone: M1 Core Foundation
 Base:      e98cb68e (main, "feat(relay-web): sticky agent avatar with working quip chip and unified send/cancel (#353)")
-Head:      56a82efc6b36c3a97f8fcc02ff7ca790af2a057a + round-15 revert (post-review)
+Head:      8acb7e5b400294be52d3edfe483b1da1cfa0075e + round-16 fixes (post-review)
 PR:        #355 "feat(elicitation): ACP Elicitation M1 core foundation" (OPEN, mergeable)
 ```
 
@@ -946,6 +946,134 @@ must fail when the fix is disabled.
 
 M1 unit suites 350/350 green; real-acpx E2E 25/26 (pre-existing `PR9-A`).
 No net test-count change from round 14's 219.
+
+## Review round 16 (head `8acb7e5b`) — full re-sweep
+
+0 Blocking, 3 Medium, 1 Low. All fixed.
+
+### 1. [Medium] ACP-legal unknown string `format` was rejected
+
+`elicitation-schema.ts` accepted only `email | uri | date | date-time` and
+rejected everything else as `malformed_schema → cancel`. The ACP elicitation RFD
+states explicitly: *"Known formats include email, uri, date and date-time. Other
+string format values are annotations. Implementations MUST preserve unknown
+formats"*. So `{ type: "string", format: "hostname" }` was cancelling a form the
+agent legitimately described.
+
+Any string `format` up to `maxFormatLength` (new limit) is now accepted and
+**carried through verbatim**; only the four ACP-known formats are core-validated.
+`ChannelElicitationField.format` widened from the four literals to `string`, with
+the contract documented on the type.
+
+Status note, so this is not over-claimed: the pinned
+`@agentclientprotocol/sdk` 1.4.0's `zStringFormat` union still has the four
+literals only, so a `"hostname"` reaching xacpx today would be rejected upstream
+of the normalizer. The fix makes the *core* boundary correct for when the SDK
+widens — it is not a live behaviour change, and the regression tests cover the
+normalizer + validator directly rather than through acpx.
+
+### 2. [Medium] Two real gaps in the round-13 pre-fill invariant
+
+**(a) UTF-16 vs code-point.** String `default` length was checked with JS
+`.length`, while the answer validator uses `codePointLength`. So
+`{minLength: 2, default: "😀"}` pre-filled a value core rejects on submit, and
+`{maxLength: 1, default: "😀"}` dropped a legal one. Now uses `codePointLength`,
+with the reason recorded at the call site.
+
+**(b) Multi-select `minItems`/`maxItems` were ignored.** The default filter
+handled duplicates and non-offered values but not the item bounds, so
+`{minItems: 2, default: ["a"]}` pre-filled a guaranteed reject. Now bounded.
+
+Both mutations verified: reverting to `.length` fails the code-point regression;
+removing the item-bound check fails the multi-select regression.
+
+### 3. [Medium] `src/channels/types.ts` still carried the round-14 contract
+
+Round 15 removed the responder-free variant from the authoritative union, but
+`channels/types.ts` still told renderers to settle abort with
+`{ action: "cancel" }` and no `responderId`, and even claimed "the type has a
+dedicated variant for exactly this" — a contract that no longer existed. A
+renderer built from that copy would be unimplementable again.
+
+Synchronised to the round-15 semantics and, per the review's suggestion, the
+duplicated MUST list is now explicitly marked as a *summary that must not be
+restated*, with a note that a second copy of a security contract is a second copy
+that can drift (it already did once).
+
+### 4. [Low] The "compile-time" plugin-contract tests are not typechecked by CI
+
+`tsconfig.json` includes only `src/**/*.ts`, and `npm test` uses Bun, which
+transpiles without type-checking. So the `@ts-expect-error` assertions in
+`elicitation-plugin-contract.test.ts` document the contract but cannot fail CI on
+type drift. Not fixed here (a dedicated type-test tsconfig is the right shape and
+is its own change); recorded as M2 prep. The runtime assertions in that file are
+real tests and still pass.
+
+### Non-blocking cleanups
+
+- PR body test count synced (215 → 224).
+- Closure header updated to the exact head.
+- External-abort regression comment corrected: it said the renderer "THROWS",
+  while the test actually settles a responder-free cancel — the comment now says
+  it models the WORST CASE (a broken renderer) and asserts core still owns the
+  terminal action.
+- Normalizer doc no longer claims it rejects "unknown root keys" (it does not,
+  by design — ACP is a versioned protocol), and explains why ignoring them is
+  correct forward compatibility.
+
+### CI: red run attributed to flake, re-run
+
+`8acb7e5b` failed one macOS test (`G4 barrier: concurrent deletes serialize to
+exactly one executor`, expected 1 fulfilled, saw 2). Evidence it is not a real
+regression: the previous head `56a82efc` was green; that diff touched no
+runtime-engine/delete code; the runner executes each test file in an isolated
+child process, so the new elicitation tests cannot share state with it. Verified
+locally on `8acb7e5b` — the test passes 3/3 in isolation. Re-run rather than
+waived; if it recurs it is a genuine fence-race bug and must be investigated.
+
+## Final totals after round 16
+
+| Suite | Tests |
+|---|---|
+| `turn-interaction-registry.test.ts` | 13 |
+| `elicitation-schema.test.ts` | 137 |
+| `elicitation-interaction-broker.test.ts` | 52 |
+| `elicitation-plugin-contract.test.ts` | 7 |
+| `channel-elicitation-capability.test.ts` | 9 |
+| `acpx-bridge-client.test.ts` | 47 |
+| `runtime-adapter-elicitation.test.ts` (real acpx) | 4 |
+| `runtime-elicitation-agent-identity.test.ts` (real worker) | 3 |
+| `runtime-elicitation-listener-balance.test.ts` | 6 |
+| `runtime-elicitation-cancel-e2e.test.ts` (real acpx) | 1 |
+
+Total new: **224**. M1 unit suites 356/356 green; real-acpx E2E 25/26
+(pre-existing `PR9-A`); `npx tsc --noEmit` 0 errors.
+
+### Cumulative mutation-verification table
+
+| Round | Mutation | Caught by |
+|---|---|---|
+| R7 | decision accessor / double read | 3 decision tests |
+| R8 | no-op `abort.release()` in helper | 2 listener tests |
+| R8 | worker's `abort.release()` removed | structural guard |
+| R9 | array canonicalisation disabled | 2 accessor tests |
+| R9 | offset range check removed | 2 offset tests |
+| R9 | preflight moved after validation | oversized-URI ordering test |
+| R10 | length guard moved after canonicalisation | 3 array-admission tests |
+| R11 | `typeof length === "number"` guard removed | 2 proxy-length tests |
+| R11 | tombstone split removed | retention regression |
+| R12 | broker `cancelElicitationRequest` disabled | 2 broker tests |
+| R12 | broker external-signal chaining removed | 1 broker test |
+| R12 | worker `elicitation.cancel` frame removed | cancel E2E (2/2 runs) |
+| R12 | string default rejection restored | 3 schema tests |
+| R12 | multi-select default filter removed | 1 schema test |
+| R12 | `Date.UTC` leap-date mapping restored | 2 leap tests |
+| R13 | pre-fill policy relaxed to size-only | prefill regression |
+| R14 | withdrawal path disabled | withdrawal regression |
+| R15 | anonymous cancel accepted again | responder-required regression |
+| R16 | unknown `format` dropped instead of preserved | 2 format regressions |
+| R16 | `.length` instead of `codePointLength` for pre-fill | code-point regression |
+| R16 | multi-select `minItems`/`maxItems` removed from pre-fill | item-bound regression |
 
 ## Review round 14 (head `e48cbe93`) — SUPERSEDED BY round 15
 

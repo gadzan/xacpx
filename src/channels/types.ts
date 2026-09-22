@@ -270,10 +270,11 @@ export interface MessageChannelRuntime {
    * Optional so already-published plugins stay compatible; absent means
    * Elicitation is unavailable for this channel and the broker fails closed.
    *
-   * The authoritative contract lives in
-   * `src/interactions/elicitation-types.ts` (`MessageChannelElicitationRuntime`).
-   * These are the ACP User Interaction Requirements core cannot enforce
-   * itself, so every renderer MUST honour them:
+   * The AUTHORITATIVE contract is `MessageChannelElicitationRuntime` in
+   * `src/interactions/elicitation-types.ts`. Do NOT restate the rules here —
+   * a second copy of a security contract is a second copy that can drift (it
+   * already did once, in review round 15). These are the essentials only:
+   *
    *   - render only for `request.requester.senderId`, and return the
    *     platform-authenticated responder id (never a self-reported id);
    *   - display `request.agent.name`; MUST NOT substitute agent-controlled
@@ -283,12 +284,16 @@ export interface MessageChannelRuntime {
    *   - let the user review and modify responses before Accept (ACP MUST);
    *   - keep pending form state in server-side memory only, never encode
    *     answer values into control ids/URLs, and never persist answers;
-   *   - settle exactly once: the first terminal decision wins — user
-   *     decline/cancel carries an authenticated `responderId`;
-   *   - on `signal` abort / expiry: withdraw the UI IMMEDIATELY and stop
-   *     collecting input, then settle with `{ action: "cancel" }` and NO
-   *     `responderId` — the type has a dedicated variant for exactly this.
-   *     Core owns that terminal cancellation, so do not fabricate an identity.
+   *   - settle exactly once: the first terminal decision wins. EVERY member of
+   *     `ChannelElicitationDecision` is a USER action and REQUIRES an
+   *     authenticated `responderId` — there is no responder-free variant.
+   *
+   *   External cancellation (timeout, turn disposal, agent
+   *   `$/cancel_request`, shutdown) is NOT a user decision, so it is not part
+   *   of the decision union at all: withdraw/disable your UI IMMEDIATELY and
+   *   stop collecting input, then reject/throw the promise (or never settle
+   *   it). Core owns that terminal cancellation and settles it as `cancel`
+   *   itself. Do not fabricate a `responderId` for it.
    */
   requestElicitation?(
     request: ChannelElicitationRequest,

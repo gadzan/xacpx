@@ -591,8 +591,10 @@ describe("ElicitationInteractionBroker deadlines and races", () => {
     const channel = formChannel((request) => {
       seen.push(request);
       received.resolve(request);
-      // Documents the real abort behaviour: the renderer observes the abort,
-      // withdraws its UI, and THROWS instead of returning a decision.
+      // Models the WORST CASE, not the documented behaviour. A broken renderer
+      // that settles a responder-free cancel on abort (the round-14 mistake)
+      // must STILL end in core's cancel, and must NOT have that settle treated
+      // as a user action — the `aborted` race / post-decision checks own it.
       request.signal.addEventListener("abort", () => {
         pending.settle({ action: "cancel" } as unknown as ChannelElicitationDecision);
       }, { once: true });

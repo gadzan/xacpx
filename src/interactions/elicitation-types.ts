@@ -48,7 +48,15 @@ export type ChannelElicitationField =
       readonly maxLength?: number;
       /** Display metadata only: core never executes agent-provided patterns. */
       readonly pattern?: string;
-      readonly format?: "email" | "uri" | "date" | "date-time";
+      /**
+       * String `format` from the agent's schema.
+       *
+       * `email | uri | date | date-time` are the ACP KNOWN formats and core
+       * validates answers against them. ANY other value is an ACP annotation:
+       * the RFD requires clients to preserve unknown formats, so core carries it
+       * through for the renderer to interpret and never rejects the form for it.
+       */
+      readonly format?: string;
     }
   | {
       readonly kind: "single-select";
@@ -65,7 +73,11 @@ export type ChannelElicitationField =
        */
       readonly minLength?: number;
       readonly maxLength?: number;
-      readonly format?: "email" | "uri" | "date" | "date-time";
+      /**
+       * Same contract as the text field: ACP known formats are validated, any
+       * other value is a preserved annotation.
+       */
+      readonly format?: string;
       /** Display metadata only: core never executes agent-provided patterns. */
       readonly pattern?: string;
     }

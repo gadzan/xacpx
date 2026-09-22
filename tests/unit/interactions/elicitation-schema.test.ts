@@ -448,6 +448,73 @@ describe("normalizeAcpElicitationForm rejections", () => {
     expect("defaultValue" in (result.form.fields[0] as object)).toBe(false);
   });
 
+  test("an unknown string format is preserved as an annotation, not rejected", () => {
+    // ACP elicitation RFD: "Known formats include email, uri, date and
+    // date-time. Other string format values are annotations. Implementations
+    // MUST preserve unknown formats..." Rejecting the form here would cancel a
+    // form the agent legitimately described.
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { host: { type: "string", format: "hostname", minLength: 1 } },
+        required: ["host"],
+      },
+    }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.form.fields[0]).toMatchObject({ kind: "text", format: "hostname" });
+  });
+
+  test("an unknown format is carried through but not core-validated", () => {
+    // Preserving the annotation must not create a validation obligation: core
+    // has no rule for `hostname`, so it must accept an answer it cannot check
+    // and leave interpretation to the renderer.
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { host: { type: "string", format: "hostname" } },
+        required: ["host"],
+      },
+    }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // A value no `hostname` grammar would accept still validates here.
+    expect(validateElicitationAnswer(result.form.fields, { host: "!!! not a hostname !!!" })).toMatchObject({ ok: true });
+  });
+
+  test("a known format is still core-validated", () => {
+    // Accepting annotations must not weaken the four known formats.
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { mail: { type: "string", format: "email" } },
+        required: ["mail"],
+      },
+    }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.form.fields[0]).toMatchObject({ format: "email" });
+    expect(validateElicitationAnswer(result.form.fields, { mail: "not-an-email" }).ok).toBe(false);
+    expect(validateElicitationAnswer(result.form.fields, { mail: "a@b.co" }).ok).toBe(true);
+  });
+
+  test("an oversized or non-string format is still rejected", () => {
+    // Preserving arbitrary values must not mean accepting unbounded ones: the
+    // annotation is agent-controlled and reaches the renderer.
+    const long = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { a: { type: "string", format: "f".repeat(ELICITATION_SCHEMA_LIMITS.maxFormatLength + 1) } },
+      },
+    }));
+    expect(long.ok).toBe(false);
+
+    const notString = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { type: "object", properties: { a: { type: "string", format: 7 } } },
+    }));
+    expect(notString.ok).toBe(false);
+  });
+
   test("a default the field's own constraints would reject is never pre-filled", () => {
     // Pre-fill policy: core hands a renderer only a default it would itself
     // ACCEPT as a submitted answer. Showing `{minLength:3, default:"x"}` would
@@ -478,6 +545,62 @@ describe("normalizeAcpElicitationForm rejections", () => {
     }));
     expect(good.ok).toBe(true);
     if (good.ok) expect(good.form.fields[0]).toMatchObject({ defaultValue: "a@b.co" });
+  });
+
+  test("pre-fill uses code-point length, not UTF-16 length", () => {
+    // The answer validator uses `codePointLength`, so the pre-fill check must
+    // too. Using JS `.length` would pre-fill "😀" for `{minLength: 2}` (2 UTF-16
+    // units, 1 code point) and drop a legal "😀" for `{maxLength: 1}` — a
+    // guaranteed reject on one side and a lost legal pre-fill on the other.
+    const twoUnit = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { type: "object", properties: { a: { type: "string", minLength: 2, default: "😀" } } },
+    }));
+    expect(twoUnit.ok).toBe(true);
+    if (twoUnit.ok) expect("defaultValue" in (twoUnit.form.fields[0] as object)).toBe(false);
+
+    const oneCodePoint = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { type: "object", properties: { a: { type: "string", maxLength: 1, default: "😀" } } },
+    }));
+    expect(oneCodePoint.ok).toBe(true);
+    if (oneCodePoint.ok) expect(oneCodePoint.form.fields[0]).toMatchObject({ defaultValue: "😀" });
+  });
+
+  test("a multi-select default honours minItems and maxItems", () => {
+    // A default outside the field's own item bounds would pre-fill a value core
+    // is guaranteed to reject when submitted unchanged.
+    const tooFew = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: {
+          a: { type: "array", minItems: 2, items: { type: "string", enum: ["a", "b", "c"] }, default: ["a"] },
+        },
+      },
+    }));
+    expect(tooFew.ok).toBe(true);
+    if (tooFew.ok) expect("defaultValue" in (tooFew.form.fields[0] as object)).toBe(false);
+
+    const tooMany = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: {
+          a: { type: "array", maxItems: 1, items: { type: "string", enum: ["a", "b", "c"] }, default: ["a", "b"] },
+        },
+      },
+    }));
+    expect(tooMany.ok).toBe(true);
+    if (tooMany.ok) expect("defaultValue" in (tooMany.form.fields[0] as object)).toBe(false);
+
+    // In-bounds still pre-fills.
+    const ok = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: {
+          a: { type: "array", minItems: 1, maxItems: 2, items: { type: "string", enum: ["a", "b", "c"] }, default: ["a", "b"] },
+        },
+      },
+    }));
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.form.fields[0]).toMatchObject({ defaultValue: ["a", "b"] });
   });
 
   test("a legal default is still carried through", () => {
