@@ -28,6 +28,9 @@ import type {
   ConversationRunDto,
   ConversationSummaryDto,
   ConversationTurnCorrelationDto,
+  ExecutionTargetDto,
+  GroupDetailDto,
+  GroupSummaryDto,
   TopicSummaryDto,
 } from "./dtos.js";
 
@@ -131,6 +134,13 @@ export const MSG = {
   conversationsGet: "control.conversations.get",
   topicsList: "control.topics.list",
   topicsCreate: "control.topics.create",
+  groupsCreate: "control.groups.create",
+  groupsUpdate: "control.groups.update",
+  groupsDelete: "control.groups.delete",
+  groupsGet: "control.groups.get",
+  groupTopicsCreate: "control.group.topics.create",
+  groupTopicsArchive: "control.group.topics.archive",
+  groupTopicsTeardown: "control.group.topics.teardown",
   conversationPrompt: "control.conversation.prompt",
   conversationHistory: "control.conversation.history",
   runsGet: "control.runs.get",
@@ -480,6 +490,47 @@ export interface TopicsCreatePayload {
 }
 export interface TopicsCreateResult {
   topic: TopicSummaryDto;
+}
+export interface GroupsCreatePayload {
+  title: string;
+  description?: string;
+  botIds: string[];
+  leadBotId?: string;
+}
+export interface GroupsCreateResult {
+  group: GroupSummaryDto;
+}
+export interface GroupsUpdatePayload {
+  id: string;
+  title?: string;
+  description?: string | null;
+  botIds?: string[];
+  leadBotId?: string | null;
+}
+export interface GroupsUpdateResult {
+  group: GroupSummaryDto;
+}
+export interface GroupsDeletePayload {
+  id: string;
+}
+export interface GroupsGetPayload {
+  id: string;
+}
+export interface GroupsGetResult {
+  group: GroupDetailDto;
+}
+export interface GroupTopicsCreatePayload {
+  conversationId: string;
+  title: string;
+  target: ExecutionTargetDto;
+}
+export interface GroupTopicsArchivePayload {
+  conversationId: string;
+  topicId: string;
+}
+export interface GroupTopicsTeardownPayload {
+  conversationId: string;
+  topicId: string;
 }
 export interface ConversationPromptPayload {
   conversationId: string;

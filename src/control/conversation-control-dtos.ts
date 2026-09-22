@@ -71,6 +71,12 @@ export interface BotUpdateRequestDto {
   enabled?: boolean | null;
 }
 
+export interface ExecutionTargetDto {
+  workspace: string;
+  cwd?: string;
+  isolation: "shared" | "shared-single-writer" | "worktree-per-member";
+}
+
 export interface TopicSummaryDto {
   id: string;
   conversationId: string;
@@ -78,6 +84,24 @@ export interface TopicSummaryDto {
   status: ConversationTopic["status"];
   createdAt: string;
   updatedAt: string;
+  executionTarget?: ConversationTopic["executionTarget"];
+}
+
+export interface GroupSummaryDto {
+  id: string;
+  kind: "group";
+  title: string;
+  description?: string;
+  botIds: string[];
+  leadBotId?: string;
+  defaultTopicId?: string;
+  lifecycle?: ConversationRecord["lifecycle"];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GroupDetailDto extends GroupSummaryDto {
+  topics: TopicSummaryDto[];
 }
 
 export interface ConversationSummaryDto {
@@ -228,6 +252,28 @@ export function toTopicSummary(topic: ConversationTopic): TopicSummaryDto {
     status: topic.status,
     createdAt: topic.createdAt,
     updatedAt: topic.updatedAt,
+    ...(topic.executionTarget ? { executionTarget: { ...topic.executionTarget } } : {}),
+  };
+}
+
+export function toGroupSummary(
+  conversation: ConversationRecord,
+  defaultTopicId?: string,
+): GroupSummaryDto {
+  if (conversation.kind !== "group") {
+    throw new Error("conversation is not a Group conversation");
+  }
+  return {
+    id: conversation.id,
+    kind: "group",
+    title: conversation.title,
+    ...(conversation.description ? { description: conversation.description } : {}),
+    botIds: [...conversation.botIds],
+    ...(conversation.leadBotId ? { leadBotId: conversation.leadBotId } : {}),
+    createdAt: conversation.createdAt,
+    updatedAt: conversation.updatedAt,
+    ...(defaultTopicId ? { defaultTopicId } : {}),
+    ...(conversation.lifecycle ? { lifecycle: conversation.lifecycle } : {}),
   };
 }
 

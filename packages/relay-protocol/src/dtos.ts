@@ -293,6 +293,12 @@ export interface BotDetailDto extends BotSummaryDto {
   createdAt: string;
 }
 
+export interface ExecutionTargetDto {
+  workspace: string;
+  cwd?: string;
+  isolation: "shared" | "shared-single-writer" | "worktree-per-member";
+}
+
 export interface TopicSummaryDto {
   id: string;
   conversationId: string;
@@ -300,6 +306,24 @@ export interface TopicSummaryDto {
   status: "active" | "archived" | "deleting";
   createdAt: string;
   updatedAt: string;
+  executionTarget?: ExecutionTargetDto;
+}
+
+export interface GroupSummaryDto {
+  id: string;
+  kind: "group";
+  title: string;
+  description?: string;
+  botIds: string[];
+  leadBotId?: string;
+  defaultTopicId?: string;
+  lifecycle?: "active" | "deleting";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GroupDetailDto extends GroupSummaryDto {
+  topics: TopicSummaryDto[];
 }
 
 export interface ConversationSummaryDto {
