@@ -258,6 +258,27 @@ test("listMessages beforeSeq returns the nearest previous page in ascending orde
   store.close();
 });
 
+test("listMessages newest-first tail returns the newest page in ascending order", async () => {
+  const store = await SqliteConversationStore.open(":memory:");
+  for (const [index, content] of ["one", "two", "three", "four", "five", "six"].entries()) {
+    store.acceptRequest({
+      conversationId: CONV,
+      topicId: TOPIC,
+      requestId: `req-tail-${index}`,
+      botId: BOT_ID,
+      content,
+      profileSnapshot: snapshot(),
+      now: NOW,
+    });
+  }
+  const tail = store.listMessages({ conversationId: CONV, topicId: TOPIC, limit: 2, direction: "newest-first" });
+  expect(tail.map((message) => message.seq)).toEqual([5, 6]);
+  expect(tail.map((message) => message.content)).toEqual(["five", "six"]);
+  const middle = store.listMessages({ conversationId: CONV, topicId: TOPIC, beforeSeq: 5, limit: 2 });
+  expect(middle.map((message) => message.seq)).toEqual([3, 4]);
+  store.close();
+});
+
 test("claimNextDispatch follows message seq when timestamps and run ids disagree", async () => {
   let messages = 0;
   let members = 0;

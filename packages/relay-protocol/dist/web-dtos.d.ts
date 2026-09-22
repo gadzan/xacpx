@@ -1,5 +1,5 @@
 import { type RelayEnvelope } from "./envelope.js";
-import type { AgentCommandDto, ControlEventDto, PeerMessageHistoryEntry, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
+import type { AgentCommandDto, ControlEventDto, ConversationTurnCorrelationDto, PeerMessageHistoryEntry, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
 import type { InstanceNoticePayload, TerminalRole } from "./messages.js";
 /** Envelope `type` for every relay→web push. */
 export declare const WEB_EVENT_TYPE = "web.event";
@@ -84,6 +84,17 @@ export interface LiveTurnSnapshotDto {
      * Web places the live turn by this id, never by comparing clocks.
      */
     slotAfterId?: number;
+    /**
+     * Exact Conversation/Run/MemberTurn join identity when this live turn belongs
+     * to a Conversation Run. Additive; `sessionAlias` remains legacy plumbing.
+     */
+    conversation?: ConversationTurnCorrelationDto;
+    /**
+     * True when the hub capped this snapshot at STATE_SYNC_TEXT_CAP: content
+     * after the cap is lost, so the trace must never certify the durable final
+     * answer. Additive; absence means untruncated (old hubs never truncated).
+     */
+    truncated?: boolean;
 }
 /** The latest context-usage meter retained per session, handed to a (re)connecting web
  *  client so the context-usage bar survives a page refresh. Mirrors the `turn-usage`

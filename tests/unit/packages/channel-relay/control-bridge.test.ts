@@ -1669,6 +1669,52 @@ test("Bot and Conversation RPCs dispatch to Control product IDs", async () => {
   expect(cancels).toEqual(["run_1"]);
 });
 
+test("conversation history direction and topic runs list dispatch with product IDs", async () => {
+  const history: unknown[] = [];
+  const { control } = makeFakeControl({
+    conversationHistory: (input: unknown) => {
+      history.push(input);
+      return { conversationId: "conversation_1", topicId: "topic_1", messages: [], hasMoreBefore: false, hasMoreAfter: false };
+    },
+    listTopicRuns: (conversationId: string, topicId: string, limit?: number) => ({
+      runs: [{ id: "run_tail", conversationId, topicId, requestMessageId: "cmsg", requestId: "req", mode: "explicit", state: "completed", profileRevision: 1, createdAt: "t", ...(limit === 1 ? { limited: true } : {}) }],
+      activeRunId: "run_tail",
+    }),
+  });
+  const bridge = createControlBridge(control as never);
+  const tail = await dispatch(bridge, req(MSG.conversationHistory, {
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    limit: 20,
+    direction: "newest-first",
+  }));
+  expect(history[0]).toMatchObject({ direction: "newest-first" });
+  expect(tail).toMatchObject({ hasMoreBefore: false });
+  expect(await dispatch(bridge, req(MSG.runsList, {
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+  }))).toMatchObject({
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    runs: [{ id: "run_tail" }],
+    activeRunId: "run_tail",
+  });
+  expect(await dispatch(bridge, req(MSG.runsList, {
+    conversationId: "conversation_1",
+    topicId: "other",
+  }))).toMatchObject({ runs: [{ id: "run_tail" }] });
+  expect(await dispatch(bridge, req(MSG.runsList, {
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    limit: 1,
+  }))).toMatchObject({ runs: [{ id: "run_tail" }] });
+  expect(await dispatch(bridge, req(MSG.runsList, {
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    limit: "many",
+  }))).toMatchObject({ error: { code: "invalid-payload" } });
+});
+
 test("conversation.prompt with Hub-stamped ingress uses trusted accept, not public promptConversation", async () => {
   const publicPrompts: unknown[] = [];
   const trusted: Array<{ input: unknown; ingress: unknown }> = [];

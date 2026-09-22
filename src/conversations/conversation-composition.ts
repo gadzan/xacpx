@@ -6,6 +6,7 @@ import { BotService } from "../bots/bot-service";
 import type { AppConfig } from "../config/types";
 import { ConversationError } from "./conversation-error";
 import type { ConversationExecutionPort } from "./conversation-execution-port";
+import type { ConversationProductEventSink } from "./conversation-product-events";
 import { resolveRuntimeDirFromConfigPath } from "../daemon/daemon-files";
 import type { AsyncMutex } from "../orchestration/async-mutex";
 import { createStrictOwnedSessionRelease, type ReleaseOwnedSession } from "../sessions/owned-session-release";
@@ -14,7 +15,6 @@ import type { StateStore } from "../state/state-store";
 import type { AppState } from "../state/types";
 import type { SessionTransport } from "../transport/types";
 import { ConversationDispatcher } from "./conversation-dispatcher";
-import type { ConversationProductEventSink } from "./conversation-product-events";
 import { ConversationRunService } from "./conversation-run-service";
 import { ControlConversationTurnRunner } from "./conversation-turn-runner";
 import { SqliteConversationStore } from "./sqlite-conversation-store";
@@ -73,8 +73,20 @@ export async function createConversationRuntime(
     ...(input.now ? { now: input.now } : {}),
   };
   const bots = new BotService(input.config, input.state, input.stateStore, shared);
+  const productSinkRef: ConversationProductEventSink | undefined = input.onProductEvent;
   const botRuntime = new BotRuntimeManager(bots, input.sessions, input.state, input.stateStore, {
     releaseOwnedSession: input.releaseOwnedSession,
+    onRuntimeMaterialized: () => {
+      // Actual binding/session publish is the ground truth for Bot
+      // lifecycle: execution-start may never follow (cancel in the
+      // materialize/start window), so converge Web clients immediately via
+      // the catalog channel instead of waiting for member-turn-started.
+      try {
+        productSinkRef?.({ type: "bots-changed" });
+      } catch {
+        // Product projection must not affect dispatch fencing.
+      }
+    },
     ...shared,
   });
   const execution: ConversationExecutionPort = {
@@ -84,6 +96,14 @@ export async function createConversationRuntime(
     cancelQueuedConversationItem: (...args) => input.control.cancelQueuedConversationItem(...args),
   };
   const runner = new ControlConversationTurnRunner(execution);
+  let runsRef: ConversationRunService | undefined;
+  bots.setReenabledHook(() => {
+    // A Bot that flips back to enabled may have durable pending work that a
+    // disabled-period drain released back to pending. Wake via the
+    // activation-aware seam so an unavailable consumer (initial recovery
+    // failure) stays parked instead of draining through a direct kick.
+    runsRef?.wakePendingWork();
+  });
   const dispatcher = new ConversationDispatcher(store, botRuntime, runner, input.sessions, {
     authorityEpoch: input.authorityEpoch ?? randomUUID(),
     ...(input.ownerId ? { ownerId: input.ownerId } : {}),
@@ -104,6 +124,7 @@ export async function createConversationRuntime(
       ...shared,
     },
   );
+  runsRef = runs;
   let lifecycle: "open" | "stopping" | "closed" = "open";
   let activeOps = 0;
   const idleWaiters: Array<() => void> = [];

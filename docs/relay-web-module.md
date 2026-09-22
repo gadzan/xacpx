@@ -685,6 +685,42 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 - `packages/relay-web/src/lib/use-image-lightbox.ts` — lightbox 状态单例
 - `packages/relay-web/src/stores/chat.ts` — 发送时调用 upload + 附件随 media 字段传出
 
+## Direct Bot 会话（PR5）
+
+将 PR1–PR4 建立的 Bot 与 Direct Conversation 后端能力接入 Relay Web，提供独立的 Direct Bot 用户界面：
+
+### 产品身份与隔离
+
+- **产品 Identity**：全链路采用 `instanceId × botId × conversationId × topicId × runId × memberTurnId × requestId`，绝不以隐藏的 `brt_*` alias 作为 Web 路由或选择标识；
+- **普通会话隔离**：普通 Sessions UI 绝不展示 hidden Bot logical session；普通会话状态树（`useChatStore`）严格忽略带 `conversation` 关联的轮次与事件；Bot 模式下普通会话的 Terminal 按钮、Files/Tasks 面板完全保持隐藏或禁用；
+- **独立状态管理**：新增 `packages/relay-web/src/stores/direct-bots.ts`（Pinia `directBots` store），独立管理 Bot CRUD、话题列表与切换、按 `seq` 游标的消息历史加载与翻页、实时 Run 流式状态、Trace 投影及精确取消。
+
+### 导航与 Bot 管理
+
+- **实例侧栏模式切换**：在左栏实例卡片中支持 `Sessions | Bots` 模式切换；切到 Bots 时展示 Bot 列表，包含名称、角色、agent、workspace 与启用状态；
+- **Bot CRUD（`BotDialog.vue`）**：支持创建与编辑 Bot（name、avatar、role、instructions、agent、workspace、model、effort、enabled；不含 cwd），agent/workspace 复用实例已有目录与工作区配置；支持删除确认与 fail-closed 错误提示。
+
+### 话题与消息流（`DirectBotPane.vue`）
+
+- **顶部栏**：展示 Bot 头像、名称、角色、工作区/Agent 徽标与操作入口；
+- **话题栏**：展示默认话题及已有额外话题，支持点击切换与「新建话题」模态框；切换话题时按 `conversationId + topicId` 隔离历史与实时 Run；
+- **消息列表（`ConversationMessageList.vue`）**：
+  - 历史消息严格按 `seq` 排序并按 message `id` 去重；
+  - 支持向上拉取更早消息，保持当前滚动位置不跳动；
+  - 实时 Run 复用 `TurnParts.vue` 呈现思考过程（reasoning）、工具调用（tool cards）、计划（plan）与流式文本输出；
+  - 轮次完成后将流式累积的 trace parts 关联保存在消息卡片上；
+  - 支持明确区分与展示 `queued`、`running`、`waiting-human`、`completed`、`failed`、`cancelled`、`indeterminate` 状态。
+- **输入框（`ConversationPromptInput.vue`）**：
+  - 支持输入 prompt 发送，Bot 处于禁用状态时给出明确警告提示；
+  - 客户端生成稳定的 `requestId`，发送失败或超时重试时复用原 `requestId` 保持幂等；
+  - active Run 运行时提供 Stop 按钮，调用 `control.runs.cancel({ runId })` 精确取消当前 Run。
+
+### 断线与重连恢复
+
+- WebSocket 重连后自动调用 `reconcileOnReconnect()`，重新拉取实例 Bots、Topics、当前话题历史与在途 Run 的最新状态；
+- WebSocket `state-snapshot` 中包含的 Conversation-correlated live turn 正确恢复；若在离线期间已完成，则自动刷新权威历史，消除残留 spinner；
+- 国际化：所有新增文本均提供 `en.ts` 与 `zh-CN.ts` 完整对齐。
+
 ## 阶段范围边界
 
 - **阶段三**交付登录 + 实例/会话树 + 对话流。
@@ -694,4 +730,5 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
   重连定时器清理、聊天错误横幅 + 回合失败浮现 + 失败消息样式 + 切换会话清错 + 乐观失败标记、
   取消在途回合（`control.prompt.cancel`）、左栏实例树会话创建/删除 UI。
 - **阶段七**消息附件：`PromptInput` 附件入口 + `MessageAttachments` 渲染 + 客户端 512px 降采样持久 preview（见上节）。
+- **PR5** Direct Bot 会话：Relay Web direct Bot vertical slice，包含 `stores/direct-bots.ts`、`BotDialog.vue`、`DirectBotPane.vue`、`ConversationMessageList.vue`、`ConversationPromptInput.vue`、实例树模式切换与完整回归套件。
 - 历史保留策略为服务端配置（`--history-retention-days`），v1 在 Web 端只读、不可编辑（见 docs/relay-module.md）。

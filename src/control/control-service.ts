@@ -1920,11 +1920,13 @@ export class ControlService {
   }
 
   listBots() {
-    return this.requireConversations().bots.listBots().map(toBotSummary);
+    const bots = this.requireConversations().bots;
+    return bots.listBots().map((bot) => toBotSummary(bot, bots.hasRuntime(bot.id)));
   }
 
   getBot(id: string) {
-    return toBotDetail(this.requireConversations().bots.getBot(id));
+    const bots = this.requireConversations().bots;
+    return toBotDetail(bots.getBot(id), bots.hasRuntime(id));
   }
 
   async createBot(input: BotCreateRequestDto) {
@@ -1932,7 +1934,7 @@ export class ControlService {
       const bot = await runtime.bots.createBot(input);
       this.deps.events.emit({ type: "bots-changed" });
       this.deps.events.emit({ type: "conversations-changed" });
-      return toBotDetail(bot);
+      return toBotDetail(bot, runtime.bots.hasRuntime(bot.id));
     });
   }
 
@@ -1941,7 +1943,7 @@ export class ControlService {
       const bot = await runtime.bots.updateBot(id, patch);
       this.deps.events.emit({ type: "bots-changed" });
       this.deps.events.emit({ type: "conversations-changed" });
-      return toBotDetail(bot);
+      return toBotDetail(bot, runtime.bots.hasRuntime(bot.id));
     });
   }
 
@@ -2001,6 +2003,12 @@ export class ControlService {
         ...(input.target?.botId ? { targetBotId: input.target.botId } : {}),
         ...(parsedIngress ? { humanIngress: parsedIngress } : {}),
       });
+      // Topic-wide authoritative owner as of accept: executing, else oldest
+      // queued (same selector as listTopicRuns). Read after the accept
+      // transaction so it reflects this accept plus every durable accept
+      // before it; it is ordered after the accept but not locked against a
+      // concurrent accept on another path.
+      const listed = runtime.runs.listTopicRuns(input.conversationId, input.topicId);
       return {
         reused: accepted.reused,
         conversationId: accepted.run.conversationId,
@@ -2009,11 +2017,19 @@ export class ControlService {
         run: toConversationRun(accepted.run),
         message: toConversationMessage(accepted.message),
         memberTurn: toMemberTurnSummary(accepted.memberTurn),
+        ...(listed.activeRunId ? { activeRunId: listed.activeRunId } : {}),
+        ...(listed.activeRun ? { activeRun: toConversationRun(listed.activeRun) } : {}),
       };
     });
   }
 
   conversationHistory(input: ConversationHistoryRequestDto) {
+    // direction is initial-page-only (which end the page starts from) and has
+    // no defined interaction with seq cursors. Reject the combination here as
+    // well as the wire validator so direct facade callers get the same rule.
+    if (input.direction !== undefined && (input.afterSeq !== undefined || input.beforeSeq !== undefined)) {
+      throw new ConversationError("invalid-history-page", "direction cannot be combined with afterSeq/beforeSeq");
+    }
     const limit = Math.min(200, Math.max(1, Math.floor(input.limit ?? 50)));
     const page = this.requireConversations().runs.listHistory({
       conversationId: input.conversationId,
@@ -2021,6 +2037,7 @@ export class ControlService {
       limit,
       ...(input.afterSeq !== undefined ? { afterSeq: input.afterSeq } : {}),
       ...(input.beforeSeq !== undefined ? { beforeSeq: input.beforeSeq } : {}),
+      ...(input.direction !== undefined ? { direction: input.direction } : {}),
     });
     return {
       conversationId: input.conversationId,
@@ -2036,6 +2053,21 @@ export class ControlService {
   getRun(runId: string) {
     const result = this.requireConversations().runs.getRun(runId);
     return toRunDetail(result.run, result.memberTurns);
+  }
+
+  listTopicRuns(conversationId: string, topicId: string, limit?: number) {
+    // Clamp at the service boundary (not only the relay bridge): the public
+    // facade is callable by any plugin/channel, and slice(-0) would return the
+    // full set instead of an empty page.
+    const clampedLimit = limit === undefined ? undefined : Math.min(200, Math.max(1, Math.floor(limit)));
+    const listed = this.requireConversations().runs.listTopicRuns(conversationId, topicId, {
+      ...(clampedLimit !== undefined ? { limit: clampedLimit } : {}),
+    });
+    return {
+      runs: listed.runs.map(toConversationRun),
+      ...(listed.activeRunId ? { activeRunId: listed.activeRunId } : {}),
+      ...(listed.activeRun ? { activeRun: toConversationRun(listed.activeRun) } : {}),
+    };
   }
 
   async cancelRun(runId: string) {

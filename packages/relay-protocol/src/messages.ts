@@ -25,6 +25,7 @@ import type {
   ConversationHistoryResponseDto,
   ConversationPromptResponseDto,
   ConversationRunDetailDto,
+  ConversationRunDto,
   ConversationSummaryDto,
   ConversationTurnCorrelationDto,
   TopicSummaryDto,
@@ -133,6 +134,7 @@ export const MSG = {
   conversationPrompt: "control.conversation.prompt",
   conversationHistory: "control.conversation.history",
   runsGet: "control.runs.get",
+  runsList: "control.runs.list",
   runsCancel: "control.runs.cancel",
 } as const;
 
@@ -493,6 +495,7 @@ export interface ConversationHistoryPayload {
   afterSeq?: number;
   beforeSeq?: number;
   limit?: number;
+  direction?: "oldest-first" | "newest-first";
 }
 export type ConversationHistoryResult = ConversationHistoryResponseDto;
 export interface RunsGetPayload {
@@ -500,6 +503,18 @@ export interface RunsGetPayload {
 }
 export interface RunsGetResult {
   run: ConversationRunDetailDto;
+}
+export interface RunsListPayload {
+  conversationId: string;
+  topicId: string;
+  limit?: number;
+}
+export interface RunsListResult {
+  conversationId: string;
+  topicId: string;
+  runs: ConversationRunDto[];
+  activeRunId?: string;
+  activeRun?: ConversationRunDto;
 }
 export interface RunsCancelPayload {
   runId: string;

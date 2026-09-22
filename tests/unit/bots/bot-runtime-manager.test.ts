@@ -76,6 +76,7 @@ function createHarness(
     stateMutex?: AsyncMutex;
     afterDirectSnapshot?: (bot: BotProfile) => Promise<void>;
     beforeLifecycleMutation?: (input: { botId: string; op: "update" | "delete" }) => Promise<void>;
+    releaseOwnedSession?: (alias: string) => Promise<void>;
   } = {},
 ) {
   const config = createConfig();
@@ -91,9 +92,9 @@ function createHarness(
     now: () => new Date(NOW),
     stateMutex,
     afterDirectSnapshot: options.afterDirectSnapshot,
-    releaseOwnedSession: async (alias) => {
+    releaseOwnedSession: options.releaseOwnedSession ?? (async (alias) => {
       await sessions.removeSession(alias);
-    },
+    }),
   });
   return { state, store, sessions, bots, runtime, stateMutex };
 }
@@ -931,4 +932,58 @@ test("PR2 adoption aligns stale legacy model/effort to the accepted snapshot", a
   expect(sessionMatchesExecution(adopted!, execution)).toBe(true);
   expect(state.bot_runtime_bindings[legacyId]).toBeUndefined();
   expect(binding.sessionAlias).toBe(alias);
+});
+
+test("publishing a direct binding fires onRuntimeMaterialized exactly once per publish", async () => {
+  const materialized: string[] = [];
+  const store = new MemoryStateStore();
+  const state = createEmptyState();
+  const config = createConfig();
+  const stateMutex = new AsyncMutex();
+  const sessions = new SessionService(config, store, state, { now: () => Date.parse(NOW), stateMutex });
+  const bots = new BotService(config, state, store, {
+    now: () => new Date(NOW),
+    createId: () => BOT_ID,
+    stateMutex,
+  });
+  const runtime = new BotRuntimeManager(bots, sessions, state, store, {
+    now: () => new Date(NOW),
+    stateMutex,
+    releaseOwnedSession: async (alias) => {
+      await sessions.removeSession(alias);
+    },
+    onRuntimeMaterialized: (botId) => {
+      materialized.push(botId);
+    },
+  });
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  await runtime.getOrCreateDirectSession({ botId: BOT_ID });
+  expect(materialized).toEqual([BOT_ID]);
+});
+
+test("recreates and rebinds direct runtime when bot effort is cleared from high to default", async () => {
+  const releasedAliases: string[] = [];
+  const { bots, runtime, sessions, state } = createHarness(undefined, undefined, {
+    releaseOwnedSession: async (alias) => {
+      releasedAliases.push(alias);
+      await sessions.removeSession(alias);
+    },
+  });
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend", effort: "high" });
+  const firstBinding = await runtime.getOrCreateDirectSession({ botId: BOT_ID });
+  const firstSession = sessions.getLogicalSessionById(firstBinding.logicalSessionId);
+  expect(firstSession?.effort).toBe("high");
+
+  // Bot effort cleared to Default (undefined)
+  await bots.updateBot(BOT_ID, { effort: null });
+  const updatedBot = bots.getBot(BOT_ID);
+  expect(updatedBot.effort).toBeUndefined();
+
+  // Next run materialization must recreate/rebind to drop the warm high process
+  const nextBinding = await runtime.getOrCreateDirectSession({ botId: BOT_ID });
+  expect(releasedAliases).toContain(firstBinding.sessionAlias);
+  expect(nextBinding.logicalSessionId).not.toBe(firstBinding.logicalSessionId);
+  const nextSession = sessions.getLogicalSessionById(nextBinding.logicalSessionId);
+  expect(nextSession?.effort).toBeUndefined();
+  expect(ownedSessions(state)).toHaveLength(1);
 });

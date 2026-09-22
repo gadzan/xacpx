@@ -29,6 +29,12 @@ export interface BotRuntimeManagerOptions {
   afterDirectSnapshot?: (bot: BotProfile) => Promise<void>;
   /** Verified physical+logical release. Required; never LogicalSession-only. */
   releaseOwnedSession: ReleaseOwnedSession;
+  /** Fired after a direct binding is durably published (fresh or adopted).
+   *  Composition routes this to a bots-changed product event so Web clients
+   *  converge Bot lifecycle even when execution-start never follows (e.g.
+   *  cancel in the materialize/start window). Must never throw: product
+   *  projection must not affect dispatch fencing. */
+  onRuntimeMaterialized?: (botId: string) => void;
 }
 
 type SessionWriter = Pick<StateStore, "save"> & { saveNow?: (state: AppState) => Promise<void> };
@@ -38,6 +44,7 @@ export class BotRuntimeManager {
   private readonly stateMutex: AsyncMutex;
   private readonly afterDirectSnapshot?: (bot: BotProfile) => Promise<void>;
   private readonly releaseOwnedSession: ReleaseOwnedSession;
+  private readonly onRuntimeMaterialized?: (botId: string) => void;
 
   constructor(
     private readonly bots: BotService,
@@ -53,6 +60,7 @@ export class BotRuntimeManager {
     this.stateMutex = options.stateMutex ?? new AsyncMutex();
     this.afterDirectSnapshot = options.afterDirectSnapshot;
     this.releaseOwnedSession = options.releaseOwnedSession;
+    this.onRuntimeMaterialized = options.onRuntimeMaterialized;
   }
 
   getBot(botId: string): BotProfile {
@@ -93,60 +101,64 @@ export class BotRuntimeManager {
     }
     this.assertBindingIdentity(snapshot);
     await this.bots.runLifecycle(snapshot.botId, async () => {
-      const live = this.state.bot_runtime_bindings[bindingId];
-      if (!live || live.scope !== "bot-direct") {
-        return;
-      }
-      this.assertBindingIdentity(live);
+      await this.releaseDirectBindingInternal(snapshot, bindingId);
+    });
+  }
+
+  private async releaseDirectBindingInternal(snapshot: DirectBotRuntimeBinding, bindingId: string): Promise<void> {
+    const live = this.state.bot_runtime_bindings[bindingId];
+    if (!live || live.scope !== "bot-direct") {
+      return;
+    }
+    this.assertBindingIdentity(live);
+    if (
+      live.botId !== snapshot.botId
+      || live.conversationId !== snapshot.conversationId
+      || live.topicId !== snapshot.topicId
+      || live.sessionAlias !== snapshot.sessionAlias
+      || live.logicalSessionId !== snapshot.logicalSessionId
+    ) {
+      throw this.bindingConflict(live.botId, live);
+    }
+    const byAlias = this.sessions.getLogicalSessionRecord(live.sessionAlias);
+    const byId = this.sessions.getLogicalSessionById(live.logicalSessionId);
+    if (byAlias || byId) {
       if (
-        live.botId !== snapshot.botId
-        || live.conversationId !== snapshot.conversationId
-        || live.topicId !== snapshot.topicId
-        || live.sessionAlias !== snapshot.sessionAlias
-        || live.logicalSessionId !== snapshot.logicalSessionId
+        !byAlias
+        || !byId
+        || byAlias.logical_session_id !== byId.logical_session_id
+        || byAlias.alias !== byId.alias
       ) {
         throw this.bindingConflict(live.botId, live);
       }
-      const byAlias = this.sessions.getLogicalSessionRecord(live.sessionAlias);
-      const byId = this.sessions.getLogicalSessionById(live.logicalSessionId);
-      if (byAlias || byId) {
-        if (
-          !byAlias
-          || !byId
-          || byAlias.logical_session_id !== byId.logical_session_id
-          || byAlias.alias !== byId.alias
-        ) {
-          throw this.bindingConflict(live.botId, live);
-        }
-        this.assertBindingOwnsSession(live, byAlias);
-        await this.releaseOwnedSession(live.sessionAlias);
-      }
-      const remaining = this.state.bot_runtime_bindings[bindingId];
+      this.assertBindingOwnsSession(live, byAlias);
+      await this.releaseOwnedSession(live.sessionAlias);
+    }
+    const remaining = this.state.bot_runtime_bindings[bindingId];
+    if (
+      !remaining
+      || remaining.sessionAlias !== live.sessionAlias
+      || remaining.logicalSessionId !== live.logicalSessionId
+    ) {
+      return;
+    }
+    await this.stateMutex.run(async () => {
+      const current = this.state.bot_runtime_bindings[bindingId];
       if (
-        !remaining
-        || remaining.sessionAlias !== live.sessionAlias
-        || remaining.logicalSessionId !== live.logicalSessionId
+        !current
+        || current.sessionAlias !== live.sessionAlias
+        || current.logicalSessionId !== live.logicalSessionId
       ) {
         return;
       }
-      await this.stateMutex.run(async () => {
-        const current = this.state.bot_runtime_bindings[bindingId];
-        if (
-          !current
-          || current.sessionAlias !== live.sessionAlias
-          || current.logicalSessionId !== live.logicalSessionId
-        ) {
-          return;
-        }
-        const next = structuredClone(this.state);
-        delete next.bot_runtime_bindings[bindingId];
-        if (typeof this.stateStore.saveNow === "function") {
-          await this.stateStore.saveNow(next);
-        } else {
-          await this.stateStore.save(next);
-        }
-        replaceRuntimeState(this.state, next);
-      });
+      const next = structuredClone(this.state);
+      delete next.bot_runtime_bindings[bindingId];
+      if (typeof this.stateStore.saveNow === "function") {
+        await this.stateStore.saveNow(next);
+      } else {
+        await this.stateStore.save(next);
+      }
+      replaceRuntimeState(this.state, next);
     });
   }
 
@@ -164,14 +176,30 @@ export class BotRuntimeManager {
     const scopedId = createScopedDirectBindingId(scope.conversationId, scope.topicId, bot.id);
     const existing = this.findScopedBinding(scope.conversationId, scope.topicId, bot.id);
     if (existing && this.bindingSessionIsLive(existing)) {
-      await this.alignSessionRuntime(existing, input.execution ?? bot);
-      return existing;
+      const session = this.sessions.getLogicalSessionRecord(existing.sessionAlias)
+        ?? this.sessions.getLogicalSessionById(existing.logicalSessionId);
+      const target = input.execution ?? bot;
+      const targetEffort = target.effort;
+      if (session && session.effort && !targetEffort) {
+        await this.releaseDirectBindingInternal(existing, existing.id);
+      } else {
+        await this.alignSessionRuntime(existing, input.execution ?? bot);
+        return existing;
+      }
     }
     const adopted = this.findAdoptableLegacyBinding(bot.id, scope);
     if (adopted && this.bindingSessionIsLive(adopted)) {
-      await this.alignSessionRuntime(adopted, input.execution ?? bot);
-      await this.afterDirectSnapshot?.(bot);
-      return await this.publishAdoptedBinding(bot, adopted, scopedId, scope);
+      const session = this.sessions.getLogicalSessionById(adopted.logicalSessionId)
+        ?? this.findOwnedSession(adopted.id, bot.id, scope.conversationId);
+      const target = input.execution ?? bot;
+      const targetEffort = target.effort;
+      if (session && session.effort && !targetEffort) {
+        await this.releaseDirectBindingInternal(adopted, adopted.id);
+      } else {
+        await this.alignSessionRuntime(adopted, input.execution ?? bot);
+        await this.afterDirectSnapshot?.(bot);
+        return await this.publishAdoptedBinding(bot, adopted, scopedId, scope);
+      }
     }
     await this.afterDirectSnapshot?.(bot);
     const session = await this.ensureOwnedSession(bot, scopedId, scope, input.execution);
@@ -296,10 +324,11 @@ export class BotRuntimeManager {
         throw this.ownershipConflict(bot.id, alias, { bindingId, conversationId: scope.conversationId }, occupant);
       }
     }
-    const agent = execution?.agent ?? bot.agent;
-    const workspace = execution?.workspace ?? bot.workspace;
-    const model = execution?.model ?? bot.model;
-    const effort = execution?.effort ?? bot.effort;
+    const target = execution ?? bot;
+    const agent = target.agent;
+    const workspace = target.workspace;
+    const model = target.model;
+    const effort = target.effort;
     if (!occupant) {
       await this.sessions.createSession(alias, agent, workspace, {
         owner: createBotDirectOwner({
@@ -378,7 +407,13 @@ export class BotRuntimeManager {
         await this.stateStore.save(next);
       }
       replaceRuntimeState(this.state, next);
-      return this.state.bot_runtime_bindings[scopedId]!;
+      const published = this.state.bot_runtime_bindings[scopedId]!;
+      try {
+        this.onRuntimeMaterialized?.(bot.id);
+      } catch {
+        // Product projection must not affect dispatch fencing.
+      }
+      return published;
     });
   }
 
@@ -457,7 +492,13 @@ export class BotRuntimeManager {
         await this.stateStore.save(next);
       }
       replaceRuntimeState(this.state, next);
-      return this.state.bot_runtime_bindings[bindingId]!;
+      const published = this.state.bot_runtime_bindings[bindingId]!;
+      try {
+        this.onRuntimeMaterialized?.(bot.id);
+      } catch {
+        // Product projection must not affect dispatch fencing.
+      }
+      return published;
     });
   }
 

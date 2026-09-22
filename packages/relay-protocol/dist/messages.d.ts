@@ -1,4 +1,4 @@
-import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto, BotDetailDto, BotSummaryDto, ConversationDetailDto, ConversationHistoryResponseDto, ConversationPromptResponseDto, ConversationRunDetailDto, ConversationSummaryDto, ConversationTurnCorrelationDto, TopicSummaryDto } from "./dtos.js";
+import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto, BotDetailDto, BotSummaryDto, ConversationDetailDto, ConversationHistoryResponseDto, ConversationPromptResponseDto, ConversationRunDetailDto, ConversationRunDto, ConversationSummaryDto, ConversationTurnCorrelationDto, TopicSummaryDto } from "./dtos.js";
 export declare const MSG: {
     readonly instanceRegister: "instance.register";
     readonly instanceAuth: "instance.auth";
@@ -97,6 +97,7 @@ export declare const MSG: {
     readonly conversationPrompt: "control.conversation.prompt";
     readonly conversationHistory: "control.conversation.history";
     readonly runsGet: "control.runs.get";
+    readonly runsList: "control.runs.list";
     readonly runsCancel: "control.runs.cancel";
 };
 export type MessageType = (typeof MSG)[keyof typeof MSG];
@@ -161,7 +162,11 @@ export interface InstanceStateSyncPayload {
         startedAt: number;
         /** Connector-local per-session seq at the original turn-start (receive order). */
         startedAfterSeq?: number;
-        /** Exact Conversation/Run/MemberTurn join identity. Additive; old hubs ignore. */
+        /**
+         * Exact Conversation/Run/MemberTurn join identity. Additive; old hubs ignore.
+         * Presence means this turn is product-owned: reconnect recovery must keep it
+         * even when the hidden session alias is absent from ordinary Sessions list.
+         */
         conversation?: ConversationTurnCorrelationDto;
         text: string;
         reasoning: string;
@@ -211,6 +216,12 @@ export interface InstanceStateSyncPayload {
         startedAt?: number;
         /** Connector-local per-session seq at the original turn-start (receive order). */
         startedAfterSeq?: number;
+        /**
+         * Exact Conversation/Run/MemberTurn join identity carried off the running
+         * mirror at finish. Additive; old hubs ignore. Required so reconnect can
+         * restore a Conversation Run that finished while the hub was offline.
+         */
+        conversation?: ConversationTurnCorrelationDto;
     }>;
 }
 export interface InstanceNoticePayload {
@@ -413,6 +424,7 @@ export interface ConversationHistoryPayload {
     afterSeq?: number;
     beforeSeq?: number;
     limit?: number;
+    direction?: "oldest-first" | "newest-first";
 }
 export type ConversationHistoryResult = ConversationHistoryResponseDto;
 export interface RunsGetPayload {
@@ -420,6 +432,18 @@ export interface RunsGetPayload {
 }
 export interface RunsGetResult {
     run: ConversationRunDetailDto;
+}
+export interface RunsListPayload {
+    conversationId: string;
+    topicId: string;
+    limit?: number;
+}
+export interface RunsListResult {
+    conversationId: string;
+    topicId: string;
+    runs: ConversationRunDto[];
+    activeRunId?: string;
+    activeRun?: ConversationRunDto;
 }
 export interface RunsCancelPayload {
     runId: string;

@@ -92,6 +92,28 @@ test("state sync restores Conversation correlation onto the live turn snapshot",
   runtime.close();
 });
 
+test("a hub-capped sync mirror emits truncated on the live turn snapshot", async () => {
+  const { runtime } = await seeded();
+  const conversation = {
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    botId: "bot_1",
+    runId: "run_1",
+    memberTurnId: "mt_1",
+  };
+  sync(runtime, {
+    turns: [{
+      sessionAlias: "brt_hidden", startedAt: STARTED_AT, text: "capped prefix", reasoning: "",
+      steps: [], parts: [{ type: "text", text: "capped prefix" }], truncated: true, conversation,
+    }],
+    usage: [], commands: [], finishedOffline: [],
+  });
+  const turns = runtime.stateSnapshot("i1").turns;
+  expect(turns).toHaveLength(1);
+  expect(turns[0]).toMatchObject({ sessionAlias: "brt_hidden", truncated: true, conversation });
+  runtime.close();
+});
+
 test("Conversation-correlated live usage/commands stay out of ordinary sessionUsage/sessionCommands", async () => {
   const { runtime } = await seeded();
   const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {

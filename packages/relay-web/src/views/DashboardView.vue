@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import { connectEvents, sendSubscribe, TerminalRequestError, isRetryableTerminalError } from "../api/events";
 import { useInstancesStore, supportsRmuxTerminal } from "../stores/instances";
 import { useChatStore, loadPersistedSelection } from "../stores/chat";
+import { useDirectBotsStore, loadPersistedBotSelection } from "../stores/direct-bots";
 import { useTasksStore } from "../stores/tasks";
 import { useNoticesStore } from "../stores/notices";
 import { useConnectionStore } from "../stores/connection";
@@ -14,6 +15,7 @@ import { pushToast } from "../lib/use-toasts";
 import { migrateAwayFromLegacyTerminalIds } from "../lib/terminal-sessions";
 import InstanceTree from "../components/InstanceTree.vue";
 import ChatPane from "../components/ChatPane.vue";
+import DirectBotPane from "../components/DirectBotPane.vue";
 import FileViewer from "../components/FileViewer.vue";
 import TaskPanel from "../components/TaskPanel.vue";
 import FilesPanel from "../components/FilesPanel.vue";
@@ -35,6 +37,7 @@ const theme = useThemeStore();
 const instances = useInstancesStore();
 const chat = useChatStore();
 const tasks = useTasksStore();
+const directBotsStore = useDirectBotsStore();
 const terminals = useTerminalStore();
 const notices = useNoticesStore();
 const conn = useConnectionStore();
@@ -268,9 +271,16 @@ function onGlobalKey(e: KeyboardEvent) {
 }
 
 function onSelect(instanceId: string, alias: string) {
+  directBotsStore.clearSelection();
   chat.select(instanceId, alias);
   void chat.loadHistory().catch(() => {});
   leftOpen.value = false; // mobile: jump straight to the conversation
+}
+
+function onSelectBot(instanceId: string, botId: string) {
+  chat.clearSelection();
+  void directBotsStore.selectBot(instanceId, botId);
+  leftOpen.value = false;
 }
 
 let everOnline = false;
@@ -290,7 +300,10 @@ function onStatus(online: boolean) {
     // Subscribe to every owned instance so background turns keep their working/unread
     // state accurate even while the user is viewing a different instance.
     sendSubscribe(subscribedInstanceIds());
-    if (everOnline) void reloadSnapshot();
+    if (everOnline) {
+      void reloadSnapshot();
+      void directBotsStore.reconcileOnReconnect();
+    }
     everOnline = true;
   }
 }
@@ -315,6 +328,7 @@ onMounted(async () => {
   disconnect = connectEvents((event) => {
     instances.applyEvent(event);
     chat.applyEvent(event);
+    directBotsStore.applyEvent(event);
     // If the selected turn completed while the browser was offline, the authoritative
     // snapshot clears its stale live card. Reload persisted history immediately so the
     // completed answer replaces it without requiring a manual page refresh.
@@ -352,9 +366,14 @@ onMounted(async () => {
       }
     } catch { /* ignore */ }
   } else {
-    const prior = loadPersistedSelection();
-    if (prior && instances.byId(prior.instanceId)) {
-      onSelect(prior.instanceId, prior.alias);
+    const persistedBot = loadPersistedBotSelection();
+    if (persistedBot && instances.byId(persistedBot.instanceId)) {
+      onSelectBot(persistedBot.instanceId, persistedBot.botId);
+    } else {
+      const prior = loadPersistedSelection();
+      if (prior && instances.byId(prior.instanceId)) {
+        onSelect(prior.instanceId, prior.alias);
+      }
     }
   }
 });
@@ -442,8 +461,12 @@ onUnmounted(() => {
               class="rounded p-1 leading-none text-fg-muted hover:bg-fg/5" @click="leftOpen = true"><Menu :size="20" /></button>
       <CenterTabStrip v-if="currentKey" bare :session-key="currentKey" class="min-w-0 flex-1"
                       @close="(id) => currentKey && requestCloseTab(currentKey, id)" />
+      <span v-else-if="directBotsStore.isBotSelected" class="min-w-0 flex-1 truncate text-center text-sm font-medium">
+        {{ directBotsStore.currentBot?.name ?? "Bot" }}
+        <span v-if="directBotsStore.currentTopic" class="text-xs text-fg-muted font-normal"> · {{ directBotsStore.currentTopic.title }}</span>
+      </span>
       <span v-else class="min-w-0 flex-1 truncate text-center text-sm font-medium">{{ chat.sessionAlias ?? "xacpx relay" }}</span>
-      <div class="flex shrink-0 items-center gap-0.5">
+      <div v-if="!directBotsStore.isBotSelected" class="flex shrink-0 items-center gap-0.5">
         <button data-test="open-files" :aria-label='$t("nav.openFiles")' :title='$t("nav.files")'
                 class="grid h-8 w-8 place-items-center rounded text-fg-muted hover:bg-fg/5"
                 @click="openRight('files')"><FileText :size="18" /></button>
@@ -472,7 +495,7 @@ onUnmounted(() => {
                     class="text-fg-muted hover:text-fg lg:hidden" @click="leftOpen = false"><X :size="18" /></button>
           </div>
         </div>
-        <InstanceTree @select="onSelect" />
+        <InstanceTree @select="onSelect" @select-bot="onSelectBot" />
       </div>
 
       <!-- Slim edge handle to bring the sidebar back once collapsed (desktop only). -->
@@ -503,9 +526,10 @@ onUnmounted(() => {
           <CenterTabStrip :session-key="currentKey" @close="(id) => currentKey && requestCloseTab(currentKey, id)" />
         </div>
         <div class="relative min-h-0 flex-1">
+          <DirectBotPane v-if="directBotsStore.isBotSelected" class="absolute inset-0 z-10" />
           <ChatPane class="absolute inset-0"
-                    :inert="!!currentKey && centerTabs.activeFor(currentKey) !== 'chat'"
-                    v-show="!currentKey || centerTabs.activeFor(currentKey) === 'chat'"
+                    :inert="directBotsStore.isBotSelected || (!!currentKey && centerTabs.activeFor(currentKey) !== 'chat')"
+                    v-show="!directBotsStore.isBotSelected && (!currentKey || centerTabs.activeFor(currentKey) === 'chat')"
                     @show-files="rightTab = 'files'" />
           <template v-for="{ key, tab } in centerTabs.allOpenTabs()" :key="key + '|' + tab.id">
             <FileViewer v-if="tab.kind === 'file' || tab.kind === 'diff'" class="absolute inset-0 z-10"
@@ -531,7 +555,8 @@ onUnmounted(() => {
            width is the user-dragged `rightWidth` (inline style overrides lg:w-[296px],
            which stays as a no-JS fallback); on mobile no inline width is set so the
            fixed `w-72` drawer width applies. -->
-      <div data-test="column" data-drawer="right"
+      <div v-if="!directBotsStore.isBotSelected"
+           data-test="column" data-drawer="right"
            class="fixed inset-y-0 right-0 z-40 flex w-full shrink-0 transform flex-col overflow-hidden border-l border-border bg-surface shadow-lg transition-transform pt-[env(safe-area-inset-top)] lg:relative lg:z-auto lg:w-[296px] lg:max-w-none lg:translate-x-0 lg:transform-none lg:shadow-none lg:pt-0"
            :class="rightOpen ? 'translate-x-0' : 'translate-x-full'"
            :style="isDesktop ? { width: rightWidth + 'px' } : undefined">

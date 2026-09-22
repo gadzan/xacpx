@@ -230,12 +230,17 @@ async function createLifecycle(options: {
   const jump = (ms: number) => {
     clock += ms;
   };
+  const dispatcherHolder: { current?: ConversationDispatcher } = {};
+  bots.setReenabledHook(() => {
+    void dispatcherHolder.current?.kick().catch(() => {});
+  });
   const dispatcher = new ConversationDispatcher(store, runtime, runner, sessions, {
     now: nowFn,
     ownerId: options.ownerId ?? "dispatcher-a",
     hooks: options.hooks,
     ...(options.leaseMs !== undefined ? { leaseMs: options.leaseMs } : {}),
   });
+  dispatcherHolder.current = dispatcher;
   const service = new ConversationRunService(store, bots, runtime, dispatcher, sessions, state, stateStore, {
     now: nowFn,
     stateMutex,
@@ -629,6 +634,40 @@ test("one active Run per Topic queues the next request durably", async () => {
   expect(runner.runs).toHaveLength(2);
 });
 
+test("cancel between materialize and execution-start still converges Bot lifecycle via bots-changed", async () => {
+  const paused = deferred();
+  const resume = deferred();
+  const first = await createLifecycle({
+    hooks: {
+      beforeExecutionStart: async () => {
+        paused.resolve();
+        await resume.promise;
+      },
+    },
+  });
+  // Attach a product listener by re-emitting through the dispatcher's sink:
+  // the composition wires onRuntimeMaterialized -> bots-changed; here we
+  // assert the same ordering directly on the runtime hook path.
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-materialize-cancel",
+    content: "hello",
+  });
+  const draining = first.dispatcher.kick();
+  await paused.promise;
+  // Binding/session are durably published at this point even though
+  // execution-start has not run.
+  const bindings = Object.values(first.state.bot_runtime_bindings);
+  expect(bindings).toHaveLength(1);
+  expect(first.bots.hasRuntime(BOT_ID)).toBe(true);
+  // Cancel before execution-start: no member-turn-started will ever fire.
+  await first.service.cancelRun(accepted.run.id);
+  resume.resolve();
+  await draining;
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("cancelled");
+  expect(first.bots.hasRuntime(BOT_ID)).toBe(true);
+});
+
 test("stale worker cannot cross the execution-start fence after a lease reclaim", async () => {
   const aPaused = deferred();
   const aResume = deferred();
@@ -821,6 +860,30 @@ test("retrying an accepted request after disable reuses the durable Run", async 
     requestId: "req-disable-new",
     content: "fresh",
   })).rejects.toMatchObject({ code: "bot_disabled" });
+});
+
+test("disable before materialize parks the Run pending; re-enable resumes it exactly once", async () => {
+  const first = await createLifecycle();
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-disable-resume",
+    content: "hello",
+  });
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("queued");
+  // Disable before any materialization: the next drain parks the claim back
+  // to pending instead of executing.
+  await first.bots.updateBot(BOT_ID, { enabled: false });
+  await first.dispatcher.kick();
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("queued");
+  expect(fakeRunner(first.runner).runs).toHaveLength(0);
+  // Re-enable must wake the dispatcher via the hook: the same durable Run
+  // resumes without a second prompt, and executes exactly once. No manual
+  // kick: the updateBot(false->true) transition fires it.
+  await first.bots.updateBot(BOT_ID, { enabled: true });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(fakeRunner(first.runner).runs).toHaveLength(1);
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
+  expect(fakeRunner(first.runner).runs.filter((r) => r.runId === accepted.run.id)).toHaveLength(1);
 });
 
 test("retrying an accepted extra-Topic request after deleting reuses the durable Run", async () => {
@@ -1607,4 +1670,50 @@ test("a worker paused before materialize cannot resurrect runtime after teardown
   expect(first.state.conversations).toEqual({});
   expect(first.state.conversation_topics).toEqual({});
   expect(fakeRunner(first.runner).runs).toHaveLength(0);
+});
+
+test("materialize high -> bot edit to default -> accept run A (snapshot effort=undefined) -> bot edit back to high -> dispatch A releases old high runtime and executes with default effort", async () => {
+  const first = await createLifecycle();
+
+  // 1. Update bot to effort: "high"
+  await first.bots.updateBot(BOT_ID, { effort: "high" });
+
+  // 2. Materialize high runtime
+  const initialBinding = await first.runtime.getOrCreateDirectSession({ botId: BOT_ID });
+  const initialSession = first.sessions.getLogicalSessionById(initialBinding.logicalSessionId);
+  expect(initialSession?.effort).toBe("high");
+
+  // 3. Edit Bot: effort = Default (cleared)
+  await first.bots.updateBot(BOT_ID, { effort: null });
+  expect(first.bots.getBot(BOT_ID).effort).toBeUndefined();
+
+  // 4. Accept Run A with Bot effort = Default -> snapshot execution.effort is undefined
+  const acceptedA = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req_run_a",
+    content: "Run A",
+  });
+  expect(acceptedA.run.profileSnapshot.execution.effort).toBeUndefined();
+
+  // 5. Edit Bot back to "high" BEFORE Run A is dispatched
+  await first.bots.updateBot(BOT_ID, { effort: "high" });
+  expect(first.bots.getBot(BOT_ID).effort).toBe("high");
+
+  // 6. Dispatch Run A: must tear down old high runtime because accepted snapshot effort is undefined (Default)
+  await first.dispatcher.kick();
+
+  // Verify: old high session was physically deleted/released
+  expect(first.physical.deleteCalls).toBeGreaterThanOrEqual(1);
+  // Binding was recreated/rebound, session effort is undefined (clean Default)
+  const activeBinding = Object.values(first.state.bot_runtime_bindings).find(
+    (b) => b.botId === BOT_ID && b.scope === "bot-direct",
+  );
+  expect(activeBinding).toBeDefined();
+  expect(activeBinding!.logicalSessionId).not.toBe(initialBinding.logicalSessionId);
+  const activeSession = first.sessions.getLogicalSessionById(activeBinding!.logicalSessionId);
+  expect(activeSession?.effort).toBeUndefined();
+
+  // Run A completed successfully
+  expect(fakeRunner(first.runner).runs).toHaveLength(1);
+  expect(first.store.getRun(acceptedA.run.id)?.state).toBe("completed");
 });

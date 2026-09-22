@@ -132,6 +132,14 @@ export class ConversationRunService {
     return this.activation === "activated";
   }
 
+  /** Wake pending durable work (e.g. after a Bot re-enables). Activation-
+   *  aware: when the consumer never activated (initial recovery failure),
+   *  Conversation work must stay parked — a Bot lifecycle event must not
+   *  bypass the fail-closed unavailable gate via a direct dispatcher kick. */
+  wakePendingWork(): void {
+    if (this.activation !== "activated" || this.closed) return;
+    void this.dispatcher.kick().catch(() => {});
+  }
   private assertAccepting(): void {
     this.assertOpen();
     if (this.activation === "unavailable") {
@@ -323,6 +331,23 @@ export class ConversationRunService {
       ...(oldestSeq !== undefined ? { oldestSeq } : {}),
       ...(newestSeq !== undefined ? { newestSeq } : {}),
     };
+  }
+
+  listTopicRuns(conversationId: string, topicId: string, options?: { limit?: number }): { runs: ConversationRun[]; activeRunId?: string; activeRun?: ConversationRun } {
+    this.assertOpen();
+    this.requireConversation(conversationId);
+    const limit = options?.limit ?? 50;
+    const all = this.store.listRuns(conversationId, topicId);
+    // Exactly one Run executes per Topic: a running/waiting-human Run owns the
+    // Topic and later accepts stay queued in durable seq order. Select from the
+    // full durable set: paging bounds the `runs` transport payload, never the
+    // active identity. The owner is always returned (even outside the page) so
+    // refresh/reconnect recovery cannot lose the executing or next-up Run.
+    const executing = all.find((run) => run.state === "running" || run.state === "waiting-human");
+    const nextQueued = all.find((run) => run.state === "queued");
+    const active = executing ?? nextQueued;
+    const runs = all.slice(-limit);
+    return { runs, ...(active ? { activeRunId: active.id, activeRun: active } : {}) };
   }
 
   async createDirectTopic(botId: string, title: string): Promise<ConversationTopic> {
