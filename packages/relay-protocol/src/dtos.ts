@@ -174,6 +174,11 @@ export interface ToolStepDto {
   kind: ToolStepKind;
   status: ToolStepStatus;
   title: string;
+  /** True when `title` is a bare file path the connector resolved from the
+   *  tool's own arguments/location (never an adapter summary). The web uses
+   *  it to head-ellipsis path previews (`…tail`) so the filename survives;
+   *  absent (older connectors) falls back to a kind+separator heuristic. */
+  titleIsPath?: boolean;
   durationMs?: number;
   /** First-frame epoch ms for this step (connector clock), so a still-running step
    *  can render a live elapsed timer. STEP-level — unrelated to

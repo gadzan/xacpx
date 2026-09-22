@@ -22,19 +22,20 @@ describe("ToolCallPanel", () => {
     expect(w.find("button").attributes("aria-expanded")).toBe("false");
   });
 
-  it("expands a row to show its detail on click", async () => {
+  it("expands a row to show its detail with the full command as rendered text", async () => {
     const w = mount(ToolCallPanel, { props: { steps } });
     expect(w.find('[data-test="cmd-output"]').exists()).toBe(false);
     await w.find("button").trigger("click");
     await w.findAll('[data-test="tool-row"]')[0].trigger("click");
     expect(w.find('[data-test="cmd-output"]').text()).toContain("passed");
+    expect(w.find('[data-test="detail-headline"]').text()).toContain("npm test");
   });
 
   it("head-truncates path rows so the filename stays visible", async () => {
     const w = mount(ToolCallPanel, {
       props: {
         steps: [
-          { toolCallId: "p1", toolName: "Read", kind: "read", status: "success", title: "packages/relay-web/src/components/ToolStepCard.vue", detail: { type: "read", path: "packages/relay-web/src/components/ToolStepCard.vue", preview: "body" } },
+          { toolCallId: "p1", toolName: "Read", kind: "read", status: "success", title: "packages/relay-web/src/components/ToolStepCard.vue", titleIsPath: true, detail: { type: "read", path: "packages/relay-web/src/components/ToolStepCard.vue", preview: "body" } },
           { toolCallId: "c1", toolName: "Bash", kind: "execute", status: "success", title: "bun run build", detail: { type: "command", command: "bun run build", output: "ok" } },
         ],
       },

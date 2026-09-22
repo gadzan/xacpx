@@ -340,10 +340,14 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
 
   if (event.kind === "edit") {
     const diff = diffBlock(blocks);
-    const path =
-      asString(diff?.path) ?? locationPath(event) ?? asString(input.file_path) ?? asString(input.path) ?? fallbackTitle;
+    // Stamp only titles resolved from a real path source (diff block /
+    // ACP location / tool arguments). A bare summary fallback is prose.
+    const sourcePath =
+      asString(diff?.path) ?? locationPath(event) ?? asString(input.file_path) ?? asString(input.path);
+    const path = sourcePath ?? fallbackTitle;
     // A degraded adapter title must not mask the file the edit touched.
     const title = isDegradedTitle(fallbackTitle, event.toolName) ? path : fallbackTitle;
+    const titleIsPath = sourcePath !== undefined && title === sourcePath;
     const oldText = asString(diff?.oldText) ?? asString(input.old_string) ?? asString(input.oldText);
     const newText = asString(diff?.newText) ?? asString(input.new_string) ?? asString(input.newText) ?? asString(input.content);
     const instruction = asString(input.instruction) ?? asString(input.description);
@@ -354,7 +358,7 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
       // non-interactive row instead of an expandable empty drawer.
       // Error steps still expand via step.error on the card.
       if ((oldText ?? "") === "" && (newText ?? "") === "" && !instruction) {
-        return { ...base, title: path };
+        return titleIsPath ? { ...base, title: path, titleIsPath } : { ...base, title: path };
       }
       const detail: ToolDetailDto = {
         type: "diff",
@@ -363,7 +367,7 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
         newText: cap(newText ?? "", DIFF_CAP),
         ...(instruction ? { instruction: cap(instruction, INSTRUCTION_CAP) } : {}),
       };
-      return { ...base, title, detail };
+      return titleIsPath ? { ...base, title, titleIsPath, detail } : { ...base, title, detail };
     }
     // The title prefers the ACP location over the input aliases; only drop the
     // input key when it actually supplied the title, so a location-won title
@@ -376,17 +380,22 @@ export function toolUseEventToStepDto(event: ToolUseEvent): ToolStepDto {
   }
 
   if (event.kind === "read") {
-    const path = asString(input.file_path) ?? asString(input.path) ?? asString(pc?.name) ?? locationPath(event) ?? fallbackTitle;
+    // The stamp marks titles the connector resolved from a real path source
+    // (tool arguments / parsed_cmd / ACP location). When every source misses,
+    // `path` is just the adapter summary echoed back — prose, never stamped.
+    const sourcePath = asString(input.file_path) ?? asString(input.path) ?? asString(pc?.name) ?? locationPath(event);
+    const path = sourcePath ?? fallbackTitle;
     // Same guard as edit: a degraded adapter title must not mask the file read.
     const title = isDegradedTitle(fallbackTitle, event.toolName) ? path : fallbackTitle;
+    const titleIsPath = sourcePath !== undefined && title === sourcePath;
     const lines = readLines(input);
     // `output.content` is cursor-agent's file body — without it a Cursor read card
     // has no preview at all, since it sends neither content blocks nor stdout.
     const preview = textFromBlocks(blocks) ?? asString(output.stdout) ?? terminalOut ?? asString(output.text) ?? asString(output.content) ?? rawOutputText;
     // The header already shows the path: a detail carrying only the path echoes it.
-    if (!lines && !preview) return { ...base, title };
+    if (!lines && !preview) return titleIsPath ? { ...base, title, titleIsPath } : { ...base, title };
     const detail: ToolDetailDto = { type: "read", path, ...(lines ? { lines } : {}), ...(preview ? { preview: capTail(preview) } : {}) };
-    return { ...base, title, detail };
+    return titleIsPath ? { ...base, title, titleIsPath, detail } : { ...base, title, detail };
   }
 
   if (event.kind === "execute") {

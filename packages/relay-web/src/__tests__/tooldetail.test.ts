@@ -14,10 +14,10 @@ describe("ToolDetail", () => {
     expect(w.find('[data-test="diff-add"]').text()).toContain("const a = 2");
   });
 
-  it("renders a diff body without a header-echo path row", () => {
+  it("renders a diff with the path as a copyable headline above the body", () => {
     const w = render({ type: "diff", path: "src/x.ts", oldText: "a\nb", newText: "a\nb\nc\nd" });
     expect(w.find('[data-test="diff-add"]').text()).toContain("c");
-    expect(w.text()).not.toContain("src/x.ts");
+    expect(w.find('[data-test="detail-headline"]').text()).toContain("src/x.ts");
   });
 
   it("renders the edit instruction at the top of a diff card", () => {
@@ -32,24 +32,25 @@ describe("ToolDetail", () => {
     expect(w.find('[data-test="diff-add"]').text()).toContain("new");
   });
 
-  it("renders a command output block and exit code without echoing the command", () => {
+  it("renders a command headline with copyable text above output and exit code", () => {
     const w = render({ type: "command", command: "npm test", output: "12 passed", exitCode: 0 });
     expect(w.find('[data-test="cmd-output"]').text()).toContain("12 passed");
     expect(w.text()).toContain("exit 0");
-    expect(w.text()).not.toContain("npm test");
+    expect(w.find('[data-test="detail-headline"]').text()).toContain("npm test");
+    expect(w.find('[data-test="copy-button"]').exists()).toBe(true);
   });
 
-  it("renders a read with the line range only when present", () => {
+  it("renders a read with the path headline plus the line range", () => {
     const w = render({ type: "read", path: "src/a.ts", lines: "1–20" });
     expect(w.find('[data-test="read-lines"]').text()).toContain("1–20");
-    expect(w.text()).not.toContain("src/a.ts");
+    expect(w.find('[data-test="detail-headline"]').text()).toContain("src/a.ts");
   });
 
-  it("renders search matches without echoing the query", () => {
+  it("renders search matches with the query as a copyable headline", () => {
     const w = render({ type: "search", query: "rg foo", output: "a.ts:1\na.ts:2" });
     expect(w.find('[data-test="search-output"]').text()).toContain("a.ts:1");
     expect(w.find('[data-test="search-count"]').text()).toContain("2 lines");
-    expect(w.text()).not.toContain("rg foo");
+    expect(w.find('[data-test="detail-headline"]').text()).toContain("rg foo");
   });
 
   it("skips the line count when the output already states its own total", () => {

@@ -388,6 +388,8 @@ function validToolStep(s) {
     return false;
   if (!optStr(c.error))
     return false;
+  if (c.titleIsPath !== undefined && typeof c.titleIsPath !== "boolean")
+    return false;
   if (!optStr(c.terminalId))
     return false;
   if (!optStr(c.agentMessageId))

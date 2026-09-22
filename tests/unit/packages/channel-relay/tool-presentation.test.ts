@@ -166,6 +166,27 @@ test("read derives path from file_path and a content array preview", () => {
   expect(step.detail).toMatchObject({ type: "read", path: "src/a.ts", preview: "file contents" });
 });
 
+test("read stamps titleIsPath when the title is the resolved path", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "t3p", toolName: "Read", kind: "read", status: "success",
+    rawInput: { file_path: "src/a.ts" },
+    content: { type: "text", text: "file contents" },
+  });
+  expect(step.titleIsPath).toBe(true);
+});
+
+test("read withholds titleIsPath for a prose summary echoing the path", () => {
+  // The Codex list call has no file input: the summary lands in both title
+  // and detail.path, but it is prose — the web must keep tail ellipsis.
+  const step = toolUseEventToStepDto({
+    toolCallId: "tc3p", toolName: "shell", kind: "read", status: "success",
+    summary: "List files in 'relay-web'",
+    rawOutput: { formatted_output: "src/main.ts\nsrc/App.vue", exit_code: 0 },
+  });
+  expect(step.title).toBe("List files in 'relay-web'");
+  expect(step.titleIsPath).toBeUndefined();
+});
+
 test("search shows the parsed_cmd query in the header without a drawer until output lands", () => {
   const step = toolUseEventToStepDto({
     toolCallId: "t4", toolName: "Search", kind: "search", status: "success",

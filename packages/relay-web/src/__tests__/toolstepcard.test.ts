@@ -108,7 +108,7 @@ describe("ToolStepCard error banner de-duplication", () => {
     expect(w.find('[data-test="tool-step-header"]').text()).toContain("a.ts");
   });
 
-  it("keeps a truncated header title single-line after expanding the detail", async () => {
+  it("shows the full command as rendered text in the expanded drawer", async () => {
     const w = card({
       status: "success",
       title: "a-very-long-command --with --many --flags --that --overflows",
@@ -118,20 +118,21 @@ describe("ToolStepCard error banner de-duplication", () => {
     expect(header.find("span.min-w-0").classes()).toContain("truncate");
     await header.trigger("click");
     expect(header.attributes("aria-expanded")).toBe("true");
-    // The full command/output lives in the detail drawer; the header stays a
-    // single-line preview (full text remains available via the title tooltip).
+    // Header stays single-line; the full command must appear as visible,
+    // selectable drawer text (not just the `title` tooltip: no hover on touch).
     expect(header.find("span.min-w-0").classes()).toContain("truncate");
-    expect(header.find("span.min-w-0").attributes("title")).toContain("a-very-long-command");
     expect(w.find('[data-test="tool-step-detail"]').exists()).toBe(true);
+    expect(w.find('[data-test="detail-headline"]').text()).toContain("a-very-long-command --with --many --flags --that --overflows");
   });
 
-  it("head-truncates path titles so the filename stays visible", () => {
+  it("head-truncates stamped path titles so the filename stays visible", () => {
     // dir=rtl moves the ellipsis to the head (…tail): the filename — the part
     // users scan for — survives truncation. Full path stays in the tooltip.
     const path = card({
       kind: "read",
       status: "success",
       title: "packages/relay-web/src/components/ToolStepCard.vue",
+      titleIsPath: true,
       detail: { type: "read", path: "packages/relay-web/src/components/ToolStepCard.vue", preview: "body" },
     });
     const pathTitle = path.find('[data-test="tool-step-header"] span.min-w-0');
@@ -146,14 +147,14 @@ describe("ToolStepCard error banner de-duplication", () => {
     });
     expect(cmd.find('[data-test="tool-step-header"] span.min-w-0').attributes("dir")).toBeUndefined();
   });
-
-  it("head-truncates spaced file paths on POSIX and Windows", () => {
-    // Real paths may contain spaces; whitespace must not disqualify them —
-    // otherwise the filename is truncated away again.
+  it("head-truncates stamped spaced paths on POSIX and Windows", () => {
+    // Real paths may contain spaces; the connector stamp carries provenance
+    // so the web need not guess from the title text.
     const posix = card({
       kind: "read",
       status: "success",
       title: "/Users/me/My Project/src/ToolStepCard.vue",
+      titleIsPath: true,
       detail: { type: "read", path: "/Users/me/My Project/src/ToolStepCard.vue", preview: "body" },
     });
     expect(posix.find('[data-test="tool-step-header"] span.min-w-0').attributes("dir")).toBe("rtl");
@@ -161,6 +162,7 @@ describe("ToolStepCard error banner de-duplication", () => {
       kind: "edit",
       status: "success",
       title: "C:\\Work Files\\src\\foo.ts",
+      titleIsPath: true,
       detail: { type: "diff", path: "C:\\Work Files\\src\\foo.ts", oldText: "a", newText: "b" },
     });
     expect(win.find('[data-test="tool-step-header"] span.min-w-0').attributes("dir")).toBe("rtl");
@@ -175,13 +177,26 @@ describe("ToolStepCard error banner de-duplication", () => {
   });
 
   it("keeps a descriptive read summary as prose even with a structured path", () => {
-    // The detail carries its own path, so title equality is decisive: a
-    // summary that merely mentions the path is prose (tail ellipsis).
+    // The detail carries its own path but the connector withheld the stamp:
+    // a summary that merely mentions the path is prose (tail ellipsis).
     const w = card({
       kind: "read",
       status: "success",
       title: "Reading /Users/me/My Project/a.ts",
       detail: { type: "read", path: "/Users/me/My Project/a.ts", preview: "body" },
+    });
+    expect(w.find('[data-test="tool-step-header"] span.min-w-0').attributes("dir")).toBeUndefined();
+  });
+
+  it("keeps an unstamped echo of the summary path as prose", () => {
+    // A path-less read echoes the adapter summary into `detail.path`
+    // (e.g. `List files in 'relay-web'`); without the stamp that echo must
+    // not flip the title to RTL head-ellipsis.
+    const w = card({
+      kind: "read",
+      status: "success",
+      title: "List files in 'relay-web'",
+      detail: { type: "read", path: "List files in 'relay-web'", preview: "src/main.ts" },
     });
     expect(w.find('[data-test="tool-step-header"] span.min-w-0').attributes("dir")).toBeUndefined();
   });
