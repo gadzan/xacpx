@@ -632,6 +632,7 @@ export default {
       agentRequired: "Agent 为必填项。",
       workspaceRequired: "工作区为必填项。",
       detailLoading: "Bot 详情仍在加载中，请稍候再保存。",
+      detailLoadFailed: "Bot 详情加载失败（{msg}），请重试后再保存。",
     },
     lifecycle: {
       identityLocked: "该 Bot 已运行过，Agent 与工作区已锁定。其他设置仍会对后续轮次生效。",

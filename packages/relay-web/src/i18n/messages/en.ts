@@ -635,6 +635,7 @@ export default {
       agentRequired: "Agent is required.",
       workspaceRequired: "Workspace is required.",
       detailLoading: "Bot details are still loading. Wait a moment before saving.",
+      detailLoadFailed: "Could not load Bot details ({msg}). Retry before saving.",
     },
     lifecycle: {
       identityLocked: "Agent and workspace are locked once this Bot has run. Other settings still apply to future turns.",

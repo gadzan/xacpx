@@ -671,6 +671,65 @@ describe("Direct Bot Components", () => {
       expect(updateSpy).toHaveBeenCalled();
       expect(loadSpy).not.toHaveBeenCalled();
     });
+    it("surfaces a retry after detail hydration fails, then hydrates and preserves user edits", async () => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "codex", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+          agentCatalog: [],
+        } as never,
+      ];
+      const directBots = useDirectBotsStore();
+      const authoritative = {
+        id: "bot_1", name: "Server Name", agent: "codex", workspace: "repo",
+        instructions: "Server instructions", enabled: true, profileRevision: 2,
+        createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "2026-09-18T00:00:00.000Z",
+      } as BotDetailDto;
+      let calls = 0;
+      const loadSpy = vi.spyOn(directBots, "loadBotDetail").mockImplementation(async (iid: string, bid: string) => {
+        calls += 1;
+        if (calls === 1) throw new Error("transient bots.get drop");
+        directBots.botDetails[`${iid}:${bid}`] = authoritative;
+        return authoritative;
+      });
+      const updateSpy = vi.spyOn(directBots, "updateBot").mockResolvedValue({
+        ...authoritative, name: "User Name",
+      });
+      const existingBot: BotSummaryDto = {
+        id: "bot_1", name: "Bot", agent: "codex", workspace: "repo",
+        enabled: true, updatedAt: "2026-09-18T00:00:00.000Z",
+      };
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local", bot: existingBot },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      // First attempt failed: visible retry banner, Save stays gated.
+      expect(wrapper.find('[data-test="bot-detail-retry"]').exists()).toBe(true);
+      const saveBtn = wrapper.findAll("button").find((b) => b.text().includes("Save"));
+      expect(saveBtn).toBeTruthy();
+      expect((saveBtn!.element as HTMLButtonElement).disabled).toBe(true);
+      // User edits while failed: retry must preserve them.
+      await wrapper.find("#bot-name").setValue("User Name");
+      await wrapper.find('[data-test="bot-detail-retry-button"]').trigger("click");
+      await flushPromises();
+      expect(loadSpy).toHaveBeenCalledTimes(2);
+      expect(wrapper.find('[data-test="bot-detail-retry"]').exists()).toBe(false);
+      // Untouched fields hydrated from authority; user edit preserved.
+      expect((wrapper.find("#bot-name").element as HTMLInputElement).value).toBe("User Name");
+      expect((wrapper.find("#bot-instructions").element as HTMLTextAreaElement).value).toBe("Server instructions");
+      // Save is now enabled and submits the dirty-only patch.
+      expect((saveBtn!.element as HTMLButtonElement).disabled).toBe(false);
+      await wrapper.find("form").trigger("submit.prevent");
+      await flushPromises();
+      expect(updateSpy).toHaveBeenCalled();
+    });
     it("blocks Save until summary-backed detail hydration completes", async () => {
       const instances = useInstancesStore();
       instances.instances = [
