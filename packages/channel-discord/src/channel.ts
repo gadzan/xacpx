@@ -25,7 +25,17 @@ import { mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import type { DiscordChannelConfig, DiscordResolvedAccountConfig } from "./config.js";
 import { parseDiscordChannelConfig } from "./config.js";
-import type { DeliveryTarget, DiscordButtonInteraction, DiscordInboundMessage, DiscordRoute, OutboundBody } from "./types.js";
+import type {
+  DeliveryTarget,
+  DiscordActionRow,
+  DiscordButtonInteraction,
+  DiscordInboundMessage,
+  DiscordModalSubmitInteraction,
+  DiscordRoute,
+  DiscordSelectActionRow,
+  DiscordSelectInteraction,
+  OutboundBody,
+} from "./types.js";
 import type { DiscordBotIdentity, DiscordClientLike } from "./discord-client.js";
 import {
   buildPermissionComponents,
@@ -37,13 +47,17 @@ import {
 } from "./permission-ui.js";
 import { checkElicitationRenderability } from "./elicitation-limits.js";
 import {
+  authorizeElicitationClick,
   buildElicitationFieldCard,
   buildElicitationOpening,
+  buildElicitationModal,
   buildElicitationReviewCard,
   createElicitationToken,
   ELICITATION_CUSTOM_ID_PREFIX,
   handleElicitationClick,
   parseElicitationCustomId,
+  parseElicitationModalCustomId,
+  parseModalAnswer,
   type ElicitationClickOutcome,
   type ElicitationUiAction,
 } from "./elicitation-ui.js";
@@ -365,10 +379,25 @@ export class DiscordChannel implements MessageChannelRuntime {
             // cannot collide: an elicitation id must never reach the permission
             // handler (whose `allowed` outcomes would reject it) and vice versa.
             if (interaction.customId.startsWith(ELICITATION_CUSTOM_ID_PREFIX)) {
+              // A field control on a text-like field opens a modal; every other
+              // elicitation control drives the wizard state machine.
+              const parsed = parseElicitationCustomId(interaction.customId);
+              if (parsed && parsed.action === "field" && parsed.fieldKey) {
+                void this.handleElicitationAnswerPrompt(interaction, parsed.fieldKey).catch(() => {});
+                return;
+              }
               void this.handleElicitationButton(interaction).catch(() => {});
               return;
             }
             void this.handlePermissionButton(interaction).catch(() => {});
+          },
+          onSelect: (interaction) => {
+            if (!interaction.customId.startsWith(ELICITATION_CUSTOM_ID_PREFIX)) return;
+            void this.handleElicitationSelect(interaction).catch(() => {});
+          },
+          onModalSubmit: (interaction) => {
+            if (!interaction.customId.startsWith(ELICITATION_CUSTOM_ID_PREFIX)) return;
+            void this.handleElicitationModalSubmit(interaction).catch(() => {});
           },
         },
         abortSignal: input.abortSignal,
@@ -655,6 +684,7 @@ export class DiscordChannel implements MessageChannelRuntime {
       target,
       request,
       values: {},
+      visitedReview: false,
       settled: false,
       resolve: settle,
       reject: rejectPromise,
@@ -704,9 +734,10 @@ export class DiscordChannel implements MessageChannelRuntime {
         components: opening.components,
       });
       entry.messageId = sent.messageId;
-      // Send race: the request may have settled while the send was in flight.
+      // Send race: the request may have settled while the send was in flight,
+      // in which case the terminal edit happened before a message id existed.
       if (entry.settled && entry.terminalState) {
-        void withdrawUi(getMessages().elicitationCancelled);
+        void this.renderElicitationInert(entry, getMessages().elicitationCancelled).catch(() => {});
       }
       void this.logger?.info("discord.elicitation.sent", "sent discord elicitation request", {
         requestId: request.requestId,
@@ -762,18 +793,35 @@ export class DiscordChannel implements MessageChannelRuntime {
     });
     if (outcome.decided) return;
     if (!outcome.rerender) return;
-    await this.rerenderElicitationCard(entry, runtime, parsed.action);
+    await this.rerenderElicitationCard(entry, runtime, parsed.action, parsed.fieldKey);
   }
 
-  /** Re-render the current wizard step in place, without settling. */
+  /**
+   * Re-render the current wizard step in place, without settling.
+   *
+   * `fieldKey` is the field a `field`/`edit` control named, when it named one:
+   * review-page Edit buttons carry the field they jump to, and a field card's
+   * Answer control carries its own field. Either way the navigation target is
+   * explicit rather than inferred from "wherever the wizard happens to be".
+   */
   private async rerenderElicitationCard(
     entry: PendingDiscordElicitation,
     runtime: AccountRuntime,
     action: ElicitationUiAction,
+    fieldKey?: string,
   ): Promise<void> {
     const messageId = entry.messageId;
     if (!messageId || entry.settled) return;
-    let card: { content: string; components: DiscordActionRow[] };
+    let card: {
+      content: string;
+      components: DiscordActionRow[];
+      selectRows?: DiscordSelectActionRow[];
+    };
+    const fieldCard = (key: string): { content: string; components: DiscordActionRow[]; selectRows?: DiscordSelectActionRow[] } => {
+      const field = entry.request.fields.find((f) => f.key === key);
+      if (!field) throw new Error(`wizard field ${JSON.stringify(key)} is not in the request`);
+      return buildElicitationFieldCard(entry.request, entry.token, field, entry.request.fields.indexOf(field) + 1, entry.values[field.key]);
+    };
     switch (action) {
       case "start": {
         entry.currentField = entry.request.fields[0]?.key;
@@ -782,36 +830,47 @@ export class DiscordChannel implements MessageChannelRuntime {
           // only if there is at least one field, so treat it as unrenderable.
           return;
         }
-        const field = entry.request.fields.find((f) => f.key === entry.currentField);
-        card = field
-          ? buildElicitationFieldCard(entry.request, entry.token, field, 1, entry.values[field.key])
-          : buildElicitationOpening(entry.request, entry.token);
+        card = fieldCard(entry.currentField);
         break;
       }
       case "field":
       case "edit": {
-        if (entry.currentField === undefined) entry.currentField = entry.request.fields[0]?.key;
-        const field = entry.request.fields.find((f) => f.key === entry.currentField);
-        if (!field) return;
-        card = buildElicitationFieldCard(
-          entry.request,
-          entry.token,
-          field,
-          entry.request.fields.indexOf(field) + 1,
-          entry.values[field.key],
-        );
+        if (fieldKey && entry.request.fields.some((f) => f.key === fieldKey)) {
+          entry.currentField = fieldKey;
+        } else if (entry.currentField === undefined) {
+          entry.currentField = entry.request.fields[0]?.key;
+        }
+        if (entry.currentField === undefined) return;
+        card = fieldCard(entry.currentField);
         break;
       }
-      case "review":
-      default:
+      case "review": {
+        // Two intents share this action: the field card's Next (forward to the
+        // review page) and the review card's Edit (back to a field). They are
+        // told apart by whether the review page has been shown, so a repeated
+        // Edit walks through fields instead of looping on the review card.
+        const returning = entry.visitedReview;
+        entry.visitedReview = !returning;
+        if (returning) {
+          const backTo = entry.currentField ?? entry.request.fields[0]?.key;
+          if (backTo !== undefined && entry.request.fields.some((f) => f.key === backTo)) {
+            entry.currentField = backTo;
+            card = fieldCard(backTo);
+            break;
+          }
+        }
         card = buildElicitationReviewCard(entry.request, entry.token, entry.values);
         break;
+      }
+      default:
+        return;
     }
     try {
       await runtime.client.editMessage(entry.target, messageId, {
         content: card.content,
         allowedMentions: { parse: [] },
         components: card.components,
+        ...(card.selectRows && card.selectRows.length > 0 ? { selectRows: card.selectRows } : {}),
       });
     } catch (error) {
       await this.logger?.warn("discord.elicitation.edit_failed", "failed to update elicitation message", {
@@ -819,6 +878,126 @@ export class DiscordChannel implements MessageChannelRuntime {
         message: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  /**
+   * Open a modal for the pending field when the initiator asks to answer it.
+   *
+   * Authorization happens before anything is shown: the interaction user must
+   * already be the recorded initiator, because Discord shows a modal only to
+   * the person who triggered the interaction and we must not open one for a
+   * form somebody else started.
+   */
+  private async handleElicitationAnswerPrompt(
+    interaction: DiscordButtonInteraction,
+    fieldKey: string,
+  ): Promise<void> {
+    const entry = this.findElicitationByToken(interaction.customId);
+    if (!entry) return;
+    if (authorizeElicitationClick(entry, interaction.userId) !== null) {
+      await interaction.replyEphemeral(getMessages().elicitationUnauthorized);
+      return;
+    }
+    const field = entry.request.fields.find((f) => f.key === fieldKey);
+    if (!field) return;
+    if (field.kind === "single-select" || field.kind === "multi-select" || field.kind === "boolean") {
+      // Select kinds are answered in place; there is nothing to open a modal for.
+      return;
+    }
+    const modal = buildElicitationModal(entry.token, field, entry.values[field.key]);
+    try {
+      await interaction.showModal(modal);
+    } catch (error) {
+      // A modal must be shown inside its interaction response; a missed
+      // response window is a Discord transport fact, not a decision, so the
+      // wizard stays live and the user can retry.
+      await this.logger?.warn("discord.elicitation.show_modal_failed", "failed to show elicitation modal", {
+        requestId: entry.requestId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      await interaction.replyEphemeral(getMessages().elicitationTextHint);
+    }
+  }
+
+  /**
+   * Record a String Select answer and advance to the review page.
+   *
+   * The values are option VALUES (what core validates), not labels. A single
+   * select that arrives with zero values is ignored rather than stored as an
+   * empty answer: Discord can deliver an empty selection when the user clears a
+   * multi-select, and treating that as an answer would submit a form the user
+   * never completed.
+   */
+  private async handleElicitationSelect(interaction: DiscordSelectInteraction): Promise<void> {
+    const parsed = parseElicitationCustomId(interaction.customId);
+    if (!parsed || !parsed.fieldKey) return;
+    const entry = this.pendingElicitations.get(parsed.token);
+    if (!entry) return;
+    if (authorizeElicitationClick(entry, interaction.userId) !== null) {
+      await interaction.replyEphemeral(getMessages().elicitationUnauthorized);
+      return;
+    }
+    const field = entry.request.fields.find((f) => f.key === parsed.fieldKey);
+    if (!field) return;
+    // The field identity also proves the answer's kind, so it is used below by
+    // the branch that writes the value.
+    if (interaction.values.length === 0) {
+      await interaction.replyEphemeral(getMessages().elicitationFieldHint);
+      return;
+    }
+    if (field.kind === "multi-select") {
+      entry.values[field.key] = [...interaction.values];
+    } else if (field.kind === "boolean") {
+      const truthy = interaction.values[0] === "true";
+      entry.values[field.key] = truthy;
+    } else {
+      // Single select: exactly one value. A payload with more is not something
+      // this renderer asked for, so it is not coerced into a single answer.
+      if (interaction.values.length !== 1) {
+        await interaction.replyEphemeral(getMessages().elicitationAlreadyResolved);
+        return;
+      }
+      entry.values[field.key] = interaction.values[0]!;
+    }
+    await interaction.acknowledge();
+  }
+
+  /**
+   * Record a modal answer and advance to the review page.
+   *
+   * Parsing is type-directed and non-coercing: `parseModalAnswer` leaves a
+   * field unanswered rather than storing `NaN` or a guessed boolean, so the
+   * submit gate still blocks on missing required values and the user can fix
+   * the input instead of silently sending a corrupted answer.
+   */
+  private async handleElicitationModalSubmit(interaction: DiscordModalSubmitInteraction): Promise<void> {
+    const parsed = parseElicitationModalCustomId(interaction.customId);
+    if (!parsed) return;
+    const entry = this.pendingElicitations.get(parsed.token);
+    if (!entry) return;
+    if (authorizeElicitationClick(entry, interaction.userId) !== null) {
+      await interaction.replyEphemeral(getMessages().elicitationUnauthorized);
+      return;
+    }
+    // A modal custom id is `<prefix><token>:modal`, so the field identity comes
+    // from the Text Input ids in the payload, never from the modal id.
+    const answered = new Set<string>();
+    for (const [key, raw] of Object.entries(interaction.fields)) {
+      const field = entry.request.fields.find((f) => f.key === key);
+      if (!field) continue;
+      const value = parseModalAnswer(field, raw);
+      if (value === undefined) continue;
+      entry.values[key] = value;
+      answered.add(key);
+    }
+    await interaction.replyEphemeral(answered.size > 0 ? getMessages().elicitationAnswerSaved : getMessages().elicitationNoAnswer);
+  }
+
+  /** Resolve the pending entry a custom id refers to, or undefined. */
+  private findElicitationByToken(customId: string): PendingDiscordElicitation | undefined {
+    const parsed = parseElicitationCustomId(customId);
+    if (!parsed) return undefined;
+    return this.pendingElicitations.get(parsed.token);
   }
 
   /** Show the inert terminal card after a user decision. */

@@ -6,7 +6,11 @@ import { join, resolve } from "node:path";
 import { RuntimeEngine } from "../../../../../src/bridge/engine/runtime-engine.ts";
 import { DiscordChannel } from "../../../../../packages/channel-discord/src/channel.ts";
 import type { DiscordClientLike } from "../../../../../packages/channel-discord/src/discord-client.ts";
-import type { DiscordButtonInteraction, OutboundBody } from "../../../../../packages/channel-discord/src/types.ts";
+import type {
+  DiscordButtonInteraction,
+  DiscordSelectInteraction,
+  OutboundBody,
+} from "../../../../../packages/channel-discord/src/types.ts";
 import { setChannelLocale } from "../../../../../packages/channel-discord/src/i18n/index.ts";
 import type { ChannelElicitationRequest } from "xacpx/plugin-api";
 
@@ -46,17 +50,20 @@ async function buildWorker(dir: string): Promise<string> {
 
 interface FakeDiscordClient extends DiscordClientLike {
   emitButton: (interaction: DiscordButtonInteraction) => void;
+  emitSelect: (interaction: DiscordSelectInteraction) => void;
   sent: Array<{ channelId: string; body: OutboundBody }>;
   edited: Array<{ channelId: string; messageId: string; body: OutboundBody }>;
 }
 
 function makeFakeClient(): FakeDiscordClient {
   let onButton: ((i: DiscordButtonInteraction) => void) | null = null;
+  let onSelect: ((i: DiscordSelectInteraction) => void) | null = null;
   const sent: Array<{ channelId: string; body: OutboundBody }> = [];
   const edited: Array<{ channelId: string; messageId: string; body: OutboundBody }> = [];
   const client: FakeDiscordClient = {
     start: async (input) => {
       onButton = input.handlers.onButton ?? null;
+      onSelect = input.handlers.onSelect ?? null;
       return { botUserId: "bot1", botTag: "Bot#0001" };
     },
     probeBot: async () => ({ botUserId: "bot1", botTag: "Bot#0001" }),
@@ -74,6 +81,9 @@ function makeFakeClient(): FakeDiscordClient {
     emitButton: (interaction) => {
       onButton?.(interaction);
     },
+    emitSelect: (interaction) => {
+      onSelect?.(interaction);
+    },
     sent,
     edited,
   };
@@ -87,6 +97,9 @@ function button(client: FakeDiscordClient, customId: string, userId: string): Di
     channelId: "c1",
     acknowledge: async () => {},
     replyEphemeral: async () => {},
+    showModal: async () => {
+      throw new Error("the E2E never opens a modal: it answers through a select");
+    },
   };
 }
 
@@ -138,24 +151,6 @@ async function waitForCard(client: FakeDiscordClient): Promise<void> {
     await new Promise((r) => setTimeout(r, 5));
   }
   if (client.sent.length === 0) throw new Error("elicitation card never appeared");
-}
-
-/**
- * Collect an answer into the pending wizard entry.
- *
- * Exposes the same mutation the Discord String Select handler performs, so the
- * E2E can answer without simulating a select interaction: a rendered select is
- * a transport detail, and faking it would test the fake instead of the spine.
- */
-function recordAnswer(
-  client: FakeDiscordClient,
-  channel: DiscordChannel,
-  values: Record<string, string | number | boolean | string[]>,
-): void {
-  const store = (channel as unknown as { pendingElicitations: Map<string, { values: Record<string, unknown> }> }).pendingElicitations;
-  const entry = [...store.values()][0];
-  if (!entry) throw new Error("no pending elicitation to answer");
-  for (const [key, value] of Object.entries(values)) entry.values[key] = value;
 }
 
 test("a protocol-faithful agent elicits, Discord renders it, the same turn resumes (accept)", async () => {
@@ -224,7 +219,20 @@ test("a protocol-faithful agent elicits, Discord renders it, the same turn resum
       }
       client.emitButton(button(client, idFor(client, "start"), "user-A"));
       await new Promise((r) => setTimeout(r, 5));
-      recordAnswer(client, discord, { env: "prod" });
+      // Answer through the String Select VALUE — the same control a real user
+      // picks — so the E2E exercises the renderer's answer path rather than a
+      // test seam.
+      const selectId = client.edited[client.edited.length - 1]!.body.selectRows?.[0]?.components[0]?.customId;
+      if (!selectId) throw new Error("no select row on the field card");
+      client.emitSelect({
+        customId: selectId,
+        userId: "user-A",
+        channelId: "c1",
+        values: ["prod"],
+        acknowledge: async () => {},
+        replyEphemeral: async () => {},
+      });
+      await new Promise((r) => setTimeout(r, 5));
       // The field card carries the review entry point.
       client.emitButton(button(client, idFor(client, "review"), "user-A"));
       await new Promise((r) => setTimeout(r, 5));

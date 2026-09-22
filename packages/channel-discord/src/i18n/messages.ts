@@ -41,9 +41,6 @@ export interface DiscordMessages {
   elicitationNoAnswer: string;
   elicitationTextHint: string;
   elicitationNumberHint: string;
-  elicitationDateHint: string;
-  elicitationEmailHint: string;
-  elicitationUriHint: string;
   summaryProcessing: string;
   summaryComplete: string;
   summaryStopped: string;

@@ -4,7 +4,11 @@ import { DiscordChannel } from "../../../../packages/channel-discord/src/channel
 import type { DiscordClientLike } from "../../../../packages/channel-discord/src/discord-client";
 import type {
   DiscordButtonInteraction,
+  DiscordModalSubmitInteraction,
+  DiscordSelectActionRow,
+  DiscordSelectInteraction,
   OutboundBody,
+  ShowModalInput,
 } from "../../../../packages/channel-discord/src/types";
 import { setChannelLocale } from "../../../../packages/channel-discord/src/i18n";
 import { ELICITATION_CUSTOM_ID_PREFIX } from "../../../../packages/channel-discord/src/elicitation-ui";
@@ -23,19 +27,27 @@ function makeLogger() {
 
 interface FakeDiscordClient extends DiscordClientLike {
   emitButton: (interaction: DiscordButtonInteraction) => void;
+  emitSelect: (interaction: DiscordSelectInteraction) => void;
+  emitModal: (interaction: DiscordModalSubmitInteraction) => void;
   sent: Array<{ channelId: string; body: OutboundBody }>;
   edited: Array<{ channelId: string; messageId: string; body: OutboundBody }>;
   ephemerals: string[];
+  modals: ShowModalInput[];
 }
 
 function makeFakeClient(): FakeDiscordClient {
   let onButton: ((i: DiscordButtonInteraction) => void) | null = null;
+  let onSelect: ((i: DiscordSelectInteraction) => void) | null = null;
+  let onModal: ((i: DiscordModalSubmitInteraction) => void) | null = null;
   const sent: Array<{ channelId: string; body: OutboundBody }> = [];
   const edited: Array<{ channelId: string; messageId: string; body: OutboundBody }> = [];
   const ephemerals: string[] = [];
+  const modals: ShowModalInput[] = [];
   const client: FakeDiscordClient = {
     start: async (input) => {
       onButton = input.handlers.onButton ?? null;
+      onSelect = input.handlers.onSelect ?? null;
+      onModal = input.handlers.onModalSubmit ?? null;
       return { botUserId: "bot1", botTag: "Bot#0001" };
     },
     probeBot: async () => ({ botUserId: "bot1", botTag: "Bot#0001" }),
@@ -53,9 +65,16 @@ function makeFakeClient(): FakeDiscordClient {
     emitButton: (interaction) => {
       onButton?.(interaction);
     },
+    emitSelect: (interaction) => {
+      onSelect?.(interaction);
+    },
+    emitModal: (interaction) => {
+      onModal?.(interaction);
+    },
     sent,
     edited,
     ephemerals,
+    modals,
   };
   return client;
 }
@@ -69,7 +88,52 @@ function click(client: FakeDiscordClient, customId: string, userId: string): Dis
     replyEphemeral: async (text: string) => {
       client.ephemerals.push(text);
     },
+    showModal: async (modal: ShowModalInput) => {
+      client.modals.push(modal);
+    },
   };
+}
+
+function selectInteraction(
+  client: FakeDiscordClient,
+  customId: string,
+  userId: string,
+  values: string[],
+): DiscordSelectInteraction {
+  return {
+    customId,
+    userId,
+    channelId: "c1",
+    values,
+    acknowledge: async () => {},
+    replyEphemeral: async (text: string) => {
+      client.ephemerals.push(text);
+    },
+  };
+}
+
+function modalSubmit(
+  client: FakeDiscordClient,
+  customId: string,
+  userId: string,
+  fields: Record<string, string>,
+): DiscordModalSubmitInteraction {
+  return {
+    customId,
+    userId,
+    channelId: "c1",
+    fields,
+    acknowledge: async () => {},
+    replyEphemeral: async (text: string) => {
+      client.ephemerals.push(text);
+    },
+  };
+}
+
+/** The select rows of the last card rendered. */
+function selectRowsOf(client: FakeDiscordClient): DiscordSelectActionRow[] {
+  const last = client.sent[client.sent.length - 1];
+  return last?.body.selectRows ?? [];
 }
 
 function makeStartInput(agent: unknown, abort: AbortController): ChannelStartInput {

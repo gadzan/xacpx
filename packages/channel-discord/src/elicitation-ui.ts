@@ -28,10 +28,17 @@ import type {
   ChannelElicitationValue,
 } from "xacpx/plugin-api";
 
-import type { DiscordActionRow, DiscordButtonComponent } from "./types.js";
+import type {
+  DiscordActionRow,
+  DiscordButtonComponent,
+  DiscordSelectActionRow,
+  ShowModalInput,
+} from "./types.js";
 import { t as getMessages } from "./i18n/index.js";
 import { escapeDiscordLiteralText } from "./permission-ui.js";
+import { DISCORD_ACTION_ROW_BUTTON_MAX } from "./elicitation-limits.js";
 import { trySettle } from "./elicitation-state.js";
+import type { PendingDiscordElicitation } from "./elicitation-state.js";
 
 export const ELICITATION_CUSTOM_ID_PREFIX = "xacpx-elicit:";
 
@@ -55,6 +62,14 @@ const ACTION_SEGMENTS: Record<ElicitationUiAction, string> = {
   cancel: "cancel",
 };
 
+/**
+ * The modal's own custom id uses a `modal` action segment. It is deliberately
+ * NOT part of `ElicitationUiAction` (the button/select action union): a modal
+ * submit carries no decision and routes through its own handler, so treating it
+ * as a button action would let a modal fall into the wizard state machine.
+ */
+const ELICITATION_MODAL_ACTION = "modal";
+
 export function createElicitationToken(): string {
   return randomUUID().replace(/-/g, "");
 }
@@ -76,6 +91,11 @@ export function elicitationCustomId(token: string, action: ElicitationUiAction, 
   // they are still length-capped so a pathological key cannot overflow the id.
   const boundedKey = fieldKey.slice(0, 48).replace(/[^A-Za-z0-9_-]/g, "");
   return `${ELICITATION_CUSTOM_ID_PREFIX}${token}:${ACTION_SEGMENTS[action]}:${boundedKey}`;
+}
+
+/** Custom id for the modal wrapper itself; the field identity rides inside. */
+export function elicitationModalCustomId(token: string): string {
+  return `${ELICITATION_CUSTOM_ID_PREFIX}${token}:${ELICITATION_MODAL_ACTION}`;
 }
 
 export function parseElicitationCustomId(
@@ -182,14 +202,27 @@ export function buildElicitationOpening(request: ChannelElicitationRequest, toke
   return { content: truncate(lines.join("\n\n"), MAX_CARD_CHARS), components };
 }
 
-/** Field card: one question, with its own decline/cancel escape hatches. */
+/**
+ * Field card: one question, with its own decline/cancel escape hatches.
+ *
+ * `selectRows` returns the String Select for a select-kind field (Discord
+ * forbids a select sharing an action row with a button, so buttons and selects
+ * travel as separate rows). `modalAction` asks the channel to open a modal for
+ * a text-like field; the card itself carries an "Answer" button, because a
+ * modal can only be opened from an interaction.
+ */
 export function buildElicitationFieldCard(
   request: ChannelElicitationRequest,
   token: string,
   field: ChannelElicitationField,
   index: number,
   current: ChannelElicitationValue | undefined,
-): { content: string; components: DiscordActionRow[] } {
+): {
+  content: string;
+  components: DiscordActionRow[];
+  selectRows: DiscordSelectActionRow[];
+  modalAction: boolean;
+} {
   const messages = getMessages();
   const lines = [
     `**${messages.elicitationFieldLabel(index, request.fields.length)}**`,
@@ -201,12 +234,62 @@ export function buildElicitationFieldCard(
   if (field.defaultValue !== undefined && current === undefined) {
     lines.push(escapeDiscordLiteralText(`_${displayValue(field.defaultValue)}_`));
   }
-  const components = actionRow([
-    { label: messages.elicitationNext, customId: elicitationCustomId(token, "review"), style: 2 },
-    { label: messages.elicitationDecline, customId: elicitationCustomId(token, "decline"), style: 2 },
-    { label: messages.elicitationCancel, customId: elicitationCustomId(token, "cancel"), style: 1 },
-  ]);
-  return { content: truncate(lines.join("\n\n"), MAX_CARD_CHARS), components };
+  if (current !== undefined) {
+    // Show what is already collected so a user returning to a field can see
+    // their current answer instead of re-entering blindly.
+    lines.push(`${messages.elicitationAnswerSaved} ${escapeDiscordLiteralText(displayValue(current))}`);
+  }
+  const isSelect = field.kind === "single-select" || field.kind === "multi-select";
+  const isBoolean = field.kind === "boolean";
+  const controls: Array<{ label: string; customId: string; style: 1 | 2 | 3 | 4 }> = [];
+  // Booleans are answerable in place (yes/no are their options), so only
+  // text-like fields need an "Answer" button that opens a modal.
+  if (!isSelect && !isBoolean) {
+    controls.push({ label: messages.elicitationEdit, customId: elicitationCustomId(token, "field", field.key), style: 3 });
+  }
+  controls.push({ label: messages.elicitationNext, customId: elicitationCustomId(token, "review"), style: 2 });
+  controls.push({ label: messages.elicitationDecline, customId: elicitationCustomId(token, "decline"), style: 2 });
+  controls.push({ label: messages.elicitationCancel, customId: elicitationCustomId(token, "cancel"), style: 1 });
+  return {
+    content: truncate(lines.join("\n\n"), MAX_CARD_CHARS),
+    components: actionRow(controls),
+    selectRows: isSelect
+      ? buildElicitationSelectRows(token, field, current)
+      : isBoolean
+        ? buildElicitationBooleanRows(token, field, current)
+        : [],
+    modalAction: !isSelect && !isBoolean,
+  };
+}
+
+/**
+ * Booleans become a two-option String Select rather than a pair of buttons, so
+ * `true` and `false` are selected with the same control the user already uses
+ * for the next field, and a boolean answer never depends on a button label.
+ */
+export function buildElicitationBooleanRows(
+  token: string,
+  field: Extract<ChannelElicitationField, { kind: "boolean" }>,
+  current: ChannelElicitationValue | undefined,
+): DiscordSelectActionRow[] {
+  const messages = getMessages();
+  const selected = typeof current === "boolean" ? String(current) : undefined;
+  return [
+    {
+      type: 1,
+      components: [
+        {
+          type: 3 as const,
+          customId: elicitationCustomId(token, "field", field.key),
+          placeholder: escapeDiscordLiteralText(field.title),
+          options: [
+            { label: messages.elicitationYes, value: "true", ...(selected === "true" ? { default: true } : {}) },
+            { label: messages.elicitationNo, value: "false", ...(selected === "false" ? { default: true } : {}) },
+          ],
+        },
+      ],
+    },
+  ];
 }
 
 /** Review card: every label and its current value, with Edit / Submit / Decline / Cancel. */
@@ -221,8 +304,19 @@ export function buildElicitationReviewCard(
     const value = values[field.key];
     lines.push(`**${escapeDiscordLiteralText(field.title)}**\n${escapeDiscordLiteralText(value === undefined ? messages.elicitationNoAnswer : displayValue(value))}`);
   }
+  // One Edit control per field, so the review page is genuinely navigable: the
+  // ACP requirement is that the user can MODIFY answers, which needs a route
+  // back to each answer rather than one ambiguous "Edit".
+  //
+  // A form with more fields than one row can hold (5) keeps an aggregate Edit
+  // that returns to the first unanswered field instead of overflowing the row.
+  const editButtons = request.fields.slice(0, DISCORD_ACTION_ROW_BUTTON_MAX - 3).map((field) => ({
+    label: truncate(escapeDiscordLiteralText(`${messages.elicitationEdit}: ${field.title}`), 80),
+    customId: elicitationCustomId(token, "edit", field.key),
+    style: 2 as const,
+  }));
   const components = actionRow([
-    { label: messages.elicitationEdit, customId: elicitationCustomId(token, "review"), style: 2 },
+    ...editButtons,
     { label: messages.elicitationSubmit, customId: elicitationCustomId(token, "submit"), style: 3 },
     { label: messages.elicitationDecline, customId: elicitationCustomId(token, "decline"), style: 2 },
     { label: messages.elicitationCancel, customId: elicitationCustomId(token, "cancel"), style: 1 },
@@ -232,31 +326,176 @@ export function buildElicitationReviewCard(
 
 export function hintForField(field: ChannelElicitationField): string {
   const messages = getMessages();
-  const base = messages.elicitationFieldHint;
+  // The plugin-facing contract has exactly five kinds: text, boolean, number,
+  // single-select, multi-select. A date/email/uri ACP field arrives as `text`
+  // with the format constraint on its schema, and core validates the answer.
   switch (field.kind) {
     case "single-select":
     case "multi-select":
-      return base;
+      return messages.elicitationFieldHint;
     case "number":
-    case "integer":
       return messages.elicitationNumberHint;
-    case "date":
-      return messages.elicitationDateHint;
-    case "date-time":
-      return messages.elicitationDateHint;
-    case "email":
-      return messages.elicitationEmailHint;
-    case "uri":
-      return messages.elicitationUriHint;
+    case "boolean":
+      return messages.elicitationFieldHint;
     default:
       return messages.elicitationTextHint;
   }
 }
 
 /** Render a collected value as literal text for a card. */
-export function displayValue(value: ChannelElicitationValue): string {
+export function displayValue(value: ChannelElicitationValue | readonly string[]): string {
   if (Array.isArray(value)) return value.join(", ");
   return String(value);
+}
+
+/**
+ * Build the String Select for a select-kind field.
+ *
+ * `min_values`/`max_values` come from the field, so multi-select enforces
+ * min/max at the platform level (which the renderability gate already checked
+ * is representable). Options keep their label and description verbatim: the
+ * option list is the question, so trimming it would change the answer set.
+ */
+export function buildElicitationSelectRows(
+  token: string,
+  field: Extract<ChannelElicitationField, { kind: "single-select" } | { kind: "multi-select" }>,
+  current: ChannelElicitationValue | undefined,
+): DiscordSelectActionRow[] {
+  const selected = current === undefined
+    ? []
+    : Array.isArray(current)
+      ? current.map(String)
+      : [String(current)];
+  // A schema default is shown as the CURRENT selection, not as an invisible
+  // pre-fill: the ACP contract requires the user be able to review and modify,
+  // and a default they cannot see is one they cannot change.
+  const shown = selected.length > 0
+    ? selected
+    : field.defaultValue === undefined
+      ? []
+      : Array.isArray(field.defaultValue)
+        ? [...field.defaultValue]
+        : [String(field.defaultValue)];
+  return [
+    {
+      type: 1,
+      components: [
+        {
+          type: 3 as const,
+          customId: elicitationCustomId(token, "field", field.key),
+          placeholder: escapeDiscordLiteralText(field.title),
+          ...(field.kind === "multi-select"
+            ? {
+                ...(field.minItems !== undefined ? { minValues: field.minItems } : {}),
+                ...(field.maxItems !== undefined ? { maxValues: field.maxItems } : {}),
+              }
+            : {}),
+          options: field.options.map((option) => ({
+            label: escapeDiscordLiteralText(option.label),
+            // The value is the correlation identity core validates; it is not
+            // rendered, but it must be exact so the answer maps back.
+            value: option.value,
+            ...(option.description !== undefined ? { description: escapeDiscordLiteralText(option.description) } : {}),
+            ...(shown.includes(option.value) ? { default: true } : {}),
+          })),
+        },
+      ],
+    },
+  ];
+}
+
+/**
+ * Build the modal for a text-like field.
+ *
+ * The modal's custom_id is the TOKEN only; each Text Input's custom_id is the
+ * FIELD KEY. No answer travels in either, which is what makes a modal payload
+ * safe to log: the answer is in the payload body, not in any identifier.
+ */
+export function buildElicitationModal(
+  token: string,
+  field: ChannelElicitationField,
+  current: ChannelElicitationValue | undefined,
+): ShowModalInput {
+  const messages = getMessages();
+  const kind = field.kind;
+  const prefill = typeof current === "string" ? current : typeof field.defaultValue === "string" ? field.defaultValue : "";
+  return {
+    title: truncate(messages.elicitationTitle, 45),
+    customId: elicitationModalCustomId(token),
+    components: [
+      {
+        // 45 characters is the platform's label cap, already enforced by the
+        // renderability gate, so no truncation is needed here.
+        label: field.title,
+        component: {
+          type: 4 as const,
+          customId: field.key,
+          style: field.kind === "text" ? 2 : 1,
+          label: field.title,
+          required: field.required,
+          ...(prefill ? { value: prefill } : {}),
+          // The platform's own upper bound. Core-side string bounds (`minLength`
+          // / `maxLength`) exist only on the ACP schema and are NOT part of the
+          // plugin contract, so the renderer does not forward them; core
+          // remains authoritative on answer validation.
+          maxLength: 4000,
+        },
+      },
+    ],
+  };
+}
+
+/**
+ * Convert a modal submit into the answer value the core validator expects.
+ *
+ * The conversion is type-directed and never coerces: a numeric field with
+ * non-numeric input produces NO answer (leaving the field unanswered) rather
+ * than `NaN`, because `NaN` would serialize into a JSON-RPC response as
+ * `null` and look like a valid answer to a consumer that does not re-check.
+ * Core's answer validator remains authoritative either way.
+ */
+export function parseModalAnswer(field: ChannelElicitationField, raw: string): ChannelElicitationValue | undefined {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return undefined;
+  switch (field.kind) {
+    case "number": {
+      const parsed = Number(trimmed);
+      if (!Number.isFinite(parsed)) return undefined;
+      // `integer` is the field's own flag: the plugin contract has no separate
+      // integer kind, so a fractional answer to an integer field is rejected
+      // rather than silently rounded.
+      if (field.integer && !Number.isInteger(parsed)) return undefined;
+      // The field's own bounds are enforced here as well as by core, so an
+      // out-of-range value is rejected before the user is asked to submit.
+      if (field.minimum !== undefined && parsed < field.minimum) return undefined;
+      if (field.maximum !== undefined && parsed > field.maximum) return undefined;
+      return parsed;
+    }
+    case "boolean": {
+      if (/^(true|yes|y|1)$/i.test(trimmed)) return true;
+      if (/^(false|no|n|0)$/i.test(trimmed)) return false;
+      return undefined;
+    }
+    case "multi-select":
+      return trimmed.split(",").map((part) => part.trim()).filter((part) => part.length > 0);
+    default:
+      return trimmed;
+  }
+}
+
+/**
+ * Parse a modal submit's custom id.
+ *
+ * Separate from `parseElicitationCustomId` because a modal id legitimately
+ * resolves to no button action: it must not be coerced into one. A modal whose
+ * id does not match exactly is dropped rather than guessed at.
+ */
+export function parseElicitationModalCustomId(customId: string): { token: string } | null {
+  if (!customId.startsWith(ELICITATION_CUSTOM_ID_PREFIX)) return null;
+  const rest = customId.slice(ELICITATION_CUSTOM_ID_PREFIX.length);
+  const match = /^([0-9a-f]{32}):modal$/.exec(rest);
+  if (!match) return null;
+  return { token: match[1]! };
 }
 
 /**

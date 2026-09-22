@@ -46,6 +46,18 @@ export const DISCORD_TEXT_INPUT_LABEL_MAX = 45;
 export const DISCORD_SELECT_OPTION_COUNT_MAX = 25;
 /** `min_values` / `max_values` accepted by the platform. */
 export const DISCORD_SELECT_MIN_MAX_VALUES_MAX = 25;
+/**
+ * Text inputs per modal. Discord documents 1..5 modal components, so a wizard
+ * that batches more than one text field per modal is unrenderable and must
+ * cancel rather than silently dropping fields.
+ */
+export const DISCORD_MODAL_INPUT_MAX = 5;
+/**
+ * Buttons per action row (Discord documents 1..5 per row). Used to bound the
+ * per-field Edit controls on the review page, which shares one row with
+ * Submit / Decline / Cancel.
+ */
+export const DISCORD_ACTION_ROW_BUTTON_MAX = 5;
 
 export type ElicitationUnsupportedReason =
   | "select-option-count"

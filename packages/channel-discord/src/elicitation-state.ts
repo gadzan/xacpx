@@ -39,6 +39,12 @@ export interface PendingDiscordElicitation {
    * card is a decline, not an empty submission.
    */
   currentField?: string;
+  /**
+   * Whether the wizard has shown the review page. Distinguishes the review
+   * control's two intents (Next forward vs. Edit back) without adding a second
+   * control whose action could be confused with a field action.
+   */
+  visitedReview: boolean;
   settled: boolean;
   /** Terminal UI state for a send that completes after settlement (send race). */
   terminalState?: "expired" | "cancelled";
