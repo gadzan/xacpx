@@ -1,5 +1,11 @@
 import { BotError } from "./bot-error";
-import type { BotService } from "./bot-service";
+import {
+  classifyDirectBotBindingSessionLink,
+  classifyDirectBotRuntimeBindingOwnership,
+  classifyDirectBotSessionOwnership,
+  type BotService,
+  type DirectBotRuntimeBinding,
+} from "./bot-service";
 import type { BotProfile, BotProfileExecution, BotRuntimeBinding } from "./bot-types";
 import { planDirectConversation } from "../conversations/direct-conversation";
 import type { ConversationTopic } from "../conversations/conversation-types";
@@ -85,17 +91,34 @@ export class BotRuntimeManager {
     if (!snapshot || snapshot.scope !== "bot-direct") {
       return;
     }
+    this.assertBindingIdentity(snapshot);
     await this.bots.runLifecycle(snapshot.botId, async () => {
       const live = this.state.bot_runtime_bindings[bindingId];
+      if (!live || live.scope !== "bot-direct") {
+        return;
+      }
+      this.assertBindingIdentity(live);
       if (
-        !live
-        || live.scope !== "bot-direct"
+        live.botId !== snapshot.botId
+        || live.conversationId !== snapshot.conversationId
+        || live.topicId !== snapshot.topicId
         || live.sessionAlias !== snapshot.sessionAlias
         || live.logicalSessionId !== snapshot.logicalSessionId
       ) {
-        return;
+        throw this.bindingConflict(live.botId, live);
       }
-      if (this.sessions.getLogicalSessionRecord(live.sessionAlias)) {
+      const byAlias = this.sessions.getLogicalSessionRecord(live.sessionAlias);
+      const byId = this.sessions.getLogicalSessionById(live.logicalSessionId);
+      if (byAlias || byId) {
+        if (
+          !byAlias
+          || !byId
+          || byAlias.logical_session_id !== byId.logical_session_id
+          || byAlias.alias !== byId.alias
+        ) {
+          throw this.bindingConflict(live.botId, live);
+        }
+        this.assertBindingOwnsSession(live, byAlias);
         await this.releaseOwnedSession(live.sessionAlias);
       }
       const remaining = this.state.bot_runtime_bindings[bindingId];
@@ -199,16 +222,24 @@ export class BotRuntimeManager {
   private findAdoptableLegacyBinding(
     botId: string,
     scope: { conversationId: string; topicId: string },
-  ): BotRuntimeBinding | undefined {
+  ): DirectBotRuntimeBinding | undefined {
     if (scope.conversationId !== createDirectConversationId(botId) || scope.topicId !== createDirectTopicId(botId)) {
       return undefined;
     }
     const legacyId = createDirectBindingId(botId);
     const binding = this.state.bot_runtime_bindings[legacyId];
-    if (binding && binding.scope === "bot-direct" && binding.botId === botId) {
+    if (binding) {
+      if (binding.scope !== "bot-direct") {
+        throw this.bindingConflict(botId, binding);
+      }
+      if (
+        classifyDirectBotRuntimeBindingOwnership(binding, botId, scope.conversationId) !== "owned"
+      ) {
+        throw this.bindingConflict(botId, binding);
+      }
       return binding;
     }
-    const owned = this.findOwnedSession(legacyId);
+    const owned = this.findOwnedSession(legacyId, botId, scope.conversationId);
     if (!owned) {
       return undefined;
     }
@@ -232,13 +263,38 @@ export class BotRuntimeManager {
     execution?: BotProfileExecution,
   ): Promise<LogicalSession> {
     const alias = ownedDirectSessionAlias(bindingId);
-    const current = this.findOwnedSession(bindingId);
+    const current = this.findOwnedSession(bindingId, bot.id, scope.conversationId);
     if (current) {
+      const owner = current.owner;
+      if (
+        owner?.kind !== "bot-direct"
+        || (owner.topicId !== undefined && owner.topicId !== scope.topicId)
+      ) {
+        throw this.ownershipConflict(
+          bot.id,
+          current.alias,
+          { bindingId, conversationId: scope.conversationId },
+          current,
+        );
+      }
       return current;
     }
     const occupant = this.sessions.getLogicalSessionRecord(alias);
-    if (occupant && (occupant.owner?.kind !== "bot-direct" || occupant.owner.bindingId !== bindingId)) {
-      throw new BotError("session_alias_conflict", `hidden session alias "${alias}" is already taken`);
+    if (occupant) {
+      const ownership = classifyDirectBotSessionOwnership(
+        occupant,
+        bot.id,
+        this.ownedBindingIdsFor(bot.id, bindingId),
+        scope.conversationId,
+      );
+      if (
+        ownership !== "owned"
+        || occupant.owner?.kind !== "bot-direct"
+        || occupant.owner.bindingId !== bindingId
+        || (occupant.owner.topicId !== undefined && occupant.owner.topicId !== scope.topicId)
+      ) {
+        throw this.ownershipConflict(bot.id, alias, { bindingId, conversationId: scope.conversationId }, occupant);
+      }
     }
     const agent = execution?.agent ?? bot.agent;
     const workspace = execution?.workspace ?? bot.workspace;
@@ -256,7 +312,7 @@ export class BotRuntimeManager {
         ...(effort ? { effort } : {}),
       });
     }
-    const record = this.findOwnedSession(bindingId);
+    const record = this.findOwnedSession(bindingId, bot.id, scope.conversationId);
     if (!record) {
       throw new BotError("session_missing", `failed to persist owned session for bot "${bot.id}"`);
     }
@@ -265,12 +321,12 @@ export class BotRuntimeManager {
 
   private async publishAdoptedBinding(
     bot: BotProfile,
-    legacy: BotRuntimeBinding,
+    legacy: DirectBotRuntimeBinding,
     scopedId: string,
     scope: { conversationId: string; topicId: string; topic: ConversationTopic },
   ): Promise<BotRuntimeBinding> {
     const session = this.sessions.getLogicalSessionById(legacy.logicalSessionId)
-      ?? this.findOwnedSession(legacy.id);
+      ?? this.findOwnedSession(legacy.id, bot.id, scope.conversationId);
     if (!session) {
       throw new BotError("session_missing", `failed to adopt owned session for bot "${bot.id}"`);
     }
@@ -304,6 +360,9 @@ export class BotRuntimeManager {
         delete next.bot_runtime_bindings[legacy.id];
       }
       const owned = next.sessions[session.alias];
+      if (owned) {
+        this.assertBindingOwnsSession(legacy, owned);
+      }
       if (owned?.owner?.kind === "bot-direct") {
         owned.owner = createBotDirectOwner({
           bindingId: scopedId,
@@ -331,8 +390,41 @@ export class BotRuntimeManager {
   ): Promise<BotRuntimeBinding> {
     return await this.stateMutex.run(async () => {
       const live = this.findScopedBinding(scope.conversationId, scope.topicId, bot.id);
-      if (live && this.bindingSessionIsLive(live)) {
-        return live;
+      if (live) {
+        const oldById = this.sessions.getLogicalSessionById(live.logicalSessionId);
+        const currentAlias = this.sessions.getLogicalSessionRecord(live.sessionAlias);
+        const repairingFullyMissingOldSession = (
+          !oldById
+          && currentAlias?.logical_session_id === session.logical_session_id
+          && currentAlias.alias === session.alias
+        );
+        if (repairingFullyMissingOldSession) {
+          const owner = session.owner;
+          const ownership = classifyDirectBotSessionOwnership(
+            session,
+            bot.id,
+            this.ownedBindingIdsFor(bot.id, bindingId),
+            scope.conversationId,
+          );
+          if (
+            ownership !== "owned"
+            || owner?.kind !== "bot-direct"
+            || owner.bindingId !== bindingId
+            || (owner.topicId !== undefined && owner.topicId !== scope.topicId)
+          ) {
+            throw this.ownershipConflict(
+              bot.id,
+              session.alias,
+              { bindingId, conversationId: scope.conversationId },
+              session,
+            );
+          }
+          // Safe stale-binding repair: the old logical id no longer resolves
+          // anywhere, while this exact alias is now the newly-created owned
+          // candidate for the same deterministic binding.
+        } else if (this.bindingSessionIsLive(live)) {
+          return live;
+        }
       }
       const timestamp = this.now().toISOString();
       const { conversation } = planDirectConversation(this.state, {
@@ -369,40 +461,135 @@ export class BotRuntimeManager {
     });
   }
 
-  private findScopedBinding(conversationId: string, topicId: string, botId: string): BotRuntimeBinding | undefined {
+  private findScopedBinding(conversationId: string, topicId: string, botId: string): DirectBotRuntimeBinding | undefined {
     const scopedId = createScopedDirectBindingId(conversationId, topicId, botId);
     const scoped = this.state.bot_runtime_bindings[scopedId];
-    if (scoped && scoped.scope === "bot-direct" && scoped.botId === botId && scoped.topicId === topicId) {
-      return scoped;
+    if (!scoped) {
+      return undefined;
+    }
+    if (
+      scoped.scope !== "bot-direct"
+      || scoped.topicId !== topicId
+      || classifyDirectBotRuntimeBindingOwnership(scoped, botId, conversationId) !== "owned"
+    ) {
+      throw this.bindingConflict(botId, scoped);
+    }
+    return scoped;
+  }
+
+  private ownedBindingIdsFor(botId: string, includeId?: string): Set<string> {
+    const ids = new Set<string>([createDirectBindingId(botId)]);
+    if (includeId) {
+      ids.add(includeId);
+    }
+    const conversationId = createDirectConversationId(botId);
+    for (const binding of Object.values(this.state.bot_runtime_bindings)) {
+      const ownership = classifyDirectBotRuntimeBindingOwnership(binding, botId, conversationId);
+      if (ownership === "conflict") {
+        throw this.bindingConflict(botId, binding);
+      }
+      if (ownership === "owned") {
+        ids.add(binding.id);
+      }
+    }
+    return ids;
+  }
+
+  private bindingConflict(botId: string, binding: BotRuntimeBinding): BotError {
+    return new BotError(
+      "runtime_ownership_conflict",
+      "direct runtime binding ownership metadata is contradictory",
+      { botId, binding },
+    );
+  }
+
+  private ownershipConflict(
+    botId: string,
+    alias: string,
+    binding: Pick<DirectBotRuntimeBinding, "id" | "conversationId"> | { bindingId: string; conversationId: string },
+    session: LogicalSession,
+  ): BotError {
+    return new BotError(
+      "runtime_ownership_conflict",
+      `direct runtime ownership for session "${alias}" is contradictory`,
+      { botId, binding, owner: session.owner },
+    );
+  }
+
+  private assertBindingIdentity(binding: DirectBotRuntimeBinding): void {
+    if (
+      classifyDirectBotRuntimeBindingOwnership(
+        binding,
+        binding.botId,
+        createDirectConversationId(binding.botId),
+      ) !== "owned"
+    ) {
+      throw this.bindingConflict(binding.botId, binding);
+    }
+  }
+
+  private assertBindingOwnsSession(binding: DirectBotRuntimeBinding, session: LogicalSession): void {
+    this.assertBindingIdentity(binding);
+    if (
+      classifyDirectBotBindingSessionLink(
+        binding,
+        session,
+        this.ownedBindingIdsFor(binding.botId, binding.id),
+      ) !== "owned"
+    ) {
+      throw this.ownershipConflict(binding.botId, session.alias, binding, session);
+    }
+  }
+
+  private findOwnedSession(bindingId: string, botId: string, conversationId: string): LogicalSession | undefined {
+    for (const session of Object.values(this.state.sessions)) {
+      if (session.owner?.kind !== "bot-direct" || session.owner.bindingId !== bindingId) {
+        continue;
+      }
+      const ownership = classifyDirectBotSessionOwnership(
+        session,
+        botId,
+        this.ownedBindingIdsFor(botId, bindingId),
+        conversationId,
+      );
+      if (ownership === "conflict") {
+        throw this.ownershipConflict(botId, session.alias, { bindingId, conversationId }, session);
+      }
+      if (ownership === "owned") {
+        return session;
+      }
     }
     return undefined;
   }
 
-  private findOwnedSession(bindingId: string): LogicalSession | undefined {
-    return Object.values(this.state.sessions).find(
-      (session) => session.owner?.kind === "bot-direct" && session.owner.bindingId === bindingId,
-    );
-  }
-
-  private bindingSessionIsLive(binding: BotRuntimeBinding): boolean {
-    const session = this.sessions.getLogicalSessionById(binding.logicalSessionId);
-    if (!session) {
+  private bindingSessionIsLive(binding: DirectBotRuntimeBinding): boolean {
+    this.assertBindingIdentity(binding);
+    const byId = this.sessions.getLogicalSessionById(binding.logicalSessionId);
+    const byAlias = this.sessions.getLogicalSessionRecord(binding.sessionAlias);
+    if (!byId && !byAlias) {
       return false;
     }
-    return session.alias === binding.sessionAlias
-      && session.owner?.kind === "bot-direct"
-      && session.owner.bindingId === binding.id;
+    if (
+      !byId
+      || !byAlias
+      || byId.logical_session_id !== byAlias.logical_session_id
+      || byId.alias !== byAlias.alias
+    ) {
+      throw this.bindingConflict(binding.botId, binding);
+    }
+    this.assertBindingOwnsSession(binding, byAlias);
+    return true;
   }
 
   private async alignSessionRuntime(
-    binding: BotRuntimeBinding,
+    binding: DirectBotRuntimeBinding,
     bot: { model?: string; effort?: string },
   ): Promise<void> {
-    const session = this.sessions.getLogicalSessionRecord(binding.sessionAlias)
-      ?? this.sessions.getLogicalSessionById(binding.logicalSessionId);
+    const session = this.sessions.getLogicalSessionRecord(binding.sessionAlias);
     if (!session) {
       return;
     }
+    this.assertBindingOwnsSession(binding, session);
     if (session.model !== bot.model) {
       await this.sessions.setSessionModel(binding.sessionAlias, bot.model);
     }

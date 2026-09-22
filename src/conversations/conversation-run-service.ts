@@ -1,9 +1,15 @@
 import { snapshotBotProfile, type BotProfile } from "../bots/bot-types";
 import { BotError } from "../bots/bot-error";
 import type { BotRuntimeManager } from "../bots/bot-runtime-manager";
-import type { BotService } from "../bots/bot-service";
+import {
+  classifyDirectBotBindingSessionLink,
+  classifyDirectBotRuntimeBindingOwnership,
+  classifyDirectBotSessionOwnership,
+  type BotService,
+  type DirectBotRuntimeBinding,
+} from "../bots/bot-service";
 import { planDirectConversation, presentDefaultDirectTopic, presentDirectConversation } from "./direct-conversation";
-import { createDirectTopicId, createTopicId } from "../domain/ids";
+import { createDirectBindingId, createDirectTopicId, createTopicId } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
 import type { ReleaseOwnedSession } from "../sessions/owned-session-release";
 import type { SessionService } from "../sessions/session-service";
@@ -365,6 +371,9 @@ export class ConversationRunService {
     const planned = this.planDirect(bot);
     const conversationId = planned.conversation.id;
     await this.bots.runLifecycle(botId, async () => {
+      // Validate every ownership signal before making teardown externally visible.
+      // A contradiction must leave the Conversation active and all physical state intact.
+      this.ownedAliases(botId, conversationId);
       this.store.markConversationDeleting(conversationId, timestamp);
       await this.markAppStateDeleting(conversationId);
     });
@@ -401,7 +410,11 @@ export class ConversationRunService {
       await this.stateMutex.run(async () => {
         const next = structuredClone(this.state);
         for (const [id, binding] of Object.entries(next.bot_runtime_bindings)) {
-          if (binding.conversationId === conversationId) {
+          if (
+            binding.scope === "bot-direct"
+            && binding.botId === botId
+            && binding.conversationId === conversationId
+          ) {
             delete next.bot_runtime_bindings[id];
           }
         }
@@ -519,16 +532,68 @@ export class ConversationRunService {
 
   private ownedAliases(botId: string, conversationId: string): string[] {
     const aliases = new Set<string>();
+    const ownedBindingIds = new Set<string>([createDirectBindingId(botId)]);
+    const ownedBindings: DirectBotRuntimeBinding[] = [];
+
     for (const binding of Object.values(this.state.bot_runtime_bindings)) {
-      if (binding.scope === "bot-direct" && binding.conversationId === conversationId) {
-        aliases.add(binding.sessionAlias);
+      const ownership = classifyDirectBotRuntimeBindingOwnership(binding, botId, conversationId);
+      if (ownership === "conflict") {
+        throw new ConversationError(
+          "runtime_ownership_conflict",
+          "direct runtime binding ownership metadata is contradictory",
+          { botId, binding },
+        );
+      }
+      if (ownership === "owned" && binding.scope === "bot-direct") {
+        ownedBindingIds.add(binding.id);
+        ownedBindings.push(binding);
       }
     }
-    for (const session of Object.values(this.state.sessions)) {
+
+    // A binding is only destructive authority when alias and logical id resolve to
+    // one exact owned session. Missing on both axes is a harmless stale binding that
+    // final cleanup may remove; any partial/mismatched link fails closed.
+    const allSessions = Object.values(this.state.sessions);
+    for (const binding of ownedBindings) {
+      const byAlias = this.state.sessions[binding.sessionAlias];
+      const byIdMatches = allSessions.filter(
+        (session) => session.logical_session_id === binding.logicalSessionId,
+      );
+      if (!byAlias && byIdMatches.length === 0) {
+        continue;
+      }
       if (
-        session.owner?.kind === "bot-direct"
-        && (session.owner.botId === botId || session.owner.conversationId === conversationId)
+        !byAlias
+        || byIdMatches.length !== 1
+        || byIdMatches[0]?.alias !== byAlias.alias
+        || classifyDirectBotBindingSessionLink(binding, byAlias, ownedBindingIds) !== "owned"
       ) {
+        throw new ConversationError(
+          "runtime_ownership_conflict",
+          "direct runtime binding/session link is contradictory",
+          { botId, binding, sessionAlias: byAlias?.alias },
+        );
+      }
+      aliases.add(byAlias.alias);
+    }
+
+    // Binding-less PR2 owners are still recoverable, but every ownership signal
+    // must agree with the same target Bot/conversation.
+    for (const session of allSessions) {
+      const ownership = classifyDirectBotSessionOwnership(
+        session,
+        botId,
+        ownedBindingIds,
+        conversationId,
+      );
+      if (ownership === "conflict") {
+        throw new ConversationError(
+          "runtime_ownership_conflict",
+          "direct session ownership metadata is contradictory",
+          { botId, alias: session.alias, owner: session.owner },
+        );
+      }
+      if (ownership === "owned") {
         aliases.add(session.alias);
       }
     }

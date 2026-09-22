@@ -342,6 +342,38 @@ test("non-default Topic scoped orphan is attributable without a binding", async 
   expect(ownedSessions(reloaded)).toHaveLength(1);
 });
 
+test("scoped orphan with an explicit mismatched topic fails closed before binding publish", async () => {
+  const { bots, runtime, sessions, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const requestedTopicId = insertExtraDirectTopic(state, BOT_ID, "topic_requested");
+  const foreignTopicId = insertExtraDirectTopic(state, BOT_ID, "topic_foreign");
+  const bindingId = extraBindingId(requestedTopicId);
+  const alias = `brt_${bindingId}`;
+  await sessions.createSession(alias, "codex", "backend", {
+    owner: createBotDirectOwner({
+      bindingId,
+      botId: BOT_ID,
+      conversationId: createDirectConversationId(BOT_ID),
+      topicId: foreignTopicId,
+    }),
+  });
+
+  await expect(runtime.getOrCreateDirectSession({
+    botId: BOT_ID,
+    topicId: requestedTopicId,
+  })).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+
+  expect(state.bot_runtime_bindings).toEqual({});
+  expect(state.sessions[alias]?.owner).toMatchObject({
+    bindingId,
+    botId: BOT_ID,
+    conversationId: createDirectConversationId(BOT_ID),
+    topicId: foreignTopicId,
+  });
+});
+
 test("releaseDirectBinding uses verified physical release and keeps ownership on failure", async () => {
   let failPhysical = true;
   const physicalReleased: string[] = [];
@@ -689,6 +721,114 @@ test("a delete that wins the lifecycle gate leaves no Conversation, binding, or 
   expect(state.conversation_topics).toEqual({});
   expect(state.bot_runtime_bindings).toEqual({});
   expect(ownedSessions(state)).toHaveLength(0);
+});
+
+test("materialization rejects a scoped binding whose stored conversation disagrees with its deterministic id", async () => {
+  const { bots, runtime, sessions, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const bindingId = defaultBindingId();
+  const alias = `brt_${bindingId}`;
+  const foreignConversationId = createDirectConversationId("bot_other");
+  await sessions.createSession(alias, "codex", "backend", {
+    owner: createBotDirectOwner({
+      bindingId,
+      botId: BOT_ID,
+      conversationId: foreignConversationId,
+      topicId: createDirectTopicId(BOT_ID),
+    }),
+  });
+  state.bot_runtime_bindings[bindingId] = {
+    id: bindingId,
+    scope: "bot-direct",
+    conversationId: foreignConversationId,
+    topicId: createDirectTopicId(BOT_ID),
+    botId: BOT_ID,
+    logicalSessionId: state.sessions[alias]!.logical_session_id,
+    sessionAlias: alias,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+
+  await expect(runtime.getOrCreateDirectSession({ botId: BOT_ID })).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+  expect(state.sessions[alias]).toBeDefined();
+  expect(state.bot_runtime_bindings[bindingId]).toBeDefined();
+});
+
+test("releaseDirectBinding rejects a self-inconsistent binding even when its session mirrors the bad metadata", async () => {
+  const { bots, runtime, sessions, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const bindingId = defaultBindingId();
+  const alias = `brt_${bindingId}`;
+  const foreignConversationId = createDirectConversationId("bot_other");
+  await sessions.createSession(alias, "codex", "backend", {
+    owner: createBotDirectOwner({
+      bindingId,
+      botId: BOT_ID,
+      conversationId: foreignConversationId,
+      topicId: createDirectTopicId(BOT_ID),
+    }),
+  });
+  state.bot_runtime_bindings[bindingId] = {
+    id: bindingId,
+    scope: "bot-direct",
+    conversationId: foreignConversationId,
+    topicId: createDirectTopicId(BOT_ID),
+    botId: BOT_ID,
+    logicalSessionId: state.sessions[alias]!.logical_session_id,
+    sessionAlias: alias,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+
+  await expect(runtime.releaseDirectBinding(bindingId)).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+  expect(sessions.getLogicalSessionRecord(alias)).toBeDefined();
+  expect(state.bot_runtime_bindings[bindingId]).toBeDefined();
+});
+
+test("materialization refuses a target bindingId owned explicitly by another Bot", async () => {
+  const { bots, runtime, sessions, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const legacyId = createDirectBindingId(BOT_ID);
+  const alias = `brt_${legacyId}`;
+  await sessions.createSession(alias, "codex", "backend", {
+    owner: {
+      kind: "bot-direct",
+      bindingId: legacyId,
+      botId: "bot_other",
+      conversationId: createDirectConversationId(BOT_ID),
+    },
+  });
+
+  await expect(runtime.getOrCreateDirectSession({ botId: BOT_ID })).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+  expect(state.sessions[alias]?.owner).toMatchObject({ botId: "bot_other", bindingId: legacyId });
+  expect(state.bot_runtime_bindings).toEqual({});
+  expect(state.conversations).toEqual({});
+});
+
+test("releaseDirectBinding refuses to physically release a session whose explicit owner changed", async () => {
+  const { bots, runtime, sessions, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const binding = await runtime.getOrCreateDirectSession({ botId: BOT_ID });
+  const session = state.sessions[binding.sessionAlias]!;
+  session.owner = {
+    kind: "bot-direct",
+    bindingId: binding.id,
+    botId: "bot_other",
+    conversationId: binding.conversationId,
+    topicId: binding.topicId,
+  };
+
+  await expect(runtime.releaseDirectBinding(binding.id)).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+  expect(sessions.getLogicalSessionRecord(binding.sessionAlias)?.logical_session_id).toBe(binding.logicalSessionId);
+  expect(state.bot_runtime_bindings[binding.id]).toBeDefined();
 });
 
 test("PR2 default binding is adopted onto the scoped key without orphaning the owned session", async () => {
