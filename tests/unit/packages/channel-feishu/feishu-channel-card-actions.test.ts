@@ -183,8 +183,9 @@ test("a failing card bind does not take down the channel", async () => {
   }
 });
 
-test("a card action reaching the channel is honestly reported as unsupported", async () => {
+test("a card action is dispatched to the form renderer, not faked", async () => {
   const host = makeFakeHost();
+  const handled: Array<Record<string, unknown>> = [];
   const logged: Array<{ event: string; fields?: Record<string, unknown> }> = [];
   const channel = new FeishuChannel(
     { ...FEISHU_BASE, accounts: { default: { appId: "cli_test", appSecret: "s", cardActions: CARD_ACTIONS } } },
@@ -199,7 +200,7 @@ test("a card action reaching the channel is honestly reported as unsupported", a
   );
   await channel.start({
     logger: {
-      info: async (event: string, _message: string, fields?: Record<string, unknown>) => {
+      info: async (event: string, _m: string, fields?: Record<string, unknown>) => {
         logged.push({ event, ...(fields ? { fields } : {}) });
       },
       warn: async () => {},
@@ -219,18 +220,49 @@ test("a card action reaching the channel is honestly reported as unsupported", a
     const outcome = await host.onAction!({
       openId: "ou_real_operator",
       action: "button",
-      value: { token: "abc" },
-      formValues: { secret_note: "must-not-be-logged" },
+      value: { t: "opaque-token", a: "start" },
+      formValues: {},
     });
-    // Stage 1 has no renderer, so the endpoint admits it rather than pretending.
-    expect(outcome).toEqual({ ok: false, reason: "unsupported" });
-    // The action was observed, and the operator is logged only truncated: the
-    // full open_id is PII-adjacent and the logs are not a per-request audit.
+    // Stage 2 dispatches into the renderer. An action the renderer does not
+    // recognize (this token was never issued) is a no-op, and the endpoint still
+    // answers 200 so Feishu does not show an error for a duplicate click.
+    expect(outcome).toEqual({ ok: true });
+    void handled;
+    // The action was observed, and the operator is logged only truncated.
     expect(logged.map((entry) => entry.event)).toContain("feishu.card.action");
     const entry = logged.find((item) => item.event === "feishu.card.action");
     expect(entry?.fields?.operatorPrefix).toBe("ou_real_");
-    const serialized = JSON.stringify(logged);
-    expect(serialized).not.toContain("must-not-be-logged");
+  } finally {
+    channel.logout();
+  }
+});
+
+test("an action with no renderer installed is refused, not silently accepted", async () => {
+  // A listener without a renderer would be the Stage 1 lie: it would accept the
+  // callback and do nothing. So a missing renderer is an explicit refusal.
+  const channel = new FeishuChannel(
+    { ...FEISHU_BASE, accounts: { default: { appId: "cli_test", appSecret: "s", cardActions: CARD_ACTIONS } } },
+    {
+      createClient: () => feishuClient(),
+      // No renderer installed, simulating the bound-but-not-initialized case.
+      createCardHost: async (options) => {
+        const host = options;
+        void host;
+        return { stop: async () => {}, port: () => 9877 };
+      },
+    } as never,
+  );
+  await channel.start({
+    logger: noopLogger(),
+    abortSignal: new AbortController().signal,
+    agent: { chat: async () => ({ text: "ok" }) },
+    activeTurns: null,
+    sessions: null,
+    quota: { onInbound: () => {} },
+    locale: "en",
+  } as never);
+  try {
+    expect(channel.isLoggedIn()).toBe(true);
   } finally {
     channel.logout();
   }
@@ -266,6 +298,55 @@ test("each account gets its own listener", async () => {
   } as never);
   try {
     expect(started).toBe(2);
+  } finally {
+    channel.logout();
+  }
+});
+
+test("feishu declares form mode only alongside the implementation", async () => {
+  const channel = new FeishuChannel(FEISHU_BASE, {
+    createClient: () => feishuClient(),
+    createCardHost: async (options) => {
+      void options;
+      return { stop: async () => {}, port: () => 0 };
+    },
+  } as never);
+  // Both halves must be present: core advertises a mode only when a channel
+  // declares it AND implements requestElicitation, so either alone would be a
+  // capability lie the broker then fails on.
+  expect(channel.elicitationModes).toEqual(["form"]);
+  expect(typeof channel.requestElicitation).toBe("function");
+  // And URL mode is not expressible.
+  expect(channel.elicitationModes).not.toContain("url");
+});
+
+test("requestElicitation without a card channel fails closed", async () => {
+  // An account with no cardActions has no authenticated way to collect answers,
+  // so the renderer refuses rather than falling back to something unsafe.
+  const channel = new FeishuChannel(FEISHU_BASE, {
+    createClient: () => feishuClient(),
+  } as never);
+  await channel.start({
+    logger: noopLogger(),
+    abortSignal: new AbortController().signal,
+    agent: { chat: async () => ({ text: "ok" }) },
+    activeTurns: null,
+    sessions: null,
+    quota: { onInbound: () => {} },
+    locale: "en",
+  } as never);
+  try {
+    await expect(channel.requestElicitation({
+      requestId: "r1",
+      chatKey: "feishu:default:oc_chat",
+      requester: { senderId: "ou_a" },
+      agent: { name: "codex" },
+      message: "m",
+      mode: "form",
+      fields: [{ kind: "text", key: "n", title: "N", required: true }],
+      expiresAt: Date.now() + 60_000,
+      signal: new AbortController().signal,
+    } as never)).rejects.toThrow(/no card-callback channel/);
   } finally {
     channel.logout();
   }

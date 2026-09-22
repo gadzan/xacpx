@@ -2,6 +2,8 @@ import path from "node:path";
 import { createConversationExecutor, resolveTurnLane, toDisplaySessionAlias } from "xacpx/plugin-api";
 import type {
   ChannelStartInput,
+  ChannelElicitationDecision,
+  ChannelElicitationRequest,
   ConversationExecutor,
   SessionService,
   ActiveTurnRegistry,
@@ -25,7 +27,15 @@ import {
   type FeishuCardActionCallback,
   type FeishuCardActionRuntime,
 } from "./card-action-host.js";
+import { checkElicitationRenderability } from "./elicitation-limits.js";
+import { buildCardMessageContent } from "./card/card-builder.js";
+import {
+  FeishuElicitationRenderer,
+  type FeishuCardTransport,
+} from "./elicitation-renderer.js";
+import type { PendingFeishuElicitation } from "./elicitation-state.js";
 import { sendTextFeishu, sendMediaFeishu } from "./send.js";
+import type { FeishuMessageClient } from "./send.js";
 import { addTypingIndicator, removeTypingIndicator, type FeishuReactionClient, type TypingIndicatorState } from "./typing.js";
 import { extractRawTextFromFeishuEvent, isLikelyAbortText } from "./abort-detect.js";
 import { clearMessageUnavailableForAccount, isMessageUnavailable, markIfUnavailableError } from "./message-unavailable.js";
@@ -71,6 +81,16 @@ interface AccountRuntime {
    * `cardActions`. Stopped on logout alongside the WS client.
    */
   cardHost?: FeishuCardActionRuntime;
+  /**
+   * Form renderer for this account, and its pending map. Both are per-account
+   * so one account's in-flight form can never be answered through another
+   * account's callback channel.
+   */
+  elicitation?: {
+    renderer: FeishuElicitationRenderer;
+    pending: Map<string, PendingFeishuElicitation>;
+    transport: FeishuCardTransport;
+  };
 }
 
 interface ActiveTask {
@@ -101,6 +121,18 @@ interface ActiveTask {
 
 export class FeishuChannel implements MessageChannelRuntime {
   readonly id = "feishu";
+  /**
+   * Declares form support, which core only advertises when a channel declares a
+   * mode AND implements `requestElicitation()` (both must be present — either
+   * alone would advertise a capability core then fails on).
+   *
+   * This is the honest declaration: the renderer exists and handles the fields
+   * Feishu can express. `multi-select` is refused by the renderability gate
+   * because Feishu cards have no multi-select component, so a form containing one
+   * cancels rather than being reshaped. URL mode is deliberately absent — the
+   * M1 plugin contract is form-only and there is no URL dispatch.
+   */
+  readonly elicitationModes = ["form"] as const;
   private readonly accounts: Map<string, AccountRuntime> = new Map();
   private dedup: MessageDedup;
   private markDelivered: OrchestrationDeliveryCallbacks["markTaskNoticeDelivered"] | null = null;
@@ -182,15 +214,70 @@ export class FeishuChannel implements MessageChannelRuntime {
   private async startCardActions(account: FeishuResolvedAccountConfig): Promise<FeishuCardActionRuntime | undefined> {
     const cardActions = account.cardActions;
     if (!cardActions) return undefined;
+    // Card transport built from the account's own client, so a card is always
+    // sent and updated through the credentials of the account that owns it.
+    const transport: FeishuCardTransport = {
+      sendCard: async ({ card, chatId, replyToMessageId }) => {
+        const client = this.cardClientFor(account.accountId);
+        const createResp = await client.cardkit.v1.card.create({
+          data: { type: "card_json", data: JSON.stringify(card) },
+        });
+        const cardId = createResp.data?.card_id;
+        if (!cardId) throw new Error("Feishu card.create returned no card_id");
+        const content = buildCardMessageContent(cardId);
+        let messageId: string | undefined;
+        if (replyToMessageId && !isMessageUnavailable(replyToMessageId, account.accountId)) {
+          try {
+            const replied = await client.im.message.reply({
+              path: { message_id: replyToMessageId },
+              data: { msg_type: "interactive", content },
+            });
+            messageId = replied.data?.message_id;
+          } catch (error) {
+            markIfUnavailableError(replyToMessageId, error, account.accountId);
+          }
+        }
+        if (!messageId) {
+          const created = await client.im.message.create({
+            params: { receive_id_type: "chat_id" },
+            data: { receive_id: chatId, msg_type: "interactive", content },
+          });
+          messageId = created.data?.message_id;
+        }
+        if (!messageId) throw new Error("Feishu interactive message send returned no message_id");
+        return { cardId, messageId };
+      },
+      updateCard: async ({ cardId, sequence, card }) => {
+        const client = this.cardClientFor(account.accountId);
+        await client.cardkit.v1.card.update({
+          path: { card_id: cardId },
+          data: { card: { type: "card_json", data: JSON.stringify(card) }, sequence },
+        });
+      },
+    };
+    const pending = new Map<string, PendingFeishuElicitation>();
+    const renderer = new FeishuElicitationRenderer({
+      transport,
+      pending,
+      log: (event, message, fields) => {
+        void this.logger?.warn(event, message, fields);
+      },
+    });
     const createHost = this.deps.createCardHost ?? startFeishuCardActionHost;
     try {
-      return await createHost({
+      const host = await createHost({
         config: cardActions,
         onAction: (callback) => this.handleCardAction(account.accountId, callback),
         log: (event, message, fields) => {
           void this.logger?.warn(event, message, fields);
         },
       });
+      // The renderer is installed only once the listener exists: a card click
+      // that arrives with no listener is never dispatched, and a listener with
+      // no renderer would be the Stage 1 lie.
+      const runtime = this.accounts.get(account.accountId);
+      if (runtime) runtime.elicitation = { renderer, pending, transport };
+      return host;
     } catch (error) {
       await this.logger?.error("feishu.card_actions_failed", "failed to start feishu card callback channel", {
         accountId: account.accountId,
@@ -202,26 +289,95 @@ export class FeishuChannel implements MessageChannelRuntime {
   }
 
   /**
-   * Dispatch a verified card action.
+   * Render a form Elicitation for the authenticated initiator and resolve the
+   * exact prompt turn.
    *
-   * Stage 1 (this commit) deliberately returns `unsupported`: the endpoint
-   * authenticates and routes, but no form renderer exists yet, so an action
-   * that reaches here has no consumer. Reporting that honestly (HTTP 404 to
-   * Feishu, a logged reason to the operator) keeps the trust boundary intact
-   * while the renderer is built — an endpoint that pretended to handle actions
-   * would be the lie this milestone is meant to avoid.
+   * Resolves to only one of the three terminal decisions, each carrying the
+   * platform-asserted responder identity. External causes (timeout, turn
+   * disposal, channel stop) reject instead of resolving, so no responderId is
+   * ever invented for a cancellation the user did not cause.
+   *
+   * The account is chosen from the chatKey: a form is rendered by the account
+   * that owns the conversation, so its card is sent with that account's
+   * credentials and its callback channel.
+   */
+  async requestElicitation(request: ChannelElicitationRequest): Promise<ChannelElicitationDecision> {
+    const route = parseFeishuConversationId(request.chatKey);
+    const accountId = request.accountId ?? route?.accountId ?? this.config.defaultAccount;
+    const runtime = this.accounts.get(accountId);
+    if (!runtime?.elicitation) {
+      throw new Error(`feishu account "${accountId}" cannot render elicitation: no card-callback channel is configured`);
+    }
+    const chatId = route?.chatId ?? request.chatKey;
+    const promise = runtime.elicitation.renderer.requestElicitation(request, chatId);
+
+    // The abort subscription lives here rather than in the renderer because the
+    // renderer is a pure interaction handler, while `request.signal` is a
+    // daemon-owned lifecycle: this is also the hook channel stop drains through.
+    const onAbort = (): void => {
+      const entry = [...runtime.elicitation!.pending.values()].find((candidate) => candidate.requestId === request.requestId);
+      if (entry) void runtime.elicitation!.renderer.withdrawPending(entry, "elicitation request aborted");
+    };
+    if (request.signal.aborted) {
+      onAbort();
+    } else {
+      request.signal.addEventListener("abort", onAbort, { once: true });
+    }
+    try {
+      return await promise;
+    } finally {
+      request.signal.removeEventListener("abort", onAbort);
+    }
+  }
+
+  /**
+   * The account's Feishu SDK client, or a thrown error.
+   *
+   * Fails closed rather than returning undefined: a card send/update with no
+   * runtime would otherwise become a runtime `undefined.cardkit` instead of an
+   * explicit, logged failure on the request that asked for it.
+   */
+  private cardClientFor(accountId: string): FeishuMessageClient {
+    const runtime = this.accounts.get(accountId);
+    if (!runtime) throw new Error(`feishu account "${accountId}" is not started`);
+    return runtime.client.sdk;
+  }
+
+  /**
+   * Dispatch a verified card action to the form renderer.
+   *
+   * The renderer owns authorization and the accept path; the channel's job is
+   * to hand it a callback it has already proven came from Feishu, and to keep
+   * the renderer alive across the channel's lifetime.
    */
   private async handleCardAction(
-    _accountId: string,
+    accountId: string,
     callback: FeishuCardActionCallback,
   ): Promise<{ ok: true } | { ok: false; reason: "unauthorized" | "malformed" | "unsupported" | "internal" }> {
+    const runtime = this.accounts.get(accountId);
+    const renderer = runtime?.elicitation?.renderer;
+    if (!renderer) return { ok: false, reason: "unsupported" };
+    // The operator is logged truncated, and no answer value is logged at all:
+    // `formValues` may contain exactly the data the elicitation asked for.
     await this.logger?.info("feishu.card.action", "received feishu card action", {
       operatorPrefix: callback.openId.slice(0, 8),
     });
-    // The operator id is logged truncated, and no answer value is logged at
-    // all: `callback.formValues` may contain exactly the data the elicitation
-    // asked for.
-    return { ok: false, reason: "unsupported" };
+    try {
+      const outcome = await renderer.handleAction({
+        openId: callback.openId,
+        value: callback.value,
+        formValues: callback.formValues,
+      });
+      // An unhandled callback is not an error the caller can act on: it belongs
+      // to some other feature, or is a late duplicate. Feishu only needs a 200.
+      if (!outcome.handled) return { ok: true };
+      return { ok: true };
+    } catch (error) {
+      await this.logger?.error("feishu.elicitation.dispatch_failed", "failed to dispatch elicitation action", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return { ok: false, reason: "internal" };
+    }
   }
 
   configureOrchestration(callbacks: OrchestrationDeliveryCallbacks): void {

@@ -57,4 +57,26 @@ export const zh: FeishuMessages = {
   // ---- completion-notice ----
   completionDone: (displayAlias) => `✅ ${displayAlias} 已完成`,
   completionError: (displayAlias) => `⚠️ ${displayAlias} 失败`,
+
+  // ---- elicitation (ACP form) ----
+  elicitationTitle: "需要补充信息",
+  elicitationFromAgent: (agent) => `来自智能体：${agent}`,
+  elicitationStart: "开始填写",
+  elicitationDecline: "拒绝回答",
+  elicitationCancel: "取消",
+  elicitationSubmit: "提交",
+  elicitationReview: "确认答案",
+  elicitationEdit: "修改",
+  elicitationProgress: (answered, total) => `已答 ${answered} / ${total} 题`,
+  elicitationFieldLabel: (index, total) => `第 ${index} / ${total} 题`,
+  elicitationOptional: "选填",
+  elicitationUnsupported: "该表单无法在飞书中展示，已取消。",
+  elicitationExpired: "请求已过期。",
+  elicitationCancelled: "请求已取消。",
+  elicitationAccepted: "答案已提交。",
+  elicitationDeclined: "你已拒绝回答。",
+  elicitationUnauthorized: "只有发起该请求的用户才能回答。",
+  elicitationAlreadyResolved: "该请求已处理。",
+  elicitationAnswerSaved: "当前答案：",
+  elicitationNoAnswer: "尚未回答。",
 };
