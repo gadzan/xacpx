@@ -978,6 +978,22 @@ function parseConversations(
   return conversations;
 }
 
+function isExecutionTarget(value: unknown): value is ConversationTopic["executionTarget"] {
+  if (value === undefined) {
+    return true;
+  }
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    isString(value.workspace) &&
+    (value.cwd === undefined || isString(value.cwd)) &&
+    (value.isolation === "shared" ||
+      value.isolation === "shared-single-writer" ||
+      value.isolation === "worktree-per-member")
+  );
+}
+
 function isConversationTopic(value: unknown): value is ConversationTopic {
   if (!isRecord(value)) {
     return false;
@@ -988,7 +1004,8 @@ function isConversationTopic(value: unknown): value is ConversationTopic {
     isString(value.title) &&
     (value.status === "active" || value.status === "archived" || value.status === "deleting") &&
     isString(value.createdAt) &&
-    isString(value.updatedAt)
+    isString(value.updatedAt) &&
+    isExecutionTarget(value.executionTarget)
   );
 }
 

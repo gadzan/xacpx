@@ -120,3 +120,34 @@ test("parseState defaults a missing Bot profileRevision to 1", () => {
   }, "state.json");
   expect(state.bots.bot_a?.profileRevision).toBe(1);
 });
+test("parseState accepts a group topic with an execution target and drops a junk target", () => {
+  const dropped: StateLoadDroppedRecord[] = [];
+  const state = parseState({
+    conversation_topics: {
+      good: {
+        id: "good",
+        conversationId: "team",
+        title: "Sprint 1",
+        status: "active",
+        createdAt: NOW,
+        updatedAt: NOW,
+        executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
+      },
+      bad: {
+        id: "bad",
+        conversationId: "team",
+        title: "Bad",
+        status: "active",
+        createdAt: NOW,
+        updatedAt: NOW,
+        executionTarget: { workspace: "backend", isolation: "mesh" },
+      },
+    },
+  }, "state.json", dropped);
+  expect(state.conversation_topics.good?.executionTarget).toEqual({
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  expect(state.conversation_topics.bad).toBeUndefined();
+  expect(dropped.some((d) => d.section === "conversation_topics" && d.key === "bad")).toBe(true);
+});

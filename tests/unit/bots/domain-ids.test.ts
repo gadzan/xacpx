@@ -14,6 +14,7 @@ import {
   createPendingDispatchId,
   createRuntimeBindingId,
   createScopedDirectBindingId,
+  createScopedGroupMemberBindingId,
   createTopicId,
   DOMAIN_ID_PREFIX,
 } from "../../../src/domain/ids";
@@ -87,4 +88,13 @@ test("direct runtime ids are deterministic opaque prefixes of the Bot id", () =>
   expect(scoped).toBe(createScopedDirectBindingId(conversationId, topicId, botId));
   expect(scoped).not.toBe(bindingId);
   expect(scoped.startsWith(`${DOMAIN_ID_PREFIX.runtimeBinding}_`)).toBe(true);
+});
+test("scoped group-member binding ids never collide with direct bindings", async () => {
+  const direct = createScopedDirectBindingId("conv_1", "topic_1", "bot_1");
+  const member = createScopedGroupMemberBindingId("conv_1", "topic_1", "bot_1");
+  expect(direct).not.toBe(member);
+  expect(direct.startsWith(`${DOMAIN_ID_PREFIX.runtimeBinding}_`)).toBe(true);
+  expect(member.startsWith(`${DOMAIN_ID_PREFIX.runtimeBinding}_`)).toBe(true);
+  // Deterministic per triple.
+  expect(createScopedGroupMemberBindingId("conv_1", "topic_1", "bot_1")).toBe(member);
 });

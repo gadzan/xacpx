@@ -8,7 +8,14 @@ export type ConversationMessageRole = "human" | "bot" | "system";
 export type GroupTurnOrigin = "human-explicit" | "controller" | "handoff" | "recovery";
 export type GroupTurnState = "queued" | "running" | "completed" | "failed" | "cancelled";
 
-export type ConversationRunMode = "explicit";
+export type ConversationRunMode = "explicit" | "automatic";
+export type WorkspaceIsolationPolicy = "shared" | "shared-single-writer" | "worktree-per-member";
+
+export interface ExecutionTarget {
+  workspace: string;
+  cwd?: string;
+  isolation: WorkspaceIsolationPolicy;
+}
 export type ConversationRunState =
   | "queued"
   | "running"
@@ -30,6 +37,13 @@ export type MemberTurnState =
 
 export type PendingDispatchState = "pending" | "claimed" | "completed";
 
+/** Declared side-effect capability of one MemberTurn. PR6 input only: no
+ *  dispatcher in this PR schedules on it yet. PR7 explicit routing attaches
+ *  this to each assignment; the scheduler (§9.6) serializes turns that are
+ *  not enforceably read-only under shared-single-writer. Never inferred from
+ *  Bot name/description — the caller must prove read-only capability. */
+export type MemberTurnEffect = "unknown" | "read-only" | "mutating";
+
 export interface ConversationRecord {
   id: string;
   kind: ConversationKind;
@@ -50,6 +64,11 @@ export interface ConversationTopic {
   status: ConversationTopicStatus;
   createdAt: string;
   updatedAt: string;
+  /** Effective work target for this Topic. Absent on pre-Group rows: readers
+   *  must treat absence as unknown, never as a default policy. Writers always
+   *  persist it on Group Topics; direct Topics resolve execution from the
+   *  owning Bot profile instead. */
+  executionTarget?: ExecutionTarget;
 }
 
 export interface ConversationMessage {
@@ -107,6 +126,12 @@ export interface MemberTurnRecord {
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
+  /** Group assignment identity. Absent on direct (single-member) turns. */
+  assignmentId?: string;
+  /** Concrete work instruction for this assignment. */
+  task?: string;
+  /** Expected output description for this assignment. */
+  expectedOutput?: string;
 }
 
 /** Server-derived authenticated human ingress. Clients cannot mint this. */

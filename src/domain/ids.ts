@@ -93,6 +93,22 @@ export function createScopedDirectBindingId(
   ])}`;
 }
 
+/** PR6 scoped group-member identity: same triple, different domain separator
+ *  so a direct and a group binding for the same triple never collide. */
+export function createScopedGroupMemberBindingId(
+  conversationId: string,
+  topicId: string,
+  botId: string,
+): string {
+  return `${DOMAIN_ID_PREFIX.runtimeBinding}_${digestOpaque([
+    "group-member",
+    "binding",
+    conversationId,
+    topicId,
+    botId,
+  ])}`;
+}
+
 export function directConversationChatKey(conversationId: string, topicId: string): string {
   return `bot:${conversationId}:${topicId}`;
 }
@@ -104,4 +120,11 @@ export function isDirectConversationChatKey(chatKey: string): boolean {
 
 export function ownedDirectSessionAlias(bindingId: string): string {
   return `brt_${bindingId}`;
+}
+
+/** Group-member owned session alias. Same brt_ family as direct (hidden by
+ *  owner metadata, never by prefix), but namespaced so a direct and a member
+ *  session for the same binding id can never share an alias. */
+export function ownedGroupMemberSessionAlias(bindingId: string): string {
+  return `brt_group_${bindingId}`;
 }
