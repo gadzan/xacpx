@@ -994,6 +994,64 @@ it("cancelled:false keeps an identity tombstone so a late same-turn snapshot can
   expect(chat.busy).toBe(false);
 });
 
+it("anchored cancelled:false turn does not mistake a same-millisecond legacy row for its terminal", async () => {
+  rpc.mockResolvedValueOnce({ cancelled: false });
+  const fetchMock = vi.fn()
+    .mockRejectedValueOnce(new Error("first history unavailable"))
+    .mockRejectedValueOnce(new Error("second history unavailable"));
+  vi.stubGlobal("fetch", fetchMock);
+
+  const chat = useChatStore();
+  chat.select("inst", "A");
+  chat.messages.push({
+    id: 2,
+    instanceId: "inst",
+    sessionAlias: "A",
+    direction: "out",
+    text: "legacy previous turn",
+    createdAt: new Date(2).toISOString(),
+    startedAt: 10,
+  });
+
+  chat.applyEvent({
+    kind: "control-event",
+    instanceId: "inst",
+    event: { type: "turn-started", chatKey: "c", sessionAlias: "A", startedAt: 10, slotAfterId: 7 },
+  } as never);
+  chat.applyEvent({
+    kind: "control-event",
+    instanceId: "inst",
+    event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: "current final" },
+  } as never);
+
+  await chat.cancel();
+  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+  chat.applyEvent({
+    kind: "control-event",
+    instanceId: "inst",
+    event: { type: "turn-finished", chatKey: "c", sessionAlias: "A", ok: true },
+  } as never);
+  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+  const outs = chat.messages.filter((message) => message.direction === "out");
+  expect(outs).toHaveLength(2);
+  expect(outs[0]).toMatchObject({
+    id: 2,
+    text: "legacy previous turn",
+    startedAt: 10,
+  });
+  expect(outs[0]?.slotAfterId).toBeUndefined();
+  expect(outs[1]).toMatchObject({
+    text: "current final",
+    status: "done",
+    startedAt: 10,
+    slotAfterId: 7,
+  });
+  expect(outs[1]?.id).toBeUndefined();
+  expect(chat.busy).toBe(false);
+});
+
 it("late finish after cancelled:false history convergence does not duplicate the authoritative row", async () => {
   rpc.mockResolvedValueOnce({ cancelled: false });
   const fetchMock = vi.fn(async () => new Response(JSON.stringify({
@@ -1294,6 +1352,45 @@ it("active reconnect snapshot after successful cancel stays hidden until the old
     { instanceId: "inst", sessionAlias: "A", parts: [{ type: "text", text: "stale" }], status: "streaming", startedAt: 1 },
   ] as never);
   expect(chat.busy).toBe(false);
+});
+
+it("anchored pending cancel does not match an anchorless same-millisecond snapshot", async () => {
+  let resolveCancel!: (value: { cancelled: boolean }) => void;
+  rpc.mockReturnValueOnce(new Promise((resolve) => { resolveCancel = resolve; }));
+  const chat = useChatStore();
+  chat.select("inst", "A");
+  chat.applyEvent({
+    kind: "control-event",
+    instanceId: "inst",
+    event: { type: "turn-started", chatKey: "c", sessionAlias: "A", startedAt: 10, slotAfterId: 7 },
+  } as never);
+  chat.applyEvent({
+    kind: "control-event",
+    instanceId: "inst",
+    event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: "old" },
+  } as never);
+
+  const cancelling = chat.cancel();
+  chat.applyEvent({
+    kind: "state-snapshot",
+    instanceId: "inst",
+    turns: [{
+      instanceId: "inst",
+      sessionAlias: "A",
+      parts: [{ type: "text", text: "legacy snapshot" }],
+      status: "streaming",
+      startedAt: 10,
+    }],
+    usage: [],
+    commands: [],
+  } as never);
+
+  expect(chat.busy).toBe(true);
+  expect(chat.streaming).toBe("legacy snapshot");
+  resolveCancel({ cancelled: true });
+  await cancelling;
+  expect(chat.busy).toBe(true);
+  expect(chat.streaming).toBe("legacy snapshot");
 });
 
 it("reconnect snapshot for a same-millisecond newer turn uses the new slot identity and position", async () => {

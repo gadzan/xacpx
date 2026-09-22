@@ -326,28 +326,29 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   /** True when an authoritative snapshot still describes the turn hidden by Stop.
-   *  slotAfterId is the Hub's durable insert-order anchor; pair it with startedAt to
-   *  distinguish even same-millisecond follow-up turns. Legacy snapshots without an
-   *  anchor fall back to the old startedAt comparison for compatibility. */
+   *  Once the local turn has Hub slot identity, never discard it: a peer without the
+   *  anchor cannot prove same-turn identity from millisecond telemetry alone. Only a
+   *  legacy local turn that never received slotAfterId may fall back to startedAt. */
   function sameLiveTurnIdentity(live: LiveTurn, snapshot: LiveTurnSnapshotDto): boolean {
-    if (typeof live.slotAfterId === "number" && typeof snapshot.slotAfterId === "number") {
-      return live.slotAfterId === snapshot.slotAfterId && live.startedAt === snapshot.startedAt;
+    if (typeof live.slotAfterId === "number") {
+      return typeof snapshot.slotAfterId === "number"
+        && live.slotAfterId === snapshot.slotAfterId
+        && live.startedAt === snapshot.startedAt;
     }
     return live.startedAt === snapshot.startedAt;
   }
 
   /** True only for a Hub-persisted out row that represents this exact live turn.
    *  Local optimistic/live-flushed rows have no id and must not suppress a later
-   *  authoritative finish. Durable slotAfterId + startedAt is preferred; legacy
-   *  rows without an anchor fall back to startedAt, matching snapshot identity. */
+   *  authoritative finish. An anchored current turn requires the persisted row to
+   *  carry the same anchor; startedAt-only fallback is reserved for legacy current
+   *  turns that never had slotAfterId. */
   function hasAuthoritativeTurnRow(turn: LiveTurn): boolean {
     return messages.value.some((message) => {
       if (message.direction !== "out" || typeof message.id !== "number") return false;
-      if (
-        typeof turn.slotAfterId === "number"
-        && typeof message.slotAfterId === "number"
-      ) {
-        return message.slotAfterId === turn.slotAfterId
+      if (typeof turn.slotAfterId === "number") {
+        return typeof message.slotAfterId === "number"
+          && message.slotAfterId === turn.slotAfterId
           && message.startedAt === turn.startedAt;
       }
       return message.startedAt === turn.startedAt;
