@@ -211,6 +211,18 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   function touchTranscript(): void {
     transcriptRevision += 1;
   }
+  // Contiguous-cursor advance for a single accepted/live seq: only chain onto
+  // the proven window (seq === contiguous+1, or first claim). A seq that lands
+  // above a hole (HTTP accept 121 while 51..120 unseen, live 601 while
+  // 101..600 missing) must NOT jump the cursor — newestSeq still tracks the
+  // display max, but the next load must see the interior hole and fill it.
+  function advanceContiguousForSeq(seq: number): void {
+    if (contiguousNewestSeq.value !== undefined && seq === contiguousNewestSeq.value + 1) {
+      contiguousNewestSeq.value = seq;
+    } else if (contiguousNewestSeq.value === undefined) {
+      contiguousNewestSeq.value = seq;
+    }
+  }
   // Navigation / Selection identity
   const instanceId = ref<string | null>(null);
   const selectedBotId = ref<string | null>(null);
@@ -743,10 +755,20 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           }),
         );
       } catch {
-        // Transport failure mid-fill: keep the partial window (already merged
-        // above) but report incomplete so the caller keeps the gate closed
-        // with a retryable error. The retry keys off the contiguous cursor,
-        // not the tail max, so the hole is re-attempted.
+        // Transport failure mid-fill: first check the supersede fence — a
+        // reject that lands after a view switch / newer reload belongs to a
+        // dead request and must exit silently, never paint the old error onto
+        // the new view. Otherwise report incomplete so the caller keeps the
+        // gate closed with a retryable error; the retry keys off the
+        // contiguous cursor, not the tail max, so the hole is re-attempted.
+        if (
+          instanceId.value !== iId ||
+          activeConversationId.value !== cId ||
+          activeTopicId.value !== tId ||
+          requestSequence !== historyRequestSequence
+        ) {
+          return "superseded";
+        }
         return "incomplete";
       }
       if (
@@ -968,7 +990,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         historyErrorDetail.value = err instanceof Error ? err.message : String(err);
       }
     } finally {
-      loadingHistory.value = false;
+      if (requestSequence === historyRequestSequence) {
+        loadingHistory.value = false;
+      }
     }
   }
   // Query durable topic Runs and adopt the authoritative active Run: the
@@ -1094,10 +1118,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     }
   }
 
-  // Transcript-only convergence: reload the canonical history page without
-  // touching the admission gate or durable-owner discovery. For callers whose
-  // owner row is already authoritative (prompt accept reusing a completed
-  // Run). Never use on a terminal handoff where a queued next Run may exist.
+  // Transcript-only convergence: reload the canonical history page on a
+  // prompt-proven owner only (new-connector terminal accept that names the
+  // accepted Run as owner). Admission stays as-is on success, but an
+  // incomplete history/gap load closes it: the window is holed, so a further
+  // prompt could queue behind an unseen Run. Retry reopens via loadHistory.
+  // Never use on an unproven terminal accept — those run full rediscovery.
   function refreshTranscriptOnly(
     targetInstanceId: string | null,
     convId: string | null,
@@ -1176,6 +1202,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         if (gapStatus === "incomplete") {
           historyError.value = "discoveryFailed";
           historyErrorDetail.value = `history gap ${prevContiguousBeforeMerge}..${tailOldest} did not converge; retry to complete recovery`;
+          topicReady.value = false;
           return;
         }
         if (activeRun.value) {
@@ -1195,9 +1222,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         ) {
           historyError.value = "discoveryFailed";
           historyErrorDetail.value = err instanceof Error ? err.message : String(err);
+          topicReady.value = false;
         }
       } finally {
-        loadingHistory.value = false;
+        if (requestSequence === historyRequestSequence) {
+          loadingHistory.value = false;
+        }
       }
     })();
   }
@@ -1509,7 +1539,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         messages.value = [...messages.value, res.message].sort((a, b) => a.seq - b.seq);
         touchTranscript();
         newestSeq.value = Math.max(newestSeq.value ?? 0, res.message.seq);
-        contiguousNewestSeq.value = Math.max(contiguousNewestSeq.value ?? 0, res.message.seq);
+        // Chained advance only: an accept whose seq lands above an interior
+        // hole must not jump the contiguous cursor (see helper).
+        advanceContiguousForSeq(res.message.seq);
       }
 
       // An HTTP accept proves the accepted Run is durable — never that it is
@@ -1573,17 +1605,24 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       if (!adoptedRun) {
         return;
       }
-      // Reused-completed-run accept: the accepted Run row is authoritative
-      // for the accepted Run, but a queued next Run may still own the Topic
-      // (the accept response carries no topic-wide ownership). Converge the
+      // Terminal accept: the accepted Run row is authoritative for the
+      // accepted Run only — never for topic-wide ownership. When the accept
+      // names the accepted Run as owner (new connectors, prompt-carried id)
+      // there is nothing to re-elect and the transcript converges below.
+      // Otherwise a queued next Run (B durable while this tab retried A) may
+      // own the Topic, so close admission and re-run full durable discovery
+      // (history + runs.list): the old-connector idempotent-retry case has no
+      // owner fields at all and must fail closed, never assume no-candidate.
       const ownerAdoptedFromPrompt = !!promptOwner && promptOwner.id !== res.run.id;
+      const terminalOwnerProven = ownerProvesAccepted;
       if (isTerminalRunState(adoptedRun.state)) {
         liveTurn.value = null;
         if (targetInstId && targetConvId && targetTopicId) {
-          if (priorRunActive) {
-            void rediscoverAfterTerminal(targetInstId, targetConvId, targetTopicId, adoptedRun.id);
-          } else {
+          if (terminalOwnerProven && !priorRunActive) {
             void refreshTranscriptOnly(targetInstId, targetConvId, targetTopicId);
+          } else {
+            topicReady.value = false;
+            void rediscoverAfterTerminal(targetInstId, targetConvId, targetTopicId, adoptedRun.id);
           }
         }
       } else if (acceptOverwritesOwner && !ownerAdoptedFromPrompt) {
@@ -2141,19 +2180,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           messages.value = [...messages.value, msg].sort((a, b) => a.seq - b.seq);
           touchTranscript();
           newestSeq.value = Math.max(newestSeq.value ?? 0, msg.seq);
-          // Advance the proven-contiguous cursor only when the live row chains
-          // onto it (msg.seq <= contiguous+1). A live row above a hole (e.g.
-          // 601 while 101..600 are still missing) must NOT jump the cursor —
-          // otherwise the next load would conclude "no gap" over a holed
-          // window. newestSeq above still tracks the display max.
-          if (
-            contiguousNewestSeq.value !== undefined &&
-            msg.seq === contiguousNewestSeq.value + 1
-          ) {
-            contiguousNewestSeq.value = msg.seq;
-          } else if (contiguousNewestSeq.value === undefined) {
-            contiguousNewestSeq.value = msg.seq;
-          }
+          // Same chained rule as the HTTP accept path (see helper).
+          advanceContiguousForSeq(msg.seq);
         }
         // If this message belongs to the active run and is from the bot, converge liveTurn
         if (msg.role === "bot" && activeRun.value && msg.runId === activeRun.value.id) {

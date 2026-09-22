@@ -3956,6 +3956,392 @@ describe("useDirectBotsStore", () => {
       expect(store.isRunActive).toBe(true);
     });
 
+    it("does not jump the contiguous cursor when an HTTP accept lands above an interior hole", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      // Loaded window proves 1..50; another client's 51..120 never arrived
+      // over WS, and the local prompt accept lands at seq 121.
+      const loaded = Array.from({ length: 50 }, (_, i) => ({
+        id: `msg_${i + 1}`,
+        conversationId: "conv_1",
+        topicId: "top_1",
+        seq: i + 1,
+        role: "human",
+        content: `m${i + 1}`,
+        createdAt: "now",
+      }));
+      store.messages = loaded as never;
+      store.oldestSeq = 1;
+      store.newestSeq = 50;
+      store.contiguousNewestSeq = 50;
+      store.hasMoreBefore = false;
+      store.topicReady = true;
+      const msg = (seq: number) => ({
+        id: `msg_${seq}`,
+        conversationId: "conv_1",
+        topicId: "top_1",
+        seq,
+        role: "human",
+        content: `m${seq}`,
+        createdAt: "now",
+      });
+      const terminalAccepted = {
+        id: "run_C",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_121",
+        requestId: "req_C",
+        mode: "explicit",
+        state: "completed",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      // Gate history so the post-accept cursors are asserted while the
+      // transcript-only refresh is still blocked — without the gate the
+      // fire-and-forget refresh converges before the assertion runs.
+      const { promise: historyGate, resolve: resolveHistoryGate } = Promise.withResolvers<unknown>();
+      let historyReleased = false;
+      const historyImpl = (payload?: unknown) => {
+        const pl = payload as { afterSeq?: number; beforeSeq?: number } | undefined;
+        if (pl?.afterSeq !== undefined) {
+          const start = pl.afterSeq + 1;
+          const end = Math.min(start + 49, 120);
+          const messages = Array.from({ length: Math.max(0, end - start + 1) }, (_, i) => msg(start + i));
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages,
+            oldestSeq: messages[0]?.seq,
+            newestSeq: messages[messages.length - 1]?.seq,
+            hasMoreBefore: true,
+            hasMoreAfter: end < 121,
+          });
+        }
+        return Promise.resolve({
+          conversationId: "conv_1",
+          topicId: "top_1",
+          messages: Array.from({ length: 50 }, (_, i) => msg(72 + i)),
+          oldestSeq: 72,
+          newestSeq: 121,
+          hasMoreBefore: true,
+          hasMoreAfter: false,
+        });
+      };
+      mockRpc.mockImplementation((instId: string, type: string, payload?: unknown) => {
+        if (type === "control.conversation.prompt") {
+          return Promise.resolve({
+            reused: false,
+            conversationId: "conv_1",
+            topicId: "top_1",
+            requestId: "req_C",
+            run: terminalAccepted,
+            message: msg(121),
+            memberTurn: { id: "turn_C", runId: "run_C", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "completed", createdAt: "now" },
+            // New connector proves the accepted Run owns the Topic: no
+            // re-election needed, but the interior hole must still fill.
+            activeRunId: "run_C",
+            activeRun: terminalAccepted,
+          });
+        }
+        if (type === "control.conversation.history") {
+          if (!historyReleased) return historyGate.then(() => historyImpl(payload));
+          return historyImpl(payload);
+        }
+        return Promise.resolve({});
+      });
+      await store.sendPrompt("prompt over unseen hole");
+      await flushPromises();
+      // The accept lands at 121 but 51..71 are still unseen: the display max
+      // moves, the proven edge must not.
+      expect(store.newestSeq).toBe(121);
+      expect(store.contiguousNewestSeq).toBe(50);
+      // Release the refresh: it still converges the full window through the hole.
+      historyReleased = true;
+      resolveHistoryGate(undefined);
+      for (let i = 0; i < 30; i += 1) {
+        await flushPromises();
+      }
+      expect(store.messages.map((m) => m.seq)).toEqual(Array.from({ length: 121 }, (_, i) => i + 1));
+      expect(store.contiguousNewestSeq).toBe(121);
+    });
+    it("keeps admission closed on an ownerless reused-completed accept until discovery elects the true owner", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      // Old connector: first requestId's Run A already completed; another
+      // client made B the queued owner meanwhile. The idempotent retry of A
+      // carries no owner fields, so the client must not assume no-candidate.
+      const terminalA = {
+        id: "run_A",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_A",
+        requestId: "req_A",
+        mode: "explicit",
+        state: "completed",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      const runBQueued = {
+        id: "run_B",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_B",
+        requestId: "req_B",
+        mode: "explicit",
+        state: "queued",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      mockRpc.mockImplementation((instId: string, type: string, payload?: unknown) => {
+        if (type === "control.conversation.prompt") {
+          return Promise.resolve({
+            reused: true,
+            conversationId: "conv_1",
+            topicId: "top_1",
+            requestId: "req_A",
+            run: terminalA,
+            message: { id: "msg_A", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "retry A", createdAt: "now" },
+            memberTurn: { id: "turn_A", runId: "run_A", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "completed", createdAt: "now" },
+            // No owner fields: old connector.
+          });
+        }
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: [
+              { id: "msg_A", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "retry A", createdAt: "now" },
+            ],
+            oldestSeq: 1,
+            newestSeq: 1,
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            runs: [terminalA, runBQueued],
+            activeRunId: "run_B",
+            activeRun: runBQueued,
+          });
+        }
+        if (type === "control.runs.get") {
+          return Promise.resolve({ run: { ...runBQueued, memberTurns: [] } });
+        }
+        return Promise.resolve({});
+      });
+      store.topicReady = true;
+      await store.sendPrompt("retry A");
+      // Admission closes synchronously: the composer must not reopen before
+      // discovery elects B.
+      expect(store.topicReady).toBe(false);
+      await flushPromises();
+      for (let i = 0; i < 10; i += 1) {
+        await flushPromises();
+      }
+      expect(store.activeRun?.id).toBe("run_B");
+      expect(store.isRunActive).toBe(true);
+      expect(store.topicReady).toBe(true);
+      // A further prompt is fenced against the recovered owner B.
+      await store.sendPrompt("prompt C while B queued");
+      expect(store.promptError).toBe("runInProgress");
+      expect(mockRpc).not.toHaveBeenCalledWith(
+        "inst_1",
+        "control.conversation.prompt",
+        expect.objectContaining({ text: "prompt C while B queued" }),
+      );
+    });
+    it("stays closed when runs discovery fails after an ownerless terminal accept", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      const terminalA = {
+        id: "run_A",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_A",
+        requestId: "req_A",
+        mode: "explicit",
+        state: "completed",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversation.prompt") {
+          return Promise.resolve({
+            reused: true,
+            conversationId: "conv_1",
+            topicId: "top_1",
+            requestId: "req_A",
+            run: terminalA,
+            message: { id: "msg_A", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "retry A", createdAt: "now" },
+            memberTurn: { id: "turn_A", runId: "run_A", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "completed", createdAt: "now" },
+          });
+        }
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: [
+              { id: "msg_A", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "retry A", createdAt: "now" },
+            ],
+            oldestSeq: 1,
+            newestSeq: 1,
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          });
+        }
+        // Old connector answering unknown-type: owner unproven, never
+        // no-candidate. Admission must stay closed, never reopen.
+        if (type === "control.runs.list") {
+          return Promise.reject(new Error("unknown-type: control.runs.list"));
+        }
+        return Promise.resolve({});
+      });
+      store.topicReady = true;
+      await store.sendPrompt("retry A");
+      expect(store.topicReady).toBe(false);
+      await flushPromises();
+      for (let i = 0; i < 10; i += 1) {
+        await flushPromises();
+      }
+      expect(store.topicReady).toBe(false);
+      expect(store.historyError).toBe("discoveryFailed");
+      expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.runs.list", {
+        conversationId: "conv_1",
+        topicId: "top_1",
+      });
+    });
+    it("never paints a stale gap error onto a newer view when the old fill rejects", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      const msg = (seq: number, topic = "top_1") => ({
+        id: `msg_${topic}_${seq}`,
+        conversationId: "conv_1",
+        topicId: topic,
+        seq,
+        role: "human",
+        content: `m${seq}`,
+        createdAt: "now",
+      });
+      const { promise: stalePageGate, resolve: resolveStalePage, reject: rejectStalePage } = Promise.withResolvers<unknown>();
+      const { promise: newTailGate, resolve: resolveNewTail } = Promise.withResolvers<unknown>();
+      let gapCalls = 0;
+      mockRpc.mockImplementation((instId: string, type: string, payload?: unknown) => {
+        if (type === "control.conversation.history") {
+          const pl = payload as { afterSeq?: number; beforeSeq?: number } | undefined;
+          if (pl?.afterSeq !== undefined) {
+            gapCalls += 1;
+            if (gapCalls === 1) return stalePageGate;
+            const start = pl.afterSeq + 1;
+            const messages = Array.from({ length: 10 }, (_, i) => msg(start + i, "top_2"));
+            return Promise.resolve({
+              conversationId: "conv_1",
+              topicId: "top_2",
+              messages,
+              oldestSeq: messages[0]?.seq,
+              newestSeq: messages[messages.length - 1]?.seq,
+              hasMoreBefore: false,
+              hasMoreAfter: false,
+            });
+          }
+          // Newest tail per active topic. The new view's tail hangs so the
+          // stale reject lands while the new request still owns the spinner.
+          const active = store.activeTopicId;
+          if (active === "top_2") {
+            return newTailGate.then(() => ({
+              conversationId: "conv_1",
+              topicId: "top_2",
+              messages: Array.from({ length: 50 }, (_, i) => msg(51 + i, "top_2")),
+              oldestSeq: 51,
+              newestSeq: 100,
+              hasMoreBefore: true,
+              hasMoreAfter: false,
+            }));
+          }
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_2",
+            messages: Array.from({ length: 50 }, (_, i) => msg(101 + i)),
+            oldestSeq: 101,
+            newestSeq: 150,
+            hasMoreBefore: true,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({ conversationId: "conv_1", topicId: store.activeTopicId, runs: [] });
+        }
+        return Promise.resolve({});
+      });
+      // Old view proves 1..50, then its newest tail (101..150) opens a hole
+      // and the fill's first page hangs in flight.
+      const loaded = Array.from({ length: 50 }, (_, i) => msg(i + 1));
+      store.messages = loaded as never;
+      store.oldestSeq = 1;
+      store.newestSeq = 50;
+      store.contiguousNewestSeq = 50;
+      store.hasMoreBefore = false;
+      const firstLoad = store.loadHistory("inst_1", "conv_1", "top_1");
+      await flushPromises();
+      await flushPromises();
+      // Switch to a new topic while the old fill page is still in flight;
+      // the new load owns the transcript now.
+      store.activeTopicId = "top_2";
+      const secondLoad = store.loadHistory("inst_1", "conv_1", "top_2");
+      await flushPromises();
+      // The stale page now rejects while the new tail is still in flight:
+      // it must exit silently, never painting the old error onto the new
+      // view, and must not clear the new load's spinner while it still owns
+      // the request.
+      expect(store.loadingHistory).toBe(true);
+      rejectStalePage(new Error("stale page network drop"));
+      await firstLoad;
+      for (let i = 0; i < 5; i += 1) {
+        await flushPromises();
+      }
+      expect(store.loadingHistory).toBe(true);
+      expect(store.historyError).toBeNull();
+      resolveNewTail(undefined);
+      await secondLoad;
+      for (let i = 0; i < 10; i += 1) {
+        await flushPromises();
+      }
+      resolveStalePage({
+        conversationId: "conv_1",
+        topicId: "top_1",
+        messages: [],
+        hasMoreBefore: false,
+        hasMoreAfter: false,
+      });
+      expect(store.activeTopicId).toBe("top_2");
+      expect(store.historyError).toBeNull();
+    });
     it("directly converges to terminal state and loads history when prompt RPC returns reused completed run", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";

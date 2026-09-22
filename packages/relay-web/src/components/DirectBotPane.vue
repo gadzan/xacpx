@@ -206,9 +206,10 @@ async function handleDeleteBot(): Promise<void> {
       @send="(text) => directBotsStore.sendPrompt(text)"
       @cancel="directBotsStore.cancelCurrentRun"
     />
-    <!-- History failure: recovery never ran, so admission stays closed. Retry
-      reloads the topic (history + durable run discovery). -->
-    <div v-if="directBotsStore.historyError && directBotsStore.activeTopicId && !directBotsStore.topicReady"
+    <!-- History failure: Retry reloads the topic (history + durable run
+      discovery). Shown whenever the transcript failed to converge — the
+      composer may still be enabled, but the newest window is stale/holed. -->
+    <div v-if="directBotsStore.historyError && directBotsStore.activeTopicId"
          class="flex items-center justify-between border-t border-danger/20 bg-danger/10 px-4 py-2 text-xs text-danger">
       <span>{{ $t(`bot.errors.${directBotsStore.historyError}`) }}</span>
       <button type="button"
