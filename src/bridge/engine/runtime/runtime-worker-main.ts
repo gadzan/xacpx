@@ -33,7 +33,6 @@ import {
   type RuntimeWorkerElicitationRequestPayload,
   type RuntimeWorkerPermissionDecisionParams,
   type RuntimeWorkerElicitationDecisionParams,
-  type RuntimeWorkerElicitationCancelParams,
   type RuntimeElicitationDecision,
   type RuntimeWorkerPromptResult,
 } from "./runtime-worker-protocol";
@@ -695,39 +694,6 @@ async function dispatch(request: RuntimeWorkerRequest): Promise<void> {
         }
         state.pendingElicitations.delete(p.elicitationRequestId);
         respond({ id, ok: true, result: {} });
-        break;
-      }
-      case "elicitation.cancel": {
-        // Request-scoped cancellation. The agent withdrew this single
-        // elicitation/create (ACP `$/cancel_request`) while the prompt turn
-        // continues. Aborting only the local pending promise is NOT enough:
-        // the renderer is sitting in the daemon broker with a live 120s
-        // deadline, so the abort has to propagate outbound — through
-        // RuntimeEngine -> bridge -> daemon -> broker -> channel — which the
-        // decision path already does when it settles cancel.
-        const p = (request.params ?? {}) as RuntimeWorkerElicitationCancelParams;
-        const entry = state.pendingElicitations.get(p.elicitationRequestId);
-        if (!entry) {
-          // Unknown id: already settled, or never dispatched. Benign; the
-          // caller treats a miss as "nothing left to cancel".
-          respond({ id, ok: true, result: { cancelled: false } });
-          break;
-        }
-        const samePrompt = p.promptRequestId === entry.promptRequestId;
-        const sameGeneration = entry.workerGeneration === state.workerGeneration;
-        if (!samePrompt || !sameGeneration) {
-          // Fenced exactly like a decision: cross-talk or a recycled worker
-          // must never abort a live request it does not own.
-          state.pendingElicitations.delete(p.elicitationRequestId);
-          respond({ id, ok: true, result: { cancelled: false, stale: true } });
-          break;
-        }
-        state.pendingElicitations.delete(p.elicitationRequestId);
-        // Aborting the controller is what emits the `elicitation.cancel`
-        // event: the handler-signal listener in `onElicitation` owns that
-        // write, so there is exactly one place that tells the host.
-        entry.abort.abort(new Error("elicitation cancelled by agent request"));
-        respond({ id, ok: true, result: { cancelled: true } });
         break;
       }
       default:

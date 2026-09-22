@@ -448,6 +448,65 @@ describe("normalizeAcpElicitationForm rejections", () => {
     expect("defaultValue" in (result.form.fields[0] as object)).toBe(false);
   });
 
+  test("ACP reader tolerance: omitted, null or malformed root type is treated as object", () => {
+    // ACP "Restricted JSON Schema": senders MUST include `type: "object"` and
+    // `properties`, but READERS "tolerate an omitted, null, or malformed type by
+    // treating it as 'object'". Cancelling these would reject forms the spec
+    // explicitly tells clients to accept.
+    const omitted = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { properties: { a: { type: "string" } } },
+    }));
+    expect(omitted.ok).toBe(true);
+
+    const nullType = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { type: null, properties: { a: { type: "string" } } },
+    }));
+    expect(nullType.ok).toBe(true);
+
+    const malformed = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { type: { bogus: true }, properties: { a: { type: "string" } } },
+    }));
+    expect(malformed.ok).toBe(true);
+
+    // A DIFFERENT declared type is still a real mismatch, not a tolerated one.
+    const wrongType = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { type: "array", properties: { a: { type: "string" } } },
+    }));
+    expect(wrongType.ok).toBe(false);
+  });
+
+  test("omitted properties renders an empty form and still checks required", () => {
+    // Reader tolerance for omitted `properties` is "treat it as an empty map" —
+    // and the `required` consistency check must still run against that map.
+    const empty = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { type: "object" },
+    }));
+    expect(empty.ok).toBe(true);
+    if (empty.ok) expect(empty.form.fields).toEqual([]);
+
+    const noPropsWithRequired = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { type: "object", required: ["a"] },
+    }));
+    expect(noPropsWithRequired.ok).toBe(false);
+  });
+
+  test("properties: null is rejected as invalid, not tolerated as an empty form", () => {
+    // The RFD is explicit that reader tolerance does NOT extend here: "null is
+    // not valid for properties". The previous implementation accepted it as an
+    // empty form, which is the opposite of the spec.
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { type: "object", properties: null },
+    }));
+    expect(result.ok).toBe(false);
+    // The SPECIFIC reason matters: this must be rejected as `properties` being
+    // invalid, not as an unrelated "not an object" fallback that a refactor
+    // could silently change.
+    if (!result.ok) {
+      expect(result.reason).toContain("properties");
+      expect(result.reason).not.toContain("is not an object");
+    }
+  });
+
   test("an unknown string format is preserved as an annotation, not rejected", () => {
     // ACP elicitation RFD: "Known formats include email, uri, date and
     // date-time. Other string format values are annotations. Implementations
@@ -798,6 +857,29 @@ describe("normalizeAcpElicitationForm string resource bounds", () => {
     }));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toContain("normalized form exceeds");
+  });
+
+  test("string format is carried on the normalized field", () => {
+    // The aggregate budget claims to cover EVERY string in the normalized form.
+    // `measureFieldChars` omitted `field.format` until round 16, so the claim was
+    // false by `maxFields × maxFormatLength` (1280 chars max). Not a resource
+    // safety issue at that size — the same class of undercount as the round-3
+    // pattern/schema-metadata gap, which is why it is fixed for the invariant
+    // rather than for the bound.
+    //
+    // Proved by the PRESENCE of the measured string on the normalized field:
+    // if `format` were dropped here, nothing downstream could ever count it.
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { host: { type: "string", format: "f".repeat(ELICITATION_SCHEMA_LIMITS.maxFormatLength) } },
+        required: ["host"],
+      },
+    }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect((result.form.fields[0] as { format?: string }).format?.length)
+      .toBe(ELICITATION_SCHEMA_LIMITS.maxFormatLength);
   });
 
   test("a realistic multi-option form passes the aggregate cap", () => {

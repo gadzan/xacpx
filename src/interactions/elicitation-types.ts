@@ -193,8 +193,18 @@ export type ChannelElicitationDecision =
       responderId: string;
     };
 
-/** ACP elicitation modes. v1 supports form only; url is never advertised. */
-export type ChannelElicitationMode = "form" | "url";
+/**
+ * Elicitation modes a plugin may declare.
+ *
+ * `"form"` ONLY in M1. ACP itself defines `form | url`, but xacpx has no URL
+ * renderer contract: `ChannelElicitationRequest` carries form data only, there
+ * is no URL dispatch, and the RFD's URL-mode rules (display the target host,
+ * obtain consent before navigating, `elicitationId`, `elicitation/complete`)
+ * are unimplemented. Declaring `"url"` here would advertise a capability core
+ * cannot deliver, so the plugin-facing union is deliberately narrower than the
+ * ACP one. Widen when M2 ships URL rendering.
+ */
+export type ChannelElicitationMode = "form";
 
 /**
  * Runtime-visible channel Elicitation interface (M1 steps 6/7 shape,

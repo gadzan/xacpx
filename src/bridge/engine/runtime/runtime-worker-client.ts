@@ -11,7 +11,6 @@ import {
   type RuntimeWorkerPermissionDecisionParams,
   type RuntimeWorkerElicitationRequestPayload,
   type RuntimeWorkerElicitationDecisionParams,
-  type RuntimeWorkerElicitationCancelParams,
   type RuntimeElicitationDecision,
 } from "./runtime-worker-protocol";
 import { mapRuntimeError } from "./runtime-contract";
@@ -294,7 +293,7 @@ export class RuntimeWorkerClient {
         // The agent withdrew this single elicitation/create. Abort the
         // outbound daemon/broker wait for THIS request only — the turn keeps
         // running, and other pending elicitations are untouched.
-        const payload = (raw as { payload?: unknown }).payload as RuntimeWorkerElicitationCancelParams | undefined;
+        const payload = (raw as { payload?: unknown }).payload as { promptRequestId?: unknown; elicitationRequestId?: unknown } | undefined;
         if (payload && typeof payload.elicitationRequestId === "string") {
           this.cancelElicitation(payload.elicitationRequestId, typeof payload.promptRequestId === "string" ? payload.promptRequestId : "");
         }

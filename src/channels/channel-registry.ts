@@ -114,19 +114,28 @@ export class MessageChannelRegistry {
   }
 
   /**
-   * Modes this registry can truthfully advertise. A mode counts only when a
-   * channel declares it AND implements `requestElicitation()`. Without a
-   * form-capable channel the result is empty, and the daemon advertises no
-   * ACP elicitation capability at all.
+   * Modes this registry can truthfully advertise.
+   *
+   * M1's plugin contract is FORM ONLY, and that is a deliberate narrowing of
+   * the ACP mode union rather than an oversight: `ChannelElicitationRequest`
+   * carries form data only, there is no URL dispatch, and the RFD's URL-mode
+   * rules (target-host display, consent before navigating, `elicitationId`,
+   * `elicitation/complete`) are unimplemented. A channel declaring `"url"`
+   * would therefore be reported as supporting a mode core cannot deliver —
+   * a capability lie in the published plugin API.
+   *
+   * A mode counts only when a channel declares it AND implements
+   * `requestElicitation()`. Without a form-capable channel the result is empty,
+   * and the daemon advertises no ACP elicitation capability at all.
+   *
+   * When M2 adds URL rendering, this is the single place that widens.
    */
-  supportedElicitationModes(): Array<"form" | "url"> {
-    const modes: Array<"form" | "url"> = [];
+  supportedElicitationModes(): Array<"form"> {
+    const modes: Array<"form"> = [];
     for (const channel of this.channels.values()) {
       if (typeof channel.requestElicitation !== "function") continue;
       for (const mode of channel.elicitationModes ?? []) {
-        if (mode === "form" || mode === "url") {
-          if (!modes.includes(mode)) modes.push(mode);
-        }
+        if (mode === "form" && !modes.includes(mode)) modes.push(mode);
       }
     }
     return modes;

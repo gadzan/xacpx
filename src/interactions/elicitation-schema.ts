@@ -595,7 +595,21 @@ export function normalizeAcpElicitationForm(request: unknown): ElicitationNormal
   }
   const schema = asPlain(record.requestedSchema);
   if (!schema) return fail("malformed_schema", "requestedSchema is not an object");
-  if (schema.type !== undefined && schema.type !== "object") {
+  // ACP "Restricted JSON Schema": senders MUST include both `type: "object"`
+  // and `properties`. For compatibility, ACP READERS tolerate an omitted,
+  // `null`, or malformed `type` by treating it as `"object"`, and tolerate
+  // omitted `properties` by treating it as an empty map; `null` is NOT valid
+  // for `properties`. "This reader tolerance does not relax the sender
+  // requirements" — so core accepts the tolerated shapes rather than cancelling
+  // a form the agent sent in good faith, but still rejects what the spec calls
+  // invalid.
+  const schemaType = schema.type;
+  // A non-string `type` is MALFORMED and tolerated (read as `"object"`); a
+  // string naming a different type is a real mismatch and still rejected. The
+  // RFD separates the two, and so must the check — otherwise "tolerate malformed
+  // type" would silently accept `type: "array"`, which is exactly what the
+  // sender requirement forbids.
+  if (typeof schemaType === "string" && schemaType !== "object") {
     return fail("malformed_schema", 'requestedSchema.type must be "object"');
   }
   // ACP schema-level presentation metadata. Bounded like every other string,
@@ -617,10 +631,15 @@ export function normalizeAcpElicitationForm(request: unknown): ElicitationNormal
     ...(schemaDescription.value !== undefined ? { schemaDescription: schemaDescription.value } : {}),
   };
   const properties = schema.properties;
-  if (properties === undefined || properties === null) {
-    return { ok: true, form: { message, ...schemaMeta, fields: [] } };
+  // ACP reader tolerance: omitted `properties` is an empty map. `null` is NOT
+  // valid for `properties` and is rejected with its own reason. Note this no
+  // longer early-returns for the omitted case — the `required` consistency
+  // check below still runs, so a `required` entry cannot survive against a form
+  // that has no fields.
+  if (properties === null) {
+    return fail("malformed_schema", "requestedSchema.properties must not be null");
   }
-  const propertiesRecord = asPlain(properties);
+  const propertiesRecord = properties === undefined ? {} : asPlain(properties);
   if (!propertiesRecord) return fail("malformed_schema", "requestedSchema.properties is not an object");
   // Bounded enumeration: collect keys and stop at maxFields + 1 instead of
   // materialising every entry first. A schema near the upstream 64 MiB message
@@ -704,7 +723,21 @@ export function normalizeAcpElicitationForm(request: unknown): ElicitationNormal
 
 /** Characters the normalized field will carry into the renderer. */
 function measureFieldChars(field: ChannelElicitationField): number {
+  // `format` MUST be counted: the aggregate budget's invariant is that it
+  // covers EVERY string in the normalized form. An unknown format is now an
+  // arbitrary agent-controlled annotation (ACP reader tolerance), so omitting
+  // it would understate the form by up to `maxFields × maxFormatLength` = 1280
+  // chars.
+  //
+  // HONEST SCOPE: at those limits the undercount can never trip the 256k cap, so
+  // there is NO behavioral test that fails when this line is removed. The fix
+  // restores the invariant the budget comment claims ("EVERY string"), and the
+  // accompanying regression proves `format` REACHES the normalized field (which
+  // is what makes it countable at all). Do not claim a mutation guard here.
   let chars = field.key.length + field.title.length + (field.description?.length ?? 0);
+  if (field.kind === "text" || field.kind === "single-select") {
+    chars += (field.format?.length ?? 0);
+  }
   if (field.kind === "text") {
     chars += (field.defaultValue?.length ?? 0) + (field.pattern?.length ?? 0);
   } else if (field.kind === "single-select" || field.kind === "multi-select") {

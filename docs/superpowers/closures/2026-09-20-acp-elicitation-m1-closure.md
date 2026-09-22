@@ -3,7 +3,7 @@
 ```text
 Milestone: M1 Core Foundation
 Base:      e98cb68e (main, "feat(relay-web): sticky agent avatar with working quip chip and unified send/cancel (#353)")
-Head:      8acb7e5b400294be52d3edfe483b1da1cfa0075e + round-16 fixes (post-review)
+Head:      860b2adede563878a0ee702df44a6f7cf04eca3a + round-17 fixes (post-review)
 PR:        #355 "feat(elicitation): ACP Elicitation M1 core foundation" (OPEN, mergeable)
 ```
 
@@ -1164,4 +1164,121 @@ Total new: **219**. M1 unit suites 350/350 green; `npx tsc --noEmit` 0 errors.
 type-level variant removal is invisible to `npx tsc --noEmit` because the
 tsconfig excludes `tests/`. Recorded in the test itself rather than left as a
 silent gap.
+
+## Review round 17 (head `860b2ade`) — protocol re-sweep
+
+0 Blocking, 2 Medium, 2 Low. All fixed.
+
+### 1. [Medium] Root-schema compatibility rules ran backwards
+
+ACP's "Restricted JSON Schema" section is explicit (verified verbatim against the
+RFD):
+
+> *Senders MUST include both `type: "object"` and `properties`. For
+> compatibility, ACP readers tolerate an omitted, `null`, or malformed `type` by
+> treating it as `"object"`, and tolerate omitted `properties` by treating it as
+> an empty map; `null` is not valid for `properties`. This reader tolerance does
+> not relax the sender requirements.*
+
+The implementation had it inverted: it rejected `type: null` and a non-string
+`type` (both of which the RFD says to tolerate as `"object"`), and accepted
+`properties: null` as an empty form (which the RFD calls invalid). A secondary
+defect: the omitted-`properties` path early-returned, so the existing
+`required`-consistency check never ran against an empty form.
+
+Now: a non-string `type` is tolerated as `"object"`; a **string** naming a
+different type is still rejected (that is a real mismatch, not a tolerated
+malformation — conflating the two would accept `type: "array"`); omitted
+`properties` is an empty map and still flows through the `required` check;
+`properties: null` is rejected with its own reason.
+
+### 2. [Medium] The plugin API could advertise URL without a URL renderer
+
+`ChannelElicitationMode` was ACP's `form | url`, and
+`supportedElicitationModes()` forwarded a `"url"` declaration, so a channel
+declaring only `URL` was reported as supporting a mode core cannot deliver:
+`ChannelElicitationRequest` carries form data only, there is no URL dispatch,
+and the RFD's URL-mode rules (display the target host, obtain consent before
+navigating, `elicitationId`, `elicitation/complete`) are unimplemented.
+
+Not a live wire bug — production only reads the form probe — but it is a
+capability lie in the M1 plugin contract that M2 would build on. The plugin-facing
+mode union is now `"form"` only, `supportedElicitationModes()` returns
+`Array<"form">`, and the registry documents this as the single place to widen
+when M2 ships URL rendering. Three tests pinned the old behaviour and were
+replaced.
+
+### 3. [Low] Dead host→worker `elicitation.cancel` request protocol removed
+
+A second, uncalled request method existed alongside the live worker→host
+**event** protocol. Its stale-identity branch deleted the pending map entry
+without resolving, rejecting, or aborting the promise — so anyone wiring it up
+would have hung to the 125s watchdog. The production path is the event (covered
+by the real-acpx E2E), so the request method and its params type were deleted
+rather than fixed.
+
+### 4. [Low] `measureFieldChars()` omitted `field.format`
+
+The aggregate budget's invariant is that it covers **every** string in the
+normalized form; `format` was missing. Since round 16 an unknown format is an
+arbitrary agent-controlled annotation, so the undercount is
+`maxFields × maxFormatLength` = 1280 chars — not a resource-safety issue, but the
+same class of invariant break as the round-3 pattern/schema-metadata undercount.
+
+**Recorded honestly:** at those limits the undercount can never trip the 256k
+cap, so **no behavioral test fails when the line is removed**. The fix restores
+the invariant and the accompanying regression proves `format` reaches the
+normalized field at all (which is what makes it countable). This is explicitly
+**not** listed in the mutation table below.
+
+## Final totals after round 17
+
+| Suite | Tests |
+|---|---|
+| `turn-interaction-registry.test.ts` | 13 |
+| `elicitation-schema.test.ts` | 139 |
+| `elicitation-interaction-broker.test.ts` | 52 |
+| `elicitation-plugin-contract.test.ts` | 7 |
+| `channel-elicitation-capability.test.ts` | 9 |
+| `acpx-bridge-client.test.ts` | 47 |
+| `runtime-adapter-elicitation.test.ts` (real acpx) | 4 |
+| `runtime-elicitation-agent-identity.test.ts` (real worker) | 3 |
+| `runtime-elicitation-listener-balance.test.ts` | 6 |
+| `runtime-elicitation-cancel-e2e.test.ts` (real acpx) | 1 |
+
+Total new: **224**. M1 unit suites 360/360 green; real-acpx E2E 25/26
+(pre-existing `PR9-A`); `npx tsc --noEmit` 0 errors.
+
+### Cumulative mutation-verification table
+
+| Round | Mutation | Caught by |
+|---|---|---|
+| R7 | decision accessor / double read | 3 decision tests |
+| R8 | no-op `abort.release()` in helper | 2 listener tests |
+| R8 | worker's `abort.release()` removed | structural guard |
+| R9 | array canonicalisation disabled | 2 accessor tests |
+| R9 | offset range check removed | 2 offset tests |
+| R9 | preflight moved after validation | oversized-URI ordering test |
+| R10 | length guard moved after canonicalisation | 3 array-admission tests |
+| R11 | `typeof length === "number"` guard removed | 2 proxy-length tests |
+| R11 | tombstone split removed | retention regression |
+| R12 | broker `cancelElicitationRequest` disabled | 2 broker tests |
+| R12 | broker external-signal chaining removed | 1 broker test |
+| R12 | worker `elicitation.cancel` frame removed | cancel E2E (2/2 runs) |
+| R12 | string default rejection restored | 3 schema tests |
+| R12 | multi-select default filter removed | 1 schema test |
+| R12 | `Date.UTC` leap-date mapping restored | 2 leap tests |
+| R13 | pre-fill policy relaxed to size-only | prefill regression |
+| R14 | withdrawal path disabled | withdrawal regression |
+| R15 | anonymous cancel accepted again | responder-required regression |
+| R16 | unknown `format` dropped instead of preserved | 2 format regressions |
+| R16 | `.length` instead of `codePointLength` for pre-fill | code-point regression |
+| R16 | multi-select `minItems`/`maxItems` removed from pre-fill | item-bound regression |
+| R17 | strict root-type check restored | root-tolerance regression |
+| R17 | `properties: null` guard removed | null-properties regression |
+| R17 | URL advertised again | 3 mode-capability tests |
+
+**Explicitly NOT mutation-guarded:** the `measureFieldChars` `format` term. The
+undercount it fixes is 1280 chars against a 256k cap, so no input can distinguish
+the two behaviors. Documented in the code rather than claimed as covered.
 
